@@ -1,0 +1,6 @@
+node_modules/
+web/dist/
+roles/
+.data/
+__pycache__/
+.pytest_cache/
