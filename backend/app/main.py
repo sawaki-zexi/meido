@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
-from .models import RoleInput, RoleList, RoleResponse, SendMessageInput, SessionResponse
+from .models import RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .role_store import RoleStore
 from .storage import initialize_databases
 from .session_manager import SessionManager
@@ -56,11 +56,13 @@ def get_role(role_id: str) -> RoleResponse:
 
 
 @app.put("/api/roles/{role_id}", response_model=RoleResponse)
-def update_role(role_id: str, data: RoleInput) -> RoleResponse:
+def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
     try:
         return RoleResponse(role=store.update(role_id, data))
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
+    except OSError as error:
+        raise HTTPException(status_code=500, detail="角色保存失败，请稍后重试") from error
 
 
 @app.get("/api/roles/{role_id}/session", response_model=SessionResponse)

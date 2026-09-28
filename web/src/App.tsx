@@ -8,8 +8,8 @@ const empty = { name: "", description: "", profile: "", personality: "", behavio
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.detail ?? data.error ?? "请求失败");
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.detail ?? data.error ?? `请求失败 (${response.status})`);
   return data as T;
 }
 
@@ -18,6 +18,8 @@ export function App() {
   const [selected, setSelected] = useState<Role | null>(null);
   const [draft, setDraft] = useState(empty);
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [view, setView] = useState<View>("roles");
   const [session, setSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -38,21 +40,41 @@ export function App() {
   const edit = (role: Role) => {
     setSelected(role);
     setCreating(false);
+    setEditing(false);
     setView("roles");
     setDraft({ name: role.name, description: role.description, ...role.profile });
+  };
+
+  const cancelEditing = () => {
+    setError("");
+    if (creating) {
+      setCreating(false);
+      setSelected(null);
+      setDraft(empty);
+      return;
+    }
+    if (selected) setDraft({ name: selected.name, description: selected.description, ...selected.profile });
+    setEditing(false);
   };
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault();
     setError("");
+    setSaving(true);
     try {
       const payload = { name: draft.name, description: draft.description, profile: { profile: draft.profile, personality: draft.personality, behaviorRules: draft.behaviorRules, responseConstraints: draft.responseConstraints, nickname: draft.nickname } };
       const data = creating
         ? await api<{ role: Role }>("/api/roles", { method: "POST", body: JSON.stringify(payload) })
         : await api<{ role: Role }>(`/api/roles/${encodeURIComponent(selected!.id)}`, { method: "PUT", body: JSON.stringify(payload) });
-      await refresh();
-      edit(data.role);
+      setRoles((current) => creating
+        ? [...current, data.role]
+        : current.map((role) => role.id === data.role.id ? data.role : role));
+      setSelected(data.role);
+      setDraft({ name: data.role.name, description: data.role.description, ...data.role.profile });
+      setCreating(false);
+      setEditing(false);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败"); }
+    finally { setSaving(false); }
   };
 
   const openChat = async (role: Role) => {
@@ -122,6 +144,6 @@ export function App() {
       <div className="chat-meta">唯一会话 · {session?.sessionKey}</div>
       <div className="message-list">{messages.map((message) => <article className={`message ${message.role}`} key={message.id}><div className="message-heading"><strong>{message.role === "user" ? "我" : selected.name}</strong><time>{new Date(message.createdAt).toLocaleString()}</time>{message.status !== "completed" && <span className={`message-status ${message.status}`}>{message.status === "streaming" ? "生成中" : "未完成"}</span>}</div><p>{message.content || (message.status === "streaming" ? "正在回复…" : "（无内容）")}</p></article>)}{!messages.length && <p className="empty-chat">发送第一条消息开始对话。</p>}<div ref={bottomRef}/></div>
       <form className="composer" onSubmit={sendMessage}><textarea aria-label="消息内容" placeholder="写消息…" value={messageDraft} onChange={(event) => setMessageDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} disabled={sending} /><button type="submit" disabled={sending || !messageDraft.trim()}>{sending ? "发送中" : "发送"}</button></form>
-    </section> : <div className="layout"><aside>{roles.map((role) => <div className={`role-item ${selected?.id === role.id ? "active" : ""}`} key={role.id}><button className="role-select" onClick={() => edit(role)}><strong>{role.name}</strong><span>{role.description || "暂无简介"}</span><small>{role.id}</small></button><button className="role-open" onClick={() => void openChat(role)}>进入会话</button></div>)}{!roles.length && <p>还没有角色。</p>}</aside><section>{(creating || selected) ? <form onSubmit={save}><h2>{creating ? "创建角色" : "角色详情"}</h2><label>名称<input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })}/></label><label>简介<textarea value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}/></label><label>角色设定<textarea required value={draft.profile} onChange={(e) => setDraft({ ...draft, profile: e.target.value })}/></label><label>性格<textarea value={draft.personality} onChange={(e) => setDraft({ ...draft, personality: e.target.value })}/></label><label>行为规则<textarea value={draft.behaviorRules} onChange={(e) => setDraft({ ...draft, behaviorRules: e.target.value })}/></label><label>回复约束<textarea value={draft.responseConstraints} onChange={(e) => setDraft({ ...draft, responseConstraints: e.target.value })}/></label><label>昵称<input value={draft.nickname} onChange={(e) => setDraft({ ...draft, nickname: e.target.value })}/></label><div className="form-actions"><button type="submit">保存</button>{selected && <button type="button" onClick={() => void openChat(selected)}>进入会话</button>}</div></form> : <p>选择角色或创建新角色。</p>}</section></div>}
+    </section> : <div className="layout"><aside>{roles.map((role) => <div className={`role-item ${selected?.id === role.id ? "active" : ""}`} key={role.id}><button className="role-select" onClick={() => edit(role)}><strong>{role.name}</strong><span>{role.description || "暂无简介"}</span><small>{role.id}</small></button><button className="role-open" onClick={() => void openChat(role)}>进入会话</button></div>)}{!roles.length && <p>还没有角色。</p>}</aside><section>{(creating || selected) ? <form onSubmit={save}><h2>{creating ? "创建角色" : "角色详情"}</h2><label>名称<input required disabled={!creating && !editing || saving} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })}/></label><label>简介<textarea disabled={!creating && !editing || saving} value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}/></label><label>角色设定<textarea required disabled={!creating && !editing || saving} value={draft.profile} onChange={(e) => setDraft({ ...draft, profile: e.target.value })}/></label><label>性格<textarea disabled={!creating && !editing || saving} value={draft.personality} onChange={(e) => setDraft({ ...draft, personality: e.target.value })}/></label><label>行为规则<textarea disabled={!creating && !editing || saving} value={draft.behaviorRules} onChange={(e) => setDraft({ ...draft, behaviorRules: e.target.value })}/></label><label>回复约束<textarea disabled={!creating && !editing || saving} value={draft.responseConstraints} onChange={(e) => setDraft({ ...draft, responseConstraints: e.target.value })}/></label><label>昵称<input disabled={!creating && !editing || saving} value={draft.nickname} onChange={(e) => setDraft({ ...draft, nickname: e.target.value })}/></label><div className="form-actions">{creating || editing ? <><button type="submit" disabled={saving}>{saving ? "保存中…" : "保存"}</button><button type="button" disabled={saving} onClick={cancelEditing}>取消</button></> : <button type="button" onClick={() => setEditing(true)}>编辑</button>}{selected && <button type="button" disabled={saving} onClick={() => void openChat(selected)}>进入会话</button>}</div></form> : <p>选择角色或创建新角色。</p>}</section></div>}
   </main>;
 }

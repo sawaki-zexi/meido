@@ -35,6 +35,27 @@ class RoleInput(BaseModel):
         return value
 
 
+class RoleUpdateInput(BaseModel):
+    name: str
+    description: str = ""
+    profile: RoleProfile
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("角色名称不能为空")
+        return value
+
+    @field_validator("profile")
+    @classmethod
+    def validate_profile(cls, value: RoleProfile) -> RoleProfile:
+        if not value.profile.strip():
+            raise ValueError("角色设定不能为空")
+        return value
+
+
 class Role(RoleInput):
     id: str
     createdAt: datetime

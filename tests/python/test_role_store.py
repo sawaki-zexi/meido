@@ -1,7 +1,7 @@
 import json
 
 from backend.app.role_store import RoleStore
-from backend.app.models import RoleInput, RoleProfile
+from backend.app.models import RoleInput, RoleProfile, RoleUpdateInput
 
 
 def role_input(name: str = "小葵") -> RoleInput:
@@ -21,9 +21,53 @@ def test_role_names_can_repeat_and_id_survives_update_and_reload(tmp_path):
     first = RoleStore(root).create(role_input())
     second = RoleStore(root).create(role_input())
     assert first.id != second.id
-    updated = RoleStore(root).update(first.id, role_input("改名"))
+    updated = RoleStore(root).update(
+        first.id,
+        RoleUpdateInput(name="改名", profile=RoleProfile(profile="更新设定")),
+    )
     assert updated.id == first.id
     assert RoleStore(root).get(first.id).name == "改名"
+
+
+def test_role_update_preserves_non_editable_configuration(tmp_path):
+    store = RoleStore(tmp_path / "roles")
+    role = store.create(RoleInput(
+        name="小葵",
+        profile=RoleProfile(profile="原设定"),
+        modelConfig={"provider": "local"},
+        proactiveConfig={"enabled": True},
+    ))
+
+    updated = store.update(role.id, RoleUpdateInput(
+        name="新名字",
+        description="新简介",
+        profile=RoleProfile(profile="新设定"),
+    ))
+
+    assert updated.modelConfig == {"provider": "local"}
+    assert updated.proactiveConfig == {"enabled": True}
+    assert updated.profile.profile == "新设定"
+
+
+def test_failed_role_update_keeps_memory_and_manifest_unchanged(tmp_path, monkeypatch):
+    root = tmp_path / "roles"
+    store = RoleStore(root)
+    role = store.create(role_input())
+    manifest_before = (root / "roles.json").read_bytes()
+
+    def fail_save(roles=None):
+        raise OSError("磁盘写入失败")
+
+    monkeypatch.setattr(store, "_save", fail_save)
+    try:
+        store.update(role.id, RoleUpdateInput(name="未保存", profile=RoleProfile(profile="未保存设定")))
+    except OSError:
+        pass
+    else:
+        raise AssertionError("failed persistence should raise")
+
+    assert store.get(role.id).name == role.name
+    assert (root / "roles.json").read_bytes() == manifest_before
 
 
 def test_role_validation_rejects_blank_name_and_profile(tmp_path):

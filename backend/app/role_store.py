@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import Role, RoleInput
+from .models import Role, RoleInput, RoleUpdateInput
 
 
 def utc_now() -> datetime:
@@ -51,21 +51,19 @@ class RoleStore:
             self._save()
             return role.model_copy(deep=True)
 
-    def update(self, role_id: str, data: RoleInput) -> Role:
+    def update(self, role_id: str, data: RoleUpdateInput) -> Role:
         with self._lock:
             index = next((i for i, role in enumerate(self._roles) if role.id == role_id), None)
             if index is None:
                 raise KeyError(role_id)
             current = self._roles[index]
-            updated = Role(
-                **data.model_dump(),
-                id=current.id,
-                createdAt=current.createdAt,
-                updatedAt=utc_now(),
-            )
-            self._roles[index] = updated
-            self._ensure_role_dirs(updated.id)
-            self._save()
+            values = current.model_dump(exclude={"id", "createdAt", "updatedAt"})
+            values.update(data.model_dump())
+            updated = Role(**values, id=current.id, createdAt=current.createdAt, updatedAt=utc_now())
+            candidate = [*self._roles]
+            candidate[index] = updated
+            self._save(candidate)
+            self._roles = candidate
             return updated.model_copy(deep=True)
 
     def _load(self) -> list[Role]:
@@ -93,8 +91,9 @@ class RoleStore:
         (self.root / role_id / "memory").mkdir(parents=True, exist_ok=True)
         (self.root / role_id / "state").mkdir(parents=True, exist_ok=True)
 
-    def _save(self) -> None:
-        payload = {"version": 1, "roles": [role.model_dump(mode="json") for role in self._roles]}
+    def _save(self, roles: list[Role] | None = None) -> None:
+        persisted_roles = roles if roles is not None else self._roles
+        payload = {"version": 1, "roles": [role.model_dump(mode="json") for role in persisted_roles]}
         temporary = self.manifest_path.with_name(f".{self.manifest_path.name}.{os.getpid()}.tmp")
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.replace(temporary, self.manifest_path)
