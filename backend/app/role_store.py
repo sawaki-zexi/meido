@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+import json
+import os
+import threading
+import uuid
+from copy import deepcopy
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .models import Role, RoleInput
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class RoleStore:
+    """Persistent role manifest modeled after Shiori-Agent's RoleStore."""
+
+    def __init__(self, root: str | Path = "roles") -> None:
+        self.root = Path(root).resolve()
+        self.manifest_path = self.root / "roles.json"
+        self._lock = threading.RLock()
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._roles: list[Role] = self._load()
+
+    def list(self) -> list[Role]:
+        with self._lock:
+            return deepcopy(self._roles)
+
+    def get(self, role_id: str) -> Role | None:
+        with self._lock:
+            for role in self._roles:
+                if role.id == role_id:
+                    return role.model_copy(deep=True)
+        return None
+
+    def create(self, data: RoleInput) -> Role:
+        with self._lock:
+            now = utc_now()
+            role = Role(
+                **data.model_dump(),
+                id=f"role-{uuid.uuid4().hex}",
+                createdAt=now,
+                updatedAt=now,
+            )
+            self._roles.append(role)
+            self._ensure_role_dirs(role.id)
+            self._save()
+            return role.model_copy(deep=True)
+
+    def update(self, role_id: str, data: RoleInput) -> Role:
+        with self._lock:
+            index = next((i for i, role in enumerate(self._roles) if role.id == role_id), None)
+            if index is None:
+                raise KeyError(role_id)
+            current = self._roles[index]
+            updated = Role(
+                **data.model_dump(),
+                id=current.id,
+                createdAt=current.createdAt,
+                updatedAt=utc_now(),
+            )
+            self._roles[index] = updated
+            self._ensure_role_dirs(updated.id)
+            self._save()
+            return updated.model_copy(deep=True)
+
+    def _load(self) -> list[Role]:
+        if not self.manifest_path.exists():
+            return []
+        raw = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        roles = raw.get("roles", []) if isinstance(raw, dict) else []
+        return [Role.model_validate(self._normalize(item)) for item in roles if isinstance(item, dict)]
+
+    @staticmethod
+    def _normalize(item: dict[str, Any]) -> dict[str, Any]:
+        profile = item.get("profile") or {}
+        return {
+            "id": item.get("id") or f"role-{uuid.uuid4().hex}",
+            "name": item.get("name", ""),
+            "description": item.get("description", ""),
+            "profile": profile,
+            "modelConfig": item.get("modelConfig") or {},
+            "proactiveConfig": item.get("proactiveConfig") or {},
+            "createdAt": item.get("createdAt") or utc_now(),
+            "updatedAt": item.get("updatedAt") or utc_now(),
+        }
+
+    def _ensure_role_dirs(self, role_id: str) -> None:
+        (self.root / role_id / "memory").mkdir(parents=True, exist_ok=True)
+        (self.root / role_id / "state").mkdir(parents=True, exist_ok=True)
+
+    def _save(self) -> None:
+        payload = {"version": 1, "roles": [role.model_dump(mode="json") for role in self._roles]}
+        temporary = self.manifest_path.with_name(f".{self.manifest_path.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, self.manifest_path)
