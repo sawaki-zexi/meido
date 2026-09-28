@@ -26,6 +26,15 @@ class SuccessAdapter:
         yield "主人。"
 
 
+class RecordingAdapter:
+    def __init__(self):
+        self.profiles = []
+
+    async def stream_reply(self, role, history):
+        self.profiles.append(role.profile.profile)
+        yield "回复"
+
+
 def configure_session_api(tmp_path, monkeypatch, adapter):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="测试女仆", profile=RoleProfile(profile="核心设定", personality="温柔")))
@@ -61,6 +70,76 @@ def test_role_api_crud_and_duplicate_names(tmp_path, monkeypatch):
     assert updated_response.json()["role"]["id"] == first["id"]
     assert client.get(f"/api/roles/{first['id']}").json()["role"]["name"] == "改名"
     assert len(client.get("/api/roles").json()["roles"]) == 2
+
+
+def test_role_update_preserves_session_messages_and_changes_future_prompt(tmp_path, monkeypatch):
+    adapter = RecordingAdapter()
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter)
+    session_key = f"role:{role.id}"
+    first = client.post(f"/api/roles/{role.id}/messages", json={"content": "第一条"})
+    assert "event: assistant_completed" in first.text
+    messages_before_update = sessions.list_messages(session_key)
+
+    updated = client.put(
+        f"/api/roles/{role.id}",
+        json={
+            "name": "改名",
+            "description": "新简介",
+            "profile": {
+                "profile": "新设定",
+                "personality": "活泼",
+                "behaviorRules": "先倾听",
+                "responseConstraints": "简洁",
+            },
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["role"]["id"] == role.id
+    assert RoleStore(tmp_path / "roles").get(role.id).profile.profile == "新设定"
+    assert [message.model_dump() for message in sessions.list_messages(session_key)] == [
+        message.model_dump() for message in messages_before_update
+    ]
+
+    second = client.post(f"/api/roles/{role.id}/messages", json={"content": "第二条"})
+    assert "event: assistant_completed" in second.text
+    assert adapter.profiles == ["核心设定", "新设定"]
+    assert client.get(f"/api/roles/{role.id}/session").json()["session"]["sessionKey"] == session_key
+
+
+def test_role_update_failure_keeps_persisted_role_unchanged(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="原角色", profile=RoleProfile(profile="原设定")))
+    manifest_before = (tmp_path / "roles" / "roles.json").read_bytes()
+    monkeypatch.setattr(main, "store", roles)
+
+    def fail_save(candidate=None):
+        raise OSError("磁盘写入失败")
+
+    monkeypatch.setattr(roles, "_save", fail_save)
+    client = TestClient(main.app, raise_server_exceptions=False)
+    response = client.put(
+        f"/api/roles/{role.id}",
+        json={"name": "新角色", "profile": {"profile": "新设定"}},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "角色保存失败，请稍后重试"
+    assert roles.get(role.id).name == "原角色"
+    assert (tmp_path / "roles" / "roles.json").read_bytes() == manifest_before
+
+
+def test_role_snapshot_is_stable_after_update_and_new_lookup_uses_latest(tmp_path, monkeypatch):
+    role, _, _ = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    snapshot, _ = main.session_manager.role_and_history(role.id)
+    response = TestClient(main.app).put(
+        f"/api/roles/{role.id}",
+        json={"name": role.name, "profile": {"profile": "新设定"}},
+    )
+
+    assert response.status_code == 200
+    assert snapshot.profile.profile == "核心设定"
+    current, _ = main.session_manager.role_and_history(role.id)
+    assert current.profile.profile == "新设定"
 
 
 def test_role_api_rejects_blank_required_fields(tmp_path, monkeypatch):
