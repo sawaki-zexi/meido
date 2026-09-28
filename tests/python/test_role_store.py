@@ -70,6 +70,22 @@ def test_failed_role_update_keeps_memory_and_manifest_unchanged(tmp_path, monkey
     assert (root / "roles.json").read_bytes() == manifest_before
 
 
+def test_role_delete_persists_remaining_roles_and_can_restore(tmp_path):
+    root = tmp_path / "roles"
+    store = RoleStore(root)
+    first = store.create(role_input("第一个"))
+    second = store.create(role_input("第二个"))
+
+    deleted = store.delete(first.id)
+    assert deleted.id == first.id
+    assert store.get(first.id) is None
+    assert store.get(second.id) is not None
+    assert RoleStore(root).get(first.id) is None
+
+    store.restore_deleted(deleted)
+    assert store.get(first.id).name == "第一个"
+
+
 def test_role_validation_rejects_blank_name_and_profile(tmp_path):
     store = RoleStore(tmp_path / "roles")
     try:

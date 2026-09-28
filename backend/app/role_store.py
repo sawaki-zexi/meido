@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import threading
 import uuid
 from copy import deepcopy
@@ -65,6 +66,32 @@ class RoleStore:
             self._save(candidate)
             self._roles = candidate
             return updated.model_copy(deep=True)
+
+    def delete(self, role_id: str) -> Role:
+        with self._lock:
+            index = next((i for i, role in enumerate(self._roles) if role.id == role_id), None)
+            if index is None:
+                raise KeyError(role_id)
+            deleted = self._roles[index]
+            candidate = [*self._roles[:index], *self._roles[index + 1 :]]
+            self._save(candidate)
+            self._roles = candidate
+            return deleted.model_copy(deep=True)
+
+    def restore_deleted(self, role: Role) -> None:
+        with self._lock:
+            if any(current.id == role.id for current in self._roles):
+                return
+            candidate = [*self._roles, role.model_copy(deep=True)]
+            self._save(candidate)
+            self._ensure_role_dirs(role.id)
+            self._roles = candidate
+
+    def remove_role_files(self, role_id: str) -> None:
+        role_path = (self.root / role_id).resolve()
+        if role_path.parent != self.root or not role_path.exists():
+            return
+        shutil.rmtree(role_path, ignore_errors=True)
 
     def _load(self) -> list[Role]:
         if not self.manifest_path.exists():
