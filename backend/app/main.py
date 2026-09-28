@@ -1,17 +1,27 @@
 import os
+import asyncio
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
-from .models import RoleInput, RoleList, RoleResponse
+from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
+from .models import RoleInput, RoleList, RoleResponse, SendMessageInput, SessionResponse
 from .role_store import RoleStore
 from .storage import initialize_databases
+from .session_manager import SessionManager
+from .session_store import SessionStore
 
 roles_root = Path(os.getenv("MEIDO_ROLES_DIR", "roles"))
 data_root = Path(os.getenv("MEIDO_DATA_DIR", ".data"))
 initialize_databases(data_root)
 store = RoleStore(roles_root)
+session_store = SessionStore(data_root / "sessions.db")
+session_manager = SessionManager(store, session_store)
+model_adapter: ModelAdapter = OpenAICompatibleAdapter()
+role_locks: dict[str, asyncio.Lock] = {}
 
 app = FastAPI(title="Meido API")
 app.add_middleware(
@@ -51,3 +61,58 @@ def update_role(role_id: str, data: RoleInput) -> RoleResponse:
         return RoleResponse(role=store.update(role_id, data))
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
+
+
+@app.get("/api/roles/{role_id}/session", response_model=SessionResponse)
+def get_role_session(role_id: str) -> SessionResponse:
+    try:
+        return session_manager.open_role_session(role_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="角色不存在") from error
+
+
+def _event(event_type: str, payload: dict[str, object]) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@app.post("/api/roles/{role_id}/messages")
+async def send_role_message(role_id: str, data: SendMessageInput) -> StreamingResponse:
+    try:
+        role, session = session_manager.role_and_history(role_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="角色不存在") from error
+    lock = role_locks.setdefault(role_id, asyncio.Lock())
+    if lock.locked():
+        raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试")
+    await lock.acquire()
+
+    try:
+        user_message = session_store.append_message(session.session.sessionKey, "user", data.content)
+        assistant_message = session_store.append_message(session.session.sessionKey, "assistant", "", "streaming")
+    except Exception:
+        lock.release()
+        raise
+    history = [*session_store.context_messages(session.session.sessionKey)[:-1], user_message]
+
+    async def stream():
+        content = ""
+        try:
+            yield _event("user_message_accepted", {"message": user_message.model_dump(mode="json")})
+            yield _event("assistant_generation_started", {"messageId": assistant_message.id})
+            try:
+                async for delta in model_adapter.stream_reply(role, history):
+                    content += delta
+                    session_store.update_message(assistant_message.id, content, "streaming")
+                    yield _event("assistant_delta", {"messageId": assistant_message.id, "delta": delta})
+                message = session_store.update_message(assistant_message.id, content, "completed")
+                yield _event("assistant_completed", {"message": message.model_dump(mode="json")})
+            except Exception as error:
+                message = session_store.update_message(assistant_message.id, content, "failed")
+                yield _event("assistant_failed", {"message": message.model_dump(mode="json"), "error": str(error)})
+        except asyncio.CancelledError:
+            session_store.update_message(assistant_message.id, content, "failed")
+            raise
+        finally:
+            lock.release()
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

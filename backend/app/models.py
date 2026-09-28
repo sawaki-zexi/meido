@@ -47,3 +47,37 @@ class RoleList(BaseModel):
 
 class RoleResponse(BaseModel):
     role: Role
+
+
+class SessionSummary(BaseModel):
+    sessionKey: str
+    roleId: str
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class Message(BaseModel):
+    id: str
+    sessionKey: str
+    sequence: int
+    role: str
+    content: str
+    status: str
+    createdAt: datetime
+
+
+class SessionResponse(BaseModel):
+    session: SessionSummary
+    messages: list[Message]
+
+
+class SendMessageInput(BaseModel):
+    content: str
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("消息不能为空")
+        return value
