@@ -69,6 +69,12 @@ class SessionStore:
             raise KeyError(message_id)
         return self._message(row)
 
+    def delete_role_session(self, role_id: str) -> None:
+        session_key = f"role:{role_id}"
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("DELETE FROM messages WHERE session_key = ?", (session_key,))
+            connection.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
+
     def _session(self, row: tuple[object, ...]) -> SessionSummary:
         return SessionSummary(sessionKey=str(row[0]), roleId=str(row[1]), createdAt=datetime.fromisoformat(str(row[2])), updatedAt=datetime.fromisoformat(str(row[3])))
 

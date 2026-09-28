@@ -128,6 +128,54 @@ def test_role_update_failure_keeps_persisted_role_unchanged(tmp_path, monkeypatc
     assert (tmp_path / "roles" / "roles.json").read_bytes() == manifest_before
 
 
+def test_delete_role_removes_role_session_messages_and_files(tmp_path, monkeypatch):
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    other = main.store.create(RoleInput(name="其他角色", profile=RoleProfile(profile="其他设定")))
+    client.post(f"/api/roles/{role.id}/messages", json={"content": "待删除消息"})
+    client.get(f"/api/roles/{other.id}/session")
+
+    response = client.delete(f"/api/roles/{role.id}")
+
+    assert response.status_code == 204
+    assert client.get(f"/api/roles/{role.id}").status_code == 404
+    assert client.get(f"/api/roles/{role.id}/session").status_code == 404
+    assert sessions.list_messages(f"role:{role.id}") == []
+    assert not (tmp_path / "roles" / role.id).exists()
+    assert client.get(f"/api/roles/{other.id}").status_code == 200
+    assert client.get(f"/api/roles/{other.id}/session").status_code == 200
+    assert all(item.id != role.id for item in main.store.list())
+
+
+def test_delete_role_failure_restores_role_and_chat_history(tmp_path, monkeypatch):
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    client.post(f"/api/roles/{role.id}/messages", json={"content": "保留消息"})
+    before = sessions.list_messages(f"role:{role.id}")
+
+    def fail_delete(role_id):
+        raise OSError("数据库删除失败")
+
+    monkeypatch.setattr(sessions, "delete_role_session", fail_delete)
+    response = client.delete(f"/api/roles/{role.id}")
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "删除失败，角色和聊天记录已保留"
+    assert client.get(f"/api/roles/{role.id}").status_code == 200
+    assert [item.model_dump() for item in sessions.list_messages(f"role:{role.id}")] == [item.model_dump() for item in before]
+
+
+def test_delete_role_rejects_while_generation_is_in_progress(tmp_path, monkeypatch):
+    role, _, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+
+    class LockedRole:
+        def locked(self):
+            return True
+
+    monkeypatch.setitem(main.role_locks, role.id, LockedRole())
+    response = client.delete(f"/api/roles/{role.id}")
+    assert response.status_code == 409
+    assert client.get(f"/api/roles/{role.id}").status_code == 200
+
+
 def test_role_snapshot_is_stable_after_update_and_new_lookup_uses_latest(tmp_path, monkeypatch):
     role, _, _ = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
     snapshot, _ = main.session_manager.role_and_history(role.id)

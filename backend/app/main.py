@@ -27,7 +27,7 @@ app = FastAPI(title="Meido API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
-    allow_methods=["GET", "POST", "PUT"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -63,6 +63,36 @@ def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
         raise HTTPException(status_code=404, detail="角色不存在") from error
     except OSError as error:
         raise HTTPException(status_code=500, detail="角色保存失败，请稍后重试") from error
+
+
+@app.delete("/api/roles/{role_id}", status_code=204)
+async def delete_role(role_id: str) -> None:
+    role = store.get(role_id)
+    if role is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+
+    lock = role_locks.setdefault(role_id, asyncio.Lock())
+    if lock.locked():
+        raise HTTPException(status_code=409, detail="该角色正在生成回复，暂时无法删除")
+
+    await lock.acquire()
+    try:
+        deleted = store.delete(role_id)
+        try:
+            session_store.delete_role_session(role_id)
+        except Exception as error:
+            try:
+                store.restore_deleted(deleted)
+            except OSError as restore_error:
+                raise HTTPException(status_code=500, detail="删除失败，角色恢复也未能完成") from restore_error
+            raise HTTPException(status_code=500, detail="删除失败，角色和聊天记录已保留") from error
+        store.remove_role_files(role_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="角色不存在") from error
+    except OSError as error:
+        raise HTTPException(status_code=500, detail="删除失败，角色和聊天记录已保留") from error
+    finally:
+        lock.release()
 
 
 @app.get("/api/roles/{role_id}/session", response_model=SessionResponse)

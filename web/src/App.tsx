@@ -20,6 +20,7 @@ export function App() {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [view, setView] = useState<View>("roles");
   const [session, setSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -75,6 +76,25 @@ export function App() {
       setEditing(false);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败"); }
     finally { setSaving(false); }
+  };
+
+  const removeRole = async () => {
+    if (!selected || creating || deleting) return;
+    const confirmed = window.confirm(`确定删除角色“${selected.name}”吗？\n\n角色和全部聊天记录将永久删除，且无法恢复。`);
+    if (!confirmed) return;
+    setError("");
+    setDeleting(true);
+    try {
+      await api<void>(`/api/roles/${encodeURIComponent(selected.id)}`, { method: "DELETE" });
+      setRoles((current) => current.filter((role) => role.id !== selected.id));
+      setSelected(null);
+      setDraft(empty);
+      setSession(null);
+      setMessages([]);
+      setView("roles");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "删除失败");
+    } finally { setDeleting(false); }
   };
 
   const openChat = async (role: Role) => {
@@ -144,6 +164,6 @@ export function App() {
       <div className="chat-meta">唯一会话 · {session?.sessionKey}</div>
       <div className="message-list">{messages.map((message) => <article className={`message ${message.role}`} key={message.id}><div className="message-heading"><strong>{message.role === "user" ? "我" : selected.name}</strong><time>{new Date(message.createdAt).toLocaleString()}</time>{message.status !== "completed" && <span className={`message-status ${message.status}`}>{message.status === "streaming" ? "生成中" : "未完成"}</span>}</div><p>{message.content || (message.status === "streaming" ? "正在回复…" : "（无内容）")}</p></article>)}{!messages.length && <p className="empty-chat">发送第一条消息开始对话。</p>}<div ref={bottomRef}/></div>
       <form className="composer" onSubmit={sendMessage}><textarea aria-label="消息内容" placeholder="写消息…" value={messageDraft} onChange={(event) => setMessageDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} disabled={sending} /><button type="submit" disabled={sending || !messageDraft.trim()}>{sending ? "发送中" : "发送"}</button></form>
-    </section> : <div className="layout"><aside>{roles.map((role) => <div className={`role-item ${selected?.id === role.id ? "active" : ""}`} key={role.id}><button className="role-select" onClick={() => edit(role)}><strong>{role.name}</strong><span>{role.description || "暂无简介"}</span><small>{role.id}</small></button><button className="role-open" onClick={() => void openChat(role)}>进入会话</button></div>)}{!roles.length && <p>还没有角色。</p>}</aside><section>{(creating || selected) ? <form onSubmit={save}><h2>{creating ? "创建角色" : "角色详情"}</h2><label>名称<input required disabled={!creating && !editing || saving} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })}/></label><label>简介<textarea disabled={!creating && !editing || saving} value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}/></label><label>角色设定<textarea required disabled={!creating && !editing || saving} value={draft.profile} onChange={(e) => setDraft({ ...draft, profile: e.target.value })}/></label><label>性格<textarea disabled={!creating && !editing || saving} value={draft.personality} onChange={(e) => setDraft({ ...draft, personality: e.target.value })}/></label><label>行为规则<textarea disabled={!creating && !editing || saving} value={draft.behaviorRules} onChange={(e) => setDraft({ ...draft, behaviorRules: e.target.value })}/></label><label>回复约束<textarea disabled={!creating && !editing || saving} value={draft.responseConstraints} onChange={(e) => setDraft({ ...draft, responseConstraints: e.target.value })}/></label><label>昵称<input disabled={!creating && !editing || saving} value={draft.nickname} onChange={(e) => setDraft({ ...draft, nickname: e.target.value })}/></label><div className="form-actions">{creating || editing ? <><button type="submit" disabled={saving}>{saving ? "保存中…" : "保存"}</button><button type="button" disabled={saving} onClick={cancelEditing}>取消</button></> : <button type="button" onClick={() => setEditing(true)}>编辑</button>}{selected && <button type="button" disabled={saving} onClick={() => void openChat(selected)}>进入会话</button>}</div></form> : <p>选择角色或创建新角色。</p>}</section></div>}
+    </section> : <div className="layout"><aside>{roles.map((role) => <div className={`role-item ${selected?.id === role.id ? "active" : ""}`} key={role.id}><button className="role-select" onClick={() => edit(role)}><strong>{role.name}</strong><span>{role.description || "暂无简介"}</span><small>{role.id}</small></button><button className="role-open" onClick={() => void openChat(role)}>进入会话</button></div>)}{!roles.length && <p>还没有角色。</p>}</aside><section>{(creating || selected) ? <form onSubmit={save}><h2>{creating ? "创建角色" : "角色详情"}</h2><label>名称<input required disabled={!creating && !editing || saving || deleting} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })}/></label><label>简介<textarea disabled={!creating && !editing || saving || deleting} value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}/></label><label>角色设定<textarea required disabled={!creating && !editing || saving || deleting} value={draft.profile} onChange={(e) => setDraft({ ...draft, profile: e.target.value })}/></label><label>性格<textarea disabled={!creating && !editing || saving || deleting} value={draft.personality} onChange={(e) => setDraft({ ...draft, personality: e.target.value })}/></label><label>行为规则<textarea disabled={!creating && !editing || saving || deleting} value={draft.behaviorRules} onChange={(e) => setDraft({ ...draft, behaviorRules: e.target.value })}/></label><label>回复约束<textarea disabled={!creating && !editing || saving || deleting} value={draft.responseConstraints} onChange={(e) => setDraft({ ...draft, responseConstraints: e.target.value })}/></label><label>昵称<input disabled={!creating && !editing || saving || deleting} value={draft.nickname} onChange={(e) => setDraft({ ...draft, nickname: e.target.value })}/></label><div className="form-actions">{creating || editing ? <><button type="submit" disabled={saving || deleting}>{saving ? "保存中…" : "保存"}</button><button type="button" disabled={saving || deleting} onClick={cancelEditing}>取消</button></> : <><button type="button" onClick={() => setEditing(true)}>编辑</button><button type="button" disabled={deleting} onClick={() => void removeRole()}>{deleting ? "删除中…" : "删除角色"}</button></>}{selected && <button type="button" disabled={saving || deleting} onClick={() => void openChat(selected)}>进入会话</button>}</div></form> : <p>选择角色或创建新角色。</p>}</section></div>}
   </main>;
 }
