@@ -99,6 +99,21 @@ def test_connection_test_uses_draft_stream_and_does_not_save_it(tmp_path, monkey
     assert store.get().apiKey == "secret-token"
 
 
+def test_connection_test_returns_elapsed_latency(tmp_path, monkeypatch):
+    _, client = configure_api(tmp_path, monkeypatch)
+    clock = iter((10.000, 10.688))
+    monkeypatch.setattr(main, "monotonic", lambda: next(clock))
+
+    async def stream_messages(messages, configuration, *, max_tokens=None):
+        yield "ok"
+
+    monkeypatch.setattr(main.connection_test_adapter, "stream_messages", stream_messages)
+
+    result = client.post("/api/model/configuration/test", json=payload()).json()
+
+    assert result == {"ok": True, "message": "连接成功", "latencyMs": 688}
+
+
 def test_connection_test_scrubs_secret_from_failure_and_keeps_active_config(tmp_path, monkeypatch):
     store, client = configure_api(tmp_path, monkeypatch)
     store.save(ModelConfigurationInput(**payload()))
