@@ -186,7 +186,7 @@ def create_role(data: RoleInput) -> RoleResponse:
     try:
         return RoleResponse(role=store.create(data))
     except OSError as error:
-        raise HTTPException(status_code=500, detail="角色保存失败，请稍后重试") from error
+        raise HTTPException(status_code=500, detail=f"角色保存失败：{error}") from error
 
 
 @app.get("/api/roles/{role_id}", response_model=RoleResponse)
@@ -204,7 +204,7 @@ def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
     except OSError as error:
-        raise HTTPException(status_code=500, detail="角色保存失败，请稍后重试") from error
+        raise HTTPException(status_code=500, detail=f"角色保存失败：{error}") from error
 
 
 @app.delete("/api/roles/{role_id}", status_code=204)

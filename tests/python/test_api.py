@@ -125,7 +125,7 @@ def test_role_update_failure_keeps_persisted_role_unchanged(tmp_path, monkeypatc
     )
 
     assert response.status_code == 500
-    assert response.json()["detail"] == "角色保存失败，请稍后重试"
+    assert response.json()["detail"] == "角色保存失败：磁盘写入失败"
     assert roles.get(role.id).name == "原角色"
     assert (tmp_path / "roles" / "roles.json").read_bytes() == manifest_before
 
@@ -211,7 +211,7 @@ def test_role_create_failure_returns_clear_error_and_does_not_leave_phantom_role
     response = client.post("/api/roles", json={"name": "未保存", "profile": {"profile": "核心设定"}})
 
     assert response.status_code == 500
-    assert response.json()["detail"] == "角色保存失败，请稍后重试"
+    assert response.json()["detail"] == "角色保存失败：磁盘写入失败"
     assert roles.list() == []
 
 

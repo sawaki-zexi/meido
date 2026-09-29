@@ -6,9 +6,37 @@ type Message = { id: string; sessionKey: string; sequence: number; role: "user" 
 type Session = { sessionKey: string; roleId: string; createdAt: string; updatedAt: string };
 type View = "roles" | "chat" | "model";
 const empty = { name: "", description: "", profile: "", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" };
+type Draft = typeof empty;
+const createDraftStorageKey = "meido:create-role-draft";
+const draftFields: (keyof Draft)[] = ["name", "description", "profile", "personality", "behaviorRules", "responseConstraints", "nickname"];
+
+function readCreateDraft(): Draft | null {
+  try {
+    const value = sessionStorage.getItem(createDraftStorageKey);
+    if (!value) return null;
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return draftFields.reduce((draft, field) => {
+      const candidate = parsed[field];
+      draft[field] = typeof candidate === "string" ? candidate : "";
+      return draft;
+    }, { ...empty });
+  } catch {
+    return null;
+  }
+}
+
+function clearCreateDraft(): void {
+  try { sessionStorage.removeItem(createDraftStorageKey); } catch { /* storage may be unavailable */ }
+}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
+  let response: Response;
+  try {
+    response = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
+  } catch {
+    throw new Error("无法连接本地后端，请确认服务正在运行");
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = Array.isArray(data.detail)
@@ -22,8 +50,8 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 export function App() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [selected, setSelected] = useState<Role | null>(null);
-  const [draft, setDraft] = useState(empty);
-  const [creating, setCreating] = useState(false);
+  const [draft, setDraft] = useState<Draft>(() => readCreateDraft() ?? empty);
+  const [creating, setCreating] = useState(() => readCreateDraft() !== null);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -52,8 +80,13 @@ export function App() {
 
   useEffect(() => { void refresh().catch((cause) => setError(cause.message)); }, []);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  useEffect(() => {
+    if (!creating) return;
+    try { sessionStorage.setItem(createDraftStorageKey, JSON.stringify(draft)); } catch { /* storage may be unavailable */ }
+  }, [creating, draft]);
 
   const edit = (role: Role) => {
+    clearCreateDraft();
     setSelected(role);
     setCreating(false);
     setEditing(false);
@@ -64,6 +97,7 @@ export function App() {
   const cancelEditing = () => {
     setError("");
     if (creating) {
+      clearCreateDraft();
       setCreating(false);
       setSelected(null);
       setDraft(empty);
@@ -92,6 +126,7 @@ export function App() {
         : current.map((role) => role.id === data.role.id ? data.role : role));
       setSelected(data.role);
       setDraft({ name: data.role.name, description: data.role.description, ...data.role.profile });
+      clearCreateDraft();
       setCreating(false);
       setEditing(false);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败"); }
@@ -178,7 +213,7 @@ export function App() {
   };
 
   return <main>
-    <header><h1>{view === "chat" ? selected?.name : view === "model" ? "模型设置" : "角色"}</h1><div className="header-actions">{view === "chat" && <button disabled={saving || deleting} onClick={() => setView("roles")}>返回角色</button>}{view === "model" && <button disabled={saving || deleting} onClick={() => setView("roles")}>返回角色</button>}{view !== "model" && <button disabled={saving || deleting} onClick={() => setView("model")}>模型设置</button>}{view === "roles" && <button disabled={saving || deleting} onClick={() => { setCreating(true); setSelected(null); setDraft(empty); setView("roles"); }}>创建角色</button>}</div></header>
+    <header><h1>{view === "chat" ? selected?.name : view === "model" ? "模型设置" : "角色"}</h1><div className="header-actions">{view === "chat" && <button disabled={saving || deleting} onClick={() => setView("roles")}>返回角色</button>}{view === "model" && <button disabled={saving || deleting} onClick={() => setView("roles")}>返回角色</button>}{view !== "model" && <button disabled={saving || deleting} onClick={() => setView("model")}>模型设置</button>}{view === "roles" && <button disabled={saving || deleting} onClick={() => { setError(""); setCreating(true); setSelected(null); setDraft((current) => creating ? current : empty); setView("roles"); }}>创建角色</button>}</div></header>
     {error && <p className="error global-error">{error}</p>}
     {view === "model" ? <ModelSettings onBack={() => setView("roles")} /> : view === "chat" && selected ? <section className="chat-panel">
       <div className="chat-meta">唯一会话 · {session?.sessionKey}</div>
