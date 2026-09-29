@@ -199,6 +199,22 @@ def test_role_api_rejects_blank_required_fields(tmp_path, monkeypatch):
     assert client.post("/api/roles", json={"name": "角色", "profile": {"profile": " "}}).status_code == 422
 
 
+def test_role_create_failure_returns_clear_error_and_does_not_leave_phantom_role(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    monkeypatch.setattr(main, "store", roles)
+
+    def fail_save(candidate=None):
+        raise OSError("磁盘写入失败")
+
+    monkeypatch.setattr(roles, "_save", fail_save)
+    client = TestClient(main.app, raise_server_exceptions=False)
+    response = client.post("/api/roles", json={"name": "未保存", "profile": {"profile": "核心设定"}})
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "角色保存失败，请稍后重试"
+    assert roles.list() == []
+
+
 def test_role_has_one_persistent_session_and_streams_completed_reply(tmp_path, monkeypatch):
     adapter = SuccessAdapter()
     role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter)
