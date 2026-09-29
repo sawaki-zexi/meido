@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -84,6 +85,7 @@ def public_configuration(config: ModelConfiguration | None) -> dict | None:
     if config is None:
         return None
     return {
+        "id": config.id,
         "providerId": config.providerId,
         "provider": config.provider,
         "baseUrl": config.baseUrl,
@@ -97,23 +99,102 @@ class ModelConfigurationStore:
         self.path = Path(path)
         self._lock = threading.RLock()
 
-    def get(self) -> ModelConfiguration | None:
+    def _read(self) -> tuple[list[ModelConfiguration], str | None]:
+        if not self.path.exists():
+            return [], None
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("configurations"), list):
+            configurations = [ModelConfiguration.model_validate(item) for item in data["configurations"]]
+            active_id = data.get("activeId")
+            return configurations, str(active_id) if active_id else (configurations[0].id if configurations else None)
+        if isinstance(data, dict) and data.get("providerId"):
+            legacy = ModelConfiguration.model_validate({**data, "id": data.get("id") or "model-default"})
+            return [legacy], legacy.id
+        return [], None
+
+    def _write(self, configurations: list[ModelConfiguration], active_id: str | None) -> None:
+        payload = json.dumps(
+            {
+                "version": 2,
+                "activeId": active_id,
+                "configurations": [item.model_dump() for item in configurations],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
+        try:
+            temporary.write_text(payload, encoding="utf-8")
+            os.replace(temporary, self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def list(self) -> list[ModelConfiguration]:
         with self._lock:
-            if not self.path.exists():
-                return None
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            return ModelConfiguration.model_validate(data)
+            configurations, _ = self._read()
+            return [item.model_copy(deep=True) for item in configurations]
+
+    def active_id(self) -> str | None:
+        with self._lock:
+            _, active_id = self._read()
+            return active_id
+
+    def get(self, configuration_id: str | None = None) -> ModelConfiguration | None:
+        with self._lock:
+            configurations, active_id = self._read()
+            target_id = configuration_id or active_id
+            item = next((item for item in configurations if item.id == target_id), None)
+            return item.model_copy(deep=True) if item else None
 
     def save(self, data: ModelConfigurationInput) -> ModelConfiguration:
         validate_model_configuration(data)
-        candidate = ModelConfiguration.model_validate(data.model_dump())
-        payload = json.dumps(candidate.model_dump(), ensure_ascii=False, indent=2) + "\n"
         with self._lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
-            try:
-                temporary.write_text(payload, encoding="utf-8")
-                os.replace(temporary, self.path)
-            finally:
-                temporary.unlink(missing_ok=True)
-        return candidate
+            configurations, active_id = self._read()
+            current = next((item for item in configurations if item.id == active_id), None)
+            candidate = ModelConfiguration.model_validate({**data.model_dump(), "id": current.id if current else f"model-{uuid.uuid4().hex}"})
+            if current:
+                configurations = [candidate if item.id == current.id else item for item in configurations]
+            else:
+                configurations.append(candidate)
+            self._write(configurations, candidate.id)
+            return candidate.model_copy(deep=True)
+
+    def create(self, data: ModelConfigurationInput) -> ModelConfiguration:
+        validate_model_configuration(data)
+        with self._lock:
+            configurations, _ = self._read()
+            candidate = ModelConfiguration.model_validate(data.model_dump())
+            configurations.append(candidate)
+            self._write(configurations, candidate.id)
+            return candidate.model_copy(deep=True)
+
+    def update(self, configuration_id: str, data: ModelConfigurationInput) -> ModelConfiguration:
+        validate_model_configuration(data)
+        with self._lock:
+            configurations, _ = self._read()
+            if not any(item.id == configuration_id for item in configurations):
+                raise KeyError(configuration_id)
+            candidate = ModelConfiguration.model_validate({**data.model_dump(), "id": configuration_id})
+            configurations = [candidate if item.id == configuration_id else item for item in configurations]
+            self._write(configurations, candidate.id)
+            return candidate.model_copy(deep=True)
+
+    def activate(self, configuration_id: str) -> ModelConfiguration:
+        with self._lock:
+            configurations, _ = self._read()
+            candidate = next((item for item in configurations if item.id == configuration_id), None)
+            if candidate is None:
+                raise KeyError(configuration_id)
+            self._write(configurations, configuration_id)
+            return candidate.model_copy(deep=True)
+
+    def delete(self, configuration_id: str) -> str | None:
+        with self._lock:
+            configurations, active_id = self._read()
+            if not any(item.id == configuration_id for item in configurations):
+                raise KeyError(configuration_id)
+            remaining = [item for item in configurations if item.id != configuration_id]
+            next_active = active_id if active_id != configuration_id else (remaining[0].id if remaining else None)
+            self._write(remaining, next_active)
+            return next_active

@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any
+import uuid
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -126,7 +127,7 @@ class ModelConfigurationInput(BaseModel):
 
 
 class ModelConfiguration(ModelConfigurationInput):
-    pass
+    id: str = Field(default_factory=lambda: f"model-{uuid.uuid4().hex}")
 
 
 class ProviderPreset(BaseModel):
