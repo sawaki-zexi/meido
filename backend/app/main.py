@@ -52,6 +52,18 @@ def get_model_configuration() -> dict[str, object]:
     return {"configuration": public_configuration(model_configuration_store.get())}
 
 
+@app.get("/api/model/configurations")
+def list_model_configurations() -> dict[str, object]:
+    active_id = model_configuration_store.active_id()
+    return {
+        "activeId": active_id,
+        "configurations": [
+            {**public_configuration(item), "active": item.id == active_id}
+            for item in model_configuration_store.list()
+        ],
+    }
+
+
 def _configuration_with_saved_key(data: ModelConfigurationInput) -> ModelConfigurationInput:
     if data.apiKey:
         return data
@@ -93,6 +105,52 @@ def save_model_configuration(data: ModelConfigurationInput) -> dict[str, object]
     except OSError as error:
         raise HTTPException(status_code=500, detail="模型配置保存失败，当前生效配置未改变") from error
     return {"configuration": public_configuration(configuration)}
+
+
+@app.post("/api/model/configurations")
+def create_model_configuration(data: ModelConfigurationInput) -> dict[str, object]:
+    try:
+        candidate = _configuration_with_saved_key(data)
+        configuration = model_configuration_store.create(candidate)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except OSError as error:
+        raise HTTPException(status_code=500, detail="模型配置保存失败") from error
+    return {"configuration": public_configuration(configuration)}
+
+
+@app.put("/api/model/configurations/{configuration_id}")
+def update_model_configuration(configuration_id: str, data: ModelConfigurationInput) -> dict[str, object]:
+    try:
+        current = model_configuration_store.get(configuration_id)
+        if current and not data.apiKey:
+            data = data.model_copy(update={"apiKey": current.apiKey})
+        configuration = model_configuration_store.update(configuration_id, data)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="模型配置不存在") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except OSError as error:
+        raise HTTPException(status_code=500, detail="模型配置保存失败") from error
+    return {"configuration": public_configuration(configuration)}
+
+
+@app.post("/api/model/configurations/{configuration_id}/activate")
+def activate_model_configuration(configuration_id: str) -> dict[str, object]:
+    try:
+        configuration = model_configuration_store.activate(configuration_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="模型配置不存在") from error
+    return {"configuration": public_configuration(configuration)}
+
+
+@app.delete("/api/model/configurations/{configuration_id}")
+def delete_model_configuration(configuration_id: str) -> dict[str, object]:
+    try:
+        active_id = model_configuration_store.delete(configuration_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="模型配置不存在") from error
+    return {"activeId": active_id}
 
 
 @app.post("/api/model/configuration/test")

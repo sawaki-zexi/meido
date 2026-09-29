@@ -61,6 +61,58 @@ def test_provider_id_must_match_preset(tmp_path, monkeypatch):
     assert response.status_code == 422
 
 
+def test_multiple_configurations_persist_list_active_selection_edit_and_delete(tmp_path, monkeypatch):
+    store, client = configure_api(tmp_path, monkeypatch)
+    first = client.post("/api/model/configurations", json=payload()).json()["configuration"]
+    second = client.post("/api/model/configurations", json=payload(
+        providerId="custom",
+        provider="local-test",
+        baseUrl="http://127.0.0.1:11434/v1",
+        model="qwen3:8b",
+        apiKey="",
+    )).json()["configuration"]
+
+    listed = client.get("/api/model/configurations").json()
+    assert [item["id"] for item in listed["configurations"]] == [first["id"], second["id"]]
+    assert listed["activeId"] == second["id"]
+    assert client.get("/api/model/configuration").json()["configuration"]["id"] == second["id"]
+
+    updated = client.put(
+        f"/api/model/configurations/{first['id']}",
+        json=payload(model="deepseek-reasoner", apiKey=""),
+    )
+    assert updated.status_code == 200
+    assert store.get(first["id"]).model == "deepseek-reasoner"
+    assert store.get(first["id"]).apiKey == "secret-token"
+    assert client.get("/api/model/configuration").json()["configuration"]["id"] == first["id"]
+
+    activated = client.post(f"/api/model/configurations/{second['id']}/activate")
+    assert activated.status_code == 200
+    assert client.get("/api/model/configuration").json()["configuration"]["id"] == second["id"]
+
+    deleted = client.delete(f"/api/model/configurations/{second['id']}")
+    assert deleted.status_code == 200
+    assert deleted.json()["activeId"] == first["id"]
+    assert [item["id"] for item in client.get("/api/model/configurations").json()["configurations"]] == [first["id"]]
+
+
+def test_legacy_single_configuration_is_read_and_migrated_on_save(tmp_path):
+    path = tmp_path / "model-config.json"
+    path.write_text(json.dumps(payload()), encoding="utf-8")
+    store = ModelConfigurationStore(path)
+
+    legacy = store.get()
+    assert legacy is not None
+    assert legacy.id == "model-default"
+    assert store.active_id() == "model-default"
+
+    store.save(ModelConfigurationInput(**payload(model="deepseek-reasoner")))
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert document["version"] == 2
+    assert document["activeId"] == "model-default"
+    assert len(document["configurations"]) == 1
+
+
 def test_save_failure_keeps_active_configuration(tmp_path, monkeypatch):
     store, client = configure_api(tmp_path, monkeypatch)
     client.put("/api/model/configuration", json=payload())
