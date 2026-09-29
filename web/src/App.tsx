@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { ModelSettings } from "./ModelSettings";
 
 type Role = { id: string; name: string; description: string; profile: { profile: string; personality: string; behaviorRules: string; responseConstraints: string; nickname: string }; createdAt: string; updatedAt: string };
 type Message = { id: string; sessionKey: string; sequence: number; role: "user" | "assistant"; content: string; status: "streaming" | "completed" | "failed"; createdAt: string };
 type Session = { sessionKey: string; roleId: string; createdAt: string; updatedAt: string };
-type View = "roles" | "chat";
+type View = "roles" | "chat" | "model";
 const empty = { name: "", description: "", profile: "", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -158,9 +159,9 @@ export function App() {
   };
 
   return <main>
-    <header><h1>{view === "chat" ? selected?.name : "角色"}</h1><div className="header-actions">{view === "chat" && <button onClick={() => setView("roles")}>返回角色</button>}<button onClick={() => { setCreating(true); setSelected(null); setDraft(empty); setView("roles"); }}>创建角色</button></div></header>
+    <header><h1>{view === "chat" ? selected?.name : view === "model" ? "模型设置" : "角色"}</h1><div className="header-actions">{view === "chat" && <button onClick={() => setView("roles")}>返回角色</button>}{view === "model" && <button onClick={() => setView("roles")}>返回角色</button>}{view !== "model" && <button onClick={() => setView("model")}>模型设置</button>}{view === "roles" && <button onClick={() => { setCreating(true); setSelected(null); setDraft(empty); setView("roles"); }}>创建角色</button>}</div></header>
     {error && <p className="error global-error">{error}</p>}
-    {view === "chat" && selected ? <section className="chat-panel">
+    {view === "model" ? <ModelSettings onBack={() => setView("roles")} /> : view === "chat" && selected ? <section className="chat-panel">
       <div className="chat-meta">唯一会话 · {session?.sessionKey}</div>
       <div className="message-list">{messages.map((message) => <article className={`message ${message.role}`} key={message.id}><div className="message-heading"><strong>{message.role === "user" ? "我" : selected.name}</strong><time>{new Date(message.createdAt).toLocaleString()}</time>{message.status !== "completed" && <span className={`message-status ${message.status}`}>{message.status === "streaming" ? "生成中" : "未完成"}</span>}</div><p>{message.content || (message.status === "streaming" ? "正在回复…" : "（无内容）")}</p></article>)}{!messages.length && <p className="empty-chat">发送第一条消息开始对话。</p>}<div ref={bottomRef}/></div>
       <form className="composer" onSubmit={sendMessage}><textarea aria-label="消息内容" placeholder="写消息…" value={messageDraft} onChange={(event) => setMessageDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} disabled={sending} /><button type="submit" disabled={sending || !messageDraft.trim()}>{sending ? "发送中" : "发送"}</button></form>

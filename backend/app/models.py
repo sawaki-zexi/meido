@@ -102,3 +102,40 @@ class SendMessageInput(BaseModel):
         if not value:
             raise ValueError("消息不能为空")
         return value
+
+
+class ModelConfigurationInput(BaseModel):
+    providerId: str
+    provider: str
+    baseUrl: str
+    model: str
+    apiKey: str = ""
+
+    @field_validator("providerId", "provider", "baseUrl", "model")
+    @classmethod
+    def validate_required_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("服务商、地址和模型均不能为空")
+        return value
+
+    @field_validator("apiKey")
+    @classmethod
+    def normalize_api_key(cls, value: str) -> str:
+        return value.strip()
+
+
+class ModelConfiguration(ModelConfigurationInput):
+    pass
+
+
+class ProviderPreset(BaseModel):
+    id: str
+    label: str
+    provider: str
+    baseUrl: str
+    modelHint: str
+
+
+class ProviderPresetList(BaseModel):
+    providers: list[ProviderPreset]
