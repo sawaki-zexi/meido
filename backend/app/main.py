@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+import httpx
 
 from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
@@ -64,7 +65,18 @@ def _configuration_with_saved_key(data: ModelConfigurationInput) -> ModelConfigu
 
 
 def _safe_model_error(error: Exception, api_key: str = "") -> str:
-    message = str(error).strip() or "模型服务请求失败"
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        message = {
+            401: "认证失败 (HTTP 401)：请检查 API Key 是否有效，以及是否属于当前服务商账号。",
+            403: "服务商拒绝了请求 (HTTP 403)：请检查账号权限和可用额度。",
+            404: "服务地址或模型不存在 (HTTP 404)：请检查 API 地址和模型 ID。",
+            429: "请求过于频繁或额度不足 (HTTP 429)：请稍后重试并检查服务商额度。",
+        }.get(status, f"模型服务请求失败 (HTTP {status})")
+        if 500 <= status <= 599:
+            message = f"模型服务暂时不可用 (HTTP {status})，请稍后重试。"
+    else:
+        message = str(error).strip() or "模型服务请求失败"
     if api_key:
         message = message.replace(api_key, "***")
     return message[:500]
