@@ -56,8 +56,8 @@ export function ModelSettings({ onBack }: { onBack: () => void }) {
     setBusy(true);
     try {
       if (action === "test") {
-        const result = await api<{ ok: boolean; message: string }>("/api/model/configuration/test", { method: "POST", body: JSON.stringify(draft) });
-        setTestResult(`${result.ok ? "成功" : "失败"}：${result.message}`);
+        const result = await api<{ ok: boolean; message: string; latencyMs?: number }>("/api/model/configuration/test", { method: "POST", body: JSON.stringify(draft) });
+        setTestResult(result.ok && result.latencyMs !== undefined ? `连接成功 · ${result.latencyMs} ms` : `失败：${result.message}`);
       } else {
         const result = await api<{ configuration: Configuration }>("/api/model/configuration", { method: "PUT", body: JSON.stringify(draft) });
         setSaved(result.configuration);

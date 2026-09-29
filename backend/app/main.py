@@ -1,6 +1,7 @@
 import os
 import asyncio
 import json
+from time import monotonic
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -102,6 +103,7 @@ async def test_model_configuration(data: ModelConfigurationInput) -> dict[str, o
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     configuration = ModelConfiguration.model_validate(candidate.model_dump())
+    started_at = monotonic()
     try:
         async for _ in connection_test_adapter.stream_messages(
             [{"role": "user", "content": "ping"}], configuration, max_tokens=8
@@ -109,7 +111,11 @@ async def test_model_configuration(data: ModelConfigurationInput) -> dict[str, o
             pass
     except Exception as error:
         return {"ok": False, "message": _safe_model_error(error, configuration.apiKey)}
-    return {"ok": True, "message": "连接成功"}
+    return {
+        "ok": True,
+        "message": "连接成功",
+        "latencyMs": round((monotonic() - started_at) * 1000),
+    }
 
 
 @app.get("/api/roles", response_model=RoleList)
