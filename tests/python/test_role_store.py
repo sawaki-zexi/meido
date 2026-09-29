@@ -49,6 +49,40 @@ def test_role_update_preserves_non_editable_configuration(tmp_path):
     assert updated.profile.profile == "新设定"
 
 
+def test_role_model_configuration_binding_persists_and_is_independent(tmp_path):
+    root = tmp_path / "roles"
+    store = RoleStore(root)
+    first = store.create(role_input("第一个"))
+    second = store.create(role_input("第二个"))
+
+    bound = store.set_model_configuration(first.id, "model-first")
+
+    assert bound.modelConfigurationId == "model-first"
+    assert store.get(second.id).modelConfigurationId is None
+    reloaded = RoleStore(root)
+    assert reloaded.get(first.id).modelConfigurationId == "model-first"
+    assert reloaded.get(second.id).modelConfigurationId is None
+
+
+def test_failed_model_configuration_binding_keeps_previous_value(tmp_path, monkeypatch):
+    store = RoleStore(tmp_path / "roles")
+    role = store.create(role_input())
+    store.set_model_configuration(role.id, "model-old")
+
+    def fail_save(roles=None):
+        raise OSError("磁盘写入失败")
+
+    monkeypatch.setattr(store, "_save", fail_save)
+    try:
+        store.set_model_configuration(role.id, "model-new")
+    except OSError:
+        pass
+    else:
+        raise AssertionError("failed persistence should raise")
+
+    assert store.get(role.id).modelConfigurationId == "model-old"
+
+
 def test_failed_role_update_keeps_memory_and_manifest_unchanged(tmp_path, monkeypatch):
     root = tmp_path / "roles"
     store = RoleStore(root)

@@ -61,6 +61,21 @@ class Role(RoleInput):
     id: str
     createdAt: datetime
     updatedAt: datetime
+    modelConfigurationId: str | None = None
+
+
+class RoleModelConfigurationInput(BaseModel):
+    configurationId: str | None
+
+    @field_validator("configurationId")
+    @classmethod
+    def validate_configuration_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("模型连接 ID 不能为空")
+        return value
 
 
 class RoleList(BaseModel):

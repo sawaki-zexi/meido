@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 from backend.app import main
-from backend.app.models import RoleInput, RoleProfile
+from backend.app.models import ModelConfigurationInput, RoleInput, RoleProfile
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
@@ -34,6 +34,38 @@ class RecordingAdapter:
     async def stream_reply(self, role, history, configuration=None):
         self.profiles.append(role.profile.profile)
         yield "回复"
+
+
+class ConfigurationRecordingAdapter:
+    def __init__(self):
+        self.configuration_ids = []
+
+    async def stream_reply(self, role, history, configuration=None):
+        self.configuration_ids.append(configuration.id if configuration else None)
+        yield "回复"
+
+
+class RebindingAdapter:
+    def __init__(self, roles, role_id, next_configuration_id):
+        self.roles = roles
+        self.role_id = role_id
+        self.next_configuration_id = next_configuration_id
+        self.configuration_ids = []
+
+    async def stream_reply(self, role, history, configuration=None):
+        self.configuration_ids.append(configuration.id if configuration else None)
+        if len(self.configuration_ids) == 1:
+            self.roles.set_model_configuration(self.role_id, self.next_configuration_id)
+        yield "回复"
+
+
+def model_configuration_payload(model="test-model"):
+    return ModelConfigurationInput(
+        providerId="openai",
+        provider="openai",
+        baseUrl="https://api.openai.com/v1",
+        model=model,
+    )
 
 
 def configure_session_api(tmp_path, monkeypatch, adapter):
@@ -72,6 +104,121 @@ def test_role_api_crud_and_duplicate_names(tmp_path, monkeypatch):
     assert updated_response.json()["role"]["id"] == first["id"]
     assert client.get(f"/api/roles/{first['id']}").json()["role"]["name"] == "改名"
     assert len(client.get("/api/roles").json()["roles"]) == 2
+
+
+def test_role_model_configuration_api_persists_and_only_changes_selected_role(tmp_path, monkeypatch):
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    other = main.store.create(RoleInput(name="另一个角色", profile=RoleProfile(profile="其他设定")))
+    client.post(f"/api/roles/{role.id}/messages", json={"content": "历史消息"})
+    before_messages = sessions.list_messages(f"role:{role.id}")
+    configuration = main.model_configuration_store.create(model_configuration_payload())
+
+    response = client.put(
+        f"/api/roles/{role.id}/model-configuration",
+        json={"configurationId": configuration.id},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["configurationId"] == configuration.id
+    assert client.get(f"/api/roles/{role.id}/model-configuration").json()["configurationId"] == configuration.id
+    assert client.get(f"/api/roles/{other.id}/model-configuration").json()["configurationId"] is None
+    assert RoleStore(tmp_path / "roles").get(role.id).modelConfigurationId == configuration.id
+    assert client.get(f"/api/roles/{role.id}/session").json()["session"]["sessionKey"] == f"role:{role.id}"
+    assert [item.model_dump() for item in sessions.list_messages(f"role:{role.id}")] == [
+        item.model_dump() for item in before_messages
+    ]
+
+
+def test_role_model_configuration_api_rejects_missing_configuration_without_changing_binding(tmp_path, monkeypatch):
+    role, _, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    configuration = main.model_configuration_store.create(model_configuration_payload())
+    client.put(
+        f"/api/roles/{role.id}/model-configuration",
+        json={"configurationId": configuration.id},
+    )
+
+    response = client.put(
+        f"/api/roles/{role.id}/model-configuration",
+        json={"configurationId": "missing-model"},
+    )
+
+    assert response.status_code == 404
+    assert client.get(f"/api/roles/{role.id}/model-configuration").json()["configurationId"] == configuration.id
+
+
+def test_role_model_configuration_api_failure_keeps_previous_binding(tmp_path, monkeypatch):
+    role, _, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    first = main.model_configuration_store.create(model_configuration_payload("first"))
+    second = main.model_configuration_store.create(model_configuration_payload("second"))
+    client.put(f"/api/roles/{role.id}/model-configuration", json={"configurationId": first.id})
+
+    def fail_save(roles=None):
+        raise OSError("磁盘写入失败")
+
+    monkeypatch.setattr(main.store, "_save", fail_save)
+    response = client.put(
+        f"/api/roles/{role.id}/model-configuration",
+        json={"configurationId": second.id},
+    )
+
+    assert response.status_code == 500
+    assert client.get(f"/api/roles/{role.id}/model-configuration").json()["configurationId"] == first.id
+
+
+def test_role_messages_use_bound_configuration_and_reject_deleted_binding(tmp_path, monkeypatch):
+    adapter = ConfigurationRecordingAdapter()
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter)
+    other = main.store.create(RoleInput(name="另一个角色", profile=RoleProfile(profile="其他设定")))
+    first = main.model_configuration_store.create(model_configuration_payload("first"))
+    second = main.model_configuration_store.create(model_configuration_payload("second"))
+    client.put(f"/api/roles/{role.id}/model-configuration", json={"configurationId": first.id})
+    client.put(f"/api/roles/{other.id}/model-configuration", json={"configurationId": second.id})
+
+    assert "event: assistant_completed" in client.post(f"/api/roles/{role.id}/messages", json={"content": "第一个"}).text
+    assert "event: assistant_completed" in client.post(f"/api/roles/{other.id}/messages", json={"content": "第二个"}).text
+    assert adapter.configuration_ids == [first.id, second.id]
+
+    main.model_configuration_store.delete(first.id)
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "不应写入"})
+    assert response.status_code == 409
+    assert [item.content for item in sessions.list_messages(f"role:{role.id}")] == ["第一个", "回复"]
+
+
+def test_role_message_keeps_configuration_snapshot_when_binding_changes_during_stream(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="测试角色", profile=RoleProfile(profile="核心设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    configurations = ModelConfigurationStore(tmp_path / "data" / "model-config.json")
+    first = configurations.create(model_configuration_payload("first"))
+    second = configurations.create(model_configuration_payload("second"))
+    roles.set_model_configuration(role.id, first.id)
+    adapter = RebindingAdapter(roles, role.id, second.id)
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))
+    monkeypatch.setattr(main, "model_adapter", adapter)
+    monkeypatch.setattr(main, "model_configuration_store", configurations)
+    monkeypatch.setattr(main, "role_locks", {})
+    client = TestClient(main.app)
+
+    first_response = client.post(f"/api/roles/{role.id}/messages", json={"content": "配置 A"})
+    second_response = client.post(f"/api/roles/{role.id}/messages", json={"content": "配置 B"})
+
+    assert "event: assistant_completed" in first_response.text
+    assert "event: assistant_completed" in second_response.text
+    assert adapter.configuration_ids == [first.id, second.id]
+
+
+def test_unbound_role_uses_active_model_configuration(tmp_path, monkeypatch):
+    adapter = ConfigurationRecordingAdapter()
+    role, _, client = configure_session_api(tmp_path, monkeypatch, adapter)
+    configuration = main.model_configuration_store.create(model_configuration_payload())
+
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "默认模型"})
+
+    assert "event: assistant_completed" in response.text
+    assert adapter.configuration_ids == [configuration.id]
 
 
 def test_role_update_preserves_session_messages_and_changes_future_prompt(tmp_path, monkeypatch):

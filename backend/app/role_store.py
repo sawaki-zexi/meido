@@ -72,6 +72,22 @@ class RoleStore:
             self._roles = candidate
             return updated.model_copy(deep=True)
 
+    def set_model_configuration(self, role_id: str, configuration_id: str | None) -> Role:
+        with self._lock:
+            index = next((i for i, role in enumerate(self._roles) if role.id == role_id), None)
+            if index is None:
+                raise KeyError(role_id)
+            current = self._roles[index]
+            updated = current.model_copy(update={
+                "modelConfigurationId": configuration_id,
+                "updatedAt": utc_now(),
+            })
+            candidate = [*self._roles]
+            candidate[index] = updated
+            self._save(candidate)
+            self._roles = candidate
+            return updated.model_copy(deep=True)
+
     def delete(self, role_id: str) -> Role:
         with self._lock:
             index = next((i for i, role in enumerate(self._roles) if role.id == role_id), None)
@@ -114,6 +130,7 @@ class RoleStore:
             "description": item.get("description", ""),
             "profile": profile,
             "modelConfig": item.get("modelConfig") or {},
+            "modelConfigurationId": item.get("modelConfigurationId"),
             "proactiveConfig": item.get("proactiveConfig") or {},
             "createdAt": item.get("createdAt") or utc_now(),
             "updatedAt": item.get("updatedAt") or utc_now(),
