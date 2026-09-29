@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from backend.app import main
 from backend.app.models import RoleInput, RoleProfile
+from backend.app.model_config import ModelConfigurationStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
 from backend.app.session_store import SessionStore
@@ -9,7 +10,7 @@ from backend.app.storage import initialize_databases
 
 
 class FailingAdapter:
-    async def stream_reply(self, role, history):
+    async def stream_reply(self, role, history, configuration=None):
         yield "部分内容"
         raise RuntimeError("模型连接中断")
 
@@ -18,7 +19,7 @@ class SuccessAdapter:
     def __init__(self):
         self.histories = []
 
-    async def stream_reply(self, role, history):
+    async def stream_reply(self, role, history, configuration=None):
         assert role.profile.profile == "核心设定"
         assert history[-1].content == "你好"
         self.histories.append(history)
@@ -30,7 +31,7 @@ class RecordingAdapter:
     def __init__(self):
         self.profiles = []
 
-    async def stream_reply(self, role, history):
+    async def stream_reply(self, role, history, configuration=None):
         self.profiles.append(role.profile.profile)
         yield "回复"
 
@@ -44,6 +45,7 @@ def configure_session_api(tmp_path, monkeypatch, adapter):
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))
     monkeypatch.setattr(main, "model_adapter", adapter)
+    monkeypatch.setattr(main, "model_configuration_store", ModelConfigurationStore(tmp_path / "data" / "model-config.json"))
     monkeypatch.setattr(main, "role_locks", {})
     return role, sessions, TestClient(main.app)
 from backend.app.role_store import RoleStore
