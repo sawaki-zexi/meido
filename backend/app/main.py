@@ -183,7 +183,10 @@ def list_roles() -> RoleList:
 
 @app.post("/api/roles", response_model=RoleResponse, status_code=201)
 def create_role(data: RoleInput) -> RoleResponse:
-    return RoleResponse(role=store.create(data))
+    try:
+        return RoleResponse(role=store.create(data))
+    except OSError as error:
+        raise HTTPException(status_code=500, detail="角色保存失败，请稍后重试") from error
 
 
 @app.get("/api/roles/{role_id}", response_model=RoleResponse)

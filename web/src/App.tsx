@@ -10,7 +10,12 @@ const empty = { name: "", description: "", profile: "", personality: "", behavio
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail ?? data.error ?? `请求失败 (${response.status})`);
+  if (!response.ok) {
+    const detail = Array.isArray(data.detail)
+      ? data.detail.map((item: { msg?: string }) => item.msg).filter(Boolean).join("；")
+      : data.detail;
+    throw new Error(detail ?? data.error ?? `请求失败 (${response.status})`);
+  }
   return data as T;
 }
 
@@ -29,9 +34,18 @@ export function App() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const rolesRequestId = useRef(0);
 
   const refresh = async () => {
-    const data = await api<{ roles: Role[] }>("/api/roles");
+    const requestId = ++rolesRequestId.current;
+    let data: { roles: Role[] };
+    try {
+      data = await api<{ roles: Role[] }>("/api/roles");
+    } catch (cause) {
+      if (requestId === rolesRequestId.current) throw cause;
+      return;
+    }
+    if (requestId !== rolesRequestId.current) return;
     setRoles(data.roles);
     if (selected) setSelected(data.roles.find((role) => role.id === selected.id) ?? null);
   };
@@ -63,12 +77,17 @@ export function App() {
     event.preventDefault();
     setError("");
     setSaving(true);
+    const creatingSnapshot = creating;
+    const selectedSnapshot = selected;
+    const draftSnapshot = { ...draft };
     try {
-      const payload = { name: draft.name, description: draft.description, profile: { profile: draft.profile, personality: draft.personality, behaviorRules: draft.behaviorRules, responseConstraints: draft.responseConstraints, nickname: draft.nickname } };
-      const data = creating
+      const payload = { name: draftSnapshot.name, description: draftSnapshot.description, profile: { profile: draftSnapshot.profile, personality: draftSnapshot.personality, behaviorRules: draftSnapshot.behaviorRules, responseConstraints: draftSnapshot.responseConstraints, nickname: draftSnapshot.nickname } };
+      const data = creatingSnapshot
         ? await api<{ role: Role }>("/api/roles", { method: "POST", body: JSON.stringify(payload) })
-        : await api<{ role: Role }>(`/api/roles/${encodeURIComponent(selected!.id)}`, { method: "PUT", body: JSON.stringify(payload) });
-      setRoles((current) => creating
+        : await api<{ role: Role }>(`/api/roles/${encodeURIComponent(selectedSnapshot!.id)}`, { method: "PUT", body: JSON.stringify(payload) });
+      // A list request started before this save must not overwrite the saved role.
+      rolesRequestId.current += 1;
+      setRoles((current) => creatingSnapshot
         ? [...current, data.role]
         : current.map((role) => role.id === data.role.id ? data.role : role));
       setSelected(data.role);
@@ -159,7 +178,7 @@ export function App() {
   };
 
   return <main>
-    <header><h1>{view === "chat" ? selected?.name : view === "model" ? "模型设置" : "角色"}</h1><div className="header-actions">{view === "chat" && <button onClick={() => setView("roles")}>返回角色</button>}{view === "model" && <button onClick={() => setView("roles")}>返回角色</button>}{view !== "model" && <button onClick={() => setView("model")}>模型设置</button>}{view === "roles" && <button onClick={() => { setCreating(true); setSelected(null); setDraft(empty); setView("roles"); }}>创建角色</button>}</div></header>
+    <header><h1>{view === "chat" ? selected?.name : view === "model" ? "模型设置" : "角色"}</h1><div className="header-actions">{view === "chat" && <button disabled={saving || deleting} onClick={() => setView("roles")}>返回角色</button>}{view === "model" && <button disabled={saving || deleting} onClick={() => setView("roles")}>返回角色</button>}{view !== "model" && <button disabled={saving || deleting} onClick={() => setView("model")}>模型设置</button>}{view === "roles" && <button disabled={saving || deleting} onClick={() => { setCreating(true); setSelected(null); setDraft(empty); setView("roles"); }}>创建角色</button>}</div></header>
     {error && <p className="error global-error">{error}</p>}
     {view === "model" ? <ModelSettings onBack={() => setView("roles")} /> : view === "chat" && selected ? <section className="chat-panel">
       <div className="chat-meta">唯一会话 · {session?.sessionKey}</div>

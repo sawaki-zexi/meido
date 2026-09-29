@@ -70,6 +70,30 @@ def test_failed_role_update_keeps_memory_and_manifest_unchanged(tmp_path, monkey
     assert (root / "roles.json").read_bytes() == manifest_before
 
 
+def test_failed_role_create_keeps_memory_and_manifest_unchanged(tmp_path, monkeypatch):
+    root = tmp_path / "roles"
+    store = RoleStore(root)
+    manifest_before = (root / "roles.json").read_bytes() if (root / "roles.json").exists() else None
+
+    def fail_save(roles=None):
+        raise OSError("磁盘写入失败")
+
+    monkeypatch.setattr(store, "_save", fail_save)
+    try:
+        store.create(role_input("未保存"))
+    except OSError:
+        pass
+    else:
+        raise AssertionError("failed persistence should raise")
+
+    assert store.list() == []
+    assert [path for path in root.iterdir() if path.is_dir()] == []
+    if manifest_before is None:
+        assert not (root / "roles.json").exists()
+    else:
+        assert (root / "roles.json").read_bytes() == manifest_before
+
+
 def test_role_delete_persists_remaining_roles_and_can_restore(tmp_path):
     root = tmp_path / "roles"
     store = RoleStore(root)

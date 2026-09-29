@@ -47,9 +47,14 @@ class RoleStore:
                 createdAt=now,
                 updatedAt=now,
             )
-            self._roles.append(role)
-            self._ensure_role_dirs(role.id)
-            self._save()
+            candidate = [*self._roles, role]
+            try:
+                self._ensure_role_dirs(role.id)
+                self._save(candidate)
+            except OSError:
+                self.remove_role_files(role.id)
+                raise
+            self._roles = candidate
             return role.model_copy(deep=True)
 
     def update(self, role_id: str, data: RoleUpdateInput) -> Role:
