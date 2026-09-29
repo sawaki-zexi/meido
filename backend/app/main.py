@@ -12,6 +12,7 @@ import httpx
 from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .models import ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
+from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
 from .storage import initialize_databases
 from .session_manager import SessionManager
@@ -207,6 +208,38 @@ def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
         raise HTTPException(status_code=500, detail=f"角色保存失败：{error}") from error
 
 
+@app.get("/api/roles/{role_id}/model-configuration")
+def get_role_model_configuration(role_id: str) -> dict[str, str | None]:
+    role = store.get(role_id)
+    if role is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    return {
+        "configurationId": role.modelConfigurationId,
+        "effectiveConfigurationId": role.modelConfigurationId or model_configuration_store.active_id(),
+    }
+
+
+@app.put("/api/roles/{role_id}/model-configuration")
+def set_role_model_configuration(
+    role_id: str,
+    data: RoleModelConfigurationInput,
+) -> dict[str, str | None]:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    if data.configurationId and model_configuration_store.get(data.configurationId) is None:
+        raise HTTPException(status_code=404, detail="模型连接不存在")
+    try:
+        role = store.set_model_configuration(role_id, data.configurationId)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="角色不存在") from error
+    except OSError as error:
+        raise HTTPException(status_code=500, detail=f"角色模型绑定保存失败：{error}") from error
+    return {
+        "configurationId": role.modelConfigurationId,
+        "effectiveConfigurationId": role.modelConfigurationId or model_configuration_store.active_id(),
+    }
+
+
 @app.delete("/api/roles/{role_id}", status_code=204)
 async def delete_role(role_id: str) -> None:
     role = store.get(role_id)
@@ -255,6 +288,9 @@ async def send_role_message(role_id: str, data: SendMessageInput) -> StreamingRe
         role, session = session_manager.role_and_history(role_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
+    configuration = model_configuration_store.get(role.modelConfigurationId)
+    if role.modelConfigurationId and configuration is None:
+        raise HTTPException(status_code=409, detail="该角色绑定的模型连接已不存在，请重新选择模型")
     lock = role_locks.setdefault(role_id, asyncio.Lock())
     if lock.locked():
         raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试")
@@ -267,8 +303,6 @@ async def send_role_message(role_id: str, data: SendMessageInput) -> StreamingRe
         lock.release()
         raise
     history = [*session_store.context_messages(session.session.sessionKey)[:-1], user_message]
-    configuration = model_configuration_store.get()
-
     async def stream():
         content = ""
         try:
