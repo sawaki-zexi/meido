@@ -1,0 +1,163 @@
+from __future__ import annotations
+
+import asyncio
+import re
+import uuid
+from collections.abc import Iterable
+from datetime import datetime
+
+from .memory_store import MemoryStore
+from .models import MemoryItem, MemorySourceRef, Message
+
+
+class MemoryService:
+    """Role-scoped memory ingestion and retrieval facade."""
+
+    def __init__(self, store: MemoryStore) -> None:
+        self.store = store
+
+    def remember(
+        self,
+        role_id: str,
+        summary: str,
+        memory_type: str,
+        *,
+        session_key: str | None = None,
+        message_ids: Iterable[str] = (),
+        happened_at: datetime | None = None,
+        stable_source_key: str | None = None,
+        supersede_key: str | None = None,
+    ) -> MemoryItem:
+        source = MemorySourceRef(
+            kind="message" if message_ids else "manual",
+            sessionKey=session_key or f"role:{role_id}",
+            messageIds=list(message_ids),
+            stableSourceKey=stable_source_key or f"manual:{uuid.uuid4().hex}",
+        )
+        extra = {"supersedeKey": supersede_key} if supersede_key else {}
+        return self.store.add_or_reinforce(
+            role_id,
+            memory_type,
+            summary,
+            source,
+            extra=extra,
+            happened_at=happened_at,
+            supersede_key=supersede_key,
+        )
+
+    def process_turn(
+        self,
+        role_id: str,
+        session_key: str,
+        user_message: Message,
+        assistant_message: Message,
+    ) -> list[MemoryItem]:
+        source_key = f"turn:{session_key}:{user_message.id}:{assistant_message.id}"
+        source = MemorySourceRef(
+            kind="turn",
+            sessionKey=session_key,
+            messageIds=[user_message.id, assistant_message.id],
+            messageRange=(user_message.sequence, assistant_message.sequence),
+            stableSourceKey=source_key,
+        )
+        extracted = self._extract(user_message.content)
+        saved: list[MemoryItem] = []
+        for memory_type, summary, supersede_key in extracted:
+            extra = {"supersedeKey": supersede_key} if supersede_key else {}
+            saved.append(
+                self.store.add_or_reinforce(
+                    role_id,
+                    memory_type,
+                    summary,
+                    source,
+                    extra=extra,
+                    happened_at=user_message.createdAt,
+                    supersede_key=supersede_key,
+                )
+            )
+        return saved
+
+    def recall(self, role_id: str, query: str, limit: int = 8) -> list[MemoryItem]:
+        return self.store.query(role_id, query, limit=limit)
+
+    @staticmethod
+    def context_block(memories: list[MemoryItem], max_chars: int = 4000) -> str:
+        if not memories:
+            return ""
+        lines = ["以下是当前角色已保存、仅供本轮理解使用的记忆："]
+        length = len(lines[0])
+        for memory in memories:
+            line = f"- [{memory.memoryType}] {memory.summary}"
+            if length + len(line) + 1 > max_chars:
+                break
+            lines.append(line)
+            length += len(line) + 1
+        return "\n".join(lines) if len(lines) > 1 else ""
+
+    @staticmethod
+    def _extract(content: str) -> list[tuple[str, str, str | None]]:
+        text = re.sub(r"\s+", " ", content).strip()
+        if not text:
+            return []
+        results: list[tuple[str, str, str | None]] = []
+        seen: set[tuple[str, str]] = set()
+
+        def add(memory_type: str, summary: str, supersede_key: str | None = None) -> None:
+            summary = summary.strip(" \t\r\n，。！？!?,.:：；;")
+            if not summary or len(summary) > 500:
+                return
+            key = (memory_type, summary.casefold())
+            if key not in seen:
+                seen.add(key)
+                results.append((memory_type, summary, supersede_key))
+
+        explicit = re.search(r"(?:请|请你)?记住(?:我|我的)?[：:，, ]*(.+)$", text, re.IGNORECASE)
+        if explicit:
+            add("fact", explicit.group(1))
+
+        changed = re.search(r"(?:以前|原来)(?:喜欢|偏好)[：:，, ]*(.+?)[，, ]*(?:现在|改为|改成|换成)(?:喜欢|偏好)?[：:，, ]*(.+)$", text)
+        if changed:
+            add("preference", f"喜欢{changed.group(2)}", "preference")
+        elif not explicit:
+            preference = re.search(r"(?:我|本人)(?:一直|平时|更|最)?喜欢(?:吃|喝|看|用)?[：:，, ]*(.+)$", text)
+            if preference:
+                add("preference", f"喜欢{preference.group(1)}")
+            dislike = re.search(r"(?:我|本人)(?:一直)?不喜欢[：:，, ]*(.+)$", text)
+            if dislike:
+                add("preference", f"不喜欢{dislike.group(1)}")
+
+        identity = re.search(r"我(?:叫|的名字是)[：:，, ]*(.+)$", text)
+        if identity:
+            add("profile", f"名字是{identity.group(1)}")
+
+        procedure = re.search(r"(?:以后|今后|请始终|请都)[：:，, ]*(.+)$", text)
+        if procedure:
+            add("procedure", procedure.group(1))
+        return results
+
+
+class MemoryWorker:
+    """In-process queue with one serial lane per role."""
+
+    def __init__(self, service: MemoryService) -> None:
+        self.service = service
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._tasks: set[asyncio.Task[object]] = set()
+        self.errors: list[str] = []
+
+    def submit(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> None:
+        task = asyncio.create_task(self._run(role_id, session_key, user_message, assistant_message))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _run(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> None:
+        lock = self._locks.setdefault(role_id, asyncio.Lock())
+        async with lock:
+            try:
+                self.service.process_turn(role_id, session_key, user_message, assistant_message)
+            except Exception as error:  # maintenance must never undo a completed turn
+                self.errors.append(f"{role_id}: {error}")
+
+    async def drain(self) -> None:
+        if self._tasks:
+            await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
