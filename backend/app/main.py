@@ -1,6 +1,7 @@
 import os
 import asyncio
 import json
+import inspect
 from time import monotonic
 from pathlib import Path
 
@@ -11,7 +12,9 @@ import httpx
 
 from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
-from .models import ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
+from .memory_service import MemoryService, MemoryWorker
+from .memory_store import MemoryStore
+from .models import MemoryList, MemoryItem, RememberMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
 from .storage import initialize_databases
@@ -24,6 +27,9 @@ initialize_databases(data_root)
 store = RoleStore(roles_root)
 session_store = SessionStore(data_root / "sessions.db")
 session_manager = SessionManager(store, session_store)
+memory_store = MemoryStore(data_root / "memory2.db")
+memory_service = MemoryService(memory_store)
+memory_worker = MemoryWorker(memory_service)
 model_adapter: ModelAdapter = OpenAICompatibleAdapter()
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
 connection_test_adapter = OpenAICompatibleAdapter(timeout=20)
@@ -261,6 +267,14 @@ async def delete_role(role_id: str) -> None:
             except OSError as restore_error:
                 raise HTTPException(status_code=500, detail="删除失败，角色恢复也未能完成") from restore_error
             raise HTTPException(status_code=500, detail="删除失败，角色和聊天记录已保留") from error
+        try:
+            memory_store.delete_role(role_id)
+        except Exception as error:
+            try:
+                store.restore_deleted(deleted)
+            except OSError as restore_error:
+                raise HTTPException(status_code=500, detail="删除失败，角色恢复也未能完成") from restore_error
+            raise HTTPException(status_code=500, detail="删除失败，角色和记忆已保留") from error
         store.remove_role_files(role_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
@@ -278,8 +292,44 @@ def get_role_session(role_id: str) -> SessionResponse:
         raise HTTPException(status_code=404, detail="角色不存在") from error
 
 
+@app.get("/api/roles/{role_id}/memories", response_model=MemoryList)
+def list_role_memories(role_id: str, q: str = "") -> MemoryList:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    memories = memory_service.recall(role_id, q) if q.strip() else memory_store.list_active(role_id)
+    return MemoryList(memories=memories)
+
+
+@app.post("/api/roles/{role_id}/memories", response_model=MemoryItem, status_code=201)
+def remember_role_memory(role_id: str, data: RememberMemoryInput) -> MemoryItem:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        return memory_service.remember(
+            role_id,
+            data.summary,
+            data.memoryType,
+            happened_at=data.happenedAt,
+            stable_source_key=f"manual:{role_id}:{data.memoryType}:{data.summary.casefold()}",
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
 def _event(event_type: str, payload: dict[str, object]) -> str:
     return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _stream_model_reply(role, history, configuration, memory_context):
+    """Keep third-party/test adapters compatible while passing memory to native adapters."""
+    stream_reply = model_adapter.stream_reply
+    try:
+        accepts_memory = "memory_context" in inspect.signature(stream_reply).parameters
+    except (TypeError, ValueError):
+        accepts_memory = False
+    if accepts_memory:
+        return stream_reply(role, history, configuration, memory_context=memory_context)
+    return stream_reply(role, history, configuration)
 
 
 @app.post("/api/roles/{role_id}/messages")
@@ -303,17 +353,24 @@ async def send_role_message(role_id: str, data: SendMessageInput) -> StreamingRe
         lock.release()
         raise
     history = [*session_store.context_messages(session.session.sessionKey)[:-1], user_message]
+    try:
+        memory_context = memory_service.context_block(memory_service.recall(role_id, data.content))
+    except Exception as error:
+        memory_worker.errors.append(f"{role_id}: recall failed: {error}")
+        memory_context = ""
     async def stream():
         content = ""
         try:
             yield _event("user_message_accepted", {"message": user_message.model_dump(mode="json")})
             yield _event("assistant_generation_started", {"messageId": assistant_message.id})
             try:
-                async for delta in model_adapter.stream_reply(role, history, configuration):
+                deltas = _stream_model_reply(role, history, configuration, memory_context)
+                async for delta in deltas:
                     content += delta
                     session_store.update_message(assistant_message.id, content, "streaming")
                     yield _event("assistant_delta", {"messageId": assistant_message.id, "delta": delta})
                 message = session_store.update_message(assistant_message.id, content, "completed")
+                memory_worker.submit(role_id, session.session.sessionKey, user_message, message)
                 yield _event("assistant_completed", {"message": message.model_dump(mode="json")})
             except Exception as error:
                 message = session_store.update_message(assistant_message.id, content, "failed")

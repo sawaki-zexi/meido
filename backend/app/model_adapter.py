@@ -14,6 +14,7 @@ class ModelAdapter(Protocol):
         role: Role,
         history: list[Message],
         configuration: ModelConfiguration | None = None,
+        memory_context: str = "",
     ) -> AsyncIterator[str]: ...
 
 
@@ -49,6 +50,7 @@ class OpenAICompatibleAdapter:
             f"行为规则：{profile.behaviorRules}" if profile.behaviorRules else "",
             f"回复约束：{profile.responseConstraints}" if profile.responseConstraints else "",
             f"称呼用户：{profile.nickname}" if profile.nickname else "",
+            memory_context,
         ] if part)
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend({"role": message.role, "content": message.content} for message in history)
