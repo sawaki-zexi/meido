@@ -322,6 +322,30 @@ def test_memory_api_is_scoped_and_manual_memory_is_recalled(tmp_path, monkeypatc
     assert client.get(f"/api/roles/{second.id}/memories", params={"q": "海边"}).json()["memories"] == []
 
 
+def test_memory_management_updates_forgets_and_deletes_only_current_role(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="甲", profile=RoleProfile(profile="设定")))
+    other = roles.create(RoleInput(name="乙", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    service = MemoryService(memory_store)
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", service)
+    client = TestClient(main.app)
+    created = client.post(f"/api/roles/{role.id}/memories", json={"summary": "喜欢红茶", "memoryType": "preference"}).json()
+    memory_id = created["id"]
+    updated = client.put(f"/api/roles/{role.id}/memories/{memory_id}", json={"summary": "喜欢咖啡", "memoryType": "preference"})
+    assert updated.status_code == 200
+    forgotten = client.post(f"/api/roles/{role.id}/memories/{memory_id}/forget")
+    assert forgotten.status_code == 200
+    assert client.get(f"/api/roles/{role.id}/memories").json()["memories"] == []
+    assert client.delete(f"/api/roles/{role.id}/memories/{memory_id}").status_code == 204
+    assert client.post(f"/api/roles/{other.id}/memories/{memory_id}/forget").status_code == 404
+
+
 def test_memory_api_lists_active_items_and_searches_with_all_sources(tmp_path, monkeypatch):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))

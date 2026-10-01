@@ -278,6 +278,34 @@ class MemoryStore:
             ).fetchone()
         return self._item(row) if row is not None else None
 
+    def update(self, role_id: str, item_id: str, summary: str, memory_type: str, happened_at: datetime | None) -> MemoryItem:
+        summary = normalize_summary(summary)
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM memory_items WHERE role_id = ? AND id = ?", (role_id, item_id)).fetchone()
+            if row is None:
+                raise KeyError(item_id)
+            connection.execute(
+                "UPDATE memory_items SET summary = ?, memory_type = ?, happened_at = ?, content_hash = ?, updated_at = ? WHERE role_id = ? AND id = ?",
+                (summary, memory_type, happened_at.isoformat() if happened_at else None, content_hash(summary), _now(), role_id, item_id),
+            )
+            row = connection.execute("SELECT * FROM memory_items WHERE id = ?", (item_id,)).fetchone()
+        assert row is not None
+        return self._item(row)
+
+    def set_status(self, role_id: str, item_id: str, status: str) -> MemoryItem:
+        with self._connect() as connection:
+            connection.execute("UPDATE memory_items SET status = ?, updated_at = ? WHERE role_id = ? AND id = ?", (status, _now(), role_id, item_id))
+            row = connection.execute("SELECT * FROM memory_items WHERE role_id = ? AND id = ?", (role_id, item_id)).fetchone()
+        if row is None:
+            raise KeyError(item_id)
+        return self._item(row)
+
+    def remove(self, role_id: str, item_id: str) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM memory_items WHERE role_id = ? AND id = ?", (role_id, item_id))
+        if cursor.rowcount == 0:
+            raise KeyError(item_id)
+
     def delete_role(self, role_id: str) -> None:
         with self._connect() as connection:
             connection.execute("DELETE FROM memory_items WHERE role_id = ?", (role_id,))

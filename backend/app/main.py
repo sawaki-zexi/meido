@@ -16,7 +16,7 @@ from .memory_service import MemoryService, MemoryWorker
 from .embeddings import OpenAICompatibleEmbeddingAdapter
 from .memory_maintenance import MemoryMaintenance
 from .memory_store import MemoryStore
-from .models import MemoryList, MemoryItem, RememberMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
+from .models import MemoryList, MemoryItem, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
 from .storage import initialize_databases
@@ -342,6 +342,36 @@ def remember_role_memory(role_id: str, data: RememberMemoryInput) -> MemoryItem:
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.put("/api/roles/{role_id}/memories/{memory_id}", response_model=MemoryItem)
+def update_role_memory(role_id: str, memory_id: str, data: UpdateMemoryInput) -> MemoryItem:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        return memory_store.update(role_id, memory_id, data.summary, data.memoryType, data.happenedAt)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="记忆不存在") from error
+
+
+@app.post("/api/roles/{role_id}/memories/{memory_id}/forget", response_model=MemoryItem)
+def forget_role_memory(role_id: str, memory_id: str) -> MemoryItem:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        return memory_store.set_status(role_id, memory_id, "forgotten")
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="记忆不存在") from error
+
+
+@app.delete("/api/roles/{role_id}/memories/{memory_id}", status_code=204)
+def delete_role_memory(role_id: str, memory_id: str) -> None:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        memory_store.remove(role_id, memory_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="记忆不存在") from error
 
 
 def _event(event_type: str, payload: dict[str, object]) -> str:
