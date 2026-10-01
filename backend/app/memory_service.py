@@ -8,6 +8,7 @@ from datetime import datetime
 
 from .memory_store import MemoryStore
 from .models import MemoryItem, MemorySourceRef, Message
+from .memory_maintenance import MemoryMaintenance
 
 
 class MemoryService:
@@ -60,7 +61,7 @@ class MemoryService:
             messageRange=(user_message.sequence, assistant_message.sequence),
             stableSourceKey=source_key,
         )
-        extracted = self._extract(user_message.content)
+        extracted = self.extract_candidates(user_message.content)
         saved: list[MemoryItem] = []
         for memory_type, summary, supersede_key in extracted:
             extra = {"supersedeKey": supersede_key} if supersede_key else {}
@@ -95,7 +96,7 @@ class MemoryService:
         return "\n".join(lines) if len(lines) > 1 else ""
 
     @staticmethod
-    def _extract(content: str) -> list[tuple[str, str, str | None]]:
+    def extract_candidates(content: str) -> list[tuple[str, str, str | None]]:
         text = re.sub(r"\s+", " ", content).strip()
         if not text:
             return []
@@ -139,8 +140,9 @@ class MemoryService:
 class MemoryWorker:
     """In-process queue with one serial lane per role."""
 
-    def __init__(self, service: MemoryService) -> None:
+    def __init__(self, service: MemoryService, maintenance: MemoryMaintenance | None = None) -> None:
         self.service = service
+        self.maintenance = maintenance
         self._locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task[object]] = set()
         self.errors: list[str] = []
@@ -154,9 +156,20 @@ class MemoryWorker:
         lock = self._locks.setdefault(role_id, asyncio.Lock())
         async with lock:
             try:
-                self.service.process_turn(role_id, session_key, user_message, assistant_message)
+                await asyncio.to_thread(
+                    self._process_turn,
+                    role_id,
+                    session_key,
+                    user_message,
+                    assistant_message,
+                )
             except Exception as error:  # maintenance must never undo a completed turn
                 self.errors.append(f"{role_id}: {error}")
+
+    def _process_turn(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> None:
+        self.service.process_turn(role_id, session_key, user_message, assistant_message)
+        if self.maintenance is not None:
+            self.maintenance.maintain(role_id, session_key)
 
     async def drain(self) -> None:
         if self._tasks:

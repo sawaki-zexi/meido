@@ -13,6 +13,7 @@ import httpx
 from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
+from .memory_maintenance import MemoryMaintenance
 from .memory_store import MemoryStore
 from .models import MemoryList, MemoryItem, RememberMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
@@ -29,7 +30,7 @@ session_store = SessionStore(data_root / "sessions.db")
 session_manager = SessionManager(store, session_store)
 memory_store = MemoryStore(data_root / "memory2.db")
 memory_service = MemoryService(memory_store)
-memory_worker = MemoryWorker(memory_service)
+memory_worker = MemoryWorker(memory_service, MemoryMaintenance(roles_root, session_store))
 model_adapter: ModelAdapter = OpenAICompatibleAdapter()
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
 connection_test_adapter = OpenAICompatibleAdapter(timeout=20)
