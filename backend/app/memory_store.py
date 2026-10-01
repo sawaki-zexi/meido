@@ -96,93 +96,171 @@ class MemoryStore:
         happened_at: datetime | None = None,
         supersede_key: str | None = None,
     ) -> MemoryItem:
+        with self._connect() as connection:
+            return self._add_or_reinforce_connection(
+                connection,
+                role_id,
+                memory_type,
+                summary,
+                source_ref,
+                extra=extra,
+                happened_at=happened_at,
+                supersede_key=supersede_key,
+            )
+
+    def add_or_reinforce_batch(
+        self,
+        role_id: str,
+        records: list[tuple[str, str, MemorySourceRef]],
+    ) -> list[MemoryItem]:
+        """Persist a consolidation result in one SQLite transaction."""
+        with self._connect() as connection:
+            return [
+                self._add_or_reinforce_connection(connection, role_id, memory_type, summary, source_ref)
+                for memory_type, summary, source_ref in records
+            ]
+
+    def consolidate_batch(
+        self,
+        role_id: str,
+        records: list[tuple[str, str, MemorySourceRef]],
+    ) -> list[MemoryItem]:
+        """Supersede extracted items covered by a consolidation and persist its result."""
+        source_keys = {source.stableSourceKey for _, _, source in records}
+        message_ids = {
+            message_id
+            for _, _, source in records
+            for message_id in source.messageIds
+        }
+        with self._connect() as connection:
+            if message_ids:
+                rows = connection.execute(
+                    "SELECT id, source_ref FROM memory_items WHERE role_id = ? AND status = 'active'",
+                    (role_id,),
+                ).fetchall()
+                now = _now()
+                for row in rows:
+                    source_payload = self._decode_json(row["source_ref"], {})
+                    keys = source_payload.get("sourceKeys", [])
+                    if isinstance(keys, list) and source_keys.intersection(keys):
+                        continue
+                    origins = source_payload.get("sources", [])
+                    origin_ids = {
+                        message_id
+                        for origin in origins if isinstance(origin, dict)
+                        for message_id in origin.get("messageIds", []) if isinstance(message_id, str)
+                    } if isinstance(origins, list) else set()
+                    direct_ids = source_payload.get("messageIds", [])
+                    if origin_ids.intersection(message_ids) or (
+                        isinstance(direct_ids, list) and set(direct_ids).intersection(message_ids)
+                    ):
+                        connection.execute(
+                            "UPDATE memory_items SET status = 'superseded', updated_at = ? WHERE id = ?",
+                            (now, row["id"]),
+                        )
+            return [
+                self._add_or_reinforce_connection(connection, role_id, memory_type, summary, source_ref)
+                for memory_type, summary, source_ref in records
+            ]
+
+    def _add_or_reinforce_connection(
+        self,
+        connection: sqlite3.Connection,
+        role_id: str,
+        memory_type: str,
+        summary: str,
+        source_ref: MemorySourceRef,
+        *,
+        extra: dict[str, Any] | None = None,
+        happened_at: datetime | None = None,
+        supersede_key: str | None = None,
+    ) -> MemoryItem:
         summary = normalize_summary(summary)
         if not summary:
             raise ValueError("记忆内容不能为空")
         item_hash = content_hash(summary)
         now = _now()
         extra_payload = dict(extra or {})
-        with self._connect() as connection:
-            source_rows = connection.execute(
-                "SELECT * FROM memory_items WHERE role_id = ? AND memory_type = ?",
-                (role_id, memory_type),
-            ).fetchall()
-            for source_row in source_rows:
-                source_payload = self._decode_json(source_row["source_ref"], {})
-                source_keys = source_payload.get("sourceKeys", [])
-                if isinstance(source_keys, list) and source_ref.stableSourceKey in source_keys:
-                    return self._item(source_row)
-            row = connection.execute(
-                "SELECT * FROM memory_items WHERE role_id = ? AND memory_type = ? AND content_hash = ?",
-                (role_id, memory_type, item_hash),
-            ).fetchone()
-            if row is None:
-                if supersede_key:
-                    rows = connection.execute(
-                        "SELECT id, extra_json FROM memory_items WHERE role_id = ? AND memory_type = ? AND status = 'active'",
-                        (role_id, memory_type),
-                    ).fetchall()
-                    for old_row in rows:
-                        old_extra = self._decode_json(old_row["extra_json"], {})
-                        if isinstance(old_extra, dict) and old_extra.get("supersedeKey") == supersede_key:
-                            connection.execute(
-                                "UPDATE memory_items SET status = 'superseded', updated_at = ? WHERE id = ?",
-                                (now, old_row["id"]),
-                            )
-                item_id = f"memory-{uuid.uuid4().hex}"
+        source_rows = connection.execute(
+            "SELECT * FROM memory_items WHERE role_id = ? AND memory_type = ?",
+            (role_id, memory_type),
+        ).fetchall()
+        for source_row in source_rows:
+            source_payload = self._decode_json(source_row["source_ref"], {})
+            source_keys = source_payload.get("sourceKeys", [])
+            if isinstance(source_keys, list) and source_ref.stableSourceKey in source_keys:
+                return self._item(source_row)
+        row = connection.execute(
+            "SELECT * FROM memory_items WHERE role_id = ? AND memory_type = ? AND content_hash = ?",
+            (role_id, memory_type, item_hash),
+        ).fetchone()
+        if row is None:
+            if supersede_key:
+                rows = connection.execute(
+                    "SELECT id, extra_json FROM memory_items WHERE role_id = ? AND memory_type = ? AND status = 'active'",
+                    (role_id, memory_type),
+                ).fetchall()
+                for old_row in rows:
+                    old_extra = self._decode_json(old_row["extra_json"], {})
+                    if isinstance(old_extra, dict) and old_extra.get("supersedeKey") == supersede_key:
+                        connection.execute(
+                            "UPDATE memory_items SET status = 'superseded', updated_at = ? WHERE id = ?",
+                            (now, old_row["id"]),
+                        )
+            item_id = f"memory-{uuid.uuid4().hex}"
+            connection.execute(
+                """
+                INSERT INTO memory_items
+                  (id, role_id, memory_type, summary, extra_json, source_ref,
+                   happened_at, status, created_at, updated_at, reinforcement, content_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 1, ?)
+                """,
+                (
+                    item_id,
+                    role_id,
+                    memory_type,
+                    summary,
+                    json.dumps(extra_payload, ensure_ascii=False, sort_keys=True),
+                    json.dumps(
+                        {
+                            **source_ref.model_dump(mode="json"),
+                            "sourceKeys": [source_ref.stableSourceKey],
+                            "sources": [self._origin(source_ref)],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    happened_at.isoformat() if happened_at else None,
+                    now,
+                    now,
+                    item_hash,
+                ),
+            )
+            row = connection.execute("SELECT * FROM memory_items WHERE id = ?", (item_id,)).fetchone()
+        else:
+            source_payload = self._decode_json(row["source_ref"], {})
+            source_keys = source_payload.get("sourceKeys", [])
+            if not isinstance(source_keys, list):
+                source_keys = []
+            if source_ref.stableSourceKey not in source_keys:
+                source_keys.append(source_ref.stableSourceKey)
+                source_payload["sourceKeys"] = source_keys
+                origins = source_payload.get("sources", [])
+                if not isinstance(origins, list):
+                    origins = []
+                origins.append(self._origin(source_ref))
+                source_payload["sources"] = origins
                 connection.execute(
                     """
-                    INSERT INTO memory_items
-                      (id, role_id, memory_type, summary, extra_json, source_ref,
-                       happened_at, status, created_at, updated_at, reinforcement, content_hash)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 1, ?)
+                    UPDATE memory_items
+                    SET source_ref = ?, updated_at = ?, reinforcement = reinforcement + 1,
+                        status = CASE WHEN status IN ('forgotten', 'superseded') THEN 'active' ELSE status END
+                    WHERE id = ?
                     """,
-                    (
-                        item_id,
-                        role_id,
-                        memory_type,
-                        summary,
-                        json.dumps(extra_payload, ensure_ascii=False, sort_keys=True),
-                        json.dumps(
-                            {
-                                **source_ref.model_dump(mode="json"),
-                                "sourceKeys": [source_ref.stableSourceKey],
-                                "sources": [self._origin(source_ref)],
-                            },
-                            ensure_ascii=False,
-                        ),
-                        happened_at.isoformat() if happened_at else None,
-                        now,
-                        now,
-                        item_hash,
-                    ),
+                    (json.dumps(source_payload, ensure_ascii=False), now, row["id"]),
                 )
-                row = connection.execute("SELECT * FROM memory_items WHERE id = ?", (item_id,)).fetchone()
-            else:
-                source_payload = self._decode_json(row["source_ref"], {})
-                source_keys = source_payload.get("sourceKeys", [])
-                if not isinstance(source_keys, list):
-                    source_keys = []
-                if source_ref.stableSourceKey not in source_keys:
-                    source_keys.append(source_ref.stableSourceKey)
-                    source_payload["sourceKeys"] = source_keys
-                    origins = source_payload.get("sources", [])
-                    if not isinstance(origins, list):
-                        origins = []
-                    origins.append(self._origin(source_ref))
-                    source_payload["sources"] = origins
-                    connection.execute(
-                        """
-                        UPDATE memory_items
-                        SET source_ref = ?, updated_at = ?, reinforcement = reinforcement + 1,
-                            status = CASE WHEN status = 'forgotten' THEN 'active' ELSE status END
-                        WHERE id = ?
-                        """,
-                        (json.dumps(source_payload, ensure_ascii=False), now, row["id"]),
-                    )
-                    row = connection.execute("SELECT * FROM memory_items WHERE id = ?", (row["id"],)).fetchone()
-            assert row is not None
-            return self._item(row)
+                row = connection.execute("SELECT * FROM memory_items WHERE id = ?", (row["id"],)).fetchone()
+        assert row is not None
+        return self._item(row)
 
     def list_active(self, role_id: str) -> list[MemoryItem]:
         with self._connect() as connection:

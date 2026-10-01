@@ -65,6 +65,14 @@ class MemoryOptimizer:
         history_path = memory_dir / "HISTORY.md"
         state_path = memory_dir / ".optimizer.json"
 
+        if self.persist_structured is not None:
+            recovery_state = self._read_state(state_path)
+            pending_records = self._decode_structured_pending(recovery_state)
+            if pending_records is not None:
+                self.persist_structured(role_id, pending_records)
+                recovery_state.pop("structuredPending", None)
+                self._write_state(state_path, recovery_state)
+
         for _ in range(self.MAX_SNAPSHOT_RETRIES):
             pending_snapshot = self._read_text(pending_path)
             history_snapshot = self._read_text(history_path)
@@ -95,18 +103,35 @@ class MemoryOptimizer:
             self._before_commit()
             if self._read_text(pending_path) != pending_snapshot or self._read_text(history_path) != history_snapshot:
                 continue
+            writes = {
+                memory_path: documents["memory"],
+                self_path: documents["self"],
+                pending_path: documents["pending"],
+                state_path: json.dumps(
+                    {
+                        "historyHash": history_hash,
+                        **(
+                            {"structuredPending": [self._record_payload(item) for item in optimized.records]}
+                            if self.persist_structured is not None
+                            else {}
+                        ),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ) + "\n",
+            }
+            previous = {path: self._read_text(path) if path.exists() else None for path in writes}
+            self._commit(writes)
+            if self._read_text(pending_path) != documents["pending"] or self._read_text(history_path) != history_snapshot:
+                self._restore_documents(previous)
+                continue
             if self.persist_structured is not None:
-                self.persist_structured(role_id, optimized.records)
-                if self._read_text(pending_path) != pending_snapshot or self._read_text(history_path) != history_snapshot:
-                    continue
-            self._commit(
-                {
-                    memory_path: documents["memory"],
-                    self_path: documents["self"],
-                    pending_path: documents["pending"],
-                    state_path: json.dumps({"historyHash": history_hash}, ensure_ascii=False, indent=2) + "\n",
-                }
-            )
+                try:
+                    self.persist_structured(role_id, optimized.records)
+                except Exception:
+                    self._restore_documents(previous)
+                    raise
+                self._write_state(state_path, {"historyHash": history_hash})
             return True
         raise RuntimeError("记忆候选在归并期间持续变化，已保留待处理内容")
 
@@ -137,12 +162,37 @@ class MemoryOptimizer:
         return path.read_text(encoding="utf-8") if path.exists() else ""
 
     @staticmethod
-    def _read_state(path: Path) -> dict[str, str]:
+    def _read_state(path: Path) -> dict[str, object]:
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return {}
         return value if isinstance(value, dict) and isinstance(value.get("historyHash"), str) else {}
+
+    @staticmethod
+    def _record_payload(record: MemoryRecord) -> dict[str, object]:
+        return {"memoryType": record.memory_type, "summary": record.summary, "sources": record.sources}
+
+    @staticmethod
+    def _decode_structured_pending(state: dict[str, object]) -> list[MemoryRecord] | None:
+        values = state.get("structuredPending")
+        if not isinstance(values, list):
+            return None
+        records: list[MemoryRecord] = []
+        for value in values:
+            if not isinstance(value, dict):
+                raise ValueError("结构化记忆恢复记录格式无效")
+            memory_type, summary, sources = value.get("memoryType"), value.get("summary"), value.get("sources")
+            if not isinstance(memory_type, str) or not isinstance(summary, str) or not isinstance(sources, list):
+                raise ValueError("结构化记忆恢复记录缺少必要字段")
+            if any(not isinstance(source, str) for source in sources):
+                raise ValueError("结构化记忆恢复来源格式无效")
+            records.append(MemoryRecord(memory_type, summary, list(sources)))
+        return records
+
+    @staticmethod
+    def _write_state(path: Path, state: dict[str, object]) -> None:
+        MemoryOptimizer._commit({path: json.dumps(state, ensure_ascii=False, indent=2) + "\n"})
 
     @classmethod
     def _parse_pending(cls, text: str) -> tuple[list[MemoryRecord], list[tuple[int, int]]]:
@@ -297,6 +347,19 @@ class MemoryOptimizer:
         finally:
             for temporary in staged.values():
                 temporary.unlink(missing_ok=True)
+
+    @classmethod
+    def _restore_documents(cls, previous: dict[Path, str | None]) -> None:
+        writes = {
+            path: content
+            for path, content in previous.items()
+            if content is not None
+        }
+        for path, content in previous.items():
+            if content is None:
+                path.unlink(missing_ok=True)
+        if writes:
+            cls._commit(writes)
 
 
 class MemoryOptimizerWorker:

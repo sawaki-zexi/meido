@@ -113,23 +113,40 @@ def _consolidate_role_memories(
     self_understanding = result.get("selfUnderstanding")
     if not isinstance(self_understanding, str):
         raise ValueError("Optimizer 返回的自我认识格式无效")
-    return MemoryOptimizationResult(MemoryOptimizer._merge_records(existing, records), self_understanding[:2000])
+    return MemoryOptimizationResult(MemoryOptimizer._merge_records([], records), self_understanding[:2000])
 
 
 def _persist_consolidated_memories(role_id: str, records: list[MemoryRecord]) -> None:
     """Mirror optimizer output into the role-scoped structured memory store."""
-    for record in records:
-        for source_key in dict.fromkeys(record.sources):
-            memory_store.add_or_reinforce(
-                role_id,
-                record.memory_type,
-                record.summary,
-                MemorySourceRef(
-                    kind="consolidation",
-                    sessionKey=f"role:{role_id}",
-                    stableSourceKey=source_key,
-                ),
-            )
+    writes = [
+        (record.memory_type, record.summary, _consolidation_source_ref(role_id, source_key))
+        for record in records
+        for source_key in dict.fromkeys(record.sources)
+    ]
+    for item in memory_store.consolidate_batch(role_id, writes):
+        memory_service._index_embedding(role_id, item)
+
+
+def _consolidation_source_ref(role_id: str, source_key: str) -> MemorySourceRef:
+    """Decode the maintenance source key into a navigable consolidation origin."""
+    parts = source_key.split(":")
+    message_ids: list[str] = []
+    message_range: tuple[int, int] | None = None
+    if len(parts) >= 6 and parts[0] == "consolidation" and parts[1] == role_id:
+        try:
+            start, end = (int(value) for value in parts[2].split("-", 1))
+            message_range = (start, end)
+            message_ids = [parts[4]]
+        except (TypeError, ValueError):
+            message_ids = []
+            message_range = None
+    return MemorySourceRef(
+        kind="consolidation",
+        sessionKey=f"role:{role_id}",
+        messageIds=message_ids,
+        messageRange=message_range,
+        stableSourceKey=source_key,
+    )
 
 
 embedding_provider = OpenAICompatibleEmbeddingAdapter(_embedding_configuration)

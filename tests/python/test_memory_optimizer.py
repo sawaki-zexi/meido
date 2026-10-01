@@ -87,6 +87,54 @@ def test_optimizer_failure_preserves_existing_documents_and_pending(tmp_path, mo
     assert {path: path.read_text(encoding="utf-8") for path in before} == before
 
 
+def test_optimizer_structured_persistence_failure_restores_markdown_snapshot(tmp_path):
+    memory_dir = tmp_path / "roles" / "role-a" / "memory"
+    memory_dir.mkdir(parents=True)
+    pending_path = memory_dir / "PENDING.md"
+    memory_path = memory_dir / "MEMORY.md"
+    self_path = memory_dir / "SELF.md"
+    pending_path.write_text(_candidate("fact", "主人住在海边", "source-a"), encoding="utf-8")
+    memory_path.write_text("# 长期记忆\n", encoding="utf-8")
+    self_path.write_text("# 自我认识\n", encoding="utf-8")
+    before = {path: path.read_text(encoding="utf-8") for path in (pending_path, memory_path, self_path)}
+
+    def fail_persistence(role_id, records):
+        raise RuntimeError("structured store unavailable")
+
+    optimizer = MemoryOptimizer(tmp_path / "roles", persist_structured=fail_persistence)
+    with pytest.raises(RuntimeError, match="structured store unavailable"):
+        optimizer.optimize("role-a")
+    assert {path: path.read_text(encoding="utf-8") for path in before} == before
+
+
+def test_optimizer_replays_structured_outbox_after_restart(tmp_path, monkeypatch):
+    memory_dir = tmp_path / "roles" / "role-a" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "PENDING.md").write_text(_candidate("fact", "主人住在海边", "source-a"), encoding="utf-8")
+    calls = []
+
+    def persist(role_id, records):
+        calls.append((role_id, records))
+
+    optimizer = MemoryOptimizer(tmp_path / "roles", persist_structured=persist)
+    original_write_state = optimizer._write_state
+
+    def fail_clearing_state(path, state):
+        if "structuredPending" not in state and calls:
+            raise OSError("simulated crash before outbox acknowledgement")
+        original_write_state(path, state)
+
+    monkeypatch.setattr(optimizer, "_write_state", fail_clearing_state)
+    with pytest.raises(OSError, match="outbox acknowledgement"):
+        optimizer.optimize("role-a")
+    assert len(calls) == 1
+
+    monkeypatch.setattr(optimizer, "_write_state", original_write_state)
+    assert optimizer.optimize("role-a") is False
+    assert len(calls) == 2
+    assert calls[1][1][0].sources == ["source-a"]
+
+
 def test_optimizer_atomic_commit_restores_documents_on_write_failure(tmp_path, monkeypatch):
     memory_dir = tmp_path / "roles" / "role-a" / "memory"
     memory_dir.mkdir(parents=True)
@@ -144,6 +192,25 @@ def test_optimizer_uses_role_scoped_model_result_and_preserves_source_keys(tmp_p
     assert "共同回忆" in (memory_dir / "SELF.md").read_text(encoding="utf-8")
 
 
+def test_model_consolidation_replaces_existing_record_when_sources_are_merged(tmp_path, monkeypatch):
+    memory_dir = tmp_path / "roles" / "role-a" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").write_text(
+        "# 长期记忆\n\n- [fact] 主人住在海边\n  <!-- source: source-old -->\n",
+        encoding="utf-8",
+    )
+    (memory_dir / "PENDING.md").write_text(_candidate("fact", "主人喜欢海风", "source-new"), encoding="utf-8")
+
+    def consolidate(role_id, existing, pending, history, current_self):
+        return _Optimization([_Record("fact", "主人住在海边并喜欢海风", ["source-old", "source-new"])], "")
+
+    optimizer = MemoryOptimizer(tmp_path / "roles", consolidate)
+    assert optimizer.optimize("role-a") is True
+    memory = (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
+    assert memory.count("主人住在海边") == 1
+    assert "主人喜欢海风" not in memory
+
+
 def test_model_consolidation_uses_role_configuration_and_rejects_unknown_sources(tmp_path, monkeypatch):
     role_store = RoleStore(tmp_path / "roles")
     role = role_store.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
@@ -170,6 +237,13 @@ def test_model_consolidation_uses_role_configuration_and_rejects_unknown_sources
     )
     assert optimized.records == [_Record("fact", "主人住在海边", ["source-a"])]
     assert optimized.self_understanding == "我们有共同回忆。"
+
+    source_ref = main._consolidation_source_ref(
+        role.id,
+        f"consolidation:{role.id}:3-8:digest:message-7:fact",
+    )
+    assert source_ref.messageIds == ["message-7"]
+    assert source_ref.messageRange == (3, 8)
 
     class HallucinatingAdapter:
         async def stream_messages(self, messages, selected_configuration, *, max_tokens=None):

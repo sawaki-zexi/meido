@@ -10,7 +10,7 @@ from backend.app.memory_maintenance import MemoryMaintenance
 from backend.app import memory_maintenance
 from backend.app.embeddings import OpenAICompatibleEmbeddingAdapter
 from backend.app.memory_store import MemoryStore
-from backend.app.models import Message, RoleInput, RoleProfile
+from backend.app.models import MemorySourceRef, Message, RoleInput, RoleProfile
 from backend.app.role_store import RoleStore
 from backend.app.session_store import SessionStore
 from backend.app.storage import initialize_databases
@@ -49,6 +49,64 @@ def test_hybrid_recall_finds_semantic_match_without_shared_words_and_is_role_sco
 
     assert [item.id for item in recalled] == [first.id]
     assert service.recall("role-b", "适合去哪里放松") == []
+
+
+def test_structured_consolidation_batch_rolls_back_as_one_transaction(tmp_path, monkeypatch):
+    store = MemoryStore(tmp_path / "memory.db")
+    original = store._add_or_reinforce_connection
+    calls = 0
+
+    def fail_second(connection, role_id, memory_type, summary, source_ref, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("simulated batch failure")
+        return original(connection, role_id, memory_type, summary, source_ref, **kwargs)
+
+    monkeypatch.setattr(store, "_add_or_reinforce_connection", fail_second)
+    with pytest.raises(RuntimeError, match="batch failure"):
+        store.add_or_reinforce_batch(
+            "role-a",
+            [
+                ("fact", "第一条", MemorySourceRef(kind="consolidation", sessionKey="role:role-a", stableSourceKey="source-1")),
+                ("fact", "第二条", MemorySourceRef(kind="consolidation", sessionKey="role:role-a", stableSourceKey="source-2")),
+            ],
+        )
+    assert store.list_active("role-a") == []
+
+
+def test_consolidation_supersedes_extracted_items_covered_by_message_window(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    extracted = store.add_or_reinforce(
+        "role-a",
+        "preference",
+        "主人喜欢海边散步",
+        MemorySourceRef(
+            kind="turn",
+            sessionKey="role:role-a",
+            messageIds=["user-1", "assistant-1"],
+            stableSourceKey="turn:user-1:assistant-1",
+        ),
+    )
+    consolidated = store.consolidate_batch(
+        "role-a",
+        [
+            (
+                "preference",
+                "主人喜欢海边散步并欣赏海风",
+                MemorySourceRef(
+                    kind="consolidation",
+                    sessionKey="role:role-a",
+                    messageIds=["user-1"],
+                    messageRange=(1, 2),
+                    stableSourceKey="consolidation:role-a:1-2:digest:user-1:preference",
+                ),
+            )
+        ],
+    )
+    assert store.get("role-a", extracted.id).status == "superseded"
+    assert consolidated[0].status == "active"
+    assert consolidated[0].sourceRef.messageIds == ["user-1"]
 
 
 def test_hybrid_recall_fuses_keyword_and_semantic_rankings(tmp_path):
