@@ -1,10 +1,14 @@
 import asyncio
 from datetime import datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import main
 from backend.app.memory_service import MemoryService, MemoryWorker
+from backend.app.memory_maintenance import MemoryMaintenance
+from backend.app import memory_maintenance
+from backend.app.embeddings import OpenAICompatibleEmbeddingAdapter
 from backend.app.memory_store import MemoryStore
 from backend.app.models import Message, RoleInput, RoleProfile
 from backend.app.role_store import RoleStore
@@ -19,6 +23,72 @@ class ContextAdapter:
     async def stream_reply(self, role, history, configuration=None, memory_context=""):
         self.contexts.append(memory_context)
         yield "收到"
+
+
+class FakeEmbeddingProvider:
+    def __init__(self, vectors):
+        self.vectors = vectors
+
+    def embed(self, role_id, text):
+        return self.vectors[(role_id, text)]
+
+
+def test_hybrid_recall_finds_semantic_match_without_shared_words_and_is_role_scoped(tmp_path):
+    vectors = {
+        ("role-a", "主人喜欢海边散步"): [1.0, 0.0],
+        ("role-a", "适合去哪里放松"): [0.98, 0.02],
+        ("role-b", "主人喜欢海边散步"): [0.0, 1.0],
+    }
+    provider = FakeEmbeddingProvider(vectors)
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store, provider)
+    first = service.remember("role-a", "主人喜欢海边散步", "preference", stable_source_key="a")
+    service.remember("role-b", "主人喜欢海边散步", "preference", stable_source_key="b")
+
+    recalled = service.recall("role-a", "适合去哪里放松")
+
+    assert [item.id for item in recalled] == [first.id]
+    assert service.recall("role-b", "适合去哪里放松") == []
+
+
+def test_hybrid_recall_fuses_keyword_and_semantic_rankings(tmp_path):
+    provider = FakeEmbeddingProvider({
+        ("role-a", "喜欢红茶"): [1.0, 0.0],
+        ("role-a", "红茶"): [0.0, 1.0],
+    })
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store, provider)
+    semantic = service.remember("role-a", "喜欢红茶", "preference", stable_source_key="semantic")
+    keyword = service.remember("role-a", "红茶", "fact", stable_source_key="keyword")
+
+    result = service.recall("role-a", "红茶")
+
+    assert {item.id for item in result} == {semantic.id, keyword.id}
+
+
+def test_embedding_adapter_uses_configured_openai_compatible_endpoint(monkeypatch):
+    from backend.app.models import ModelConfiguration
+
+    calls = []
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": [{"embedding": [0.1, 0.2]}]}
+
+    def post(url, **kwargs):
+        calls.append((url, kwargs))
+        return Response()
+
+    monkeypatch.setattr("backend.app.embeddings.httpx.post", post)
+    config = ModelConfiguration(providerId="custom", provider="custom", baseUrl="https://model.test/v1", model="embed-model", apiKey="secret")
+    adapter = OpenAICompatibleEmbeddingAdapter(lambda role_id: config)
+
+    assert adapter.embed("role-a", "query") == [0.1, 0.2]
+    assert calls[0][0] == "https://model.test/v1/embeddings"
+    assert calls[0][1]["json"] == {"model": "embed-model", "input": "query"}
 
 
 def test_memory_store_is_role_scoped_and_source_idempotent(tmp_path):
@@ -112,6 +182,125 @@ def test_memory_worker_extracts_explicit_and_implicit_memory_without_blocking(tm
     assert memories[0].summary == "喜欢乌龙茶"
     assert memories[0].sourceRef.messageIds == [user.id, assistant.id]
     assert memories[0].sourceRef.kind == "turn"
+
+
+def test_memory_maintenance_updates_recent_context_and_is_idempotent(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    user = sessions.append_message(session.sessionKey, "user", "请记住我喜欢乌龙茶")
+    assistant = sessions.append_message(session.sessionKey, "assistant", "好的")
+    maintenance = MemoryMaintenance(tmp_path / "roles", sessions)
+
+    maintenance.maintain(role.id, session.sessionKey)
+    recent_path = tmp_path / "roles" / role.id / "memory" / "RECENT_CONTEXT.md"
+    assert "喜欢乌龙茶" in recent_path.read_text(encoding="utf-8")
+    first = recent_path.read_text(encoding="utf-8")
+    maintenance.maintain(role.id, session.sessionKey)
+    assert recent_path.read_text(encoding="utf-8") == first
+
+
+def test_memory_maintenance_consolidates_once_and_keeps_source_window(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    for index in range(10):
+        sessions.append_message(session.sessionKey, "user", f"请记住第{index}项")
+        sessions.append_message(session.sessionKey, "assistant", "收到")
+    maintenance = MemoryMaintenance(tmp_path / "roles", sessions)
+    maintenance.maintain(role.id, session.sessionKey)
+    history_path = tmp_path / "roles" / role.id / "memory" / "HISTORY.md"
+    pending_path = tmp_path / "roles" / role.id / "memory" / "PENDING.md"
+    history = history_path.read_text(encoding="utf-8")
+    pending = pending_path.read_text(encoding="utf-8")
+    maintenance.maintain(role.id, session.sessionKey)
+    assert history_path.read_text(encoding="utf-8") == history
+    assert pending_path.read_text(encoding="utf-8") == pending
+    assert history.count("<!-- source:") == 1
+    assert "consolidation:" in history
+    assert "第9项" in pending
+
+
+def test_memory_worker_serially_runs_markdown_maintenance(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    user = sessions.append_message(session.sessionKey, "user", "请记住我喜欢红茶")
+    assistant = sessions.append_message(session.sessionKey, "assistant", "好的")
+    store = MemoryStore(tmp_path / "data" / "memory.db")
+    service = MemoryService(store)
+    worker = MemoryWorker(service, MemoryMaintenance(tmp_path / "roles", sessions))
+
+    async def run_worker() -> None:
+        worker.submit(role.id, session.sessionKey, user, assistant)
+        await worker.drain()
+
+    asyncio.run(run_worker())
+    assert (tmp_path / "roles" / role.id / "memory" / "RECENT_CONTEXT.md").exists()
+
+
+def test_memory_maintenance_discards_stale_snapshot(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    sessions.append_message(session.sessionKey, "user", "第一条")
+    sessions.append_message(session.sessionKey, "assistant", "回复一")
+
+    class MessageDuringPreparation(MemoryMaintenance):
+        def __init__(self, root, session_store):
+            super().__init__(root, session_store)
+            self.injected = False
+
+        def _before_commit(self):
+            if not self.injected:
+                self.injected = True
+                sessions.append_message(session.sessionKey, "user", "新消息")
+                sessions.append_message(session.sessionKey, "assistant", "回复二")
+
+    maintenance = MessageDuringPreparation(tmp_path / "roles", sessions)
+    recent_path = tmp_path / "roles" / role.id / "memory" / "RECENT_CONTEXT.md"
+    maintenance.maintain(role.id, session.sessionKey)
+    assert not recent_path.exists()
+    maintenance.maintain(role.id, session.sessionKey)
+    assert "新消息" in recent_path.read_text(encoding="utf-8")
+
+
+def test_memory_maintenance_restores_files_when_commit_fails(tmp_path, monkeypatch):
+    recent_path = tmp_path / "memory" / "RECENT_CONTEXT.md"
+    history_path = tmp_path / "memory" / "HISTORY.md"
+    cursor_path = tmp_path / "memory" / ".maintenance.json"
+    recent_path.parent.mkdir()
+    recent_path.write_text("旧近期\n", encoding="utf-8")
+    history_path.write_text("旧历史\n", encoding="utf-8")
+    cursor_path.write_text('{"lastSequence": 2}\n', encoding="utf-8")
+    original_replace = memory_maintenance.os.replace
+    replacements = 0
+
+    def fail_second_replace(source, target):
+        nonlocal replacements
+        replacements += 1
+        if replacements == 2:
+            raise OSError("simulated write failure")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(memory_maintenance.os, "replace", fail_second_replace)
+    with pytest.raises(OSError, match="simulated write failure"):
+        MemoryMaintenance._commit(
+            {recent_path: "新近期\n", history_path: "新历史\n"},
+            cursor_path,
+            {"lastSequence": 20},
+        )
+    assert recent_path.read_text(encoding="utf-8") == "旧近期\n"
+    assert history_path.read_text(encoding="utf-8") == "旧历史\n"
+    assert cursor_path.read_text(encoding="utf-8") == '{"lastSequence": 2}\n'
 
 
 def test_memory_api_is_scoped_and_manual_memory_is_recalled(tmp_path, monkeypatch):
@@ -258,3 +447,31 @@ def test_recalled_memory_is_injected_only_for_related_current_role(tmp_path, mon
     response = client.post(f"/api/roles/{role.id}/messages", json={"content": "我们去海边吧"})
     assert response.status_code == 200
     assert "海边散步" in adapter.contexts[0]
+
+
+def test_fixed_markdown_memory_is_injected_with_recalled_memory(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    memory_dir = tmp_path / "roles" / role.id / "memory"
+    memory_dir.mkdir(exist_ok=True)
+    (memory_dir / "SELF.md").write_text("角色认识主人", encoding="utf-8")
+    (memory_dir / "MEMORY.md").write_text("主人喜欢清晨散步", encoding="utf-8")
+    (memory_dir / "RECENT_CONTEXT.md").write_text("最近在讨论旅行", encoding="utf-8")
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    memory_service = MemoryService(memory_store)
+    adapter = ContextAdapter()
+    monkeypatch.setattr(main, "roles_root", tmp_path / "roles")
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "session_manager", main.SessionManager(roles, sessions))
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", memory_service)
+    monkeypatch.setattr(main, "memory_worker", MemoryWorker(memory_service))
+    monkeypatch.setattr(main, "model_adapter", adapter)
+    response = TestClient(main.app).post(f"/api/roles/{role.id}/messages", json={"content": "我们去哪里旅行"})
+    assert response.status_code == 200
+    assert "角色认识主人" in adapter.contexts[0]
+    assert "主人喜欢清晨散步" in adapter.contexts[0]
+    assert "最近在讨论旅行" in adapter.contexts[0]

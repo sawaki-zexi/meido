@@ -8,13 +8,27 @@ from datetime import datetime
 
 from .memory_store import MemoryStore
 from .models import MemoryItem, MemorySourceRef, Message
+from .embeddings import EmbeddingProvider
+from .memory_maintenance import MemoryMaintenance
 
 
 class MemoryService:
     """Role-scoped memory ingestion and retrieval facade."""
 
-    def __init__(self, store: MemoryStore) -> None:
+    def __init__(self, store: MemoryStore, embedding_provider: EmbeddingProvider | None = None) -> None:
         self.store = store
+        self.embedding_provider = embedding_provider
+        self.embedding_errors: list[str] = []
+
+    def _index_embedding(self, role_id: str, item: MemoryItem) -> None:
+        if self.embedding_provider is None:
+            return
+        try:
+            vector = self.embedding_provider.embed(role_id, item.summary)
+            if vector is not None:
+                self.store.set_embedding(role_id, item.id, vector)
+        except Exception:
+            self.embedding_errors.append(f"{role_id}: embedding 写入失败")
 
     def remember(
         self,
@@ -35,7 +49,7 @@ class MemoryService:
             stableSourceKey=stable_source_key or f"manual:{uuid.uuid4().hex}",
         )
         extra = {"supersedeKey": supersede_key} if supersede_key else {}
-        return self.store.add_or_reinforce(
+        item = self.store.add_or_reinforce(
             role_id,
             memory_type,
             summary,
@@ -44,6 +58,8 @@ class MemoryService:
             happened_at=happened_at,
             supersede_key=supersede_key,
         )
+        self._index_embedding(role_id, item)
+        return item
 
     def process_turn(
         self,
@@ -64,8 +80,7 @@ class MemoryService:
         saved: list[MemoryItem] = []
         for memory_type, summary, supersede_key in extracted:
             extra = {"supersedeKey": supersede_key} if supersede_key else {}
-            saved.append(
-                self.store.add_or_reinforce(
+            item = self.store.add_or_reinforce(
                     role_id,
                     memory_type,
                     summary,
@@ -74,25 +89,64 @@ class MemoryService:
                     happened_at=user_message.createdAt,
                     supersede_key=supersede_key,
                 )
-            )
+            self._index_embedding(role_id, item)
+            saved.append(item)
         return saved
 
     def recall(self, role_id: str, query: str, limit: int = 8) -> list[MemoryItem]:
-        return self.store.query(role_id, query, limit=limit)
+        if self.embedding_provider is None:
+            return self.store.query(role_id, query, limit=limit)
+        for item in self.store.list_without_embeddings(role_id):
+            self._index_embedding(role_id, item)
+        try:
+            vector = self.embedding_provider.embed(role_id, query)
+        except Exception:
+            self.embedding_errors.append(f"{role_id}: embedding 查询失败")
+            vector = None
+        return self.store.query_hybrid(role_id, query, vector, limit=limit) if vector is not None else self.store.query(role_id, query, limit=limit)
+
+    async def recall_async(self, role_id: str, query: str, limit: int = 8) -> list[MemoryItem]:
+        if self.embedding_provider is None:
+            return await asyncio.to_thread(self.store.query, role_id, query, limit)
+        lexical_task = asyncio.to_thread(self.store.query, role_id, query, limit)
+        vector_task = asyncio.to_thread(self.embedding_provider.embed, role_id, query)
+        lexical_result, vector_result = await asyncio.gather(lexical_task, vector_task, return_exceptions=True)
+        lexical = lexical_result if isinstance(lexical_result, list) else []
+        vector = vector_result if isinstance(vector_result, list) else None
+        if isinstance(vector_result, BaseException):
+            self.embedding_errors.append(f"{role_id}: embedding 查询失败")
+        if vector is None:
+            return lexical
+        missing = await asyncio.to_thread(self.store.list_without_embeddings, role_id, 8)
+        async def index(item: MemoryItem) -> None:
+            try:
+                item_vector = await asyncio.to_thread(self.embedding_provider.embed, role_id, item.summary)
+                if item_vector is not None:
+                    await asyncio.to_thread(self.store.set_embedding, role_id, item.id, item_vector)
+            except Exception:
+                self.embedding_errors.append(f"{role_id}: embedding 回填失败")
+        await asyncio.gather(*(index(item) for item in missing))
+        return await asyncio.to_thread(self.store.query_hybrid, role_id, query, vector, limit)
 
     @staticmethod
-    def context_block(memories: list[MemoryItem], max_chars: int = 4000) -> str:
-        if not memories:
+    def context_block(memories: list[MemoryItem], fixed_context: str = "", max_chars: int = 4000) -> str:
+        fixed_context = fixed_context.strip()[:max_chars]
+        sections = [section for section in (fixed_context, "以下是当前角色已保存、仅供本轮理解使用的记忆：") if section]
+        if not sections and not memories:
             return ""
-        lines = ["以下是当前角色已保存、仅供本轮理解使用的记忆："]
-        length = len(lines[0])
+        lines = sections
+        length = sum(len(line) for line in lines)
+        type_counts: dict[str, int] = {}
         for memory in memories:
+            if type_counts.get(memory.memoryType, 0) >= 3:
+                continue
             line = f"- [{memory.memoryType}] {memory.summary}"
             if length + len(line) + 1 > max_chars:
                 break
             lines.append(line)
             length += len(line) + 1
-        return "\n".join(lines) if len(lines) > 1 else ""
+            type_counts[memory.memoryType] = type_counts.get(memory.memoryType, 0) + 1
+        return "\n".join(lines)
 
     @staticmethod
     def _extract(content: str) -> list[tuple[str, str, str | None]]:
@@ -135,12 +189,18 @@ class MemoryService:
             add("procedure", procedure.group(1))
         return results
 
+    @staticmethod
+    def extract_candidates(content: str) -> list[tuple[str, str, str | None]]:
+        """Compatibility entry point used by Markdown memory maintenance."""
+        return MemoryService._extract(content)
+
 
 class MemoryWorker:
     """In-process queue with one serial lane per role."""
 
-    def __init__(self, service: MemoryService) -> None:
+    def __init__(self, service: MemoryService, maintenance: MemoryMaintenance | None = None) -> None:
         self.service = service
+        self.maintenance = maintenance
         self._locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task[object]] = set()
         self.errors: list[str] = []
@@ -154,9 +214,20 @@ class MemoryWorker:
         lock = self._locks.setdefault(role_id, asyncio.Lock())
         async with lock:
             try:
-                self.service.process_turn(role_id, session_key, user_message, assistant_message)
+                await asyncio.to_thread(
+                    self._process_turn,
+                    role_id,
+                    session_key,
+                    user_message,
+                    assistant_message,
+                )
             except Exception as error:  # maintenance must never undo a completed turn
                 self.errors.append(f"{role_id}: {error}")
+
+    def _process_turn(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> None:
+        self.service.process_turn(role_id, session_key, user_message, assistant_message)
+        if self.maintenance is not None:
+            self.maintenance.maintain(role_id, session_key)
 
     async def drain(self) -> None:
         if self._tasks:
