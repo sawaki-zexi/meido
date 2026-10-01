@@ -77,6 +77,13 @@ class MemoryService:
             messageRange=(user_message.sequence, assistant_message.sequence),
             stableSourceKey=source_key,
         )
+        forget_target = self._forget_target(user_message.content)
+        if forget_target is not None:
+            forgotten = self.forget_matching(role_id, forget_target)
+            return [forgotten] if forgotten is not None else []
+        reject_target = self._reject_target(user_message.content)
+        if reject_target is not None:
+            return [self.reject_matching(role_id, reject_target, source)]
         extracted = self._extract(user_message.content)
         saved: list[MemoryItem] = []
         for memory_type, summary, supersede_key in extracted:
@@ -93,6 +100,25 @@ class MemoryService:
             self._index_embedding(role_id, item)
             saved.append(item)
         return saved
+
+    def forget_matching(self, role_id: str, target: str) -> MemoryItem | None:
+        item = self.store.find_status_candidate(role_id, target, ("active", "rejected"))
+        if item is None:
+            return None
+        return self.store.set_status(role_id, item.id, "forgotten")
+
+    def reject_matching(self, role_id: str, target: str, source: MemorySourceRef) -> MemoryItem:
+        item = self.store.find_status_candidate(role_id, target, ("active", "rejected", "forgotten"))
+        if item is not None:
+            return self.store.set_status(role_id, item.id, "rejected")
+        created = self.store.add_or_reinforce(
+            role_id,
+            "fact",
+            target,
+            source,
+            status="rejected",
+        )
+        return created
 
     def recall(self, role_id: str, query: str, limit: int = 8) -> list[MemoryItem]:
         if self.embedding_provider is None:
@@ -131,28 +157,56 @@ class MemoryService:
 
     @staticmethod
     def context_block(memories: list[MemoryItem], fixed_context: str = "", max_chars: int = 4000) -> str:
-        fixed_context = fixed_context.strip()[:max_chars]
-        sections = [section for section in (fixed_context, "以下是当前角色已保存、仅供本轮理解使用的记忆：") if section]
-        if not sections and not memories:
+        if max_chars <= 0:
             return ""
-        lines = sections
-        length = sum(len(line) for line in lines)
+
+        lines: list[str] = []
+        length = 0
+
+        def append_line(line: str) -> bool:
+            nonlocal length
+            line = line.strip()
+            if not line:
+                return True
+            added = len(line) if not lines else len(line) + 1
+            if length + added > max_chars:
+                return False
+            lines.append(line)
+            length += added
+            return True
+
+        for line in fixed_context.strip().splitlines():
+            if not append_line(line):
+                break
+
+        memory_lines: list[str] = []
         type_counts: dict[str, int] = {}
         for memory in memories:
             if type_counts.get(memory.memoryType, 0) >= 3:
                 continue
             line = f"- [{memory.memoryType}] {memory.summary}"
-            if length + len(line) + 1 > max_chars:
-                break
-            lines.append(line)
-            length += len(line) + 1
+            memory_lines.append(line)
             type_counts[memory.memoryType] = type_counts.get(memory.memoryType, 0) + 1
+        if memory_lines:
+            heading = "以下是当前角色已保存、仅供本轮理解使用的记忆："
+            before_heading = len(lines)
+            before_length = length
+            if append_line(heading):
+                added_memory = 0
+                for line in memory_lines:
+                    if append_line(line):
+                        added_memory += 1
+                if added_memory == 0:
+                    del lines[before_heading:]
+                    length = before_length
         return "\n".join(lines)
 
     @staticmethod
     def _extract(content: str) -> list[tuple[str, str, str | None]]:
         text = re.sub(r"\s+", " ", content).strip()
         if not text:
+            return []
+        if MemoryService._forget_target(text) or MemoryService._reject_target(text):
             return []
         results: list[tuple[str, str, str | None]] = []
         seen: set[tuple[str, str]] = set()
@@ -191,6 +245,18 @@ class MemoryService:
         return results
 
     @staticmethod
+    def _forget_target(content: str) -> str | None:
+        match = re.search(r"^(?:请|请你)?(?:忘记|忘了|不要再记得|删除记忆)[：:，,\s]*(.+)$", content.strip(), re.IGNORECASE)
+        target = match.group(1).strip(" \t\r\n，。！？!?,.:：；;") if match else ""
+        return re.sub(r"^(?:我|我的)", "", target).strip() or None
+
+    @staticmethod
+    def _reject_target(content: str) -> str | None:
+        match = re.search(r"^(?:请|请你)?(?:拒绝记忆|不要记住|别记住|不需要记住)[：:，,\s]*(.+)$", content.strip(), re.IGNORECASE)
+        target = match.group(1).strip(" \t\r\n，。！？!?,.:：；;") if match else ""
+        return re.sub(r"^(?:我|我的)", "", target).strip() or None
+
+    @staticmethod
     def extract_candidates(content: str) -> list[tuple[str, str, str | None]]:
         """Compatibility entry point used by Markdown memory maintenance."""
         return MemoryService._extract(content)
@@ -212,13 +278,20 @@ class MemoryWorker:
         self._tasks: dict[asyncio.Task[object], str] = {}
         self._deleting: set[str] = set()
         self.errors: list[str] = []
+        self.closed = False
 
-    def submit(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> None:
-        if role_id in self._deleting:
-            return
+    def start(self) -> None:
+        self.closed = False
+        if self.optimizer is not None:
+            self.optimizer.start()
+
+    def submit(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> bool:
+        if self.closed or role_id in self._deleting:
+            return False
         task = asyncio.create_task(self._run(role_id, session_key, user_message, assistant_message))
         self._tasks[task] = role_id
         task.add_done_callback(self._forget_task)
+        return True
 
     def _forget_task(self, task: asyncio.Task[object]) -> None:
         self._tasks.pop(task, None)
@@ -250,12 +323,20 @@ class MemoryWorker:
                 self.errors.append(f"{role_id}: {error}")
 
     def _process_turn(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> None:
-        self.service.process_turn(role_id, session_key, user_message, assistant_message)
+        changed = self.service.process_turn(role_id, session_key, user_message, assistant_message)
         if self.maintenance is not None:
             self.maintenance.maintain(role_id, session_key)
+            if any(item.status in {"forgotten", "rejected"} for item in changed):
+                self.maintenance.sync_structured_memory(role_id, self.service.store.list_active(role_id))
 
     async def drain(self) -> None:
         if self._tasks:
             await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
         if self.optimizer is not None:
             await self.optimizer.drain()
+
+    async def close(self) -> None:
+        self.closed = True
+        if self.optimizer is not None:
+            await self.optimizer.close()
+        await self.drain()

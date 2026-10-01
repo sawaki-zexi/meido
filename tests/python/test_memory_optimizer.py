@@ -276,6 +276,16 @@ def test_optimizer_worker_runs_in_background_and_serializes_roles(tmp_path):
     assert worker.errors == []
 
 
+def test_optimizer_worker_close_rejects_new_jobs(tmp_path):
+    worker = MemoryOptimizerWorker(MemoryOptimizer(tmp_path / "roles"))
+
+    async def run() -> None:
+        await worker.close()
+        assert worker.submit("role-a") is False
+
+    asyncio.run(run())
+
+
 def test_memory_worker_schedules_optimizer_after_turn_maintenance(tmp_path):
     roles_root = tmp_path / "roles"
     memory_dir = roles_root / "role-a" / "memory"

@@ -95,6 +95,7 @@ class MemoryStore:
         extra: dict[str, Any] | None = None,
         happened_at: datetime | None = None,
         supersede_key: str | None = None,
+        status: str = "active",
     ) -> MemoryItem:
         with self._connect() as connection:
             return self._add_or_reinforce_connection(
@@ -106,6 +107,7 @@ class MemoryStore:
                 extra=extra,
                 happened_at=happened_at,
                 supersede_key=supersede_key,
+                status=status,
             )
 
     def add_or_reinforce_batch(
@@ -174,6 +176,7 @@ class MemoryStore:
         extra: dict[str, Any] | None = None,
         happened_at: datetime | None = None,
         supersede_key: str | None = None,
+        status: str = "active",
     ) -> MemoryItem:
         summary = normalize_summary(summary)
         if not summary:
@@ -213,7 +216,7 @@ class MemoryStore:
                 INSERT INTO memory_items
                   (id, role_id, memory_type, summary, extra_json, source_ref,
                    happened_at, status, created_at, updated_at, reinforcement, content_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 1, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                 """,
                 (
                     item_id,
@@ -230,6 +233,7 @@ class MemoryStore:
                         ensure_ascii=False,
                     ),
                     happened_at.isoformat() if happened_at else None,
+                    status,
                     now,
                     now,
                     item_hash,
@@ -253,7 +257,7 @@ class MemoryStore:
                     """
                     UPDATE memory_items
                     SET source_ref = ?, updated_at = ?, reinforcement = reinforcement + 1,
-                        status = CASE WHEN status IN ('forgotten', 'superseded') THEN 'active' ELSE status END
+                        status = CASE WHEN status = 'superseded' THEN 'active' ELSE status END
                     WHERE id = ?
                     """,
                     (json.dumps(source_payload, ensure_ascii=False), now, row["id"]),
@@ -266,6 +270,14 @@ class MemoryStore:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM memory_items WHERE role_id = ? AND status = 'active' ORDER BY updated_at DESC, created_at DESC",
+                (role_id,),
+            ).fetchall()
+        return [self._item(row) for row in rows]
+
+    def list_all(self, role_id: str) -> list[MemoryItem]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM memory_items WHERE role_id = ? ORDER BY updated_at DESC, created_at DESC",
                 (role_id,),
             ).fetchall()
         return [self._item(row) for row in rows]
@@ -296,6 +308,30 @@ class MemoryStore:
             return ranked[:limit]
         matching = [item for item in ranked if score(item)[0] > 0]
         return matching[:limit]
+
+    def find_status_candidate(self, role_id: str, text: str, statuses: tuple[str, ...]) -> MemoryItem | None:
+        if not statuses:
+            return None
+        placeholders = ",".join("?" for _ in statuses)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM memory_items WHERE role_id = ? AND status IN ({placeholders}) ORDER BY updated_at DESC",
+                (role_id, *statuses),
+            ).fetchall()
+        normalized = normalize_summary(text).casefold()
+        terms: list[str] = []
+        for token in re.findall(r"[\u4e00-\u9fff]+|[a-z0-9_]+", normalized):
+            if re.fullmatch(r"[\u4e00-\u9fff]+", token) and len(token) > 1:
+                terms.extend(token[index : index + 2] for index in range(len(token) - 1))
+            else:
+                terms.append(token)
+        candidates = [self._item(row) for row in rows]
+        matching = [item for item in candidates if normalized and normalized in item.summary.casefold()]
+        if not matching:
+            matching = [item for item in candidates if any(term in item.summary.casefold() for term in terms)]
+        if not matching:
+            return None
+        return max(matching, key=lambda item: (sum(term in item.summary.casefold() for term in terms), item.updatedAt))
 
     def set_embedding(self, role_id: str, item_id: str, vector: list[float]) -> None:
         with self._connect() as connection:

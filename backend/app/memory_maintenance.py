@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .models import Message
 from .session_store import SessionStore
+from .memory_documents import MemoryDocuments
 
 
 class MemoryMaintenance:
@@ -30,6 +31,7 @@ class MemoryMaintenance:
             raise ValueError("角色路径无效")
         memory_dir = role_root / "memory"
         memory_dir.mkdir(parents=True, exist_ok=True)
+        (memory_dir / "journal").mkdir(parents=True, exist_ok=True)
 
         messages = self._committed_messages(self.sessions.context_messages(session_key))
         cursor_path = memory_dir / ".maintenance.json"
@@ -47,18 +49,26 @@ class MemoryMaintenance:
                 pending_path = memory_dir / "PENDING.md"
                 history = self._read_text(history_path)
                 pending = self._read_text(pending_path)
+                journal_path = MemoryDocuments(self.roles_root).journal_path(role_id, window[0].createdAt.date().isoformat())
+                journal = self._read_text(journal_path)
                 if source_key not in history:
                     history += self._history_entry(source_key, window)
                 if source_key not in pending:
                     pending += self._pending_entries(source_key, window)
+                if source_key not in journal:
+                    journal += MemoryDocuments.render_journal_entry(source_key, window[0].sequence, window[-1].sequence)
                 cursor = {"lastSequence": window[-1].sequence, "lastSourceKey": source_key}
                 writes[history_path] = history
                 writes[pending_path] = pending
+                writes[journal_path] = journal
         self._before_commit()
         latest = self._committed_messages(self.sessions.context_messages(session_key))
         if [message.id for message in latest] != [message.id for message in messages]:
             return
         self._commit(writes, cursor_path, cursor)
+
+    def sync_structured_memory(self, role_id: str, memories: list[object]) -> None:
+        MemoryDocuments(self.roles_root).sync_structured_memory(role_id, memories)  # type: ignore[arg-type]
 
     def _before_commit(self) -> None:
         """Hook for deterministic stale-snapshot verification in tests."""

@@ -370,15 +370,22 @@ class MemoryOptimizerWorker:
         self._locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task[object]] = set()
         self.errors: list[str] = []
+        self.closed = False
+
+    def start(self) -> None:
+        self.closed = False
 
     def lock_for(self, role_id: str) -> asyncio.Lock:
         """Return the lock shared with the post-response worker for this role."""
         return self._locks.setdefault(role_id, asyncio.Lock())
 
-    def submit(self, role_id: str) -> None:
+    def submit(self, role_id: str) -> bool:
+        if self.closed:
+            return False
         task = asyncio.create_task(self._run(role_id))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        return True
 
     async def run(self, role_id: str) -> None:
         """Run inside MemoryWorker's per-role lane after Markdown maintenance."""
@@ -394,3 +401,7 @@ class MemoryOptimizerWorker:
     async def drain(self) -> None:
         if self._tasks:
             await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
+
+    async def close(self) -> None:
+        self.closed = True
+        await self.drain()
