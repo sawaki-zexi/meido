@@ -47,9 +47,11 @@ class MemoryOptimizer:
         self,
         roles_root: str | Path,
         consolidate: Callable[[str, list[MemoryRecord], list[MemoryRecord], str, str], MemoryOptimizationResult] | None = None,
+        persist_structured: Callable[[str, list[MemoryRecord]], None] | None = None,
     ) -> None:
         self.roles_root = Path(roles_root).resolve()
         self.consolidate = consolidate
+        self.persist_structured = persist_structured
 
     def optimize(self, role_id: str) -> bool:
         role_root = (self.roles_root / role_id).resolve()
@@ -93,6 +95,10 @@ class MemoryOptimizer:
             self._before_commit()
             if self._read_text(pending_path) != pending_snapshot or self._read_text(history_path) != history_snapshot:
                 continue
+            if self.persist_structured is not None:
+                self.persist_structured(role_id, optimized.records)
+                if self._read_text(pending_path) != pending_snapshot or self._read_text(history_path) != history_snapshot:
+                    continue
             self._commit(
                 {
                     memory_path: documents["memory"],
