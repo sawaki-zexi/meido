@@ -13,6 +13,7 @@ import httpx
 from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
+from .embeddings import OpenAICompatibleEmbeddingAdapter
 from .memory_maintenance import MemoryMaintenance
 from .memory_store import MemoryStore
 from .models import MemoryList, MemoryItem, RememberMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
@@ -29,12 +30,37 @@ store = RoleStore(roles_root)
 session_store = SessionStore(data_root / "sessions.db")
 session_manager = SessionManager(store, session_store)
 memory_store = MemoryStore(data_root / "memory2.db")
-memory_service = MemoryService(memory_store)
-memory_worker = MemoryWorker(memory_service, MemoryMaintenance(roles_root, session_store))
 model_adapter: ModelAdapter = OpenAICompatibleAdapter()
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
+
+
+def _embedding_configuration(role_id: str):
+    role = store.get(role_id)
+    return model_configuration_store.get(role.modelConfigurationId) if role and role.modelConfigurationId else model_configuration_store.get()
+
+
+embedding_provider = OpenAICompatibleEmbeddingAdapter(_embedding_configuration)
+memory_service = MemoryService(memory_store, embedding_provider)
+memory_worker = MemoryWorker(memory_service, MemoryMaintenance(roles_root, session_store))
 connection_test_adapter = OpenAICompatibleAdapter(timeout=20)
 role_locks: dict[str, asyncio.Lock] = {}
+
+
+def _role_memory_context(role_id: str) -> str:
+    memory_dir = (roles_root / role_id / "memory").resolve()
+    if memory_dir.parent != roles_root / role_id:
+        return ""
+    sections = []
+    for filename in ("SELF.md", "MEMORY.md", "RECENT_CONTEXT.md"):
+        path = memory_dir / filename
+        if path.exists():
+            try:
+                content = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if content:
+                sections.append(f"[{filename}]\n{content}")
+    return "\n\n".join(sections)
 
 app = FastAPI(title="Meido API")
 app.add_middleware(
@@ -355,7 +381,8 @@ async def send_role_message(role_id: str, data: SendMessageInput) -> StreamingRe
         raise
     history = [*session_store.context_messages(session.session.sessionKey)[:-1], user_message]
     try:
-        memory_context = memory_service.context_block(memory_service.recall(role_id, data.content))
+        memories = await memory_service.recall_async(role_id, data.content)
+        memory_context = memory_service.context_block(memories, _role_memory_context(role_id))
     except Exception as error:
         memory_worker.errors.append(f"{role_id}: recall failed: {error}")
         memory_context = ""

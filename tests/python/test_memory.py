@@ -8,6 +8,7 @@ from backend.app import main
 from backend.app.memory_service import MemoryService, MemoryWorker
 from backend.app.memory_maintenance import MemoryMaintenance
 from backend.app import memory_maintenance
+from backend.app.embeddings import OpenAICompatibleEmbeddingAdapter
 from backend.app.memory_store import MemoryStore
 from backend.app.models import Message, RoleInput, RoleProfile
 from backend.app.role_store import RoleStore
@@ -22,6 +23,72 @@ class ContextAdapter:
     async def stream_reply(self, role, history, configuration=None, memory_context=""):
         self.contexts.append(memory_context)
         yield "收到"
+
+
+class FakeEmbeddingProvider:
+    def __init__(self, vectors):
+        self.vectors = vectors
+
+    def embed(self, role_id, text):
+        return self.vectors[(role_id, text)]
+
+
+def test_hybrid_recall_finds_semantic_match_without_shared_words_and_is_role_scoped(tmp_path):
+    vectors = {
+        ("role-a", "主人喜欢海边散步"): [1.0, 0.0],
+        ("role-a", "适合去哪里放松"): [0.98, 0.02],
+        ("role-b", "主人喜欢海边散步"): [0.0, 1.0],
+    }
+    provider = FakeEmbeddingProvider(vectors)
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store, provider)
+    first = service.remember("role-a", "主人喜欢海边散步", "preference", stable_source_key="a")
+    service.remember("role-b", "主人喜欢海边散步", "preference", stable_source_key="b")
+
+    recalled = service.recall("role-a", "适合去哪里放松")
+
+    assert [item.id for item in recalled] == [first.id]
+    assert service.recall("role-b", "适合去哪里放松") == []
+
+
+def test_hybrid_recall_fuses_keyword_and_semantic_rankings(tmp_path):
+    provider = FakeEmbeddingProvider({
+        ("role-a", "喜欢红茶"): [1.0, 0.0],
+        ("role-a", "红茶"): [0.0, 1.0],
+    })
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store, provider)
+    semantic = service.remember("role-a", "喜欢红茶", "preference", stable_source_key="semantic")
+    keyword = service.remember("role-a", "红茶", "fact", stable_source_key="keyword")
+
+    result = service.recall("role-a", "红茶")
+
+    assert {item.id for item in result} == {semantic.id, keyword.id}
+
+
+def test_embedding_adapter_uses_configured_openai_compatible_endpoint(monkeypatch):
+    from backend.app.models import ModelConfiguration
+
+    calls = []
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": [{"embedding": [0.1, 0.2]}]}
+
+    def post(url, **kwargs):
+        calls.append((url, kwargs))
+        return Response()
+
+    monkeypatch.setattr("backend.app.embeddings.httpx.post", post)
+    config = ModelConfiguration(providerId="custom", provider="custom", baseUrl="https://model.test/v1", model="embed-model", apiKey="secret")
+    adapter = OpenAICompatibleEmbeddingAdapter(lambda role_id: config)
+
+    assert adapter.embed("role-a", "query") == [0.1, 0.2]
+    assert calls[0][0] == "https://model.test/v1/embeddings"
+    assert calls[0][1]["json"] == {"model": "embed-model", "input": "query"}
 
 
 def test_memory_store_is_role_scoped_and_source_idempotent(tmp_path):
