@@ -7,6 +7,8 @@ from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
 from backend.app.session_store import SessionStore
 from backend.app.storage import initialize_databases
+from backend.app.memory_service import MemoryService, MemoryWorker
+from backend.app.memory_store import MemoryStore
 
 
 class FailingAdapter:
@@ -310,6 +312,29 @@ def test_delete_role_failure_restores_role_and_chat_history(tmp_path, monkeypatc
     assert response.json()["detail"] == "删除失败，角色和聊天记录已保留"
     assert client.get(f"/api/roles/{role.id}").status_code == 200
     assert [item.model_dump() for item in sessions.list_messages(f"role:{role.id}")] == [item.model_dump() for item in before]
+
+
+def test_delete_role_memory_failure_restores_role_chat_and_memory(tmp_path, monkeypatch):
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    memory_service = MemoryService(memory_store)
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", memory_service)
+    monkeypatch.setattr(main, "memory_worker", MemoryWorker(memory_service))
+    client.post(f"/api/roles/{role.id}/messages", json={"content": "保留消息"})
+    memory_service.remember(role.id, "保留记忆", "fact", stable_source_key="keep")
+    before_messages = sessions.list_messages(f"role:{role.id}")
+
+    def fail_delete(role_id):
+        raise OSError("记忆数据库删除失败")
+
+    monkeypatch.setattr(memory_store, "delete_role", fail_delete)
+    response = client.delete(f"/api/roles/{role.id}")
+
+    assert response.status_code == 500
+    assert client.get(f"/api/roles/{role.id}").status_code == 200
+    assert [item.model_dump() for item in sessions.list_messages(f"role:{role.id}")] == [item.model_dump() for item in before_messages]
+    assert [item.summary for item in memory_store.list_active(role.id)] == ["保留记忆"]
 
 
 def test_delete_role_rejects_while_generation_is_in_progress(tmp_path, monkeypatch):

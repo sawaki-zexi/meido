@@ -142,7 +142,7 @@ export function App() {
 
   const removeRole = async () => {
     if (!selected || creating || deleting) return;
-    const confirmed = window.confirm(`确定删除角色“${selected.name}”吗？\n\n角色和全部聊天记录将永久删除，且无法恢复。`);
+    const confirmed = window.confirm(`确定删除角色“${selected.name}”吗？\n\n角色、全部聊天记录和记忆将永久删除，且无法恢复。`);
     if (!confirmed) return;
     setError("");
     setDeleting(true);
