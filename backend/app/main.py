@@ -15,6 +15,7 @@ from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_conf
 from .memory_service import MemoryService, MemoryWorker
 from .embeddings import OpenAICompatibleEmbeddingAdapter
 from .memory_maintenance import MemoryMaintenance
+from .memory_optimizer import MemoryOptimizer, MemoryOptimizerWorker, _Optimization, _Record
 from .memory_store import MemoryStore
 from .models import MemoryList, MemoryItem, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
@@ -39,9 +40,101 @@ def _embedding_configuration(role_id: str):
     return model_configuration_store.get(role.modelConfigurationId) if role and role.modelConfigurationId else model_configuration_store.get()
 
 
+def _consolidate_role_memories(
+    role_id: str,
+    existing: list[_Record],
+    pending: list[_Record],
+    history: str,
+    current_self: str,
+) -> _Optimization:
+    role = store.get(role_id)
+    if role is None:
+        raise ValueError("角色不存在")
+    configuration = model_configuration_store.get(role.modelConfigurationId) if role.modelConfigurationId else model_configuration_store.get()
+    if configuration is None:
+        raise RuntimeError("长期记忆归并需要可用的模型连接")
+    payload = {
+        "existingMemories": [
+            {"memoryType": item.memory_type, "summary": item.summary, "sourceKeys": item.sources}
+            for item in existing
+        ],
+        "pendingCandidates": [
+            {"memoryType": item.memory_type, "summary": item.summary, "sourceKeys": item.sources}
+            for item in pending
+        ],
+        "recentHistory": history[-6000:],
+        "currentSelfUnderstanding": current_self,
+    }
+    request = [
+        {
+            "role": "system",
+            "content": (
+                "你负责归并一个角色的长期记忆。只根据输入内容总结，不得推测或添加事实。"
+                "合并重复或相近事实，保留不同事实；保留每条记忆原有的 sourceKeys，禁止新造来源。"
+                "selfUnderstanding 只描述关系认识和共同经历，不写入或建议修改角色性格、行为规则或回复限制。"
+                "只返回 JSON：{\"memories\":[{\"memoryType\":string,\"summary\":string,\"sourceKeys\":string[]}],"
+                "\"selfUnderstanding\":string}。"
+            ),
+        },
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+    async def collect() -> str:
+        parts: list[str] = []
+        async for delta in model_adapter.stream_messages(request, configuration, max_tokens=1200):
+            parts.append(delta)
+        return "".join(parts)
+
+    text = asyncio.run(collect())
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3].rstrip()
+    try:
+        result = json.loads(cleaned)
+    except json.JSONDecodeError as error:
+        raise ValueError("Optimizer 返回内容不是有效 JSON") from error
+    if not isinstance(result, dict) or not isinstance(result.get("memories"), list):
+        raise ValueError("Optimizer 返回的记忆格式无效")
+    allowed_sources = {source for item in [*existing, *pending] for source in item.sources}
+    records: list[_Record] = []
+    for item in result["memories"]:
+        if not isinstance(item, dict):
+            raise ValueError("Optimizer 返回的记忆条目格式无效")
+        memory_type = item.get("memoryType")
+        summary = item.get("summary")
+        sources = item.get("sourceKeys")
+        if not isinstance(memory_type, str) or not memory_type.strip() or not isinstance(summary, str) or not summary.strip() or not isinstance(sources, list):
+            raise ValueError("Optimizer 返回的记忆条目缺少必要字段")
+        if any(not isinstance(source, str) or source not in allowed_sources for source in sources):
+            raise ValueError("Optimizer 返回了无效的记忆来源")
+        records.append(_Record(memory_type.strip(), summary.strip(), list(dict.fromkeys(sources))))
+    self_understanding = result.get("selfUnderstanding")
+    if not isinstance(self_understanding, str):
+        raise ValueError("Optimizer 返回的自我认识格式无效")
+    return _Optimization(MemoryOptimizer._merge_records(existing, records), self_understanding[:2000])
+
+
 embedding_provider = OpenAICompatibleEmbeddingAdapter(_embedding_configuration)
 memory_service = MemoryService(memory_store, embedding_provider)
-memory_worker = MemoryWorker(memory_service, MemoryMaintenance(roles_root, session_store))
+memory_optimizer_worker = MemoryOptimizerWorker(
+    MemoryOptimizer(
+        roles_root,
+        lambda role_id, existing, pending, history, current_self: _consolidate_role_memories(
+            role_id,
+            existing,
+            pending,
+            history,
+            current_self,
+        ),
+    )
+)
+memory_worker = MemoryWorker(
+    memory_service,
+    MemoryMaintenance(roles_root, session_store),
+    memory_optimizer_worker,
+)
 connection_test_adapter = OpenAICompatibleAdapter(timeout=20)
 role_locks: dict[str, asyncio.Lock] = {}
 
