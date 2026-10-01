@@ -65,6 +65,63 @@ def test_memory_worker_accepts_tasks_after_role_deletion_finishes(tmp_path):
     assert [item.summary for item in store.list_active("role-a")] == ["喜欢海边"]
 
 
+def test_memory_worker_close_drains_and_rejects_new_tasks(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store)
+    worker = MemoryWorker(service)
+    user = Message(
+        id="user-1",
+        sessionKey="role:role-a",
+        sequence=1,
+        role="user",
+        content="请记住我喜欢海边",
+        status="completed",
+        createdAt=datetime.now(timezone.utc),
+    )
+    assistant = user.model_copy(update={"id": "assistant-1", "sequence": 2, "role": "assistant", "content": "好的"})
+
+    async def run() -> None:
+        assert worker.submit("role-a", "role:role-a", user, assistant) is True
+        await worker.close()
+        assert worker.submit("role-a", "role:role-a", user, assistant) is False
+
+    asyncio.run(run())
+    assert [item.summary for item in store.list_active("role-a")] == ["喜欢海边"]
+
+
+def test_fastapi_shutdown_closes_memory_worker(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    service = MemoryService(memory_store)
+    worker = MemoryWorker(service)
+    user = Message(
+        id="user-1",
+        sessionKey=f"role:{role.id}",
+        sequence=1,
+        role="user",
+        content="请记住我喜欢海边",
+        status="completed",
+        createdAt=datetime.now(timezone.utc),
+    )
+    assistant = user.model_copy(update={"id": "assistant-1", "sequence": 2, "role": "assistant", "content": "好的"})
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", service)
+    monkeypatch.setattr(main, "memory_worker", worker)
+    async def run() -> None:
+        assert worker.submit(role.id, f"role:{role.id}", user, assistant) is True
+        for callback in main.app.router.on_shutdown:
+            await callback()
+
+    asyncio.run(run())
+
+    assert [item.summary for item in memory_store.list_active(role.id)] == ["喜欢海边"]
+    assert worker.closed is True
+
+
 class ContextAdapter:
     def __init__(self):
         self.contexts = []
@@ -291,6 +348,75 @@ def test_memory_worker_extracts_explicit_and_implicit_memory_without_blocking(tm
     assert memories[0].sourceRef.kind == "turn"
 
 
+def test_turn_forgetting_memory_keeps_message_evidence_and_is_role_scoped(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store)
+    target = service.remember("role-a", "喜欢红茶", "preference", stable_source_key="saved")
+    other = service.remember("role-b", "喜欢红茶", "preference", stable_source_key="saved-other")
+    user = Message(
+        id="forget-message",
+        sessionKey="role:role-a",
+        sequence=3,
+        role="user",
+        content="请忘记我喜欢红茶",
+        status="completed",
+        createdAt=datetime.now(timezone.utc),
+    )
+    assistant = user.model_copy(update={"id": "forget-reply", "sequence": 4, "role": "assistant", "content": "好的"})
+
+    service.process_turn("role-a", "role:role-a", user, assistant)
+    service.process_turn("role-a", "role:role-a", user, assistant)
+
+    assert store.get("role-a", target.id).status == "forgotten"
+    assert store.get("role-b", other.id).status == "active"
+    assert store.query("role-a", "红茶") == []
+
+
+def test_worker_forgetting_turn_removes_memory_markdown_view(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    store = MemoryStore(tmp_path / "data" / "memory.db")
+    service = MemoryService(store)
+    maintenance = MemoryMaintenance(tmp_path / "roles", sessions)
+    target = service.remember(role.id, "喜欢红茶", "preference", stable_source_key="saved")
+    maintenance.sync_structured_memory(role.id, store.list_active(role.id))
+    user = sessions.append_message(session.sessionKey, "user", "请忘记我喜欢红茶")
+    assistant = sessions.append_message(session.sessionKey, "assistant", "好的")
+    worker = MemoryWorker(service, maintenance)
+
+    async def run() -> None:
+        worker.submit(role.id, session.sessionKey, user, assistant)
+        await worker.drain()
+
+    asyncio.run(run())
+    assert store.get(role.id, target.id).status == "forgotten"
+    assert "喜欢红茶" not in (tmp_path / "roles" / role.id / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+
+
+def test_turn_rejection_is_persisted_without_becoming_recallable(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store)
+    user = Message(
+        id="reject-message",
+        sessionKey="role:role-a",
+        sequence=1,
+        role="user",
+        content="请不要记住我喜欢红茶",
+        status="completed",
+        createdAt=datetime.now(timezone.utc),
+    )
+    assistant = user.model_copy(update={"id": "reject-reply", "sequence": 2, "role": "assistant", "content": "好的"})
+
+    rejected = service.process_turn("role-a", "role:role-a", user, assistant)
+
+    assert len(rejected) == 1
+    assert rejected[0].status == "rejected"
+    assert store.query("role-a", "红茶") == []
+
+
 def test_memory_maintenance_updates_recent_context_and_is_idempotent(tmp_path):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
@@ -330,6 +456,44 @@ def test_memory_maintenance_consolidates_once_and_keeps_source_window(tmp_path):
     assert history.count("<!-- source:") == 1
     assert "consolidation:" in history
     assert "第9项" in pending
+
+
+def test_memory_maintenance_writes_idempotent_journal_and_documents_endpoint(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    for index in range(10):
+        sessions.append_message(session.sessionKey, "user", f"请记住第{index}项")
+        sessions.append_message(session.sessionKey, "assistant", "收到")
+    maintenance = MemoryMaintenance(tmp_path / "roles", sessions)
+
+    maintenance.maintain(role.id, session.sessionKey)
+    maintenance.maintain(role.id, session.sessionKey)
+    journal_files = list((tmp_path / "roles" / role.id / "memory" / "journal").glob("*.md"))
+    assert len(journal_files) == 1
+    journal = journal_files[0].read_text(encoding="utf-8")
+    assert journal.count("<!-- source:") == 1
+
+    monkeypatch.setattr(main, "roles_root", tmp_path / "roles")
+    monkeypatch.setattr(main, "store", roles)
+    response = TestClient(main.app).get(f"/api/roles/{role.id}/memory-documents")
+    assert response.status_code == 200
+    payload = response.json()
+    assert {item["name"] for item in payload["documents"]} == {"SELF.md", "MEMORY.md", "HISTORY.md", "PENDING.md", "RECENT_CONTEXT.md"}
+    assert payload["journals"][0]["content"] == journal
+
+
+def test_memory_documents_reject_path_traversal(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    monkeypatch.setattr(main, "roles_root", tmp_path / "roles")
+    monkeypatch.setattr(main, "store", roles)
+
+    response = TestClient(main.app).get(f"/api/roles/{role.id}/memory-documents/../MEMORY.md")
+
+    assert response.status_code in {400, 404}
 
 
 def test_memory_worker_serially_runs_markdown_maintenance(tmp_path):
@@ -451,6 +615,89 @@ def test_memory_management_updates_forgets_and_deletes_only_current_role(tmp_pat
     assert client.get(f"/api/roles/{role.id}/memories").json()["memories"] == []
     assert client.delete(f"/api/roles/{role.id}/memories/{memory_id}").status_code == 204
     assert client.post(f"/api/roles/{other.id}/memories/{memory_id}/forget").status_code == 404
+
+
+def test_memory_api_can_reject_memory_in_current_role_only(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="甲", profile=RoleProfile(profile="设定")))
+    other = roles.create(RoleInput(name="乙", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    service = MemoryService(memory_store)
+    memory = service.remember(role.id, "喜欢红茶", "preference", stable_source_key="saved")
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", service)
+    client = TestClient(main.app)
+
+    rejected = client.post(f"/api/roles/{role.id}/memories/{memory.id}/reject")
+
+    assert rejected.status_code == 200
+    assert rejected.json()["status"] == "rejected"
+    assert client.get(f"/api/roles/{role.id}/memories").json()["memories"] == []
+    assert client.post(f"/api/roles/{other.id}/memories/{memory.id}/reject").status_code == 404
+
+
+def test_memory_management_keeps_structured_and_markdown_views_in_sync(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    service = MemoryService(memory_store)
+    memory_dir = tmp_path / "roles" / role.id / "memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    memory_path = memory_dir / "MEMORY.md"
+    memory_path.write_text("# 主人手写\n\n只保留这段手写内容。\n", encoding="utf-8")
+    monkeypatch.setattr(main, "roles_root", tmp_path / "roles")
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", service)
+    client = TestClient(main.app)
+
+    created = client.post(f"/api/roles/{role.id}/memories", json={"summary": "喜欢红茶", "memoryType": "preference"})
+    memory = created.json()
+    document = memory_path.read_text(encoding="utf-8")
+    assert "只保留这段手写内容。" in document
+    assert "喜欢红茶" in document
+
+    forgotten = client.post(f"/api/roles/{role.id}/memories/{memory['id']}/forget")
+
+    assert forgotten.status_code == 200
+    document = memory_path.read_text(encoding="utf-8")
+    assert "只保留这段手写内容。" in document
+    assert "喜欢红茶" not in document
+    assert client.get(f"/api/roles/{role.id}/memories").json()["memories"] == []
+
+
+def test_memory_management_rolls_back_when_markdown_sync_fails(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    service = MemoryService(memory_store)
+    memory = service.remember(role.id, "喜欢红茶", "preference", stable_source_key="saved")
+    memory_path = tmp_path / "roles" / role.id / "memory" / "MEMORY.md"
+    memory_path.write_text("原 Markdown\n", encoding="utf-8")
+    monkeypatch.setattr(main, "roles_root", tmp_path / "roles")
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", service)
+
+    def fail_sync(self, role_id, memories):
+        raise OSError("模拟同步失败")
+
+    monkeypatch.setattr("backend.app.memory_documents.MemoryDocuments.sync_structured_memory", fail_sync)
+    response = TestClient(main.app).post(f"/api/roles/{role.id}/memories/{memory.id}/forget")
+
+    assert response.status_code == 500
+    assert memory_store.get(role.id, memory.id).status == "active"
+    assert memory_path.read_text(encoding="utf-8") == "原 Markdown\n"
 
 
 def test_memory_api_lists_active_items_and_searches_with_all_sources(tmp_path, monkeypatch):
@@ -586,3 +833,31 @@ def test_fixed_markdown_memory_is_injected_with_recalled_memory(tmp_path, monkey
     assert "角色认识主人" in adapter.contexts[0]
     assert "主人喜欢清晨散步" in adapter.contexts[0]
     assert "最近在讨论旅行" in adapter.contexts[0]
+
+
+def test_context_block_never_exceeds_budget_and_keeps_complete_memory_items(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store)
+    first = service.remember("role-a", "第一条完整记忆", "fact", stable_source_key="one")
+    second = service.remember("role-a", "第二条完整记忆", "fact", stable_source_key="two")
+
+    context = service.context_block(
+        [first, second],
+        "[MEMORY.md]\n" + "固定内容" * 20,
+        max_chars=48,
+    )
+
+    assert len(context) <= 48
+    assert "第一条完整记忆" not in context or "- [fact] 第一条完整记忆" in context
+    assert "第二条完整记忆" not in context or "- [fact] 第二条完整记忆" in context
+    assert "- [fact] 第一条完整记忆" not in context or "- [fact] 第二条完整记忆" not in context
+
+
+def test_context_block_does_not_emit_empty_memory_heading(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store)
+    memory = service.remember("role-a", "一条很长的记忆" * 20, "fact", stable_source_key="one")
+
+    context = service.context_block([memory], "", max_chars=12)
+
+    assert context == ""
