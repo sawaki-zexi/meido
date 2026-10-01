@@ -47,8 +47,9 @@ role_locks: dict[str, asyncio.Lock] = {}
 
 
 def _role_memory_context(role_id: str) -> str:
-    memory_dir = (roles_root / role_id / "memory").resolve()
-    if memory_dir.parent != roles_root / role_id:
+    roles_root_path = roles_root.resolve()
+    memory_dir = (roles_root_path / role_id / "memory").resolve()
+    if memory_dir.parent != roles_root_path / role_id:
         return ""
     sections = []
     for filename in ("SELF.md", "MEMORY.md", "RECENT_CONTEXT.md"):

@@ -423,3 +423,31 @@ def test_recalled_memory_is_injected_only_for_related_current_role(tmp_path, mon
     response = client.post(f"/api/roles/{role.id}/messages", json={"content": "我们去海边吧"})
     assert response.status_code == 200
     assert "海边散步" in adapter.contexts[0]
+
+
+def test_fixed_markdown_memory_is_injected_with_recalled_memory(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    memory_dir = tmp_path / "roles" / role.id / "memory"
+    memory_dir.mkdir(exist_ok=True)
+    (memory_dir / "SELF.md").write_text("角色认识主人", encoding="utf-8")
+    (memory_dir / "MEMORY.md").write_text("主人喜欢清晨散步", encoding="utf-8")
+    (memory_dir / "RECENT_CONTEXT.md").write_text("最近在讨论旅行", encoding="utf-8")
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    memory_service = MemoryService(memory_store)
+    adapter = ContextAdapter()
+    monkeypatch.setattr(main, "roles_root", tmp_path / "roles")
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "session_manager", main.SessionManager(roles, sessions))
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", memory_service)
+    monkeypatch.setattr(main, "memory_worker", MemoryWorker(memory_service))
+    monkeypatch.setattr(main, "model_adapter", adapter)
+    response = TestClient(main.app).post(f"/api/roles/{role.id}/messages", json={"content": "我们去哪里旅行"})
+    assert response.status_code == 200
+    assert "角色认识主人" in adapter.contexts[0]
+    assert "主人喜欢清晨散步" in adapter.contexts[0]
+    assert "最近在讨论旅行" in adapter.contexts[0]
