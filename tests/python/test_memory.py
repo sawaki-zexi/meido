@@ -25,7 +25,7 @@ def test_memory_worker_blocks_new_tasks_during_role_deletion(tmp_path):
         sessionKey="role:role-a",
         sequence=1,
         role="user",
-        content="请记住海边",
+        content="请记住我喜欢海边",
         status="completed",
         createdAt=datetime.now(timezone.utc),
     )
@@ -49,7 +49,7 @@ def test_memory_worker_accepts_tasks_after_role_deletion_finishes(tmp_path):
         sessionKey="role:role-a",
         sequence=1,
         role="user",
-        content="请记住海边",
+        content="请记住我喜欢海边",
         status="completed",
         createdAt=datetime.now(timezone.utc),
     )
