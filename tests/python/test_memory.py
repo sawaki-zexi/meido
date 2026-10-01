@@ -1,10 +1,13 @@
 import asyncio
 from datetime import datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import main
 from backend.app.memory_service import MemoryService, MemoryWorker
+from backend.app.memory_maintenance import MemoryMaintenance
+from backend.app import memory_maintenance
 from backend.app.memory_store import MemoryStore
 from backend.app.models import Message, RoleInput, RoleProfile
 from backend.app.role_store import RoleStore
@@ -112,6 +115,125 @@ def test_memory_worker_extracts_explicit_and_implicit_memory_without_blocking(tm
     assert memories[0].summary == "喜欢乌龙茶"
     assert memories[0].sourceRef.messageIds == [user.id, assistant.id]
     assert memories[0].sourceRef.kind == "turn"
+
+
+def test_memory_maintenance_updates_recent_context_and_is_idempotent(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    user = sessions.append_message(session.sessionKey, "user", "请记住我喜欢乌龙茶")
+    assistant = sessions.append_message(session.sessionKey, "assistant", "好的")
+    maintenance = MemoryMaintenance(tmp_path / "roles", sessions)
+
+    maintenance.maintain(role.id, session.sessionKey)
+    recent_path = tmp_path / "roles" / role.id / "memory" / "RECENT_CONTEXT.md"
+    assert "喜欢乌龙茶" in recent_path.read_text(encoding="utf-8")
+    first = recent_path.read_text(encoding="utf-8")
+    maintenance.maintain(role.id, session.sessionKey)
+    assert recent_path.read_text(encoding="utf-8") == first
+
+
+def test_memory_maintenance_consolidates_once_and_keeps_source_window(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    for index in range(10):
+        sessions.append_message(session.sessionKey, "user", f"请记住第{index}项")
+        sessions.append_message(session.sessionKey, "assistant", "收到")
+    maintenance = MemoryMaintenance(tmp_path / "roles", sessions)
+    maintenance.maintain(role.id, session.sessionKey)
+    history_path = tmp_path / "roles" / role.id / "memory" / "HISTORY.md"
+    pending_path = tmp_path / "roles" / role.id / "memory" / "PENDING.md"
+    history = history_path.read_text(encoding="utf-8")
+    pending = pending_path.read_text(encoding="utf-8")
+    maintenance.maintain(role.id, session.sessionKey)
+    assert history_path.read_text(encoding="utf-8") == history
+    assert pending_path.read_text(encoding="utf-8") == pending
+    assert history.count("<!-- source:") == 1
+    assert "consolidation:" in history
+    assert "第9项" in pending
+
+
+def test_memory_worker_serially_runs_markdown_maintenance(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    user = sessions.append_message(session.sessionKey, "user", "请记住我喜欢红茶")
+    assistant = sessions.append_message(session.sessionKey, "assistant", "好的")
+    store = MemoryStore(tmp_path / "data" / "memory.db")
+    service = MemoryService(store)
+    worker = MemoryWorker(service, MemoryMaintenance(tmp_path / "roles", sessions))
+
+    async def run_worker() -> None:
+        worker.submit(role.id, session.sessionKey, user, assistant)
+        await worker.drain()
+
+    asyncio.run(run_worker())
+    assert (tmp_path / "roles" / role.id / "memory" / "RECENT_CONTEXT.md").exists()
+
+
+def test_memory_maintenance_discards_stale_snapshot(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    sessions.append_message(session.sessionKey, "user", "第一条")
+    sessions.append_message(session.sessionKey, "assistant", "回复一")
+
+    class MessageDuringPreparation(MemoryMaintenance):
+        def __init__(self, root, session_store):
+            super().__init__(root, session_store)
+            self.injected = False
+
+        def _before_commit(self):
+            if not self.injected:
+                self.injected = True
+                sessions.append_message(session.sessionKey, "user", "新消息")
+                sessions.append_message(session.sessionKey, "assistant", "回复二")
+
+    maintenance = MessageDuringPreparation(tmp_path / "roles", sessions)
+    recent_path = tmp_path / "roles" / role.id / "memory" / "RECENT_CONTEXT.md"
+    maintenance.maintain(role.id, session.sessionKey)
+    assert not recent_path.exists()
+    maintenance.maintain(role.id, session.sessionKey)
+    assert "新消息" in recent_path.read_text(encoding="utf-8")
+
+
+def test_memory_maintenance_restores_files_when_commit_fails(tmp_path, monkeypatch):
+    recent_path = tmp_path / "memory" / "RECENT_CONTEXT.md"
+    history_path = tmp_path / "memory" / "HISTORY.md"
+    cursor_path = tmp_path / "memory" / ".maintenance.json"
+    recent_path.parent.mkdir()
+    recent_path.write_text("旧近期\n", encoding="utf-8")
+    history_path.write_text("旧历史\n", encoding="utf-8")
+    cursor_path.write_text('{"lastSequence": 2}\n', encoding="utf-8")
+    original_replace = memory_maintenance.os.replace
+    replacements = 0
+
+    def fail_second_replace(source, target):
+        nonlocal replacements
+        replacements += 1
+        if replacements == 2:
+            raise OSError("simulated write failure")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(memory_maintenance.os, "replace", fail_second_replace)
+    with pytest.raises(OSError, match="simulated write failure"):
+        MemoryMaintenance._commit(
+            {recent_path: "新近期\n", history_path: "新历史\n"},
+            cursor_path,
+            {"lastSequence": 20},
+        )
+    assert recent_path.read_text(encoding="utf-8") == "旧近期\n"
+    assert history_path.read_text(encoding="utf-8") == "旧历史\n"
+    assert cursor_path.read_text(encoding="utf-8") == '{"lastSequence": 2}\n'
 
 
 def test_memory_api_is_scoped_and_manual_memory_is_recalled(tmp_path, monkeypatch):
