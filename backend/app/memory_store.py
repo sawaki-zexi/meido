@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import MemoryItem, MemorySourceRef
+from .models import MemoryItem, MemoryOrigin, MemorySourceRef
 
 
 def _now() -> str:
@@ -138,7 +138,14 @@ class MemoryStore:
                         memory_type,
                         summary,
                         json.dumps(extra_payload, ensure_ascii=False, sort_keys=True),
-                        json.dumps({**source_ref.model_dump(mode="json"), "sourceKeys": [source_ref.stableSourceKey]}, ensure_ascii=False),
+                        json.dumps(
+                            {
+                                **source_ref.model_dump(mode="json"),
+                                "sourceKeys": [source_ref.stableSourceKey],
+                                "sources": [self._origin(source_ref)],
+                            },
+                            ensure_ascii=False,
+                        ),
                         happened_at.isoformat() if happened_at else None,
                         now,
                         now,
@@ -154,6 +161,11 @@ class MemoryStore:
                 if source_ref.stableSourceKey not in source_keys:
                     source_keys.append(source_ref.stableSourceKey)
                     source_payload["sourceKeys"] = source_keys
+                    origins = source_payload.get("sources", [])
+                    if not isinstance(origins, list):
+                        origins = []
+                    origins.append(self._origin(source_ref))
+                    source_payload["sources"] = origins
                     connection.execute(
                         """
                         UPDATE memory_items
@@ -232,6 +244,10 @@ class MemoryStore:
             reinforcement=int(row["reinforcement"]),
             contentHash=str(row["content_hash"]),
         )
+
+    @staticmethod
+    def _origin(source_ref: MemoryOrigin) -> dict[str, Any]:
+        return source_ref.model_dump(mode="json")
 
     @staticmethod
     def _decode_json(value: str, fallback: Any) -> Any:

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { ModelSettings } from "./ModelSettings";
+import { MemoryOrigin, MemoryPanel } from "./MemoryPanel";
 
 type Role = { id: string; name: string; description: string; profile: { profile: string; personality: string; behaviorRules: string; responseConstraints: string; nickname: string }; createdAt: string; updatedAt: string };
 type Message = { id: string; sessionKey: string; sequence: number; role: "user" | "assistant"; content: string; status: "streaming" | "completed" | "failed"; createdAt: string };
 type Session = { sessionKey: string; roleId: string; createdAt: string; updatedAt: string };
-type View = "roles" | "chat" | "model";
+type View = "roles" | "chat" | "model" | "memories";
 const empty = { name: "", description: "", profile: "", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" };
 type Draft = typeof empty;
 const createDraftStorageKey = "meido:create-role-draft";
@@ -61,7 +62,9 @@ export function App() {
   const [messageDraft, setMessageDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const messageElements = useRef(new Map<string, HTMLElement>());
   const rolesRequestId = useRef(0);
 
   const refresh = async () => {
@@ -80,6 +83,10 @@ export function App() {
 
   useEffect(() => { void refresh().catch((cause) => setError(cause.message)); }, []);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  useEffect(() => {
+    if (view !== "chat" || !highlightedMessageId) return;
+    messageElements.current.get(highlightedMessageId)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [view, highlightedMessageId, messages]);
   useEffect(() => {
     if (!creating) return;
     try { sessionStorage.setItem(createDraftStorageKey, JSON.stringify(draft)); } catch { /* storage may be unavailable */ }
@@ -163,6 +170,37 @@ export function App() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "无法打开会话"); }
   };
 
+  const openMemoryView = (role: Role) => {
+    setError("");
+    setSelected(role);
+    setView("memories");
+  };
+
+  const openMemorySource = async (role: Role, origin: MemoryOrigin, messageId?: string) => {
+    setError("");
+    if (origin.sessionKey !== `role:${role.id}`) {
+      setError("来源会话与当前角色不匹配");
+      return;
+    }
+    try {
+      const data = await api<{ session: Session; messages: Message[] }>(`/api/roles/${encodeURIComponent(role.id)}/session`);
+      const sourceMessage = messageId
+        ? data.messages.find((message) => message.id === messageId)
+        : origin.messageRange
+          ? data.messages.find((message) => message.sequence >= origin.messageRange![0] && message.sequence <= origin.messageRange![1])
+          : undefined;
+      if (!sourceMessage) {
+        setError("来源消息当前不可访问");
+        return;
+      }
+      setSelected(role);
+      setSession(data.session);
+      setMessages(data.messages);
+      setHighlightedMessageId(sourceMessage.id);
+      setView("chat");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "无法打开来源消息"); }
+  };
+
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
     const content = messageDraft.trim();
@@ -213,12 +251,13 @@ export function App() {
   };
 
   return <main>
-    <header><h1>{view === "chat" ? selected?.name : view === "model" ? "模型设置" : "角色"}</h1><div className="header-actions">{view === "chat" && <button disabled={saving || deleting} onClick={() => setView("roles")}>返回角色</button>}{view === "model" && <button disabled={saving || deleting} onClick={() => setView("roles")}>返回角色</button>}{view !== "model" && <button disabled={saving || deleting} onClick={() => setView("model")}>模型设置</button>}{view === "roles" && <button disabled={saving || deleting} onClick={() => { setError(""); setCreating(true); setSelected(null); setDraft((current) => creating ? current : empty); setView("roles"); }}>创建角色</button>}</div></header>
+    <header><h1>{view === "chat" ? selected?.name : view === "memories" ? "角色记忆" : view === "model" ? "模型设置" : "角色"}</h1><div className="header-actions">{view === "chat" && <><button disabled={saving || deleting} onClick={() => setView("roles")}>返回角色</button>{selected && <button disabled={saving || deleting} onClick={() => openMemoryView(selected)}>查看记忆</button>}</>}{view === "model" && <button disabled={saving || deleting} onClick={() => setView("roles")}>返回角色</button>}{view !== "model" && view !== "memories" && <button disabled={saving || deleting} onClick={() => setView("model")}>模型设置</button>}{view === "roles" && <button disabled={saving || deleting} onClick={() => { setError(""); setCreating(true); setSelected(null); setDraft((current) => creating ? current : empty); setView("roles"); }}>创建角色</button>}</div></header>
     {error && <p className="error global-error">{error}</p>}
-    {view === "model" ? <ModelSettings onBack={() => setView("roles")} /> : view === "chat" && selected ? <section className="chat-panel">
+    {view === "model" ? <ModelSettings onBack={() => setView("roles")} /> : view === "memories" && selected ? <MemoryPanel roleId={selected.id} roleName={selected.name} onBack={() => setView("roles")} onOpenSource={(origin, messageId) => void openMemorySource(selected, origin, messageId)} /> : view === "chat" && selected ? <section className="chat-panel">
       <div className="chat-meta">唯一会话 · {session?.sessionKey}</div>
-      <div className="message-list">{messages.map((message) => <article className={`message ${message.role}`} key={message.id}><div className="message-heading"><strong>{message.role === "user" ? "我" : selected.name}</strong><time>{new Date(message.createdAt).toLocaleString()}</time>{message.status !== "completed" && <span className={`message-status ${message.status}`}>{message.status === "streaming" ? "生成中" : "未完成"}</span>}</div><p>{message.content || (message.status === "streaming" ? "正在回复…" : "（无内容）")}</p></article>)}{!messages.length && <p className="empty-chat">发送第一条消息开始对话。</p>}<div ref={bottomRef}/></div>
+      <div className="chat-meta"><button type="button" onClick={() => openMemoryView(selected)}>查看角色记忆</button></div>
+      <div className="message-list">{messages.map((message) => <article ref={(element) => { if (element) messageElements.current.set(message.id, element); else messageElements.current.delete(message.id); }} className={`message ${message.role} ${message.id === highlightedMessageId ? "source-highlight" : ""}`} key={message.id}><div className="message-heading"><strong>{message.role === "user" ? "我" : selected.name}</strong><time>{new Date(message.createdAt).toLocaleString()}</time>{message.status !== "completed" && <span className={`message-status ${message.status}`}>{message.status === "streaming" ? "生成中" : "未完成"}</span>}{message.id === highlightedMessageId && <span className="source-marker">记忆来源</span>}</div><p>{message.content || (message.status === "streaming" ? "正在回复…" : "（无内容）")}</p></article>)}{!messages.length && <p className="empty-chat">发送第一条消息开始对话。</p>}<div ref={bottomRef}/></div>
       <form className="composer" onSubmit={sendMessage}><textarea aria-label="消息内容" placeholder="写消息…" value={messageDraft} onChange={(event) => setMessageDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} disabled={sending} /><button type="submit" disabled={sending || !messageDraft.trim()}>{sending ? "发送中" : "发送"}</button></form>
-    </section> : <div className="layout"><aside>{roles.map((role) => <div className={`role-item ${selected?.id === role.id ? "active" : ""}`} key={role.id}><button className="role-select" onClick={() => edit(role)}><strong>{role.name}</strong><span>{role.description || "暂无简介"}</span><small>{role.id}</small></button><button className="role-open" onClick={() => void openChat(role)}>进入会话</button></div>)}{!roles.length && <p>还没有角色。</p>}</aside><section>{(creating || selected) ? <form onSubmit={save}><h2>{creating ? "创建角色" : "角色详情"}</h2><label>名称<input required disabled={!creating && !editing || saving || deleting} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })}/></label><label>简介<textarea disabled={!creating && !editing || saving || deleting} value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}/></label><label>角色设定<textarea required disabled={!creating && !editing || saving || deleting} value={draft.profile} onChange={(e) => setDraft({ ...draft, profile: e.target.value })}/></label><label>性格<textarea disabled={!creating && !editing || saving || deleting} value={draft.personality} onChange={(e) => setDraft({ ...draft, personality: e.target.value })}/></label><label>行为规则<textarea disabled={!creating && !editing || saving || deleting} value={draft.behaviorRules} onChange={(e) => setDraft({ ...draft, behaviorRules: e.target.value })}/></label><label>回复约束<textarea disabled={!creating && !editing || saving || deleting} value={draft.responseConstraints} onChange={(e) => setDraft({ ...draft, responseConstraints: e.target.value })}/></label><label>昵称<input disabled={!creating && !editing || saving || deleting} value={draft.nickname} onChange={(e) => setDraft({ ...draft, nickname: e.target.value })}/></label><div className="form-actions">{creating || editing ? <><button type="submit" disabled={saving || deleting}>{saving ? "保存中…" : "保存"}</button><button type="button" disabled={saving || deleting} onClick={cancelEditing}>取消</button></> : <><button type="button" onClick={() => setEditing(true)}>编辑</button><button type="button" disabled={deleting} onClick={() => void removeRole()}>{deleting ? "删除中…" : "删除角色"}</button></>}{selected && <button type="button" disabled={saving || deleting} onClick={() => void openChat(selected)}>进入会话</button>}</div></form> : <p>选择角色或创建新角色。</p>}</section></div>}
+    </section> : <div className="layout"><aside>{roles.map((role) => <div className={`role-item ${selected?.id === role.id ? "active" : ""}`} key={role.id}><button className="role-select" onClick={() => edit(role)}><strong>{role.name}</strong><span>{role.description || "暂无简介"}</span><small>{role.id}</small></button><button className="role-open" onClick={() => void openChat(role)}>进入会话</button></div>)}{!roles.length && <p>还没有角色。</p>}</aside><section>{(creating || selected) ? <form onSubmit={save}><h2>{creating ? "创建角色" : "角色详情"}</h2><label>名称<input required disabled={!creating && !editing || saving || deleting} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })}/></label><label>简介<textarea disabled={!creating && !editing || saving || deleting} value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}/></label><label>角色设定<textarea required disabled={!creating && !editing || saving || deleting} value={draft.profile} onChange={(e) => setDraft({ ...draft, profile: e.target.value })}/></label><label>性格<textarea disabled={!creating && !editing || saving || deleting} value={draft.personality} onChange={(e) => setDraft({ ...draft, personality: e.target.value })}/></label><label>行为规则<textarea disabled={!creating && !editing || saving || deleting} value={draft.behaviorRules} onChange={(e) => setDraft({ ...draft, behaviorRules: e.target.value })}/></label><label>回复约束<textarea disabled={!creating && !editing || saving || deleting} value={draft.responseConstraints} onChange={(e) => setDraft({ ...draft, responseConstraints: e.target.value })}/></label><label>昵称<input disabled={!creating && !editing || saving || deleting} value={draft.nickname} onChange={(e) => setDraft({ ...draft, nickname: e.target.value })}/></label><div className="form-actions">{creating || editing ? <><button type="submit" disabled={saving || deleting}>{saving ? "保存中…" : "保存"}</button><button type="button" disabled={saving || deleting} onClick={cancelEditing}>取消</button></> : <><button type="button" onClick={() => setEditing(true)}>编辑</button><button type="button" disabled={deleting} onClick={() => void removeRole()}>{deleting ? "删除中…" : "删除角色"}</button>{selected && <button type="button" onClick={() => openMemoryView(selected)}>查看记忆</button>}</>}{selected && <button type="button" disabled={saving || deleting} onClick={() => void openChat(selected)}>进入会话</button>}</div></form> : <p>选择角色或创建新角色。</p>}</section></div>}
   </main>;
 }
