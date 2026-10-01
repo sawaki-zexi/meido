@@ -17,7 +17,7 @@ from .embeddings import OpenAICompatibleEmbeddingAdapter
 from .memory_maintenance import MemoryMaintenance
 from .memory_optimizer import MemoryOptimizer, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
 from .memory_store import MemoryStore
-from .models import MemoryList, MemoryItem, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
+from .models import MemoryList, MemoryItem, MemorySourceRef, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
 from .storage import initialize_databases
@@ -116,6 +116,22 @@ def _consolidate_role_memories(
     return MemoryOptimizationResult(MemoryOptimizer._merge_records(existing, records), self_understanding[:2000])
 
 
+def _persist_consolidated_memories(role_id: str, records: list[MemoryRecord]) -> None:
+    """Mirror optimizer output into the role-scoped structured memory store."""
+    for record in records:
+        for source_key in dict.fromkeys(record.sources):
+            memory_store.add_or_reinforce(
+                role_id,
+                record.memory_type,
+                record.summary,
+                MemorySourceRef(
+                    kind="consolidation",
+                    sessionKey=f"role:{role_id}",
+                    stableSourceKey=source_key,
+                ),
+            )
+
+
 embedding_provider = OpenAICompatibleEmbeddingAdapter(_embedding_configuration)
 memory_service = MemoryService(memory_store, embedding_provider)
 memory_optimizer_worker = MemoryOptimizerWorker(
@@ -128,6 +144,7 @@ memory_optimizer_worker = MemoryOptimizerWorker(
             history,
             current_self,
         ),
+        _persist_consolidated_memories,
     )
 )
 memory_worker = MemoryWorker(
