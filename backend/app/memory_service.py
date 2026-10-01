@@ -234,7 +234,7 @@ class MemoryWorker:
         self._deleting.discard(role_id)
 
     async def _run(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> None:
-        lock = self._locks.setdefault(role_id, asyncio.Lock())
+        lock = self.optimizer.lock_for(role_id) if self.optimizer is not None else self._locks.setdefault(role_id, asyncio.Lock())
         async with lock:
             try:
                 await asyncio.to_thread(
@@ -245,7 +245,7 @@ class MemoryWorker:
                     assistant_message,
                 )
                 if self.optimizer is not None:
-                    self.optimizer.submit(role_id)
+                    await self.optimizer.run(role_id)
             except Exception as error:  # maintenance must never undo a completed turn
                 self.errors.append(f"{role_id}: {error}")
 
