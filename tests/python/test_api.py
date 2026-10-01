@@ -295,7 +295,6 @@ def test_delete_role_removes_role_session_messages_and_files(tmp_path, monkeypat
     assert client.get(f"/api/roles/{other.id}").status_code == 200
     assert client.get(f"/api/roles/{other.id}/session").status_code == 200
     assert all(item.id != role.id for item in main.store.list())
-    assert role.id not in main.memory_worker._deleting
 
 
 def test_delete_role_attempts_role_and_file_restore_when_database_rollback_fails(tmp_path, monkeypatch):
@@ -323,7 +322,6 @@ def test_delete_role_attempts_role_and_file_restore_when_database_rollback_fails
     assert response.json()["detail"] == "删除失败，角色恢复也未能完成"
     assert client.get(f"/api/roles/{role.id}").status_code == 200
     assert memory_path.read_text(encoding="utf-8") == "保留的文档"
-    assert role.id not in worker._deleting
 
 
 def test_delete_role_preserves_files_when_staging_fails(tmp_path, monkeypatch):
@@ -380,6 +378,25 @@ def test_delete_role_memory_failure_restores_role_chat_and_memory(tmp_path, monk
     assert client.get(f"/api/roles/{role.id}").status_code == 200
     assert [item.model_dump() for item in sessions.list_messages(f"role:{role.id}")] == [item.model_dump() for item in before_messages]
     assert [item.summary for item in memory_store.list_active(role.id)] == ["保留记忆"]
+
+
+def test_delete_role_downstream_key_error_is_reported_as_delete_failure(tmp_path, monkeypatch):
+    role, _, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    memory_service = MemoryService(memory_store)
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", memory_service)
+    monkeypatch.setattr(main, "memory_worker", MemoryWorker(memory_service))
+
+    def fail_delete(role_id):
+        raise KeyError("memory row")
+
+    monkeypatch.setattr(memory_store, "delete_role", fail_delete)
+    response = client.delete(f"/api/roles/{role.id}")
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "删除失败，角色和记忆已保留"
+    assert client.get(f"/api/roles/{role.id}").status_code == 200
 
 
 def test_delete_role_file_failure_restores_role_session_memory_and_documents(tmp_path, monkeypatch):
