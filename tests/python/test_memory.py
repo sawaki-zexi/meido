@@ -16,6 +16,55 @@ from backend.app.session_store import SessionStore
 from backend.app.storage import initialize_databases
 
 
+def test_memory_worker_blocks_new_tasks_during_role_deletion(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store)
+    worker = MemoryWorker(service)
+    user = Message(
+        id="user-1",
+        sessionKey="role:role-a",
+        sequence=1,
+        role="user",
+        content="请记住我喜欢海边",
+        status="completed",
+        createdAt=datetime.now(timezone.utc),
+    )
+    assistant = user.model_copy(update={"id": "assistant-1", "sequence": 2, "role": "assistant", "content": "好的"})
+
+    async def run() -> None:
+        await worker.begin_role_deletion("role-a")
+        worker.submit("role-a", "role:role-a", user, assistant)
+        await worker.drain()
+
+    asyncio.run(run())
+    assert store.list_active("role-a") == []
+
+
+def test_memory_worker_accepts_tasks_after_role_deletion_finishes(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store)
+    worker = MemoryWorker(service)
+    user = Message(
+        id="user-1",
+        sessionKey="role:role-a",
+        sequence=1,
+        role="user",
+        content="请记住我喜欢海边",
+        status="completed",
+        createdAt=datetime.now(timezone.utc),
+    )
+    assistant = user.model_copy(update={"id": "assistant-1", "sequence": 2, "role": "assistant", "content": "好的"})
+
+    async def run() -> None:
+        await worker.begin_role_deletion("role-a")
+        worker.end_role_deletion("role-a")
+        worker.submit("role-a", "role:role-a", user, assistant)
+        await worker.drain()
+
+    asyncio.run(run())
+    assert [item.summary for item in store.list_active("role-a")] == ["喜欢海边"]
+
+
 class ContextAdapter:
     def __init__(self):
         self.contexts = []
@@ -474,6 +523,8 @@ def test_delete_role_cleans_structured_memory(tmp_path, monkeypatch):
     memory_store = MemoryStore(tmp_path / "data" / "memory.db")
     memory_service = MemoryService(memory_store)
     memory_service.remember(role.id, "主人住在海边", "fact", stable_source_key="one")
+    memory_service.remember("other-role", "其他角色的记忆", "fact", stable_source_key="other")
+    (tmp_path / "roles" / role.id / "memory" / "MEMORY.md").write_text("角色记忆", encoding="utf-8")
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "memory_store", memory_store)
@@ -482,6 +533,8 @@ def test_delete_role_cleans_structured_memory(tmp_path, monkeypatch):
     response = TestClient(main.app).delete(f"/api/roles/{role.id}")
     assert response.status_code == 204
     assert memory_store.list_active(role.id) == []
+    assert [item.summary for item in memory_store.list_active("other-role")] == ["其他角色的记忆"]
+    assert not (tmp_path / "roles" / role.id / "memory").exists()
 
 
 def test_recalled_memory_is_injected_only_for_related_current_role(tmp_path, monkeypatch):

@@ -209,13 +209,29 @@ class MemoryWorker:
         self.maintenance = maintenance
         self.optimizer = optimizer
         self._locks: dict[str, asyncio.Lock] = {}
-        self._tasks: set[asyncio.Task[object]] = set()
+        self._tasks: dict[asyncio.Task[object], str] = {}
+        self._deleting: set[str] = set()
         self.errors: list[str] = []
 
     def submit(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> None:
+        if role_id in self._deleting:
+            return
         task = asyncio.create_task(self._run(role_id, session_key, user_message, assistant_message))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._tasks[task] = role_id
+        task.add_done_callback(self._forget_task)
+
+    def _forget_task(self, task: asyncio.Task[object]) -> None:
+        self._tasks.pop(task, None)
+
+    async def begin_role_deletion(self, role_id: str) -> None:
+        """Stop accepting maintenance and wait for in-flight work for a role."""
+        self._deleting.add(role_id)
+        tasks = tuple(task for task, task_role in self._tasks.items() if task_role == role_id)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def end_role_deletion(self, role_id: str) -> None:
+        self._deleting.discard(role_id)
 
     async def _run(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> None:
         lock = self.optimizer.lock_for(role_id) if self.optimizer is not None else self._locks.setdefault(role_id, asyncio.Lock())

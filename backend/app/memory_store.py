@@ -389,6 +389,32 @@ class MemoryStore:
             connection.execute("DELETE FROM memory_items WHERE role_id = ?", (role_id,))
             connection.execute("DELETE FROM semantic_memory WHERE role_id = ?", (role_id,))
 
+    def snapshot_role(self, role_id: str) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        with self._connect() as connection:
+            memory_rows = [dict(row) for row in connection.execute("SELECT * FROM memory_items WHERE role_id = ?", (role_id,))]
+            semantic_rows = [dict(row) for row in connection.execute("SELECT * FROM semantic_memory WHERE role_id = ?", (role_id,))]
+        return memory_rows, semantic_rows
+
+    def restore_role(self, role_id: str, snapshot: tuple[list[dict[str, object]], list[dict[str, object]]]) -> None:
+        memory_rows, semantic_rows = snapshot
+        with self._connect() as connection:
+            connection.execute("DELETE FROM memory_items WHERE role_id = ?", (role_id,))
+            connection.execute("DELETE FROM semantic_memory WHERE role_id = ?", (role_id,))
+            if memory_rows:
+                columns = list(memory_rows[0])
+                placeholders = ", ".join("?" for _ in columns)
+                connection.executemany(
+                    f"INSERT INTO memory_items ({', '.join(columns)}) VALUES ({placeholders})",
+                    [[row[column] for column in columns] for row in memory_rows],
+                )
+            if semantic_rows:
+                columns = list(semantic_rows[0])
+                placeholders = ", ".join("?" for _ in columns)
+                connection.executemany(
+                    f"INSERT INTO semantic_memory ({', '.join(columns)}) VALUES ({placeholders})",
+                    [[row[column] for column in columns] for row in semantic_rows],
+                )
+
     def _item(self, row: sqlite3.Row) -> MemoryItem:
         source_payload = self._decode_json(row["source_ref"], {})
         source = MemorySourceRef.model_validate(source_payload)
