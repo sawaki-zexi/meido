@@ -10,6 +10,7 @@ from .memory_store import MemoryStore
 from .models import MemoryItem, MemorySourceRef, Message
 from .embeddings import EmbeddingProvider
 from .memory_maintenance import MemoryMaintenance
+from .memory_optimizer import MemoryOptimizerWorker
 
 
 class MemoryService:
@@ -198,9 +199,15 @@ class MemoryService:
 class MemoryWorker:
     """In-process queue with one serial lane per role."""
 
-    def __init__(self, service: MemoryService, maintenance: MemoryMaintenance | None = None) -> None:
+    def __init__(
+        self,
+        service: MemoryService,
+        maintenance: MemoryMaintenance | None = None,
+        optimizer: MemoryOptimizerWorker | None = None,
+    ) -> None:
         self.service = service
         self.maintenance = maintenance
+        self.optimizer = optimizer
         self._locks: dict[str, asyncio.Lock] = {}
         self._tasks: dict[asyncio.Task[object], str] = {}
         self._deleting: set[str] = set()
@@ -237,6 +244,8 @@ class MemoryWorker:
                     user_message,
                     assistant_message,
                 )
+                if self.optimizer is not None:
+                    self.optimizer.submit(role_id)
             except Exception as error:  # maintenance must never undo a completed turn
                 self.errors.append(f"{role_id}: {error}")
 
@@ -248,3 +257,5 @@ class MemoryWorker:
     async def drain(self) -> None:
         if self._tasks:
             await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
+        if self.optimizer is not None:
+            await self.optimizer.drain()
