@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import uuid
@@ -54,6 +55,7 @@ class MemoryStore:
                     updated_at TEXT NOT NULL,
                     reinforcement INTEGER NOT NULL DEFAULT 1,
                     content_hash TEXT NOT NULL
+                    ,embedding_json TEXT
                 )
                 """
             )
@@ -67,6 +69,9 @@ class MemoryStore:
                 )
                 """
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(memory_items)")}
+            if "embedding_json" not in columns:
+                connection.execute("ALTER TABLE memory_items ADD COLUMN embedding_json TEXT")
             connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS memory_items_role_type_hash
@@ -213,6 +218,58 @@ class MemoryStore:
             return ranked[:limit]
         matching = [item for item in ranked if score(item)[0] > 0]
         return matching[:limit]
+
+    def set_embedding(self, role_id: str, item_id: str, vector: list[float]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE memory_items SET embedding_json = ? WHERE role_id = ? AND id = ? AND status = 'active'",
+                (json.dumps(vector), role_id, item_id),
+            )
+
+    def list_without_embeddings(self, role_id: str, limit: int = 32) -> list[MemoryItem]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM memory_items WHERE role_id = ? AND status = 'active' AND embedding_json IS NULL ORDER BY updated_at DESC LIMIT ?",
+                (role_id, limit),
+            ).fetchall()
+        return [self._item(row) for row in rows]
+
+    def query_hybrid(self, role_id: str, text: str, vector: list[float] | None, limit: int = 8) -> list[MemoryItem]:
+        lexical = self.query(role_id, text, limit=max(limit, 1))
+        if vector is None:
+            return lexical[:limit]
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM memory_items WHERE role_id = ? AND status = 'active' AND embedding_json IS NOT NULL",
+                (role_id,),
+            ).fetchall()
+        semantic = sorted(
+            (row for row in rows if self._cosine(vector, self._decode_json(row["embedding_json"], [])) >= 0.15),
+            key=lambda row: self._cosine(vector, self._decode_json(row["embedding_json"], [])),
+            reverse=True,
+        )
+        fused: dict[str, tuple[float, sqlite3.Row | MemoryItem]] = {}
+        lexical_ids = [item.id for item in lexical]
+        semantic_ids = [str(row["id"]) for row in semantic]
+        by_id = {str(row["id"]): row for row in semantic}
+        if len(by_id) < len(rows):
+            by_id.update({item.id: item for item in lexical if item.id not in by_id})
+        for result_ids in (lexical_ids, semantic_ids):
+            for rank, item_id in enumerate(result_ids, 1):
+                current_score, _ = fused.get(item_id, (0.0, by_id[item_id]))
+                fused[item_id] = (current_score + 1 / (60 + rank), by_id[item_id])
+        ordered = sorted(fused.values(), key=lambda entry: entry[0], reverse=True)
+        return [self._item(row) if isinstance(row, sqlite3.Row) else row for _, row in ordered[:limit]]
+
+    @staticmethod
+    def _cosine(left: list[float], right: Any) -> float:
+        if not isinstance(right, list) or len(left) != len(right) or not left:
+            return -1.0
+        left_norm = math.sqrt(sum(value * value for value in left))
+        right_norm = math.sqrt(sum(float(value) * float(value) for value in right))
+        if not left_norm or not right_norm:
+            return -1.0
+        return sum(float(a) * float(b) for a, b in zip(left, right)) / (left_norm * right_norm)
 
     def get(self, role_id: str, item_id: str) -> MemoryItem | None:
         with self._connect() as connection:
