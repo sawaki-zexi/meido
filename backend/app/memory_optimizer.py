@@ -20,16 +20,22 @@ _MANAGED_END = "<!-- meido-optimizer:end -->"
 
 
 @dataclass
-class _Record:
+class MemoryRecord:
     memory_type: str
     summary: str
     sources: list[str]
 
 
 @dataclass
-class _Optimization:
-    records: list[_Record]
+class MemoryOptimizationResult:
+    records: list[MemoryRecord]
     self_understanding: str
+
+
+# Backwards-compatible aliases for callers that used the original internal
+# names before these result types became part of the optimizer's public API.
+_Record = MemoryRecord
+_Optimization = MemoryOptimizationResult
 
 
 class MemoryOptimizer:
@@ -40,7 +46,7 @@ class MemoryOptimizer:
     def __init__(
         self,
         roles_root: str | Path,
-        consolidate: Callable[[str, list[_Record], list[_Record], str, str], _Optimization] | None = None,
+        consolidate: Callable[[str, list[MemoryRecord], list[MemoryRecord], str, str], MemoryOptimizationResult] | None = None,
     ) -> None:
         self.roles_root = Path(roles_root).resolve()
         self.consolidate = consolidate
@@ -70,7 +76,7 @@ class MemoryOptimizer:
             optimized = (
                 self.consolidate(role_id, existing_records, candidates, history_snapshot, existing_self)
                 if self.consolidate is not None
-                else _Optimization(self._merge_records(existing_records, candidates), self._fallback_self(candidates))
+                else MemoryOptimizationResult(self._merge_records(existing_records, candidates), self._fallback_self(candidates))
             )
             required_sources = {source for record in [*existing_records, *candidates] for source in record.sources}
             returned_sources = {source for record in optimized.records for source in record.sources}
@@ -107,7 +113,7 @@ class MemoryOptimizer:
         memory_text: str,
         self_text: str,
         history_text: str,
-        optimized: _Optimization,
+        optimized: MemoryOptimizationResult,
         ranges: list[tuple[int, int]],
     ) -> dict[str, str]:
         return {
@@ -117,7 +123,7 @@ class MemoryOptimizer:
         }
 
     @staticmethod
-    def _fallback_self(candidates: list[_Record]) -> str:
+    def _fallback_self(candidates: list[MemoryRecord]) -> str:
         return "；".join(record.summary for record in candidates[:8])
 
     @staticmethod
@@ -133,9 +139,9 @@ class MemoryOptimizer:
         return value if isinstance(value, dict) and isinstance(value.get("historyHash"), str) else {}
 
     @classmethod
-    def _parse_pending(cls, text: str) -> tuple[list[_Record], list[tuple[int, int]]]:
+    def _parse_pending(cls, text: str) -> tuple[list[MemoryRecord], list[tuple[int, int]]]:
         lines = text.splitlines(keepends=True)
-        records: list[_Record] = []
+        records: list[MemoryRecord] = []
         ranges: list[tuple[int, int]] = []
         index = 0
         while index < len(lines):
@@ -150,15 +156,15 @@ class MemoryOptimizer:
                 if source_match is not None:
                     source = source_match.group("source").strip()
                     end += 1
-            records.append(_Record(match.group("memory_type").strip(), match.group("summary").strip(), [source] if source else []))
+            records.append(MemoryRecord(match.group("memory_type").strip(), match.group("summary").strip(), [source] if source else []))
             ranges.append((index, end))
             index = end
         return records, ranges
 
     @staticmethod
-    def _parse_memory(text: str) -> list[_Record]:
+    def _parse_memory(text: str) -> list[MemoryRecord]:
         lines = text.splitlines()
-        records: list[_Record] = []
+        records: list[MemoryRecord] = []
         for index, line in enumerate(lines):
             match = _MEMORY_LINE.match(line)
             if match is None:
@@ -168,7 +174,7 @@ class MemoryOptimizer:
                 source_match = _SOURCE_LINE.match(lines[index + 1])
                 if source_match is not None:
                     sources.extend(source.strip() for source in source_match.group("source").split(",") if source.strip())
-            records.append(_Record(match.group("memory_type").strip(), match.group("summary").strip(), sources))
+            records.append(MemoryRecord(match.group("memory_type").strip(), match.group("summary").strip(), sources))
         return records
 
     @staticmethod
@@ -176,7 +182,7 @@ class MemoryOptimizer:
         return re.sub(r"[^\w\u4e00-\u9fff]+", "", value.casefold())
 
     @classmethod
-    def _same_record(cls, left: _Record, right: _Record) -> bool:
+    def _same_record(cls, left: MemoryRecord, right: MemoryRecord) -> bool:
         if left.memory_type != right.memory_type:
             return False
         left_key = cls._canonical(left.summary)
@@ -186,12 +192,12 @@ class MemoryOptimizer:
         return difflib.SequenceMatcher(None, left_key, right_key).ratio() >= 0.88
 
     @classmethod
-    def _merge_records(cls, existing: list[_Record], candidates: list[_Record]) -> list[_Record]:
-        merged = [_Record(item.memory_type, item.summary, list(item.sources)) for item in existing]
+    def _merge_records(cls, existing: list[MemoryRecord], candidates: list[MemoryRecord]) -> list[MemoryRecord]:
+        merged = [MemoryRecord(item.memory_type, item.summary, list(item.sources)) for item in existing]
         for candidate in candidates:
             match = next((item for item in merged if cls._same_record(item, candidate)), None)
             if match is None:
-                merged.append(_Record(candidate.memory_type, candidate.summary, list(candidate.sources)))
+                merged.append(MemoryRecord(candidate.memory_type, candidate.summary, list(candidate.sources)))
                 continue
             for source in candidate.sources:
                 if source and source not in match.sources:
@@ -201,7 +207,7 @@ class MemoryOptimizer:
         return merged
 
     @classmethod
-    def _render_memory(cls, original: str, records: list[_Record]) -> str:
+    def _render_memory(cls, original: str, records: list[MemoryRecord]) -> str:
         prefix, suffix = cls._managed_parts(original)
         if not prefix.strip():
             prefix = "# 长期记忆"
@@ -217,7 +223,7 @@ class MemoryOptimizer:
         return result
 
     @classmethod
-    def _render_self(cls, original: str, records: list[_Record], history: str, self_understanding: str) -> str:
+    def _render_self(cls, original: str, records: list[MemoryRecord], history: str, self_understanding: str) -> str:
         prefix, suffix = cls._managed_parts(original)
         if not prefix.strip():
             prefix = "# 角色自我认识"
@@ -296,16 +302,23 @@ class MemoryOptimizerWorker:
         self._tasks: set[asyncio.Task[object]] = set()
         self.errors: list[str] = []
 
+    def lock_for(self, role_id: str) -> asyncio.Lock:
+        """Return the lock shared with the post-response worker for this role."""
+        return self._locks.setdefault(role_id, asyncio.Lock())
+
     def submit(self, role_id: str) -> None:
         task = asyncio.create_task(self._run(role_id))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
+    async def run(self, role_id: str) -> None:
+        """Run inside MemoryWorker's per-role lane after Markdown maintenance."""
+        await asyncio.to_thread(self.optimizer.optimize, role_id)
+
     async def _run(self, role_id: str) -> None:
         try:
-            lock = self._locks.setdefault(role_id, asyncio.Lock())
-            async with lock:
-                await asyncio.to_thread(self.optimizer.optimize, role_id)
+            async with self.lock_for(role_id):
+                await self.run(role_id)
         except Exception as error:
             self.errors.append(f"{role_id}: {error}")
 

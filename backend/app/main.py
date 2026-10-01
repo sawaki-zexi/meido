@@ -15,7 +15,7 @@ from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_conf
 from .memory_service import MemoryService, MemoryWorker
 from .embeddings import OpenAICompatibleEmbeddingAdapter
 from .memory_maintenance import MemoryMaintenance
-from .memory_optimizer import MemoryOptimizer, MemoryOptimizerWorker, _Optimization, _Record
+from .memory_optimizer import MemoryOptimizer, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
 from .memory_store import MemoryStore
 from .models import MemoryList, MemoryItem, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
@@ -42,11 +42,11 @@ def _embedding_configuration(role_id: str):
 
 def _consolidate_role_memories(
     role_id: str,
-    existing: list[_Record],
-    pending: list[_Record],
+    existing: list[MemoryRecord],
+    pending: list[MemoryRecord],
     history: str,
     current_self: str,
-) -> _Optimization:
+) -> MemoryOptimizationResult:
     role = store.get(role_id)
     if role is None:
         raise ValueError("角色不存在")
@@ -98,7 +98,7 @@ def _consolidate_role_memories(
     if not isinstance(result, dict) or not isinstance(result.get("memories"), list):
         raise ValueError("Optimizer 返回的记忆格式无效")
     allowed_sources = {source for item in [*existing, *pending] for source in item.sources}
-    records: list[_Record] = []
+    records: list[MemoryRecord] = []
     for item in result["memories"]:
         if not isinstance(item, dict):
             raise ValueError("Optimizer 返回的记忆条目格式无效")
@@ -109,11 +109,11 @@ def _consolidate_role_memories(
             raise ValueError("Optimizer 返回的记忆条目缺少必要字段")
         if any(not isinstance(source, str) or source not in allowed_sources for source in sources):
             raise ValueError("Optimizer 返回了无效的记忆来源")
-        records.append(_Record(memory_type.strip(), summary.strip(), list(dict.fromkeys(sources))))
+        records.append(MemoryRecord(memory_type.strip(), summary.strip(), list(dict.fromkeys(sources))))
     self_understanding = result.get("selfUnderstanding")
     if not isinstance(self_understanding, str):
         raise ValueError("Optimizer 返回的自我认识格式无效")
-    return _Optimization(MemoryOptimizer._merge_records(existing, records), self_understanding[:2000])
+    return MemoryOptimizationResult(MemoryOptimizer._merge_records(existing, records), self_understanding[:2000])
 
 
 embedding_provider = OpenAICompatibleEmbeddingAdapter(_embedding_configuration)
