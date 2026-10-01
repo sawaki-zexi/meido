@@ -189,6 +189,11 @@ class MemoryService:
             add("procedure", procedure.group(1))
         return results
 
+    @staticmethod
+    def extract_candidates(content: str) -> list[tuple[str, str, str | None]]:
+        """Compatibility entry point used by Markdown memory maintenance."""
+        return MemoryService._extract(content)
+
 
 class MemoryWorker:
     """In-process queue with one serial lane per role."""
