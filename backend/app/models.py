@@ -120,13 +120,17 @@ class SendMessageInput(BaseModel):
         return value
 
 
-class MemorySourceRef(BaseModel):
+class MemoryOrigin(BaseModel):
     kind: str
     sessionKey: str
     messageIds: list[str] = Field(default_factory=list)
     messageRange: tuple[int, int] | None = None
     stableSourceKey: str
+
+
+class MemorySourceRef(MemoryOrigin):
     sourceKeys: list[str] = Field(default_factory=list)
+    sources: list[MemoryOrigin] = Field(default_factory=list)
 
 
 class MemoryItem(BaseModel):

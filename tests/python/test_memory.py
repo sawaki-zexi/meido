@@ -75,6 +75,21 @@ def test_same_source_with_changed_extraction_is_idempotent(tmp_path):
     assert store.get("role-a", first.id).sourceRef.sourceKeys == ["turn-1"]
 
 
+def test_matching_memory_keeps_each_source_for_traceability(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store)
+    first = service.remember(
+        "role-a", "主人喜欢海边散步", "preference", session_key="role:role-a",
+        message_ids=["message-1"], stable_source_key="turn-1",
+    )
+    reinforced = service.remember(
+        "role-a", "主人喜欢海边散步", "preference", session_key="role:role-a",
+        message_ids=["message-8"], stable_source_key="turn-2",
+    )
+    assert reinforced.id == first.id
+    assert [source.messageIds for source in reinforced.sourceRef.sources] == [["message-1"], ["message-8"]]
+
+
 def test_memory_worker_extracts_explicit_and_implicit_memory_without_blocking(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     service = MemoryService(store)
@@ -116,6 +131,61 @@ def test_memory_api_is_scoped_and_manual_memory_is_recalled(tmp_path, monkeypatc
     assert created.status_code == 201
     assert client.get(f"/api/roles/{first.id}/memories", params={"q": "海边"}).json()["memories"][0]["summary"] == "主人住在海边"
     assert client.get(f"/api/roles/{second.id}/memories", params={"q": "海边"}).json()["memories"] == []
+
+
+def test_memory_api_lists_active_items_and_searches_with_all_sources(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    service = MemoryService(memory_store)
+    service.remember(role.id, "喜欢海边散步", "preference", message_ids=["msg-a"], stable_source_key="source-a")
+    service.remember(role.id, "喜欢海边散步", "preference", message_ids=["msg-b"], stable_source_key="source-b")
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", service)
+    client = TestClient(main.app)
+
+    response = client.get(f"/api/roles/{role.id}/memories", params={"q": "海边"})
+    memories = response.json()["memories"]
+    assert response.status_code == 200
+    assert len(memories) == 1
+    assert memories[0]["status"] == "active"
+    assert [origin["messageIds"] for origin in memories[0]["sourceRef"]["sources"]] == [["msg-a"], ["msg-b"]]
+
+
+def test_memory_api_hides_inactive_items_and_other_role_sources(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="甲", profile=RoleProfile(profile="设定")))
+    other_role = roles.create(RoleInput(name="乙", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    service = MemoryService(memory_store)
+    active = service.remember(role.id, "主人喜欢海边", "preference", message_ids=["private-msg"], stable_source_key="active")
+    superseded = service.remember(role.id, "主人住在海边", "fact", stable_source_key="superseded")
+    forgotten = service.remember(role.id, "主人常去海边", "fact", stable_source_key="forgotten")
+    service.remember(other_role.id, "主人喜欢海边", "preference", message_ids=["other-role-msg"], stable_source_key="other")
+    with memory_store._connect() as connection:
+        connection.execute("UPDATE memory_items SET status = 'superseded' WHERE id = ?", (superseded.id,))
+        connection.execute("UPDATE memory_items SET status = 'forgotten' WHERE id = ?", (forgotten.id,))
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", service)
+    client = TestClient(main.app)
+
+    visible = client.get(f"/api/roles/{role.id}/memories").json()["memories"]
+    search = client.get(f"/api/roles/{role.id}/memories", params={"q": "海边"}).json()["memories"]
+    other_role_search = client.get(f"/api/roles/{other_role.id}/memories", params={"q": "private-msg"}).json()["memories"]
+    no_results = client.get(f"/api/roles/{role.id}/memories", params={"q": "不存在的词"}).json()["memories"]
+
+    assert [item["id"] for item in visible] == [active.id]
+    assert [item["sourceRef"]["sources"][0]["messageIds"] for item in search] == [["private-msg"]]
+    assert all("private-msg" not in str(item["sourceRef"]) for item in other_role_search)
+    assert no_results == []
 
 
 def test_empty_recall_does_not_inject_all_memories(tmp_path):
