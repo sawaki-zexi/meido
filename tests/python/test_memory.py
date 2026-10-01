@@ -440,6 +440,8 @@ def test_delete_role_cleans_structured_memory(tmp_path, monkeypatch):
     memory_store = MemoryStore(tmp_path / "data" / "memory.db")
     memory_service = MemoryService(memory_store)
     memory_service.remember(role.id, "主人住在海边", "fact", stable_source_key="one")
+    memory_service.remember("other-role", "其他角色的记忆", "fact", stable_source_key="other")
+    (tmp_path / "roles" / role.id / "memory" / "MEMORY.md").write_text("角色记忆", encoding="utf-8")
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "memory_store", memory_store)
@@ -448,6 +450,8 @@ def test_delete_role_cleans_structured_memory(tmp_path, monkeypatch):
     response = TestClient(main.app).delete(f"/api/roles/{role.id}")
     assert response.status_code == 204
     assert memory_store.list_active(role.id) == []
+    assert [item.summary for item in memory_store.list_active("other-role")] == ["其他角色的记忆"]
+    assert not (tmp_path / "roles" / role.id / "memory").exists()
 
 
 def test_recalled_memory_is_injected_only_for_related_current_role(tmp_path, monkeypatch):
