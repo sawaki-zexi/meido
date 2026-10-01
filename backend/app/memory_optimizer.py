@@ -121,7 +121,7 @@ class MemoryOptimizer:
                 ) + "\n",
             }
             previous = {path: self._read_text(path) if path.exists() else None for path in writes}
-            self._commit(writes)
+            self.commit_documents(writes)
             if self._read_text(pending_path) != documents["pending"] or self._read_text(history_path) != history_snapshot:
                 self._restore_documents(previous)
                 continue
@@ -148,7 +148,7 @@ class MemoryOptimizer:
         ranges: list[tuple[int, int]],
     ) -> dict[str, str]:
         return {
-            "memory": self._render_memory(memory_text, optimized.records),
+            "memory": self.render_managed_memory(memory_text, optimized.records),
             "self": self._render_self(self_text, optimized.records, history_text, optimized.self_understanding),
             "pending": self._remove_ranges(pending_text, ranges),
         }
@@ -192,7 +192,7 @@ class MemoryOptimizer:
 
     @staticmethod
     def _write_state(path: Path, state: dict[str, object]) -> None:
-        MemoryOptimizer._commit({path: json.dumps(state, ensure_ascii=False, indent=2) + "\n"})
+        MemoryOptimizer.commit_documents({path: json.dumps(state, ensure_ascii=False, indent=2) + "\n"})
 
     @classmethod
     def _parse_pending(cls, text: str) -> tuple[list[MemoryRecord], list[tuple[int, int]]]:
@@ -263,7 +263,7 @@ class MemoryOptimizer:
         return merged
 
     @classmethod
-    def _render_memory(cls, original: str, records: list[MemoryRecord]) -> str:
+    def render_managed_memory(cls, original: str, records: list[MemoryRecord]) -> str:
         prefix, suffix = cls._managed_parts(original)
         if not prefix.strip():
             prefix = "# 长期记忆"
@@ -324,7 +324,7 @@ class MemoryOptimizer:
         return result if result.strip() else ""
 
     @staticmethod
-    def _commit(writes: dict[Path, str]) -> None:
+    def commit_documents(writes: dict[Path, str]) -> None:
         previous: dict[Path, str | None] = {}
         staged: dict[Path, Path] = {}
         try:
@@ -359,7 +359,7 @@ class MemoryOptimizer:
             if content is None:
                 path.unlink(missing_ok=True)
         if writes:
-            cls._commit(writes)
+            cls.commit_documents(writes)
 
 
 class MemoryOptimizerWorker:
@@ -386,6 +386,23 @@ class MemoryOptimizerWorker:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return True
+
+    def resume_pending(self) -> int:
+        """Schedule role documents with durable candidate content for startup recovery."""
+        if self.closed or not self.optimizer.roles_root.exists():
+            return 0
+        scheduled = 0
+        for role_root in self.optimizer.roles_root.iterdir():
+            pending = role_root / "memory" / "PENDING.md"
+            if role_root.is_dir() and pending.is_file():
+                try:
+                    has_content = bool(pending.read_text(encoding="utf-8").strip())
+                except OSError as error:
+                    self.errors.append(f"{role_root.name}: 读取待整理记忆失败：{error}")
+                    continue
+                if has_content and self.submit(role_root.name):
+                    scheduled += 1
+        return scheduled
 
     async def run(self, role_id: str) -> None:
         """Run inside MemoryWorker's per-role lane after Markdown maintenance."""

@@ -90,18 +90,21 @@ class MemoryMaintenance:
         return path.read_text(encoding="utf-8") if path.exists() else ""
 
     def _recent_context(self, messages: list[Message]) -> str:
+        heading = "# 近期对话\n\n"
         selected: list[str] = []
         length = 0
         for message in reversed(messages[-self.RECENT_MESSAGE_LIMIT :]):
             line = f"- [{message.role}] {message.content.strip()}"
             if not message.content.strip():
                 continue
-            if length + len(line) + 1 > self.RECENT_CHAR_LIMIT:
+            candidate_count = len(selected) + 1
+            candidate_length = length + len(line) + (1 if selected else 0)
+            if len(heading) + candidate_length + max(0, candidate_count - 1) + 1 > self.RECENT_CHAR_LIMIT:
                 break
             selected.append(line)
-            length += len(line) + 1
+            length = candidate_length
         selected.reverse()
-        return "# 近期对话\n\n" + "\n".join(selected) + ("\n" if selected else "")
+        return heading + "\n".join(selected) + ("\n" if selected else "")
 
     @staticmethod
     def _window(messages: list[Message], after_sequence: int) -> list[Message]:
