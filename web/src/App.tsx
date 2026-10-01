@@ -148,6 +148,8 @@ export function App() {
     setDeleting(true);
     try {
       await api<void>(`/api/roles/${encodeURIComponent(selected.id)}`, { method: "DELETE" });
+      // A list request started before this delete must not resurrect the role.
+      rolesRequestId.current += 1;
       setRoles((current) => current.filter((role) => role.id !== selected.id));
       setSelected(null);
       setDraft(empty);
