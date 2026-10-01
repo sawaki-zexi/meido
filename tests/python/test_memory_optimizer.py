@@ -286,6 +286,20 @@ def test_optimizer_worker_close_rejects_new_jobs(tmp_path):
     asyncio.run(run())
 
 
+def test_optimizer_worker_resumes_pending_candidates_on_startup(tmp_path):
+    memory_dir = tmp_path / "roles" / "role-a" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "PENDING.md").write_text(_candidate("fact", "待恢复的记忆", "source-a"), encoding="utf-8")
+    worker = MemoryOptimizerWorker(MemoryOptimizer(tmp_path / "roles"))
+
+    async def run() -> None:
+        assert worker.resume_pending() == 1
+        await worker.drain()
+
+    asyncio.run(run())
+    assert "待恢复的记忆" in (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
+
+
 def test_memory_worker_schedules_optimizer_after_turn_maintenance(tmp_path):
     roles_root = tmp_path / "roles"
     memory_dir = roles_root / "role-a" / "memory"

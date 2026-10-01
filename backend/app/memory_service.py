@@ -327,7 +327,7 @@ class MemoryWorker:
         if self.maintenance is not None:
             self.maintenance.maintain(role_id, session_key)
             if any(item.status in {"forgotten", "rejected"} for item in changed):
-                self.maintenance.sync_structured_memory(role_id, self.service.store.list_active(role_id))
+                self.maintenance.sync_structured_memory(role_id, self.service.store.list_all(role_id))
 
     async def drain(self) -> None:
         if self._tasks:

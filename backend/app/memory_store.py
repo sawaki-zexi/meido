@@ -399,7 +399,7 @@ class MemoryStore:
             if row is None:
                 raise KeyError(item_id)
             connection.execute(
-                "UPDATE memory_items SET summary = ?, memory_type = ?, happened_at = ?, content_hash = ?, updated_at = ? WHERE role_id = ? AND id = ?",
+                "UPDATE memory_items SET summary = ?, memory_type = ?, happened_at = ?, content_hash = ?, embedding_json = NULL, updated_at = ? WHERE role_id = ? AND id = ?",
                 (summary, memory_type, happened_at.isoformat() if happened_at else None, content_hash(summary), _now(), role_id, item_id),
             )
             row = connection.execute("SELECT * FROM memory_items WHERE id = ?", (item_id,)).fetchone()

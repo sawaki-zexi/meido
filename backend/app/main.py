@@ -18,7 +18,6 @@ from .memory_maintenance import MemoryMaintenance
 from .memory_optimizer import MemoryOptimizer, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
 from .memory_store import MemoryStore
 from .memory_documents import MemoryDocuments
-from .memory_optimizer import MemoryOptimizer
 from .models import MemoryList, MemoryItem, MemorySourceRef, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
@@ -127,7 +126,6 @@ def _persist_consolidated_memories(role_id: str, records: list[MemoryRecord]) ->
     ]
     for item in memory_store.consolidate_batch(role_id, writes):
         memory_service._index_embedding(role_id, item)
-    MemoryDocuments(roles_root).sync_structured_memory(role_id, memory_store.list_active(role_id))
 
 
 def _consolidation_source_ref(role_id: str, source_key: str) -> MemorySourceRef:
@@ -184,15 +182,21 @@ async def _mutate_and_sync_memory(role_id: str, operation):
 def _mutate_and_sync_memory_locked(role_id: str, operation):
     snapshot = memory_store.snapshot_role(role_id)
     documents = MemoryDocuments(roles_root)
-    memory_path = documents.memory_dir(role_id) / "MEMORY.md"
-    previous_document = memory_path.read_text(encoding="utf-8") if memory_path.exists() else None
+    memory_dir = documents.memory_dir(role_id)
+    document_paths = (memory_dir / "MEMORY.md", memory_dir / "PENDING.md")
+    previous_documents = {
+        path: path.read_text(encoding="utf-8") if path.exists() else None
+        for path in document_paths
+    }
     def restore(error: Exception) -> None:
         try:
             memory_store.restore_role(role_id, snapshot)
-            if previous_document is None:
-                memory_path.unlink(missing_ok=True)
-            else:
-                MemoryOptimizer._commit({memory_path: previous_document})
+            writes = {path: content for path, content in previous_documents.items() if content is not None}
+            for path, content in previous_documents.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+            if writes:
+                MemoryOptimizer.commit_documents(writes)
         except Exception as restore_error:
             raise HTTPException(status_code=500, detail=f"记忆同步失败，且回滚失败：{restore_error}") from error
 
@@ -202,7 +206,7 @@ def _mutate_and_sync_memory_locked(role_id: str, operation):
         restore(error)
         raise
     try:
-        documents.sync_structured_memory(role_id, memory_store.list_active(role_id))
+        documents.sync_structured_memory(role_id, memory_store.list_all(role_id))
     except Exception as error:
         restore(error)
         raise HTTPException(status_code=500, detail=f"记忆同步失败，原记忆已恢复：{error}") from error
@@ -230,8 +234,9 @@ async def _close_memory_workers() -> None:
     await memory_optimizer_worker.drain()
 
 
-def _start_memory_workers() -> None:
+async def _start_memory_workers() -> None:
     memory_worker.start()
+    memory_optimizer_worker.resume_pending()
 
 
 app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown=[_close_memory_workers])

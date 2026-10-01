@@ -396,6 +396,24 @@ def test_worker_forgetting_turn_removes_memory_markdown_view(tmp_path):
     assert "喜欢红茶" not in (tmp_path / "roles" / role.id / "memory" / "MEMORY.md").read_text(encoding="utf-8")
 
 
+def test_rejected_unstructured_candidate_is_removed_from_pending_markdown(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    store = MemoryStore(tmp_path / "data" / "memory.db")
+    service = MemoryService(store)
+    documents = MemoryMaintenance(tmp_path / "roles", SessionStore(tmp_path / "data" / "sessions.db"))
+    memory_dir = tmp_path / "roles" / role.id / "memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    (memory_dir / "PENDING.md").write_text("- [preference] 喜欢红茶（来源：消息 1）\n  <!-- source: consolidation-key:message-1:preference -->\n", encoding="utf-8")
+    source = MemorySourceRef(kind="turn", sessionKey=f"role:{role.id}", messageIds=["reject-1"], stableSourceKey="reject-turn")
+
+    service.reject_matching(role.id, "喜欢红茶", source)
+    documents.sync_structured_memory(role.id, store.list_all(role.id))
+
+    assert "喜欢红茶" not in (memory_dir / "PENDING.md").read_text(encoding="utf-8")
+
+
 def test_turn_rejection_is_persisted_without_becoming_recallable(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     service = MemoryService(store)
@@ -433,6 +451,24 @@ def test_memory_maintenance_updates_recent_context_and_is_idempotent(tmp_path):
     first = recent_path.read_text(encoding="utf-8")
     maintenance.maintain(role.id, session.sessionKey)
     assert recent_path.read_text(encoding="utf-8") == first
+
+
+def test_recent_context_respects_its_total_document_budget(tmp_path):
+    maintenance = MemoryMaintenance(tmp_path / "roles", SessionStore.__new__(SessionStore))
+    messages = [
+        Message(
+            id=f"m{index}",
+            sessionKey="role:role-a",
+            sequence=index,
+            role="user",
+            content="近期内容" * 500,
+            status="completed",
+            createdAt=datetime.now(timezone.utc),
+        )
+        for index in range(1, 4)
+    ]
+
+    assert len(maintenance._recent_context(messages)) <= maintenance.RECENT_CHAR_LIMIT
 
 
 def test_memory_maintenance_consolidates_once_and_keeps_source_window(tmp_path):
@@ -651,6 +687,9 @@ def test_memory_management_keeps_structured_and_markdown_views_in_sync(tmp_path,
     memory_dir.mkdir(parents=True, exist_ok=True)
     memory_path = memory_dir / "MEMORY.md"
     memory_path.write_text("# 主人手写\n\n只保留这段手写内容。\n", encoding="utf-8")
+    pending_path = memory_dir / "PENDING.md"
+    pending_path.write_text("- [preference] 喜欢红茶（来源：消息 1）\n  <!-- source: pending-source:message-1:preference -->\n", encoding="utf-8")
+    service.remember(role.id, "喜欢红茶", "preference", stable_source_key="pending-source")
     monkeypatch.setattr(main, "roles_root", tmp_path / "roles")
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
@@ -670,6 +709,7 @@ def test_memory_management_keeps_structured_and_markdown_views_in_sync(tmp_path,
     document = memory_path.read_text(encoding="utf-8")
     assert "只保留这段手写内容。" in document
     assert "喜欢红茶" not in document
+    assert "喜欢红茶" not in pending_path.read_text(encoding="utf-8")
     assert client.get(f"/api/roles/{role.id}/memories").json()["memories"] == []
 
 
@@ -698,6 +738,22 @@ def test_memory_management_rolls_back_when_markdown_sync_fails(tmp_path, monkeyp
     assert response.status_code == 500
     assert memory_store.get(role.id, memory.id).status == "active"
     assert memory_path.read_text(encoding="utf-8") == "原 Markdown\n"
+
+
+def test_editing_memory_rebuilds_its_embedding_for_the_new_summary(tmp_path):
+    provider = FakeEmbeddingProvider({
+        ("role-a", "旧摘要"): [1.0, 0.0],
+        ("role-a", "新摘要"): [0.0, 1.0],
+        ("role-a", "旧内容查询"): [1.0, 0.0],
+    })
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store, provider)
+    memory = service.remember("role-a", "旧摘要", "fact", stable_source_key="source")
+
+    store.update("role-a", memory.id, "新摘要", "fact", None)
+
+    assert service.recall("role-a", "旧内容查询") == []
+    assert store.get("role-a", memory.id).summary == "新摘要"
 
 
 def test_memory_api_lists_active_items_and_searches_with_all_sources(tmp_path, monkeypatch):

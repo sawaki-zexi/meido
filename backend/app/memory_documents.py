@@ -67,14 +67,52 @@ class MemoryDocuments:
         memory_dir.mkdir(parents=True, exist_ok=True)
         path = memory_dir / "MEMORY.md"
         original = path.read_text(encoding="utf-8") if path.exists() else ""
+        pending_path = memory_dir / "PENDING.md"
+        pending_original = pending_path.read_text(encoding="utf-8") if pending_path.exists() else ""
         records = [
             MemoryRecord(
                 memory_type=item.memoryType,
                 summary=item.summary,
                 sources=list(dict.fromkeys(item.sourceRef.sourceKeys or [item.sourceRef.stableSourceKey])),
             )
-            for item in memories
+            for item in memories if item.status == "active"
         ]
-        updated = MemoryOptimizer._render_memory(original, records)
-        MemoryOptimizer._commit({path: updated})
+        updated = MemoryOptimizer.render_managed_memory(original, records)
+        excluded = [item for item in memories if item.status in {"forgotten", "rejected"}]
+        pending_updated = self._remove_rejected_candidates(pending_original, excluded)
+        writes = {path: updated}
+        if pending_updated != pending_original:
+            writes[pending_path] = pending_updated
+        MemoryOptimizer.commit_documents(writes)
         return path
+
+    @staticmethod
+    def _remove_rejected_candidates(text: str, excluded: list[MemoryItem]) -> str:
+        if not text or not excluded:
+            return text
+        sources = {
+            source
+            for item in excluded
+            for source in (item.sourceRef.sourceKeys or [item.sourceRef.stableSourceKey])
+        }
+        summaries = {" ".join(item.summary.casefold().split()) for item in excluded}
+        lines = text.splitlines(keepends=True)
+        kept: list[str] = []
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            if line.lstrip().startswith("- [") and index + 1 < len(lines):
+                source_line = lines[index + 1].strip()
+                match = re.fullmatch(r"<!-- source: ([^>]+) -->", source_line)
+                if match:
+                    candidate_sources = match.group(1).split(",")
+                    candidate = re.match(r"- \[[^\]]+\] (.+?)(?:[（(]来源：.*[）)])?\s*$", line.strip())
+                    candidate_summary = " ".join(candidate.group(1).casefold().split()) if candidate else ""
+                    source_match = any(source == key or source.startswith(key + ":") for source in candidate_sources for key in sources)
+                    summary_match = candidate_summary in summaries
+                    if source_match or summary_match:
+                        index += 2
+                        continue
+            kept.append(line)
+            index += 1
+        return "".join(kept)
