@@ -75,6 +75,39 @@ class SessionStore:
             connection.execute("DELETE FROM messages WHERE session_key = ?", (session_key,))
             connection.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
 
+    def snapshot_role_session(self, role_id: str) -> tuple[tuple[object, ...] | None, list[tuple[object, ...]]]:
+        session_key = f"role:{role_id}"
+        with sqlite3.connect(self.database_path) as connection:
+            session = connection.execute(
+                "SELECT session_key, role_id, created_at, updated_at FROM sessions WHERE session_key = ?",
+                (session_key,),
+            ).fetchone()
+            messages = connection.execute(
+                "SELECT message_id, session_key, sequence, role, content, status, created_at FROM messages WHERE session_key = ?",
+                (session_key,),
+            ).fetchall()
+        return session, messages
+
+    def restore_role_session(
+        self,
+        role_id: str,
+        snapshot: tuple[tuple[object, ...] | None, list[tuple[object, ...]]],
+    ) -> None:
+        session, messages = snapshot
+        session_key = f"role:{role_id}"
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("DELETE FROM messages WHERE session_key = ?", (session_key,))
+            connection.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
+            if session is not None:
+                connection.execute(
+                    "INSERT INTO sessions (session_key, role_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                    session,
+                )
+            connection.executemany(
+                "INSERT INTO messages (message_id, session_key, sequence, role, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                messages,
+            )
+
     def _session(self, row: tuple[object, ...]) -> SessionSummary:
         return SessionSummary(sessionKey=str(row[0]), roleId=str(row[1]), createdAt=datetime.fromisoformat(str(row[2])), updatedAt=datetime.fromisoformat(str(row[3])))
 

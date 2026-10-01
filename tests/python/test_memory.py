@@ -16,6 +16,30 @@ from backend.app.session_store import SessionStore
 from backend.app.storage import initialize_databases
 
 
+def test_memory_worker_blocks_new_tasks_during_role_deletion(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store)
+    worker = MemoryWorker(service)
+    user = Message(
+        id="user-1",
+        sessionKey="role:role-a",
+        sequence=1,
+        role="user",
+        content="请记住海边",
+        status="completed",
+        createdAt=datetime.now(timezone.utc),
+    )
+    assistant = user.model_copy(update={"id": "assistant-1", "sequence": 2, "role": "assistant", "content": "好的"})
+
+    async def run() -> None:
+        await worker.begin_role_deletion("role-a")
+        worker.submit("role-a", "role:role-a", user, assistant)
+        await worker.drain()
+
+    asyncio.run(run())
+    assert store.list_active("role-a") == []
+
+
 class ContextAdapter:
     def __init__(self):
         self.contexts = []

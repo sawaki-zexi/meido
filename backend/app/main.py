@@ -285,30 +285,40 @@ async def delete_role(role_id: str) -> None:
         raise HTTPException(status_code=409, detail="该角色正在生成回复，暂时无法删除")
 
     await lock.acquire()
+    deletion_started = False
+    deleted = None
+    staged_path = None
+    deletion_phase = "preflight"
     try:
+        await memory_worker.begin_role_deletion(role_id)
+        deletion_started = True
+        session_snapshot = session_store.snapshot_role_session(role_id)
+        memory_snapshot = memory_store.snapshot_role(role_id)
         deleted = store.delete(role_id)
-        try:
-            session_store.delete_role_session(role_id)
-        except Exception as error:
-            try:
-                store.restore_deleted(deleted)
-            except OSError as restore_error:
-                raise HTTPException(status_code=500, detail="删除失败，角色恢复也未能完成") from restore_error
-            raise HTTPException(status_code=500, detail="删除失败，角色和聊天记录已保留") from error
-        try:
-            memory_store.delete_role(role_id)
-        except Exception as error:
-            try:
-                store.restore_deleted(deleted)
-            except OSError as restore_error:
-                raise HTTPException(status_code=500, detail="删除失败，角色恢复也未能完成") from restore_error
-            raise HTTPException(status_code=500, detail="删除失败，角色和记忆已保留") from error
-        store.remove_role_files(role_id)
+        staged_path = store.stage_role_files_for_deletion(role_id)
+        deletion_phase = "session"
+        session_store.delete_role_session(role_id)
+        deletion_phase = "memory"
+        memory_store.delete_role(role_id)
+        store.purge_staged_role_files(staged_path)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
-    except OSError as error:
-        raise HTTPException(status_code=500, detail="删除失败，角色和聊天记录已保留") from error
+    except Exception as error:
+        if "session_snapshot" in locals() and "memory_snapshot" in locals():
+            session_store.restore_role_session(role_id, session_snapshot)
+            memory_store.restore_role(role_id, memory_snapshot)
+        if deleted is not None:
+            try:
+                store.restore_deleted(deleted)
+                store.remove_role_files(role_id)
+                store.restore_staged_role_files(role_id, staged_path)
+            except OSError as restore_error:
+                raise HTTPException(status_code=500, detail="删除失败，角色恢复也未能完成") from restore_error
+        detail = "删除失败，角色和聊天记录已保留" if deletion_phase == "session" else "删除失败，角色和记忆已保留"
+        raise HTTPException(status_code=500, detail=detail) from error
     finally:
+        if deletion_started and store.get(role_id) is not None:
+            memory_worker.end_role_deletion(role_id)
         lock.release()
 
 
@@ -403,6 +413,10 @@ async def send_role_message(role_id: str, data: SendMessageInput) -> StreamingRe
     if lock.locked():
         raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试")
     await lock.acquire()
+
+    if store.get(role_id) is None:
+        lock.release()
+        raise HTTPException(status_code=404, detail="角色不存在")
 
     try:
         user_message = session_store.append_message(session.session.sessionKey, "user", data.content)
