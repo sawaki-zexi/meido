@@ -166,6 +166,20 @@ class RememberMemoryInput(BaseModel):
         return value
 
 
+class UpdateMemoryInput(BaseModel):
+    summary: str
+    memoryType: str = "fact"
+    happenedAt: datetime | None = None
+
+    @field_validator("summary")
+    @classmethod
+    def validate_summary(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("记忆内容不能为空")
+        return value
+
+
 class ModelConfigurationInput(BaseModel):
     providerId: str
     provider: str
