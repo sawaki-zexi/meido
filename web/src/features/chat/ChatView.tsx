@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 
 import type { Message, Role } from "../../api/types";
 import type { ChatState } from "./useChat";
 import { Avatar, roleStyle } from "../../ui/Avatar";
+import { Icon, IconButton } from "../../ui/Icon";
 import { Notice, Placeholder } from "../../ui/Status";
 
 function MessageItem({ message, role }: { message: Message; role: Role }) {
@@ -10,32 +11,30 @@ function MessageItem({ message, role }: { message: Message; role: Role }) {
   const failed = message.status === "failed";
   return <li className={`message ${message.role}${failed ? " failed" : ""}`} aria-busy={streaming || undefined}>
     {!mine && <Avatar id={role.id} name={role.name} size="sm" />}
-    <div className="bubble">
+    <div className="message-body">
       <div className="message-heading">
         <strong>{mine ? "我" : role.name}</strong>
         <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString()}</time>
         {streaming && <span className="message-status streaming">生成中</span>}
         {failed && <span className="message-status failed">未完成</span>}
       </div>
-      <p>{message.content || (streaming ? <span className="typing" aria-label="正在回复">正在回复…</span> : "（无内容）")}</p>
+      <p className="bubble">{message.content || (streaming ? <span className="typing" aria-label="正在回复">正在回复…</span> : "（无内容）")}</p>
     </div>
   </li>;
 }
 
-export function ChatView({ role, chat }: { role: Role; chat: ChatState }) {
+/** Message box shared by the conversation and the welcome screen, so home always looks like a chat. */
+function Composer({ placeholder, disabled, sending, onSend }: { placeholder: string; disabled?: boolean; sending?: boolean; onSend: (text: string) => Promise<unknown> }) {
   const [draft, setDraft] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => { bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" }); }, [chat.messages]);
-  useEffect(() => { if (!chat.sending) inputRef.current?.focus(); }, [chat.sending]);
+  useEffect(() => { if (!sending && !disabled) inputRef.current?.focus(); }, [sending, disabled]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const text = draft;
-    if (!text.trim() || chat.sending) return;
+    if (!text.trim() || sending || disabled) return;
     setDraft("");
-    await chat.send(text);
+    await onSend(text);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -45,9 +44,31 @@ export function ChatView({ role, chat }: { role: Role; chat: ChatState }) {
     }
   };
 
+  return <form className="composer" onSubmit={submit}>
+    <textarea ref={inputRef} aria-label="消息内容" placeholder={placeholder} rows={1} value={draft} disabled={disabled || sending} onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} />
+    <button type="submit" className="send" aria-label="发送" title="发送（Enter）" disabled={disabled || sending || !draft.trim()}>
+      {sending ? <span className="spinner" aria-hidden="true" /> : <Icon name="send" size={18} />}
+    </button>
+  </form>;
+}
+
+type ChatProps = { role: Role; chat: ChatState; onBack: () => void; onShowProfile: () => void };
+
+export function ChatView({ role, chat, onBack, onShowProfile }: ChatProps) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" }); }, [chat.messages]);
+
   return <section className="chat" style={roleStyle(role.id)} aria-label={`与${role.name}的会话`}>
+    <header className="chat-header">
+      <IconButton icon="back" label="对话列表" className="only-narrow" onClick={onBack} />
+      <Avatar id={role.id} name={role.name} size="sm" />
+      <div className="chat-title">
+        <h1>{role.name}</h1>
+        {role.description && <small>{role.description}</small>}
+      </div>
+      <IconButton icon="profile" label="角色资料" onClick={onShowProfile} />
+    </header>
     <div className="chat-scroll">
-      <p className="chat-meta">唯一会话 · {chat.session?.sessionKey}</p>
       {chat.messages.length
         ? <ol className="message-list" aria-live="polite">{chat.messages.map((message) => <MessageItem key={message.id} message={message} role={role} />)}</ol>
         : <Placeholder>发送第一条消息开始对话。</Placeholder>}
@@ -55,11 +76,32 @@ export function ChatView({ role, chat }: { role: Role; chat: ChatState }) {
     </div>
     <div className="composer-dock">
       {chat.error && <Notice onDismiss={() => chat.setError("")}>{chat.error}</Notice>}
-      <form className="composer" onSubmit={submit}>
-        <textarea ref={inputRef} aria-label="消息内容" placeholder={`对${role.name}说点什么…`} rows={1} value={draft} disabled={chat.sending} onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} />
-        <button type="submit" className="primary" disabled={chat.sending || !draft.trim()}>{chat.sending ? "发送中" : "发送"}</button>
-      </form>
-      <small className="composer-hint muted">Enter 发送 · Shift + Enter 换行</small>
+      <Composer placeholder={`对${role.name}说点什么…`} sending={chat.sending} onSend={chat.send} />
+    </div>
+  </section>;
+}
+
+type WelcomeProps = { loading: boolean; hasRoles: boolean; error: string; onDismissError: () => void; onCreate: () => void; onBack: () => void };
+
+/** Home before any conversation is open: the same chat frame, with a note from Meido herself. */
+export function WelcomeView({ loading, hasRoles, error, onDismissError, onCreate, onBack }: WelcomeProps) {
+  return <section className="chat" aria-label="Meido">
+    <header className="chat-header">
+      <IconButton icon="back" label="对话列表" className="only-narrow" onClick={onBack} />
+      <span className="avatar avatar-sm avatar-meido" aria-hidden="true">M</span>
+      <div className="chat-title"><h1>Meido</h1></div>
+    </header>
+    <div className="chat-scroll">
+      {loading ? <Placeholder loading>正在加载角色…</Placeholder>
+        : hasRoles ? <Placeholder>从左侧选一位角色，继续你们的对话。</Placeholder>
+        : <div className="empty-create">
+          <button type="button" className="empty-create-button" aria-label="创建角色" onClick={onCreate}><Icon name="plus" size={28} /></button>
+          <p>还没有角色。先创建一位，她会在这里等你。</p>
+        </div>}
+    </div>
+    <div className="composer-dock">
+      {error && <Notice onDismiss={onDismissError}>{error}</Notice>}
+      <Composer placeholder={hasRoles ? "选择角色后开始对话" : "创建角色后开始对话"} disabled onSend={async () => undefined} />
     </div>
   </section>;
 }

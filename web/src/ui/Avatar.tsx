@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 
-// Muted hues so each role reads as distinct without shouting.
-const hues = [18, 42, 150, 190, 222, 280, 330];
+// Sakura-friendly hues (pink, peach, lavender, mint, sky…) so each role reads as distinct on white.
+const hues = [340, 10, 28, 150, 200, 265, 300];
 
 export function roleHue(id: string): number {
   let hash = 0;

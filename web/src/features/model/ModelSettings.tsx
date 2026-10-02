@@ -7,7 +7,7 @@ type Draft = { providerId: string; provider: string; baseUrl: string; model: str
 
 const emptyDraft: Draft = { providerId: "openai", provider: "openai", baseUrl: "", model: "", apiKey: "" };
 
-export function ModelSettings({ onBack }: { onBack: () => void }) {
+export function ModelSettings() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [configurations, setConfigurations] = useState<Configuration[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -148,7 +148,6 @@ export function ModelSettings({ onBack }: { onBack: () => void }) {
       <div className="form-actions">
         <button type="button" disabled={busy || loading} onClick={() => void submit("test")}>{testing ? "测试中…" : "测试连接"}</button>
         <button type="submit" className="primary" disabled={busy || loading}>{saving ? "保存中…" : "保存"}</button>
-        <button type="button" className="ghost push-end" disabled={busy} onClick={onBack}>返回</button>
       </div>
     </form>}
   </section>;

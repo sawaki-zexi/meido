@@ -1,218 +1,348 @@
 /* Meido: 需要她时，她就在；不需要时，她安静地留在那儿。
-   Quiet surfaces, one warm accent, and each role keeps its own hue where it matters. */
+   Quiet white-and-sakura messenger: conversation list | chat; panels (role profile, settings) open over it.
+   Pink is an accent (selection, focus, her name), never a filled button. Each role keeps her own hue (--role-hue). */
 
 :root {
-  --paper: #f6f3ee;
-  --surface: #fffdfa;
-  --surface-muted: #efe9e1;
-  --line: #e2dbd1;
-  --line-strong: #cfc6ba;
-  --ink: #2b2723;
-  --ink-soft: #5d564f;
-  --ink-faint: #6f675f;
-  --accent: #6b4d3b;
-  --accent-soft: #efe5da;
-  --danger: #a13a32;
-  --danger-soft: #f8e9e6;
-  --success: #2f6a47;
-  --success-soft: #e7f2ea;
-  --focus: #3d7f77;
-  --role-hue: 28;
-  --role: hsl(var(--role-hue) 32% 40%);
-  --role-soft: hsl(var(--role-hue) 36% 94%);
-  --role-line: hsl(var(--role-hue) 26% 84%);
-  --radius: 10px;
-  --radius-sm: 6px;
-  --shadow: 0 1px 2px rgb(43 39 35 / 5%), 0 4px 16px rgb(43 39 35 / 4%);
-  --topbar-h: 60px;
+  --bg: #ffffff;
+  --side: #fcf7f9;
+  --hover: #f8eef2;
+  --blush: #fbe9ef;
+  --sakura: #f6cddb;
+  --rose: #d1648b;
+  --rose-deep: #b24a72;
+  --line: #f1e4e9;
+  --line-strong: #e6d3db;
+  --ink: #3d2f35;
+  --ink-soft: #6f5c64;
+  --ink-faint: #a08f96;
+  --danger: #b3314f;
+  --danger-soft: #fdecef;
+  --success: #3d7a5a;
+  --success-soft: #ebf6f0;
+  --focus: #d1648b;
+  --role-hue: 340;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", serif;
   color-scheme: light;
-  font-family: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   font-size: 15px;
-  line-height: 1.55;
+  line-height: 1.6;
   color: var(--ink);
-  background: var(--paper);
+  background: var(--bg);
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-height: 100vh; min-height: 100dvh; }
-h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: .01em; }
-h1 { font-size: 17px; }
-h2 { font-size: 19px; }
+body { margin: 0; min-height: 100vh; min-height: 100dvh; background: var(--bg); }
+h1, h2, h3 { margin: 0; font-weight: 600; }
+h1 { font-size: 16px; }
+h2 { font-size: 17px; }
 h3 { font-size: 15px; }
 p { margin: 0; }
 ul, ol { list-style: none; margin: 0; padding: 0; }
 .muted { color: var(--ink-faint); font-weight: 400; }
 small { font-size: 12.5px; }
 
-/* Controls */
+/* Controls: quiet text buttons; `primary` is emphasised by colour, not a pink fill. */
 button {
-  font: inherit; font-size: 14px; color: var(--ink); cursor: pointer;
-  border: 1px solid var(--line-strong); background: var(--surface);
-  padding: 7px 14px; border-radius: var(--radius-sm); min-height: 36px;
+  font: inherit; font-size: 14px; color: var(--ink-soft); cursor: pointer;
+  border: 1px solid var(--line-strong); background: var(--bg);
+  padding: 6px 14px; border-radius: var(--radius-sm); min-height: 34px;
   transition: background-color .15s, border-color .15s, color .15s;
 }
-button:hover:not(:disabled) { background: var(--surface-muted); }
-button:disabled { cursor: not-allowed; opacity: .5; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.primary:hover:not(:disabled) { background: #5a3f30; }
-button.ghost { border-color: transparent; background: transparent; color: var(--ink-soft); }
-button.ghost:hover:not(:disabled) { background: var(--surface-muted); color: var(--ink); }
-button.danger { color: var(--danger); border-color: #e3c3be; }
-button.danger:hover:not(:disabled) { background: var(--danger-soft); }
-button.icon { min-height: 28px; padding: 2px 8px; font-size: 16px; line-height: 1; }
+button:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+button:disabled { cursor: not-allowed; opacity: .45; }
+button.primary { border-color: transparent; color: var(--rose-deep); font-weight: 600; }
+button.primary:hover:not(:disabled) { background: var(--blush); color: var(--rose-deep); }
+button.ghost { border-color: transparent; background: transparent; }
+button.danger { color: var(--danger); border-color: transparent; }
+button.danger:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); }
+button.icon { min-height: 26px; padding: 0 8px; font-size: 17px; line-height: 1; border-color: transparent; background: transparent; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 input, textarea, select {
   font: inherit; color: var(--ink); width: 100%; min-width: 0;
   border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
-  padding: 9px 11px; background: var(--surface);
-  transition: border-color .15s, background-color .15s;
+  padding: 8px 11px; background: var(--bg);
+  transition: border-color .15s, box-shadow .15s;
 }
-input:focus, textarea:focus, select:focus { border-color: var(--focus); outline: none; box-shadow: 0 0 0 3px rgb(61 127 119 / 15%); }
-textarea { min-height: 84px; resize: vertical; line-height: 1.6; }
+input:focus, textarea:focus, select:focus { border-color: var(--focus); outline: none; box-shadow: 0 0 0 3px rgb(209 100 139 / 14%); }
+textarea { min-height: 80px; resize: vertical; line-height: 1.7; }
 input:disabled, textarea:disabled, select:disabled { background: transparent; color: var(--ink); cursor: default; }
+::placeholder { color: #bfaeb5; }
 
 .field { display: grid; gap: 4px; }
 .field label { font-size: 13px; font-weight: 600; color: var(--ink-soft); }
 .field-hint { color: var(--ink-faint); margin-top: -2px; }
-.required { color: var(--danger); margin-left: 3px; }
+.required { color: var(--rose); margin-left: 3px; }
 fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 14px; min-width: 0; }
-legend { padding: 0; margin-bottom: 10px; font-size: 12px; font-weight: 600; letter-spacing: .08em; color: var(--ink-faint); }
-.form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; letter-spacing: .12em; color: var(--ink-faint); }
+.form-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
 .push-end { margin-left: auto; }
 
 /* States */
-.placeholder { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 40px 16px; color: var(--ink-faint); text-align: center; }
-.spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line-strong); border-top-color: var(--accent); animation: spin .9s linear infinite; }
-.notice { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 9px 12px; border-radius: var(--radius-sm); font-size: 14px; }
-.notice p { padding-top: 2px; overflow-wrap: anywhere; }
+.placeholder { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 40px 16px; color: var(--ink-faint); text-align: center; font-size: 14px; }
+.spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--sakura); border-top-color: var(--rose); animation: spin .9s linear infinite; }
+.notice { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 8px 12px; border-radius: var(--radius-sm); font-size: 14px; }
+.notice p { padding-top: 1px; overflow-wrap: anywhere; }
 .notice-error { background: var(--danger-soft); color: var(--danger); }
 .notice-success { background: var(--success-soft); color: var(--success); }
 .notice button.icon { color: inherit; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes breathe { 50% { opacity: .45; } }
 
-/* Avatar: the role hue lives here */
+/* Role accents resolve where --role-hue is set (a custom property computed on :root would not follow it). */
+:root, .avatar, .chat, .role-card { --role: hsl(var(--role-hue) 45% 46%); --role-soft: hsl(var(--role-hue) 70% 95%); }
+
+/* Avatar: flat tinted circle with her initial. */
 .avatar {
-  --size: 36px;
+  --size: 40px;
   flex: none; display: inline-grid; place-items: center; width: var(--size); height: var(--size);
-  border-radius: 50%; background: var(--role-soft); color: var(--role);
-  border: 1px solid var(--role-line); font-weight: 600; font-size: calc(var(--size) * .42); user-select: none;
+  border-radius: 50%; color: var(--role); background: var(--role-soft);
+  font-family: var(--serif); font-weight: 700; font-size: calc(var(--size) * .44); user-select: none;
 }
-.avatar-sm { --size: 28px; }
+.avatar-sm { --size: 32px; }
 .avatar-lg { --size: 52px; }
-.avatar-new { color: var(--ink-faint); background: var(--surface-muted); border-style: dashed; border-color: var(--line-strong); }
+.avatar-meido { color: var(--rose); background: var(--blush); }
 
-/* Shell */
-.app { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
-.topbar {
-  position: sticky; top: 0; z-index: 10; height: var(--topbar-h); flex: none;
-  display: flex; align-items: center; gap: 12px; padding: 0 24px;
-  background: rgb(246 243 238 / 92%); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line);
+/* Icon buttons */
+.icon-svg { display: block; flex: none; }
+.icon-button {
+  display: inline-grid; place-items: center; width: 36px; height: 36px; min-height: 0; padding: 0; flex: none;
+  border: 0; border-radius: 10px; background: transparent; color: var(--ink-soft);
 }
-.topbar-title { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 16px; }
-.topbar-title h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.topbar-actions { margin-left: auto; display: flex; gap: 6px; flex: none; }
-.back { padding-left: 8px; flex: none; }
-.page { flex: 1; width: 100%; max-width: 1120px; margin: 0 auto; padding: 24px; }
-.page-narrow { max-width: 680px; margin: 0 auto; }
+.icon-button:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+.icon-button.accent { background: var(--blush); color: var(--rose-deep); }
+.icon-button.accent:hover:not(:disabled) { background: var(--sakura); color: var(--rose-deep); }
+.icon-button.accent .icon-svg { stroke-width: 2.4; }
+.icon-button.danger:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); }
 
-/* Roles */
-.roles-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 24px; align-items: start; }
-.roles-sidebar { display: grid; gap: 10px; position: sticky; top: calc(var(--topbar-h) + 24px); max-height: calc(100dvh - var(--topbar-h) - 48px); overflow: auto; }
-.role-list { display: grid; gap: 4px; }
-.role-item { display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: var(--radius); border: 1px solid transparent; transition: background-color .15s, border-color .15s; }
-.role-item:hover { background: var(--surface); }
-.role-item.active { background: var(--surface); border-color: var(--line); box-shadow: var(--shadow); }
-.role-select { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; border: 0; background: transparent; padding: 6px; text-align: left; }
-.role-select:hover:not(:disabled) { background: transparent; }
-.role-text { display: grid; min-width: 0; }
+/* Shell: conversation list | chat. New panes (e.g. a future memory view) slot in as siblings. */
+.shell { --sidebar-w: 280px; height: 100vh; height: 100dvh; display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr); overflow: hidden; }
+.sidebar { min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; background: var(--side); border-right: 1px solid var(--line); }
+.sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 60px; padding: 0 12px 0 18px; }
+.brand { font-family: var(--serif); font-size: 19px; color: var(--rose); letter-spacing: .08em; }
+.sidebar-body { min-height: 0; overflow-y: auto; padding: 0 8px 8px; display: grid; align-content: start; gap: 8px; }
+.sidebar-body .placeholder { padding: 28px 12px; font-size: 13.5px; }
+.sidebar-footer { display: flex; align-items: center; gap: 4px; padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); }
+/* Page switch under the brand: conversations | tavern. More pages (e.g. memories) become more tabs. */
+.side-tabs { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; margin: 0 10px 10px; padding: 3px; border-radius: 10px; background: var(--hover); }
+.side-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: var(--ink-faint); font-size: 13.5px; }
+.side-tabs button:hover { color: var(--ink); }
+.side-tabs button[aria-current="page"] { background: var(--bg); color: var(--rose-deep); font-weight: 600; box-shadow: 0 1px 3px rgb(61 47 53 / 10%); }
+
+/* Conversation list rows, QQ-like: avatar, name, one-line summary. */
+.role-list { display: grid; gap: 2px; }
+.role-row {
+  width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px; min-height: 62px;
+  border: 0; border-radius: 10px; background: transparent; text-align: left; color: var(--ink);
+}
+.role-row:hover:not(:disabled) { background: var(--hover); }
+.role-row.active, .role-row.active:hover:not(:disabled) { background: var(--blush); }
+.role-text { display: grid; min-width: 0; gap: 1px; }
 .role-text strong { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.role-text span { font-size: 13px; color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.role-open { flex: none; font-size: 13px; padding: 5px 10px; min-height: 32px; opacity: 0; }
-.role-item:hover .role-open, .role-item.active .role-open, .role-open:focus-visible { opacity: 1; }
-@media (hover: none) { .role-open { opacity: 1; } }
+.role-text span { font-size: 12.5px; color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.roles-detail { min-width: 0; }
-.role-editor {
-  display: grid; gap: 26px; max-width: 720px; padding: 28px;
-  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow);
+/* Main pane */
+.main { min-width: 0; min-height: 0; display: flex; background: var(--bg); }
+.chat { flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.chat-header { display: flex; align-items: center; gap: 10px; height: 60px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--line); }
+.chat-title { flex: 1; min-width: 0; display: grid; }
+.chat-title h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-title small { font-size: 12px; color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.only-narrow { display: none; }
+
+.chat-scroll { min-height: 0; overflow-y: auto; padding: 24px clamp(16px, 4vw, 48px) 12px; display: flex; flex-direction: column; }
+.chat-scroll > .placeholder { margin: auto; }
+.message-list { display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 820px; margin: 0 auto; }
+.message { display: flex; align-items: flex-start; gap: 10px; max-width: min(78%, 620px); }
+.message.user { align-self: flex-end; flex-direction: row-reverse; }
+.message-body { min-width: 0; display: grid; gap: 3px; }
+.message.user .message-body { justify-items: end; }
+.message-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 11.5px; color: var(--ink-faint); }
+.message-heading strong { font-size: 12.5px; font-weight: 600; color: var(--ink-soft); }
+.message.assistant .message-heading strong { color: var(--role); }
+.message.user .message-heading strong { display: none; }
+.bubble { padding: 9px 13px; border-radius: 4px 14px 14px 14px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; background: #f7f3f5; }
+.message.user .bubble { border-radius: 14px 4px 14px 14px; background: var(--blush); }
+.message.failed .bubble { outline: 1px dashed #e7a9ba; }
+.message-status { font-size: 11px; padding: 0 7px; border-radius: 999px; }
+.message-status.streaming { color: var(--role); background: var(--role-soft); animation: breathe 1.6s ease-in-out infinite; }
+.message-status.failed { color: var(--danger); background: var(--danger-soft); }
+.typing { color: var(--ink-faint); animation: breathe 1.6s ease-in-out infinite; }
+
+.empty-create { margin: auto; display: grid; justify-items: center; gap: 14px; color: var(--ink-faint); text-align: center; font-size: 14px; }
+.empty-create-button {
+  width: 72px; height: 72px; padding: 0; display: grid; place-items: center; border-radius: 50%;
+  border: 1.5px dashed var(--sakura); background: var(--bg); color: var(--rose);
 }
-.editor-header { display: flex; align-items: center; gap: 14px; }
-.editor-header > div { display: grid; gap: 2px; min-width: 0; }
-.editor-header small { overflow-wrap: anywhere; }
+.empty-create-button:hover:not(:disabled) { background: var(--blush); border-color: var(--rose); color: var(--rose-deep); }
+
+.composer-dock { display: grid; gap: 6px; width: 100%; max-width: 868px; margin: 0 auto; padding: 8px clamp(12px, 3vw, 24px) calc(16px + env(safe-area-inset-bottom)); }
+.composer { display: flex; align-items: flex-end; gap: 6px; padding: 5px 5px 5px 14px; background: var(--bg); border: 1px solid var(--line-strong); border-radius: 22px; }
+.composer:focus-within { border-color: var(--focus); box-shadow: 0 0 0 3px rgb(209 100 139 / 12%); }
+.composer textarea { border: 0; box-shadow: none; min-height: 36px; max-height: 160px; resize: none; padding: 6px 2px; field-sizing: content; background: transparent; }
+.composer textarea:focus { box-shadow: none; }
+.composer textarea:disabled { cursor: not-allowed; }
+.composer .send { flex: none; width: 36px; height: 36px; min-height: 0; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--rose); }
+.composer .send:hover:not(:disabled) { background: var(--blush); color: var(--rose-deep); }
+.composer .send:disabled { color: var(--ink-faint); opacity: .5; }
+
+/* Dialogs: drawer (role profile / create) slides from the right; modal (settings) is centred. */
+.dialog-layer { position: fixed; inset: 0; z-index: 30; display: flex; background: rgb(61 47 53 / 18%); animation: fade .16s ease-out; }
+.dialog-modal { align-items: center; justify-content: center; padding: 24px; }
+.dialog-drawer { justify-content: flex-end; }
+.dialog-compact { align-items: center; justify-content: center; padding: 24px; }
+.dialog-compact .dialog-panel { width: min(360px, 100%); max-height: 100%; border-radius: 16px; animation: pop .18s ease-out; }
+.dialog-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; background: var(--bg); outline: none; box-shadow: 0 16px 48px rgb(61 47 53 / 16%); }
+.dialog-modal .dialog-panel { width: min(820px, 100%); height: min(600px, 100%); border-radius: 16px; animation: pop .18s ease-out; }
+.dialog-drawer .dialog-panel { width: min(440px, 100%); height: 100%; animation: slide .2s ease-out; }
+.dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 56px; padding: 0 10px 0 22px; border-bottom: 1px solid var(--line); }
+.dialog-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+@keyframes fade { from { opacity: 0; } }
+@keyframes pop { from { opacity: 0; transform: scale(.98); } }
+@keyframes slide { from { transform: translateX(20px); opacity: 0; } }
+
+/* Role profile / create form */
+.role-editor { display: grid; gap: 22px; padding: 20px 22px 22px; }
+.profile-card { display: flex; align-items: center; gap: 14px; }
+.profile-card > div { flex: 1; display: grid; gap: 2px; min-width: 0; }
+.profile-card strong { font-size: 17px; }
+.profile-card small { overflow-wrap: anywhere; }
+.profile-actions { display: flex; gap: 2px; }
 .role-editor:not(.is-writable) input, .role-editor:not(.is-writable) textarea { border-color: transparent; padding-left: 0; padding-right: 0; resize: none; }
 .role-editor:not(.is-writable) textarea { min-height: 0; field-sizing: content; }
-.role-editor .form-actions { padding-top: 18px; border-top: 1px solid var(--line); }
+.role-editor .form-actions { position: sticky; bottom: 0; padding: 12px 0 2px; background: linear-gradient(rgb(255 255 255 / 0%), #fff 35%); }
+
+/* Settings: section nav + content. Add sections in SettingsDialog. */
+.settings-layout { display: grid; grid-template-columns: 160px minmax(0, 1fr); height: 100%; min-height: 0; }
+.settings-nav { display: grid; align-content: start; gap: 2px; padding: 12px 8px; background: var(--side); }
+.settings-nav button { display: flex; align-items: center; gap: 10px; width: 100%; border: 0; border-radius: 8px; background: transparent; padding: 8px 12px; text-align: left; }
+.settings-nav button.active { background: var(--blush); color: var(--rose-deep); font-weight: 600; }
+.settings-content { min-width: 0; min-height: 0; overflow-y: auto; padding: 20px 24px 28px; }
 
 /* Model settings */
-.model-settings { display: grid; gap: 20px; }
+.model-settings { display: grid; gap: 18px; }
 .settings-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .settings-heading > div { display: grid; gap: 4px; }
 .settings-subheading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
 .settings-subheading span { font-size: 13px; }
 .configuration-list { display: grid; gap: 8px; }
-.configuration-item { display: grid; gap: 10px; padding: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
-.configuration-item.active { border-color: #c9b4a2; background: var(--accent-soft); }
-.configuration-item.editing { outline: 2px solid var(--focus); outline-offset: 1px; }
-.configuration-main { display: grid; gap: 2px; border: 0; background: transparent; padding: 2px; text-align: left; }
+.configuration-item { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); }
+.configuration-item.active { border-color: var(--sakura); background: #fff9fb; }
+.configuration-item.editing { border-color: var(--focus); }
+.configuration-main { display: grid; gap: 2px; border: 0; background: transparent; padding: 2px; text-align: left; color: var(--ink); }
 .configuration-main:hover:not(:disabled) { background: transparent; }
 .configuration-main span, .configuration-main small { color: var(--ink-faint); overflow-wrap: anywhere; }
-.configuration-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.card-form { display: grid; gap: 14px; padding: 24px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
-
-/* Chat: the conversation is the focus */
-.page-chat { display: flex; padding: 0; max-width: 820px; }
-.chat { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: calc(100dvh - var(--topbar-h)); }
-.chat-scroll { flex: 1; padding: 20px 24px 12px; }
-.chat-meta { text-align: center; font-size: 12px; color: var(--ink-faint); margin-bottom: 18px; overflow-wrap: anywhere; }
-.message-list { display: flex; flex-direction: column; gap: 16px; }
-.message { display: flex; align-items: flex-start; gap: 10px; max-width: min(84%, 640px); }
-.message.user { align-self: flex-end; flex-direction: row-reverse; }
-.message.assistant { align-self: flex-start; }
-.bubble { min-width: 0; padding: 10px 14px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); }
-.message.assistant .bubble { border-top-left-radius: 4px; border-color: var(--role-line); }
-.message.user .bubble { border-top-right-radius: 4px; background: var(--surface-muted); border-color: transparent; }
-.message.failed .bubble { border-color: #e3c3be; border-style: dashed; }
-.message-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 12px; color: var(--ink-faint); }
-.message-heading strong { color: var(--ink-soft); font-weight: 600; }
-.message.assistant .message-heading strong { color: var(--role); }
-.message.user .message-heading { justify-content: flex-end; }
-.message p { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 4px; line-height: 1.7; }
-.message-status { font-size: 11.5px; padding: 0 6px; border-radius: 999px; }
-.message-status.streaming { color: var(--role); background: var(--role-soft); animation: breathe 1.6s ease-in-out infinite; }
-.message-status.failed { color: var(--danger); background: var(--danger-soft); }
-.typing { color: var(--ink-faint); animation: breathe 1.6s ease-in-out infinite; }
-
-.composer-dock {
-  position: sticky; bottom: 0; display: grid; gap: 6px; padding: 12px 24px calc(12px + env(safe-area-inset-bottom));
-  background: linear-gradient(to bottom, rgb(246 243 238 / 0%), var(--paper) 18px);
-}
-.composer { display: flex; align-items: flex-end; gap: 8px; padding: 6px; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 14px; box-shadow: var(--shadow); }
-.composer:focus-within { border-color: var(--focus); }
-.composer textarea { border: 0; box-shadow: none; min-height: 40px; max-height: 180px; resize: none; padding: 8px 10px; field-sizing: content; background: transparent; }
-.composer button { flex: none; border-radius: 10px; }
-.composer-hint { text-align: center; }
+.configuration-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.configuration-actions button { border-color: transparent; }
+.card-form { display: grid; gap: 14px; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius); }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
-/* Mobile: single column, composer docked to the bottom. */
+/* Narrow screens: one pane at a time, like a phone messenger. Home stays the conversation. */
 @media (max-width: 760px) {
-  :root { --topbar-h: 54px; }
-  .topbar { padding: 0 12px; gap: 8px; }
-  .brand .muted { display: none; }
-  .page { padding: 16px; }
-  .roles-layout { grid-template-columns: 1fr; gap: 16px; align-content: start; }
-  .roles-layout:not(.has-detail) .roles-detail .placeholder { padding-top: 8px; }
-  .roles-sidebar { position: static; max-height: none; overflow: visible; }
-  .role-editor { padding: 18px; gap: 22px; }
-  .page-chat { padding: 0; }
+  .shell { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
+  .shell.show-list .sidebar { display: grid; }
+  .shell.show-list .main { display: none; }
+  .only-narrow { display: inline-grid; }
+  .chat-header { padding: 0 8px; gap: 6px; }
   .chat-scroll { padding: 16px 12px 8px; }
-  .composer-dock { padding-left: 12px; padding-right: 12px; }
-  .composer-hint { display: none; }
-  .message { max-width: 94%; }
+  .message { max-width: 88%; }
   .message .avatar { display: none; }
+  .dialog-modal { padding: 0; }
+  .dialog-modal .dialog-panel { width: 100%; height: 100%; border-radius: 0; }
+  .settings-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .settings-nav { display: flex; padding: 8px; }
+  .settings-nav button { width: auto; }
+  .settings-content { padding: 16px; }
   .settings-heading { flex-direction: column; }
-  .card-form { padding: 18px; }
-  .push-end { margin-left: 0; }
+  .role-editor { padding: 16px; }
+}
+
+
+/* Role tavern: a shelf of role cards. Each card derives hue, motif and glyph from the role ID. */
+.tavern { flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.tavern-scroll { min-height: 0; overflow-y: auto; padding: 24px clamp(16px, 4vw, 40px) 40px; display: grid; align-content: start; gap: 16px; background: var(--side); }
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 20px; }
+.card-grid > li { display: grid; }
+
+.role-card {
+  --card: hsl(var(--role-hue) 55% 62%);
+  --card-soft: hsl(var(--role-hue) 70% 94%);
+  position: relative; aspect-ratio: 5 / 7; display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
+  padding: 10px; border-radius: 14px; background: #fff; overflow: hidden; isolation: isolate;
+  border: 1px solid hsl(var(--role-hue) 50% 88%);
+  box-shadow: 0 1px 2px rgb(61 47 53 / 6%), 0 8px 20px hsl(var(--role-hue) 40% 60% / 14%);
+  transition: transform .2s, box-shadow .2s;
+}
+/* Inner frame, like a printed card border. */
+.role-card::after { content: ""; position: absolute; inset: 5px; border: 1px solid hsl(var(--role-hue) 50% 90%); border-radius: 10px; pointer-events: none; z-index: -1; }
+.role-card:hover { transform: translateY(-4px); box-shadow: 0 2px 4px rgb(61 47 53 / 6%), 0 16px 32px hsl(var(--role-hue) 40% 60% / 22%); }
+.card-top { display: flex; justify-content: space-between; padding: 2px 6px; font-size: 11px; letter-spacing: .08em; color: var(--card); font-weight: 600; }
+.card-art { position: relative; margin: 6px 2px; border-radius: 9px; display: grid; place-items: center; overflow: hidden; background: var(--card-soft); }
+.card-initial { font-family: var(--serif); font-size: 64px; font-weight: 700; line-height: 1; color: var(--card); text-shadow: 0 2px 0 #fff; }
+.card-foot { display: grid; gap: 2px; padding: 4px 6px 2px; min-width: 0; }
+.card-foot strong { font-family: var(--serif); font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-foot small { color: var(--ink-faint); font-size: 12px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; min-height: 2.9em; line-height: 1.45; }
+.card-foot em { font-style: normal; font-size: 11.5px; color: var(--card); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Background motifs. */
+.motif-0 .card-art { background: radial-gradient(circle at 30% 25%, #fff 0 12%, transparent 13%), radial-gradient(circle at 75% 70%, hsl(var(--role-hue) 70% 88%) 0 22%, transparent 23%), var(--card-soft); }
+.motif-1 .card-art { background: repeating-linear-gradient(135deg, transparent 0 10px, hsl(var(--role-hue) 70% 90%) 10px 11px), var(--card-soft); }
+.motif-2 .card-art { background: radial-gradient(circle at 1px 1px, hsl(var(--role-hue) 55% 80%) 1px, transparent 1.6px) 0 0 / 12px 12px, var(--card-soft); }
+.motif-3 .card-art { background: radial-gradient(120% 70% at 50% 110%, hsl(var(--role-hue) 70% 86%) 0 40%, transparent 41%), radial-gradient(90% 50% at 50% 115%, #fff 0 40%, transparent 41%), var(--card-soft); }
+.motif-4 .card-art { background: conic-gradient(from 0deg at 50% 50%, var(--card-soft) 0 25%, hsl(var(--role-hue) 70% 91%) 0 50%, var(--card-soft) 0 75%, hsl(var(--role-hue) 70% 91%) 0) 0 0 / 28px 28px; }
+
+/* The whole card opens the profile; the chat shortcut sits above it. */
+.card-hit { position: absolute; inset: 0; z-index: 1; border: 0; border-radius: inherit; background: transparent; padding: 0; min-height: 0; }
+.card-hit:hover:not(:disabled) { background: transparent; }
+.card-hit:focus-visible { outline-offset: -2px; }
+.card-chat { position: absolute; z-index: 2; right: 18px; bottom: 74px; background: #fff; color: var(--card); box-shadow: 0 2px 8px rgb(61 47 53 / 12%); opacity: 0; transition: opacity .15s; }
+.card-chat:hover:not(:disabled) { background: #fff; color: var(--rose-deep); }
+.role-card:hover .card-chat, .card-chat:focus-visible { opacity: 1; }
+@media (hover: none) { .card-chat { opacity: 1; } }
+
+.card-new {
+  aspect-ratio: 5 / 7; width: 100%; display: grid; place-content: center; justify-items: center; gap: 10px;
+  border: 2px dashed var(--sakura-deep, #eeb0c6); border-radius: 14px; background: rgb(255 255 255 / 70%); color: var(--rose);
+}
+.card-new .icon-svg { width: 44px; height: 44px; padding: 8px; border-radius: 50%; background: var(--blush); box-sizing: content-box; }
+.card-new:hover:not(:disabled) { background: #fff; border-color: var(--rose); color: var(--rose-deep); }
+.card-new span { font-size: 13.5px; }
+
+/* New card reveal */
+.card-reveal { height: 100%; display: grid; place-content: center; justify-items: center; gap: 16px; padding: 24px; }
+.card-reveal .role-card { width: 220px; }
+.role-card.is-new { animation: reveal .6s cubic-bezier(.2, .8, .2, 1.2); }
+.role-card.is-new::before { content: ""; position: absolute; inset: 0; z-index: 3; pointer-events: none; background: linear-gradient(115deg, transparent 30%, rgb(255 255 255 / 85%) 50%, transparent 70%) -200% 0 / 200% 100% no-repeat; animation: shine 1.2s .4s ease-out forwards; }
+@keyframes reveal { from { opacity: 0; transform: rotateY(90deg) scale(.9); } }
+@keyframes shine { to { background-position: 200% 0; } }
+
+@media (max-width: 760px) {
+  .tavern-scroll { padding: 16px 12px 32px; }
+  .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .card-initial { font-size: 48px; }
+}
+
+/* Create-role page: a centred sheet with the form beside a live card preview */
+.dialog-page { align-items: center; justify-content: center; padding: 24px; }
+.dialog-page .dialog-panel { width: min(860px, 100%); height: min(680px, 100%); border-radius: 18px; animation: pop .18s ease-out; }
+.dialog-page .dialog-body { overflow: hidden; }
+.create-layout { height: 100%; display: grid; grid-template-columns: 260px minmax(0, 1fr); }
+.create-preview { display: grid; align-content: center; justify-items: center; gap: 14px; padding: 24px; background: var(--side); border-right: 1px solid var(--line); }
+.create-preview .role-card { width: 200px; }
+.create-preview .muted { margin: 0; text-align: center; font-size: 12px; }
+/* The draft card wears the brand pink; her own hue and motif are dealt on save. */
+.role-card.is-draft { --role-hue: 340 !important; }
+.create-layout .role-editor { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+@media (max-width: 760px) {
+  .dialog-page { padding: 0; }
+  .dialog-page .dialog-panel { width: 100%; height: 100%; border-radius: 0; }
+  .dialog-page .dialog-body { overflow-y: auto; }
+  .create-layout { height: auto; grid-template-columns: 1fr; }
+  .create-preview { border-right: 0; border-bottom: 1px solid var(--line); padding: 16px; }
+  .create-preview .role-card { width: 132px; }
+  .create-layout .role-editor { overflow: visible; }
 }

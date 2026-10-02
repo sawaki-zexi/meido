@@ -22,7 +22,7 @@ export function useRoles() {
     api<{ roles: Role[] }>("/api/roles")
       .then((data) => { if (id === requestId.current) setRoles(data.roles); })
       .catch((cause) => { if (id === requestId.current) { setLoadFailed(true); setError(errorMessage(cause, "无法加载角色")); } })
-      .finally(() => setLoading(false));
+      .finally(() => { if (id === requestId.current) setLoading(false); });
   }, []);
 
   useEffect(() => { if (creating) writeCreateDraft(draft); }, [creating, draft]);
@@ -58,7 +58,8 @@ export function useRoles() {
     setEditing(false);
   };
 
-  const save = async () => {
+  /** Saves the draft. Resolves the saved role, or null when saving failed. */
+  const save = async (): Promise<Role | null> => {
     setError("");
     setSaving(true);
     const creatingSnapshot = creating;
@@ -70,14 +71,17 @@ export function useRoles() {
         : await api<{ role: Role }>(`/api/roles/${encodeURIComponent(selectedSnapshot!.id)}`, { method: "PUT", body: payload });
       // A list request started before this save must not overwrite the saved role.
       requestId.current += 1;
+      setLoading(false);
       setRoles((current) => creatingSnapshot ? [...current, data.role] : current.map((role) => role.id === data.role.id ? data.role : role));
       setSelected(data.role);
       setDraft(draftFromRole(data.role));
       clearCreateDraft();
       setCreating(false);
       setEditing(false);
+      return data.role;
     } catch (cause) {
       setError(errorMessage(cause, "保存失败"));
+      return null;
     } finally {
       setSaving(false);
     }

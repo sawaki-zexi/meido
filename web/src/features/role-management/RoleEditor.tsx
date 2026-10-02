@@ -2,6 +2,7 @@ import type { FormEvent } from "react";
 import type { RolesState } from "./useRoles";
 import type { RoleDraft } from "./draft";
 import { Avatar } from "../../ui/Avatar";
+import { IconButton } from "../../ui/Icon";
 import { Notice } from "../../ui/Status";
 
 type Field = { key: keyof RoleDraft; label: string; hint?: string; multiline?: boolean; required?: boolean };
@@ -18,14 +19,15 @@ const characterFields: Field[] = [
   { key: "responseConstraints", label: "回复约束", multiline: true },
 ];
 
-type Props = { state: RolesState; opening: boolean; onOpenChat: () => void; onDelete: () => void };
+type Props = { state: RolesState; onSubmit: () => void; onCancel: () => void; onDelete: () => void };
 
-export function RoleEditor({ state, opening, onOpenChat, onDelete }: Props) {
+/** Role profile: read-only by default, editable after "编辑", or a blank form when creating. */
+export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
   const { selected, draft, setDraft, creating, editing, saving, deleting, busy, error, setError } = state;
   const writable = creating || editing;
   const locked = !writable || busy;
 
-  const submit = (event: FormEvent) => { event.preventDefault(); void state.save(); };
+  const submit = (event: FormEvent) => { event.preventDefault(); onSubmit(); };
 
   const renderField = (field: Field) => {
     const id = `role-${field.key}`;
@@ -37,16 +39,19 @@ export function RoleEditor({ state, opening, onOpenChat, onDelete }: Props) {
     </div>;
   };
 
-  const title = creating ? "创建角色" : "角色详情";
-  return <form className={`role-editor${writable ? " is-writable" : ""}`} onSubmit={submit} aria-label={title}>
-    <header className="editor-header">
-      {selected && !creating ? <Avatar id={selected.id} name={draft.name || selected.name} size="lg" /> : <span className="avatar avatar-lg avatar-new" aria-hidden="true">＋</span>}
+  return <form className={`role-editor${writable ? " is-writable" : ""}`} onSubmit={submit}>
+    {selected && !creating && <header className="profile-card">
+      <Avatar id={selected.id} name={draft.name || selected.name} size="lg" />
       <div>
-        <h2>{title}</h2>
-        {selected && !creating && <small className="muted">角色 ID · {selected.id}</small>}
-        {writable && <small className="muted">{creating ? "填写后保存即可开始对话" : "修改只影响之后的对话"}</small>}
+        <strong>{draft.name || selected.name}</strong>
+        <small className="muted">{editing ? "修改只影响之后的对话" : selected.description || "暂无简介"}</small>
       </div>
-    </header>
+      {!editing && <span className="profile-actions">
+        <IconButton icon="edit" label="编辑" onClick={state.startEdit} />
+        <IconButton icon="trash" label="删除角色" className="danger" disabled={deleting} onClick={onDelete} />
+      </span>}
+    </header>}
+    {creating && <p className="muted">填写后保存，就可以和她开始对话。</p>}
     <fieldset>
       <legend>身份</legend>
       {identityFields.map(renderField)}
@@ -56,15 +61,9 @@ export function RoleEditor({ state, opening, onOpenChat, onDelete }: Props) {
       {characterFields.map(renderField)}
     </fieldset>
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
-    <div className="form-actions">
-      {writable ? <>
-        <button type="submit" className="primary" disabled={busy}>{saving ? "保存中…" : "保存"}</button>
-        <button type="button" disabled={busy} onClick={state.cancel}>取消</button>
-      </> : <>
-        <button type="button" onClick={state.startEdit}>编辑</button>
-        <button type="button" className="danger" disabled={deleting} onClick={onDelete}>{deleting ? "删除中…" : "删除角色"}</button>
-      </>}
-      {selected && <button type="button" className="primary push-end" disabled={busy || opening} onClick={onOpenChat}>{opening ? "正在打开…" : "进入会话"}</button>}
-    </div>
+    {writable && <div className="form-actions">
+      <button type="button" className="ghost" disabled={busy} onClick={onCancel}>取消</button>
+      <button type="submit" className="primary" disabled={busy}>{saving ? "保存中…" : "保存"}</button>
+    </div>}
   </form>;
 }
