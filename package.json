@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k \"npm:dev:api\" \"npm:dev:web\"",
-    "dev:api": "python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 4174 --reload",
+    "dev:api": "python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 4288 --reload",
     "dev:web": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "test": "python -m pytest && vitest run",
