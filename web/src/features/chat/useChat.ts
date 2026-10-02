@@ -28,7 +28,8 @@ export function useChat() {
   const [error, setError] = useState("");
 
   /** Loads the role's session. Resolves true when the chat can be shown. */
-  const open = async (role: Role): Promise<boolean> => {
+  /** Opens a role's session. Resolves her messages, or null when it could not be opened. */
+  const open = async (role: Role): Promise<Message[] | null> => {
     setError("");
     setOpening(true);
     try {
@@ -36,10 +37,10 @@ export function useChat() {
       setRoleId(role.id);
       setSession(data.session);
       setMessages(data.messages);
-      return true;
+      return data.messages;
     } catch (cause) {
       setError(errorMessage(cause, "无法打开会话"));
-      return false;
+      return null;
     } finally {
       setOpening(false);
     }

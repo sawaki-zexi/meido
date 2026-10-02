@@ -351,3 +351,30 @@ describe("唯一会话", () => {
     expect(screen.getByText(/从左侧选一位角色/)).toBeTruthy();
   });
 });
+
+describe("角色记忆", () => {
+  const origin = { kind: "message", sessionKey: "role:r1", messageIds: ["m2"], messageRange: null, stableSourceKey: "message:m2" };
+  const memory = { id: "mem1", roleId: "r1", memoryType: "preference", summary: "主人喜欢红茶", status: "active", happenedAt: null, createdAt: "2026-09-30T00:00:00Z", updatedAt: "2026-09-30T00:00:00Z", sourceRef: { ...origin, sourceKeys: [], sources: [origin] } };
+
+  it("从对话打开角色记忆，并定位到记忆来源的消息", async () => {
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": () => ({ body: { session, messages: [message({ id: "m1", role: "user", sequence: 1, content: "早安" }), message({ id: "m2", role: "user", sequence: 2, content: "我喜欢红茶" })] } }),
+      "GET /api/roles/r1/memories": () => ({ body: { memories: [memory] } }),
+      "GET /api/roles/r1/memory-documents": () => ({ body: { documents: [], journals: [] } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    await user.click(screen.getByRole("button", { name: "角色记忆" }));
+    const list = await screen.findByRole("list", { name: "记忆列表" });
+    expect(within(list).getByText("主人喜欢红茶")).toBeTruthy();
+    expect(within(list).getByText("偏好")).toBeTruthy();
+
+    await user.click(within(list).getByRole("button", { name: "定位到消息" }));
+    expect(await chatHeading("爱丽丝")).toBeTruthy();
+    const source = screen.getByText("我喜欢红茶").closest("li")!;
+    expect(source).toHaveClass("source-highlight");
+    expect(within(source).getByText("记忆来源")).toBeTruthy();
+  });
+});

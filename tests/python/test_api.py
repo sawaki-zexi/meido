@@ -7,6 +7,8 @@ from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
 from backend.app.session_store import SessionStore
 from backend.app.storage import initialize_databases
+from backend.app.memory_service import MemoryService, MemoryWorker
+from backend.app.memory_store import MemoryStore
 
 
 class FailingAdapter:
@@ -295,6 +297,49 @@ def test_delete_role_removes_role_session_messages_and_files(tmp_path, monkeypat
     assert all(item.id != role.id for item in main.store.list())
 
 
+def test_delete_role_attempts_role_and_file_restore_when_database_rollback_fails(tmp_path, monkeypatch):
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    memory_service = MemoryService(memory_store)
+    worker = MemoryWorker(memory_service)
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", memory_service)
+    monkeypatch.setattr(main, "memory_worker", worker)
+    memory_path = tmp_path / "roles" / role.id / "memory" / "MEMORY.md"
+    memory_path.write_text("保留的文档", encoding="utf-8")
+
+    def fail_delete(role_id):
+        raise OSError("记忆数据库删除失败")
+
+    def fail_session_restore(role_id, snapshot):
+        raise OSError("聊天记录恢复失败")
+
+    monkeypatch.setattr(memory_store, "delete_role", fail_delete)
+    monkeypatch.setattr(sessions, "restore_role_session", fail_session_restore)
+    response = client.delete(f"/api/roles/{role.id}")
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "删除失败，角色恢复也未能完成"
+    assert client.get(f"/api/roles/{role.id}").status_code == 200
+    assert memory_path.read_text(encoding="utf-8") == "保留的文档"
+
+
+def test_delete_role_preserves_files_when_staging_fails(tmp_path, monkeypatch):
+    role, _, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    memory_path = tmp_path / "roles" / role.id / "memory" / "MEMORY.md"
+    memory_path.write_text("尚未暂存的文档", encoding="utf-8")
+
+    def fail_stage(role_id):
+        raise OSError("目录暂存失败")
+
+    monkeypatch.setattr(main.store, "stage_role_files_for_deletion", fail_stage)
+    response = client.delete(f"/api/roles/{role.id}")
+
+    assert response.status_code == 500
+    assert client.get(f"/api/roles/{role.id}").status_code == 200
+    assert memory_path.read_text(encoding="utf-8") == "尚未暂存的文档"
+
+
 def test_delete_role_failure_restores_role_and_chat_history(tmp_path, monkeypatch):
     role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
     client.post(f"/api/roles/{role.id}/messages", json={"content": "保留消息"})
@@ -310,6 +355,75 @@ def test_delete_role_failure_restores_role_and_chat_history(tmp_path, monkeypatc
     assert response.json()["detail"] == "删除失败，角色和聊天记录已保留"
     assert client.get(f"/api/roles/{role.id}").status_code == 200
     assert [item.model_dump() for item in sessions.list_messages(f"role:{role.id}")] == [item.model_dump() for item in before]
+
+
+def test_delete_role_memory_failure_restores_role_chat_and_memory(tmp_path, monkeypatch):
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    memory_service = MemoryService(memory_store)
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", memory_service)
+    monkeypatch.setattr(main, "memory_worker", MemoryWorker(memory_service))
+    client.post(f"/api/roles/{role.id}/messages", json={"content": "保留消息"})
+    memory_service.remember(role.id, "保留记忆", "fact", stable_source_key="keep")
+    before_messages = sessions.list_messages(f"role:{role.id}")
+
+    def fail_delete(role_id):
+        raise OSError("记忆数据库删除失败")
+
+    monkeypatch.setattr(memory_store, "delete_role", fail_delete)
+    response = client.delete(f"/api/roles/{role.id}")
+
+    assert response.status_code == 500
+    assert client.get(f"/api/roles/{role.id}").status_code == 200
+    assert [item.model_dump() for item in sessions.list_messages(f"role:{role.id}")] == [item.model_dump() for item in before_messages]
+    assert [item.summary for item in memory_store.list_active(role.id)] == ["保留记忆"]
+
+
+def test_delete_role_downstream_key_error_is_reported_as_delete_failure(tmp_path, monkeypatch):
+    role, _, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    memory_service = MemoryService(memory_store)
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", memory_service)
+    monkeypatch.setattr(main, "memory_worker", MemoryWorker(memory_service))
+
+    def fail_delete(role_id):
+        raise KeyError("memory row")
+
+    monkeypatch.setattr(memory_store, "delete_role", fail_delete)
+    response = client.delete(f"/api/roles/{role.id}")
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "删除失败，角色和记忆已保留"
+    assert client.get(f"/api/roles/{role.id}").status_code == 200
+
+
+def test_delete_role_file_failure_restores_role_session_memory_and_documents(tmp_path, monkeypatch):
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    memory_service = MemoryService(memory_store)
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", memory_service)
+    monkeypatch.setattr(main, "memory_worker", MemoryWorker(memory_service))
+    client.post(f"/api/roles/{role.id}/messages", json={"content": "保留消息"})
+    memory_service.remember(role.id, "保留记忆", "fact", stable_source_key="keep")
+    memory_path = tmp_path / "roles" / role.id / "memory" / "MEMORY.md"
+    memory_path.write_text("长期记忆文件", encoding="utf-8")
+    original_purge = main.store.purge_staged_role_files
+
+    def fail_purge(path):
+        raise OSError("文件清理失败")
+
+    monkeypatch.setattr(main.store, "purge_staged_role_files", fail_purge)
+    response = client.delete(f"/api/roles/{role.id}")
+
+    assert response.status_code == 500
+    assert client.get(f"/api/roles/{role.id}").status_code == 200
+    assert sessions.list_messages(f"role:{role.id}")
+    assert memory_store.list_active(role.id)[0].summary == "保留记忆"
+    assert memory_path.read_text(encoding="utf-8") == "长期记忆文件"
+    monkeypatch.setattr(main.store, "purge_staged_role_files", original_purge)
 
 
 def test_delete_role_rejects_while_generation_is_in_progress(tmp_path, monkeypatch):

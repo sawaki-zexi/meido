@@ -90,11 +90,13 @@ export function useRoles() {
   /** Deletes the selected role after confirmation. Resolves true once deleted. */
   const remove = async (): Promise<boolean> => {
     if (!selected || creating || deleting) return false;
-    if (!window.confirm(`确定删除角色“${selected.name}”吗？\n\n角色和全部聊天记录将永久删除，且无法恢复。`)) return false;
+    if (!window.confirm(`确定删除角色“${selected.name}”吗？\n\n角色、全部聊天记录和记忆将永久删除，且无法恢复。`)) return false;
     setError("");
     setDeleting(true);
     try {
       await api<void>(`/api/roles/${encodeURIComponent(selected.id)}`, { method: "DELETE" });
+      // A list request started before this delete must not resurrect the role.
+      requestId.current += 1;
       setRoles((current) => current.filter((role) => role.id !== selected.id));
       setSelected(null);
       setDraft(emptyDraft);

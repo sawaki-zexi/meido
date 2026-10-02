@@ -1,6 +1,7 @@
 import os
 import asyncio
 import json
+import inspect
 from time import monotonic
 from pathlib import Path
 
@@ -11,7 +12,13 @@ import httpx
 
 from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
-from .models import ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
+from .memory_service import MemoryService, MemoryWorker
+from .embeddings import OpenAICompatibleEmbeddingAdapter
+from .memory_maintenance import MemoryMaintenance
+from .memory_optimizer import MemoryOptimizer, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
+from .memory_store import MemoryStore
+from .memory_documents import MemoryDocuments
+from .models import MemoryList, MemoryItem, MemorySourceRef, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
 from .storage import initialize_databases
@@ -24,12 +31,215 @@ initialize_databases(data_root)
 store = RoleStore(roles_root)
 session_store = SessionStore(data_root / "sessions.db")
 session_manager = SessionManager(store, session_store)
+memory_store = MemoryStore(data_root / "memory2.db")
 model_adapter: ModelAdapter = OpenAICompatibleAdapter()
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
+
+
+def _embedding_configuration(role_id: str):
+    role = store.get(role_id)
+    return model_configuration_store.get(role.modelConfigurationId) if role and role.modelConfigurationId else model_configuration_store.get()
+
+
+def _consolidate_role_memories(
+    role_id: str,
+    existing: list[MemoryRecord],
+    pending: list[MemoryRecord],
+    history: str,
+    current_self: str,
+) -> MemoryOptimizationResult:
+    role = store.get(role_id)
+    if role is None:
+        raise ValueError("角色不存在")
+    configuration = model_configuration_store.get(role.modelConfigurationId) if role.modelConfigurationId else model_configuration_store.get()
+    if configuration is None:
+        raise RuntimeError("长期记忆归并需要可用的模型连接")
+    payload = {
+        "existingMemories": [
+            {"memoryType": item.memory_type, "summary": item.summary, "sourceKeys": item.sources}
+            for item in existing
+        ],
+        "pendingCandidates": [
+            {"memoryType": item.memory_type, "summary": item.summary, "sourceKeys": item.sources}
+            for item in pending
+        ],
+        "recentHistory": history[-6000:],
+        "currentSelfUnderstanding": current_self,
+    }
+    request = [
+        {
+            "role": "system",
+            "content": (
+                "你负责归并一个角色的长期记忆。只根据输入内容总结，不得推测或添加事实。"
+                "合并重复或相近事实，保留不同事实；保留每条记忆原有的 sourceKeys，禁止新造来源。"
+                "selfUnderstanding 只描述关系认识和共同经历，不写入或建议修改角色性格、行为规则或回复限制。"
+                "只返回 JSON：{\"memories\":[{\"memoryType\":string,\"summary\":string,\"sourceKeys\":string[]}],"
+                "\"selfUnderstanding\":string}。"
+            ),
+        },
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+    async def collect() -> str:
+        parts: list[str] = []
+        async for delta in model_adapter.stream_messages(request, configuration, max_tokens=1200):
+            parts.append(delta)
+        return "".join(parts)
+
+    text = asyncio.run(collect())
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3].rstrip()
+    try:
+        result = json.loads(cleaned)
+    except json.JSONDecodeError as error:
+        raise ValueError("Optimizer 返回内容不是有效 JSON") from error
+    if not isinstance(result, dict) or not isinstance(result.get("memories"), list):
+        raise ValueError("Optimizer 返回的记忆格式无效")
+    allowed_sources = {source for item in [*existing, *pending] for source in item.sources}
+    records: list[MemoryRecord] = []
+    for item in result["memories"]:
+        if not isinstance(item, dict):
+            raise ValueError("Optimizer 返回的记忆条目格式无效")
+        memory_type = item.get("memoryType")
+        summary = item.get("summary")
+        sources = item.get("sourceKeys")
+        if not isinstance(memory_type, str) or not memory_type.strip() or not isinstance(summary, str) or not summary.strip() or not isinstance(sources, list):
+            raise ValueError("Optimizer 返回的记忆条目缺少必要字段")
+        if any(not isinstance(source, str) or source not in allowed_sources for source in sources):
+            raise ValueError("Optimizer 返回了无效的记忆来源")
+        records.append(MemoryRecord(memory_type.strip(), summary.strip(), list(dict.fromkeys(sources))))
+    self_understanding = result.get("selfUnderstanding")
+    if not isinstance(self_understanding, str):
+        raise ValueError("Optimizer 返回的自我认识格式无效")
+    return MemoryOptimizationResult(MemoryOptimizer._merge_records([], records), self_understanding[:2000])
+
+
+def _persist_consolidated_memories(role_id: str, records: list[MemoryRecord]) -> None:
+    """Mirror optimizer output into the role-scoped structured memory store."""
+    writes = [
+        (record.memory_type, record.summary, _consolidation_source_ref(role_id, source_key))
+        for record in records
+        for source_key in dict.fromkeys(record.sources)
+    ]
+    for item in memory_store.consolidate_batch(role_id, writes):
+        memory_service._index_embedding(role_id, item)
+
+
+def _consolidation_source_ref(role_id: str, source_key: str) -> MemorySourceRef:
+    """Decode the maintenance source key into a navigable consolidation origin."""
+    parts = source_key.split(":")
+    message_ids: list[str] = []
+    message_range: tuple[int, int] | None = None
+    if len(parts) >= 6 and parts[0] == "consolidation" and parts[1] == role_id:
+        try:
+            start, end = (int(value) for value in parts[2].split("-", 1))
+            message_range = (start, end)
+            message_ids = [parts[4]]
+        except (TypeError, ValueError):
+            message_ids = []
+            message_range = None
+    return MemorySourceRef(
+        kind="consolidation",
+        sessionKey=f"role:{role_id}",
+        messageIds=message_ids,
+        messageRange=message_range,
+        stableSourceKey=source_key,
+    )
+
+
+embedding_provider = OpenAICompatibleEmbeddingAdapter(_embedding_configuration)
+memory_service = MemoryService(memory_store, embedding_provider)
+memory_optimizer_worker = MemoryOptimizerWorker(
+    MemoryOptimizer(
+        roles_root,
+        lambda role_id, existing, pending, history, current_self: _consolidate_role_memories(
+            role_id,
+            existing,
+            pending,
+            history,
+            current_self,
+        ),
+        _persist_consolidated_memories,
+    )
+)
+memory_worker = MemoryWorker(
+    memory_service,
+    MemoryMaintenance(roles_root, session_store),
+    memory_optimizer_worker,
+)
 connection_test_adapter = OpenAICompatibleAdapter(timeout=20)
 role_locks: dict[str, asyncio.Lock] = {}
 
-app = FastAPI(title="Meido API")
+
+async def _mutate_and_sync_memory(role_id: str, operation):
+    async with memory_optimizer_worker.lock_for(role_id):
+        return _mutate_and_sync_memory_locked(role_id, operation)
+
+
+def _mutate_and_sync_memory_locked(role_id: str, operation):
+    snapshot = memory_store.snapshot_role(role_id)
+    documents = MemoryDocuments(roles_root)
+    memory_dir = documents.memory_dir(role_id)
+    document_paths = (memory_dir / "MEMORY.md", memory_dir / "PENDING.md")
+    previous_documents = {
+        path: path.read_text(encoding="utf-8") if path.exists() else None
+        for path in document_paths
+    }
+    def restore(error: Exception) -> None:
+        try:
+            memory_store.restore_role(role_id, snapshot)
+            writes = {path: content for path, content in previous_documents.items() if content is not None}
+            for path, content in previous_documents.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+            if writes:
+                MemoryOptimizer.commit_documents(writes)
+        except Exception as restore_error:
+            raise HTTPException(status_code=500, detail=f"记忆同步失败，且回滚失败：{restore_error}") from error
+
+    try:
+        result = operation()
+    except Exception as error:
+        restore(error)
+        raise
+    try:
+        documents.sync_structured_memory(role_id, memory_store.list_all(role_id))
+    except Exception as error:
+        restore(error)
+        raise HTTPException(status_code=500, detail=f"记忆同步失败，原记忆已恢复：{error}") from error
+    return result
+
+
+def _role_memory_context(role_id: str) -> str:
+    documents = MemoryDocuments(roles_root)
+    try:
+        documents.memory_dir(role_id)
+    except ValueError:
+        return ""
+    sections = []
+    for filename in ("SELF.md", "MEMORY.md", "RECENT_CONTEXT.md"):
+        try:
+            content = documents.read_document(role_id, filename).strip()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if content:
+            sections.append(f"[{filename}]\n{content}")
+    return "\n\n".join(sections)
+
+async def _close_memory_workers() -> None:
+    await memory_worker.close()
+    await memory_optimizer_worker.drain()
+
+
+async def _start_memory_workers() -> None:
+    memory_worker.start()
+    memory_optimizer_worker.resume_pending()
+
+
+app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown=[_close_memory_workers])
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -251,22 +461,66 @@ async def delete_role(role_id: str) -> None:
         raise HTTPException(status_code=409, detail="该角色正在生成回复，暂时无法删除")
 
     await lock.acquire()
+    deletion_started = False
+    session_snapshot = None
+    memory_snapshot = None
+    session_snapshot_taken = False
+    memory_snapshot_taken = False
+    role_delete_attempted = False
+    deleted = None
+    staged_path = None
+    deletion_phase = "preflight"
     try:
+        await memory_worker.begin_role_deletion(role_id)
+        deletion_started = True
+        session_snapshot = session_store.snapshot_role_session(role_id)
+        session_snapshot_taken = True
+        memory_snapshot = memory_store.snapshot_role(role_id)
+        memory_snapshot_taken = True
+        deletion_phase = "role"
+        role_delete_attempted = True
         deleted = store.delete(role_id)
-        try:
-            session_store.delete_role_session(role_id)
-        except Exception as error:
+        staged_path = store.stage_role_files_for_deletion(role_id)
+        deletion_phase = "session"
+        session_store.delete_role_session(role_id)
+        deletion_phase = "memory"
+        memory_store.delete_role(role_id)
+        store.purge_staged_role_files(staged_path)
+    except Exception as error:
+        rollback_errors: list[Exception] = []
+        if session_snapshot_taken:
+            try:
+                session_store.restore_role_session(role_id, session_snapshot)
+            except Exception as restore_error:
+                rollback_errors.append(restore_error)
+        if memory_snapshot_taken:
+            try:
+                memory_store.restore_role(role_id, memory_snapshot)
+            except Exception as restore_error:
+                rollback_errors.append(restore_error)
+        if deleted is not None:
             try:
                 store.restore_deleted(deleted)
-            except OSError as restore_error:
-                raise HTTPException(status_code=500, detail="删除失败，角色恢复也未能完成") from restore_error
-            raise HTTPException(status_code=500, detail="删除失败，角色和聊天记录已保留") from error
-        store.remove_role_files(role_id)
-    except KeyError as error:
-        raise HTTPException(status_code=404, detail="角色不存在") from error
-    except OSError as error:
-        raise HTTPException(status_code=500, detail="删除失败，角色和聊天记录已保留") from error
+            except Exception as restore_error:
+                rollback_errors.append(restore_error)
+            if staged_path is not None:
+                try:
+                    store.remove_role_files(role_id)
+                except Exception as restore_error:
+                    rollback_errors.append(restore_error)
+                try:
+                    store.restore_staged_role_files(role_id, staged_path)
+                except Exception as restore_error:
+                    rollback_errors.append(restore_error)
+        if isinstance(error, KeyError) and role_delete_attempted and deleted is None and not rollback_errors:
+            raise HTTPException(status_code=404, detail="角色不存在") from error
+        if rollback_errors:
+            raise HTTPException(status_code=500, detail="删除失败，角色恢复也未能完成") from error
+        detail = "删除失败，角色和聊天记录已保留" if deletion_phase == "session" else "删除失败，角色和记忆已保留"
+        raise HTTPException(status_code=500, detail=detail) from error
     finally:
+        if deletion_started:
+            memory_worker.end_role_deletion(role_id)
         lock.release()
 
 
@@ -278,8 +532,121 @@ def get_role_session(role_id: str) -> SessionResponse:
         raise HTTPException(status_code=404, detail="角色不存在") from error
 
 
+@app.get("/api/roles/{role_id}/memories", response_model=MemoryList)
+def list_role_memories(role_id: str, q: str = "") -> MemoryList:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    memories = memory_service.recall(role_id, q) if q.strip() else memory_store.list_active(role_id)
+    return MemoryList(memories=memories)
+
+
+@app.get("/api/roles/{role_id}/memory-documents")
+def list_role_memory_documents(role_id: str) -> dict[str, object]:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    documents = MemoryDocuments(roles_root)
+    try:
+        return {
+            "documents": [
+                {"name": name, "content": documents.read_document(role_id, name)}
+                for name in sorted(MemoryDocuments.DOCUMENTS)
+            ],
+            "journals": documents.read_journal(role_id),
+        }
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@app.get("/api/roles/{role_id}/memory-documents/{document_name}")
+def get_role_memory_document(role_id: str, document_name: str) -> dict[str, str]:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        return {"name": document_name, "content": MemoryDocuments(roles_root).read_document(role_id, document_name)}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@app.post("/api/roles/{role_id}/memories", response_model=MemoryItem, status_code=201)
+async def remember_role_memory(role_id: str, data: RememberMemoryInput) -> MemoryItem:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        return await _mutate_and_sync_memory(
+            role_id,
+            lambda: memory_service.remember(
+                role_id,
+                data.summary,
+                data.memoryType,
+                happened_at=data.happenedAt,
+                stable_source_key=f"manual:{role_id}:{data.memoryType}:{data.summary.casefold()}",
+            ),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.put("/api/roles/{role_id}/memories/{memory_id}", response_model=MemoryItem)
+async def update_role_memory(role_id: str, memory_id: str, data: UpdateMemoryInput) -> MemoryItem:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        return await _mutate_and_sync_memory(
+            role_id,
+            lambda: memory_store.update(role_id, memory_id, data.summary, data.memoryType, data.happenedAt),
+        )
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="记忆不存在") from error
+
+
+@app.post("/api/roles/{role_id}/memories/{memory_id}/forget", response_model=MemoryItem)
+async def forget_role_memory(role_id: str, memory_id: str) -> MemoryItem:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        return await _mutate_and_sync_memory(role_id, lambda: memory_store.set_status(role_id, memory_id, "forgotten"))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="记忆不存在") from error
+
+
+@app.post("/api/roles/{role_id}/memories/{memory_id}/reject", response_model=MemoryItem)
+async def reject_role_memory(role_id: str, memory_id: str) -> MemoryItem:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        return await _mutate_and_sync_memory(role_id, lambda: memory_store.set_status(role_id, memory_id, "rejected"))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="记忆不存在") from error
+
+
+@app.delete("/api/roles/{role_id}/memories/{memory_id}", status_code=204)
+async def delete_role_memory(role_id: str, memory_id: str) -> None:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        await _mutate_and_sync_memory(role_id, lambda: memory_store.remove(role_id, memory_id))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="记忆不存在") from error
+
+
 def _event(event_type: str, payload: dict[str, object]) -> str:
     return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _stream_model_reply(role, history, configuration, memory_context):
+    """Keep third-party/test adapters compatible while passing memory to native adapters."""
+    stream_reply = model_adapter.stream_reply
+    try:
+        accepts_memory = "memory_context" in inspect.signature(stream_reply).parameters
+    except (TypeError, ValueError):
+        accepts_memory = False
+    if accepts_memory:
+        return stream_reply(role, history, configuration, memory_context=memory_context)
+    return stream_reply(role, history, configuration)
 
 
 @app.post("/api/roles/{role_id}/messages")
@@ -296,6 +663,10 @@ async def send_role_message(role_id: str, data: SendMessageInput) -> StreamingRe
         raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试")
     await lock.acquire()
 
+    if store.get(role_id) is None:
+        lock.release()
+        raise HTTPException(status_code=404, detail="角色不存在")
+
     try:
         user_message = session_store.append_message(session.session.sessionKey, "user", data.content)
         assistant_message = session_store.append_message(session.session.sessionKey, "assistant", "", "streaming")
@@ -303,17 +674,25 @@ async def send_role_message(role_id: str, data: SendMessageInput) -> StreamingRe
         lock.release()
         raise
     history = [*session_store.context_messages(session.session.sessionKey)[:-1], user_message]
+    try:
+        memories = await memory_service.recall_async(role_id, data.content)
+        memory_context = memory_service.context_block(memories, _role_memory_context(role_id))
+    except Exception as error:
+        memory_worker.errors.append(f"{role_id}: recall failed: {error}")
+        memory_context = ""
     async def stream():
         content = ""
         try:
             yield _event("user_message_accepted", {"message": user_message.model_dump(mode="json")})
             yield _event("assistant_generation_started", {"messageId": assistant_message.id})
             try:
-                async for delta in model_adapter.stream_reply(role, history, configuration):
+                deltas = _stream_model_reply(role, history, configuration, memory_context)
+                async for delta in deltas:
                     content += delta
                     session_store.update_message(assistant_message.id, content, "streaming")
                     yield _event("assistant_delta", {"messageId": assistant_message.id, "delta": delta})
                 message = session_store.update_message(assistant_message.id, content, "completed")
+                memory_worker.submit(role_id, session.session.sessionKey, user_message, message)
                 yield _event("assistant_completed", {"message": message.model_dump(mode="json")})
             except Exception as error:
                 message = session_store.update_message(assistant_message.id, content, "failed")

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Role } from "./api/types";
 import { ChatView, WelcomeView } from "./features/chat/ChatView";
 import { useChat } from "./features/chat/useChat";
+import { MemoryPanel, type MemoryOrigin } from "./features/memory/MemoryPanel";
 import { RoleEditor } from "./features/role-management/RoleEditor";
 import { RoleList } from "./features/role-management/RoleList";
 import { useRoles } from "./features/role-management/useRoles";
@@ -13,8 +14,8 @@ import { Dialog } from "./ui/Dialog";
 import { Icon, IconButton } from "./ui/Icon";
 import { Notice } from "./ui/Status";
 
-/** What the main pane shows: a conversation, or the role tavern (all role cards). */
-type View = "chat" | "tavern";
+/** What the main pane shows: a conversation, the role tavern (all role cards), or the open role's memories. */
+type View = "chat" | "tavern" | "memories";
 /** Overlay on top of the main pane; null means none. "card" reveals a newly created role's card. */
 type Panel = null | "create" | "profile" | "settings" | "card";
 
@@ -33,6 +34,8 @@ export function App() {
   const [showList, setShowList] = useState(false);
   const [openingId, setOpeningId] = useState<string | null>(null);
   const booted = useRef(false);
+  // The message a memory came from; the chat scrolls to and marks it.
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
 
   const openChat = async (role: Role) => {
     roles.setError("");
@@ -41,6 +44,7 @@ export function App() {
     setOpeningId(null);
     if (!opened) return false;
     writeLastRole(role.id);
+    setHighlightedId(null);
     setView("chat");
     setShowList(false);
     return true;
@@ -61,8 +65,22 @@ export function App() {
   const startCreate = () => { roles.startCreate(); setPanel("create"); };
   const showProfile = (role: Role) => { roles.select(role); setPanel("profile"); };
   const openTavern = () => { setView("tavern"); setShowList(false); };
-  const backToChat = () => { setView("chat"); setShowList(false); };
-  const chatWith = (role: Role) => role.id === chat.roleId ? (setView("chat"), setShowList(false)) : void openChat(role);
+  const backToChat = () => { setView("chat"); setShowList(false); setHighlightedId(null); };
+
+  const openMemorySource = async (role: Role, origin: MemoryOrigin, messageId?: string) => {
+    chat.setError("");
+    if (origin.sessionKey !== `role:${role.id}`) { chat.setError("来源会话与当前角色不匹配"); setView("chat"); return; }
+    const messages = await chat.open(role);
+    setView("chat");
+    if (!messages) return;
+    const [from, to] = origin.messageRange ?? [];
+    const source = messageId
+      ? messages.find((message) => message.id === messageId)
+      : messages.find((message) => from !== undefined && message.sequence >= from && message.sequence <= to!);
+    if (!source) { chat.setError("来源消息当前不可访问"); return; }
+    setHighlightedId(source.id);
+  };
+  const chatWith = (role: Role) => role.id === chat.roleId ? backToChat() : void openChat(role);
 
   const closePanel = () => {
     // Closing the create panel keeps the draft (it is restored next time); closing a profile drops unsaved edits.
@@ -92,7 +110,7 @@ export function App() {
     chat.reset();
     // In the tavern the user stays with the cards; in a conversation, move on to the next role.
     const next = roles.roles.find((role) => role.id !== deletedId);
-    if (next && view === "chat") void openChat(next);
+    if (next && view !== "tavern") void openChat(next);
   };
 
   // Switching roles mid-reply would mix two conversations, so the list waits for the reply.
@@ -104,12 +122,12 @@ export function App() {
         <h1 className="brand">Meido</h1>
       </header>
       <nav className="side-tabs" aria-label="页面">
-        <button type="button" aria-current={view === "chat" ? "page" : undefined} onClick={backToChat}><Icon name="chat" size={17} />对话</button>
+        <button type="button" aria-current={view !== "tavern" ? "page" : undefined} onClick={backToChat}><Icon name="chat" size={17} />对话</button>
         <button type="button" aria-current={view === "tavern" ? "page" : undefined} onClick={openTavern}><Icon name="cards" size={17} />角色</button>
       </nav>
       <div className="sidebar-body">
-        {roles.error && panel === null && view === "chat" && <Notice onDismiss={() => roles.setError("")}>{roles.error}</Notice>}
-        <RoleList roles={roles.roles} loading={roles.loading} loadFailed={roles.loadFailed} activeId={view === "chat" ? chat.roleId : null} disabled={lockSwitch} onOpen={chatWith} />
+        {roles.error && panel === null && view !== "tavern" && <Notice onDismiss={() => roles.setError("")}>{roles.error}</Notice>}
+        <RoleList roles={roles.roles} loading={roles.loading} loadFailed={roles.loadFailed} activeId={view === "tavern" ? null : chat.roleId} disabled={lockSwitch} onOpen={chatWith} />
       </div>
       <footer className="sidebar-footer">
         <IconButton icon="settings" label="设置" onClick={() => setPanel("settings")} />
@@ -119,8 +137,10 @@ export function App() {
     <main className="main">
       {view === "tavern"
         ? <TavernView roles={roles.roles} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onCreate={startCreate} onShow={showProfile} onChat={chatWith} />
+        : view === "memories" && chatRole
+        ? <MemoryPanel key={chatRole.id} role={chatRole} onBack={backToChat} onOpenSource={(origin, messageId) => void openMemorySource(chatRole, origin, messageId)} />
         : chatRole
-        ? <ChatView role={chatRole} chat={chat} onBack={() => setShowList(true)} onShowProfile={() => showProfile(chatRole)} />
+        ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showProfile(chatRole)} onShowMemories={() => setView("memories")} />
         : <WelcomeView loading={roles.loading || openingId !== null} hasRoles={roles.roles.length > 0} error={chat.error} onDismissError={() => chat.setError("")} onCreate={startCreate} onBack={() => setShowList(true)} />}
     </main>
 

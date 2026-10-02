@@ -120,6 +120,66 @@ class SendMessageInput(BaseModel):
         return value
 
 
+class MemoryOrigin(BaseModel):
+    kind: str
+    sessionKey: str
+    messageIds: list[str] = Field(default_factory=list)
+    messageRange: tuple[int, int] | None = None
+    stableSourceKey: str
+
+
+class MemorySourceRef(MemoryOrigin):
+    sourceKeys: list[str] = Field(default_factory=list)
+    sources: list[MemoryOrigin] = Field(default_factory=list)
+
+
+class MemoryItem(BaseModel):
+    id: str
+    roleId: str
+    memoryType: str
+    summary: str
+    extra: dict[str, Any] = Field(default_factory=dict)
+    sourceRef: MemorySourceRef
+    happenedAt: datetime | None = None
+    status: str
+    createdAt: datetime
+    updatedAt: datetime
+    reinforcement: int = 1
+    contentHash: str
+
+
+class MemoryList(BaseModel):
+    memories: list[MemoryItem]
+
+
+class RememberMemoryInput(BaseModel):
+    summary: str
+    memoryType: str = "fact"
+    happenedAt: datetime | None = None
+
+    @field_validator("summary")
+    @classmethod
+    def validate_summary(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("记忆内容不能为空")
+        return value
+
+
+class UpdateMemoryInput(BaseModel):
+    summary: str
+    memoryType: str = "fact"
+    happenedAt: datetime | None = None
+
+    @field_validator("summary")
+    @classmethod
+    def validate_summary(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("记忆内容不能为空")
+        return value
+
+
 class ModelConfigurationInput(BaseModel):
     providerId: str
     provider: str

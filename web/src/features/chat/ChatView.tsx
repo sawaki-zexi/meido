@@ -5,11 +5,14 @@ import { Avatar, roleStyle } from "../../ui/Avatar";
 import { Icon, IconButton } from "../../ui/Icon";
 import { Notice, Placeholder } from "../../ui/Status";
 
-function MessageItem({ message, role }: { message: Message; role: Role }) {
+function MessageItem({ message, role, highlighted }: { message: Message; role: Role; highlighted: boolean }) {
   const mine = message.role === "user";
   const streaming = message.status === "streaming";
   const failed = message.status === "failed";
-  return <li className={`message ${message.role}${failed ? " failed" : ""}`} aria-busy={streaming || undefined}>
+  const ref = useRef<HTMLLIElement>(null);
+  // A memory source opens the chat scrolled to the message it came from.
+  useEffect(() => { if (highlighted) ref.current?.scrollIntoView?.({ behavior: "smooth", block: "center" }); }, [highlighted]);
+  return <li ref={ref} className={`message ${message.role}${failed ? " failed" : ""}${highlighted ? " source-highlight" : ""}`} aria-busy={streaming || undefined}>
     {!mine && <Avatar id={role.id} name={role.name} size="sm" />}
     <div className="message-body">
       <div className="message-heading">
@@ -17,6 +20,7 @@ function MessageItem({ message, role }: { message: Message; role: Role }) {
         <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString()}</time>
         {streaming && <span className="message-status streaming">生成中</span>}
         {failed && <span className="message-status failed">未完成</span>}
+        {highlighted && <span className="source-marker">记忆来源</span>}
       </div>
       <p className="bubble">{message.content || (streaming ? <span className="typing" aria-label="正在回复">正在回复…</span> : "（无内容）")}</p>
     </div>
@@ -52,11 +56,11 @@ function Composer({ placeholder, disabled, sending, onSend }: { placeholder: str
   </form>;
 }
 
-type ChatProps = { role: Role; chat: ChatState; onBack: () => void; onShowProfile: () => void };
+type ChatProps = { role: Role; chat: ChatState; highlightedId?: string | null; onBack: () => void; onShowProfile: () => void; onShowMemories: () => void };
 
-export function ChatView({ role, chat, onBack, onShowProfile }: ChatProps) {
+export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfile, onShowMemories }: ChatProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" }); }, [chat.messages]);
+  useEffect(() => { if (!highlightedId) bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" }); }, [chat.messages, highlightedId]);
 
   return <section className="chat" style={roleStyle(role.id)} aria-label={`与${role.name}的会话`}>
     <header className="chat-header">
@@ -66,11 +70,12 @@ export function ChatView({ role, chat, onBack, onShowProfile }: ChatProps) {
         <h1>{role.name}</h1>
         {role.description && <small>{role.description}</small>}
       </div>
+      <IconButton icon="memory" label="角色记忆" onClick={onShowMemories} />
       <IconButton icon="profile" label="角色资料" onClick={onShowProfile} />
     </header>
     <div className="chat-scroll">
       {chat.messages.length
-        ? <ol className="message-list" aria-live="polite">{chat.messages.map((message) => <MessageItem key={message.id} message={message} role={role} />)}</ol>
+        ? <ol className="message-list" aria-live="polite">{chat.messages.map((message) => <MessageItem key={message.id} message={message} role={role} highlighted={message.id === highlightedId} />)}</ol>
         : <Placeholder>发送第一条消息开始对话。</Placeholder>}
       <div ref={bottomRef} />
     </div>

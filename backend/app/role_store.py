@@ -112,7 +112,28 @@ class RoleStore:
         role_path = (self.root / role_id).resolve()
         if role_path.parent != self.root or not role_path.exists():
             return
-        shutil.rmtree(role_path, ignore_errors=True)
+        shutil.rmtree(role_path)
+
+    def stage_role_files_for_deletion(self, role_id: str) -> Path | None:
+        role_path = (self.root / role_id).resolve()
+        if role_path.parent != self.root or not role_path.exists():
+            return None
+        staged_path = self.root / f".deleted-{role_id}-{uuid.uuid4().hex}"
+        os.replace(role_path, staged_path)
+        return staged_path
+
+    def restore_staged_role_files(self, role_id: str, staged_path: Path | None) -> None:
+        if staged_path is None or not staged_path.exists():
+            return
+        role_path = (self.root / role_id).resolve()
+        if role_path.parent != self.root:
+            raise ValueError("角色路径无效")
+        os.replace(staged_path, role_path)
+
+    @staticmethod
+    def purge_staged_role_files(staged_path: Path | None) -> None:
+        if staged_path is not None and staged_path.exists():
+            shutil.rmtree(staged_path)
 
     def _load(self) -> list[Role]:
         if not self.manifest_path.exists():
