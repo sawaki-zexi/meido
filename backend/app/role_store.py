@@ -88,6 +88,129 @@ class RoleStore:
             self._roles = candidate
             return updated.model_copy(deep=True)
 
+    def set_avatar(self, role_id: str, content: bytes, media_type: str, *, original: bool = False, card: bool = False) -> Role:
+        with self._lock:
+            index = next((i for i, role in enumerate(self._roles) if role.id == role_id), None)
+            if index is None:
+                raise KeyError(role_id)
+            role_dir = self.root / role_id
+            file_name = "avatar-original" if original else "card-image" if card else "avatar"
+            avatar_path = role_dir / file_name
+            temporary_path = role_dir / f".avatar-{uuid.uuid4().hex}.tmp"
+            previous_path = role_dir / f".avatar-{uuid.uuid4().hex}.bak"
+            had_previous = avatar_path.exists()
+            staged_previous = False
+            installed_new = False
+            try:
+                temporary_path.write_bytes(content)
+                if had_previous:
+                    os.replace(avatar_path, previous_path)
+                    staged_previous = True
+                os.replace(temporary_path, avatar_path)
+                installed_new = True
+                current = self._roles[index]
+                updated_at = utc_now()
+                updated = current.model_copy(update={
+                    ("avatarOriginalUrl" if original else "cardImageUrl" if card else "avatarUrl"): f"/api/roles/{role_id}/avatar-original?v={updated_at.timestamp()}" if original else f"/api/roles/{role_id}/card-image?v={updated_at.timestamp()}" if card else f"/api/roles/{role_id}/avatar?v={updated_at.timestamp()}",
+                    ("avatarOriginalMediaType" if original else "cardImageMediaType" if card else "avatarMediaType"): media_type,
+                    "updatedAt": updated_at,
+                })
+                candidate = [*self._roles]
+                candidate[index] = updated
+                self._save(candidate)
+            except OSError:
+                temporary_path.unlink(missing_ok=True)
+                if installed_new:
+                    avatar_path.unlink(missing_ok=True)
+                if staged_previous and previous_path.exists():
+                    os.replace(previous_path, avatar_path)
+                raise
+            self._roles = candidate
+            try:
+                previous_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return updated.model_copy(deep=True)
+
+    def remove_avatar(self, role_id: str) -> Role:
+        with self._lock:
+            index = next((i for i, role in enumerate(self._roles) if role.id == role_id), None)
+            if index is None:
+                raise KeyError(role_id)
+            role_dir = self.root / role_id
+            avatar_path = role_dir / "avatar"
+            original_path = role_dir / "avatar-original"
+            staged_path = role_dir / f".avatar-{uuid.uuid4().hex}.bak"
+            had_avatar = avatar_path.exists()
+            had_original = original_path.exists()
+            if had_avatar:
+                os.replace(avatar_path, staged_path)
+            staged_original = role_dir / f".avatar-original-{uuid.uuid4().hex}.bak"
+            if had_original:
+                os.replace(original_path, staged_original)
+            current = self._roles[index]
+            updated = current.model_copy(update={
+                "avatarUrl": None,
+                "avatarMediaType": None,
+                "avatarOriginalUrl": None,
+                "avatarOriginalMediaType": None,
+                "updatedAt": utc_now(),
+            })
+            candidate = [*self._roles]
+            candidate[index] = updated
+            try:
+                self._save(candidate)
+            except OSError:
+                if had_avatar and staged_path.exists():
+                    os.replace(staged_path, avatar_path)
+                if had_original and staged_original.exists():
+                    os.replace(staged_original, original_path)
+                raise
+            self._roles = candidate
+            try:
+                staged_path.unlink(missing_ok=True)
+                staged_original.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return updated.model_copy(deep=True)
+
+    def avatar_path(self, role_id: str) -> Path:
+        role_dir = (self.root / role_id).resolve()
+        if role_dir.parent != self.root or not role_dir.is_dir():
+            raise KeyError(role_id)
+        return role_dir / "avatar"
+
+    def avatar_original_path(self, role_id: str) -> Path:
+        role_dir = (self.root / role_id).resolve()
+        if role_dir.parent != self.root or not role_dir.is_dir():
+            raise KeyError(role_id)
+        return role_dir / "avatar-original"
+
+    def remove_card_image(self, role_id: str) -> Role:
+        with self._lock:
+            index = next((i for i, role in enumerate(self._roles) if role.id == role_id), None)
+            if index is None:
+                raise KeyError(role_id)
+            role_dir = self.root / role_id
+            image_path = role_dir / "card-image"
+            staged = role_dir / f".card-image-{uuid.uuid4().hex}.bak"
+            had_image = image_path.exists()
+            if had_image:
+                os.replace(image_path, staged)
+            current = self._roles[index]
+            updated = current.model_copy(update={"cardImageUrl": None, "cardImageMediaType": None, "updatedAt": utc_now()})
+            candidate = [*self._roles]
+            candidate[index] = updated
+            try:
+                self._save(candidate)
+            except OSError:
+                if had_image and staged.exists():
+                    os.replace(staged, image_path)
+                raise
+            self._roles = candidate
+            staged.unlink(missing_ok=True)
+            return updated.model_copy(deep=True)
+
     def delete(self, role_id: str) -> Role:
         with self._lock:
             index = next((i for i, role in enumerate(self._roles) if role.id == role_id), None)
@@ -152,6 +275,12 @@ class RoleStore:
             "profile": profile,
             "modelConfig": item.get("modelConfig") or {},
             "modelConfigurationId": item.get("modelConfigurationId"),
+            "avatarUrl": item.get("avatarUrl"),
+            "avatarMediaType": item.get("avatarMediaType"),
+            "avatarOriginalUrl": item.get("avatarOriginalUrl"),
+            "avatarOriginalMediaType": item.get("avatarOriginalMediaType"),
+            "cardImageUrl": item.get("cardImageUrl"),
+            "cardImageMediaType": item.get("cardImageMediaType"),
             "proactiveConfig": item.get("proactiveConfig") or {},
             "createdAt": item.get("createdAt") or utc_now(),
             "updatedAt": item.get("updatedAt") or utc_now(),

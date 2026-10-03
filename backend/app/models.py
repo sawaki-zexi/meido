@@ -62,6 +62,12 @@ class Role(RoleInput):
     createdAt: datetime
     updatedAt: datetime
     modelConfigurationId: str | None = None
+    avatarUrl: str | None = None
+    avatarMediaType: str | None = None
+    avatarOriginalUrl: str | None = None
+    avatarOriginalMediaType: str | None = None
+    cardImageUrl: str | None = None
+    cardImageMediaType: str | None = None
 
 
 class RoleModelConfigurationInput(BaseModel):
