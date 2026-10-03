@@ -13,6 +13,7 @@ const spriteBySegment: Record<Segment, string> = {
   ending: "smile",
 };
 const githubUrl = "https://github.com/sawaki-zexi/meido";
+const speakerName = "女仆";
 
 function getTopic(id: TopicId) {
   return topics.find((topic) => topic.id === id)!;
@@ -231,7 +232,7 @@ export function LandingPage() {
 
     {phase === "title" || phase === "transition" ? <section className="title-screen" aria-label="Meido 项目介绍标题画面">
       <div className="title-wordmark"><span className="title-kicker">A LOCAL-FIRST CHARACTER COMPANION</span><h1>meido</h1><span className="title-rule" /></div>
-      <img className="title-sprite" src="/landing/elysia-greeting.png" alt="Elysia，Meido 的女仆讲解角色" />
+      <img className="title-sprite" src="/landing/elysia-greeting.png" alt="Meido 的女仆讲解角色" />
       <button className="start-prompt" onClick={(event) => { event.stopPropagation(); begin(); }} aria-label="按任意键开始游戏">
         <span>按任意键开始游戏</span>
       </button>
@@ -241,10 +242,10 @@ export function LandingPage() {
         <div className="scene-brand"><span className="brand-mark">M</span><span>MEIDO</span><i />项目介绍</div>
       </div>
 
-      <img className={`dialogue-sprite sprite-${sprite}`} src={`/landing/elysia-${sprite}.png`} alt="Elysia" />
+      <img className={`dialogue-sprite sprite-${sprite}`} src={`/landing/elysia-${sprite}.png`} alt="Meido 的女仆讲解角色" />
 
       <section className="dialogue-box" aria-live="polite">
-        <div className="speaker-name"><span className="speaker-emblem">✦</span>Elysia</div>
+        <div className="speaker-name"><span className="speaker-emblem">✦</span>{speakerName}</div>
         <p className="dialogue-text">{displayedText}<span className={`text-caret ${visibleCharacters >= characters.length ? "caret-hidden" : ""}`} aria-hidden="true">▾</span></p>
         <div className="scene-controls" aria-label="对话控制">
           <button type="button" className={autoPlay ? "control-active" : ""} onClick={() => setAutoPlay((value) => !value)} title="自动播放" aria-label={autoPlay ? "关闭自动播放" : "开启自动播放"}><span className="control-icon" aria-hidden="true">▷</span>自动</button>
@@ -277,7 +278,7 @@ export function LandingPage() {
       <section className={`utility-panel ${modal === "settings" ? "settings-panel" : "backlog-panel"}`} role="dialog" aria-modal="true" aria-labelledby="utility-title">
         <div className="utility-heading"><div><span>MEIDO · SYSTEM</span><h2 id="utility-title">{modal === "backlog" ? "对话记录" : "设置"}</h2></div><button type="button" className="close-control" onClick={() => setModal(null)} aria-label="关闭">×</button></div>
         {modal === "backlog" ? <div className="backlog-list">{log.map((entry, index) => <article className={`backlog-entry ${entry.kind}`} key={`${index}-${entry.text}`}>
-          {entry.kind === "choice" ? <span className="backlog-choice">选择了　{entry.text}</span> : <><strong>Elysia</strong><p>{entry.text}</p></>}
+          {entry.kind === "choice" ? <span className="backlog-choice">选择了　{entry.text}</span> : <><strong>{speakerName}</strong><p>{entry.text}</p></>}
         </article>)}<div ref={logEndRef} /></div> : <div className="settings-form">
           <fieldset><legend>文字速度</legend><div className="setting-options">
             {(["slow", "normal", "fast"] as const).map((value) => <button type="button" key={value} className={speed === value ? "setting-selected" : ""} onClick={() => setSpeed(value)}>{value === "slow" ? "慢" : value === "normal" ? "标准" : "快"}</button>)}
