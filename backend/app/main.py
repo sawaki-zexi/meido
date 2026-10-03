@@ -5,7 +5,7 @@ import inspect
 from time import monotonic
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import httpx
@@ -27,6 +27,8 @@ from .session_store import SessionStore
 
 roles_root = Path(os.getenv("MEIDO_ROLES_DIR", "roles"))
 data_root = Path(os.getenv("MEIDO_DATA_DIR", ".data"))
+MAX_ROLE_AVATAR_BYTES = 10 * 1024 * 1024
+ROLE_AVATAR_MEDIA_TYPES = {"image/png", "image/jpeg", "image/webp"}
 initialize_databases(data_root)
 store = RoleStore(roles_root)
 session_store = SessionStore(data_root / "sessions.db")
@@ -416,6 +418,137 @@ def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
         raise HTTPException(status_code=404, detail="角色不存在") from error
     except OSError as error:
         raise HTTPException(status_code=500, detail=f"角色保存失败：{error}") from error
+
+
+def _avatar_signature_matches(content: bytes, media_type: str) -> bool:
+    if media_type == "image/png":
+        return content.startswith(b"\x89PNG\r\n\x1a\n")
+    if media_type == "image/jpeg":
+        return content.startswith(b"\xff\xd8\xff")
+    if media_type == "image/webp":
+        return len(content) >= 12 and content.startswith(b"RIFF") and content[8:12] == b"WEBP"
+    return False
+
+
+@app.post("/api/roles/{role_id}/avatar", response_model=RoleResponse)
+async def upload_role_avatar(role_id: str, request: Request) -> RoleResponse:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type not in ROLE_AVATAR_MEDIA_TYPES:
+        raise HTTPException(status_code=415, detail="仅支持 PNG、JPEG 或 WebP 图片")
+    content = bytearray()
+    async for chunk in request.stream():
+        if len(content) + len(chunk) > MAX_ROLE_AVATAR_BYTES:
+            raise HTTPException(status_code=413, detail="头像图片不能超过 10 MB")
+        content.extend(chunk)
+    if not _avatar_signature_matches(content, media_type):
+        raise HTTPException(status_code=415, detail="图片内容与文件格式不匹配")
+    try:
+        return RoleResponse(role=store.set_avatar(role_id, bytes(content), media_type))
+    except OSError as error:
+        raise HTTPException(status_code=500, detail=f"头像保存失败：{error}") from error
+
+
+@app.get("/api/roles/{role_id}/avatar")
+def get_role_avatar(role_id: str) -> Response:
+    role = store.get(role_id)
+    if role is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    if not role.avatarUrl or not role.avatarMediaType:
+        raise HTTPException(status_code=404, detail="角色没有头像")
+    try:
+        content = store.avatar_path(role_id).read_bytes()
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="角色没有头像") from error
+    return Response(content, media_type=role.avatarMediaType, headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/api/roles/{role_id}/avatar-original", response_model=RoleResponse)
+async def upload_role_avatar_original(role_id: str, request: Request) -> RoleResponse:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type not in ROLE_AVATAR_MEDIA_TYPES:
+        raise HTTPException(status_code=415, detail="仅支持 PNG、JPEG 或 WebP 图片")
+    content = bytearray()
+    async for chunk in request.stream():
+        if len(content) + len(chunk) > MAX_ROLE_AVATAR_BYTES:
+            raise HTTPException(status_code=413, detail="头像图片不能超过 10 MB")
+        content.extend(chunk)
+    if not _avatar_signature_matches(content, media_type):
+        raise HTTPException(status_code=415, detail="图片内容与文件格式不匹配")
+    try:
+        return RoleResponse(role=store.set_avatar(role_id, bytes(content), media_type, original=True))
+    except OSError as error:
+        raise HTTPException(status_code=500, detail=f"原图保存失败：{error}") from error
+
+
+@app.get("/api/roles/{role_id}/avatar-original")
+def get_role_avatar_original(role_id: str) -> Response:
+    role = store.get(role_id)
+    if role is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    media_type = role.avatarOriginalMediaType or role.avatarMediaType
+    path = store.avatar_original_path(role_id) if role.avatarOriginalMediaType else store.avatar_path(role_id)
+    try:
+        content = path.read_bytes()
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="角色没有头像") from error
+    return Response(content, media_type=media_type, headers={"Cache-Control": "no-cache"})
+
+@app.post("/api/roles/{role_id}/card-image", response_model=RoleResponse)
+async def upload_role_card_image(role_id: str, request: Request) -> RoleResponse:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type not in ROLE_AVATAR_MEDIA_TYPES:
+        raise HTTPException(status_code=415, detail="仅支持 PNG、JPEG 或 WebP 图片")
+    content = bytearray()
+    async for chunk in request.stream():
+        if len(content) + len(chunk) > MAX_ROLE_AVATAR_BYTES:
+            raise HTTPException(status_code=413, detail="卡片图片不能超过 10 MB")
+        content.extend(chunk)
+    if not _avatar_signature_matches(content, media_type):
+        raise HTTPException(status_code=415, detail="图片内容与文件格式不匹配")
+    try:
+        return RoleResponse(role=store.set_avatar(role_id, bytes(content), media_type, card=True))
+    except OSError as error:
+        raise HTTPException(status_code=500, detail=f"卡片图片保存失败：{error}") from error
+
+@app.get("/api/roles/{role_id}/card-image")
+def get_role_card_image(role_id: str) -> Response:
+    role = store.get(role_id)
+    if role is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    if not role.cardImageMediaType:
+        raise HTTPException(status_code=404, detail="角色没有独立卡片图片")
+    try:
+        content = (store.root / role_id / "card-image").read_bytes()
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="角色没有独立卡片图片") from error
+    return Response(content, media_type=role.cardImageMediaType, headers={"Cache-Control": "no-cache"})
+
+@app.delete("/api/roles/{role_id}/card-image", status_code=204)
+def delete_role_card_image(role_id: str) -> Response:
+    try:
+        store.remove_card_image(role_id)
+        return Response(status_code=204)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="角色不存在") from error
+    except OSError as error:
+        raise HTTPException(status_code=500, detail=f"卡片图片移除失败：{error}") from error
+
+
+@app.delete("/api/roles/{role_id}/avatar", status_code=204)
+def delete_role_avatar(role_id: str) -> Response:
+    try:
+        store.remove_avatar(role_id)
+        return Response(status_code=204)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="角色不存在") from error
+    except OSError as error:
+        raise HTTPException(status_code=500, detail=f"头像移除失败：{error}") from error
 
 
 @app.get("/api/roles/{role_id}/model-configuration")

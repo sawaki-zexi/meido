@@ -24,7 +24,11 @@ export function fakeBackend(routes: Record<string, Handler>) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     const method = init?.method ?? "GET";
-    calls.push({ method, path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    let body: unknown;
+    if (typeof init?.body === "string") {
+      try { body = JSON.parse(init.body); } catch { body = init.body; }
+    } else body = init?.body;
+    calls.push({ method, path, body });
     for (const [pattern, handler] of Object.entries(routes)) {
       const match = `${method} ${path}`.match(new RegExp(`^${pattern}$`));
       if (!match) continue;

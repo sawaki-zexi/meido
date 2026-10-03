@@ -14,10 +14,11 @@ type Props = {
   onCreate: () => void;
   onShow: (role: Role) => void;
   onChat: (role: Role) => void;
+  onPreviewAvatar: (role: Role) => void;
 };
 
 /** Role tavern: every role as a card. New roles are created here and get their own card. */
-export function TavernView({ roles, loading, error, onDismissError, chatDisabled, onBack, onCreate, onShow, onChat }: Props) {
+export function TavernView({ roles, loading, error, onDismissError, chatDisabled, onBack, onCreate, onShow, onChat, onPreviewAvatar }: Props) {
   return <section className="tavern" aria-label="角色酒馆">
     <header className="chat-header">
       <IconButton icon="back" label="对话列表" className="only-narrow" onClick={onBack} />
@@ -31,9 +32,9 @@ export function TavernView({ roles, loading, error, onDismissError, chatDisabled
       {loading ? <Placeholder loading>正在加载角色…</Placeholder>
         : <ul className="card-grid" aria-label="角色卡牌">
           {roles.map((role, index) => <li key={role.id}>
-            <RoleCard role={role} number={index + 1}>
-              <button type="button" className="card-hit" aria-label={`查看${role.name}`} onClick={() => onShow(role)} />
-              <IconButton icon="chat" label={`与${role.name}对话`} className="card-chat" disabled={chatDisabled} onClick={() => onChat(role)} />
+            <RoleCard role={role} number={index + 1} onPreviewAvatar={onPreviewAvatar}>
+              <button type="button" className="card-hit" aria-label={`与${role.name}对话`} onClick={() => onChat(role)} disabled={chatDisabled} />
+              <IconButton icon="edit" label={`编辑${role.name}`} className="card-edit" onClick={() => onShow(role)} />
             </RoleCard>
           </li>)}
           <li>

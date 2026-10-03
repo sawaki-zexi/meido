@@ -13,7 +13,7 @@ function MessageItem({ message, role, highlighted }: { message: Message; role: R
   // A memory source opens the chat scrolled to the message it came from.
   useEffect(() => { if (highlighted) ref.current?.scrollIntoView?.({ behavior: "smooth", block: "center" }); }, [highlighted]);
   return <li ref={ref} className={`message ${message.role}${failed ? " failed" : ""}${highlighted ? " source-highlight" : ""}`} aria-busy={streaming || undefined}>
-    {!mine && <Avatar id={role.id} name={role.name} size="sm" />}
+    {!mine && <Avatar id={role.id} name={role.name} size="sm" avatarUrl={role.avatarUrl} />}
     <div className="message-body">
       <div className="message-heading">
         <strong>{mine ? "我" : role.name}</strong>
@@ -65,7 +65,7 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
   return <section className="chat" style={roleStyle(role.id)} aria-label={`与${role.name}的会话`}>
     <header className="chat-header">
       <IconButton icon="back" label="对话列表" className="only-narrow" onClick={onBack} />
-      <Avatar id={role.id} name={role.name} size="sm" />
+      <Avatar id={role.id} name={role.name} size="sm" avatarUrl={role.avatarUrl} />
       <div className="chat-title">
         <h1>{role.name}</h1>
         {role.description && <small>{role.description}</small>}

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "./App";
 import { fakeBackend, message, role, sse } from "./test/fakeBackend";
@@ -102,14 +102,14 @@ describe("角色管理", () => {
     const preview = within(form).getByRole("complementary", { name: "卡牌预览" });
     expect(within(preview).getByText("No.001")).toBeTruthy();
     await user.type(within(form).getByLabelText(/名称/), "新角色");
-    expect(within(preview).getByText("新角色", { selector: "strong" })).toBeTruthy();
+    expect(within(form).getByLabelText(/名称/)).toHaveValue("新角色");
     await user.type(within(form).getByLabelText(/角色设定/), "她的设定");
     await user.click(within(form).getByRole("button", { name: "保存" }));
 
     const reveal = await dialog("新卡牌");
     expect(within(reveal).getByText("新角色", { selector: "strong" })).toBeTruthy();
     expect(within(reveal).getByText("No.001")).toBeTruthy();
-    expect(within(await screen.findByRole("list", { name: "角色卡牌" })).getByRole("button", { name: "查看新角色" })).toBeTruthy();
+    expect(within(await screen.findByRole("list", { name: "角色卡牌" })).getByRole("button", { name: "编辑新角色" })).toBeTruthy();
     expect(calls.find((call) => call.method === "POST")?.body).toEqual({
       name: "新角色", description: "",
       profile: { profile: "她的设定", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" },
@@ -119,6 +119,103 @@ describe("角色管理", () => {
     await user.click(within(reveal).getByRole("button", { name: "开始对话" }));
     expect(await chatHeading("新角色")).toBeTruthy();
     expect(within(await roleList()).getByText("新角色")).toBeTruthy();
+  });
+
+  it("创建角色时预览并上传头像，保存后显示在角色卡", async () => {
+    const previewUrl = "blob:portrait-preview";
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => previewUrl), revokeObjectURL: vi.fn() });
+    const created = role({ id: "r3", name: "新角色" });
+    const withAvatar = { ...created, avatarUrl: "/api/roles/r3/avatar" };
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [] } }),
+      "POST /api/roles": () => ({ status: 201, body: { role: created } }),
+      "POST /api/roles/r3/avatar": () => ({ body: { role: withAvatar } }),
+      "POST /api/roles/r3/avatar-original": () => ({ body: { role: { ...withAvatar, avatarOriginalUrl: "/api/roles/r3/avatar-original" } } }),
+      "POST /api/roles/r3/card-image": () => ({ body: { role: { ...withAvatar, avatarOriginalUrl: "/api/roles/r3/avatar-original", cardImageUrl: "/api/roles/r3/card-image" } } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "创建角色" }));
+    const form = await dialog("创建角色");
+    await user.type(within(form).getByLabelText(/名称/), "新角色");
+    await user.type(within(form).getByLabelText(/角色设定/), "设定");
+    const image = new File(["portrait"], "portrait.png", { type: "image/png" });
+    await user.upload(within(form).getByLabelText("角色头像"), image);
+
+    const crop = within(form).getByRole("region", { name: "调整头像裁切" });
+    expect(crop.querySelector(".avatar-crop-window")).toHaveClass("crop-circle");
+    const cropImage = within(crop).getByRole("img", { name: "头像裁切预览" });
+    Object.defineProperties(cropImage, { naturalWidth: { configurable: true, value: 800 }, naturalHeight: { configurable: true, value: 600 } });
+    fireEvent.load(cropImage);
+    const drawImage = vi.fn();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback) => callback(new Blob(["cropped"], { type: "image/png" })));
+    await user.click(within(crop).getByRole("button", { name: "保存" }));
+
+    expect(within(form).getByRole("img", { name: "新角色卡片图片" })).toHaveAttribute("src", previewUrl);
+    const cardImage = new File(["card"], "card.png", { type: "image/png" });
+    await user.upload(within(form).getByLabelText("卡片图片"), cardImage);
+    const cardCrop = within(form).getByRole("region", { name: "调整头像裁切" });
+    const cardCropImage = within(cardCrop).getByRole("img", { name: "头像裁切预览" });
+    Object.defineProperties(cardCropImage, { naturalWidth: { configurable: true, value: 600 }, naturalHeight: { configurable: true, value: 800 } });
+    fireEvent.load(cardCropImage);
+    await user.click(within(cardCrop).getByRole("button", { name: "保存" }));
+    await user.click(within(form).getByRole("button", { name: "保存" }));
+
+    const reveal = await dialog("新卡牌");
+    expect(within(reveal).getByRole("img", { name: "新角色卡片图片" })).toHaveAttribute("src", "/api/roles/r3/card-image");
+    await user.click(within(reveal).getByRole("button", { name: "稍后再聊" }));
+    await user.click(screen.getByRole("button", { name: "角色" }));
+    const cards = await screen.findByRole("list", { name: "角色卡牌" });
+    expect(cards.querySelector('img[src="/api/roles/r3/card-image"]')).toBeTruthy();
+    const uploaded = calls.find((call) => call.method === "POST" && call.path === "/api/roles/r3/avatar")?.body as File;
+    expect(uploaded).toBeInstanceOf(File);
+    expect(uploaded).not.toBe(image);
+    expect(drawImage).toHaveBeenCalled();
+    const uploadedCard = calls.find((call) => call.method === "POST" && call.path === "/api/roles/r3/card-image")?.body as File;
+    expect(uploadedCard).toBeInstanceOf(File);
+    expect(uploadedCard).not.toBe(cardImage);
+  });
+
+  it("点击酒馆角色卡头像可预览大图", async () => {
+    const withAvatar = { ...alice, avatarUrl: "/api/roles/r1/avatar" };
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [withAvatar] } }),
+      "GET /api/roles/r1/session": emptySession,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    await user.click(screen.getByRole("button", { name: "角色" }));
+    const cards = await screen.findByRole("list", { name: "角色卡牌" });
+    await user.click(within(cards).getByRole("button", { name: "预览爱丽丝头像" }));
+    const preview = await dialog("爱丽丝头像");
+    expect(within(preview).getByRole("img", { name: "爱丽丝头像" })).toHaveAttribute("src", withAvatar.avatarUrl);
+  });
+
+  it("编辑角色资料时可以移除已有头像", async () => {
+    const withAvatar = { ...alice, avatarUrl: "/api/roles/r1/avatar?v=old" };
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [withAvatar] } }),
+      "GET /api/roles/r1/session": emptySession,
+      "PUT /api/roles/r1": () => ({ body: { role: withAvatar } }),
+      "DELETE /api/roles/r1/avatar": () => ({ status: 204 }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    await user.click(screen.getByRole("button", { name: "角色" }));
+    const cards = await screen.findByRole("list", { name: "角色卡牌" });
+    expect(cards.querySelector(`img[src="${withAvatar.avatarUrl}"]`)).toBeTruthy();
+    await user.click(within(cards).getByRole("button", { name: "编辑爱丽丝" }));
+    const profile = await dialog("角色资料");
+    expect(within(profile).getByLabelText(/名称/)).not.toBeDisabled();
+    await user.click(within(profile).getByRole("button", { name: "移除" }));
+    await user.click(within(profile).getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(calls.some((call) => call.method === "DELETE" && call.path === "/api/roles/r1/avatar")).toBe(true));
+    expect(cards.querySelector("img")).toBeNull();
+    expect(within(profile).getByLabelText(/名称/)).toHaveValue("爱丽丝");
   });
 
   it("从对话页打开创建页，关闭后回到对话页", async () => {
@@ -162,8 +259,12 @@ describe("角色管理", () => {
     expect(within(cards).getByText("安静的女仆")).toBeTruthy();
     expect(within(cards).getByText("No.002")).toBeTruthy();
 
-    await user.click(within(cards).getByRole("button", { name: "查看贝拉" }));
-    expect(within(await dialog("角色资料")).getByLabelText(/名称/)).toHaveValue("贝拉");
+    await user.click(within(cards).getByRole("button", { name: "编辑贝拉" }));
+    const profile = await dialog("角色资料");
+    expect(within(profile).getByLabelText(/名称/)).toHaveValue("贝拉");
+    expect(within(profile).getByLabelText(/名称/)).not.toBeDisabled();
+    expect(within(within(profile).getByRole("complementary", { name: "卡牌预览" })).getByText("No.002")).toBeTruthy();
+    expect(profile.closest(".dialog-layer")).toHaveClass("dialog-page");
     await user.keyboard("{Escape}");
 
     await user.click(within(cards).getByRole("button", { name: "与贝拉对话" }));
@@ -201,7 +302,7 @@ describe("角色管理", () => {
     expect(within(await dialog("创建角色")).getByLabelText(/名称/)).toHaveValue("草稿");
   });
 
-  it("查看角色资料为只读，编辑后保存，取消编辑恢复原值", async () => {
+  it("打开角色资料后直接编辑，取消恢复原值，保存后更新", async () => {
     const { calls } = fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": emptySession,
@@ -213,19 +314,18 @@ describe("角色管理", () => {
     await user.click(screen.getByRole("button", { name: "角色资料" }));
     const panel = await dialog("角色资料");
     const name = within(panel).getByLabelText(/名称/);
-    expect(name).toBeDisabled();
-
-    await user.click(within(panel).getByRole("button", { name: "编辑" }));
+    expect(name).not.toBeDisabled();
     await user.clear(name);
     await user.type(name, "临时");
     await user.click(within(panel).getByRole("button", { name: "取消" }));
-    expect(name).toHaveValue("爱丽丝");
-    expect(name).toBeDisabled();
-
-    await user.click(within(panel).getByRole("button", { name: "编辑" }));
-    await user.clear(name);
-    await user.type(name, "爱丽丝二号");
-    await user.click(within(panel).getByRole("button", { name: "保存" }));
+    expect(screen.queryByRole("dialog", { name: "角色资料" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "角色资料" }));
+    const reopened = await dialog("角色资料");
+    expect(within(reopened).getByLabelText(/名称/)).toHaveValue("爱丽丝");
+    expect(within(reopened).getByLabelText(/名称/)).not.toBeDisabled();
+    await user.clear(within(reopened).getByLabelText(/名称/));
+    await user.type(within(reopened).getByLabelText(/名称/), "爱丽丝二号");
+    await user.click(within(reopened).getByRole("button", { name: "保存" }));
     expect(await within(await roleList()).findByText("爱丽丝二号")).toBeTruthy();
     expect(await chatHeading("爱丽丝二号")).toBeTruthy();
     expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);

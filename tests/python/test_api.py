@@ -108,6 +108,102 @@ def test_role_api_crud_and_duplicate_names(tmp_path, monkeypatch):
     assert len(client.get("/api/roles").json()["roles"]) == 2
 
 
+def test_role_avatar_can_be_uploaded_replaced_loaded_and_removed(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="测试角色", profile=RoleProfile(profile="核心设定")))
+    monkeypatch.setattr(main, "store", roles)
+    client = TestClient(main.app)
+    png = b"\x89PNG\r\n\x1a\nportrait"
+    jpeg = b"\xff\xd8\xffportrait"
+    endpoint = f"/api/roles/{role.id}/avatar"
+
+    uploaded = client.post(endpoint, content=png, headers={"content-type": "image/png"})
+
+    assert uploaded.status_code == 200
+    assert uploaded.json()["role"]["avatarUrl"].startswith(endpoint)
+    assert client.get(endpoint).content == png
+    assert client.get(endpoint).headers["content-type"] == "image/png"
+    assert RoleStore(tmp_path / "roles").get(role.id).avatarUrl.startswith(endpoint)
+
+    replaced = client.post(endpoint, content=jpeg, headers={"content-type": "image/jpeg"})
+    assert replaced.status_code == 200
+    assert client.get(endpoint).content == jpeg
+    assert client.get(endpoint).headers["content-type"] == "image/jpeg"
+
+    removed = client.delete(endpoint)
+    assert removed.status_code == 204
+    assert client.get(endpoint).status_code == 404
+    assert client.get(f"/api/roles/{role.id}").json()["role"]["avatarUrl"] is None
+
+
+def test_role_card_image_is_independent_persistent_and_removable(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="测试角色", profile=RoleProfile(profile="核心设定")))
+    monkeypatch.setattr(main, "store", roles)
+    client = TestClient(main.app)
+    avatar = b"\x89PNG\r\n\x1a\navatar"
+    card_image = b"\xff\xd8\xffcard"
+    avatar_endpoint = f"/api/roles/{role.id}/avatar"
+    card_endpoint = f"/api/roles/{role.id}/card-image"
+    client.post(avatar_endpoint, content=avatar, headers={"content-type": "image/png"})
+
+    uploaded = client.post(card_endpoint, content=card_image, headers={"content-type": "image/jpeg"})
+
+    assert uploaded.status_code == 200
+    assert uploaded.json()["role"]["avatarUrl"].startswith(avatar_endpoint)
+    assert uploaded.json()["role"]["cardImageUrl"].startswith(card_endpoint)
+    assert client.get(avatar_endpoint).content == avatar
+    assert client.get(card_endpoint).content == card_image
+    assert RoleStore(tmp_path / "roles").get(role.id).cardImageUrl.startswith(card_endpoint)
+
+    removed = client.delete(card_endpoint)
+    assert removed.status_code == 204
+    assert client.get(card_endpoint).status_code == 404
+    assert client.get(f"/api/roles/{role.id}").json()["role"]["avatarUrl"].startswith(avatar_endpoint)
+    assert client.get(f"/api/roles/{role.id}").json()["role"]["cardImageUrl"] is None
+
+
+def test_invalid_role_avatar_is_rejected_without_replacing_existing_image(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="测试角色", profile=RoleProfile(profile="核心设定")))
+    monkeypatch.setattr(main, "store", roles)
+    client = TestClient(main.app)
+    endpoint = f"/api/roles/{role.id}/avatar"
+    original = b"\x89PNG\r\n\x1a\nportrait"
+    client.post(endpoint, content=original, headers={"content-type": "image/png"})
+
+    wrong_type = client.post(endpoint, content=b"not an image", headers={"content-type": "text/plain"})
+    oversized = client.post(
+        endpoint,
+        content=b"\x89PNG\r\n\x1a\n" + b"x" * (10 * 1024 * 1024),
+        headers={"content-type": "image/png"},
+    )
+
+    assert wrong_type.status_code == 415
+    assert oversized.status_code == 413
+    assert client.get(endpoint).content == original
+
+
+def test_avatar_storage_failure_restores_the_previous_image(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="测试角色", profile=RoleProfile(profile="核心设定")))
+    monkeypatch.setattr(main, "store", roles)
+    client = TestClient(main.app)
+    endpoint = f"/api/roles/{role.id}/avatar"
+    original = b"\x89PNG\r\n\x1a\noriginal"
+    client.post(endpoint, content=original, headers={"content-type": "image/png"})
+
+    def fail_save(_roles=None):
+        raise OSError("磁盘写入失败")
+
+    monkeypatch.setattr(roles, "_save", fail_save)
+    failed = client.post(endpoint, content=b"\xff\xd8\xffreplacement", headers={"content-type": "image/jpeg"})
+
+    assert failed.status_code == 500
+    assert client.get(endpoint).content == original
+    assert roles.get(role.id).avatarMediaType == "image/png"
+
+
 def test_role_model_configuration_api_persists_and_only_changes_selected_role(tmp_path, monkeypatch):
     role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
     other = main.store.create(RoleInput(name="另一个角色", profile=RoleProfile(profile="其他设定")))

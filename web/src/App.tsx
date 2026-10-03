@@ -3,7 +3,6 @@ import type { Role } from "./api/types";
 import { ChatView, WelcomeView } from "./features/chat/ChatView";
 import { useChat } from "./features/chat/useChat";
 import { MemoryPanel, type MemoryOrigin } from "./features/memory/MemoryPanel";
-import { RoleEditor } from "./features/role-management/RoleEditor";
 import { RoleList } from "./features/role-management/RoleList";
 import { useRoles } from "./features/role-management/useRoles";
 import { SettingsDialog } from "./features/settings/SettingsDialog";
@@ -36,6 +35,7 @@ export function App() {
   const booted = useRef(false);
   // The message a memory came from; the chat scrolls to and marks it.
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const [previewRole, setPreviewRole] = useState<Role | null>(null);
 
   const openChat = async (role: Role) => {
     roles.setError("");
@@ -63,7 +63,7 @@ export function App() {
 
   // The create page opens over whatever is showing, so closing it returns there.
   const startCreate = () => { roles.startCreate(); setPanel("create"); };
-  const showProfile = (role: Role) => { roles.select(role); setPanel("profile"); };
+  const showProfile = (role: Role) => { roles.select(role); roles.startEdit(); setPanel("profile"); };
   const openTavern = () => { setView("tavern"); setShowList(false); };
   const backToChat = () => { setView("chat"); setShowList(false); setHighlightedId(null); };
 
@@ -97,9 +97,8 @@ export function App() {
   };
 
   const cancelEdit = () => {
-    const wasCreating = roles.creating;
     roles.cancel();
-    if (wasCreating) setPanel(null);
+    setPanel(null);
   };
 
   const deleteRole = async () => {
@@ -136,7 +135,7 @@ export function App() {
 
     <main className="main">
       {view === "tavern"
-        ? <TavernView roles={roles.roles} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onCreate={startCreate} onShow={showProfile} onChat={chatWith} />
+        ? <TavernView roles={roles.roles} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onCreate={startCreate} onShow={showProfile} onChat={chatWith} onPreviewAvatar={setPreviewRole} />
         : view === "memories" && chatRole
         ? <MemoryPanel key={chatRole.id} role={chatRole} onBack={backToChat} onOpenSource={(origin, messageId) => void openMemorySource(chatRole, origin, messageId)} />
         : chatRole
@@ -147,10 +146,13 @@ export function App() {
     {panel === "create" && <Dialog title="创建角色" variant="page" onClose={closePanel}>
       <CreateRolePage state={roles} number={roles.roles.length + 1} onSubmit={() => void saveRole()} onCancel={cancelEdit} />
     </Dialog>}
-    {panel === "profile" && <Dialog title="角色资料" variant="drawer" onClose={closePanel}>
-      <RoleEditor state={roles} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} />
+    {panel === "profile" && <Dialog title="角色资料" variant="page" onClose={closePanel}>
+      <CreateRolePage state={roles} number={roles.roles.findIndex((role) => role.id === roles.selected?.id) + 1} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} />
     </Dialog>}
     {panel === "settings" && <SettingsDialog onClose={() => setPanel(null)} />}
+    {previewRole && <Dialog title={`${previewRole.name}头像`} variant="modal" onClose={() => setPreviewRole(null)}>
+      <div className="avatar-lightbox"><img src={previewRole.avatarOriginalUrl ?? previewRole.avatarUrl ?? ""} alt={`${previewRole.name}头像`} /></div>
+    </Dialog>}
     {panel === "card" && newRole && <Dialog title="新卡牌" variant="compact" onClose={() => setPanel(null)}>
       <div className="card-reveal">
         <RoleCard role={newRole} number={roles.roles.findIndex((role) => role.id === newRole.id) + 1} className="is-new" />

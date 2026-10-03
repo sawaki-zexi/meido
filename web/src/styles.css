@@ -97,10 +97,11 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 /* Avatar: flat tinted circle with her initial. */
 .avatar {
   --size: 40px;
-  flex: none; display: inline-grid; place-items: center; width: var(--size); height: var(--size);
-  border-radius: 50%; color: var(--role); background: var(--role-soft);
+  position: relative; flex: none; display: inline-grid; place-items: center; width: var(--size); height: var(--size);
+  border-radius: 50%; color: var(--role); background: var(--role-soft); overflow: hidden;
   font-family: var(--serif); font-weight: 700; font-size: calc(var(--size) * .44); user-select: none;
 }
+.avatar-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .avatar-sm { --size: 32px; }
 .avatar-lg { --size: 52px; }
 .avatar-meido { color: var(--rose); background: var(--blush); }
@@ -199,6 +200,8 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .dialog-drawer .dialog-panel { width: min(440px, 100%); height: 100%; animation: slide .2s ease-out; }
 .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 56px; padding: 0 10px 0 22px; border-bottom: 1px solid var(--line); }
 .dialog-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.avatar-lightbox { display: grid; place-items: center; width: 100%; height: 100%; min-height: 0; padding: 20px; background: #f8f4f6; }
+.avatar-lightbox img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
 @keyframes fade { from { opacity: 0; } }
 @keyframes pop { from { opacity: 0; transform: scale(.98); } }
 @keyframes slide { from { transform: translateX(20px); opacity: 0; } }
@@ -209,6 +212,23 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .profile-card > div { flex: 1; display: grid; gap: 2px; min-width: 0; }
 .profile-card strong { font-size: 17px; }
 .profile-card small { overflow-wrap: anywhere; }
+.field-label { font-size: 13px; font-weight: 600; color: var(--ink-soft); }
+.image-add { display: grid; place-items: center; width: 48px; height: 48px; min-height: 0; padding: 0; overflow: hidden; border: 1px dashed var(--sakura); border-radius: 50%; background: #fff; color: var(--rose); font-size: 30px; font-weight: 300; line-height: 1; }
+.image-add:hover:not(:disabled) { border-color: var(--rose); background: var(--blush); }
+.image-add img { width: 100%; height: 100%; object-fit: cover; }
+.image-file-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.role-image-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.image-control { display: grid; justify-items: start; align-content: start; gap: 6px; min-width: 0; }
+.image-control small { color: var(--ink-faint); overflow-wrap: anywhere; }
+.image-remove { min-height: 28px; padding: 2px 6px; font-size: 12px; }
+.avatar-cropper { display: grid; justify-items: center; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--side); }
+.avatar-crop-window { position: relative; width: min(260px, 100%); aspect-ratio: 1; overflow: hidden; overscroll-behavior: contain; touch-action: none; cursor: grab; background-color: #eee7ea; background-image: linear-gradient(45deg, #e8dfe3 25%, transparent 25%), linear-gradient(-45deg, #e8dfe3 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #e8dfe3 75%), linear-gradient(-45deg, transparent 75%, #e8dfe3 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0; }
+.avatar-crop-window.crop-circle { border-radius: 50%; }
+.avatar-crop-window.is-dragging { cursor: grabbing; }
+.avatar-crop-window img { position: absolute; left: 50%; top: 50%; max-width: none; user-select: none; pointer-events: none; }
+.avatar-crop-zoom { display: grid; grid-template-columns: auto minmax(120px, 1fr); align-items: center; gap: 12px; width: min(260px, 100%); font-size: 13px; color: var(--ink-soft); }
+.avatar-crop-zoom input { padding: 0; accent-color: var(--rose); }
+.avatar-crop-actions { display: flex; justify-content: flex-end; gap: 6px; width: min(260px, 100%); }
 .profile-actions { display: flex; gap: 2px; }
 .role-editor:not(.is-writable) input, .role-editor:not(.is-writable) textarea { border-color: transparent; padding-left: 0; padding-right: 0; resize: none; }
 .role-editor:not(.is-writable) textarea { min-height: 0; field-sizing: content; }
@@ -283,6 +303,9 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .card-top { display: flex; justify-content: space-between; padding: 2px 6px; font-size: 11px; letter-spacing: .08em; color: var(--card); font-weight: 600; }
 .card-art { position: relative; margin: 6px 2px; border-radius: 9px; display: grid; place-items: center; overflow: hidden; background: var(--card-soft); }
 .card-initial { font-family: var(--serif); font-size: 64px; font-weight: 700; line-height: 1; color: var(--card); text-shadow: 0 2px 0 #fff; }
+.card-portrait { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.card-portrait-hit { position: absolute; z-index: 3; inset: 0; width: 100%; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.card-portrait-hit:hover:not(:disabled) { background: rgb(61 47 53 / 5%); }
 .card-foot { display: grid; gap: 2px; padding: 4px 6px 2px; min-width: 0; }
 .card-foot strong { font-family: var(--serif); font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-foot small { color: var(--ink-faint); font-size: 12px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; min-height: 2.9em; line-height: 1.45; }
@@ -295,14 +318,11 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .motif-3 .card-art { background: radial-gradient(120% 70% at 50% 110%, hsl(var(--role-hue) 70% 86%) 0 40%, transparent 41%), radial-gradient(90% 50% at 50% 115%, #fff 0 40%, transparent 41%), var(--card-soft); }
 .motif-4 .card-art { background: conic-gradient(from 0deg at 50% 50%, var(--card-soft) 0 25%, hsl(var(--role-hue) 70% 91%) 0 50%, var(--card-soft) 0 75%, hsl(var(--role-hue) 70% 91%) 0) 0 0 / 28px 28px; }
 
-/* The whole card opens the profile; the chat shortcut sits above it. */
+/* The card surface opens the conversation; preview and edit controls sit above it. */
 .card-hit { position: absolute; inset: 0; z-index: 1; border: 0; border-radius: inherit; background: transparent; padding: 0; min-height: 0; }
 .card-hit:hover:not(:disabled) { background: transparent; }
 .card-hit:focus-visible { outline-offset: -2px; }
-.card-chat { position: absolute; z-index: 2; right: 18px; bottom: 74px; background: #fff; color: var(--card); box-shadow: 0 2px 8px rgb(61 47 53 / 12%); opacity: 0; transition: opacity .15s; }
-.card-chat:hover:not(:disabled) { background: #fff; color: var(--rose-deep); }
-.role-card:hover .card-chat, .card-chat:focus-visible { opacity: 1; }
-@media (hover: none) { .card-chat { opacity: 1; } }
+.card-edit { position: absolute; z-index: 4; top: 14px; right: 14px; background: #fff; box-shadow: 0 2px 8px rgb(61 47 53 / 12%); }
 
 .card-new {
   aspect-ratio: 5 / 7; width: 100%; display: grid; place-content: center; justify-items: center; gap: 10px;
