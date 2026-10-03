@@ -42,7 +42,7 @@
 .scene-brand > span:nth-child(2) { font-weight: 700; letter-spacing: 2px; }
 .scene-brand i { width: 1px; height: 17px; background: rgb(121 78 96 / 38%); }
 .brand-mark { display: grid; width: 27px; height: 27px; place-items: center; border: 1px solid rgb(201 121 145 / 72%); border-radius: 7px; color: var(--gold); font: 15px/1 Georgia, serif; }
-.scene-controls { position: absolute; right: 10px; bottom: 8px; left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; padding: 5px 0; }
+.scene-controls { position: absolute; right: clamp(18px, 2.5vw, 32px); bottom: 8px; left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; padding: 5px 0; }
 .scene-controls button { display: inline-flex; min-height: 28px; align-items: center; gap: 5px; border: 0; padding: 5px 9px; background: transparent; color: rgb(255 246 244 / 58%); font: 11px/1 system-ui, sans-serif; cursor: pointer; transition: color 150ms ease, opacity 150ms ease; }
 .scene-controls button:hover, .scene-controls button:focus-visible { color: rgb(255 255 255 / 94%); }
 .scene-controls button:disabled { opacity: .35; cursor: not-allowed; }
@@ -127,7 +127,7 @@
   .scene-topbar { min-height: 62px; align-items: flex-start; padding: 12px 12px; }
   .scene-brand { gap: 7px; padding-top: 5px; font-size: 10px; }
   .brand-mark { width: 23px; height: 23px; }
-  .scene-controls { right: 8px; bottom: 5px; left: auto; justify-content: flex-end; padding: 4px 0; }
+  .scene-controls { right: 16px; bottom: 5px; left: auto; justify-content: flex-end; padding: 4px 0; }
   .scene-controls button { min-height: 29px; padding: 6px 7px; font-size: 10px; }
   .dialogue-sprite { top: auto; right: -46px; bottom: -85px; left: auto; height: min(82vh, 700px); max-height: none; opacity: .98; }
   .dialogue-box { right: 12px; bottom: 18px; left: 12px; min-height: 122px; max-height: 25vh; padding: 15px 22px 44px; }
@@ -146,7 +146,7 @@
 
 @media (max-width: 760px) and (max-height: 600px) {
   .scene-topbar { min-height: 50px; padding-top: 8px; padding-bottom: 8px; }
-  .scene-controls { right: 6px; bottom: 4px; }
+  .scene-controls { right: 14px; bottom: 4px; }
   .scene-controls button { min-height: 28px; padding: 5px 6px; }
   .dialogue-sprite { top: auto; right: -35px; bottom: -80px; height: min(82vh, 560px); }
   .choice-list { top: 39%; width: min(620px, calc(100vw - 32px)); grid-template-columns: repeat(2, minmax(0, 1fr)); }
