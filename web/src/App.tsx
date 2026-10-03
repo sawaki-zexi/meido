@@ -1,265 +1,167 @@
 import { useEffect, useRef, useState } from "react";
-import { ModelSettings } from "./ModelSettings";
-import { MemoryOrigin, MemoryPanel } from "./MemoryPanel";
+import type { Role } from "./api/types";
+import { ChatView, WelcomeView } from "./features/chat/ChatView";
+import { useChat } from "./features/chat/useChat";
+import { MemoryPanel, type MemoryOrigin } from "./features/memory/MemoryPanel";
+import { RoleList } from "./features/role-management/RoleList";
+import { useRoles } from "./features/role-management/useRoles";
+import { SettingsDialog } from "./features/settings/SettingsDialog";
+import { CreateRolePage } from "./features/tavern/CreateRolePage";
+import { RoleCard } from "./features/tavern/RoleCard";
+import { TavernView } from "./features/tavern/TavernView";
+import { Dialog } from "./ui/Dialog";
+import { Icon, IconButton } from "./ui/Icon";
+import { Notice } from "./ui/Status";
 
-type Role = { id: string; name: string; description: string; profile: { profile: string; personality: string; behaviorRules: string; responseConstraints: string; nickname: string }; createdAt: string; updatedAt: string };
-type Message = { id: string; sessionKey: string; sequence: number; role: "user" | "assistant"; content: string; status: "streaming" | "completed" | "failed"; createdAt: string };
-type Session = { sessionKey: string; roleId: string; createdAt: string; updatedAt: string };
-type View = "roles" | "chat" | "model" | "memories";
-const empty = { name: "", description: "", profile: "", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" };
-type Draft = typeof empty;
-const createDraftStorageKey = "meido:create-role-draft";
-const draftFields: (keyof Draft)[] = ["name", "description", "profile", "personality", "behaviorRules", "responseConstraints", "nickname"];
+/** What the main pane shows: a conversation, the role tavern (all role cards), or the open role's memories. */
+type View = "chat" | "tavern" | "memories";
+/** Overlay on top of the main pane; null means none. "card" reveals a newly created role's card. */
+type Panel = null | "create" | "profile" | "settings" | "card";
 
-function readCreateDraft(): Draft | null {
-  try {
-    const value = sessionStorage.getItem(createDraftStorageKey);
-    if (!value) return null;
-    const parsed = JSON.parse(value) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return draftFields.reduce((draft, field) => {
-      const candidate = parsed[field];
-      draft[field] = typeof candidate === "string" ? candidate : "";
-      return draft;
-    }, { ...empty });
-  } catch {
-    return null;
-  }
-}
-
-function clearCreateDraft(): void {
-  try { sessionStorage.removeItem(createDraftStorageKey); } catch { /* storage may be unavailable */ }
-}
-
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
-  } catch {
-    throw new Error("无法连接本地后端，请确认服务正在运行");
-  }
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const detail = Array.isArray(data.detail)
-      ? data.detail.map((item: { msg?: string }) => item.msg).filter(Boolean).join("；")
-      : data.detail;
-    throw new Error(detail ?? data.error ?? `请求失败 (${response.status})`);
-  }
-  return data as T;
-}
+const LAST_ROLE_KEY = "meido:last-role";
+const readLastRole = () => { try { return localStorage.getItem(LAST_ROLE_KEY); } catch { return null; } };
+const writeLastRole = (id: string) => { try { localStorage.setItem(LAST_ROLE_KEY, id); } catch { /* storage unavailable */ } };
 
 export function App() {
-  const [roles, setRoles] = useState<Role[]>([]);
-  const [selected, setSelected] = useState<Role | null>(null);
-  const [draft, setDraft] = useState<Draft>(() => readCreateDraft() ?? empty);
-  const [creating, setCreating] = useState(() => readCreateDraft() !== null);
-  const [editing, setEditing] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [view, setView] = useState<View>("roles");
-  const [session, setSession] = useState<Session | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [messageDraft, setMessageDraft] = useState("");
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState("");
-  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const messageElements = useRef(new Map<string, HTMLElement>());
-  const rolesRequestId = useRef(0);
-
-  const refresh = async () => {
-    const requestId = ++rolesRequestId.current;
-    let data: { roles: Role[] };
-    try {
-      data = await api<{ roles: Role[] }>("/api/roles");
-    } catch (cause) {
-      if (requestId === rolesRequestId.current) throw cause;
-      return;
-    }
-    if (requestId !== rolesRequestId.current) return;
-    setRoles(data.roles);
-    if (selected) setSelected(data.roles.find((role) => role.id === selected.id) ?? null);
-  };
-
-  useEffect(() => { void refresh().catch((cause) => setError(cause.message)); }, []);
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
-  useEffect(() => {
-    if (view !== "chat" || !highlightedMessageId) return;
-    messageElements.current.get(highlightedMessageId)?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [view, highlightedMessageId, messages]);
-  useEffect(() => {
-    if (!creating) return;
-    try { sessionStorage.setItem(createDraftStorageKey, JSON.stringify(draft)); } catch { /* storage may be unavailable */ }
-  }, [creating, draft]);
-
-  const edit = (role: Role) => {
-    clearCreateDraft();
-    setSelected(role);
-    setCreating(false);
-    setEditing(false);
-    setView("roles");
-    setDraft({ name: role.name, description: role.description, ...role.profile });
-  };
-
-  const cancelEditing = () => {
-    setError("");
-    if (creating) {
-      clearCreateDraft();
-      setCreating(false);
-      setSelected(null);
-      setDraft(empty);
-      return;
-    }
-    if (selected) setDraft({ name: selected.name, description: selected.description, ...selected.profile });
-    setEditing(false);
-  };
-
-  const save = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setError("");
-    setSaving(true);
-    const creatingSnapshot = creating;
-    const selectedSnapshot = selected;
-    const draftSnapshot = { ...draft };
-    try {
-      const payload = { name: draftSnapshot.name, description: draftSnapshot.description, profile: { profile: draftSnapshot.profile, personality: draftSnapshot.personality, behaviorRules: draftSnapshot.behaviorRules, responseConstraints: draftSnapshot.responseConstraints, nickname: draftSnapshot.nickname } };
-      const data = creatingSnapshot
-        ? await api<{ role: Role }>("/api/roles", { method: "POST", body: JSON.stringify(payload) })
-        : await api<{ role: Role }>(`/api/roles/${encodeURIComponent(selectedSnapshot!.id)}`, { method: "PUT", body: JSON.stringify(payload) });
-      // A list request started before this save must not overwrite the saved role.
-      rolesRequestId.current += 1;
-      setRoles((current) => creatingSnapshot
-        ? [...current, data.role]
-        : current.map((role) => role.id === data.role.id ? data.role : role));
-      setSelected(data.role);
-      setDraft({ name: data.role.name, description: data.role.description, ...data.role.profile });
-      clearCreateDraft();
-      setCreating(false);
-      setEditing(false);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败"); }
-    finally { setSaving(false); }
-  };
-
-  const removeRole = async () => {
-    if (!selected || creating || deleting) return;
-    const confirmed = window.confirm(`确定删除角色“${selected.name}”吗？\n\n角色、全部聊天记录和记忆将永久删除，且无法恢复。`);
-    if (!confirmed) return;
-    setError("");
-    setDeleting(true);
-    try {
-      await api<void>(`/api/roles/${encodeURIComponent(selected.id)}`, { method: "DELETE" });
-      // A list request started before this delete must not resurrect the role.
-      rolesRequestId.current += 1;
-      setRoles((current) => current.filter((role) => role.id !== selected.id));
-      setSelected(null);
-      setDraft(empty);
-      setSession(null);
-      setMessages([]);
-      setView("roles");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "删除失败");
-    } finally { setDeleting(false); }
-  };
+  const roles = useRoles();
+  const chat = useChat();
+  // A restored create-role draft reopens the create panel.
+  const [panel, setPanel] = useState<Panel>(() => roles.creating ? "create" : null);
+  const [view, setView] = useState<View>("chat");
+  const [newRole, setNewRole] = useState<Role | null>(null);
+  // Narrow screens show one pane at a time; home is the conversation.
+  const [showList, setShowList] = useState(false);
+  const [openingId, setOpeningId] = useState<string | null>(null);
+  const booted = useRef(false);
+  // The message a memory came from; the chat scrolls to and marks it.
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const [previewRole, setPreviewRole] = useState<Role | null>(null);
 
   const openChat = async (role: Role) => {
-    setError("");
-    setSelected(role);
-    try {
-      const data = await api<{ session: Session; messages: Message[] }>(`/api/roles/${encodeURIComponent(role.id)}/session`);
-      setSession(data.session);
-      setMessages(data.messages);
-      setView("chat");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "无法打开会话"); }
+    roles.setError("");
+    setOpeningId(role.id);
+    const opened = await chat.open(role);
+    setOpeningId(null);
+    if (!opened) return false;
+    writeLastRole(role.id);
+    setHighlightedId(null);
+    setView("chat");
+    setShowList(false);
+    return true;
   };
 
-  const openMemoryView = (role: Role) => {
-    setError("");
-    setSelected(role);
-    setView("memories");
-  };
+  // Home is a conversation: once roles load, open the last role (or the first one).
+  useEffect(() => {
+    if (roles.loading || booted.current) return;
+    booted.current = true;
+    const home = roles.roles.find((role) => role.id === readLastRole()) ?? roles.roles[0];
+    if (home) void openChat(home);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roles.loading]);
+
+  const chatRole = roles.roles.find((role) => role.id === chat.roleId) ?? null;
+
+  // The create page opens over whatever is showing, so closing it returns there.
+  const startCreate = () => { roles.startCreate(); setPanel("create"); };
+  const showProfile = (role: Role) => { roles.select(role); roles.startEdit(); setPanel("profile"); };
+  const openTavern = () => { setView("tavern"); setShowList(false); };
+  const backToChat = () => { setView("chat"); setShowList(false); setHighlightedId(null); };
 
   const openMemorySource = async (role: Role, origin: MemoryOrigin, messageId?: string) => {
-    setError("");
-    if (origin.sessionKey !== `role:${role.id}`) {
-      setError("来源会话与当前角色不匹配");
-      return;
-    }
-    try {
-      const data = await api<{ session: Session; messages: Message[] }>(`/api/roles/${encodeURIComponent(role.id)}/session`);
-      const sourceMessage = messageId
-        ? data.messages.find((message) => message.id === messageId)
-        : origin.messageRange
-          ? data.messages.find((message) => message.sequence >= origin.messageRange![0] && message.sequence <= origin.messageRange![1])
-          : undefined;
-      if (!sourceMessage) {
-        setError("来源消息当前不可访问");
-        return;
-      }
-      setSelected(role);
-      setSession(data.session);
-      setMessages(data.messages);
-      setHighlightedMessageId(sourceMessage.id);
-      setView("chat");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "无法打开来源消息"); }
+    chat.setError("");
+    if (origin.sessionKey !== `role:${role.id}`) { chat.setError("来源会话与当前角色不匹配"); setView("chat"); return; }
+    const messages = await chat.open(role);
+    setView("chat");
+    if (!messages) return;
+    const [from, to] = origin.messageRange ?? [];
+    const source = messageId
+      ? messages.find((message) => message.id === messageId)
+      : messages.find((message) => from !== undefined && message.sequence >= from && message.sequence <= to!);
+    if (!source) { chat.setError("来源消息当前不可访问"); return; }
+    setHighlightedId(source.id);
+  };
+  const chatWith = (role: Role) => role.id === chat.roleId ? backToChat() : void openChat(role);
+
+  const closePanel = () => {
+    // Closing the create panel keeps the draft (it is restored next time); closing a profile drops unsaved edits.
+    if (panel === "profile" && roles.editing) roles.cancel();
+    setPanel(null);
   };
 
-  const sendMessage = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const content = messageDraft.trim();
-    if (!content || !selected || sending) return;
-    setMessageDraft("");
-    setError("");
-    setSending(true);
-    try {
-      const response = await fetch(`/api/roles/${encodeURIComponent(selected.id)}/messages`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content }),
-      });
-      if (!response.ok) {
-        const body = await response.json();
-        throw new Error(body.detail ?? "发送失败");
-      }
-      if (!response.body) throw new Error("服务端没有返回流式响应");
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      const handleEvent = (raw: string) => {
-        const lines = raw.split("\n");
-        const eventName = lines.find((line) => line.startsWith("event: "))?.slice(7);
-        const dataLine = lines.find((line) => line.startsWith("data: "))?.slice(6);
-        if (!eventName || !dataLine) return;
-        const data = JSON.parse(dataLine) as { messageId?: string; delta?: string; message?: Message; error?: string };
-        if (eventName === "user_message_accepted") {
-          if (data.message) setMessages((current) => [...current, data.message!]);
-        } else if (eventName === "assistant_generation_started" && data.messageId) {
-          setMessages((current) => [...current, { id: data.messageId!, sessionKey: session?.sessionKey ?? `role:${selected.id}`, sequence: current.length + 1, role: "assistant", content: "", status: "streaming", createdAt: new Date().toISOString() }]);
-        } else if (eventName === "assistant_delta" && data.messageId) {
-          setMessages((current) => current.map((message) => message.id === data.messageId ? { ...message, content: message.content + (data.delta ?? "") } : message));
-        } else if ((eventName === "assistant_completed" || eventName === "assistant_failed") && data.message) {
-          setMessages((current) => current.map((message) => message.id === data.message!.id ? data.message! : message));
-          if (eventName === "assistant_failed") setError(data.error ?? "回复未能完成");
-        }
-      };
-      while (true) {
-        const { value, done } = await reader.read();
-        buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-        const events = buffer.split("\n\n");
-        buffer = events.pop() ?? "";
-        events.forEach(handleEvent);
-        if (done) break;
-      }
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "发送失败");
-    } finally { setSending(false); }
+  const saveRole = async () => {
+    const wasCreating = roles.creating;
+    const saved = await roles.save();
+    if (!saved) return;
+    // A new role gets her own card; the user starts chatting from there.
+    if (wasCreating) { setNewRole(saved); setPanel("card"); }
   };
 
-  return <main>
-    <header><h1>{view === "chat" ? selected?.name : view === "memories" ? "角色记忆" : view === "model" ? "模型设置" : "角色"}</h1><div className="header-actions">{view === "chat" && <><button disabled={saving || deleting} onClick={() => setView("roles")}>返回角色</button>{selected && <button disabled={saving || deleting} onClick={() => openMemoryView(selected)}>查看记忆</button>}</>}{view === "model" && <button disabled={saving || deleting} onClick={() => setView("roles")}>返回角色</button>}{view !== "model" && view !== "memories" && <button disabled={saving || deleting} onClick={() => setView("model")}>模型设置</button>}{view === "roles" && <button disabled={saving || deleting} onClick={() => { setError(""); setCreating(true); setSelected(null); setDraft((current) => creating ? current : empty); setView("roles"); }}>创建角色</button>}</div></header>
-    {error && <p className="error global-error">{error}</p>}
-    {view === "model" ? <ModelSettings onBack={() => setView("roles")} /> : view === "memories" && selected ? <MemoryPanel roleId={selected.id} roleName={selected.name} onBack={() => setView("roles")} onOpenSource={(origin, messageId) => void openMemorySource(selected, origin, messageId)} /> : view === "chat" && selected ? <section className="chat-panel">
-      <div className="chat-meta">唯一会话 · {session?.sessionKey}</div>
-      <div className="chat-meta"><button type="button" onClick={() => openMemoryView(selected)}>查看角色记忆</button></div>
-      <div className="message-list">{messages.map((message) => <article ref={(element) => { if (element) messageElements.current.set(message.id, element); else messageElements.current.delete(message.id); }} className={`message ${message.role} ${message.id === highlightedMessageId ? "source-highlight" : ""}`} key={message.id}><div className="message-heading"><strong>{message.role === "user" ? "我" : selected.name}</strong><time>{new Date(message.createdAt).toLocaleString()}</time>{message.status !== "completed" && <span className={`message-status ${message.status}`}>{message.status === "streaming" ? "生成中" : "未完成"}</span>}{message.id === highlightedMessageId && <span className="source-marker">记忆来源</span>}</div><p>{message.content || (message.status === "streaming" ? "正在回复…" : "（无内容）")}</p></article>)}{!messages.length && <p className="empty-chat">发送第一条消息开始对话。</p>}<div ref={bottomRef}/></div>
-      <form className="composer" onSubmit={sendMessage}><textarea aria-label="消息内容" placeholder="写消息…" value={messageDraft} onChange={(event) => setMessageDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} disabled={sending} /><button type="submit" disabled={sending || !messageDraft.trim()}>{sending ? "发送中" : "发送"}</button></form>
-    </section> : <div className="layout"><aside>{roles.map((role) => <div className={`role-item ${selected?.id === role.id ? "active" : ""}`} key={role.id}><button className="role-select" onClick={() => edit(role)}><strong>{role.name}</strong><span>{role.description || "暂无简介"}</span><small>{role.id}</small></button><button className="role-open" onClick={() => void openChat(role)}>进入会话</button></div>)}{!roles.length && <p>还没有角色。</p>}</aside><section>{(creating || selected) ? <form onSubmit={save}><h2>{creating ? "创建角色" : "角色详情"}</h2><label>名称<input required disabled={!creating && !editing || saving || deleting} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })}/></label><label>简介<textarea disabled={!creating && !editing || saving || deleting} value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}/></label><label>角色设定<textarea required disabled={!creating && !editing || saving || deleting} value={draft.profile} onChange={(e) => setDraft({ ...draft, profile: e.target.value })}/></label><label>性格<textarea disabled={!creating && !editing || saving || deleting} value={draft.personality} onChange={(e) => setDraft({ ...draft, personality: e.target.value })}/></label><label>行为规则<textarea disabled={!creating && !editing || saving || deleting} value={draft.behaviorRules} onChange={(e) => setDraft({ ...draft, behaviorRules: e.target.value })}/></label><label>回复约束<textarea disabled={!creating && !editing || saving || deleting} value={draft.responseConstraints} onChange={(e) => setDraft({ ...draft, responseConstraints: e.target.value })}/></label><label>昵称<input disabled={!creating && !editing || saving || deleting} value={draft.nickname} onChange={(e) => setDraft({ ...draft, nickname: e.target.value })}/></label><div className="form-actions">{creating || editing ? <><button type="submit" disabled={saving || deleting}>{saving ? "保存中…" : "保存"}</button><button type="button" disabled={saving || deleting} onClick={cancelEditing}>取消</button></> : <><button type="button" onClick={() => setEditing(true)}>编辑</button><button type="button" disabled={deleting} onClick={() => void removeRole()}>{deleting ? "删除中…" : "删除角色"}</button>{selected && <button type="button" onClick={() => openMemoryView(selected)}>查看记忆</button>}</>}{selected && <button type="button" disabled={saving || deleting} onClick={() => void openChat(selected)}>进入会话</button>}</div></form> : <p>选择角色或创建新角色。</p>}</section></div>}
-  </main>;
+  const cancelEdit = () => {
+    roles.cancel();
+    setPanel(null);
+  };
+
+  const deleteRole = async () => {
+    const deletedId = roles.selected?.id;
+    if (!await roles.remove()) return;
+    setPanel(null);
+    if (deletedId !== chat.roleId) return;
+    chat.reset();
+    // In the tavern the user stays with the cards; in a conversation, move on to the next role.
+    const next = roles.roles.find((role) => role.id !== deletedId);
+    if (next && view !== "tavern") void openChat(next);
+  };
+
+  // Switching roles mid-reply would mix two conversations, so the list waits for the reply.
+  const lockSwitch = chat.sending || openingId !== null;
+
+  return <div className={`shell${showList ? " show-list" : ""}`}>
+    <aside className="sidebar" aria-label="对话列表">
+      <header className="sidebar-header">
+        <h1 className="brand">Meido</h1>
+      </header>
+      <nav className="side-tabs" aria-label="页面">
+        <button type="button" aria-current={view !== "tavern" ? "page" : undefined} onClick={backToChat}><Icon name="chat" size={17} />对话</button>
+        <button type="button" aria-current={view === "tavern" ? "page" : undefined} onClick={openTavern}><Icon name="cards" size={17} />角色</button>
+      </nav>
+      <div className="sidebar-body">
+        {roles.error && panel === null && view !== "tavern" && <Notice onDismiss={() => roles.setError("")}>{roles.error}</Notice>}
+        <RoleList roles={roles.roles} loading={roles.loading} loadFailed={roles.loadFailed} activeId={view === "tavern" ? null : chat.roleId} disabled={lockSwitch} onOpen={chatWith} />
+      </div>
+      <footer className="sidebar-footer">
+        <IconButton icon="settings" label="设置" onClick={() => setPanel("settings")} />
+      </footer>
+    </aside>
+
+    <main className="main">
+      {view === "tavern"
+        ? <TavernView roles={roles.roles} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onCreate={startCreate} onShow={showProfile} onChat={chatWith} onPreviewAvatar={setPreviewRole} />
+        : view === "memories" && chatRole
+        ? <MemoryPanel key={chatRole.id} role={chatRole} onBack={backToChat} onOpenSource={(origin, messageId) => void openMemorySource(chatRole, origin, messageId)} />
+        : chatRole
+        ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showProfile(chatRole)} onShowMemories={() => setView("memories")} />
+        : <WelcomeView loading={roles.loading || openingId !== null} hasRoles={roles.roles.length > 0} error={chat.error} onDismissError={() => chat.setError("")} onCreate={startCreate} onBack={() => setShowList(true)} />}
+    </main>
+
+    {panel === "create" && <Dialog title="创建角色" variant="page" onClose={closePanel}>
+      <CreateRolePage state={roles} number={roles.roles.length + 1} onSubmit={() => void saveRole()} onCancel={cancelEdit} />
+    </Dialog>}
+    {panel === "profile" && <Dialog title="角色资料" variant="page" onClose={closePanel}>
+      <CreateRolePage state={roles} number={roles.roles.findIndex((role) => role.id === roles.selected?.id) + 1} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} />
+    </Dialog>}
+    {panel === "settings" && <SettingsDialog onClose={() => setPanel(null)} />}
+    {previewRole && <Dialog title={`${previewRole.name}头像`} variant="modal" onClose={() => setPreviewRole(null)}>
+      <div className="avatar-lightbox"><img src={previewRole.avatarOriginalUrl ?? previewRole.avatarUrl ?? ""} alt={`${previewRole.name}头像`} /></div>
+    </Dialog>}
+    {panel === "card" && newRole && <Dialog title="新卡牌" variant="compact" onClose={() => setPanel(null)}>
+      <div className="card-reveal">
+        <RoleCard role={newRole} number={roles.roles.findIndex((role) => role.id === newRole.id) + 1} className="is-new" />
+        <p className="muted">{newRole.name} 加入了酒馆。</p>
+        <div className="form-actions">
+          <button type="button" className="ghost" onClick={() => setPanel(null)}>稍后再聊</button>
+          <button type="button" className="primary" onClick={() => { setPanel(null); void openChat(newRole); }}>开始对话</button>
+        </div>
+      </div>
+    </Dialog>}
+  </div>;
 }
