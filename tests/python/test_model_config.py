@@ -243,6 +243,46 @@ def test_openai_compatible_adapter_posts_stream_to_preset_base_url(monkeypatch):
     assert body["max_tokens"] == 8
 
 
+def test_openai_compatible_adapter_includes_memory_context(tmp_path, monkeypatch):
+    import asyncio
+    from backend.app.model_adapter import OpenAICompatibleAdapter
+    from backend.app.models import ModelConfiguration, RoleInput, RoleProfile
+    from backend.app.role_store import RoleStore
+
+    role = RoleStore(tmp_path / "roles").create(
+        RoleInput(name="测试角色", profile=RoleProfile(profile="测试设定"))
+    )
+    configuration = ModelConfiguration(
+        providerId="custom",
+        provider="测试服务",
+        baseUrl="https://example.com/v1",
+        model="test-model",
+    )
+    seen = []
+    adapter = OpenAICompatibleAdapter()
+
+    async def stream_messages(messages, selected_configuration, *, max_tokens=None):
+        seen.append(messages)
+        yield "回复"
+
+    monkeypatch.setattr(adapter, "stream_messages", stream_messages)
+    monkeypatch.setattr(main, "model_adapter", adapter)
+
+    async def collect():
+        return [
+            delta
+            async for delta in main._stream_model_reply(
+                role,
+                [],
+                configuration,
+                "[MEMORY.md]\n主人喜欢海边",
+            )
+        ]
+
+    assert asyncio.run(collect()) == ["回复"]
+    assert "主人喜欢海边" in seen[0][0]["content"]
+
+
 def test_blank_api_key_keeps_existing_key_for_same_connection(tmp_path, monkeypatch):
     store, client = configure_api(tmp_path, monkeypatch)
     client.put("/api/model/configuration", json=payload())

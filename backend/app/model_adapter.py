@@ -29,6 +29,7 @@ class OpenAICompatibleAdapter:
         role: Role,
         history: list[Message],
         configuration: ModelConfiguration | None = None,
+        memory_context: str = "",
     ) -> AsyncIterator[str]:
         if configuration is None:
             base_url = os.getenv("MEIDO_MODEL_BASE_URL", "").strip().rstrip("/")
