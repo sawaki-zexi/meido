@@ -42,7 +42,7 @@
 .scene-brand > span:nth-child(2) { font-weight: 700; letter-spacing: 2px; }
 .scene-brand i { width: 1px; height: 17px; background: rgb(121 78 96 / 38%); }
 .brand-mark { display: grid; width: 27px; height: 27px; place-items: center; border: 1px solid rgb(201 121 145 / 72%); border-radius: 7px; color: var(--gold); font: 15px/1 Georgia, serif; }
-.scene-controls { position: absolute; right: clamp(18px, 5vw, 76px); bottom: 8px; left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; padding: 5px 0; }
+.scene-controls { position: absolute; right: 10px; bottom: 8px; left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; padding: 5px 0; }
 .scene-controls button { display: inline-flex; min-height: 28px; align-items: center; gap: 5px; border: 0; padding: 5px 9px; background: transparent; color: rgb(255 246 244 / 58%); font: 11px/1 system-ui, sans-serif; cursor: pointer; transition: color 150ms ease, opacity 150ms ease; }
 .scene-controls button:hover, .scene-controls button:focus-visible { color: rgb(255 255 255 / 94%); }
 .scene-controls button:disabled { opacity: .35; cursor: not-allowed; }
@@ -51,7 +51,7 @@
 
 .dialogue-sprite { position: absolute; z-index: 3; left: clamp(8px, 5vw, 90px); bottom: -145px; height: min(94vh, 1000px); max-height: none; width: auto; object-fit: contain; object-position: bottom center; filter: drop-shadow(0 16px 25px rgb(18 13 17 / 35%)); animation: sprite-arrive 500ms cubic-bezier(.2,.8,.2,1) both; }
 .dialogue-box { position: absolute; z-index: 4; right: max(18px, calc((100% - 1100px) / 2)); bottom: 24px; left: max(18px, calc((100% - 1100px) / 2)); min-height: clamp(126px, 16vh, 180px); max-height: min(23vh, 205px); overflow: auto; border: 1px solid rgb(255 255 255 / 48%); border-radius: 10px; padding: 17px clamp(24px, 5vw, 70px) 45px; background: linear-gradient(180deg, rgb(255 252 253 / 30%), rgb(247 238 243 / 46%)); box-shadow: 0 10px 32px rgb(105 51 76 / 12%), inset 0 1px rgb(255 255 255 / 58%); backdrop-filter: blur(8px) saturate(90%); }
-.dialogue-box::before { position: absolute; inset: 7px; border: 1px solid rgb(255 255 255 / 24%); border-radius: 6px; content: ""; pointer-events: none; }
+.dialogue-box::before { content: none; }
 .dialogue-corner { position: absolute; z-index: 1; color: rgb(255 246 244 / 48%); font: 24px/1 Georgia, serif; pointer-events: none; }
 .corner-tl { top: 7px; left: 11px; transform: rotate(180deg); }
 .corner-tr { top: 7px; right: 11px; }
@@ -127,11 +127,11 @@
   .scene-topbar { min-height: 62px; align-items: flex-start; padding: 12px 12px; }
   .scene-brand { gap: 7px; padding-top: 5px; font-size: 10px; }
   .brand-mark { width: 23px; height: 23px; }
-  .scene-controls { right: 12px; bottom: 5px; left: auto; justify-content: flex-end; padding: 4px 0; }
+  .scene-controls { right: 8px; bottom: 5px; left: auto; justify-content: flex-end; padding: 4px 0; }
   .scene-controls button { min-height: 29px; padding: 6px 7px; font-size: 10px; }
   .dialogue-sprite { top: auto; right: -46px; bottom: -85px; left: auto; height: min(82vh, 700px); max-height: none; opacity: .98; }
   .dialogue-box { right: 12px; bottom: 18px; left: 12px; min-height: 122px; max-height: 25vh; padding: 15px 22px 44px; }
-  .dialogue-box::before { top: 6px; right: 6px; bottom: 0; left: 6px; }
+  .dialogue-box::before { content: none; }
   .dialogue-text { margin-top: 10px; font-size: 16px; line-height: 1.7; }
   .speaker-name { font-size: 12px; }
   .choice-list { top: 39%; width: min(460px, calc(100vw - 32px)); gap: 6px; }
@@ -146,7 +146,7 @@
 
 @media (max-width: 760px) and (max-height: 600px) {
   .scene-topbar { min-height: 50px; padding-top: 8px; padding-bottom: 8px; }
-  .scene-controls { right: 10px; bottom: 4px; }
+  .scene-controls { right: 6px; bottom: 4px; }
   .scene-controls button { min-height: 28px; padding: 5px 6px; }
   .dialogue-sprite { top: auto; right: -35px; bottom: -80px; height: min(82vh, 560px); }
   .choice-list { top: 39%; width: min(620px, calc(100vw - 32px)); grid-template-columns: repeat(2, minmax(0, 1fr)); }
