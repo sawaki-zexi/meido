@@ -245,6 +245,10 @@ export function LandingPage() {
       <img className={`dialogue-sprite sprite-${sprite}`} src={`/landing/elysia-${sprite}.png`} alt="Meido 的女仆讲解角色" />
 
       <section className="dialogue-box" aria-live="polite">
+        <span className="dialogue-corner corner-tl" aria-hidden="true">❧</span>
+        <span className="dialogue-corner corner-tr" aria-hidden="true">❧</span>
+        <span className="dialogue-corner corner-bl" aria-hidden="true">❧</span>
+        <span className="dialogue-corner corner-br" aria-hidden="true">❧</span>
         <div className="speaker-name"><span className="speaker-emblem">✦</span>{speakerName}</div>
         <p className="dialogue-text">{displayedText}<span className={`text-caret ${visibleCharacters >= characters.length ? "caret-hidden" : ""}`} aria-hidden="true">▾</span></p>
         <div className="scene-controls" aria-label="对话控制">
