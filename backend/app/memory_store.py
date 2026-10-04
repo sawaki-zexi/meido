@@ -40,6 +40,9 @@ class MemoryStore:
     def _initialize(self) -> None:
         Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
+            schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            if schema_version > 1:
+                raise RuntimeError(f"memory database schema {schema_version} is newer than this application")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS memory_items (
@@ -54,8 +57,9 @@ class MemoryStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     reinforcement INTEGER NOT NULL DEFAULT 1,
-                    content_hash TEXT NOT NULL
-                    ,embedding_json TEXT
+                    content_hash TEXT NOT NULL,
+                    emotional_weight INTEGER NOT NULL DEFAULT 0,
+                    embedding_json TEXT
                 )
                 """
             )
@@ -72,6 +76,8 @@ class MemoryStore:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(memory_items)")}
             if "embedding_json" not in columns:
                 connection.execute("ALTER TABLE memory_items ADD COLUMN embedding_json TEXT")
+            if "emotional_weight" not in columns:
+                connection.execute("ALTER TABLE memory_items ADD COLUMN emotional_weight INTEGER NOT NULL DEFAULT 0")
             connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS memory_items_role_type_hash
@@ -84,6 +90,99 @@ class MemoryStore:
                 ON memory_items(role_id, status, updated_at)
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS consolidation_events (
+                    role_id TEXT NOT NULL,
+                    source_ref TEXT NOT NULL,
+                    item_id TEXT,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (role_id, source_ref)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_replacements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    role_id TEXT NOT NULL,
+                    old_item_id TEXT NOT NULL,
+                    old_memory_type TEXT NOT NULL,
+                    old_summary TEXT NOT NULL,
+                    old_source_ref TEXT,
+                    old_happened_at TEXT,
+                    old_extra_json TEXT,
+                    new_item_id TEXT NOT NULL,
+                    new_memory_type TEXT NOT NULL,
+                    new_summary TEXT NOT NULL,
+                    new_source_ref TEXT,
+                    new_happened_at TEXT,
+                    new_extra_json TEXT,
+                    relation_type TEXT NOT NULL DEFAULT 'supersede',
+                    source_ref TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS memory_replacements_role_old ON memory_replacements(role_id, old_item_id, created_at)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS memory_replacements_role_new ON memory_replacements(role_id, new_item_id, created_at)"
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_embedding_spaces (
+                    role_id TEXT PRIMARY KEY,
+                    dimension INTEGER NOT NULL CHECK (dimension > 0)
+                )
+                """
+            )
+            if schema_version < 1:
+                self._migrate_embedding_dimensions(connection)
+            connection.execute("PRAGMA user_version = 1")
+
+    @staticmethod
+    def _migrate_embedding_dimensions(connection: sqlite3.Connection) -> None:
+        role_ids = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT DISTINCT role_id FROM memory_items WHERE embedding_json IS NOT NULL"
+            )
+        ]
+        for role_id in role_ids:
+            rows = connection.execute(
+                "SELECT embedding_json FROM memory_items WHERE role_id = ? AND embedding_json IS NOT NULL",
+                (role_id,),
+            ).fetchall()
+            dimensions: set[int] = set()
+            invalid = False
+            for row in rows:
+                vector = MemoryStore._decode_json(row[0], None)
+                if not isinstance(vector, list) or not vector:
+                    invalid = True
+                    break
+                dimensions.add(len(vector))
+            if invalid or len(dimensions) != 1:
+                connection.execute("UPDATE memory_items SET embedding_json = NULL WHERE role_id = ?", (role_id,))
+                connection.execute("DELETE FROM memory_embedding_spaces WHERE role_id = ?", (role_id,))
+                continue
+            connection.execute(
+                "INSERT INTO memory_embedding_spaces(role_id, dimension) VALUES (?, ?) "
+                "ON CONFLICT(role_id) DO UPDATE SET dimension = excluded.dimension",
+                (role_id, dimensions.pop()),
+            )
+
+    @staticmethod
+    def _require_role_id(role_id: str) -> None:
+        if not isinstance(role_id, str) or not role_id.strip():
+            raise ValueError("role_id is required for memory operations")
+
+    @classmethod
+    def _require_source_scope(cls, role_id: str, source_ref: MemorySourceRef) -> None:
+        cls._require_role_id(role_id)
+        if source_ref.sessionKey != f"role:{role_id}":
+            raise ValueError("source sessionKey does not belong to role_id")
 
     def add_or_reinforce(
         self,
@@ -97,6 +196,7 @@ class MemoryStore:
         supersede_key: str | None = None,
         status: str = "active",
     ) -> MemoryItem:
+        self._require_role_id(role_id)
         with self._connect() as connection:
             return self._add_or_reinforce_connection(
                 connection,
@@ -116,6 +216,7 @@ class MemoryStore:
         records: list[tuple[str, str, MemorySourceRef]],
     ) -> list[MemoryItem]:
         """Persist a consolidation result in one SQLite transaction."""
+        self._require_role_id(role_id)
         with self._connect() as connection:
             return [
                 self._add_or_reinforce_connection(connection, role_id, memory_type, summary, source_ref)
@@ -128,6 +229,7 @@ class MemoryStore:
         records: list[tuple[str, str, MemorySourceRef]],
     ) -> list[MemoryItem]:
         """Supersede extracted items covered by a consolidation and persist its result."""
+        self._require_role_id(role_id)
         source_keys = {source.stableSourceKey for _, _, source in records}
         message_ids = {
             message_id
@@ -178,6 +280,7 @@ class MemoryStore:
         supersede_key: str | None = None,
         status: str = "active",
     ) -> MemoryItem:
+        self._require_source_scope(role_id, source_ref)
         summary = normalize_summary(summary)
         if not summary:
             raise ValueError("记忆内容不能为空")
@@ -267,6 +370,7 @@ class MemoryStore:
         return self._item(row)
 
     def list_active(self, role_id: str) -> list[MemoryItem]:
+        self._require_role_id(role_id)
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM memory_items WHERE role_id = ? AND status = 'active' ORDER BY updated_at DESC, created_at DESC",
@@ -275,6 +379,7 @@ class MemoryStore:
         return [self._item(row) for row in rows]
 
     def list_all(self, role_id: str) -> list[MemoryItem]:
+        self._require_role_id(role_id)
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM memory_items WHERE role_id = ? ORDER BY updated_at DESC, created_at DESC",
@@ -310,6 +415,7 @@ class MemoryStore:
         return matching[:limit]
 
     def find_status_candidate(self, role_id: str, text: str, statuses: tuple[str, ...]) -> MemoryItem | None:
+        self._require_role_id(role_id)
         if not statuses:
             return None
         placeholders = ",".join("?" for _ in statuses)
@@ -334,13 +440,149 @@ class MemoryStore:
         return max(matching, key=lambda item: (sum(term in item.summary.casefold() for term in terms), item.updatedAt))
 
     def set_embedding(self, role_id: str, item_id: str, vector: list[float]) -> None:
+        self._require_role_id(role_id)
+        if not vector or any(not math.isfinite(float(value)) for value in vector):
+            raise ValueError("embedding vector must contain finite values")
         with self._connect() as connection:
+            self._register_embedding_dimension(connection, role_id, len(vector))
             connection.execute(
                 "UPDATE memory_items SET embedding_json = ? WHERE role_id = ? AND id = ? AND status = 'active'",
                 (json.dumps(vector), role_id, item_id),
             )
 
+    @staticmethod
+    def _register_embedding_dimension(connection: sqlite3.Connection, role_id: str, dimension: int) -> bool:
+        row = connection.execute(
+            "SELECT dimension FROM memory_embedding_spaces WHERE role_id = ?", (role_id,)
+        ).fetchone()
+        changed = row is not None and int(row["dimension"]) != dimension
+        if changed:
+            connection.execute("UPDATE memory_items SET embedding_json = NULL WHERE role_id = ?", (role_id,))
+        connection.execute(
+            "INSERT INTO memory_embedding_spaces(role_id, dimension) VALUES (?, ?) "
+            "ON CONFLICT(role_id) DO UPDATE SET dimension = excluded.dimension",
+            (role_id, dimension),
+        )
+        return changed
+
+    def observe_query_embedding(self, role_id: str, vector: list[float]) -> bool:
+        """Register a query vector's dimension; return whether old vectors were invalidated."""
+        if not vector or any(not math.isfinite(float(value)) for value in vector):
+            raise ValueError("embedding vector must contain finite values")
+        self._require_role_id(role_id)
+        with self._connect() as connection:
+            return self._register_embedding_dimension(connection, role_id, len(vector))
+
+    def embedding_for(self, role_id: str, item_id: str) -> list[float] | None:
+        self._require_role_id(role_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT embedding_json FROM memory_items WHERE role_id = ? AND id = ?",
+                (role_id, item_id),
+            ).fetchone()
+        if row is None:
+            return None
+        vector = self._decode_json(row["embedding_json"], None)
+        return vector if isinstance(vector, list) else None
+
+    def consolidation_events_by_time_range(
+        self, role_id: str, time_start: str, time_end: str, limit: int = 200
+    ) -> list[dict[str, object]]:
+        self._require_role_id(role_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT role_id, source_ref, item_id, created_at FROM consolidation_events
+                   WHERE role_id = ? AND created_at >= ? AND created_at < ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (role_id, time_start, time_end, max(0, limit)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def reinforce_items_batch(self, role_id: str, ids: list[str]) -> None:
+        self._require_role_id(role_id)
+        unique_ids = tuple(dict.fromkeys(item_id for item_id in ids if item_id))
+        if not unique_ids:
+            return
+        placeholders = ",".join("?" for _ in unique_ids)
+        with self._connect() as connection:
+            connection.execute(
+                f"UPDATE memory_items SET reinforcement = reinforcement + 1, updated_at = ? "
+                f"WHERE role_id = ? AND status = 'active' AND id IN ({placeholders})",
+                (_now(), role_id, *unique_ids),
+            )
+
+    def update_metadata(
+        self,
+        role_id: str,
+        item_id: str,
+        *,
+        status: str | None = None,
+        extra_json: dict[str, object] | None = None,
+        source_ref: str | None = None,
+        happened_at: str | None = None,
+        emotional_weight: int | None = None,
+    ) -> MemoryItem | None:
+        self._require_role_id(role_id)
+        if emotional_weight is not None and not 0 <= emotional_weight <= 10:
+            raise ValueError("emotional_weight must be between 0 and 10")
+        if source_ref is not None:
+            try:
+                parsed_source = MemorySourceRef.model_validate_json(source_ref)
+            except ValueError as error:
+                raise ValueError("source_ref must be a valid memory source reference") from error
+            self._require_source_scope(role_id, parsed_source)
+        updates: list[str] = []
+        values: list[object] = []
+        if status is not None:
+            updates.append("status = ?")
+            values.append(status)
+        if extra_json is not None:
+            updates.append("extra_json = ?")
+            values.append(json.dumps(extra_json, ensure_ascii=False, sort_keys=True))
+        if source_ref is not None:
+            updates.append("source_ref = ?")
+            values.append(source_ref)
+        if happened_at is not None:
+            updates.append("happened_at = ?")
+            values.append(happened_at)
+        if emotional_weight is not None:
+            updates.append("emotional_weight = ?")
+            values.append(emotional_weight)
+        if updates:
+            updates.append("updated_at = ?")
+            values.extend((_now(), role_id, item_id))
+            with self._connect() as connection:
+                connection.execute(
+                    f"UPDATE memory_items SET {', '.join(updates)} WHERE role_id = ? AND id = ?",
+                    values,
+                )
+        return self.get(role_id, item_id)
+
+    def remove_batch(self, role_id: str, ids: list[str]) -> int:
+        self._require_role_id(role_id)
+        unique_ids = tuple(dict.fromkeys(item_id for item_id in ids if item_id))
+        if not unique_ids:
+            return 0
+        placeholders = ",".join("?" for _ in unique_ids)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"DELETE FROM memory_items WHERE role_id = ? AND id IN ({placeholders})",
+                (role_id, *unique_ids),
+            )
+        return cursor.rowcount
+
+    def invalidate_role(self, role_id: str) -> int:
+        self._require_role_id(role_id)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE memory_items SET status = 'forgotten', updated_at = ? "
+                "WHERE role_id = ? AND status = 'active'",
+                (_now(), role_id),
+            )
+        return cursor.rowcount
+
     def list_without_embeddings(self, role_id: str, limit: int = 32) -> list[MemoryItem]:
+        self._require_role_id(role_id)
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM memory_items WHERE role_id = ? AND status = 'active' AND embedding_json IS NULL ORDER BY updated_at DESC LIMIT ?",
@@ -366,8 +608,7 @@ class MemoryStore:
         lexical_ids = [item.id for item in lexical]
         semantic_ids = [str(row["id"]) for row in semantic]
         by_id = {str(row["id"]): row for row in semantic}
-        if len(by_id) < len(rows):
-            by_id.update({item.id: item for item in lexical if item.id not in by_id})
+        by_id.update({item.id: item for item in lexical if item.id not in by_id})
         for result_ids in (lexical_ids, semantic_ids):
             for rank, item_id in enumerate(result_ids, 1):
                 current_score, _ = fused.get(item_id, (0.0, by_id[item_id]))
@@ -386,6 +627,7 @@ class MemoryStore:
         return sum(float(a) * float(b) for a, b in zip(left, right)) / (left_norm * right_norm)
 
     def get(self, role_id: str, item_id: str) -> MemoryItem | None:
+        self._require_role_id(role_id)
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT * FROM memory_items WHERE role_id = ? AND id = ?", (role_id, item_id)
@@ -393,6 +635,7 @@ class MemoryStore:
         return self._item(row) if row is not None else None
 
     def update(self, role_id: str, item_id: str, summary: str, memory_type: str, happened_at: datetime | None) -> MemoryItem:
+        self._require_role_id(role_id)
         summary = normalize_summary(summary)
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM memory_items WHERE role_id = ? AND id = ?", (role_id, item_id)).fetchone()
@@ -407,6 +650,7 @@ class MemoryStore:
         return self._item(row)
 
     def set_status(self, role_id: str, item_id: str, status: str) -> MemoryItem:
+        self._require_role_id(role_id)
         with self._connect() as connection:
             connection.execute("UPDATE memory_items SET status = ?, updated_at = ? WHERE role_id = ? AND id = ?", (status, _now(), role_id, item_id))
             row = connection.execute("SELECT * FROM memory_items WHERE role_id = ? AND id = ?", (role_id, item_id)).fetchone()
@@ -415,41 +659,61 @@ class MemoryStore:
         return self._item(row)
 
     def remove(self, role_id: str, item_id: str) -> None:
+        self._require_role_id(role_id)
         with self._connect() as connection:
             cursor = connection.execute("DELETE FROM memory_items WHERE role_id = ? AND id = ?", (role_id, item_id))
         if cursor.rowcount == 0:
             raise KeyError(item_id)
 
     def delete_role(self, role_id: str) -> None:
+        self._require_role_id(role_id)
         with self._connect() as connection:
             connection.execute("DELETE FROM memory_items WHERE role_id = ?", (role_id,))
             connection.execute("DELETE FROM semantic_memory WHERE role_id = ?", (role_id,))
+            connection.execute("DELETE FROM memory_embedding_spaces WHERE role_id = ?", (role_id,))
+            connection.execute("DELETE FROM consolidation_events WHERE role_id = ?", (role_id,))
+            connection.execute("DELETE FROM memory_replacements WHERE role_id = ?", (role_id,))
 
-    def snapshot_role(self, role_id: str) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    def snapshot_role(self, role_id: str) -> dict[str, list[dict[str, object]]]:
+        self._require_role_id(role_id)
+        table_names = (
+            "memory_items",
+            "semantic_memory",
+            "memory_embedding_spaces",
+            "consolidation_events",
+            "memory_replacements",
+        )
         with self._connect() as connection:
-            memory_rows = [dict(row) for row in connection.execute("SELECT * FROM memory_items WHERE role_id = ?", (role_id,))]
-            semantic_rows = [dict(row) for row in connection.execute("SELECT * FROM semantic_memory WHERE role_id = ?", (role_id,))]
-        return memory_rows, semantic_rows
+            return {
+                table: [dict(row) for row in connection.execute(f"SELECT * FROM {table} WHERE role_id = ?", (role_id,))]
+                for table in table_names
+            }
 
-    def restore_role(self, role_id: str, snapshot: tuple[list[dict[str, object]], list[dict[str, object]]]) -> None:
-        memory_rows, semantic_rows = snapshot
+    def restore_role(self, role_id: str, snapshot: dict[str, list[dict[str, object]]] | tuple[list[dict[str, object]], list[dict[str, object]]]) -> None:
+        self._require_role_id(role_id)
+        if isinstance(snapshot, tuple):
+            rows_by_table = {"memory_items": snapshot[0], "semantic_memory": snapshot[1]}
+        else:
+            rows_by_table = snapshot
+        table_names = (
+            "memory_items",
+            "semantic_memory",
+            "memory_embedding_spaces",
+            "consolidation_events",
+            "memory_replacements",
+        )
         with self._connect() as connection:
-            connection.execute("DELETE FROM memory_items WHERE role_id = ?", (role_id,))
-            connection.execute("DELETE FROM semantic_memory WHERE role_id = ?", (role_id,))
-            if memory_rows:
-                columns = list(memory_rows[0])
-                placeholders = ", ".join("?" for _ in columns)
-                connection.executemany(
-                    f"INSERT INTO memory_items ({', '.join(columns)}) VALUES ({placeholders})",
-                    [[row[column] for column in columns] for row in memory_rows],
-                )
-            if semantic_rows:
-                columns = list(semantic_rows[0])
-                placeholders = ", ".join("?" for _ in columns)
-                connection.executemany(
-                    f"INSERT INTO semantic_memory ({', '.join(columns)}) VALUES ({placeholders})",
-                    [[row[column] for column in columns] for row in semantic_rows],
-                )
+            for table in table_names:
+                connection.execute(f"DELETE FROM {table} WHERE role_id = ?", (role_id,))
+            for table in table_names:
+                table_rows = rows_by_table.get(table, [])
+                if table_rows:
+                    columns = list(table_rows[0])
+                    placeholders = ", ".join("?" for _ in columns)
+                    connection.executemany(
+                        f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
+                        [[row[column] for column in columns] for row in table_rows],
+                    )
 
     def _item(self, row: sqlite3.Row) -> MemoryItem:
         source_payload = self._decode_json(row["source_ref"], {})
@@ -468,6 +732,8 @@ class MemoryStore:
             updatedAt=datetime.fromisoformat(row["updated_at"]),
             reinforcement=int(row["reinforcement"]),
             contentHash=str(row["content_hash"]),
+            emotionalWeight=int(row["emotional_weight"]),
+            hasEmbedding=row["embedding_json"] is not None,
         )
 
     @staticmethod
