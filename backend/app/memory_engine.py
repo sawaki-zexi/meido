@@ -86,7 +86,7 @@ class MemoryIngestResult:
 
 @dataclass
 class EvidenceRef:
-    kind: Literal["message", "message_range", "turn", "external"] = "message"
+    kind: Literal["message", "message_range", "turn", "consolidation", "external"] = "message"
     refs: list[str] = field(default_factory=list)
     resolver: str = "session"
     source_ref: str = ""
@@ -101,8 +101,14 @@ class MemoryRecord:
     score: float
     engine_kind: str
     evidence: list[EvidenceRef] = field(default_factory=list)
+    source: dict[str, object] = field(default_factory=dict)
     signals: dict[str, object] = field(default_factory=dict)
     domain: str = ""
+    extra: dict[str, object] = field(default_factory=dict)
+    happened_at: str | None = None
+    status: str = "active"
+    emotional_weight: int = 0
+    has_embedding: bool = False
     injected: bool = False
 
 
@@ -142,13 +148,14 @@ class MemoryQueryResult:
 
 @dataclass(frozen=True)
 class MemoryMutation:
-    kind: Literal["remember", "forget"]
+    kind: Literal["remember", "forget", "reject", "state_change", "update", "delete"]
     scope: MemoryScope | None = None
     summary: str = ""
     memory_kind: str = ""
     memory_domain: str = ""
     source_ref: str = ""
     happened_at: str = ""
+    status: str = ""
     ids: tuple[str, ...] = ()
     metadata: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
 
@@ -207,6 +214,8 @@ class MemoryWriteApi(Protocol):
 @runtime_checkable
 class MemoryAdminApi(Protocol):
     def list_role_filter_values(self, role_id: str) -> dict[str, list[str]]: ...
+
+    def list_active_items(self, role_id: str, query: str = "") -> list[MemoryItem]: ...
 
     def describe(self) -> MemoryEngineDescriptor: ...
 
@@ -338,7 +347,7 @@ class DefaultMemoryEngine:
             text_block=self.service.context_block(items),
             records=records,
             trace={"intent": request.intent, "effect": request.effect, "role_id": scope.role_id},
-            raw={"candidate_count": len(records)},
+            raw={"candidate_count": len(records), "items": [item.model_dump(mode="json") for item in items]},
         )
 
     async def mutate(self, request: MemoryMutation) -> MemoryMutationResult:
@@ -359,7 +368,7 @@ class DefaultMemoryEngine:
                 extra=dict(request.metadata),
                 happened_at=datetime.fromisoformat(request.happened_at) if request.happened_at else None,
             )
-            self.service._index_embedding(scope.role_id, item)
+            self.service.index_embedding(scope.role_id, item)
             return MemoryMutationResult(
                 accepted=True,
                 item_id=item.id,
@@ -367,6 +376,53 @@ class DefaultMemoryEngine:
                 status=item.status,
                 affected_ids=[item.id],
                 items=[asdict(self._record(item, 0))],
+                raw={"item": item.model_dump(mode="json")},
+            )
+        if request.kind == "update":
+            if len(request.ids) != 1:
+                raise ValueError("update requires exactly one item id")
+            item = self.store.update(
+                scope.role_id,
+                request.ids[0],
+                request.summary,
+                request.memory_kind or None,
+                datetime.fromisoformat(request.happened_at) if request.happened_at else None,
+            )
+            return MemoryMutationResult(
+                accepted=True,
+                item_id=item.id,
+                actual_kind=item.memoryType,
+                status=item.status,
+                affected_ids=[item.id],
+                raw={"item": item.model_dump(mode="json")},
+            )
+        if request.kind == "delete":
+            removed = self.store.remove_batch(scope.role_id, list(request.ids))
+            return MemoryMutationResult(
+                accepted=removed == len(request.ids),
+                affected_ids=list(request.ids[:removed]),
+                missing_ids=list(request.ids[removed:]),
+            )
+        if request.kind in ("reject", "state_change"):
+            status = request.status or ("rejected" if request.kind == "reject" else "")
+            if status not in {"active", "rejected", "forgotten", "superseded"}:
+                raise ValueError("a supported target status is required")
+            affected: list[str] = []
+            missing: list[str] = []
+            results: list[MemoryItem] = []
+            for item_id in request.ids:
+                try:
+                    results.append(self.store.set_status(scope.role_id, item_id, status))
+                except KeyError:
+                    missing.append(item_id)
+                else:
+                    affected.append(item_id)
+            return MemoryMutationResult(
+                accepted=not missing,
+                status=status if affected else "unchanged",
+                affected_ids=affected,
+                missing_ids=missing,
+                raw={"items": [item.model_dump(mode="json") for item in results]},
             )
         affected: list[str] = []
         missing: list[str] = []
@@ -402,7 +458,7 @@ class DefaultMemoryEngine:
             ),
             extra=request.metadata,
         )
-        self.service._index_embedding(scope.role_id, item)
+        self.service.index_embedding(scope.role_id, item)
         return MemoryIngestResult(accepted=True, created_ids=[item.id], summary=item.summary)
 
     def reinforce_items_batch(self, scope: MemoryScope, ids: list[str]) -> None:
@@ -420,6 +476,11 @@ class DefaultMemoryEngine:
             "sources": sorted({item.sourceRef.kind for item in items}),
         }
 
+    def list_active_items(self, role_id: str, query: str = "") -> list[MemoryItem]:
+        if not self._role_exists(role_id):
+            raise ValueError(f"unknown role_id: {role_id}")
+        return self.store.query(role_id, query) if query.strip() else self.store.list_active(role_id)
+
     def list_events_by_time_range(
         self, role_id: str, time_start: datetime, time_end: datetime, *, limit: int = 200
     ) -> list[dict[str, object]]:
@@ -427,14 +488,9 @@ class DefaultMemoryEngine:
             raise ValueError(f"unknown role_id: {role_id}")
         if time_end <= time_start:
             raise ValueError("time_end must be after time_start")
-        with self.store._connect() as connection:
-            rows = connection.execute(
-                """SELECT role_id, source_ref, item_id, created_at FROM consolidation_events
-                   WHERE role_id = ? AND created_at >= ? AND created_at < ?
-                   ORDER BY created_at DESC LIMIT ?""",
-                (role_id, time_start.isoformat(), time_end.isoformat(), max(0, limit)),
-            ).fetchall()
-        return [dict(row) for row in rows]
+        return self.store.consolidation_events_by_time_range(
+            role_id, time_start.isoformat(), time_end.isoformat(), limit
+        )
 
     def list_items_for_admin(
         self,
@@ -528,15 +584,30 @@ class DefaultMemoryEngine:
     ) -> list[dict[str, object]]:
         if not self._role_exists(role_id):
             raise ValueError(f"unknown role_id: {role_id}")
+        if top_k <= 0:
+            return []
         item = self.store.get(role_id, item_id)
         if item is None:
             return []
-        candidates = self.store.query(role_id, item.summary, limit=max(1, top_k + 1))
-        return [
-            candidate.model_dump(mode="json")
-            for candidate in candidates
-            if candidate.id != item_id and (not memory_type or candidate.memoryType == memory_type)
-        ][: max(0, top_k)]
+        candidates = (
+            [candidate for candidate in self.store.list_all(role_id) if candidate.status == "active" or (include_superseded and candidate.status == "superseded")]
+            if include_superseded
+            else self.store.query(role_id, item.summary, limit=max(1, top_k + 1))
+        )
+        similar: list[dict[str, object]] = []
+        for rank, candidate in enumerate(candidates):
+            score = 1.0 / (rank + 2)
+            if (
+                candidate.id == item_id
+                or (memory_type and candidate.memoryType != memory_type)
+                or (candidate.status == "superseded" and not include_superseded)
+                or score < score_threshold
+            ):
+                continue
+            similar.append(candidate.model_dump(mode="json"))
+            if len(similar) >= max(0, top_k):
+                break
+        return similar
 
     @staticmethod
     def _record(item: MemoryItem, rank: int) -> MemoryRecord:
@@ -544,8 +615,14 @@ class DefaultMemoryEngine:
         refs = list(source.messageIds)
         if source.messageRange:
             refs.extend(str(value) for value in source.messageRange)
+        evidence_kind = (
+            "consolidation" if source.kind == "consolidation"
+            else "message_range" if source.messageRange
+            else "message" if refs
+            else "turn"
+        )
         evidence = EvidenceRef(
-            kind="message_range" if source.messageRange else "message" if refs else "turn",
+            kind=evidence_kind,
             refs=refs,
             source_ref=source.stableSourceKey,
             metadata={"session_key": source.sessionKey, "kind": source.kind},
@@ -557,7 +634,18 @@ class DefaultMemoryEngine:
             score=1.0 / (rank + 1),
             engine_kind="meido-sqlite-memory",
             evidence=[evidence],
+            source={
+                "kind": source.kind,
+                "session_key": source.sessionKey,
+                "message_ids": list(source.messageIds),
+                "stable_source_key": source.stableSourceKey,
+            },
             signals={"reinforcement": item.reinforcement, "status": item.status},
             domain=str(item.extra.get("memory_domain", "")),
+            extra=dict(item.extra),
+            happened_at=item.happenedAt.isoformat() if item.happenedAt else None,
+            status=item.status,
+            emotional_weight=item.emotionalWeight,
+            has_embedding=item.hasEmbedding,
             injected=False,
         )

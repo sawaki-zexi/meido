@@ -21,7 +21,7 @@ class MemoryService:
         self.embedding_provider = embedding_provider
         self.embedding_errors: list[str] = []
 
-    def _index_embedding(self, role_id: str, item: MemoryItem) -> None:
+    def index_embedding(self, role_id: str, item: MemoryItem) -> None:
         if self.embedding_provider is None:
             return
         try:
@@ -59,7 +59,7 @@ class MemoryService:
             happened_at=happened_at,
             supersede_key=supersede_key,
         )
-        self._index_embedding(role_id, item)
+        self.index_embedding(role_id, item)
         return item
 
     def process_turn(
@@ -97,7 +97,7 @@ class MemoryService:
                     happened_at=user_message.createdAt,
                     supersede_key=supersede_key,
                 )
-            self._index_embedding(role_id, item)
+            self.index_embedding(role_id, item)
             saved.append(item)
         return saved
 
@@ -123,13 +123,21 @@ class MemoryService:
     def recall(self, role_id: str, query: str, limit: int = 8) -> list[MemoryItem]:
         if self.embedding_provider is None:
             return self.store.query(role_id, query, limit=limit)
-        for item in self.store.list_without_embeddings(role_id):
-            self._index_embedding(role_id, item)
         try:
             vector = self.embedding_provider.embed(role_id, query)
         except Exception:
             self.embedding_errors.append(f"{role_id}: embedding 查询失败")
             vector = None
+        dimension_changed = False
+        if vector is not None:
+            try:
+                dimension_changed = self.store.observe_query_embedding(role_id, vector)
+            except Exception:
+                self.embedding_errors.append(f"{role_id}: embedding 空间更新失败")
+                vector = None
+        if not dimension_changed:
+            for item in self.store.list_without_embeddings(role_id):
+                self.index_embedding(role_id, item)
         return self.store.query_hybrid(role_id, query, vector, limit=limit) if vector is not None else self.store.query(role_id, query, limit=limit)
 
     async def recall_async(self, role_id: str, query: str, limit: int = 8) -> list[MemoryItem]:
@@ -144,6 +152,13 @@ class MemoryService:
             self.embedding_errors.append(f"{role_id}: embedding 查询失败")
         if vector is None:
             return lexical
+        try:
+            dimension_changed = await asyncio.to_thread(self.store.observe_query_embedding, role_id, vector)
+        except Exception:
+            self.embedding_errors.append(f"{role_id}: embedding 空间更新失败")
+            return lexical
+        if dimension_changed:
+            return await asyncio.to_thread(self.store.query_hybrid, role_id, query, vector, limit)
         missing = await asyncio.to_thread(self.store.list_without_embeddings, role_id, 8)
         async def index(item: MemoryItem) -> None:
             try:

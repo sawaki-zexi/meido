@@ -121,6 +121,38 @@ def test_embedding_dimension_change_invalidates_only_that_roles_vectors(tmp_path
     assert json.loads(vectors["role-b"]) == [1.0, 0.0]
 
 
+def test_recall_detects_a_query_embedding_dimension_change(tmp_path):
+    class QueryEmbeddingProvider:
+        def embed(self, role_id, text):
+            return [1.0, 0.0, 0.0]
+
+    store = MemoryStore(tmp_path / "memory.db")
+    source = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="source")
+    item = store.add_or_reinforce("role-a", "fact", "喜欢海边", source)
+    store.set_embedding("role-a", item.id, [1.0, 0.0])
+    service = MemoryService(store, QueryEmbeddingProvider())
+
+    service.recall("role-a", "喜欢海边")
+
+    assert store.list_without_embeddings("role-a") == [store.get("role-a", item.id)]
+
+
+def test_async_recall_detects_a_query_embedding_dimension_change(tmp_path):
+    class QueryEmbeddingProvider:
+        def embed(self, role_id, text):
+            return [1.0, 0.0, 0.0]
+
+    store = MemoryStore(tmp_path / "memory.db")
+    source = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="source")
+    item = store.add_or_reinforce("role-a", "fact", "喜欢海边", source)
+    store.set_embedding("role-a", item.id, [1.0, 0.0])
+    service = MemoryService(store, QueryEmbeddingProvider())
+
+    asyncio.run(service.recall_async("role-a", "喜欢海边"))
+
+    assert store.list_without_embeddings("role-a") == [store.get("role-a", item.id)]
+
+
 def test_memory_store_rejects_missing_role_scope(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     source = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="source")
@@ -213,6 +245,31 @@ def test_memory_engine_keeps_identical_content_isolated_between_roles(tmp_path):
     assert second.accepted is True
     assert first.item_id != second.item_id
     assert [record.id for record in result.records] == [first.item_id]
+    assert result.records[0].source["stable_source_key"] == "manual-a"
+    assert result.records[0].status == "active"
+    assert result.records[0].has_embedding is False
+
+
+def test_memory_engine_mutation_can_change_item_state(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True)
+    scope = MemoryScope("role-a", "role:role-a")
+
+    async def exercise():
+        created = await engine.mutate(
+            MemoryMutation(kind="remember", scope=scope, summary="喜欢海边", memory_kind="preference")
+        )
+        changed = await engine.mutate(
+            MemoryMutation(kind="state_change", scope=scope, ids=(created.item_id,), status="rejected")
+        )
+        return created, changed
+
+    created, changed = asyncio.run(exercise())
+
+    assert changed.accepted is True
+    assert changed.status == "rejected"
+    assert changed.raw["items"][0]["status"] == "rejected"
+    assert store.get("role-a", created.item_id).status == "rejected"
 
 
 def test_memory_engine_rejects_unknown_roles(tmp_path):

@@ -13,7 +13,7 @@ import httpx
 from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
-from .memory_engine import DefaultMemoryEngine
+from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryScope
 from .embeddings import OpenAICompatibleEmbeddingAdapter
 from .memory_maintenance import MemoryMaintenance
 from .memory_optimizer import MemoryOptimizer, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
@@ -128,7 +128,7 @@ def _persist_consolidated_memories(role_id: str, records: list[MemoryRecord]) ->
         for source_key in dict.fromkeys(record.sources)
     ]
     for item in memory_store.consolidate_batch(role_id, writes):
-        memory_service._index_embedding(role_id, item)
+        memory_service.index_embedding(role_id, item)
 
 
 def _consolidation_source_ref(role_id: str, source_key: str) -> MemorySourceRef:
@@ -178,12 +178,19 @@ connection_test_adapter = OpenAICompatibleAdapter(timeout=20)
 role_locks: dict[str, asyncio.Lock] = {}
 
 
+def _current_memory_engine() -> DefaultMemoryEngine:
+    global memory_engine
+    if memory_engine.service is not memory_service or memory_engine.store is not memory_store:
+        memory_engine = DefaultMemoryEngine(memory_service, role_exists=lambda role_id: store.get(role_id) is not None)
+    return memory_engine
+
+
 async def _mutate_and_sync_memory(role_id: str, operation):
     async with memory_optimizer_worker.lock_for(role_id):
-        return _mutate_and_sync_memory_locked(role_id, operation)
+        return await _mutate_and_sync_memory_locked(role_id, operation)
 
 
-def _mutate_and_sync_memory_locked(role_id: str, operation):
+async def _mutate_and_sync_memory_locked(role_id: str, operation):
     snapshot = memory_store.snapshot_role(role_id)
     documents = MemoryDocuments(roles_root)
     memory_dir = documents.memory_dir(role_id)
@@ -206,6 +213,8 @@ def _mutate_and_sync_memory_locked(role_id: str, operation):
 
     try:
         result = operation()
+        if inspect.isawaitable(result):
+            result = await result
     except Exception as error:
         restore(error)
         raise
@@ -232,6 +241,29 @@ def _role_memory_context(role_id: str) -> str:
         if content:
             sections.append(f"[{filename}]\n{content}")
     return "\n\n".join(sections)
+
+
+async def _memory_engine_item_mutation(mutation: MemoryMutation) -> MemoryItem:
+    result = await _current_memory_engine().mutate(mutation)
+    item = result.raw.get("item")
+    if not result.accepted or not isinstance(item, dict):
+        raise KeyError(mutation.ids[0] if mutation.ids else "memory")
+    return MemoryItem.model_validate(item)
+
+
+async def _memory_engine_status_mutation(mutation: MemoryMutation) -> MemoryItem:
+    result = await _current_memory_engine().mutate(mutation)
+    items = result.raw.get("items", [])
+    if not result.accepted or not items or not isinstance(items[0], dict):
+        raise KeyError(mutation.ids[0] if mutation.ids else "memory")
+    return MemoryItem.model_validate(items[0])
+
+
+async def _memory_engine_delete(mutation: MemoryMutation) -> None:
+    result = await _current_memory_engine().mutate(mutation)
+    if not result.accepted:
+        raise KeyError(result.missing_ids[0] if result.missing_ids else "memory")
+
 
 async def _close_memory_workers() -> None:
     await memory_worker.close()
@@ -671,7 +703,7 @@ def get_role_session(role_id: str) -> SessionResponse:
 def list_role_memories(role_id: str, q: str = "") -> MemoryList:
     if store.get(role_id) is None:
         raise HTTPException(status_code=404, detail="角色不存在")
-    memories = memory_service.recall(role_id, q) if q.strip() else memory_store.list_active(role_id)
+    memories = _current_memory_engine().list_active_items(role_id, q)
     return MemoryList(memories=memories)
 
 
@@ -713,13 +745,14 @@ async def remember_role_memory(role_id: str, data: RememberMemoryInput) -> Memor
     try:
         return await _mutate_and_sync_memory(
             role_id,
-            lambda: memory_service.remember(
-                role_id,
-                data.summary,
-                data.memoryType,
-                happened_at=data.happenedAt,
-                stable_source_key=f"manual:{role_id}:{data.memoryType}:{data.summary.casefold()}",
-            ),
+            lambda: _memory_engine_item_mutation(MemoryMutation(
+                kind="remember",
+                scope=MemoryScope(role_id, f"role:{role_id}"),
+                summary=data.summary,
+                memory_kind=data.memoryType,
+                happened_at=data.happenedAt.isoformat() if data.happenedAt else "",
+                source_ref=f"manual:{role_id}:{data.memoryType}:{data.summary.casefold()}",
+            )),
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -732,7 +765,11 @@ async def update_role_memory(role_id: str, memory_id: str, data: UpdateMemoryInp
     try:
         return await _mutate_and_sync_memory(
             role_id,
-            lambda: memory_store.update(role_id, memory_id, data.summary, data.memoryType, data.happenedAt),
+            lambda: _memory_engine_item_mutation(MemoryMutation(
+                kind="update", scope=MemoryScope(role_id, f"role:{role_id}"), ids=(memory_id,),
+                summary=data.summary, memory_kind=data.memoryType,
+                happened_at=data.happenedAt.isoformat() if data.happenedAt else "",
+            )),
         )
     except KeyError as error:
         raise HTTPException(status_code=404, detail="记忆不存在") from error
@@ -743,7 +780,9 @@ async def forget_role_memory(role_id: str, memory_id: str) -> MemoryItem:
     if store.get(role_id) is None:
         raise HTTPException(status_code=404, detail="角色不存在")
     try:
-        return await _mutate_and_sync_memory(role_id, lambda: memory_store.set_status(role_id, memory_id, "forgotten"))
+        return await _mutate_and_sync_memory(role_id, lambda: _memory_engine_status_mutation(
+            MemoryMutation(kind="state_change", scope=MemoryScope(role_id, f"role:{role_id}"), ids=(memory_id,), status="forgotten")
+        ))
     except KeyError as error:
         raise HTTPException(status_code=404, detail="记忆不存在") from error
 
@@ -753,7 +792,9 @@ async def reject_role_memory(role_id: str, memory_id: str) -> MemoryItem:
     if store.get(role_id) is None:
         raise HTTPException(status_code=404, detail="角色不存在")
     try:
-        return await _mutate_and_sync_memory(role_id, lambda: memory_store.set_status(role_id, memory_id, "rejected"))
+        return await _mutate_and_sync_memory(role_id, lambda: _memory_engine_status_mutation(
+            MemoryMutation(kind="reject", scope=MemoryScope(role_id, f"role:{role_id}"), ids=(memory_id,))
+        ))
     except KeyError as error:
         raise HTTPException(status_code=404, detail="记忆不存在") from error
 
@@ -763,7 +804,9 @@ async def delete_role_memory(role_id: str, memory_id: str) -> None:
     if store.get(role_id) is None:
         raise HTTPException(status_code=404, detail="角色不存在")
     try:
-        await _mutate_and_sync_memory(role_id, lambda: memory_store.remove(role_id, memory_id))
+        await _mutate_and_sync_memory(role_id, lambda: _memory_engine_delete(
+            MemoryMutation(kind="delete", scope=MemoryScope(role_id, f"role:{role_id}"), ids=(memory_id,))
+        ))
     except KeyError as error:
         raise HTTPException(status_code=404, detail="记忆不存在") from error
 
@@ -810,8 +853,14 @@ async def send_role_message(role_id: str, data: SendMessageInput) -> StreamingRe
         raise
     history = [*session_store.context_messages(session.session.sessionKey)[:-1], user_message]
     try:
-        memories = await memory_service.recall_async(role_id, data.content)
-        memory_context = memory_service.context_block(memories, _role_memory_context(role_id))
+        query_result = await _current_memory_engine().query(MemoryQuery(
+            text=data.content,
+            intent="context",
+            scope=MemoryScope(role_id, session.session.sessionKey),
+        ))
+        memory_context = memory_service.context_block([], _role_memory_context(role_id))
+        if query_result.text_block:
+            memory_context = "\n".join(part for part in (memory_context, query_result.text_block) if part)
     except Exception as error:
         memory_worker.errors.append(f"{role_id}: recall failed: {error}")
         memory_context = ""

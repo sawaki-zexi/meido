@@ -1,5 +1,11 @@
 # Shiori-Agent 记忆系统研究
 
+状态：当前研究档案，包含注明基线提交的历史快照
+
+事实来源：Shiori-Agent `096a4ecbfbcdae3ba77c179fedb852721846fcb9` 对应源码和测试；各章节注明的其他历史提交仅用于解释版本变化。
+
+最后核验：2026-10-03
+
 ## 2026-10-03 当前 main 深度复核
 
 本节以 Shiori-Agent 当前远程 `origin/main` 提交

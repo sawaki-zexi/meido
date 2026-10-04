@@ -444,21 +444,34 @@ class MemoryStore:
         if not vector or any(not math.isfinite(float(value)) for value in vector):
             raise ValueError("embedding vector must contain finite values")
         with self._connect() as connection:
-            dimension = len(vector)
-            row = connection.execute(
-                "SELECT dimension FROM memory_embedding_spaces WHERE role_id = ?", (role_id,)
-            ).fetchone()
-            if row is not None and int(row["dimension"]) != dimension:
-                connection.execute("UPDATE memory_items SET embedding_json = NULL WHERE role_id = ?", (role_id,))
-            connection.execute(
-                "INSERT INTO memory_embedding_spaces(role_id, dimension) VALUES (?, ?) "
-                "ON CONFLICT(role_id) DO UPDATE SET dimension = excluded.dimension",
-                (role_id, dimension),
-            )
+            self._register_embedding_dimension(connection, role_id, len(vector))
             connection.execute(
                 "UPDATE memory_items SET embedding_json = ? WHERE role_id = ? AND id = ? AND status = 'active'",
                 (json.dumps(vector), role_id, item_id),
             )
+
+    @staticmethod
+    def _register_embedding_dimension(connection: sqlite3.Connection, role_id: str, dimension: int) -> bool:
+        row = connection.execute(
+            "SELECT dimension FROM memory_embedding_spaces WHERE role_id = ?", (role_id,)
+        ).fetchone()
+        changed = row is not None and int(row["dimension"]) != dimension
+        if changed:
+            connection.execute("UPDATE memory_items SET embedding_json = NULL WHERE role_id = ?", (role_id,))
+        connection.execute(
+            "INSERT INTO memory_embedding_spaces(role_id, dimension) VALUES (?, ?) "
+            "ON CONFLICT(role_id) DO UPDATE SET dimension = excluded.dimension",
+            (role_id, dimension),
+        )
+        return changed
+
+    def observe_query_embedding(self, role_id: str, vector: list[float]) -> bool:
+        """Register a query vector's dimension; return whether old vectors were invalidated."""
+        if not vector or any(not math.isfinite(float(value)) for value in vector):
+            raise ValueError("embedding vector must contain finite values")
+        self._require_role_id(role_id)
+        with self._connect() as connection:
+            return self._register_embedding_dimension(connection, role_id, len(vector))
 
     def embedding_for(self, role_id: str, item_id: str) -> list[float] | None:
         self._require_role_id(role_id)
@@ -471,6 +484,19 @@ class MemoryStore:
             return None
         vector = self._decode_json(row["embedding_json"], None)
         return vector if isinstance(vector, list) else None
+
+    def consolidation_events_by_time_range(
+        self, role_id: str, time_start: str, time_end: str, limit: int = 200
+    ) -> list[dict[str, object]]:
+        self._require_role_id(role_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT role_id, source_ref, item_id, created_at FROM consolidation_events
+                   WHERE role_id = ? AND created_at >= ? AND created_at < ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (role_id, time_start, time_end, max(0, limit)),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def reinforce_items_batch(self, role_id: str, ids: list[str]) -> None:
         self._require_role_id(role_id)
@@ -582,8 +608,7 @@ class MemoryStore:
         lexical_ids = [item.id for item in lexical]
         semantic_ids = [str(row["id"]) for row in semantic]
         by_id = {str(row["id"]): row for row in semantic}
-        if len(by_id) < len(rows):
-            by_id.update({item.id: item for item in lexical if item.id not in by_id})
+        by_id.update({item.id: item for item in lexical if item.id not in by_id})
         for result_ids in (lexical_ids, semantic_ids):
             for rank, item_id in enumerate(result_ids, 1):
                 current_score, _ = fused.get(item_id, (0.0, by_id[item_id]))
