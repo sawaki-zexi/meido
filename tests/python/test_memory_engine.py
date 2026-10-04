@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
@@ -280,6 +281,75 @@ def test_memory_engine_rejects_unknown_roles(tmp_path):
 
     with pytest.raises(ValueError, match="role_id"):
         asyncio.run(exercise())
+
+
+def test_memory_engine_applies_interest_filters_and_answer_lanes(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True)
+    source = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="source")
+    store.add_or_reinforce("role-a", "preference", "喜欢海边", source)
+    store.add_or_reinforce("role-a", "fact", "海边工作地点", source)
+
+    async def exercise():
+        interest = await engine.query(MemoryQuery(
+            "海边", intent="interest", scope=MemoryScope("role-a", "role:role-a")
+        ))
+        answer = await engine.query(MemoryQuery(
+            "海边", intent="answer", scope=MemoryScope("role-a", "role:role-a")
+        ))
+        return interest, answer
+
+    interest, answer = asyncio.run(exercise())
+
+    assert [record.kind for record in interest.records] == ["preference"]
+    assert [lane["query"] for lane in answer.trace["lanes"]] == ["海边", "event: 海边", "general: 海边"]
+    assert answer.trace["rrf"] is True
+
+
+def test_memory_engine_timeline_requires_range_and_filters_event_time(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True)
+    source = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="source")
+    store.add_or_reinforce(
+        "role-a", "event", "搬到海边", source,
+        happened_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+    store.add_or_reinforce(
+        "role-a", "event", "参加会议", source,
+        happened_at=datetime(2025, 1, 2, tzinfo=timezone.utc),
+    )
+
+    async def exercise():
+        with pytest.raises(ValueError, match="time_start"):
+            await engine.query(MemoryQuery(
+                "", intent="timeline", scope=MemoryScope("role-a", "role:role-a")
+            ))
+        return await engine.query(MemoryQuery(
+            "", intent="timeline", scope=MemoryScope("role-a", "role:role-a"),
+            filters=MemoryQueryFilters(
+                time_start=datetime(2025, 6, 1, tzinfo=timezone.utc),
+                time_end=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            ),
+        ))
+
+    result = asyncio.run(exercise())
+
+    assert [record.summary for record in result.records] == ["搬到海边"]
+
+
+def test_memory_engine_returns_empty_result_when_retrieval_lane_fails(tmp_path):
+    class FailingService(MemoryService):
+        async def recall_async(self, role_id, query, limit=8):
+            raise RuntimeError("embedding unavailable")
+
+    engine = DefaultMemoryEngine(FailingService(MemoryStore(tmp_path / "memory.db")), role_exists=lambda _: True)
+
+    result = asyncio.run(engine.query(MemoryQuery(
+        "任何内容", scope=MemoryScope("role-a", "role:role-a")
+    )))
+
+    assert result.records == []
+    assert "error" in result.trace["lanes"][0]
 
 
 def test_metadata_update_preserves_content_hash_and_embedding(tmp_path):
