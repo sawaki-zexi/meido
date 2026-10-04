@@ -6,18 +6,18 @@ import { IconButton } from "../../ui/Icon";
 import { Notice } from "../../ui/Status";
 import { AvatarCropper } from "./AvatarCropper";
 
-type Field = { key: keyof RoleDraft; label: string; hint?: string; multiline?: boolean; required?: boolean };
+type Field = { key: keyof RoleDraft; label: string; placeholder: string; multiline?: boolean; required?: boolean };
 
 const identityFields: Field[] = [
-  { key: "name", label: "名称", required: true },
-  { key: "nickname", label: "昵称" },
-  { key: "description", label: "简介", multiline: true },
+  { key: "name", label: "名称", placeholder: "给她起个名字", required: true },
+  { key: "nickname", label: "昵称", placeholder: "角色对你的称呼，例如：主人" },
+  { key: "description", label: "简介", placeholder: "简短介绍她，让你在角色卡上一眼认出她", multiline: true },
 ];
 const characterFields: Field[] = [
-  { key: "profile", label: "角色设定", multiline: true, required: true },
-  { key: "personality", label: "性格", multiline: true },
-  { key: "behaviorRules", label: "行为规则", multiline: true },
-  { key: "responseConstraints", label: "回复约束", multiline: true },
+  { key: "profile", label: "角色设定", placeholder: "描述她的身份、背景，以及你们之间的关系", multiline: true, required: true },
+  { key: "personality", label: "性格", placeholder: "例如：温柔、细心，偶尔会开些小玩笑", multiline: true },
+  { key: "behaviorRules", label: "行为规则", placeholder: "描述她平时会怎么做、怎么回应你", multiline: true },
+  { key: "responseConstraints", label: "回复约束", placeholder: "例如：避免替你做决定，回答尽量简洁", multiline: true },
 ];
 
 type Props = { state: RolesState; onSubmit: () => void; onCancel: () => void; onDelete: () => void };
@@ -34,10 +34,9 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
 
   const renderField = (field: Field) => {
     const id = `role-${field.key}`;
-    const common = { id, required: field.required, disabled: locked, placeholder: writable ? undefined : "未填写", value: draft[field.key], onChange: (event: { target: { value: string } }) => setDraft({ ...draft, [field.key]: event.target.value }) };
+    const common = { id, required: field.required, disabled: locked, placeholder: writable ? field.placeholder : "未填写", value: draft[field.key], onChange: (event: { target: { value: string } }) => setDraft({ ...draft, [field.key]: event.target.value }) };
     return <div className="field" key={field.key}>
       <label htmlFor={id}>{field.label}{field.required && <span className="required" aria-hidden="true">*</span>}</label>
-      {field.hint && <small className="field-hint">{field.hint}</small>}
       {field.multiline ? <textarea {...common} /> : <input {...common} />}
     </div>;
   };

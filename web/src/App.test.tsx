@@ -99,6 +99,9 @@ describe("角色管理", () => {
     await user.click(screen.getByRole("button", { name: "角色" }));
     await user.click(await screen.findByRole("button", { name: "新建角色" }));
     const form = await dialog("创建角色");
+    expect(within(form).getByLabelText("昵称")).toHaveAttribute("placeholder", "角色对你的称呼，例如：主人");
+    expect(within(form).getByLabelText("简介")).toHaveAttribute("placeholder", "简短介绍她，让你在角色卡上一眼认出她");
+    expect(within(form).getByLabelText(/角色设定/)).toHaveAttribute("placeholder", "描述她的身份、背景，以及你们之间的关系");
     const preview = within(form).getByRole("complementary", { name: "卡牌预览" });
     expect(within(preview).getByText("No.001")).toBeTruthy();
     await user.type(within(form).getByLabelText(/名称/), "新角色");
