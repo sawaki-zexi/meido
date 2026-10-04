@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
+import asyncio
 import uuid
 from typing import Callable, Literal, Protocol, runtime_checkable
 
@@ -341,14 +342,97 @@ class DefaultMemoryEngine:
         scope = self._validate_scope(request.scope)
         if request.limit < 0:
             raise ValueError("limit must be non-negative")
-        items = await self.service.recall_async(scope.role_id, request.text, limit=request.limit)
-        records = [self._record(item, index) for index, item in enumerate(items)]
+        if request.intent == "timeline" and (
+            request.filters.time_start is None or request.filters.time_end is None
+        ):
+            raise ValueError("timeline queries require time_start and time_end")
+        if request.limit == 0:
+            return MemoryQueryResult(
+                trace={"intent": request.intent, "effect": request.effect, "role_id": scope.role_id, "lanes": []},
+                raw={"candidate_count": 0, "items": []},
+            )
+
+        lanes = self._query_lanes(request)
+        lane_results = await asyncio.gather(
+            *(self._retrieve_lane(scope.role_id, text, max(request.limit * 4, 16)) for text in lanes),
+            return_exceptions=True,
+        )
+        fused: dict[str, tuple[MemoryItem, float, dict[str, object]]] = {}
+        lane_trace: list[dict[str, object]] = []
+        for lane_index, (lane, result) in enumerate(zip(lanes, lane_results, strict=True)):
+            if isinstance(result, BaseException):
+                lane_trace.append({"query": lane, "error": str(result)})
+                continue
+            lane_trace.append({"query": lane, "rank": len(result)})
+            for rank, item in enumerate(result, 1):
+                if not self._matches_filters(item, request):
+                    continue
+                # RRF is used only for ordering; source lane/rank remain observable.
+                contribution = 1.0 / (60 + rank)
+                current = fused.get(item.id)
+                if current is None:
+                    fused[item.id] = (item, contribution, {"lanes": [lane], "ranks": {lane: rank}})
+                else:
+                    current[2]["lanes"].append(lane)
+                    current[2]["ranks"][lane] = rank
+                    fused[item.id] = (item, current[1] + contribution, current[2])
+
+        ranked = sorted(fused.values(), key=lambda value: (value[1], value[0].updatedAt), reverse=True)
+        if request.intent == "timeline":
+            ranked.sort(key=lambda value: value[0].happenedAt or value[0].updatedAt, reverse=True)
+        selected = ranked[: request.limit]
+        items = [item for item, _, _ in selected]
+        records = [self._record(item, index, score=score, signals=signals) for index, (item, score, signals) in enumerate(selected)]
         return MemoryQueryResult(
             text_block=self.service.context_block(items),
             records=records,
-            trace={"intent": request.intent, "effect": request.effect, "role_id": scope.role_id},
+            trace={"intent": request.intent, "effect": request.effect, "role_id": scope.role_id, "lanes": lane_trace, "rrf": True},
             raw={"candidate_count": len(records), "items": [item.model_dump(mode="json") for item in items]},
         )
+
+    async def _retrieve_lane(self, role_id: str, text: str, limit: int) -> list[MemoryItem]:
+        if not text.strip():
+            return await asyncio.to_thread(self.store.list_active, role_id)
+        return await self.service.recall_async(role_id, text, limit=limit)
+
+    @staticmethod
+    def _query_lanes(request: MemoryQuery) -> list[str]:
+        text = request.text.strip()
+        if request.intent == "answer":
+            # Shiori's answer path keeps the lexical original and uses two bounded
+            # semantic hypotheses. A caller may provide reviewed hypotheses through hints.
+            configured = request.filters.hints.get("hyde_queries", ())
+            hypotheses = [str(value).strip() for value in configured if str(value).strip()][:2]
+            if not hypotheses:
+                hypotheses = [f"event: {text}", f"general: {text}"]
+            return [text, *hypotheses]
+        if request.intent == "procedure":
+            return [f"执行步骤和规则：{text}", text]
+        return [text]
+
+    @staticmethod
+    def _matches_filters(item: MemoryItem, request: MemoryQuery) -> bool:
+        filters = request.filters
+        allowed_kinds = filters.kinds
+        if request.intent == "interest" and not allowed_kinds:
+            allowed_kinds = ("preference", "profile")
+        elif request.intent == "procedure" and not allowed_kinds:
+            allowed_kinds = ("procedure", "preference")
+        if allowed_kinds and item.memoryType not in allowed_kinds:
+            return False
+        domain = str(item.extra.get("memory_domain", ""))
+        if filters.domains and domain not in filters.domains:
+            return False
+        if item.status != "active":
+            return False
+        happened = item.happenedAt
+        if filters.time_start is not None and (happened is None or happened < filters.time_start):
+            return False
+        if filters.time_end is not None and (happened is None or happened >= filters.time_end):
+            return False
+        if request.intent == "timeline" and item.memoryType != "event" and not filters.kinds:
+            return False
+        return True
 
     async def mutate(self, request: MemoryMutation) -> MemoryMutationResult:
         scope = self._validate_scope(request.scope)
@@ -610,7 +694,13 @@ class DefaultMemoryEngine:
         return similar
 
     @staticmethod
-    def _record(item: MemoryItem, rank: int) -> MemoryRecord:
+    def _record(
+        item: MemoryItem,
+        rank: int,
+        *,
+        score: float | None = None,
+        signals: dict[str, object] | None = None,
+    ) -> MemoryRecord:
         source = item.sourceRef
         refs = list(source.messageIds)
         if source.messageRange:
@@ -631,7 +721,7 @@ class DefaultMemoryEngine:
             id=item.id,
             kind=item.memoryType,
             summary=item.summary,
-            score=1.0 / (rank + 1),
+            score=score if score is not None else 1.0 / (rank + 1),
             engine_kind="meido-sqlite-memory",
             evidence=[evidence],
             source={
@@ -640,7 +730,7 @@ class DefaultMemoryEngine:
                 "message_ids": list(source.messageIds),
                 "stable_source_key": source.stableSourceKey,
             },
-            signals={"reinforcement": item.reinforcement, "status": item.status},
+            signals={"reinforcement": item.reinforcement, "status": item.status, **(signals or {})},
             domain=str(item.extra.get("memory_domain", "")),
             extra=dict(item.extra),
             happened_at=item.happenedAt.isoformat() if item.happenedAt else None,
