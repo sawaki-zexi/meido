@@ -1,9 +1,11 @@
 import asyncio
+import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
-from backend.app.memory_optimizer import MemoryOptimizer, MemoryOptimizerWorker, _Optimization, _Record
+from backend.app.memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop, MemoryOptimizerWorker, _Optimization, _Record
 from backend.app.memory_service import MemoryService, MemoryWorker
 from backend.app.memory_store import MemoryStore
 from backend.app.models import Message
@@ -60,8 +62,8 @@ def test_optimizer_keeps_new_pending_candidates_when_snapshot_changes(tmp_path):
     assert optimizer.optimize("role-a") is True
     memory = (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
     assert "主人住在海边" in memory
-    assert "一起看过海上日出" in memory
-    assert "source:" not in pending_path.read_text(encoding="utf-8")
+    assert "一起看过海上日出" not in memory
+    assert "一起看过海上日出" in pending_path.read_text(encoding="utf-8")
 
 
 def test_optimizer_failure_preserves_existing_documents_and_pending(tmp_path, monkeypatch):
@@ -325,3 +327,153 @@ def test_memory_worker_does_not_run_optimizer_after_each_turn(tmp_path):
     asyncio.run(run())
     assert not (memory_dir / "MEMORY.md").exists()
     assert "主人住在海边" in (memory_dir / "PENDING.md").read_text(encoding="utf-8")
+
+
+def test_optimizer_recovers_pending_snapshot_and_keeps_new_candidates(tmp_path):
+    memory_dir = tmp_path / "roles" / "role-a" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "PENDING.snapshot.md").write_text(_candidate("fact", "旧候选", "old"), encoding="utf-8")
+    (memory_dir / "PENDING.md").write_text(_candidate("event", "新候选", "new"), encoding="utf-8")
+
+    assert MemoryOptimizer(tmp_path / "roles").optimize("role-a") is True
+    assert not (memory_dir / "PENDING.snapshot.md").exists()
+    assert "旧候选" in (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
+    assert "新候选" in (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
+    assert not (memory_dir / "PENDING.md").read_text(encoding="utf-8").strip()
+
+
+def test_optimizer_self_failure_keeps_memory_commit_and_marks_retry(tmp_path):
+    memory_dir = tmp_path / "roles" / "role-a" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "PENDING.md").write_text(_candidate("fact", "主人住在海边", "source-a"), encoding="utf-8")
+
+    class SelfUnavailable(MemoryOptimizer):
+        @classmethod
+        def _render_self(cls, original, records, history, self_understanding):
+            raise RuntimeError("SELF provider unavailable")
+
+    with pytest.raises(RuntimeError, match="SELF provider unavailable"):
+        SelfUnavailable(tmp_path / "roles").optimize("role-a")
+    assert "主人住在海边" in (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
+    assert not (memory_dir / "PENDING.md").read_text(encoding="utf-8").strip()
+    state = __import__("json").loads((memory_dir / ".optimizer.json").read_text(encoding="utf-8"))
+    assert state["self_update_pending"] is True
+
+
+def test_optimizer_retries_self_update_after_memory_commit(tmp_path, monkeypatch):
+    memory_dir = tmp_path / "roles" / "role-a" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "PENDING.md").write_text(_candidate("fact", "主人住在海边", "source-a"), encoding="utf-8")
+    optimizer = MemoryOptimizer(tmp_path / "roles")
+    original = optimizer._render_self
+    calls = 0
+
+    def fail_once(original_text, records, history, understanding):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("SELF provider unavailable")
+        return original(original_text, records, history, understanding)
+
+    monkeypatch.setattr(optimizer, "_render_self", fail_once)
+    with pytest.raises(RuntimeError, match="SELF provider unavailable"):
+        optimizer.optimize("role-a")
+    assert MemoryOptimizer.should_run(tmp_path / "roles", "role-a") is True
+    assert optimizer.optimize("role-a") is True
+    assert "主人住在海边" in (memory_dir / "SELF.md").read_text(encoding="utf-8")
+    assert MemoryOptimizer.should_run(tmp_path / "roles", "role-a") is False
+
+
+def test_optimizer_snapshot_cleanup_failure_is_recovered_without_duplicate_pending(tmp_path, monkeypatch):
+    memory_dir = tmp_path / "roles" / "role-a" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "PENDING.md").write_text(_candidate("fact", "主人住在海边", "source-a"), encoding="utf-8")
+    original_unlink = Path.unlink
+
+    def fail_snapshot_unlink(path, *args, **kwargs):
+        if path.name == "PENDING.snapshot.md":
+            raise OSError("simulated snapshot cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_snapshot_unlink)
+    with pytest.raises(OSError, match="snapshot cleanup failure"):
+        MemoryOptimizer(tmp_path / "roles").optimize("role-a")
+    assert "主人住在海边" in (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
+    assert (memory_dir / "PENDING.snapshot.md").exists()
+    assert not (memory_dir / "PENDING.md").read_text(encoding="utf-8").strip()
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    assert MemoryOptimizer(tmp_path / "roles").optimize("role-a") is True
+    assert not (memory_dir / "PENDING.snapshot.md").exists()
+
+
+def test_optimizer_worker_serializes_different_roles(tmp_path):
+    active = 0
+    maximum = 0
+
+    def optimize(role_id):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        time.sleep(0.04)
+        active -= 1
+        return True
+
+    optimizer = MemoryOptimizer(tmp_path / "roles")
+    optimizer.optimize = optimize
+    worker = MemoryOptimizerWorker(optimizer)
+
+    async def run() -> None:
+        worker.start()
+        assert worker.submit("role-a") is True
+        assert worker.submit("role-b") is True
+        await worker.drain()
+
+    asyncio.run(run())
+    assert maximum == 1
+
+
+def test_optimizer_loop_clamps_interval_and_scans_only_due_roles_at_startup(tmp_path):
+    roles_root = tmp_path / "roles"
+    pending_dir = roles_root / "role-a" / "memory"
+    current_dir = roles_root / "role-b" / "memory"
+    pending_dir.mkdir(parents=True)
+    current_dir.mkdir(parents=True)
+    (pending_dir / "PENDING.md").write_text(_candidate("fact", "需要归并", "source-a"), encoding="utf-8")
+    now = datetime.now(timezone.utc)
+    (current_dir / ".optimizer.json").write_text(
+        __import__("json").dumps({
+            "historyHash": "empty",
+            "self_rules_version": MemoryOptimizer.SELF_RULES_VERSION,
+            "last_memory_optimized_at": now.isoformat(),
+        }),
+        encoding="utf-8",
+    )
+    worker = MemoryOptimizerWorker(MemoryOptimizer(roles_root))
+    loop = MemoryOptimizerLoop(worker, roles_root, interval_seconds=1, now=lambda: now)
+
+    async def run() -> int:
+        worker.start()
+        assert loop.interval_seconds == 60
+        scheduled = await loop.run_once(startup=True)
+        await worker.drain()
+        return scheduled
+
+    assert asyncio.run(run()) == 1
+    assert "需要归并" in (pending_dir / "MEMORY.md").read_text(encoding="utf-8")
+    assert not (current_dir / "MEMORY.md").exists()
+
+
+def test_optimizer_loop_disabled_does_not_schedule_work(tmp_path):
+    roles_root = tmp_path / "roles"
+    memory_dir = roles_root / "role-a" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "PENDING.md").write_text(_candidate("fact", "候选", "source-a"), encoding="utf-8")
+    worker = MemoryOptimizerWorker(MemoryOptimizer(roles_root))
+    loop = MemoryOptimizerLoop(worker, roles_root, enabled=False)
+
+    async def run() -> int:
+        worker.start()
+        return await loop.run_once(startup=True)
+
+    assert asyncio.run(run()) == 0
+    assert not (memory_dir / "MEMORY.md").exists()

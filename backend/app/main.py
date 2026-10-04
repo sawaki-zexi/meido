@@ -16,7 +16,7 @@ from .memory_service import MemoryService, MemoryWorker
 from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryScope
 from .embeddings import OpenAICompatibleEmbeddingAdapter
 from .memory_maintenance import MemoryMaintenance
-from .memory_optimizer import MemoryOptimizer, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
+from .memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
 from .memory_store import MemoryStore
 from .memory_events import ConsolidationCommitted, TurnCommitted
 from .memory_documents import MemoryDocuments
@@ -178,6 +178,12 @@ def _consume_consolidation_event(event: ConsolidationCommitted) -> None:
 embedding_provider = OpenAICompatibleEmbeddingAdapter(_embedding_configuration)
 memory_service = MemoryService(memory_store, embedding_provider)
 memory_engine = DefaultMemoryEngine(memory_service, role_exists=lambda role_id: store.get(role_id) is not None)
+memory_optimizer_enabled = os.getenv("MEIDO_MEMORY_OPTIMIZER_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+try:
+    memory_optimizer_interval = float(os.getenv("MEIDO_MEMORY_OPTIMIZER_INTERVAL_SECONDS", str(MemoryOptimizer.DEFAULT_INTERVAL_SECONDS)))
+except ValueError:
+    memory_optimizer_interval = MemoryOptimizer.DEFAULT_INTERVAL_SECONDS
+
 memory_optimizer_worker = MemoryOptimizerWorker(
     MemoryOptimizer(
         roles_root,
@@ -188,8 +194,21 @@ memory_optimizer_worker = MemoryOptimizerWorker(
             history,
             current_self,
         ),
-        _persist_consolidated_memories,
     )
+)
+memory_optimizer_loop = MemoryOptimizerLoop(
+    memory_optimizer_worker,
+    roles_root,
+    enabled=memory_optimizer_enabled,
+    interval_seconds=memory_optimizer_interval,
+    model_available=lambda role_id: (
+        (role := store.get(role_id)) is not None
+        and (
+            model_configuration_store.get(role.modelConfigurationId)
+            if role.modelConfigurationId
+            else model_configuration_store.get()
+        ) is not None
+    ),
 )
 memory_maintenance = MemoryMaintenance(roles_root, session_store, _consume_consolidation_event)
 memory_worker = MemoryWorker(
@@ -289,6 +308,7 @@ async def _memory_engine_delete(mutation: MemoryMutation) -> None:
 
 
 async def _close_memory_workers() -> None:
+    await memory_optimizer_loop.close()
     await memory_worker.close()
     await memory_optimizer_worker.drain()
 
@@ -296,7 +316,7 @@ async def _close_memory_workers() -> None:
 async def _start_memory_workers() -> None:
     memory_worker.start()
     await asyncio.to_thread(memory_maintenance.resume_pending)
-    memory_optimizer_worker.resume_pending()
+    memory_optimizer_loop.start()
 
 
 app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown=[_close_memory_workers])
