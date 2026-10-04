@@ -18,7 +18,7 @@ from .embeddings import OpenAICompatibleEmbeddingAdapter
 from .memory_maintenance import MemoryMaintenance
 from .memory_optimizer import MemoryOptimizer, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
 from .memory_store import MemoryStore
-from .memory_events import TurnCommitted
+from .memory_events import ConsolidationCommitted, TurnCommitted
 from .memory_documents import MemoryDocuments
 from .models import MemoryList, MemoryItem, MemorySourceRef, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
@@ -154,6 +154,27 @@ def _consolidation_source_ref(role_id: str, source_key: str) -> MemorySourceRef:
     )
 
 
+def _consume_consolidation_event(event: ConsolidationCommitted) -> None:
+    records = [
+        (
+            candidate.memory_type,
+            candidate.summary,
+            MemorySourceRef(
+                kind="consolidation",
+                sessionKey=event.session_key,
+                messageIds=list(event.message_ids),
+                messageRange=event.message_range,
+                stableSourceKey=candidate.source_key,
+            ),
+            None,
+        )
+        for candidate in event.candidates
+    ]
+    items = memory_store.consume_consolidation_event(event.role_id, event.source_key, records)
+    for item in items:
+        memory_service.index_embedding(event.role_id, item)
+
+
 embedding_provider = OpenAICompatibleEmbeddingAdapter(_embedding_configuration)
 memory_service = MemoryService(memory_store, embedding_provider)
 memory_engine = DefaultMemoryEngine(memory_service, role_exists=lambda role_id: store.get(role_id) is not None)
@@ -170,9 +191,10 @@ memory_optimizer_worker = MemoryOptimizerWorker(
         _persist_consolidated_memories,
     )
 )
+memory_maintenance = MemoryMaintenance(roles_root, session_store, _consume_consolidation_event)
 memory_worker = MemoryWorker(
     memory_service,
-    MemoryMaintenance(roles_root, session_store),
+    memory_maintenance,
     memory_optimizer_worker,
 )
 connection_test_adapter = OpenAICompatibleAdapter(timeout=20)
@@ -273,6 +295,7 @@ async def _close_memory_workers() -> None:
 
 async def _start_memory_workers() -> None:
     memory_worker.start()
+    await asyncio.to_thread(memory_maintenance.resume_pending)
     memory_optimizer_worker.resume_pending()
 
 
@@ -852,7 +875,24 @@ async def send_role_message(role_id: str, data: SendMessageInput) -> StreamingRe
     except Exception:
         lock.release()
         raise
-    history = [*session_store.context_messages(session.session.sessionKey)[:-1], user_message]
+    # Before handing an overgrown history to the model, give Markdown
+    # maintenance a chance to consolidate the turns that would otherwise be
+    # evicted from the input window.  This path is independent of the normal
+    # post-response maintenance trigger and is deliberately best effort.
+    context_messages = session_store.context_messages(session.session.sessionKey)
+    context_limit = MemoryMaintenance.RECENT_MESSAGE_LIMIT * 2
+    try:
+        if len(context_messages) > context_limit:
+            await asyncio.to_thread(
+                memory_maintenance.ensure_memory_for_window,
+                role_id,
+                session.session.sessionKey,
+                max_messages=context_limit,
+            )
+            context_messages = context_messages[-context_limit:]
+    except Exception as error:
+        memory_worker.errors.append(f"{role_id}: input-window maintenance failed: {error}")
+    history = [*context_messages[:-1], user_message]
     try:
         query_result = await _current_memory_engine().query(MemoryQuery(
             text=data.content,

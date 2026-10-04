@@ -434,11 +434,6 @@ class MemoryWorker:
                     self.maintenance.sync_structured_memory(role_id, self.service.store.list_all(role_id))
                 except Exception as error:
                     self.errors.append(f"{role_id}: structured Markdown sync failed: {error}")
-            if self.optimizer is not None:
-                try:
-                    await self.optimizer.run(role_id)
-                except Exception as error:
-                    self.errors.append(f"{role_id}: optimizer failed: {error}")
 
     def _process_semantic(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> list[MemoryItem]:
         return self.service.process_turn(role_id, session_key, user_message, assistant_message)
