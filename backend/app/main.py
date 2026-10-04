@@ -2,6 +2,7 @@ import os
 import asyncio
 import json
 import inspect
+from datetime import datetime
 from time import monotonic
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from .memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop, MemoryOptimi
 from .memory_store import MemoryStore
 from .memory_events import ConsolidationCommitted, TurnCommitted
 from .memory_documents import MemoryDocuments
-from .models import MemoryList, MemoryItem, MemorySourceRef, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
+from .models import MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
 from .storage import initialize_databases
@@ -744,11 +745,43 @@ def get_role_session(role_id: str) -> SessionResponse:
 
 
 @app.get("/api/roles/{role_id}/memories", response_model=MemoryList)
-def list_role_memories(role_id: str, q: str = "") -> MemoryList:
+def list_role_memories(
+    role_id: str,
+    q: str = "",
+    memoryType: str = "",
+    memoryDomain: str = "",
+    status: str = "active",
+    sourceRef: str = "",
+    hasEmbedding: bool | None = None,
+    page: int = 1,
+    pageSize: int = 50,
+    sortBy: str = "updated_at",
+    sortOrder: str = "desc",
+) -> MemoryList:
     if store.get(role_id) is None:
         raise HTTPException(status_code=404, detail="角色不存在")
-    memories = _current_memory_engine().list_active_items(role_id, q)
-    return MemoryList(memories=memories)
+    try:
+        rows, total = _current_memory_engine().list_items_for_admin(
+            role_id=role_id,
+            q=q,
+            memory_type=memoryType,
+            memory_domain=memoryDomain,
+            status=status,
+            source_ref=sourceRef,
+            has_embedding=hasEmbedding,
+            page=page,
+            page_size=pageSize,
+            sort_by=sortBy,
+            sort_order=sortOrder,
+        )
+        return MemoryList(
+            memories=[MemoryItem.model_validate(row) for row in rows],
+            total=total,
+            page=max(1, page),
+            pageSize=max(1, pageSize),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @app.get("/api/roles/{role_id}/memory-documents")
@@ -780,6 +813,128 @@ def get_role_memory_document(role_id: str, document_name: str) -> dict[str, str]
         raise HTTPException(status_code=400, detail=str(error)) from error
     except RuntimeError as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@app.get("/api/roles/{role_id}/memory-admin/filters")
+def list_memory_admin_filters(role_id: str) -> dict[str, object]:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        return {**_current_memory_engine().list_role_filter_values(role_id), "embedding_states": [False, True]}
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.get("/api/roles/{role_id}/memory-admin/events")
+def list_memory_admin_events(
+    role_id: str,
+    timeStart: datetime,
+    timeEnd: datetime,
+    limit: int = 200,
+) -> dict[str, object]:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        return {"events": _current_memory_engine().list_events_by_time_range(role_id, timeStart, timeEnd, limit=limit)}
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.get("/api/roles/{role_id}/memory-admin/items/{memory_id}")
+def get_memory_admin_item(role_id: str, memory_id: str, includeEmbedding: bool = False) -> dict[str, object]:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        item = _current_memory_engine().get_item_for_admin(role_id, memory_id, include_embedding=includeEmbedding)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if item is None:
+        raise HTTPException(status_code=404, detail="记忆不存在")
+    return item
+
+
+@app.patch("/api/roles/{role_id}/memory-admin/items/{memory_id}", response_model=MemoryItem)
+async def update_memory_admin_item(
+    role_id: str,
+    memory_id: str,
+    data: MemoryAdminUpdateInput,
+) -> MemoryItem:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    fields = data.model_fields_set
+    source_ref = data.sourceRef.model_dump_json() if "sourceRef" in fields and data.sourceRef is not None else None
+    kwargs = {
+        "status": data.status if "status" in fields else None,
+        "extra_json": data.extraJson if "extraJson" in fields else None,
+        "source_ref": source_ref,
+        "happened_at": data.happenedAt.isoformat() if "happenedAt" in fields and data.happenedAt is not None else None,
+        "happened_at_provided": "happenedAt" in fields,
+        "emotional_weight": data.emotionalWeight if "emotionalWeight" in fields else None,
+    }
+    try:
+        async def update() -> MemoryItem:
+            item = _current_memory_engine().update_item_for_admin(role_id, memory_id, **kwargs)
+            if item is None:
+                raise KeyError(memory_id)
+            return MemoryItem.model_validate(item)
+
+        return await _mutate_and_sync_memory(role_id, update)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="记忆不存在") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/api/roles/{role_id}/memory-admin/items/batch-delete")
+async def delete_memory_admin_items(role_id: str, data: MemoryBatchDeleteInput) -> dict[str, int]:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        deleted = await _mutate_and_sync_memory(
+            role_id,
+            lambda: _current_memory_engine().delete_items_batch(role_id, data.ids),
+        )
+        return {"deleted": deleted}
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/api/roles/{role_id}/memory-admin/invalidate")
+async def invalidate_memory_admin_items(role_id: str) -> dict[str, int]:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        invalidated = await _mutate_and_sync_memory(
+            role_id,
+            lambda: _current_memory_engine().invalidate_role_memories(role_id),
+        )
+        return {"invalidated": invalidated}
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.get("/api/roles/{role_id}/memory-admin/items/{memory_id}/similar")
+def find_similar_memory_admin_items(
+    role_id: str,
+    memory_id: str,
+    topK: int = 8,
+    memoryType: str = "",
+    scoreThreshold: float = 0.0,
+    includeSuperseded: bool = False,
+) -> dict[str, object]:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    try:
+        return {"items": _current_memory_engine().find_similar_items_for_admin(
+            role_id,
+            memory_id,
+            top_k=topK,
+            memory_type=memoryType,
+            score_threshold=scoreThreshold,
+            include_superseded=includeSuperseded,
+        )}
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @app.post("/api/roles/{role_id}/memories", response_model=MemoryItem, status_code=201)

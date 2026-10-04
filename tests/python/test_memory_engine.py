@@ -396,3 +396,47 @@ def test_role_snapshot_restores_only_that_roles_events_and_replacements(tmp_path
         ).fetchall()
     assert rows == [("role-a", "source:role-a"), ("role-b", "source:role-b")]
     assert replacements == [("role-a", "old:role-a"), ("role-b", "old:role-b")]
+
+
+def test_memory_admin_filters_updates_metadata_and_keeps_embedding(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda role_id: role_id == "role-a")
+    scope = MemoryScope("role-a", "role:role-a")
+    created = asyncio.run(engine.mutate(MemoryMutation(
+        kind="remember", scope=scope, summary="喜欢红茶", memory_kind="preference",
+        metadata={"memory_domain": "relationship", "source_note": "manual"},
+    )))
+    store.set_embedding("role-a", created.item_id, [1.0, 0.0])
+
+    rows, total = engine.list_items_for_admin(
+        role_id="role-a", memory_domain="relationship", has_embedding=True, page=1, page_size=10
+    )
+    assert total == 1
+    assert rows[0]["id"] == created.item_id
+    updated = engine.update_item_for_admin(
+        "role-a", created.item_id, emotional_weight=8, extra_json={"memory_domain": "relationship", "reviewed": True}
+    )
+    assert updated is not None
+    assert updated["emotionalWeight"] == 8
+    assert updated["contentHash"] == rows[0]["contentHash"]
+    assert store.embedding_for("role-a", created.item_id) == [1.0, 0.0]
+
+
+def test_memory_admin_supports_similar_batch_delete_and_invalidation_without_cross_role_access(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda role_id: role_id in {"role-a", "role-b"})
+    source_a = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="a")
+    source_b = MemorySourceRef(kind="manual", sessionKey="role:role-b", stableSourceKey="b")
+    first = store.add_or_reinforce("role-a", "fact", "主人喜欢海边", source_a)
+    second = store.add_or_reinforce(
+        "role-a", "fact", "主人常去海边", MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="a-2")
+    )
+    other = store.add_or_reinforce("role-b", "fact", "主人喜欢海边", source_b)
+
+    similar = engine.find_similar_items_for_admin("role-a", first.id, top_k=5)
+    assert all(item["roleId"] == "role-a" for item in similar)
+    assert engine.delete_items_batch("role-a", [second.id]) == 1
+    assert store.get("role-a", second.id) is None
+    assert engine.invalidate_role_memories("role-a") == 1
+    assert store.get("role-a", first.id).status == "forgotten"
+    assert store.get("role-b", other.id).status == "active"

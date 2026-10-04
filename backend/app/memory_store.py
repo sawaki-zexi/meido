@@ -557,6 +557,7 @@ class MemoryStore:
         extra_json: dict[str, object] | None = None,
         source_ref: str | None = None,
         happened_at: str | None = None,
+        happened_at_provided: bool = False,
         emotional_weight: int | None = None,
     ) -> MemoryItem | None:
         self._require_role_id(role_id)
@@ -579,7 +580,7 @@ class MemoryStore:
         if source_ref is not None:
             updates.append("source_ref = ?")
             values.append(source_ref)
-        if happened_at is not None:
+        if happened_at is not None or happened_at_provided:
             updates.append("happened_at = ?")
             values.append(happened_at)
         if emotional_weight is not None:

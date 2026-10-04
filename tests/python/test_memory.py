@@ -1157,6 +1157,73 @@ def test_memory_api_hides_inactive_items_and_other_role_sources(tmp_path, monkey
     assert no_results == []
 
 
+def test_memory_admin_api_filters_updates_metadata_and_supports_bulk_actions(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    other_role = roles.create(RoleInput(name="其他", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    service = MemoryService(memory_store)
+    source = MemorySourceRef(kind="manual", sessionKey=f"role:{role.id}", stableSourceKey="admin-a")
+    first = memory_store.add_or_reinforce(
+        role.id, "preference", "主人喜欢红茶", source,
+        extra={"memory_domain": "relationship", "note": "初始"},
+    )
+    second = memory_store.add_or_reinforce(
+        role.id, "fact", "主人住在海边",
+        MemorySourceRef(kind="manual", sessionKey=f"role:{role.id}", stableSourceKey="admin-b"),
+    )
+    other = service.remember(other_role.id, "其他角色的事实", "fact", stable_source_key="other")
+    memory_store.set_embedding(role.id, first.id, [1.0, 0.0])
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", service)
+    monkeypatch.setattr(main, "memory_worker", MemoryWorker(service))
+    client = TestClient(main.app)
+
+    listed = client.get(
+        f"/api/roles/{role.id}/memories",
+        params={"memoryDomain": "relationship", "hasEmbedding": "true", "page": 1, "pageSize": 1},
+    )
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 1
+    assert listed.json()["memories"][0]["id"] == first.id
+
+    details = client.get(f"/api/roles/{role.id}/memory-admin/items/{first.id}", params={"includeEmbedding": "true"})
+    assert details.status_code == 200
+    assert details.json()["embedding"] == [1.0, 0.0]
+    updated = client.patch(
+        f"/api/roles/{role.id}/memory-admin/items/{first.id}",
+        json={"emotionalWeight": 8, "extraJson": {"memory_domain": "relationship", "reviewed": True}},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["emotionalWeight"] == 8
+    assert memory_store.get(role.id, first.id).contentHash == first.contentHash
+    assert memory_store.embedding_for(role.id, first.id) == [1.0, 0.0]
+    happened = client.patch(
+        f"/api/roles/{role.id}/memory-admin/items/{first.id}",
+        json={"happenedAt": "2026-09-30T08:00:00+00:00"},
+    )
+    assert happened.status_code == 200
+    assert memory_store.get(role.id, first.id).happenedAt is not None
+    cleared = client.patch(
+        f"/api/roles/{role.id}/memory-admin/items/{first.id}",
+        json={"happenedAt": None},
+    )
+    assert cleared.status_code == 200
+    assert memory_store.get(role.id, first.id).happenedAt is None
+
+    similar = client.get(f"/api/roles/{role.id}/memory-admin/items/{first.id}/similar")
+    assert similar.status_code == 200
+    assert all(item["roleId"] == role.id for item in similar.json()["items"])
+    assert client.post(f"/api/roles/{role.id}/memory-admin/items/batch-delete", json={"ids": [second.id]}).json() == {"deleted": 1}
+    assert memory_store.get(role.id, second.id) is None
+    assert client.post(f"/api/roles/{role.id}/memory-admin/invalidate").json() == {"invalidated": 1}
+    all_items = client.get(f"/api/roles/{role.id}/memories", params={"status": ""}).json()["memories"]
+    assert all_items[0]["status"] == "forgotten"
+    assert memory_store.get(other_role.id, other.id).status == "active"
+
+
 def test_empty_recall_does_not_inject_all_memories(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     service = MemoryService(store)
