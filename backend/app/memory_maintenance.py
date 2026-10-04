@@ -6,24 +6,60 @@ import os
 import re
 import uuid
 from pathlib import Path
+from collections.abc import Callable
 
+from .memory_events import ConsolidationCandidate, ConsolidationCommitted
 from .models import Message
 from .session_store import SessionStore
 from .memory_documents import MemoryDocuments
 
 
+class ConsolidationDraftError(ValueError):
+    """The configured consolidation provider returned no valid draft."""
+
+
 class MemoryMaintenance:
     """Maintain each role's Markdown memory views from committed messages."""
 
-    CONSOLIDATION_MIN_MESSAGES = 20
     RECENT_MESSAGE_LIMIT = 12
     RECENT_CHAR_LIMIT = 4000
+    CONSOLIDATION_MIN_READY_MESSAGES = max(5, RECENT_MESSAGE_LIMIT // 2)
 
-    def __init__(self, roles_root: str | Path, sessions: SessionStore) -> None:
+    def __init__(
+        self,
+        roles_root: str | Path,
+        sessions: SessionStore,
+        on_consolidation_committed: Callable[[ConsolidationCommitted], None] | None = None,
+        consolidation_provider: Callable[[str, list[Message]], object] | None = None,
+    ) -> None:
         self.roles_root = Path(roles_root).resolve()
         self.sessions = sessions
+        self.on_consolidation_committed = on_consolidation_committed
+        self.consolidation_provider = consolidation_provider
+        self.errors: list[str] = []
 
-    def maintain(self, role_id: str, session_key: str) -> None:
+    def resume_pending(self) -> int:
+        """Retry durable consolidation events left by a previous process."""
+        if not self.roles_root.exists():
+            return 0
+        resumed = 0
+        for role_root in self.roles_root.iterdir():
+            if not role_root.is_dir():
+                continue
+            cursor_path = role_root / "memory" / ".maintenance.json"
+            cursor = self._read_cursor(cursor_path)
+            if "pendingEvent" not in cursor:
+                continue
+            if self.on_consolidation_committed is None:
+                continue
+            try:
+                self.maintain(role_root.name, f"role:{role_root.name}")
+                resumed += 1
+            except Exception as error:
+                self.errors.append(f"{role_root.name}: pending consolidation retry failed: {error}")
+        return resumed
+
+    def maintain(self, role_id: str, session_key: str, *, force: bool = False) -> None:
         if session_key != f"role:{role_id}":
             raise ValueError("会话与角色不匹配")
         role_root = (self.roles_root / role_id).resolve()
@@ -36,12 +72,20 @@ class MemoryMaintenance:
         messages = self._committed_messages(self.sessions.context_messages(session_key))
         cursor_path = memory_dir / ".maintenance.json"
         cursor = self._read_cursor(cursor_path)
+        cursor = self._retry_pending_event(cursor_path, cursor, role_id, session_key)
+        if "pendingEvent" in cursor and self.on_consolidation_committed is None:
+            return
+        cursor_snapshot = dict(cursor)
         last_sequence = cursor["lastSequence"]
         recent = self._recent_context(messages)
         writes: dict[Path, str] = {memory_dir / "RECENT_CONTEXT.md": recent}
+        document_snapshot = {path: self._file_signature(path) for path in writes}
 
         new_messages = [message for message in messages if message.sequence > last_sequence]
-        if len(new_messages) >= self.CONSOLIDATION_MIN_MESSAGES:
+        eligible = [message for message in messages if message.sequence > last_sequence]
+        ready = len(eligible) - self.RECENT_MESSAGE_LIMIT
+        event: ConsolidationCommitted | None = None
+        if force or ready >= self.CONSOLIDATION_MIN_READY_MESSAGES:
             window = self._window(messages, last_sequence)
             if window:
                 source_key = self._source_key(role_id, window)
@@ -51,21 +95,86 @@ class MemoryMaintenance:
                 pending = self._read_text(pending_path)
                 journal_path = MemoryDocuments(self.roles_root).journal_path(role_id, window[0].createdAt.date().isoformat())
                 journal = self._read_text(journal_path)
+                try:
+                    candidates = self._candidates(source_key, window)
+                except (ConsolidationDraftError, TimeoutError):
+                    # Keep RECENT_CONTEXT, but leave the consolidation cursor
+                    # unchanged so the same input can be retried later.
+                    self._before_commit()
+                    latest = self._committed_messages(self.sessions.context_messages(session_key))
+                    if self._message_signature(latest) != self._message_signature(messages):
+                        return
+                    if self._read_cursor(cursor_path) != cursor_snapshot:
+                        return
+                    if any(self._file_signature(path) != signature for path, signature in document_snapshot.items()):
+                        return
+                    self._commit(writes, cursor_path, cursor_snapshot)
+                    return
                 if source_key not in history:
                     history += self._history_entry(source_key, window)
                 if source_key not in pending:
-                    pending += self._pending_entries(source_key, window)
+                    pending += self._pending_entries(source_key, window, candidates)
                 if source_key not in journal:
                     journal += MemoryDocuments.render_journal_entry(source_key, window[0].sequence, window[-1].sequence)
                 cursor = {"lastSequence": window[-1].sequence, "lastSourceKey": source_key}
+                event = ConsolidationCommitted(
+                    role_id=role_id,
+                    session_key=session_key,
+                    source_key=source_key,
+                    message_ids=tuple(message.id for message in window),
+                    message_range=(window[0].sequence, window[-1].sequence),
+                    candidates=tuple(candidates),
+                )
+                # Persist the event even when this process has no consumer;
+                # another process can resume it after startup.
+                cursor["pendingEvent"] = self._event_payload(event)
                 writes[history_path] = history
                 writes[pending_path] = pending
                 writes[journal_path] = journal
+                document_snapshot.update({
+                    history_path: self._file_signature(history_path),
+                    pending_path: self._file_signature(pending_path),
+                    journal_path: self._file_signature(journal_path),
+                })
         self._before_commit()
         latest = self._committed_messages(self.sessions.context_messages(session_key))
-        if [message.id for message in latest] != [message.id for message in messages]:
+        if self._message_signature(latest) != self._message_signature(messages):
+            return
+        if self._read_cursor(cursor_path) != cursor_snapshot:
+            return
+        if any(self._file_signature(path) != signature for path, signature in document_snapshot.items()):
+            return
+        if not new_messages and cursor_path.exists() and (memory_dir / "RECENT_CONTEXT.md").exists():
             return
         self._commit(writes, cursor_path, cursor)
+        if event is not None and self.on_consolidation_committed is not None:
+            self._publish_event(event, cursor_path, cursor)
+
+    def ensure_memory_for_window(
+        self,
+        role_id: str,
+        session_key: str,
+        *,
+        max_messages: int | None = None,
+    ) -> bool:
+        """Ensure older committed turns are consolidated before input eviction.
+
+        The normal maintenance threshold remains unchanged.  This entry point is
+        used by hosts that are about to trim model input history and forces one
+        maintenance pass when the committed context exceeds the requested window.
+        """
+        if max_messages is None:
+            max_messages = self.RECENT_MESSAGE_LIMIT
+        if max_messages < self.RECENT_MESSAGE_LIMIT:
+            raise ValueError("max_messages must include the recent context window")
+        messages = self._committed_messages(self.sessions.context_messages(session_key))
+        cursor_path = (self.roles_root / role_id / "memory" / ".maintenance.json").resolve()
+        cursor = self._read_cursor(cursor_path)
+        eligible = [message for message in messages if message.sequence > int(cursor["lastSequence"])]
+        if len(eligible) <= max_messages:
+            return False
+        self.maintain(role_id, session_key, force=True)
+        return True
 
     def sync_structured_memory(self, role_id: str, memories: list[object]) -> None:
         MemoryDocuments(self.roles_root).sync_structured_memory(role_id, memories)  # type: ignore[arg-type]
@@ -106,9 +215,11 @@ class MemoryMaintenance:
         selected.reverse()
         return heading + "\n".join(selected) + ("\n" if selected else "")
 
-    @staticmethod
-    def _window(messages: list[Message], after_sequence: int) -> list[Message]:
-        return [message for message in messages if message.sequence > after_sequence]
+    def _window(self, messages: list[Message], after_sequence: int) -> list[Message]:
+        eligible = [message for message in messages if message.sequence > after_sequence]
+        if len(eligible) <= self.RECENT_MESSAGE_LIMIT:
+            return []
+        return eligible[:-self.RECENT_MESSAGE_LIMIT]
 
     @staticmethod
     def _committed_messages(messages: list[Message]) -> list[Message]:
@@ -118,6 +229,13 @@ class MemoryMaintenance:
             if message.role == "user" and following.role == "assistant" and following.status == "completed":
                 committed.extend((message, following))
         return committed
+
+    @staticmethod
+    def _message_signature(messages: list[Message]) -> tuple[tuple[object, ...], ...]:
+        return tuple(
+            (message.id, message.sequence, message.role, message.status, message.content, message.createdAt.isoformat())
+            for message in messages
+        )
 
     @staticmethod
     def _source_key(role_id: str, window: list[Message]) -> str:
@@ -134,19 +252,157 @@ class MemoryMaintenance:
                 lines.append(f"- [{message.role}] {content}\n")
         return "".join(lines)
 
-    def _pending_entries(self, source_key: str, window: list[Message]) -> str:
+    def _candidates(self, source_key: str, window: list[Message]) -> list[ConsolidationCandidate]:
+        if self.consolidation_provider is not None:
+            raw = self.consolidation_provider(source_key, window)
+            if not isinstance(raw, list) or not raw:
+                raise ConsolidationDraftError("整理模型未返回有效候选")
+            candidates: list[ConsolidationCandidate] = []
+            for value in raw:
+                if isinstance(value, ConsolidationCandidate):
+                    candidate = value
+                elif isinstance(value, dict) and all(isinstance(value.get(key), str) and value[key].strip() for key in ("memoryType", "summary", "sourceKey")):
+                    candidate = ConsolidationCandidate(value["memoryType"], value["summary"], value["sourceKey"])
+                else:
+                    raise ConsolidationDraftError("整理模型返回结构无效")
+                if not candidate.summary.strip():
+                    raise ConsolidationDraftError("整理模型返回空摘要")
+                candidates.append(candidate)
+            return candidates
         from .memory_service import MemoryService
 
-        entries: list[str] = []
+        candidates: list[ConsolidationCandidate] = []
         for message in window:
             if message.role != "user":
                 continue
             for memory_type, summary, _ in MemoryService.extract_candidates(message.content):
-                entries.append(
-                    f"\n- [{memory_type}] {summary} (来源：消息 {message.sequence})\n"
-                    f"  <!-- source: {source_key}:{message.id}:{memory_type} -->\n"
-                )
-        return "".join(entries)
+                candidates.append(ConsolidationCandidate(
+                    memory_type=memory_type,
+                    summary=summary,
+                    source_key=f"{source_key}:{message.id}:{memory_type}",
+                ))
+        return candidates
+
+    def _pending_entries(
+        self,
+        source_key: str,
+        window: list[Message],
+        candidates: list[ConsolidationCandidate] | None = None,
+    ) -> str:
+        if candidates is None:
+            return "".join(
+                f"\n- [{candidate.memory_type}] {candidate.summary} (来源：消息 {message.sequence})\n"
+                f"  <!-- source: {candidate.source_key} -->\n"
+                for message in window
+                for candidate in self._candidates(source_key, [message])
+            )
+        return "".join(
+            f"\n- [{candidate.memory_type}] {candidate.summary} (来源：整理 {source_key})\n"
+            f"  <!-- source: {candidate.source_key} -->\n"
+            for candidate in candidates
+        )
+
+    @staticmethod
+    def _event_payload(event: ConsolidationCommitted) -> dict[str, object]:
+        return {
+            "roleId": event.role_id,
+            "sessionKey": event.session_key,
+            "sourceKey": event.source_key,
+            "messageIds": list(event.message_ids),
+            "messageRange": list(event.message_range) if event.message_range else None,
+            "candidates": [
+                {
+                    "memoryType": candidate.memory_type,
+                    "summary": candidate.summary,
+                    "sourceKey": candidate.source_key,
+                }
+                for candidate in event.candidates
+            ],
+        }
+
+    @staticmethod
+    def _event_from_payload(payload: object) -> ConsolidationCommitted:
+        if not isinstance(payload, dict):
+            raise ValueError("整理事件格式无效")
+        role_id = payload.get("roleId")
+        session_key = payload.get("sessionKey")
+        source_key = payload.get("sourceKey")
+        message_ids = payload.get("messageIds")
+        message_range = payload.get("messageRange")
+        raw_candidates = payload.get("candidates")
+        if not all(isinstance(value, str) for value in (role_id, session_key, source_key)):
+            raise ValueError("整理事件来源无效")
+        if not isinstance(message_ids, list) or any(not isinstance(value, str) for value in message_ids):
+            raise ValueError("整理事件消息引用无效")
+        parsed_range = None
+        if message_range is not None:
+            if not isinstance(message_range, list) or len(message_range) != 2 or any(not isinstance(value, int) for value in message_range):
+                raise ValueError("整理事件消息范围无效")
+            parsed_range = (message_range[0], message_range[1])
+        if not isinstance(raw_candidates, list):
+            raise ValueError("整理事件候选无效")
+        candidates: list[ConsolidationCandidate] = []
+        for value in raw_candidates:
+            if not isinstance(value, dict) or not all(isinstance(value.get(key), str) for key in ("memoryType", "summary", "sourceKey")):
+                raise ValueError("整理事件候选格式无效")
+            candidates.append(ConsolidationCandidate(value["memoryType"], value["summary"], value["sourceKey"]))
+        return ConsolidationCommitted(
+            role_id=role_id,
+            session_key=session_key,
+            source_key=source_key,
+            message_ids=tuple(message_ids),
+            message_range=parsed_range,
+            candidates=tuple(candidates),
+        )
+
+    def _publish_event(
+        self,
+        event: ConsolidationCommitted,
+        cursor_path: Path,
+        cursor: dict[str, object],
+    ) -> None:
+        assert self.on_consolidation_committed is not None
+        try:
+            self.on_consolidation_committed(event)
+        except Exception:
+            # The committed event remains in the cursor and is retried before
+            # the next maintenance snapshot. Structured consumers are idempotent.
+            raise
+        acknowledged = dict(cursor)
+        acknowledged.pop("pendingEvent", None)
+        self._commit({}, cursor_path, acknowledged)
+
+    @staticmethod
+    def _file_signature(path: Path) -> str | None:
+        if not path.exists():
+            return None
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return None
+
+    def _retry_pending_event(
+        self,
+        cursor_path: Path,
+        cursor: dict[str, object],
+        role_id: str,
+        session_key: str,
+    ) -> dict[str, object]:
+        payload = cursor.get("pendingEvent")
+        if payload is None:
+            return cursor
+        event = self._event_from_payload(payload)
+        if event.role_id != role_id or event.session_key != session_key:
+            raise ValueError("整理事件作用域与当前角色不匹配")
+        # A process started without its structured consumer must retain the
+        # durable event for the next process that can consume it.
+        if self.on_consolidation_committed is None:
+            return cursor
+        self.on_consolidation_committed(event)
+        updated = dict(cursor)
+        updated.pop("pendingEvent", None)
+        self._commit({}, cursor_path, updated)
+        return updated
 
     @staticmethod
     def _commit(writes: dict[Path, str], cursor_path: Path, cursor: dict[str, object]) -> None:

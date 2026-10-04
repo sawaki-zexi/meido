@@ -498,6 +498,43 @@ class MemoryStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def consume_consolidation_event(
+        self,
+        role_id: str,
+        event_source_key: str,
+        records: list[tuple[str, str, MemorySourceRef, datetime | None]],
+    ) -> list[MemoryItem]:
+        """Consume one committed Markdown event exactly once per source key."""
+        self._require_role_id(role_id)
+        if not event_source_key.strip():
+            raise ValueError("consolidation event source is required")
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT item_id FROM consolidation_events WHERE role_id = ? AND source_ref = ?",
+                (role_id, event_source_key),
+            ).fetchone()
+            if existing is not None:
+                item_ids = [value for value in str(existing["item_id"] or "").split(",") if value]
+                return [self._item(row) for item_id in item_ids if (row := connection.execute(
+                    "SELECT * FROM memory_items WHERE role_id = ? AND id = ?", (role_id, item_id)
+                ).fetchone()) is not None]
+            items = [
+                self._add_or_reinforce_connection(
+                    connection,
+                    role_id,
+                    memory_type,
+                    summary,
+                    source_ref,
+                    happened_at=happened_at,
+                )
+                for memory_type, summary, source_ref, happened_at in records
+            ]
+            connection.execute(
+                "INSERT INTO consolidation_events(role_id, source_ref, item_id, created_at) VALUES (?, ?, ?, ?)",
+                (role_id, event_source_key, ",".join(item.id for item in items), _now()),
+            )
+            return items
+
     def reinforce_items_batch(self, role_id: str, ids: list[str]) -> None:
         self._require_role_id(role_id)
         unique_ids = tuple(dict.fromkeys(item_id for item_id in ids if item_id))

@@ -300,7 +300,7 @@ def test_optimizer_worker_resumes_pending_candidates_on_startup(tmp_path):
     assert "待恢复的记忆" in (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
 
 
-def test_memory_worker_schedules_optimizer_after_turn_maintenance(tmp_path):
+def test_memory_worker_does_not_run_optimizer_after_each_turn(tmp_path):
     roles_root = tmp_path / "roles"
     memory_dir = roles_root / "role-a" / "memory"
     memory_dir.mkdir(parents=True)
@@ -323,4 +323,5 @@ def test_memory_worker_schedules_optimizer_after_turn_maintenance(tmp_path):
         await memory_worker.drain()
 
     asyncio.run(run())
-    assert "主人住在海边" in (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
+    assert not (memory_dir / "MEMORY.md").exists()
+    assert "主人住在海边" in (memory_dir / "PENDING.md").read_text(encoding="utf-8")

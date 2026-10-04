@@ -208,6 +208,8 @@ Shiori 当前把 role/scope 放在 `extra_json`，SQLite item 没有独立 `role
 
 空结果、非法结构、超时和文档写入失败均不推进 cursor；保留可重试输入。稳定 source key 使重复窗口不会重复追加。
 
+Meido 宿主通过 `MemoryMaintenance` 的 consolidation provider seam 接入窗口整理模型；在宿主未配置该 provider 时，使用本地确定性候选提取作为降级路径。provider 返回空结果或非法结构时只保留近期上下文、保留原 cursor，下一次维护可重试；provider 超时或抛错直接结束本次维护，同样不推进 cursor。该 seam 保持 Shiori 的 snapshot/draft/conditional commit 和失败语义，待宿主模型调用能力接入后无需改变事件契约。
+
 触发口径固定为：
 
 - 被动助手回合完成并保存后产生 `TurnCommitted`；主动消息等有各自处理规则，本规格删除群聊触发类型，但保留 Meido 自身实际存在的非普通回合来源处理。失败、中断和未提交回复不触发被动回合链路。
@@ -216,6 +218,8 @@ Shiori 当前把 role/scope 放在 `extra_json`，SQLite item 没有独立 `role
 - consolidation 不是每轮必做。普通 maintenance 的默认窗口判断为 `ready = message_count - keep_count - last_consolidated`，且 `ready >= max(5, keep_count // 2)`；另有输入预算/历史压缩路径，在消息即将从模型历史移除时调用 `ensure_memory_for_window` 补齐该窗口所需的整理，不应误解为每次输入 token 压力都直接触发普通 consolidation。未达到条件时只维护近期上下文。
 - consolidation 成功提交后推进 cursor 并发布一个 `ConsolidationCommitted`；失败、输入变化或条件未满足都不推进 cursor。
 - `PENDING.md` 不在每轮 consolidation 后立即归并；由独立定时 Optimizer 按周期或启动补跑条件消费。
+
+当前 FastAPI 入口在构造模型输入前发现角色会话超过两倍近期保留窗口时调用 `ensure_memory_for_window`；该调用是 best effort，维护失败只记录错误，不阻塞回复。现有宿主尚未执行 token 级裁剪，因此该入口以消息窗口作为裁剪前保障信号。
 
 ### 7.3 Memory Optimizer
 

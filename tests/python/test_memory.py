@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -618,7 +619,9 @@ def test_memory_maintenance_consolidates_once_and_keeps_source_window(tmp_path):
     assert pending_path.read_text(encoding="utf-8") == pending
     assert history.count("<!-- source:") == 1
     assert "consolidation:" in history
-    assert "第9项" in pending
+    assert "第3项" in pending
+    recent_path = tmp_path / "roles" / role.id / "memory" / "RECENT_CONTEXT.md"
+    assert "第9项" in recent_path.read_text(encoding="utf-8")
 
 
 def test_memory_maintenance_writes_idempotent_journal_and_documents_endpoint(tmp_path, monkeypatch):
@@ -646,6 +649,197 @@ def test_memory_maintenance_writes_idempotent_journal_and_documents_endpoint(tmp
     payload = response.json()
     assert {item["name"] for item in payload["documents"]} == {"SELF.md", "MEMORY.md", "HISTORY.md", "PENDING.md", "RECENT_CONTEXT.md"}
     assert payload["journals"][0]["content"] == journal
+
+
+def test_memory_maintenance_does_not_consolidate_before_keep_window_is_exceeded(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    for index in range(3):
+        sessions.append_message(session.sessionKey, "user", f"普通消息{index}")
+        sessions.append_message(session.sessionKey, "assistant", "收到")
+
+    MemoryMaintenance(tmp_path / "roles", sessions).maintain(role.id, session.sessionKey)
+
+    memory_dir = tmp_path / "roles" / role.id / "memory"
+    assert (memory_dir / "RECENT_CONTEXT.md").exists()
+    assert not (memory_dir / "HISTORY.md").exists()
+    assert json.loads((memory_dir / ".maintenance.json").read_text(encoding="utf-8"))["lastSequence"] == 0
+
+
+def test_memory_maintenance_window_pressure_entry_point_consolidates_old_turns(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    for index in range(8):
+        sessions.append_message(session.sessionKey, "user", f"窗口消息{index}")
+        sessions.append_message(session.sessionKey, "assistant", "收到")
+
+    maintenance = MemoryMaintenance(tmp_path / "roles", sessions)
+    assert maintenance.ensure_memory_for_window(role.id, session.sessionKey, max_messages=12) is True
+    memory_dir = tmp_path / "roles" / role.id / "memory"
+    assert (memory_dir / "HISTORY.md").exists()
+    assert json.loads((memory_dir / ".maintenance.json").read_text(encoding="utf-8"))["lastSequence"] > 0
+
+
+def test_memory_maintenance_preserves_documents_changed_during_draft(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    for index in range(10):
+        sessions.append_message(session.sessionKey, "user", f"消息{index}")
+        sessions.append_message(session.sessionKey, "assistant", "收到")
+
+    class UserEditDuringDraft(MemoryMaintenance):
+        edited = False
+
+        def _before_commit(self):
+            if not self.edited:
+                self.edited = True
+                path = tmp_path / "roles" / role.id / "memory" / "HISTORY.md"
+                path.write_text("用户保留内容\n", encoding="utf-8")
+
+    maintenance = UserEditDuringDraft(tmp_path / "roles", sessions)
+    maintenance.maintain(role.id, session.sessionKey)
+    history_path = tmp_path / "roles" / role.id / "memory" / "HISTORY.md"
+    assert history_path.read_text(encoding="utf-8") == "用户保留内容\n"
+    cursor_path = tmp_path / "roles" / role.id / "memory" / ".maintenance.json"
+    assert not cursor_path.exists() or json.loads(cursor_path.read_text(encoding="utf-8"))["lastSequence"] == 0
+
+
+def test_memory_maintenance_keeps_pending_event_without_consumer(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    for index in range(10):
+        sessions.append_message(session.sessionKey, "user", f"请记住第{index}项")
+        sessions.append_message(session.sessionKey, "assistant", "收到")
+    consumer = MemoryMaintenance(tmp_path / "roles", sessions, lambda event: None)
+    consumer.maintain(role.id, session.sessionKey)
+    # A maintenance process without a callback must leave the durable event;
+    # this variant simulates restart before the consumer is available.
+    cursor_path = tmp_path / "roles" / role.id / "memory" / ".maintenance.json"
+    cursor = json.loads(cursor_path.read_text(encoding="utf-8"))
+    cursor["pendingEvent"] = cursor.get("pendingEvent") or {
+        "roleId": role.id,
+        "sessionKey": session.sessionKey,
+        "sourceKey": "source",
+        "messageIds": [],
+        "messageRange": None,
+        "candidates": [],
+    }
+    cursor_path.write_text(json.dumps(cursor, ensure_ascii=False), encoding="utf-8")
+    without_consumer = MemoryMaintenance(tmp_path / "roles", sessions)
+    without_consumer.maintain(role.id, session.sessionKey)
+    assert "pendingEvent" in json.loads(cursor_path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("result", [[], [{"bad": "shape"}], [{"memoryType": "", "summary": "摘要", "sourceKey": "source"}]])
+def test_invalid_consolidation_provider_result_does_not_advance_cursor(tmp_path, result):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    for index in range(10):
+        sessions.append_message(session.sessionKey, "user", f"请记住第{index}项")
+        sessions.append_message(session.sessionKey, "assistant", "收到")
+    maintenance = MemoryMaintenance(tmp_path / "roles", sessions, consolidation_provider=lambda source, window: result)
+
+    maintenance.maintain(role.id, session.sessionKey)
+
+    cursor_path = tmp_path / "roles" / role.id / "memory" / ".maintenance.json"
+    assert not cursor_path.exists() or json.loads(cursor_path.read_text(encoding="utf-8"))["lastSequence"] == 0
+
+
+def test_consolidation_committed_event_is_retried_and_acknowledged(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    for index in range(10):
+        sessions.append_message(session.sessionKey, "user", f"请记住第{index}项")
+        sessions.append_message(session.sessionKey, "assistant", "收到")
+
+    events = []
+    failures = 0
+
+    def consume(event):
+        nonlocal failures
+        events.append(event)
+        if failures == 0:
+            failures += 1
+            raise RuntimeError("consumer unavailable")
+
+    maintenance = MemoryMaintenance(tmp_path / "roles", sessions, consume)
+    with pytest.raises(RuntimeError, match="consumer unavailable"):
+        maintenance.maintain(role.id, session.sessionKey)
+    cursor_path = tmp_path / "roles" / role.id / "memory" / ".maintenance.json"
+    assert "pendingEvent" in json.loads(cursor_path.read_text(encoding="utf-8"))
+
+    maintenance.maintain(role.id, session.sessionKey)
+    cursor = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert "pendingEvent" not in cursor
+    assert len(events) == 2
+    assert events[0].source_key == events[1].source_key
+
+
+def test_maintenance_resumes_pending_event_after_restart(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    for index in range(10):
+        sessions.append_message(session.sessionKey, "user", f"请记住第{index}项")
+        sessions.append_message(session.sessionKey, "assistant", "收到")
+    first_events = []
+
+    def fail_once(event):
+        first_events.append(event)
+        raise RuntimeError("restart required")
+
+    first = MemoryMaintenance(tmp_path / "roles", sessions, fail_once)
+    with pytest.raises(RuntimeError, match="restart required"):
+        first.maintain(role.id, session.sessionKey)
+
+    resumed_events = []
+    resumed = MemoryMaintenance(tmp_path / "roles", sessions, resumed_events.append)
+    assert resumed.resume_pending() == 1
+    assert len(resumed_events) == 1
+    assert "pendingEvent" not in json.loads(
+        (tmp_path / "roles" / role.id / "memory" / ".maintenance.json").read_text(encoding="utf-8")
+    )
+
+
+def test_consolidation_event_consumer_is_idempotent(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    source = MemorySourceRef(
+        kind="consolidation",
+        sessionKey="role:role-a",
+        messageIds=["m1"],
+        messageRange=(1, 2),
+        stableSourceKey="consolidation:role-a:1-2:digest:m1:fact",
+    )
+    first = store.consume_consolidation_event(
+        "role-a", "consolidation:role-a:1-2:digest", [("fact", "主人住在海边", source, None)]
+    )
+    second = store.consume_consolidation_event(
+        "role-a", "consolidation:role-a:1-2:digest", [("fact", "主人住在海边", source, None)]
+    )
+
+    assert [item.id for item in second] == [first[0].id]
+    assert store.get("role-a", first[0].id).reinforcement == 1
+    assert len(store.consolidation_events_by_time_range("role-a", "0000", "9999")) == 1
 
 
 def test_memory_documents_reject_path_traversal(tmp_path, monkeypatch):
@@ -705,6 +899,31 @@ def test_memory_maintenance_discards_stale_snapshot(tmp_path):
     assert not recent_path.exists()
     maintenance.maintain(role.id, session.sessionKey)
     assert "新消息" in recent_path.read_text(encoding="utf-8")
+
+
+def test_memory_maintenance_discards_draft_when_snapshot_message_changes(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    session = sessions.open_role_session(role.id)
+    user = sessions.append_message(session.sessionKey, "user", "原始内容")
+    sessions.append_message(session.sessionKey, "assistant", "回复")
+
+    class MessageChangedDuringPreparation(MemoryMaintenance):
+        changed = False
+
+        def _before_commit(self):
+            if not self.changed:
+                self.changed = True
+                sessions.update_message(user.id, "已修改内容", "completed")
+
+    maintenance = MessageChangedDuringPreparation(tmp_path / "roles", sessions)
+    maintenance.maintain(role.id, session.sessionKey)
+    recent_path = tmp_path / "roles" / role.id / "memory" / "RECENT_CONTEXT.md"
+    assert not recent_path.exists()
+    maintenance.maintain(role.id, session.sessionKey)
+    assert "已修改内容" in recent_path.read_text(encoding="utf-8")
 
 
 def test_memory_maintenance_restores_files_when_commit_fails(tmp_path, monkeypatch):
