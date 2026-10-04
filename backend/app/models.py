@@ -152,6 +152,8 @@ class MemoryItem(BaseModel):
     updatedAt: datetime
     reinforcement: int = 1
     contentHash: str
+    emotionalWeight: int = 0
+    hasEmbedding: bool = False
 
 
 class MemoryList(BaseModel):

@@ -13,6 +13,7 @@ import httpx
 from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
+from .memory_engine import DefaultMemoryEngine
 from .embeddings import OpenAICompatibleEmbeddingAdapter
 from .memory_maintenance import MemoryMaintenance
 from .memory_optimizer import MemoryOptimizer, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
@@ -154,6 +155,7 @@ def _consolidation_source_ref(role_id: str, source_key: str) -> MemorySourceRef:
 
 embedding_provider = OpenAICompatibleEmbeddingAdapter(_embedding_configuration)
 memory_service = MemoryService(memory_store, embedding_provider)
+memory_engine = DefaultMemoryEngine(memory_service, role_exists=lambda role_id: store.get(role_id) is not None)
 memory_optimizer_worker = MemoryOptimizerWorker(
     MemoryOptimizer(
         roles_root,
