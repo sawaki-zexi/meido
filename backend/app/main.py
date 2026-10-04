@@ -18,6 +18,7 @@ from .embeddings import OpenAICompatibleEmbeddingAdapter
 from .memory_maintenance import MemoryMaintenance
 from .memory_optimizer import MemoryOptimizer, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
 from .memory_store import MemoryStore
+from .memory_events import TurnCommitted
 from .memory_documents import MemoryDocuments
 from .models import MemoryList, MemoryItem, MemorySourceRef, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
@@ -876,7 +877,10 @@ async def send_role_message(role_id: str, data: SendMessageInput) -> StreamingRe
                     session_store.update_message(assistant_message.id, content, "streaming")
                     yield _event("assistant_delta", {"messageId": assistant_message.id, "delta": delta})
                 message = session_store.update_message(assistant_message.id, content, "completed")
-                memory_worker.submit(role_id, session.session.sessionKey, user_message, message)
+                try:
+                    memory_worker.publish(TurnCommitted(role_id, session.session.sessionKey, user_message, message))
+                except Exception as error:
+                    memory_worker.errors.append(f"{role_id}: TurnCommitted publish failed: {error}")
                 yield _event("assistant_completed", {"message": message.model_dump(mode="json")})
             except Exception as error:
                 message = session_store.update_message(assistant_message.id, content, "failed")
