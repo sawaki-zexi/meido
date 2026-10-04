@@ -89,6 +89,77 @@ def test_memory_worker_close_drains_and_rejects_new_tasks(tmp_path):
     assert [item.summary for item in store.list_active("role-a")] == ["喜欢海边"]
 
 
+def test_memory_worker_ignores_uncommitted_assistant_replies(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store)
+    worker = MemoryWorker(service)
+    user = Message(
+        id="user-1",
+        sessionKey="role:role-a",
+        sequence=1,
+        role="user",
+        content="请记住我喜欢海边",
+        status="completed",
+        createdAt=datetime.now(timezone.utc),
+    )
+    assistant = user.model_copy(update={"id": "assistant-1", "sequence": 2, "role": "assistant", "content": "", "status": "failed"})
+
+    async def run() -> None:
+        assert worker.submit("role-a", "role:role-a", user, assistant) is False
+        await worker.drain()
+
+    asyncio.run(run())
+    assert store.list_all("role-a") == []
+
+
+def test_memory_worker_runs_maintenance_when_semantic_processing_fails(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+
+    class FailingService(MemoryService):
+        def process_turn(self, *args, **kwargs):
+            raise RuntimeError("semantic failure")
+
+    class RecordingMaintenance:
+        def __init__(self):
+            self.calls = 0
+
+        def maintain(self, role_id, session_key):
+            self.calls += 1
+
+    maintenance = RecordingMaintenance()
+    worker = MemoryWorker(FailingService(store), maintenance)  # type: ignore[arg-type]
+    user = Message(id="u", sessionKey="role:role-a", sequence=1, role="user", content="你好", status="completed", createdAt=datetime.now(timezone.utc))
+    assistant = user.model_copy(update={"id": "a", "sequence": 2, "role": "assistant", "content": "你好", "status": "completed"})
+
+    async def run() -> None:
+        assert worker.submit("role-a", "role:role-a", user, assistant) is True
+        await worker.drain()
+
+    asyncio.run(run())
+    assert maintenance.calls == 1
+    assert any("semantic" in error for error in worker.errors)
+
+
+def test_memory_worker_runs_semantic_processing_when_maintenance_fails(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+
+    class FailingMaintenance:
+        def maintain(self, role_id, session_key):
+            raise RuntimeError("maintenance failure")
+
+    worker = MemoryWorker(MemoryService(store), FailingMaintenance())  # type: ignore[arg-type]
+    user = Message(id="u", sessionKey="role:role-a", sequence=1, role="user", content="请记住我喜欢海边", status="completed", createdAt=datetime.now(timezone.utc))
+    assistant = user.model_copy(update={"id": "a", "sequence": 2, "role": "assistant", "content": "好的", "status": "completed"})
+
+    async def run() -> None:
+        assert worker.submit("role-a", "role:role-a", user, assistant) is True
+        await worker.drain()
+
+    asyncio.run(run())
+    assert [item.summary for item in store.list_active("role-a")] == ["喜欢海边"]
+    assert any("maintenance" in error for error in worker.errors)
+
+
 def test_fastapi_shutdown_closes_memory_worker(tmp_path, monkeypatch):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
@@ -344,8 +415,64 @@ def test_memory_worker_extracts_explicit_and_implicit_memory_without_blocking(tm
     memories = store.list_active(role.id)
     assert len(memories) == 1
     assert memories[0].summary == "喜欢乌龙茶"
+    assert memories[0].memoryType == "preference"
     assert memories[0].sourceRef.messageIds == [user.id, assistant.id]
     assert memories[0].sourceRef.kind == "turn"
+
+
+def test_post_response_marks_explicit_memory_as_protected(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store)
+    user = Message(
+        id="explicit-user",
+        sessionKey="role:role-a",
+        sequence=1,
+        role="user",
+        content="请记住我喜欢乌龙茶",
+        status="completed",
+        createdAt=datetime.now(timezone.utc),
+    )
+    assistant = user.model_copy(update={"id": "explicit-assistant", "sequence": 2, "role": "assistant", "content": "好的"})
+
+    saved = service.process_turn("role-a", "role:role-a", user, assistant)
+
+    assert len(saved) == 1
+    assert saved[0].memoryType == "preference"
+    assert saved[0].extra["explicit"] is True
+    assert saved[0].extra["protectedTurn"] == "turn:role:role-a:explicit-user:explicit-assistant"
+
+
+def test_replaying_a_committed_turn_is_idempotent(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store)
+    user = Message(id="replay-user", sessionKey="role:role-a", sequence=1, role="user", content="请记住我喜欢乌龙茶", status="completed", createdAt=datetime.now(timezone.utc))
+    assistant = user.model_copy(update={"id": "replay-assistant", "sequence": 2, "role": "assistant", "content": "好的"})
+
+    first = service.process_turn("role-a", "role:role-a", user, assistant)
+    second = service.process_turn("role-a", "role:role-a", user, assistant)
+
+    assert [item.id for item in second] == [first[0].id]
+    assert store.get("role-a", first[0].id).reinforcement == 1
+
+
+def test_post_response_extracts_events_and_corrections(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store)
+    event_user = Message(id="event-user", sessionKey="role:role-a", sequence=1, role="user", content="昨天我去了海边", status="completed", createdAt=datetime.now(timezone.utc))
+    event_assistant = event_user.model_copy(update={"id": "event-assistant", "sequence": 2, "role": "assistant", "content": "听起来不错"})
+    event = service.process_turn("role-a", "role:role-a", event_user, event_assistant)
+    assert [(item.memoryType, item.summary) for item in event] == [("event", "昨天我去了海边")]
+
+    first_user = event_user.model_copy(update={"id": "pref-user-1", "sequence": 3, "content": "我喜欢红茶"})
+    first_assistant = event_assistant.model_copy(update={"id": "pref-assistant-1", "sequence": 4})
+    service.process_turn("role-a", "role:role-a", first_user, first_assistant)
+    correction_user = event_user.model_copy(update={"id": "pref-user-2", "sequence": 5, "content": "我以前喜欢红茶，现在喜欢咖啡"})
+    correction_assistant = event_assistant.model_copy(update={"id": "pref-assistant-2", "sequence": 6})
+    service.process_turn("role-a", "role:role-a", correction_user, correction_assistant)
+
+    active = store.list_active("role-a")
+    assert {item.summary for item in active} >= {"喜欢咖啡"}
+    assert "喜欢红茶" not in {item.summary for item in active}
 
 
 def test_turn_forgetting_memory_keeps_message_evidence_and_is_role_scoped(tmp_path):
