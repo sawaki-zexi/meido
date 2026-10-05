@@ -17,6 +17,14 @@ class ModelAdapter(Protocol):
         memory_context: str = "",
     ) -> AsyncIterator[str]: ...
 
+    async def complete_messages(
+        self,
+        messages: list[dict[str, str]],
+        configuration: ModelConfiguration,
+        *,
+        max_tokens: int | None = None,
+    ) -> str: ...
+
 
 class OpenAICompatibleAdapter:
     """Streams chat completions from an OpenAI-compatible endpoint."""
@@ -29,6 +37,7 @@ class OpenAICompatibleAdapter:
         role: Role,
         history: list[Message],
         configuration: ModelConfiguration | None = None,
+        memory_context: str = "",
     ) -> AsyncIterator[str]:
         if configuration is None:
             base_url = os.getenv("MEIDO_MODEL_BASE_URL", "").strip().rstrip("/")
@@ -109,3 +118,21 @@ class OpenAICompatibleAdapter:
                         yield delta
         if not completed:
             raise RuntimeError("模型流式响应未正常结束")
+
+    async def complete_messages(
+        self,
+        messages: list[dict[str, str]],
+        configuration: ModelConfiguration,
+        *,
+        max_tokens: int | None = None,
+    ) -> str:
+        """Collect a bounded completion through the same compatible endpoint.
+
+        Memory workers use this non-streaming-shaped helper so extraction and
+        consolidation can be tested with a small fake adapter while production
+        continues to use the existing streaming transport.
+        """
+        parts: list[str] = []
+        async for delta in self.stream_messages(messages, configuration, max_tokens=max_tokens):
+            parts.append(delta)
+        return "".join(parts)

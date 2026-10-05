@@ -4,20 +4,39 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+import math
 from enum import Enum
 from types import MappingProxyType
 import asyncio
 import uuid
+import inspect
 from typing import Callable, Literal, Protocol, runtime_checkable
 
 from .memory_service import MemoryService
+from .memory_events import RetrievalCompleted
 from .models import MemoryItem, MemorySourceRef
 
 
 MemoryQueryIntent = Literal["context", "answer", "timeline", "interest", "procedure"]
 MemoryQueryEffect = Literal["stateful", "read_only"]
 MemoryDomain = Literal["role_self", "relationship", "shared"]
+
+
+@dataclass(frozen=True)
+class ProcedureRule:
+    """Portable rule metadata for safe procedure memory injection."""
+
+    required_tags: tuple[str, ...] = ()
+    min_confidence: float = 0.0
+    requires_explicit_user_signal: bool = False
+
+    def as_hint(self) -> dict[str, object]:
+        return {
+            "requiredTags": list(self.required_tags),
+            "minConfidence": max(0.0, min(1.0, self.min_confidence)),
+            "requiresExplicitUserSignal": self.requires_explicit_user_signal,
+        }
 
 
 class EngineProfile(str, Enum):
@@ -284,10 +303,18 @@ class MemoryEngine(MemoryIngestApi, MemoryRetrievalApi, MemoryWriteApi, MemoryAd
 class DefaultMemoryEngine:
     """Meido's role-isolated engine over the SQLite store and retrieval service."""
 
-    def __init__(self, service: MemoryService, role_exists: Callable[[str], bool]) -> None:
+    def __init__(
+        self,
+        service: MemoryService,
+        role_exists: Callable[[str], bool],
+        event_bus: object | None = None,
+        hyde_provider: Callable[..., list[str]] | None = None,
+    ) -> None:
         self.service = service
         self.store = service.store
         self._role_exists = role_exists
+        self.event_bus = event_bus
+        self.hyde_provider = hyde_provider
         self.admin = self
 
     def _validate_scope(self, scope: MemoryScope | None) -> MemoryScope:
@@ -345,6 +372,15 @@ class DefaultMemoryEngine:
         if request.intent == "timeline" and (
             request.filters.time_start is None or request.filters.time_end is None
         ):
+            if self.event_bus is not None:
+                self.event_bus.publish(RetrievalCompleted(
+                    scope.role_id,
+                    scope.session_key,
+                    request.text,
+                    request.intent,
+                    0,
+                    error="timeline queries require time_start and time_end",
+                ))
             raise ValueError("timeline queries require time_start and time_end")
         if request.limit == 0:
             return MemoryQueryResult(
@@ -353,8 +389,32 @@ class DefaultMemoryEngine:
             )
 
         lanes = self._query_lanes(request)
+        if request.intent == "answer" and self.hyde_provider is not None and request.text.strip() and not request.filters.hints.get("hyde_queries"):
+            try:
+                try:
+                    accepts_scope = len(inspect.signature(self.hyde_provider).parameters) >= 2
+                except (TypeError, ValueError):
+                    accepts_scope = False
+                if accepts_scope:
+                    generated = await asyncio.to_thread(self.hyde_provider, scope.role_id, request.text.strip())
+                else:
+                    generated = await asyncio.to_thread(self.hyde_provider, request.text.strip())
+                if isinstance(generated, list):
+                    hypotheses = [value.strip() for value in generated if isinstance(value, str) and value.strip()][:2]
+                    if hypotheses:
+                        lanes = [request.text.strip(), *hypotheses]
+            except Exception:
+                pass
         lane_results = await asyncio.gather(
-            *(self._retrieve_lane(scope.role_id, text, max(request.limit * 4, 16)) for text in lanes),
+            *(
+                self._retrieve_lane(
+                    scope.role_id,
+                    text,
+                    max(request.limit * 4, 16),
+                    semantic_only=request.intent == "answer" and index > 0,
+                )
+                for index, text in enumerate(lanes)
+            ),
             return_exceptions=True,
         )
         fused: dict[str, tuple[MemoryItem, float, dict[str, object]]] = {}
@@ -371,29 +431,107 @@ class DefaultMemoryEngine:
                 contribution = 1.0 / (60 + rank)
                 current = fused.get(item.id)
                 if current is None:
-                    fused[item.id] = (item, contribution, {"lanes": [lane], "ranks": {lane: rank}})
+                    fused[item.id] = (item, contribution, {"lanes": [lane], "ranks": {lane: rank}, "lane_score": 1.0 / rank})
                 else:
                     current[2]["lanes"].append(lane)
                     current[2]["ranks"][lane] = rank
+                    current[2]["lane_score"] = max(float(current[2].get("lane_score", 0.0)), 1.0 / rank)
                     fused[item.id] = (item, current[1] + contribution, current[2])
 
-        ranked = sorted(fused.values(), key=lambda value: (value[1], value[0].updatedAt), reverse=True)
+        # RRF remains the relevance score. Hotness is only a stable tie-breaker
+        # and can never promote a weak lane match over a relevant candidate.
+        ranked = sorted(
+            fused.values(),
+            key=lambda value: (value[1], self._hotness(value[0]), value[0].updatedAt),
+            reverse=True,
+        )
         if request.intent == "timeline":
             ranked.sort(key=lambda value: value[0].happenedAt or value[0].updatedAt, reverse=True)
-        selected = ranked[: request.limit]
+        min_score = request.filters.hints.get("min_score", 0.0)
+        try:
+            min_score_value = max(0.0, float(min_score))
+        except (TypeError, ValueError):
+            min_score_value = 0.0
+        selected = [entry for entry in ranked if float(entry[2].get("lane_score", 0.0)) >= min_score_value]
+        type_limits = request.filters.hints.get("type_limits", {})
+        if isinstance(type_limits, Mapping):
+            counts: dict[str, int] = {}
+            limited: list[tuple[MemoryItem, float, dict[str, object]]] = []
+            for entry in selected:
+                memory_type = entry[0].memoryType
+                limit_for_type = type_limits.get(memory_type)
+                if limit_for_type is not None:
+                    try:
+                        type_limit = max(0, int(limit_for_type))
+                    except (TypeError, ValueError):
+                        type_limit = 0
+                    if counts.get(memory_type, 0) >= type_limit:
+                        continue
+                    counts[memory_type] = counts.get(memory_type, 0) + 1
+                limited.append(entry)
+            selected = limited
+        selected = selected[: request.limit]
         items = [item for item, _, _ in selected]
-        records = [self._record(item, index, score=score, signals=signals) for index, (item, score, signals) in enumerate(selected)]
-        return MemoryQueryResult(
-            text_block=self.service.context_block(items),
+        records = [
+            self._record(
+                item,
+                index,
+                score=score,
+                signals={**signals, "hotness": self._hotness(item)},
+            )
+            for index, (item, score, signals) in enumerate(selected)
+        ]
+        text_block = self.service.context_block(items)
+        injected_count = text_block.count("\n- [") + (1 if text_block.startswith("- [") else 0)
+        result = MemoryQueryResult(
+            text_block=text_block,
             records=records,
-            trace={"intent": request.intent, "effect": request.effect, "role_id": scope.role_id, "lanes": lane_trace, "rrf": True},
+            trace={
+                "intent": request.intent,
+                "effect": request.effect,
+                "role_id": scope.role_id,
+                "lanes": lane_trace,
+                "rrf": True,
+                "vector_index": self.store.vector_index_status(),
+            },
             raw={"candidate_count": len(records), "items": [item.model_dump(mode="json") for item in items]},
         )
+        if self.event_bus is not None:
+            try:
+                self.event_bus.publish(RetrievalCompleted(
+                    scope.role_id,
+                    scope.session_key,
+                    request.text,
+                    request.intent,
+                    len(records),
+                    injected_count,
+                    result.trace,
+                    "; ".join(str(lane.get("error")) for lane in lane_trace if lane.get("error")) or None,
+                ))
+            except Exception:
+                pass
+        return result
 
-    async def _retrieve_lane(self, role_id: str, text: str, limit: int) -> list[MemoryItem]:
+    @staticmethod
+    def _hotness(item: MemoryItem) -> float:
+        """Bounded recency/reinforcement signal used after relevance fusion."""
+        try:
+            age_days = max(0.0, (datetime.now(timezone.utc) - item.updatedAt).total_seconds() / 86400)
+        except (TypeError, ValueError):
+            age_days = 365.0
+        recency = math.exp(-age_days / 30.0)
+        reinforcement = min(1.0, max(0, item.reinforcement - 1) / 10.0)
+        emotion = min(1.0, max(0, item.emotionalWeight) / 10.0)
+        return 0.03 * recency + 0.02 * reinforcement + 0.01 * emotion
+
+    async def _retrieve_lane(self, role_id: str, text: str, limit: int, *, semantic_only: bool = False) -> list[MemoryItem]:
         if not text.strip():
             return await asyncio.to_thread(self.store.list_active, role_id)
-        return await self.service.recall_async(role_id, text, limit=limit)
+        return await (
+            self.service.recall_vector_async(role_id, text, limit=limit)
+            if semantic_only
+            else self.service.recall_async(role_id, text, limit=limit)
+        )
 
     @staticmethod
     def _query_lanes(request: MemoryQuery) -> list[str]:
@@ -403,11 +541,16 @@ class DefaultMemoryEngine:
             # semantic hypotheses. A caller may provide reviewed hypotheses through hints.
             configured = request.filters.hints.get("hyde_queries", ())
             hypotheses = [str(value).strip() for value in configured if str(value).strip()][:2]
-            if not hypotheses:
-                hypotheses = [f"event: {text}", f"general: {text}"]
             return [text, *hypotheses]
         if request.intent == "procedure":
-            return [f"执行步骤和规则：{text}", text]
+            rule = request.filters.hints.get("procedure_rule")
+            tags = []
+            if isinstance(rule, Mapping):
+                raw_tags = rule.get("requiredTags", rule.get("required_tags", ()))
+                if isinstance(raw_tags, (list, tuple, set)):
+                    tags = [str(tag).strip() for tag in raw_tags if str(tag).strip()]
+            suffix = f" 标签：{'、'.join(tags)}" if tags else ""
+            return [f"执行步骤和规则：{text}{suffix}", text]
         return [text]
 
     @staticmethod
@@ -423,6 +566,21 @@ class DefaultMemoryEngine:
         domain = str(item.extra.get("memory_domain", ""))
         if filters.domains and domain not in filters.domains:
             return False
+        if request.intent == "procedure":
+            rule = filters.hints.get("procedure_rule")
+            if isinstance(rule, Mapping):
+                required = rule.get("requiredTags", rule.get("required_tags", ()))
+                if isinstance(required, (list, tuple, set)) and required:
+                    tags = item.extra.get("procedureTags", item.extra.get("procedure_tags", ()))
+                    if not isinstance(tags, (list, tuple, set)):
+                        return False
+                    if not set(map(str, required)).issubset(set(map(str, tags))):
+                        return False
+                min_confidence = rule.get("minConfidence", rule.get("min_confidence"))
+                if isinstance(min_confidence, (int, float)) and float(item.extra.get("confidence", 1.0)) < float(min_confidence):
+                    return False
+                if rule.get("requiresExplicitUserSignal", rule.get("requires_explicit_user_signal", False)) and not item.extra.get("explicit"):
+                    return False
         if item.status != "active":
             return False
         happened = item.happenedAt
