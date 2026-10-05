@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -284,6 +285,50 @@ def test_optimizer_worker_close_rejects_new_jobs(tmp_path):
     async def run() -> None:
         await worker.close()
         assert worker.submit("role-a") is False
+
+    asyncio.run(run())
+
+
+def test_optimizer_worker_deletion_barrier_waits_and_tombstones_role(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    def optimize(role_id):
+        started.set()
+        release.wait(timeout=2)
+        return True
+
+    worker = MemoryOptimizerWorker(MemoryOptimizer(tmp_path / "roles"))
+    worker.optimizer.optimize = optimize
+
+    async def run() -> None:
+        worker.start()
+        assert worker.submit("role-a") is True
+        assert await asyncio.to_thread(started.wait, 1) is True
+        deleting = asyncio.create_task(worker.begin_role_deletion("role-a"))
+        await asyncio.sleep(0)
+        assert not deleting.done()
+        assert worker.submit("role-a") is False
+        release.set()
+        await deleting
+        worker.end_role_deletion("role-a", deleted=True)
+        assert worker.submit("role-a") is False
+        await worker.drain()
+
+    asyncio.run(run())
+
+
+def test_memory_worker_deletion_barrier_covers_optimizer_and_rejects_deleted_role(tmp_path):
+    optimizer = MemoryOptimizerWorker(MemoryOptimizer(tmp_path / "roles"))
+    worker = MemoryWorker(MemoryService(MemoryStore(tmp_path / "memory.db")), optimizer=optimizer)
+    user = Message(id="u", sessionKey="role:role-a", sequence=1, role="user", content="你好", status="completed", createdAt=datetime.now(timezone.utc))
+    assistant = user.model_copy(update={"id": "a", "sequence": 2, "role": "assistant", "content": "你好"})
+
+    async def run() -> None:
+        await worker.begin_role_deletion("role-a")
+        assert worker.submit("role-a", "role:role-a", user, assistant) is False
+        worker.end_role_deletion("role-a", deleted=True)
+        assert optimizer.submit("role-a") is False
 
     asyncio.run(run())
 

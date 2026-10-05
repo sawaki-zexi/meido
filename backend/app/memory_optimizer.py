@@ -567,8 +567,10 @@ class MemoryOptimizerWorker:
     def __init__(self, optimizer: MemoryOptimizer) -> None:
         self.optimizer = optimizer
         self._locks: dict[str, asyncio.Lock] = {}
-        self._tasks: set[asyncio.Task[object]] = set()
+        self._tasks: dict[asyncio.Task[object], str] = {}
         self._scheduled_roles: set[str] = set()
+        self._deleting: set[str] = set()
+        self._deleted: set[str] = set()
         self._optimizer_lock = asyncio.Lock()
         self.errors: list[str] = []
         self.closed = False
@@ -581,13 +583,13 @@ class MemoryOptimizerWorker:
         return self._locks.setdefault(role_id, asyncio.Lock())
 
     def submit(self, role_id: str) -> bool:
-        if self.closed or role_id in self._scheduled_roles:
+        if self.closed or role_id in self._scheduled_roles or role_id in self._deleting or role_id in self._deleted:
             return False
         self._scheduled_roles.add(role_id)
         task = asyncio.create_task(self._run(role_id))
-        self._tasks.add(task)
+        self._tasks[task] = role_id
         def done(completed: asyncio.Task[object]) -> None:
-            self._tasks.discard(completed)
+            self._tasks.pop(completed, None)
             self._scheduled_roles.discard(role_id)
         task.add_done_callback(done)
         return True
@@ -599,7 +601,7 @@ class MemoryOptimizerWorker:
         scheduled = 0
         for role_root in self.optimizer.roles_root.iterdir():
             pending = role_root / "memory" / "PENDING.md"
-            if role_root.is_dir() and pending.is_file():
+            if role_root.is_dir() and not role_root.name.startswith(".") and role_root.name not in self._deleted and pending.is_file():
                 try:
                     has_content = bool(pending.read_text(encoding="utf-8").strip())
                 except OSError as error:
@@ -608,6 +610,21 @@ class MemoryOptimizerWorker:
                 if has_content and self.submit(role_root.name):
                     scheduled += 1
         return scheduled
+
+    async def begin_role_deletion(self, role_id: str) -> None:
+        """Stop scheduling a role and wait for its independent optimizer task."""
+        self._deleting.add(role_id)
+        tasks = tuple(
+            task for task, task_role in self._tasks.items()
+            if task_role == role_id and not task.done()
+        )
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def end_role_deletion(self, role_id: str, *, deleted: bool = False) -> None:
+        self._deleting.discard(role_id)
+        if deleted:
+            self._deleted.add(role_id)
 
     async def run(self, role_id: str) -> None:
         """Run inside MemoryWorker's per-role lane after Markdown maintenance."""

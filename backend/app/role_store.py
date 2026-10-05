@@ -24,8 +24,11 @@ class RoleStore:
         self.root = Path(root).resolve()
         self.manifest_path = self.root / "roles.json"
         self._lock = threading.RLock()
+        self._deleting: set[str] = set()
+        self.recovery_errors: list[str] = []
         self.root.mkdir(parents=True, exist_ok=True)
         self._roles: list[Role] = self._load()
+        self.cleanup_staged_role_files()
 
     def list(self) -> list[Role]:
         with self._lock:
@@ -59,6 +62,7 @@ class RoleStore:
 
     def update(self, role_id: str, data: RoleUpdateInput) -> Role:
         with self._lock:
+            self._require_writable(role_id)
             index = next((i for i, role in enumerate(self._roles) if role.id == role_id), None)
             if index is None:
                 raise KeyError(role_id)
@@ -74,6 +78,7 @@ class RoleStore:
 
     def set_model_configuration(self, role_id: str, configuration_id: str | None) -> Role:
         with self._lock:
+            self._require_writable(role_id)
             index = next((i for i, role in enumerate(self._roles) if role.id == role_id), None)
             if index is None:
                 raise KeyError(role_id)
@@ -90,6 +95,7 @@ class RoleStore:
 
     def set_avatar(self, role_id: str, content: bytes, media_type: str, *, original: bool = False, card: bool = False) -> Role:
         with self._lock:
+            self._require_writable(role_id)
             index = next((i for i, role in enumerate(self._roles) if role.id == role_id), None)
             if index is None:
                 raise KeyError(role_id)
@@ -134,6 +140,7 @@ class RoleStore:
 
     def remove_avatar(self, role_id: str) -> Role:
         with self._lock:
+            self._require_writable(role_id)
             index = next((i for i, role in enumerate(self._roles) if role.id == role_id), None)
             if index is None:
                 raise KeyError(role_id)
@@ -188,6 +195,7 @@ class RoleStore:
 
     def remove_card_image(self, role_id: str) -> Role:
         with self._lock:
+            self._require_writable(role_id)
             index = next((i for i, role in enumerate(self._roles) if role.id == role_id), None)
             if index is None:
                 raise KeyError(role_id)
@@ -245,6 +253,49 @@ class RoleStore:
         os.replace(role_path, staged_path)
         return staged_path
 
+    def begin_role_deletion(self, role_id: str) -> Path:
+        """Persist an intent marker so an interrupted deletion can resume safely."""
+        with self._lock:
+            if self.get(role_id) is None:
+                raise KeyError(role_id)
+            marker = self.root / f".deleting-{role_id}-{uuid.uuid4().hex}.json"
+            marker.write_text(json.dumps({"roleId": role_id}) + "\n", encoding="utf-8")
+            self._deleting.add(role_id)
+        return marker
+
+    def _require_writable(self, role_id: str) -> None:
+        if role_id in self._deleting:
+            raise KeyError(role_id)
+
+    def end_role_deletion(self, role_id: str) -> None:
+        with self._lock:
+            self._deleting.discard(role_id)
+
+    def complete_role_deletion(self, marker: Path | None) -> None:
+        if marker is None:
+            return
+        role_id = self._deletion_marker_role(marker)
+        if any(self.root.glob(f".deleted-{role_id}-*")):
+            raise OSError("角色文件暂存目录尚未清理")
+        if self.get(role_id) is None and (self.root / role_id).exists():
+            raise OSError("已删除角色的文件目录尚未清理")
+        marker.unlink(missing_ok=True)
+        self.end_role_deletion(role_id)
+
+    def pending_role_deletions(self) -> list[str]:
+        """Return deletion intents whose role manifest entry is already gone."""
+        pending: list[str] = []
+        with self._lock:
+            for marker in self.root.glob(".deleting-*.json"):
+                try:
+                    role_id = self._deletion_marker_role(marker)
+                except OSError as error:
+                    self.recovery_errors.append(f"{marker.name}: {error}")
+                    continue
+                if self.get(role_id) is None and role_id not in pending:
+                    pending.append(role_id)
+        return pending
+
     def restore_staged_role_files(self, role_id: str, staged_path: Path | None) -> None:
         if staged_path is None or not staged_path.exists():
             return
@@ -257,6 +308,57 @@ class RoleStore:
     def purge_staged_role_files(staged_path: Path | None) -> None:
         if staged_path is not None and staged_path.exists():
             shutil.rmtree(staged_path)
+
+    def cleanup_staged_role_files(self) -> int:
+        """Recover or remove staged role directories after an interrupted delete."""
+        handled = 0
+        with self._lock:
+            role_ids = {role.id for role in self._roles}
+            for path in sorted(self.root.glob(".deleted-*")):
+                if not path.is_dir() or path.is_symlink() or path.resolve().parent != self.root:
+                    continue
+                role_id = path.name.removeprefix(".deleted-").rsplit("-", 1)[0]
+                try:
+                    role_path = self.root / role_id
+                    if role_id in role_ids:
+                        if role_path.exists():
+                            # Keep both copies: an incomplete rollback may
+                            # have recreated an empty canonical directory.
+                            raise OSError("角色目录和删除暂存同时存在，需要恢复检查")
+                        os.replace(path, role_path)
+                    else:
+                        shutil.rmtree(path)
+                except OSError as error:
+                    self.recovery_errors.append(f"{path.name}: {error}")
+                    continue
+                handled += 1
+            for marker in self.root.glob(".deleting-*.json"):
+                try:
+                    role_id = self._deletion_marker_role(marker)
+                    if role_id not in role_ids:
+                        role_path = self.root / role_id
+                        if role_path.exists():
+                            shutil.rmtree(role_path)
+                    elif not any(self.root.glob(f".deleted-{role_id}-*")):
+                        self.complete_role_deletion(marker)
+                except OSError as error:
+                    self.recovery_errors.append(f"{marker.name}: {error}")
+        return handled
+
+    def _deletion_marker_role(self, marker: Path) -> str:
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+            role_id = payload.get("roleId") if isinstance(payload, dict) else None
+        except (OSError, json.JSONDecodeError) as error:
+            raise OSError("角色删除标记无效") from error
+        if (
+            not isinstance(role_id, str) or not role_id
+            or (self.root / role_id).resolve().parent != self.root
+            or any(character in role_id for character in "*/\\?[]")
+            or not marker.name.startswith(f".deleting-{role_id}-")
+        ):
+            raise OSError("角色删除标记缺少有效 roleId")
+        return role_id
 
     def _load(self) -> list[Role]:
         if not self.manifest_path.exists():
