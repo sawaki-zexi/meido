@@ -39,6 +39,7 @@ class MemoryMaintenance:
         self.consolidation_provider = consolidation_provider
         self.role_exists = role_exists or (lambda role_id: True)
         self.errors: list[str] = []
+        self._draft_overrides: dict[str, dict[str, str]] = {}
 
     def resume_pending(self) -> int:
         """Retry durable consolidation events left by a previous process."""
@@ -101,7 +102,7 @@ class MemoryMaintenance:
                 journal = self._read_text(journal_path)
                 try:
                     candidates = self._candidates(source_key, window)
-                except (ConsolidationDraftError, TimeoutError):
+                except (ConsolidationDraftError, TimeoutError, ValueError):
                     # Keep RECENT_CONTEXT, but leave the consolidation cursor
                     # unchanged so the same input can be retried later.
                     self._before_commit()
@@ -114,8 +115,11 @@ class MemoryMaintenance:
                         return
                     self._commit(writes, cursor_path, cursor_snapshot)
                     return
+                draft = self._draft_overrides.get(source_key, {})
+                if draft.get("recent"):
+                    writes[memory_dir / "RECENT_CONTEXT.md"] = draft["recent"]
                 if source_key not in history:
-                    history += self._history_entry(source_key, window)
+                    history += draft.get("history", "") or self._history_entry(source_key, window)
                 if source_key not in pending:
                     pending += self._pending_entries(source_key, window, candidates)
                 if source_key not in journal:
@@ -129,6 +133,7 @@ class MemoryMaintenance:
                     message_range=(window[0].sequence, window[-1].sequence),
                     candidates=tuple(candidates),
                 )
+                self._draft_overrides.pop(source_key, None)
                 # Persist the event even when this process has no consumer;
                 # another process can resume it after startup.
                 cursor["pendingEvent"] = self._event_payload(event)
@@ -259,8 +264,19 @@ class MemoryMaintenance:
     def _candidates(self, source_key: str, window: list[Message]) -> list[ConsolidationCandidate]:
         if self.consolidation_provider is not None:
             raw = self.consolidation_provider(source_key, window)
-            if not isinstance(raw, list) or not raw:
+            draft: dict[str, str] = {}
+            if isinstance(raw, dict):
+                history = raw.get("history", raw.get("historyText", ""))
+                recent = raw.get("recentContext", raw.get("recent", ""))
+                if isinstance(history, str):
+                    draft["history"] = history[:12000]
+                if isinstance(recent, str):
+                    draft["recent"] = recent[: self.RECENT_CHAR_LIMIT]
+                raw = raw.get("pendingItems", raw.get("memories", []))
+            if not isinstance(raw, list) or (not raw and not draft):
                 raise ConsolidationDraftError("整理模型未返回有效候选")
+            if draft:
+                self._draft_overrides[source_key] = draft
             candidates: list[ConsolidationCandidate] = []
             for value in raw:
                 if isinstance(value, ConsolidationCandidate):
@@ -322,6 +338,7 @@ class MemoryMaintenance:
                 }
                 for candidate in event.candidates
             ],
+            "error": event.error,
         }
 
     @staticmethod
@@ -357,6 +374,7 @@ class MemoryMaintenance:
             message_ids=tuple(message_ids),
             message_range=parsed_range,
             candidates=tuple(candidates),
+            error=payload.get("error") if isinstance(payload.get("error"), str) else None,
         )
 
     def _publish_event(

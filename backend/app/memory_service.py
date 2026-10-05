@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 
 from .memory_store import MemoryStore
@@ -11,18 +11,28 @@ from .models import MemoryItem, MemorySourceRef, Message
 from .embeddings import EmbeddingProvider
 from .memory_maintenance import MemoryMaintenance
 from .memory_optimizer import MemoryOptimizerWorker
-from .memory_events import TurnCommitted
+from .memory_events import TurnCommitted, TurnIngested, MemoryWritten
 
 
 class MemoryService:
     """Role-scoped memory ingestion and retrieval facade."""
 
     POST_RESPONSE_MAX_CANDIDATES = 8
+    VALID_MEMORY_TYPES = frozenset({"fact", "preference", "profile", "procedure", "event"})
 
-    def __init__(self, store: MemoryStore, embedding_provider: EmbeddingProvider | None = None) -> None:
+    def __init__(
+        self,
+        store: MemoryStore,
+        embedding_provider: EmbeddingProvider | None = None,
+        post_response_provider: Callable[..., object] | None = None,
+        event_bus: object | None = None,
+    ) -> None:
         self.store = store
         self.embedding_provider = embedding_provider
+        self.post_response_provider = post_response_provider
+        self.event_bus = event_bus
         self.embedding_errors: list[str] = []
+        self.post_response_errors: list[str] = []
 
     def index_embedding(self, role_id: str, item: MemoryItem) -> None:
         if self.embedding_provider is None:
@@ -89,12 +99,16 @@ class MemoryService:
         forget_target = self._forget_target(user_message.content)
         if forget_target is not None:
             forgotten = self.forget_matching(role_id, forget_target)
+            if forgotten is not None:
+                self._publish_written(role_id, session_key, source_key, [forgotten.id], "forget")
             return [forgotten] if forgotten is not None else []
         reject_target = self._reject_target(user_message.content)
         if reject_target is not None:
-            return [self.reject_matching(role_id, reject_target, source)]
+            item = self.reject_matching(role_id, reject_target, source)
+            self._publish_written(role_id, session_key, source_key, [item.id], "reject")
+            return [item]
         explicit = self._extract_explicit(user_message.content)
-        extracted = self._extract(user_message.content)
+        extracted = self._extract_with_provider(role_id, session_key, user_message, assistant_message)
         saved: list[MemoryItem] = []
         correction_target = self._correction_target(user_message.content)
         if correction_target is not None:
@@ -133,7 +147,56 @@ class MemoryService:
             )
             self.index_embedding(role_id, item)
             saved.append(item)
+        self._publish_written(role_id, session_key, source_key, [item.id for item in saved], "post_response")
         return saved
+
+    def _extract_with_provider(
+        self, role_id: str, session_key: str, user_message: Message, assistant_message: Message
+    ) -> list[tuple[str, str, str | None]]:
+        """Use the Shiori-style structured extractor, with deterministic fallback."""
+        if self.post_response_provider is None:
+            return self._extract(user_message.content)
+        try:
+            active = [
+                {"memoryType": item.memoryType, "summary": item.summary}
+                for item in self.store.list_active(role_id)[:40]
+            ]
+            raw = self.post_response_provider(
+                role_id, session_key, user_message, assistant_message, active
+            )
+            if not isinstance(raw, list):
+                raise ValueError("post-response provider returned invalid output")
+            result: list[tuple[str, str, str | None]] = []
+            seen: set[tuple[str, str]] = set()
+            for value in raw[: self.POST_RESPONSE_MAX_CANDIDATES]:
+                if not isinstance(value, dict):
+                    continue
+                memory_type = value.get("memoryType", value.get("memory_type"))
+                summary = value.get("summary")
+                supersede_key = value.get("supersedeKey", value.get("supersede_key"))
+                if not isinstance(memory_type, str) or memory_type.strip() not in self.VALID_MEMORY_TYPES or not isinstance(summary, str):
+                    raise ValueError("post-response memory type is invalid")
+                summary = summary.strip(" \t\r\n，。！？!?,.:：；;")
+                if not summary or len(summary) > 500:
+                    continue
+                key = (memory_type.strip(), summary.casefold())
+                if key in seen:
+                    continue
+                seen.add(key)
+                result.append((memory_type.strip(), summary, supersede_key if isinstance(supersede_key, str) else None))
+            return result
+        except Exception as error:
+            self.post_response_errors.append(f"{role_id}: LLM post-response fallback: {error}")
+            return self._extract(user_message.content)
+
+    def _publish_written(self, role_id: str, session_key: str, source_key: str, ids: list[str], operation: str) -> None:
+        if self.event_bus is None:
+            return
+        try:
+            from .memory_events import MemoryWritten
+            self.event_bus.publish(MemoryWritten(role_id, session_key, source_key, tuple(ids), operation))
+        except Exception:
+            return
 
     def forget_matching(self, role_id: str, target: str) -> MemoryItem | None:
         item = self.store.find_status_candidate(role_id, target, ("active", "rejected"))
@@ -203,6 +266,20 @@ class MemoryService:
                 self.embedding_errors.append(f"{role_id}: embedding 回填失败")
         await asyncio.gather(*(index(item) for item in missing))
         return await asyncio.to_thread(self.store.query_hybrid, role_id, query, vector, limit)
+
+    async def recall_vector_async(self, role_id: str, query: str, limit: int = 8) -> list[MemoryItem]:
+        """Semantic-only lane used by answer HyDE (no keyword recall)."""
+        if self.embedding_provider is None:
+            return []
+        try:
+            vector = await asyncio.to_thread(self.embedding_provider.embed, role_id, query)
+            if vector is None:
+                return []
+            await asyncio.to_thread(self.store.observe_query_embedding, role_id, vector)
+            return await asyncio.to_thread(self.store.query_hybrid, role_id, "", vector, limit)
+        except Exception:
+            self.embedding_errors.append(f"{role_id}: semantic lane failed")
+            return []
 
     @staticmethod
     def context_block(memories: list[MemoryItem], fixed_context: str = "", max_chars: int = 4000) -> str:
@@ -394,6 +471,11 @@ class MemoryWorker:
             or session_key != f"role:{role_id}"
         ):
             return False
+        if self.service.event_bus is not None:
+            try:
+                self.service.event_bus.publish(event)
+            except Exception as error:
+                self.errors.append(f"{role_id}: TurnCommitted observation failed: {error}")
         task = asyncio.create_task(self._run(role_id, session_key, user_message, assistant_message))
         self._tasks[task] = role_id
         task.add_done_callback(self._forget_task)
@@ -438,6 +520,30 @@ class MemoryWorker:
             )
             if isinstance(semantic_result, BaseException):
                 self.errors.append(f"{role_id}: semantic post-response failed: {semantic_result}")
+                if self.service.event_bus is not None:
+                    self.service.event_bus.publish(MemoryWritten(
+                        role_id,
+                        session_key,
+                        f"turn:{session_key}:{user_message.id}:{assistant_message.id}",
+                        operation="post_response",
+                        error=str(semantic_result),
+                    ))
+                    self.service.event_bus.publish(TurnIngested(
+                        role_id,
+                        session_key,
+                        f"turn:{session_key}:{user_message.id}:{assistant_message.id}",
+                        error=str(semantic_result),
+                    ))
+            elif self.service.event_bus is not None:
+                try:
+                    self.service.event_bus.publish(TurnIngested(
+                        role_id,
+                        session_key,
+                        f"turn:{session_key}:{user_message.id}:{assistant_message.id}",
+                        tuple(item.id for item in semantic_result),
+                    ))
+                except Exception as error:
+                    self.errors.append(f"{role_id}: TurnIngested observation failed: {error}")
             if isinstance(maintenance_result, BaseException):
                 self.errors.append(f"{role_id}: markdown maintenance failed: {maintenance_result}")
             if (

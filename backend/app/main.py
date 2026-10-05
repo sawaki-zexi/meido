@@ -19,7 +19,7 @@ from .embeddings import OpenAICompatibleEmbeddingAdapter
 from .memory_maintenance import MemoryMaintenance
 from .memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
 from .memory_store import MemoryStore
-from .memory_events import ConsolidationCommitted, TurnCommitted
+from .memory_events import ConsolidationCommitted, TurnCommitted, MemoryEventBus, MemoryWritten
 from .memory_documents import MemoryDocuments
 from .models import MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
@@ -37,6 +37,7 @@ store = RoleStore(roles_root)
 session_store = SessionStore(data_root / "sessions.db")
 session_manager = SessionManager(store, session_store)
 memory_store = MemoryStore(data_root / "memory2.db")
+memory_event_bus = MemoryEventBus()
 model_adapter: ModelAdapter = OpenAICompatibleAdapter()
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
 
@@ -44,6 +45,85 @@ model_configuration_store = ModelConfigurationStore(data_root / "model-config.js
 def _embedding_configuration(role_id: str):
     role = store.get(role_id)
     return model_configuration_store.get(role.modelConfigurationId) if role and role.modelConfigurationId else model_configuration_store.get()
+
+
+def _role_model_configuration(role_id: str):
+    role = store.get(role_id)
+    return model_configuration_store.get(role.modelConfigurationId) if role and role.modelConfigurationId else model_configuration_store.get()
+
+
+def _complete_model_json(messages: list[dict[str, str]], configuration, *, max_tokens: int) -> object:
+    if configuration is None:
+        raise RuntimeError("memory model is not configured")
+
+    async def collect() -> str:
+        complete = getattr(model_adapter, "complete_messages", None)
+        if complete is not None:
+            return await complete(messages, configuration, max_tokens=max_tokens)
+        parts: list[str] = []
+        async for delta in model_adapter.stream_messages(messages, configuration, max_tokens=max_tokens):
+            parts.append(delta)
+        return "".join(parts)
+
+    text = asyncio.run(asyncio.wait_for(collect(), timeout=8.0)).strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        if text.endswith("```"):
+            text = text[:-3].rstrip()
+    return json.loads(text)
+
+
+def _post_response_provider(role_id, session_key, user_message, assistant_message, active):
+    result = _complete_model_json([
+        {"role": "system", "content": (
+            "从本轮用户和助手消息中提取值得长期保存的隐式记忆。只返回 JSON："
+            "{\"memories\":[{\"memoryType\":\"fact|preference|profile|procedure|event\","
+            "\"summary\":string,\"supersedeKey\":string|null}]}。"
+            "不要记录一次性闲聊、助手推测或执行结果。"
+        )},
+        {"role": "user", "content": json.dumps({"user": user_message.content, "assistant": assistant_message.content, "activeMemories": active}, ensure_ascii=False)},
+    ], _role_model_configuration(role_id), max_tokens=700)
+    if not isinstance(result, dict) or not isinstance(result.get("memories"), list):
+        raise ValueError("post-response JSON schema invalid")
+    return result["memories"]
+
+
+def _consolidation_provider(source_key: str, window: list) -> object:
+    parts = source_key.split(":", 2)
+    role_id = parts[1] if len(parts) > 1 else ""
+    result = _complete_model_json([
+        {"role": "system", "content": (
+            "用 LLM 整理对话窗口。只返回 JSON："
+            "{\"history\":string,\"recentContext\":string,\"pendingItems\":[{\"memoryType\":string,\"summary\":string,\"sourceKey\":string}]}。"
+            "history 和 recentContext 必须是可直接写入 Markdown 的简洁内容；sourceKey 必须以前缀 consolidation: 开头，禁止虚构事实。"
+        )},
+        {"role": "user", "content": json.dumps({"sourceKey": source_key, "messages": [{"role": m.role, "content": m.content, "sequence": m.sequence} for m in window]}, ensure_ascii=False)},
+    ], _role_model_configuration(role_id), max_tokens=900)
+    if not isinstance(result, dict) or not isinstance(result.get("pendingItems", result.get("memories")), list):
+        raise ValueError("consolidation JSON schema invalid")
+    normalized: list[dict[str, str]] = []
+    raw_items = result.get("pendingItems", result.get("memories"))
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        memory_type, summary, item_source = item.get("memoryType"), item.get("summary"), item.get("sourceKey")
+        if isinstance(memory_type, str) and memory_type.strip() in {"fact", "preference", "profile", "procedure", "event"} and isinstance(summary, str) and isinstance(item_source, str) and summary.strip() and item_source.startswith(source_key):
+            normalized.append({"memoryType": memory_type.strip(), "summary": summary.strip(), "sourceKey": item_source.strip()})
+    return {
+        "pendingItems": normalized,
+        "history": result.get("history", "") if isinstance(result.get("history", ""), str) else "",
+        "recentContext": result.get("recentContext", "") if isinstance(result.get("recentContext", ""), str) else "",
+    }
+
+
+def _hyde_provider(role_id: str, query: str) -> list[str]:
+    result = _complete_model_json([
+        {"role": "system", "content": "为记忆检索生成最多两个简短假设查询，分别关注事件和一般事实。只返回 JSON：{\"queries\":[string,string]}。"},
+        {"role": "user", "content": query},
+    ], _role_model_configuration(role_id), max_tokens=120)
+    if not isinstance(result, dict) or not isinstance(result.get("queries"), list):
+        raise ValueError("HyDE JSON schema invalid")
+    return [value.strip() for value in result["queries"] if isinstance(value, str) and value.strip()][:2]
 
 
 def _consolidate_role_memories(
@@ -174,11 +254,34 @@ def _consume_consolidation_event(event: ConsolidationCommitted) -> None:
     items = memory_store.consume_consolidation_event(event.role_id, event.source_key, records)
     for item in items:
         memory_service.index_embedding(event.role_id, item)
+    memory_event_bus.publish(MemoryWritten(
+        event.role_id,
+        event.session_key,
+        event.source_key,
+        tuple(item.id for item in items),
+        "consolidation",
+    ))
+
+
+def _observe_consolidation_event(event: ConsolidationCommitted) -> None:
+    """Publish the commit boundary before consumers run, then consume it."""
+    memory_event_bus.publish(event)
+    try:
+        _consume_consolidation_event(event)
+    except Exception as error:
+        memory_event_bus.publish(MemoryWritten(
+            event.role_id,
+            event.session_key,
+            event.source_key,
+            operation="consolidation",
+            error=str(error),
+        ))
+        raise
 
 
 embedding_provider = OpenAICompatibleEmbeddingAdapter(_embedding_configuration)
-memory_service = MemoryService(memory_store, embedding_provider)
-memory_engine = DefaultMemoryEngine(memory_service, role_exists=lambda role_id: store.get(role_id) is not None)
+memory_service = MemoryService(memory_store, embedding_provider, _post_response_provider, memory_event_bus)
+memory_engine = DefaultMemoryEngine(memory_service, role_exists=lambda role_id: store.get(role_id) is not None, event_bus=memory_event_bus, hyde_provider=_hyde_provider)
 memory_optimizer_enabled = os.getenv("MEIDO_MEMORY_OPTIMIZER_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
 try:
     memory_optimizer_interval = float(os.getenv("MEIDO_MEMORY_OPTIMIZER_INTERVAL_SECONDS", str(MemoryOptimizer.DEFAULT_INTERVAL_SECONDS)))
@@ -214,7 +317,8 @@ memory_optimizer_loop = MemoryOptimizerLoop(
 memory_maintenance = MemoryMaintenance(
     roles_root,
     session_store,
-    _consume_consolidation_event,
+    _observe_consolidation_event,
+    _consolidation_provider,
     role_exists=lambda role_id: store.get(role_id) is not None,
 )
 memory_worker = MemoryWorker(
@@ -229,7 +333,12 @@ role_locks: dict[str, asyncio.Lock] = {}
 def _current_memory_engine() -> DefaultMemoryEngine:
     global memory_engine
     if memory_engine.service is not memory_service or memory_engine.store is not memory_store:
-        memory_engine = DefaultMemoryEngine(memory_service, role_exists=lambda role_id: store.get(role_id) is not None)
+        memory_engine = DefaultMemoryEngine(
+            memory_service,
+            role_exists=lambda role_id: store.get(role_id) is not None,
+            event_bus=memory_event_bus,
+            hyde_provider=_hyde_provider,
+        )
     return memory_engine
 
 
@@ -880,6 +989,29 @@ def list_memory_admin_events(
         return {"events": _current_memory_engine().list_events_by_time_range(role_id, timeStart, timeEnd, limit=limit)}
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.get("/api/roles/{role_id}/memory-admin/observations")
+def list_memory_observations(role_id: str, limit: int = 200) -> dict[str, object]:
+    """Return the bounded in-process event observation stream for diagnostics."""
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    observations: list[dict[str, object]] = []
+    for event in reversed(memory_event_bus.events):
+        if getattr(event, "role_id", None) != role_id:
+            continue
+        observations.append({
+            "type": type(event).__name__,
+            "roleId": role_id,
+            "sessionKey": getattr(event, "session_key", ""),
+            "sourceKey": getattr(event, "source_key", getattr(event, "stable_source_key", "")),
+            "error": getattr(event, "error", None),
+            "memoryIds": list(getattr(event, "memory_ids", ())),
+            "resultCount": getattr(event, "result_count", None),
+        })
+        if len(observations) >= max(0, min(limit, 1000)):
+            break
+    return {"events": observations}
 
 
 @app.get("/api/roles/{role_id}/memory-admin/items/{memory_id}")

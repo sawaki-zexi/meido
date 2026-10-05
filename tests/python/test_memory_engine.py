@@ -302,8 +302,38 @@ def test_memory_engine_applies_interest_filters_and_answer_lanes(tmp_path):
     interest, answer = asyncio.run(exercise())
 
     assert [record.kind for record in interest.records] == ["preference"]
-    assert [lane["query"] for lane in answer.trace["lanes"]] == ["海边", "event: 海边", "general: 海边"]
+    assert [lane["query"] for lane in answer.trace["lanes"]] == ["海边"]
     assert answer.trace["rrf"] is True
+
+
+def test_memory_engine_uses_real_hyde_provider_and_falls_back(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    calls = []
+
+    def hyde(query):
+        calls.append(query)
+        return ["用户过去的事件", "用户的一般事实"]
+
+    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True, hyde_provider=hyde)
+    result = asyncio.run(engine.query(MemoryQuery("最近发生了什么", intent="answer", scope=MemoryScope("role-a", "role:role-a"))))
+
+    assert calls == ["最近发生了什么"]
+    assert [lane["query"] for lane in result.trace["lanes"]] == ["最近发生了什么", "用户过去的事件", "用户的一般事实"]
+
+
+def test_procedure_rule_schema_filters_unsafe_memory(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    source = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="procedure")
+    store.add_or_reinforce("role-a", "procedure", "发送邮件前确认收件人", source, extra={"procedureTags": ["communication"], "confidence": 0.9})
+    store.add_or_reinforce("role-a", "procedure", "自动删除草稿", MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="unsafe"), extra={"procedureTags": ["dangerous"], "confidence": 0.2})
+    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True)
+
+    result = asyncio.run(engine.query(MemoryQuery(
+        "发送邮件", intent="procedure", scope=MemoryScope("role-a", "role:role-a"),
+        filters=MemoryQueryFilters(hints={"procedure_rule": {"requiredTags": ["communication"], "minConfidence": 0.8}}),
+    )))
+
+    assert [record.summary for record in result.records] == ["发送邮件前确认收件人"]
 
 
 def test_memory_engine_timeline_requires_range_and_filters_event_time(tmp_path):

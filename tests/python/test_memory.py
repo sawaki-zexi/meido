@@ -11,6 +11,7 @@ from backend.app.memory_maintenance import MemoryMaintenance
 from backend.app import memory_maintenance
 from backend.app.embeddings import OpenAICompatibleEmbeddingAdapter
 from backend.app.memory_store import MemoryStore
+from backend.app.memory_events import MemoryEventBus, MemoryWritten
 from backend.app.models import MemorySourceRef, Message, RoleInput, RoleProfile
 from backend.app.role_store import RoleStore
 from backend.app.session_store import SessionStore
@@ -1348,3 +1349,60 @@ def test_context_block_does_not_emit_empty_memory_heading(tmp_path):
     context = service.context_block([memory], "", max_chars=12)
 
     assert context == ""
+
+
+def test_post_response_provider_is_structured_and_falls_back_on_invalid_output(tmp_path):
+    calls = []
+
+    def provider(role_id, session_key, user, assistant, active):
+        calls.append((role_id, session_key, len(active)))
+        return [{"memoryType": "preference", "summary": "喜欢绿茶", "supersedeKey": None}]
+
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store, post_response_provider=provider)
+    now = datetime.now(timezone.utc)
+    user = Message(id="u1", role="user", content="今天聊聊", sessionKey="role:role-a", sequence=1, status="completed", createdAt=now)
+    assistant = Message(id="a1", role="assistant", content="好的", sessionKey="role:role-a", sequence=2, status="completed", createdAt=now)
+    saved = service.process_turn("role-a", "role:role-a", user, assistant)
+
+    assert [item.summary for item in saved] == ["喜欢绿茶"]
+    assert calls == [("role-a", "role:role-a", 0)]
+
+    fallback = MemoryService(store, post_response_provider=lambda *args: {"bad": True})
+    fallback_user = user.model_copy(update={"id": "u2", "sequence": 3, "content": "我叫小明"})
+    fallback_assistant = assistant.model_copy(update={"id": "a2", "sequence": 4})
+    result = fallback.process_turn("role-a", "role:role-a", fallback_user, fallback_assistant)
+    assert any(item.summary == "名字是小明" for item in result)
+
+
+def test_memory_event_bus_observers_are_best_effort():
+    bus = MemoryEventBus()
+    seen = []
+    bus.subscribe(lambda event: seen.append(event))
+    bus.subscribe(lambda event: (_ for _ in ()).throw(RuntimeError("telemetry down")))
+
+    bus.publish(MemoryWritten("role-a", "role:role-a", "source", ("m1",)))
+
+    assert isinstance(seen[0], MemoryWritten)
+    assert bus.errors and "telemetry down" in bus.errors[0]
+
+
+def test_memory_store_uses_optional_vector_index_and_keeps_sqlite_fallback(tmp_path):
+    class Index:
+        def __init__(self):
+            self.rows = {}
+        def upsert(self, role_id, item_id, vector):
+            self.rows[(role_id, item_id)] = vector
+        def search(self, role_id, vector, limit):
+            return [(item_id, 0.9) for (stored_role, item_id), _ in self.rows.items() if stored_role == role_id][:limit]
+        def delete_role(self, role_id):
+            self.rows = {key: value for key, value in self.rows.items() if key[0] != role_id}
+
+    index = Index()
+    store = MemoryStore(tmp_path / "memory.db", vector_index=index)
+    source = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="vector")
+    item = store.add_or_reinforce("role-a", "fact", "海边", source)
+    store.set_embedding("role-a", item.id, [1.0, 0.0])
+
+    assert store.vector_index_status() == {"available": True, "backend": "vector-index", "fallback": False}
+    assert store.query_hybrid("role-a", "海边", [1.0, 0.0], limit=1)[0].id == item.id
