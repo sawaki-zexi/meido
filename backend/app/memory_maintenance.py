@@ -31,11 +31,13 @@ class MemoryMaintenance:
         sessions: SessionStore,
         on_consolidation_committed: Callable[[ConsolidationCommitted], None] | None = None,
         consolidation_provider: Callable[[str, list[Message]], object] | None = None,
+        role_exists: Callable[[str], bool] | None = None,
     ) -> None:
         self.roles_root = Path(roles_root).resolve()
         self.sessions = sessions
         self.on_consolidation_committed = on_consolidation_committed
         self.consolidation_provider = consolidation_provider
+        self.role_exists = role_exists or (lambda role_id: True)
         self.errors: list[str] = []
 
     def resume_pending(self) -> int:
@@ -45,6 +47,8 @@ class MemoryMaintenance:
         resumed = 0
         for role_root in self.roles_root.iterdir():
             if not role_root.is_dir():
+                continue
+            if role_root.name.startswith(".") or not self.role_exists(role_root.name):
                 continue
             cursor_path = role_root / "memory" / ".maintenance.json"
             cursor = self._read_cursor(cursor_path)

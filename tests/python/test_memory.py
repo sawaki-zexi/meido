@@ -842,6 +842,24 @@ def test_consolidation_event_consumer_is_idempotent(tmp_path):
     assert len(store.consolidation_events_by_time_range("role-a", "0000", "9999")) == 1
 
 
+def test_maintenance_does_not_resume_deleted_role_directory(tmp_path):
+    roles_root = tmp_path / "roles"
+    memory_dir = roles_root / "deleted-role" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / ".maintenance.json").write_text('{"pendingEvent": {}}', encoding="utf-8")
+    calls: list[str] = []
+    initialize_databases(tmp_path / "data")
+
+    maintenance = MemoryMaintenance(
+        roles_root,
+        SessionStore(tmp_path / "data" / "sessions.db"),
+        on_consolidation_committed=lambda event: calls.append(event.role_id),
+        role_exists=lambda role_id: False,
+    )
+    assert maintenance.resume_pending() == 0
+    assert calls == []
+
+
 def test_memory_documents_reject_path_traversal(tmp_path, monkeypatch):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))

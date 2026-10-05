@@ -358,6 +358,7 @@ class MemoryWorker:
         self._locks: dict[str, asyncio.Lock] = {}
         self._tasks: dict[asyncio.Task[object], str] = {}
         self._deleting: set[str] = set()
+        self._deleted: set[str] = set()
         self.errors: list[str] = []
         self.closed = False
 
@@ -369,6 +370,13 @@ class MemoryWorker:
     def submit(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> bool:
         return self.publish(TurnCommitted(role_id, session_key, user_message, assistant_message))
 
+    def role_lock_for(self, role_id: str) -> asyncio.Lock:
+        """Return the lock shared by all writes for one role."""
+        return self.optimizer.lock_for(role_id) if self.optimizer is not None else self._locks.setdefault(role_id, asyncio.Lock())
+
+    def role_deletion_blocked(self, role_id: str) -> bool:
+        return role_id in self._deleting or role_id in self._deleted
+
     def publish(self, event: TurnCommitted) -> bool:
         role_id = event.role_id
         session_key = event.session_key
@@ -377,6 +385,7 @@ class MemoryWorker:
         if (
             self.closed
             or role_id in self._deleting
+            or role_id in self._deleted
             or user_message.role != "user"
             or assistant_message.role != "assistant"
             or assistant_message.status != "completed"
@@ -396,15 +405,21 @@ class MemoryWorker:
     async def begin_role_deletion(self, role_id: str) -> None:
         """Stop accepting maintenance and wait for in-flight work for a role."""
         self._deleting.add(role_id)
+        if self.optimizer is not None:
+            await self.optimizer.begin_role_deletion(role_id)
         tasks = tuple(task for task, task_role in self._tasks.items() if task_role == role_id)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    def end_role_deletion(self, role_id: str) -> None:
+    def end_role_deletion(self, role_id: str, *, deleted: bool = False) -> None:
         self._deleting.discard(role_id)
+        if deleted:
+            self._deleted.add(role_id)
+        if self.optimizer is not None:
+            self.optimizer.end_role_deletion(role_id, deleted=deleted)
 
     async def _run(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> None:
-        lock = self.optimizer.lock_for(role_id) if self.optimizer is not None else self._locks.setdefault(role_id, asyncio.Lock())
+        lock = self.role_lock_for(role_id)
         async with lock:
             semantic_task = asyncio.create_task(asyncio.to_thread(
                 self._process_semantic,

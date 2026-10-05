@@ -1,7 +1,11 @@
 from fastapi.testclient import TestClient
+from datetime import datetime, timezone
+import asyncio
+import sqlite3
+import pytest
 
 from backend.app import main
-from backend.app.models import ModelConfigurationInput, RoleInput, RoleProfile
+from backend.app.models import Message, ModelConfigurationInput, RoleInput, RoleProfile
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
@@ -391,6 +395,208 @@ def test_delete_role_removes_role_session_messages_and_files(tmp_path, monkeypat
     assert client.get(f"/api/roles/{other.id}").status_code == 200
     assert client.get(f"/api/roles/{other.id}/session").status_code == 200
     assert all(item.id != role.id for item in main.store.list())
+
+
+def test_delete_role_cleans_optimizer_maintenance_state_and_only_target_sqlite_rows(tmp_path, monkeypatch):
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    other = main.store.create(RoleInput(name="其他角色", profile=RoleProfile(profile="其他设定")))
+    memory_store = MemoryStore(tmp_path / "data" / "memory.db")
+    memory_service = MemoryService(memory_store)
+    from backend.app.memory_optimizer import MemoryOptimizer, MemoryOptimizerWorker
+
+    optimizer_worker = MemoryOptimizerWorker(MemoryOptimizer(tmp_path / "roles"))
+    worker = MemoryWorker(memory_service, optimizer=optimizer_worker)
+    monkeypatch.setattr(main, "memory_store", memory_store)
+    monkeypatch.setattr(main, "memory_service", memory_service)
+    monkeypatch.setattr(main, "memory_worker", worker)
+    doomed = memory_service.remember(role.id, "待删除记忆", "fact", stable_source_key="shared-source")
+    survivor = memory_service.remember(other.id, "保留记忆", "fact", stable_source_key="shared-source")
+    with sqlite3.connect(tmp_path / "data" / "memory.db") as connection:
+        connection.execute(
+            "INSERT INTO consolidation_events(role_id, source_ref, item_id, created_at) VALUES (?, ?, ?, ?)",
+            (role.id, "shared-source", doomed.id, "2026-01-01T00:00:00+00:00"),
+        )
+        connection.execute(
+            "INSERT INTO memory_replacements(role_id, old_item_id, old_memory_type, old_summary, new_item_id, new_memory_type, new_summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (role.id, "old", "fact", "旧", doomed.id, "fact", "新", "2026-01-01T00:00:00+00:00"),
+        )
+    memory_dir = tmp_path / "roles" / role.id / "memory"
+    (memory_dir / "PENDING.snapshot.md").write_text("待恢复候选", encoding="utf-8")
+    (memory_dir / ".maintenance.json").write_text('{"pendingEvent": {}}', encoding="utf-8")
+    (memory_dir / ".optimizer.json").write_text('{"self_update_pending": true}', encoding="utf-8")
+    (memory_dir / "journal").mkdir(exist_ok=True)
+    (memory_dir / "journal" / "2026-01-01.md").write_text("日志", encoding="utf-8")
+
+    assert client.delete(f"/api/roles/{role.id}").status_code == 204
+    assert not (tmp_path / "roles" / role.id).exists()
+    assert not list((tmp_path / "roles").glob(f".deleted-{role.id}-*"))
+    assert memory_store.get(role.id, doomed.id) is None
+    assert memory_store.get(other.id, survivor.id).summary == "保留记忆"
+    with sqlite3.connect(tmp_path / "data" / "memory.db") as connection:
+        assert connection.execute("SELECT COUNT(*) FROM consolidation_events WHERE role_id = ?", (role.id,)).fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM memory_replacements WHERE role_id = ?", (role.id,)).fetchone()[0] == 0
+    assert worker.submit(role.id, "role:" + role.id, Message(id="u", sessionKey="role:" + role.id, sequence=1, role="user", content="记住", status="completed", createdAt=datetime.now(timezone.utc)), Message(id="a", sessionKey="role:" + role.id, sequence=2, role="assistant", content="好", status="completed", createdAt=datetime.now(timezone.utc))) is False
+
+
+def test_role_store_removes_stale_deleted_directory_on_restart(tmp_path):
+    roles_root = tmp_path / "roles"
+    stale = roles_root / ".deleted-role-old-token" / "memory"
+    stale.mkdir(parents=True)
+    (stale / "PENDING.snapshot.md").write_text("旧候选", encoding="utf-8")
+    RoleStore(roles_root)
+    assert not stale.parent.exists()
+
+
+def test_role_store_restores_staged_directory_when_manifest_still_contains_role(tmp_path):
+    roles_root = tmp_path / "roles"
+    roles = RoleStore(roles_root)
+    role = roles.create(RoleInput(name="待恢复", profile=RoleProfile(profile="设定")))
+    role_file = roles_root / role.id / "memory" / "MEMORY.md"
+    role_file.write_text("保留", encoding="utf-8")
+    staged = roles.stage_role_files_for_deletion(role.id)
+    assert staged is not None
+    restarted = RoleStore(roles_root)
+    assert restarted.get(role.id) is not None
+    assert (roles_root / role.id / "memory" / "MEMORY.md").read_text(encoding="utf-8") == "保留"
+    assert not staged.exists()
+
+
+def test_role_store_keeps_interrupted_deletion_marker_until_database_recovery(tmp_path):
+    roles_root = tmp_path / "roles"
+    roles = RoleStore(roles_root)
+    role = roles.create(RoleInput(name="待清理", profile=RoleProfile(profile="设定")))
+    marker = roles.begin_role_deletion(role.id)
+    staged = roles.stage_role_files_for_deletion(role.id)
+    roles.delete(role.id)
+    restarted = RoleStore(roles_root)
+    assert restarted.pending_role_deletions() == [role.id]
+    assert staged is not None and not staged.exists()
+    restarted.complete_role_deletion(marker)
+    assert restarted.pending_role_deletions() == []
+
+
+def test_role_store_removes_canonical_directory_when_manifest_delete_precedes_staging(tmp_path):
+    roles_root = tmp_path / "roles"
+    roles = RoleStore(roles_root)
+    role = roles.create(RoleInput(name="孤儿", profile=RoleProfile(profile="设定")))
+    marker = roles.begin_role_deletion(role.id)
+    (roles_root / role.id / "memory" / "PENDING.md").write_text("候选", encoding="utf-8")
+    roles.delete(role.id)
+    restarted = RoleStore(roles_root)
+    assert not (roles_root / role.id).exists()
+    assert restarted.pending_role_deletions() == [role.id]
+    restarted.complete_role_deletion(marker)
+
+
+def test_startup_finishes_interrupted_role_deletion_without_recreating_data(tmp_path, monkeypatch):
+    role, sessions, _ = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    roles = main.store
+    other = roles.create(RoleInput(name="保留", profile=RoleProfile(profile="设定")))
+    memories = MemoryStore(tmp_path / "data" / "memory.db")
+    service = MemoryService(memories)
+    service.remember(role.id, "同一记忆", "fact", stable_source_key="same")
+    survivor = service.remember(other.id, "同一记忆", "fact", stable_source_key="same")
+    sessions.open_role_session(role.id)
+    marker = roles.begin_role_deletion(role.id)
+    roles.stage_role_files_for_deletion(role.id)
+    roles.delete(role.id)
+    # Crash before either SQLite store was cleaned. Reopen every component.
+    restarted = RoleStore(tmp_path / "roles")
+    memories = MemoryStore(tmp_path / "data" / "memory.db")
+    service = MemoryService(memories)
+    from backend.app.memory_optimizer import MemoryOptimizer, MemoryOptimizerWorker, MemoryOptimizerLoop
+    from backend.app.memory_maintenance import MemoryMaintenance
+
+    optimizer = MemoryOptimizerWorker(MemoryOptimizer(tmp_path / "roles"))
+    worker = MemoryWorker(service, optimizer=optimizer)
+    monkeypatch.setattr(main, "store", restarted)
+    monkeypatch.setattr(main, "memory_store", memories)
+    monkeypatch.setattr(main, "memory_worker", worker)
+    monkeypatch.setattr(main, "memory_maintenance", MemoryMaintenance(tmp_path / "roles", sessions))
+    monkeypatch.setattr(main, "memory_optimizer_loop", MemoryOptimizerLoop(optimizer, tmp_path / "roles", enabled=False))
+    asyncio.run(main._start_memory_workers())
+    assert all(not rows for rows in memories.snapshot_role(role.id).values())
+    assert sessions.snapshot_role_session(role.id) == (None, [])
+    assert memories.get(other.id, survivor.id) is not None
+    assert restarted.get(role.id) is None
+    assert not (tmp_path / "roles" / role.id).exists()
+    assert not marker.exists()
+    assert restarted.pending_role_deletions() == []
+
+
+def test_role_file_mutations_cannot_recreate_directory_during_deletion(tmp_path):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="删除中", profile=RoleProfile(profile="设定")))
+    marker = roles.begin_role_deletion(role.id)
+    staged = roles.stage_role_files_for_deletion(role.id)
+    with pytest.raises(KeyError):
+        roles.set_avatar(role.id, b"avatar", "image/png")
+    assert not (tmp_path / "roles" / role.id).exists()
+    roles.restore_staged_role_files(role.id, staged)
+    roles.complete_role_deletion(marker)
+    assert roles.set_avatar(role.id, b"avatar", "image/png") is not None
+
+
+def test_delete_waits_for_admin_write_and_rejects_late_mutation(tmp_path, monkeypatch):
+    role, _, _ = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    memories = MemoryStore(tmp_path / "data" / "memory.db")
+    worker = MemoryWorker(MemoryService(memories))
+    monkeypatch.setattr(main, "memory_store", memories)
+    monkeypatch.setattr(main, "memory_worker", worker)
+    monkeypatch.setattr(main, "role_locks", {})
+    monkeypatch.setattr(main, "roles_root", tmp_path / "roles")
+
+    async def run():
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def operation():
+            started.set()
+            await release.wait()
+            return worker.service.remember(role.id, "先完成写入", "fact")
+
+        mutation = asyncio.create_task(main._mutate_and_sync_memory(role.id, operation))
+        await started.wait()
+        deleting = asyncio.create_task(main.delete_role(role.id))
+        await asyncio.sleep(0)
+        assert not deleting.done()
+        with pytest.raises(main.HTTPException) as error:
+            await main._mutate_and_sync_memory(role.id, operation)
+        assert error.value.status_code == 409
+        release.set()
+        await mutation
+        await deleting
+        with pytest.raises(main.HTTPException):
+            await main._mutate_and_sync_memory(role.id, operation)
+
+    asyncio.run(run())
+    assert memories.list_all(role.id) == []
+    assert not (tmp_path / "roles" / role.id).exists()
+
+
+def test_cancelled_delete_clears_memory_deletion_barrier(tmp_path, monkeypatch):
+    role, _, _ = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    worker = MemoryWorker(MemoryService(MemoryStore(tmp_path / "data" / "memory.db")))
+    monkeypatch.setattr(main, "memory_worker", worker)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_begin(role_id):
+        worker._deleting.add(role_id)
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(worker, "begin_role_deletion", blocking_begin)
+
+    async def run():
+        deletion = asyncio.create_task(main.delete_role(role.id))
+        await entered.wait()
+        deletion.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await deletion
+
+    asyncio.run(run())
+    assert worker.role_deletion_blocked(role.id) is False
 
 
 def test_delete_role_attempts_role_and_file_restore_when_database_rollback_fails(tmp_path, monkeypatch):

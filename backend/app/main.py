@@ -211,7 +211,12 @@ memory_optimizer_loop = MemoryOptimizerLoop(
         ) is not None
     ),
 )
-memory_maintenance = MemoryMaintenance(roles_root, session_store, _consume_consolidation_event)
+memory_maintenance = MemoryMaintenance(
+    roles_root,
+    session_store,
+    _consume_consolidation_event,
+    role_exists=lambda role_id: store.get(role_id) is not None,
+)
 memory_worker = MemoryWorker(
     memory_service,
     memory_maintenance,
@@ -229,7 +234,11 @@ def _current_memory_engine() -> DefaultMemoryEngine:
 
 
 async def _mutate_and_sync_memory(role_id: str, operation):
-    async with memory_optimizer_worker.lock_for(role_id):
+    if memory_worker.role_deletion_blocked(role_id):
+        raise HTTPException(status_code=409, detail="角色正在删除，请稍后再试")
+    async with memory_worker.role_lock_for(role_id):
+        if memory_worker.role_deletion_blocked(role_id):
+            raise HTTPException(status_code=409, detail="角色正在删除，请稍后再试")
         return await _mutate_and_sync_memory_locked(role_id, operation)
 
 
@@ -316,6 +325,19 @@ async def _close_memory_workers() -> None:
 
 async def _start_memory_workers() -> None:
     memory_worker.start()
+    store.cleanup_staged_role_files()
+    memory_worker.errors.extend(store.recovery_errors)
+    for role_id in store.pending_role_deletions():
+        try:
+            await memory_worker.begin_role_deletion(role_id)
+            session_store.delete_role_session(role_id)
+            memory_store.delete_role(role_id)
+            for marker in store.root.glob(f".deleting-{role_id}-*.json"):
+                store.complete_role_deletion(marker)
+        except Exception as error:
+            memory_worker.errors.append(f"{role_id}: interrupted deletion recovery failed: {error}")
+        finally:
+            memory_worker.end_role_deletion(role_id, deleted=True)
     await asyncio.to_thread(memory_maintenance.resume_pending)
     memory_optimizer_loop.start()
 
@@ -679,25 +701,39 @@ async def delete_role(role_id: str) -> None:
     session_snapshot_taken = False
     memory_snapshot_taken = False
     role_delete_attempted = False
+    deletion_succeeded = False
+    deletion_marker = None
+    deletion_lock = None
     deleted = None
     staged_path = None
     deletion_phase = "preflight"
     try:
-        await memory_worker.begin_role_deletion(role_id)
+        # Mark the gate before the first await so cancellation cannot leave a
+        # role permanently blocked from future memory work.
         deletion_started = True
+        await memory_worker.begin_role_deletion(role_id)
+        deletion_lock = memory_worker.role_lock_for(role_id)
+        await deletion_lock.acquire()
         session_snapshot = session_store.snapshot_role_session(role_id)
         session_snapshot_taken = True
         memory_snapshot = memory_store.snapshot_role(role_id)
         memory_snapshot_taken = True
+        deletion_marker = store.begin_role_deletion(role_id)
+        deletion_phase = "files"
+        staged_path = store.stage_role_files_for_deletion(role_id)
         deletion_phase = "role"
         role_delete_attempted = True
         deleted = store.delete(role_id)
-        staged_path = store.stage_role_files_for_deletion(role_id)
         deletion_phase = "session"
         session_store.delete_role_session(role_id)
         deletion_phase = "memory"
         memory_store.delete_role(role_id)
         store.purge_staged_role_files(staged_path)
+        deletion_succeeded = True
+        try:
+            store.complete_role_deletion(deletion_marker)
+        except OSError as error:
+            memory_worker.errors.append(f"{role_id}: deletion marker cleanup deferred: {error}")
     except Exception as error:
         rollback_errors: list[Exception] = []
         if session_snapshot_taken:
@@ -715,15 +751,18 @@ async def delete_role(role_id: str) -> None:
                 store.restore_deleted(deleted)
             except Exception as restore_error:
                 rollback_errors.append(restore_error)
-            if staged_path is not None:
-                try:
+        if staged_path is not None:
+            try:
+                if deleted is not None:
                     store.remove_role_files(role_id)
-                except Exception as restore_error:
-                    rollback_errors.append(restore_error)
-                try:
-                    store.restore_staged_role_files(role_id, staged_path)
-                except Exception as restore_error:
-                    rollback_errors.append(restore_error)
+                store.restore_staged_role_files(role_id, staged_path)
+            except Exception as restore_error:
+                rollback_errors.append(restore_error)
+        if deletion_marker is not None and not deletion_succeeded and not rollback_errors:
+            try:
+                store.complete_role_deletion(deletion_marker)
+            except Exception as restore_error:
+                rollback_errors.append(restore_error)
         if isinstance(error, KeyError) and role_delete_attempted and deleted is None and not rollback_errors:
             raise HTTPException(status_code=404, detail="角色不存在") from error
         if rollback_errors:
@@ -732,7 +771,10 @@ async def delete_role(role_id: str) -> None:
         raise HTTPException(status_code=500, detail=detail) from error
     finally:
         if deletion_started:
-            memory_worker.end_role_deletion(role_id)
+            memory_worker.end_role_deletion(role_id, deleted=deletion_succeeded)
+            store.end_role_deletion(role_id)
+        if deletion_lock is not None and deletion_lock.locked():
+            deletion_lock.release()
         lock.release()
 
 
