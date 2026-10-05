@@ -1441,3 +1441,33 @@ def test_memory_store_uses_optional_vector_index_and_keeps_sqlite_fallback(tmp_p
     assert store.vector_index_status()["available"] is True
     assert store.vector_index_status()["backend"] == "vector-index"
     assert store.query_hybrid("role-a", "海边", [1.0, 0.0], limit=1)[0].id == item.id
+
+
+def test_memory_store_reports_query_failure_when_vector_index_falls_back(tmp_path):
+    class BrokenIndex:
+        def upsert(self, role_id, item_id, vector):
+            pass
+
+        def search(self, role_id, vector, limit):
+            raise RuntimeError("index unavailable")
+
+        def delete(self, role_id, item_id):
+            pass
+
+        def delete_role(self, role_id):
+            pass
+
+    store = MemoryStore(tmp_path / "memory.db", vector_index=BrokenIndex())
+    source = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="fallback")
+    item = store.add_or_reinforce("role-a", "fact", "海边", source)
+    store.set_embedding("role-a", item.id, [1.0, 0.0])
+
+    result = store.query_hybrid("role-a", "海边", [1.0, 0.0], limit=1)
+
+    assert result[0].id == item.id
+    assert store.vector_index_status() == {
+        "available": False,
+        "backend": "sqlite-scan",
+        "fallback": True,
+        "error": "vector index query failed",
+    }

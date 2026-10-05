@@ -793,7 +793,7 @@ class MemoryStore:
                 return [by_id[item_id] for item_id, _ in sorted(fused.items(), key=lambda pair: pair[1], reverse=True)[:limit]]
             except Exception:
                 self.vector_index_available = False
-                self.vector_index_error = "vector index dimension reset failed"
+                self.vector_index_error = "vector index query failed"
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM memory_items WHERE role_id = ? AND status = 'active' AND embedding_json IS NOT NULL",
