@@ -553,11 +553,17 @@ class DefaultMemoryEngine:
         if not self._role_exists(role_id):
             raise ValueError(f"unknown role_id: {role_id}")
         items = self.store.list_all(role_id)
+        sources = {
+            source_key
+            for item in items
+            for source_key in (item.sourceRef.sourceKeys or [item.sourceRef.stableSourceKey]) + [item.sourceRef.kind]
+            if source_key
+        }
         return {
             "memory_types": sorted({item.memoryType for item in items}),
             "statuses": sorted({item.status for item in items}),
             "domains": sorted({str(item.extra.get("memory_domain", "")) for item in items if item.extra.get("memory_domain")}),
-            "sources": sorted({item.sourceRef.kind for item in items}),
+            "sources": sorted(sources),
         }
 
     def list_active_items(self, role_id: str, query: str = "") -> list[MemoryItem]:
@@ -596,6 +602,8 @@ class DefaultMemoryEngine:
         allowed_sort = {"created_at", "updated_at", "happened_at", "reinforcement"}
         if sort_by not in allowed_sort:
             raise ValueError("invalid sort_by")
+        if sort_order not in {"asc", "desc"}:
+            raise ValueError("invalid sort_order")
         items = self.store.list_all(role_id)
         needle = q.casefold().strip()
         selected = [
@@ -604,15 +612,21 @@ class DefaultMemoryEngine:
             and (not memory_type or item.memoryType == memory_type)
             and (not memory_domain or item.extra.get("memory_domain") == memory_domain)
             and (not status or item.status == status)
-            and (not source_ref or source_ref in item.sourceRef.stableSourceKey)
+            and (not source_ref or source_ref in (item.sourceRef.sourceKeys or [item.sourceRef.stableSourceKey]))
             and (has_embedding is None or item.hasEmbedding is has_embedding)
         ]
+        sort_attribute = {
+            "created_at": "createdAt",
+            "updated_at": "updatedAt",
+            "happened_at": "happenedAt",
+            "reinforcement": "reinforcement",
+        }[sort_by]
         if sort_by == "reinforcement":
             selected.sort(key=lambda item: item.reinforcement, reverse=sort_order != "asc")
         elif sort_by == "happened_at":
             selected.sort(key=lambda item: (item.happenedAt is not None, item.happenedAt), reverse=sort_order != "asc")
         else:
-            selected.sort(key=lambda item: getattr(item, sort_by), reverse=sort_order != "asc")
+            selected.sort(key=lambda item: getattr(item, sort_attribute), reverse=sort_order != "asc")
         total = len(selected)
         start = max(0, page - 1) * max(1, page_size)
         return [item.model_dump(mode="json") for item in selected[start : start + max(1, page_size)]], total
@@ -634,12 +648,16 @@ class DefaultMemoryEngine:
         self, role_id: str, item_id: str, *, status: str | None = None,
         extra_json: dict[str, object] | None = None, source_ref: str | None = None,
         happened_at: str | None = None, emotional_weight: int | None = None,
+        happened_at_provided: bool = False,
     ) -> dict[str, object] | None:
         if not self._role_exists(role_id):
             raise ValueError(f"unknown role_id: {role_id}")
+        if status is not None and status not in {"active", "rejected", "forgotten", "superseded"}:
+            raise ValueError("unsupported memory status")
         item = self.store.update_metadata(
             role_id, item_id, status=status, extra_json=extra_json, source_ref=source_ref,
-            happened_at=happened_at, emotional_weight=emotional_weight,
+            happened_at=happened_at, happened_at_provided=happened_at_provided,
+            emotional_weight=emotional_weight,
         )
         return item.model_dump(mode="json") if item else None
 
@@ -670,6 +688,8 @@ class DefaultMemoryEngine:
             raise ValueError(f"unknown role_id: {role_id}")
         if top_k <= 0:
             return []
+        if score_threshold < 0:
+            raise ValueError("score_threshold must be non-negative")
         item = self.store.get(role_id, item_id)
         if item is None:
             return []

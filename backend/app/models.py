@@ -158,6 +158,29 @@ class MemoryItem(BaseModel):
 
 class MemoryList(BaseModel):
     memories: list[MemoryItem]
+    total: int | None = None
+    page: int | None = None
+    pageSize: int | None = None
+
+
+class MemoryAdminUpdateInput(BaseModel):
+    status: str | None = None
+    extraJson: dict[str, Any] | None = None
+    sourceRef: MemorySourceRef | None = None
+    happenedAt: datetime | None = None
+    emotionalWeight: int | None = Field(default=None, ge=0, le=10)
+
+
+class MemoryBatchDeleteInput(BaseModel):
+    ids: list[str] = Field(min_length=1)
+
+    @field_validator("ids")
+    @classmethod
+    def validate_ids(cls, value: list[str]) -> list[str]:
+        cleaned = list(dict.fromkeys(item.strip() for item in value if item.strip()))
+        if not cleaned:
+            raise ValueError("至少需要一个记忆 ID")
+        return cleaned
 
 
 class RememberMemoryInput(BaseModel):
