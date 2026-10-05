@@ -43,6 +43,14 @@ class MemoryService:
                 self.store.set_embedding(role_id, item.id, vector)
         except Exception:
             self.embedding_errors.append(f"{role_id}: embedding 写入失败")
+            self._publish_written(
+                role_id,
+                item.sourceRef.sessionKey,
+                item.sourceRef.stableSourceKey,
+                [item.id],
+                "embedding",
+                error="embedding 写入失败",
+            )
 
     def remember(
         self,
@@ -189,12 +197,12 @@ class MemoryService:
             self.post_response_errors.append(f"{role_id}: LLM post-response fallback: {error}")
             return self._extract(user_message.content)
 
-    def _publish_written(self, role_id: str, session_key: str, source_key: str, ids: list[str], operation: str) -> None:
+    def _publish_written(self, role_id: str, session_key: str, source_key: str, ids: list[str], operation: str, error: str | None = None) -> None:
         if self.event_bus is None:
             return
         try:
             from .memory_events import MemoryWritten
-            self.event_bus.publish(MemoryWritten(role_id, session_key, source_key, tuple(ids), operation))
+            self.event_bus.publish(MemoryWritten(role_id, session_key, source_key, tuple(ids), operation, error))
         except Exception:
             return
 
