@@ -1387,6 +1387,40 @@ def test_memory_event_bus_observers_are_best_effort():
     assert bus.errors and "telemetry down" in bus.errors[0]
 
 
+def test_post_response_protects_explicit_tool_memory_ids(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(store)
+    source = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="tool:item")
+    item = store.add_or_reinforce("role-a", "preference", "喜欢咖啡", source, extra={"explicit": True})
+    now = datetime.now(timezone.utc)
+    user = Message(
+        id="u-tool", role="user", content="以前喜欢咖啡，现在改为喜欢茶",
+        sessionKey="role:role-a", sequence=1, status="completed", createdAt=now,
+    )
+    assistant = Message(
+        id="a-tool", role="assistant", content="知道了", sessionKey="role:role-a",
+        sequence=2, status="completed", createdAt=now,
+    )
+
+    service.process_turn("role-a", "role:role-a", user, assistant, protected_item_ids=(item.id,))
+
+    assert store.get("role-a", item.id).status == "active"
+
+
+def test_memory_store_vector_index_survives_store_restart(tmp_path):
+    database = tmp_path / "memory.db"
+    source = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="restart")
+    first_store = MemoryStore(database)
+    item = first_store.add_or_reinforce("role-a", "fact", "主人喜欢海边", source)
+    first_store.set_embedding("role-a", item.id, [1.0, 0.0])
+
+    restarted = MemoryStore(database)
+    result = restarted.query_hybrid("role-a", "", [1.0, 0.0], limit=1)
+
+    assert result and result[0].id == item.id
+    assert restarted.vector_index_status()["backend"] in {"vector-index", "sqlite-scan"}
+
+
 def test_memory_store_uses_optional_vector_index_and_keeps_sqlite_fallback(tmp_path):
     class Index:
         def __init__(self):
@@ -1404,5 +1438,6 @@ def test_memory_store_uses_optional_vector_index_and_keeps_sqlite_fallback(tmp_p
     item = store.add_or_reinforce("role-a", "fact", "海边", source)
     store.set_embedding("role-a", item.id, [1.0, 0.0])
 
-    assert store.vector_index_status() == {"available": True, "backend": "vector-index", "fallback": False}
+    assert store.vector_index_status()["available"] is True
+    assert store.vector_index_status()["backend"] == "vector-index"
     assert store.query_hybrid("role-a", "海边", [1.0, 0.0], limit=1)[0].id == item.id

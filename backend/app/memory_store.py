@@ -37,12 +37,97 @@ class VectorIndex(Protocol):
     def delete_role(self, role_id: str) -> None: ...
 
 
+class SQLiteVecIndex:
+    """Persistent sqlite-vec adapter with one virtual table per dimension."""
+
+    def __init__(self, database_path: str | Path) -> None:
+        try:
+            import sqlite_vec  # type: ignore[import-not-found]
+        except Exception as error:
+            raise RuntimeError("sqlite-vec is unavailable") from error
+        self.database_path = str(database_path)
+        self._sqlite_vec = sqlite_vec
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.database_path, timeout=10)
+        connection.enable_load_extension(True)
+        self._sqlite_vec.load(connection)
+        connection.enable_load_extension(False)
+        return connection
+
+    @staticmethod
+    def _table(dimension: int) -> str:
+        if dimension <= 0:
+            raise ValueError("embedding dimension must be positive")
+        return f"memory_vec_{dimension}"
+
+    def _ensure_table(self, connection: sqlite3.Connection, dimension: int) -> str:
+        table = self._table(dimension)
+        connection.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING vec0(item_id TEXT PRIMARY KEY, role_id TEXT, embedding float[{dimension}])"
+        )
+        return table
+
+    def upsert(self, role_id: str, item_id: str, vector: list[float]) -> None:
+        with self._connect() as connection:
+            table = self._ensure_table(connection, len(vector))
+            connection.execute(f"DELETE FROM {table} WHERE item_id = ?", (item_id,))
+            connection.execute(
+                f"INSERT INTO {table}(item_id, role_id, embedding) VALUES (?, ?, ?)",
+                (item_id, role_id, self._sqlite_vec.serialize_float32(vector)),
+            )
+
+    def search(self, role_id: str, vector: list[float], limit: int) -> list[tuple[str, float]]:
+        if limit <= 0:
+            return []
+        with self._connect() as connection:
+            table = self._ensure_table(connection, len(vector))
+            rows = connection.execute(
+                f"SELECT item_id, distance FROM {table} WHERE embedding MATCH ? AND k = ? AND role_id = ?",
+                (self._sqlite_vec.serialize_float32(vector), limit, role_id),
+            ).fetchall()
+        # sqlite-vec reports distance; MemoryStore's hybrid path expects cosine-like relevance.
+        return [(str(row[0]), max(-1.0, 1.0 - float(row[1]))) for row in rows]
+
+    def delete(self, role_id: str, item_id: str) -> None:
+        with self._connect() as connection:
+            for dimension in self._dimensions(connection):
+                connection.execute(f"DELETE FROM {self._table(dimension)} WHERE role_id = ? AND item_id = ?", (role_id, item_id))
+
+    def delete_role(self, role_id: str) -> None:
+        with self._connect() as connection:
+            for dimension in self._dimensions(connection):
+                connection.execute(f"DELETE FROM {self._table(dimension)} WHERE role_id = ?", (role_id,))
+
+    @staticmethod
+    def _dimensions(connection: sqlite3.Connection) -> list[int]:
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'memory_vec_%'"
+        ).fetchall()
+        dimensions: list[int] = []
+        for row in rows:
+            try:
+                dimensions.append(int(str(row[0]).rsplit("_", 1)[1]))
+            except (ValueError, IndexError):
+                continue
+        return dimensions
+
+
 class MemoryStore:
     """SQLite authority for role-scoped structured memories."""
 
     def __init__(self, database_path: str | Path, vector_index: "VectorIndex | None" = None) -> None:
         self.database_path = str(database_path)
+        if vector_index is None:
+            try:
+                candidate = SQLiteVecIndex(database_path)
+                probe = candidate._connect()
+                probe.close()
+                vector_index = candidate
+            except Exception:
+                vector_index = None
         self.vector_index = vector_index
+        self.vector_index_error: str | None = None
         # sqlite-vec is optional in desktop installs. Keep the capability
         # explicit so callers can report whether indexed search or the safe
         # SQLite scan is being used.
@@ -57,6 +142,7 @@ class MemoryStore:
             "available": self.vector_index_available,
             "backend": "vector-index" if self.vector_index_available else "sqlite-scan",
             "fallback": not self.vector_index_available,
+            "error": self.vector_index_error,
         }
 
     def _connect(self) -> sqlite3.Connection:
@@ -168,6 +254,18 @@ class MemoryStore:
             if schema_version < 1:
                 self._migrate_embedding_dimensions(connection)
             connection.execute("PRAGMA user_version = 1")
+        self._rebuild_vector_index_for_all_roles()
+
+    def _rebuild_vector_index_for_all_roles(self) -> None:
+        if self.vector_index is None:
+            return
+        try:
+            with self._connect() as connection:
+                role_ids = [str(row[0]) for row in connection.execute("SELECT DISTINCT role_id FROM memory_items")]
+            for role_id in role_ids:
+                self._rebuild_vector_index(role_id)
+        except Exception:
+            self.vector_index_available = False
 
     @staticmethod
     def _migrate_embedding_dimensions(connection: sqlite3.Connection) -> None:
@@ -512,6 +610,7 @@ class MemoryStore:
                 self.vector_index.delete_role(role_id)
             except Exception:
                 self.vector_index_available = False
+                self.vector_index_error = "vector index dimension reset failed"
         return changed
 
     def embedding_for(self, role_id: str, item_id: str) -> list[float] | None:
@@ -694,6 +793,7 @@ class MemoryStore:
                 return [by_id[item_id] for item_id, _ in sorted(fused.items(), key=lambda pair: pair[1], reverse=True)[:limit]]
             except Exception:
                 self.vector_index_available = False
+                self.vector_index_error = "vector index dimension reset failed"
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM memory_items WHERE role_id = ? AND status = 'active' AND embedding_json IS NOT NULL",
@@ -734,6 +834,19 @@ class MemoryStore:
             ).fetchone()
         return self._item(row) if row is not None else None
 
+    def get_many(self, role_id: str, item_ids: list[str]) -> list[MemoryItem]:
+        self._require_role_id(role_id)
+        ids = tuple(dict.fromkeys(item_id for item_id in item_ids if item_id))
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM memory_items WHERE role_id = ? AND id IN ({placeholders})",
+                (role_id, *ids),
+            ).fetchall()
+        return [self._item(row) for row in rows]
+
     def update(self, role_id: str, item_id: str, summary: str, memory_type: str, happened_at: datetime | None) -> MemoryItem:
         self._require_role_id(role_id)
         summary = normalize_summary(summary)
@@ -751,6 +864,7 @@ class MemoryStore:
                 self.vector_index.delete(role_id, item_id)
             except Exception:
                 self.vector_index_available = False
+                self.vector_index_error = "vector index delete failed"
         assert row is not None
         return self._item(row)
 
@@ -761,6 +875,12 @@ class MemoryStore:
             row = connection.execute("SELECT * FROM memory_items WHERE role_id = ? AND id = ?", (role_id, item_id)).fetchone()
         if row is None:
             raise KeyError(item_id)
+        if status != "active" and self.vector_index is not None:
+            try:
+                self.vector_index.delete(role_id, item_id)
+            except Exception:
+                self.vector_index_available = False
+                self.vector_index_error = "vector index query failed"
         return self._item(row)
 
     def remove(self, role_id: str, item_id: str) -> None:
@@ -829,6 +949,24 @@ class MemoryStore:
                         f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
                         [[row[column] for column in columns] for row in table_rows],
                     )
+        self._rebuild_vector_index(role_id)
+
+    def _rebuild_vector_index(self, role_id: str) -> None:
+        if self.vector_index is None:
+            return
+        try:
+            self.vector_index.delete_role(role_id)
+            with self._connect() as connection:
+                rows = connection.execute(
+                    "SELECT id, embedding_json FROM memory_items WHERE role_id = ? AND status = 'active' AND embedding_json IS NOT NULL",
+                    (role_id,),
+                ).fetchall()
+            for row in rows:
+                vector = self._decode_json(row["embedding_json"], None)
+                if isinstance(vector, list) and vector:
+                    self.vector_index.upsert(role_id, str(row["id"]), [float(value) for value in vector])
+        except Exception:
+            self.vector_index_available = False
 
     def _item(self, row: sqlite3.Row) -> MemoryItem:
         source_payload = self._decode_json(row["source_ref"], {})

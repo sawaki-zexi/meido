@@ -89,6 +89,8 @@ class MemoryService:
         session_key: str,
         user_message: Message,
         assistant_message: Message,
+        *,
+        protected_item_ids: Iterable[str] = (),
     ) -> list[MemoryItem]:
         if assistant_message.role != "assistant" or assistant_message.status != "completed":
             return []
@@ -104,14 +106,23 @@ class MemoryService:
             messageRange=(user_message.sequence, assistant_message.sequence),
             stableSourceKey=source_key,
         )
+        protected_ids = set(protected_item_ids)
         forget_target = self._forget_target(user_message.content)
         if forget_target is not None:
+            protected = self.store.get_many(role_id, list(protected_ids)) if protected_ids else []
+            if any(forget_target.casefold() in item.summary.casefold() for item in protected):
+                self._publish_written(role_id, session_key, source_key, [], "forget", "protected explicit memory")
+                return []
             forgotten = self.forget_matching(role_id, forget_target)
             if forgotten is not None:
                 self._publish_written(role_id, session_key, source_key, [forgotten.id], "forget")
             return [forgotten] if forgotten is not None else []
         reject_target = self._reject_target(user_message.content)
         if reject_target is not None:
+            protected = self.store.get_many(role_id, list(protected_ids)) if protected_ids else []
+            if any(reject_target.casefold() in item.summary.casefold() for item in protected):
+                self._publish_written(role_id, session_key, source_key, [], "reject", "protected explicit memory")
+                return []
             item = self.reject_matching(role_id, reject_target, source)
             self._publish_written(role_id, session_key, source_key, [item.id], "reject")
             return [item]
@@ -121,7 +132,11 @@ class MemoryService:
         correction_target = self._correction_target(user_message.content)
         if correction_target is not None:
             previous = self.store.find_status_candidate(role_id, correction_target, ("active",))
-            if previous is not None and previous.memoryType == "preference":
+            if (
+                previous is not None
+                and previous.id not in protected_ids
+                and previous.memoryType == "preference"
+            ):
                 saved.append(self.store.set_status(role_id, previous.id, "superseded"))
         protected: set[tuple[str, str]] = set()
         for memory_type, summary, supersede_key in explicit:
@@ -452,8 +467,20 @@ class MemoryWorker:
         if self.optimizer is not None:
             self.optimizer.start()
 
-    def submit(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> bool:
-        return self.publish(TurnCommitted(role_id, session_key, user_message, assistant_message))
+    def submit(
+        self,
+        role_id: str,
+        session_key: str,
+        user_message: Message,
+        assistant_message: Message,
+        *,
+        explicit_memory_ids: tuple[str, ...] = (),
+        tool_metadata: dict[str, object] | None = None,
+    ) -> bool:
+        return self.publish(TurnCommitted(
+            role_id, session_key, user_message, assistant_message,
+            tuple(dict.fromkeys(explicit_memory_ids)), tool_metadata,
+        ))
 
     def role_lock_for(self, role_id: str) -> asyncio.Lock:
         """Return the lock shared by all writes for one role."""
@@ -484,7 +511,14 @@ class MemoryWorker:
                 self.service.event_bus.publish(event)
             except Exception as error:
                 self.errors.append(f"{role_id}: TurnCommitted observation failed: {error}")
-        task = asyncio.create_task(self._run(role_id, session_key, user_message, assistant_message))
+        task = asyncio.create_task(self._run(
+            role_id,
+            session_key,
+            user_message,
+            assistant_message,
+            event.explicit_memory_ids,
+            event.tool_metadata,
+        ))
         self._tasks[task] = role_id
         task.add_done_callback(self._forget_task)
         return True
@@ -508,7 +542,15 @@ class MemoryWorker:
         if self.optimizer is not None:
             self.optimizer.end_role_deletion(role_id, deleted=deleted)
 
-    async def _run(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> None:
+    async def _run(
+        self,
+        role_id: str,
+        session_key: str,
+        user_message: Message,
+        assistant_message: Message,
+        explicit_memory_ids: tuple[str, ...] = (),
+        tool_metadata: dict[str, object] | None = None,
+    ) -> None:
         lock = self.role_lock_for(role_id)
         async with lock:
             semantic_task = asyncio.create_task(asyncio.to_thread(
@@ -517,6 +559,7 @@ class MemoryWorker:
                 session_key,
                 user_message,
                 assistant_message,
+                explicit_memory_ids,
             ))
             maintenance_task = asyncio.create_task(asyncio.to_thread(
                 self._process_maintenance,
@@ -549,6 +592,7 @@ class MemoryWorker:
                         session_key,
                         f"turn:{session_key}:{user_message.id}:{assistant_message.id}",
                         tuple(item.id for item in semantic_result),
+                        tool_metadata=tool_metadata,
                     ))
                 except Exception as error:
                     self.errors.append(f"{role_id}: TurnIngested observation failed: {error}")
@@ -564,8 +608,22 @@ class MemoryWorker:
                 except Exception as error:
                     self.errors.append(f"{role_id}: structured Markdown sync failed: {error}")
 
-    def _process_semantic(self, role_id: str, session_key: str, user_message: Message, assistant_message: Message) -> list[MemoryItem]:
-        return self.service.process_turn(role_id, session_key, user_message, assistant_message)
+    def _process_semantic(
+        self,
+        role_id: str,
+        session_key: str,
+        user_message: Message,
+        assistant_message: Message,
+        explicit_memory_ids: tuple[str, ...] = (),
+        tool_metadata: dict[str, object] | None = None,
+    ) -> list[MemoryItem]:
+        return self.service.process_turn(
+            role_id,
+            session_key,
+            user_message,
+            assistant_message,
+            protected_item_ids=explicit_memory_ids,
+        )
 
     def _process_maintenance(self, role_id: str, session_key: str) -> None:
         if self.maintenance is not None:
