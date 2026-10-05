@@ -120,8 +120,11 @@ class MemoryStore:
         self.database_path = str(database_path)
         if vector_index is None:
             try:
-                vector_index = SQLiteVecIndex(database_path)
-            except RuntimeError:
+                candidate = SQLiteVecIndex(database_path)
+                probe = candidate._connect()
+                probe.close()
+                vector_index = candidate
+            except Exception:
                 vector_index = None
         self.vector_index = vector_index
         # sqlite-vec is optional in desktop installs. Keep the capability
@@ -827,6 +830,19 @@ class MemoryStore:
             ).fetchone()
         return self._item(row) if row is not None else None
 
+    def get_many(self, role_id: str, item_ids: list[str]) -> list[MemoryItem]:
+        self._require_role_id(role_id)
+        ids = tuple(dict.fromkeys(item_id for item_id in item_ids if item_id))
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM memory_items WHERE role_id = ? AND id IN ({placeholders})",
+                (role_id, *ids),
+            ).fetchall()
+        return [self._item(row) for row in rows]
+
     def update(self, role_id: str, item_id: str, summary: str, memory_type: str, happened_at: datetime | None) -> MemoryItem:
         self._require_role_id(role_id)
         summary = normalize_summary(summary)
@@ -854,6 +870,11 @@ class MemoryStore:
             row = connection.execute("SELECT * FROM memory_items WHERE role_id = ? AND id = ?", (role_id, item_id)).fetchone()
         if row is None:
             raise KeyError(item_id)
+        if status != "active" and self.vector_index is not None:
+            try:
+                self.vector_index.delete(role_id, item_id)
+            except Exception:
+                self.vector_index_available = False
         return self._item(row)
 
     def remove(self, role_id: str, item_id: str) -> None:

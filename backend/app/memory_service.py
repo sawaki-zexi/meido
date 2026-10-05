@@ -109,12 +109,20 @@ class MemoryService:
         protected_ids = set(protected_item_ids)
         forget_target = self._forget_target(user_message.content)
         if forget_target is not None:
+            protected = self.store.get_many(role_id, list(protected_ids)) if protected_ids else []
+            if any(forget_target.casefold() in item.summary.casefold() for item in protected):
+                self._publish_written(role_id, session_key, source_key, [], "forget", "protected explicit memory")
+                return []
             forgotten = self.forget_matching(role_id, forget_target)
             if forgotten is not None:
                 self._publish_written(role_id, session_key, source_key, [forgotten.id], "forget")
             return [forgotten] if forgotten is not None else []
         reject_target = self._reject_target(user_message.content)
         if reject_target is not None:
+            protected = self.store.get_many(role_id, list(protected_ids)) if protected_ids else []
+            if any(reject_target.casefold() in item.summary.casefold() for item in protected):
+                self._publish_written(role_id, session_key, source_key, [], "reject", "protected explicit memory")
+                return []
             item = self.reject_matching(role_id, reject_target, source)
             self._publish_written(role_id, session_key, source_key, [item.id], "reject")
             return [item]
@@ -509,6 +517,7 @@ class MemoryWorker:
             user_message,
             assistant_message,
             event.explicit_memory_ids,
+            event.tool_metadata,
         ))
         self._tasks[task] = role_id
         task.add_done_callback(self._forget_task)
@@ -540,6 +549,7 @@ class MemoryWorker:
         user_message: Message,
         assistant_message: Message,
         explicit_memory_ids: tuple[str, ...] = (),
+        tool_metadata: dict[str, object] | None = None,
     ) -> None:
         lock = self.role_lock_for(role_id)
         async with lock:
@@ -582,6 +592,7 @@ class MemoryWorker:
                         session_key,
                         f"turn:{session_key}:{user_message.id}:{assistant_message.id}",
                         tuple(item.id for item in semantic_result),
+                        tool_metadata=tool_metadata,
                     ))
                 except Exception as error:
                     self.errors.append(f"{role_id}: TurnIngested observation failed: {error}")
@@ -604,6 +615,7 @@ class MemoryWorker:
         user_message: Message,
         assistant_message: Message,
         explicit_memory_ids: tuple[str, ...] = (),
+        tool_metadata: dict[str, object] | None = None,
     ) -> list[MemoryItem]:
         return self.service.process_turn(
             role_id,

@@ -37,6 +37,7 @@ class TurnIngested:
     memory_ids: tuple[str, ...] = ()
     implicit: bool = True
     error: str | None = None
+    tool_metadata: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
