@@ -431,10 +431,11 @@ class DefaultMemoryEngine:
                 contribution = 1.0 / (60 + rank)
                 current = fused.get(item.id)
                 if current is None:
-                    fused[item.id] = (item, contribution, {"lanes": [lane], "ranks": {lane: rank}})
+                    fused[item.id] = (item, contribution, {"lanes": [lane], "ranks": {lane: rank}, "lane_score": 1.0 / rank})
                 else:
                     current[2]["lanes"].append(lane)
                     current[2]["ranks"][lane] = rank
+                    current[2]["lane_score"] = max(float(current[2].get("lane_score", 0.0)), 1.0 / rank)
                     fused[item.id] = (item, current[1] + contribution, current[2])
 
         # RRF remains the relevance score. Hotness is only a stable tie-breaker
@@ -451,7 +452,7 @@ class DefaultMemoryEngine:
             min_score_value = max(0.0, float(min_score))
         except (TypeError, ValueError):
             min_score_value = 0.0
-        selected = [entry for entry in ranked if entry[1] >= min_score_value]
+        selected = [entry for entry in ranked if float(entry[2].get("lane_score", 0.0)) >= min_score_value]
         type_limits = request.filters.hints.get("type_limits", {})
         if isinstance(type_limits, Mapping):
             counts: dict[str, int] = {}
