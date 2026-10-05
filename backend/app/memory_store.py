@@ -127,6 +127,7 @@ class MemoryStore:
             except Exception:
                 vector_index = None
         self.vector_index = vector_index
+        self.vector_index_error: str | None = None
         # sqlite-vec is optional in desktop installs. Keep the capability
         # explicit so callers can report whether indexed search or the safe
         # SQLite scan is being used.
@@ -141,6 +142,7 @@ class MemoryStore:
             "available": self.vector_index_available,
             "backend": "vector-index" if self.vector_index_available else "sqlite-scan",
             "fallback": not self.vector_index_available,
+            "error": self.vector_index_error,
         }
 
     def _connect(self) -> sqlite3.Connection:
@@ -608,6 +610,7 @@ class MemoryStore:
                 self.vector_index.delete_role(role_id)
             except Exception:
                 self.vector_index_available = False
+                self.vector_index_error = "vector index dimension reset failed"
         return changed
 
     def embedding_for(self, role_id: str, item_id: str) -> list[float] | None:
@@ -790,6 +793,7 @@ class MemoryStore:
                 return [by_id[item_id] for item_id, _ in sorted(fused.items(), key=lambda pair: pair[1], reverse=True)[:limit]]
             except Exception:
                 self.vector_index_available = False
+                self.vector_index_error = "vector index dimension reset failed"
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM memory_items WHERE role_id = ? AND status = 'active' AND embedding_json IS NOT NULL",
@@ -860,6 +864,7 @@ class MemoryStore:
                 self.vector_index.delete(role_id, item_id)
             except Exception:
                 self.vector_index_available = False
+                self.vector_index_error = "vector index delete failed"
         assert row is not None
         return self._item(row)
 
@@ -875,6 +880,7 @@ class MemoryStore:
                 self.vector_index.delete(role_id, item_id)
             except Exception:
                 self.vector_index_available = False
+                self.vector_index_error = "vector index query failed"
         return self._item(row)
 
     def remove(self, role_id: str, item_id: str) -> None:
