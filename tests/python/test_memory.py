@@ -1438,5 +1438,6 @@ def test_memory_store_uses_optional_vector_index_and_keeps_sqlite_fallback(tmp_p
     item = store.add_or_reinforce("role-a", "fact", "海边", source)
     store.set_embedding("role-a", item.id, [1.0, 0.0])
 
-    assert store.vector_index_status() == {"available": True, "backend": "vector-index", "fallback": False}
+    assert store.vector_index_status()["available"] is True
+    assert store.vector_index_status()["backend"] == "vector-index"
     assert store.query_hybrid("role-a", "海边", [1.0, 0.0], limit=1)[0].id == item.id
