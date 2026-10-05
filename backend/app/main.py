@@ -1267,7 +1267,14 @@ async def send_role_message(role_id: str, data: SendMessageInput) -> StreamingRe
                     yield _event("assistant_delta", {"messageId": assistant_message.id, "delta": delta})
                 message = session_store.update_message(assistant_message.id, content, "completed")
                 try:
-                    memory_worker.publish(TurnCommitted(role_id, session.session.sessionKey, user_message, message))
+                    memory_worker.publish(TurnCommitted(
+                        role_id,
+                        session.session.sessionKey,
+                        user_message,
+                        message,
+                        tuple(data.toolMemoryIds),
+                        {"explicitMemoryIds": list(data.toolMemoryIds)} if data.toolMemoryIds else None,
+                    ))
                 except Exception as error:
                     memory_worker.errors.append(f"{role_id}: TurnCommitted publish failed: {error}")
                 yield _event("assistant_completed", {"message": message.model_dump(mode="json")})

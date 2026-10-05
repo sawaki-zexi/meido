@@ -303,6 +303,14 @@ class MemoryEngine(MemoryIngestApi, MemoryRetrievalApi, MemoryWriteApi, MemoryAd
 class DefaultMemoryEngine:
     """Meido's role-isolated engine over the SQLite store and retrieval service."""
 
+    DEFAULT_POLICIES: dict[str, dict[str, object]] = {
+        "context": {"min_lane_score": 0.15, "type_limits": {}},
+        "answer": {"min_lane_score": 0.10, "type_limits": {}},
+        "timeline": {"min_lane_score": 0.0, "type_limits": {"event": 8}},
+        "interest": {"min_lane_score": 0.10, "type_limits": {"preference": 4, "profile": 4}},
+        "procedure": {"min_lane_score": 0.10, "type_limits": {"procedure": 4, "preference": 2}},
+    }
+
     def __init__(
         self,
         service: MemoryService,
@@ -447,13 +455,28 @@ class DefaultMemoryEngine:
         )
         if request.intent == "timeline":
             ranked.sort(key=lambda value: value[0].happenedAt or value[0].updatedAt, reverse=True)
-        min_score = request.filters.hints.get("min_score", 0.0)
+        policy = self.DEFAULT_POLICIES.get(request.intent, self.DEFAULT_POLICIES["answer"])
+        try:
+            requested_min_score = float(request.filters.hints.get("min_score", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            requested_min_score = 0.0
+        min_score = max(float(policy.get("min_lane_score", 0.0)), requested_min_score)
         try:
             min_score_value = max(0.0, float(min_score))
         except (TypeError, ValueError):
             min_score_value = 0.0
         selected = [entry for entry in ranked if float(entry[2].get("lane_score", 0.0)) >= min_score_value]
-        type_limits = request.filters.hints.get("type_limits", {})
+        type_limits = dict(policy.get("type_limits", {}))
+        requested_limits = request.filters.hints.get("type_limits", {})
+        if isinstance(requested_limits, Mapping):
+            for memory_type, requested_limit in requested_limits.items():
+                try:
+                    # Hints may tighten a default quota, never widen it.
+                    requested_value = max(0, int(requested_limit))
+                except (TypeError, ValueError):
+                    continue
+                default_value = type_limits.get(memory_type)
+                type_limits[memory_type] = min(int(default_value), requested_value) if default_value is not None else requested_value
         if isinstance(type_limits, Mapping):
             counts: dict[str, int] = {}
             limited: list[tuple[MemoryItem, float, dict[str, object]]] = []
@@ -481,7 +504,14 @@ class DefaultMemoryEngine:
             )
             for index, (item, score, signals) in enumerate(selected)
         ]
-        text_block = self.service.context_block(items)
+        budget_hint = request.filters.hints.get("max_chars")
+        try:
+            budget = min(4000, max(0, int(budget_hint))) if budget_hint is not None else 4000
+        except (TypeError, ValueError):
+            budget = 4000
+        text_block = self.service.context_block(items, max_chars=budget)
+        for record, item in zip(records, items, strict=True):
+            record.injected = f"- [{item.memoryType}] {item.summary}" in text_block
         injected_count = text_block.count("\n- [") + (1 if text_block.startswith("- [") else 0)
         result = MemoryQueryResult(
             text_block=text_block,
@@ -493,6 +523,13 @@ class DefaultMemoryEngine:
                 "lanes": lane_trace,
                 "rrf": True,
                 "vector_index": self.store.vector_index_status(),
+                "injection": {
+                    "budget_chars": budget,
+                    "candidate_count": len(items),
+                    "injected_count": injected_count,
+                    "trimmed_count": max(0, len(items) - injected_count),
+                    "type_limits": type_limits,
+                },
             },
             raw={"candidate_count": len(records), "items": [item.model_dump(mode="json") for item in items]},
         )

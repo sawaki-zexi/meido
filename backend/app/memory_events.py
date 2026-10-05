@@ -21,6 +21,8 @@ class TurnCommitted:
     session_key: str
     user_message: Message
     assistant_message: Message
+    explicit_memory_ids: tuple[str, ...] = ()
+    tool_metadata: dict[str, object] | None = None
 
     @property
     def stable_source_key(self) -> str:

@@ -116,6 +116,7 @@ class SessionResponse(BaseModel):
 
 class SendMessageInput(BaseModel):
     content: str
+    toolMemoryIds: list[str] = Field(default_factory=list)
 
     @field_validator("content")
     @classmethod
@@ -124,6 +125,11 @@ class SendMessageInput(BaseModel):
         if not value:
             raise ValueError("消息不能为空")
         return value
+
+    @field_validator("toolMemoryIds")
+    @classmethod
+    def validate_tool_memory_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
 
 
 class MemoryOrigin(BaseModel):

@@ -336,6 +336,29 @@ def test_procedure_rule_schema_filters_unsafe_memory(tmp_path):
     assert [record.summary for record in result.records] == ["发送邮件前确认收件人"]
 
 
+def test_memory_engine_applies_default_intent_policy_and_reports_injection_budget(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    for index in range(6):
+        store.add_or_reinforce(
+            "role-a",
+            "preference",
+            f"偏好项目 {index}",
+            MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey=f"pref-{index}"),
+        )
+    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True)
+
+    result = asyncio.run(engine.query(MemoryQuery(
+        "偏好", intent="interest", scope=MemoryScope("role-a", "role:role-a"),
+        filters=MemoryQueryFilters(hints={"max_chars": 80}),
+    )))
+
+    injection = result.trace["injection"]
+    assert injection["budget_chars"] == 80
+    assert injection["candidate_count"] <= 4
+    assert injection["injected_count"] <= injection["candidate_count"]
+    assert injection["trimmed_count"] == injection["candidate_count"] - injection["injected_count"]
+
+
 def test_memory_engine_timeline_requires_range_and_filters_event_time(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True)
