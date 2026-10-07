@@ -80,6 +80,20 @@ class ObserveHook:
         return HookOutcome.deny("ignored")
 
 
+class SlowHook:
+    definition = HookDefinition(
+        hook_id="demo.slow",
+        mode="transform",
+        tool_names=("plugin.echo",),
+        timeout_seconds=0.001,
+    )
+
+    async def before_tool(self, context: HookContext) -> HookOutcome:
+        del context
+        await asyncio.sleep(0.01)
+        return HookOutcome()
+
+
 def _manifest(*capabilities: str) -> PluginManifest:
     return PluginManifest(
         plugin_id="demo",
@@ -227,7 +241,7 @@ def test_plugin_deny_hook_returns_structured_tool_error():
     assert arguments == {"message": "hello"}
     assert error is not None
     assert error.is_error is True
-    assert error.details == {"hook": "demo.deny", "reason": "demo policy"}
+    assert error.details == {"hook": "demo.deny", "status": "denied", "reason": "demo policy"}
     asyncio.run(capabilities.close())
 
 
@@ -256,4 +270,35 @@ def test_plugin_observe_hook_cannot_change_or_deny_tool_call():
     assert arguments == {"message": "hello"}
     assert error is None
     assert observe.seen == [{"message": "hello"}]
+    asyncio.run(capabilities.close())
+
+
+def test_plugin_hook_timeout_returns_structured_error():
+    def factory(context):
+        del context
+        return PluginContribution(tools=(EchoTool(),), hooks=(SlowHook(),))
+
+    capabilities = asyncio.run(
+        CapabilityRegistry(plugins=PluginRegistry([(_manifest(), factory)])).resolve_async(
+            role_id="role-1",
+            session_key="role:role-1",
+            run_id="run-1",
+            enabled_tools={"plugin.echo"},
+        )
+    )
+    _, error = asyncio.run(
+        capabilities.prepare_tool_call(
+            "plugin.echo",
+            {"message": "hello"},
+            ToolContext("role-1", "role:role-1", "run-1", signal=CancellationToken()),
+        )
+    )
+    assert error is not None
+    assert error.content == "tool hook failed"
+    assert error.details == {
+        "hook": "demo.slow",
+        "status": "timed_out",
+        "errorType": "TimeoutError",
+        "message": "tool hook timed out",
+    }
     asyncio.run(capabilities.close())

@@ -110,15 +110,25 @@ class CapabilityResolution:
                     else await pending
                 )
             except Exception as error:
+                status = "timed_out" if isinstance(error, asyncio.TimeoutError) else "failed"
                 return current, AgentToolResult(
                     "tool hook failed",
-                    details={"hook": hook.definition.hook_id, "reason": str(error)},
+                    details={
+                        "hook": hook.definition.hook_id,
+                        "status": status,
+                        "errorType": type(error).__name__,
+                        "message": "tool hook timed out" if status == "timed_out" else "tool hook failed",
+                    },
                     is_error=True,
                 )
             if not outcome.allowed:
                 return current, AgentToolResult(
                     "tool call denied by hook",
-                    details={"hook": hook.definition.hook_id, "reason": outcome.reason or "denied"},
+                    details={
+                        "hook": hook.definition.hook_id,
+                        "status": "denied",
+                        "reason": outcome.reason or "denied",
+                    },
                     is_error=True,
                 )
             if outcome.arguments is not None:
