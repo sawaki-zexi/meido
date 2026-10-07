@@ -367,8 +367,8 @@ def _tools(value: object) -> tuple[str, ...]:
 
 def _front_matter_metadata(path: Path) -> tuple[str | None, str | None]:
     try:
-        with path.open("r", encoding="utf-8") as stream:
-            raw = stream.read(_FRONT_MATTER_DIAGNOSTIC_BYTES)
+        with path.open("rb") as stream:
+            raw = stream.read(_FRONT_MATTER_DIAGNOSTIC_BYTES).decode("utf-8", errors="ignore")
     except OSError:
         return None, None
     id_match = re.search(r"(?m)^id:\s*([^\s#]+)", raw)

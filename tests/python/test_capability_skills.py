@@ -92,6 +92,20 @@ def test_skill_discovery_rejects_unknown_sources(tmp_path):
         SkillRegistry.discover(tmp_path, source="untrusted")
 
 
+def test_skill_discovery_reports_invalid_encoding_without_aborting(tmp_path):
+    directory = tmp_path / "invalid-encoding"
+    directory.mkdir()
+    (directory / "SKILL.md").write_bytes(b"---\nid: invalid-encoding\n\xff\n")
+
+    registry = SkillRegistry.discover(tmp_path, source="project")
+
+    assert registry.skills == ()
+    assert registry.diagnostics[0]["skillId"] == "invalid-encoding"
+    assert registry.diagnostics[0]["source"] == "project"
+    assert registry.diagnostics[0]["version"] is None
+    assert "'utf-8' codec" in registry.diagnostics[0]["error"]
+
+
 def test_skill_activation_supports_explicit_and_keyword_modes(tmp_path):
     _write_skill(
         tmp_path,
