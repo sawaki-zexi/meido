@@ -30,6 +30,24 @@ def test_tool_definition_validates_policy_metadata_and_limits():
         ToolDefinition("bad-output", "Invalid", output_limit=0)
 
 
+def test_provider_schema_does_not_expose_mutable_tool_definition():
+    definition = ToolDefinition(
+        "nested",
+        "Nested schema",
+        input_schema={
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+        },
+    )
+
+    schema = definition.as_provider_schema()
+    parameters = schema["function"]["parameters"]
+    assert isinstance(parameters, dict)
+    parameters["properties"] = {}
+
+    assert definition.input_schema["properties"] == {"value": {"type": "string"}}
+
+
 class ReadTool:
     definition = ToolDefinition(
         name="memory.read",
