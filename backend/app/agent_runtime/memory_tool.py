@@ -93,6 +93,7 @@ class MemoryRecallTool:
         on_update=None,
     ) -> AgentToolResult:
         del on_update
+        context.signal.raise_if_cancelled()
         query = arguments.get("query")
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query must be a non-empty string")
@@ -118,6 +119,7 @@ class MemoryRecallTool:
             scope=scope,
             limit=limit,
         ))
+        context.signal.raise_if_cancelled()
         records: list[dict[str, object]] = []
         payload: dict[str, object] = {
             "query": query,

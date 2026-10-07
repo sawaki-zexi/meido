@@ -75,6 +75,21 @@ def test_memory_recall_tool_rejects_invalid_arguments_before_engine_call():
     assert engine.requests == []
 
 
+def test_memory_recall_tool_honors_cancelled_context_before_engine_call():
+    engine = FakeMemoryReadPort()
+    token = CancellationToken()
+    token.cancel()
+    tool = MemoryRecallTool(RoleScopedMemoryReadPort(engine, "role-a"))
+
+    with pytest.raises(RuntimeError, match="agent run cancelled"):
+        asyncio.run(tool.execute(
+            {"query": "事实"},
+            ToolContext("role-a", "role:role-a", "run-1", token),
+        ))
+
+    assert engine.requests == []
+
+
 def test_role_scoped_port_rejects_non_read_only_or_foreign_requests():
     engine = FakeMemoryReadPort()
     port = RoleScopedMemoryReadPort(engine, "role-a")
