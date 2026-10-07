@@ -206,9 +206,22 @@ class PluginResolution:
         if errors:
             raise PluginError("; ".join(errors))
 
-    async def reload(self, registry: PluginRegistry, **load_options: object) -> PluginResolution:
+    async def reload(
+        self,
+        registry: PluginRegistry,
+        *,
+        enabled_ids: set[str] | frozenset[str] | None = None,
+        granted_capabilities: set[str] | frozenset[str] = frozenset(),
+        host_services: Mapping[str, object] = MappingProxyType({}),
+        plugin_dir: str = "",
+    ) -> PluginResolution:
         await self.close()
-        return await registry.load(**load_options)
+        return await registry.load(
+            enabled_ids=enabled_ids,
+            granted_capabilities=granted_capabilities,
+            host_services=host_services,
+            plugin_dir=plugin_dir,
+        )
 
 
 @dataclass(frozen=True, slots=True)

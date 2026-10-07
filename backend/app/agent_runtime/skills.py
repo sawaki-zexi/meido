@@ -229,9 +229,10 @@ def _parse_front_matter(lines: list[str]) -> dict[str, object]:
         if line.startswith("- "):
             if current_list is None:
                 raise ValueError("list item has no field")
-            values.setdefault(current_list, [])
-            assert isinstance(values[current_list], list)
-            values[current_list].append(_scalar(line[2:].strip()))
+            current_value = values.setdefault(current_list, [])
+            if not isinstance(current_value, list):
+                raise ValueError(f"{current_list} must be a list")
+            current_value.append(_scalar(line[2:].strip()))
             continue
         if ":" not in line:
             raise ValueError(f"invalid front matter line: {raw_line}")
