@@ -209,6 +209,10 @@ class MemoryList(BaseModel):
     total: int | None = None
     page: int | None = None
     pageSize: int | None = None
+    # Optional diagnostic payload populated for recall queries. Keeping the
+    # original memories field makes this additive for existing clients.
+    hits: list[dict[str, Any]] = Field(default_factory=list)
+    trace: dict[str, Any] | None = None
 
 
 class MemoryAdminUpdateInput(BaseModel):

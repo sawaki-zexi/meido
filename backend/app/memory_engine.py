@@ -427,24 +427,61 @@ class DefaultMemoryEngine:
         )
         fused: dict[str, tuple[MemoryItem, float, dict[str, object]]] = {}
         lane_trace: list[dict[str, object]] = []
+        raw_unique_ids: set[str] = set()
+        filtered_occurrences = 0
         for lane_index, (lane, result) in enumerate(zip(lanes, lane_results, strict=True)):
             if isinstance(result, BaseException):
-                lane_trace.append({"query": lane, "error": str(result)})
+                lane_trace.append({
+                    "query": lane,
+                    "candidate_count": 0,
+                    "filtered_count": 0,
+                    "semantic_only": request.intent == "answer" and lane_index > 0,
+                    "error": str(result),
+                })
                 continue
-            lane_trace.append({"query": lane, "rank": len(result)})
+            lane_filtered = 0
+            lane_trace_entry = {
+                "query": lane,
+                "candidate_count": len(result),
+                # Retain the legacy field while exposing the unambiguous name.
+                "rank": len(result),
+                "semantic_only": request.intent == "answer" and lane_index > 0,
+            }
             for rank, item in enumerate(result, 1):
+                raw_unique_ids.add(item.id)
                 if not self._matches_filters(item, request):
+                    lane_filtered += 1
+                    filtered_occurrences += 1
                     continue
                 # RRF is used only for ordering; source lane/rank remain observable.
                 contribution = 1.0 / (60 + rank)
+                lane_hit = {
+                    "query": lane,
+                    "rank": rank,
+                    "lane_score": 1.0 / rank,
+                    "rrf_contribution": contribution,
+                    "semantic_only": request.intent == "answer" and lane_index > 0,
+                }
                 current = fused.get(item.id)
                 if current is None:
-                    fused[item.id] = (item, contribution, {"lanes": [lane], "ranks": {lane: rank}, "lane_score": 1.0 / rank})
+                    fused[item.id] = (
+                        item,
+                        contribution,
+                        {
+                            "lanes": [lane],
+                            "lane_ranks": {lane: rank},
+                            "lane_score": 1.0 / rank,
+                            "lane_hits": [lane_hit],
+                        },
+                    )
                 else:
                     current[2]["lanes"].append(lane)
-                    current[2]["ranks"][lane] = rank
+                    current[2]["lane_ranks"][lane] = rank
+                    current[2]["lane_hits"].append(lane_hit)
                     current[2]["lane_score"] = max(float(current[2].get("lane_score", 0.0)), 1.0 / rank)
                     fused[item.id] = (item, current[1] + contribution, current[2])
+            lane_trace_entry["filtered_count"] = lane_filtered
+            lane_trace.append(lane_trace_entry)
 
         # RRF remains the relevance score. Hotness is only a stable tie-breaker
         # and can never promote a weak lane match over a relevant candidate.
@@ -465,7 +502,9 @@ class DefaultMemoryEngine:
             min_score_value = max(0.0, float(min_score))
         except (TypeError, ValueError):
             min_score_value = 0.0
-        selected = [entry for entry in ranked if float(entry[2].get("lane_score", 0.0)) >= min_score_value]
+        threshold_selected = [entry for entry in ranked if float(entry[2].get("lane_score", 0.0)) >= min_score_value]
+        below_threshold_count = len(ranked) - len(threshold_selected)
+        selected = threshold_selected
         type_limits = dict(policy.get("type_limits", {}))
         requested_limits = request.filters.hints.get("type_limits", {})
         if isinstance(requested_limits, Mapping):
@@ -477,6 +516,7 @@ class DefaultMemoryEngine:
                     continue
                 default_value = type_limits.get(memory_type)
                 type_limits[memory_type] = min(int(default_value), requested_value) if default_value is not None else requested_value
+        quota_excluded_count = 0
         if isinstance(type_limits, Mapping):
             counts: dict[str, int] = {}
             limited: list[tuple[MemoryItem, float, dict[str, object]]] = []
@@ -489,18 +529,32 @@ class DefaultMemoryEngine:
                     except (TypeError, ValueError):
                         type_limit = 0
                     if counts.get(memory_type, 0) >= type_limit:
+                        quota_excluded_count += 1
                         continue
                     counts[memory_type] = counts.get(memory_type, 0) + 1
                 limited.append(entry)
             selected = limited
-        selected = selected[: request.limit]
+        limited_selected = selected[: request.limit]
+        limit_excluded_count = len(selected) - len(limited_selected)
+        selected = limited_selected
         items = [item for item, _, _ in selected]
         records = [
             self._record(
                 item,
                 index,
                 score=score,
-                signals={**signals, "hotness": self._hotness(item)},
+                signals={
+                    **signals,
+                    "rrf_score": score,
+                    "hotness": self._hotness(item),
+                    "reasons": [
+                        *(
+                            "semantic match" if hit["semantic_only"] else "lexical match"
+                            for hit in signals.get("lane_hits", [])
+                        ),
+                        "hotness considered as tie-breaker",
+                    ],
+                },
             )
             for index, (item, score, signals) in enumerate(selected)
         ]
@@ -512,6 +566,9 @@ class DefaultMemoryEngine:
         text_block = self.service.context_block(items, max_chars=budget)
         for record, item in zip(records, items, strict=True):
             record.injected = f"- [{item.memoryType}] {item.summary}" in text_block
+            record.signals["reasons"].append(
+                "selected for injection" if record.injected else "excluded by injection budget"
+            )
         injected_count = text_block.count("\n- [") + (1 if text_block.startswith("- [") else 0)
         result = MemoryQueryResult(
             text_block=text_block,
@@ -520,8 +577,18 @@ class DefaultMemoryEngine:
                 "intent": request.intent,
                 "effect": request.effect,
                 "role_id": scope.role_id,
+                "session_key": scope.session_key,
                 "lanes": lane_trace,
                 "rrf": True,
+                "ranking": {
+                    "unique_candidates": len(fused),
+                    "raw_unique_candidates": len(raw_unique_ids),
+                    "filtered_occurrences": filtered_occurrences,
+                    "below_threshold_count": below_threshold_count,
+                    "quota_excluded_count": quota_excluded_count,
+                    "limit_excluded_count": limit_excluded_count,
+                    "min_lane_score": min_score_value,
+                },
                 "vector_index": self.store.vector_index_status(),
                 "injection": {
                     "budget_chars": budget,
@@ -930,7 +997,11 @@ class DefaultMemoryEngine:
             kind=evidence_kind,
             refs=refs,
             source_ref=source.stableSourceKey,
-            metadata={"session_key": source.sessionKey, "kind": source.kind},
+            metadata={
+                "session_key": source.sessionKey,
+                "kind": source.kind,
+                "message_range": list(source.messageRange) if source.messageRange else None,
+            },
         )
         return MemoryRecord(
             id=item.id,
@@ -943,6 +1014,7 @@ class DefaultMemoryEngine:
                 "kind": source.kind,
                 "session_key": source.sessionKey,
                 "message_ids": list(source.messageIds),
+                "message_range": list(source.messageRange) if source.messageRange else None,
                 "stable_source_key": source.stableSourceKey,
             },
             signals={"reinforcement": item.reinforcement, "status": item.status, **(signals or {})},

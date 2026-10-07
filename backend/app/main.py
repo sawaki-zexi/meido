@@ -18,7 +18,7 @@ import httpx
 from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
-from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryScope
+from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryQueryFilters, MemoryScope
 from .embeddings import OpenAICompatibleEmbeddingAdapter
 from .memory_maintenance import MemoryMaintenance
 from .memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
@@ -69,6 +69,13 @@ def _embedding_configuration(role_id: str):
 def _role_model_configuration(role_id: str):
     role = store.get(role_id)
     return model_configuration_store.get(role.modelConfigurationId) if role and role.modelConfigurationId else model_configuration_store.get()
+
+
+def _env_bool(name: str, default: bool = True) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _complete_model_json(messages: list[dict[str, str]], configuration, *, max_tokens: int) -> object:
@@ -299,7 +306,13 @@ def _observe_consolidation_event(event: ConsolidationCommitted) -> None:
 
 
 embedding_provider = OpenAICompatibleEmbeddingAdapter(_embedding_configuration)
-memory_service = MemoryService(memory_store, embedding_provider, _post_response_provider, memory_event_bus)
+memory_service = MemoryService(
+    memory_store,
+    embedding_provider,
+    _post_response_provider,
+    memory_event_bus,
+    implicit_extraction_enabled=_env_bool("MEIDO_MEMORY_IMPLICIT_EXTRACTION_ENABLED", True),
+)
 memory_engine = DefaultMemoryEngine(memory_service, role_exists=lambda role_id: store.get(role_id) is not None, event_bus=memory_event_bus, hyde_provider=_hyde_provider)
 memory_optimizer_enabled = os.getenv("MEIDO_MEMORY_OPTIMIZER_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
 try:
@@ -927,7 +940,7 @@ def get_role_session(role_id: str) -> SessionResponse:
 
 
 @app.get("/api/roles/{role_id}/memories", response_model=MemoryList)
-def list_role_memories(
+async def list_role_memories(
     role_id: str,
     q: str = "",
     memoryType: str = "",
@@ -956,11 +969,29 @@ def list_role_memories(
             sort_by=sortBy,
             sort_order=sortOrder,
         )
+        diagnostic_hits: list[dict[str, object]] = []
+        diagnostic_trace: dict[str, object] | None = None
+        if q.strip():
+            diagnostic = await _current_memory_engine().query(MemoryQuery(
+                text=q,
+                intent="context",
+                effect="read_only",
+                scope=MemoryScope(role_id, f"role:{role_id}"),
+                filters=MemoryQueryFilters(
+                    kinds=(memoryType,) if memoryType else (),
+                    domains=(memoryDomain,) if memoryDomain else (),
+                ),
+                limit=max(1, min(pageSize, 100)),
+            ))
+            diagnostic_hits = [asdict(record) for record in diagnostic.records]
+            diagnostic_trace = diagnostic.trace
         return MemoryList(
             memories=[MemoryItem.model_validate(row) for row in rows],
             total=total,
             page=max(1, page),
             pageSize=max(1, pageSize),
+            hits=diagnostic_hits,
+            trace=diagnostic_trace,
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
