@@ -259,6 +259,7 @@ class PluginRegistry:
                 "status": "denied",
                 "error": f"unknown capability grant: {', '.join(sorted(unknown_grants))}",
             }))
+        hook_ids: set[str] = set()
         if enabled_ids is not None:
             unknown_plugins = set(enabled_ids) - set(self._registrations)
             diagnostics.extend(
@@ -294,6 +295,15 @@ class PluginRegistry:
                 if not isinstance(contribution, PluginContribution):
                     raise PluginSetupError("plugin factory returned invalid contribution")
                 _validate_contribution(contribution)
+                duplicate_hooks = {
+                    hook.definition.hook_id
+                    for hook in contribution.hooks
+                } & hook_ids
+                if duplicate_hooks:
+                    raise PluginSetupError(
+                        f"duplicate plugin hook: {', '.join(sorted(duplicate_hooks))}"
+                    )
+                hook_ids.update(hook.definition.hook_id for hook in contribution.hooks)
             except Exception as error:
                 try:
                     await context.close()

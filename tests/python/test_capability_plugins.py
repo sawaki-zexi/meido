@@ -155,6 +155,23 @@ def test_plugin_registry_reports_unknown_enabled_plugin():
     },)
 
 
+def test_plugin_registry_rejects_duplicate_hook_ids_across_plugins():
+    contribution = PluginContribution(hooks=(ObserveHook(),))
+    registry = PluginRegistry([
+        (PluginManifest("demo-a", "1.0.0"), lambda context: contribution),
+        (PluginManifest("demo-b", "1.0.0"), lambda context: contribution),
+    ])
+
+    result = asyncio.run(registry.load(enabled_ids={"demo-a", "demo-b"}))
+
+    assert [plugin.descriptor.manifest.plugin_id for plugin in result.loaded] == ["demo-a"]
+    assert result.diagnostics == ({
+        "pluginId": "demo-b",
+        "status": "failed",
+        "error": "duplicate plugin hook: demo.observe",
+    },)
+
+
 def test_plugin_setup_rollback_and_cleanup_are_idempotent():
     cleanup = []
 
