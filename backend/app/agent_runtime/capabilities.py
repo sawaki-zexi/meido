@@ -307,7 +307,13 @@ class CapabilityRegistry:
             )
             for tool in selected
         )
-        skill_resolution: SkillResolution = self.skills.resolve(
+        skill_registry = self.skills
+        if plugin_resolution is not None and plugin_resolution.skills:
+            skill_registry = SkillRegistry(
+                (*self.skills.skills, *plugin_resolution.skills),
+                diagnostics=self.skills.diagnostics,
+            )
+        skill_resolution: SkillResolution = skill_registry.resolve(
             prompt=prompt_text,
             explicit_ids=explicit_skill_ids,
             available_tools={tool.definition.name for tool in registered_tools},

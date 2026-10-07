@@ -7,11 +7,13 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Awaitable, Callable, Iterable, Mapping, Protocol
 
+from .skills import SkillDescriptor
 from .tools import AgentTool, ToolContext
 
 
 _PLUGIN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _TRUST_LEVELS = frozenset({"builtin", "project", "installed", "external"})
+_IMPLICIT_ACTIVATION_TRUST_LEVELS = frozenset({"installed", "external"})
 KNOWN_CAPABILITIES = frozenset({
     "runtime.hook",
     "runtime.tool",
@@ -133,6 +135,7 @@ class AgentToolHook(Protocol):
 @dataclass(frozen=True, slots=True)
 class PluginContribution:
     tools: tuple[AgentTool, ...] = ()
+    skills: tuple[SkillDescriptor, ...] = ()
     hooks: tuple[AgentToolHook, ...] = ()
 
 
@@ -210,6 +213,10 @@ class PluginResolution:
     def hooks(self) -> tuple[AgentToolHook, ...]:
         hooks = [hook for plugin in self.loaded for hook in plugin.contribution.hooks]
         return tuple(sorted(hooks, key=lambda item: (item.definition.priority, item.definition.hook_id)))
+
+    @property
+    def skills(self) -> tuple[SkillDescriptor, ...]:
+        return tuple(skill for plugin in self.loaded for skill in plugin.contribution.skills)
 
     @property
     def descriptors(self) -> tuple[PluginDescriptor, ...]:
@@ -293,6 +300,16 @@ class PluginRegistry:
             manifest = registration.manifest
             if enabled_ids is not None and manifest.plugin_id not in enabled_ids:
                 continue
+            if (
+                enabled_ids is None
+                and manifest.trust_level in _IMPLICIT_ACTIVATION_TRUST_LEVELS
+            ):
+                diagnostics.append(MappingProxyType({
+                    "pluginId": manifest.plugin_id,
+                    "status": "denied",
+                    "error": "plugin requires explicit activation for its trust level",
+                }))
+                continue
             missing = set(manifest.requested_capabilities) - set(granted_capabilities)
             if missing:
                 diagnostics.append(MappingProxyType({
@@ -346,6 +363,11 @@ def _validate_contribution(contribution: PluginContribution) -> None:
         if name in names:
             raise PluginSetupError(f"duplicate plugin tool: {name}")
         names.add(name)
+    skill_ids: set[str] = set()
+    for skill in contribution.skills:
+        if skill.skill_id in skill_ids:
+            raise PluginSetupError(f"duplicate plugin skill: {skill.skill_id}")
+        skill_ids.add(skill.skill_id)
     hook_ids: set[str] = set()
     for hook in contribution.hooks:
         hook_id = hook.definition.hook_id

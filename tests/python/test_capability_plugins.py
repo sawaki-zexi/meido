@@ -22,6 +22,7 @@ from backend.app.agent_runtime import (
     run_agent_loop,
 )
 from backend.app.agent_runtime.plugins import HookContext
+from backend.app.agent_runtime.skills import SkillDescriptor
 
 
 class EchoTool:
@@ -162,6 +163,63 @@ def test_plugin_registry_reports_unknown_enabled_plugin():
         "status": "unknown",
         "error": "plugin is not registered",
     },)
+
+
+def test_untrusted_plugins_require_explicit_activation():
+    registry = PluginRegistry([
+        (
+            PluginManifest("external-demo", "1.0.0", source="external", trust_level="external"),
+            lambda context: PluginContribution(),
+        ),
+    ])
+
+    implicit = asyncio.run(registry.load())
+    assert implicit.loaded == ()
+    assert implicit.diagnostics == ({
+        "pluginId": "external-demo",
+        "status": "denied",
+        "error": "plugin requires explicit activation for its trust level",
+    },)
+
+    explicit = asyncio.run(registry.load(enabled_ids={"external-demo"}))
+    assert [item.descriptor.manifest.plugin_id for item in explicit.loaded] == ["external-demo"]
+    asyncio.run(explicit.close())
+
+
+def test_plugin_can_contribute_declarative_skill():
+    skill = SkillDescriptor(
+        skill_id="plugin-study",
+        version="1.0.0",
+        description="Plugin study guidance",
+        tools=("plugin.echo",),
+        activation="explicit",
+        source="builtin",
+        path="skills/plugin-study/SKILL.md",
+        content_hash="plugin-hash",
+        body="先调用 echo，再总结结果。",
+        trust_level="builtin",
+    )
+    registry = PluginRegistry([
+        (
+            _manifest(),
+            lambda context: PluginContribution(tools=(EchoTool(),), skills=(skill,)),
+        ),
+    ])
+
+    capabilities = asyncio.run(
+        CapabilityRegistry(plugins=registry).resolve_async(
+            role_id="role-1",
+            session_key="role:role-1",
+            run_id="run-plugin-skill",
+            enabled_plugin_ids={"demo"},
+            enabled_tools={"plugin.echo"},
+            explicit_skill_ids={"plugin-study"},
+        )
+    )
+    assert [item.skill_id for item in capabilities.snapshot.skills] == ["plugin-study"]
+    assert capabilities.prompt_context() == "先调用 echo，再总结结果。"
+    assert capabilities.snapshot.skills[0].tools == ("plugin.echo",)
+    asyncio.run(capabilities.close())
 
 
 def test_plugin_registry_rejects_duplicate_hook_ids_across_plugins():
