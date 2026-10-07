@@ -243,6 +243,16 @@ class PluginRegistry:
             raise ValueError(f"unknown capability grant: {', '.join(sorted(unknown_grants))}")
         loaded: list[LoadedPlugin] = []
         diagnostics: list[MappingProxyType] = []
+        if enabled_ids is not None:
+            unknown_plugins = set(enabled_ids) - set(self._registrations)
+            diagnostics.extend(
+                MappingProxyType({
+                    "pluginId": plugin_id,
+                    "status": "unknown",
+                    "error": "plugin is not registered",
+                })
+                for plugin_id in sorted(unknown_plugins)
+            )
         for registration in self._registrations.values():
             manifest = registration.manifest
             if enabled_ids is not None and manifest.plugin_id not in enabled_ids:

@@ -132,6 +132,19 @@ def test_plugin_grant_and_host_service_diagnostics_are_distinct():
     assert called == []
 
 
+def test_plugin_registry_reports_unknown_enabled_plugin():
+    registry = PluginRegistry()
+
+    result = asyncio.run(registry.load(enabled_ids={"missing"}))
+
+    assert result.loaded == ()
+    assert result.diagnostics == ({
+        "pluginId": "missing",
+        "status": "unknown",
+        "error": "plugin is not registered",
+    },)
+
+
 def test_plugin_setup_rollback_and_cleanup_are_idempotent():
     cleanup = []
 
