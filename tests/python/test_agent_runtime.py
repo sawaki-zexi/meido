@@ -120,6 +120,48 @@ def test_tool_schema_and_output_limits_are_enforced_by_runtime():
         registry.validate_arguments("bounded", {"mode": "safe", "count": 3})
 
 
+def test_tool_registry_rejects_duplicates_and_validates_nested_schema():
+    class NestedTool:
+        definition = ToolDefinition(
+            "nested",
+            "Nested tool",
+            {
+                "type": "object",
+                "properties": {
+                    "options": {
+                        "type": "object",
+                        "required": ["kind"],
+                        "properties": {"kind": {"type": "string", "enum": ["read"]}},
+                        "additionalProperties": False,
+                    },
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "integer", "minimum": 1},
+                        "maxItems": 2,
+                    },
+                },
+                "required": ["options", "items"],
+                "additionalProperties": False,
+            },
+        )
+
+        def execute(self, arguments, context, on_update=None):
+            del arguments, context, on_update
+            return AgentToolResult("ok")
+
+    registry = ToolRegistry([NestedTool()])
+    with pytest.raises(ValueError, match="duplicate tool"):
+        ToolRegistry([NestedTool(), NestedTool()])
+    with pytest.raises(ValueError, match="missing required arguments at options"):
+        registry.validate_arguments("nested", {"options": {}, "items": [1]})
+    with pytest.raises(ValueError, match="unsupported value"):
+        registry.validate_arguments("nested", {"options": {"kind": "write"}, "items": [1]})
+    with pytest.raises(ValueError, match="exceeds the maximum"):
+        registry.validate_arguments("nested", {"options": {"kind": "read"}, "items": [1, 2, 3]})
+    with pytest.raises(ValueError, match="below the minimum"):
+        registry.validate_arguments("nested", {"options": {"kind": "read"}, "items": [0]})
+
+
 def test_agent_loop_runs_tool_then_final_provider_turn():
     call = ToolCall("call-1", "read", {"key": "name"})
     provider = FakeProvider([

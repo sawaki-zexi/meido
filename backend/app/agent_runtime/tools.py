@@ -60,7 +60,9 @@ class AgentTool(Protocol):
 
 class ToolRegistry:
     def __init__(self, tools: Sequence[AgentTool] = ()) -> None:
-        self._tools = {tool.definition.name: tool for tool in tools}
+        self._tools: dict[str, AgentTool] = {}
+        for tool in tools:
+            self.register(tool)
 
     def register(self, tool: AgentTool) -> None:
         if tool.definition.name in self._tools:
@@ -83,23 +85,10 @@ class ToolRegistry:
         if tool is None:
             raise ValueError(f"unknown tool: {name}")
         schema = tool.definition.input_schema
-        required = schema.get("required", [])
-        if isinstance(required, list):
-            missing = [key for key in required if isinstance(key, str) and key not in arguments]
-            if missing:
-                raise ValueError(f"missing required arguments: {', '.join(missing)}")
-        properties = schema.get("properties", {})
-        if not isinstance(properties, dict):
-            return
-        if schema.get("additionalProperties") is False:
-            unknown = [key for key in arguments if key not in properties]
-            if unknown:
-                raise ValueError(f"unknown arguments: {', '.join(str(key) for key in unknown)}")
-        for key, value in arguments.items():
-            definition = properties.get(key)
-            if not isinstance(definition, dict):
-                continue
-            _validate_schema_value(key, value, definition)
+        if schema.get("type") == "object":
+            _validate_object_value("", arguments, schema)
+        else:
+            _validate_schema_value("arguments", arguments, schema)
 
 
 def _validate_schema_value(path: str, value: object, schema: Mapping[str, object]) -> None:
@@ -117,8 +106,8 @@ def _validate_schema_value(path: str, value: object, schema: Mapping[str, object
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"argument {path} must be a number")
         _validate_number_bounds(path, value, schema)
-    elif expected == "object" and not isinstance(value, dict):
-        raise ValueError(f"argument {path} must be an object")
+    elif expected == "object":
+        _validate_object_value(path, value, schema)
     elif expected == "array":
         if not isinstance(value, list):
             raise ValueError(f"argument {path} must be an array")
@@ -133,6 +122,32 @@ def _validate_schema_value(path: str, value: object, schema: Mapping[str, object
     enum = schema.get("enum")
     if isinstance(enum, list) and value not in enum:
         raise ValueError(f"argument {path} has an unsupported value")
+
+
+def _validate_object_value(path: str, value: object, schema: Mapping[str, object]) -> None:
+    if not isinstance(value, dict):
+        label = "arguments" if not path else f"argument {path}"
+        raise ValueError(f"{label} must be an object")
+    required = schema.get("required", [])
+    if isinstance(required, list):
+        missing = [key for key in required if isinstance(key, str) and key not in value]
+        if missing:
+            prefix = f" at {path}" if path else ""
+            raise ValueError(f"missing required arguments{prefix}: {', '.join(missing)}")
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        return
+    if schema.get("additionalProperties") is False:
+        unknown = [key for key in value if key not in properties]
+        if unknown:
+            prefix = f" at {path}" if path else ""
+            raise ValueError(f"unknown arguments{prefix}: {', '.join(str(key) for key in unknown)}")
+    for key, item in value.items():
+        definition = properties.get(key)
+        if not isinstance(definition, dict):
+            continue
+        item_path = f"{path}.{key}" if path else str(key)
+        _validate_schema_value(item_path, item, definition)
 
 
 def _validate_number_bounds(path: str, value: int | float, schema: Mapping[str, object]) -> None:
