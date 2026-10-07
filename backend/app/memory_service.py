@@ -26,11 +26,14 @@ class MemoryService:
         embedding_provider: EmbeddingProvider | None = None,
         post_response_provider: Callable[..., object] | None = None,
         event_bus: object | None = None,
+        *,
+        implicit_extraction_enabled: bool = True,
     ) -> None:
         self.store = store
         self.embedding_provider = embedding_provider
         self.post_response_provider = post_response_provider
         self.event_bus = event_bus
+        self.implicit_extraction_enabled = implicit_extraction_enabled
         self.embedding_errors: list[str] = []
         self.post_response_errors: list[str] = []
 
@@ -127,7 +130,11 @@ class MemoryService:
             self._publish_written(role_id, session_key, source_key, [item.id], "reject")
             return [item]
         explicit = self._extract_explicit(user_message.content)
-        extracted = self._extract_with_provider(role_id, session_key, user_message, assistant_message)
+        extracted = (
+            self._extract_with_provider(role_id, session_key, user_message, assistant_message)
+            if self.implicit_extraction_enabled
+            else []
+        )
         saved: list[MemoryItem] = []
         correction_target = self._correction_target(user_message.content)
         if correction_target is not None:
@@ -583,6 +590,7 @@ class MemoryWorker:
                         role_id,
                         session_key,
                         f"turn:{session_key}:{user_message.id}:{assistant_message.id}",
+                        implicit=self.service.implicit_extraction_enabled,
                         error=str(semantic_result),
                     ))
             elif self.service.event_bus is not None:
@@ -592,6 +600,7 @@ class MemoryWorker:
                         session_key,
                         f"turn:{session_key}:{user_message.id}:{assistant_message.id}",
                         tuple(item.id for item in semantic_result),
+                        implicit=self.service.implicit_extraction_enabled,
                         tool_metadata=tool_metadata,
                     ))
                 except Exception as error:
