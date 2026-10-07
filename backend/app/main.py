@@ -1480,7 +1480,9 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     prompt_text=data.content,
                     explicit_skill_ids=data.skillIds,
                 )
-                model_snapshot["capabilities"] = capabilities.snapshot.to_dict()
+                # Persist capability metadata and hashes, while keeping Skill bodies
+                # in the in-memory provider context only.
+                model_snapshot["capabilities"] = capabilities.snapshot.to_dict(include_prompt_sections=False)
                 session_store.update_run(run_id, status="created", model_snapshot=model_snapshot)
                 provider = MeidoProvider(
                     model_adapter,

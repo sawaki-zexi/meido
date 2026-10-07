@@ -30,8 +30,8 @@ class CapabilitySnapshot:
     def provider_schemas(self) -> list[dict[str, object]]:
         return [definition.as_provider_schema() for definition in self.tools]
 
-    def to_dict(self) -> dict[str, object]:
-        return {
+    def to_dict(self, *, include_prompt_sections: bool = True) -> dict[str, object]:
+        snapshot: dict[str, object] = {
             "snapshotId": self.snapshot_id,
             "runId": self.run_id,
             "roleId": self.role_id,
@@ -56,11 +56,13 @@ class CapabilitySnapshot:
                 skill.to_dict()
                 for skill in self.skills
             ],
-            "promptSections": list(self.prompt_sections),
             "skillDiagnostics": [dict(item) for item in self.skill_diagnostics],
             "plugins": [plugin.to_dict() for plugin in self.plugins],
             "pluginDiagnostics": [dict(item) for item in self.plugin_diagnostics],
         }
+        if include_prompt_sections:
+            snapshot["promptSections"] = list(self.prompt_sections)
+        return snapshot
 
 
 @dataclass(frozen=True, slots=True)

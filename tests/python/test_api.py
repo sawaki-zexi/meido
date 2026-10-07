@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 from datetime import datetime, timezone
 import asyncio
+import json
 import sqlite3
 import pytest
 
@@ -509,6 +510,8 @@ activation: role_default
     assert snapshot["skills"][0]["version"] == "1.0.0"
     assert snapshot["skills"][0]["source"] == "role"
     assert snapshot["skills"][0]["tools"] == []
+    assert "promptSections" not in snapshot
+    assert "请先参考已有记忆，再给出分阶段学习计划。" not in json.dumps(snapshot, ensure_ascii=False)
     assert any(
         item["skillId"] == "study-plan" and item["tool"] == "memory.read"
         for item in snapshot["skillDiagnostics"]
