@@ -70,6 +70,22 @@ def initialize_databases(data_dir: str | Path) -> None:
             )
         """)
         connection.execute("CREATE INDEX IF NOT EXISTS agent_runs_role_status ON agent_runs(role_id, status)")
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS tool_audits (
+                audit_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                role_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                call_id TEXT NOT NULL,
+                argument_summary_json TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                result_category TEXT,
+                error_type TEXT,
+                error_message TEXT
+            )
+        """)
+        connection.execute("CREATE INDEX IF NOT EXISTS tool_audits_run_id ON tool_audits(run_id)")
         index_row = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type='index' AND name='agent_runs_one_active_per_role'"
         ).fetchone()

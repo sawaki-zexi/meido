@@ -2,13 +2,15 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 from datetime import datetime, timezone
 import asyncio
+import json
 import sqlite3
 import pytest
 
 from backend.app import main
 from backend.app.agent_runtime.types import ToolResultMessage
 from backend.app.model_adapter import ModelTextDelta, ModelToolCall
-from backend.app.models import AgentRun, AgentToolConfig, Message, ModelConfigurationInput, RoleInput, RoleProfile, SendMessageInput, ShellToolConfig
+from backend.app.models import AgentRun, AgentToolConfig, MemoryRecallToolConfig, Message, ModelConfigurationInput, RoleInput, RoleProfile, SendMessageInput, ShellToolConfig
+from backend.app.memory_engine import MemoryQueryResult, MemoryScope
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
@@ -413,6 +415,78 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["source"] == "role"
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["timeoutSeconds"] == 30.0
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["outputLimit"] == 20000
+
+
+def test_enabled_role_memory_recall_is_scoped_and_hidden_from_session_api(tmp_path, monkeypatch):
+    from backend.app.agent_runtime.types import ToolResultMessage
+
+    class FakeMemoryEngine:
+        def __init__(self):
+            self.requests = []
+
+        async def query(self, request):
+            self.requests.append(request)
+            return MemoryQueryResult(text_block="- [fact] 喜欢海边")
+
+    class StructuredAdapter:
+        def __init__(self):
+            self.requests = []
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            del configuration
+            self.requests.append((messages, tools))
+            if len(self.requests) == 1:
+                assert tools[0]["function"]["name"] == "recall_memory"
+                yield ModelToolCall("call-memory", "recall_memory", {"query": "喜欢什么", "limit": 1})
+            else:
+                assert any(item.get("role") == "tool" and "喜欢海边" in str(item.get("content")) for item in messages)
+                yield ModelTextDelta("记得你喜欢海边")
+
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(
+        name="记忆角色",
+        profile=RoleProfile(profile="核心设定"),
+        agentConfig=AgentToolConfig(memoryRecall=MemoryRecallToolConfig(enabled=True)),
+    ))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    engine = FakeMemoryEngine()
+    adapter = StructuredAdapter()
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))
+    monkeypatch.setattr(main, "model_adapter", adapter)
+    monkeypatch.setattr(main, "model_configuration_store", ModelConfigurationStore(tmp_path / "data" / "model-config.json"))
+    monkeypatch.setattr(main, "role_locks", {})
+    monkeypatch.setattr(main, "_current_memory_engine", lambda: engine)
+
+    client = TestClient(main.app)
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "你记得什么"})
+
+    assert response.status_code == 200
+    assert len(engine.requests) == 2
+    assert engine.requests[0].effect == "stateful"
+    assert engine.requests[1].effect == "read_only"
+    assert all(request.scope == MemoryScope(role.id, f"role:{role.id}") for request in engine.requests)
+    assert any(item["function"]["name"] == "recall_memory" for item in adapter.requests[0][1])
+    assert any(isinstance(item, ToolResultMessage) for item in sessions.runtime_messages(f"role:{role.id}"))
+    session_payload = client.get(f"/api/roles/{role.id}/session").json()
+    assert all(message["messageType"] == "text" for message in session_payload["messages"])
+    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
+    run = sessions.get_run(run_id)
+    assert run is not None
+    assert run.modelSnapshot["capabilities"]["tools"][0]["name"] == "recall_memory"
+    assert run.modelSnapshot["capabilities"]["tools"][0]["source"] == "builtin:memory"
+    audits = sessions.list_tool_audits(run_id)
+    assert len(audits) == 1
+    assert audits[0]["roleId"] == role.id
+    assert audits[0]["toolName"] == "recall_memory"
+    assert audits[0]["callId"] == "call-memory"
+    assert audits[0]["endedAt"] is not None
+    assert audits[0]["resultCategory"] == "succeeded"
+    assert audits[0]["argumentSummary"]["fields"]["query"] == {"type": "string", "length": 4}
+    assert "喜欢什么" not in json.dumps(audits, ensure_ascii=False)
+    assert "喜欢海边" not in json.dumps(audits, ensure_ascii=False)
 
 
 def test_role_update_preserves_session_messages_and_changes_future_prompt(tmp_path, monkeypatch):

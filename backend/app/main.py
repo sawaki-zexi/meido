@@ -40,8 +40,11 @@ from .agent_runtime import (
     MessageStartEvent,
     MessageUpdateEvent,
     MeidoProvider,
+    MemoryRecallTool,
+    RoleScopedMemoryReadPort,
     RuntimeManager,
     ShellTool,
+    summarize_tool_arguments,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
@@ -1264,27 +1267,34 @@ def _stream_model_reply(role, history, configuration, memory_context):
     return stream_reply(role, history, configuration)
 
 
-def _runtime_tools(role) -> tuple[ShellTool, ...]:
+def _memory_runtime_tool(role) -> MemoryRecallTool:
+    return MemoryRecallTool(RoleScopedMemoryReadPort(_current_memory_engine(), role.id))
+
+
+def _runtime_tools(role) -> tuple[ShellTool | MemoryRecallTool, ...]:
     """Build tools from the request-time role snapshot and its policy."""
     shell = role.agentConfig.shell
-    if not shell.enabled or not shell.allowedCommands:
-        return ()
-    return (ShellTool(
-        store.workspace_path(role.id),
-        allowed_commands=shell.allowedCommands,
-        timeout_seconds=shell.timeoutSeconds,
-        max_output_chars=shell.maxOutputChars,
-    ),)
+    tools: list[ShellTool | MemoryRecallTool] = []
+    if shell.enabled and shell.allowedCommands:
+        tools.append(ShellTool(
+            store.workspace_path(role.id),
+            allowed_commands=shell.allowedCommands,
+            timeout_seconds=shell.timeoutSeconds,
+            max_output_chars=shell.maxOutputChars,
+        ))
+    if role.agentConfig.memoryRecall.enabled:
+        tools.append(_memory_runtime_tool(role))
+    return tuple(tools)
 
 
-def _available_runtime_tools(role) -> tuple[ShellTool, ...]:
+def _available_runtime_tools(role) -> tuple[ShellTool | MemoryRecallTool, ...]:
     shell = role.agentConfig.shell
-    return (ShellTool(
+    return tuple([ShellTool(
         store.workspace_path(role.id),
         allowed_commands=shell.allowedCommands,
         timeout_seconds=shell.timeoutSeconds,
         max_output_chars=shell.maxOutputChars,
-    ),)
+    ), _memory_runtime_tool(role)])
 
 
 def _runtime_capabilities(role, *, session_key: str, run_id: str) -> CapabilityResolution:
@@ -1502,6 +1512,13 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     elif isinstance(runtime_event, MessageEndEvent) and isinstance(runtime_event.message, AssistantMessage):
                         content = runtime_event.message.content
                     elif isinstance(runtime_event, ToolExecutionStartEvent):
+                        session_store.start_tool_audit(
+                            run_id=run_id,
+                            role_id=role_id,
+                            tool_name=runtime_event.tool_name,
+                            call_id=runtime_event.tool_call_id,
+                            argument_summary=summarize_tool_arguments(runtime_event.arguments),
+                        )
                         yield _event("tool_execution_start", runtime_event_payload({
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
@@ -1515,6 +1532,14 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                             "isError": runtime_event.result.is_error,
                         }, runtime_event.sequence))
                     elif isinstance(runtime_event, ToolExecutionEndEvent):
+                        details = runtime_event.result.details if isinstance(runtime_event.result.details, dict) else {}
+                        session_store.finish_tool_audit(
+                            run_id=run_id,
+                            call_id=runtime_event.tool_call_id,
+                            result_category=str(details.get("status") or ("error" if runtime_event.result.is_error else "succeeded")),
+                            error_type=str(details["errorType"]) if details.get("errorType") else None,
+                            error_message=str(details["message"]) if details.get("message") else None,
+                        )
                         yield _event("tool_execution_end", runtime_event_payload({
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,

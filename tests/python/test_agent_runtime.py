@@ -147,7 +147,7 @@ def test_agent_loop_tool_exception_returns_error_result_and_continues():
 
         def execute(self, arguments, context, on_update=None):
             del arguments, context, on_update
-            raise ValueError("tool failed")
+            raise RuntimeError("tool failed")
 
     provider = FakeProvider([
         [ToolCallEndEvent(call), AssistantDoneEvent(AssistantMessage(tool_calls=(call,), stop_reason="tool_use"))],
@@ -164,7 +164,8 @@ def test_agent_loop_tool_exception_returns_error_result_and_continues():
 
     result = next(event.result for event in events if isinstance(event, ToolExecutionEndEvent))
     assert result.is_error is True
-    assert result.content == "tool failed"
+    assert result.content == "tool execution failed"
+    assert result.details == {"status": "failed", "errorType": "RuntimeError", "message": "tool execution failed"}
     assert events[-1].type == "agent_end" and events[-1].reason == "completed"
 
 
@@ -233,7 +234,8 @@ def test_agent_loop_returns_structured_error_for_invalid_tool_arguments():
     events = asyncio.run(collect())
     tool_result = next(event for event in events if isinstance(event, ToolExecutionEndEvent))
     assert tool_result.result.is_error is True
-    assert "required" in tool_result.result.content
+    assert tool_result.result.content == "tool input rejected"
+    assert tool_result.result.details == {"status": "invalid_arguments", "errorType": "ValueError", "message": "invalid tool arguments"}
 
 
 def test_agent_loop_tool_timeout_becomes_error_result_and_can_continue():
@@ -265,7 +267,7 @@ def test_agent_loop_tool_timeout_becomes_error_result_and_can_continue():
     assert tool_result.result.is_error is True
     assert tool_result.result.content == "tool timed out"
     assert events[-1].type == "agent_end" and events[-1].reason == "completed"
-    assert provider.calls[1][-1] == ToolResultMessage("slow-call", "slow", "tool timed out", is_error=True)
+    assert provider.calls[1][-1] == ToolResultMessage("slow-call", "slow", "tool timed out", is_error=True, details={"status": "timed_out", "message": "tool timed out"})
 
 
 def test_agent_loop_provider_timeout_finishes_failed_run():

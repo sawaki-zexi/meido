@@ -344,6 +344,60 @@ class SessionStore:
             connection.execute("DELETE FROM messages WHERE session_key = ?", (session_key,))
             connection.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
             connection.execute("DELETE FROM agent_runs WHERE role_id = ?", (role_id,))
+            connection.execute("DELETE FROM tool_audits WHERE role_id = ?", (role_id,))
+
+    def start_tool_audit(
+        self,
+        *,
+        run_id: str,
+        role_id: str,
+        tool_name: str,
+        call_id: str,
+        argument_summary: dict[str, object],
+    ) -> None:
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO tool_audits (audit_id, run_id, role_id, tool_name, call_id, argument_summary_json, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (f"{run_id}:{call_id}", run_id, role_id, tool_name, call_id, _dump(argument_summary), _now()),
+            )
+
+    def finish_tool_audit(
+        self,
+        *,
+        run_id: str,
+        call_id: str,
+        result_category: str,
+        error_type: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute(
+                "UPDATE tool_audits SET ended_at=?, result_category=?, error_type=?, error_message=? WHERE audit_id=?",
+                (_now(), result_category, error_type, error_message, f"{run_id}:{call_id}"),
+            )
+
+    def list_tool_audits(self, run_id: str) -> list[dict[str, object]]:
+        with sqlite3.connect(self.database_path) as connection:
+            rows = connection.execute(
+                "SELECT audit_id, run_id, role_id, tool_name, call_id, argument_summary_json, started_at, ended_at, result_category, error_type, error_message FROM tool_audits WHERE run_id=? ORDER BY started_at, audit_id",
+                (run_id,),
+            ).fetchall()
+        return [
+            {
+                "auditId": str(row[0]),
+                "runId": str(row[1]),
+                "roleId": str(row[2]),
+                "toolName": str(row[3]),
+                "callId": str(row[4]),
+                "argumentSummary": _load_dict(row[5]) or {},
+                "startedAt": str(row[6]),
+                "endedAt": str(row[7]) if row[7] is not None else None,
+                "resultCategory": str(row[8]) if row[8] is not None else None,
+                "errorType": str(row[9]) if row[9] is not None else None,
+                "errorMessage": str(row[10]) if row[10] is not None else None,
+            }
+            for row in rows
+        ]
 
     def snapshot_role_session(self, role_id: str) -> tuple[tuple[object, ...] | None, list[tuple[object, ...]], list[tuple[object, ...]]]:
         session_key = f"role:{role_id}"

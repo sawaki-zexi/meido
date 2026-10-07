@@ -58,9 +58,35 @@ class AgentTool(Protocol):
     ) -> AgentToolResult | Awaitable[AgentToolResult]: ...
 
 
+def summarize_tool_arguments(arguments: Mapping[str, object]) -> dict[str, object]:
+    """Return a non-sensitive shape summary suitable for tool audit records."""
+
+    fields: dict[str, dict[str, object]] = {}
+    for key, value in arguments.items():
+        if isinstance(value, str):
+            fields[str(key)] = {"type": "string", "length": len(value)}
+        elif isinstance(value, bool):
+            fields[str(key)] = {"type": "boolean"}
+        elif isinstance(value, int):
+            fields[str(key)] = {"type": "integer"}
+        elif isinstance(value, float):
+            fields[str(key)] = {"type": "number"}
+        elif isinstance(value, list):
+            fields[str(key)] = {"type": "array", "length": len(value)}
+        elif isinstance(value, dict):
+            fields[str(key)] = {"type": "object", "keys": sorted(str(item) for item in value)}
+        elif value is None:
+            fields[str(key)] = {"type": "null"}
+        else:
+            fields[str(key)] = {"type": type(value).__name__}
+    return {"keys": sorted(fields), "fields": fields}
+
+
 class ToolRegistry:
     def __init__(self, tools: Sequence[AgentTool] = ()) -> None:
-        self._tools = {tool.definition.name: tool for tool in tools}
+        self._tools: dict[str, AgentTool] = {}
+        for tool in tools:
+            self.register(tool)
 
     def register(self, tool: AgentTool) -> None:
         if tool.definition.name in self._tools:
@@ -77,44 +103,92 @@ class ToolRegistry:
         return [definition.as_provider_schema() for definition in self.definitions()]
 
     def validate_arguments(self, name: str, arguments: Mapping[str, object]) -> None:
-        """Validate the small JSON-schema subset used by runtime tools.
-
-        Full JSON Schema is deliberately kept out of the core dependency set;
-        required fields and primitive/object/array types cover the first-party
-        read-only tools and make malformed model calls diagnosable.
-        """
+        """Validate the bounded JSON-schema subset used by runtime tools."""
 
         tool = self.get(name)
         if tool is None:
             raise ValueError(f"unknown tool: {name}")
         schema = tool.definition.input_schema
-        required = schema.get("required", [])
-        if isinstance(required, list):
-            missing = [key for key in required if isinstance(key, str) and key not in arguments]
-            if missing:
-                raise ValueError(f"missing required arguments: {', '.join(missing)}")
-        properties = schema.get("properties", {})
-        if not isinstance(properties, dict):
-            return
-        if schema.get("additionalProperties") is False:
-            unknown = [key for key in arguments if key not in properties]
-            if unknown:
-                raise ValueError(f"unknown arguments: {', '.join(str(key) for key in unknown)}")
-        for key, value in arguments.items():
-            definition = properties.get(key)
-            if not isinstance(definition, dict):
-                continue
-            expected = definition.get("type")
-            if expected == "string" and not isinstance(value, str):
-                raise ValueError(f"argument {key} must be a string")
-            if expected == "object" and not isinstance(value, dict):
-                raise ValueError(f"argument {key} must be an object")
-            if expected == "array" and not isinstance(value, list):
-                raise ValueError(f"argument {key} must be an array")
-            if expected == "boolean" and not isinstance(value, bool):
-                raise ValueError(f"argument {key} must be a boolean")
-            if expected == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))):
-                raise ValueError(f"argument {key} must be a number")
+        if schema.get("type") == "object":
+            _validate_object_value("", arguments, schema)
+        else:
+            _validate_schema_value("arguments", arguments, schema)
+
+
+def _validate_schema_value(path: str, value: object, schema: Mapping[str, object]) -> None:
+    expected = schema.get("type")
+    if expected == "string":
+        if not isinstance(value, str):
+            raise ValueError(f"argument {path} must be a string")
+        _validate_length(path, len(value), schema, "minLength", upper=False)
+        _validate_length(path, len(value), schema, "maxLength", upper=True)
+    elif expected == "integer":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"argument {path} must be an integer")
+        _validate_number_bounds(path, value, schema)
+    elif expected == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"argument {path} must be a number")
+        _validate_number_bounds(path, value, schema)
+    elif expected == "object":
+        _validate_object_value(path, value, schema)
+    elif expected == "array":
+        if not isinstance(value, list):
+            raise ValueError(f"argument {path} must be an array")
+        _validate_length(path, len(value), schema, "minItems", upper=False)
+        _validate_length(path, len(value), schema, "maxItems", upper=True)
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(value):
+                _validate_schema_value(f"{path}[{index}]", item, item_schema)
+    elif expected == "boolean" and not isinstance(value, bool):
+        raise ValueError(f"argument {path} must be a boolean")
+    enum = schema.get("enum")
+    if isinstance(enum, list) and value not in enum:
+        raise ValueError(f"argument {path} has an unsupported value")
+
+
+def _validate_object_value(path: str, value: object, schema: Mapping[str, object]) -> None:
+    if not isinstance(value, dict):
+        label = "arguments" if not path else f"argument {path}"
+        raise ValueError(f"{label} must be an object")
+    required = schema.get("required", [])
+    if isinstance(required, list):
+        missing = [key for key in required if isinstance(key, str) and key not in value]
+        if missing:
+            prefix = f" at {path}" if path else ""
+            raise ValueError(f"missing required arguments{prefix}: {', '.join(missing)}")
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        return
+    if schema.get("additionalProperties") is False:
+        unknown = [key for key in value if key not in properties]
+        if unknown:
+            prefix = f" at {path}" if path else ""
+            raise ValueError(f"unknown arguments{prefix}: {', '.join(str(key) for key in unknown)}")
+    for key, item in value.items():
+        definition = properties.get(key)
+        if isinstance(definition, dict):
+            item_path = f"{path}.{key}" if path else str(key)
+            _validate_schema_value(item_path, item, definition)
+
+
+def _validate_number_bounds(path: str, value: int | float, schema: Mapping[str, object]) -> None:
+    minimum = schema.get("minimum")
+    if isinstance(minimum, (int, float)) and not isinstance(minimum, bool) and value < minimum:
+        raise ValueError(f"argument {path} is below the minimum")
+    maximum = schema.get("maximum")
+    if isinstance(maximum, (int, float)) and not isinstance(maximum, bool) and value > maximum:
+        raise ValueError(f"argument {path} exceeds the maximum")
+
+
+def _validate_length(path: str, value: int, schema: Mapping[str, object], key: str, *, upper: bool) -> None:
+    bound = schema.get(key)
+    if not isinstance(bound, int) or isinstance(bound, bool):
+        return
+    if (upper and value > bound) or (not upper and value < bound):
+        phrase = "exceeds the maximum" if upper else "is below the minimum"
+        raise ValueError(f"argument {path} {phrase}")
 
 
 async def resolve_tool_result(value: AgentToolResult | Awaitable[AgentToolResult]) -> AgentToolResult:

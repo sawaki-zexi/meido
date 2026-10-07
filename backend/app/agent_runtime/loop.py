@@ -242,11 +242,21 @@ async def _execute_tool(
     if tool is None:
         reason = registry.denial_reason(call.name) if isinstance(registry, CapabilityResolution) else None
         content = f"tool denied: {call.name}: {reason}" if reason else f"unknown tool: {call.name}"
-        return AgentToolResult(content, details={"tool": call.name, "reason": reason or "unknown"}, is_error=True), []
+        status = "denied" if reason else "unknown_tool"
+        return AgentToolResult(content, details={"tool": call.name, "reason": reason or "unknown", "status": status}, is_error=True), []
     updates: list[AgentToolResult] = []
 
+    def bounded(result: AgentToolResult) -> AgentToolResult:
+        output_limit = tool.definition.output_limit
+        if output_limit is None or len(result.content) <= output_limit:
+            return result
+        details = dict(result.details) if isinstance(result.details, dict) else {}
+        details["truncated"] = True
+        details["outputLimit"] = output_limit
+        return AgentToolResult(result.content[:output_limit], details=details, is_error=result.is_error)
+
     def on_update(result: AgentToolResult) -> None:
-        updates.append(result)
+        updates.append(bounded(result))
 
     try:
         signal.raise_if_cancelled()
@@ -261,8 +271,24 @@ async def _execute_tool(
         result = await asyncio.wait_for(pending, timeout=effective_timeout) if effective_timeout is not None else await pending
         if not isinstance(result, AgentToolResult):
             return AgentToolResult("tool returned an invalid result", is_error=True), updates
-        return result, updates
+        return bounded(result), updates
     except asyncio.TimeoutError:
-        return AgentToolResult("tool timed out", is_error=True), updates
+        return AgentToolResult("tool timed out", details={"status": "timed_out", "message": "tool timed out"}, is_error=True), updates
+    except ValueError as error:
+        return AgentToolResult(
+            "tool input rejected",
+            details={"status": "invalid_arguments", "errorType": type(error).__name__, "message": "invalid tool arguments"},
+            is_error=True,
+        ), updates
+    except PermissionError as error:
+        return AgentToolResult(
+            "tool access denied",
+            details={"status": "denied", "errorType": type(error).__name__, "message": "tool access denied"},
+            is_error=True,
+        ), updates
     except Exception as error:
-        return AgentToolResult(str(error), is_error=True), updates
+        return AgentToolResult(
+            "tool execution failed",
+            details={"status": "failed", "errorType": type(error).__name__, "message": "tool execution failed"},
+            is_error=True,
+        ), updates
