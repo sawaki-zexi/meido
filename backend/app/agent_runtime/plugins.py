@@ -252,10 +252,13 @@ class PluginRegistry:
         plugin_dir: str = "",
     ) -> PluginResolution:
         unknown_grants = set(granted_capabilities) - KNOWN_CAPABILITIES
-        if unknown_grants:
-            raise ValueError(f"unknown capability grant: {', '.join(sorted(unknown_grants))}")
         loaded: list[LoadedPlugin] = []
         diagnostics: list[MappingProxyType] = []
+        if unknown_grants:
+            diagnostics.append(MappingProxyType({
+                "status": "denied",
+                "error": f"unknown capability grant: {', '.join(sorted(unknown_grants))}",
+            }))
         if enabled_ids is not None:
             unknown_plugins = set(enabled_ids) - set(self._registrations)
             diagnostics.extend(

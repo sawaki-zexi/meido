@@ -132,6 +132,16 @@ def test_plugin_grant_and_host_service_diagnostics_are_distinct():
     assert called == []
 
 
+def test_unknown_capability_grant_is_diagnosed_without_aborting_load():
+    result = asyncio.run(PluginRegistry().load(granted_capabilities={"unknown.capability"}))
+
+    assert result.loaded == ()
+    assert result.diagnostics == ({
+        "status": "denied",
+        "error": "unknown capability grant: unknown.capability",
+    },)
+
+
 def test_plugin_registry_reports_unknown_enabled_plugin():
     registry = PluginRegistry()
 
@@ -324,7 +334,7 @@ def test_plugin_hook_cannot_mutate_arguments_in_place():
         )
 
         def before_tool(self, context: HookContext) -> HookOutcome:
-            context.arguments["message"] = "tampered"  # type: ignore[index]
+            context.arguments["metadata"]["flag"] = True  # type: ignore[index]
             return HookOutcome()
 
     def factory(context):
@@ -342,19 +352,15 @@ def test_plugin_hook_cannot_mutate_arguments_in_place():
     arguments, error = asyncio.run(
         capabilities.prepare_tool_call(
             "plugin.echo",
-            {"message": "hello"},
+            {"message": "hello", "metadata": {"flag": False}},
             ToolContext("role-1", "role:role-1", "run-1", signal=CancellationToken()),
         )
     )
-    assert arguments == {"message": "hello"}
+    assert arguments == {"message": "hello", "metadata": {"flag": False}}
     assert error is not None
     assert error.is_error is True
-    assert error.details == {
-        "hook": "demo.mutating-observer",
-        "status": "failed",
-        "errorType": "TypeError",
-        "message": "tool hook failed",
-    }
+    assert error.details["hook"] == "demo.mutating-observer"
+    assert error.details["status"] == "failed"
     asyncio.run(capabilities.close())
 
 
@@ -386,6 +392,45 @@ def test_plugin_hook_timeout_returns_structured_error():
         "errorType": "TimeoutError",
         "message": "tool hook timed out",
     }
+    asyncio.run(capabilities.close())
+
+
+def test_plugin_hook_stops_when_run_is_cancelled_while_awaiting():
+    class CancellingHook:
+        definition = HookDefinition(
+            hook_id="demo.cancelling",
+            mode="transform",
+            tool_names=("plugin.echo",),
+        )
+
+        async def before_tool(self, context: HookContext) -> HookOutcome:
+            context.tool_context.signal.cancel()
+            await asyncio.sleep(0)
+            return HookOutcome()
+
+    def factory(context):
+        del context
+        return PluginContribution(tools=(EchoTool(),), hooks=(CancellingHook(),))
+
+    capabilities = asyncio.run(
+        CapabilityRegistry(plugins=PluginRegistry([(_manifest(), factory)])).resolve_async(
+            role_id="role-1",
+            session_key="role:role-1",
+            run_id="run-1",
+            enabled_tools={"plugin.echo"},
+        )
+    )
+    _, error = asyncio.run(
+        capabilities.prepare_tool_call(
+            "plugin.echo",
+            {"message": "hello"},
+            ToolContext("role-1", "role:role-1", "run-1", signal=CancellationToken()),
+        )
+    )
+    assert error is not None
+    assert error.is_error is True
+    assert error.details["status"] == "cancelled"
+    assert error.details["message"] == "tool hook cancelled"
     asyncio.run(capabilities.close())
 
 

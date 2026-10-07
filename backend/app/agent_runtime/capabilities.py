@@ -105,24 +105,38 @@ class CapabilityResolution:
             if hook.definition.tool_names and name not in hook.definition.tool_names:
                 continue
             try:
+                context.signal.raise_if_cancelled()
                 # Hooks may only return transformed arguments explicitly; do not
                 # let an in-place mutation bypass the hook mode contract.
-                hook_arguments = MappingProxyType(deepcopy(current))
+                hook_arguments = _readonly_arguments(deepcopy(current))
                 pending = run_hook(hook, HookContext(name, hook_arguments, context))
                 outcome = (
                     await asyncio.wait_for(pending, timeout=hook.definition.timeout_seconds)
                     if hook.definition.timeout_seconds is not None
                     else await pending
                 )
+                context.signal.raise_if_cancelled()
             except Exception as error:
-                status = "timed_out" if isinstance(error, asyncio.TimeoutError) else "failed"
+                status = (
+                    "timed_out"
+                    if isinstance(error, asyncio.TimeoutError)
+                    else "cancelled"
+                    if isinstance(error, RuntimeError) and str(error) == "agent run cancelled"
+                    else "failed"
+                )
                 return current, AgentToolResult(
                     "tool hook failed",
                     details={
                         "hook": hook.definition.hook_id,
                         "status": status,
                         "errorType": type(error).__name__,
-                        "message": "tool hook timed out" if status == "timed_out" else "tool hook failed",
+                        "message": (
+                            "tool hook timed out"
+                            if status == "timed_out"
+                            else "tool hook cancelled"
+                            if status == "cancelled"
+                            else "tool hook failed"
+                        ),
                     },
                     is_error=True,
                 )
@@ -143,6 +157,24 @@ class CapabilityResolution:
     async def close(self) -> None:
         if self.plugin_resolution is not None:
             await self.plugin_resolution.close()
+
+
+def _readonly_arguments(arguments: dict[str, object]) -> Mapping[str, object]:
+    return MappingProxyType({
+        key: _readonly_value(value)
+        for key, value in arguments.items()
+    })
+
+
+def _readonly_value(value: object) -> object:
+    if isinstance(value, dict):
+        return MappingProxyType({
+            key: _readonly_value(item)
+            for key, item in value.items()
+        })
+    if isinstance(value, list):
+        return tuple(_readonly_value(item) for item in value)
+    return value
 
 
 class CapabilityRegistry:
