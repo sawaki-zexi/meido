@@ -7,6 +7,10 @@ from typing import Protocol
 
 from .provider import CancellationToken
 
+_RISKS = frozenset({"read_only", "mutating", "external"})
+_EXPOSURES = frozenset({"direct", "model_only", "deferred", "hidden"})
+_APPROVALS = frozenset({"auto", "prompt", "writes", "deny"})
+
 
 @dataclass(frozen=True, slots=True)
 class ToolDefinition:
@@ -20,6 +24,24 @@ class ToolDefinition:
     approval: str = "auto"
     timeout_seconds: float | None = None
     output_limit: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("tool name is required")
+        if not self.description.strip():
+            raise ValueError(f"tool description is required: {self.name}")
+        if self.risk not in _RISKS:
+            raise ValueError(f"unsupported tool risk: {self.risk}")
+        if self.exposure not in _EXPOSURES:
+            raise ValueError(f"unsupported tool exposure: {self.exposure}")
+        if self.approval not in _APPROVALS:
+            raise ValueError(f"unsupported tool approval: {self.approval}")
+        if not self.version.strip():
+            raise ValueError(f"tool version is required: {self.name}")
+        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
+            raise ValueError(f"tool timeout must be positive: {self.name}")
+        if self.output_limit is not None and self.output_limit <= 0:
+            raise ValueError(f"tool output limit must be positive: {self.name}")
 
     def as_provider_schema(self) -> dict[str, object]:
         return {

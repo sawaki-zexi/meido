@@ -17,6 +17,19 @@ from backend.app.agent_runtime import (
 from backend.app.agent_runtime.capabilities import CapabilityRegistry
 
 
+def test_tool_definition_validates_policy_metadata_and_limits():
+    with pytest.raises(ValueError, match="unsupported tool risk"):
+        ToolDefinition("bad-risk", "Invalid", risk="write")
+    with pytest.raises(ValueError, match="unsupported tool exposure"):
+        ToolDefinition("bad-exposure", "Invalid", exposure="always")
+    with pytest.raises(ValueError, match="unsupported tool approval"):
+        ToolDefinition("bad-approval", "Invalid", approval="silent")
+    with pytest.raises(ValueError, match="tool timeout must be positive"):
+        ToolDefinition("bad-timeout", "Invalid", timeout_seconds=0)
+    with pytest.raises(ValueError, match="tool output limit must be positive"):
+        ToolDefinition("bad-output", "Invalid", output_limit=0)
+
+
 class ReadTool:
     definition = ToolDefinition(
         name="memory.read",
