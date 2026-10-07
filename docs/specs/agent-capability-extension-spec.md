@@ -7,6 +7,9 @@
 事实来源：
 
 - [Pi 与 Shiori 能力扩展机制调研](../research/pi-shiori-capability-extension.md)
+- Codex 官方 Skills、Plugins、MCP 和 Hooks 文档
+- Claude Code 官方 Skills、Plugins、MCP、Hooks、Permissions 和 Subagents 文档
+- 具体 URL 和核验事实见 [四方能力扩展机制调研](../research/pi-shiori-capability-extension.md)
 - [Meido Agent Runtime 规格](agent-runtime-tau-integration-spec.md)
 - [ADR-0002：Shiori 风格记忆引擎边界](../adr/0002-shiori-memory-engine-boundary.md)
 - [ADR-0003：Tau 启发的 Agent Runtime 边界](../adr/0003-tau-inspired-agent-runtime-boundary.md)
@@ -35,6 +38,7 @@ Meido 已经有 provider-neutral Agent Loop 和基础 `ToolRegistry`。如果以
 - 不把自动记忆召回改成模型可选择的普通工具；
 - 不在 Skill 中执行任意 Python、Shell 或外部事务；
 - 不实现 Codex/Claude 执行器、远程任务、审批工作流和长期任务；
+- 不把 MCP server、Subagent 或外部 Executor 当作当前角色 Agent Loop 的普通 Plugin；
 - 不替换 SQLite 为插件 session 文件或内存 transcript。
 
 ## 3. 术语和职责
@@ -55,6 +59,18 @@ Meido 已经有 provider-neutral Agent Loop 和基础 `ToolRegistry`。如果以
 
 保障产品一致性的核心服务，包括角色、会话、RuntimeManager、MemoryEngine、SessionStore、SQLite、MemoryWorker 和 HTTP/SSE。核心服务不依赖模型是否选择某个 Tool。
 
+### 3.5 MCP adapter
+
+外部 MCP server 到 Meido `Tool` 的连接适配器。MCP server 的连接、健康状态、工具发现、超时和输出预算由适配器管理；MCP server 不直接获得 `MemoryEngine`、SQLite 或其他核心服务对象。MCP 是连接协议，不是 Plugin、Skill 或权限授予本身。
+
+### 3.6 Hook and policy
+
+Hook 是在稳定生命周期 slot 上执行的策略贡献。它必须声明匹配范围、模式、超时、来源信任和失败策略；PolicyEvaluator 决定 Tool 是否声明给 provider、是否可以执行以及是否需要后续审批。Hook 不能绕过 PolicyEvaluator。
+
+### 3.7 TaskRuntime
+
+用于 Codex/Claude Executor、Subagent、远程任务、审批和长期运行的独立运行边界。TaskRuntime 不属于本规格，当前 Capability Layer 只为一个角色的一次 AgentLoop 提供能力。
+
 ## 4. 目标架构
 
 ```text
@@ -67,12 +83,14 @@ RuntimeManager
     |      +--> role/model/memory snapshot
     |      +--> CapabilityResolver
     |      +--> Skill prompt compiler
+    |      +--> MCP adapter discovery (后续)
     |
     +--> CapabilitySnapshot
            +--> declared tool schemas
            +--> tool policies and hooks
            +--> skill sections
            +--> plugin generations/config versions
+           +--> source/trust/approval decisions
     |
     v
 AgentLoop
@@ -98,6 +116,7 @@ CapabilityManifest
   source: builtin | role | project | installed
   requestedCapabilities: string[]
   configSchema: object | null
+  trustLevel: builtin | project | installed | external
 
 CapabilityDescriptor
   name: string
@@ -106,6 +125,10 @@ CapabilityDescriptor
   risk: read_only | mutating | external
   enabledByDefault: boolean
   exposure: direct | model_only | deferred | hidden
+  approval: auto | prompt | writes | deny
+  timeoutMs: integer
+  outputLimit: integer
+  contentHash: string | null
 
 CapabilityContext
   pluginId: string
@@ -123,6 +146,9 @@ CapabilitySnapshot
   skills: tuple[SkillDescriptor, ...]
   pluginVersions: dict[str, str]
   policyDecisions: dict[str, PolicyDecision]
+  skillHashes: dict[str, str]
+  sourceTrust: dict[str, string]
+  generation: string
 ```
 
 `CapabilitySnapshot` 必须在第一次 provider 请求前建立，并作为运行快照的一部分持久化。运行期间能力注册、配置和权限的变化不得改变当前 snapshot。
@@ -146,6 +172,7 @@ Registry 至少需要：
 - 拒绝重复的稳定 ID；
 - 校验 manifest、版本和 capability 名称；
 - 根据 role、source、risk、feature flag 和配置生成 snapshot；
+- 在第一次 provider 请求前完成 Skill 描述筛选、MCP 工具发现和工具 policy 决策；
 - 对外只返回 descriptor，不暴露插件内部对象；
 - 在运行结束或插件卸载时执行幂等 cleanup；
 - 对 snapshot 生成结果提供可诊断原因。
@@ -166,7 +193,7 @@ Tool 的可见性和可执行性分为两步：
 - 输入通过 JSON Schema 和大小限制；
 - timeout、output limit 和 cancellation 已配置。
 
-`read_only`、`mutating` 和 `external` 必须是机器可读字段。风险标记不能单独充当沙箱，但可以驱动后续审批和审计。
+`read_only`、`mutating` 和 `external` 必须是机器可读字段。风险标记不能单独充当沙箱，但可以驱动后续审批和审计。`approval`、timeout 和 output limit 也必须是机器可读字段；它们与 risk、role policy、来源 trust 分开计算。对外部 MCP Tool，server 连接失败、工具未启用或工具搜索尚未完成时，必须返回确定性的 unavailable 诊断，不能把半初始化工具加入 provider schema。
 
 ### 6.3 Tool result
 
@@ -182,7 +209,7 @@ Tool 结果同时包含：
 
 ## 7. Skill 规格
 
-首版 Skill 使用 Markdown 文件和受限 front matter：
+首版 Skill 使用 Markdown 文件和受限 front matter，并采用 progressive disclosure：启动时只读取 descriptor，只有在 Skill 被显式调用或策略激活后才读取正文和 supporting files。Skill 的目录可以兼容 `SKILL.md`、`references/` 和 `assets/`，但这些文件不具有执行权限。
 
 ```yaml
 id: study-plan
@@ -205,8 +232,10 @@ Skill 编译器必须：
 
 - 校验 front matter 和文件大小；
 - 根据角色配置、来源信任级别和 activation 规则筛选；
+- 先用 `description` 和 activation 判断是否加载正文，避免所有 Skill 常驻上下文；
 - 删除不存在或未授权的工具引用；
 - 给每个 section 标记来源、版本和优先级；
+- 记录正文和 supporting files 的大小、hash 和 trust level；
 - 在 `CapabilitySnapshot` 中保存最终启用的 Skill；
 - 不允许正文触发任意代码、Shell 或网络请求。
 
@@ -214,7 +243,7 @@ Skill 只影响 prompt，不拥有 MemoryStore、SessionStore 或 RuntimeManager
 
 ## 8. Plugin 规格
 
-首版 Plugin 使用进程内 Python 包，通过静态 manifest 和宿主装配加载：
+首版 Plugin 使用进程内 Python 包，通过静态 manifest 和宿主装配加载。Plugin 是多个 Tool、Skill、Hook 和后续 MCP adapter 的分发/装配单元，不是一个新的 Agent Loop，也不是安全 sandbox：
 
 ```text
 plugin/
@@ -231,6 +260,8 @@ Manifest 至少包含：
 - `tools`、`skills` 或 lifecycle contributions；
 - 配置 schema 和默认值；
 - 风险声明和资源目录。
+- 组件路径必须位于 Plugin 根目录内；组件 ID 在 Plugin 命名空间中稳定；
+- Plugin generation、manifest hash 和 trust level 必须进入 `CapabilitySnapshot`。
 
 宿主加载流程：
 
@@ -247,6 +278,7 @@ Manifest 至少包含：
 插件只能从 `PluginContext` 获取服务。未声明的服务抛出 `CapabilityNotGranted`；声明了但宿主未装配时抛出明确的 `HostServiceUnavailable`。插件创建的后台任务、文件句柄、连接和 watcher 必须通过 effect 注册，并在 shutdown/reload/失败回滚时幂等释放。
 
 首版不支持：插件自定义 FastAPI 路由、直接修改 SQLite schema、覆盖核心角色状态、修改 Runtime 状态机和未声明的网络/进程访问。
+Plugin 可以声明 MCP adapter，但首版不连接远程 server；后续连接仍必须经过独立的 server/tool policy、审批、超时和输出限制。
 
 ## 9. Lifecycle slots
 
@@ -266,6 +298,7 @@ after_run
 - `mode`: observe | transform | deny | request_follow_up；
 - `requires` 和 `produces`；
 - timeout 和失败策略。
+- `matcher` 和来源 trust；
 
 默认规则：
 
@@ -274,6 +307,8 @@ after_run
 - `deny` 只能阻止当前 Tool，不得伪造成功结果；
 - `request_follow_up` 首版禁用，避免插件制造无限 Agent Loop；
 - `after_run` 不得改变已提交的运行终态。
+
+Hook 的 `transform` 和 `deny` 只对当前事件生效。并发 Hook 的执行顺序和合并规则必须由宿主定义；首版采用按 priority、plugin ID、contribution ID 的稳定顺序串行执行，避免不同启动顺序产生不同的工具参数或 prompt。
 
 自动记忆召回和 MemoryWorker 提交仍由核心流程调用，不通过可选 lifecycle module 决定是否执行。
 
@@ -297,6 +332,8 @@ SQLite 新增或扩展的字段只记录可诊断快照：
 - plugin ID/version；
 - enabled skill IDs/version；
 - policy decision 摘要；
+- tool source/trust/approval、MCP server 状态和 hook generation；
+- Skill/tool content hash；
 - 不包含 API Key、完整插件配置密钥或未必要的记忆全文。
 
 工具和 Skill 的配置变化必须在下一次运行生效，不影响当前 run。SSE 可以增加 capability/tool 事件，但旧客户端必须仍能完成普通文本对话。
@@ -304,6 +341,7 @@ SQLite 新增或扩展的字段只记录可诊断快照：
 ## 11. 安全和失败策略
 
 - 插件不是 sandbox；需要强隔离时使用独立 Executor/容器；
+- Plugin load、MCP connection、Tool approval 和 OS sandbox 是四个独立的信任层；
 - role scope 从 `ToolContext` 和宿主服务注入，不能由模型参数覆盖；
 - 外部副作用能力默认不注册；
 - 工具超时、取消和失败统一返回结构化错误结果；
@@ -312,6 +350,7 @@ SQLite 新增或扩展的字段只记录可诊断快照：
 - capability snapshot 生成失败时，运行不能静默使用不完整的工具集合；
 - Skill 解析失败不应阻塞普通文本对话，但必须记录 source、版本和错误；
 - 插件和工具日志必须做密钥、token、记忆内容和环境变量脱敏。
+- 项目/用户来源的 Skill、Hook、MCP 和 Plugin 必须经过显式来源校验；未信任来源不得隐式扩大工具权限。
 
 ## 12. 实施阶段
 
@@ -326,6 +365,7 @@ SQLite 新增或扩展的字段只记录可诊断快照：
 
 - 支持角色/项目 Skill 目录发现；
 - 解析 front matter、工具引用和 activation；
+- 采用 descriptor-first/progressive disclosure，记录正文 hash 和来源 trust；
 - 将启用 Skill 编译进 system prompt，并记录版本；
 - 用 fake Skill 验证不会绕过 Tool policy。
 
@@ -335,6 +375,13 @@ SQLite 新增或扩展的字段只记录可诊断快照：
 - PluginContext、配置、effect cleanup、生命周期 slots；
 - 用内置 memory tool plugin 验证 MemoryEngine 端口；
 - 外部网络、远程任务和动态安装继续关闭。
+
+### Phase 3.5：MCP adapter（后续，可独立 Ticket）
+
+- 只接入已配置的本地 STDIO 或受信任的 HTTP server；
+- 将 server/tool discovery、enabled/disabled、approval、timeout 和 output limit 映射到 snapshot；
+- 连接失败或工具不可用不破坏普通无工具对话；
+- 不允许 MCP server 直接访问 Meido 核心服务。
 
 ### Phase 4：独立 TaskRuntime（后续规格）
 
@@ -358,4 +405,4 @@ SQLite 新增或扩展的字段只记录可诊断快照：
 
 ## 14. 设计取舍
 
-统一能力层会增加 manifest、snapshot、policy 和生命周期代码，但能把可选能力与核心对话流程隔离。直接采用 Pi 的 Extension API 会引入 TypeScript runtime、Coding Agent 权限和 Pi session 语义；直接采用 Shiori 的完整插件宿主会引入多渠道、RPC、UI 和兼容矩阵。Meido 只借鉴它们的接口思想，保留 Python、SQLite、角色硬隔离和现有 Runtime 边界。
+统一能力层会增加 manifest、snapshot、policy 和生命周期代码，但能把可选能力与核心对话流程隔离。Pi 和 Shiori 提供运行时扩展与 capability grant 的实现参考；Codex 和 Claude Code 进一步证明 Skill 的按需加载、Plugin 的分发边界、MCP 的连接/审批分离和 Hook 的 trust/decision 语义值得采用。直接采用这些产品的完整宿主会引入 TypeScript/Coding Agent、CLI 工作区信任、多渠道或 IDE 组件等超出 Meido 的职责。Meido 只借鉴接口思想，保留 Python、SQLite、角色硬隔离和现有 Runtime 边界。

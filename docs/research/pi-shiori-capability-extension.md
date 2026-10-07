@@ -1,4 +1,4 @@
-# Pi 与 Shiori 能力扩展机制调研
+# Agent 能力扩展机制调研：Pi、Shiori、Codex 与 Claude Code
 
 状态：当前研究记录
 
@@ -8,9 +8,11 @@
 
 - Pi `badlogic/pi-mono` main：`b30a6dd779340f7bc2f3ffa60f4c0a5f914ba9ae`
 - Shiori-Agent `YinFengWindy/Shiori-Agent` main：`c7ad4423cc63ae5157cfada21e408dd40b360e63`
+- Codex 官方文档：[Skills and Plugins](https://learn.chatgpt.com/docs/skills-and-plugins.md)、[Build Skills](https://learn.chatgpt.com/docs/build-skills.md)、[Build Plugins](https://learn.chatgpt.com/docs/build-plugins.md)、[Hooks](https://learn.chatgpt.com/docs/hooks.md)、[MCP](https://learn.chatgpt.com/docs/extend/mcp.md)
+- Claude Code 官方文档：[Skills](https://code.claude.com/docs/en/skills.md)、[Plugins overview](https://code.claude.com/docs/en/plugins/overview.md)、[Plugin components](https://code.claude.com/docs/en/plugins/components.md)、[MCP](https://code.claude.com/docs/en/mcp.md)、[Hooks](https://code.claude.com/docs/en/hooks.md)、[Subagents](https://code.claude.com/docs/en/sub-agents.md)、[Permissions](https://code.claude.com/docs/en/permissions.md)
 - Meido 当前基线：`a9cfb10`（Agent Runtime PR #81 合入 `main`）
 
-本文只提取与 Meido 能力扩展层有关的源码事实和设计启发，不建议把 Pi 的 TypeScript Coding Agent 或 Shiori 的完整插件宿主直接移植到 Meido。
+本文只提取与 Meido 能力扩展层有关的源码事实和设计启发，不建议把 Pi 的 TypeScript Coding Agent、Codex CLI 或 Claude Code 的完整宿主直接移植到 Meido。
 
 ## 结论
 
@@ -157,6 +159,72 @@ Meido 已有 [`backend/app/memory_engine.py`](../../backend/app/memory_engine.py
 ### Shiori 的限制
 
 Shiori 插件系统覆盖渠道、账户、UI、模型、记忆和后台服务，包含多渠道 scope、RPC、依赖和版本兼容。Meido 当前是单主人、单角色会话；复制 Shiori 的全量宿主会把渠道、多用户和桌面插件生命周期一起引入，超出 Agent Runtime 的职责。
+
+## Codex：Skill、Plugin、MCP 和 Hook 分层
+
+### Skill 是按需加载的指令与资源
+
+Codex 遵循 open agent skills standard。一个 Skill 目录必须包含 `SKILL.md`，并可以附带 `scripts/`、`references/`、`assets/` 和 `agents/openai.yaml`。启动时只读取 Skill 的名称和描述，选中后才读取完整正文；官方文档把这称为 progressive disclosure，并对初始 Skill 列表设置上下文预算。Skill 可以显式调用，也可以根据描述隐式匹配；`agents/openai.yaml` 可控制隐式调用和工具依赖。
+
+这证明 Skill 应该是 prompt/resource 层，而不是一个隐式的 Python 插件。Meido 可以兼容同一目录形态，但必须在激活时重新校验角色、来源和工具策略。
+
+### Plugin 是分发单元，MCP 是连接协议
+
+Codex Plugin 是可安装的 bundle，可以同时携带 Skills、Apps/connectors、MCP server 和 lifecycle hooks。Plugin 解决安装、版本和分发边界，不能替代 Tool 或 Skill 的运行时语义。MCP 则负责连接外部工具，支持 STDIO 和 Streamable HTTP，并单独配置 server 是否启用、启用/禁用哪些工具、启动/调用超时、输出 token 限制和每个工具的 approval mode（例如 `auto`、`prompt`、`writes`、`approve`）。
+
+因此，Meido 不应把 MCP server 当作 Plugin 的同义词：Plugin 是宿主装配包，MCP 是 Tool 的外部适配器。后续若接入 MCP，应把 server 连接状态、工具暴露和审批策略映射到 `CapabilitySnapshot`，不能让远端 server 直接获得 Meido 的核心服务对象。
+
+### Hook 是 Agent Loop 的策略边界
+
+Codex Hook 由事件、matcher 和 handler 组成，事件覆盖 `SessionStart`、`SessionEnd`、`SubagentStart`、`PreToolUse`、`PermissionRequest`、`PostToolUse`、`PreCompact`、`PostCompact`、`UserPromptSubmit`、`SubagentStop`、`Stop` 和 `Interrupt`。Handler 可以是 command 或 MCP tool；匹配的同类 hook 并发启动，非 managed hook 需要按当前定义的 hash 进行 review/trust。Hook 可以返回额外上下文或阻止决策，但 hook 错误、超时和格式错误的阻止语义是分开的。
+
+Codex 还允许 Plugin bundle hooks，并通过 managed hooks 与用户/项目 hooks 区分信任层级。对 Meido 的直接启发是：Hook 必须有事件、匹配范围、超时、失败策略和信任来源，不能设计成任意订阅内部对象的回调。
+
+## Claude Code：统一组件包和受限 Subagent
+
+### Skill 与长期指令分开
+
+Claude Code 的 Skill 同样采用 `SKILL.md` 目录，并支持 supporting files、front matter、动态上下文注入、显式/隐式调用、工具预授权和在 Subagent 中预加载。Skill 正文只有在使用时才加载；项目、用户、企业、插件和嵌套目录是不同的发现来源，并有明确的同名优先级和命名空间规则。`CLAUDE.md` 负责持续的项目/用户指令，Skill 负责按需流程，两者不是同一个层次。
+
+Meido 已有角色设定和核心运行 prompt，不应复制 `CLAUDE.md` 的整套文件优先级。适合的做法是保留角色设定作为核心上下文，把受限 `SKILL.md` 作为可选任务流程，并把 Skill 的来源、版本、激活原因和最终正文 hash 记录到运行快照。
+
+### Plugin 可以装配多个组件
+
+Claude Code Plugin 是带 `.claude-plugin/plugin.json` manifest 的目录，组件可以包括 Skills、Agents、Hooks、MCP servers、LSP servers、可执行文件、默认设置和 UI 资源。Plugin skill 使用命名空间，Plugin 中的 MCP server 只在插件启用时连接，组件路径必须保持在插件根目录内。Marketplace 是分发目录，不是运行时权限本身。
+
+这与 Meido 的目标相符，但首版只需要静态、进程内 Python Plugin manifest；不引入 marketplace、LSP、UI 资源或动态安装。
+
+### Hook、权限和信任是独立层
+
+Claude Code Hook 通过 command、HTTP 或 MCP tool handler 接入生命周期，覆盖会话、用户 prompt、模型工具调用、权限请求、Subagent、压缩和停止等事件。`PreToolUse` 可以修改或阻止工具调用，`PostToolUse` 可以补充结果信息；matcher 负责按工具名或事件原因筛选，handler 有明确输入输出、退出码、超时和失败处理。
+
+Claude Code 的 permissions 还有 `allow`、`ask`、`deny` 和 managed settings，workspace trust 决定项目提供的 allow 规则、MCP server 和部分插件组件何时生效；sandbox 是操作系统层约束，和模型权限判断分开。这个分层很重要：Meido 的 Plugin manifest/capability grant、Tool policy 和未来 sandbox 应该是三个不同概念，不能用“插件已加载”代表“工具已获准执行”。
+
+### Subagent 是另一种运行边界
+
+Claude Code Subagent 使用 Markdown front matter 声明名称、描述、工具 allowlist、模型、permission mode、最大轮次、预加载 Skill、MCP server、持久化 memory、hooks、后台运行和 worktree isolation。它可以在前台或后台运行，但仍是受宿主管理的独立 Agent 运行单元。
+
+Meido 当前不应把 Subagent 作为普通 Plugin 能力。Codex/Claude Executor、远程任务、审批和长期运行需要独立的 `TaskRuntime`；在此之前，能力层只负责当前角色的一次 `AgentLoop`。
+
+## 四个系统的统一比较
+
+| 维度 | Pi | Shiori-Agent | Codex | Claude Code | Meido 采用方式 |
+| --- | --- | --- | --- | --- | --- |
+| Tool | Extension 注册，支持 exposure、annotations、structured result | manifest/SDK 注册，带 risk、hooks、external_allowed | 内置/Plugin/MCP 工具，支持 enabled/disabled、approval、timeout、output budget | 内置/Plugin/MCP 工具，受 permissions、trust 和 tool search 管理 | 保留 `ToolRegistry`，补齐 source/version/risk/exposure/approval/timeout/output limit |
+| Skill | Skill/resource discovery，工具由 Extension 提供 | 主要由 Plugin/Module 提供 | `SKILL.md`，progressive disclosure，open standard | `SKILL.md`，按来源发现、命名空间、动态上下文和预加载 | 采用受限 `SKILL.md`，只贡献 prompt/resource，不执行代码 |
+| Plugin | 进程内 Extension，权限等同宿主 | manifest + capability grant + PluginContext | 安装 bundle，可带 Skill/MCP/Hook | manifest bundle，可带 Skill/Agent/Hook/MCP 等 | 静态进程内 Python manifest，显式 grant，幂等 cleanup |
+| MCP | Extension 可注册 server | 可由插件/宿主接入 | STDIO/HTTP，server/tool/approval/timeout/output 分层 | 多 transport、scope、trust 和 tool availability | 后续作为外部 Tool adapter，隔离连接与宿主服务 |
+| Hook/Lifecycle | session/tool/agent 事件，部分可变换 | 固定 phase slots，requires/produces | matcher + command/MCP hook，trust/review/managed | matcher + command/HTTP/MCP，decision control | 少量稳定 slots，区分 observe/transform/deny，冻结失败策略 |
+| Permission | exposure/annotations，不是 sandbox | capability grant 和 risk | approval、trust、managed policy、sandbox | allow/ask/deny、workspace trust、sandbox | role scope + policy evaluator + 后续独立 sandbox |
+| Context loading | Skill/resource 与 prompt checkpoint | lifecycle prompt render | Skill 描述先行、正文按需，工具可延迟搜索 | Skill 正文按需，CLAUDE.md 持续加载 | descriptor 先行，激活正文；snapshot 记录 hash 和原因 |
+| Persistence | JSONL session tree/custom entries | Runtime/Plugin state | hook/plugin 配置和运行上下文 | settings、memory、session/worktree | SQLite transcript 为权威，snapshot/diagnostics 单独记录 |
+| Distribution | npm/本地 Extension | Python Plugin/manifest | Plugin bundle/marketplace | Plugin/marketplace | 先内置和项目目录，动态市场后置 |
+
+## 对 Meido 的收敛判断
+
+四个系统共同说明能力扩展层至少要拆成六个边界：`Tool`（结构化动作）、`Skill`（按需指令/资源）、`Plugin`（分发和宿主装配）、`MCP`（外部工具连接）、`Hook`（生命周期策略）和 `Policy/Trust`（权限与来源）。Pi 和 Shiori 分别提供了运行时 API 与 capability grant 的实现参考；Codex 和 Claude Code 进一步证明 Skill 的 progressive disclosure、Plugin 的 bundle 边界、MCP 的连接/审批独立性以及 Hook 的 trust/decision 语义是可复用的通用设计。
+
+Meido 的首版应采用 Python 原生、provider-neutral 的能力层：启动时只解析 descriptors，运行开始前生成不可变 `CapabilitySnapshot`，Skill 正文在通过策略后按需编译，Tool schema 和 policy 在当前 run 内保持稳定。Plugin 只能访问显式授予的宿主端口；MemoryEngine 仍是核心服务，`memory.search` 等是受角色作用域约束的 Tool 视图。远程 MCP、Codex/Claude 调用和 Subagent 留给独立 TaskRuntime。
 
 ## Meido 当前缺口
 
