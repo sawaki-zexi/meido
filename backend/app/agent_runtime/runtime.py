@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, TypeAlias
 
 from ..models import AgentRun, Message
 from .events import AgentEndEvent, AgentEvent, MessageEndEvent, MessageUpdateEvent, TurnStartEvent
+from .capabilities import CapabilityResolution
 from .loop import run_agent_loop
 from .provider import CancellationToken, ModelProvider
 from .tools import AgentTool
@@ -136,6 +137,7 @@ class RuntimeManager:
         system: str,
         messages: list[AgentMessage],
         tools: Sequence[AgentTool] = (),
+        capabilities: CapabilityResolution | None = None,
         max_turns: int | None = None,
         provider_timeout: float | None = None,
         tool_timeout: float | None = None,
@@ -170,6 +172,7 @@ class RuntimeManager:
                 system=system,
                 messages=messages,
                 tools=tools,
+                capabilities=capabilities,
                 max_turns=max_turns,
                 signal=token,
                 session_id=run.sessionKey,

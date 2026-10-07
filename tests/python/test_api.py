@@ -350,6 +350,7 @@ def test_role_message_snapshot_does_not_persist_legacy_role_secrets(tmp_path, mo
     assert "legacy-secret" not in str(run.modelSnapshot)
     assert "modelConfig" not in run.modelSnapshot["role"]
     assert run.modelSnapshot["context"]["toolAllowlist"] == []
+    assert run.modelSnapshot["capabilities"]["tools"] == []
     assert run.modelSnapshot["context"]["messages"] == [{"content": "你好", "role": "user"}]
 
 
@@ -408,6 +409,10 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
     stored_run = sessions.get_run(run)
     assert stored_run is not None
     assert stored_run.modelSnapshot["context"]["toolAllowlist"] == [executable]
+    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["name"] == "shell"
+    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["source"] == "role"
+    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["timeoutSeconds"] == 30.0
+    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["outputLimit"] == 20000
 
 
 def test_role_update_preserves_session_messages_and_changes_future_prompt(tmp_path, monkeypatch):

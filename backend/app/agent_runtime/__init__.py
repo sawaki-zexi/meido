@@ -13,6 +13,7 @@ from .events import (
     TurnEndEvent,
     TurnStartEvent,
 )
+from .capabilities import CapabilityRegistry, CapabilityResolution, CapabilitySnapshot
 from .loop import run_agent_loop
 from .meido_provider import MeidoProvider
 from .runtime import ActiveRunError, RuntimeManager
@@ -37,6 +38,9 @@ __all__ = [
     "AgentTool",
     "AgentToolResult",
     "ActiveRunError",
+    "CapabilityRegistry",
+    "CapabilityResolution",
+    "CapabilitySnapshot",
     "AssistantDoneEvent",
     "AssistantMessage",
     "CancellationToken",
