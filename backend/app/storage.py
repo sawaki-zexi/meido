@@ -78,6 +78,10 @@ def initialize_databases(data_dir: str | Path) -> None:
                 tool_name TEXT NOT NULL,
                 call_id TEXT NOT NULL,
                 argument_summary_json TEXT NOT NULL,
+                snapshot_id TEXT,
+                tool_source TEXT,
+                tool_version TEXT,
+                policy_decision TEXT,
                 started_at TEXT NOT NULL,
                 ended_at TEXT,
                 result_category TEXT,
@@ -85,6 +89,16 @@ def initialize_databases(data_dir: str | Path) -> None:
                 error_message TEXT
             )
         """)
+        audit_columns = {row[1] for row in connection.execute("PRAGMA table_info(tool_audits)")}
+        audit_additions = {
+            "snapshot_id": "TEXT",
+            "tool_source": "TEXT",
+            "tool_version": "TEXT",
+            "policy_decision": "TEXT",
+        }
+        for column, definition in audit_additions.items():
+            if column not in audit_columns:
+                connection.execute(f"ALTER TABLE tool_audits ADD COLUMN {column} {definition}")
         connection.execute("CREATE INDEX IF NOT EXISTS tool_audits_run_id ON tool_audits(run_id)")
         index_row = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type='index' AND name='agent_runs_one_active_per_role'"

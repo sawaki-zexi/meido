@@ -112,6 +112,10 @@ def test_open_tool_audit_is_recovered_as_failed_after_restart(tmp_path):
         tool_name="recall_memory",
         call_id="call-1",
         argument_summary={"fields": {"query": {"type": "string", "length": 2}}},
+        snapshot_id="cap-run-restarted",
+        tool_source="builtin:memory",
+        tool_version="1.0.0",
+        policy_decision="allowed",
     )
 
     reopened = SessionStore(tmp_path / "data" / "sessions.db")
@@ -121,6 +125,10 @@ def test_open_tool_audit_is_recovered_as_failed_after_restart(tmp_path):
     assert audit["resultCategory"] == "failed"
     assert audit["errorType"] == "RuntimeError"
     assert audit["errorMessage"] == "服务重启时工具运行未完成"
+    assert audit["snapshotId"] == "cap-run-restarted"
+    assert audit["toolSource"] == "builtin:memory"
+    assert audit["toolVersion"] == "1.0.0"
+    assert audit["policyDecision"] == "allowed"
 
 
 def test_finish_open_tool_audits_closes_only_unfinished_rows(tmp_path):

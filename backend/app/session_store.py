@@ -359,11 +359,27 @@ class SessionStore:
         tool_name: str,
         call_id: str,
         argument_summary: dict[str, object],
+        snapshot_id: str | None = None,
+        tool_source: str | None = None,
+        tool_version: str | None = None,
+        policy_decision: str | None = None,
     ) -> None:
         with sqlite3.connect(self.database_path) as connection:
             connection.execute(
-                "INSERT OR REPLACE INTO tool_audits (audit_id, run_id, role_id, tool_name, call_id, argument_summary_json, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (f"{run_id}:{call_id}", run_id, role_id, tool_name, call_id, _dump(argument_summary), _now()),
+                "INSERT OR REPLACE INTO tool_audits (audit_id, run_id, role_id, tool_name, call_id, argument_summary_json, snapshot_id, tool_source, tool_version, policy_decision, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"{run_id}:{call_id}",
+                    run_id,
+                    role_id,
+                    tool_name,
+                    call_id,
+                    _dump(argument_summary),
+                    snapshot_id,
+                    tool_source,
+                    tool_version,
+                    policy_decision,
+                    _now(),
+                ),
             )
 
     def finish_tool_audit(
@@ -400,7 +416,7 @@ class SessionStore:
     def list_tool_audits(self, run_id: str) -> list[dict[str, object]]:
         with sqlite3.connect(self.database_path) as connection:
             rows = connection.execute(
-                "SELECT audit_id, run_id, role_id, tool_name, call_id, argument_summary_json, started_at, ended_at, result_category, error_type, error_message FROM tool_audits WHERE run_id=? ORDER BY started_at, audit_id",
+                "SELECT audit_id, run_id, role_id, tool_name, call_id, argument_summary_json, snapshot_id, tool_source, tool_version, policy_decision, started_at, ended_at, result_category, error_type, error_message FROM tool_audits WHERE run_id=? ORDER BY started_at, audit_id",
                 (run_id,),
             ).fetchall()
         return [
@@ -411,11 +427,15 @@ class SessionStore:
                 "toolName": str(row[3]),
                 "callId": str(row[4]),
                 "argumentSummary": _load_dict(row[5]) or {},
-                "startedAt": str(row[6]),
-                "endedAt": str(row[7]) if row[7] is not None else None,
-                "resultCategory": str(row[8]) if row[8] is not None else None,
-                "errorType": str(row[9]) if row[9] is not None else None,
-                "errorMessage": str(row[10]) if row[10] is not None else None,
+                "snapshotId": str(row[6]) if row[6] is not None else None,
+                "toolSource": str(row[7]) if row[7] is not None else None,
+                "toolVersion": str(row[8]) if row[8] is not None else None,
+                "policyDecision": str(row[9]) if row[9] is not None else None,
+                "startedAt": str(row[10]),
+                "endedAt": str(row[11]) if row[11] is not None else None,
+                "resultCategory": str(row[12]) if row[12] is not None else None,
+                "errorType": str(row[13]) if row[13] is not None else None,
+                "errorMessage": str(row[14]) if row[14] is not None else None,
             }
             for row in rows
         ]

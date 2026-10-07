@@ -482,6 +482,10 @@ def test_enabled_role_memory_recall_is_scoped_and_hidden_from_session_api(tmp_pa
     assert audits[0]["roleId"] == role.id
     assert audits[0]["toolName"] == "recall_memory"
     assert audits[0]["callId"] == "call-memory"
+    assert audits[0]["snapshotId"] == run.modelSnapshot["capabilities"]["snapshotId"]
+    assert audits[0]["toolSource"] == "builtin:memory"
+    assert audits[0]["toolVersion"] == "1.0.0"
+    assert audits[0]["policyDecision"] == "allowed"
     assert audits[0]["endedAt"] is not None
     assert audits[0]["resultCategory"] == "succeeded"
     assert audits[0]["argumentSummary"]["fields"]["query"] == {"type": "string", "length": 4}

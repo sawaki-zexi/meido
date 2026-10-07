@@ -1531,12 +1531,26 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     elif isinstance(runtime_event, MessageEndEvent) and isinstance(runtime_event.message, AssistantMessage):
                         content = runtime_event.message.content
                     elif isinstance(runtime_event, ToolExecutionStartEvent):
+                        definition = (
+                            capabilities.get(runtime_event.tool_name).definition
+                            if capabilities is not None and capabilities.get(runtime_event.tool_name) is not None
+                            else None
+                        )
+                        policy_decision = (
+                            capabilities.snapshot.policy_decisions.get(runtime_event.tool_name)
+                            if capabilities is not None
+                            else None
+                        )
                         session_store.start_tool_audit(
                             run_id=run_id,
                             role_id=role_id,
                             tool_name=runtime_event.tool_name,
                             call_id=runtime_event.tool_call_id,
                             argument_summary=summarize_tool_arguments(runtime_event.arguments),
+                            snapshot_id=capabilities.snapshot.snapshot_id if capabilities is not None else None,
+                            tool_source=definition.source if definition is not None else None,
+                            tool_version=definition.version if definition is not None else None,
+                            policy_decision=str(policy_decision) if policy_decision is not None else None,
                         )
                         yield _event("tool_execution_start", runtime_event_payload({
                             "toolCallId": runtime_event.tool_call_id,
