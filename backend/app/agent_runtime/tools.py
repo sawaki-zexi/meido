@@ -14,6 +14,12 @@ class ToolDefinition:
     description: str
     input_schema: dict[str, object] = field(default_factory=dict)
     risk: str = "read_only"
+    source: str = "builtin"
+    version: str = "1.0.0"
+    exposure: str = "direct"
+    approval: str = "auto"
+    timeout_seconds: float | None = None
+    output_limit: int | None = None
 
     def as_provider_schema(self) -> dict[str, object]:
         return {

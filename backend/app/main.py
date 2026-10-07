@@ -33,6 +33,7 @@ from .session_manager import SessionManager
 from .session_store import SessionStore
 from .agent_runtime import (
     ActiveRunError,
+    CapabilityRegistry,
     AgentEndEvent,
     AssistantMessage,
     MessageEndEvent,
@@ -46,6 +47,7 @@ from .agent_runtime import (
     ToolExecutionUpdateEvent,
     ToolResultMessage,
 )
+from .agent_runtime.capabilities import CapabilityResolution
 
 roles_root = Path(os.getenv("MEIDO_ROLES_DIR", "roles"))
 data_root = Path(os.getenv("MEIDO_DATA_DIR", ".data"))
@@ -1275,6 +1277,27 @@ def _runtime_tools(role) -> tuple[ShellTool, ...]:
     ),)
 
 
+def _available_runtime_tools(role) -> tuple[ShellTool, ...]:
+    shell = role.agentConfig.shell
+    return (ShellTool(
+        store.workspace_path(role.id),
+        allowed_commands=shell.allowedCommands,
+        timeout_seconds=shell.timeoutSeconds,
+        max_output_chars=shell.maxOutputChars,
+    ),)
+
+
+def _runtime_capabilities(role, *, session_key: str, run_id: str) -> CapabilityResolution:
+    enabled_tools = {tool.definition.name for tool in _runtime_tools(role)}
+    return CapabilityRegistry(_available_runtime_tools(role)).resolve(
+        role_id=role.id,
+        session_key=session_key,
+        run_id=run_id,
+        enabled_tools=enabled_tools,
+        allowed_risks={"read_only", "mutating", "external"},
+    )
+
+
 @app.post("/api/roles/{role_id}/messages")
 async def send_role_message(role_id: str, data: SendMessageInput, request: Request) -> StreamingResponse:
     try:
@@ -1429,6 +1452,12 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     "memoryContext": memory_context,
                     "toolAllowlist": list(shell_config.allowedCommands) if runtime_tools else [],
                 }
+                capabilities = _runtime_capabilities(
+                    role,
+                    session_key=session.session.sessionKey,
+                    run_id=run_id,
+                )
+                model_snapshot["capabilities"] = capabilities.snapshot.to_dict()
                 session_store.update_run(run_id, status="created", model_snapshot=model_snapshot)
                 provider = MeidoProvider(model_adapter, role, configuration, memory_context)
                 async for runtime_event in runtime_manager.run(
@@ -1446,6 +1475,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     system="",
                     messages=runtime_messages,
                     tools=runtime_tools,
+                    capabilities=capabilities,
                     max_turns=8,
                     provider_timeout=120.0,
                     tool_timeout=shell_config.timeoutSeconds if runtime_tools else 30.0,

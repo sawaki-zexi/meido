@@ -19,6 +19,7 @@ from .events import (
     TurnStartEvent,
     stamp_event,
 )
+from .capabilities import CapabilityResolution
 from .provider import (
     AssistantDoneEvent,
     CancellationToken,
@@ -38,6 +39,7 @@ async def run_agent_loop(
     system: str,
     messages: list[AgentMessage],
     tools: Sequence[AgentTool] = (),
+    capabilities: CapabilityResolution | None = None,
     max_turns: int | None = None,
     signal: CancellationToken | None = None,
     session_id: str | None = None,
@@ -55,7 +57,7 @@ async def run_agent_loop(
     """
 
     token = signal or CancellationToken()
-    registry = ToolRegistry(tools)
+    registry = ToolRegistry(tools) if capabilities is None else capabilities
     sequence = 0
 
     async def emit(event: AgentEvent) -> AsyncIterator[AgentEvent]:
@@ -185,10 +187,20 @@ async def run_agent_loop(
         for call in assistant.tool_calls:
             async for event in emit(ToolExecutionStartEvent(call.id, call.name, dict(call.arguments))):
                 yield event
+            tool_context = (
+                ToolContext(
+                    role_id=registry.snapshot.role_id,
+                    session_key=registry.snapshot.session_key,
+                    run_id=registry.snapshot.run_id,
+                    signal=token,
+                )
+                if isinstance(registry, CapabilityResolution)
+                else ToolContext(role_id=role_id, session_key=session_key, run_id=run_id, signal=token)
+            )
             result = await _execute_tool(
                 call,
                 registry,
-                ToolContext(role_id=role_id, session_key=session_key, run_id=run_id, signal=token),
+                tool_context,
                 token,
                 tool_timeout,
             )
@@ -221,14 +233,16 @@ async def run_agent_loop(
 
 async def _execute_tool(
     call: ToolCall,
-    registry: ToolRegistry,
+    registry: ToolRegistry | CapabilityResolution,
     context: ToolContext,
     signal: CancellationToken,
     timeout: float | None,
 ) -> tuple[AgentToolResult, list[AgentToolResult]]:
     tool = registry.get(call.name)
     if tool is None:
-        return AgentToolResult(f"unknown tool: {call.name}", is_error=True), []
+        reason = registry.denial_reason(call.name) if isinstance(registry, CapabilityResolution) else None
+        content = f"tool denied: {call.name}: {reason}" if reason else f"unknown tool: {call.name}"
+        return AgentToolResult(content, details={"tool": call.name, "reason": reason or "unknown"}, is_error=True), []
     updates: list[AgentToolResult] = []
 
     def on_update(result: AgentToolResult) -> None:
@@ -238,7 +252,13 @@ async def _execute_tool(
         signal.raise_if_cancelled()
         registry.validate_arguments(call.name, call.arguments)
         pending = resolve_tool_result(tool.execute(call.arguments, context, on_update))
-        result = await asyncio.wait_for(pending, timeout=timeout) if timeout is not None else await pending
+        tool_timeout = tool.definition.timeout_seconds
+        effective_timeout = (
+            min(timeout, tool_timeout)
+            if timeout is not None and tool_timeout is not None
+            else tool_timeout if tool_timeout is not None else timeout
+        )
+        result = await asyncio.wait_for(pending, timeout=effective_timeout) if effective_timeout is not None else await pending
         if not isinstance(result, AgentToolResult):
             return AgentToolResult("tool returned an invalid result", is_error=True), updates
         return result, updates
