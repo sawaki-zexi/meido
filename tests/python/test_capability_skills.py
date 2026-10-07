@@ -71,6 +71,8 @@ activation: role_default
     registry = SkillRegistry.discover(tmp_path, source="role")
     assert [skill.skill_id for skill in registry.skills] == ["study-plan"]
     assert registry.diagnostics[0]["skillId"] == "broken"
+    assert registry.diagnostics[0]["source"] == "role"
+    assert registry.diagnostics[0]["version"] == "1.0.0"
 
     active = registry.resolve(
         prompt="今天开始学习",
@@ -245,6 +247,8 @@ activation: explicit
     assert registry.diagnostics == ({
         "path": str((tmp_path / "oversized" / "SKILL.md").resolve()),
         "skillId": "oversized",
+        "source": "project",
+        "version": "1.0.0",
         "error": "skill exceeds 256 KiB",
     },)
 

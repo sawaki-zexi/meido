@@ -100,7 +100,12 @@ class SkillRegistry:
         diagnostics: list[dict[str, object]] = []
         for path in candidates:
             if path.is_symlink() or path.parent.is_symlink():
-                diagnostics.append({"path": str(path), "error": "symlinked skills are not supported"})
+                diagnostics.append({
+                    "path": str(path),
+                    "source": source,
+                    "version": None,
+                    "error": "symlinked skills are not supported",
+                })
                 continue
             try:
                 loaded.append(
@@ -112,10 +117,12 @@ class SkillRegistry:
                     )
                 )
             except (OSError, UnicodeError, ValueError) as error:
-                skill_id = _front_matter_id(path)
+                skill_id, version = _front_matter_metadata(path)
                 diagnostics.append({
                     "path": str(path),
                     "skillId": skill_id,
+                    "source": source,
+                    "version": version,
                     "error": str(error),
                 })
         try:
@@ -358,14 +365,18 @@ def _tools(value: object) -> tuple[str, ...]:
     return tuple(cleaned)
 
 
-def _front_matter_id(path: Path) -> str | None:
+def _front_matter_metadata(path: Path) -> tuple[str | None, str | None]:
     try:
         with path.open("r", encoding="utf-8") as stream:
             raw = stream.read(_FRONT_MATTER_DIAGNOSTIC_BYTES)
     except OSError:
-        return None
-    match = re.search(r"(?m)^id:\s*([^\s#]+)", raw)
-    return match.group(1) if match else None
+        return None, None
+    id_match = re.search(r"(?m)^id:\s*([^\s#]+)", raw)
+    version_match = re.search(r"(?m)^version:\s*([^\s#]+)", raw)
+    return (
+        id_match.group(1) if id_match else None,
+        version_match.group(1) if version_match else None,
+    )
 
 
 def _is_active(skill: SkillDescriptor, *, prompt: str, explicit_ids: set[str] | frozenset[str]) -> bool:
