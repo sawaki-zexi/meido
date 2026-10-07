@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Iterable
@@ -35,6 +35,11 @@ class SkillDescriptor:
     content_hash: str
     body: str
     trust_level: str = "project"
+    # Discovered skills keep only descriptor metadata in the registry.  These
+    # fields are intentionally omitted from ``to_dict`` and are populated only
+    # for file-backed descriptors.
+    body_path: str | None = None
+    root_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.trust_level not in _TRUST_LEVELS:
@@ -50,8 +55,33 @@ class SkillDescriptor:
             "source": self.source,
             "trustLevel": self.trust_level,
             "path": self.path,
-            "contentHash": self.content_hash,
+            "contentHash": self.content_hash or None,
         }
+
+    def materialize(self) -> SkillDescriptor:
+        """Load and verify a file-backed Skill body when it is activated."""
+
+        if self.body_path is None:
+            return self
+        path = Path(self.body_path)
+        root = Path(self.root_path) if self.root_path is not None else path.parent
+        if path.is_symlink() or path.parent.is_symlink():
+            raise ValueError("symlinked skills are not supported")
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(root.resolve())
+        except ValueError as error:
+            raise ValueError("skill path escapes discovery root") from error
+        body, content_hash = _read_skill_body(resolved)
+        if self.content_hash and content_hash != self.content_hash:
+            raise ValueError("skill changed after discovery")
+        return replace(
+            self,
+            body=body,
+            content_hash=content_hash,
+            body_path=None,
+            root_path=None,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,18 +231,20 @@ class SkillRegistry:
                     })
                     continue
                 allowed_tools.append(name)
+            try:
+                materialized = skill.materialize()
+            except (OSError, UnicodeError, ValueError) as error:
+                diagnostics.append({
+                    "skillId": skill.skill_id,
+                    "path": skill.path,
+                    "status": "unavailable",
+                    "error": str(error),
+                })
+                continue
             selected.append(
-                SkillDescriptor(
-                    skill_id=skill.skill_id,
-                    version=skill.version,
-                    description=skill.description,
+                replace(
+                    materialized,
                     tools=tuple(allowed_tools),
-                    activation=skill.activation,
-                    source=skill.source,
-                    path=skill.path,
-                    content_hash=skill.content_hash,
-                    body=skill.body,
-                    trust_level=skill.trust_level,
                 )
             )
         return SkillResolution(
@@ -231,12 +263,7 @@ def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str) 
             raise ValueError("skill exceeds 256 KiB")
     except OSError:
         raise
-    raw = path.read_text(encoding="utf-8")
-    # The stat check bounds normal files before decoding; retain the encoded
-    # length check for races and files whose byte size changes while reading.
-    if len(raw.encode("utf-8")) > _MAX_SKILL_BYTES:
-        raise ValueError("skill exceeds 256 KiB")
-    front_matter, body = _split_front_matter(raw)
+    front_matter = _read_skill_front_matter(path)
     skill_id = _required_text(front_matter, "id")
     version = _required_text(front_matter, "version")
     description = _required_text(front_matter, "description")
@@ -246,7 +273,7 @@ def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str) 
     if activation not in _ACTIVATIONS:
         raise ValueError(f"unsupported activation: {activation}")
     tools = _tools(front_matter.get("tools", []))
-    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    digest = _hash_skill(path)
     return SkillDescriptor(
         skill_id=skill_id,
         version=version,
@@ -256,9 +283,60 @@ def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str) 
         source=source,
         path=resolved.relative_to(root_path).as_posix(),
         content_hash=digest,
-        body=body,
+        body="",
         trust_level=trust_level,
+        body_path=str(resolved),
+        root_path=str(root_path),
     )
+
+
+def _read_skill_front_matter(path: Path) -> dict[str, object]:
+    """Read only the bounded YAML-like header during discovery."""
+
+    lines: list[str] = []
+    consumed = 0
+    with path.open("rb") as stream:
+        first = stream.readline(_MAX_SKILL_BYTES + 1)
+        consumed += len(first)
+        if not first:
+            raise ValueError("SKILL.md must start with YAML front matter")
+        if first.decode("utf-8").strip() != "---":
+            raise ValueError("SKILL.md must start with YAML front matter")
+        while True:
+            line = stream.readline(_MAX_SKILL_BYTES + 1)
+            if not line:
+                raise ValueError("front matter is not terminated")
+            consumed += len(line)
+            if consumed > _MAX_SKILL_BYTES:
+                raise ValueError("skill exceeds 256 KiB")
+            decoded = line.decode("utf-8")
+            if decoded.strip() == "---":
+                break
+            lines.append(decoded.rstrip("\r\n"))
+    return _parse_front_matter(lines)
+
+
+def _read_skill_body(path: Path) -> tuple[str, str]:
+    """Read, decode and hash the complete document at activation time."""
+
+    raw = path.read_bytes()
+    if len(raw) > _MAX_SKILL_BYTES:
+        raise ValueError("skill exceeds 256 KiB")
+    text = raw.decode("utf-8")
+    _, body = _split_front_matter(text)
+    return body, hashlib.sha256(raw).hexdigest()
+
+
+def _hash_skill(path: Path) -> str:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as stream:
+        while chunk := stream.read(64 * 1024):
+            size += len(chunk)
+            if size > _MAX_SKILL_BYTES:
+                raise ValueError("skill exceeds 256 KiB")
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _split_front_matter(raw: str) -> tuple[dict[str, object], str]:

@@ -70,6 +70,7 @@ activation: role_default
 
     registry = SkillRegistry.discover(tmp_path, source="role")
     assert [skill.skill_id for skill in registry.skills] == ["study-plan"]
+    assert registry.skills[0].body == ""
     assert registry.diagnostics[0]["skillId"] == "broken"
     assert registry.diagnostics[0]["source"] == "role"
     assert registry.diagnostics[0]["version"] == "1.0.0"
@@ -85,6 +86,62 @@ activation: role_default
     assert "学习计划" in active.prompt_sections[0]
     assert active.skills[0].path == "study-plan/SKILL.md"
     assert str(tmp_path) not in active.skills[0].path
+
+
+def test_skill_body_is_loaded_only_when_activation_selects_it(tmp_path):
+    directory = _write_skill(
+        tmp_path,
+        "lazy-skill",
+        """---
+id: lazy-skill
+version: 1.0.0
+description: 只在激活时加载正文
+activation: explicit
+---
+激活后的正文。
+""",
+    )
+
+    registry = SkillRegistry.discover(tmp_path)
+    descriptor = registry.skills[0]
+    assert descriptor.body == ""
+    original_hash = descriptor.content_hash
+    assert original_hash
+
+    # Discovery keeps only the descriptor.  A changed file is rejected when
+    # the skill is explicitly selected instead of mixing metadata and content
+    # from different generations.
+    (directory / "SKILL.md").write_text(
+        """---
+id: lazy-skill
+version: 1.0.0
+description: 只在激活时加载正文
+activation: explicit
+---
+更新后的正文。
+""",
+        encoding="utf-8",
+    )
+    changed = registry.resolve(prompt="", explicit_ids={"lazy-skill"})
+    assert changed.skills == ()
+    assert changed.prompt_sections == ()
+    assert changed.diagnostics[-1]["error"] == "skill changed after discovery"
+
+    (directory / "SKILL.md").write_text(
+        """---
+id: lazy-skill
+version: 1.0.0
+description: 只在激活时加载正文
+activation: explicit
+---
+激活后的正文。
+""",
+        encoding="utf-8",
+    )
+    fresh_registry = SkillRegistry.discover(tmp_path)
+    active = fresh_registry.resolve(prompt="", explicit_ids={"lazy-skill"})
+    assert active.prompt_sections == ("激活后的正文。",)
+    assert active.skills[0].content_hash == original_hash
 
 
 def test_skill_discovery_rejects_unknown_sources(tmp_path):
