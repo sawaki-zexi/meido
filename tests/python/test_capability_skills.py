@@ -219,6 +219,29 @@ description: 重复字段
     assert "duplicate front matter field: id" in registry.diagnostics[0]["error"]
 
 
+def test_skill_discovery_rejects_oversized_files_before_loading_body(tmp_path):
+    _write_skill(
+        tmp_path,
+        "oversized",
+        """---
+id: oversized
+version: 1.0.0
+description: 过大的技能
+activation: explicit
+---
+""" + "x" * (256 * 1024),
+    )
+
+    registry = SkillRegistry.discover(tmp_path)
+
+    assert registry.skills == ()
+    assert registry.diagnostics == ({
+        "path": str((tmp_path / "oversized" / "SKILL.md").resolve()),
+        "skillId": "oversized",
+        "error": "skill exceeds 256 KiB",
+    },)
+
+
 def test_skill_snapshot_and_agent_loop_use_filtered_prompt(tmp_path):
     _write_skill(
         tmp_path,

@@ -12,6 +12,8 @@ _SKILL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _ACTIVATIONS = frozenset({"explicit", "role_default", "keyword"})
 _TRUST_LEVELS = frozenset({"builtin", "project", "installed", "external"})
 _IMPLICIT_ACTIVATION_TRUST_LEVELS = frozenset({"installed", "external"})
+_MAX_SKILL_BYTES = 256 * 1024
+_FRONT_MATTER_DIAGNOSTIC_BYTES = 8 * 1024
 _SOURCE_TRUST_LEVELS = {
     "builtin": "builtin",
     "role": "project",
@@ -215,8 +217,15 @@ def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str) 
     resolved = path.resolve()
     if resolved.parent != root_path and resolved.parent.parent != root_path:
         raise ValueError("skill path escapes discovery root")
+    try:
+        if path.stat().st_size > _MAX_SKILL_BYTES:
+            raise ValueError("skill exceeds 256 KiB")
+    except OSError:
+        raise
     raw = path.read_text(encoding="utf-8")
-    if len(raw.encode("utf-8")) > 256 * 1024:
+    # The stat check bounds normal files before decoding; retain the encoded
+    # length check for races and files whose byte size changes while reading.
+    if len(raw.encode("utf-8")) > _MAX_SKILL_BYTES:
         raise ValueError("skill exceeds 256 KiB")
     front_matter, body = _split_front_matter(raw)
     skill_id = _required_text(front_matter, "id")
@@ -349,7 +358,8 @@ def _tools(value: object) -> tuple[str, ...]:
 
 def _front_matter_id(path: Path) -> str | None:
     try:
-        raw = path.read_text(encoding="utf-8")
+        with path.open("r", encoding="utf-8") as stream:
+            raw = stream.read(_FRONT_MATTER_DIAGNOSTIC_BYTES)
     except OSError:
         return None
     match = re.search(r"(?m)^id:\s*([^\s#]+)", raw)
