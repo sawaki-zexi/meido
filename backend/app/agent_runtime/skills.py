@@ -11,6 +11,7 @@ from typing import Iterable
 _SKILL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _ACTIVATIONS = frozenset({"explicit", "role_default", "keyword"})
 _TRUST_LEVELS = frozenset({"builtin", "project", "installed", "external"})
+_IMPLICIT_ACTIVATION_TRUST_LEVELS = frozenset({"installed", "external"})
 _SOURCE_TRUST_LEVELS = {
     "builtin": "builtin",
     "role": "project",
@@ -159,6 +160,17 @@ class SkillRegistry:
             for skill_id in sorted(unknown_ids)
         )
         for skill in self._skills.values():
+            if (
+                skill.trust_level in _IMPLICIT_ACTIVATION_TRUST_LEVELS
+                and skill.skill_id not in explicit_ids
+                and skill.activation != "explicit"
+            ):
+                diagnostics.append({
+                    "skillId": skill.skill_id,
+                    "status": "denied",
+                    "error": "skill requires explicit activation for its trust level",
+                })
+                continue
             if not _is_active(skill, prompt=prompt, explicit_ids=explicit_ids):
                 continue
             allowed_tools: list[str] = []

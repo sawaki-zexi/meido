@@ -115,6 +115,36 @@ activation: keyword
     assert registry.resolve(prompt="普通聊天", explicit_ids={"explicit-only"}).skills[0].skill_id == "explicit-only"
 
 
+def test_untrusted_skill_sources_require_explicit_activation(tmp_path):
+    _write_skill(
+        tmp_path,
+        "external-help",
+        """---
+id: external-help
+version: 1.0.0
+description: 外部帮助
+activation: keyword
+---
+外部规则。
+""",
+    )
+
+    registry = SkillRegistry.discover(tmp_path, source="external")
+    implicit = registry.resolve(prompt="外部帮助")
+
+    assert implicit.skills == ()
+    assert implicit.prompt_sections == ()
+    assert implicit.diagnostics == ({
+        "skillId": "external-help",
+        "status": "denied",
+        "error": "skill requires explicit activation for its trust level",
+    },)
+
+    explicit = registry.resolve(prompt="普通问题", explicit_ids={"external-help"})
+    assert [skill.skill_id for skill in explicit.skills] == ["external-help"]
+    assert explicit.skills[0].trust_level == "external"
+
+
 def test_explicit_unknown_skill_is_reported_without_prompt_injection():
     resolution = SkillRegistry().resolve(
         prompt="普通问题",
