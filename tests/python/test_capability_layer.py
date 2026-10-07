@@ -88,6 +88,19 @@ class WriteTool:
         return AgentToolResult("ok")
 
 
+class DeniedTool:
+    definition = ToolDefinition(
+        name="memory.denied",
+        description="Never available",
+        input_schema={"type": "object"},
+        approval="deny",
+    )
+
+    def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
+        del arguments, context, on_update
+        return AgentToolResult("should not execute")
+
+
 def test_capability_registry_rejects_duplicate_ids_and_freezes_snapshot():
     registry = CapabilityRegistry([ReadTool()])
 
@@ -130,6 +143,21 @@ def test_capability_registry_filters_tools_and_records_deterministic_reasons():
     assert resolution.denied_tools == {
         "memory.write": "tool is disabled for this run",
     }
+
+
+def test_capability_registry_denies_approval_policy_and_unknown_enabled_tools():
+    resolution = CapabilityRegistry([ReadTool(), DeniedTool()]).resolve(
+        role_id="role-1",
+        session_key="role:role-1",
+        run_id="run-1",
+        enabled_tools={"memory.read", "memory.denied", "memory.missing"},
+    )
+
+    assert [tool.name for tool in resolution.snapshot.tools] == ["memory.read"]
+    assert resolution.snapshot.policy_decisions["memory.denied"] == "denied:approval"
+    assert resolution.snapshot.policy_decisions["memory.missing"] == "denied:unknown"
+    assert resolution.denial_reason("memory.denied") == "tool approval policy denies this run"
+    assert resolution.denial_reason("memory.missing") == "tool is not registered"
 
 
 def test_agent_loop_uses_capability_resolution_for_schema_and_denied_calls():

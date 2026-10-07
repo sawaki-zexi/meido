@@ -251,12 +251,22 @@ class CapabilityRegistry:
                 denied[definition.name] = "tool risk is not allowed for this run"
                 decisions[definition.name] = "denied:risk"
                 continue
+            if definition.approval == "deny":
+                denied[definition.name] = "tool approval policy denies this run"
+                decisions[definition.name] = "denied:approval"
+                continue
             if definition.exposure == "hidden":
                 denied[definition.name] = "tool is hidden"
                 decisions[definition.name] = "denied:hidden"
                 continue
             selected.append(tool)
             decisions[definition.name] = "allowed"
+
+        if enabled_tools is not None:
+            unknown_tools = set(enabled_tools) - names
+            for name in sorted(unknown_tools):
+                denied[name] = "tool is not registered"
+                decisions[name] = "denied:unknown"
 
         snapshot_definitions = tuple(
             ToolDefinition(
