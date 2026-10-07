@@ -264,13 +264,20 @@ class CapabilityRegistry:
             host_services=host_services,
             plugin_dir=plugin_dir,
         )
-        return self.resolve(
-            role_id=role_id,
-            session_key=session_key,
-            run_id=run_id,
-            enabled_tools=enabled_tools,
-            allowed_risks=allowed_risks,
-            prompt_text=prompt_text,
-            explicit_skill_ids=explicit_skill_ids,
-            plugin_resolution=plugin_resolution,
-        )
+        try:
+            return self.resolve(
+                role_id=role_id,
+                session_key=session_key,
+                run_id=run_id,
+                enabled_tools=enabled_tools,
+                allowed_risks=allowed_risks,
+                prompt_text=prompt_text,
+                explicit_skill_ids=explicit_skill_ids,
+                plugin_resolution=plugin_resolution,
+            )
+        except BaseException:
+            try:
+                await plugin_resolution.close()
+            except Exception:
+                pass
+            raise

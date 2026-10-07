@@ -179,6 +179,35 @@ def test_plugin_setup_rollback_and_cleanup_are_idempotent():
     assert cleanup == ["rolled-back", "closed", "closed"]
 
 
+def test_plugin_resources_are_closed_when_capability_resolution_fails():
+    cleanup = []
+
+    class DuplicateTool:
+        definition = EchoTool.definition
+
+        def execute(self, arguments, context, on_update=None):
+            del arguments, context, on_update
+            return AgentToolResult("unreachable")
+
+    def factory(context):
+        context.add_cleanup(lambda: cleanup.append("closed"))
+        return PluginContribution(tools=(DuplicateTool(),))
+
+    registry = PluginRegistry([(_manifest(), factory)])
+    capabilities = CapabilityRegistry([EchoTool()], plugins=registry)
+
+    with pytest.raises(ValueError, match="duplicate tool"):
+        asyncio.run(capabilities.resolve_async(
+            role_id="role-1",
+            session_key="role:role-1",
+            run_id="run-duplicate",
+            enabled_plugin_ids={"demo"},
+            enabled_tools={"plugin.echo"},
+        ))
+
+    assert cleanup == ["closed"]
+
+
 def test_plugin_transform_hook_changes_tool_arguments_before_execution():
     def factory(context):
         del context
