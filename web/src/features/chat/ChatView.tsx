@@ -4,6 +4,7 @@ import type { ChatState } from "./useChat";
 import { Avatar, roleStyle } from "../../ui/Avatar";
 import { Icon, IconButton } from "../../ui/Icon";
 import { Notice, Placeholder } from "../../ui/Status";
+import { RoleModelSelector } from "../model/RoleModelSelector";
 
 function MessageItem({ message, role, highlighted }: { message: Message; role: Role; highlighted: boolean }) {
   const mine = message.role === "user";
@@ -70,6 +71,7 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
         <h1>{role.name}</h1>
         {role.description && <small>{role.description}</small>}
       </div>
+      <RoleModelSelector roleId={role.id} disabled={chat.sending || chat.opening} />
       <IconButton icon="memory" label="角色记忆" onClick={onShowMemories} />
       <IconButton icon="profile" label="角色资料" onClick={onShowProfile} />
     </header>
