@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+import asyncio
 from types import MappingProxyType
+from typing import Mapping
 
+from .plugins import HookContext, PluginDescriptor, PluginResolution, PluginRegistry, run_hook
 from .skills import SkillDescriptor, SkillRegistry, SkillResolution
-from .tools import AgentTool, ToolDefinition, ToolRegistry
+from .tools import AgentTool, AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +24,8 @@ class CapabilitySnapshot:
     skills: tuple[SkillDescriptor, ...] = ()
     prompt_sections: tuple[str, ...] = ()
     skill_diagnostics: tuple[MappingProxyType, ...] = ()
+    plugins: tuple[PluginDescriptor, ...] = ()
+    plugin_diagnostics: tuple[MappingProxyType, ...] = ()
 
     def provider_schemas(self) -> list[dict[str, object]]:
         return [definition.as_provider_schema() for definition in self.tools]
@@ -53,6 +58,8 @@ class CapabilitySnapshot:
             ],
             "promptSections": list(self.prompt_sections),
             "skillDiagnostics": [dict(item) for item in self.skill_diagnostics],
+            "plugins": [plugin.to_dict() for plugin in self.plugins],
+            "pluginDiagnostics": [dict(item) for item in self.plugin_diagnostics],
         }
 
 
@@ -63,6 +70,7 @@ class CapabilityResolution:
     snapshot: CapabilitySnapshot
     tools: tuple[AgentTool, ...]
     denied_tools: MappingProxyType
+    plugin_resolution: PluginResolution | None = None
 
     def provider_schemas(self) -> list[dict[str, object]]:
         return self.snapshot.provider_schemas()
@@ -80,6 +88,47 @@ class CapabilityResolution:
     def validate_arguments(self, name: str, arguments: dict[str, object]) -> None:
         ToolRegistry(self.tools).validate_arguments(name, arguments)
 
+    @property
+    def hooks(self):
+        return self.plugin_resolution.hooks if self.plugin_resolution is not None else ()
+
+    async def prepare_tool_call(
+        self,
+        name: str,
+        arguments: dict[str, object],
+        context: ToolContext,
+    ) -> tuple[dict[str, object], AgentToolResult | None]:
+        current = dict(arguments)
+        for hook in self.hooks:
+            if hook.definition.tool_names and name not in hook.definition.tool_names:
+                continue
+            try:
+                pending = run_hook(hook, HookContext(name, current, context))
+                outcome = (
+                    await asyncio.wait_for(pending, timeout=hook.definition.timeout_seconds)
+                    if hook.definition.timeout_seconds is not None
+                    else await pending
+                )
+            except Exception as error:
+                return current, AgentToolResult(
+                    "tool hook failed",
+                    details={"hook": hook.definition.hook_id, "reason": str(error)},
+                    is_error=True,
+                )
+            if not outcome.allowed:
+                return current, AgentToolResult(
+                    "tool call denied by hook",
+                    details={"hook": hook.definition.hook_id, "reason": outcome.reason or "denied"},
+                    is_error=True,
+                )
+            if outcome.arguments is not None:
+                current = dict(outcome.arguments)
+        return current, None
+
+    async def close(self) -> None:
+        if self.plugin_resolution is not None:
+            await self.plugin_resolution.close()
+
 
 class CapabilityRegistry:
     """Resolve registered tools into a stable, role-scoped run snapshot."""
@@ -89,9 +138,11 @@ class CapabilityRegistry:
         tools: tuple[AgentTool, ...] | list[AgentTool] = (),
         *,
         skills: SkillRegistry | None = None,
+        plugins: PluginRegistry | None = None,
     ) -> None:
         self._tools: dict[str, AgentTool] = {}
         self.skills = skills or SkillRegistry()
+        self.plugins = plugins or PluginRegistry()
         for tool in tools:
             self.register(tool)
 
@@ -111,11 +162,20 @@ class CapabilityRegistry:
         allowed_risks: set[str] | frozenset[str] | None = None,
         prompt_text: str = "",
         explicit_skill_ids: set[str] | frozenset[str] = frozenset(),
+        plugin_resolution: PluginResolution | None = None,
     ) -> CapabilityResolution:
+        registered_tools = list(self._tools.values())
+        if plugin_resolution is not None:
+            registered_tools.extend(plugin_resolution.tools)
+        names: set[str] = set()
+        for tool in registered_tools:
+            if tool.definition.name in names:
+                raise ValueError(f"duplicate tool: {tool.definition.name}")
+            names.add(tool.definition.name)
         selected: list[AgentTool] = []
         decisions: dict[str, str] = {}
         denied: dict[str, str] = {}
-        for tool in self._tools.values():
+        for tool in registered_tools:
             definition = tool.definition
             if enabled_tools is not None and definition.name not in enabled_tools:
                 denied[definition.name] = "tool is disabled for this run"
@@ -150,7 +210,7 @@ class CapabilityRegistry:
         skill_resolution: SkillResolution = self.skills.resolve(
             prompt=prompt_text,
             explicit_ids=explicit_skill_ids,
-            available_tools=set(self._tools),
+            available_tools={tool.definition.name for tool in registered_tools},
             enabled_tools=set(tool.definition.name for tool in selected),
         )
         snapshot = CapabilitySnapshot(
@@ -163,9 +223,44 @@ class CapabilityRegistry:
             skills=skill_resolution.skills,
             prompt_sections=skill_resolution.prompt_sections,
             skill_diagnostics=skill_resolution.diagnostics,
+            plugins=plugin_resolution.descriptors if plugin_resolution is not None else (),
+            plugin_diagnostics=plugin_resolution.diagnostics if plugin_resolution is not None else (),
         )
         return CapabilityResolution(
             snapshot=snapshot,
             tools=tuple(selected),
             denied_tools=MappingProxyType(dict(denied)),
+            plugin_resolution=plugin_resolution,
+        )
+
+    async def resolve_async(
+        self,
+        *,
+        role_id: str,
+        session_key: str,
+        run_id: str,
+        enabled_tools: set[str] | frozenset[str] | None = None,
+        allowed_risks: set[str] | frozenset[str] | None = None,
+        prompt_text: str = "",
+        explicit_skill_ids: set[str] | frozenset[str] = frozenset(),
+        enabled_plugin_ids: set[str] | frozenset[str] | None = None,
+        granted_capabilities: set[str] | frozenset[str] = frozenset(),
+        host_services: Mapping[str, object] = MappingProxyType({}),
+        plugin_dir: str = "",
+    ) -> CapabilityResolution:
+        plugin_resolution = await self.plugins.load(
+            enabled_ids=enabled_plugin_ids,
+            granted_capabilities=granted_capabilities,
+            host_services=host_services,
+            plugin_dir=plugin_dir,
+        )
+        return self.resolve(
+            role_id=role_id,
+            session_key=session_key,
+            run_id=run_id,
+            enabled_tools=enabled_tools,
+            allowed_risks=allowed_risks,
+            prompt_text=prompt_text,
+            explicit_skill_ids=explicit_skill_ids,
+            plugin_resolution=plugin_resolution,
         )

@@ -40,6 +40,7 @@ from .agent_runtime import (
     MessageStartEvent,
     MessageUpdateEvent,
     MeidoProvider,
+    PluginRegistry,
     RuntimeManager,
     ShellTool,
     ToolExecutionEndEvent,
@@ -63,6 +64,7 @@ memory_store = MemoryStore(data_root / "memory2.db")
 memory_event_bus = MemoryEventBus()
 model_adapter: ModelAdapter = OpenAICompatibleAdapter()
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
+plugin_registry = PluginRegistry()
 
 
 def _embedding_configuration(role_id: str):
@@ -1289,14 +1291,18 @@ def _available_runtime_tools(role) -> tuple[ShellTool, ...]:
     ),)
 
 
-def _runtime_capabilities(role, *, session_key: str, run_id: str, prompt_text: str, explicit_skill_ids: list[str] | None = None) -> CapabilityResolution:
+async def _runtime_capabilities(role, *, session_key: str, run_id: str, prompt_text: str, explicit_skill_ids: list[str] | None = None) -> CapabilityResolution:
     enabled_tools = {tool.definition.name for tool in _runtime_tools(role)}
     skill_roots = (
         (roles_root / role.id / "skills", "role"),
         (project_root / ".agents" / "skills", "project"),
     )
     skills = SkillRegistry.discover_many(skill_roots)
-    return CapabilityRegistry(_available_runtime_tools(role), skills=skills).resolve(
+    return await CapabilityRegistry(
+        _available_runtime_tools(role),
+        skills=skills,
+        plugins=plugin_registry,
+    ).resolve_async(
         role_id=role.id,
         session_key=session_key,
         run_id=run_id,
@@ -1461,7 +1467,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     "memoryContext": memory_context,
                     "toolAllowlist": list(shell_config.allowedCommands) if runtime_tools else [],
                 }
-                capabilities = _runtime_capabilities(
+                capabilities = await _runtime_capabilities(
                     role,
                     session_key=session.session.sessionKey,
                     run_id=run_id,

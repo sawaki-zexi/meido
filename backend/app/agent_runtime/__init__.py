@@ -14,6 +14,23 @@ from .events import (
     TurnStartEvent,
 )
 from .capabilities import CapabilityRegistry, CapabilityResolution, CapabilitySnapshot
+from .plugins import (
+    AgentToolHook,
+    CapabilityNotGranted,
+    HookContext,
+    HookDefinition,
+    HookOutcome,
+    HostServiceUnavailable,
+    LoadedPlugin,
+    PluginContext,
+    PluginContribution,
+    PluginDescriptor,
+    PluginError,
+    PluginFactory,
+    PluginManifest,
+    PluginRegistry,
+    PluginResolution,
+)
 from .skills import SkillDescriptor, SkillRegistry, SkillResolution
 from .loop import run_agent_loop
 from .meido_provider import MeidoProvider
@@ -42,6 +59,21 @@ __all__ = [
     "CapabilityRegistry",
     "CapabilityResolution",
     "CapabilitySnapshot",
+    "AgentToolHook",
+    "CapabilityNotGranted",
+    "HookContext",
+    "HookDefinition",
+    "HookOutcome",
+    "HostServiceUnavailable",
+    "LoadedPlugin",
+    "PluginContext",
+    "PluginContribution",
+    "PluginDescriptor",
+    "PluginError",
+    "PluginFactory",
+    "PluginManifest",
+    "PluginRegistry",
+    "PluginResolution",
     "SkillDescriptor",
     "SkillRegistry",
     "SkillResolution",

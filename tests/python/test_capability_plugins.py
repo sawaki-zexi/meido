@@ -1,0 +1,259 @@
+import asyncio
+from collections.abc import Mapping
+
+import pytest
+
+from backend.app.agent_runtime import (
+    AgentToolResult,
+    AssistantDoneEvent,
+    AssistantMessage,
+    CapabilityRegistry,
+    CancellationToken,
+    HookDefinition,
+    HookOutcome,
+    PluginContribution,
+    PluginManifest,
+    PluginRegistry,
+    ToolCall,
+    ToolCallEndEvent,
+    ToolContext,
+    ToolDefinition,
+    UserMessage,
+    run_agent_loop,
+)
+from backend.app.agent_runtime.plugins import HookContext
+
+
+class EchoTool:
+    definition = ToolDefinition(
+        name="plugin.echo",
+        description="Echo a message",
+        input_schema={
+            "type": "object",
+            "properties": {"message": {"type": "string"}},
+            "required": ["message"],
+            "additionalProperties": False,
+        },
+        source="plugin:demo",
+    )
+
+    def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
+        del context, on_update
+        return AgentToolResult(str(arguments["message"]))
+
+
+class UppercaseHook:
+    definition = HookDefinition(
+        hook_id="demo.uppercase",
+        mode="transform",
+        tool_names=("plugin.echo",),
+    )
+
+    def before_tool(self, context: HookContext) -> HookOutcome:
+        return HookOutcome(arguments={"message": str(context.arguments["message"]).upper()})
+
+
+class DenyHook:
+    definition = HookDefinition(
+        hook_id="demo.deny",
+        mode="deny",
+        tool_names=("plugin.echo",),
+    )
+
+    def before_tool(self, context: HookContext) -> HookOutcome:
+        del context
+        return HookOutcome.deny("demo policy")
+
+
+class ObserveHook:
+    definition = HookDefinition(
+        hook_id="demo.observe",
+        mode="observe",
+        tool_names=("plugin.echo",),
+    )
+
+    def __init__(self):
+        self.seen = []
+
+    def before_tool(self, context: HookContext) -> HookOutcome:
+        self.seen.append(dict(context.arguments))
+        return HookOutcome.deny("ignored")
+
+
+def _manifest(*capabilities: str) -> PluginManifest:
+    return PluginManifest(
+        plugin_id="demo",
+        version="1.0.0",
+        requested_capabilities=capabilities,
+        source="builtin",
+    )
+
+
+def test_plugin_manifest_rejects_unknown_capability_and_duplicate_ids():
+    with pytest.raises(ValueError, match="unknown capability"):
+        PluginManifest("demo", "1.0.0", ("network.open",))
+
+    registry = PluginRegistry()
+    registry.register(_manifest(), lambda context: PluginContribution())
+    with pytest.raises(ValueError, match="duplicate plugin"):
+        registry.register(_manifest(), lambda context: PluginContribution())
+
+
+def test_plugin_grant_and_host_service_diagnostics_are_distinct():
+    called = []
+
+    def factory(context):
+        called.append(context.require("memory.read"))
+        return PluginContribution()
+
+    registry = PluginRegistry([(_manifest("memory.read"), factory)])
+    denied = asyncio.run(registry.load(granted_capabilities=set()))
+    assert denied.loaded == ()
+    assert denied.diagnostics[0]["error"] == "capability not granted: memory.read"
+    assert called == []
+
+    unavailable = asyncio.run(registry.load(granted_capabilities={"memory.read"}))
+    assert unavailable.loaded == ()
+    assert "host service unavailable: memory.read" in unavailable.diagnostics[0]["error"]
+    assert called == []
+
+
+def test_plugin_setup_rollback_and_cleanup_are_idempotent():
+    cleanup = []
+
+    def factory(context):
+        context.add_cleanup(lambda: cleanup.append("rolled-back"))
+        raise RuntimeError("setup failed")
+
+    registry = PluginRegistry([(_manifest(), factory)])
+    result = asyncio.run(registry.load())
+    assert result.loaded == ()
+    assert result.diagnostics[0]["status"] == "failed"
+    assert cleanup == ["rolled-back"]
+
+    async def good_factory(context):
+        context.add_cleanup(lambda: cleanup.append("closed"))
+        return PluginContribution(tools=(EchoTool(),))
+
+    good = PluginRegistry([(_manifest(), good_factory)])
+    resolution = asyncio.run(good.load())
+    capabilities = CapabilityRegistry(plugins=good).resolve(
+        role_id="role-1",
+        session_key="role:role-1",
+        run_id="run-1",
+        plugin_resolution=resolution,
+    )
+    assert capabilities.snapshot.to_dict()["plugins"][0]["status"] == "loaded"
+    asyncio.run(capabilities.close())
+    asyncio.run(capabilities.close())
+    assert cleanup == ["rolled-back", "closed"]
+    reloaded = asyncio.run(resolution.reload(good))
+    asyncio.run(reloaded.close())
+    assert cleanup == ["rolled-back", "closed", "closed"]
+
+
+def test_plugin_transform_hook_changes_tool_arguments_before_execution():
+    def factory(context):
+        del context
+        return PluginContribution(tools=(EchoTool(),), hooks=(UppercaseHook(),))
+
+    registry = PluginRegistry([(_manifest(), factory)])
+    capabilities = asyncio.run(
+        CapabilityRegistry(plugins=registry).resolve_async(
+            role_id="role-1",
+            session_key="role:role-1",
+            run_id="run-1",
+            enabled_tools={"plugin.echo"},
+        )
+    )
+
+    class Provider:
+        def __init__(self):
+            self.turn = 0
+
+        def stream_response(self, *, model, system, messages, tools, signal, session_id=None):
+            del model, system, messages, tools, signal, session_id
+            self.turn += 1
+            call = ToolCall("call-1", "plugin.echo", {"message": "hello"})
+
+            async def stream():
+                if self.turn == 1:
+                    yield ToolCallEndEvent(call)
+                    yield AssistantDoneEvent(AssistantMessage(tool_calls=(call,), stop_reason="tool_use"))
+                else:
+                    yield AssistantDoneEvent(AssistantMessage(content="done"))
+
+            return stream()
+
+    async def collect():
+        return [
+            event
+            async for event in run_agent_loop(
+                provider=Provider(),
+                model="fake",
+                system="",
+                messages=[UserMessage("echo")],
+                capabilities=capabilities,
+                max_turns=2,
+            )
+        ]
+
+    events = asyncio.run(collect())
+    result = next(event.result for event in events if event.type == "tool_execution_end")
+    assert result.content == "HELLO"
+    asyncio.run(capabilities.close())
+
+
+def test_plugin_deny_hook_returns_structured_tool_error():
+    def factory(context):
+        del context
+        return PluginContribution(tools=(EchoTool(),), hooks=(DenyHook(),))
+
+    capabilities = asyncio.run(
+        CapabilityRegistry(plugins=PluginRegistry([(_manifest(), factory)])).resolve_async(
+            role_id="role-1",
+            session_key="role:role-1",
+            run_id="run-1",
+            enabled_tools={"plugin.echo"},
+        )
+    )
+    arguments, error = asyncio.run(
+        capabilities.prepare_tool_call(
+            "plugin.echo",
+            {"message": "hello"},
+            ToolContext("role-1", "role:role-1", "run-1", signal=CancellationToken()),
+        )
+    )
+    assert arguments == {"message": "hello"}
+    assert error is not None
+    assert error.is_error is True
+    assert error.details == {"hook": "demo.deny", "reason": "demo policy"}
+    asyncio.run(capabilities.close())
+
+
+def test_plugin_observe_hook_cannot_change_or_deny_tool_call():
+    observe = ObserveHook()
+
+    def factory(context):
+        del context
+        return PluginContribution(tools=(EchoTool(),), hooks=(observe,))
+
+    capabilities = asyncio.run(
+        CapabilityRegistry(plugins=PluginRegistry([(_manifest(), factory)])).resolve_async(
+            role_id="role-1",
+            session_key="role:role-1",
+            run_id="run-1",
+            enabled_tools={"plugin.echo"},
+        )
+    )
+    arguments, error = asyncio.run(
+        capabilities.prepare_tool_call(
+            "plugin.echo",
+            {"message": "hello"},
+            ToolContext("role-1", "role:role-1", "run-1", signal=CancellationToken()),
+        )
+    )
+    assert arguments == {"message": "hello"}
+    assert error is None
+    assert observe.seen == [{"message": "hello"}]
+    asyncio.run(capabilities.close())

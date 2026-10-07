@@ -250,8 +250,13 @@ async def _execute_tool(
 
     try:
         signal.raise_if_cancelled()
-        registry.validate_arguments(call.name, call.arguments)
-        pending = resolve_tool_result(tool.execute(call.arguments, context, on_update))
+        arguments = dict(call.arguments)
+        if isinstance(registry, CapabilityResolution):
+            arguments, hook_error = await registry.prepare_tool_call(call.name, arguments, context)
+            if hook_error is not None:
+                return hook_error, updates
+        registry.validate_arguments(call.name, arguments)
+        pending = resolve_tool_result(tool.execute(arguments, context, on_update))
         tool_timeout = tool.definition.timeout_seconds
         effective_timeout = (
             min(timeout, tool_timeout)

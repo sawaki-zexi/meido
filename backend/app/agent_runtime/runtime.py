@@ -232,6 +232,12 @@ class RuntimeManager:
             )
             raise
         finally:
+            if capabilities is not None:
+                try:
+                    await capabilities.close()
+                except Exception:
+                    # Cleanup diagnostics must not hide the run's terminal state.
+                    pass
             run_state = self.sessions.get_run(run.runId)
             if run_state is not None and run_state.status in {"created", "running"}:
                 token.cancel()
