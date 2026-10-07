@@ -222,6 +222,14 @@ def test_plugin_can_contribute_declarative_skill():
     asyncio.run(capabilities.close())
 
 
+def test_plugin_contribution_keeps_tools_hooks_positional_contract():
+    contribution = PluginContribution((EchoTool(),), (UppercaseHook(),))
+
+    assert contribution.tools[0].definition.name == "plugin.echo"
+    assert contribution.hooks[0].definition.hook_id == "demo.uppercase"
+    assert contribution.skills == ()
+
+
 def test_plugin_registry_rejects_duplicate_hook_ids_across_plugins():
     contribution = PluginContribution(hooks=(ObserveHook(),))
     registry = PluginRegistry([

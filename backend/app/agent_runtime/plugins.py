@@ -135,8 +135,8 @@ class AgentToolHook(Protocol):
 @dataclass(frozen=True, slots=True)
 class PluginContribution:
     tools: tuple[AgentTool, ...] = ()
-    skills: tuple[SkillDescriptor, ...] = ()
     hooks: tuple[AgentToolHook, ...] = ()
+    skills: tuple[SkillDescriptor, ...] = ()
 
 
 @dataclass(slots=True)
