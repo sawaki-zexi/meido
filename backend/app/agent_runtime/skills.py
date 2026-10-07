@@ -128,6 +128,15 @@ class SkillRegistry:
     ) -> SkillResolution:
         selected: list[SkillDescriptor] = []
         diagnostics = [dict(item) for item in self.diagnostics]
+        unknown_ids = set(explicit_ids) - set(self._skills)
+        diagnostics.extend(
+            {
+                "skillId": skill_id,
+                "status": "unknown",
+                "error": "skill is not registered",
+            }
+            for skill_id in sorted(unknown_ids)
+        )
         for skill in self._skills.values():
             if not _is_active(skill, prompt=prompt, explicit_ids=explicit_ids):
                 continue

@@ -114,6 +114,21 @@ activation: keyword
     assert registry.resolve(prompt="普通聊天", explicit_ids={"explicit-only"}).skills[0].skill_id == "explicit-only"
 
 
+def test_explicit_unknown_skill_is_reported_without_prompt_injection():
+    resolution = SkillRegistry().resolve(
+        prompt="普通问题",
+        explicit_ids={"missing-skill"},
+    )
+
+    assert resolution.skills == ()
+    assert resolution.prompt_sections == ()
+    assert resolution.diagnostics == ({
+        "skillId": "missing-skill",
+        "status": "unknown",
+        "error": "skill is not registered",
+    },)
+
+
 def test_skill_front_matter_accepts_inline_tool_list(tmp_path):
     _write_skill(
         tmp_path,
