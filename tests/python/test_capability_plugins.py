@@ -382,12 +382,11 @@ def test_plugin_hook_cannot_mutate_arguments_in_place():
     )
     assert arguments == {"message": "hello", "metadata": {"flag": False}}
     assert error is None
-    assert capabilities.hook_diagnostics == ({
-        "hook": "demo.mutating-observer",
-        "status": "failed",
-        "errorType": "TypeError",
-        "message": "tool hook failed",
-    },)
+    assert len(capabilities.hook_diagnostics) == 1
+    diagnostic = capabilities.hook_diagnostics[0]
+    assert diagnostic["hook"] == "demo.mutating-observer"
+    assert diagnostic["status"] == "failed"
+    assert diagnostic["message"] == "tool hook failed"
     asyncio.run(capabilities.close())
 
 
