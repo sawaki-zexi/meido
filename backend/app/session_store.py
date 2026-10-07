@@ -440,6 +440,21 @@ class SessionStore:
             for row in rows
         ]
 
+    def snapshot_tool_audits(self, role_id: str) -> list[tuple[object, ...]]:
+        with sqlite3.connect(self.database_path) as connection:
+            return connection.execute(
+                "SELECT audit_id, run_id, role_id, tool_name, call_id, argument_summary_json, snapshot_id, tool_source, tool_version, policy_decision, started_at, ended_at, result_category, error_type, error_message FROM tool_audits WHERE role_id = ?",
+                (role_id,),
+            ).fetchall()
+
+    def restore_tool_audits(self, role_id: str, audits: list[tuple[object, ...]]) -> None:
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("DELETE FROM tool_audits WHERE role_id = ?", (role_id,))
+            connection.executemany(
+                "INSERT INTO tool_audits (audit_id, run_id, role_id, tool_name, call_id, argument_summary_json, snapshot_id, tool_source, tool_version, policy_decision, started_at, ended_at, result_category, error_type, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                audits,
+            )
+
     def snapshot_role_session(self, role_id: str) -> tuple[tuple[object, ...] | None, list[tuple[object, ...]], list[tuple[object, ...]]]:
         session_key = f"role:{role_id}"
         with sqlite3.connect(self.database_path) as connection:

@@ -939,6 +939,18 @@ def test_delete_role_failure_restores_role_and_chat_history(tmp_path, monkeypatc
     role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
     client.post(f"/api/roles/{role.id}/messages", json={"content": "保留消息"})
     before = sessions.list_messages(f"role:{role.id}")
+    sessions.start_tool_audit(
+        run_id="run-audit-rollback",
+        role_id=role.id,
+        tool_name="recall_memory",
+        call_id="call-audit-rollback",
+        argument_summary={"fields": {"query": {"type": "string", "length": 2}}},
+        snapshot_id="cap-audit-rollback",
+        tool_source="builtin:memory",
+        tool_version="1.0.0",
+        policy_decision="allowed",
+    )
+    before_audits = sessions.list_tool_audits("run-audit-rollback")
 
     def fail_delete(role_id):
         raise OSError("数据库删除失败")
@@ -950,6 +962,7 @@ def test_delete_role_failure_restores_role_and_chat_history(tmp_path, monkeypatc
     assert response.json()["detail"] == "删除失败，角色和聊天记录已保留"
     assert client.get(f"/api/roles/{role.id}").status_code == 200
     assert [item.model_dump() for item in sessions.list_messages(f"role:{role.id}")] == [item.model_dump() for item in before]
+    assert sessions.list_tool_audits("run-audit-rollback") == before_audits
 
 
 def test_delete_role_memory_failure_restores_role_chat_and_memory(tmp_path, monkeypatch):
@@ -962,6 +975,14 @@ def test_delete_role_memory_failure_restores_role_chat_and_memory(tmp_path, monk
     client.post(f"/api/roles/{role.id}/messages", json={"content": "保留消息"})
     memory_service.remember(role.id, "保留记忆", "fact", stable_source_key="keep")
     before_messages = sessions.list_messages(f"role:{role.id}")
+    sessions.start_tool_audit(
+        run_id="run-memory-delete-rollback",
+        role_id=role.id,
+        tool_name="recall_memory",
+        call_id="call-memory-delete-rollback",
+        argument_summary={},
+    )
+    before_audits = sessions.list_tool_audits("run-memory-delete-rollback")
 
     def fail_delete(role_id):
         raise OSError("记忆数据库删除失败")
@@ -973,6 +994,7 @@ def test_delete_role_memory_failure_restores_role_chat_and_memory(tmp_path, monk
     assert client.get(f"/api/roles/{role.id}").status_code == 200
     assert [item.model_dump() for item in sessions.list_messages(f"role:{role.id}")] == [item.model_dump() for item in before_messages]
     assert [item.summary for item in memory_store.list_active(role.id)] == ["保留记忆"]
+    assert sessions.list_tool_audits("run-memory-delete-rollback") == before_audits
 
 
 def test_delete_role_downstream_key_error_is_reported_as_delete_failure(tmp_path, monkeypatch):

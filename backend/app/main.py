@@ -855,8 +855,10 @@ async def delete_role(role_id: str) -> None:
         raise HTTPException(status_code=409, detail="该角色正在生成回复，暂时无法删除")
     deletion_started = False
     session_snapshot = None
+    audit_snapshot = None
     memory_snapshot = None
     session_snapshot_taken = False
+    audit_snapshot_taken = False
     memory_snapshot_taken = False
     role_delete_attempted = False
     deletion_succeeded = False
@@ -874,6 +876,8 @@ async def delete_role(role_id: str) -> None:
         await deletion_lock.acquire()
         session_snapshot = session_store.snapshot_role_session(role_id)
         session_snapshot_taken = True
+        audit_snapshot = session_store.snapshot_tool_audits(role_id)
+        audit_snapshot_taken = True
         memory_snapshot = memory_store.snapshot_role(role_id)
         memory_snapshot_taken = True
         deletion_marker = store.begin_role_deletion(role_id)
@@ -897,6 +901,11 @@ async def delete_role(role_id: str) -> None:
         if session_snapshot_taken and session_snapshot is not None:
             try:
                 session_store.restore_role_session(role_id, session_snapshot)
+            except Exception as restore_error:
+                rollback_errors.append(restore_error)
+        if audit_snapshot_taken and audit_snapshot is not None:
+            try:
+                session_store.restore_tool_audits(role_id, audit_snapshot)
             except Exception as restore_error:
                 rollback_errors.append(restore_error)
         if memory_snapshot_taken and memory_snapshot is not None:
