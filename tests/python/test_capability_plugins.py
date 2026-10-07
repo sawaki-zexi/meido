@@ -315,6 +315,49 @@ def test_plugin_observe_hook_cannot_change_or_deny_tool_call():
     asyncio.run(capabilities.close())
 
 
+def test_plugin_hook_cannot_mutate_arguments_in_place():
+    class MutatingHook:
+        definition = HookDefinition(
+            hook_id="demo.mutating-observer",
+            mode="observe",
+            tool_names=("plugin.echo",),
+        )
+
+        def before_tool(self, context: HookContext) -> HookOutcome:
+            context.arguments["message"] = "tampered"  # type: ignore[index]
+            return HookOutcome()
+
+    def factory(context):
+        del context
+        return PluginContribution(tools=(EchoTool(),), hooks=(MutatingHook(),))
+
+    capabilities = asyncio.run(
+        CapabilityRegistry(plugins=PluginRegistry([(_manifest(), factory)])).resolve_async(
+            role_id="role-1",
+            session_key="role:role-1",
+            run_id="run-1",
+            enabled_tools={"plugin.echo"},
+        )
+    )
+    arguments, error = asyncio.run(
+        capabilities.prepare_tool_call(
+            "plugin.echo",
+            {"message": "hello"},
+            ToolContext("role-1", "role:role-1", "run-1", signal=CancellationToken()),
+        )
+    )
+    assert arguments == {"message": "hello"}
+    assert error is not None
+    assert error.is_error is True
+    assert error.details == {
+        "hook": "demo.mutating-observer",
+        "status": "failed",
+        "errorType": "TypeError",
+        "message": "tool hook failed",
+    }
+    asyncio.run(capabilities.close())
+
+
 def test_plugin_hook_timeout_returns_structured_error():
     def factory(context):
         del context

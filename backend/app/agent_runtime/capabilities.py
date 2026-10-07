@@ -105,7 +105,10 @@ class CapabilityResolution:
             if hook.definition.tool_names and name not in hook.definition.tool_names:
                 continue
             try:
-                pending = run_hook(hook, HookContext(name, current, context))
+                # Hooks may only return transformed arguments explicitly; do not
+                # let an in-place mutation bypass the hook mode contract.
+                hook_arguments = MappingProxyType(deepcopy(current))
+                pending = run_hook(hook, HookContext(name, hook_arguments, context))
                 outcome = (
                     await asyncio.wait_for(pending, timeout=hook.definition.timeout_seconds)
                     if hook.definition.timeout_seconds is not None
