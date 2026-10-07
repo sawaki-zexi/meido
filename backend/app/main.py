@@ -1367,6 +1367,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         placeholder_id: str | None = assistant_message.id
         final_message: Message | None = None
         disconnect_watcher: asyncio.Task[None] | None = None
+        capabilities: CapabilityResolution | None = None
+        capabilities_owned_by_runtime = False
 
         def runtime_event_payload(payload: dict[str, object], runtime_sequence: int | None = None) -> dict[str, object]:
             nonlocal sse_sequence
@@ -1483,6 +1485,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     memory_context,
                     capabilities.prompt_context(),
                 )
+                capabilities_owned_by_runtime = True
                 async for runtime_event in runtime_manager.run(
                     AgentRun(
                         runId=run_id,
@@ -1597,6 +1600,11 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
             runtime_manager.cancel_unstarted_run(run_id)
             raise
         finally:
+            if capabilities is not None and not capabilities_owned_by_runtime:
+                try:
+                    await capabilities.close()
+                except Exception:
+                    pass
             if disconnect_watcher is not None:
                 disconnect_watcher.cancel()
                 await asyncio.gather(disconnect_watcher, return_exceptions=True)

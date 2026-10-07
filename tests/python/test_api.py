@@ -975,6 +975,49 @@ def test_unstarted_message_stream_is_failed_and_role_can_retry(tmp_path, monkeyp
     assert "event: assistant_completed" in retry.text
 
 
+def test_capabilities_are_closed_when_provider_setup_fails(tmp_path, monkeypatch):
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+
+    class FakeCapabilities:
+        class Snapshot:
+            def to_dict(self):
+                return {"tools": []}
+
+        snapshot = Snapshot()
+
+        def prompt_context(self):
+            return ""
+
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    capabilities = FakeCapabilities()
+
+    async def resolve_capabilities(*args, **kwargs):
+        del args, kwargs
+        return capabilities
+
+    def fail_provider(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("provider setup failed")
+
+    monkeypatch.setattr(main, "_runtime_capabilities", resolve_capabilities)
+    monkeypatch.setattr(main, "MeidoProvider", fail_provider)
+
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "触发失败"})
+
+    assert response.status_code == 200
+    assert "event: assistant_failed" in response.text
+    assert capabilities.closed
+    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
+    assert run_id is not None
+    run = sessions.get_run(run_id)
+    assert run is not None and run.status == "failed"
+
+
 def test_role_snapshot_is_stable_after_update_and_new_lookup_uses_latest(tmp_path, monkeypatch):
     role, _, _ = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
     snapshot, _ = main.session_manager.role_and_history(role.id)
