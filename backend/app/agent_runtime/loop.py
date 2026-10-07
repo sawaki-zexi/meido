@@ -286,6 +286,18 @@ async def _execute_tool(
             details={"status": "denied", "errorType": type(error).__name__, "message": "tool access denied"},
             is_error=True,
         ), updates
+    except RuntimeError as error:
+        if str(error) == "agent run cancelled":
+            return AgentToolResult(
+                "tool cancelled",
+                details={"status": "cancelled", "errorType": type(error).__name__, "message": "tool cancelled"},
+                is_error=True,
+            ), updates
+        return AgentToolResult(
+            "tool execution failed",
+            details={"status": "failed", "errorType": type(error).__name__, "message": "tool execution failed"},
+            is_error=True,
+        ), updates
     except Exception as error:
         return AgentToolResult(
             "tool execution failed",
