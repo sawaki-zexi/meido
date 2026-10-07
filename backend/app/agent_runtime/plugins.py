@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 import re
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -80,8 +81,14 @@ class HookDefinition:
             raise ValueError("hook_id is required")
         if self.mode not in {"observe", "transform", "deny"}:
             raise ValueError(f"unsupported hook mode: {self.mode}")
-        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
-            raise ValueError("hook timeout must be positive")
+        if self.timeout_seconds is not None:
+            if (
+                isinstance(self.timeout_seconds, bool)
+                or not isinstance(self.timeout_seconds, (int, float))
+                or not math.isfinite(self.timeout_seconds)
+                or self.timeout_seconds <= 0
+            ):
+                raise ValueError("hook timeout must be positive and finite")
 
 
 @dataclass(frozen=True, slots=True)

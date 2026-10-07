@@ -112,6 +112,11 @@ def test_plugin_manifest_rejects_unknown_capability_and_duplicate_ids():
     with pytest.raises(ValueError, match="duplicate plugin"):
         registry.register(_manifest(), lambda context: PluginContribution())
 
+    with pytest.raises(ValueError, match="hook timeout must be positive"):
+        HookDefinition("bad-timeout", "transform", timeout_seconds=float("nan"))
+    with pytest.raises(ValueError, match="hook timeout must be positive"):
+        HookDefinition("bad-bool-timeout", "transform", timeout_seconds=True)
+
 
 def test_plugin_grant_and_host_service_diagnostics_are_distinct():
     called = []

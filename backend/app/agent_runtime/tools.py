@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import inspect
+import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -39,10 +40,17 @@ class ToolDefinition:
             raise ValueError(f"unsupported tool approval: {self.approval}")
         if not self.version.strip():
             raise ValueError(f"tool version is required: {self.name}")
-        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
-            raise ValueError(f"tool timeout must be positive: {self.name}")
-        if self.output_limit is not None and self.output_limit <= 0:
-            raise ValueError(f"tool output limit must be positive: {self.name}")
+        if self.timeout_seconds is not None:
+            if (
+                isinstance(self.timeout_seconds, bool)
+                or not isinstance(self.timeout_seconds, (int, float))
+                or not math.isfinite(self.timeout_seconds)
+                or self.timeout_seconds <= 0
+            ):
+                raise ValueError(f"tool timeout must be positive and finite: {self.name}")
+        if self.output_limit is not None:
+            if isinstance(self.output_limit, bool) or not isinstance(self.output_limit, int) or self.output_limit <= 0:
+                raise ValueError(f"tool output limit must be positive integer: {self.name}")
 
     def as_provider_schema(self) -> dict[str, object]:
         return {
