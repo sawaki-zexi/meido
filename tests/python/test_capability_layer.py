@@ -101,6 +101,19 @@ class DeniedTool:
         return AgentToolResult("should not execute")
 
 
+class DeferredTool:
+    definition = ToolDefinition(
+        name="memory.deferred",
+        description="Deferred memory search",
+        input_schema={"type": "object"},
+        exposure="deferred",
+    )
+
+    def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
+        del arguments, context, on_update
+        return AgentToolResult("ok")
+
+
 def test_capability_registry_rejects_duplicate_ids_and_freezes_snapshot():
     registry = CapabilityRegistry([ReadTool()])
 
@@ -158,6 +171,29 @@ def test_capability_registry_denies_approval_policy_and_unknown_enabled_tools():
     assert resolution.snapshot.policy_decisions["memory.missing"] == "denied:unknown"
     assert resolution.denial_reason("memory.denied") == "tool approval policy denies this run"
     assert resolution.denial_reason("memory.missing") == "tool is not registered"
+
+
+def test_capability_registry_requires_explicit_activation_for_deferred_tools():
+    registry = CapabilityRegistry([DeferredTool()])
+
+    deferred = registry.resolve(
+        role_id="role-1",
+        session_key="role:role-1",
+        run_id="run-deferred",
+        enabled_tools={"memory.deferred"},
+    )
+    assert deferred.snapshot.tools == ()
+    assert deferred.snapshot.policy_decisions["memory.deferred"] == "denied:deferred"
+    assert deferred.denial_reason("memory.deferred") == "tool is deferred and not activated"
+
+    activated = registry.resolve(
+        role_id="role-1",
+        session_key="role:role-1",
+        run_id="run-activated",
+        enabled_tools={"memory.deferred"},
+        activated_tools={"memory.deferred"},
+    )
+    assert [definition.name for definition in activated.snapshot.tools] == ["memory.deferred"]
 
 
 def test_agent_loop_uses_capability_resolution_for_schema_and_denied_calls():

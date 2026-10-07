@@ -239,6 +239,7 @@ class CapabilityRegistry:
         session_key: str,
         run_id: str,
         enabled_tools: set[str] | frozenset[str] | None = None,
+        activated_tools: set[str] | frozenset[str] = frozenset(),
         allowed_risks: set[str] | frozenset[str] | None = None,
         prompt_text: str = "",
         explicit_skill_ids: set[str] | frozenset[str] = frozenset(),
@@ -272,6 +273,10 @@ class CapabilityRegistry:
             if definition.exposure == "hidden":
                 denied[definition.name] = "tool is hidden"
                 decisions[definition.name] = "denied:hidden"
+                continue
+            if definition.exposure == "deferred" and definition.name not in activated_tools:
+                denied[definition.name] = "tool is deferred and not activated"
+                decisions[definition.name] = "denied:deferred"
                 continue
             selected.append(tool)
             decisions[definition.name] = "allowed"
@@ -330,6 +335,7 @@ class CapabilityRegistry:
         session_key: str,
         run_id: str,
         enabled_tools: set[str] | frozenset[str] | None = None,
+        activated_tools: set[str] | frozenset[str] = frozenset(),
         allowed_risks: set[str] | frozenset[str] | None = None,
         prompt_text: str = "",
         explicit_skill_ids: set[str] | frozenset[str] = frozenset(),
@@ -350,6 +356,7 @@ class CapabilityRegistry:
                 session_key=session_key,
                 run_id=run_id,
                 enabled_tools=enabled_tools,
+                activated_tools=activated_tools,
                 allowed_risks=allowed_risks,
                 prompt_text=prompt_text,
                 explicit_skill_ids=explicit_skill_ids,
