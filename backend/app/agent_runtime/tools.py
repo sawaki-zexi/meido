@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+import inspect
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Protocol
+
+from .provider import CancellationToken
+
+
+@dataclass(frozen=True, slots=True)
+class ToolDefinition:
+    name: str
+    description: str
+    input_schema: dict[str, object] = field(default_factory=dict)
+    risk: str = "read_only"
+
+    def as_provider_schema(self) -> dict[str, object]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.input_schema,
+            },
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ToolContext:
+    role_id: str
+    session_key: str
+    run_id: str
+    signal: CancellationToken
+
+
+@dataclass(frozen=True, slots=True)
+class AgentToolResult:
+    content: str
+    details: object | None = None
+    is_error: bool = False
+
+
+class AgentTool(Protocol):
+    definition: ToolDefinition
+
+    def execute(
+        self,
+        arguments: Mapping[str, object],
+        context: ToolContext,
+        on_update: Callable[[AgentToolResult], None] | None = None,
+    ) -> AgentToolResult | Awaitable[AgentToolResult]: ...
+
+
+class ToolRegistry:
+    def __init__(self, tools: Sequence[AgentTool] = ()) -> None:
+        self._tools = {tool.definition.name: tool for tool in tools}
+
+    def register(self, tool: AgentTool) -> None:
+        if tool.definition.name in self._tools:
+            raise ValueError(f"duplicate tool: {tool.definition.name}")
+        self._tools[tool.definition.name] = tool
+
+    def get(self, name: str) -> AgentTool | None:
+        return self._tools.get(name)
+
+    def definitions(self) -> list[ToolDefinition]:
+        return [tool.definition for tool in self._tools.values()]
+
+    def provider_schemas(self) -> list[dict[str, object]]:
+        return [definition.as_provider_schema() for definition in self.definitions()]
+
+    def validate_arguments(self, name: str, arguments: Mapping[str, object]) -> None:
+        """Validate the small JSON-schema subset used by runtime tools.
+
+        Full JSON Schema is deliberately kept out of the core dependency set;
+        required fields and primitive/object/array types cover the first-party
+        read-only tools and make malformed model calls diagnosable.
+        """
+
+        tool = self.get(name)
+        if tool is None:
+            raise ValueError(f"unknown tool: {name}")
+        schema = tool.definition.input_schema
+        required = schema.get("required", [])
+        if isinstance(required, list):
+            missing = [key for key in required if isinstance(key, str) and key not in arguments]
+            if missing:
+                raise ValueError(f"missing required arguments: {', '.join(missing)}")
+        properties = schema.get("properties", {})
+        if not isinstance(properties, dict):
+            return
+        if schema.get("additionalProperties") is False:
+            unknown = [key for key in arguments if key not in properties]
+            if unknown:
+                raise ValueError(f"unknown arguments: {', '.join(str(key) for key in unknown)}")
+        for key, value in arguments.items():
+            definition = properties.get(key)
+            if not isinstance(definition, dict):
+                continue
+            expected = definition.get("type")
+            if expected == "string" and not isinstance(value, str):
+                raise ValueError(f"argument {key} must be a string")
+            if expected == "object" and not isinstance(value, dict):
+                raise ValueError(f"argument {key} must be an object")
+            if expected == "array" and not isinstance(value, list):
+                raise ValueError(f"argument {key} must be an array")
+            if expected == "boolean" and not isinstance(value, bool):
+                raise ValueError(f"argument {key} must be a boolean")
+            if expected == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))):
+                raise ValueError(f"argument {key} must be a number")
+
+
+async def resolve_tool_result(value: AgentToolResult | Awaitable[AgentToolResult]) -> AgentToolResult:
+    if inspect.isawaitable(value):
+        return await value
+    return value

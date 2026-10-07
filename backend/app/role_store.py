@@ -41,6 +41,17 @@ class RoleStore:
                     return role.model_copy(deep=True)
         return None
 
+    def workspace_path(self, role_id: str) -> Path:
+        """Return the role-owned workspace, creating it for legacy roles."""
+        role = self.get(role_id)
+        if role is None:
+            raise KeyError(role_id)
+        workspace = (self.root / role_id / "workspace").resolve()
+        if workspace.parent.parent != self.root or workspace.parent.name != role_id:
+            raise ValueError("角色 workspace 路径无效")
+        workspace.mkdir(parents=True, exist_ok=True)
+        return workspace
+
     def create(self, data: RoleInput) -> Role:
         with self._lock:
             now = utc_now()
@@ -68,7 +79,7 @@ class RoleStore:
                 raise KeyError(role_id)
             current = self._roles[index]
             values = current.model_dump(exclude={"id", "createdAt", "updatedAt"})
-            values.update(data.model_dump())
+            values.update(data.model_dump(exclude_unset=True, exclude_none=True))
             updated = Role(**values, id=current.id, createdAt=current.createdAt, updatedAt=utc_now())
             candidate = [*self._roles]
             candidate[index] = updated
@@ -384,6 +395,7 @@ class RoleStore:
             "cardImageUrl": item.get("cardImageUrl"),
             "cardImageMediaType": item.get("cardImageMediaType"),
             "proactiveConfig": item.get("proactiveConfig") or {},
+            "agentConfig": item.get("agentConfig") or {},
             "createdAt": item.get("createdAt") or utc_now(),
             "updatedAt": item.get("updatedAt") or utc_now(),
         }
@@ -391,6 +403,7 @@ class RoleStore:
     def _ensure_role_dirs(self, role_id: str) -> None:
         (self.root / role_id / "memory").mkdir(parents=True, exist_ok=True)
         (self.root / role_id / "state").mkdir(parents=True, exist_ok=True)
+        (self.root / role_id / "workspace").mkdir(parents=True, exist_ok=True)
 
     def _save(self, roles: list[Role] | None = None) -> None:
         persisted_roles = roles if roles is not None else self._roles

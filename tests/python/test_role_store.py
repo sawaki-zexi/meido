@@ -1,7 +1,7 @@
 import json
 
 from backend.app.role_store import RoleStore
-from backend.app.models import RoleInput, RoleProfile, RoleUpdateInput
+from backend.app.models import AgentToolConfig, RoleInput, RoleProfile, RoleUpdateInput, ShellToolConfig
 
 
 def role_input(name: str = "小葵") -> RoleInput:
@@ -47,6 +47,21 @@ def test_role_update_preserves_non_editable_configuration(tmp_path):
     assert updated.modelConfig == {"provider": "local"}
     assert updated.proactiveConfig == {"enabled": True}
     assert updated.profile.profile == "新设定"
+
+
+def test_role_update_preserves_agent_tool_policy_when_profile_edit_omits_it(tmp_path):
+    store = RoleStore(tmp_path / "roles")
+    role = store.create(RoleInput(
+        name="可执行角色",
+        profile=RoleProfile(profile="设定"),
+        agentConfig=AgentToolConfig(shell=ShellToolConfig(enabled=True, allowedCommands=["python"])),
+    ))
+
+    updated = store.update(role.id, RoleUpdateInput(name="改名", profile=RoleProfile(profile="新设定")))
+
+    assert updated.agentConfig.shell.enabled is True
+    assert updated.agentConfig.shell.allowedCommands == ["python"]
+    assert (tmp_path / "roles" / role.id / "workspace").is_dir()
 
 
 def test_role_model_configuration_binding_persists_and_is_independent(tmp_path):
