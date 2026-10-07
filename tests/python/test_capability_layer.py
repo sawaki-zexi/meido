@@ -114,6 +114,20 @@ class DeferredTool:
         return AgentToolResult("ok")
 
 
+class ApprovalTool:
+    definition = ToolDefinition(
+        name="memory.write-approval",
+        description="Write memory after approval",
+        input_schema={"type": "object"},
+        risk="mutating",
+        approval="writes",
+    )
+
+    def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
+        del arguments, context, on_update
+        return AgentToolResult("ok")
+
+
 def test_capability_registry_rejects_duplicate_ids_and_freezes_snapshot():
     registry = CapabilityRegistry([ReadTool()])
 
@@ -194,6 +208,29 @@ def test_capability_registry_requires_explicit_activation_for_deferred_tools():
         activated_tools={"memory.deferred"},
     )
     assert [definition.name for definition in activated.snapshot.tools] == ["memory.deferred"]
+
+
+def test_capability_registry_requires_approval_for_prompted_tools():
+    registry = CapabilityRegistry([ApprovalTool()])
+
+    pending = registry.resolve(
+        role_id="role-1",
+        session_key="role:role-1",
+        run_id="run-pending-approval",
+        enabled_tools={"memory.write-approval"},
+    )
+    assert pending.snapshot.tools == ()
+    assert pending.snapshot.policy_decisions["memory.write-approval"] == "denied:approval_required"
+    assert pending.denial_reason("memory.write-approval") == "tool approval required: writes"
+
+    approved = registry.resolve(
+        role_id="role-1",
+        session_key="role:role-1",
+        run_id="run-approved",
+        enabled_tools={"memory.write-approval"},
+        approved_tools={"memory.write-approval"},
+    )
+    assert [definition.name for definition in approved.snapshot.tools] == ["memory.write-approval"]
 
 
 def test_agent_loop_uses_capability_resolution_for_schema_and_denied_calls():

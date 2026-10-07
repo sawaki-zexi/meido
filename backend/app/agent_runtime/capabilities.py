@@ -240,6 +240,7 @@ class CapabilityRegistry:
         run_id: str,
         enabled_tools: set[str] | frozenset[str] | None = None,
         activated_tools: set[str] | frozenset[str] = frozenset(),
+        approved_tools: set[str] | frozenset[str] = frozenset(),
         allowed_risks: set[str] | frozenset[str] | None = None,
         prompt_text: str = "",
         explicit_skill_ids: set[str] | frozenset[str] = frozenset(),
@@ -269,6 +270,10 @@ class CapabilityRegistry:
             if definition.approval == "deny":
                 denied[definition.name] = "tool approval policy denies this run"
                 decisions[definition.name] = "denied:approval"
+                continue
+            if definition.approval in {"prompt", "writes"} and definition.name not in approved_tools:
+                denied[definition.name] = f"tool approval required: {definition.approval}"
+                decisions[definition.name] = "denied:approval_required"
                 continue
             if definition.exposure == "hidden":
                 denied[definition.name] = "tool is hidden"
@@ -336,6 +341,7 @@ class CapabilityRegistry:
         run_id: str,
         enabled_tools: set[str] | frozenset[str] | None = None,
         activated_tools: set[str] | frozenset[str] = frozenset(),
+        approved_tools: set[str] | frozenset[str] = frozenset(),
         allowed_risks: set[str] | frozenset[str] | None = None,
         prompt_text: str = "",
         explicit_skill_ids: set[str] | frozenset[str] = frozenset(),
@@ -357,6 +363,7 @@ class CapabilityRegistry:
                 run_id=run_id,
                 enabled_tools=enabled_tools,
                 activated_tools=activated_tools,
+                approved_tools=approved_tools,
                 allowed_risks=allowed_risks,
                 prompt_text=prompt_text,
                 explicit_skill_ids=explicit_skill_ids,
