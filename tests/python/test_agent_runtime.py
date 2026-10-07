@@ -13,9 +13,11 @@ from backend.app.agent_runtime import (
     ToolCall,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
+    ToolExecutionUpdateEvent,
     ToolResultMessage,
     ToolContext,
     ToolDefinition,
+    ToolRegistry,
     UserMessage,
     run_agent_loop,
 )
@@ -65,6 +67,57 @@ class ReadTool:
         if on_update:
             on_update(AgentToolResult("working"))
         return AgentToolResult(f"value:{arguments['key']}")
+
+
+def test_tool_schema_and_output_limits_are_enforced_by_runtime():
+    class BoundedTool:
+        definition = ToolDefinition(
+            "bounded",
+            "Bounded tool",
+            {
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string", "enum": ["safe"]},
+                    "count": {"type": "integer", "minimum": 1, "maximum": 2},
+                },
+                "required": ["mode", "count"],
+                "additionalProperties": False,
+            },
+            output_limit=5,
+        )
+
+        def execute(self, arguments, context, on_update=None):
+            del arguments, context
+            if on_update:
+                on_update(AgentToolResult("update-too-long"))
+            return AgentToolResult("result-too-long")
+
+    call = ToolCall("bounded-call", "bounded", {"mode": "safe", "count": 2})
+    provider = FakeProvider([
+        [ToolCallEndEvent(call), AssistantDoneEvent(AssistantMessage(tool_calls=(call,), stop_reason="tool_use"))],
+        [TextDeltaEvent("完成"), AssistantDoneEvent(AssistantMessage("完成"))],
+    ])
+    events = asyncio.run(_collect(run_agent_loop(
+        provider=provider,
+        model="fake",
+        system="",
+        messages=[UserMessage("执行")],
+        tools=[BoundedTool()],
+    )))
+    update = next(event.result for event in events if isinstance(event, ToolExecutionUpdateEvent))
+    result = next(event.result for event in events if isinstance(event, ToolExecutionEndEvent))
+    assert update.content == "updat"
+    assert update.details == {"truncated": True, "outputLimit": 5}
+    assert result.content == "resul"
+    assert result.details == {"truncated": True, "outputLimit": 5}
+
+    registry = ToolRegistry([BoundedTool()])
+    with pytest.raises(ValueError, match="unsupported value"):
+        registry.validate_arguments("bounded", {"mode": "unsafe", "count": 1})
+    with pytest.raises(ValueError, match="below the minimum"):
+        registry.validate_arguments("bounded", {"mode": "safe", "count": 0})
+    with pytest.raises(ValueError, match="exceeds the maximum"):
+        registry.validate_arguments("bounded", {"mode": "safe", "count": 3})
 
 
 def test_agent_loop_runs_tool_then_final_provider_turn():

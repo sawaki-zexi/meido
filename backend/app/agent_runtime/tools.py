@@ -77,12 +77,7 @@ class ToolRegistry:
         return [definition.as_provider_schema() for definition in self.definitions()]
 
     def validate_arguments(self, name: str, arguments: Mapping[str, object]) -> None:
-        """Validate the small JSON-schema subset used by runtime tools.
-
-        Full JSON Schema is deliberately kept out of the core dependency set;
-        required fields and primitive/object/array types cover the first-party
-        read-only tools and make malformed model calls diagnosable.
-        """
+        """Validate the bounded JSON-schema subset used by runtime tools."""
 
         tool = self.get(name)
         if tool is None:
@@ -104,17 +99,65 @@ class ToolRegistry:
             definition = properties.get(key)
             if not isinstance(definition, dict):
                 continue
-            expected = definition.get("type")
-            if expected == "string" and not isinstance(value, str):
-                raise ValueError(f"argument {key} must be a string")
-            if expected == "object" and not isinstance(value, dict):
-                raise ValueError(f"argument {key} must be an object")
-            if expected == "array" and not isinstance(value, list):
-                raise ValueError(f"argument {key} must be an array")
-            if expected == "boolean" and not isinstance(value, bool):
-                raise ValueError(f"argument {key} must be a boolean")
-            if expected == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))):
-                raise ValueError(f"argument {key} must be a number")
+            _validate_schema_value(key, value, definition)
+
+
+def _validate_schema_value(path: str, value: object, schema: Mapping[str, object]) -> None:
+    expected = schema.get("type")
+    if expected == "string":
+        if not isinstance(value, str):
+            raise ValueError(f"argument {path} must be a string")
+        _validate_bound(path, len(value), schema, "minLength", "maximum length")
+        _validate_bound(path, len(value), schema, "maxLength", "maximum length", upper=True)
+    elif expected == "integer":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"argument {path} must be an integer")
+        _validate_number_bounds(path, value, schema)
+    elif expected == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"argument {path} must be a number")
+        _validate_number_bounds(path, value, schema)
+    elif expected == "object" and not isinstance(value, dict):
+        raise ValueError(f"argument {path} must be an object")
+    elif expected == "array":
+        if not isinstance(value, list):
+            raise ValueError(f"argument {path} must be an array")
+        _validate_bound(path, len(value), schema, "minItems", "minimum item count")
+        _validate_bound(path, len(value), schema, "maxItems", "maximum item count", upper=True)
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(value):
+                _validate_schema_value(f"{path}[{index}]", item, item_schema)
+    elif expected == "boolean" and not isinstance(value, bool):
+        raise ValueError(f"argument {path} must be a boolean")
+    enum = schema.get("enum")
+    if isinstance(enum, list) and value not in enum:
+        raise ValueError(f"argument {path} has an unsupported value")
+
+
+def _validate_number_bounds(path: str, value: int | float, schema: Mapping[str, object]) -> None:
+    minimum = schema.get("minimum")
+    if isinstance(minimum, (int, float)) and not isinstance(minimum, bool) and value < minimum:
+        raise ValueError(f"argument {path} is below the minimum")
+    maximum = schema.get("maximum")
+    if isinstance(maximum, (int, float)) and not isinstance(maximum, bool) and value > maximum:
+        raise ValueError(f"argument {path} exceeds the maximum")
+
+
+def _validate_bound(
+    path: str,
+    value: int,
+    schema: Mapping[str, object],
+    key: str,
+    description: str,
+    *,
+    upper: bool = False,
+) -> None:
+    bound = schema.get(key)
+    if not isinstance(bound, int) or isinstance(bound, bool):
+        return
+    if (upper and value > bound) or (not upper and value < bound):
+        raise ValueError(f"argument {path} exceeds the {description}" if upper else f"argument {path} is below the {description}")
 
 
 async def resolve_tool_result(value: AgentToolResult | Awaitable[AgentToolResult]) -> AgentToolResult:
