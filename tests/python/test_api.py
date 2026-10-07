@@ -415,6 +415,86 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["outputLimit"] == 20000
 
 
+def test_role_skill_is_injected_into_provider_and_run_snapshot(tmp_path, monkeypatch):
+    class SkillRecordingAdapter:
+        def __init__(self):
+            self.memory_contexts = []
+
+        async def stream_reply(self, role, history, configuration=None, *, memory_context=""):
+            del role, history, configuration
+            self.memory_contexts.append(memory_context)
+            yield "技能回复"
+
+    adapter = SkillRecordingAdapter()
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter)
+    monkeypatch.setattr(main, "roles_root", tmp_path / "roles")
+    skill_dir = tmp_path / "roles" / role.id / "skills" / "study-plan"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+id: study-plan
+version: 1.0.0
+description: 制定学习计划
+tools:
+  - memory.read
+activation: role_default
+---
+请先参考已有记忆，再给出分阶段学习计划。
+""",
+        encoding="utf-8",
+    )
+
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "制定学习计划"})
+
+    assert response.status_code == 200
+    assert "event: assistant_completed" in response.text
+    assert adapter.memory_contexts == ["请先参考已有记忆，再给出分阶段学习计划。"]
+    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
+    assert run_id is not None
+    run = sessions.get_run(run_id)
+    assert run is not None
+    snapshot = run.modelSnapshot["capabilities"]
+    assert snapshot["skills"][0]["id"] == "study-plan"
+    assert snapshot["skills"][0]["version"] == "1.0.0"
+    assert snapshot["skills"][0]["source"] == "role"
+    assert snapshot["skills"][0]["tools"] == []
+    assert any(
+        item["skillId"] == "study-plan" and item["tool"] == "memory.read"
+        for item in snapshot["skillDiagnostics"]
+    )
+
+
+def test_role_message_can_explicitly_activate_skill(tmp_path, monkeypatch):
+    adapter = RecordingAdapter()
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter)
+    monkeypatch.setattr(main, "roles_root", tmp_path / "roles")
+    skill_dir = tmp_path / "roles" / role.id / "skills" / "explicit-help"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+id: explicit-help
+version: 1.0.0
+description: 仅显式启用
+activation: explicit
+---
+显式规则。
+""",
+        encoding="utf-8",
+    )
+
+    response = client.post(
+        f"/api/roles/{role.id}/messages",
+        json={"content": "普通问题", "skillIds": ["explicit-help"]},
+    )
+
+    assert response.status_code == 200
+    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
+    assert run_id is not None
+    run = sessions.get_run(run_id)
+    assert run is not None
+    assert run.modelSnapshot["capabilities"]["skills"][0]["id"] == "explicit-help"
+
+
 def test_role_update_preserves_session_messages_and_changes_future_prompt(tmp_path, monkeypatch):
     adapter = RecordingAdapter()
     role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter)

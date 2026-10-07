@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from .skills import SkillDescriptor, SkillRegistry, SkillResolution
 from .tools import AgentTool, ToolDefinition, ToolRegistry
 
 
@@ -17,6 +18,9 @@ class CapabilitySnapshot:
     session_key: str
     tools: tuple[ToolDefinition, ...]
     policy_decisions: MappingProxyType
+    skills: tuple[SkillDescriptor, ...] = ()
+    prompt_sections: tuple[str, ...] = ()
+    skill_diagnostics: tuple[MappingProxyType, ...] = ()
 
     def provider_schemas(self) -> list[dict[str, object]]:
         return [definition.as_provider_schema() for definition in self.tools]
@@ -43,6 +47,12 @@ class CapabilitySnapshot:
                 for definition in self.tools
             ],
             "policyDecisions": dict(self.policy_decisions),
+            "skills": [
+                skill.to_dict()
+                for skill in self.skills
+            ],
+            "promptSections": list(self.prompt_sections),
+            "skillDiagnostics": [dict(item) for item in self.skill_diagnostics],
         }
 
 
@@ -64,6 +74,9 @@ class CapabilityResolution:
         reason = self.denied_tools.get(name)
         return str(reason) if reason is not None else None
 
+    def prompt_context(self) -> str:
+        return "\n\n".join(self.snapshot.prompt_sections)
+
     def validate_arguments(self, name: str, arguments: dict[str, object]) -> None:
         ToolRegistry(self.tools).validate_arguments(name, arguments)
 
@@ -71,8 +84,14 @@ class CapabilityResolution:
 class CapabilityRegistry:
     """Resolve registered tools into a stable, role-scoped run snapshot."""
 
-    def __init__(self, tools: tuple[AgentTool, ...] | list[AgentTool] = ()) -> None:
+    def __init__(
+        self,
+        tools: tuple[AgentTool, ...] | list[AgentTool] = (),
+        *,
+        skills: SkillRegistry | None = None,
+    ) -> None:
         self._tools: dict[str, AgentTool] = {}
+        self.skills = skills or SkillRegistry()
         for tool in tools:
             self.register(tool)
 
@@ -90,6 +109,8 @@ class CapabilityRegistry:
         run_id: str,
         enabled_tools: set[str] | frozenset[str] | None = None,
         allowed_risks: set[str] | frozenset[str] | None = None,
+        prompt_text: str = "",
+        explicit_skill_ids: set[str] | frozenset[str] = frozenset(),
     ) -> CapabilityResolution:
         selected: list[AgentTool] = []
         decisions: dict[str, str] = {}
@@ -126,6 +147,12 @@ class CapabilityRegistry:
             )
             for tool in selected
         )
+        skill_resolution: SkillResolution = self.skills.resolve(
+            prompt=prompt_text,
+            explicit_ids=explicit_skill_ids,
+            available_tools=set(self._tools),
+            enabled_tools=set(tool.definition.name for tool in selected),
+        )
         snapshot = CapabilitySnapshot(
             snapshot_id=f"cap-{run_id}",
             run_id=run_id,
@@ -133,6 +160,9 @@ class CapabilityRegistry:
             session_key=session_key,
             tools=snapshot_definitions,
             policy_decisions=MappingProxyType(dict(decisions)),
+            skills=skill_resolution.skills,
+            prompt_sections=skill_resolution.prompt_sections,
+            skill_diagnostics=skill_resolution.diagnostics,
         )
         return CapabilityResolution(
             snapshot=snapshot,

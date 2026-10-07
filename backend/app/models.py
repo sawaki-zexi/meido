@@ -159,6 +159,7 @@ class SessionResponse(BaseModel):
 class SendMessageInput(BaseModel):
     content: str
     toolMemoryIds: list[str] = Field(default_factory=list)
+    skillIds: list[str] = Field(default_factory=list)
 
     @field_validator("content")
     @classmethod
@@ -171,6 +172,11 @@ class SendMessageInput(BaseModel):
     @field_validator("toolMemoryIds")
     @classmethod
     def validate_tool_memory_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
+
+    @field_validator("skillIds")
+    @classmethod
+    def validate_skill_ids(cls, value: list[str]) -> list[str]:
         return list(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
 
 

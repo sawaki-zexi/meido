@@ -48,8 +48,10 @@ from .agent_runtime import (
     ToolResultMessage,
 )
 from .agent_runtime.capabilities import CapabilityResolution
+from .agent_runtime.skills import SkillRegistry
 
 roles_root = Path(os.getenv("MEIDO_ROLES_DIR", "roles"))
+project_root = Path(os.getenv("MEIDO_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
 data_root = Path(os.getenv("MEIDO_DATA_DIR", ".data"))
 MAX_ROLE_AVATAR_BYTES = 10 * 1024 * 1024
 ROLE_AVATAR_MEDIA_TYPES = {"image/png", "image/jpeg", "image/webp"}
@@ -1287,14 +1289,21 @@ def _available_runtime_tools(role) -> tuple[ShellTool, ...]:
     ),)
 
 
-def _runtime_capabilities(role, *, session_key: str, run_id: str) -> CapabilityResolution:
+def _runtime_capabilities(role, *, session_key: str, run_id: str, prompt_text: str, explicit_skill_ids: list[str] | None = None) -> CapabilityResolution:
     enabled_tools = {tool.definition.name for tool in _runtime_tools(role)}
-    return CapabilityRegistry(_available_runtime_tools(role)).resolve(
+    skill_roots = (
+        (roles_root / role.id / "skills", "role"),
+        (project_root / ".agents" / "skills", "project"),
+    )
+    skills = SkillRegistry.discover_many(skill_roots)
+    return CapabilityRegistry(_available_runtime_tools(role), skills=skills).resolve(
         role_id=role.id,
         session_key=session_key,
         run_id=run_id,
         enabled_tools=enabled_tools,
         allowed_risks={"read_only", "mutating", "external"},
+        prompt_text=prompt_text,
+        explicit_skill_ids=set(explicit_skill_ids or ()),
     )
 
 
@@ -1456,10 +1465,18 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     role,
                     session_key=session.session.sessionKey,
                     run_id=run_id,
+                    prompt_text=data.content,
+                    explicit_skill_ids=data.skillIds,
                 )
                 model_snapshot["capabilities"] = capabilities.snapshot.to_dict()
                 session_store.update_run(run_id, status="created", model_snapshot=model_snapshot)
-                provider = MeidoProvider(model_adapter, role, configuration, memory_context)
+                provider = MeidoProvider(
+                    model_adapter,
+                    role,
+                    configuration,
+                    memory_context,
+                    capabilities.prompt_context(),
+                )
                 async for runtime_event in runtime_manager.run(
                     AgentRun(
                         runId=run_id,

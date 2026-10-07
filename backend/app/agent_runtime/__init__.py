@@ -14,6 +14,7 @@ from .events import (
     TurnStartEvent,
 )
 from .capabilities import CapabilityRegistry, CapabilityResolution, CapabilitySnapshot
+from .skills import SkillDescriptor, SkillRegistry, SkillResolution
 from .loop import run_agent_loop
 from .meido_provider import MeidoProvider
 from .runtime import ActiveRunError, RuntimeManager
@@ -41,6 +42,9 @@ __all__ = [
     "CapabilityRegistry",
     "CapabilityResolution",
     "CapabilitySnapshot",
+    "SkillDescriptor",
+    "SkillRegistry",
+    "SkillResolution",
     "AssistantDoneEvent",
     "AssistantMessage",
     "CancellationToken",
