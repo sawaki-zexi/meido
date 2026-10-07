@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from ..memory_engine import MemoryQuery, MemoryQueryResult, MemoryScope
 from .tools import AgentToolResult, ToolContext, ToolDefinition
@@ -92,9 +92,10 @@ class MemoryRecallTool:
         if len(query) > 500:
             raise ValueError("query is too long")
 
-        intent = arguments.get("intent", "answer")
-        if not isinstance(intent, str) or intent not in {"context", "answer", "interest", "procedure"}:
+        intent_value = arguments.get("intent", "answer")
+        if not isinstance(intent_value, str) or intent_value not in {"context", "answer", "interest", "procedure"}:
             raise ValueError("unsupported memory query intent")
+        intent = cast(MemoryRecallIntent, intent_value)
         limit = arguments.get("limit", 5)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 8:
             raise ValueError("limit must be an integer between 1 and 8")
@@ -107,25 +108,27 @@ class MemoryRecallTool:
             scope=scope,
             limit=limit,
         ))
-        payload = {
+        records: list[dict[str, object]] = []
+        payload: dict[str, object] = {
             "query": query,
             "intent": intent,
             "count": len(result.records),
             "text": str(result.text_block)[:4000],
-            "records": [],
+            "records": records,
         }
         truncated = len(str(result.text_block)) > 4000
+        output_limit = self.definition.output_limit
         for record in result.records:
             candidate = _record_payload(record)
-            payload["records"].append(candidate)
-            if len(_encode(payload)) > self.definition.output_limit:
-                payload["records"].pop()
+            records.append(candidate)
+            if output_limit is not None and len(_encode(payload)) > output_limit:
+                records.pop()
                 truncated = True
                 break
         if truncated:
             payload["truncated"] = True
         return AgentToolResult(
-            content=_encode_bounded(payload, self.definition.output_limit),
+            content=_encode_bounded(payload, output_limit),
             details={"status": "succeeded", "count": len(result.records), "intent": intent},
         )
 
