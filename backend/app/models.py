@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 import uuid
 
 from pydantic import BaseModel, Field, field_validator
@@ -13,12 +13,31 @@ class RoleProfile(BaseModel):
     nickname: str = ""
 
 
+class ShellToolConfig(BaseModel):
+    """Role-scoped policy for the optional process execution tool."""
+
+    enabled: bool = False
+    allowedCommands: list[str] = Field(default_factory=list)
+    timeoutSeconds: float = Field(default=30.0, gt=0, le=300)
+    maxOutputChars: int = Field(default=20000, gt=0, le=200000)
+
+    @field_validator("allowedCommands")
+    @classmethod
+    def validate_allowed_commands(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
+
+
+class AgentToolConfig(BaseModel):
+    shell: ShellToolConfig = Field(default_factory=ShellToolConfig)
+
+
 class RoleInput(BaseModel):
     name: str
     description: str = ""
     profile: RoleProfile
     modelConfig: dict[str, Any] = Field(default_factory=dict)
     proactiveConfig: dict[str, Any] = Field(default_factory=dict)
+    agentConfig: AgentToolConfig = Field(default_factory=AgentToolConfig)
 
     @field_validator("name")
     @classmethod
@@ -40,6 +59,7 @@ class RoleUpdateInput(BaseModel):
     name: str
     description: str = ""
     profile: RoleProfile
+    agentConfig: AgentToolConfig | None = None
 
     @field_validator("name")
     @classmethod
@@ -107,6 +127,28 @@ class Message(BaseModel):
     content: str
     status: str
     createdAt: datetime
+    messageType: str = "text"
+    toolCallId: str | None = None
+    toolName: str | None = None
+    toolArguments: dict[str, Any] | None = None
+    toolResult: Any | None = None
+    isError: bool = False
+    runId: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentRun(BaseModel):
+    runId: str
+    roleId: str
+    sessionKey: str
+    status: Literal["created", "running", "completed", "failed", "cancelled", "max_turns"]
+    modelConfigurationId: str | None = None
+    modelSnapshot: dict[str, Any] = Field(default_factory=dict)
+    turnCount: int = 0
+    startedAt: datetime
+    endedAt: datetime | None = None
+    cancelReason: str | None = None
+    error: str | None = None
 
 
 class SessionResponse(BaseModel):

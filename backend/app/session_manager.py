@@ -1,4 +1,4 @@
-from .models import Message, Role, SessionResponse
+from .models import Role, SessionResponse
 from .role_store import RoleStore
 from .session_store import SessionStore
 
@@ -12,7 +12,10 @@ class SessionManager:
         if self.roles.get(role_id) is None:
             raise KeyError(role_id)
         session = self.sessions.open_role_session(role_id)
-        return SessionResponse(session=session, messages=self.sessions.list_messages(session.sessionKey))
+        return SessionResponse(
+            session=session,
+            messages=[message for message in self.sessions.list_messages(session.sessionKey) if message.messageType == "text"],
+        )
 
     def role_and_history(self, role_id: str) -> tuple[Role, SessionResponse]:
         role = self.roles.get(role_id)

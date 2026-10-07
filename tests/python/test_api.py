@@ -1,11 +1,14 @@
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 from datetime import datetime, timezone
 import asyncio
 import sqlite3
 import pytest
 
 from backend.app import main
-from backend.app.models import Message, ModelConfigurationInput, RoleInput, RoleProfile
+from backend.app.agent_runtime.types import ToolResultMessage
+from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.models import AgentRun, AgentToolConfig, Message, ModelConfigurationInput, RoleInput, RoleProfile, SendMessageInput, ShellToolConfig
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
@@ -86,9 +89,6 @@ def configure_session_api(tmp_path, monkeypatch, adapter):
     monkeypatch.setattr(main, "model_configuration_store", ModelConfigurationStore(tmp_path / "data" / "model-config.json"))
     monkeypatch.setattr(main, "role_locks", {})
     return role, sessions, TestClient(main.app)
-from backend.app.role_store import RoleStore
-
-
 def test_role_api_crud_and_duplicate_names(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "store", RoleStore(tmp_path / "roles"))
     client = TestClient(main.app)
@@ -323,6 +323,93 @@ def test_unbound_role_uses_active_model_configuration(tmp_path, monkeypatch):
     assert adapter.configuration_ids == [configuration.id]
 
 
+def test_role_message_snapshot_does_not_persist_legacy_role_secrets(tmp_path, monkeypatch):
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(
+        name="带旧配置的角色",
+        profile=RoleProfile(profile="核心设定"),
+        modelConfig={"apiKey": "legacy-secret", "provider": "openai"},
+    ))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))
+    monkeypatch.setattr(main, "model_adapter", RecordingAdapter())
+    monkeypatch.setattr(main, "model_configuration_store", ModelConfigurationStore(tmp_path / "data" / "model-config.json"))
+    monkeypatch.setattr(main, "role_locks", {})
+    client = TestClient(main.app)
+
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "你好"})
+
+    assert response.status_code == 200
+    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
+    assert run_id is not None
+    run = sessions.get_run(run_id)
+    assert run is not None
+    assert "legacy-secret" not in str(run.modelSnapshot)
+    assert "modelConfig" not in run.modelSnapshot["role"]
+    assert run.modelSnapshot["context"]["toolAllowlist"] == []
+    assert run.modelSnapshot["context"]["messages"] == [{"content": "你好", "role": "user"}]
+
+
+def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tmp_path, monkeypatch):
+    import sys
+    from pathlib import Path
+
+    executable = str(Path(sys.executable)).replace("\\", "/")
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(
+        name="可执行角色",
+        profile=RoleProfile(profile="核心设定"),
+        agentConfig=AgentToolConfig(shell=ShellToolConfig(enabled=True, allowedCommands=[executable])),
+    ))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+
+    class StructuredAdapter:
+        def __init__(self):
+            self.requests = []
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            del configuration
+            self.requests.append((messages, tools))
+            if len(self.requests) == 1:
+                yield ModelToolCall("call-shell", "shell", {
+                    "command": f'{executable} -c "print(\'shell-ok\')"',
+                })
+            else:
+                assert any(
+                    message.get("role") == "tool"
+                    and isinstance(message.get("content"), str)
+                    and message["content"].strip() == "shell-ok"
+                    for message in messages
+                )
+                yield ModelTextDelta("完成")
+
+    adapter = StructuredAdapter()
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))
+    monkeypatch.setattr(main, "model_adapter", adapter)
+    monkeypatch.setattr(main, "model_configuration_store", ModelConfigurationStore(tmp_path / "data" / "model-config.json"))
+    monkeypatch.setattr(main, "role_locks", {})
+
+    response = TestClient(main.app).post(f"/api/roles/{role.id}/messages", json={"content": "执行命令"})
+
+    assert response.status_code == 200
+    assert "event: assistant_completed" in response.text
+    assert len(adapter.requests) == 2
+    assert adapter.requests[0][1][0]["function"]["name"] == "shell"
+    messages = sessions.runtime_messages(f"role:{role.id}")
+    assert any(isinstance(message, ToolResultMessage) and message.content.strip() == "shell-ok" for message in messages)
+    run = sessions.list_messages(f"role:{role.id}")[-1].runId
+    assert run is not None
+    stored_run = sessions.get_run(run)
+    assert stored_run is not None
+    assert stored_run.modelSnapshot["context"]["toolAllowlist"] == [executable]
+
+
 def test_role_update_preserves_session_messages_and_changes_future_prompt(tmp_path, monkeypatch):
     adapter = RecordingAdapter()
     role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter)
@@ -516,7 +603,7 @@ def test_startup_finishes_interrupted_role_deletion_without_recreating_data(tmp_
     monkeypatch.setattr(main, "memory_optimizer_loop", MemoryOptimizerLoop(optimizer, tmp_path / "roles", enabled=False))
     asyncio.run(main._start_memory_workers())
     assert all(not rows for rows in memories.snapshot_role(role.id).values())
-    assert sessions.snapshot_role_session(role.id) == (None, [])
+    assert sessions.snapshot_role_session(role.id) == (None, [], [])
     assert memories.get(other.id, survivor.id) is not None
     assert restarted.get(role.id) is None
     assert not (tmp_path / "roles" / role.id).exists()
@@ -730,15 +817,77 @@ def test_delete_role_file_failure_restores_role_session_memory_and_documents(tmp
 
 def test_delete_role_rejects_while_generation_is_in_progress(tmp_path, monkeypatch):
     role, _, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
-
-    class LockedRole:
-        def locked(self):
-            return True
-
-    monkeypatch.setitem(main.role_locks, role.id, LockedRole())
+    lock = main._runtime_role_lock(role.id)
+    assert not lock.locked()
+    asyncio.run(lock.acquire())
     response = client.delete(f"/api/roles/{role.id}")
     assert response.status_code == 409
     assert client.get(f"/api/roles/{role.id}").status_code == 200
+    lock.release()
+
+
+def test_delete_role_rejects_persisted_active_run_without_process_lock(tmp_path, monkeypatch):
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    session = sessions.open_role_session(role.id)
+    sessions.create_run(AgentRun(
+        runId="run-persisted-active",
+        roleId=role.id,
+        sessionKey=session.sessionKey,
+        status="created",
+        startedAt=datetime.now(timezone.utc),
+    ))
+
+    response = client.delete(f"/api/roles/{role.id}")
+
+    assert response.status_code == 409
+    assert client.get(f"/api/roles/{role.id}").status_code == 200
+
+
+def test_unstarted_message_stream_is_failed_and_role_can_retry(tmp_path, monkeypatch):
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": f"/api/roles/{role.id}/messages",
+        "raw_path": f"/api/roles/{role.id}/messages".encode(),
+        "query_string": b"",
+        "headers": [],
+        "server": ("testserver", 80),
+        "client": ("testclient", 12345),
+        "root_path": "",
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def prepare_response():
+        request = Request(scope, receive)
+        return await main.send_role_message(role.id, SendMessageInput(content="第一次"), request)
+
+    response = asyncio.run(prepare_response())
+    assert main.runtime_manager.lock_for(role.id).locked()
+    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
+    assert run_id is not None
+    assert sessions.get_run(run_id).status == "created"
+    assert response.background is not None
+
+    async def abandon_before_first_chunk():
+        await response.body_iterator.aclose()
+        await response.background()
+
+    asyncio.run(abandon_before_first_chunk())
+    assert not main.runtime_manager.lock_for(role.id).locked()
+    failed_run = sessions.get_run(sessions.list_messages(f"role:{role.id}")[0].runId)
+    assert failed_run is not None and failed_run.status == "failed"
+    stored = sessions.list_messages(f"role:{role.id}")
+    assert [(item.role, item.status) for item in stored] == [("user", "completed"), ("assistant", "failed")]
+
+    retry = client.post(f"/api/roles/{role.id}/messages", json={"content": "重试"})
+    assert retry.status_code == 200
+    assert "event: assistant_completed" in retry.text
 
 
 def test_role_snapshot_is_stable_after_update_and_new_lookup_uses_latest(tmp_path, monkeypatch):

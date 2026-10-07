@@ -2,11 +2,15 @@ import os
 import asyncio
 import json
 import inspect
-from datetime import datetime
+import uuid
+import sqlite3
+from dataclasses import asdict
+from datetime import datetime, timezone
 from time import monotonic
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from starlette.background import BackgroundTask
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import httpx
@@ -21,12 +25,27 @@ from .memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop, MemoryOptimi
 from .memory_store import MemoryStore
 from .memory_events import ConsolidationCommitted, TurnCommitted, MemoryEventBus, MemoryWritten
 from .memory_documents import MemoryDocuments
-from .models import MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
+from .models import AgentRun, MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, Message, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
 from .storage import initialize_databases
 from .session_manager import SessionManager
 from .session_store import SessionStore
+from .agent_runtime import (
+    ActiveRunError,
+    AgentEndEvent,
+    AssistantMessage,
+    MessageEndEvent,
+    MessageStartEvent,
+    MessageUpdateEvent,
+    MeidoProvider,
+    RuntimeManager,
+    ShellTool,
+    ToolExecutionEndEvent,
+    ToolExecutionStartEvent,
+    ToolExecutionUpdateEvent,
+    ToolResultMessage,
+)
 
 roles_root = Path(os.getenv("MEIDO_ROLES_DIR", "roles"))
 data_root = Path(os.getenv("MEIDO_DATA_DIR", ".data"))
@@ -327,7 +346,16 @@ memory_worker = MemoryWorker(
     memory_optimizer_worker,
 )
 connection_test_adapter = OpenAICompatibleAdapter(timeout=20)
-role_locks: dict[str, asyncio.Lock] = {}
+runtime_manager = RuntimeManager(session_store)
+role_locks = runtime_manager.role_locks
+
+
+def _runtime_role_lock(role_id: str) -> asyncio.Lock:
+    """Keep test/application store rebinding behind the RuntimeManager seam."""
+
+    runtime_manager.role_locks = role_locks
+    runtime_manager.sessions = session_store
+    return runtime_manager.lock_for(role_id)
 
 
 def _current_memory_engine() -> DefaultMemoryEngine:
@@ -799,11 +827,14 @@ async def delete_role(role_id: str) -> None:
     if role is None:
         raise HTTPException(status_code=404, detail="角色不存在")
 
-    lock = role_locks.setdefault(role_id, asyncio.Lock())
-    if lock.locked():
+    lock = _runtime_role_lock(role_id)
+    if lock.locked() or session_store.active_run(role_id) is not None:
         raise HTTPException(status_code=409, detail="该角色正在生成回复，暂时无法删除")
 
     await lock.acquire()
+    if session_store.active_run(role_id) is not None:
+        lock.release()
+        raise HTTPException(status_code=409, detail="该角色正在生成回复，暂时无法删除")
     deletion_started = False
     session_snapshot = None
     memory_snapshot = None
@@ -845,12 +876,12 @@ async def delete_role(role_id: str) -> None:
             memory_worker.errors.append(f"{role_id}: deletion marker cleanup deferred: {error}")
     except Exception as error:
         rollback_errors: list[Exception] = []
-        if session_snapshot_taken:
+        if session_snapshot_taken and session_snapshot is not None:
             try:
                 session_store.restore_role_session(role_id, session_snapshot)
             except Exception as restore_error:
                 rollback_errors.append(restore_error)
-        if memory_snapshot_taken:
+        if memory_snapshot_taken and memory_snapshot is not None:
             try:
                 memory_store.restore_role(role_id, memory_snapshot)
             except Exception as restore_error:
@@ -1200,8 +1231,21 @@ def _stream_model_reply(role, history, configuration, memory_context):
     return stream_reply(role, history, configuration)
 
 
+def _runtime_tools(role) -> tuple[ShellTool, ...]:
+    """Build tools from the request-time role snapshot and its policy."""
+    shell = role.agentConfig.shell
+    if not shell.enabled or not shell.allowedCommands:
+        return ()
+    return (ShellTool(
+        store.workspace_path(role.id),
+        allowed_commands=shell.allowedCommands,
+        timeout_seconds=shell.timeoutSeconds,
+        max_output_chars=shell.maxOutputChars,
+    ),)
+
+
 @app.post("/api/roles/{role_id}/messages")
-async def send_role_message(role_id: str, data: SendMessageInput) -> StreamingResponse:
+async def send_role_message(role_id: str, data: SendMessageInput, request: Request) -> StreamingResponse:
     try:
         role, session = session_manager.role_and_history(role_id)
     except KeyError as error:
@@ -1209,63 +1253,238 @@ async def send_role_message(role_id: str, data: SendMessageInput) -> StreamingRe
     configuration = model_configuration_store.get(role.modelConfigurationId)
     if role.modelConfigurationId and configuration is None:
         raise HTTPException(status_code=409, detail="该角色绑定的模型连接已不存在，请重新选择模型")
-    lock = role_locks.setdefault(role_id, asyncio.Lock())
-    if lock.locked():
-        raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试")
-    await lock.acquire()
-
     if store.get(role_id) is None:
-        lock.release()
         raise HTTPException(status_code=404, detail="角色不存在")
 
     try:
-        user_message = session_store.append_message(session.session.sessionKey, "user", data.content)
-        assistant_message = session_store.append_message(session.session.sessionKey, "assistant", "", "streaming")
+        run_id = f"run-{uuid.uuid4().hex}"
+        configuration_snapshot = configuration.model_dump(mode="json") if configuration else {}
+        if isinstance(configuration_snapshot, dict):
+            configuration_snapshot.pop("apiKey", None)
+        role_snapshot = role.model_dump(mode="json", exclude={"modelConfig"})
+        runtime_tools = _runtime_tools(role)
+        shell_config = role.agentConfig.shell
+        model_snapshot = {
+            "modelConfiguration": configuration_snapshot,
+            "role": role_snapshot,
+        }
+        run = AgentRun(
+            runId=run_id,
+            roleId=role_id,
+            sessionKey=session.session.sessionKey,
+            status="created",
+            modelConfigurationId=configuration.id if configuration else None,
+            modelSnapshot=model_snapshot,
+            startedAt=datetime.now(timezone.utc),
+        )
+        runtime_manager.sessions = session_store
+        runtime_manager.role_locks = role_locks
+        _, user_message, assistant_message = await runtime_manager.reserve_run(run, data.content)
+    except sqlite3.IntegrityError as error:
+        raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试") from error
+    except ActiveRunError as error:
+        raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试") from error
     except Exception:
-        lock.release()
         raise
-    # Before handing an overgrown history to the model, give Markdown
-    # maintenance a chance to consolidate the turns that would otherwise be
-    # evicted from the input window.  This path is independent of the normal
-    # post-response maintenance trigger and is deliberately best effort.
-    context_messages = session_store.context_messages(session.session.sessionKey)
     context_limit = MemoryMaintenance.RECENT_MESSAGE_LIMIT * 2
-    try:
-        if len(context_messages) > context_limit:
-            await asyncio.to_thread(
-                memory_maintenance.ensure_memory_for_window,
-                role_id,
-                session.session.sessionKey,
-                max_messages=context_limit,
-            )
-            context_messages = context_messages[-context_limit:]
-    except Exception as error:
-        memory_worker.errors.append(f"{role_id}: input-window maintenance failed: {error}")
-    history = [*context_messages[:-1], user_message]
-    try:
-        query_result = await _current_memory_engine().query(MemoryQuery(
-            text=data.content,
-            intent="context",
-            scope=MemoryScope(role_id, session.session.sessionKey),
-        ))
-        memory_context = memory_service.context_block([], _role_memory_context(role_id))
-        if query_result.text_block:
-            memory_context = "\n".join(part for part in (memory_context, query_result.text_block) if part)
-    except Exception as error:
-        memory_worker.errors.append(f"{role_id}: recall failed: {error}")
-        memory_context = ""
     async def stream():
+        if not runtime_manager.attach_current_task(run_id):
+            runtime_manager.cancel_unstarted_run(run_id)
+            raise asyncio.CancelledError
         content = ""
+        terminal_reason = "failed"
+        terminal_error: str | None = None
+        sse_sequence = 0
+        placeholder_id: str | None = assistant_message.id
+        final_message: Message | None = None
+        disconnect_watcher: asyncio.Task[None] | None = None
+
+        def runtime_event_payload(payload: dict[str, object], runtime_sequence: int | None = None) -> dict[str, object]:
+            nonlocal sse_sequence
+            sse_sequence += 1
+            payload.setdefault("runId", run_id)
+            payload.setdefault("sequence", sse_sequence)
+            if runtime_sequence is not None:
+                payload["runtimeSequence"] = runtime_sequence
+            return payload
+
+        async def watch_disconnect() -> None:
+            while True:
+                await asyncio.sleep(0.1)
+                if await request.is_disconnected():
+                    runtime_manager.cancel_run(run_id)
+                    return
+
+        async def persist_runtime_message(event: MessageEndEvent) -> Message | None:
+            nonlocal content, placeholder_id, final_message
+            if isinstance(event.message, AssistantMessage):
+                content = event.message.content
+                if event.message.tool_calls:
+                    # The streaming placeholder belongs to the final textual
+                    # answer. Remove it before recording the first structured
+                    # assistant tool-call message so SQLite order matches the
+                    # provider transcript.
+                    if placeholder_id is not None:
+                        session_store.delete_message(placeholder_id)
+                        placeholder_id = None
+                        runtime_manager.set_assistant_message(run_id, None)
+                    session_store.append_agent_message(
+                        session.session.sessionKey,
+                        event.message,
+                        run_id=run_id,
+                        status="completed" if event.message.stop_reason == "tool_use" else "failed",
+                    )
+                    return None
+                if placeholder_id is not None:
+                    final_message = session_store.update_message(
+                        placeholder_id,
+                        event.message.content,
+                        "streaming",
+                        metadata={"runtimeStopReason": event.message.stop_reason},
+                    )
+                else:
+                    final_message = session_store.append_agent_message(
+                        session.session.sessionKey,
+                        event.message,
+                        run_id=run_id,
+                        status="streaming",
+                    )[0]
+                return final_message
+            elif isinstance(event.message, ToolResultMessage):
+                return session_store.append_agent_message(
+                    session.session.sessionKey,
+                    event.message,
+                    run_id=run_id,
+                    status="completed",
+                )[0]
+            return None
+
         try:
-            yield _event("user_message_accepted", {"message": user_message.model_dump(mode="json")})
-            yield _event("assistant_generation_started", {"messageId": assistant_message.id})
+            disconnect_watcher = asyncio.create_task(watch_disconnect())
+            yield _event("user_message_accepted", runtime_event_payload({"message": user_message.model_dump(mode="json")}))
+            yield _event("assistant_generation_started", runtime_event_payload({"messageId": assistant_message.id}))
             try:
-                deltas = _stream_model_reply(role, history, configuration, memory_context)
-                async for delta in deltas:
-                    content += delta
-                    session_store.update_message(assistant_message.id, content, "streaming")
-                    yield _event("assistant_delta", {"messageId": assistant_message.id, "delta": delta})
-                message = session_store.update_message(assistant_message.id, content, "completed")
+                # Run memory preparation after the response stream starts so
+                # the disconnect watcher can cancel even a slow recall query.
+                context_messages = session_store.context_messages(session.session.sessionKey)
+                try:
+                    if len(context_messages) > context_limit:
+                        await asyncio.to_thread(
+                            memory_maintenance.ensure_memory_for_window,
+                            role_id,
+                            session.session.sessionKey,
+                            max_messages=context_limit,
+                        )
+                except Exception as error:
+                    memory_worker.errors.append(f"{role_id}: input-window maintenance failed: {error}")
+                try:
+                    query_result = await _current_memory_engine().query(MemoryQuery(
+                        text=data.content,
+                        intent="context",
+                        scope=MemoryScope(role_id, session.session.sessionKey),
+                    ))
+                    memory_context = memory_service.context_block([], _role_memory_context(role_id))
+                    if query_result.text_block:
+                        memory_context = "\n".join(part for part in (memory_context, query_result.text_block) if part)
+                except Exception as error:
+                    memory_worker.errors.append(f"{role_id}: recall failed: {error}")
+                    memory_context = ""
+                runtime_messages = session_store.runtime_messages(
+                    session.session.sessionKey,
+                    max_messages=context_limit,
+                )
+                model_snapshot["context"] = {
+                    "messages": [asdict(message) for message in runtime_messages],
+                    "memoryContext": memory_context,
+                    "toolAllowlist": list(shell_config.allowedCommands) if runtime_tools else [],
+                }
+                session_store.update_run(run_id, status="created", model_snapshot=model_snapshot)
+                provider = MeidoProvider(model_adapter, role, configuration, memory_context)
+                async for runtime_event in runtime_manager.run(
+                    AgentRun(
+                        runId=run_id,
+                        roleId=role_id,
+                        sessionKey=session.session.sessionKey,
+                        status="created",
+                        modelConfigurationId=configuration.id if configuration else None,
+                        modelSnapshot=model_snapshot,
+                        startedAt=datetime.now(timezone.utc),
+                    ),
+                    provider=provider,
+                    model=configuration.model if configuration else "",
+                    system="",
+                    messages=runtime_messages,
+                    tools=runtime_tools,
+                    max_turns=8,
+                    provider_timeout=120.0,
+                    tool_timeout=shell_config.timeoutSeconds if runtime_tools else 30.0,
+                    on_message_end=persist_runtime_message,
+                ):
+                    if isinstance(runtime_event, MessageStartEvent) and isinstance(runtime_event.message, AssistantMessage):
+                        content = ""
+                        if placeholder_id is None:
+                            placeholder = session_store.append_message(
+                                session.session.sessionKey,
+                                "assistant",
+                                "",
+                                "streaming",
+                                run_id=run_id,
+                                metadata={"runtimePlaceholder": True},
+                            )
+                            placeholder_id = placeholder.id
+                            runtime_manager.set_assistant_message(run_id, placeholder_id)
+                    elif isinstance(runtime_event, MessageUpdateEvent):
+                        content += runtime_event.delta
+                        if placeholder_id is not None:
+                            session_store.update_message(placeholder_id, content, "streaming")
+                        yield _event("assistant_delta", runtime_event_payload({"messageId": placeholder_id or assistant_message.id, "delta": runtime_event.delta}, runtime_event.sequence))
+                    elif isinstance(runtime_event, MessageEndEvent) and isinstance(runtime_event.message, AssistantMessage):
+                        content = runtime_event.message.content
+                    elif isinstance(runtime_event, ToolExecutionStartEvent):
+                        yield _event("tool_execution_start", runtime_event_payload({
+                            "toolCallId": runtime_event.tool_call_id,
+                            "toolName": runtime_event.tool_name,
+                            "arguments": runtime_event.arguments,
+                        }, runtime_event.sequence))
+                    elif isinstance(runtime_event, ToolExecutionUpdateEvent):
+                        yield _event("tool_execution_update", runtime_event_payload({
+                            "toolCallId": runtime_event.tool_call_id,
+                            "toolName": runtime_event.tool_name,
+                            "result": runtime_event.result.content,
+                            "isError": runtime_event.result.is_error,
+                        }, runtime_event.sequence))
+                    elif isinstance(runtime_event, ToolExecutionEndEvent):
+                        yield _event("tool_execution_end", runtime_event_payload({
+                            "toolCallId": runtime_event.tool_call_id,
+                            "toolName": runtime_event.tool_name,
+                            "result": runtime_event.result.content,
+                            "isError": runtime_event.result.is_error,
+                        }, runtime_event.sequence))
+                    elif isinstance(runtime_event, AgentEndEvent):
+                        terminal_reason = runtime_event.reason
+                        terminal_error = runtime_event.error
+                if terminal_reason != "completed":
+                    message = next(
+                        item
+                        for item in reversed(session_store.list_messages(session.session.sessionKey))
+                        if item.runId == run_id and item.role == "assistant" and item.messageType == "text"
+                    )
+                    reason_text = {
+                        "cancelled": "模型生成已取消",
+                        "max_turns": "模型运行达到最大轮数",
+                        "failed": terminal_error or "模型生成失败",
+                    }.get(terminal_reason, terminal_error or "模型生成失败")
+                    yield _event("assistant_failed", runtime_event_payload({
+                        "message": message.model_dump(mode="json"),
+                        "error": reason_text,
+                    }))
+                    return
+                final_message = next(
+                    item
+                    for item in reversed(session_store.list_messages(session.session.sessionKey))
+                    if item.runId == run_id and item.role == "assistant" and item.messageType == "text"
+                )
+                message = final_message
                 try:
                     memory_worker.publish(TurnCommitted(
                         role_id,
@@ -1277,17 +1496,29 @@ async def send_role_message(role_id: str, data: SendMessageInput) -> StreamingRe
                     ))
                 except Exception as error:
                     memory_worker.errors.append(f"{role_id}: TurnCommitted publish failed: {error}")
-                yield _event("assistant_completed", {"message": message.model_dump(mode="json")})
+                yield _event("assistant_completed", runtime_event_payload({"message": message.model_dump(mode="json")}))
             except Exception as error:
-                message = session_store.update_message(assistant_message.id, content, "failed")
-                yield _event("assistant_failed", {
+                runtime_manager.abandon_unstarted_run(run_id, str(error))
+                message = next(
+                    item
+                    for item in reversed(session_store.list_messages(session.session.sessionKey))
+                    if item.runId == run_id and item.role == "assistant" and item.messageType == "text"
+                )
+                yield _event("assistant_failed", runtime_event_payload({
                     "message": message.model_dump(mode="json"),
                     "error": _safe_model_error(error, configuration.apiKey if configuration else ""),
-                })
+                }))
         except asyncio.CancelledError:
-            session_store.update_message(assistant_message.id, content, "failed")
+            runtime_manager.cancel_run(run_id, interrupt=False)
+            runtime_manager.cancel_unstarted_run(run_id)
             raise
         finally:
-            lock.release()
-
-    return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+            if disconnect_watcher is not None:
+                disconnect_watcher.cancel()
+                await asyncio.gather(disconnect_watcher, return_exceptions=True)
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        background=BackgroundTask(runtime_manager.abandon_unstarted_run, run_id),
+    )
