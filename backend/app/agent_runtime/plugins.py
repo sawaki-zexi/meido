@@ -11,6 +11,7 @@ from .tools import AgentTool, ToolContext
 
 
 _PLUGIN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_TRUST_LEVELS = frozenset({"builtin", "project", "installed", "external"})
 KNOWN_CAPABILITIES = frozenset({
     "runtime.hook",
     "runtime.tool",
@@ -51,6 +52,8 @@ class PluginManifest:
             raise ValueError("plugin_id must contain only lowercase letters, digits, '.', '_' or '-'")
         if not self.version.strip():
             raise ValueError("plugin version is required")
+        if self.trust_level not in _TRUST_LEVELS:
+            raise ValueError(f"unsupported plugin trust level: {self.trust_level}")
         if len(set(self.requested_capabilities)) != len(self.requested_capabilities):
             raise ValueError("duplicate requested capability")
         unknown = set(self.requested_capabilities) - KNOWN_CAPABILITIES

@@ -106,6 +106,8 @@ def _manifest(*capabilities: str) -> PluginManifest:
 def test_plugin_manifest_rejects_unknown_capability_and_duplicate_ids():
     with pytest.raises(ValueError, match="unknown capability"):
         PluginManifest("demo", "1.0.0", ("network.open",))
+    with pytest.raises(ValueError, match="unsupported plugin trust level"):
+        PluginManifest("demo", "1.0.0", trust_level="untrusted")
 
     registry = PluginRegistry()
     registry.register(_manifest(), lambda context: PluginContribution())
