@@ -27,6 +27,11 @@ class SessionStore:
                     "UPDATE agent_runs SET status='failed', ended_at=?, error=COALESCE(error, '服务重启时运行未完成') WHERE status IN ('created', 'running')",
                     (_now(),),
                 )
+                if "tool_audits" in tables:
+                    connection.execute(
+                        "UPDATE tool_audits SET ended_at=COALESCE(ended_at, ?), result_category=COALESCE(result_category, 'failed'), error_type=COALESCE(error_type, 'RuntimeError'), error_message=COALESCE(error_message, '服务重启时工具运行未完成') WHERE ended_at IS NULL",
+                        (_now(),),
+                    )
             elif "messages" in tables and "status" in message_columns:
                 # Legacy databases may be opened before initialize_databases.
                 connection.execute("UPDATE messages SET status = 'failed' WHERE status = 'streaming'")
@@ -374,6 +379,22 @@ class SessionStore:
             connection.execute(
                 "UPDATE tool_audits SET ended_at=?, result_category=?, error_type=?, error_message=? WHERE audit_id=?",
                 (_now(), result_category, error_type, error_message, f"{run_id}:{call_id}"),
+            )
+
+    def finish_open_tool_audits(
+        self,
+        run_id: str,
+        *,
+        result_category: str,
+        error_type: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Close audits that did not emit a tool-end event before interruption."""
+
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute(
+                "UPDATE tool_audits SET ended_at=?, result_category=?, error_type=?, error_message=? WHERE run_id=? AND ended_at IS NULL",
+                (_now(), result_category, error_type, error_message, run_id),
             )
 
     def list_tool_audits(self, run_id: str) -> list[dict[str, object]]:

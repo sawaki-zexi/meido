@@ -5,6 +5,8 @@ import pytest
 
 from backend.app.agent_runtime import CancellationToken, MemoryRecallTool, RoleScopedMemoryReadPort, ToolContext
 from backend.app.memory_engine import EvidenceRef, MemoryQuery, MemoryQueryResult, MemoryRecord, MemoryScope
+from backend.app.session_store import SessionStore
+from backend.app.storage import initialize_databases
 
 
 class FakeMemoryReadPort:
@@ -99,3 +101,53 @@ def test_memory_recall_output_limit_preserves_valid_json():
     assert len(result.content) <= tool.definition.output_limit
     payload = json.loads(result.content)
     assert payload["truncated"] is True
+
+
+def test_open_tool_audit_is_recovered_as_failed_after_restart(tmp_path):
+    initialize_databases(tmp_path / "data")
+    first = SessionStore(tmp_path / "data" / "sessions.db")
+    first.start_tool_audit(
+        run_id="run-restarted",
+        role_id="role-a",
+        tool_name="recall_memory",
+        call_id="call-1",
+        argument_summary={"fields": {"query": {"type": "string", "length": 2}}},
+    )
+
+    reopened = SessionStore(tmp_path / "data" / "sessions.db")
+    audit = reopened.list_tool_audits("run-restarted")[0]
+
+    assert audit["endedAt"] is not None
+    assert audit["resultCategory"] == "failed"
+    assert audit["errorType"] == "RuntimeError"
+    assert audit["errorMessage"] == "服务重启时工具运行未完成"
+
+
+def test_finish_open_tool_audits_closes_only_unfinished_rows(tmp_path):
+    initialize_databases(tmp_path / "data")
+    store = SessionStore(tmp_path / "data" / "sessions.db")
+    for call_id in ("open", "done"):
+        store.start_tool_audit(
+            run_id="run-close",
+            role_id="role-a",
+            tool_name="recall_memory",
+            call_id=call_id,
+            argument_summary={},
+        )
+    store.finish_tool_audit(
+        run_id="run-close",
+        call_id="done",
+        result_category="succeeded",
+    )
+
+    store.finish_open_tool_audits(
+        "run-close",
+        result_category="cancelled",
+        error_type="CancelledError",
+        error_message="客户端断开",
+    )
+    audits = {item["callId"]: item for item in store.list_tool_audits("run-close")}
+
+    assert audits["open"]["resultCategory"] == "cancelled"
+    assert audits["open"]["errorType"] == "CancelledError"
+    assert audits["done"]["resultCategory"] == "succeeded"

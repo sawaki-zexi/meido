@@ -1614,10 +1614,26 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     "error": _safe_model_error(error, configuration.apiKey if configuration else ""),
                 }))
         except asyncio.CancelledError:
+            terminal_reason = "cancelled"
             runtime_manager.cancel_run(run_id, interrupt=False)
             runtime_manager.cancel_unstarted_run(run_id)
             raise
         finally:
+            if terminal_reason != "completed":
+                audit_category = "cancelled" if terminal_reason == "cancelled" else "failed"
+                try:
+                    session_store.finish_open_tool_audits(
+                        run_id,
+                        result_category=audit_category,
+                        error_type="CancelledError" if audit_category == "cancelled" else "RuntimeError",
+                        error_message=(
+                            "客户端取消，工具结果未完成"
+                            if audit_category == "cancelled"
+                            else "工具运行在结果记录前中断"
+                        ),
+                    )
+                except Exception as error:
+                    memory_worker.errors.append(f"{role_id}: tool audit cleanup failed: {error}")
             if disconnect_watcher is not None:
                 disconnect_watcher.cancel()
                 await asyncio.gather(disconnect_watcher, return_exceptions=True)
