@@ -36,7 +36,10 @@ class ShellTool:
         max_output_chars: int = 20_000,
     ) -> None:
         self.workspace = Path(workspace).resolve()
-        self.allowed_commands = {item.strip().lower() for item in allowed_commands if item.strip()}
+        # Keep absolute paths in their original form. Lowercasing a complete
+        # path breaks valid case-sensitive POSIX paths such as hosted Python
+        # installations; command names are normalized only when matched.
+        self.allowed_commands = tuple(item.strip() for item in allowed_commands if item.strip())
         self.timeout_seconds = timeout_seconds
         self.max_output_chars = max_output_chars
 
@@ -61,16 +64,19 @@ class ShellTool:
             return AgentToolResult(f"invalid command: {error}", is_error=True)
         if not argv:
             return AgentToolResult("command must be a non-empty string", is_error=True)
-        executable = Path(argv[0]).name.lower()
-        configured_path = str(Path(argv[0]).resolve()).lower() if Path(argv[0]).is_absolute() else None
+        executable = Path(argv[0]).name
         raw_executable = argv[0]
         allowed = any(
-            (Path(item).is_absolute() and configured_path == str(Path(item).resolve()).lower())
+            (
+                Path(item).is_absolute()
+                and os.path.normcase(str(Path(argv[0]).resolve()))
+                == os.path.normcase(str(Path(item).resolve()))
+            )
             or (
                 not Path(item).is_absolute()
                 and "/" not in raw_executable
                 and "\\" not in raw_executable
-                and executable == item
+                and os.path.normcase(executable) == os.path.normcase(item)
             )
             for item in self.allowed_commands
         )

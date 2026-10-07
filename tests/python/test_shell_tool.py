@@ -1,6 +1,9 @@
 import asyncio
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 from backend.app.agent_runtime import CancellationToken, ToolContext
 from backend.app.agent_runtime.shell_tool import ShellTool
@@ -22,6 +25,20 @@ def test_shell_tool_runs_allowlisted_command_in_fixed_workspace(tmp_path):
     assert result.is_error is False
     assert str(tmp_path) in result.content
     assert result.details["exitCode"] == 0
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or str(Path(sys.executable)) == str(Path(sys.executable)).lower(),
+    reason="requires a case-sensitive executable path",
+)
+def test_absolute_allowlist_preserves_case_sensitive_path(tmp_path):
+    executable = str(Path(sys.executable)).replace("\\", "/")
+    tool = ShellTool(tmp_path, allowed_commands=[executable])
+
+    result = asyncio.run(tool.execute({"command": f'{executable} -c "print(1)"'}, _context()))
+
+    assert result.is_error is False
+    assert result.content.strip() == "1"
 
 
 def test_shell_tool_denies_unallowlisted_executable(tmp_path):
