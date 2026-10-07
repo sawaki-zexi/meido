@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import asyncio
 from collections.abc import Mapping as MappingABC
 from types import MappingProxyType
@@ -74,6 +74,7 @@ class CapabilityResolution:
     tools: tuple[AgentTool, ...]
     denied_tools: MappingProxyType
     plugin_resolution: PluginResolution | None = None
+    _hook_diagnostics: list[MappingProxyType] = field(default_factory=list, repr=False, compare=False)
 
     def provider_schemas(self) -> list[dict[str, object]]:
         return self.snapshot.provider_schemas()
@@ -94,6 +95,12 @@ class CapabilityResolution:
     @property
     def hooks(self):
         return self.plugin_resolution.hooks if self.plugin_resolution is not None else ()
+
+    @property
+    def hook_diagnostics(self) -> tuple[MappingProxyType, ...]:
+        """Return non-blocking Hook diagnostics collected during this run."""
+
+        return tuple(self._hook_diagnostics)
 
     async def prepare_tool_call(
         self,
@@ -125,7 +132,7 @@ class CapabilityResolution:
                     if isinstance(error, RuntimeError) and str(error) == "agent run cancelled"
                     else "failed"
                 )
-                return current, AgentToolResult(
+                failure = AgentToolResult(
                     "tool hook failed",
                     details={
                         "hook": hook.definition.hook_id,
@@ -141,6 +148,13 @@ class CapabilityResolution:
                     },
                     is_error=True,
                 )
+                if status == "cancelled":
+                    return current, failure
+                if hook.definition.mode == "observe":
+                    details = failure.details if isinstance(failure.details, dict) else {}
+                    self._hook_diagnostics.append(MappingProxyType(dict(details)))
+                    continue
+                return current, failure
             if not outcome.allowed:
                 return current, AgentToolResult(
                     "tool call denied by hook",
