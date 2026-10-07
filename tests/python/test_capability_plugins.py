@@ -116,6 +116,8 @@ def test_plugin_manifest_rejects_unknown_capability_and_duplicate_ids():
         HookDefinition("bad-timeout", "transform", timeout_seconds=float("nan"))
     with pytest.raises(ValueError, match="hook timeout must be positive"):
         HookDefinition("bad-bool-timeout", "transform", timeout_seconds=True)
+    with pytest.raises(ValueError, match="hook timeout must be positive"):
+        HookDefinition("bad-huge-timeout", "transform", timeout_seconds=10**1000)
 
 
 def test_plugin_grant_and_host_service_diagnostics_are_distinct():

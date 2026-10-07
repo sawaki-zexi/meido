@@ -30,6 +30,8 @@ def test_tool_definition_validates_policy_metadata_and_limits():
         ToolDefinition("bad-nan-timeout", "Invalid", timeout_seconds=float("nan"))
     with pytest.raises(ValueError, match="tool timeout must be positive"):
         ToolDefinition("bad-bool-timeout", "Invalid", timeout_seconds=True)
+    with pytest.raises(ValueError, match="tool timeout must be positive"):
+        ToolDefinition("bad-huge-timeout", "Invalid", timeout_seconds=10**1000)
     with pytest.raises(ValueError, match="tool output limit must be positive"):
         ToolDefinition("bad-output", "Invalid", output_limit=0)
     with pytest.raises(ValueError, match="tool output limit must be positive integer"):

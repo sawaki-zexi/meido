@@ -44,7 +44,7 @@ class ToolDefinition:
             if (
                 isinstance(self.timeout_seconds, bool)
                 or not isinstance(self.timeout_seconds, (int, float))
-                or not math.isfinite(self.timeout_seconds)
+                or not _is_finite_number(self.timeout_seconds)
                 or self.timeout_seconds <= 0
             ):
                 raise ValueError(f"tool timeout must be positive and finite: {self.name}")
@@ -61,6 +61,15 @@ class ToolDefinition:
                 "parameters": deepcopy(self.input_schema),
             },
         }
+
+
+def _is_finite_number(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 @dataclass(frozen=True, slots=True)
