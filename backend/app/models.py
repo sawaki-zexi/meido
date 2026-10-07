@@ -29,6 +29,14 @@ class ShellToolConfig(BaseModel):
 
 class AgentToolConfig(BaseModel):
     shell: ShellToolConfig = Field(default_factory=ShellToolConfig)
+    enabledTools: list[str] = Field(default_factory=list)
+    enabledPlugins: list[str] = Field(default_factory=list)
+    grantedCapabilities: list[str] = Field(default_factory=list)
+
+    @field_validator("enabledTools", "enabledPlugins", "grantedCapabilities")
+    @classmethod
+    def validate_capability_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
 
 
 class RoleInput(BaseModel):

@@ -1292,7 +1292,9 @@ def _available_runtime_tools(role) -> tuple[ShellTool, ...]:
 
 
 async def _runtime_capabilities(role, *, session_key: str, run_id: str, prompt_text: str, explicit_skill_ids: list[str] | None = None) -> CapabilityResolution:
+    agent_config = role.agentConfig
     enabled_tools = {tool.definition.name for tool in _runtime_tools(role)}
+    enabled_tools.update(agent_config.enabledTools)
     skill_roots = (
         (roles_root / role.id / "skills", "role"),
         (project_root / ".agents" / "skills", "project"),
@@ -1310,6 +1312,8 @@ async def _runtime_capabilities(role, *, session_key: str, run_id: str, prompt_t
         allowed_risks={"read_only", "mutating", "external"},
         prompt_text=prompt_text,
         explicit_skill_ids=set(explicit_skill_ids or ()),
+        enabled_plugin_ids=set(agent_config.enabledPlugins),
+        granted_capabilities=set(agent_config.grantedCapabilities),
     )
 
 

@@ -302,3 +302,51 @@ def test_plugin_hook_timeout_returns_structured_error():
         "message": "tool hook timed out",
     }
     asyncio.run(capabilities.close())
+
+
+def test_plugin_activation_and_tool_allowlist_are_independent():
+    def factory(context):
+        del context
+        return PluginContribution(tools=(EchoTool(),))
+
+    registry = PluginRegistry([(_manifest(), factory)])
+
+    disabled = asyncio.run(
+        CapabilityRegistry(plugins=registry).resolve_async(
+            role_id="role-1",
+            session_key="role:role-1",
+            run_id="run-disabled",
+            enabled_plugin_ids=set(),
+            enabled_tools={"plugin.echo"},
+        )
+    )
+    assert disabled.snapshot.plugins == ()
+    assert disabled.snapshot.tools == ()
+    asyncio.run(disabled.close())
+
+    plugin_enabled = asyncio.run(
+        CapabilityRegistry(plugins=registry).resolve_async(
+            role_id="role-1",
+            session_key="role:role-1",
+            run_id="run-plugin-only",
+            enabled_plugin_ids={"demo"},
+            enabled_tools=set(),
+        )
+    )
+    assert plugin_enabled.snapshot.plugins[0].status == "loaded"
+    assert plugin_enabled.snapshot.tools == ()
+    assert plugin_enabled.snapshot.policy_decisions["plugin.echo"] == "denied:disabled"
+    asyncio.run(plugin_enabled.close())
+
+    fully_enabled = asyncio.run(
+        CapabilityRegistry(plugins=registry).resolve_async(
+            role_id="role-1",
+            session_key="role:role-1",
+            run_id="run-enabled",
+            enabled_plugin_ids={"demo"},
+            enabled_tools={"plugin.echo"},
+        )
+    )
+    assert [definition.name for definition in fully_enabled.snapshot.tools] == ["plugin.echo"]
+    assert fully_enabled.snapshot.policy_decisions["plugin.echo"] == "allowed"
+    asyncio.run(fully_enabled.close())

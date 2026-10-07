@@ -6,9 +6,10 @@ import sqlite3
 import pytest
 
 from backend.app import main
+from backend.app.agent_runtime import AgentToolResult, PluginContribution, PluginManifest, PluginRegistry, ToolContext, ToolDefinition
 from backend.app.agent_runtime.types import ToolResultMessage
 from backend.app.model_adapter import ModelTextDelta, ModelToolCall
-from backend.app.models import AgentRun, AgentToolConfig, Message, ModelConfigurationInput, RoleInput, RoleProfile, SendMessageInput, ShellToolConfig
+from backend.app.models import AgentRun, AgentToolConfig, Message, ModelConfigurationInput, RoleInput, RoleProfile, RoleUpdateInput, SendMessageInput, ShellToolConfig
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
@@ -413,6 +414,56 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["source"] == "role"
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["timeoutSeconds"] == 30.0
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["outputLimit"] == 20000
+
+
+def test_role_capability_config_controls_plugin_resolution(tmp_path, monkeypatch):
+    role, _, _ = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+
+    class PluginEchoTool:
+        definition = ToolDefinition(
+            name="plugin.echo",
+            description="Echo a message",
+            input_schema={"type": "object", "properties": {"message": {"type": "string"}}},
+            source="plugin:demo",
+        )
+
+        def execute(self, arguments, context: ToolContext, on_update=None):
+            del context, on_update
+            return AgentToolResult(str(arguments["message"]))
+
+    registry = PluginRegistry([
+        (
+            PluginManifest("demo", "1.0.0"),
+            lambda context: PluginContribution(tools=(PluginEchoTool(),)),
+        ),
+    ])
+    monkeypatch.setattr(main, "plugin_registry", registry)
+
+    updated = main.store.update(
+        role.id,
+        RoleUpdateInput(
+            name=role.name,
+            profile=role.profile,
+            agentConfig=AgentToolConfig(
+                enabledTools=["plugin.echo"],
+                enabledPlugins=["demo"],
+            ),
+        ),
+    )
+    capabilities = asyncio.run(main._runtime_capabilities(
+        updated,
+        session_key=f"role:{role.id}",
+        run_id="run-plugin-config",
+        prompt_text="使用插件",
+    ))
+
+    assert [definition.name for definition in capabilities.snapshot.tools] == ["plugin.echo"]
+    assert capabilities.snapshot.plugins[0].manifest.plugin_id == "demo"
+    assert capabilities.snapshot.policy_decisions["plugin.echo"] == "allowed"
+
+    updated.agentConfig.enabledTools.clear()
+    assert capabilities.get("plugin.echo") is not None
+    asyncio.run(capabilities.close())
 
 
 def test_role_skill_is_injected_into_provider_and_run_snapshot(tmp_path, monkeypatch):
