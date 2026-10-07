@@ -77,6 +77,7 @@ activation: role_default
     assert [skill.skill_id for skill in active.skills] == ["study-plan"]
     assert active.skills[0].tools == ("memory.read",)
     assert active.skills[0].content_hash
+    assert active.skills[0].trust_level == "project"
     assert "学习计划" in active.prompt_sections[0]
     assert active.skills[0].path == "study-plan/SKILL.md"
     assert str(tmp_path) not in active.skills[0].path
@@ -214,6 +215,7 @@ activation: role_default
     )
     snapshot = capabilities.snapshot.to_dict()
     assert snapshot["skills"][0]["tools"] == ["memory.read"]
+    assert snapshot["skills"][0]["trustLevel"] == "project"
     assert snapshot["promptSections"] == ["回答前先参考记忆。"]
     assert {
         item["tool"]

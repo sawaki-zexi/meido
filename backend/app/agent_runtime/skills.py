@@ -10,6 +10,14 @@ from typing import Iterable
 
 _SKILL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _ACTIVATIONS = frozenset({"explicit", "role_default", "keyword"})
+_TRUST_LEVELS = frozenset({"builtin", "project", "installed", "external"})
+_SOURCE_TRUST_LEVELS = {
+    "builtin": "builtin",
+    "role": "project",
+    "project": "project",
+    "installed": "installed",
+    "external": "external",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +31,11 @@ class SkillDescriptor:
     path: str
     content_hash: str
     body: str
+    trust_level: str = "project"
+
+    def __post_init__(self) -> None:
+        if self.trust_level not in _TRUST_LEVELS:
+            raise ValueError(f"unsupported skill trust level: {self.trust_level}")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -32,6 +45,7 @@ class SkillDescriptor:
             "tools": list(self.tools),
             "activation": self.activation,
             "source": self.source,
+            "trustLevel": self.trust_level,
             "path": self.path,
             "contentHash": self.content_hash,
         }
@@ -84,7 +98,14 @@ class SkillRegistry:
                 diagnostics.append({"path": str(path), "error": "symlinked skills are not supported"})
                 continue
             try:
-                loaded.append(_parse_skill(path, root_path=root_path, source=source))
+                loaded.append(
+                    _parse_skill(
+                        path,
+                        root_path=root_path,
+                        source=source,
+                        trust_level=_SOURCE_TRUST_LEVELS.get(source, "project"),
+                    )
+                )
             except (OSError, UnicodeError, ValueError) as error:
                 skill_id = _front_matter_id(path)
                 diagnostics.append({
@@ -168,6 +189,7 @@ class SkillRegistry:
                     path=skill.path,
                     content_hash=skill.content_hash,
                     body=skill.body,
+                    trust_level=skill.trust_level,
                 )
             )
         return SkillResolution(
@@ -177,7 +199,7 @@ class SkillRegistry:
         )
 
 
-def _parse_skill(path: Path, *, root_path: Path, source: str) -> SkillDescriptor:
+def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str) -> SkillDescriptor:
     resolved = path.resolve()
     if resolved.parent != root_path and resolved.parent.parent != root_path:
         raise ValueError("skill path escapes discovery root")
@@ -205,6 +227,7 @@ def _parse_skill(path: Path, *, root_path: Path, source: str) -> SkillDescriptor
         path=resolved.relative_to(root_path).as_posix(),
         content_hash=digest,
         body=body,
+        trust_level=trust_level,
     )
 
 
