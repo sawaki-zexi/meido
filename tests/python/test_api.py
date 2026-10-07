@@ -1034,7 +1034,8 @@ def test_capabilities_are_closed_when_provider_setup_fails(tmp_path, monkeypatch
 
     class FakeCapabilities:
         class Snapshot:
-            def to_dict(self):
+            def to_dict(self, **kwargs):
+                assert kwargs == {"include_prompt_sections": False}
                 return {"tools": []}
 
         snapshot = Snapshot()
@@ -1054,7 +1055,11 @@ def test_capabilities_are_closed_when_provider_setup_fails(tmp_path, monkeypatch
         del args, kwargs
         return capabilities
 
+    provider_called = False
+
     def fail_provider(*args, **kwargs):
+        nonlocal provider_called
+        provider_called = True
         del args, kwargs
         raise RuntimeError("provider setup failed")
 
@@ -1065,6 +1070,7 @@ def test_capabilities_are_closed_when_provider_setup_fails(tmp_path, monkeypatch
 
     assert response.status_code == 200
     assert "event: assistant_failed" in response.text
+    assert provider_called
     assert capabilities.closed
     run_id = sessions.list_messages(f"role:{role.id}")[0].runId
     assert run_id is not None
