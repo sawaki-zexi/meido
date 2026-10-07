@@ -1,6 +1,8 @@
 import asyncio
 from collections.abc import Mapping
 
+import pytest
+
 from backend.app.agent_runtime import (
     AgentToolResult,
     AssistantDoneEvent,
@@ -81,6 +83,11 @@ activation: role_default
     assert "学习计划" in active.prompt_sections[0]
     assert active.skills[0].path == "study-plan/SKILL.md"
     assert str(tmp_path) not in active.skills[0].path
+
+
+def test_skill_discovery_rejects_unknown_sources(tmp_path):
+    with pytest.raises(ValueError, match="unsupported skill source"):
+        SkillRegistry.discover(tmp_path, source="untrusted")
 
 
 def test_skill_activation_supports_explicit_and_keyword_modes(tmp_path):

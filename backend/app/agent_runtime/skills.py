@@ -86,6 +86,8 @@ class SkillRegistry:
 
     @classmethod
     def discover(cls, root: str | Path, *, source: str = "project") -> SkillRegistry:
+        if source not in _SOURCE_TRUST_LEVELS:
+            raise ValueError(f"unsupported skill source: {source}")
         root_path = Path(root).resolve()
         if not root_path.exists() or not root_path.is_dir():
             return cls()
@@ -106,7 +108,7 @@ class SkillRegistry:
                         path,
                         root_path=root_path,
                         source=source,
-                        trust_level=_SOURCE_TRUST_LEVELS.get(source, "project"),
+                        trust_level=_SOURCE_TRUST_LEVELS[source],
                     )
                 )
             except (OSError, UnicodeError, ValueError) as error:
