@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Literal, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
-from ..memory_engine import MemoryQuery, MemoryQueryResult, MemoryScope
 from .tools import AgentToolResult, ToolContext, ToolDefinition
 
+if TYPE_CHECKING:
+    from ..memory_engine import MemoryQuery, MemoryQueryResult, MemoryScope
+
 MemoryRecallIntent = Literal["context", "answer", "interest", "procedure"]
+_MEMORY_INTENTS: tuple[MemoryRecallIntent, ...] = ("context", "answer", "interest", "procedure")
+_MEMORY_INTENT_VALUES = frozenset(_MEMORY_INTENTS)
+_MAX_QUERY_LENGTH = 500
+_MAX_RESULT_LIMIT = 8
 
 
 class MemoryReadPort(Protocol):
@@ -22,6 +28,8 @@ class RoleScopedMemoryReadPort:
     """Bind the read-only port to one role before exposing it to a tool."""
 
     def __init__(self, engine: MemoryReadPort, role_id: str) -> None:
+        from ..memory_engine import MemoryScope
+
         self._engine = engine
         self._scope = MemoryScope(role_id, f"role:{role_id}")
 
@@ -50,17 +58,17 @@ class MemoryRecallTool:
                     "type": "string",
                     "description": "要检索的事实、事件或偏好",
                     "minLength": 1,
-                    "maxLength": 500,
+                    "maxLength": _MAX_QUERY_LENGTH,
                 },
                 "intent": {
                     "type": "string",
-                    "enum": ["context", "answer", "interest", "procedure"],
+                    "enum": list(_MEMORY_INTENTS),
                     "description": "检索目的，默认使用 answer",
                 },
                 "limit": {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 8,
+                    "maximum": _MAX_RESULT_LIMIT,
                     "description": "最多返回的记忆条数",
                 },
             },
@@ -89,16 +97,18 @@ class MemoryRecallTool:
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query must be a non-empty string")
         query = query.strip()
-        if len(query) > 500:
+        if len(query) > _MAX_QUERY_LENGTH:
             raise ValueError("query is too long")
 
         intent_value = arguments.get("intent", "answer")
-        if not isinstance(intent_value, str) or intent_value not in {"context", "answer", "interest", "procedure"}:
+        if not isinstance(intent_value, str) or intent_value not in _MEMORY_INTENT_VALUES:
             raise ValueError("unsupported memory query intent")
         intent = cast(MemoryRecallIntent, intent_value)
         limit = arguments.get("limit", 5)
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 8:
-            raise ValueError("limit must be an integer between 1 and 8")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= _MAX_RESULT_LIMIT:
+            raise ValueError(f"limit must be an integer between 1 and {_MAX_RESULT_LIMIT}")
+
+        from ..memory_engine import MemoryQuery, MemoryScope
 
         scope = MemoryScope(context.role_id, context.session_key)
         result = await self._memory.query(MemoryQuery(

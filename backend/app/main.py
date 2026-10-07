@@ -1271,35 +1271,52 @@ def _memory_runtime_tool(role) -> MemoryRecallTool:
     return MemoryRecallTool(RoleScopedMemoryReadPort(_current_memory_engine(), role.id))
 
 
-def _runtime_tools(role) -> tuple[ShellTool | MemoryRecallTool, ...]:
-    """Build tools from the request-time role snapshot and its policy."""
+def _runtime_tool_candidates(role) -> tuple[ShellTool | MemoryRecallTool, ...]:
+    """Build every tool available to the host for a role snapshot."""
     shell = role.agentConfig.shell
-    tools: list[ShellTool | MemoryRecallTool] = []
-    if shell.enabled and shell.allowedCommands:
-        tools.append(ShellTool(
+    return (
+        ShellTool(
             store.workspace_path(role.id),
             allowed_commands=shell.allowedCommands,
             timeout_seconds=shell.timeoutSeconds,
             max_output_chars=shell.maxOutputChars,
-        ))
-    if role.agentConfig.memoryRecall.enabled:
-        tools.append(_memory_runtime_tool(role))
-    return tuple(tools)
+        ),
+        _memory_runtime_tool(role),
+    )
 
 
-def _available_runtime_tools(role) -> tuple[ShellTool | MemoryRecallTool, ...]:
+def _enabled_runtime_tool_names(role) -> set[str]:
     shell = role.agentConfig.shell
-    return tuple([ShellTool(
-        store.workspace_path(role.id),
-        allowed_commands=shell.allowedCommands,
-        timeout_seconds=shell.timeoutSeconds,
-        max_output_chars=shell.maxOutputChars,
-    ), _memory_runtime_tool(role)])
+    enabled: set[str] = set()
+    if shell.enabled and shell.allowedCommands:
+        enabled.add("shell")
+    if role.agentConfig.memoryRecall.enabled:
+        enabled.add("recall_memory")
+    return enabled
 
 
-def _runtime_capabilities(role, *, session_key: str, run_id: str) -> CapabilityResolution:
-    enabled_tools = {tool.definition.name for tool in _runtime_tools(role)}
-    return CapabilityRegistry(_available_runtime_tools(role)).resolve(
+def _runtime_tools(
+    role,
+    *,
+    candidates: tuple[ShellTool | MemoryRecallTool, ...] | None = None,
+) -> tuple[ShellTool | MemoryRecallTool, ...]:
+    """Filter host tool candidates using the request-time role policy."""
+    available = _runtime_tool_candidates(role) if candidates is None else candidates
+    enabled = _enabled_runtime_tool_names(role)
+    return tuple(tool for tool in available if tool.definition.name in enabled)
+
+
+def _runtime_capabilities(
+    role,
+    *,
+    session_key: str,
+    run_id: str,
+    available_tools: tuple[ShellTool | MemoryRecallTool, ...] | None = None,
+) -> CapabilityResolution:
+    enabled_tools = _enabled_runtime_tool_names(role)
+    return CapabilityRegistry(
+        _runtime_tool_candidates(role) if available_tools is None else available_tools,
+    ).resolve(
         role_id=role.id,
         session_key=session_key,
         run_id=run_id,
@@ -1326,7 +1343,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         if isinstance(configuration_snapshot, dict):
             configuration_snapshot.pop("apiKey", None)
         role_snapshot = role.model_dump(mode="json", exclude={"modelConfig"})
-        runtime_tools = _runtime_tools(role)
+        available_runtime_tools = _runtime_tool_candidates(role)
+        runtime_tools = _runtime_tools(role, candidates=available_runtime_tools)
         shell_config = role.agentConfig.shell
         model_snapshot = {
             "modelConfiguration": configuration_snapshot,
@@ -1466,6 +1484,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     role,
                     session_key=session.session.sessionKey,
                     run_id=run_id,
+                    available_tools=available_runtime_tools,
                 )
                 model_snapshot["capabilities"] = capabilities.snapshot.to_dict()
                 session_store.update_run(run_id, status="created", model_snapshot=model_snapshot)
