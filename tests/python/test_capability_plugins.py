@@ -364,6 +364,66 @@ def test_plugin_hook_cannot_mutate_arguments_in_place():
     asyncio.run(capabilities.close())
 
 
+def test_transform_hook_can_return_nested_readonly_arguments():
+    class NestedTool:
+        definition = ToolDefinition(
+            name="plugin.nested",
+            description="Accept nested arguments",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "metadata": {
+                        "type": "object",
+                        "properties": {"flag": {"type": "boolean"}},
+                        "required": ["flag"],
+                        "additionalProperties": False,
+                    },
+                    "labels": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["metadata", "labels"],
+                "additionalProperties": False,
+            },
+        )
+
+        def execute(self, arguments, context, on_update=None):
+            del arguments, context, on_update
+            return AgentToolResult("ok")
+
+    class PassthroughHook:
+        definition = HookDefinition(
+            hook_id="demo.nested-passthrough",
+            mode="transform",
+            tool_names=("plugin.nested",),
+        )
+
+        def before_tool(self, context: HookContext) -> HookOutcome:
+            return HookOutcome(arguments=dict(context.arguments))
+
+    def factory(context):
+        del context
+        return PluginContribution(tools=(NestedTool(),), hooks=(PassthroughHook(),))
+
+    capabilities = asyncio.run(
+        CapabilityRegistry(plugins=PluginRegistry([(_manifest(), factory)])).resolve_async(
+            role_id="role-1",
+            session_key="role:role-1",
+            run_id="run-1",
+            enabled_tools={"plugin.nested"},
+        )
+    )
+    arguments, error = asyncio.run(
+        capabilities.prepare_tool_call(
+            "plugin.nested",
+            {"metadata": {"flag": True}, "labels": ["one", "two"]},
+            ToolContext("role-1", "role:role-1", "run-1", signal=CancellationToken()),
+        )
+    )
+    assert error is None
+    assert arguments == {"metadata": {"flag": True}, "labels": ["one", "two"]}
+    capabilities.validate_arguments("plugin.nested", arguments)
+    asyncio.run(capabilities.close())
+
+
 def test_plugin_hook_timeout_returns_structured_error():
     def factory(context):
         del context

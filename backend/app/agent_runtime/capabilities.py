@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 import asyncio
+from collections.abc import Mapping as MappingABC
 from types import MappingProxyType
 from typing import Mapping
 
@@ -151,7 +152,7 @@ class CapabilityResolution:
                     is_error=True,
                 )
             if outcome.arguments is not None:
-                current = dict(outcome.arguments)
+                current = _mutable_arguments(outcome.arguments)
         return current, None
 
     async def close(self) -> None:
@@ -174,6 +175,24 @@ def _readonly_value(value: object) -> object:
         })
     if isinstance(value, list):
         return tuple(_readonly_value(item) for item in value)
+    return value
+
+
+def _mutable_arguments(arguments: Mapping[str, object]) -> dict[str, object]:
+    return {
+        key: _mutable_value(value)
+        for key, value in arguments.items()
+    }
+
+
+def _mutable_value(value: object) -> object:
+    if isinstance(value, MappingABC):
+        return {
+            key: _mutable_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_mutable_value(item) for item in value]
     return value
 
 
