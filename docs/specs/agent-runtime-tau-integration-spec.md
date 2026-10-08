@@ -224,6 +224,8 @@ Tool.execute(
 ) -> ToolResult
 ```
 
+Loop 在工具调用边界统一补齐结果诊断字段。`content` 是提供给模型的有限文本；`details` 至少包含状态、耗时、原始输出字符数和截断标志，并保留 Tool 自己提供的领域字段。字段和状态转换见 [`agent-runtime-tool-result.md`](../reference/agent-runtime-tool-result.md)。
+
 `ToolContext` 必须包含 `role_id`、`session_key`、`run_id` 和取消信号。工具不能自行读取全局角色或越过 Registry 访问未授权资源。
 
 首批内建工具保持 `read_only`。角色范围 Shell 工具是唯一的第二阶段 `external` 工具：默认关闭、使用显式 executable allowlist、固定角色 workspace、最小环境、超时/取消和有界输出。它不提供操作系统 sandbox；`mutating`、其他 `external` 工具以及强隔离执行需要另行定义审批、权限、审计和幂等规则。
