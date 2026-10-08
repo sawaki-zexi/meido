@@ -415,6 +415,7 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["source"] == "role"
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["timeoutSeconds"] == 30.0
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["outputLimit"] == 20000
+    assert len(stored_run.modelSnapshot["capabilities"]["generation"]) == 24
 
 
 def test_role_capability_config_controls_plugin_resolution(tmp_path, monkeypatch):

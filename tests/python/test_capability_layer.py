@@ -145,6 +145,8 @@ def test_capability_registry_rejects_duplicate_ids_and_freezes_snapshot():
     assert [tool.definition.name for tool in first.tools] == ["memory.read"]
     assert first.snapshot.to_dict()["tools"][0]["source"] == "builtin"
     assert first.snapshot.to_dict()["tools"][0]["inputSchema"] == {"type": "object"}
+    first_generation = first.snapshot.generation
+    assert len(first_generation) == 24
 
     second = registry.resolve(
         role_id="role-1",
@@ -152,6 +154,7 @@ def test_capability_registry_rejects_duplicate_ids_and_freezes_snapshot():
         run_id="run-2",
     )
     assert [tool.name for tool in second.snapshot.tools] == ["memory.read", "memory.write"]
+    assert second.snapshot.generation != first_generation
 
 
 def test_capability_registry_filters_tools_and_records_deterministic_reasons():
