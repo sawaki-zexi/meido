@@ -181,6 +181,8 @@ activation: explicit
 
 
 def test_skill_descriptor_rejects_forged_source_or_trust():
+    with pytest.raises(ValueError, match="stay within"):
+        SkillResourceDescriptor("../secret", 1, "hash", "external")
     with pytest.raises(ValueError, match="unsupported skill source"):
         SkillDescriptor(
             skill_id="forged",

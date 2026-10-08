@@ -34,6 +34,7 @@ class SkillResourceDescriptor:
     def __post_init__(self) -> None:
         if self.trust_level not in _TRUST_LEVELS:
             raise ValueError(f"unsupported skill resource trust level: {self.trust_level}")
+        _validate_relative_path(self.path, "skill resource path")
         if self.size < 0:
             raise ValueError("skill resource size must be non-negative")
 
@@ -68,6 +69,7 @@ class SkillDescriptor:
     def __post_init__(self) -> None:
         if self.trust_level not in _TRUST_LEVELS:
             raise ValueError(f"unsupported skill trust level: {self.trust_level}")
+        _validate_relative_path(self.path, "skill path")
         source_trust = _SOURCE_TRUST_LEVELS.get(self.source)
         if source_trust is None:
             raise ValueError(f"unsupported skill source: {self.source}")
@@ -425,6 +427,12 @@ def _discover_supporting_files(
             size, digest = _hash_bounded_file(resolved)
             resources.append(SkillResourceDescriptor(relative, size, digest, trust_level))
     return tuple(sorted(resources, key=lambda item: item.path))
+
+
+def _validate_relative_path(value: str, label: str) -> None:
+    path = Path(value)
+    if not value.strip() or path.is_absolute() or ".." in path.parts:
+        raise ValueError(f"{label} must stay within the discovery root")
 
 
 def _split_front_matter(raw: str) -> tuple[dict[str, object], str]:
