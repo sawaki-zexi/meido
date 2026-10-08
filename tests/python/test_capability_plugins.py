@@ -154,7 +154,8 @@ def test_plugin_grant_and_host_service_diagnostics_are_distinct():
 
     unavailable = asyncio.run(registry.load(granted_capabilities={"memory.read"}))
     assert unavailable.loaded == ()
-    assert "host service unavailable: memory.read" in unavailable.diagnostics[0]["error"]
+    assert unavailable.diagnostics[0]["error"] == "host service unavailable"
+    assert unavailable.diagnostics[0]["errorType"] == "HostServiceUnavailable"
     assert called == []
 
 
@@ -518,6 +519,36 @@ def test_plugin_setup_rollback_and_cleanup_are_idempotent():
     reloaded = asyncio.run(resolution.reload(good))
     asyncio.run(reloaded.close())
     assert cleanup == ["rolled-back", "closed", "closed"]
+
+
+def test_plugin_factory_error_diagnostic_does_not_persist_exception_secrets():
+    cleanup = []
+    secret = "plugin-api-key-do-not-persist"
+
+    def fail_cleanup():
+        cleanup.append("closed")
+        raise RuntimeError(f"cleanup failed with {secret}")
+
+    def factory(context):
+        context.add_cleanup(fail_cleanup)
+        raise RuntimeError(f"failed to initialize with {secret}")
+
+    registry = PluginRegistry([(_manifest(), factory)])
+    capabilities = asyncio.run(CapabilityRegistry(plugins=registry).resolve_async(
+        role_id="role-1",
+        session_key="role:role-1",
+        run_id="run-secret-plugin-error",
+        enabled_plugin_ids={"demo"},
+    ))
+
+    assert cleanup == ["closed"]
+    diagnostic = dict(capabilities.snapshot.plugin_diagnostics[0])
+    assert diagnostic["status"] == "failed"
+    assert diagnostic["error"] == "plugin setup and rollback cleanup failed"
+    assert diagnostic["errorType"] == "RuntimeError"
+    assert diagnostic["cleanupErrorType"] == "PluginError"
+    assert secret not in str(capabilities.snapshot.to_dict())
+    asyncio.run(capabilities.close())
 
 
 def test_plugin_resources_are_closed_when_capability_resolution_fails():

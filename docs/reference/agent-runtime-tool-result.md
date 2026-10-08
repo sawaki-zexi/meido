@@ -2,6 +2,8 @@
 
 状态：当前
 
+最后核验：2026-10-08
+
 事实来源：
 
 - [`backend/app/agent_runtime/loop.py`](../../backend/app/agent_runtime/loop.py)

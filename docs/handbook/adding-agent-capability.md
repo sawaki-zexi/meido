@@ -2,6 +2,8 @@
 
 状态：当前
 
+最后核验：2026-10-08
+
 事实来源：
 
 - [`backend/app/agent_runtime/tools.py`](../../backend/app/agent_runtime/tools.py)
@@ -13,6 +15,12 @@
 能力在运行开始时解析为一份冻结的 `CapabilitySnapshot`。新增能力应接入 Registry 和宿主服务端口，不修改 FastAPI 路由、Agent Loop、MemoryWorker 或 SQLite 的核心流程。
 
 解析完成后，Tool 的实现对象会和本次运行的 Tool 定义绑定。不要在运行期间修改 Tool 的名称、Schema、超时或输出上限；需要改变契约时注册新版本，让下一次运行生成新的 generation。
+
+## 准备条件
+
+开始接入前，确认能力属于 Tool、Skill 或 Plugin 之一，已经有明确的来源、风险和角色授权策略，并能通过 `ToolContext` 或宿主服务端口取得所需资源。当前运行时只接受进程内 Python Plugin；动态安装、远程 Plugin、MCP 和操作系统 sandbox 不在本手册范围内。
+
+先为能力写行为测试，再把它注册到对应 Registry。测试目录和项目目录中的 Skill 文件不得使用符号链接；Plugin factory 必须能在 setup 失败、取消和 reload 时清理已创建的资源。
 
 ## 选择扩展类型
 
@@ -67,3 +75,12 @@ tools:
 - 失败、超时和取消返回结构化错误，不能伪装成成功结果。
 - 能力来源、版本、策略和 generation 可在运行快照中诊断，且不包含 API Key 或插件配置密钥。
 - 相关 Python 行为测试、Runtime mypy、Ruff、compileall 和 `git diff --check` 全部通过。
+
+## 常见故障
+
+- Tool 没有出现在 provider schema：检查角色 `enabledTools`、风险集合、审批状态、`exposure` 和 Tool ID 是否完全匹配；Skill 的 Tool 引用不会自动启用 Tool。
+- Skill 出现 `unavailable` 或 hash 错误：检查 `SKILL.md` 及 supporting files 是否在发现后被修改、超出大小限制、使用了符号链接或逃出所属目录。
+- Plugin 出现 `capability not granted` 或 `host service unavailable`：分别检查角色的 `grantedCapabilities` 和宿主传入的服务端口；不要在 factory 中绕过 `PluginContext.require()` 读取全局对象。
+- Plugin 出现来源、声明或重复 ID 错误：确认 Tool source 为 `plugin:<plugin_id>`，Skill source/trust 不高于 manifest，并把所有贡献 ID 列入对应 manifest 字段。
+- Plugin factory 或回滚 cleanup 抛错时，运行快照只记录稳定错误类别和异常类型，不记录任意异常文本。宿主不保留原始异常；需要诊断时，由 Plugin 在自己的日志中脱敏记录，避免写入凭据。
+- 运行被取消但资源仍未释放：让 cleanup 返回可等待对象并确保它最终完成；Runtime 会等待已启动的异步 cleanup，然后继续处理其余资源。

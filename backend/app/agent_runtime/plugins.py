@@ -45,6 +45,10 @@ class PluginSetupError(PluginError):
     """A plugin failed while building its contributions."""
 
 
+class _PluginContributionError(PluginSetupError):
+    """A deterministic validation error produced by the host."""
+
+
 @dataclass(frozen=True, slots=True)
 class PluginManifest:
     plugin_id: str
@@ -431,14 +435,14 @@ class PluginRegistry:
                 if inspect.isawaitable(contribution):
                     contribution = await contribution
                 if not isinstance(contribution, PluginContribution):
-                    raise PluginSetupError("plugin factory returned invalid contribution")
+                    raise _PluginContributionError("plugin factory returned invalid contribution")
                 _validate_contribution(contribution, manifest=manifest)
                 duplicate_hooks = {
                     hook.definition.hook_id
                     for hook in contribution.hooks
                 } & hook_ids
                 if duplicate_hooks:
-                    raise PluginSetupError(
+                    raise _PluginContributionError(
                         f"duplicate plugin hook: {', '.join(sorted(duplicate_hooks))}"
                     )
                 hook_ids.update(hook.definition.hook_id for hook in contribution.hooks)
@@ -449,6 +453,16 @@ class PluginRegistry:
                 )
                 raise
             except Exception as error:
+                error_type = type(error).__name__
+                if isinstance(error, _PluginContributionError):
+                    diagnostic_error = str(error)
+                elif isinstance(error, CapabilityNotGranted):
+                    diagnostic_error = "capability not granted"
+                elif isinstance(error, HostServiceUnavailable):
+                    diagnostic_error = "host service unavailable"
+                else:
+                    diagnostic_error = "plugin setup failed"
+                cleanup_error_type: str | None = None
                 try:
                     await context.close()
                 except asyncio.CancelledError:
@@ -458,12 +472,18 @@ class PluginRegistry:
                     )
                     raise
                 except Exception as cleanup_error:
-                    error = PluginSetupError(f"{error}; rollback cleanup failed: {cleanup_error}")
-                diagnostics.append(MappingProxyType({
+                    diagnostic_error = "plugin setup and rollback cleanup failed"
+                    cleanup_error_type = type(cleanup_error).__name__
+                diagnostic: dict[str, object] = {
                     "pluginId": manifest.plugin_id,
                     "status": "failed",
-                    "error": str(error),
-                }))
+                    "error": diagnostic_error,
+                }
+                if not isinstance(error, _PluginContributionError):
+                    diagnostic["errorType"] = error_type
+                if cleanup_error_type is not None:
+                    diagnostic["cleanupErrorType"] = cleanup_error_type
+                diagnostics.append(MappingProxyType(diagnostic))
                 continue
             except BaseException:
                 await _close_plugin_contexts(
@@ -481,7 +501,7 @@ def _validate_contribution(contribution: PluginContribution, *, manifest: Plugin
         tool.definition.name for tool in contribution.tools
     } - set(manifest.declared_tools)
     if undeclared_tools:
-        raise PluginSetupError(
+        raise _PluginContributionError(
             f"plugin contributed undeclared tool: {', '.join(sorted(undeclared_tools))}"
         )
     names: set[str] = set()
@@ -489,24 +509,24 @@ def _validate_contribution(contribution: PluginContribution, *, manifest: Plugin
     for tool in contribution.tools:
         name = tool.definition.name
         if name in names:
-            raise PluginSetupError(f"duplicate plugin tool: {name}")
+            raise _PluginContributionError(f"duplicate plugin tool: {name}")
         if tool.definition.source != expected_tool_source:
-            raise PluginSetupError(
+            raise _PluginContributionError(
                 f"plugin tool source must be {expected_tool_source}: {name}"
             )
         names.add(name)
     skill_ids: set[str] = set()
     for skill in contribution.skills:
         if skill.skill_id in skill_ids:
-            raise PluginSetupError(f"duplicate plugin skill: {skill.skill_id}")
+            raise _PluginContributionError(f"duplicate plugin skill: {skill.skill_id}")
         if skill.skill_id not in manifest.declared_skills:
-            raise PluginSetupError(f"plugin contributed undeclared skill: {skill.skill_id}")
+            raise _PluginContributionError(f"plugin contributed undeclared skill: {skill.skill_id}")
         if skill.source != manifest.source:
-            raise PluginSetupError(
+            raise _PluginContributionError(
                 f"plugin skill source does not match manifest source: {skill.skill_id}"
             )
         if _TRUST_RANK[skill.trust_level] > _TRUST_RANK[manifest.trust_level]:
-            raise PluginSetupError(
+            raise _PluginContributionError(
                 f"plugin skill trust level exceeds plugin trust: {skill.skill_id}"
             )
         skill_ids.add(skill.skill_id)
@@ -514,9 +534,9 @@ def _validate_contribution(contribution: PluginContribution, *, manifest: Plugin
     for hook in contribution.hooks:
         hook_id = hook.definition.hook_id
         if hook_id in hook_ids:
-            raise PluginSetupError(f"duplicate plugin hook: {hook_id}")
+            raise _PluginContributionError(f"duplicate plugin hook: {hook_id}")
         if hook_id not in manifest.lifecycle_contributions:
-            raise PluginSetupError(f"plugin contributed undeclared hook: {hook_id}")
+            raise _PluginContributionError(f"plugin contributed undeclared hook: {hook_id}")
         hook_ids.add(hook_id)
 
 
