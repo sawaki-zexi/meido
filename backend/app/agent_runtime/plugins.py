@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import inspect
 import math
 import re
@@ -15,6 +16,8 @@ _PLUGIN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _TRUST_LEVELS = frozenset({"builtin", "project", "installed", "external"})
 _IMPLICIT_ACTIVATION_TRUST_LEVELS = frozenset({"installed", "external"})
 _TRUST_RANK = {"external": 0, "installed": 1, "project": 2, "builtin": 3}
+_SOURCE_TRUST = {"builtin": "builtin", "project": "project", "installed": "installed", "external": "external"}
+_DEFAULT_RUNTIME_API = "meido.agent_runtime.v1"
 KNOWN_CAPABILITIES = frozenset({
     "runtime.hook",
     "runtime.tool",
@@ -49,6 +52,14 @@ class PluginManifest:
     source: str = "builtin"
     trust_level: str = "builtin"
     manifest_hash: str | None = None
+    runtime_api: str = _DEFAULT_RUNTIME_API
+    config_schema: dict[str, object] | None = None
+    config_defaults: dict[str, object] | None = None
+    declared_tools: tuple[str, ...] = ()
+    declared_skills: tuple[str, ...] = ()
+    lifecycle_contributions: tuple[str, ...] = ()
+    resource_dir: str | None = None
+    generation: str | None = None
 
     def __post_init__(self) -> None:
         if not _PLUGIN_ID.fullmatch(self.plugin_id):
@@ -57,6 +68,26 @@ class PluginManifest:
             raise ValueError("plugin version is required")
         if self.trust_level not in _TRUST_LEVELS:
             raise ValueError(f"unsupported plugin trust level: {self.trust_level}")
+        source_trust = _SOURCE_TRUST.get(self.source)
+        if source_trust is None:
+            raise ValueError(f"unsupported plugin source: {self.source}")
+        if _TRUST_RANK[self.trust_level] > _TRUST_RANK[source_trust]:
+            raise ValueError("plugin trust level exceeds source trust")
+        if not self.runtime_api.strip():
+            raise ValueError("plugin runtime_api is required")
+        for field_name, values in (
+            ("declared_tools", self.declared_tools),
+            ("declared_skills", self.declared_skills),
+            ("lifecycle_contributions", self.lifecycle_contributions),
+        ):
+            if len(set(values)) != len(values) or any(not item.strip() for item in values):
+                raise ValueError(f"plugin {field_name} must contain unique non-empty IDs")
+        if self.resource_dir is not None and not self.resource_dir.strip():
+            raise ValueError("plugin resource_dir must not be empty")
+        if self.config_schema is not None and not isinstance(self.config_schema, dict):
+            raise ValueError("plugin config_schema must be an object")
+        if self.config_defaults is not None and not isinstance(self.config_defaults, dict):
+            raise ValueError("plugin config_defaults must be an object")
         if len(set(self.requested_capabilities)) != len(self.requested_capabilities):
             raise ValueError("duplicate requested capability")
         unknown = set(self.requested_capabilities) - KNOWN_CAPABILITIES
@@ -71,6 +102,14 @@ class PluginManifest:
             "trustLevel": self.trust_level,
             "manifestHash": self.manifest_hash,
             "requestedCapabilities": list(self.requested_capabilities),
+            "runtimeApi": self.runtime_api,
+            "configSchema": deepcopy(self.config_schema),
+            "configDefaults": deepcopy(self.config_defaults),
+            "declaredTools": list(self.declared_tools),
+            "declaredSkills": list(self.declared_skills),
+            "lifecycleContributions": list(self.lifecycle_contributions),
+            "resourceDir": self.resource_dir,
+            "generation": self.generation or self.manifest_hash or f"{self.plugin_id}@{self.version}",
         }
 
 

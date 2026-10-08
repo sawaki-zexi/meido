@@ -18,7 +18,7 @@ from backend.app.agent_runtime import (
     run_agent_loop,
 )
 from backend.app.models import RoleInput, RoleProfile
-from backend.app.agent_runtime.skills import SkillRegistry
+from backend.app.agent_runtime.skills import SkillDescriptor, SkillRegistry, SkillResourceDescriptor
 
 
 class ReadTool:
@@ -142,6 +142,84 @@ activation: explicit
     active = fresh_registry.resolve(prompt="", explicit_ids={"lazy-skill"})
     assert active.prompt_sections == ("激活后的正文。",)
     assert active.skills[0].content_hash == original_hash
+
+
+def test_skill_discovery_records_and_verifies_supporting_files(tmp_path):
+    directory = _write_skill(
+        tmp_path,
+        "with-resources",
+        """---
+id: with-resources
+version: 1.0.0
+description: 带参考资料的技能
+activation: explicit
+---
+使用参考资料。
+""",
+    )
+    references = directory / "references"
+    references.mkdir()
+    (references / "guide.md").write_text("参考内容", encoding="utf-8")
+    assets = directory / "assets"
+    assets.mkdir()
+    (assets / "example.bin").write_bytes(b"asset")
+
+    registry = SkillRegistry.discover(tmp_path)
+    descriptor = registry.skills[0]
+    assert descriptor.body == ""
+    assert [item.path for item in descriptor.supporting_files] == [
+        "with-resources/assets/example.bin",
+        "with-resources/references/guide.md",
+    ]
+    assert all(item.size > 0 and item.content_hash for item in descriptor.supporting_files)
+    assert descriptor.to_dict()["supportingFiles"]
+
+    (references / "guide.md").write_text("被修改的参考内容", encoding="utf-8")
+    changed = registry.resolve(prompt="", explicit_ids={"with-resources"})
+    assert changed.skills == ()
+    assert changed.diagnostics[-1]["error"] == "skill supporting file changed after discovery"
+
+
+def test_skill_descriptor_rejects_forged_source_or_trust():
+    with pytest.raises(ValueError, match="unsupported skill source"):
+        SkillDescriptor(
+            skill_id="forged",
+            version="1.0.0",
+            description="forged",
+            tools=(),
+            activation="explicit",
+            source="forged",
+            path="SKILL.md",
+            content_hash="hash",
+            body="",
+        )
+    with pytest.raises(ValueError, match="exceeds source trust"):
+        SkillDescriptor(
+            skill_id="forged",
+            version="1.0.0",
+            description="forged",
+            tools=(),
+            activation="explicit",
+            source="external",
+            path="SKILL.md",
+            content_hash="hash",
+            body="",
+            trust_level="builtin",
+        )
+    with pytest.raises(ValueError, match="resource trust level exceeds"):
+        SkillDescriptor(
+            skill_id="forged",
+            version="1.0.0",
+            description="forged",
+            tools=(),
+            activation="explicit",
+            source="external",
+            path="SKILL.md",
+            content_hash="hash",
+            body="",
+            trust_level="external",
+            supporting_files=(SkillResourceDescriptor("references/a.md", 1, "hash", "builtin"),),
+        )
 
 
 def test_skill_discovery_rejects_unknown_sources(tmp_path):

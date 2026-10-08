@@ -4,6 +4,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 import asyncio
 from collections.abc import Mapping as MappingABC
+import hashlib
+import json
 from types import MappingProxyType
 from typing import Mapping
 
@@ -27,6 +29,7 @@ class CapabilitySnapshot:
     skill_diagnostics: tuple[MappingProxyType, ...] = ()
     plugins: tuple[PluginDescriptor, ...] = ()
     plugin_diagnostics: tuple[MappingProxyType, ...] = ()
+    generation: str = ""
 
     def provider_schemas(self) -> list[dict[str, object]]:
         return [definition.as_provider_schema() for definition in self.tools]
@@ -60,6 +63,7 @@ class CapabilitySnapshot:
             "skillDiagnostics": [dict(item) for item in self.skill_diagnostics],
             "plugins": [plugin.to_dict() for plugin in self.plugins],
             "pluginDiagnostics": [dict(item) for item in self.plugin_diagnostics],
+            "generation": self.generation,
         }
         if include_prompt_sections:
             snapshot["promptSections"] = list(self.prompt_sections)
@@ -331,6 +335,12 @@ class CapabilityRegistry:
             skill_diagnostics=skill_resolution.diagnostics,
             plugins=plugin_resolution.descriptors if plugin_resolution is not None else (),
             plugin_diagnostics=plugin_resolution.diagnostics if plugin_resolution is not None else (),
+            generation=_snapshot_generation(
+                tools=snapshot_definitions,
+                skills=skill_resolution.skills,
+                plugins=plugin_resolution.descriptors if plugin_resolution is not None else (),
+                policy_decisions=decisions,
+            ),
         )
         return CapabilityResolution(
             snapshot=snapshot,
@@ -381,3 +391,39 @@ class CapabilityRegistry:
             except Exception:
                 pass
             raise
+
+
+def _snapshot_generation(
+    *,
+    tools: tuple[ToolDefinition, ...],
+    skills: tuple[SkillDescriptor, ...],
+    plugins: tuple[PluginDescriptor, ...],
+    policy_decisions: Mapping[str, str],
+) -> str:
+    payload = {
+        "tools": [
+            {
+                "name": item.name,
+                "version": item.version,
+                "source": item.source,
+                "risk": item.risk,
+                "exposure": item.exposure,
+                "approval": item.approval,
+            }
+            for item in tools
+        ],
+        "skills": [
+            {
+                "id": item.skill_id,
+                "version": item.version,
+                "contentHash": item.content_hash,
+                "supportingFiles": [resource.to_dict() for resource in item.supporting_files],
+                "trustLevel": item.trust_level,
+            }
+            for item in skills
+        ],
+        "plugins": [item.to_dict() for item in plugins],
+        "policyDecisions": dict(sorted(policy_decisions.items())),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:24]

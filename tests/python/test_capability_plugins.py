@@ -109,6 +109,10 @@ def test_plugin_manifest_rejects_unknown_capability_and_duplicate_ids():
         PluginManifest("demo", "1.0.0", ("network.open",))
     with pytest.raises(ValueError, match="unsupported plugin trust level"):
         PluginManifest("demo", "1.0.0", trust_level="untrusted")
+    with pytest.raises(ValueError, match="unsupported plugin source"):
+        PluginManifest("demo", "1.0.0", source="forged")
+    with pytest.raises(ValueError, match="exceeds source trust"):
+        PluginManifest("demo", "1.0.0", source="external", trust_level="builtin")
 
     registry = PluginRegistry()
     registry.register(_manifest(), lambda context: PluginContribution())
@@ -219,7 +223,32 @@ def test_plugin_can_contribute_declarative_skill():
     assert [item.skill_id for item in capabilities.snapshot.skills] == ["plugin-study"]
     assert capabilities.prompt_context() == "先调用 echo，再总结结果。"
     assert capabilities.snapshot.skills[0].tools == ("plugin.echo",)
+    assert len(capabilities.snapshot.generation) == 24
     asyncio.run(capabilities.close())
+
+
+def test_plugin_manifest_persists_runtime_config_and_generation_metadata():
+    manifest = PluginManifest(
+        "configured",
+        "2.0.0",
+        runtime_api="meido.agent_runtime.v2",
+        config_schema={"type": "object"},
+        config_defaults={"enabled": True},
+        declared_tools=("configured.read",),
+        declared_skills=("configured.help",),
+        lifecycle_contributions=("configured.audit",),
+        resource_dir="resources",
+        manifest_hash="manifest-hash",
+    )
+
+    serialized = manifest.to_dict()
+    assert serialized["runtimeApi"] == "meido.agent_runtime.v2"
+    assert serialized["configDefaults"] == {"enabled": True}
+    assert serialized["declaredTools"] == ["configured.read"]
+    assert serialized["declaredSkills"] == ["configured.help"]
+    assert serialized["lifecycleContributions"] == ["configured.audit"]
+    assert serialized["resourceDir"] == "resources"
+    assert serialized["generation"] == "manifest-hash"
 
 
 def test_plugin_cannot_escalate_contributed_skill_trust():

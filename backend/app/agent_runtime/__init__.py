@@ -31,7 +31,7 @@ from .plugins import (
     PluginRegistry,
     PluginResolution,
 )
-from .skills import SkillDescriptor, SkillRegistry, SkillResolution
+from .skills import SkillDescriptor, SkillRegistry, SkillResourceDescriptor, SkillResolution
 from .loop import run_agent_loop
 from .meido_provider import MeidoProvider
 from .runtime import ActiveRunError, RuntimeManager
@@ -76,6 +76,7 @@ __all__ = [
     "PluginResolution",
     "SkillDescriptor",
     "SkillRegistry",
+    "SkillResourceDescriptor",
     "SkillResolution",
     "AssistantDoneEvent",
     "AssistantMessage",

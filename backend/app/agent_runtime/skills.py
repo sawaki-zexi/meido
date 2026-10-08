@@ -12,6 +12,7 @@ _SKILL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _ACTIVATIONS = frozenset({"explicit", "role_default", "keyword"})
 _TRUST_LEVELS = frozenset({"builtin", "project", "installed", "external"})
 _IMPLICIT_ACTIVATION_TRUST_LEVELS = frozenset({"installed", "external"})
+_TRUST_RANK = {"external": 0, "installed": 1, "project": 2, "builtin": 3}
 _MAX_SKILL_BYTES = 256 * 1024
 _FRONT_MATTER_DIAGNOSTIC_BYTES = 8 * 1024
 _SOURCE_TRUST_LEVELS = {
@@ -21,6 +22,28 @@ _SOURCE_TRUST_LEVELS = {
     "installed": "installed",
     "external": "external",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class SkillResourceDescriptor:
+    path: str
+    size: int
+    content_hash: str
+    trust_level: str
+
+    def __post_init__(self) -> None:
+        if self.trust_level not in _TRUST_LEVELS:
+            raise ValueError(f"unsupported skill resource trust level: {self.trust_level}")
+        if self.size < 0:
+            raise ValueError("skill resource size must be non-negative")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "path": self.path,
+            "size": self.size,
+            "contentHash": self.content_hash,
+            "trustLevel": self.trust_level,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,10 +63,18 @@ class SkillDescriptor:
     # for file-backed descriptors.
     body_path: str | None = None
     root_path: str | None = None
+    supporting_files: tuple[SkillResourceDescriptor, ...] = ()
 
     def __post_init__(self) -> None:
         if self.trust_level not in _TRUST_LEVELS:
             raise ValueError(f"unsupported skill trust level: {self.trust_level}")
+        source_trust = _SOURCE_TRUST_LEVELS.get(self.source)
+        if source_trust is None:
+            raise ValueError(f"unsupported skill source: {self.source}")
+        if _TRUST_RANK[self.trust_level] > _TRUST_RANK[source_trust]:
+            raise ValueError("skill trust level exceeds source trust")
+        if any(_TRUST_RANK[item.trust_level] > _TRUST_RANK[self.trust_level] for item in self.supporting_files):
+            raise ValueError("skill resource trust level exceeds skill trust")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -56,6 +87,7 @@ class SkillDescriptor:
             "trustLevel": self.trust_level,
             "path": self.path,
             "contentHash": self.content_hash or None,
+            "supportingFiles": [item.to_dict() for item in self.supporting_files],
         }
 
     def materialize(self) -> SkillDescriptor:
@@ -75,12 +107,25 @@ class SkillDescriptor:
         body, content_hash = _read_skill_body(resolved)
         if self.content_hash and content_hash != self.content_hash:
             raise ValueError("skill changed after discovery")
+        for resource in self.supporting_files:
+            resource_path = root / resource.path
+            if resource_path.is_symlink() or resource_path.parent.is_symlink():
+                raise ValueError("symlinked skill resource is not supported")
+            resolved_resource = resource_path.resolve()
+            try:
+                resolved_resource.relative_to(root.resolve())
+            except ValueError as error:
+                raise ValueError("skill resource path escapes discovery root") from error
+            current_size, current_hash = _hash_bounded_file(resolved_resource)
+            if current_size != resource.size or current_hash != resource.content_hash:
+                raise ValueError("skill supporting file changed after discovery")
         return replace(
             self,
             body=body,
             content_hash=content_hash,
             body_path=None,
             root_path=None,
+            supporting_files=self.supporting_files,
         )
 
 
@@ -274,6 +319,11 @@ def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str) 
         raise ValueError(f"unsupported activation: {activation}")
     tools = _tools(front_matter.get("tools", []))
     digest = _hash_skill(path)
+    supporting_files = _discover_supporting_files(
+        resolved.parent,
+        root_path=root_path,
+        trust_level=trust_level,
+    )
     return SkillDescriptor(
         skill_id=skill_id,
         version=version,
@@ -287,6 +337,7 @@ def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str) 
         trust_level=trust_level,
         body_path=str(resolved),
         root_path=str(root_path),
+        supporting_files=supporting_files,
     )
 
 
@@ -328,15 +379,52 @@ def _read_skill_body(path: Path) -> tuple[str, str]:
 
 
 def _hash_skill(path: Path) -> str:
+    _, digest = _hash_bounded_file(path, error_message="skill exceeds 256 KiB")
+    return digest
+
+
+def _hash_bounded_file(
+    path: Path,
+    *,
+    error_message: str = "skill resource exceeds 256 KiB",
+) -> tuple[int, str]:
     digest = hashlib.sha256()
     size = 0
     with path.open("rb") as stream:
         while chunk := stream.read(64 * 1024):
             size += len(chunk)
             if size > _MAX_SKILL_BYTES:
-                raise ValueError("skill exceeds 256 KiB")
+                raise ValueError(error_message)
             digest.update(chunk)
-    return digest.hexdigest()
+    return size, digest.hexdigest()
+
+
+def _discover_supporting_files(
+    skill_directory: Path,
+    *,
+    root_path: Path,
+    trust_level: str,
+) -> tuple[SkillResourceDescriptor, ...]:
+    resources: list[SkillResourceDescriptor] = []
+    for directory_name in ("references", "assets"):
+        directory = skill_directory / directory_name
+        if not directory.exists():
+            continue
+        if directory.is_symlink():
+            raise ValueError("symlinked skill resource directory is not supported")
+        for candidate in sorted(directory.rglob("*")):
+            if candidate.is_symlink() or candidate.parent.is_symlink():
+                raise ValueError("symlinked skill resource is not supported")
+            if not candidate.is_file():
+                continue
+            resolved = candidate.resolve()
+            try:
+                relative = resolved.relative_to(root_path).as_posix()
+            except ValueError as error:
+                raise ValueError("skill resource path escapes discovery root") from error
+            size, digest = _hash_bounded_file(resolved)
+            resources.append(SkillResourceDescriptor(relative, size, digest, trust_level))
+    return tuple(sorted(resources, key=lambda item: item.path))
 
 
 def _split_front_matter(raw: str) -> tuple[dict[str, object], str]:
