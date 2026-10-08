@@ -29,6 +29,14 @@ class ShellToolConfig(BaseModel):
 
 class AgentToolConfig(BaseModel):
     shell: ShellToolConfig = Field(default_factory=ShellToolConfig)
+    enabledTools: list[str] = Field(default_factory=list)
+    enabledPlugins: list[str] = Field(default_factory=list)
+    grantedCapabilities: list[str] = Field(default_factory=list)
+
+    @field_validator("enabledTools", "enabledPlugins", "grantedCapabilities")
+    @classmethod
+    def validate_capability_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
 
 
 class RoleInput(BaseModel):
@@ -159,6 +167,7 @@ class SessionResponse(BaseModel):
 class SendMessageInput(BaseModel):
     content: str
     toolMemoryIds: list[str] = Field(default_factory=list)
+    skillIds: list[str] = Field(default_factory=list)
 
     @field_validator("content")
     @classmethod
@@ -171,6 +180,11 @@ class SendMessageInput(BaseModel):
     @field_validator("toolMemoryIds")
     @classmethod
     def validate_tool_memory_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
+
+    @field_validator("skillIds")
+    @classmethod
+    def validate_skill_ids(cls, value: list[str]) -> list[str]:
         return list(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
 
 
@@ -209,6 +223,10 @@ class MemoryList(BaseModel):
     total: int | None = None
     page: int | None = None
     pageSize: int | None = None
+    # Optional diagnostic payload populated for recall queries. Keeping the
+    # original memories field makes this additive for existing clients.
+    hits: list[dict[str, Any]] = Field(default_factory=list)
+    trace: dict[str, Any] | None = None
 
 
 class MemoryAdminUpdateInput(BaseModel):

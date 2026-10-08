@@ -18,7 +18,7 @@ import httpx
 from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
-from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryScope
+from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryQueryFilters, MemoryScope
 from .embeddings import OpenAICompatibleEmbeddingAdapter
 from .memory_maintenance import MemoryMaintenance
 from .memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
@@ -33,12 +33,14 @@ from .session_manager import SessionManager
 from .session_store import SessionStore
 from .agent_runtime import (
     ActiveRunError,
+    CapabilityRegistry,
     AgentEndEvent,
     AssistantMessage,
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
     MeidoProvider,
+    PluginRegistry,
     RuntimeManager,
     ShellTool,
     ToolExecutionEndEvent,
@@ -46,8 +48,11 @@ from .agent_runtime import (
     ToolExecutionUpdateEvent,
     ToolResultMessage,
 )
+from .agent_runtime.capabilities import CapabilityResolution
+from .agent_runtime.skills import SkillRegistry
 
 roles_root = Path(os.getenv("MEIDO_ROLES_DIR", "roles"))
+project_root = Path(os.getenv("MEIDO_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
 data_root = Path(os.getenv("MEIDO_DATA_DIR", ".data"))
 MAX_ROLE_AVATAR_BYTES = 10 * 1024 * 1024
 ROLE_AVATAR_MEDIA_TYPES = {"image/png", "image/jpeg", "image/webp"}
@@ -59,6 +64,7 @@ memory_store = MemoryStore(data_root / "memory2.db")
 memory_event_bus = MemoryEventBus()
 model_adapter: ModelAdapter = OpenAICompatibleAdapter()
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
+plugin_registry = PluginRegistry()
 
 
 def _embedding_configuration(role_id: str):
@@ -69,6 +75,13 @@ def _embedding_configuration(role_id: str):
 def _role_model_configuration(role_id: str):
     role = store.get(role_id)
     return model_configuration_store.get(role.modelConfigurationId) if role and role.modelConfigurationId else model_configuration_store.get()
+
+
+def _env_bool(name: str, default: bool = True) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _complete_model_json(messages: list[dict[str, str]], configuration, *, max_tokens: int) -> object:
@@ -299,7 +312,13 @@ def _observe_consolidation_event(event: ConsolidationCommitted) -> None:
 
 
 embedding_provider = OpenAICompatibleEmbeddingAdapter(_embedding_configuration)
-memory_service = MemoryService(memory_store, embedding_provider, _post_response_provider, memory_event_bus)
+memory_service = MemoryService(
+    memory_store,
+    embedding_provider,
+    _post_response_provider,
+    memory_event_bus,
+    implicit_extraction_enabled=_env_bool("MEIDO_MEMORY_IMPLICIT_EXTRACTION_ENABLED", True),
+)
 memory_engine = DefaultMemoryEngine(memory_service, role_exists=lambda role_id: store.get(role_id) is not None, event_bus=memory_event_bus, hyde_provider=_hyde_provider)
 memory_optimizer_enabled = os.getenv("MEIDO_MEMORY_OPTIMIZER_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
 try:
@@ -927,7 +946,7 @@ def get_role_session(role_id: str) -> SessionResponse:
 
 
 @app.get("/api/roles/{role_id}/memories", response_model=MemoryList)
-def list_role_memories(
+async def list_role_memories(
     role_id: str,
     q: str = "",
     memoryType: str = "",
@@ -956,11 +975,29 @@ def list_role_memories(
             sort_by=sortBy,
             sort_order=sortOrder,
         )
+        diagnostic_hits: list[dict[str, object]] = []
+        diagnostic_trace: dict[str, object] | None = None
+        if q.strip():
+            diagnostic = await _current_memory_engine().query(MemoryQuery(
+                text=q,
+                intent="context",
+                effect="read_only",
+                scope=MemoryScope(role_id, f"role:{role_id}"),
+                filters=MemoryQueryFilters(
+                    kinds=(memoryType,) if memoryType else (),
+                    domains=(memoryDomain,) if memoryDomain else (),
+                ),
+                limit=max(1, min(pageSize, 100)),
+            ))
+            diagnostic_hits = [asdict(record) for record in diagnostic.records]
+            diagnostic_trace = diagnostic.trace
         return MemoryList(
             memories=[MemoryItem.model_validate(row) for row in rows],
             total=total,
             page=max(1, page),
             pageSize=max(1, pageSize),
+            hits=diagnostic_hits,
+            trace=diagnostic_trace,
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -1244,6 +1281,42 @@ def _runtime_tools(role) -> tuple[ShellTool, ...]:
     ),)
 
 
+def _available_runtime_tools(role) -> tuple[ShellTool, ...]:
+    shell = role.agentConfig.shell
+    return (ShellTool(
+        store.workspace_path(role.id),
+        allowed_commands=shell.allowedCommands,
+        timeout_seconds=shell.timeoutSeconds,
+        max_output_chars=shell.maxOutputChars,
+    ),)
+
+
+async def _runtime_capabilities(role, *, session_key: str, run_id: str, prompt_text: str, explicit_skill_ids: list[str] | None = None) -> CapabilityResolution:
+    agent_config = role.agentConfig
+    enabled_tools = {tool.definition.name for tool in _runtime_tools(role)}
+    enabled_tools.update(agent_config.enabledTools)
+    skill_roots = (
+        (roles_root / role.id / "skills", "role"),
+        (project_root / ".agents" / "skills", "project"),
+    )
+    skills = SkillRegistry.discover_many(skill_roots)
+    return await CapabilityRegistry(
+        _available_runtime_tools(role),
+        skills=skills,
+        plugins=plugin_registry,
+    ).resolve_async(
+        role_id=role.id,
+        session_key=session_key,
+        run_id=run_id,
+        enabled_tools=enabled_tools,
+        allowed_risks={"read_only", "mutating", "external"},
+        prompt_text=prompt_text,
+        explicit_skill_ids=set(explicit_skill_ids or ()),
+        enabled_plugin_ids=set(agent_config.enabledPlugins),
+        granted_capabilities=set(agent_config.grantedCapabilities),
+    )
+
+
 @app.post("/api/roles/{role_id}/messages")
 async def send_role_message(role_id: str, data: SendMessageInput, request: Request) -> StreamingResponse:
     try:
@@ -1298,6 +1371,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         placeholder_id: str | None = assistant_message.id
         final_message: Message | None = None
         disconnect_watcher: asyncio.Task[None] | None = None
+        capabilities: CapabilityResolution | None = None
+        capabilities_owned_by_runtime = False
 
         def runtime_event_payload(payload: dict[str, object], runtime_sequence: int | None = None) -> dict[str, object]:
             nonlocal sse_sequence
@@ -1395,11 +1470,31 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                 )
                 model_snapshot["context"] = {
                     "messages": [asdict(message) for message in runtime_messages],
-                    "memoryContext": memory_context,
+                    "memoryContextMetadata": {
+                        "included": bool(memory_context),
+                        "characterCount": len(memory_context),
+                    },
                     "toolAllowlist": list(shell_config.allowedCommands) if runtime_tools else [],
                 }
+                capabilities = await _runtime_capabilities(
+                    role,
+                    session_key=session.session.sessionKey,
+                    run_id=run_id,
+                    prompt_text=data.content,
+                    explicit_skill_ids=data.skillIds,
+                )
+                # Persist capability metadata and hashes, while keeping Skill bodies
+                # in the in-memory provider context only.
+                model_snapshot["capabilities"] = capabilities.snapshot.to_dict(include_prompt_sections=False)
                 session_store.update_run(run_id, status="created", model_snapshot=model_snapshot)
-                provider = MeidoProvider(model_adapter, role, configuration, memory_context)
+                provider = MeidoProvider(
+                    model_adapter,
+                    role,
+                    configuration,
+                    memory_context,
+                    capabilities.prompt_context(),
+                )
+                capabilities_owned_by_runtime = True
                 async for runtime_event in runtime_manager.run(
                     AgentRun(
                         runId=run_id,
@@ -1415,6 +1510,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     system="",
                     messages=runtime_messages,
                     tools=runtime_tools,
+                    capabilities=capabilities,
                     max_turns=8,
                     provider_timeout=120.0,
                     tool_timeout=shell_config.timeoutSeconds if runtime_tools else 30.0,
@@ -1513,6 +1609,11 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
             runtime_manager.cancel_unstarted_run(run_id)
             raise
         finally:
+            if capabilities is not None and not capabilities_owned_by_runtime:
+                try:
+                    await capabilities.close()
+                except Exception:
+                    pass
             if disconnect_watcher is not None:
                 disconnect_watcher.cancel()
                 await asyncio.gather(disconnect_watcher, return_exceptions=True)

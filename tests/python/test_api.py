@@ -2,13 +2,15 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 from datetime import datetime, timezone
 import asyncio
+import json
 import sqlite3
 import pytest
 
 from backend.app import main
+from backend.app.agent_runtime import AgentToolResult, PluginContribution, PluginManifest, PluginRegistry, ToolContext, ToolDefinition
 from backend.app.agent_runtime.types import ToolResultMessage
 from backend.app.model_adapter import ModelTextDelta, ModelToolCall
-from backend.app.models import AgentRun, AgentToolConfig, Message, ModelConfigurationInput, RoleInput, RoleProfile, SendMessageInput, ShellToolConfig
+from backend.app.models import AgentRun, AgentToolConfig, Message, ModelConfigurationInput, RoleInput, RoleProfile, RoleUpdateInput, SendMessageInput, ShellToolConfig
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
@@ -350,7 +352,46 @@ def test_role_message_snapshot_does_not_persist_legacy_role_secrets(tmp_path, mo
     assert "legacy-secret" not in str(run.modelSnapshot)
     assert "modelConfig" not in run.modelSnapshot["role"]
     assert run.modelSnapshot["context"]["toolAllowlist"] == []
+    assert run.modelSnapshot["capabilities"]["tools"] == []
     assert run.modelSnapshot["context"]["messages"] == [{"content": "你好", "role": "user"}]
+
+
+def test_run_snapshot_keeps_recalled_memory_ephemeral(tmp_path, monkeypatch):
+    class MemoryResult:
+        text_block = "private-memory-snippet"
+
+    class MemoryEngine:
+        async def query(self, request):
+            del request
+            return MemoryResult()
+
+    class CapturingAdapter:
+        def __init__(self):
+            self.memory_contexts = []
+
+        async def stream_reply(self, role, history, configuration=None, *, memory_context=""):
+            del role, history, configuration
+            self.memory_contexts.append(memory_context)
+            yield "完成"
+
+    adapter = CapturingAdapter()
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter)
+    monkeypatch.setattr(main, "_current_memory_engine", lambda: MemoryEngine())
+    monkeypatch.setattr(main, "_role_memory_context", lambda role_id: "")
+
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "查询私人记忆"})
+
+    assert response.status_code == 200
+    assert "private-memory-snippet" in adapter.memory_contexts[0]
+    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
+    assert run_id is not None
+    run = sessions.get_run(run_id)
+    assert run is not None
+    assert "private-memory-snippet" not in json.dumps(run.modelSnapshot, ensure_ascii=False)
+    assert run.modelSnapshot["context"]["memoryContextMetadata"] == {
+        "included": True,
+        "characterCount": len(adapter.memory_contexts[0]),
+    }
 
 
 def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tmp_path, monkeypatch):
@@ -408,6 +449,143 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
     stored_run = sessions.get_run(run)
     assert stored_run is not None
     assert stored_run.modelSnapshot["context"]["toolAllowlist"] == [executable]
+    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["name"] == "shell"
+    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["source"] == "role"
+    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["timeoutSeconds"] == 30.0
+    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["outputLimit"] == 20000
+    assert len(stored_run.modelSnapshot["capabilities"]["generation"]) == 24
+
+
+def test_role_capability_config_controls_plugin_resolution(tmp_path, monkeypatch):
+    role, _, _ = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+
+    class PluginEchoTool:
+        definition = ToolDefinition(
+            name="plugin.echo",
+            description="Echo a message",
+            input_schema={"type": "object", "properties": {"message": {"type": "string"}}},
+            source="plugin:demo",
+        )
+
+        def execute(self, arguments, context: ToolContext, on_update=None):
+            del context, on_update
+            return AgentToolResult(str(arguments["message"]))
+
+    registry = PluginRegistry([
+        (
+            PluginManifest("demo", "1.0.0", declared_tools=("plugin.echo",)),
+            lambda context: PluginContribution(tools=(PluginEchoTool(),)),
+        ),
+    ])
+    monkeypatch.setattr(main, "plugin_registry", registry)
+
+    updated = main.store.update(
+        role.id,
+        RoleUpdateInput(
+            name=role.name,
+            profile=role.profile,
+            agentConfig=AgentToolConfig(
+                enabledTools=["plugin.echo"],
+                enabledPlugins=["demo"],
+            ),
+        ),
+    )
+    capabilities = asyncio.run(main._runtime_capabilities(
+        updated,
+        session_key=f"role:{role.id}",
+        run_id="run-plugin-config",
+        prompt_text="使用插件",
+    ))
+
+    assert [definition.name for definition in capabilities.snapshot.tools] == ["plugin.echo"]
+    assert capabilities.snapshot.plugins[0].manifest.plugin_id == "demo"
+    assert capabilities.snapshot.policy_decisions["plugin.echo"] == "allowed"
+
+    updated.agentConfig.enabledTools.clear()
+    assert capabilities.get("plugin.echo") is not None
+    asyncio.run(capabilities.close())
+
+
+def test_role_skill_is_injected_into_provider_and_run_snapshot(tmp_path, monkeypatch):
+    class SkillRecordingAdapter:
+        def __init__(self):
+            self.memory_contexts = []
+
+        async def stream_reply(self, role, history, configuration=None, *, memory_context=""):
+            del role, history, configuration
+            self.memory_contexts.append(memory_context)
+            yield "技能回复"
+
+    adapter = SkillRecordingAdapter()
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter)
+    monkeypatch.setattr(main, "roles_root", tmp_path / "roles")
+    skill_dir = tmp_path / "roles" / role.id / "skills" / "study-plan"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+id: study-plan
+version: 1.0.0
+description: 制定学习计划
+tools:
+  - memory.read
+activation: role_default
+---
+请先参考已有记忆，再给出分阶段学习计划。
+""",
+        encoding="utf-8",
+    )
+
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "制定学习计划"})
+
+    assert response.status_code == 200
+    assert "event: assistant_completed" in response.text
+    assert adapter.memory_contexts == ["请先参考已有记忆，再给出分阶段学习计划。"]
+    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
+    assert run_id is not None
+    run = sessions.get_run(run_id)
+    assert run is not None
+    snapshot = run.modelSnapshot["capabilities"]
+    assert snapshot["skills"][0]["id"] == "study-plan"
+    assert snapshot["skills"][0]["version"] == "1.0.0"
+    assert snapshot["skills"][0]["source"] == "role"
+    assert snapshot["skills"][0]["tools"] == []
+    assert "promptSections" not in snapshot
+    assert "请先参考已有记忆，再给出分阶段学习计划。" not in json.dumps(snapshot, ensure_ascii=False)
+    assert any(
+        item["skillId"] == "study-plan" and item["tool"] == "memory.read"
+        for item in snapshot["skillDiagnostics"]
+    )
+
+
+def test_role_message_can_explicitly_activate_skill(tmp_path, monkeypatch):
+    adapter = RecordingAdapter()
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter)
+    monkeypatch.setattr(main, "roles_root", tmp_path / "roles")
+    skill_dir = tmp_path / "roles" / role.id / "skills" / "explicit-help"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+id: explicit-help
+version: 1.0.0
+description: 仅显式启用
+activation: explicit
+---
+显式规则。
+""",
+        encoding="utf-8",
+    )
+
+    response = client.post(
+        f"/api/roles/{role.id}/messages",
+        json={"content": "普通问题", "skillIds": ["explicit-help"]},
+    )
+
+    assert response.status_code == 200
+    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
+    assert run_id is not None
+    run = sessions.get_run(run_id)
+    assert run is not None
+    assert run.modelSnapshot["capabilities"]["skills"][0]["id"] == "explicit-help"
 
 
 def test_role_update_preserves_session_messages_and_changes_future_prompt(tmp_path, monkeypatch):
@@ -888,6 +1066,55 @@ def test_unstarted_message_stream_is_failed_and_role_can_retry(tmp_path, monkeyp
     retry = client.post(f"/api/roles/{role.id}/messages", json={"content": "重试"})
     assert retry.status_code == 200
     assert "event: assistant_completed" in retry.text
+
+
+def test_capabilities_are_closed_when_provider_setup_fails(tmp_path, monkeypatch):
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+
+    class FakeCapabilities:
+        class Snapshot:
+            def to_dict(self, **kwargs):
+                assert kwargs == {"include_prompt_sections": False}
+                return {"tools": []}
+
+        snapshot = Snapshot()
+
+        def prompt_context(self):
+            return ""
+
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    capabilities = FakeCapabilities()
+
+    async def resolve_capabilities(*args, **kwargs):
+        del args, kwargs
+        return capabilities
+
+    provider_called = False
+
+    def fail_provider(*args, **kwargs):
+        nonlocal provider_called
+        provider_called = True
+        del args, kwargs
+        raise RuntimeError("provider setup failed")
+
+    monkeypatch.setattr(main, "_runtime_capabilities", resolve_capabilities)
+    monkeypatch.setattr(main, "MeidoProvider", fail_provider)
+
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "触发失败"})
+
+    assert response.status_code == 200
+    assert "event: assistant_failed" in response.text
+    assert provider_called
+    assert capabilities.closed
+    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
+    assert run_id is not None
+    run = sessions.get_run(run_id)
+    assert run is not None and run.status == "failed"
 
 
 def test_role_snapshot_is_stable_after_update_and_new_lookup_uses_latest(tmp_path, monkeypatch):

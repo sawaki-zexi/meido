@@ -1,8 +1,8 @@
 # Meido 与 Shiori 记忆模块源码对照
 
 状态：当前研究记录  
-最后核验：2026-10-05  
-Meido 基线：`17c92a92b2b3b8c26adb199cd92b8e622b704497`（角色删除记忆清理 PR #62）  
+最后核验：2026-10-07
+Meido 基线：`a9cfb10`（Agent Runtime PR #81，包含记忆策略 PR #71/#73/#74）
 Shiori 基线：`629e5ba6967a9fa2f4477b38d55e315c8c2b58d7`（`main`）
 
 本文只记录源码核验结果，不把 Shiori 的群聊能力列为 Meido 的缺陷。Meido 当前明确采用单角色、单会话边界；Shiori 的 `channel`、`chat_id`、用户线程和旁听层是对照项，而不是本项目本轮的实现范围。
@@ -12,9 +12,9 @@ Shiori 基线：`629e5ba6967a9fa2f4477b38d55e315c8c2b58d7`（`main`）
 两者已经共享同一组上层概念：回复前查询、回复后异步处理、Markdown maintenance/consolidation、PENDING 到 MEMORY 的 Optimizer、SQLite 结构化记录、向量检索、显式记忆工具和管理接口。Meido 的 #55–#62 实现确实参考了 Shiori 的端口和生命周期，但当前实现不是 Shiori 的逐文件复制，关键差异仍然存在：
 
 1. Shiori 把 `MemoryEngine` 放在 SDK，把默认 SQLite/向量实现放进可替换的 `default_memory` 插件；Meido 把端口、默认引擎、存储和 FastAPI 生命周期放在同一个 `backend/app`。
-2. Shiori 使用事件总线把 `TurnCommitted` 转成 `TurnIngested`，由 LLM post-response worker 提取隐式长期记忆；Meido 目前由角色级进程内 worker 调用规则提取器，只有显式规则和正则候选，没有 Shiori 的隐式 LLM 提取预算链路。
+2. Shiori 使用事件总线把 `TurnCommitted` 转成 `TurnIngested`，由 LLM post-response worker 提取隐式长期记忆；Meido 现在也支持结构化 LLM 提取，默认启用，并可通过 `MEIDO_MEMORY_IMPLICIT_EXTRACTION_ENABLED=false` 关闭，关闭时保留显式记忆操作。
 3. Shiori 的 SQLite schema 是跨角色表，角色和 scope 放在 `extra_json`；Meido 给 `memory_items` 和相关事件表增加了强制 `role_id` 列与索引，因此隔离更强，但这不是 Shiori 原样 schema。
-4. Shiori 的检索器有真实的 HyDE、类型阈值、热度、时间和 scope 过滤及注入配额；Meido 保留五类 intent 和 RRF 外形，但 `answer`/`procedure` 的辅助 query 是固定字符串，评分和注入策略更简单。
+4. Shiori 的检索器有真实的 HyDE、类型阈值、热度、时间和 scope 过滤及注入配额；Meido 已接入受限 HyDE、hotness、procedure rule、RRF、sqlite-vec/SQLite 回退和注入预算，但策略与证据 trace 仍比 Shiori 简化。
 5. Shiori 的 Markdown maintenance 支持 ContextScope、用户线程可见性、近期摘要 LLM 和持久消费者进度；Meido 针对一个角色会话使用 `.maintenance.json` 游标和确定性的近期消息窗口。
 6. Meido 的角色删除是比 Shiori 当前默认路径更强的安全流程：阻止新写入、等待任务、暂存角色目录、清理全部角色结构化数据，并用持久 marker 在重启时恢复；Shiori 的角色删除监听器主要把该角色的结构化条目标为 `superseded`。
 
@@ -27,11 +27,11 @@ FastAPI / backend.app.main
   ├─ 回复前：读取 SELF/MEMORY/RECENT_CONTEXT
   │          └─ DefaultMemoryEngine.query
   │               └─ MemoryService.recall_async
-  │                    └─ MemoryStore（SQLite + JSON embedding）
+  │                    └─ MemoryStore（SQLite + sqlite-vec/SQLite embedding 回退）
   └─ 回复成功后：发布 TurnCommitted
        └─ MemoryWorker（每角色锁、进程内任务）
             ├─ MemoryService.process_turn
-            │    └─ 显式记住/忘记/拒绝/纠正 + 规则候选 → SQLite
+            │    └─ 显式记住/忘记/拒绝/纠正 + 可选 LLM/规则候选 → SQLite
             ├─ MemoryMaintenance.maintain
             │    └─ RECENT_CONTEXT / HISTORY / PENDING / journal
             │         └─ ConsolidationCommitted → SQLite consolidation_events
@@ -87,18 +87,18 @@ proactive_v2/memory_optimizer.py
 |---|---|---|---|
 | 端口 | 本地 `DefaultMemoryEngine`，所有请求必须有有效 `role_id` 和 `role:<role_id>` session | SDK `MemoryEngine`，`MemoryScope` 还携带 `channel`、`chat_id`；默认引擎可按 scope 过滤 | Meido 的调用边界更窄，且隔离由 Python 校验和 SQL `role_id` 同时保证 |
 | `context` | 原 query 走一条 `MemoryService.recall_async` lane | `_query_context` 走 Retriever，可带 procedure query builder、domain、时间和 scope 过滤 | Meido 保留语义但没有 Shiori 的完整 scope/domain policy |
-| `answer` | 原文 + 固定 `event: ...`、`general: ...` 两条字符串 lane；不是模型生成 HyDE | 并行调用轻量模型生成 event/general 两个受限假设（80 tokens、3 秒），失败退回原 query | Meido 不产生额外模型调用，召回召回质量和成本都更简单 |
+| `answer` | 原 query 保留关键词 lane；模型可生成最多两个受限 HyDE 查询并只走语义 lane，失败回退原 query | 并行调用轻量模型生成 event/general 两个受限假设（80 tokens、3 秒），失败退回原 query | Meido 已有真实 HyDE，但生成预算、注入规划和 trace 仍更简单 |
 | `timeline` | 必须提供时间范围；默认只保留 `event`，按 `happened_at` 排序 | 必须有时间范围；直接查询 event 时间索引并遵守 role/domain/scope | 两者接口形状接近，Shiori 的 SQL 时间预过滤和 scope 条件更完整 |
-| `interest` / `procedure` | interest 默认 `preference/profile`；procedure 默认 `procedure/preference`，procedure 只加固定中文前缀 | interest 固定偏好/画像；procedure 通过 query builder、标签/工具触发规则并可优先注入 procedure | Meido 目前没有 Shiori 的 procedure trigger tags 和 guard |
-| 召回 | `MemoryStore.query_hybrid` 用摘要关键词/中文二元组 + JSON embedding 余弦（阈值 0.15），引擎层用 RRF 排序 | Retriever 先做 vector/keyword lanes，再 RRF；有类型阈值、全局阈值、relative delta、热度衰减和 sqlite-vec KNN，缺少 sqlite-vec 时全表回退 | Meido 具有可用的 hybrid 检索，但排序信号和过滤层次较少 |
+| `interest` / `procedure` | interest 默认 `preference/profile`；procedure 默认 `procedure/preference`，支持规则标签、置信度和显式信号过滤 | interest 固定偏好/画像；procedure 通过 query builder、标签/工具触发规则并可优先注入 procedure | Meido 有基础 procedure guard，但还没有 Shiori 完整的 trigger/tool planner |
+| 召回 | `MemoryStore.query_hybrid` 用摘要关键词/中文二元组 + embedding 召回；可用时使用 sqlite-vec，不可用时回退 SQLite 扫描，引擎层用 RRF 排序 | Retriever 先做 vector/keyword lanes，再 RRF；有类型阈值、全局阈值、relative delta、热度衰减和 sqlite-vec KNN，缺少 sqlite-vec 时全表回退 | Meido 已具备可用的 hybrid 检索，但排序信号和过滤层次较少 |
 | 注入 | `SELF.md`、`MEMORY.md`、`RECENT_CONTEXT.md` 直接全文读入，query block 总字符上限 4000，各类型最多 3 条 | Markdown runtime 读取可见的 self/long-term/recent context；Retriever 再按 forced/procedure-preference/event-profile 配额、每行和总字符预算生成 block | Shiori 的“检索结果”和“注入结果”分离得更清楚；Meido 由 `context_block` 做简单裁剪 |
-| 证据/观测 | `MemoryRecord` 有 `EvidenceRef`、trace、source；未单独记录每次召回观测 | 结果含 record/evidence/trace，并由插件写召回观察 JSONL | Shiori 有更完整的诊断轨迹，Meido 主要返回请求内 trace |
+| 证据/观测 | `MemoryRecord` 有 `EvidenceRef`、source、lane/rank/score/hotness/reasons；`MemoryQueryResult.trace` 和 `RetrievalCompleted` 记录候选、过滤、裁剪和索引降级 | 结果含 record/evidence/trace，并由插件写召回观察 JSONL | Shiori 仍有更完整的持久诊断轨迹；Meido 通过引擎结果和角色记忆 API 提供请求内 trace |
 
 ### SQLite 结构差异
 
 Shiori `memory_items` 的基线字段是 `id、memory_type、summary、content_hash、embedding、reinforcement、emotional_weight、extra_json、source_ref、happened_at、status、created_at、updated_at`；唯一索引是 `(content_hash, memory_type)`。角色、domain、频道和聊天 scope 通过 `extra_json` 过滤，`consolidation_events` 以 `source_ref` 为主键，`memory_replacements` 保存旧/新条目的快照。`MemoryStore2` 另外初始化 `sqlite-vec` 的 `vec_items` 虚拟表，并在不可用时回退全表余弦。
 
-Meido `memory_items` 在相同核心字段上增加了 `role_id`，唯一索引为 `(role_id, memory_type, content_hash)`；`consolidation_events`、`memory_replacements`、`semantic_memory` 和 `memory_embedding_spaces` 也都有角色键。embedding 直接存 `embedding_json`，按角色记录维度并在维度变化时清空旧向量，没有 Shiori 的 sqlite-vec 虚拟表。这个变化是 Meido 的隔离适配，不是 Shiori schema parity；它避免两个角色写入相同摘要时共享一条唯一记录。
+Meido `memory_items` 在相同核心字段上增加了 `role_id`，唯一索引为 `(role_id, memory_type, content_hash)`；`consolidation_events`、`memory_replacements`、`semantic_memory` 和 `memory_embedding_spaces` 也都有角色键。embedding 按角色记录维度，优先写入 sqlite-vec 虚拟表并保留 SQLite 扫描回退；维度变化时清理旧向量。这个变化是 Meido 的隔离适配，不是 Shiori schema parity；它避免两个角色写入相同摘要时共享一条唯一记录。
 
 ## 回复后：两条异步链路
 
@@ -113,7 +113,7 @@ Meido `memory_items` 在相同核心字段上增加了 `role_id`，唯一索引�
 
 1. 只有保存为 `completed` 的 assistant 消息才由 `main.py` 发布 `TurnCommitted`；事件只含当前角色、单会话和两个 `Message`，没有 Shiori 的 tool chain、channel/chat 或 request metadata。
 2. `MemoryWorker.publish()` 创建进程内 asyncio task，按角色锁串行；语义处理和 Markdown maintenance 在同一个角色锁内并行执行。
-3. `MemoryService.process_turn()` 通过规则识别 `记住`、偏好、身份、以后规则、时间事件，以及 `忘记`、`拒绝记忆`、偏好纠正。它直接调用 `MemoryStore.add_or_reinforce`，无需 post-response LLM；embedding 失败只记录错误，回复不会回滚。
+3. `MemoryService.process_turn()` 先处理 `记住`、`忘记`、`拒绝记忆` 和偏好纠正，再按配置调用结构化 post-response LLM；模型失败或非法输出时回退规则提取。embedding 失败只记录错误，回复不会回滚。
 4. `MemoryMaintenance` 在每个成功回合被调用。未达到窗口阈值时重写确定性的最近 12 条消息；达到阈值时写 HISTORY/PENDING/journal，在 `.maintenance.json` 保存 `pendingEvent`，事件消费者再以 `source_key` 幂等写入 SQLite。
 
 因此，Meido 的“事件和两条链路”拓扑接近 Shiori，但语义后处理的智能提取、工具链保护、事件元数据和事件总线抽象仍有明显差距。
@@ -161,7 +161,7 @@ Meido 在同一端口上扩展了 `update`、`delete`、`reject`、`state_change
 
 以下差异是当前源码事实，不能在项目说明中继续写成“已经一比一复刻 Shiori”：
 
-1. Meido 没有 Shiori 的 post-response 隐式 LLM 提取、HyDE 真正生成、procedure trigger tags、热度/类型阈值和注入配额。
+1. Meido 已有 post-response 隐式 LLM 提取、HyDE、procedure rule、热度/类型阈值、注入配额和请求内诊断 trace；仍缺少 Shiori 更细的提取预算、forced evidence、relative-delta 和持久召回观察。
 2. Meido 没有 Shiori 的 SDK 插件构造、可替换 engine、`MemoryScope.channel/chat_id`、ContextScope、多用户线程和旁听路径；群聊排除是本项目有意边界。
 3. Meido 的 `role_id` SQL 硬隔离、角色级事件/replacement 清理、删除屏障和持久删除恢复是本地增强，不是 Shiori schema 或删除流程的原样复制。
 4. Meido 当前 Optimizer 不负责 SQLite 镜像；`main.py` 中未接线的 `_persist_consolidated_memories` 不能作为运行时行为写入架构图。

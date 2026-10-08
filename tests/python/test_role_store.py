@@ -64,6 +64,25 @@ def test_role_update_preserves_agent_tool_policy_when_profile_edit_omits_it(tmp_
     assert (tmp_path / "roles" / role.id / "workspace").is_dir()
 
 
+def test_role_store_persists_capability_enablement_and_grants(tmp_path):
+    store = RoleStore(tmp_path / "roles")
+    role = store.create(RoleInput(
+        name="扩展角色",
+        profile=RoleProfile(profile="设定"),
+        agentConfig=AgentToolConfig(
+            enabledTools=["plugin.echo", "plugin.echo"],
+            enabledPlugins=["demo", "demo"],
+            grantedCapabilities=["runtime.tool", "runtime.tool"],
+        ),
+    ))
+
+    reloaded = RoleStore(tmp_path / "roles").get(role.id)
+
+    assert reloaded.agentConfig.enabledTools == ["plugin.echo"]
+    assert reloaded.agentConfig.enabledPlugins == ["demo"]
+    assert reloaded.agentConfig.grantedCapabilities == ["runtime.tool"]
+
+
 def test_role_model_configuration_binding_persists_and_is_independent(tmp_path):
     root = tmp_path / "roles"
     store = RoleStore(root)

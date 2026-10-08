@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import nullcontext
+import math
+import time
 from typing import Literal
 
 from .events import (
@@ -19,6 +21,7 @@ from .events import (
     TurnStartEvent,
     stamp_event,
 )
+from .capabilities import CapabilityResolution
 from .provider import (
     AssistantDoneEvent,
     CancellationToken,
@@ -38,6 +41,7 @@ async def run_agent_loop(
     system: str,
     messages: list[AgentMessage],
     tools: Sequence[AgentTool] = (),
+    capabilities: CapabilityResolution | None = None,
     max_turns: int | None = None,
     signal: CancellationToken | None = None,
     session_id: str | None = None,
@@ -55,7 +59,7 @@ async def run_agent_loop(
     """
 
     token = signal or CancellationToken()
-    registry = ToolRegistry(tools)
+    registry = ToolRegistry(tools) if capabilities is None else capabilities
     sequence = 0
 
     async def emit(event: AgentEvent) -> AsyncIterator[AgentEvent]:
@@ -185,10 +189,20 @@ async def run_agent_loop(
         for call in assistant.tool_calls:
             async for event in emit(ToolExecutionStartEvent(call.id, call.name, dict(call.arguments))):
                 yield event
+            tool_context = (
+                ToolContext(
+                    role_id=registry.snapshot.role_id,
+                    session_key=registry.snapshot.session_key,
+                    run_id=registry.snapshot.run_id,
+                    signal=token,
+                )
+                if isinstance(registry, CapabilityResolution)
+                else ToolContext(role_id=role_id, session_key=session_key, run_id=run_id, signal=token)
+            )
             result = await _execute_tool(
                 call,
                 registry,
-                ToolContext(role_id=role_id, session_key=session_key, run_id=run_id, signal=token),
+                tool_context,
                 token,
                 tool_timeout,
             )
@@ -221,28 +235,163 @@ async def run_agent_loop(
 
 async def _execute_tool(
     call: ToolCall,
-    registry: ToolRegistry,
+    registry: ToolRegistry | CapabilityResolution,
     context: ToolContext,
     signal: CancellationToken,
     timeout: float | None,
 ) -> tuple[AgentToolResult, list[AgentToolResult]]:
+    started = time.monotonic()
     tool = registry.get(call.name)
     if tool is None:
-        return AgentToolResult(f"unknown tool: {call.name}", is_error=True), []
+        reason = registry.denial_reason(call.name) if isinstance(registry, CapabilityResolution) else None
+        content = f"tool denied: {call.name}: {reason}" if reason else f"unknown tool: {call.name}"
+        status = "denied" if reason else "unknown"
+        return _finalize_tool_result(
+            AgentToolResult(content, details={"tool": call.name, "reason": reason or "unknown"}, is_error=True),
+            started=started,
+            status=status,
+        ), []
     updates: list[AgentToolResult] = []
 
+    def bounded(result: AgentToolResult) -> tuple[AgentToolResult, int]:
+        output_chars = _result_output_chars(result)
+        definition = (
+            registry.definition(call.name)
+            if isinstance(registry, CapabilityResolution)
+            else tool.definition
+        ) or tool.definition
+        output_limit = definition.output_limit
+        if output_limit is None or len(result.content) <= output_limit:
+            return result, output_chars
+        details = _details_mapping(result.details)
+        details["truncated"] = True
+        details["outputLimit"] = output_limit
+        return AgentToolResult(
+            content=result.content[:output_limit],
+            details=details,
+            is_error=result.is_error,
+        ), output_chars
+
     def on_update(result: AgentToolResult) -> None:
-        updates.append(result)
+        bounded_result, output_chars = bounded(result)
+        updates.append(_finalize_tool_result(
+            bounded_result,
+            started=started,
+            status=_detail_status(bounded_result.details) or "running",
+            output_chars=output_chars,
+        ))
+
+    def finish(result: AgentToolResult, *, status: str | None = None) -> AgentToolResult:
+        bounded_result, output_chars = bounded(result)
+        return _finalize_tool_result(
+            bounded_result,
+            started=started,
+            status=status,
+            output_chars=output_chars,
+        )
 
     try:
         signal.raise_if_cancelled()
-        registry.validate_arguments(call.name, call.arguments)
-        pending = resolve_tool_result(tool.execute(call.arguments, context, on_update))
-        result = await asyncio.wait_for(pending, timeout=timeout) if timeout is not None else await pending
+        arguments = dict(call.arguments)
+        if isinstance(registry, CapabilityResolution):
+            arguments, hook_error = await registry.prepare_tool_call(call.name, arguments, context)
+            if hook_error is not None:
+                return finish(hook_error), updates
+        try:
+            registry.validate_arguments(call.name, arguments)
+        except ValueError as error:
+            return finish(AgentToolResult(str(error), is_error=True), status="invalid_arguments"), updates
+        pending = resolve_tool_result(tool.execute(arguments, context, on_update))
+        definition = (
+            registry.definition(call.name)
+            if isinstance(registry, CapabilityResolution)
+            else tool.definition
+        ) or tool.definition
+        tool_timeout = definition.timeout_seconds
+        effective_timeout = (
+            min(timeout, tool_timeout)
+            if timeout is not None and tool_timeout is not None
+            else tool_timeout if tool_timeout is not None else timeout
+        )
+        result = await asyncio.wait_for(pending, timeout=effective_timeout) if effective_timeout is not None else await pending
         if not isinstance(result, AgentToolResult):
-            return AgentToolResult("tool returned an invalid result", is_error=True), updates
-        return result, updates
+            return finish(AgentToolResult("tool returned an invalid result", is_error=True), status="failed"), updates
+        return finish(result), updates
     except asyncio.TimeoutError:
-        return AgentToolResult("tool timed out", is_error=True), updates
+        return finish(AgentToolResult("tool timed out", is_error=True), status="timed_out"), updates
+    except RuntimeError as error:
+        if str(error) == "agent run cancelled":
+            return finish(AgentToolResult("tool cancelled", is_error=True), status="cancelled"), updates
+        return finish(AgentToolResult(str(error), is_error=True), status="failed"), updates
     except Exception as error:
-        return AgentToolResult(str(error), is_error=True), updates
+        return finish(AgentToolResult(str(error), is_error=True), status="failed"), updates
+
+
+_TOOL_RESULT_STATUSES = frozenset({
+    "running",
+    "unknown",
+    "denied",
+    "invalid_arguments",
+    "timed_out",
+    "cancelled",
+    "failed",
+    "succeeded",
+})
+
+
+def _details_mapping(details: object | None) -> dict[str, object]:
+    if isinstance(details, Mapping):
+        return dict(details)
+    if details is None:
+        return {}
+    return {"value": details}
+
+
+def _detail_status(details: object | None) -> str | None:
+    if not isinstance(details, Mapping):
+        return None
+    status = details.get("status")
+    return status if isinstance(status, str) and status in _TOOL_RESULT_STATUSES else None
+
+
+def _result_output_chars(result: AgentToolResult) -> int:
+    if isinstance(result.details, Mapping):
+        output_chars = result.details.get("outputChars")
+        if isinstance(output_chars, int) and not isinstance(output_chars, bool) and output_chars >= 0:
+            return output_chars
+    return len(result.content)
+
+
+def _finalize_tool_result(
+    result: AgentToolResult,
+    *,
+    started: float,
+    status: str | None = None,
+    output_chars: int | None = None,
+) -> AgentToolResult:
+    details = _details_mapping(result.details)
+    effective_status = status or _detail_status(details) or ("failed" if result.is_error else "succeeded")
+    details["status"] = effective_status
+    measured_duration = round(max(0.0, time.monotonic() - started), 3)
+    existing_duration = details.get("durationSeconds")
+    if (
+        isinstance(existing_duration, bool)
+        or not isinstance(existing_duration, (int, float))
+        or not math.isfinite(existing_duration)
+        or existing_duration < 0
+    ):
+        details["durationSeconds"] = measured_duration
+    existing_output_chars = details.get("outputChars")
+    if (
+        isinstance(existing_output_chars, bool)
+        or not isinstance(existing_output_chars, int)
+        or existing_output_chars < 0
+    ):
+        details["outputChars"] = output_chars if output_chars is not None else len(result.content)
+    if not isinstance(details.get("truncated"), bool):
+        details["truncated"] = False
+    return AgentToolResult(
+        result.content,
+        details=details,
+        is_error=result.is_error or effective_status in {"unknown", "denied", "invalid_arguments", "timed_out", "cancelled", "failed"},
+    )

@@ -21,11 +21,13 @@ class MeidoProvider:
         role: Role,
         configuration: ModelConfiguration | None,
         memory_context: str = "",
+        capability_prompt: str = "",
     ) -> None:
         self.adapter = adapter
         self.role = role
         self.configuration = configuration
         self.memory_context = memory_context
+        self.capability_prompt = capability_prompt
 
     def stream_response(
         self,
@@ -80,7 +82,7 @@ class MeidoProvider:
         return stream()
 
     def _structured_messages(self, system: str, messages: Sequence[object]) -> list[dict[str, object]]:
-        prompt = system or self._role_system_prompt()
+        prompt = self._structured_system_prompt(system)
         result: list[dict[str, object]] = [{"role": "system", "content": prompt}]
         for message in messages:
             if isinstance(message, UserMessage):
@@ -108,6 +110,11 @@ class MeidoProvider:
                 })
         return result
 
+    def _structured_system_prompt(self, system: str) -> str:
+        if not system:
+            return self._role_system_prompt()
+        return "\n\n".join(part for part in (system, self.capability_prompt) if part)
+
     def _role_system_prompt(self) -> str:
         profile = self.role.profile
         return "\n\n".join(part for part in [
@@ -119,7 +126,18 @@ class MeidoProvider:
             f"回复约束：{profile.responseConstraints}" if profile.responseConstraints else "",
             f"称呼用户：{profile.nickname}" if profile.nickname else "",
             self.memory_context,
+            self.capability_prompt,
         ] if part)
+
+    def _combined_memory_context(self) -> str:
+        return "\n\n".join(part for part in (self.memory_context, self.capability_prompt) if part)
+
+    def _role_with_context(self) -> Role:
+        profile = self.role.profile.model_copy(deep=True)
+        profile.profile = "\n\n".join(
+            part for part in (profile.profile, self.capability_prompt) if part
+        )
+        return self.role.model_copy(deep=True, update={"profile": profile})
 
     async def _stream(self, messages: Sequence[object], signal: CancellationToken) -> AsyncIterator[ProviderEvent]:
         history: list[Message] = []
@@ -136,10 +154,11 @@ class MeidoProvider:
         except (TypeError, ValueError):
             accepts_memory = False
         yield ProviderStartEvent()
+        role = self.role if accepts_memory or not (self.memory_context or self.capability_prompt) else self._role_with_context()
         source: object = (
-            stream_reply(self.role, history, self.configuration, memory_context=self.memory_context)
+            stream_reply(role, history, self.configuration, memory_context=self._combined_memory_context())
             if accepts_memory
-            else stream_reply(self.role, history, self.configuration)
+            else stream_reply(role, history, self.configuration)
         )
         content = ""
         async for delta in cast(AsyncIterator[str], source):

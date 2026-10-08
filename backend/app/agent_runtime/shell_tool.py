@@ -8,6 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 from collections.abc import Mapping, Callable
+from dataclasses import replace
 
 from .tools import AgentToolResult, ToolContext, ToolDefinition
 
@@ -35,6 +36,12 @@ class ShellTool:
         timeout_seconds: float = 30.0,
         max_output_chars: int = 20_000,
     ) -> None:
+        self.definition = replace(
+            self.definition,
+            source="role",
+            timeout_seconds=timeout_seconds,
+            output_limit=max_output_chars,
+        )
         self.workspace = Path(workspace).resolve()
         # Keep absolute paths in their original form. Lowercasing a complete
         # path breaks valid case-sensitive POSIX paths such as hosted Python

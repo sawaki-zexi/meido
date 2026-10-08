@@ -359,6 +359,35 @@ def test_memory_engine_applies_default_intent_policy_and_reports_injection_budge
     assert injection["trimmed_count"] == injection["candidate_count"] - injection["injected_count"]
 
 
+def test_memory_engine_exposes_evidence_and_ranking_reasons(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    source = MemorySourceRef(
+        kind="message",
+        sessionKey="role:role-a",
+        messageIds=["user-1", "assistant-1"],
+        stableSourceKey="turn:role:role-a:user-1:assistant-1",
+    )
+    store.add_or_reinforce("role-a", "fact", "主人喜欢海边散步", source)
+    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True)
+
+    result = asyncio.run(engine.query(MemoryQuery(
+        "海边", intent="context", scope=MemoryScope("role-a", "role:role-a")
+    )))
+
+    record = result.records[0]
+    assert record.evidence[0].source_ref == source.stableSourceKey
+    assert record.evidence[0].refs == ["user-1", "assistant-1"]
+    assert record.signals["lanes"] == ["海边"]
+    assert record.signals["lane_ranks"] == {"海边": 1}
+    assert record.signals["rrf_score"] == record.score
+    assert "lexical match" in record.signals["reasons"]
+    assert "selected for injection" in record.signals["reasons"]
+    assert result.trace["lanes"][0]["candidate_count"] == 1
+    assert result.trace["lanes"][0]["filtered_count"] == 0
+    assert result.trace["ranking"]["unique_candidates"] == 1
+    assert result.trace["session_key"] == "role:role-a"
+
+
 def test_memory_engine_timeline_requires_range_and_filters_event_time(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True)

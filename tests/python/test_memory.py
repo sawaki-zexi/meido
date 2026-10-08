@@ -990,7 +990,12 @@ def test_memory_api_is_scoped_and_manual_memory_is_recalled(tmp_path, monkeypatc
 
     created = client.post(f"/api/roles/{first.id}/memories", json={"summary": "主人住在海边", "memoryType": "fact"})
     assert created.status_code == 201
-    assert client.get(f"/api/roles/{first.id}/memories", params={"q": "海边"}).json()["memories"][0]["summary"] == "主人住在海边"
+    response = client.get(f"/api/roles/{first.id}/memories", params={"q": "海边"})
+    payload = response.json()
+    assert payload["memories"][0]["summary"] == "主人住在海边"
+    assert payload["hits"][0]["evidence"][0]["source_ref"].startswith("manual:")
+    assert payload["hits"][0]["signals"]["reasons"]
+    assert payload["trace"]["ranking"]["unique_candidates"] == 1
     assert client.get(f"/api/roles/{second.id}/memories", params={"q": "海边"}).json()["memories"] == []
 
 
@@ -1373,6 +1378,48 @@ def test_post_response_provider_is_structured_and_falls_back_on_invalid_output(t
     fallback_assistant = assistant.model_copy(update={"id": "a2", "sequence": 4})
     result = fallback.process_turn("role-a", "role:role-a", fallback_user, fallback_assistant)
     assert any(item.summary == "名字是小明" for item in result)
+
+
+def test_post_response_implicit_extraction_can_be_disabled(tmp_path):
+    calls = []
+
+    def provider(*args):
+        calls.append(args)
+        return [{"memoryType": "fact", "summary": "模型不应被调用"}]
+
+    store = MemoryStore(tmp_path / "memory.db")
+    service = MemoryService(
+        store,
+        post_response_provider=provider,
+        implicit_extraction_enabled=False,
+    )
+    now = datetime.now(timezone.utc)
+    user = Message(
+        id="u-disabled",
+        role="user",
+        content="今天聊聊",
+        sessionKey="role:role-a",
+        sequence=1,
+        status="completed",
+        createdAt=now,
+    )
+    assistant = Message(
+        id="a-disabled",
+        role="assistant",
+        content="好的",
+        sessionKey="role:role-a",
+        sequence=2,
+        status="completed",
+        createdAt=now,
+    )
+    assert service.process_turn("role-a", "role:role-a", user, assistant) == []
+    assert calls == []
+
+    explicit_user = user.model_copy(update={"id": "u-explicit", "sequence": 3, "content": "请记住我喜欢红茶"})
+    explicit_assistant = assistant.model_copy(update={"id": "a-explicit", "sequence": 4})
+    saved = service.process_turn("role-a", "role:role-a", explicit_user, explicit_assistant)
+    assert [item.summary for item in saved] == ["喜欢红茶"]
+    assert calls == []
 
 
 def test_memory_event_bus_observers_are_best_effort():
