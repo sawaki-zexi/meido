@@ -27,8 +27,15 @@ class ShellToolConfig(BaseModel):
         return list(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
 
 
+class MemoryRecallToolConfig(BaseModel):
+    """Role policy for the optional model-initiated memory recall tool."""
+
+    enabled: bool = False
+
+
 class AgentToolConfig(BaseModel):
     shell: ShellToolConfig = Field(default_factory=ShellToolConfig)
+    memoryRecall: MemoryRecallToolConfig = Field(default_factory=MemoryRecallToolConfig)
     enabledTools: list[str] = Field(default_factory=list)
     enabledPlugins: list[str] = Field(default_factory=list)
     grantedCapabilities: list[str] = Field(default_factory=list)

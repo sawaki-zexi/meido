@@ -6,7 +6,8 @@ import { IconButton } from "../../ui/Icon";
 import { Notice } from "../../ui/Status";
 import { AvatarCropper } from "./AvatarCropper";
 
-type Field = { key: keyof RoleDraft; label: string; hint?: string; multiline?: boolean; required?: boolean };
+type TextFieldKey = Exclude<keyof RoleDraft, "memoryRecallEnabled">;
+type Field = { key: TextFieldKey; label: string; hint?: string; multiline?: boolean; required?: boolean };
 
 const identityFields: Field[] = [
   { key: "name", label: "名称", required: true },
@@ -66,6 +67,19 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
     </fieldset>
     <fieldset>
       {characterFields.map(renderField)}
+    </fieldset>
+    <fieldset>
+      <legend>能力</legend>
+      <label className="field checkbox-field">
+        <input
+          type="checkbox"
+          checked={draft.memoryRecallEnabled}
+          disabled={locked}
+          onChange={(event) => setDraft({ ...draft, memoryRecallEnabled: event.target.checked })}
+        />
+        <span>允许主动检索记忆</span>
+        <small className="field-hint">关闭时仍保留每轮自动记忆召回，但模型不能主动查询记忆。</small>
+      </label>
     </fieldset>
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {writable && <div className="form-actions">

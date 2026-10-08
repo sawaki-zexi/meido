@@ -98,6 +98,30 @@ class AgentTool(Protocol):
     ) -> AgentToolResult | Awaitable[AgentToolResult]: ...
 
 
+def summarize_tool_arguments(arguments: Mapping[str, object]) -> dict[str, object]:
+    """Return a non-sensitive shape summary suitable for tool audit records."""
+
+    fields: dict[str, dict[str, object]] = {}
+    for key, value in arguments.items():
+        if isinstance(value, str):
+            fields[str(key)] = {"type": "string", "length": len(value)}
+        elif isinstance(value, bool):
+            fields[str(key)] = {"type": "boolean"}
+        elif isinstance(value, int):
+            fields[str(key)] = {"type": "integer"}
+        elif isinstance(value, float):
+            fields[str(key)] = {"type": "number"}
+        elif isinstance(value, list):
+            fields[str(key)] = {"type": "array", "length": len(value)}
+        elif isinstance(value, dict):
+            fields[str(key)] = {"type": "object", "keys": sorted(str(item) for item in value)}
+        elif value is None:
+            fields[str(key)] = {"type": "null"}
+        else:
+            fields[str(key)] = {"type": type(value).__name__}
+    return {"keys": sorted(fields), "fields": fields}
+
+
 class ToolRegistry:
     def __init__(self, tools: Sequence[AgentTool] = ()) -> None:
         self._tools: dict[str, AgentTool] = {}

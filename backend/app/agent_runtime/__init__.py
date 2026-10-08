@@ -33,6 +33,7 @@ from .plugins import (
 )
 from .skills import SkillDescriptor, SkillRegistry, SkillResourceDescriptor, SkillResolution
 from .loop import run_agent_loop
+from .memory_tool import MemoryReadPort, MemoryRecallTool, RoleScopedMemoryReadPort
 from .meido_provider import MeidoProvider
 from .runtime import ActiveRunError, RuntimeManager
 from .shell_tool import ShellTool
@@ -45,7 +46,7 @@ from .provider import (
     TextDeltaEvent,
     ToolCallEndEvent,
 )
-from .tools import AgentTool, AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
+from .tools import AgentTool, AgentToolResult, ToolContext, ToolDefinition, ToolRegistry, summarize_tool_arguments
 from .types import AgentMessage, AssistantMessage, ToolCall, ToolResultMessage, UserMessage
 
 __all__ = [
@@ -85,6 +86,9 @@ __all__ = [
     "MessageStartEvent",
     "MessageUpdateEvent",
     "MeidoProvider",
+    "MemoryReadPort",
+    "MemoryRecallTool",
+    "RoleScopedMemoryReadPort",
     "RuntimeManager",
     "ShellTool",
     "ProviderErrorEvent",
@@ -99,6 +103,7 @@ __all__ = [
     "ToolExecutionStartEvent",
     "ToolExecutionUpdateEvent",
     "ToolRegistry",
+    "summarize_tool_arguments",
     "ToolResultMessage",
     "TurnEndEvent",
     "TurnStartEvent",

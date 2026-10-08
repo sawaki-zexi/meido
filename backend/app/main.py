@@ -40,9 +40,12 @@ from .agent_runtime import (
     MessageStartEvent,
     MessageUpdateEvent,
     MeidoProvider,
+    MemoryRecallTool,
+    RoleScopedMemoryReadPort,
     PluginRegistry,
     RuntimeManager,
     ShellTool,
+    summarize_tool_arguments,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
@@ -856,8 +859,10 @@ async def delete_role(role_id: str) -> None:
         raise HTTPException(status_code=409, detail="该角色正在生成回复，暂时无法删除")
     deletion_started = False
     session_snapshot = None
+    audit_snapshot = None
     memory_snapshot = None
     session_snapshot_taken = False
+    audit_snapshot_taken = False
     memory_snapshot_taken = False
     role_delete_attempted = False
     deletion_succeeded = False
@@ -875,6 +880,8 @@ async def delete_role(role_id: str) -> None:
         await deletion_lock.acquire()
         session_snapshot = session_store.snapshot_role_session(role_id)
         session_snapshot_taken = True
+        audit_snapshot = session_store.snapshot_tool_audits(role_id)
+        audit_snapshot_taken = True
         memory_snapshot = memory_store.snapshot_role(role_id)
         memory_snapshot_taken = True
         deletion_marker = store.begin_role_deletion(role_id)
@@ -898,6 +905,11 @@ async def delete_role(role_id: str) -> None:
         if session_snapshot_taken and session_snapshot is not None:
             try:
                 session_store.restore_role_session(role_id, session_snapshot)
+            except Exception as restore_error:
+                rollback_errors.append(restore_error)
+        if audit_snapshot_taken and audit_snapshot is not None:
+            try:
+                session_store.restore_tool_audits(role_id, audit_snapshot)
             except Exception as restore_error:
                 rollback_errors.append(restore_error)
         if memory_snapshot_taken and memory_snapshot is not None:
@@ -1268,41 +1280,63 @@ def _stream_model_reply(role, history, configuration, memory_context):
     return stream_reply(role, history, configuration)
 
 
-def _runtime_tools(role) -> tuple[ShellTool, ...]:
-    """Build tools from the request-time role snapshot and its policy."""
+def _memory_runtime_tool(role) -> MemoryRecallTool:
+    return MemoryRecallTool(RoleScopedMemoryReadPort(_current_memory_engine(), role.id))
+
+
+def _runtime_tool_candidates(role) -> tuple[ShellTool | MemoryRecallTool, ...]:
+    """Build every tool available to the host for a role snapshot."""
     shell = role.agentConfig.shell
-    if not shell.enabled or not shell.allowedCommands:
-        return ()
-    return (ShellTool(
-        store.workspace_path(role.id),
-        allowed_commands=shell.allowedCommands,
-        timeout_seconds=shell.timeoutSeconds,
-        max_output_chars=shell.maxOutputChars,
-    ),)
-
-
-def _available_runtime_tools(role) -> tuple[ShellTool, ...]:
-    shell = role.agentConfig.shell
-    return (ShellTool(
-        store.workspace_path(role.id),
-        allowed_commands=shell.allowedCommands,
-        timeout_seconds=shell.timeoutSeconds,
-        max_output_chars=shell.maxOutputChars,
-    ),)
-
-
-async def _runtime_capabilities(role, *, session_key: str, run_id: str, prompt_text: str, explicit_skill_ids: list[str] | None = None) -> CapabilityResolution:
-    agent_config = role.agentConfig
-    enabled_tools = {tool.definition.name for tool in _runtime_tools(role)}
-    enabled_tools.update(agent_config.enabledTools)
-    skill_roots = (
-        (roles_root / role.id / "skills", "role"),
-        (project_root / ".agents" / "skills", "project"),
+    return (
+        ShellTool(
+            store.workspace_path(role.id),
+            allowed_commands=shell.allowedCommands,
+            timeout_seconds=shell.timeoutSeconds,
+            max_output_chars=shell.maxOutputChars,
+        ),
+        _memory_runtime_tool(role),
     )
-    skills = SkillRegistry.discover_many(skill_roots)
+
+
+def _enabled_runtime_tool_names(role) -> set[str]:
+    shell = role.agentConfig.shell
+    enabled: set[str] = set()
+    if shell.enabled and shell.allowedCommands:
+        enabled.add("shell")
+    if role.agentConfig.memoryRecall.enabled:
+        enabled.add("recall_memory")
+    return enabled
+
+
+def _runtime_tools(
+    role,
+    *,
+    candidates: tuple[ShellTool | MemoryRecallTool, ...] | None = None,
+) -> tuple[ShellTool | MemoryRecallTool, ...]:
+    """Filter host tool candidates using the request-time role policy."""
+    available = _runtime_tool_candidates(role) if candidates is None else candidates
+    enabled = _enabled_runtime_tool_names(role)
+    return tuple(tool for tool in available if tool.definition.name in enabled)
+
+
+async def _runtime_capabilities(
+    role,
+    *,
+    session_key: str,
+    run_id: str,
+    available_tools: tuple[ShellTool | MemoryRecallTool, ...] | None = None,
+    prompt_text: str = "",
+    explicit_skill_ids: list[str] | None = None,
+) -> CapabilityResolution:
+    agent_config = role.agentConfig
+    enabled_tools = _enabled_runtime_tool_names(role)
+    enabled_tools.update(agent_config.enabledTools)
     return await CapabilityRegistry(
-        _available_runtime_tools(role),
-        skills=skills,
+        _runtime_tool_candidates(role) if available_tools is None else available_tools,
+        skills=SkillRegistry.discover_many((
+            (roles_root / role.id / "skills", "role"),
+            (project_root / ".agents" / "skills", "project"),
+        )),
         plugins=plugin_registry,
     ).resolve_async(
         role_id=role.id,
@@ -1335,7 +1369,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         if isinstance(configuration_snapshot, dict):
             configuration_snapshot.pop("apiKey", None)
         role_snapshot = role.model_dump(mode="json", exclude={"modelConfig"})
-        runtime_tools = _runtime_tools(role)
+        available_runtime_tools = _runtime_tool_candidates(role)
+        runtime_tools = _runtime_tools(role, candidates=available_runtime_tools)
         shell_config = role.agentConfig.shell
         model_snapshot = {
             "modelConfiguration": configuration_snapshot,
@@ -1480,6 +1515,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     role,
                     session_key=session.session.sessionKey,
                     run_id=run_id,
+                    available_tools=available_runtime_tools,
                     prompt_text=data.content,
                     explicit_skill_ids=data.skillIds,
                 )
@@ -1537,6 +1573,27 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     elif isinstance(runtime_event, MessageEndEvent) and isinstance(runtime_event.message, AssistantMessage):
                         content = runtime_event.message.content
                     elif isinstance(runtime_event, ToolExecutionStartEvent):
+                        definition = (
+                            capabilities.get(runtime_event.tool_name).definition
+                            if capabilities is not None and capabilities.get(runtime_event.tool_name) is not None
+                            else None
+                        )
+                        policy_decision = (
+                            capabilities.snapshot.policy_decisions.get(runtime_event.tool_name)
+                            if capabilities is not None
+                            else None
+                        )
+                        session_store.start_tool_audit(
+                            run_id=run_id,
+                            role_id=role_id,
+                            tool_name=runtime_event.tool_name,
+                            call_id=runtime_event.tool_call_id,
+                            argument_summary=summarize_tool_arguments(runtime_event.arguments),
+                            snapshot_id=capabilities.snapshot.snapshot_id if capabilities is not None else None,
+                            tool_source=definition.source if definition is not None else None,
+                            tool_version=definition.version if definition is not None else None,
+                            policy_decision=str(policy_decision) if policy_decision is not None else None,
+                        )
                         yield _event("tool_execution_start", runtime_event_payload({
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
@@ -1550,6 +1607,14 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                             "isError": runtime_event.result.is_error,
                         }, runtime_event.sequence))
                     elif isinstance(runtime_event, ToolExecutionEndEvent):
+                        details = runtime_event.result.details if isinstance(runtime_event.result.details, dict) else {}
+                        session_store.finish_tool_audit(
+                            run_id=run_id,
+                            call_id=runtime_event.tool_call_id,
+                            result_category=str(details.get("status") or ("error" if runtime_event.result.is_error else "succeeded")),
+                            error_type=str(details["errorType"]) if details.get("errorType") else None,
+                            error_message=str(details["message"]) if details.get("message") else None,
+                        )
                         yield _event("tool_execution_end", runtime_event_payload({
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
@@ -1605,10 +1670,26 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     "error": _safe_model_error(error, configuration.apiKey if configuration else ""),
                 }))
         except asyncio.CancelledError:
+            terminal_reason = "cancelled"
             runtime_manager.cancel_run(run_id, interrupt=False)
             runtime_manager.cancel_unstarted_run(run_id)
             raise
         finally:
+            if terminal_reason != "completed":
+                audit_category = "cancelled" if terminal_reason == "cancelled" else "failed"
+                try:
+                    session_store.finish_open_tool_audits(
+                        run_id,
+                        result_category=audit_category,
+                        error_type="CancelledError" if audit_category == "cancelled" else "RuntimeError",
+                        error_message=(
+                            "客户端取消，工具结果未完成"
+                            if audit_category == "cancelled"
+                            else "工具运行在结果记录前中断"
+                        ),
+                    )
+                except Exception as error:
+                    memory_worker.errors.append(f"{role_id}: tool audit cleanup failed: {error}")
             if capabilities is not None and not capabilities_owned_by_runtime:
                 try:
                     await capabilities.close()

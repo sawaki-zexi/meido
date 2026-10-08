@@ -253,7 +253,7 @@ def test_agent_loop_tool_exception_returns_error_result_and_continues():
 
         def execute(self, arguments, context, on_update=None):
             del arguments, context, on_update
-            raise ValueError("tool failed")
+            raise RuntimeError("tool failed")
 
     provider = FakeProvider([
         [ToolCallEndEvent(call), AssistantDoneEvent(AssistantMessage(tool_calls=(call,), stop_reason="tool_use"))],
@@ -270,8 +270,10 @@ def test_agent_loop_tool_exception_returns_error_result_and_continues():
 
     result = next(event.result for event in events if isinstance(event, ToolExecutionEndEvent))
     assert result.is_error is True
-    assert result.content == "tool failed"
+    assert result.content == "tool execution failed"
     assert result.details["status"] == "failed"
+    assert result.details["errorType"] == "RuntimeError"
+    assert result.details["message"] == "tool execution failed"
     assert events[-1].type == "agent_end" and events[-1].reason == "completed"
 
 
@@ -319,6 +321,37 @@ def test_agent_loop_cancellation_emits_aborted_message():
     assert events[-1].reason == "cancelled"
 
 
+def test_agent_loop_records_cooperative_tool_cancellation_and_stops():
+    call = ToolCall("cancel-call", "cancel", {})
+
+    class CooperativeCancellationTool:
+        definition = ToolDefinition("cancel", "Cancel the current run", {"type": "object"})
+
+        def execute(self, arguments, context, on_update=None):
+            del arguments, on_update
+            context.signal.cancel()
+            context.signal.raise_if_cancelled()
+
+    provider = FakeProvider([
+        [ToolCallEndEvent(call), AssistantDoneEvent(AssistantMessage(tool_calls=(call,), stop_reason="tool_use"))],
+    ])
+
+    events = asyncio.run(_collect(run_agent_loop(
+        provider=provider,
+        model="fake",
+        system="",
+        messages=[UserMessage("取消工具")],
+        tools=[CooperativeCancellationTool()],
+    )))
+
+    result = next(event for event in events if isinstance(event, ToolExecutionEndEvent))
+    assert result.result.details["status"] == "cancelled"
+    assert result.result.details["errorType"] == "RuntimeError"
+    assert result.result.details["message"] == "tool cancelled"
+    assert events[-1].type == "agent_end"
+    assert events[-1].reason == "cancelled"
+
+
 def test_agent_loop_returns_structured_error_for_invalid_tool_arguments():
     call = ToolCall("call-1", "read", {})
     provider = FakeProvider([
@@ -342,6 +375,7 @@ def test_agent_loop_returns_structured_error_for_invalid_tool_arguments():
     assert tool_result.result.is_error is True
     assert "required" in tool_result.result.content
     assert tool_result.result.details["status"] == "invalid_arguments"
+    assert tool_result.result.details["errorType"] == "ValueError"
 
 
 def test_agent_loop_tool_timeout_becomes_error_result_and_can_continue():

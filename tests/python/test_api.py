@@ -10,7 +10,8 @@ from backend.app import main
 from backend.app.agent_runtime import AgentToolResult, PluginContribution, PluginManifest, PluginRegistry, ToolContext, ToolDefinition
 from backend.app.agent_runtime.types import ToolResultMessage
 from backend.app.model_adapter import ModelTextDelta, ModelToolCall
-from backend.app.models import AgentRun, AgentToolConfig, Message, ModelConfigurationInput, RoleInput, RoleProfile, RoleUpdateInput, SendMessageInput, ShellToolConfig
+from backend.app.models import AgentRun, AgentToolConfig, MemoryRecallToolConfig, Message, ModelConfigurationInput, RoleInput, RoleProfile, RoleUpdateInput, SendMessageInput, ShellToolConfig
+from backend.app.memory_engine import MemoryQueryResult, MemoryScope
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
@@ -588,6 +589,205 @@ activation: explicit
     assert run.modelSnapshot["capabilities"]["skills"][0]["id"] == "explicit-help"
 
 
+def test_enabled_role_memory_recall_is_scoped_and_hidden_from_session_api(tmp_path, monkeypatch):
+    from backend.app.agent_runtime.types import ToolResultMessage
+
+    class FakeMemoryEngine:
+        def __init__(self):
+            self.requests = []
+
+        async def query(self, request):
+            self.requests.append(request)
+            return MemoryQueryResult(text_block="- [fact] 喜欢海边")
+
+    class StructuredAdapter:
+        def __init__(self):
+            self.requests = []
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            del configuration
+            self.requests.append((messages, tools))
+            if len(self.requests) == 1:
+                assert tools[0]["function"]["name"] == "recall_memory"
+                yield ModelToolCall("call-memory", "recall_memory", {"query": "喜欢什么", "limit": 1})
+            else:
+                assert any(item.get("role") == "tool" and "喜欢海边" in str(item.get("content")) for item in messages)
+                yield ModelTextDelta("记得你喜欢海边")
+
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(
+        name="记忆角色",
+        profile=RoleProfile(profile="核心设定"),
+        agentConfig=AgentToolConfig(memoryRecall=MemoryRecallToolConfig(enabled=True)),
+    ))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    engine = FakeMemoryEngine()
+    adapter = StructuredAdapter()
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))
+    monkeypatch.setattr(main, "model_adapter", adapter)
+    monkeypatch.setattr(main, "model_configuration_store", ModelConfigurationStore(tmp_path / "data" / "model-config.json"))
+    monkeypatch.setattr(main, "role_locks", {})
+    monkeypatch.setattr(main, "_current_memory_engine", lambda: engine)
+
+    client = TestClient(main.app)
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "你记得什么"})
+
+    assert response.status_code == 200
+    assert len(engine.requests) == 2
+    assert engine.requests[0].effect == "stateful"
+    assert engine.requests[1].effect == "read_only"
+    assert all(request.scope == MemoryScope(role.id, f"role:{role.id}") for request in engine.requests)
+    assert any(item["function"]["name"] == "recall_memory" for item in adapter.requests[0][1])
+    assert any(isinstance(item, ToolResultMessage) for item in sessions.runtime_messages(f"role:{role.id}"))
+    session_payload = client.get(f"/api/roles/{role.id}/session").json()
+    assert all(message["messageType"] == "text" for message in session_payload["messages"])
+    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
+    run = sessions.get_run(run_id)
+    assert run is not None
+    assert run.modelSnapshot["capabilities"]["tools"][0]["name"] == "recall_memory"
+    assert run.modelSnapshot["capabilities"]["tools"][0]["source"] == "builtin:memory"
+    audits = sessions.list_tool_audits(run_id)
+    assert len(audits) == 1
+    assert audits[0]["roleId"] == role.id
+    assert audits[0]["toolName"] == "recall_memory"
+    assert audits[0]["callId"] == "call-memory"
+    assert audits[0]["snapshotId"] == run.modelSnapshot["capabilities"]["snapshotId"]
+    assert audits[0]["toolSource"] == "builtin:memory"
+    assert audits[0]["toolVersion"] == "1.0.0"
+    assert audits[0]["policyDecision"] == "allowed"
+    assert audits[0]["endedAt"] is not None
+    assert audits[0]["resultCategory"] == "succeeded"
+    assert audits[0]["argumentSummary"]["fields"]["query"] == {"type": "string", "length": 4}
+    assert "喜欢什么" not in json.dumps(audits, ensure_ascii=False)
+    assert "喜欢海边" not in json.dumps(audits, ensure_ascii=False)
+
+
+def _configure_memory_tool_failure_api(tmp_path, monkeypatch, engine, arguments):
+    class StructuredAdapter:
+        def __init__(self):
+            self.requests = []
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            del messages, configuration, tools
+            self.requests.append(True)
+            if len(self.requests) == 1:
+                yield ModelToolCall("call-memory-failure", "recall_memory", arguments)
+            else:
+                yield ModelTextDelta("已处理")
+
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(
+        name="记忆错误角色",
+        profile=RoleProfile(profile="核心设定"),
+        agentConfig=AgentToolConfig(memoryRecall=MemoryRecallToolConfig(enabled=True)),
+    ))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    adapter = StructuredAdapter()
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))
+    monkeypatch.setattr(main, "model_adapter", adapter)
+    monkeypatch.setattr(main, "model_configuration_store", ModelConfigurationStore(tmp_path / "data" / "model-config.json"))
+    monkeypatch.setattr(main, "role_locks", {})
+    monkeypatch.setattr(main, "_current_memory_engine", lambda: engine)
+    return role, sessions, adapter, TestClient(main.app)
+
+
+def test_memory_tool_invalid_arguments_are_audited(tmp_path, monkeypatch):
+    class MemoryEngine:
+        def __init__(self):
+            self.requests = []
+
+        async def query(self, request):
+            self.requests.append(request)
+            return MemoryQueryResult(text_block="")
+
+    engine = MemoryEngine()
+    role, sessions, adapter, client = _configure_memory_tool_failure_api(
+        tmp_path,
+        monkeypatch,
+        engine,
+        {"query": ""},
+    )
+
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "检查参数"})
+
+    assert response.status_code == 200
+    assert len(adapter.requests) == 2
+    assert [request.effect for request in engine.requests] == ["stateful"]
+    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
+    assert run_id is not None
+    audits = sessions.list_tool_audits(run_id)
+    assert audits[0]["resultCategory"] == "invalid_arguments"
+    assert audits[0]["errorType"] == "ValueError"
+    assert audits[0]["endedAt"] is not None
+
+
+def test_memory_tool_engine_failure_is_audited(tmp_path, monkeypatch):
+    class MemoryEngine:
+        def __init__(self):
+            self.requests = []
+
+        async def query(self, request):
+            self.requests.append(request)
+            if request.effect == "read_only":
+                raise RuntimeError("engine unavailable")
+            return MemoryQueryResult(text_block="")
+
+    engine = MemoryEngine()
+    role, sessions, _, client = _configure_memory_tool_failure_api(
+        tmp_path,
+        monkeypatch,
+        engine,
+        {"query": "事实"},
+    )
+
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "查询记忆"})
+
+    assert response.status_code == 200
+    assert [request.effect for request in engine.requests] == ["stateful", "read_only"]
+    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
+    assert run_id is not None
+    audits = sessions.list_tool_audits(run_id)
+    assert audits[0]["resultCategory"] == "failed"
+    assert audits[0]["errorType"] == "RuntimeError"
+
+
+def test_memory_tool_timeout_is_audited(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    class MemoryEngine:
+        async def query(self, request):
+            if request.effect == "read_only":
+                await asyncio.sleep(0.05)
+            return MemoryQueryResult(text_block="")
+
+    monkeypatch.setattr(
+        main.MemoryRecallTool,
+        "definition",
+        replace(main.MemoryRecallTool.definition, timeout_seconds=0.01),
+    )
+    role, sessions, _, client = _configure_memory_tool_failure_api(
+        tmp_path,
+        monkeypatch,
+        MemoryEngine(),
+        {"query": "事实"},
+    )
+
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "查询记忆"})
+
+    assert response.status_code == 200
+    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
+    assert run_id is not None
+    audits = sessions.list_tool_audits(run_id)
+    assert audits[0]["resultCategory"] == "timed_out"
+    assert audits[0]["errorMessage"] == "tool timed out"
+
+
 def test_role_update_preserves_session_messages_and_changes_future_prompt(tmp_path, monkeypatch):
     adapter = RecordingAdapter()
     role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter)
@@ -911,6 +1111,18 @@ def test_delete_role_failure_restores_role_and_chat_history(tmp_path, monkeypatc
     role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
     client.post(f"/api/roles/{role.id}/messages", json={"content": "保留消息"})
     before = sessions.list_messages(f"role:{role.id}")
+    sessions.start_tool_audit(
+        run_id="run-audit-rollback",
+        role_id=role.id,
+        tool_name="recall_memory",
+        call_id="call-audit-rollback",
+        argument_summary={"fields": {"query": {"type": "string", "length": 2}}},
+        snapshot_id="cap-audit-rollback",
+        tool_source="builtin:memory",
+        tool_version="1.0.0",
+        policy_decision="allowed",
+    )
+    before_audits = sessions.list_tool_audits("run-audit-rollback")
 
     def fail_delete(role_id):
         raise OSError("数据库删除失败")
@@ -922,6 +1134,7 @@ def test_delete_role_failure_restores_role_and_chat_history(tmp_path, monkeypatc
     assert response.json()["detail"] == "删除失败，角色和聊天记录已保留"
     assert client.get(f"/api/roles/{role.id}").status_code == 200
     assert [item.model_dump() for item in sessions.list_messages(f"role:{role.id}")] == [item.model_dump() for item in before]
+    assert sessions.list_tool_audits("run-audit-rollback") == before_audits
 
 
 def test_delete_role_memory_failure_restores_role_chat_and_memory(tmp_path, monkeypatch):
@@ -934,6 +1147,14 @@ def test_delete_role_memory_failure_restores_role_chat_and_memory(tmp_path, monk
     client.post(f"/api/roles/{role.id}/messages", json={"content": "保留消息"})
     memory_service.remember(role.id, "保留记忆", "fact", stable_source_key="keep")
     before_messages = sessions.list_messages(f"role:{role.id}")
+    sessions.start_tool_audit(
+        run_id="run-memory-delete-rollback",
+        role_id=role.id,
+        tool_name="recall_memory",
+        call_id="call-memory-delete-rollback",
+        argument_summary={},
+    )
+    before_audits = sessions.list_tool_audits("run-memory-delete-rollback")
 
     def fail_delete(role_id):
         raise OSError("记忆数据库删除失败")
@@ -945,6 +1166,7 @@ def test_delete_role_memory_failure_restores_role_chat_and_memory(tmp_path, monk
     assert client.get(f"/api/roles/{role.id}").status_code == 200
     assert [item.model_dump() for item in sessions.list_messages(f"role:{role.id}")] == [item.model_dump() for item in before_messages]
     assert [item.summary for item in memory_store.list_active(role.id)] == ["保留记忆"]
+    assert sessions.list_tool_audits("run-memory-delete-rollback") == before_audits
 
 
 def test_delete_role_downstream_key_error_is_reported_as_delete_failure(tmp_path, monkeypatch):

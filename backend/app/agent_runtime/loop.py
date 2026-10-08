@@ -300,7 +300,14 @@ async def _execute_tool(
         try:
             registry.validate_arguments(call.name, arguments)
         except ValueError as error:
-            return finish(AgentToolResult(str(error), is_error=True), status="invalid_arguments"), updates
+            return finish(
+                AgentToolResult(
+                    str(error),
+                    details={"errorType": type(error).__name__, "message": "invalid tool arguments"},
+                    is_error=True,
+                ),
+                status="invalid_arguments",
+            ), updates
         pending = resolve_tool_result(tool.execute(arguments, context, on_update))
         definition = (
             registry.definition(call.name)
@@ -318,13 +325,41 @@ async def _execute_tool(
             return finish(AgentToolResult("tool returned an invalid result", is_error=True), status="failed"), updates
         return finish(result), updates
     except asyncio.TimeoutError:
-        return finish(AgentToolResult("tool timed out", is_error=True), status="timed_out"), updates
+        return finish(
+            AgentToolResult(
+                "tool timed out",
+                details={"errorType": "TimeoutError", "message": "tool timed out"},
+                is_error=True,
+            ),
+            status="timed_out",
+        ), updates
     except RuntimeError as error:
         if str(error) == "agent run cancelled":
-            return finish(AgentToolResult("tool cancelled", is_error=True), status="cancelled"), updates
-        return finish(AgentToolResult(str(error), is_error=True), status="failed"), updates
+            return finish(
+                AgentToolResult(
+                    "tool cancelled",
+                    details={"errorType": type(error).__name__, "message": "tool cancelled"},
+                    is_error=True,
+                ),
+                status="cancelled",
+            ), updates
+        return finish(
+            AgentToolResult(
+                "tool execution failed",
+                details={"errorType": type(error).__name__, "message": "tool execution failed"},
+                is_error=True,
+            ),
+            status="failed",
+        ), updates
     except Exception as error:
-        return finish(AgentToolResult(str(error), is_error=True), status="failed"), updates
+        return finish(
+            AgentToolResult(
+                "tool execution failed",
+                details={"errorType": type(error).__name__, "message": "tool execution failed"},
+                is_error=True,
+            ),
+            status="failed",
+        ), updates
 
 
 _TOOL_RESULT_STATUSES = frozenset({
