@@ -239,6 +239,7 @@ def test_capability_resolution_keeps_execution_policy_after_tool_mutation():
         },
         output_limit=100,
     )
+    resolution.snapshot.tools[0].input_schema["required"] = ["other"]
 
     class Provider:
         def __init__(self) -> None:

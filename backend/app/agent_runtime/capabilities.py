@@ -91,6 +91,8 @@ class CapabilityResolution:
     )
 
     def provider_schemas(self) -> list[dict[str, object]]:
+        if self._definitions_by_name:
+            return [definition.as_provider_schema() for definition in self._definitions_by_name.values()]
         return self.snapshot.provider_schemas()
 
     def get(self, name: str) -> AgentTool | None:
@@ -99,7 +101,8 @@ class CapabilityResolution:
     def definition(self, name: str) -> ToolDefinition | None:
         """Return the immutable-at-resolution policy used by this run."""
 
-        return self._definitions_by_name.get(name)
+        definition = self._definitions_by_name.get(name)
+        return deepcopy(definition) if definition is not None else None
 
     def denial_reason(self, name: str) -> str | None:
         reason = self.denied_tools.get(name)
@@ -366,7 +369,10 @@ class CapabilityRegistry:
             denied_tools=MappingProxyType(dict(denied)),
             plugin_resolution=plugin_resolution,
             _tools_by_name=MappingProxyType({tool.definition.name: tool for tool in selected}),
-            _definitions_by_name=MappingProxyType({definition.name: definition for definition in snapshot_definitions}),
+            _definitions_by_name=MappingProxyType({
+                definition.name: deepcopy(definition)
+                for definition in snapshot_definitions
+            }),
         )
 
     async def resolve_async(
