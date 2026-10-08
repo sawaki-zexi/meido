@@ -278,7 +278,10 @@ def test_agent_loop_uses_capability_resolution_for_schema_and_denied_calls():
     assert [item["function"]["name"] for item in provider.schemas[0]] == ["memory.read"]
     result = next(event.result for event in events if event.type == "tool_execution_end")
     assert result.is_error is True
-    assert result.details == {"tool": "memory.write", "reason": "tool is disabled for this run"}
+    assert result.details["tool"] == "memory.write"
+    assert result.details["reason"] == "tool is disabled for this run"
+    assert result.details["status"] == "denied"
+    assert result.details["truncated"] is False
 
 
 def test_agent_loop_injects_resolution_scope_into_tool_context():
