@@ -10,7 +10,7 @@ from types import MappingProxyType
 from typing import Awaitable, Callable, Iterable, Mapping, Protocol, cast
 
 from .skills import SkillDescriptor
-from .tools import AgentTool, ToolContext
+from .tools import AgentTool, AgentToolResult, ToolContext, ToolDefinition
 
 
 _PLUGIN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -314,13 +314,51 @@ class LoadedPlugin:
 
 
 @dataclass(slots=True)
+class _PluginToolAdapter:
+    tool: AgentTool
+    definition: ToolDefinition
+
+    async def execute(
+        self,
+        arguments: Mapping[str, object],
+        context: ToolContext,
+        on_update: Callable[[AgentToolResult], None] | None = None,
+    ) -> AgentToolResult:
+        try:
+            result = self.tool.execute(arguments, context, on_update)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+        except TimeoutError:
+            raise
+        except RuntimeError as error:
+            if str(error) == "agent run cancelled":
+                raise
+            return _plugin_tool_failure(error)
+        except Exception as error:
+            return _plugin_tool_failure(error)
+
+
+def _plugin_tool_failure(error: Exception) -> AgentToolResult:
+    return AgentToolResult(
+        "plugin tool failed",
+        details={"status": "failed", "errorType": type(error).__name__},
+        is_error=True,
+    )
+
+
+@dataclass(slots=True)
 class PluginResolution:
     loaded: tuple[LoadedPlugin, ...]
     diagnostics: tuple[MappingProxyType, ...]
 
     @property
     def tools(self) -> tuple[AgentTool, ...]:
-        return tuple(tool for plugin in self.loaded for tool in plugin.contribution.tools)
+        return tuple(
+            _PluginToolAdapter(tool, tool.definition)
+            for plugin in self.loaded
+            for tool in plugin.contribution.tools
+        )
 
     @property
     def hooks(self) -> tuple[AgentToolHook, ...]:

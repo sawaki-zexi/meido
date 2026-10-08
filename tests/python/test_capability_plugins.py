@@ -715,6 +715,69 @@ def test_plugin_transform_hook_changes_tool_arguments_before_execution():
     asyncio.run(capabilities.close())
 
 
+def test_plugin_tool_exception_does_not_leak_into_runtime_result():
+    secret = "plugin-runtime-token-do-not-persist"
+
+    class FailingTool:
+        definition = EchoTool.definition
+
+        def execute(self, arguments, context, on_update=None):
+            del arguments, context, on_update
+            raise RuntimeError(f"plugin failed while using {secret}")
+
+    def factory(context):
+        del context
+        return PluginContribution(tools=(FailingTool(),))
+
+    capabilities = asyncio.run(
+        CapabilityRegistry(plugins=PluginRegistry([(_manifest(), factory)])).resolve_async(
+            role_id="role-1",
+            session_key="role:role-1",
+            run_id="run-plugin-tool-error",
+            enabled_tools={"plugin.echo"},
+        )
+    )
+
+    class Provider:
+        def __init__(self):
+            self.turn = 0
+
+        def stream_response(self, *, model, system, messages, tools, signal, session_id=None):
+            del model, system, messages, tools, signal, session_id
+            self.turn += 1
+            call = ToolCall("call-error", "plugin.echo", {"message": "hello"})
+
+            async def stream():
+                if self.turn == 1:
+                    yield ToolCallEndEvent(call)
+                    yield AssistantDoneEvent(AssistantMessage(tool_calls=(call,), stop_reason="tool_use"))
+                else:
+                    yield AssistantDoneEvent(AssistantMessage(content="done"))
+
+            return stream()
+
+    async def collect():
+        return [
+            event
+            async for event in run_agent_loop(
+                provider=Provider(),
+                model="fake",
+                system="",
+                messages=[UserMessage("run plugin")],
+                capabilities=capabilities,
+                max_turns=2,
+            )
+        ]
+
+    events = asyncio.run(collect())
+    result = next(event.result for event in events if event.type == "tool_execution_end")
+    assert result.content == "plugin tool failed"
+    assert result.details["status"] == "failed"
+    assert result.details["errorType"] == "RuntimeError"
+    assert secret not in str(events)
+    asyncio.run(capabilities.close())
+
+
 def test_plugin_deny_hook_returns_structured_tool_error():
     def factory(context):
         del context

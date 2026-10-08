@@ -65,6 +65,8 @@ tools:
 4. 为资源注册 cleanup；验证 setup 异常、关闭、取消和 reload 都能释放资源。
 5. 测试未知 capability、缺少宿主服务、未声明的贡献、重复 Tool/Skill/Hook、低信任显式激活和跨来源名称冲突。PluginContext 只暴露 manifest 请求且已获授权的宿主服务；映射是只读快照。
 
+Plugin Tool 抛出的异常文本不会原样传给模型或写入工具 transcript；Runtime 返回固定的 `plugin tool failed` 和异常类型。超时和运行取消继续使用 Runtime 的 `timed_out` / `cancelled` 状态。Plugin 应在自己的脱敏日志中记录排障细节。
+
 当前不支持动态安装、远程 Plugin、MCP 或操作系统 sandbox。需要这些边界时，应另建进程或任务执行规格，不把隔离责任隐含在 Plugin API 中。
 
 ## 验收清单
