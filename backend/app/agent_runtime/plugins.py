@@ -388,7 +388,7 @@ class PluginRegistry:
                 plugin_id=manifest.plugin_id,
                 plugin_dir=plugin_dir,
                 grants=frozenset(manifest.requested_capabilities),
-                host_services=host_services,
+                host_services=MappingProxyType(dict(host_services)),
             )
             try:
                 contribution = registration.factory(context)
@@ -441,6 +441,13 @@ class PluginRegistry:
 
 
 def _validate_contribution(contribution: PluginContribution, *, manifest: PluginManifest) -> None:
+    undeclared_tools = {
+        tool.definition.name for tool in contribution.tools
+    } - set(manifest.declared_tools)
+    if undeclared_tools:
+        raise PluginSetupError(
+            f"plugin contributed undeclared tool: {', '.join(sorted(undeclared_tools))}"
+        )
     names: set[str] = set()
     for tool in contribution.tools:
         name = tool.definition.name
@@ -451,6 +458,8 @@ def _validate_contribution(contribution: PluginContribution, *, manifest: Plugin
     for skill in contribution.skills:
         if skill.skill_id in skill_ids:
             raise PluginSetupError(f"duplicate plugin skill: {skill.skill_id}")
+        if skill.skill_id not in manifest.declared_skills:
+            raise PluginSetupError(f"plugin contributed undeclared skill: {skill.skill_id}")
         if _TRUST_RANK[skill.trust_level] > _TRUST_RANK[manifest.trust_level]:
             raise PluginSetupError(
                 f"plugin skill trust level exceeds plugin trust: {skill.skill_id}"
@@ -461,6 +470,8 @@ def _validate_contribution(contribution: PluginContribution, *, manifest: Plugin
         hook_id = hook.definition.hook_id
         if hook_id in hook_ids:
             raise PluginSetupError(f"duplicate plugin hook: {hook_id}")
+        if hook_id not in manifest.lifecycle_contributions:
+            raise PluginSetupError(f"plugin contributed undeclared hook: {hook_id}")
         hook_ids.add(hook_id)
 
 

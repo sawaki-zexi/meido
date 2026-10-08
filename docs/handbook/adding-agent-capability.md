@@ -53,9 +53,9 @@ tools:
 
 1. 创建 `PluginManifest`，声明稳定的 plugin ID、版本、来源、信任级别、runtime API 和所需 capability。
 2. 在 factory 中通过 `PluginContext.require()` 获取已经授权的宿主服务。
-3. 返回 `PluginContribution`，只包含声明范围内的 Tool、Skill 和 Hook。
+3. 返回 `PluginContribution`，只包含声明范围内的 Tool、Skill 和 Hook；Tool ID 列在 `declared_tools`，Skill ID 列在 `declared_skills`，Hook ID 列在 `lifecycle_contributions`。
 4. 为资源注册 cleanup；验证 setup 异常、关闭、取消和 reload 都能释放资源。
-5. 测试未知 capability、缺少宿主服务、重复 Tool/Skill/Hook、低信任显式激活和跨来源名称冲突。
+5. 测试未知 capability、缺少宿主服务、未声明的贡献、重复 Tool/Skill/Hook、低信任显式激活和跨来源名称冲突。PluginContext 中的宿主服务映射是只读快照。
 
 当前不支持动态安装、远程 Plugin、MCP 或操作系统 sandbox。需要这些边界时，应另建进程或任务执行规格，不把隔离责任隐含在 Plugin API 中。
 

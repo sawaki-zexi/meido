@@ -239,7 +239,17 @@ def test_capability_resolution_keeps_execution_policy_after_tool_mutation():
         },
         output_limit=100,
     )
-    resolution.snapshot.tools[0].input_schema["required"] = ["other"]
+    with pytest.raises(TypeError):
+        resolution.snapshot.tools[0].input_schema["required"] = ["other"]
+
+    with pytest.raises(TypeError):
+        resolution.snapshot.tools[0].input_schema["properties"]["value"]["type"] = "integer"
+
+    provider_schema = resolution.snapshot.provider_schemas()
+    provider_schema[0]["function"]["parameters"]["properties"]["value"]["type"] = "number"
+    audit_snapshot = resolution.snapshot.to_dict()
+    audit_snapshot["tools"][0]["inputSchema"]["properties"]["value"]["type"] = "boolean"
+    assert resolution.snapshot.to_dict()["tools"][0]["inputSchema"]["properties"]["value"]["type"] == "string"
 
     class Provider:
         def __init__(self) -> None:

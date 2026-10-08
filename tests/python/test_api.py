@@ -435,7 +435,7 @@ def test_role_capability_config_controls_plugin_resolution(tmp_path, monkeypatch
 
     registry = PluginRegistry([
         (
-            PluginManifest("demo", "1.0.0"),
+            PluginManifest("demo", "1.0.0", declared_tools=("plugin.echo",)),
             lambda context: PluginContribution(tools=(PluginEchoTool(),)),
         ),
     ])

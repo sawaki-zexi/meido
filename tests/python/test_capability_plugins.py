@@ -102,6 +102,17 @@ def _manifest(*capabilities: str) -> PluginManifest:
         version="1.0.0",
         requested_capabilities=capabilities,
         source="builtin",
+        declared_tools=("plugin.echo", "plugin.nested"),
+        declared_skills=("plugin-study",),
+        lifecycle_contributions=(
+            "demo.uppercase",
+            "demo.deny",
+            "demo.observe",
+            "demo.mutating-observer",
+            "demo.nested-passthrough",
+            "demo.slow",
+            "demo.cancelling",
+        ),
     )
 
 
@@ -145,6 +156,25 @@ def test_plugin_grant_and_host_service_diagnostics_are_distinct():
     assert unavailable.loaded == ()
     assert "host service unavailable: memory.read" in unavailable.diagnostics[0]["error"]
     assert called == []
+
+
+def test_plugin_context_exposes_a_readonly_copy_of_host_services():
+    services = {"memory.read": object()}
+    contexts = []
+
+    def factory(context):
+        contexts.append(context)
+        return PluginContribution()
+
+    result = asyncio.run(PluginRegistry([(_manifest(), factory)]).load(host_services=services))
+
+    assert len(result.loaded) == 1
+    original_service = contexts[0].host_services["memory.read"]
+    services["memory.read"] = object()
+    assert contexts[0].host_services["memory.read"] is original_service
+    with pytest.raises(TypeError):
+        contexts[0].host_services["memory.write"] = object()
+    asyncio.run(result.close())
 
 
 def test_unknown_capability_grant_is_diagnosed_without_aborting_load():
@@ -271,7 +301,13 @@ def test_plugin_cannot_escalate_contributed_skill_trust():
     )
     registry = PluginRegistry([
         (
-            PluginManifest("external-demo", "1.0.0", source="external", trust_level="external"),
+            PluginManifest(
+                "external-demo",
+                "1.0.0",
+                source="external",
+                trust_level="external",
+                declared_skills=("untrusted-plugin-skill",),
+            ),
             lambda context: PluginContribution(skills=(skill,)),
         ),
     ])
@@ -294,11 +330,61 @@ def test_plugin_contribution_keeps_tools_hooks_positional_contract():
     assert contribution.skills == ()
 
 
+def test_plugin_registry_rejects_contributions_outside_manifest_declarations():
+    registry = PluginRegistry([
+        (
+            PluginManifest("demo", "1.0.0", declared_tools=("plugin.allowed",)),
+            lambda context: PluginContribution(tools=(EchoTool(),)),
+        ),
+    ])
+
+    result = asyncio.run(registry.load(enabled_ids={"demo"}))
+
+    assert result.loaded == ()
+    assert result.diagnostics[0]["status"] == "failed"
+    assert result.diagnostics[0]["error"] == "plugin contributed undeclared tool: plugin.echo"
+
+
+@pytest.mark.parametrize("contribution_kind", ["skill", "hook"])
+def test_plugin_registry_rejects_undeclared_skill_and_hook(contribution_kind):
+    if contribution_kind == "skill":
+        skill = SkillDescriptor(
+            skill_id="plugin-study",
+            version="1.0.0",
+            description="Study guidance",
+            tools=(),
+            activation="explicit",
+            source="builtin",
+            path="skills/plugin-study/SKILL.md",
+            content_hash="hash",
+            body="study",
+            trust_level="builtin",
+        )
+        contribution = PluginContribution(skills=(skill,))
+        expected = "plugin contributed undeclared skill: plugin-study"
+    else:
+        contribution = PluginContribution(hooks=(ObserveHook(),))
+        expected = "plugin contributed undeclared hook: demo.observe"
+
+    result = asyncio.run(PluginRegistry([
+        (PluginManifest("demo", "1.0.0"), lambda context: contribution),
+    ]).load(enabled_ids={"demo"}))
+
+    assert result.loaded == ()
+    assert result.diagnostics[0]["error"] == expected
+
+
 def test_plugin_registry_rejects_duplicate_hook_ids_across_plugins():
     contribution = PluginContribution(hooks=(ObserveHook(),))
     registry = PluginRegistry([
-        (PluginManifest("demo-a", "1.0.0"), lambda context: contribution),
-        (PluginManifest("demo-b", "1.0.0"), lambda context: contribution),
+        (
+            PluginManifest("demo-a", "1.0.0", lifecycle_contributions=("demo.observe",)),
+            lambda context: contribution,
+        ),
+        (
+            PluginManifest("demo-b", "1.0.0", lifecycle_contributions=("demo.observe",)),
+            lambda context: contribution,
+        ),
     ])
 
     result = asyncio.run(registry.load(enabled_ids={"demo-a", "demo-b"}))

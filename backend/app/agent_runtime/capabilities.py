@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import asyncio
 from collections.abc import Mapping as MappingABC
 import hashlib
 import json
 from types import MappingProxyType
-from typing import Mapping
+from typing import Mapping, cast
 
 from .plugins import HookContext, PluginDescriptor, PluginResolution, PluginRegistry, run_hook
 from .skills import SkillDescriptor, SkillRegistry, SkillResolution
@@ -32,7 +32,17 @@ class CapabilitySnapshot:
     generation: str = ""
 
     def provider_schemas(self) -> list[dict[str, object]]:
-        return [definition.as_provider_schema() for definition in self.tools]
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": definition.name,
+                    "description": definition.description,
+                    "parameters": _thaw_json(definition.input_schema),
+                },
+            }
+            for definition in self.tools
+        ]
 
     def to_dict(self, *, include_prompt_sections: bool = True) -> dict[str, object]:
         snapshot: dict[str, object] = {
@@ -50,7 +60,7 @@ class CapabilitySnapshot:
                     "approval": definition.approval,
                     "timeoutSeconds": definition.timeout_seconds,
                     "outputLimit": definition.output_limit,
-                    "inputSchema": deepcopy(definition.input_schema),
+                    "inputSchema": _thaw_json(definition.input_schema),
                     "description": definition.description,
                 }
                 for definition in self.tools
@@ -235,6 +245,22 @@ def _mutable_value(value: object) -> object:
     return value
 
 
+def _freeze_json(value: object) -> object:
+    if isinstance(value, MappingABC):
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json(item) for item in value)
+    return deepcopy(value)
+
+
+def _thaw_json(value: object) -> object:
+    if isinstance(value, MappingABC):
+        return {key: _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_thaw_json(item) for item in value]
+    return deepcopy(value)
+
+
 class CapabilityRegistry:
     """Resolve registered tools into a stable, role-scoped run snapshot."""
 
@@ -317,7 +343,7 @@ class CapabilityRegistry:
                 denied[name] = "tool is not registered"
                 decisions[name] = "denied:unknown"
 
-        snapshot_definitions = tuple(
+        execution_definitions = tuple(
             ToolDefinition(
                 name=tool.definition.name,
                 description=tool.definition.description,
@@ -331,6 +357,13 @@ class CapabilityRegistry:
                 output_limit=tool.definition.output_limit,
             )
             for tool in selected
+        )
+        snapshot_definitions = tuple(
+            replace(
+                definition,
+                input_schema=cast(dict[str, object], _freeze_json(definition.input_schema)),
+            )
+            for definition in execution_definitions
         )
         skill_registry = self.skills
         if plugin_resolution is not None and plugin_resolution.skills:
@@ -370,8 +403,8 @@ class CapabilityRegistry:
             plugin_resolution=plugin_resolution,
             _tools_by_name=MappingProxyType({tool.definition.name: tool for tool in selected}),
             _definitions_by_name=MappingProxyType({
-                definition.name: deepcopy(definition)
-                for definition in snapshot_definitions
+                definition.name: definition
+                for definition in execution_definitions
             }),
         )
 
@@ -431,7 +464,7 @@ def _snapshot_generation(
             {
                 "name": item.name,
                 "description": item.description,
-                "inputSchema": item.input_schema,
+                "inputSchema": _thaw_json(item.input_schema),
                 "version": item.version,
                 "source": item.source,
                 "risk": item.risk,
