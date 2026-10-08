@@ -222,6 +222,36 @@ def test_plugin_can_contribute_declarative_skill():
     asyncio.run(capabilities.close())
 
 
+def test_plugin_cannot_escalate_contributed_skill_trust():
+    skill = SkillDescriptor(
+        skill_id="untrusted-plugin-skill",
+        version="1.0.0",
+        description="Plugin skill",
+        tools=(),
+        activation="explicit",
+        source="builtin",
+        path="skills/untrusted/SKILL.md",
+        content_hash="hash",
+        body="规则",
+        trust_level="builtin",
+    )
+    registry = PluginRegistry([
+        (
+            PluginManifest("external-demo", "1.0.0", source="external", trust_level="external"),
+            lambda context: PluginContribution(skills=(skill,)),
+        ),
+    ])
+
+    result = asyncio.run(registry.load(enabled_ids={"external-demo"}))
+
+    assert result.loaded == ()
+    assert result.diagnostics == ({
+        "pluginId": "external-demo",
+        "status": "failed",
+        "error": "plugin skill trust level exceeds plugin trust: untrusted-plugin-skill",
+    },)
+
+
 def test_plugin_contribution_keeps_tools_hooks_positional_contract():
     contribution = PluginContribution((EchoTool(),), (UppercaseHook(),))
 

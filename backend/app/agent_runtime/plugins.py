@@ -14,6 +14,7 @@ from .tools import AgentTool, ToolContext
 _PLUGIN_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _TRUST_LEVELS = frozenset({"builtin", "project", "installed", "external"})
 _IMPLICIT_ACTIVATION_TRUST_LEVELS = frozenset({"installed", "external"})
+_TRUST_RANK = {"external": 0, "installed": 1, "project": 2, "builtin": 3}
 KNOWN_CAPABILITIES = frozenset({
     "runtime.hook",
     "runtime.tool",
@@ -330,7 +331,7 @@ class PluginRegistry:
                     contribution = await contribution
                 if not isinstance(contribution, PluginContribution):
                     raise PluginSetupError("plugin factory returned invalid contribution")
-                _validate_contribution(contribution)
+                _validate_contribution(contribution, manifest=manifest)
                 duplicate_hooks = {
                     hook.definition.hook_id
                     for hook in contribution.hooks
@@ -356,7 +357,7 @@ class PluginRegistry:
         return PluginResolution(tuple(loaded), tuple(diagnostics))
 
 
-def _validate_contribution(contribution: PluginContribution) -> None:
+def _validate_contribution(contribution: PluginContribution, *, manifest: PluginManifest) -> None:
     names: set[str] = set()
     for tool in contribution.tools:
         name = tool.definition.name
@@ -367,6 +368,10 @@ def _validate_contribution(contribution: PluginContribution) -> None:
     for skill in contribution.skills:
         if skill.skill_id in skill_ids:
             raise PluginSetupError(f"duplicate plugin skill: {skill.skill_id}")
+        if _TRUST_RANK[skill.trust_level] > _TRUST_RANK[manifest.trust_level]:
+            raise PluginSetupError(
+                f"plugin skill trust level exceeds plugin trust: {skill.skill_id}"
+            )
         skill_ids.add(skill.skill_id)
     hook_ids: set[str] = set()
     for hook in contribution.hooks:
