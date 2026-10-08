@@ -28,6 +28,8 @@ Tool 实现返回 `AgentToolResult`，Runtime 在工具调用边界补齐诊断�
 
 Tool 可以在 `details` 中提供领域字段，例如 Shell Tool 的 `exitCode`。Runtime 保留这些字段，并补齐或覆盖执行契约字段。`details` 不是映射时会放入 `value` 字段，以保证结果仍然是可记录的结构化对象。
 
+Tool 的执行策略（输入 Schema、超时和输出上限）取自运行开始时的能力快照；运行期间改变注册表或 Tool 定义不会改变当前运行。
+
 ## 状态
 
 最终工具结果使用以下状态：

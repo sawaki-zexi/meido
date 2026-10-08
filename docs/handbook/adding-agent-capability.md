@@ -12,6 +12,8 @@
 
 能力在运行开始时解析为一份冻结的 `CapabilitySnapshot`。新增能力应接入 Registry 和宿主服务端口，不修改 FastAPI 路由、Agent Loop、MemoryWorker 或 SQLite 的核心流程。
 
+解析完成后，Tool 的实现对象会和本次运行的 Tool 定义绑定。不要在运行期间修改 Tool 的名称、Schema、超时或输出上限；需要改变契约时注册新版本，让下一次运行生成新的 generation。
+
 ## 选择扩展类型
 
 使用 **Tool** 处理需要模型主动调用的可执行动作。Tool 应声明唯一名称、输入 JSON Schema、来源、版本、风险、暴露方式、审批策略、超时和输出上限。执行函数只接收宿主注入的 `ToolContext`，不能从全局对象读取角色、会话或密钥。
