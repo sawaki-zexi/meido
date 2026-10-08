@@ -124,7 +124,13 @@ class ToolRegistry:
         tool = self.get(name)
         if tool is None:
             raise ValueError(f"unknown tool: {name}")
-        schema = tool.definition.input_schema
+        self.validate_definition(tool.definition, arguments)
+
+    @staticmethod
+    def validate_definition(definition: ToolDefinition, arguments: Mapping[str, object]) -> None:
+        """Validate arguments against a frozen Tool definition."""
+
+        schema = definition.input_schema
         if schema.get("type") == "object":
             _validate_object_value("", arguments, schema)
         else:

@@ -206,6 +206,77 @@ def test_capability_generation_is_independent_of_registration_order():
     assert first.snapshot.generation == reversed_order.snapshot.generation
 
 
+def test_capability_resolution_keeps_execution_policy_after_tool_mutation():
+    class MutableTool:
+        definition = ToolDefinition(
+            "mutable",
+            "Uses a frozen execution policy",
+            {
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"],
+            },
+            output_limit=4,
+        )
+
+        def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
+            del context, on_update
+            return AgentToolResult(f"value:{arguments['value']}")
+
+    tool = MutableTool()
+    resolution = CapabilityRegistry([tool]).resolve(
+        role_id="role-1",
+        session_key="role:role-1",
+        run_id="run-frozen-policy",
+        enabled_tools={"mutable"},
+    )
+    tool.definition = replace(
+        tool.definition,
+        input_schema={
+            "type": "object",
+            "properties": {"other": {"type": "string"}},
+            "required": ["other"],
+        },
+        output_limit=100,
+    )
+
+    class Provider:
+        def __init__(self) -> None:
+            self.turn = 0
+
+        def stream_response(self, *, model, system, messages, tools, signal, session_id=None):
+            del model, system, messages, tools, signal, session_id
+            self.turn += 1
+            call = ToolCall("call-mutable", "mutable", {"value": "ok"})
+
+            async def stream():
+                if self.turn == 1:
+                    yield ToolCallEndEvent(call)
+                    yield AssistantDoneEvent(AssistantMessage(tool_calls=(call,), stop_reason="tool_use"))
+                else:
+                    yield AssistantDoneEvent(AssistantMessage(content="完成"))
+
+            return stream()
+
+    async def collect():
+        return [
+            event
+            async for event in run_agent_loop(
+                provider=Provider(),
+                model="fake",
+                system="",
+                messages=[UserMessage("执行")],
+                capabilities=resolution,
+                max_turns=2,
+            )
+        ]
+
+    events = asyncio.run(collect())
+    result = next(event.result for event in events if event.type == "tool_execution_end")
+    assert result.content == "valu"
+    assert result.details["outputLimit"] == 4
+
+
 def test_capability_registry_filters_tools_and_records_deterministic_reasons():
     registry = CapabilityRegistry([ReadTool(), WriteTool()])
 

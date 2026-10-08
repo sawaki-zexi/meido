@@ -255,7 +255,12 @@ async def _execute_tool(
 
     def bounded(result: AgentToolResult) -> tuple[AgentToolResult, int]:
         output_chars = _result_output_chars(result)
-        output_limit = tool.definition.output_limit
+        definition = (
+            registry.definition(call.name)
+            if isinstance(registry, CapabilityResolution)
+            else tool.definition
+        ) or tool.definition
+        output_limit = definition.output_limit
         if output_limit is None or len(result.content) <= output_limit:
             return result, output_chars
         details = _details_mapping(result.details)
@@ -297,7 +302,12 @@ async def _execute_tool(
         except ValueError as error:
             return finish(AgentToolResult(str(error), is_error=True), status="invalid_arguments"), updates
         pending = resolve_tool_result(tool.execute(arguments, context, on_update))
-        tool_timeout = tool.definition.timeout_seconds
+        definition = (
+            registry.definition(call.name)
+            if isinstance(registry, CapabilityResolution)
+            else tool.definition
+        ) or tool.definition
+        tool_timeout = definition.timeout_seconds
         effective_timeout = (
             min(timeout, tool_timeout)
             if timeout is not None and tool_timeout is not None
