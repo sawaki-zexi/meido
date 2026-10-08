@@ -42,6 +42,7 @@ from .agent_runtime import (
     MeidoProvider,
     MemoryRecallTool,
     RoleScopedMemoryReadPort,
+    PluginRegistry,
     RuntimeManager,
     ShellTool,
     summarize_tool_arguments,
@@ -51,8 +52,10 @@ from .agent_runtime import (
     ToolResultMessage,
 )
 from .agent_runtime.capabilities import CapabilityResolution
+from .agent_runtime.skills import SkillRegistry
 
 roles_root = Path(os.getenv("MEIDO_ROLES_DIR", "roles"))
+project_root = Path(os.getenv("MEIDO_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
 data_root = Path(os.getenv("MEIDO_DATA_DIR", ".data"))
 MAX_ROLE_AVATAR_BYTES = 10 * 1024 * 1024
 ROLE_AVATAR_MEDIA_TYPES = {"image/png", "image/jpeg", "image/webp"}
@@ -64,6 +67,7 @@ memory_store = MemoryStore(data_root / "memory2.db")
 memory_event_bus = MemoryEventBus()
 model_adapter: ModelAdapter = OpenAICompatibleAdapter()
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
+plugin_registry = PluginRegistry()
 
 
 def _embedding_configuration(role_id: str):
@@ -1315,22 +1319,35 @@ def _runtime_tools(
     return tuple(tool for tool in available if tool.definition.name in enabled)
 
 
-def _runtime_capabilities(
+async def _runtime_capabilities(
     role,
     *,
     session_key: str,
     run_id: str,
     available_tools: tuple[ShellTool | MemoryRecallTool, ...] | None = None,
+    prompt_text: str = "",
+    explicit_skill_ids: list[str] | None = None,
 ) -> CapabilityResolution:
+    agent_config = role.agentConfig
     enabled_tools = _enabled_runtime_tool_names(role)
-    return CapabilityRegistry(
+    enabled_tools.update(agent_config.enabledTools)
+    return await CapabilityRegistry(
         _runtime_tool_candidates(role) if available_tools is None else available_tools,
-    ).resolve(
+        skills=SkillRegistry.discover_many((
+            (roles_root / role.id / "skills", "role"),
+            (project_root / ".agents" / "skills", "project"),
+        )),
+        plugins=plugin_registry,
+    ).resolve_async(
         role_id=role.id,
         session_key=session_key,
         run_id=run_id,
         enabled_tools=enabled_tools,
         allowed_risks={"read_only", "mutating", "external"},
+        prompt_text=prompt_text,
+        explicit_skill_ids=set(explicit_skill_ids or ()),
+        enabled_plugin_ids=set(agent_config.enabledPlugins),
+        granted_capabilities=set(agent_config.grantedCapabilities),
     )
 
 
@@ -1389,6 +1406,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         placeholder_id: str | None = assistant_message.id
         final_message: Message | None = None
         disconnect_watcher: asyncio.Task[None] | None = None
+        capabilities: CapabilityResolution | None = None
+        capabilities_owned_by_runtime = False
 
         def runtime_event_payload(payload: dict[str, object], runtime_sequence: int | None = None) -> dict[str, object]:
             nonlocal sse_sequence
@@ -1486,18 +1505,32 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                 )
                 model_snapshot["context"] = {
                     "messages": [asdict(message) for message in runtime_messages],
-                    "memoryContext": memory_context,
+                    "memoryContextMetadata": {
+                        "included": bool(memory_context),
+                        "characterCount": len(memory_context),
+                    },
                     "toolAllowlist": list(shell_config.allowedCommands) if runtime_tools else [],
                 }
-                capabilities = _runtime_capabilities(
+                capabilities = await _runtime_capabilities(
                     role,
                     session_key=session.session.sessionKey,
                     run_id=run_id,
                     available_tools=available_runtime_tools,
+                    prompt_text=data.content,
+                    explicit_skill_ids=data.skillIds,
                 )
-                model_snapshot["capabilities"] = capabilities.snapshot.to_dict()
+                # Persist capability metadata and hashes, while keeping Skill bodies
+                # in the in-memory provider context only.
+                model_snapshot["capabilities"] = capabilities.snapshot.to_dict(include_prompt_sections=False)
                 session_store.update_run(run_id, status="created", model_snapshot=model_snapshot)
-                provider = MeidoProvider(model_adapter, role, configuration, memory_context)
+                provider = MeidoProvider(
+                    model_adapter,
+                    role,
+                    configuration,
+                    memory_context,
+                    capabilities.prompt_context(),
+                )
+                capabilities_owned_by_runtime = True
                 async for runtime_event in runtime_manager.run(
                     AgentRun(
                         runId=run_id,
@@ -1657,6 +1690,11 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     )
                 except Exception as error:
                     memory_worker.errors.append(f"{role_id}: tool audit cleanup failed: {error}")
+            if capabilities is not None and not capabilities_owned_by_runtime:
+                try:
+                    await capabilities.close()
+                except Exception:
+                    pass
             if disconnect_watcher is not None:
                 disconnect_watcher.cancel()
                 await asyncio.gather(disconnect_watcher, return_exceptions=True)

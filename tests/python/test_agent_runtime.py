@@ -13,9 +13,11 @@ from backend.app.agent_runtime import (
     ToolCall,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
+    ToolExecutionUpdateEvent,
     ToolResultMessage,
     ToolContext,
     ToolDefinition,
+    ToolRegistry,
     UserMessage,
     run_agent_loop,
 )
@@ -67,6 +69,105 @@ class ReadTool:
         return AgentToolResult(f"value:{arguments['key']}")
 
 
+def test_tool_schema_and_output_limits_are_enforced_by_runtime():
+    class BoundedTool:
+        definition = ToolDefinition(
+            "bounded",
+            "Bounded tool",
+            {
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string", "enum": ["safe"]},
+                    "count": {"type": "integer", "minimum": 1, "maximum": 2},
+                },
+                "required": ["mode", "count"],
+                "additionalProperties": False,
+            },
+            output_limit=5,
+        )
+
+        def execute(self, arguments, context, on_update=None):
+            del arguments, context
+            if on_update:
+                on_update(AgentToolResult("update-too-long"))
+            return AgentToolResult("result-too-long")
+
+    call = ToolCall("bounded-call", "bounded", {"mode": "safe", "count": 2})
+    provider = FakeProvider([
+        [ToolCallEndEvent(call), AssistantDoneEvent(AssistantMessage(tool_calls=(call,), stop_reason="tool_use"))],
+        [TextDeltaEvent("完成"), AssistantDoneEvent(AssistantMessage("完成"))],
+    ])
+    events = asyncio.run(_collect(run_agent_loop(
+        provider=provider,
+        model="fake",
+        system="",
+        messages=[UserMessage("执行")],
+        tools=[BoundedTool()],
+    )))
+    update = next(event.result for event in events if isinstance(event, ToolExecutionUpdateEvent))
+    result = next(event.result for event in events if isinstance(event, ToolExecutionEndEvent))
+    assert update.content == "updat"
+    assert update.details["status"] == "running"
+    assert update.details["outputChars"] == len("update-too-long")
+    assert update.details["truncated"] is True
+    assert update.details["outputLimit"] == 5
+    assert result.content == "resul"
+    assert result.details["status"] == "succeeded"
+    assert result.details["outputChars"] == len("result-too-long")
+    assert result.details["truncated"] is True
+    assert result.details["outputLimit"] == 5
+
+    registry = ToolRegistry([BoundedTool()])
+    with pytest.raises(ValueError, match="unsupported value"):
+        registry.validate_arguments("bounded", {"mode": "unsafe", "count": 1})
+    with pytest.raises(ValueError, match="below the minimum"):
+        registry.validate_arguments("bounded", {"mode": "safe", "count": 0})
+    with pytest.raises(ValueError, match="exceeds the maximum"):
+        registry.validate_arguments("bounded", {"mode": "safe", "count": 3})
+
+
+def test_tool_registry_rejects_duplicates_and_validates_nested_schema():
+    class NestedTool:
+        definition = ToolDefinition(
+            "nested",
+            "Nested tool",
+            {
+                "type": "object",
+                "properties": {
+                    "options": {
+                        "type": "object",
+                        "required": ["kind"],
+                        "properties": {"kind": {"type": "string", "enum": ["read"]}},
+                        "additionalProperties": False,
+                    },
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "integer", "minimum": 1},
+                        "maxItems": 2,
+                    },
+                },
+                "required": ["options", "items"],
+                "additionalProperties": False,
+            },
+        )
+
+        def execute(self, arguments, context, on_update=None):
+            del arguments, context, on_update
+            return AgentToolResult("ok")
+
+    registry = ToolRegistry([NestedTool()])
+    with pytest.raises(ValueError, match="duplicate tool"):
+        ToolRegistry([NestedTool(), NestedTool()])
+    with pytest.raises(ValueError, match="missing required arguments at options"):
+        registry.validate_arguments("nested", {"options": {}, "items": [1]})
+    with pytest.raises(ValueError, match="unsupported value"):
+        registry.validate_arguments("nested", {"options": {"kind": "write"}, "items": [1]})
+    with pytest.raises(ValueError, match="exceeds the maximum"):
+        registry.validate_arguments("nested", {"options": {"kind": "read"}, "items": [1, 2, 3]})
+    with pytest.raises(ValueError, match="below the minimum"):
+        registry.validate_arguments("nested", {"options": {"kind": "read"}, "items": [0]})
+
+
 def test_agent_loop_runs_tool_then_final_provider_turn():
     call = ToolCall("call-1", "read", {"key": "name"})
     provider = FakeProvider([
@@ -88,7 +189,10 @@ def test_agent_loop_runs_tool_then_final_provider_turn():
         )]
 
     events = asyncio.run(collect())
-    assert messages[-2] == ToolResultMessage("call-1", "read", "value:name")
+    assert messages[-2].tool_call_id == "call-1"
+    assert messages[-2].content == "value:name"
+    assert messages[-2].details["status"] == "succeeded"
+    assert messages[-2].details["outputChars"] == len("value:name")
     assert provider.calls[1][-1] == messages[-2]
     assert any(isinstance(event, ToolExecutionStartEvent) for event in events)
     assert any(isinstance(event, ToolExecutionEndEvent) for event in events)
@@ -136,6 +240,8 @@ def test_agent_loop_unknown_tool_returns_error_result_and_continues():
     result = next(event.result for event in events if isinstance(event, ToolExecutionEndEvent))
     assert result.is_error is True
     assert result.content == "unknown tool: missing"
+    assert result.details["status"] == "unknown"
+    assert result.details["outputChars"] == len(result.content)
     assert events[-1].type == "agent_end" and events[-1].reason == "completed"
 
 
@@ -165,7 +271,9 @@ def test_agent_loop_tool_exception_returns_error_result_and_continues():
     result = next(event.result for event in events if isinstance(event, ToolExecutionEndEvent))
     assert result.is_error is True
     assert result.content == "tool execution failed"
-    assert result.details == {"status": "failed", "errorType": "RuntimeError", "message": "tool execution failed"}
+    assert result.details["status"] == "failed"
+    assert result.details["errorType"] == "RuntimeError"
+    assert result.details["message"] == "tool execution failed"
     assert events[-1].type == "agent_end" and events[-1].reason == "completed"
 
 
@@ -237,11 +345,9 @@ def test_agent_loop_records_cooperative_tool_cancellation_and_stops():
     )))
 
     result = next(event for event in events if isinstance(event, ToolExecutionEndEvent))
-    assert result.result.details == {
-        "status": "cancelled",
-        "errorType": "RuntimeError",
-        "message": "tool cancelled",
-    }
+    assert result.result.details["status"] == "cancelled"
+    assert result.result.details["errorType"] == "RuntimeError"
+    assert result.result.details["message"] == "tool cancelled"
     assert events[-1].type == "agent_end"
     assert events[-1].reason == "cancelled"
 
@@ -267,8 +373,9 @@ def test_agent_loop_returns_structured_error_for_invalid_tool_arguments():
     events = asyncio.run(collect())
     tool_result = next(event for event in events if isinstance(event, ToolExecutionEndEvent))
     assert tool_result.result.is_error is True
-    assert tool_result.result.content == "tool input rejected"
-    assert tool_result.result.details == {"status": "invalid_arguments", "errorType": "ValueError", "message": "invalid tool arguments"}
+    assert "required" in tool_result.result.content
+    assert tool_result.result.details["status"] == "invalid_arguments"
+    assert tool_result.result.details["errorType"] == "ValueError"
 
 
 def test_agent_loop_tool_timeout_becomes_error_result_and_can_continue():
@@ -299,8 +406,45 @@ def test_agent_loop_tool_timeout_becomes_error_result_and_can_continue():
     tool_result = next(event for event in events if isinstance(event, ToolExecutionEndEvent))
     assert tool_result.result.is_error is True
     assert tool_result.result.content == "tool timed out"
+    assert tool_result.result.details["status"] == "timed_out"
+    assert tool_result.result.details["outputChars"] == len("tool timed out")
     assert events[-1].type == "agent_end" and events[-1].reason == "completed"
-    assert provider.calls[1][-1] == ToolResultMessage("slow-call", "slow", "tool timed out", is_error=True, details={"status": "timed_out", "message": "tool timed out"})
+    assert provider.calls[1][-1].tool_call_id == "slow-call"
+    assert provider.calls[1][-1].content == "tool timed out"
+    assert provider.calls[1][-1].is_error is True
+    assert provider.calls[1][-1].details["status"] == "timed_out"
+
+
+def test_agent_loop_marks_tool_cancellation_without_swallowing_the_run_cancel():
+    call = ToolCall("cancelled-call", "cancelled", {})
+    token = CancellationToken()
+
+    class CancellationAwareTool:
+        definition = ToolDefinition("cancelled", "Cancellation-aware tool", {"type": "object"})
+
+        async def execute(self, arguments, context, on_update=None):
+            del arguments, on_update
+            context.signal.cancel()
+            context.signal.raise_if_cancelled()
+            return AgentToolResult("unreachable")
+
+    provider = FakeProvider([
+        [ToolCallEndEvent(call), AssistantDoneEvent(AssistantMessage(tool_calls=(call,), stop_reason="tool_use"))],
+    ])
+    events = asyncio.run(_collect(run_agent_loop(
+        provider=provider,
+        model="fake",
+        system="",
+        messages=[UserMessage("取消工具")],
+        tools=[CancellationAwareTool()],
+        signal=token,
+    )))
+
+    result = next(event.result for event in events if isinstance(event, ToolExecutionEndEvent))
+    assert result.content == "tool cancelled"
+    assert result.is_error is True
+    assert result.details["status"] == "cancelled"
+    assert events[-1].type == "agent_end" and events[-1].reason == "cancelled"
 
 
 def test_agent_loop_provider_timeout_finishes_failed_run():

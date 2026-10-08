@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import inspect
+import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from .provider import CancellationToken
+
+_RISKS = frozenset({"read_only", "mutating", "external"})
+_EXPOSURES = frozenset({"direct", "model_only", "deferred", "hidden"})
+_APPROVALS = frozenset({"auto", "prompt", "writes", "deny"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,15 +27,49 @@ class ToolDefinition:
     timeout_seconds: float | None = None
     output_limit: int | None = None
 
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("tool name is required")
+        if not self.description.strip():
+            raise ValueError(f"tool description is required: {self.name}")
+        if self.risk not in _RISKS:
+            raise ValueError(f"unsupported tool risk: {self.risk}")
+        if self.exposure not in _EXPOSURES:
+            raise ValueError(f"unsupported tool exposure: {self.exposure}")
+        if self.approval not in _APPROVALS:
+            raise ValueError(f"unsupported tool approval: {self.approval}")
+        if not self.version.strip():
+            raise ValueError(f"tool version is required: {self.name}")
+        if self.timeout_seconds is not None:
+            if (
+                isinstance(self.timeout_seconds, bool)
+                or not isinstance(self.timeout_seconds, (int, float))
+                or not _is_finite_number(self.timeout_seconds)
+                or self.timeout_seconds <= 0
+            ):
+                raise ValueError(f"tool timeout must be positive and finite: {self.name}")
+        if self.output_limit is not None:
+            if isinstance(self.output_limit, bool) or not isinstance(self.output_limit, int) or self.output_limit <= 0:
+                raise ValueError(f"tool output limit must be positive integer: {self.name}")
+
     def as_provider_schema(self) -> dict[str, object]:
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.input_schema,
+                "parameters": deepcopy(self.input_schema),
             },
         }
+
+
+def _is_finite_number(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +148,13 @@ class ToolRegistry:
         tool = self.get(name)
         if tool is None:
             raise ValueError(f"unknown tool: {name}")
-        schema = tool.definition.input_schema
+        self.validate_definition(tool.definition, arguments)
+
+    @staticmethod
+    def validate_definition(definition: ToolDefinition, arguments: Mapping[str, object]) -> None:
+        """Validate arguments against a frozen Tool definition."""
+
+        schema = definition.input_schema
         if schema.get("type") == "object":
             _validate_object_value("", arguments, schema)
         else:
@@ -120,8 +166,8 @@ def _validate_schema_value(path: str, value: object, schema: Mapping[str, object
     if expected == "string":
         if not isinstance(value, str):
             raise ValueError(f"argument {path} must be a string")
-        _validate_length(path, len(value), schema, "minLength", upper=False)
-        _validate_length(path, len(value), schema, "maxLength", upper=True)
+        _validate_bound(path, len(value), schema, "minLength", "maximum length")
+        _validate_bound(path, len(value), schema, "maxLength", "maximum length", upper=True)
     elif expected == "integer":
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(f"argument {path} must be an integer")
@@ -135,8 +181,8 @@ def _validate_schema_value(path: str, value: object, schema: Mapping[str, object
     elif expected == "array":
         if not isinstance(value, list):
             raise ValueError(f"argument {path} must be an array")
-        _validate_length(path, len(value), schema, "minItems", upper=False)
-        _validate_length(path, len(value), schema, "maxItems", upper=True)
+        _validate_bound(path, len(value), schema, "minItems", "minimum item count")
+        _validate_bound(path, len(value), schema, "maxItems", "maximum item count", upper=True)
         item_schema = schema.get("items")
         if isinstance(item_schema, dict):
             for index, item in enumerate(value):
@@ -168,9 +214,10 @@ def _validate_object_value(path: str, value: object, schema: Mapping[str, object
             raise ValueError(f"unknown arguments{prefix}: {', '.join(str(key) for key in unknown)}")
     for key, item in value.items():
         definition = properties.get(key)
-        if isinstance(definition, dict):
-            item_path = f"{path}.{key}" if path else str(key)
-            _validate_schema_value(item_path, item, definition)
+        if not isinstance(definition, dict):
+            continue
+        item_path = f"{path}.{key}" if path else str(key)
+        _validate_schema_value(item_path, item, definition)
 
 
 def _validate_number_bounds(path: str, value: int | float, schema: Mapping[str, object]) -> None:
@@ -182,13 +229,20 @@ def _validate_number_bounds(path: str, value: int | float, schema: Mapping[str, 
         raise ValueError(f"argument {path} exceeds the maximum")
 
 
-def _validate_length(path: str, value: int, schema: Mapping[str, object], key: str, *, upper: bool) -> None:
+def _validate_bound(
+    path: str,
+    value: int,
+    schema: Mapping[str, object],
+    key: str,
+    description: str,
+    *,
+    upper: bool = False,
+) -> None:
     bound = schema.get(key)
     if not isinstance(bound, int) or isinstance(bound, bool):
         return
     if (upper and value > bound) or (not upper and value < bound):
-        phrase = "exceeds the maximum" if upper else "is below the minimum"
-        raise ValueError(f"argument {path} {phrase}")
+        raise ValueError(f"argument {path} exceeds the {description}" if upper else f"argument {path} is below the {description}")
 
 
 async def resolve_tool_result(value: AgentToolResult | Awaitable[AgentToolResult]) -> AgentToolResult:

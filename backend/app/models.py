@@ -36,6 +36,14 @@ class MemoryRecallToolConfig(BaseModel):
 class AgentToolConfig(BaseModel):
     shell: ShellToolConfig = Field(default_factory=ShellToolConfig)
     memoryRecall: MemoryRecallToolConfig = Field(default_factory=MemoryRecallToolConfig)
+    enabledTools: list[str] = Field(default_factory=list)
+    enabledPlugins: list[str] = Field(default_factory=list)
+    grantedCapabilities: list[str] = Field(default_factory=list)
+
+    @field_validator("enabledTools", "enabledPlugins", "grantedCapabilities")
+    @classmethod
+    def validate_capability_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
 
 
 class RoleInput(BaseModel):
@@ -166,6 +174,7 @@ class SessionResponse(BaseModel):
 class SendMessageInput(BaseModel):
     content: str
     toolMemoryIds: list[str] = Field(default_factory=list)
+    skillIds: list[str] = Field(default_factory=list)
 
     @field_validator("content")
     @classmethod
@@ -178,6 +187,11 @@ class SendMessageInput(BaseModel):
     @field_validator("toolMemoryIds")
     @classmethod
     def validate_tool_memory_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
+
+    @field_validator("skillIds")
+    @classmethod
+    def validate_skill_ids(cls, value: list[str]) -> list[str]:
         return list(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
 
 

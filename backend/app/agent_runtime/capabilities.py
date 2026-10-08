@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+import asyncio
+from collections.abc import Mapping as MappingABC
+import hashlib
+import json
 from types import MappingProxyType
+from typing import Mapping, cast
 
-from .tools import AgentTool, ToolDefinition, ToolRegistry
+from .plugins import HookContext, PluginDescriptor, PluginResolution, PluginRegistry, run_hook
+from .skills import SkillDescriptor, SkillRegistry, SkillResolution
+from .tools import AgentTool, AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,12 +24,28 @@ class CapabilitySnapshot:
     session_key: str
     tools: tuple[ToolDefinition, ...]
     policy_decisions: MappingProxyType
+    skills: tuple[SkillDescriptor, ...] = ()
+    prompt_sections: tuple[str, ...] = ()
+    skill_diagnostics: tuple[MappingProxyType, ...] = ()
+    plugins: tuple[PluginDescriptor, ...] = ()
+    plugin_diagnostics: tuple[MappingProxyType, ...] = ()
+    generation: str = ""
 
     def provider_schemas(self) -> list[dict[str, object]]:
-        return [definition.as_provider_schema() for definition in self.tools]
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": definition.name,
+                    "description": definition.description,
+                    "parameters": _thaw_json(definition.input_schema),
+                },
+            }
+            for definition in self.tools
+        ]
 
-    def to_dict(self) -> dict[str, object]:
-        return {
+    def to_dict(self, *, include_prompt_sections: bool = True) -> dict[str, object]:
+        snapshot: dict[str, object] = {
             "snapshotId": self.snapshot_id,
             "runId": self.run_id,
             "roleId": self.role_id,
@@ -37,13 +60,24 @@ class CapabilitySnapshot:
                     "approval": definition.approval,
                     "timeoutSeconds": definition.timeout_seconds,
                     "outputLimit": definition.output_limit,
-                    "inputSchema": deepcopy(definition.input_schema),
+                    "inputSchema": _thaw_json(definition.input_schema),
                     "description": definition.description,
                 }
                 for definition in self.tools
             ],
             "policyDecisions": dict(self.policy_decisions),
+            "skills": [
+                skill.to_dict()
+                for skill in self.skills
+            ],
+            "skillDiagnostics": [dict(item) for item in self.skill_diagnostics],
+            "plugins": [plugin.to_dict() for plugin in self.plugins],
+            "pluginDiagnostics": [dict(item) for item in self.plugin_diagnostics],
+            "generation": self.generation,
         }
+        if include_prompt_sections:
+            snapshot["promptSections"] = list(self.prompt_sections)
+        return snapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,26 +87,193 @@ class CapabilityResolution:
     snapshot: CapabilitySnapshot
     tools: tuple[AgentTool, ...]
     denied_tools: MappingProxyType
+    plugin_resolution: PluginResolution | None = None
+    _hook_diagnostics: list[MappingProxyType] = field(default_factory=list, repr=False, compare=False)
+    _tools_by_name: MappingProxyType = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
+    _definitions_by_name: MappingProxyType = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
 
     def provider_schemas(self) -> list[dict[str, object]]:
+        if self._definitions_by_name:
+            return [definition.as_provider_schema() for definition in self._definitions_by_name.values()]
         return self.snapshot.provider_schemas()
 
     def get(self, name: str) -> AgentTool | None:
-        return next((tool for tool in self.tools if tool.definition.name == name), None)
+        return self._tools_by_name.get(name)
+
+    def definition(self, name: str) -> ToolDefinition | None:
+        """Return the immutable-at-resolution policy used by this run."""
+
+        definition = self._definitions_by_name.get(name)
+        return deepcopy(definition) if definition is not None else None
 
     def denial_reason(self, name: str) -> str | None:
         reason = self.denied_tools.get(name)
         return str(reason) if reason is not None else None
 
+    def prompt_context(self) -> str:
+        return "\n\n".join(self.snapshot.prompt_sections)
+
     def validate_arguments(self, name: str, arguments: dict[str, object]) -> None:
-        ToolRegistry(self.tools).validate_arguments(name, arguments)
+        definition = self.definition(name)
+        if definition is None:
+            raise ValueError(f"unknown tool: {name}")
+        ToolRegistry.validate_definition(definition, arguments)
+
+    @property
+    def hooks(self):
+        return self.plugin_resolution.hooks if self.plugin_resolution is not None else ()
+
+    @property
+    def hook_diagnostics(self) -> tuple[MappingProxyType, ...]:
+        """Return non-blocking Hook diagnostics collected during this run."""
+
+        return tuple(self._hook_diagnostics)
+
+    async def prepare_tool_call(
+        self,
+        name: str,
+        arguments: dict[str, object],
+        context: ToolContext,
+    ) -> tuple[dict[str, object], AgentToolResult | None]:
+        current = dict(arguments)
+        for hook in self.hooks:
+            if hook.definition.tool_names and name not in hook.definition.tool_names:
+                continue
+            try:
+                context.signal.raise_if_cancelled()
+                # Hooks may only return transformed arguments explicitly; do not
+                # let an in-place mutation bypass the hook mode contract.
+                hook_arguments = _readonly_arguments(deepcopy(current))
+                pending = run_hook(hook, HookContext(name, hook_arguments, context))
+                outcome = (
+                    await asyncio.wait_for(pending, timeout=hook.definition.timeout_seconds)
+                    if hook.definition.timeout_seconds is not None
+                    else await pending
+                )
+                context.signal.raise_if_cancelled()
+            except Exception as error:
+                status = (
+                    "timed_out"
+                    if isinstance(error, asyncio.TimeoutError)
+                    else "cancelled"
+                    if isinstance(error, RuntimeError) and str(error) == "agent run cancelled"
+                    else "failed"
+                )
+                failure = AgentToolResult(
+                    "tool hook failed",
+                    details={
+                        "hook": hook.definition.hook_id,
+                        "status": status,
+                        "errorType": type(error).__name__,
+                        "message": (
+                            "tool hook timed out"
+                            if status == "timed_out"
+                            else "tool hook cancelled"
+                            if status == "cancelled"
+                            else "tool hook failed"
+                        ),
+                    },
+                    is_error=True,
+                )
+                if status == "cancelled":
+                    return current, failure
+                if hook.definition.mode == "observe":
+                    details = failure.details if isinstance(failure.details, dict) else {}
+                    self._hook_diagnostics.append(MappingProxyType(dict(details)))
+                    continue
+                return current, failure
+            if not outcome.allowed:
+                return current, AgentToolResult(
+                    "tool call denied by hook",
+                    details={
+                        "hook": hook.definition.hook_id,
+                        "status": "denied",
+                        "reason": outcome.reason or "denied",
+                    },
+                    is_error=True,
+                )
+            if outcome.arguments is not None:
+                current = _mutable_arguments(outcome.arguments)
+        return current, None
+
+    async def close(self) -> None:
+        if self.plugin_resolution is not None:
+            await self.plugin_resolution.close()
+
+
+def _readonly_arguments(arguments: dict[str, object]) -> Mapping[str, object]:
+    return MappingProxyType({
+        key: _readonly_value(value)
+        for key, value in arguments.items()
+    })
+
+
+def _readonly_value(value: object) -> object:
+    if isinstance(value, dict):
+        return MappingProxyType({
+            key: _readonly_value(item)
+            for key, item in value.items()
+        })
+    if isinstance(value, list):
+        return tuple(_readonly_value(item) for item in value)
+    return value
+
+
+def _mutable_arguments(arguments: Mapping[str, object]) -> dict[str, object]:
+    return {
+        key: _mutable_value(value)
+        for key, value in arguments.items()
+    }
+
+
+def _mutable_value(value: object) -> object:
+    if isinstance(value, MappingABC):
+        return {
+            key: _mutable_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_mutable_value(item) for item in value]
+    return value
+
+
+def _freeze_json(value: object) -> object:
+    if isinstance(value, MappingABC):
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json(item) for item in value)
+    return deepcopy(value)
+
+
+def _thaw_json(value: object) -> object:
+    if isinstance(value, MappingABC):
+        return {key: _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_thaw_json(item) for item in value]
+    return deepcopy(value)
 
 
 class CapabilityRegistry:
     """Resolve registered tools into a stable, role-scoped run snapshot."""
 
-    def __init__(self, tools: tuple[AgentTool, ...] | list[AgentTool] = ()) -> None:
+    def __init__(
+        self,
+        tools: tuple[AgentTool, ...] | list[AgentTool] = (),
+        *,
+        skills: SkillRegistry | None = None,
+        plugins: PluginRegistry | None = None,
+    ) -> None:
         self._tools: dict[str, AgentTool] = {}
+        self.skills = skills or SkillRegistry()
+        self.plugins = plugins or PluginRegistry()
         for tool in tools:
             self.register(tool)
 
@@ -89,12 +290,25 @@ class CapabilityRegistry:
         session_key: str,
         run_id: str,
         enabled_tools: set[str] | frozenset[str] | None = None,
+        activated_tools: set[str] | frozenset[str] = frozenset(),
+        approved_tools: set[str] | frozenset[str] = frozenset(),
         allowed_risks: set[str] | frozenset[str] | None = None,
+        prompt_text: str = "",
+        explicit_skill_ids: set[str] | frozenset[str] = frozenset(),
+        plugin_resolution: PluginResolution | None = None,
     ) -> CapabilityResolution:
+        registered_tools = list(self._tools.values())
+        if plugin_resolution is not None:
+            registered_tools.extend(plugin_resolution.tools)
+        names: set[str] = set()
+        for tool in registered_tools:
+            if tool.definition.name in names:
+                raise ValueError(f"duplicate tool: {tool.definition.name}")
+            names.add(tool.definition.name)
         selected: list[AgentTool] = []
         decisions: dict[str, str] = {}
         denied: dict[str, str] = {}
-        for tool in self._tools.values():
+        for tool in registered_tools:
             definition = tool.definition
             if enabled_tools is not None and definition.name not in enabled_tools:
                 denied[definition.name] = "tool is disabled for this run"
@@ -104,14 +318,32 @@ class CapabilityRegistry:
                 denied[definition.name] = "tool risk is not allowed for this run"
                 decisions[definition.name] = "denied:risk"
                 continue
+            if definition.approval == "deny":
+                denied[definition.name] = "tool approval policy denies this run"
+                decisions[definition.name] = "denied:approval"
+                continue
+            if definition.approval in {"prompt", "writes"} and definition.name not in approved_tools:
+                denied[definition.name] = f"tool approval required: {definition.approval}"
+                decisions[definition.name] = "denied:approval_required"
+                continue
             if definition.exposure == "hidden":
                 denied[definition.name] = "tool is hidden"
                 decisions[definition.name] = "denied:hidden"
                 continue
+            if definition.exposure == "deferred" and definition.name not in activated_tools:
+                denied[definition.name] = "tool is deferred and not activated"
+                decisions[definition.name] = "denied:deferred"
+                continue
             selected.append(tool)
             decisions[definition.name] = "allowed"
 
-        snapshot_definitions = tuple(
+        if enabled_tools is not None:
+            unknown_tools = set(enabled_tools) - names
+            for name in sorted(unknown_tools):
+                denied[name] = "tool is not registered"
+                decisions[name] = "denied:unknown"
+
+        execution_definitions = tuple(
             ToolDefinition(
                 name=tool.definition.name,
                 description=tool.definition.description,
@@ -126,6 +358,25 @@ class CapabilityRegistry:
             )
             for tool in selected
         )
+        snapshot_definitions = tuple(
+            replace(
+                definition,
+                input_schema=cast(dict[str, object], _freeze_json(definition.input_schema)),
+            )
+            for definition in execution_definitions
+        )
+        skill_registry = self.skills
+        if plugin_resolution is not None and plugin_resolution.skills:
+            skill_registry = SkillRegistry(
+                (*self.skills.skills, *plugin_resolution.skills),
+                diagnostics=self.skills.diagnostics,
+            )
+        skill_resolution: SkillResolution = skill_registry.resolve(
+            prompt=prompt_text,
+            explicit_ids=explicit_skill_ids,
+            available_tools={tool.definition.name for tool in registered_tools},
+            enabled_tools=set(tool.definition.name for tool in selected),
+        )
         snapshot = CapabilitySnapshot(
             snapshot_id=f"cap-{run_id}",
             run_id=run_id,
@@ -133,9 +384,112 @@ class CapabilityRegistry:
             session_key=session_key,
             tools=snapshot_definitions,
             policy_decisions=MappingProxyType(dict(decisions)),
+            skills=skill_resolution.skills,
+            prompt_sections=skill_resolution.prompt_sections,
+            skill_diagnostics=skill_resolution.diagnostics,
+            plugins=plugin_resolution.descriptors if plugin_resolution is not None else (),
+            plugin_diagnostics=plugin_resolution.diagnostics if plugin_resolution is not None else (),
+            generation=_snapshot_generation(
+                tools=snapshot_definitions,
+                skills=skill_resolution.skills,
+                plugins=plugin_resolution.descriptors if plugin_resolution is not None else (),
+                policy_decisions=decisions,
+            ),
         )
         return CapabilityResolution(
             snapshot=snapshot,
             tools=tuple(selected),
             denied_tools=MappingProxyType(dict(denied)),
+            plugin_resolution=plugin_resolution,
+            _tools_by_name=MappingProxyType({tool.definition.name: tool for tool in selected}),
+            _definitions_by_name=MappingProxyType({
+                definition.name: definition
+                for definition in execution_definitions
+            }),
         )
+
+    async def resolve_async(
+        self,
+        *,
+        role_id: str,
+        session_key: str,
+        run_id: str,
+        enabled_tools: set[str] | frozenset[str] | None = None,
+        activated_tools: set[str] | frozenset[str] = frozenset(),
+        approved_tools: set[str] | frozenset[str] = frozenset(),
+        allowed_risks: set[str] | frozenset[str] | None = None,
+        prompt_text: str = "",
+        explicit_skill_ids: set[str] | frozenset[str] = frozenset(),
+        enabled_plugin_ids: set[str] | frozenset[str] | None = None,
+        granted_capabilities: set[str] | frozenset[str] = frozenset(),
+        host_services: Mapping[str, object] = MappingProxyType({}),
+        plugin_dir: str = "",
+    ) -> CapabilityResolution:
+        plugin_resolution = await self.plugins.load(
+            enabled_ids=enabled_plugin_ids,
+            granted_capabilities=granted_capabilities,
+            host_services=host_services,
+            plugin_dir=plugin_dir,
+        )
+        try:
+            return self.resolve(
+                role_id=role_id,
+                session_key=session_key,
+                run_id=run_id,
+                enabled_tools=enabled_tools,
+                activated_tools=activated_tools,
+                approved_tools=approved_tools,
+                allowed_risks=allowed_risks,
+                prompt_text=prompt_text,
+                explicit_skill_ids=explicit_skill_ids,
+                plugin_resolution=plugin_resolution,
+            )
+        except BaseException:
+            try:
+                await plugin_resolution.close()
+            except Exception:
+                pass
+            raise
+
+
+def _snapshot_generation(
+    *,
+    tools: tuple[ToolDefinition, ...],
+    skills: tuple[SkillDescriptor, ...],
+    plugins: tuple[PluginDescriptor, ...],
+    policy_decisions: Mapping[str, str],
+) -> str:
+    payload = {
+        "tools": [
+            {
+                "name": item.name,
+                "description": item.description,
+                "inputSchema": _thaw_json(item.input_schema),
+                "version": item.version,
+                "source": item.source,
+                "risk": item.risk,
+                "exposure": item.exposure,
+                "approval": item.approval,
+                "timeoutSeconds": item.timeout_seconds,
+                "outputLimit": item.output_limit,
+            }
+            for item in sorted(tools, key=lambda item: (item.name, item.version, item.source))
+        ],
+        "skills": [
+            {
+                "id": item.skill_id,
+                "version": item.version,
+                "contentHash": item.content_hash,
+                "supportingFiles": [resource.to_dict() for resource in item.supporting_files],
+                "trustLevel": item.trust_level,
+            }
+            for item in sorted(skills, key=lambda item: (item.skill_id, item.version, item.source, item.path))
+        ],
+        "plugins": [
+            item.to_dict()
+            for item in sorted(plugins, key=lambda item: (item.manifest.plugin_id, item.manifest.version))
+        ],
+        "policyDecisions": dict(sorted(policy_decisions.items())),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:24]
