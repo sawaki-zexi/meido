@@ -428,7 +428,11 @@ class PluginRegistry:
                 plugin_id=manifest.plugin_id,
                 plugin_dir=plugin_dir,
                 grants=frozenset(manifest.requested_capabilities),
-                host_services=MappingProxyType(dict(host_services)),
+                host_services=MappingProxyType({
+                    capability: service
+                    for capability, service in host_services.items()
+                    if capability in manifest.requested_capabilities
+                }),
             )
             try:
                 contribution = registration.factory(context)

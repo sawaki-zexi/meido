@@ -160,19 +160,25 @@ def test_plugin_grant_and_host_service_diagnostics_are_distinct():
 
 
 def test_plugin_context_exposes_a_readonly_copy_of_host_services():
-    services = {"memory.read": object()}
+    services = {"memory.read": object(), "memory.write": object()}
     contexts = []
 
     def factory(context):
         contexts.append(context)
         return PluginContribution()
 
-    result = asyncio.run(PluginRegistry([(_manifest(), factory)]).load(host_services=services))
+    result = asyncio.run(PluginRegistry([(_manifest("memory.read"), factory)]).load(
+        granted_capabilities={"memory.read", "memory.write"},
+        host_services=services,
+    ))
 
     assert len(result.loaded) == 1
     original_service = contexts[0].host_services["memory.read"]
+    assert set(contexts[0].host_services) == {"memory.read"}
     services["memory.read"] = object()
     assert contexts[0].host_services["memory.read"] is original_service
+    with pytest.raises(KeyError):
+        _ = contexts[0].host_services["memory.write"]
     with pytest.raises(TypeError):
         contexts[0].host_services["memory.write"] = object()
     asyncio.run(result.close())
