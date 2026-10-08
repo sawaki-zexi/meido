@@ -286,6 +286,31 @@ def test_plugin_manifest_persists_runtime_config_and_generation_metadata():
     assert "enabled" not in str(descriptor)
 
 
+def test_plugin_manifest_config_is_frozen_and_detached_from_serialized_copy():
+    source_schema = {"properties": {"query": {"type": "string"}}}
+    source_defaults = {"nested": {"values": ["one"]}}
+    manifest = PluginManifest(
+        "configured",
+        "1.0.0",
+        config_schema=source_schema,
+        config_defaults=source_defaults,
+    )
+
+    source_schema["properties"]["query"]["type"] = "integer"
+    source_defaults["nested"]["values"].append("two")
+
+    assert manifest.config_schema["properties"]["query"]["type"] == "string"
+    assert manifest.config_defaults["nested"]["values"] == ("one",)
+    with pytest.raises(TypeError):
+        manifest.config_schema["properties"]["query"]["type"] = "integer"
+    with pytest.raises(AttributeError):
+        manifest.config_defaults["nested"]["values"].append("three")
+
+    serialized = manifest.to_dict()
+    serialized["configDefaults"]["nested"]["values"].append("three")
+    assert manifest.config_defaults["nested"]["values"] == ("one",)
+
+
 def test_plugin_cannot_escalate_contributed_skill_trust():
     skill = SkillDescriptor(
         skill_id="untrusted-plugin-skill",
@@ -499,6 +524,7 @@ def test_plugin_load_cancellation_rolls_back_loaded_and_pending_plugins():
 def test_plugin_resolution_close_finishes_all_cleanup_after_cancellation():
     cleanup = []
     cleanup_started = asyncio.Event()
+    allow_cleanup_to_finish = asyncio.Event()
     first = PluginManifest("first", "1.0.0")
     second = PluginManifest("second", "1.0.0")
 
@@ -509,7 +535,8 @@ def test_plugin_resolution_close_finishes_all_cleanup_after_cancellation():
     async def second_factory(context):
         async def blocking_cleanup():
             cleanup_started.set()
-            await asyncio.Event().wait()
+            await allow_cleanup_to_finish.wait()
+            cleanup.append("second-async")
 
         context.add_cleanup(blocking_cleanup)
         context.add_cleanup(lambda: cleanup.append("second-prior-cleanup"))
@@ -525,11 +552,14 @@ def test_plugin_resolution_close_finishes_all_cleanup_after_cancellation():
         task = asyncio.create_task(resolution.close())
         await cleanup_started.wait()
         task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        allow_cleanup_to_finish.set()
         with pytest.raises(asyncio.CancelledError):
             await task
 
     asyncio.run(cancel_close())
-    assert cleanup == ["second-prior-cleanup", "first"]
+    assert cleanup == ["second-prior-cleanup", "second-async", "first"]
 
 
 def test_plugin_transform_hook_changes_tool_arguments_before_execution():

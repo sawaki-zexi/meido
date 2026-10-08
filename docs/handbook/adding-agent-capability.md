@@ -20,7 +20,7 @@
 
 使用 **Skill** 提供工作说明、提示词片段和资源索引。Skill 放在角色目录的 `skills/<id>/SKILL.md` 或项目目录的 `.agents/skills/<id>/SKILL.md`，正文只能通过受控 Markdown front matter 激活。Skill 可以引用 Tool，但不能执行代码、启用未授权 Tool 或直接访问宿主服务。
 
-使用 **Plugin** 组合多个 Tool、Skill 或 Tool Hook，并管理它们的生命周期。当前 Plugin 是静态、进程内 Python manifest/factory，必须声明宿主 capability grant；低信任 Plugin 需要显式启用。Plugin 的 cleanup 必须可重复执行，setup 失败必须能回滚已经创建的资源。
+使用 **Plugin** 组合多个 Tool、Skill 或 Tool Hook，并管理它们的生命周期。当前 Plugin 是静态、进程内 Python manifest/factory，必须声明宿主 capability grant；低信任 Plugin 需要显式启用。Plugin 的 cleanup 必须可重复执行，setup 失败必须能回滚已经创建的资源。关闭期间收到取消时，已启动的异步 cleanup 会完成，随后继续清理其他资源并传播取消。
 
 ## Tool 接入步骤
 

@@ -7,7 +7,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Awaitable, Callable, Iterable, Mapping, Protocol
+from typing import Awaitable, Callable, Iterable, Mapping, Protocol, cast
 
 from .skills import SkillDescriptor
 from .tools import AgentTool, ToolContext
@@ -54,8 +54,8 @@ class PluginManifest:
     trust_level: str = "builtin"
     manifest_hash: str | None = None
     runtime_api: str = _DEFAULT_RUNTIME_API
-    config_schema: dict[str, object] | None = None
-    config_defaults: dict[str, object] | None = None
+    config_schema: Mapping[str, object] | None = None
+    config_defaults: Mapping[str, object] | None = None
     declared_tools: tuple[str, ...] = ()
     declared_skills: tuple[str, ...] = ()
     lifecycle_contributions: tuple[str, ...] = ()
@@ -89,6 +89,10 @@ class PluginManifest:
             raise ValueError("plugin config_schema must be an object")
         if self.config_defaults is not None and not isinstance(self.config_defaults, dict):
             raise ValueError("plugin config_defaults must be an object")
+        if self.config_schema is not None:
+            object.__setattr__(self, "config_schema", cast(Mapping[str, object], _freeze_config(self.config_schema)))
+        if self.config_defaults is not None:
+            object.__setattr__(self, "config_defaults", cast(Mapping[str, object], _freeze_config(self.config_defaults)))
         if len(set(self.requested_capabilities)) != len(self.requested_capabilities):
             raise ValueError("duplicate requested capability")
         unknown = set(self.requested_capabilities) - KNOWN_CAPABILITIES
@@ -104,14 +108,32 @@ class PluginManifest:
             "manifestHash": self.manifest_hash,
             "requestedCapabilities": list(self.requested_capabilities),
             "runtimeApi": self.runtime_api,
-            "configSchema": deepcopy(self.config_schema) if include_config else None,
-            "configDefaults": deepcopy(self.config_defaults) if include_config else None,
+            "configSchema": _thaw_config(self.config_schema) if include_config else None,
+            "configDefaults": _thaw_config(self.config_defaults) if include_config else None,
             "declaredTools": list(self.declared_tools),
             "declaredSkills": list(self.declared_skills),
             "lifecycleContributions": list(self.lifecycle_contributions),
             "resourceDir": self.resource_dir,
             "generation": self.generation or self.manifest_hash or f"{self.plugin_id}@{self.version}",
         }
+
+
+def _freeze_config(value: object) -> object:
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError("plugin configuration keys must be strings")
+        return MappingProxyType({key: _freeze_config(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_config(item) for item in value)
+    return value
+
+
+def _thaw_config(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw_config(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_thaw_config(item) for item in value]
+    return deepcopy(value)
 
 
 def _is_finite_number(value: object) -> bool:
@@ -213,7 +235,21 @@ class PluginContext:
             try:
                 result = cleanup()
                 if inspect.isawaitable(result):
-                    await result
+                    cleanup_task = asyncio.ensure_future(result)
+                    while True:
+                        try:
+                            await asyncio.shield(cleanup_task)
+                            break
+                        except asyncio.CancelledError as error:
+                            if cancellation is None:
+                                cancellation = error
+                            if cleanup_task.done():
+                                break
+                        except Exception as error:  # cleanup must not prevent remaining effects
+                            errors.append(str(error))
+                            break
+                    if cleanup_task.cancelled() and cancellation is None:
+                        cancellation = asyncio.CancelledError()
             except asyncio.CancelledError as error:
                 if cancellation is None:
                     cancellation = error
