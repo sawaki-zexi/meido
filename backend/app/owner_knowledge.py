@@ -419,8 +419,11 @@ class SystemCredentialStore:
             import keyring  # type: ignore[import-not-found]
 
             return keyring.get_password("meido.owner-knowledge", key) or ""
-        except Exception as error:
-            raise RuntimeError("系统凭据库不可用，未读取飞书凭据") from error
+        except Exception:
+            # An unavailable vault means the optional Feishu connection is not
+            # configured. Writes still fail loudly below so secrets are never
+            # silently persisted somewhere else.
+            return ""
 
     def set(self, key: str, value: str) -> None:
         try:
