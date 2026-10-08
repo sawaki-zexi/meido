@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Mapping
+from dataclasses import replace
 
 import pytest
 
@@ -155,6 +156,39 @@ def test_capability_registry_rejects_duplicate_ids_and_freezes_snapshot():
     )
     assert [tool.name for tool in second.snapshot.tools] == ["memory.read", "memory.write"]
     assert second.snapshot.generation != first_generation
+
+
+def test_capability_generation_changes_when_tool_contract_changes():
+    first = CapabilityRegistry([ReadTool()]).resolve(
+        role_id="role-1",
+        session_key="role:role-1",
+        run_id="run-1",
+    )
+
+    class ChangedReadTool:
+        definition = replace(
+            ReadTool.definition,
+            description="Read a memory item with a bounded query",
+            input_schema={
+                "type": "object",
+                "properties": {"query": {"type": "string", "maxLength": 100}},
+                "required": ["query"],
+            },
+            timeout_seconds=2.0,
+            output_limit=1000,
+        )
+
+        def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
+            del arguments, context, on_update
+            return AgentToolResult("ok")
+
+    changed = CapabilityRegistry([ChangedReadTool()]).resolve(
+        role_id="role-1",
+        session_key="role:role-1",
+        run_id="run-2",
+    )
+
+    assert changed.snapshot.generation != first.snapshot.generation
 
 
 def test_capability_registry_filters_tools_and_records_deterministic_reasons():

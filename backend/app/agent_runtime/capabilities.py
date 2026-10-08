@@ -404,11 +404,15 @@ def _snapshot_generation(
         "tools": [
             {
                 "name": item.name,
+                "description": item.description,
+                "inputSchema": item.input_schema,
                 "version": item.version,
                 "source": item.source,
                 "risk": item.risk,
                 "exposure": item.exposure,
                 "approval": item.approval,
+                "timeoutSeconds": item.timeout_seconds,
+                "outputLimit": item.output_limit,
             }
             for item in tools
         ],
