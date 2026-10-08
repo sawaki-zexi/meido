@@ -485,10 +485,15 @@ def _validate_contribution(contribution: PluginContribution, *, manifest: Plugin
             f"plugin contributed undeclared tool: {', '.join(sorted(undeclared_tools))}"
         )
     names: set[str] = set()
+    expected_tool_source = f"plugin:{manifest.plugin_id}"
     for tool in contribution.tools:
         name = tool.definition.name
         if name in names:
             raise PluginSetupError(f"duplicate plugin tool: {name}")
+        if tool.definition.source != expected_tool_source:
+            raise PluginSetupError(
+                f"plugin tool source must be {expected_tool_source}: {name}"
+            )
         names.add(name)
     skill_ids: set[str] = set()
     for skill in contribution.skills:
@@ -496,6 +501,10 @@ def _validate_contribution(contribution: PluginContribution, *, manifest: Plugin
             raise PluginSetupError(f"duplicate plugin skill: {skill.skill_id}")
         if skill.skill_id not in manifest.declared_skills:
             raise PluginSetupError(f"plugin contributed undeclared skill: {skill.skill_id}")
+        if skill.source != manifest.source:
+            raise PluginSetupError(
+                f"plugin skill source does not match manifest source: {skill.skill_id}"
+            )
         if _TRUST_RANK[skill.trust_level] > _TRUST_RANK[manifest.trust_level]:
             raise PluginSetupError(
                 f"plugin skill trust level exceeds plugin trust: {skill.skill_id}"

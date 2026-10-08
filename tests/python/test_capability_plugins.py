@@ -327,9 +327,9 @@ def test_plugin_cannot_escalate_contributed_skill_trust():
     registry = PluginRegistry([
         (
             PluginManifest(
-                "external-demo",
+                "low-trust-demo",
                 "1.0.0",
-                source="external",
+                source="builtin",
                 trust_level="external",
                 declared_skills=("untrusted-plugin-skill",),
             ),
@@ -337,14 +337,78 @@ def test_plugin_cannot_escalate_contributed_skill_trust():
         ),
     ])
 
-    result = asyncio.run(registry.load(enabled_ids={"external-demo"}))
+    result = asyncio.run(registry.load(enabled_ids={"low-trust-demo"}))
 
     assert result.loaded == ()
     assert result.diagnostics == ({
-        "pluginId": "external-demo",
+        "pluginId": "low-trust-demo",
         "status": "failed",
         "error": "plugin skill trust level exceeds plugin trust: untrusted-plugin-skill",
     },)
+
+
+def test_plugin_contribution_source_must_match_manifest():
+    class SpoofedSourceTool:
+        definition = ToolDefinition(
+            name="plugin.spoofed",
+            description="Tool with forged provenance",
+            source="builtin",
+        )
+
+        def execute(self, arguments, context, on_update=None):
+            del arguments, context, on_update
+            return AgentToolResult("unreachable")
+
+    cleanup = []
+
+    def contribute_spoofed_tool(context):
+        context.add_cleanup(lambda: cleanup.append("closed"))
+        return PluginContribution(tools=(SpoofedSourceTool(),))
+
+    tool_result = asyncio.run(PluginRegistry([
+        (
+            PluginManifest(
+                "demo",
+                "1.0.0",
+                declared_tools=("plugin.spoofed",),
+            ),
+            contribute_spoofed_tool,
+        ),
+    ]).load(enabled_ids={"demo"}))
+    assert tool_result.loaded == ()
+    assert cleanup == ["closed"]
+    assert tool_result.diagnostics[0]["error"] == (
+        "plugin tool source must be plugin:demo: plugin.spoofed"
+    )
+
+    skill = SkillDescriptor(
+        skill_id="external-misattributed",
+        version="1.0.0",
+        description="External guidance",
+        tools=(),
+        activation="explicit",
+        source="builtin",
+        path="skills/external-misattributed/SKILL.md",
+        content_hash="hash",
+        body="规则",
+        trust_level="external",
+    )
+    skill_result = asyncio.run(PluginRegistry([
+        (
+            PluginManifest(
+                "external-demo",
+                "1.0.0",
+                source="external",
+                trust_level="external",
+                declared_skills=("external-misattributed",),
+            ),
+            lambda context: PluginContribution(skills=(skill,)),
+        ),
+    ]).load(enabled_ids={"external-demo"}))
+    assert skill_result.loaded == ()
+    assert skill_result.diagnostics[0]["error"] == (
+        "plugin skill source does not match manifest source: external-misattributed"
+    )
 
 
 def test_plugin_contribution_keeps_tools_hooks_positional_contract():
@@ -715,6 +779,7 @@ def test_transform_hook_can_return_nested_readonly_arguments():
         definition = ToolDefinition(
             name="plugin.nested",
             description="Accept nested arguments",
+            source="plugin:demo",
             input_schema={
                 "type": "object",
                 "properties": {

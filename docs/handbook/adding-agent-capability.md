@@ -53,7 +53,7 @@ tools:
 
 1. 创建 `PluginManifest`，声明稳定的 plugin ID、版本、来源、信任级别、runtime API 和所需 capability。
 2. 在 factory 中通过 `PluginContext.require()` 获取已经授权的宿主服务。
-3. 返回 `PluginContribution`，只包含声明范围内的 Tool、Skill 和 Hook；Tool ID 列在 `declared_tools`，Skill ID 列在 `declared_skills`，Hook ID 列在 `lifecycle_contributions`。
+3. 返回 `PluginContribution`，只包含声明范围内的 Tool、Skill 和 Hook；Tool ID 列在 `declared_tools`，Tool source 必须是 `plugin:<plugin_id>`；Skill ID 列在 `declared_skills`，其 source 和信任级别必须与 manifest 一致或更低；Hook ID 列在 `lifecycle_contributions`。
 4. 为资源注册 cleanup；验证 setup 异常、关闭、取消和 reload 都能释放资源。
 5. 测试未知 capability、缺少宿主服务、未声明的贡献、重复 Tool/Skill/Hook、低信任显式激活和跨来源名称冲突。PluginContext 中的宿主服务映射是只读快照。
 
