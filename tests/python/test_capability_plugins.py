@@ -12,6 +12,7 @@ from backend.app.agent_runtime import (
     HookDefinition,
     HookOutcome,
     PluginContribution,
+    PluginDescriptor,
     PluginManifest,
     PluginRegistry,
     ToolCall,
@@ -249,6 +250,10 @@ def test_plugin_manifest_persists_runtime_config_and_generation_metadata():
     assert serialized["lifecycleContributions"] == ["configured.audit"]
     assert serialized["resourceDir"] == "resources"
     assert serialized["generation"] == "manifest-hash"
+    descriptor = PluginDescriptor(manifest, status="loaded").to_dict()
+    assert descriptor["configSchema"] is None
+    assert descriptor["configDefaults"] is None
+    assert "enabled" not in str(descriptor)
 
 
 def test_plugin_cannot_escalate_contributed_skill_trust():

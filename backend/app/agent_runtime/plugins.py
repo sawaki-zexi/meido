@@ -94,7 +94,7 @@ class PluginManifest:
         if unknown:
             raise ValueError(f"unknown capability: {', '.join(sorted(unknown))}")
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self, *, include_config: bool = True) -> dict[str, object]:
         return {
             "id": self.plugin_id,
             "version": self.version,
@@ -103,8 +103,8 @@ class PluginManifest:
             "manifestHash": self.manifest_hash,
             "requestedCapabilities": list(self.requested_capabilities),
             "runtimeApi": self.runtime_api,
-            "configSchema": deepcopy(self.config_schema),
-            "configDefaults": deepcopy(self.config_defaults),
+            "configSchema": deepcopy(self.config_schema) if include_config else None,
+            "configDefaults": deepcopy(self.config_defaults) if include_config else None,
             "declaredTools": list(self.declared_tools),
             "declaredSkills": list(self.declared_skills),
             "lifecycleContributions": list(self.lifecycle_contributions),
@@ -228,7 +228,10 @@ class PluginDescriptor:
     error: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        result = self.manifest.to_dict()
+        # Config schemas/defaults may contain secret-bearing defaults. They
+        # remain available to the in-process loader but never enter a run
+        # snapshot or audit record.
+        result = self.manifest.to_dict(include_config=False)
         result.update({"status": self.status, "error": self.error})
         return result
 
