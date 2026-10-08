@@ -356,6 +356,44 @@ def test_role_message_snapshot_does_not_persist_legacy_role_secrets(tmp_path, mo
     assert run.modelSnapshot["context"]["messages"] == [{"content": "你好", "role": "user"}]
 
 
+def test_run_snapshot_keeps_recalled_memory_ephemeral(tmp_path, monkeypatch):
+    class MemoryResult:
+        text_block = "private-memory-snippet"
+
+    class MemoryEngine:
+        async def query(self, request):
+            del request
+            return MemoryResult()
+
+    class CapturingAdapter:
+        def __init__(self):
+            self.memory_contexts = []
+
+        async def stream_reply(self, role, history, configuration=None, *, memory_context=""):
+            del role, history, configuration
+            self.memory_contexts.append(memory_context)
+            yield "完成"
+
+    adapter = CapturingAdapter()
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter)
+    monkeypatch.setattr(main, "_current_memory_engine", lambda: MemoryEngine())
+    monkeypatch.setattr(main, "_role_memory_context", lambda role_id: "")
+
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "查询私人记忆"})
+
+    assert response.status_code == 200
+    assert "private-memory-snippet" in adapter.memory_contexts[0]
+    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
+    assert run_id is not None
+    run = sessions.get_run(run_id)
+    assert run is not None
+    assert "private-memory-snippet" not in json.dumps(run.modelSnapshot, ensure_ascii=False)
+    assert run.modelSnapshot["context"]["memoryContextMetadata"] == {
+        "included": True,
+        "characterCount": len(adapter.memory_contexts[0]),
+    }
+
+
 def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tmp_path, monkeypatch):
     import sys
     from pathlib import Path

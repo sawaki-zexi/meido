@@ -1470,7 +1470,10 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                 )
                 model_snapshot["context"] = {
                     "messages": [asdict(message) for message in runtime_messages],
-                    "memoryContext": memory_context,
+                    "memoryContextMetadata": {
+                        "included": bool(memory_context),
+                        "characterCount": len(memory_context),
+                    },
                     "toolAllowlist": list(shell_config.allowedCommands) if runtime_tools else [],
                 }
                 capabilities = await _runtime_capabilities(
