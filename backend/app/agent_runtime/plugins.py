@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 import inspect
 import math
@@ -206,16 +207,45 @@ class PluginContext:
             return
         self._closed = True
         errors: list[str] = []
+        cancellation: asyncio.CancelledError | None = None
         while self._cleanups:
             cleanup = self._cleanups.pop()
             try:
                 result = cleanup()
                 if inspect.isawaitable(result):
                     await result
+            except asyncio.CancelledError as error:
+                if cancellation is None:
+                    cancellation = error
             except Exception as error:  # cleanup must not prevent remaining effects
                 errors.append(str(error))
+        if cancellation is not None:
+            raise cancellation
         if errors:
             raise PluginError("plugin cleanup failed: " + "; ".join(errors))
+
+
+async def _close_plugin_contexts(
+    contexts: Iterable[PluginContext],
+    *,
+    suppress_errors: bool = False,
+) -> None:
+    errors: list[str] = []
+    cancellation: asyncio.CancelledError | None = None
+    for context in contexts:
+        try:
+            await context.close()
+        except asyncio.CancelledError as error:
+            if cancellation is None:
+                cancellation = error
+        except PluginError as error:
+            errors.append(str(error))
+    if suppress_errors:
+        return
+    if cancellation is not None:
+        raise cancellation
+    if errors:
+        raise PluginError("; ".join(errors))
 
 
 PluginFactory = Callable[[PluginContext], PluginContribution | Awaitable[PluginContribution]]
@@ -266,14 +296,7 @@ class PluginResolution:
         return tuple(plugin.descriptor for plugin in self.loaded)
 
     async def close(self) -> None:
-        errors: list[str] = []
-        for plugin in reversed(self.loaded):
-            try:
-                await plugin.context.close()
-            except PluginError as error:
-                errors.append(str(error))
-        if errors:
-            raise PluginError("; ".join(errors))
+        await _close_plugin_contexts(plugin.context for plugin in reversed(self.loaded))
 
     async def reload(
         self,
@@ -383,9 +406,21 @@ class PluginRegistry:
                         f"duplicate plugin hook: {', '.join(sorted(duplicate_hooks))}"
                     )
                 hook_ids.update(hook.definition.hook_id for hook in contribution.hooks)
+            except asyncio.CancelledError:
+                await _close_plugin_contexts(
+                    [context, *(plugin.context for plugin in reversed(loaded))],
+                    suppress_errors=True,
+                )
+                raise
             except Exception as error:
                 try:
                     await context.close()
+                except asyncio.CancelledError:
+                    await _close_plugin_contexts(
+                        (plugin.context for plugin in reversed(loaded)),
+                        suppress_errors=True,
+                    )
+                    raise
                 except Exception as cleanup_error:
                     error = PluginSetupError(f"{error}; rollback cleanup failed: {cleanup_error}")
                 diagnostics.append(MappingProxyType({
@@ -394,6 +429,12 @@ class PluginRegistry:
                     "error": str(error),
                 }))
                 continue
+            except BaseException:
+                await _close_plugin_contexts(
+                    [context, *(plugin.context for plugin in reversed(loaded))],
+                    suppress_errors=True,
+                )
+                raise
             descriptor = PluginDescriptor(manifest, status="loaded")
             loaded.append(LoadedPlugin(descriptor, context, contribution))
         return PluginResolution(tuple(loaded), tuple(diagnostics))

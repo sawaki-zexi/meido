@@ -374,6 +374,78 @@ def test_plugin_resources_are_closed_when_capability_resolution_fails():
     assert cleanup == ["closed"]
 
 
+def test_plugin_load_cancellation_rolls_back_loaded_and_pending_plugins():
+    cleanup = []
+    setup_started = asyncio.Event()
+    first = PluginManifest("first", "1.0.0")
+    second = PluginManifest("second", "1.0.0")
+
+    def first_factory(context):
+        context.add_cleanup(lambda: cleanup.append("first"))
+        return PluginContribution()
+
+    async def second_factory(context):
+        def failing_cleanup():
+            raise RuntimeError("cleanup failed")
+
+        context.add_cleanup(lambda: cleanup.append("second"))
+        context.add_cleanup(failing_cleanup)
+        setup_started.set()
+        await asyncio.Event().wait()
+        return PluginContribution()
+
+    registry = PluginRegistry([
+        (first, first_factory),
+        (second, second_factory),
+    ])
+
+    async def cancel_load() -> None:
+        task = asyncio.create_task(registry.load(enabled_ids={"first", "second"}))
+        await setup_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_load())
+    assert cleanup == ["second", "first"]
+
+
+def test_plugin_resolution_close_finishes_all_cleanup_after_cancellation():
+    cleanup = []
+    cleanup_started = asyncio.Event()
+    first = PluginManifest("first", "1.0.0")
+    second = PluginManifest("second", "1.0.0")
+
+    def first_factory(context):
+        context.add_cleanup(lambda: cleanup.append("first"))
+        return PluginContribution()
+
+    async def second_factory(context):
+        async def blocking_cleanup():
+            cleanup_started.set()
+            await asyncio.Event().wait()
+
+        context.add_cleanup(blocking_cleanup)
+        context.add_cleanup(lambda: cleanup.append("second-prior-cleanup"))
+        return PluginContribution()
+
+    registry = PluginRegistry([
+        (first, first_factory),
+        (second, second_factory),
+    ])
+
+    async def cancel_close() -> None:
+        resolution = await registry.load(enabled_ids={"first", "second"})
+        task = asyncio.create_task(resolution.close())
+        await cleanup_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_close())
+    assert cleanup == ["second-prior-cleanup", "first"]
+
+
 def test_plugin_transform_hook_changes_tool_arguments_before_execution():
     def factory(context):
         del context
