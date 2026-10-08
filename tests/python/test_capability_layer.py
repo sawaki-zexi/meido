@@ -191,6 +191,21 @@ def test_capability_generation_changes_when_tool_contract_changes():
     assert changed.snapshot.generation != first.snapshot.generation
 
 
+def test_capability_generation_is_independent_of_registration_order():
+    first = CapabilityRegistry([ReadTool(), WriteTool()]).resolve(
+        role_id="role-1",
+        session_key="role:role-1",
+        run_id="run-1",
+    )
+    reversed_order = CapabilityRegistry([WriteTool(), ReadTool()]).resolve(
+        role_id="role-1",
+        session_key="role:role-1",
+        run_id="run-2",
+    )
+
+    assert first.snapshot.generation == reversed_order.snapshot.generation
+
+
 def test_capability_registry_filters_tools_and_records_deterministic_reasons():
     registry = CapabilityRegistry([ReadTool(), WriteTool()])
 

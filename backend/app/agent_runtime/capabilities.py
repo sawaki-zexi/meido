@@ -414,7 +414,7 @@ def _snapshot_generation(
                 "timeoutSeconds": item.timeout_seconds,
                 "outputLimit": item.output_limit,
             }
-            for item in tools
+            for item in sorted(tools, key=lambda item: (item.name, item.version, item.source))
         ],
         "skills": [
             {
@@ -424,9 +424,12 @@ def _snapshot_generation(
                 "supportingFiles": [resource.to_dict() for resource in item.supporting_files],
                 "trustLevel": item.trust_level,
             }
-            for item in skills
+            for item in sorted(skills, key=lambda item: (item.skill_id, item.version, item.source, item.path))
         ],
-        "plugins": [item.to_dict() for item in plugins],
+        "plugins": [
+            item.to_dict()
+            for item in sorted(plugins, key=lambda item: (item.manifest.plugin_id, item.manifest.version))
+        ],
         "policyDecisions": dict(sorted(policy_decisions.items())),
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
