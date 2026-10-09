@@ -326,6 +326,59 @@ def test_exported_docx_content_keeps_paragraph_boundaries():
     assert _docx_text(buffer.getvalue()) == "第一段内容\n\n第二段内容"
 
 
+def test_feishu_connector_exchanges_authorization_code_for_user_token(monkeypatch):
+    calls = []
+
+    def handler(request):
+        calls.append((str(request.url), json.loads(request.content.decode("utf-8"))))
+        if request.url.path.endswith("/app_access_token/internal"):
+            return httpx.Response(200, json={"code": 0, "app_access_token": "app-token"})
+        return httpx.Response(200, json={"code": 0, "data": {
+            "access_token": "user-token",
+            "refresh_token": "user-refresh-token",
+            "expires_in": 7200,
+        }})
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "backend.app.owner_knowledge.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    connector = FeishuApiConnector(lambda: "")
+
+    payload = asyncio.run(connector.exchange_code(
+        "auth-code",
+        "app-id",
+        "app-secret",
+        "http://127.0.0.1:4288/api/owner-knowledge/oauth/callback",
+    ))
+
+    assert payload["access_token"] == "user-token"
+    assert payload["refresh_token"] == "user-refresh-token"
+    token_request = next(body for url, body in calls if url.endswith("/authen/v2/oauth/token"))
+    assert token_request["grant_type"] == "authorization_code"
+    assert token_request["code"] == "auth-code"
+    assert token_request["redirect_uri"] == "http://127.0.0.1:4288/api/owner-knowledge/oauth/callback"
+
+
+def test_feishu_connector_refreshes_user_token(monkeypatch):
+    def handler(request):
+        if request.url.path.endswith("/app_access_token/internal"):
+            return httpx.Response(200, json={"code": 0, "app_access_token": "app-token"})
+        return httpx.Response(200, json={"code": 0, "data": {"access_token": "fresh-token"}})
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "backend.app.owner_knowledge.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    connector = FeishuApiConnector(lambda: "")
+
+    payload = asyncio.run(connector.refresh_token("old-refresh-token", "app-id", "app-secret"))
+
+    assert payload["access_token"] == "fresh-token"
+
+
 def test_chinese_lexical_search_matches_partial_phrases(tmp_path):
     async def scenario():
         plugin, store, feishu, embedder = make_plugin(tmp_path)

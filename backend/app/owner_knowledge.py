@@ -333,22 +333,6 @@ class FeishuApiConnector:
             await asyncio.sleep(1)
         raise TimeoutError("飞书文档导出超时")
 
-
-def _docx_text(data: bytes) -> str:
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            xml = archive.read("word/document.xml")
-        root = ET.fromstring(xml)
-    except Exception as error:
-        raise RuntimeError("飞书导出的 Word 文档无法解析") from error
-    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-    paragraphs: list[str] = []
-    for paragraph in root.findall(".//w:p", namespace):
-        text = "".join(item.text or "" for item in paragraph.findall(".//w:t", namespace)).strip()
-        if text:
-            paragraphs.append(text)
-    return "\n\n".join(paragraphs)
-
     async def exchange_code(self, code: str, app_id: str, app_secret: str, redirect_uri: str) -> dict[str, object]:
         if not app_id or not app_secret or not code:
             raise RuntimeError("飞书 OAuth 配置不完整")
@@ -395,6 +379,22 @@ def _docx_text(data: bytes) -> str:
         if not isinstance(token, str) or not token:
             raise RuntimeError("无法获取飞书应用访问令牌")
         return token
+
+
+def _docx_text(data: bytes) -> str:
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            xml = archive.read("word/document.xml")
+        root = ET.fromstring(xml)
+    except Exception as error:
+        raise RuntimeError("飞书导出的 Word 文档无法解析") from error
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    paragraphs: list[str] = []
+    for paragraph in root.findall(".//w:p", namespace):
+        text = "".join(item.text or "" for item in paragraph.findall(".//w:t", namespace)).strip()
+        if text:
+            paragraphs.append(text)
+    return "\n\n".join(paragraphs)
 
 
 class _VectorIndex(Protocol):
