@@ -125,7 +125,7 @@ class TodoPlugin:
                     continue
                 role_id = self.store.ensure_reminder_day(local_date, available)
                 if not role_id:
-                    self.store.finish_daily_summary(local_date.isoformat(), error="当天没有可用的提醒角色")
+                    self.store.skip_daily_summary(local_date.isoformat(), "当天没有可用的提醒角色")
                     continue
                 payload = self.store.daily_summary_payload(local_date)
                 if not payload:
@@ -147,7 +147,7 @@ class TodoPlugin:
                     continue
                 role_id = self.store.ensure_reminder_day(local_due.date(), available)
                 if not role_id:
-                    self.store.finish_role_reminder(str(reminder["id"]), error="当天没有可用的提醒角色")
+                    self.store.skip_role_reminder(str(reminder["id"]), "当天没有可用的提醒角色")
                     continue
                 self.store.assign_reminder_role(str(reminder["id"]), role_id)
                 payload = [

@@ -238,7 +238,15 @@ def test_scheduler_does_not_send_when_no_reminder_role_is_enabled(tmp_path):
     assert plugin.schedule_reminders_once(now=datetime(2026, 10, 9, 2, 1, tzinfo=timezone.utc)) == []
     assert [message for message in sessions.list_messages("role:role-1") if message.messageType == "proactive_reminder"] == []
     assert todos.reminder_day(today)["roleId"] is None
-    assert todos.list_reminders()[0]["status"] == "failed"
+    assert todos.reminder_day(today)["digestStatus"] == "skipped"
+    with _sqlite(todos.database_path) as connection:
+        assert connection.execute("SELECT status,last_error FROM todo_reminders").fetchone() == ("skipped", "当天没有可用的提醒角色")
+
+    todos.set_reminder_role("role-1", True, effective_date=today)
+    assert plugin.schedule_reminders_once(now=datetime(2026, 10, 9, 4, 1, tzinfo=timezone.utc)) == []
+    assert todos.reminder_day(today)["roleId"] is None
+    with _sqlite(todos.database_path) as connection:
+        assert connection.execute("SELECT status FROM todo_reminders").fetchone()[0] == "skipped"
 
 
 def test_delivered_reminders_remain_deduplicated_after_store_and_scheduler_restart(tmp_path):
