@@ -378,8 +378,6 @@ def test_feishu_connector_exchanges_authorization_code_for_user_token(monkeypatc
 
     def handler(request):
         calls.append((str(request.url), json.loads(request.content.decode("utf-8"))))
-        if request.url.path.endswith("/app_access_token/internal"):
-            return httpx.Response(200, json={"code": 0, "app_access_token": "app-token"})
         return httpx.Response(200, json={"code": 0, "data": {
             "access_token": "user-token",
             "refresh_token": "user-refresh-token",
@@ -405,13 +403,17 @@ def test_feishu_connector_exchanges_authorization_code_for_user_token(monkeypatc
     token_request = next(body for url, body in calls if url.endswith("/authen/v2/oauth/token"))
     assert token_request["grant_type"] == "authorization_code"
     assert token_request["code"] == "auth-code"
+    assert token_request["client_id"] == "app-id"
+    assert token_request["client_secret"] == "app-secret"
     assert token_request["redirect_uri"] == "http://127.0.0.1:4288/api/owner-knowledge/oauth/callback"
+    assert not any(url.endswith("/app_access_token/internal") for url, _ in calls)
 
 
 def test_feishu_connector_refreshes_user_token(monkeypatch):
+    calls = []
+
     def handler(request):
-        if request.url.path.endswith("/app_access_token/internal"):
-            return httpx.Response(200, json={"code": 0, "app_access_token": "app-token"})
+        calls.append((str(request.url), json.loads(request.content.decode("utf-8"))))
         return httpx.Response(200, json={"code": 0, "data": {"access_token": "fresh-token"}})
 
     original_client = httpx.AsyncClient
@@ -424,12 +426,15 @@ def test_feishu_connector_refreshes_user_token(monkeypatch):
     payload = asyncio.run(connector.refresh_token("old-refresh-token", "app-id", "app-secret"))
 
     assert payload["access_token"] == "fresh-token"
+    token_request = next(body for url, body in calls if url.endswith("/authen/v2/oauth/token"))
+    assert token_request["grant_type"] == "refresh_token"
+    assert token_request["refresh_token"] == "old-refresh-token"
+    assert token_request["client_id"] == "app-id"
+    assert token_request["client_secret"] == "app-secret"
 
 
 def test_feishu_oauth_rejection_reports_safe_response_code(monkeypatch):
     def handler(request):
-        if request.url.path.endswith("/app_access_token/internal"):
-            return httpx.Response(200, json={"code": 0, "app_access_token": "app-token"})
         return httpx.Response(400, json={"code": 20015, "msg": "invalid grant"})
 
     original_client = httpx.AsyncClient
@@ -449,6 +454,26 @@ def test_feishu_oauth_rejection_reports_safe_response_code(monkeypatch):
 
     assert "one-time-auth-code" not in str(error.value)
     assert "app-secret" not in str(error.value)
+
+
+def test_feishu_oauth_client_configuration_error_reports_code_20063(monkeypatch):
+    def handler(request):
+        return httpx.Response(400, json={"code": 20063, "msg": "invalid client configuration"})
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "backend.app.owner_knowledge.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    connector = FeishuApiConnector(lambda: "")
+
+    with pytest.raises(RuntimeError, match=r"HTTP 400.*20063"):
+        asyncio.run(connector.exchange_code(
+            "one-time-auth-code",
+            "app-id",
+            "app-secret",
+            "http://127.0.0.1:4288/api/owner-knowledge/oauth/callback",
+        ))
 
 
 def test_oauth_callback_access_log_redacts_code_and_state():

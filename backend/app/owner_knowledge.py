@@ -387,8 +387,13 @@ class FeishuApiConnector:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 "https://open.feishu.cn/open-apis/authen/v2/oauth/token",
-                json={"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri},
-                headers={"Authorization": "Bearer " + await self._app_token(client, app_id, app_secret)},
+                json={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "client_id": app_id,
+                    "client_secret": app_secret,
+                    "redirect_uri": redirect_uri,
+                },
             )
             payload = _feishu_json(response, "飞书授权码兑换")
         data = payload.get("data")
@@ -398,15 +403,17 @@ class FeishuApiConnector:
         return result
 
     async def refresh_token(self, refresh_token: str, app_id: str, app_secret: str) -> dict[str, object]:
+        if not refresh_token or not app_id or not app_secret:
+            raise RuntimeError("飞书 OAuth 刷新配置不完整")
         async with httpx.AsyncClient(timeout=30.0) as client:
-            app_token = await self._app_token(client, app_id, app_secret)
             response = await client.post(
                 "https://open.feishu.cn/open-apis/authen/v2/oauth/token",
                 json={
                     "grant_type": "refresh_token",
                     "refresh_token": refresh_token,
+                    "client_id": app_id,
+                    "client_secret": app_secret,
                 },
-                headers={"Authorization": f"Bearer {app_token}"},
             )
             payload = _feishu_json(response, "飞书用户令牌刷新")
         data = payload.get("data")
