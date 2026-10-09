@@ -87,7 +87,7 @@ Application Plugin Manager
 
 ## 5. 本地存储和检索
 
-主人资料使用独立于 `memory2.db` 的 SQLite 数据库，例如 `owner-knowledge.db`。这让索引扩展加载、资料断开清理和资料迁移与 MemoryEngine 生命周期隔离。SQLite 保存原文副本、目录、同步状态及角色理解；FTS5 用于精确词补充；`sqlite-vec` 保存 chunk 向量并执行语义召回。
+主人资料使用独立于 `memory2.db` 的 SQLite 数据库。默认数据目录为项目根目录下的 `owner-knowledge-data/`，数据库文件为 `owner-knowledge.db`；可用 `MEIDO_OWNER_KNOWLEDGE_DATA_DIR` 覆盖。这样索引扩展加载、资料断开清理和资料迁移与 MemoryEngine 生命周期隔离。SQLite 保存原文副本、目录、同步状态及角色理解；FTS5 用于精确词补充；`sqlite-vec` 保存 chunk 向量并执行语义召回。升级时若发现旧的 `.data/owner-knowledge.db` 且新位置不存在，会复制到新位置并保留旧文件。
 
 存储至少表达以下数据：
 

@@ -3,5 +3,6 @@ web/dist/
 .vite/
 roles/
 .data/
+owner-knowledge-data/
 __pycache__/
 .pytest_cache/

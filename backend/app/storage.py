@@ -1,6 +1,31 @@
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def resolve_owner_knowledge_database(project_root: str | Path, data_root: str | Path) -> Path:
+    """Use a dedicated owner-knowledge directory, copying the legacy DB once."""
+    project = Path(project_root).resolve()
+    legacy_database = Path(data_root) / "owner-knowledge.db"
+    configured_directory = os.getenv("MEIDO_OWNER_KNOWLEDGE_DATA_DIR", "").strip()
+    if configured_directory:
+        directory = Path(configured_directory)
+        if not directory.is_absolute():
+            directory = project / directory
+    else:
+        directory = project / "owner-knowledge-data"
+    database = directory / "owner-knowledge.db"
+
+    if not database.exists() and legacy_database.exists():
+        directory.mkdir(parents=True, exist_ok=True)
+        try:
+            with sqlite3.connect(legacy_database) as source, sqlite3.connect(database) as target:
+                source.backup(target)
+        except Exception:
+            database.unlink(missing_ok=True)
+            raise
+    return database
 
 
 def initialize_databases(data_dir: str | Path) -> None:

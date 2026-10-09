@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import sqlite3
 import zipfile
 from types import SimpleNamespace
 import pytest
@@ -17,6 +18,50 @@ from backend.app.owner_knowledge import (
     RemoteDocument,
     _docx_text,
 )
+from backend.app.storage import resolve_owner_knowledge_database
+
+
+def test_owner_knowledge_database_uses_dedicated_directory(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEIDO_OWNER_KNOWLEDGE_DATA_DIR", raising=False)
+    project_root = tmp_path / "meido"
+    data_root = project_root / ".data"
+
+    database_path = resolve_owner_knowledge_database(project_root, data_root)
+
+    assert database_path == project_root / "owner-knowledge-data" / "owner-knowledge.db"
+    assert database_path.parent.name == "owner-knowledge-data"
+
+
+def test_owner_knowledge_database_migrates_legacy_database_once(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEIDO_OWNER_KNOWLEDGE_DATA_DIR", raising=False)
+    project_root = tmp_path / "meido"
+    data_root = project_root / ".data"
+    data_root.mkdir(parents=True)
+    legacy = data_root / "owner-knowledge.db"
+    with sqlite3.connect(legacy) as connection:
+        connection.execute("CREATE TABLE marker(value TEXT)")
+        connection.execute("INSERT INTO marker VALUES ('legacy')")
+
+    migrated = resolve_owner_knowledge_database(project_root, data_root)
+    overridden = resolve_owner_knowledge_database(project_root, data_root)
+
+    assert migrated.exists()
+    with sqlite3.connect(migrated) as connection:
+        assert connection.execute("SELECT value FROM marker").fetchone() == ("legacy",)
+    with sqlite3.connect(migrated) as connection:
+        connection.execute("INSERT INTO marker VALUES ('after-migration')")
+    assert overridden == migrated
+    with sqlite3.connect(migrated) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM marker").fetchone() == (2,)
+
+
+def test_owner_knowledge_database_honors_explicit_directory(tmp_path, monkeypatch):
+    explicit_root = tmp_path / "custom-owner-data"
+    monkeypatch.setenv("MEIDO_OWNER_KNOWLEDGE_DATA_DIR", str(explicit_root))
+
+    database_path = resolve_owner_knowledge_database(tmp_path / "meido", tmp_path / ".data")
+
+    assert database_path == explicit_root / "owner-knowledge.db"
 
 
 class FakeFeishu:

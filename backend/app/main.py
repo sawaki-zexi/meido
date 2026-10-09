@@ -40,7 +40,7 @@ from .owner_knowledge import (
 from .models import AgentRun, MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, Message, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
-from .storage import initialize_databases
+from .storage import initialize_databases, resolve_owner_knowledge_database
 from .session_manager import SessionManager
 from .session_store import SessionStore
 from .agent_runtime import (
@@ -80,7 +80,7 @@ memory_event_bus = MemoryEventBus()
 model_adapter: ModelAdapter = OpenAICompatibleAdapter()
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
 plugin_registry = PluginRegistry()
-owner_knowledge_store = OwnerKnowledgeStore(data_root / "owner-knowledge.db")
+owner_knowledge_store = OwnerKnowledgeStore(resolve_owner_knowledge_database(project_root, data_root))
 async def _refresh_feishu_access_token() -> None:
     refresh = owner_knowledge_store.get_state("feishu_refresh_token")
     app_id = owner_knowledge_store.get_state("feishu_app_id") or os.getenv("MEIDO_FEISHU_APP_ID", "").strip()
