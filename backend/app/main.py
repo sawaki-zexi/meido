@@ -635,15 +635,28 @@ def authorize_owner_knowledge() -> dict[str, str]:
 async def owner_knowledge_oauth_callback(code: str = "", state: str = "", error: str = "") -> Response:
     if error:
         raise HTTPException(status_code=400, detail="飞书授权未完成")
-    if not code or not state or state != owner_knowledge_store.get_state("oauth_state"):
+
+    try:
+        expected_state = owner_knowledge_store.get_state("oauth_state")
+    except Exception as callback_error:
+        logger.exception("读取飞书 OAuth 状态失败：%s", type(callback_error).__name__)
+        raise HTTPException(status_code=503, detail="飞书授权状态暂时不可用，请重试") from callback_error
+    if not code or not state or state != expected_state:
         raise HTTPException(status_code=400, detail="飞书授权状态无效或已过期")
-    owner_knowledge_store.set_state("oauth_state", "")
-    app_id = owner_knowledge_store.get_state("feishu_app_id") or os.getenv("MEIDO_FEISHU_APP_ID", "").strip()
-    app_secret = owner_knowledge_store.get_state("feishu_app_secret") or os.getenv("MEIDO_FEISHU_APP_SECRET", "").strip()
-    redirect_uri = os.getenv(
-        "MEIDO_FEISHU_REDIRECT_URI",
-        "http://127.0.0.1:4288/api/owner-knowledge/oauth/callback",
-    ).strip()
+
+    try:
+        # Consume the one-time state before exchanging the code. A failed
+        # exchange can then be retried by starting a fresh authorization flow.
+        owner_knowledge_store.set_state("oauth_state", "")
+        app_id = owner_knowledge_store.get_state("feishu_app_id") or os.getenv("MEIDO_FEISHU_APP_ID", "").strip()
+        app_secret = owner_knowledge_store.get_state("feishu_app_secret") or os.getenv("MEIDO_FEISHU_APP_SECRET", "").strip()
+        redirect_uri = os.getenv(
+            "MEIDO_FEISHU_REDIRECT_URI",
+            "http://127.0.0.1:4288/api/owner-knowledge/oauth/callback",
+        ).strip()
+    except Exception as callback_error:
+        logger.exception("读取或清理飞书 OAuth 配置失败：%s", type(callback_error).__name__)
+        raise HTTPException(status_code=503, detail="飞书授权配置暂时不可用，请重试") from callback_error
     try:
         payload = await owner_knowledge_connector.exchange_code(code, app_id, app_secret, redirect_uri)
     except FeishuApiError as error:
