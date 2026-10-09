@@ -5,6 +5,9 @@ import { Avatar, roleStyle } from "../../ui/Avatar";
 import { Icon, IconButton } from "../../ui/Icon";
 import { Notice, Placeholder } from "../../ui/Status";
 import { RoleModelSelector } from "../model/RoleModelSelector";
+import { api } from "../../api/client";
+import type { TodoSettings } from "../../api/types";
+import { TodoDrawer } from "../todo/TodoDrawer";
 
 function MessageItem({ message, role, highlighted }: { message: Message; role: Role; highlighted: boolean }) {
   const mine = message.role === "user";
@@ -57,11 +60,49 @@ function Composer({ placeholder, disabled, sending, onSend }: { placeholder: str
   </form>;
 }
 
-type ChatProps = { role: Role; chat: ChatState; highlightedId?: string | null; onBack: () => void; onShowProfile: () => void; onShowMemories: () => void };
+type ChatProps = { role: Role; chat: ChatState; highlightedId?: string | null; onBack: () => void; onShowProfile: () => void; onShowMemories: () => void; onOpenTodoSource: (roleId: string, sessionKey: string, messageId: string) => void };
 
-export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfile, onShowMemories }: ChatProps) {
+export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfile, onShowMemories, onOpenTodoSource }: ChatProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [todoSettings, setTodoSettings] = useState<TodoSettings | null>(null);
+  const [todoUnread, setTodoUnread] = useState(0);
+  const [todoOpen, setTodoOpen] = useState(false);
   useEffect(() => { if (!highlightedId) bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" }); }, [chat.messages, highlightedId]);
+  useEffect(() => {
+    if (!chat.session || chat.sending) return;
+    const timer = window.setInterval(() => void chat.refresh(), 10000);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void chat.refresh();
+    };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [chat.session?.sessionKey, chat.sending, chat.refresh]);
+  useEffect(() => {
+    let mounted = true;
+    const refresh = async () => {
+      try {
+        let settings = await api<TodoSettings>("/api/todos/settings");
+        if (settings.timezoneConfigured === false) {
+          const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          if (timezone) settings = await api<TodoSettings>("/api/todos/settings", { method: "PUT", body: JSON.stringify({ timezone }) });
+        }
+        if (!mounted) return;
+        setTodoSettings(settings);
+        if (settings.enabled && settings.remindersEnabled) {
+          const reminders = await api<{ unreadCount: number }>("/api/todos/reminders");
+          if (mounted) setTodoUnread(reminders.unreadCount);
+        } else setTodoUnread(0);
+      } catch { if (mounted) setTodoSettings(null); }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 20000);
+    return () => { mounted = false; window.clearInterval(timer); };
+  }, []);
 
   return <section className="chat" style={roleStyle(role.id)} aria-label={`与${role.name}的会话`}>
     <header className="chat-header">
@@ -72,6 +113,7 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
         {role.description && <small>{role.description}</small>}
       </div>
       <RoleModelSelector roleId={role.id} disabled={chat.sending || chat.opening} />
+      {todoSettings?.enabled && <button type="button" className="icon-button todo-entry" aria-label={todoUnread ? `待办提醒 ${todoUnread}` : "待办"} title="待办" onClick={() => setTodoOpen(true)}><Icon name="todo" />{todoUnread > 0 && <span>{todoUnread > 99 ? "99+" : todoUnread}</span>}</button>}
       <IconButton icon="memory" label="角色记忆" onClick={onShowMemories} />
       <IconButton icon="profile" label="角色资料" onClick={onShowProfile} />
     </header>
@@ -85,6 +127,7 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
       {chat.error && <Notice onDismiss={() => chat.setError("")}>{chat.error}</Notice>}
       <Composer placeholder={`对${role.name}说点什么…`} sending={chat.sending} onSend={chat.send} />
     </div>
+    {todoOpen && <TodoDrawer onClose={() => setTodoOpen(false)} onOpenSource={(roleId, sessionKey, messageId) => { setTodoOpen(false); onOpenTodoSource(roleId, sessionKey, messageId); }} />}
   </section>;
 }
 

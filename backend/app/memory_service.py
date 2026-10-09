@@ -12,6 +12,7 @@ from .embeddings import EmbeddingProvider
 from .memory_maintenance import MemoryMaintenance
 from .memory_optimizer import MemoryOptimizerWorker
 from .memory_events import TurnCommitted, TurnIngested, MemoryWritten
+from .todo_intent import is_explicit_todo_request
 
 
 class MemoryService:
@@ -129,6 +130,9 @@ class MemoryService:
             item = self.reject_matching(role_id, reject_target, source)
             self._publish_written(role_id, session_key, source_key, [item.id], "reject")
             return [item]
+        if is_explicit_todo_request(user_message.content):
+            self._publish_written(role_id, session_key, source_key, [], "todo_excluded")
+            return []
         explicit = self._extract_explicit(user_message.content)
         extracted = (
             self._extract_with_provider(role_id, session_key, user_message, assistant_message)

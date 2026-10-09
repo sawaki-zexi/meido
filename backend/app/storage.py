@@ -54,6 +54,15 @@ def initialize_databases(data_dir: str | Path) -> None:
             if column not in message_columns:
                 connection.execute(f"ALTER TABLE messages ADD COLUMN {column} {definition}")
         connection.execute("CREATE INDEX IF NOT EXISTS messages_run_id ON messages(run_id)")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS proactive_messages (
+                event_id TEXT PRIMARY KEY,
+                message_id TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         connection.execute("""
             CREATE TABLE IF NOT EXISTS agent_runs (
                 run_id TEXT PRIMARY KEY,

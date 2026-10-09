@@ -6,7 +6,7 @@ import { IconButton } from "../../ui/Icon";
 import { Notice } from "../../ui/Status";
 import { AvatarCropper } from "./AvatarCropper";
 
-type TextFieldKey = Exclude<keyof RoleDraft, "memoryRecallEnabled">;
+type TextFieldKey = Exclude<keyof RoleDraft, "memoryRecallEnabled" | "todoSearchEnabled" | "otherEnabledTools" | "otherEnabledPlugins" | "otherGrantedCapabilities">;
 type Field = { key: TextFieldKey; label: string; hint?: string; multiline?: boolean; required?: boolean };
 
 const identityFields: Field[] = [
@@ -73,12 +73,24 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
       <label className="field checkbox-field">
         <input
           type="checkbox"
+          aria-label="允许主动检索记忆"
           checked={draft.memoryRecallEnabled}
           disabled={locked}
           onChange={(event) => setDraft({ ...draft, memoryRecallEnabled: event.target.checked })}
         />
         <span>允许主动检索记忆</span>
         <small className="field-hint">关闭时仍保留每轮自动记忆召回，但模型不能主动查询记忆。</small>
+      </label>
+      <label className="field checkbox-field">
+        <input
+          type="checkbox"
+          aria-label="允许查询主人待办"
+          checked={draft.todoSearchEnabled}
+          disabled={locked}
+          onChange={(event) => setDraft({ ...draft, todoSearchEnabled: event.target.checked })}
+        />
+        <span>允许查询主人待办</span>
+        <small className="field-hint">只允许读取与当前问题相关的事项。</small>
       </label>
     </fieldset>
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { api, errorMessage } from "../../api/client";
 import { streamRoleMessage, type StreamEvent } from "../../api/stream";
 import type { Message, Role, Session } from "../../api/types";
@@ -46,6 +46,18 @@ export function useChat() {
     }
   };
 
+  const refresh = useCallback(async () => {
+    if (!roleId || sending) return;
+    try {
+      const data = await api<{ session: Session; messages: Message[] }>(`/api/roles/${encodeURIComponent(roleId)}/session`);
+      if (data.session.roleId !== roleId) return;
+      setSession(data.session);
+      setMessages(data.messages);
+    } catch {
+      // Keep the conversation usable during a temporary background refresh failure.
+    }
+  }, [roleId, sending]);
+
   const reset = () => { setRoleId(null); setSession(null); setMessages([]); setError(""); };
 
   /** Sends a message. Resolves false when nothing was sent so the caller can keep the draft. */
@@ -68,7 +80,7 @@ export function useChat() {
     return true;
   };
 
-  return { roleId, session, messages, opening, sending, error, setError, open, reset, send };
+  return { roleId, session, messages, opening, sending, error, setError, open, reset, send, refresh };
 }
 
 export type ChatState = ReturnType<typeof useChat>;
