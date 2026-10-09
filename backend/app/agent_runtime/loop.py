@@ -195,9 +195,10 @@ async def run_agent_loop(
                     session_key=registry.snapshot.session_key,
                     run_id=registry.snapshot.run_id,
                     signal=token,
+                    tool_call_id=call.id,
                 )
                 if isinstance(registry, CapabilityResolution)
-                else ToolContext(role_id=role_id, session_key=session_key, run_id=run_id, signal=token)
+                else ToolContext(role_id=role_id, session_key=session_key, run_id=run_id, signal=token, tool_call_id=call.id)
             )
             result = await _execute_tool(
                 call,

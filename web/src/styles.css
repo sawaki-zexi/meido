@@ -266,6 +266,9 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .todo-icon-action:hover:not(:disabled) { background: var(--hover); color: var(--rose-deep); }
 .todo-settings { display: grid; align-content: start; gap: 18px; }
 .todo-settings h2 { font-size: 17px; }
+.todo-reminder-roles { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.todo-reminder-roles legend { padding: 0 6px; font-size: 13px; font-weight: 600; color: var(--ink-soft); }
+.todo-reminder-roles ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 @keyframes fade { from { opacity: 0; } }
 @keyframes pop { from { opacity: 0; transform: scale(.98); } }
 @keyframes slide { from { transform: translateX(20px); opacity: 0; } }

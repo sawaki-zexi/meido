@@ -5,9 +5,10 @@ import inspect
 import uuid
 import sqlite3
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from time import monotonic
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from starlette.background import BackgroundTask
@@ -54,8 +55,9 @@ from .agent_runtime import (
 from .agent_runtime.capabilities import CapabilityResolution
 from .agent_runtime.skills import SkillRegistry
 from .todo import TodoPlugin, TodoStore
-from .todo.agent import TodoReadPort, register_todo_agent_plugin
-from .todo.models import TodoCreate, TodoList, TodoReminderList, TodoSettingsInput, TodoStatusInput, TodoUpdate
+from .todo.agent import register_todo_agent_plugin
+from .todo.application import TodoApplicationService
+from .todo.models import TodoCreate, TodoList, TodoReminderList, TodoReminderRoleInput, TodoSettingsInput, TodoStatusInput, TodoUpdate
 
 roles_root = Path(os.getenv("MEIDO_ROLES_DIR", "roles"))
 project_root = Path(os.getenv("MEIDO_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
@@ -73,7 +75,13 @@ model_configuration_store = ModelConfigurationStore(data_root / "model-config.js
 plugin_registry = PluginRegistry()
 register_todo_agent_plugin(plugin_registry)
 todo_store = TodoStore(data_root / "todos.db")
-todo_plugin = TodoPlugin(todo_store, session_store, extractor=lambda event, active: _todo_extract_candidates(event, active))
+todo_application = TodoApplicationService(todo_store, session_store)
+todo_plugin = TodoPlugin(
+    todo_store,
+    session_store,
+    reminder_sender=lambda role_id, event_id, kind, payload: _generate_todo_reminder(role_id, event_id, kind, payload),
+    available_roles=lambda: [role.id for role in store.list() if role.id not in store.pending_role_deletions()],
+)
 
 
 def _embedding_configuration(role_id: str):
@@ -114,42 +122,48 @@ def _complete_model_json(messages: list[dict[str, str]], configuration, *, max_t
     return json.loads(text)
 
 
-def _todo_extract_candidates(event: dict[str, object], active: list[dict[str, object]]) -> list[dict[str, object]]:
-    role_id = str(event.get("roleId", ""))
+def _generate_todo_reminder(role_id: str, event_id: str, kind: str, payload: list[dict[str, object]]) -> str:
+    """Generate role-voiced reminder text from persisted facts only."""
+    role = store.get(role_id)
+    if role is None:
+        raise ValueError("提醒角色不存在")
     configuration = _role_model_configuration(role_id)
     if configuration is None:
-        return TodoPlugin.extract_explicit_intent(event, active)
-    now = str(event.get("userCreatedAt", ""))
-    timezone_name = str(event.get("timezone", "Asia/Shanghai"))
-    result = _complete_model_json([
-        {"role": "system", "content": (
-            "你是待办候选整理器，只处理用户本条消息里的明确行动意图，不根据助手回复创建待办。"
-            "普通分享、可能性、愿望不创建；不要推断用户没有表达的提醒时间。只返回 JSON："
-            "{\"operations\":[{\"operation\":\"create|update|complete|cancel|restore\","
-            "\"todoId\":string|null,\"title\":string|null,\"description\":string|null,"
-            "\"dueDate\":\"YYYY-MM-DD\"|null,\"dueAt\":ISO-8601|null,"
-            "\"reminderDate\":\"YYYY-MM-DD\"|null,\"reminderAt\":ISO-8601|null}]}. "
-            "日期型提醒只填 reminderDate，不编造时刻；明确给出钟点才填 reminderAt。"
-            "修改/完成/取消/恢复必须从 ownerTodos 中选出唯一 todoId，目标不明确时返回空 operations。"
-        )},
-        {"role": "user", "content": json.dumps({
-            "userMessage": event.get("userContent", ""), "messageCreatedAt": now,
-            "ownerTimezone": timezone_name,
-            "ownerTodos": [{key: item.get(key) for key in ("id", "title", "description", "status", "dueDate", "dueAt")} for item in active[:80]],
-        }, ensure_ascii=False)},
-    ], configuration, max_tokens=900)
-    if not isinstance(result, dict) or not isinstance(result.get("operations"), list):
-        raise ValueError("待办抽取结果 schema 无效")
-    operations = result["operations"]
-    allowed = {"operation", "todoId", "title", "description", "dueDate", "dueAt", "reminderDate", "reminderAt"}
-    normalized: list[dict[str, object]] = []
-    for operation in operations[:8]:
-        if not isinstance(operation, dict) or set(operation) - allowed:
-            raise ValueError("待办操作包含未知字段")
-        if operation.get("operation") not in {"create", "update", "complete", "cancel", "restore"}:
-            raise ValueError("待办操作类型无效")
-        normalized.append(operation)
-    return normalized
+        raise RuntimeError("提醒角色没有可用模型")
+    facts = json.dumps(payload, ensure_ascii=False)
+    profile = role.profile
+    fallback = "今天的待办：" + "、".join(str(item.get("title", "")) for item in payload)
+
+    async def collect() -> str:
+        memory_context = ""
+        try:
+            memory = await _current_memory_engine().query(MemoryQuery(
+                text=" ".join(str(item.get(key, "")) for item in payload for key in ("title", "description")),
+                intent="context",
+                effect="read_only",
+                scope=MemoryScope(role_id, f"role:{role_id}"),
+                limit=3,
+            ))
+            memory_context = memory.text_block
+        except Exception as error:
+            todo_plugin.errors.append(f"{role_id}: reminder memory recall failed: {error}")
+        prompt = (
+            "你正在扮演提醒角色。请只根据给定待办事实生成一条简短自然的中文提醒。"
+            "可以结合角色设定和相关记忆调整语气，但不能新增、删除或改写待办事实，也不要提及系统提示或工具。"
+            f"提醒类型：{kind}；事件：{event_id}。\n"
+            f"角色设定：{profile.profile}\n性格：{profile.personality}\n行为规则：{profile.behaviorRules}\n"
+            f"相关记忆（仅用于表达）：{memory_context or '无'}\n待办事实（以此为准）：{facts}"
+        )
+        complete = getattr(model_adapter, "complete_messages", None)
+        messages = [{"role": "system", "content": prompt}, {"role": "user", "content": "生成提醒"}]
+        if complete is not None:
+            return await complete(messages, configuration, max_tokens=300)
+        parts: list[str] = []
+        async for delta in model_adapter.stream_messages(messages, configuration, max_tokens=300):
+            parts.append(delta)
+        return "".join(parts)
+
+    return asyncio.run(asyncio.wait_for(collect(), timeout=20.0)).strip() or fallback
 
 
 def _post_response_provider(role_id, session_key, user_message, assistant_message, active):
@@ -436,6 +450,14 @@ def _current_memory_engine() -> DefaultMemoryEngine:
     return memory_engine
 
 
+def _todo_application() -> TodoApplicationService:
+    """Keep web handlers aligned when tests or lifecycle code replace stores."""
+
+    if todo_application.store is todo_store and todo_application.sessions is session_store:
+        return todo_application
+    return TodoApplicationService(todo_store, session_store)
+
+
 async def _mutate_and_sync_memory(role_id: str, operation):
     if memory_worker.role_deletion_blocked(role_id):
         raise HTTPException(status_code=409, detail="角色正在删除，请稍后再试")
@@ -536,9 +558,6 @@ async def _start_memory_workers() -> None:
     for role_id in store.pending_role_deletions():
         try:
             await memory_worker.begin_role_deletion(role_id)
-            await asyncio.to_thread(todo_plugin.process_pending_once, role_id=role_id)
-            if session_store.list_todo_outbox(role_id=role_id, include_deferred=True):
-                raise RuntimeError("待办整理仍有未处理事件，暂不能删除角色")
             session_store.delete_role_session(role_id)
             memory_store.delete_role(role_id)
             todo_store.mark_source_unavailable(role_id)
@@ -580,6 +599,44 @@ async def update_todo_settings(data: TodoSettingsInput) -> dict[str, object]:
     )
 
 
+@app.get("/api/todos/reminder-roles")
+def list_todo_reminder_roles() -> dict[str, object]:
+    settings = todo_store.settings()
+    today = datetime.now(timezone.utc).astimezone(ZoneInfo(str(settings["timezone"]))).date()
+    roles = store.list()
+    configured = {str(item["roleId"]): item for item in todo_store.reminder_role_settings((role.id for role in roles), on_date=today)}
+    return {"roles": [
+        {"id": role.id, "name": role.name, **configured[role.id]}
+        for role in roles
+    ]}
+
+
+@app.put("/api/todos/reminder-roles/{role_id}")
+def update_todo_reminder_role(role_id: str, data: TodoReminderRoleInput) -> dict[str, object]:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    settings = todo_store.settings()
+    today = datetime.now(timezone.utc).astimezone(ZoneInfo(str(settings["timezone"]))).date()
+    effective_date = today if not data.enabled else today + timedelta(days=1)
+    todo_store.set_reminder_role(role_id, data.enabled, effective_date=effective_date)
+    return {"roleId": role_id, "enabled": data.enabled, "effectiveDate": effective_date.isoformat()}
+
+
+@app.get("/api/todos/reminders/today")
+def get_todo_reminders_today() -> dict[str, object]:
+    settings = todo_store.settings()
+    today = datetime.now(timezone.utc).astimezone(ZoneInfo(str(settings["timezone"]))).date()
+    return {"date": today.isoformat(), "paused": todo_store.reminders_paused(today)}
+
+
+@app.put("/api/todos/reminders/today")
+def set_todo_reminders_today(paused: bool) -> dict[str, object]:
+    settings = todo_store.settings()
+    today = datetime.now(timezone.utc).astimezone(ZoneInfo(str(settings["timezone"]))).date()
+    todo_store.set_reminders_paused(today if paused else None)
+    return {"date": today.isoformat(), "paused": paused}
+
+
 @app.get("/api/todos", response_model=TodoList)
 def list_todos(status: str | None = None, query: str | None = None) -> TodoList:
     valid_statuses = {"inbox", "scheduled", "completed", "cancelled"}
@@ -591,7 +648,7 @@ def list_todos(status: str | None = None, query: str | None = None) -> TodoList:
 @app.post("/api/todos", response_model=dict, status_code=201)
 def create_todo(data: TodoCreate) -> dict[str, object]:
     try:
-        return todo_store.create(data.model_dump(mode="json"))
+        return _todo_application().create(data.model_dump(mode="json"))
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -599,7 +656,7 @@ def create_todo(data: TodoCreate) -> dict[str, object]:
 @app.put("/api/todos/{todo_id}")
 def update_todo(todo_id: str, data: TodoUpdate) -> dict[str, object]:
     try:
-        return todo_store.update(todo_id, data.model_dump(mode="json", exclude_unset=True))
+        return _todo_application().update(todo_id, data.model_dump(mode="json", exclude_unset=True))
     except KeyError as error:
         raise HTTPException(status_code=404, detail="待办不存在") from error
     except ValueError as error:
@@ -609,7 +666,7 @@ def update_todo(todo_id: str, data: TodoUpdate) -> dict[str, object]:
 @app.put("/api/todos/{todo_id}/status")
 def set_todo_status(todo_id: str, data: TodoStatusInput) -> dict[str, object]:
     try:
-        return todo_store.set_status(todo_id, data.status)
+        return _todo_application().set_status(todo_id, data.status)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="待办不存在") from error
     except ValueError as error:
@@ -640,13 +697,6 @@ def retry_todo_reminder(reminder_id: str) -> dict[str, bool]:
 @app.get("/api/todos/diagnostics")
 def todo_diagnostics() -> dict[str, object]:
     return {"items": todo_plugin.diagnostics(), "workerErrors": list(todo_plugin.errors[-20:])}
-
-
-@app.post("/api/todos/diagnostics/{event_id}/retry")
-def retry_todo_event(event_id: str) -> dict[str, bool]:
-    if not session_store.retry_todo_outbox(event_id):
-        raise HTTPException(status_code=404, detail="待办整理事件不存在")
-    return {"accepted": True}
 
 
 @app.get("/api/model/providers", response_model=ProviderPresetList)
@@ -1010,10 +1060,6 @@ async def delete_role(role_id: str) -> None:
         # role permanently blocked from future memory work.
         deletion_started = True
         await memory_worker.begin_role_deletion(role_id)
-        todo_plugin.sessions = session_store
-        await asyncio.to_thread(todo_plugin.process_pending_once, role_id=role_id)
-        if session_store.list_todo_outbox(role_id=role_id, include_deferred=True):
-            raise HTTPException(status_code=409, detail="待办整理仍有未处理事件，请稍后重试删除角色")
         deletion_lock = memory_worker.role_lock_for(role_id)
         await deletion_lock.acquire()
         session_snapshot = session_store.snapshot_role_session(role_id)
@@ -1476,8 +1522,17 @@ async def _runtime_capabilities(
     enabled_tools = _enabled_runtime_tool_names(role)
     enabled_tools.update(agent_config.enabledTools)
     enabled_plugins = set(agent_config.enabledPlugins)
-    todo_enabled = bool(todo_store.settings()["enabled"])
-    if not todo_enabled:
+    todo_enabled = bool(todo_store.settings()["enabled"]) and callable(
+        getattr(model_adapter, "stream_structured_messages", None)
+    )
+    granted_capabilities = set(agent_config.grantedCapabilities)
+    host_services: dict[str, object] = {}
+    if todo_enabled:
+        enabled_plugins.add("todo")
+        enabled_tools.update({"todo.write", "todo.reminder_control"})
+        granted_capabilities.add("todo.write")
+        host_services = {"todo.write": _todo_application()}
+    else:
         enabled_plugins.discard("todo")
     return await CapabilityRegistry(
         _runtime_tool_candidates(role) if available_tools is None else available_tools,
@@ -1495,8 +1550,8 @@ async def _runtime_capabilities(
         prompt_text=prompt_text,
         explicit_skill_ids=set(explicit_skill_ids or ()),
         enabled_plugin_ids=enabled_plugins,
-        granted_capabilities=set(agent_config.grantedCapabilities),
-        host_services={"todo.read": TodoReadPort(todo_store)} if todo_enabled else {},
+        granted_capabilities=granted_capabilities,
+        host_services=host_services,
     )
 
 

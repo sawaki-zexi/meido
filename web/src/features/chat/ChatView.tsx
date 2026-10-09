@@ -69,6 +69,20 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
   const [todoOpen, setTodoOpen] = useState(false);
   useEffect(() => { if (!highlightedId) bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" }); }, [chat.messages, highlightedId]);
   useEffect(() => {
+    if (!chat.session || chat.sending) return;
+    const timer = window.setInterval(() => void chat.refresh(), 10000);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void chat.refresh();
+    };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [chat.session?.sessionKey, chat.sending, chat.refresh]);
+  useEffect(() => {
     let mounted = true;
     const refresh = async () => {
       try {

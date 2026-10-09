@@ -122,15 +122,6 @@ export function TodoDrawer({ onClose, onOpenSource }: { onClose: () => void; onO
     }
   };
 
-  const retry = async (eventId: string) => {
-    try {
-      await api(`/api/todos/diagnostics/${encodeURIComponent(eventId)}/retry`, { method: "POST" });
-      await refresh();
-    } catch (cause) {
-      setError(errorMessage(cause, "待办整理重试失败"));
-    }
-  };
-
   const sourceClick = (todo: TodoItem) => {
     if (todo.sourceAvailable && todo.sourceRoleId && todo.sourceSessionKey && todo.sourceMessageId) {
       onOpenSource(todo.sourceRoleId, todo.sourceSessionKey, todo.sourceMessageId);
@@ -155,7 +146,6 @@ export function TodoDrawer({ onClose, onOpenSource }: { onClose: () => void; onO
         <div className="todo-section-heading"><h3>需要处理</h3></div>
         {diagnostics.map((item) => <div className="todo-diagnostic" key={item.eventId ?? item.id ?? `${item.operation}-${item.todoId}`}>
           <span>{item.error ?? "待办操作需要确认"}</span>
-          {item.eventId && <button type="button" className="ghost" onClick={() => void retry(item.eventId!)}>重试</button>}
         </div>)}
       </section>}
 

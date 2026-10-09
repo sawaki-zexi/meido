@@ -60,7 +60,7 @@ class TodoUpdate(BaseModel):
     @classmethod
     def clean_title(cls, value: str | None) -> str | None:
         if value is None:
-            return value
+            raise ValueError("待办标题不能为空")
         value = value.strip()
         if not value:
             raise ValueError("待办标题不能为空")
@@ -92,6 +92,10 @@ class TodoSettingsInput(BaseModel):
     @classmethod
     def valid_timezone(cls, value: str | None) -> str | None:
         return _timezone(value) if value is not None else None
+
+
+class TodoReminderRoleInput(BaseModel):
+    enabled: bool
 
 
 class TodoList(BaseModel):

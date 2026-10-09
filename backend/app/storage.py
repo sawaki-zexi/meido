@@ -54,45 +54,15 @@ def initialize_databases(data_dir: str | Path) -> None:
             if column not in message_columns:
                 connection.execute(f"ALTER TABLE messages ADD COLUMN {column} {definition}")
         connection.execute("CREATE INDEX IF NOT EXISTS messages_run_id ON messages(run_id)")
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS todo_turn_outbox (
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS proactive_messages (
                 event_id TEXT PRIMARY KEY,
-                run_id TEXT NOT NULL UNIQUE,
-                role_id TEXT NOT NULL,
-                session_key TEXT NOT NULL,
-                user_message_id TEXT NOT NULL,
-                assistant_message_id TEXT NOT NULL,
-                user_created_at TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT,
-                next_attempt_at TEXT
+                message_id TEXT NOT NULL,
+                created_at TEXT NOT NULL
             )
-        """)
-        outbox_columns = {row[1] for row in connection.execute("PRAGMA table_info(todo_turn_outbox)")}
-        if "user_content" in outbox_columns:
-            connection.execute("ALTER TABLE todo_turn_outbox RENAME TO todo_turn_outbox_with_content")
-            connection.execute("""
-                CREATE TABLE todo_turn_outbox (
-                    event_id TEXT PRIMARY KEY,
-                    run_id TEXT NOT NULL UNIQUE,
-                    role_id TEXT NOT NULL,
-                    session_key TEXT NOT NULL,
-                    user_message_id TEXT NOT NULL,
-                    assistant_message_id TEXT NOT NULL,
-                    user_created_at TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    last_error TEXT,
-                    next_attempt_at TEXT
-                )
-            """)
-            connection.execute(
-                "INSERT INTO todo_turn_outbox(event_id,run_id,role_id,session_key,user_message_id,assistant_message_id,user_created_at,created_at,attempts,last_error,next_attempt_at) "
-                "SELECT event_id,run_id,role_id,session_key,user_message_id,assistant_message_id,user_created_at,created_at,attempts,last_error,next_attempt_at FROM todo_turn_outbox_with_content"
-            )
-            connection.execute("DROP TABLE todo_turn_outbox_with_content")
-        connection.execute("CREATE INDEX IF NOT EXISTS todo_turn_outbox_role_id ON todo_turn_outbox(role_id)")
+            """
+        )
         connection.execute("""
             CREATE TABLE IF NOT EXISTS agent_runs (
                 run_id TEXT PRIMARY KEY,

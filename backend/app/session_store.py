@@ -59,6 +59,15 @@ class SessionStore:
             ).fetchall()
         return [self._message(row) for row in rows]
 
+    def user_message_for_run(self, run_id: str) -> Message | None:
+        with sqlite3.connect(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT message_id, session_key, sequence, role, content, status, created_at, message_type, tool_call_id, tool_name, tool_arguments_json, tool_result_json, is_error, run_id, metadata_json "
+                "FROM messages WHERE run_id=? AND role='user' AND status='completed' ORDER BY sequence LIMIT 1",
+                (run_id,),
+            ).fetchone()
+        return self._message(row) if row else None
+
     def context_messages(self, session_key: str) -> list[Message]:
         return [
             message
@@ -97,6 +106,52 @@ class SessionStore:
             )
             connection.execute("UPDATE sessions SET updated_at = ? WHERE session_key = ?", (now, session_key))
         return Message(id=message_id, sessionKey=session_key, sequence=sequence, role=role, content=content, status=status, createdAt=datetime.fromisoformat(now), messageType=message_type, toolCallId=tool_call_id, toolName=tool_name, toolArguments=tool_arguments, toolResult=tool_result, isError=is_error, runId=run_id, metadata=metadata or {})
+
+    def append_proactive_message_once(
+        self,
+        session_key: str,
+        content: str,
+        *,
+        event_id: str,
+        metadata: dict[str, object] | None = None,
+    ) -> Message:
+        """Persist one proactive role message per durable event ID."""
+
+        if not event_id.strip():
+            raise ValueError("主动消息缺少事件标识")
+        message_metadata = {**(metadata or {}), "proactiveEventId": event_id}
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT m.message_id,m.session_key,m.sequence,m.role,m.content,m.status,m.created_at,m.message_type,m.tool_call_id,m.tool_name,m.tool_arguments_json,m.tool_result_json,m.is_error,m.run_id,m.metadata_json "
+                "FROM proactive_messages p JOIN messages m ON m.message_id=p.message_id WHERE p.event_id=?",
+                (event_id,),
+            ).fetchall()
+            for row in rows:
+                return self._message(row)
+            row = connection.execute(
+                "SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE session_key=?",
+                (session_key,),
+            ).fetchone()
+            sequence = int(row[0])
+            now = _now()
+            message_id = f"{session_key}:{uuid.uuid4().hex}"
+            connection.execute(
+                "INSERT INTO messages(message_id,session_key,sequence,role,content,status,created_at,message_type,run_id,metadata_json) "
+                "VALUES(?,?,?,'assistant',?,'completed',?,'proactive_reminder',NULL,?)",
+                (message_id, session_key, sequence, content, now, _dump(message_metadata)),
+            )
+            connection.execute(
+                "INSERT INTO proactive_messages(event_id,message_id,created_at) VALUES(?,?,?)",
+                (event_id, message_id, now),
+            )
+            connection.execute("UPDATE sessions SET updated_at=? WHERE session_key=?", (now, session_key))
+            stored = connection.execute(
+                "SELECT message_id,session_key,sequence,role,content,status,created_at,message_type,tool_call_id,tool_name,tool_arguments_json,tool_result_json,is_error,run_id,metadata_json FROM messages WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+        assert stored is not None
+        return self._message(stored)
 
     def update_message(
         self,
@@ -347,71 +402,10 @@ class SessionStore:
         session_key = f"role:{role_id}"
         with sqlite3.connect(self.database_path) as connection:
             connection.execute("DELETE FROM messages WHERE session_key = ?", (session_key,))
+            connection.execute("DELETE FROM proactive_messages WHERE message_id NOT IN (SELECT message_id FROM messages)")
             connection.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
             connection.execute("DELETE FROM agent_runs WHERE role_id = ?", (role_id,))
             connection.execute("DELETE FROM tool_audits WHERE role_id = ?", (role_id,))
-
-    def list_todo_outbox(
-        self,
-        *,
-        role_id: str | None = None,
-        now: str | None = None,
-        include_deferred: bool = False,
-    ) -> list[dict[str, object]]:
-        current = now or _now()
-        query = (
-            "SELECT o.event_id, o.run_id, o.role_id, o.session_key, o.user_message_id, o.assistant_message_id, "
-            "m.content, o.user_created_at, o.attempts, o.last_error "
-            "FROM todo_turn_outbox o LEFT JOIN messages m ON m.message_id=o.user_message_id WHERE 1=1"
-        )
-        parameters: list[object] = []
-        if not include_deferred:
-            query += " AND (next_attempt_at IS NULL OR next_attempt_at <= ?)"
-            parameters.append(current)
-        if role_id is not None:
-            query += " AND o.role_id = ?"
-            parameters.append(role_id)
-        query += " ORDER BY o.created_at, o.event_id"
-        with sqlite3.connect(self.database_path) as connection:
-            rows = connection.execute(query, parameters).fetchall()
-        return [
-            {
-                "eventId": str(row[0]),
-                "runId": str(row[1]),
-                "roleId": str(row[2]),
-                "sessionKey": str(row[3]),
-                "userMessageId": str(row[4]),
-                "assistantMessageId": str(row[5]),
-                "userContent": str(row[6]),
-                "userCreatedAt": str(row[7]),
-                "attempts": int(row[8]),
-                "lastError": str(row[9]) if row[9] is not None else None,
-            }
-            for row in rows
-        ]
-
-    def retry_todo_outbox(self, event_id: str) -> bool:
-        with sqlite3.connect(self.database_path) as connection:
-            cursor = connection.execute(
-                "UPDATE todo_turn_outbox SET next_attempt_at=NULL WHERE event_id=?",
-                (event_id,),
-            )
-        return cursor.rowcount > 0
-
-    def fail_todo_outbox(self, event_id: str, error: str, *, retry_after_seconds: int = 60) -> None:
-        next_attempt = datetime.fromtimestamp(
-            datetime.now(timezone.utc).timestamp() + retry_after_seconds,
-            timezone.utc,
-        ).isoformat()
-        with sqlite3.connect(self.database_path) as connection:
-            connection.execute(
-                "UPDATE todo_turn_outbox SET attempts = attempts + 1, last_error = ?, next_attempt_at = ? WHERE event_id = ?",
-                (error[:1000], next_attempt, event_id),
-            )
-
-    def ack_todo_outbox(self, event_id: str) -> None:
-        with sqlite3.connect(self.database_path) as connection:
-            connection.execute("DELETE FROM todo_turn_outbox WHERE event_id = ?", (event_id,))
 
     def start_tool_audit(
         self,
@@ -543,6 +537,7 @@ class SessionStore:
         session_key = f"role:{role_id}"
         with sqlite3.connect(self.database_path) as connection:
             connection.execute("DELETE FROM messages WHERE session_key = ?", (session_key,))
+            connection.execute("DELETE FROM proactive_messages WHERE message_id NOT IN (SELECT message_id FROM messages)")
             connection.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
             if session is not None:
                 connection.execute(
@@ -660,24 +655,6 @@ class SessionStore:
                     (message_id, current.sessionKey, int(sequence_row[0]), assistant_content, assistant_status, now, run_id, _dump(metadata)),
                 )
             connection.execute("UPDATE sessions SET updated_at = ? WHERE session_key = ?", (now, current.sessionKey))
-            if status == "completed" and assistant_status == "completed":
-                user_row = connection.execute(
-                    "SELECT message_id, content, created_at FROM messages "
-                    "WHERE run_id = ? AND role = 'user' AND status = 'completed' "
-                    "ORDER BY sequence ASC LIMIT 1",
-                    (run_id,),
-                ).fetchone()
-                final_assistant = self._find_terminal_assistant(connection, run_id, assistant_message_id)
-                if user_row is not None and final_assistant is not None and str(final_assistant[5]) == "completed":
-                    connection.execute(
-                        "INSERT OR IGNORE INTO todo_turn_outbox "
-                        "(event_id, run_id, role_id, session_key, user_message_id, assistant_message_id, user_created_at, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (
-                            f"turn:{run_id}", run_id, current.roleId, current.sessionKey,
-                            str(user_row[0]), str(final_assistant[0]), str(user_row[2]), now,
-                        ),
-                    )
             run_row = connection.execute(
                 "SELECT run_id, role_id, session_key, status, model_configuration_id, model_snapshot_json, turn_count, started_at, ended_at, cancel_reason, error FROM agent_runs WHERE run_id = ?",
                 (run_id,),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import sqlite3
 import uuid
@@ -27,6 +28,16 @@ def _iso_date(value: object) -> str | None:
     if value is None or value == "":
         return None
     return value.isoformat() if isinstance(value, date) else date.fromisoformat(str(value)).isoformat()
+
+
+def _retry_at(attempts: int, *, base: datetime | None = None) -> str:
+    """Return a bounded retry time so a failing model cannot spin the worker."""
+
+    delay_seconds = min(3600, 60 * (2 ** max(0, min(attempts, 6))))
+    moment = base or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return (moment.astimezone(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat()
 
 
 class TodoStore:
@@ -79,12 +90,14 @@ class TodoStore:
                     due_key TEXT NOT NULL UNIQUE,
                     status TEXT NOT NULL,
                     due_at TEXT NOT NULL,
+                    role_id TEXT,
                     attempts INTEGER NOT NULL DEFAULT 0,
                     last_error TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     delivered_at TEXT,
-                    read_at TEXT
+                    read_at TEXT,
+                    next_attempt_at TEXT
                 );
                 CREATE INDEX IF NOT EXISTS todo_reminders_inbox ON todo_reminders(status, read_at, due_at);
                 CREATE TABLE IF NOT EXISTS todo_reminder_inbox (
@@ -99,7 +112,44 @@ class TodoStore:
                     role_id TEXT PRIMARY KEY,
                     deleted_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS todo_reminder_roles (
+                    role_id TEXT PRIMARY KEY,
+                    enabled INTEGER NOT NULL,
+                    effective_date TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS todo_reminder_role_changes (
+                    role_id TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    effective_date TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(role_id, effective_date)
+                );
+                CREATE TABLE IF NOT EXISTS todo_reminder_days (
+                    local_date TEXT PRIMARY KEY,
+                    role_id TEXT,
+                    digest_status TEXT NOT NULL DEFAULT 'not_due',
+                    digest_payload_json TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    delivered_at TEXT,
+                    next_attempt_at TEXT
+                );
             """)
+            reminder_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(todo_reminders)")}
+            if "role_id" not in reminder_columns:
+                connection.execute("ALTER TABLE todo_reminders ADD COLUMN role_id TEXT")
+            if "next_attempt_at" not in reminder_columns:
+                connection.execute("ALTER TABLE todo_reminders ADD COLUMN next_attempt_at TEXT")
+            day_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(todo_reminder_days)")}
+            if "next_attempt_at" not in day_columns:
+                connection.execute("ALTER TABLE todo_reminder_days ADD COLUMN next_attempt_at TEXT")
+            connection.execute(
+                "INSERT OR IGNORE INTO todo_reminder_role_changes(role_id,enabled,effective_date,updated_at) "
+                "SELECT role_id,enabled,effective_date,updated_at FROM todo_reminder_roles"
+            )
             connection.execute(
                 "INSERT OR IGNORE INTO todo_reminder_inbox(reminder_id,read_at) "
                 "SELECT id,read_at FROM todo_reminders WHERE status='delivered'"
@@ -140,6 +190,303 @@ class TodoStore:
                     (timezone_name,),
                 )
         return self.settings()
+
+    def set_reminder_role(self, role_id: str, enabled: bool, *, effective_date: date) -> None:
+        now = _now()
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute(
+                "DELETE FROM todo_reminder_role_changes WHERE role_id=? AND effective_date>=?",
+                (role_id, effective_date.isoformat()),
+            )
+            connection.execute(
+                "INSERT INTO todo_reminder_role_changes(role_id,enabled,effective_date,updated_at) VALUES(?,?,?,?)",
+                (role_id, int(enabled), effective_date.isoformat(), now),
+            )
+
+    def reminder_role_ids(self, *, on_date: date, available_role_ids: Iterable[str] | None = None) -> list[str]:
+        with sqlite3.connect(self.database_path) as connection:
+            rows = connection.execute(
+                "SELECT role_id,enabled FROM todo_reminder_role_changes c "
+                "WHERE effective_date<=? AND NOT EXISTS("
+                "SELECT 1 FROM todo_reminder_role_changes newer "
+                "WHERE newer.role_id=c.role_id AND newer.effective_date<=? "
+                "AND (newer.effective_date>c.effective_date OR (newer.effective_date=c.effective_date AND newer.updated_at>c.updated_at))"
+                ") ORDER BY role_id",
+                (on_date.isoformat(), on_date.isoformat()),
+            ).fetchall()
+        available = set(available_role_ids) if available_role_ids is not None else None
+        return [str(role_id) for role_id, enabled in rows if bool(enabled) and (available is None or str(role_id) in available)]
+
+    def reminder_role_settings(self, role_ids: Iterable[str], *, on_date: date) -> list[dict[str, object]]:
+        identifiers = list(dict.fromkeys(str(role_id) for role_id in role_ids))
+        if not identifiers:
+            return []
+        placeholders = ",".join("?" for _ in identifiers)
+        with sqlite3.connect(self.database_path) as connection:
+            current_rows = connection.execute(
+                f"SELECT role_id,enabled,effective_date FROM todo_reminder_role_changes c "
+                f"WHERE role_id IN ({placeholders}) AND effective_date<=? "
+                "AND NOT EXISTS(SELECT 1 FROM todo_reminder_role_changes newer "
+                "WHERE newer.role_id=c.role_id AND newer.effective_date<=? "
+                "AND (newer.effective_date>c.effective_date OR (newer.effective_date=c.effective_date AND newer.updated_at>c.updated_at))) "
+                "ORDER BY role_id",
+                (*identifiers, on_date.isoformat(), on_date.isoformat()),
+            ).fetchall()
+            next_rows = connection.execute(
+                f"SELECT role_id,enabled,effective_date FROM todo_reminder_role_changes c "
+                f"WHERE role_id IN ({placeholders}) AND effective_date>? "
+                "AND NOT EXISTS(SELECT 1 FROM todo_reminder_role_changes newer "
+                "WHERE newer.role_id=c.role_id AND newer.effective_date<=? "
+                "AND (newer.effective_date>c.effective_date OR (newer.effective_date=c.effective_date AND newer.updated_at>c.updated_at))) "
+                "ORDER BY role_id,effective_date,updated_at",
+                (*identifiers, on_date.isoformat(), on_date.isoformat()),
+            ).fetchall()
+        current = {str(role_id): (bool(enabled), date.fromisoformat(str(effective_date))) for role_id, enabled, effective_date in current_rows}
+        upcoming: dict[str, tuple[bool, date]] = {}
+        for role_id, enabled, effective_date in next_rows:
+            identifier = str(role_id)
+            candidate = (bool(enabled), date.fromisoformat(str(effective_date)))
+            current_candidate = upcoming.get(identifier)
+            if current_candidate is None or candidate[1] < current_candidate[1]:
+                upcoming[identifier] = candidate
+        result = []
+        for role_id in identifiers:
+            active_today, current_effective = current.get(role_id, (False, on_date))
+            future = upcoming.get(role_id)
+            enabled, effective = future if future is not None else (active_today, current_effective)
+            result.append({
+                "roleId": role_id,
+                "enabled": enabled,
+                "activeToday": active_today,
+                "effectiveDate": effective.isoformat(),
+            })
+        return result
+
+    def set_reminders_paused(self, paused_date: date | None) -> None:
+        with sqlite3.connect(self.database_path) as connection:
+            if paused_date is None:
+                connection.execute("DELETE FROM todo_settings WHERE key='remindersPausedDate'")
+            else:
+                connection.execute(
+                    "INSERT INTO todo_settings(key,value) VALUES('remindersPausedDate',?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (paused_date.isoformat(),),
+                )
+                self._skip_pending_in(connection, paused_date)
+
+    def _skip_pending_in(self, connection: sqlite3.Connection, local_date: date) -> None:
+        zone = ZoneInfo(str(self.settings()["timezone"]))
+        start = datetime.combine(local_date, datetime.min.time(), zone).astimezone(timezone.utc).isoformat()
+        end = datetime.combine(local_date + timedelta(days=1), datetime.min.time(), zone).astimezone(timezone.utc).isoformat()
+        now = _now()
+        connection.execute(
+            "UPDATE todo_reminders SET status='skipped',last_error='当天提醒已暂停',next_attempt_at=NULL,updated_at=? "
+            "WHERE status IN ('pending','failed') AND due_at>=? AND due_at<?",
+            (now, start, end),
+        )
+        connection.execute(
+            "UPDATE todo_reminder_days SET digest_status='skipped',last_error='当天提醒已暂停',next_attempt_at=NULL,updated_at=? "
+            "WHERE local_date=? AND digest_status IN ('not_due','pending','failed')",
+            (now, local_date.isoformat()),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO todo_reminder_days(local_date,role_id,digest_status,digest_payload_json,last_error,created_at,updated_at) "
+            "VALUES(?,NULL,'skipped','[]','当天提醒已暂停',?,?)",
+            (local_date.isoformat(), now, now),
+        )
+
+    def reminders_paused(self, on_date: date) -> bool:
+        with sqlite3.connect(self.database_path) as connection:
+            row = connection.execute("SELECT value FROM todo_settings WHERE key='remindersPausedDate'").fetchone()
+        return row is not None and str(row[0]) == on_date.isoformat()
+
+    def ensure_reminder_day(self, local_date: date, available_role_ids: Iterable[str]) -> str | None:
+        available = self.reminder_role_ids(on_date=local_date, available_role_ids=available_role_ids)
+        now = _now()
+        with sqlite3.connect(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT role_id,digest_status FROM todo_reminder_days WHERE local_date=?",
+                (local_date.isoformat(),),
+            ).fetchone()
+            if row is not None and row[0] in available:
+                return str(row[0])
+            role_id = random.choice(available) if available else None
+            connection.execute(
+                "INSERT INTO todo_reminder_days(local_date,role_id,digest_status,created_at,updated_at) "
+                "VALUES(?,?, 'not_due', ?, ?) ON CONFLICT(local_date) DO UPDATE SET role_id=excluded.role_id,updated_at=excluded.updated_at",
+                (local_date.isoformat(), role_id, now, now),
+            )
+            zone = ZoneInfo(str(self.settings()["timezone"]))
+            start = datetime.combine(local_date, datetime.min.time(), zone).astimezone(timezone.utc).isoformat()
+            end = datetime.combine(local_date + timedelta(days=1), datetime.min.time(), zone).astimezone(timezone.utc).isoformat()
+            connection.execute(
+                "UPDATE todo_reminders SET role_id=? WHERE status IN ('pending','failed') AND due_at>=? AND due_at<?",
+                (role_id, start, end),
+            )
+        return role_id
+
+    def reminder_day(self, local_date: date) -> dict[str, object] | None:
+        with sqlite3.connect(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT local_date,role_id,digest_status,digest_payload_json,attempts,last_error,created_at,updated_at,delivered_at "
+                "FROM todo_reminder_days WHERE local_date=?",
+                (local_date.isoformat(),),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "date": str(row[0]), "roleId": row[1], "digestStatus": str(row[2]),
+            "digestPayload": json.loads(str(row[3])) if row[3] else None,
+            "attempts": int(row[4]), "lastError": row[5], "createdAt": str(row[6]),
+            "updatedAt": str(row[7]), "deliveredAt": row[8],
+        }
+
+    def todos_for_daily_summary(self, local_date: date) -> list[dict[str, object]]:
+        active = self.list(statuses=("inbox", "scheduled"))
+        owner_zone = ZoneInfo(str(self.settings()["timezone"]))
+        result = []
+        for item in active:
+            due_date = str(item.get("dueDate") or "")
+            due_at = str(item.get("dueAt") or "")
+            reminder_at = str(item.get("reminderAt") or "")
+            reminder_date = str(item.get("reminderDate") or "")
+            due_at_date = datetime.fromisoformat(due_at).astimezone(owner_zone).date().isoformat() if due_at else ""
+            reminder_at_date = datetime.fromisoformat(reminder_at).astimezone(owner_zone).date().isoformat() if reminder_at else ""
+            if any(value and value <= local_date.isoformat() for value in (due_date, due_at_date, reminder_at_date, reminder_date)):
+                result.append(item)
+        return result
+
+    def schedule_daily_summary(self, local_date: date, role_id: str, now: datetime, *, refresh_pending: bool = False) -> dict[str, object] | None:
+        todos = self.todos_for_daily_summary(local_date)
+        now_text = now.astimezone(timezone.utc).isoformat()
+        payload = [{key: item.get(key) for key in ("id", "title", "description", "dueDate", "dueAt", "reminderAt", "reminderDate", "timezone")} for item in todos]
+        status = "pending" if payload else "skipped"
+        with sqlite3.connect(self.database_path) as connection:
+            if refresh_pending:
+                connection.execute(
+                    "UPDATE todo_reminder_days SET role_id=?,digest_payload_json=? "
+                    "WHERE local_date=? AND digest_status IN ('not_due','pending','failed')",
+                    (role_id, json.dumps(payload, ensure_ascii=False), local_date.isoformat()),
+                )
+            connection.execute(
+                "INSERT OR IGNORE INTO todo_reminder_days(local_date,role_id,digest_status,digest_payload_json,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (local_date.isoformat(), role_id, status, json.dumps(payload, ensure_ascii=False), now_text, now_text),
+            )
+            connection.execute(
+                "UPDATE todo_reminder_days SET role_id=?,digest_status=?,digest_payload_json=?,updated_at=? "
+                "WHERE local_date=? AND digest_status='not_due'",
+                (role_id, status, json.dumps(payload, ensure_ascii=False), now_text, local_date.isoformat()),
+            )
+            row = connection.execute(
+                "SELECT local_date,role_id,digest_status,digest_payload_json,attempts,last_error,created_at,updated_at,delivered_at "
+                "FROM todo_reminder_days WHERE local_date=?",
+                (local_date.isoformat(),),
+            ).fetchone()
+        assert row is not None
+        return self.reminder_day(local_date)
+
+    def pending_daily_summaries(self, *, now: datetime | None = None) -> list[dict[str, object]]:
+        now_text = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+        with sqlite3.connect(self.database_path) as connection:
+            rows = connection.execute(
+                "SELECT local_date,role_id,digest_status,digest_payload_json,attempts,last_error,created_at,updated_at,delivered_at "
+                "FROM todo_reminder_days WHERE digest_status IN ('pending','failed') "
+                "AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY local_date LIMIT 100",
+                (now_text,),
+            ).fetchall()
+        return [
+            {
+                "date": str(row[0]), "roleId": row[1], "digestStatus": str(row[2]),
+                "digestPayload": json.loads(str(row[3])) if row[3] else [], "attempts": int(row[4]),
+                "lastError": row[5], "createdAt": str(row[6]), "updatedAt": str(row[7]), "deliveredAt": row[8],
+            }
+            for row in rows
+        ]
+
+    def finish_daily_summary(self, local_date: str, *, error: str | None = None, retry_base: datetime | None = None) -> None:
+        now = (retry_base or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+        with sqlite3.connect(self.database_path) as connection:
+            if error is None:
+                connection.execute(
+                    "UPDATE todo_reminder_days SET digest_status='delivered',attempts=attempts+1,last_error=NULL,next_attempt_at=NULL,updated_at=?,delivered_at=? WHERE local_date=? AND digest_status IN ('pending','failed')",
+                    (now, now, local_date),
+                )
+            else:
+                row = connection.execute("SELECT attempts FROM todo_reminder_days WHERE local_date=?", (local_date,)).fetchone()
+                attempts = int(row[0]) if row else 0
+                connection.execute(
+                    "UPDATE todo_reminder_days SET digest_status='failed',attempts=attempts+1,last_error=?,next_attempt_at=?,updated_at=? WHERE local_date=? AND digest_status IN ('pending','failed')",
+                    (error[:1000], _retry_at(attempts, base=retry_base), now, local_date),
+                )
+
+    def skip_daily_summary(self, local_date: str, reason: str) -> None:
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute(
+                "UPDATE todo_reminder_days SET digest_status='skipped',last_error=?,next_attempt_at=NULL,updated_at=? "
+                "WHERE local_date=? AND digest_status IN ('not_due','pending','failed')",
+                (reason[:1000], _now(), local_date),
+            )
+
+    def daily_summary_payload(self, local_date: date) -> list[dict[str, object]]:
+        """Recompute digest facts at delivery time so stale retries cannot remind with old state."""
+
+        todos = self.todos_for_daily_summary(local_date)
+        return [{key: item.get(key) for key in ("id", "title", "description", "dueDate", "dueAt", "reminderAt", "reminderDate", "timezone")} for item in todos]
+
+    def pending_role_reminders(
+        self,
+        *,
+        limit: int = 100,
+        reminder_ids: Iterable[str] | None = None,
+        now: datetime | None = None,
+    ) -> list[dict[str, object]]:
+        identifiers = [str(identifier) for identifier in reminder_ids] if reminder_ids is not None else None
+        now_text = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+        with sqlite3.connect(self.database_path) as connection:
+            sql = (
+                "SELECT r.id,r.todo_id,r.due_key,r.due_at,r.role_id,t.title,t.description,t.due_date,t.due_at,t.timezone "
+                "FROM todo_reminders r JOIN todos t ON t.id=r.todo_id "
+                "WHERE r.status IN ('pending','failed') AND r.due_key LIKE '%:at:%' AND t.status IN ('inbox','scheduled') "
+                "AND (r.next_attempt_at IS NULL OR r.next_attempt_at<=?) "
+            )
+            parameters: list[object] = [now_text]
+            if identifiers is not None:
+                if not identifiers:
+                    return []
+                sql += f" AND r.id IN ({','.join('?' for _ in identifiers)})"
+                parameters.extend(identifiers)
+            sql += " ORDER BY r.due_at,r.created_at LIMIT ?"
+            parameters.append(max(1, min(limit, 500)))
+            rows = connection.execute(sql, parameters).fetchall()
+        return [
+            {"id": str(row[0]), "todoId": str(row[1]), "dueKey": str(row[2]), "dueAt": str(row[3]), "roleId": row[4],
+             "title": str(row[5]), "description": str(row[6]), "dueDate": row[7], "todoDueAt": row[8], "timezone": str(row[9])}
+            for row in rows
+        ]
+
+    def assign_reminder_role(self, reminder_id: str, role_id: str) -> None:
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute(
+                "UPDATE todo_reminders SET role_id=? WHERE id=? AND status IN ('pending','failed')",
+                (role_id, reminder_id),
+            )
+
+    def finish_role_reminder(self, reminder_id: str, *, error: str | None = None, retry_base: datetime | None = None) -> None:
+        now = (retry_base or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+        with sqlite3.connect(self.database_path) as connection:
+            if error is None:
+                connection.execute(
+                    "UPDATE todo_reminders SET status='delivered',attempts=attempts+1,last_error=NULL,next_attempt_at=NULL,updated_at=?,delivered_at=? WHERE id=? AND status IN ('pending','failed')",
+                    (now, now, reminder_id),
+                )
+            else:
+                row = connection.execute("SELECT attempts FROM todo_reminders WHERE id=?", (reminder_id,)).fetchone()
+                attempts = int(row[0]) if row else 0
+                connection.execute(
+                    "UPDATE todo_reminders SET status='failed',attempts=attempts+1,last_error=?,next_attempt_at=?,updated_at=? WHERE id=? AND status IN ('pending','failed')",
+                    (error[:1000], _retry_at(attempts, base=retry_base), now, reminder_id),
+                )
 
     def create(self, payload: dict[str, object], *, source: dict[str, str] | None = None) -> dict[str, object]:
         source = source or {}
@@ -284,22 +631,46 @@ class TodoStore:
                         title = candidate.get("title")
                         if not isinstance(title, str) or not title.strip():
                             raise ValueError("create 操作缺少标题")
-                        payload = {key: candidate[key] for key in ("title", "description", "dueDate", "dueAt", "reminderAt", "reminderDate") if key in candidate and candidate[key] is not None}
+                        payload = {key: candidate[key] for key in ("title", "description", "dueDate", "dueAt", "reminderAt", "reminderDate") if key in candidate}
                         payload["timezone"] = str(candidate.get("timezone") or timezone_name or self.settings()["timezone"])
                         matching = connection.execute("SELECT id,title FROM todos WHERE status IN ('inbox','scheduled') AND lower(trim(title))=lower(trim(?))", (title.strip(),)).fetchall()
                         if len(matching) > 1:
                             result, error = "needs_review", "存在多个同名待办，无法安全合并"
                         else:
                             duplicate_id = str(matching[0][0]) if matching else None
+                            source = (
+                                {"roleId": role_id, "sessionKey": session_key, "messageId": user_message_id}
+                                if role_id and session_key and user_message_id != "web"
+                                else None
+                            )
                             item = self._update_in(connection, duplicate_id, payload) if duplicate_id else self._create_in(connection, payload, {
-                                "roleId": role_id, "sessionKey": session_key, "messageId": user_message_id,
+                                **(source or {}),
                             })
                             result = "applied"
                     elif operation in {"update", "complete", "cancel", "restore"}:
                         target = str(todo_id or "")
+                        if not target:
+                            title = str(candidate.get("targetTitle", "")).strip()
+                            allowed_statuses = {
+                                "update": ("inbox", "scheduled"),
+                                "complete": ("inbox", "scheduled"),
+                                "cancel": ("inbox", "scheduled"),
+                                "restore": ("completed", "cancelled"),
+                            }[operation]
+                            matching = connection.execute(
+                                f"SELECT id FROM todos WHERE status IN ({','.join('?' for _ in allowed_statuses)}) "
+                                "AND lower(trim(title))=lower(trim(?)) ORDER BY created_at,id",
+                                (*allowed_statuses, title),
+                            ).fetchall() if title else []
+                            if len(matching) == 1:
+                                target = str(matching[0][0])
+                                todo_id = target
+                            elif len(matching) > 1:
+                                result, error = "needs_review", "存在多个同名待办，无法安全选择"
                         row = connection.execute("SELECT * FROM todos WHERE id=?", (target,)).fetchone() if target else None
                         if row is None:
-                            result, error = "needs_review", "操作没有指向当前主人可访问的待办"
+                            if error is None:
+                                result, error = "needs_review", "操作没有指向当前主人可访问的待办"
                         else:
                             current_status = str(row[3])
                             allowed_statuses = {
@@ -311,11 +682,17 @@ class TodoStore:
                             if current_status not in allowed_statuses:
                                 result, error = "needs_review", f"{operation} 操作不适用于 {current_status} 状态"
                             elif operation == "update":
-                                patch = {key: candidate[key] for key in ("title", "description", "dueDate", "dueAt", "reminderAt", "reminderDate") if key in candidate and candidate[key] is not None}
+                                patch = {key: candidate[key] for key in ("title", "description", "dueDate", "dueAt", "reminderAt", "reminderDate") if key in candidate}
                                 item = self._update_in(connection, target, patch)
                                 result = "applied"
                             else:
-                                next_status = {"complete": "completed", "cancel": "cancelled", "restore": "inbox"}[operation]
+                                next_status = {"complete": "completed", "cancel": "cancelled"}.get(operation)
+                                if operation == "restore":
+                                    requested_status = candidate.get("restoreStatus")
+                                    next_status = requested_status if requested_status in {"inbox", "scheduled"} else (
+                                        "scheduled" if any(row[index] for index in (4, 5, 6, 7)) else "inbox"
+                                    )
+                                assert next_status is not None
                                 item = self._status_in(connection, target, next_status)
                                 result = "applied"
                     else:
@@ -333,37 +710,38 @@ class TodoStore:
             connection.execute("INSERT INTO todo_events(event_id,result_json,created_at) VALUES(?,?,?)", (event_id, encoded, _now()))
             return applied
 
-    def schedule_due_reminders(self, now: datetime | None = None) -> list[dict[str, object]]:
+    def schedule_due_reminders(self, now: datetime | None = None, *, skip_dates: set[date] | None = None) -> list[dict[str, object]]:
         moment = now or datetime.now(timezone.utc)
         if moment.tzinfo is None:
             moment = moment.replace(tzinfo=timezone.utc)
         moment = moment.astimezone(timezone.utc)
         now_text = moment.isoformat()
+        owner_zone = ZoneInfo(str(self.settings()["timezone"]))
         created: list[dict[str, object]] = []
         with sqlite3.connect(self.database_path) as connection:
             todos = connection.execute(
-                "SELECT * FROM todos WHERE status IN ('inbox','scheduled') AND (reminder_at IS NOT NULL OR reminder_date IS NOT NULL)"
+                "SELECT * FROM todos WHERE status IN ('inbox','scheduled') AND reminder_at IS NOT NULL"
             ).fetchall()
             for row in todos:
                 todo = self._todo(row)
                 reminder_at = todo["reminderAt"]
-                reminder_date = todo["reminderDate"]
-                due_key = None
-                due_at = None
-                if reminder_at and str(reminder_at) <= now_text:
-                    due_key = f"{todo['id']}:at:{reminder_at}"
-                    due_at = str(reminder_at)
-                elif reminder_date:
-                    local_today = moment.astimezone(ZoneInfo(str(todo["timezone"]))).date().isoformat()
-                    if str(reminder_date) <= local_today:
-                        due_key = f"{todo['id']}:date:{reminder_date}"
-                        due_at = f"{reminder_date}T00:00:00[{todo['timezone']}]"
-                if due_key is None:
+                local_date = datetime.fromisoformat(str(reminder_at)).astimezone(owner_zone).date() if reminder_at else None
+                due_key = f"{todo['id']}:at:{reminder_at}" if reminder_at else None
+                if reminder_at and local_date in (skip_dates or set()):
+                    # Materialize the skipped event even when its exact time is
+                    # still in the future, so resuming today cannot backfill it.
+                    connection.execute(
+                        "INSERT OR IGNORE INTO todo_reminders(id,todo_id,due_key,status,due_at,last_error,created_at,updated_at) "
+                        "VALUES(?,?,?,'skipped',?,'当天提醒已暂停',?,?)",
+                        (uuid.uuid4().hex, todo["id"], due_key, reminder_at, now_text, now_text),
+                    )
+                    continue
+                if due_key is None or str(reminder_at) > now_text:
                     continue
                 reminder_id = uuid.uuid4().hex
                 inserted = connection.execute(
                     "INSERT OR IGNORE INTO todo_reminders(id,todo_id,due_key,status,due_at,created_at,updated_at) VALUES(?,?,?,'pending',?,?,?)",
-                    (reminder_id, todo["id"], due_key, due_at, now_text, now_text),
+                    (reminder_id, todo["id"], due_key, reminder_at, now_text, now_text),
                 ).rowcount
                 if inserted:
                     created.append({
@@ -372,7 +750,7 @@ class TodoStore:
                         "title": todo["title"],
                         "dueKey": due_key,
                         "status": "pending",
-                        "dueAt": due_at,
+                        "dueAt": reminder_at,
                         "createdAt": now_text,
                         "readAt": None,
                     })
@@ -381,6 +759,32 @@ class TodoStore:
                 (now_text,),
             )
         return created
+
+    def cancel_completed_reminders(self) -> None:
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute(
+                "UPDATE todo_reminders SET status='cancelled',updated_at=? "
+                "WHERE status IN ('pending','failed') AND todo_id IN (SELECT id FROM todos WHERE status IN ('completed','cancelled'))",
+                (_now(),),
+            )
+
+    def discard_pending_before(self, local_date: date) -> None:
+        """Mark stale work as skipped so a paused day never fires after it ends."""
+
+        zone = ZoneInfo(str(self.settings()["timezone"]))
+        boundary = datetime.combine(local_date, datetime.min.time(), zone).astimezone(timezone.utc).isoformat()
+        now = _now()
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute(
+                "UPDATE todo_reminders SET status='skipped',last_error='提醒日期已过',next_attempt_at=NULL,updated_at=? "
+                "WHERE status IN ('pending','failed') AND due_at<?",
+                (now, boundary),
+            )
+            connection.execute(
+                "UPDATE todo_reminder_days SET digest_status='skipped',last_error='提醒日期已过',next_attempt_at=NULL,updated_at=? "
+                "WHERE local_date<? AND digest_status IN ('not_due','pending','failed')",
+                (now, local_date.isoformat()),
+            )
 
     def deliver_pending_reminders(self, *, limit: int = 100, now: datetime | None = None) -> list[dict[str, object]]:
         with sqlite3.connect(self.database_path) as connection:
@@ -478,7 +882,7 @@ class TodoStore:
         now = _now()
         with sqlite3.connect(self.database_path) as connection:
             cursor = connection.execute(
-                "UPDATE todo_reminders SET status='pending',last_error=NULL,updated_at=? WHERE id=? AND status='failed'",
+                "UPDATE todo_reminders SET status='pending',last_error=NULL,next_attempt_at=NULL,updated_at=? WHERE id=? AND status='failed'",
                 (now, reminder_id),
             )
         return cursor.rowcount > 0
@@ -497,6 +901,32 @@ class TodoStore:
         return [
             {"id": row[0], "todoId": row[1], "eventId": row[2], "sourceMessageId": row[3], "operation": row[4], "result": row[5], "error": row[6], "createdAt": row[7]}
             for row in rows
+        ]
+
+    def reminder_diagnostics(self, limit: int = 50) -> list[dict[str, object]]:
+        with sqlite3.connect(self.database_path) as connection:
+            reminder_rows = connection.execute(
+                "SELECT id,todo_id,due_at,attempts,last_error,status,updated_at FROM todo_reminders "
+                "WHERE status IN ('pending','failed') ORDER BY due_at LIMIT ?",
+                (max(1, min(limit, 200)),),
+            ).fetchall()
+            day_rows = connection.execute(
+                "SELECT local_date,role_id,attempts,last_error,digest_status,updated_at FROM todo_reminder_days "
+                "WHERE digest_status IN ('not_due','pending','failed') ORDER BY local_date LIMIT ?",
+                (max(1, min(limit, 200)),),
+            ).fetchall()
+        return [
+            {
+                "id": row[0], "todoId": row[1], "dueAt": row[2], "attempts": int(row[3]),
+                "error": row[4], "status": str(row[5]), "kind": "exact", "updatedAt": row[6],
+            }
+            for row in reminder_rows
+        ] + [
+            {
+                "id": row[0], "roleId": row[1], "attempts": int(row[2]), "error": row[3],
+                "status": str(row[4]), "kind": "daily", "updatedAt": row[5],
+            }
+            for row in day_rows
         ]
 
     def read_port(self, query: str, *, limit: int = 5) -> list[dict[str, object]]:

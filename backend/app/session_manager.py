@@ -14,7 +14,10 @@ class SessionManager:
         session = self.sessions.open_role_session(role_id)
         return SessionResponse(
             session=session,
-            messages=[message for message in self.sessions.list_messages(session.sessionKey) if message.messageType == "text"],
+            messages=[
+                message for message in self.sessions.list_messages(session.sessionKey)
+                if message.messageType in {"text", "proactive_reminder"}
+            ],
         )
 
     def role_and_history(self, role_id: str) -> tuple[Role, SessionResponse]:

@@ -74,6 +74,22 @@ describe("首页", () => {
     expect(calls.find((call) => call.method === "POST" && call.path === "/api/todos")?.body).toMatchObject({ title: "提交实验报告", timezone: "Asia/Shanghai" });
   });
 
+  it("当前聊天会刷新并显示后台送达的角色主动提醒", async () => {
+    let sessionReads = 0;
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": () => {
+        sessionReads += 1;
+        return { body: { session, messages: sessionReads === 1 ? [] : [message({ id: "reminder-1", role: "assistant", content: "主人，记得交报告", sessionKey: "role:r1", sequence: 1, messageType: "proactive_reminder" })] } };
+      },
+    });
+    render(<App />);
+    await chatHeading("爱丽丝");
+    window.dispatchEvent(new Event("focus"));
+    expect(await screen.findByText("主人，记得交报告")).toBeTruthy();
+    expect(sessionReads).toBe(2);
+  });
+
   it("后端不可用时显示明确错误", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("Failed to fetch"); }));
     render(<App />);
@@ -135,6 +151,35 @@ describe("设置", () => {
     await user.click(reminders);
     await waitFor(() => expect(calls.find((call) => call.method === "PUT" && call.path === "/api/todos/settings")?.body).toMatchObject({ remindersEnabled: false }));
     expect(within(panel).getByRole("checkbox", { name: "启用待办插件" })).toBeChecked();
+  });
+
+  it("可以选择提醒角色并暂停今天的提醒", async () => {
+    let roleEnabled = false;
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [] } }),
+      "GET /api/model/providers": () => ({ body: { providers: [] } }),
+      "GET /api/model/configurations": () => ({ body: { configurations: [], activeId: null } }),
+      "GET /api/todos/settings": () => ({ body: { enabled: true, remindersEnabled: true, timezone: "Asia/Shanghai" } }),
+      "GET /api/todos/reminder-roles": () => ({ body: { roles: [{ id: "r1", name: "爱丽丝", enabled: roleEnabled, activeToday: false, effectiveDate: roleEnabled ? "2026-10-10" : "2026-10-09" }] } }),
+      "PUT /api/todos/reminder-roles/r1": () => { roleEnabled = true; return { body: { roleId: "r1", enabled: true, effectiveDate: "2026-10-10" } }; },
+      "GET /api/todos/reminders/today": () => ({ body: { date: "2026-10-09", paused: false } }),
+      "PUT /api/todos/reminders/today\\?paused=true": () => ({ body: { date: "2026-10-09", paused: true } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    const panel = await dialog("设置");
+    await user.click(within(panel).getByRole("button", { name: "待办" }));
+
+    expect(await within(panel).findByText("未启用提醒角色，系统不会发送提醒。")).toBeTruthy();
+    const role = await within(panel).findByRole("checkbox", { name: "爱丽丝" });
+    await user.click(role);
+    await waitFor(() => expect(calls.find((call) => call.method === "PUT" && call.path === "/api/todos/reminder-roles/r1")?.body).toEqual({ enabled: true }));
+    expect(await within(panel).findByText("2026-10-10 起生效")).toBeTruthy();
+    expect(await within(panel).findByText("提醒角色从生效日期起参与；今天不会发送提醒。")).toBeTruthy();
+    await user.click(within(panel).getByRole("checkbox", { name: "暂停今天的提醒" }));
+    await waitFor(() => expect(calls.some((call) => call.method === "PUT" && call.path === "/api/todos/reminders/today?paused=true")).toBe(true));
+    expect(await within(panel).findByText(/暂停期间跳过的提醒不会补发/)).toBeTruthy();
   });
 });
 
