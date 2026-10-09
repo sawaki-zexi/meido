@@ -652,12 +652,21 @@ async def owner_knowledge_oauth_callback(code: str = "", state: str = "", error:
     except Exception as error:
         logger.error("飞书 OAuth 令牌交换异常：%s", type(error).__name__)
         raise HTTPException(status_code=502, detail="飞书授权交换失败") from error
-    owner_knowledge_store.set_state("feishu_access_token", str(payload.get("access_token", "")))
-    owner_knowledge_store.set_state("feishu_refresh_token", str(payload.get("refresh_token", "")))
-    expires_in = payload.get("expires_in", 0)
-    if isinstance(expires_in, int):
-        expires_at = datetime.now(timezone.utc).timestamp() + expires_in
-        owner_knowledge_store.set_state("feishu_token_expires_at", str(expires_at))
+    try:
+        access_token = str(payload.get("access_token", "")).strip()
+        if not access_token:
+            raise RuntimeError("飞书响应缺少用户访问令牌")
+        owner_knowledge_store.set_state("feishu_access_token", access_token)
+        refresh_token = str(payload.get("refresh_token", "")).strip()
+        if refresh_token:
+            owner_knowledge_store.set_state("feishu_refresh_token", refresh_token)
+        expires_in = payload.get("expires_in", 0)
+        if isinstance(expires_in, (int, float)) and not isinstance(expires_in, bool):
+            expires_at = datetime.now(timezone.utc).timestamp() + expires_in
+            owner_knowledge_store.set_state("feishu_token_expires_at", str(expires_at))
+    except Exception as error:
+        logger.error("飞书 OAuth 令牌保存异常：%s", type(error).__name__)
+        raise HTTPException(status_code=502, detail="飞书授权成功，但本地凭据保存失败，请检查系统凭据库") from error
     return Response(
         "<!doctype html><html lang='zh-CN'><meta charset='utf-8'><title>飞书连接成功</title>"
         "<body><main><h1>飞书已连接</h1><p>可以关闭此页面，返回 Meido 启用主人资料插件。</p></main></body></html>",

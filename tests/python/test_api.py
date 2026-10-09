@@ -115,6 +115,37 @@ def test_role_api_crud_and_duplicate_names(tmp_path, monkeypatch):
     assert len(client.get("/api/roles").json()["roles"]) == 2
 
 
+def test_feishu_oauth_callback_reports_local_credential_store_failure(monkeypatch):
+    class FailingStore:
+        def __init__(self):
+            self.values = {
+                "oauth_state": "state-1",
+                "feishu_app_id": "app-id",
+                "feishu_app_secret": "app-secret",
+            }
+
+        def get_state(self, key, default=""):
+            return self.values.get(key, default)
+
+        def set_state(self, key, value):
+            if key == "feishu_access_token":
+                raise RuntimeError("系统凭据库不可用")
+            self.values[key] = value
+
+    class Connector:
+        async def exchange_code(self, code, app_id, app_secret, redirect_uri):
+            return {"access_token": "user-token", "refresh_token": "refresh-token", "expires_in": 7200}
+
+    monkeypatch.setattr(main, "owner_knowledge_store", FailingStore())
+    monkeypatch.setattr(main, "owner_knowledge_connector", Connector())
+    response = TestClient(main.app, raise_server_exceptions=False).get(
+        "/api/owner-knowledge/oauth/callback?code=auth-code&state=state-1"
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "飞书授权成功，但本地凭据保存失败，请检查系统凭据库"
+
+
 def test_role_avatar_can_be_uploaded_replaced_loaded_and_removed(tmp_path, monkeypatch):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="测试角色", profile=RoleProfile(profile="核心设定")))
