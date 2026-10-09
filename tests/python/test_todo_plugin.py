@@ -126,6 +126,26 @@ def test_tool_refuses_unqualified_and_missing_source_writes(tmp_path):
     assert todos.list() == []
 
 
+def test_tool_does_not_modify_multiple_matching_todos(tmp_path):
+    todos = TodoStore(tmp_path / "todos.db")
+    todos.create({"title": "提交报告"})
+    todos.create({"title": "提交报告"})
+    sessions = _sessions(tmp_path)
+    sessions.open_role_session("role-1")
+    sessions.create_run_with_messages(_run("ambiguous"), "取消提交报告")
+    tool = TodoWriteTool(TodoApplicationService(todos, sessions))
+
+    result = tool.execute(
+        {"operation": "cancel", "targetTitle": "提交报告"},
+        ToolContext("role-1", "role:role-1", "ambiguous", CancellationToken(), "call-cancel"),
+    )
+
+    assert result.is_error is True
+    assert [todo["status"] for todo in todos.list()] == ["inbox", "inbox"]
+    diagnostic, = todos.operation_diagnostics()
+    assert diagnostic["result"] == "needs_review"
+
+
 def test_plugin_manifest_registers_optional_search_and_all_role_write_tools(tmp_path):
     todos = TodoStore(tmp_path / "todos.db")
     sessions = _sessions(tmp_path)
@@ -206,6 +226,44 @@ def test_disabling_selected_reminder_role_reselects_today_or_stops(tmp_path):
 
     todos.set_reminder_role(replacement, False, effective_date=today)
     assert todos.ensure_reminder_day(today, roles) is None
+
+
+def test_scheduler_does_not_send_when_no_reminder_role_is_enabled(tmp_path):
+    todos, sessions, plugin = _plugin(tmp_path)
+    today = date(2026, 10, 9)
+    todos.set_reminder_role("role-1", True, effective_date=today)
+    todos.set_reminder_role("role-1", False, effective_date=today)
+    todos.create({"title": "吃药", "reminderAt": "2026-10-09T10:00:00+08:00", "timezone": "Asia/Shanghai"})
+
+    assert plugin.schedule_reminders_once(now=datetime(2026, 10, 9, 2, 1, tzinfo=timezone.utc)) == []
+    assert [message for message in sessions.list_messages("role:role-1") if message.messageType == "proactive_reminder"] == []
+    assert todos.reminder_day(today)["roleId"] is None
+    assert todos.list_reminders()[0]["status"] == "failed"
+
+
+def test_delivered_reminders_remain_deduplicated_after_store_and_scheduler_restart(tmp_path):
+    todos, sessions, plugin = _plugin(tmp_path)
+    today = date(2026, 10, 9)
+    todos.set_reminder_role("role-1", True, effective_date=today)
+    todos.create({"title": "吃药", "reminderAt": "2026-10-09T10:00:00+08:00", "timezone": "Asia/Shanghai"})
+    moment = datetime(2026, 10, 9, 2, 1, tzinfo=timezone.utc)
+
+    assert len(plugin.schedule_reminders_once(now=moment)) == 2
+    selected_role = todos.reminder_day(today)["roleId"]
+
+    restarted_todos = TodoStore(tmp_path / "todos.db")
+    restarted_sessions = _sessions(tmp_path)
+    restarted_plugin = TodoPlugin(
+        restarted_todos,
+        restarted_sessions,
+        reminder_sender=lambda role_id, _event_id, kind, payload: f"{role_id}:{kind}:" + "、".join(str(item["title"]) for item in payload),
+        available_roles=lambda: ["role-1"],
+    )
+
+    assert restarted_todos.reminder_day(today)["roleId"] == selected_role
+    assert restarted_plugin.schedule_reminders_once(now=moment) == []
+    proactive = [message for message in restarted_sessions.list_messages("role:role-1") if message.messageType == "proactive_reminder"]
+    assert len(proactive) == 2
 
 
 def test_daily_summary_is_sent_once_after_four_and_empty_digest_is_not_sent(tmp_path):

@@ -6,7 +6,7 @@
 
 规格状态：目标方案已确认；当前分支实现已完成本规格验收，PR #91 仍待审。
 
-实现核验：待办工具和网页共用应用服务；提醒由每天固定的角色以主动消息发送，并支持当天暂停/恢复和前端资格配置。角色删除或网页关闭提醒资格会触发当天重选；加入资格和重新启用从次日生效。工具提示用于引导模型识别明确请求，不是后端可验证的自然语言授权凭据。回合结束后的待办抽取路径已移除。当前工作区验证：`python -m pytest -q` 为 321 passed、1 skipped；`npm run test:web -- --run` 为 35 passed；`npm run build`、`python -m ruff check backend tests/python/test_todo_plugin.py` 与 `git diff --check` 均通过。具体实现事实以源码和测试为准。
+实现核验：待办工具和网页共用应用服务；提醒由每天固定的角色以主动消息发送，并支持当天暂停/恢复和前端资格配置。角色删除或网页关闭提醒资格会触发当天重选；加入资格和重新启用从次日生效。工具提示用于引导模型识别明确请求，不是后端可验证的自然语言授权凭据。回合结束后的待办抽取路径已移除。当前工作区验证：`python -m pytest -q` 为 324 passed、1 skipped；`npm run test:web -- --run` 为 35 passed；`npm run build`、`python -m ruff check backend tests/python/test_todo_plugin.py` 与 `git diff --check` 均通过。具体实现事实以源码和测试为准。
 
 事实来源：
 
