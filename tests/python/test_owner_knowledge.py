@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import logging
 import sqlite3
 import zipfile
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from backend.app.agent_runtime import CancellationToken, ToolContext
 from backend.app.owner_knowledge import (
     DocumentScan,
     FeishuApiConnector,
+    OAuthCallbackAccessLogFilter,
     OwnerKnowledgePlugin,
     OwnerKnowledgeStore,
     OwnerKnowledgeTool,
@@ -422,6 +424,54 @@ def test_feishu_connector_refreshes_user_token(monkeypatch):
     payload = asyncio.run(connector.refresh_token("old-refresh-token", "app-id", "app-secret"))
 
     assert payload["access_token"] == "fresh-token"
+
+
+def test_feishu_oauth_rejection_reports_safe_response_code(monkeypatch):
+    def handler(request):
+        if request.url.path.endswith("/app_access_token/internal"):
+            return httpx.Response(200, json={"code": 0, "app_access_token": "app-token"})
+        return httpx.Response(400, json={"code": 20015, "msg": "invalid grant"})
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "backend.app.owner_knowledge.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    connector = FeishuApiConnector(lambda: "")
+
+    with pytest.raises(RuntimeError, match=r"HTTP 400.*20015") as error:
+        asyncio.run(connector.exchange_code(
+            "one-time-auth-code",
+            "app-id",
+            "app-secret",
+            "http://127.0.0.1:4288/api/owner-knowledge/oauth/callback",
+        ))
+
+    assert "one-time-auth-code" not in str(error.value)
+    assert "app-secret" not in str(error.value)
+
+
+def test_oauth_callback_access_log_redacts_code_and_state():
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        "server.py",
+        1,
+        '%s - "%s %s HTTP/%s" %s',
+        (
+            "127.0.0.1:12345",
+            "GET",
+            "/api/owner-knowledge/oauth/callback?code=secret-code&state=secret-state",
+            "1.1",
+            502,
+        ),
+        None,
+    )
+
+    assert OAuthCallbackAccessLogFilter().filter(record)
+    assert "secret-code" not in record.getMessage()
+    assert "secret-state" not in record.getMessage()
+    assert "?<redacted>" in record.getMessage()
 
 
 def test_chinese_lexical_search_matches_partial_phrases(tmp_path):

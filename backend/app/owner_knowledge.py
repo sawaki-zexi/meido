@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
 import math
 import re
 import sqlite3
@@ -52,6 +53,53 @@ class DocumentScan:
     documents: list[RemoteDocument]
     complete: bool
     errors: tuple[str, ...] = ()
+
+
+class FeishuApiError(RuntimeError):
+    """Safe summary of an unsuccessful Feishu API response."""
+
+    def __init__(self, operation: str, status_code: int, error_code: str | None) -> None:
+        self.operation = operation
+        self.status_code = status_code
+        self.error_code = error_code
+        suffix = f"，飞书错误码 {error_code}" if error_code else ""
+        super().__init__(f"{operation}失败（HTTP {status_code}{suffix}）")
+
+
+def _feishu_json(response: httpx.Response, operation: str) -> dict[str, object]:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    error_code: str | None = None
+    if isinstance(payload, dict):
+        raw_code = payload.get("code")
+        if isinstance(raw_code, int) and not isinstance(raw_code, bool):
+            error_code = str(raw_code)
+        elif isinstance(raw_code, str) and raw_code.isdigit():
+            error_code = raw_code[:12]
+    if (
+        not response.is_success
+        or not isinstance(payload, dict)
+        or payload.get("code", 0) not in (0, "0", None)
+    ):
+        raise FeishuApiError(operation, response.status_code, error_code)
+    return payload
+
+
+class OAuthCallbackAccessLogFilter(logging.Filter):
+    """Remove one-time OAuth query parameters from Uvicorn access logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3:
+            request_target = str(args[2])
+            path, separator, _query = request_target.partition("?")
+            if separator and path == "/api/owner-knowledge/oauth/callback":
+                safe_args = list(args)
+                safe_args[2] = path + "?<redacted>"
+                record.args = tuple(safe_args)
+        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,12 +390,12 @@ class FeishuApiConnector:
                 json={"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri},
                 headers={"Authorization": "Bearer " + await self._app_token(client, app_id, app_secret)},
             )
-            response.raise_for_status()
-            payload = response.json()
-        if not isinstance(payload, dict) or payload.get("code", 0) not in (0, None):
-            raise RuntimeError("飞书 OAuth 授权失败")
+            payload = _feishu_json(response, "飞书授权码兑换")
         data = payload.get("data")
-        return data if isinstance(data, dict) else payload
+        result = data if isinstance(data, dict) else payload
+        if not result.get("access_token"):
+            raise RuntimeError("飞书授权码兑换成功，但响应缺少用户访问令牌")
+        return result
 
     async def refresh_token(self, refresh_token: str, app_id: str, app_secret: str) -> dict[str, object]:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -360,12 +408,12 @@ class FeishuApiConnector:
                 },
                 headers={"Authorization": f"Bearer {app_token}"},
             )
-            response.raise_for_status()
-            payload = response.json()
-        if not isinstance(payload, dict) or payload.get("code", 0) not in (0, None):
-            raise RuntimeError("飞书令牌刷新失败")
+            payload = _feishu_json(response, "飞书用户令牌刷新")
         data = payload.get("data")
-        return data if isinstance(data, dict) else payload
+        result = data if isinstance(data, dict) else payload
+        if not result.get("access_token"):
+            raise RuntimeError("飞书用户令牌刷新成功，但响应缺少用户访问令牌")
+        return result
 
     @staticmethod
     async def _app_token(client: httpx.AsyncClient, app_id: str, app_secret: str) -> str:
@@ -373,8 +421,7 @@ class FeishuApiConnector:
             "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal",
             json={"app_id": app_id, "app_secret": app_secret},
         )
-        response.raise_for_status()
-        payload = response.json()
+        payload = _feishu_json(response, "飞书应用令牌请求")
         token = payload.get("app_access_token") if isinstance(payload, dict) else None
         if not isinstance(token, str) or not token:
             raise RuntimeError("无法获取飞书应用访问令牌")

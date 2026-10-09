@@ -2,6 +2,7 @@ import os
 import asyncio
 import json
 import inspect
+import logging
 import uuid
 import sqlite3
 import secrets
@@ -29,7 +30,9 @@ from .memory_documents import MemoryDocuments
 from .owner_knowledge import (
     ApplicationPluginManager,
     FeishuApiConnector,
+    FeishuApiError,
     LocalEmbeddingAdapter,
+    OAuthCallbackAccessLogFilter,
     OwnerKnowledgePlugin,
     OwnerKnowledgeScheduler,
     SyncReport,
@@ -65,6 +68,9 @@ from .agent_runtime import (
 )
 from .agent_runtime.capabilities import CapabilityResolution
 from .agent_runtime.skills import SkillRegistry
+
+logging.getLogger("uvicorn.access").addFilter(OAuthCallbackAccessLogFilter())
+logger = logging.getLogger(__name__)
 
 roles_root = Path(os.getenv("MEIDO_ROLES_DIR", "roles"))
 project_root = Path(os.getenv("MEIDO_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
@@ -640,7 +646,11 @@ async def owner_knowledge_oauth_callback(code: str = "", state: str = "", error:
     ).strip()
     try:
         payload = await owner_knowledge_connector.exchange_code(code, app_id, app_secret, redirect_uri)
+    except FeishuApiError as error:
+        logger.warning("飞书 OAuth 令牌交换失败：%s", error)
+        raise HTTPException(status_code=502, detail=str(error)) from error
     except Exception as error:
+        logger.error("飞书 OAuth 令牌交换异常：%s", type(error).__name__)
         raise HTTPException(status_code=502, detail="飞书授权交换失败") from error
     owner_knowledge_store.set_state("feishu_access_token", str(payload.get("access_token", "")))
     owner_knowledge_store.set_state("feishu_refresh_token", str(payload.get("refresh_token", "")))
