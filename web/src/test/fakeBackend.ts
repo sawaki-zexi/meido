@@ -42,6 +42,8 @@ export function fakeBackend(routes: Record<string, Handler>) {
       const status = reply.status ?? 200;
       return new Response(status === 204 ? null : JSON.stringify(reply.body ?? {}), { status, headers: { "content-type": "application/json" } });
     }
+    if (method === "GET" && path === "/api/todos/settings") return new Response(JSON.stringify({ enabled: false, remindersEnabled: true, timezone: "Asia/Shanghai" }), { status: 200, headers: { "content-type": "application/json" } });
+    if (method === "GET" && path === "/api/todos/reminders") return new Response(JSON.stringify({ reminders: [], unreadCount: 0 }), { status: 200, headers: { "content-type": "application/json" } });
     throw new Error(`Unexpected request: ${method} ${path}`);
   });
   vi.stubGlobal("fetch", fetchMock);

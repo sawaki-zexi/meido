@@ -24,6 +24,7 @@ KNOWN_CAPABILITIES = frozenset({
     "runtime.tool",
     "memory.read",
     "memory.write",
+    "todo.read",
 })
 HookMode = str
 Cleanup = Callable[[], object | Awaitable[object]]

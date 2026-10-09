@@ -2,10 +2,12 @@ import { useState, type ReactNode } from "react";
 import { Dialog } from "../../ui/Dialog";
 import { Icon, type IconName } from "../../ui/Icon";
 import { ModelSettings } from "../model/ModelSettings";
+import { TodoSettings } from "../todo/TodoSettings";
 
 /** Settings sections. Add an entry here to add a new section to the dialog. */
 const sections: { id: string; label: string; icon: IconName; render: () => ReactNode }[] = [
   { id: "model", label: "模型", icon: "model", render: () => <ModelSettings /> },
+  { id: "todo", label: "待办", icon: "todo", render: () => <TodoSettings /> },
 ];
 
 export function SettingsDialog({ onClose }: { onClose: () => void }) {

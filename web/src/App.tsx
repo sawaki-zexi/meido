@@ -42,12 +42,12 @@ export function App() {
     setOpeningId(role.id);
     const opened = await chat.open(role);
     setOpeningId(null);
-    if (!opened) return false;
+    if (!opened) return null;
     writeLastRole(role.id);
     setHighlightedId(null);
     setView("chat");
     setShowList(false);
-    return true;
+    return opened;
   };
 
   // Home is a conversation: once roles load, open the last role (or the first one).
@@ -79,6 +79,21 @@ export function App() {
       : messages.find((message) => from !== undefined && message.sequence >= from && message.sequence <= to!);
     if (!source) { chat.setError("来源消息当前不可访问"); return; }
     setHighlightedId(source.id);
+  };
+  const openTodoSource = async (roleId: string, sessionKey: string, messageId: string) => {
+    const sourceRole = roles.roles.find((role) => role.id === roleId);
+    if (!sourceRole || sessionKey !== `role:${roleId}`) {
+      chat.setError("来源角色当前不可访问");
+      setView("chat");
+      return;
+    }
+    const messages = await openChat(sourceRole);
+    if (!messages) return;
+    if (!messages.some((message) => message.id === messageId)) {
+      chat.setError("来源消息当前不可访问");
+      return;
+    }
+    setHighlightedId(messageId);
   };
   const chatWith = (role: Role) => role.id === chat.roleId ? backToChat() : void openChat(role);
 
@@ -139,7 +154,7 @@ export function App() {
         : view === "memories" && chatRole
         ? <MemoryPanel key={chatRole.id} role={chatRole} onBack={backToChat} onOpenSource={(origin, messageId) => void openMemorySource(chatRole, origin, messageId)} />
         : chatRole
-        ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showProfile(chatRole)} onShowMemories={() => setView("memories")} />
+        ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showProfile(chatRole)} onShowMemories={() => setView("memories")} onOpenTodoSource={(roleId, sessionKey, messageId) => void openTodoSource(roleId, sessionKey, messageId)} />
         : <WelcomeView loading={roles.loading || openingId !== null} hasRoles={roles.roles.length > 0} error={chat.error} onDismissError={() => chat.setError("")} onCreate={startCreate} onBack={() => setShowList(true)} />}
     </main>
 

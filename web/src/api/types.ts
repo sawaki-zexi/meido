@@ -1,9 +1,14 @@
 export type RoleProfile = { profile: string; personality: string; behaviorRules: string; responseConstraints: string; nickname: string };
 export type MemoryRecallToolConfig = { enabled: boolean };
-export type AgentToolConfig = { memoryRecall?: MemoryRecallToolConfig; shell?: { enabled: boolean; allowedCommands: string[]; timeoutSeconds: number; maxOutputChars: number } };
+export type AgentToolConfig = { memoryRecall?: MemoryRecallToolConfig; enabledTools?: string[]; enabledPlugins?: string[]; grantedCapabilities?: string[]; shell?: { enabled: boolean; allowedCommands: string[]; timeoutSeconds: number; maxOutputChars: number } };
 export type Role = { id: string; name: string; description: string; profile: RoleProfile; agentConfig?: AgentToolConfig; createdAt: string; updatedAt: string; avatarUrl?: string | null; avatarMediaType?: string | null; avatarOriginalUrl?: string | null; avatarOriginalMediaType?: string | null; cardImageUrl?: string | null; cardImageMediaType?: string | null };
 export type MessageStatus = "streaming" | "completed" | "failed";
 export type Message = { id: string; sessionKey: string; sequence: number; role: "user" | "assistant"; content: string; status: MessageStatus; createdAt: string };
 export type Session = { sessionKey: string; roleId: string; createdAt: string; updatedAt: string };
 export type Provider = { id: string; label: string; provider: string; baseUrl: string; modelHint: string };
 export type ModelConfiguration = { id: string; providerId: string; provider: string; baseUrl: string; model: string; apiKeyConfigured: boolean; active?: boolean };
+export type TodoStatus = "inbox" | "scheduled" | "completed" | "cancelled";
+export type TodoItem = { id: string; title: string; description: string; status: TodoStatus; dueDate: string | null; dueAt: string | null; reminderAt: string | null; reminderDate: string | null; timezone: string; sourceRoleId: string | null; sourceSessionKey: string | null; sourceMessageId: string | null; sourceAvailable: boolean; createdAt: string; updatedAt: string; completedAt: string | null; cancelledAt: string | null };
+export type TodoReminder = { id: string; todoId: string; dueKey: string; status: "pending" | "delivered" | "failed"; dueAt: string; attempts: number; lastError: string | null; createdAt: string; updatedAt: string; deliveredAt: string | null; readAt: string | null; title: string; todoStatus: TodoStatus; delayed?: boolean };
+export type TodoSettings = { enabled: boolean; remindersEnabled: boolean; timezone: string; timezoneConfigured?: boolean };
+export type TodoDiagnostic = { id?: string; eventId?: string; roleId?: string; attempts?: number; error?: string | null; status: string; todoId?: string | null; operation?: string };
