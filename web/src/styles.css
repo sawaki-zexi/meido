@@ -77,6 +77,9 @@ input:disabled, textarea:disabled, select:disabled { background: transparent; co
 .required { color: var(--rose); margin-left: 3px; }
 fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 14px; min-width: 0; }
 legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; letter-spacing: .12em; color: var(--ink-faint); }
+.section-toggle { justify-self: start; min-height: 30px; padding: 3px 0; border-color: transparent; background: transparent; color: var(--rose-deep); font-size: 13px; }
+.section-toggle:hover:not(:disabled) { background: transparent; color: var(--rose); }
+.advanced-fields { display: grid; gap: 14px; }
 .form-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
 .push-end { margin-left: auto; }
 

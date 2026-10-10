@@ -201,6 +201,24 @@ describe("设置", () => {
 });
 
 describe("角色管理", () => {
+  it("新建角色时显示字段提示，并默认收起非核心设定", async () => {
+    fakeBackend({ "GET /api/roles": () => ({ body: { roles: [] } }) });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "创建角色" }));
+    const form = await dialog("创建角色");
+
+    expect(within(form).getByLabelText(/名称/)).toHaveAttribute("placeholder", "给她起个名字");
+    expect(within(form).getByLabelText(/角色设定/)).toHaveAttribute("placeholder", "描述她的身份、背景，以及你们之间的关系");
+    expect(within(form).queryByLabelText(/性格/)).toBeNull();
+    const more = within(form).getByRole("button", { name: "更多设定" });
+    expect(more).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(more);
+    expect(within(form).getByLabelText(/性格/)).toHaveAttribute("placeholder", "例如：温柔、细心，偶尔会开些小玩笑");
+    expect(within(form).getByRole("button", { name: "收起更多设定" })).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("在角色酒馆中创建角色，生成她的专属卡牌，再从卡牌进入对话", async () => {
     const created = role({ id: "r2", name: "新角色", description: "新来的", profile: { ...alice.profile, profile: "她的设定" } });
     const { calls } = fakeBackend({
