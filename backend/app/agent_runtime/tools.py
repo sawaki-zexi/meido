@@ -78,6 +78,7 @@ class ToolContext:
     session_key: str
     run_id: str
     signal: CancellationToken
+    tool_call_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

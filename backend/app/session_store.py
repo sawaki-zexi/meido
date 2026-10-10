@@ -59,6 +59,15 @@ class SessionStore:
             ).fetchall()
         return [self._message(row) for row in rows]
 
+    def user_message_for_run(self, run_id: str) -> Message | None:
+        with sqlite3.connect(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT message_id, session_key, sequence, role, content, status, created_at, message_type, tool_call_id, tool_name, tool_arguments_json, tool_result_json, is_error, run_id, metadata_json "
+                "FROM messages WHERE run_id=? AND role='user' AND status='completed' ORDER BY sequence LIMIT 1",
+                (run_id,),
+            ).fetchone()
+        return self._message(row) if row else None
+
     def context_messages(self, session_key: str) -> list[Message]:
         return [
             message
@@ -97,6 +106,52 @@ class SessionStore:
             )
             connection.execute("UPDATE sessions SET updated_at = ? WHERE session_key = ?", (now, session_key))
         return Message(id=message_id, sessionKey=session_key, sequence=sequence, role=role, content=content, status=status, createdAt=datetime.fromisoformat(now), messageType=message_type, toolCallId=tool_call_id, toolName=tool_name, toolArguments=tool_arguments, toolResult=tool_result, isError=is_error, runId=run_id, metadata=metadata or {})
+
+    def append_proactive_message_once(
+        self,
+        session_key: str,
+        content: str,
+        *,
+        event_id: str,
+        metadata: dict[str, object] | None = None,
+    ) -> Message:
+        """Persist one proactive role message per durable event ID."""
+
+        if not event_id.strip():
+            raise ValueError("主动消息缺少事件标识")
+        message_metadata = {**(metadata or {}), "proactiveEventId": event_id}
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT m.message_id,m.session_key,m.sequence,m.role,m.content,m.status,m.created_at,m.message_type,m.tool_call_id,m.tool_name,m.tool_arguments_json,m.tool_result_json,m.is_error,m.run_id,m.metadata_json "
+                "FROM proactive_messages p JOIN messages m ON m.message_id=p.message_id WHERE p.event_id=?",
+                (event_id,),
+            ).fetchall()
+            for row in rows:
+                return self._message(row)
+            row = connection.execute(
+                "SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE session_key=?",
+                (session_key,),
+            ).fetchone()
+            sequence = int(row[0])
+            now = _now()
+            message_id = f"{session_key}:{uuid.uuid4().hex}"
+            connection.execute(
+                "INSERT INTO messages(message_id,session_key,sequence,role,content,status,created_at,message_type,run_id,metadata_json) "
+                "VALUES(?,?,?,'assistant',?,'completed',?,'proactive_reminder',NULL,?)",
+                (message_id, session_key, sequence, content, now, _dump(message_metadata)),
+            )
+            connection.execute(
+                "INSERT INTO proactive_messages(event_id,message_id,created_at) VALUES(?,?,?)",
+                (event_id, message_id, now),
+            )
+            connection.execute("UPDATE sessions SET updated_at=? WHERE session_key=?", (now, session_key))
+            stored = connection.execute(
+                "SELECT message_id,session_key,sequence,role,content,status,created_at,message_type,tool_call_id,tool_name,tool_arguments_json,tool_result_json,is_error,run_id,metadata_json FROM messages WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+        assert stored is not None
+        return self._message(stored)
 
     def update_message(
         self,
@@ -347,6 +402,7 @@ class SessionStore:
         session_key = f"role:{role_id}"
         with sqlite3.connect(self.database_path) as connection:
             connection.execute("DELETE FROM messages WHERE session_key = ?", (session_key,))
+            connection.execute("DELETE FROM proactive_messages WHERE message_id NOT IN (SELECT message_id FROM messages)")
             connection.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
             connection.execute("DELETE FROM agent_runs WHERE role_id = ?", (role_id,))
             connection.execute("DELETE FROM tool_audits WHERE role_id = ?", (role_id,))
@@ -481,6 +537,7 @@ class SessionStore:
         session_key = f"role:{role_id}"
         with sqlite3.connect(self.database_path) as connection:
             connection.execute("DELETE FROM messages WHERE session_key = ?", (session_key,))
+            connection.execute("DELETE FROM proactive_messages WHERE message_id NOT IN (SELECT message_id FROM messages)")
             connection.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
             if session is not None:
                 connection.execute(

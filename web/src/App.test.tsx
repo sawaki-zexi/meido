@@ -45,6 +45,51 @@ describe("首页", () => {
     expect(localStorage.getItem("meido:last-role")).toBe("r1");
   });
 
+  it("在聊天待办抽屉中创建并查看主人级待办", async () => {
+    const items: Record<string, unknown>[] = [];
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": emptySession,
+      "GET /api/todos/settings": () => ({ body: { enabled: true, remindersEnabled: true, timezone: "Asia/Shanghai" } }),
+      "GET /api/todos/reminders": () => ({ body: { reminders: [], unreadCount: 0 } }),
+      "GET /api/todos/diagnostics": () => ({ body: { items: [] } }),
+      "GET /api/todos": () => ({ body: { todos: items } }),
+      "POST /api/todos": (_, match) => {
+        void match;
+        const call = calls.at(-1);
+        const body = call?.body as Record<string, unknown>;
+        items.push({ ...body, id: "todo-1", status: body.dueDate ? "scheduled" : "inbox", sourceRoleId: null, sourceSessionKey: null, sourceMessageId: null, sourceAvailable: true, createdAt: "2026-10-08T00:00:00Z", updatedAt: "2026-10-08T00:00:00Z", completedAt: null, cancelledAt: null });
+        return { status: 201, body: items[0] };
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    await user.click(await screen.findByRole("button", { name: "待办" }));
+    const drawer = await dialog("待办");
+    await user.click(within(drawer).getByRole("button", { name: "新建待办" }));
+    await user.type(within(drawer).getByLabelText("标题"), "提交实验报告");
+    await user.click(within(drawer).getByRole("button", { name: "保存" }));
+    expect(await within(drawer).findByText("提交实验报告")).toBeTruthy();
+    expect(calls.find((call) => call.method === "POST" && call.path === "/api/todos")?.body).toMatchObject({ title: "提交实验报告", timezone: "Asia/Shanghai" });
+  });
+
+  it("当前聊天会刷新并显示后台送达的角色主动提醒", async () => {
+    let sessionReads = 0;
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": () => {
+        sessionReads += 1;
+        return { body: { session, messages: sessionReads === 1 ? [] : [message({ id: "reminder-1", role: "assistant", content: "主人，记得交报告", sessionKey: "role:r1", sequence: 1, messageType: "proactive_reminder" })] } };
+      },
+    });
+    render(<App />);
+    await chatHeading("爱丽丝");
+    window.dispatchEvent(new Event("focus"));
+    expect(await screen.findByText("主人，记得交报告")).toBeTruthy();
+    expect(sessionReads).toBe(2);
+  });
+
   it("后端不可用时显示明确错误", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("Failed to fetch"); }));
     render(<App />);
@@ -100,6 +145,59 @@ describe("设置", () => {
     expect(within(panel).getByRole("button", { name: /主人资料/ })).toHaveAttribute("aria-current", "true");
     expect(await within(panel).findByText("飞书授权成功，可以启用主人资料插件")).toBeInTheDocument();
   });
+
+  it("可以独立暂停待办提醒而保留待办插件", async () => {
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [] } }),
+      "GET /api/model/providers": () => ({ body: { providers: [] } }),
+      "GET /api/model/configurations": () => ({ body: { configurations: [], activeId: null } }),
+      "GET /api/todos/settings": () => ({ body: { enabled: true, remindersEnabled: true, timezone: "Asia/Shanghai" } }),
+      "PUT /api/todos/settings": (_, match) => {
+        void match;
+        const body = calls.at(-1)?.body as Record<string, unknown>;
+        return { body: { enabled: true, remindersEnabled: body.remindersEnabled ?? true, timezone: "Asia/Shanghai" } };
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    const panel = await dialog("设置");
+    await user.click(within(panel).getByRole("button", { name: "待办" }));
+    const reminders = within(panel).getByRole("checkbox", { name: "启用提醒" });
+    expect(reminders).toBeChecked();
+    await user.click(reminders);
+    await waitFor(() => expect(calls.find((call) => call.method === "PUT" && call.path === "/api/todos/settings")?.body).toMatchObject({ remindersEnabled: false }));
+    expect(within(panel).getByRole("checkbox", { name: "启用待办插件" })).toBeChecked();
+  });
+
+  it("可以选择提醒角色并暂停今天的提醒", async () => {
+    let roleEnabled = false;
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [] } }),
+      "GET /api/model/providers": () => ({ body: { providers: [] } }),
+      "GET /api/model/configurations": () => ({ body: { configurations: [], activeId: null } }),
+      "GET /api/todos/settings": () => ({ body: { enabled: true, remindersEnabled: true, timezone: "Asia/Shanghai" } }),
+      "GET /api/todos/reminder-roles": () => ({ body: { roles: [{ id: "r1", name: "爱丽丝", enabled: roleEnabled, activeToday: false, effectiveDate: roleEnabled ? "2026-10-10" : "2026-10-09" }] } }),
+      "PUT /api/todos/reminder-roles/r1": () => { roleEnabled = true; return { body: { roleId: "r1", enabled: true, effectiveDate: "2026-10-10" } }; },
+      "GET /api/todos/reminders/today": () => ({ body: { date: "2026-10-09", paused: false } }),
+      "PUT /api/todos/reminders/today\\?paused=true": () => ({ body: { date: "2026-10-09", paused: true } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    const panel = await dialog("设置");
+    await user.click(within(panel).getByRole("button", { name: "待办" }));
+
+    expect(await within(panel).findByText("未启用提醒角色，系统不会发送提醒。")).toBeTruthy();
+    const role = await within(panel).findByRole("checkbox", { name: "爱丽丝" });
+    await user.click(role);
+    await waitFor(() => expect(calls.find((call) => call.method === "PUT" && call.path === "/api/todos/reminder-roles/r1")?.body).toEqual({ enabled: true }));
+    expect(await within(panel).findByText("2026-10-10 起生效")).toBeTruthy();
+    expect(await within(panel).findByText("提醒角色从生效日期起参与；今天不会发送提醒。")).toBeTruthy();
+    await user.click(within(panel).getByRole("checkbox", { name: "暂停今天的提醒" }));
+    await waitFor(() => expect(calls.some((call) => call.method === "PUT" && call.path === "/api/todos/reminders/today?paused=true")).toBe(true));
+    expect(await within(panel).findByText(/暂停期间跳过的提醒不会补发/)).toBeTruthy();
+  });
 });
 
 describe("角色管理", () => {
@@ -130,7 +228,7 @@ describe("角色管理", () => {
     expect(calls.find((call) => call.method === "POST")?.body).toEqual({
       name: "新角色", description: "",
       profile: { profile: "她的设定", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" },
-      agentConfig: { memoryRecall: { enabled: false } },
+      agentConfig: { memoryRecall: { enabled: false }, enabledPlugins: [], grantedCapabilities: [], enabledTools: [] },
     });
     expect(sessionStorage.getItem("meido:create-role-draft")).toBeNull();
 
@@ -151,11 +249,29 @@ describe("角色管理", () => {
     const form = await dialog("创建角色");
     await user.type(within(form).getByLabelText(/名称/), "记忆角色");
     await user.type(within(form).getByLabelText(/角色设定/), "设定");
-    await user.click(within(form).getByRole("checkbox"));
+    await user.click(within(form).getByRole("checkbox", { name: "允许主动检索记忆" }));
     await user.click(within(form).getByRole("button", { name: "保存" }));
 
     await waitFor(() => expect(calls.find((call) => call.method === "POST")?.body).toMatchObject({
       agentConfig: { memoryRecall: { enabled: true } },
+    }));
+  });
+
+  it("可以为角色显式启用只读待办查询工具", async () => {
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [] } }),
+      "POST /api/roles": () => ({ body: { role: role({ id: "r1", name: "待办角色" }) } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "创建角色" }));
+    const form = await dialog("创建角色");
+    await user.type(within(form).getByLabelText(/名称/), "待办角色");
+    await user.type(within(form).getByLabelText(/角色设定/), "设定");
+    await user.click(within(form).getByRole("checkbox", { name: "允许查询主人待办" }));
+    await user.click(within(form).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(calls.find((call) => call.method === "POST" && call.path === "/api/roles")?.body).toMatchObject({
+      agentConfig: { enabledPlugins: ["todo"], grantedCapabilities: ["todo.read"], enabledTools: ["todo.search"] },
     }));
   });
 

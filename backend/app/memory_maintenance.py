@@ -12,6 +12,7 @@ from .memory_events import ConsolidationCandidate, ConsolidationCommitted
 from .models import Message
 from .session_store import SessionStore
 from .memory_documents import MemoryDocuments
+from .todo_intent import is_explicit_todo_request
 
 
 class ConsolidationDraftError(ValueError):
@@ -236,7 +237,8 @@ class MemoryMaintenance:
         for index, message in enumerate(messages[:-1]):
             following = messages[index + 1]
             if message.role == "user" and following.role == "assistant" and following.status == "completed":
-                committed.extend((message, following))
+                if not is_explicit_todo_request(message.content):
+                    committed.extend((message, following))
         return committed
 
     @staticmethod

@@ -3,12 +3,14 @@ import { Dialog } from "../../ui/Dialog";
 import { Icon, type IconName } from "../../ui/Icon";
 import { ModelSettings } from "../model/ModelSettings";
 import { OwnerKnowledgeSettings } from "./OwnerKnowledgeSettings";
+import { TodoSettings } from "../todo/TodoSettings";
 
 /** Settings sections. Add an entry here to add a new section to the dialog. */
-type SettingsSectionId = "model" | "owner-knowledge";
+type SettingsSectionId = "model" | "owner-knowledge" | "todo";
 const sections: { id: SettingsSectionId; label: string; icon: IconName; render: () => ReactNode }[] = [
   { id: "model", label: "模型", icon: "model", render: () => <ModelSettings /> },
   { id: "owner-knowledge", label: "主人资料", icon: "memory", render: () => <OwnerKnowledgeSettings /> },
+  { id: "todo", label: "待办", icon: "todo", render: () => <TodoSettings /> },
 ];
 
 export function SettingsDialog({ onClose, initialSection }: { onClose: () => void; initialSection?: SettingsSectionId }) {
