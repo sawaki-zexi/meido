@@ -73,7 +73,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
         type="button"
         className="section-toggle"
         aria-expanded={showAdvanced}
-        aria-controls="role-advanced-fields"
+        aria-controls={showAdvanced ? "role-advanced-fields" : undefined}
         onClick={() => setShowAdvanced((current) => !current)}
       >
         {showAdvanced ? "收起更多设定" : "更多设定"}
