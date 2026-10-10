@@ -18,6 +18,7 @@ from backend.app.owner_knowledge import (
     OwnerKnowledgeTool,
     RoleBoundOwnerKnowledgeReader,
     RemoteDocument,
+    SystemCredentialStore,
     _docx_text,
 )
 from backend.app.storage import resolve_owner_knowledge_database
@@ -536,6 +537,38 @@ def test_sensitive_feishu_credentials_are_stored_outside_owner_database(tmp_path
     assert stored_state == []
     assert credential_store.get("feishu_app_secret") == "app-secret-value"
     assert credential_store.get("feishu_refresh_token") == "refresh-token-value"
+
+
+def test_system_credential_store_chunks_long_tokens_to_fit_windows_limit(monkeypatch):
+    import keyring
+
+    credentials = {}
+
+    def set_password(service, username, password):
+        if len(password.encode("utf-16-le")) > 2560:
+            raise ValueError("Windows credential blob exceeds 2560 bytes")
+        credentials[(service, username)] = password
+
+    monkeypatch.setattr(keyring, "set_password", set_password)
+    monkeypatch.setattr(keyring, "get_password", lambda service, username: credentials.get((service, username)))
+    monkeypatch.setattr(keyring, "delete_password", lambda service, username: credentials.pop((service, username), None))
+    store = SystemCredentialStore()
+    token = "x" * 2048
+
+    store.set("feishu_access_token", token)
+
+    assert store.get("feishu_access_token") == token
+    assert len(credentials) > 1
+
+    store.set("feishu_access_token", "short-token")
+
+    assert store.get("feishu_access_token") == "short-token"
+    assert len(credentials) == 1
+
+    store.set("feishu_access_token", "")
+
+    assert store.get("feishu_access_token") == ""
+    assert credentials == {}
 
 
 def test_feishu_connector_paginates_and_recursively_enumerates_document_nodes(monkeypatch):

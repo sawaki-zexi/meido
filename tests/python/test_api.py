@@ -14,6 +14,7 @@ from backend.app.models import AgentRun, AgentToolConfig, MemoryRecallToolConfig
 from backend.app.memory_engine import MemoryQueryResult, MemoryScope
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.role_store import RoleStore
+from backend.app.owner_knowledge import OwnerKnowledgeStore, SystemCredentialStore
 from backend.app.session_manager import SessionManager
 from backend.app.session_store import SessionStore
 from backend.app.storage import initialize_databases
@@ -161,6 +162,42 @@ def test_feishu_oauth_callback_reports_oauth_state_store_failure(monkeypatch):
 
     assert response.status_code == 503
     assert response.json()["detail"] == "飞书授权状态暂时不可用，请重试"
+
+
+def test_feishu_oauth_callback_persists_long_token_with_windows_credential_limit(tmp_path, monkeypatch):
+    import keyring
+
+    credentials = {}
+
+    def set_password(service, username, password):
+        if len(password.encode("utf-16-le")) > 2560:
+            raise ValueError("Windows credential blob exceeds 2560 bytes")
+        credentials[(service, username)] = password
+
+    monkeypatch.setattr(keyring, "set_password", set_password)
+    monkeypatch.setattr(keyring, "get_password", lambda service, username: credentials.get((service, username)))
+    monkeypatch.setattr(keyring, "delete_password", lambda service, username: credentials.pop((service, username), None))
+
+    store = OwnerKnowledgeStore(tmp_path / "owner-knowledge.db", credential_store=SystemCredentialStore())
+    store.set_state("oauth_state", "state-1")
+    store.set_state("feishu_app_id", "app-id")
+    store.set_state("feishu_app_secret", "app-secret")
+    access_token = "x" * 2048
+
+    class Connector:
+        async def exchange_code(self, code, app_id, app_secret, redirect_uri):
+            return {"access_token": access_token, "refresh_token": "refresh-token", "expires_in": 7200}
+
+    monkeypatch.setattr(main, "owner_knowledge_store", store)
+    monkeypatch.setattr(main, "owner_knowledge_connector", Connector())
+
+    response = TestClient(main.app, raise_server_exceptions=False).get(
+        "/api/owner-knowledge/oauth/callback?code=auth-code&state=state-1"
+    )
+
+    assert response.status_code == 200
+    assert store.get_state("feishu_access_token") == access_token
+    assert all(len(value.encode("utf-16-le")) <= 2560 for value in credentials.values())
 
 
 def test_role_avatar_can_be_uploaded_replaced_loaded_and_removed(tmp_path, monkeypatch):
