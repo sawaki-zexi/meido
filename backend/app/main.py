@@ -2,8 +2,10 @@ import os
 import asyncio
 import json
 import inspect
+import logging
 import uuid
 import sqlite3
+import secrets
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from time import monotonic
@@ -13,7 +15,7 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Request, Response
 from starlette.background import BackgroundTask
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 import httpx
 
 from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
@@ -26,10 +28,23 @@ from .memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop, MemoryOptimi
 from .memory_store import MemoryStore
 from .memory_events import ConsolidationCommitted, TurnCommitted, MemoryEventBus, MemoryWritten
 from .memory_documents import MemoryDocuments
+from .owner_knowledge import (
+    ApplicationPluginManager,
+    FeishuApiConnector,
+    FeishuApiError,
+    LocalEmbeddingAdapter,
+    OAuthCallbackAccessLogFilter,
+    OwnerKnowledgePlugin,
+    OwnerKnowledgeScheduler,
+    SyncReport,
+    OwnerKnowledgeStore,
+    OwnerKnowledgeTool,
+    RoleBoundOwnerKnowledgeReader,
+)
 from .models import AgentRun, MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, Message, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
-from .storage import initialize_databases
+from .storage import initialize_databases, resolve_owner_knowledge_database
 from .session_manager import SessionManager
 from .session_store import SessionStore
 from .agent_runtime import (
@@ -59,6 +74,9 @@ from .todo.agent import register_todo_agent_plugin
 from .todo.application import TodoApplicationService
 from .todo.models import TodoCreate, TodoList, TodoReminderList, TodoReminderRoleInput, TodoSettingsInput, TodoStatusInput, TodoUpdate
 
+logging.getLogger("uvicorn.access").addFilter(OAuthCallbackAccessLogFilter())
+logger = logging.getLogger(__name__)
+
 roles_root = Path(os.getenv("MEIDO_ROLES_DIR", "roles"))
 project_root = Path(os.getenv("MEIDO_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
 data_root = Path(os.getenv("MEIDO_DATA_DIR", ".data"))
@@ -73,6 +91,29 @@ memory_event_bus = MemoryEventBus()
 model_adapter: ModelAdapter = OpenAICompatibleAdapter()
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
 plugin_registry = PluginRegistry()
+owner_knowledge_store = OwnerKnowledgeStore(resolve_owner_knowledge_database(project_root, data_root))
+async def _refresh_feishu_access_token() -> None:
+    refresh = owner_knowledge_store.get_state("feishu_refresh_token")
+    app_id = owner_knowledge_store.get_state("feishu_app_id") or os.getenv("MEIDO_FEISHU_APP_ID", "").strip()
+    app_secret = owner_knowledge_store.get_state("feishu_app_secret") or os.getenv("MEIDO_FEISHU_APP_SECRET", "").strip()
+    if not refresh or not app_id or not app_secret:
+        raise RuntimeError("飞书授权已过期，请重新连接")
+    payload = await owner_knowledge_connector.refresh_token(refresh, app_id, app_secret)
+    owner_knowledge_store.set_state("feishu_access_token", str(payload.get("access_token", "")))
+    owner_knowledge_store.set_state("feishu_refresh_token", str(payload.get("refresh_token", refresh)))
+
+
+owner_knowledge_connector = FeishuApiConnector(
+    lambda: owner_knowledge_store.get_state("feishu_access_token"),
+    refresh_token=_refresh_feishu_access_token,
+)
+owner_knowledge_plugin = OwnerKnowledgePlugin(
+    owner_knowledge_store,
+    owner_knowledge_connector,
+    LocalEmbeddingAdapter(os.getenv("MEIDO_OWNER_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")),
+)
+application_plugin_manager = ApplicationPluginManager()
+application_plugin_manager.register("owner-knowledge", owner_knowledge_plugin)
 register_todo_agent_plugin(plugin_registry)
 todo_store = TodoStore(data_root / "todos.db")
 todo_application = TodoApplicationService(todo_store, session_store)
@@ -520,6 +561,20 @@ def _role_memory_context(role_id: str) -> str:
     return "\n\n".join(sections)
 
 
+def _role_owner_understanding_memory(role_id: str) -> str:
+    sections = [_role_memory_context(role_id)]
+    records = memory_store.list_all(role_id)
+    if records:
+        summaries = [
+            f"- [{item.memoryType}] {item.summary}"
+            for item in records
+            if getattr(item, "status", "active") == "active"
+        ]
+        if summaries:
+            sections.append("[结构化角色记忆]\n" + "\n".join(summaries[:120]))
+    return "\n\n".join(part for part in sections if part)[:12000]
+
+
 async def _memory_engine_item_mutation(mutation: MemoryMutation) -> MemoryItem:
     result = await _current_memory_engine().mutate(mutation)
     item = result.raw.get("item")
@@ -543,6 +598,8 @@ async def _memory_engine_delete(mutation: MemoryMutation) -> None:
 
 
 async def _close_memory_workers() -> None:
+    await owner_knowledge_scheduler.close()
+    await owner_knowledge_plugin.close()
     await todo_plugin.close()
     await memory_optimizer_loop.close()
     await memory_worker.close()
@@ -569,15 +626,274 @@ async def _start_memory_workers() -> None:
             memory_worker.end_role_deletion(role_id, deleted=True)
     await asyncio.to_thread(memory_maintenance.resume_pending)
     memory_optimizer_loop.start()
+    owner_startup_report = await owner_knowledge_plugin.startup()
+    if owner_startup_report and (owner_startup_report.created or owner_startup_report.updated or owner_startup_report.deleted):
+        _queue_owner_understanding_refresh(owner_startup_report)
+    owner_knowledge_scheduler.start()
+
+
+owner_knowledge_frontend_port = os.getenv("MEIDO_WEB_PORT", "5288").strip()
+owner_knowledge_frontend_origins = [
+    os.getenv("MEIDO_WEB_ORIGIN", f"http://127.0.0.1:{owner_knowledge_frontend_port}").strip().rstrip("/"),
+]
+if "MEIDO_WEB_ORIGIN" not in os.environ:
+    owner_knowledge_frontend_origins.append(f"http://localhost:{owner_knowledge_frontend_port}")
+
+
+def _owner_knowledge_return_url(origin: str = "") -> str:
+    requested_origin = origin.rstrip("/")
+    safe_origin = (
+        requested_origin
+        if requested_origin in owner_knowledge_frontend_origins
+        else owner_knowledge_frontend_origins[0]
+    )
+    return f"{safe_origin}/app?ownerKnowledge=connected"
 
 
 app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown=[_close_memory_workers])
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5288", "http://localhost:5288"],
+    allow_origins=owner_knowledge_frontend_origins,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
+
+
+@app.get("/api/owner-knowledge")
+def get_owner_knowledge_status() -> dict[str, object]:
+    status = owner_knowledge_plugin.status()
+    return {
+        "enabled": status.enabled,
+        "connected": status.connected,
+        "oauthConfigured": bool(
+            (owner_knowledge_store.get_state("feishu_app_id") or os.getenv("MEIDO_FEISHU_APP_ID"))
+            and (owner_knowledge_store.get_state("feishu_app_secret") or os.getenv("MEIDO_FEISHU_APP_SECRET"))
+        ),
+        "embeddingReady": getattr(owner_knowledge_plugin.embedder, "ready", False),
+        "appId": owner_knowledge_store.get_state("feishu_app_id"),
+        "redirectUri": os.getenv(
+            "MEIDO_FEISHU_REDIRECT_URI",
+            "http://127.0.0.1:4288/api/owner-knowledge/oauth/callback",
+        ),
+        "lastError": status.last_error,
+        "lastSync": asdict(status.last_sync) if status.last_sync else None,
+    }
+
+
+@app.get("/api/plugins")
+def list_application_plugins() -> dict[str, object]:
+    return {"plugins": application_plugin_manager.list()}
+
+
+@app.put("/api/owner-knowledge/oauth-config")
+def save_owner_knowledge_oauth_config(data: dict[str, object]) -> dict[str, object]:
+    app_id = data.get("appId")
+    app_secret = data.get("appSecret")
+    if not isinstance(app_id, str) or not app_id.strip():
+        raise HTTPException(status_code=422, detail="飞书应用 ID 不能为空")
+    if isinstance(app_secret, str) and app_secret.strip():
+        owner_knowledge_store.set_state("feishu_app_secret", app_secret.strip())
+    elif not owner_knowledge_store.get_state("feishu_app_secret"):
+        raise HTTPException(status_code=422, detail="飞书应用 Secret 不能为空")
+    owner_knowledge_store.set_state("feishu_app_id", app_id.strip())
+    return {"oauthConfigured": True, "appId": app_id.strip(), "appSecretConfigured": True}
+
+
+@app.post("/api/owner-knowledge/authorize")
+def authorize_owner_knowledge(request: Request) -> dict[str, str]:
+    from .owner_knowledge import feishu_authorization_url
+
+    app_id = owner_knowledge_store.get_state("feishu_app_id") or os.getenv("MEIDO_FEISHU_APP_ID", "").strip()
+    redirect_uri = os.getenv(
+        "MEIDO_FEISHU_REDIRECT_URI",
+        "http://127.0.0.1:4288/api/owner-knowledge/oauth/callback",
+    ).strip()
+    app_secret = owner_knowledge_store.get_state("feishu_app_secret") or os.getenv("MEIDO_FEISHU_APP_SECRET", "").strip()
+    if not app_id or not app_secret:
+        raise HTTPException(status_code=409, detail="尚未配置飞书自建应用 ID 和 Secret")
+    state = secrets.token_urlsafe(32)
+    owner_knowledge_store.set_state("oauth_state", state)
+    owner_knowledge_store.set_state("oauth_return_url", _owner_knowledge_return_url(request.headers.get("origin", "")))
+    try:
+        return {"authorizationUrl": feishu_authorization_url(app_id, redirect_uri, state)}
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.get("/api/owner-knowledge/oauth/callback")
+async def owner_knowledge_oauth_callback(code: str = "", state: str = "", error: str = "") -> Response:
+    if error:
+        raise HTTPException(status_code=400, detail="飞书授权未完成")
+
+    try:
+        expected_state = owner_knowledge_store.get_state("oauth_state")
+    except Exception as callback_error:
+        logger.exception("读取飞书 OAuth 状态失败：%s", type(callback_error).__name__)
+        raise HTTPException(status_code=503, detail="飞书授权状态暂时不可用，请重试") from callback_error
+    if not code or not state or state != expected_state:
+        raise HTTPException(status_code=400, detail="飞书授权状态无效或已过期")
+
+    try:
+        # Consume the one-time state before exchanging the code. A failed
+        # exchange can then be retried by starting a fresh authorization flow.
+        owner_knowledge_store.set_state("oauth_state", "")
+        return_url = owner_knowledge_store.get_state("oauth_return_url")
+        owner_knowledge_store.set_state("oauth_return_url", "")
+        app_id = owner_knowledge_store.get_state("feishu_app_id") or os.getenv("MEIDO_FEISHU_APP_ID", "").strip()
+        app_secret = owner_knowledge_store.get_state("feishu_app_secret") or os.getenv("MEIDO_FEISHU_APP_SECRET", "").strip()
+        redirect_uri = os.getenv(
+            "MEIDO_FEISHU_REDIRECT_URI",
+            "http://127.0.0.1:4288/api/owner-knowledge/oauth/callback",
+        ).strip()
+    except Exception as callback_error:
+        logger.exception("读取或清理飞书 OAuth 配置失败：%s", type(callback_error).__name__)
+        raise HTTPException(status_code=503, detail="飞书授权配置暂时不可用，请重试") from callback_error
+    try:
+        payload = await owner_knowledge_connector.exchange_code(code, app_id, app_secret, redirect_uri)
+    except FeishuApiError as error:
+        logger.warning("飞书 OAuth 令牌交换失败：%s", error)
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except Exception as error:
+        logger.error("飞书 OAuth 令牌交换异常：%s", type(error).__name__)
+        raise HTTPException(status_code=502, detail="飞书授权交换失败") from error
+    try:
+        access_token = str(payload.get("access_token", "")).strip()
+        if not access_token:
+            raise RuntimeError("飞书响应缺少用户访问令牌")
+        owner_knowledge_store.set_state("feishu_access_token", access_token)
+        refresh_token = str(payload.get("refresh_token", "")).strip()
+        if refresh_token:
+            owner_knowledge_store.set_state("feishu_refresh_token", refresh_token)
+        expires_in = payload.get("expires_in", 0)
+        if isinstance(expires_in, (int, float)) and not isinstance(expires_in, bool):
+            expires_at = datetime.now(timezone.utc).timestamp() + expires_in
+            owner_knowledge_store.set_state("feishu_token_expires_at", str(expires_at))
+    except Exception as error:
+        logger.error("飞书 OAuth 令牌保存异常：%s", type(error).__name__)
+        raise HTTPException(status_code=502, detail="飞书授权成功，但本地凭据保存失败，请检查系统凭据库") from error
+    safe_return_urls = {_owner_knowledge_return_url(origin) for origin in owner_knowledge_frontend_origins}
+    if return_url not in safe_return_urls:
+        return_url = _owner_knowledge_return_url()
+    return RedirectResponse(return_url, status_code=303)
+
+
+@app.post("/api/owner-knowledge/enable")
+async def enable_owner_knowledge() -> dict[str, object]:
+    try:
+        report = await application_plugin_manager.enable("owner-knowledge")
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if report.created or report.updated or report.deleted:
+        _queue_owner_understanding_refresh(report)
+    return get_owner_knowledge_status()
+
+
+@app.post("/api/owner-knowledge/pause")
+async def pause_owner_knowledge() -> dict[str, object]:
+    await application_plugin_manager.pause("owner-knowledge")
+    return get_owner_knowledge_status()
+
+
+@app.post("/api/owner-knowledge/sync")
+async def sync_owner_knowledge() -> dict[str, object]:
+    try:
+        report = await owner_knowledge_plugin.sync()
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if report.created or report.updated or report.deleted:
+        _queue_owner_understanding_refresh(report)
+    return {**get_owner_knowledge_status(), "report": asdict(report)}
+
+
+@app.post("/api/owner-knowledge/disconnect")
+async def disconnect_owner_knowledge() -> dict[str, object]:
+    await application_plugin_manager.pause("owner-knowledge")
+    owner_knowledge_store.clear_source()
+    return get_owner_knowledge_status()
+
+
+@app.get("/api/owner-knowledge/documents")
+def list_owner_knowledge_documents() -> dict[str, object]:
+    return {"documents": owner_knowledge_store.list_document_statuses()}
+
+
+@app.get("/api/owner-knowledge/sync-runs")
+def list_owner_knowledge_sync_runs() -> dict[str, object]:
+    return {"runs": owner_knowledge_store.list_sync_runs()}
+
+
+@app.get("/api/roles/{role_id}/owner-understanding")
+def get_owner_understanding(role_id: str) -> dict[str, object]:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    return {"understanding": owner_knowledge_store.get_understanding(role_id)}
+
+
+def _queue_owner_understanding_refresh(report: SyncReport | None = None, *, full_refresh: bool = False) -> None:
+    for role in store.list():
+        owner_knowledge_plugin.queue_understanding_refresh(
+            role.id,
+            role,
+            model_adapter,
+            _role_model_configuration(role.id),
+            _role_owner_understanding_memory(role.id),
+            changed_document_ids=report.changed_document_ids if report else (),
+            deleted_document_titles=report.deleted_document_titles if report else (),
+            full_refresh=full_refresh,
+        )
+
+
+def _owner_knowledge_changed(
+    role_id: str | None,
+    changed_document_ids: tuple[str, ...],
+    deleted_document_titles: tuple[str, ...],
+    full_refresh: bool,
+) -> None:
+    if role_id is None:
+        _queue_owner_understanding_refresh(
+            SyncReport(
+                trigger="scheduled",
+                complete=True,
+                changed_document_ids=changed_document_ids,
+                deleted_document_titles=deleted_document_titles,
+            ),
+            full_refresh=full_refresh,
+        )
+        return
+    role = store.get(role_id)
+    if role is None:
+        return
+    job = owner_knowledge_store.understanding_job(role_id)
+    payload, job_full_refresh = job[:2] if job else ({}, False)
+    owner_knowledge_plugin.queue_understanding_refresh(
+        role_id,
+        role,
+        model_adapter,
+        _role_model_configuration(role_id),
+        _role_owner_understanding_memory(role_id),
+        changed_document_ids=payload.get("changedDocumentIds", changed_document_ids),
+        deleted_document_titles=payload.get("deletedDocumentTitles", deleted_document_titles),
+        full_refresh=full_refresh or job_full_refresh,
+    )
+
+
+owner_knowledge_scheduler = OwnerKnowledgeScheduler(owner_knowledge_plugin, _owner_knowledge_changed)
+
+
+@app.post("/api/roles/{role_id}/owner-understanding/regenerate")
+async def regenerate_owner_understanding(role_id: str) -> dict[str, object]:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    if not owner_knowledge_plugin.status().enabled:
+        raise HTTPException(status_code=409, detail="主人资料插件已暂停")
+    try:
+        owner_knowledge_store.enqueue_understanding(role_id, {"kind": "manual"}, full_refresh=True)
+        await owner_knowledge_plugin.generate_understanding(
+            store.get(role_id), model_adapter, _role_model_configuration(role_id), _role_owner_understanding_memory(role_id)
+        )
+    except Exception as error:
+        raise HTTPException(status_code=502, detail="角色理解生成失败，已保留上一版本") from error
+    return {"understanding": owner_knowledge_store.get_understanding(role_id)}
 
 
 @app.get("/api/health")
@@ -1045,9 +1361,11 @@ async def delete_role(role_id: str) -> None:
     session_snapshot = None
     audit_snapshot = None
     memory_snapshot = None
+    owner_knowledge_snapshot = None
     session_snapshot_taken = False
     audit_snapshot_taken = False
     memory_snapshot_taken = False
+    owner_knowledge_snapshot_taken = False
     role_delete_attempted = False
     deletion_succeeded = False
     deletion_marker = None
@@ -1060,6 +1378,7 @@ async def delete_role(role_id: str) -> None:
         # role permanently blocked from future memory work.
         deletion_started = True
         await memory_worker.begin_role_deletion(role_id)
+        await owner_knowledge_plugin.begin_role_deletion(role_id)
         deletion_lock = memory_worker.role_lock_for(role_id)
         await deletion_lock.acquire()
         session_snapshot = session_store.snapshot_role_session(role_id)
@@ -1068,6 +1387,8 @@ async def delete_role(role_id: str) -> None:
         audit_snapshot_taken = True
         memory_snapshot = memory_store.snapshot_role(role_id)
         memory_snapshot_taken = True
+        owner_knowledge_snapshot = owner_knowledge_store.snapshot_role(role_id)
+        owner_knowledge_snapshot_taken = True
         deletion_marker = store.begin_role_deletion(role_id)
         deletion_phase = "files"
         staged_path = store.stage_role_files_for_deletion(role_id)
@@ -1078,6 +1399,7 @@ async def delete_role(role_id: str) -> None:
         session_store.delete_role_session(role_id)
         deletion_phase = "memory"
         memory_store.delete_role(role_id)
+        owner_knowledge_store.delete_role(role_id)
         store.purge_staged_role_files(staged_path)
         deletion_succeeded = True
         try:
@@ -1095,6 +1417,11 @@ async def delete_role(role_id: str) -> None:
         if session_snapshot_taken and session_snapshot is not None:
             try:
                 session_store.restore_role_session(role_id, session_snapshot)
+            except Exception as restore_error:
+                rollback_errors.append(restore_error)
+        if owner_knowledge_snapshot_taken and owner_knowledge_snapshot is not None:
+            try:
+                owner_knowledge_store.restore_role(role_id, owner_knowledge_snapshot)
             except Exception as restore_error:
                 rollback_errors.append(restore_error)
         if audit_snapshot_taken and audit_snapshot is not None:
@@ -1131,6 +1458,7 @@ async def delete_role(role_id: str) -> None:
         detail = "删除失败，角色和聊天记录已保留" if deletion_phase == "session" else "删除失败，角色和记忆已保留"
         raise HTTPException(status_code=500, detail=detail) from error
     finally:
+        await owner_knowledge_plugin.end_role_deletion(role_id)
         if deletion_started:
             memory_worker.end_role_deletion(role_id, deleted=deletion_succeeded)
             store.end_role_deletion(role_id)
@@ -1474,10 +1802,14 @@ def _memory_runtime_tool(role) -> MemoryRecallTool:
     return MemoryRecallTool(RoleScopedMemoryReadPort(_current_memory_engine(), role.id))
 
 
-def _runtime_tool_candidates(role) -> tuple[ShellTool | MemoryRecallTool, ...]:
+def _owner_knowledge_runtime_tool(role) -> OwnerKnowledgeTool:
+    return OwnerKnowledgeTool(RoleBoundOwnerKnowledgeReader(role.id, owner_knowledge_plugin.search))
+
+
+def _runtime_tool_candidates(role) -> tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool, ...]:
     """Build every tool available to the host for a role snapshot."""
     shell = role.agentConfig.shell
-    return (
+    tools: list[ShellTool | MemoryRecallTool | OwnerKnowledgeTool] = [
         ShellTool(
             store.workspace_path(role.id),
             allowed_commands=shell.allowedCommands,
@@ -1485,7 +1817,10 @@ def _runtime_tool_candidates(role) -> tuple[ShellTool | MemoryRecallTool, ...]:
             max_output_chars=shell.maxOutputChars,
         ),
         _memory_runtime_tool(role),
-    )
+    ]
+    if owner_knowledge_plugin.status().enabled:
+        tools.append(_owner_knowledge_runtime_tool(role))
+    return tuple(tools)
 
 
 def _enabled_runtime_tool_names(role) -> set[str]:
@@ -1495,14 +1830,16 @@ def _enabled_runtime_tool_names(role) -> set[str]:
         enabled.add("shell")
     if role.agentConfig.memoryRecall.enabled:
         enabled.add("recall_memory")
+    if owner_knowledge_plugin.status().enabled:
+        enabled.add("search_owner_knowledge")
     return enabled
 
 
 def _runtime_tools(
     role,
     *,
-    candidates: tuple[ShellTool | MemoryRecallTool, ...] | None = None,
-) -> tuple[ShellTool | MemoryRecallTool, ...]:
+    candidates: tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool, ...] | None = None,
+) -> tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool, ...]:
     """Filter host tool candidates using the request-time role policy."""
     available = _runtime_tool_candidates(role) if candidates is None else candidates
     enabled = _enabled_runtime_tool_names(role)
@@ -1514,7 +1851,7 @@ async def _runtime_capabilities(
     *,
     session_key: str,
     run_id: str,
-    available_tools: tuple[ShellTool | MemoryRecallTool, ...] | None = None,
+    available_tools: tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool, ...] | None = None,
     prompt_text: str = "",
     explicit_skill_ids: list[str] | None = None,
 ) -> CapabilityResolution:
@@ -1703,6 +2040,27 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                 except Exception as error:
                     memory_worker.errors.append(f"{role_id}: recall failed: {error}")
                     memory_context = ""
+                if owner_knowledge_plugin.status().enabled:
+                    try:
+                        owner_hits = await owner_knowledge_plugin.search(data.content, role_id=role_id, limit=4)
+                        if owner_hits:
+                            owner_sections = {
+                                "owner_knowledge": [hit for hit in owner_hits if hit.kind == "owner_knowledge"],
+                                "role_understanding": [hit for hit in owner_hits if hit.kind == "role_understanding"],
+                            }
+                            owner_blocks: list[str] = []
+                            if owner_sections["owner_knowledge"]:
+                                owner_blocks.append("[主人资料证据]\n" + "\n".join(
+                                    f"- {hit.text}（{hit.title or '主人资料'}{': ' + hit.location if hit.location else ''}{', ' + hit.url if hit.url else ''}）"
+                                    for hit in owner_sections["owner_knowledge"]
+                                ))
+                            if owner_sections["role_understanding"]:
+                                owner_blocks.append("[当前角色对主人的想法]\n" + "\n".join(
+                                    f"- {hit.text}" for hit in owner_sections["role_understanding"]
+                                ))
+                            memory_context = "\n".join(part for part in (memory_context, *owner_blocks) if part)
+                    except Exception as error:
+                        owner_knowledge_plugin.record_error(f"检索失败：{type(error).__name__}")
                 try:
                     todo_context = todo_plugin.context_block(data.content)
                     if todo_context:

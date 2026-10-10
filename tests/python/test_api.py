@@ -14,6 +14,7 @@ from backend.app.models import AgentRun, AgentToolConfig, MemoryRecallToolConfig
 from backend.app.memory_engine import MemoryQueryResult, MemoryScope
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.role_store import RoleStore
+from backend.app.owner_knowledge import OwnerKnowledgeStore, SystemCredentialStore
 from backend.app.session_manager import SessionManager
 from backend.app.session_store import SessionStore
 from backend.app.storage import initialize_databases
@@ -113,6 +114,124 @@ def test_role_api_crud_and_duplicate_names(tmp_path, monkeypatch):
     assert updated_response.json()["role"]["id"] == first["id"]
     assert client.get(f"/api/roles/{first['id']}").json()["role"]["name"] == "改名"
     assert len(client.get("/api/roles").json()["roles"]) == 2
+
+
+def test_feishu_oauth_callback_reports_local_credential_store_failure(monkeypatch):
+    class FailingStore:
+        def __init__(self):
+            self.values = {
+                "oauth_state": "state-1",
+                "feishu_app_id": "app-id",
+                "feishu_app_secret": "app-secret",
+            }
+
+        def get_state(self, key, default=""):
+            return self.values.get(key, default)
+
+        def set_state(self, key, value):
+            if key == "feishu_access_token":
+                raise RuntimeError("系统凭据库不可用")
+            self.values[key] = value
+
+    class Connector:
+        async def exchange_code(self, code, app_id, app_secret, redirect_uri):
+            return {"access_token": "user-token", "refresh_token": "refresh-token", "expires_in": 7200}
+
+    monkeypatch.setattr(main, "owner_knowledge_store", FailingStore())
+    monkeypatch.setattr(main, "owner_knowledge_connector", Connector())
+    response = TestClient(main.app, raise_server_exceptions=False).get(
+        "/api/owner-knowledge/oauth/callback?code=auth-code&state=state-1"
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "飞书授权成功，但本地凭据保存失败，请检查系统凭据库"
+
+
+def test_feishu_oauth_callback_reports_oauth_state_store_failure(monkeypatch):
+    class FailingStore:
+        def get_state(self, key, default=""):
+            raise RuntimeError("本地状态库不可用")
+
+        def set_state(self, key, value):
+            raise AssertionError("状态库异常时不应继续清理或保存")
+
+    monkeypatch.setattr(main, "owner_knowledge_store", FailingStore())
+    response = TestClient(main.app, raise_server_exceptions=False).get(
+        "/api/owner-knowledge/oauth/callback?code=auth-code&state=state-1"
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "飞书授权状态暂时不可用，请重试"
+
+
+def test_feishu_oauth_callback_persists_long_token_with_windows_credential_limit(tmp_path, monkeypatch):
+    import keyring
+
+    credentials = {}
+
+    def set_password(service, username, password):
+        if len(password.encode("utf-16-le")) > 2560:
+            raise ValueError("Windows credential blob exceeds 2560 bytes")
+        credentials[(service, username)] = password
+
+    monkeypatch.setattr(keyring, "set_password", set_password)
+    monkeypatch.setattr(keyring, "get_password", lambda service, username: credentials.get((service, username)))
+    monkeypatch.setattr(keyring, "delete_password", lambda service, username: credentials.pop((service, username), None))
+
+    store = OwnerKnowledgeStore(tmp_path / "owner-knowledge.db", credential_store=SystemCredentialStore())
+    store.set_state("oauth_state", "state-1")
+    store.set_state("oauth_return_url", "http://localhost:5288/app?ownerKnowledge=connected")
+    store.set_state("feishu_app_id", "app-id")
+    store.set_state("feishu_app_secret", "app-secret")
+    access_token = "x" * 2048
+
+    class Connector:
+        async def exchange_code(self, code, app_id, app_secret, redirect_uri):
+            return {"access_token": access_token, "refresh_token": "refresh-token", "expires_in": 7200}
+
+    monkeypatch.setattr(main, "owner_knowledge_store", store)
+    monkeypatch.setattr(main, "owner_knowledge_connector", Connector())
+
+    response = TestClient(main.app, raise_server_exceptions=False, follow_redirects=False).get(
+        "/api/owner-knowledge/oauth/callback?code=auth-code&state=state-1"
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "http://localhost:5288/app?ownerKnowledge=connected"
+    assert store.get_state("feishu_access_token") == access_token
+    assert all(len(value.encode("utf-16-le")) <= 2560 for value in credentials.values())
+
+
+def test_feishu_authorization_remembers_local_frontend_for_same_tab_return(monkeypatch):
+    class Store:
+        def __init__(self):
+            self.values = {"feishu_app_id": "app-id", "feishu_app_secret": "app-secret"}
+
+        def get_state(self, key, default=""):
+            return self.values.get(key, default)
+
+        def set_state(self, key, value):
+            self.values[key] = value
+
+    store = Store()
+    monkeypatch.setattr(main, "owner_knowledge_store", store)
+
+    response = TestClient(main.app).post(
+        "/api/owner-knowledge/authorize",
+        headers={"origin": "http://localhost:5288"},
+    )
+
+    assert response.status_code == 200
+    assert store.values["oauth_return_url"] == "http://localhost:5288/app?ownerKnowledge=connected"
+    assert "state=" + store.values["oauth_state"] in response.json()["authorizationUrl"]
+
+    rejected_origin = TestClient(main.app).post(
+        "/api/owner-knowledge/authorize",
+        headers={"origin": "https://attacker.example"},
+    )
+
+    assert rejected_origin.status_code == 200
+    assert store.values["oauth_return_url"] == "http://127.0.0.1:5288/app?ownerKnowledge=connected"
 
 
 def test_role_avatar_can_be_uploaded_replaced_loaded_and_removed(tmp_path, monkeypatch):

@@ -11,7 +11,7 @@ const sessionOf = (id: string) => ({ ...session, sessionKey: `role:${id}`, roleI
 const emptySession = () => ({ body: { session, messages: [] } });
 
 beforeEach(() => { sessionStorage.clear(); localStorage.clear(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.history.replaceState({}, "", "/"); });
 
 const roleList = () => screen.findByRole("list", { name: "角色列表" });
 const chatHeading = (name: string) => screen.findByRole("heading", { level: 1, name });
@@ -127,6 +127,23 @@ describe("设置", () => {
     expect(await within(panel).findByLabelText("API 地址")).toHaveValue("https://api.openai.com/v1");
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("从飞书授权返回时直接打开主人资料设置", async () => {
+    window.history.replaceState({}, "", "/app?ownerKnowledge=connected");
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [] } }),
+      "GET /api/owner-knowledge": () => ({ body: { enabled: false, connected: true, oauthConfigured: true, appId: "cli_local", embeddingReady: true, lastError: null, lastSync: null } }),
+      "GET /api/owner-knowledge/documents": () => ({ body: { documents: [] } }),
+      "GET /api/model/providers": () => ({ body: { providers: [] } }),
+      "GET /api/model/configurations": () => ({ body: { configurations: [], activeId: null } }),
+    });
+
+    render(<App />);
+
+    const panel = await dialog("设置");
+    expect(within(panel).getByRole("button", { name: /主人资料/ })).toHaveAttribute("aria-current", "true");
+    expect(await within(panel).findByText("飞书授权成功，可以启用主人资料插件")).toBeInTheDocument();
   });
 
   it("可以独立暂停待办提醒而保留待办插件", async () => {
