@@ -58,6 +58,12 @@ export function OwnerKnowledgeSettings() {
   };
 
   useEffect(() => {
+    const currentUrl = new URL(window.location.href);
+    if (currentUrl.searchParams.get("ownerKnowledge") === "connected") {
+      setMessage("飞书授权成功，可以启用主人资料插件");
+      currentUrl.searchParams.delete("ownerKnowledge");
+      window.history.replaceState({}, "", `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`);
+    }
     void refresh().catch((cause) => setError(errorMessage(cause, "无法读取主人资料插件状态"))).finally(() => setLoading(false));
   }, []);
 
@@ -84,8 +90,8 @@ export function OwnerKnowledgeSettings() {
         setMessage("飞书应用配置已保存");
       } else if (action === "authorize") {
         const result = await api<{ authorizationUrl: string }>("/api/owner-knowledge/authorize", { method: "POST" });
-        window.open(result.authorizationUrl, "_blank", "noopener,noreferrer");
-        setMessage("请在新页面完成飞书授权，再返回这里刷新连接状态");
+        window.location.assign(result.authorizationUrl);
+        return;
       } else if (action === "refresh") {
         await refresh();
         setMessage("飞书连接状态已刷新");

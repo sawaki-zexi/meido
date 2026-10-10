@@ -1,10 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OwnerKnowledgeSettings } from "./OwnerKnowledgeSettings";
 import { fakeBackend } from "../../test/fakeBackend";
 
 describe("OwnerKnowledgeSettings", () => {
   beforeEach(() => vi.unstubAllGlobals());
+  afterEach(() => window.history.replaceState({}, "", "/"));
 
   it("shows sync counts and lets the owner pause the application plugin", async () => {
     let enabled = true;
@@ -36,5 +37,28 @@ describe("OwnerKnowledgeSettings", () => {
     fireEvent.click(toggle);
     await waitFor(() => expect(calls.some((call) => call.method === "POST" && call.path === "/api/owner-knowledge/pause")).toBe(true));
     await waitFor(() => expect(toggle).not.toBeChecked());
+  });
+
+  it("shows the Feishu authorization result after returning to the app", async () => {
+    window.history.replaceState({}, "", "/app?ownerKnowledge=connected");
+    fakeBackend({
+      "GET /api/owner-knowledge": () => ({ body: {
+        enabled: false,
+        connected: true,
+        oauthConfigured: true,
+        appId: "cli_local",
+        embeddingReady: true,
+        lastError: null,
+        lastSync: null,
+      } }),
+      "GET /api/roles": () => ({ body: { roles: [] } }),
+      "GET /api/owner-knowledge/documents": () => ({ body: { documents: [] } }),
+    });
+
+    render(<OwnerKnowledgeSettings />);
+
+    expect(await screen.findByText("飞书授权成功，可以启用主人资料插件")).toBeInTheDocument();
+    expect(await screen.findAllByText("已连接")).not.toHaveLength(0);
+    expect(window.location.search).toBe("");
   });
 });

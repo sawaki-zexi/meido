@@ -25,8 +25,11 @@ const writeLastRole = (id: string) => { try { localStorage.setItem(LAST_ROLE_KEY
 export function App() {
   const roles = useRoles();
   const chat = useChat();
+  const [returnedFromOwnerKnowledgeAuthorization] = useState(
+    () => new URLSearchParams(window.location.search).get("ownerKnowledge") === "connected",
+  );
   // A restored create-role draft reopens the create panel.
-  const [panel, setPanel] = useState<Panel>(() => roles.creating ? "create" : null);
+  const [panel, setPanel] = useState<Panel>(() => roles.creating ? "create" : returnedFromOwnerKnowledgeAuthorization ? "settings" : null);
   const [view, setView] = useState<View>("chat");
   const [newRole, setNewRole] = useState<Role | null>(null);
   // Narrow screens show one pane at a time; home is the conversation.
@@ -149,7 +152,7 @@ export function App() {
     {panel === "profile" && <Dialog title="角色资料" variant="page" onClose={closePanel}>
       <CreateRolePage state={roles} number={roles.roles.findIndex((role) => role.id === roles.selected?.id) + 1} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} />
     </Dialog>}
-    {panel === "settings" && <SettingsDialog onClose={() => setPanel(null)} />}
+    {panel === "settings" && <SettingsDialog initialSection={returnedFromOwnerKnowledgeAuthorization ? "owner-knowledge" : undefined} onClose={() => setPanel(null)} />}
     {previewRole && <Dialog title={`${previewRole.name}头像`} variant="modal" onClose={() => setPreviewRole(null)}>
       <div className="avatar-lightbox"><img src={previewRole.avatarOriginalUrl ?? previewRole.avatarUrl ?? ""} alt={`${previewRole.name}头像`} /></div>
     </Dialog>}

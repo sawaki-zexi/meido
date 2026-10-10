@@ -14,7 +14,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, Response
 from starlette.background import BackgroundTask
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 import httpx
 
 from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
@@ -562,10 +562,28 @@ async def _start_memory_workers() -> None:
     owner_knowledge_scheduler.start()
 
 
+owner_knowledge_frontend_port = os.getenv("MEIDO_WEB_PORT", "5288").strip()
+owner_knowledge_frontend_origins = [
+    os.getenv("MEIDO_WEB_ORIGIN", f"http://127.0.0.1:{owner_knowledge_frontend_port}").strip().rstrip("/"),
+]
+if "MEIDO_WEB_ORIGIN" not in os.environ:
+    owner_knowledge_frontend_origins.append(f"http://localhost:{owner_knowledge_frontend_port}")
+
+
+def _owner_knowledge_return_url(origin: str = "") -> str:
+    requested_origin = origin.rstrip("/")
+    safe_origin = (
+        requested_origin
+        if requested_origin in owner_knowledge_frontend_origins
+        else owner_knowledge_frontend_origins[0]
+    )
+    return f"{safe_origin}/app?ownerKnowledge=connected"
+
+
 app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown=[_close_memory_workers])
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5288", "http://localhost:5288"],
+    allow_origins=owner_knowledge_frontend_origins,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
@@ -612,7 +630,7 @@ def save_owner_knowledge_oauth_config(data: dict[str, object]) -> dict[str, obje
 
 
 @app.post("/api/owner-knowledge/authorize")
-def authorize_owner_knowledge() -> dict[str, str]:
+def authorize_owner_knowledge(request: Request) -> dict[str, str]:
     from .owner_knowledge import feishu_authorization_url
 
     app_id = owner_knowledge_store.get_state("feishu_app_id") or os.getenv("MEIDO_FEISHU_APP_ID", "").strip()
@@ -625,6 +643,7 @@ def authorize_owner_knowledge() -> dict[str, str]:
         raise HTTPException(status_code=409, detail="尚未配置飞书自建应用 ID 和 Secret")
     state = secrets.token_urlsafe(32)
     owner_knowledge_store.set_state("oauth_state", state)
+    owner_knowledge_store.set_state("oauth_return_url", _owner_knowledge_return_url(request.headers.get("origin", "")))
     try:
         return {"authorizationUrl": feishu_authorization_url(app_id, redirect_uri, state)}
     except ValueError as error:
@@ -648,6 +667,8 @@ async def owner_knowledge_oauth_callback(code: str = "", state: str = "", error:
         # Consume the one-time state before exchanging the code. A failed
         # exchange can then be retried by starting a fresh authorization flow.
         owner_knowledge_store.set_state("oauth_state", "")
+        return_url = owner_knowledge_store.get_state("oauth_return_url")
+        owner_knowledge_store.set_state("oauth_return_url", "")
         app_id = owner_knowledge_store.get_state("feishu_app_id") or os.getenv("MEIDO_FEISHU_APP_ID", "").strip()
         app_secret = owner_knowledge_store.get_state("feishu_app_secret") or os.getenv("MEIDO_FEISHU_APP_SECRET", "").strip()
         redirect_uri = os.getenv(
@@ -680,11 +701,10 @@ async def owner_knowledge_oauth_callback(code: str = "", state: str = "", error:
     except Exception as error:
         logger.error("飞书 OAuth 令牌保存异常：%s", type(error).__name__)
         raise HTTPException(status_code=502, detail="飞书授权成功，但本地凭据保存失败，请检查系统凭据库") from error
-    return Response(
-        "<!doctype html><html lang='zh-CN'><meta charset='utf-8'><title>飞书连接成功</title>"
-        "<body><main><h1>飞书已连接</h1><p>可以关闭此页面，返回 Meido 启用主人资料插件。</p></main></body></html>",
-        media_type="text/html",
-    )
+    safe_return_urls = {_owner_knowledge_return_url(origin) for origin in owner_knowledge_frontend_origins}
+    if return_url not in safe_return_urls:
+        return_url = _owner_knowledge_return_url()
+    return RedirectResponse(return_url, status_code=303)
 
 
 @app.post("/api/owner-knowledge/enable")

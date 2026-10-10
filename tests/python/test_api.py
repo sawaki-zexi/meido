@@ -180,6 +180,7 @@ def test_feishu_oauth_callback_persists_long_token_with_windows_credential_limit
 
     store = OwnerKnowledgeStore(tmp_path / "owner-knowledge.db", credential_store=SystemCredentialStore())
     store.set_state("oauth_state", "state-1")
+    store.set_state("oauth_return_url", "http://localhost:5288/app?ownerKnowledge=connected")
     store.set_state("feishu_app_id", "app-id")
     store.set_state("feishu_app_secret", "app-secret")
     access_token = "x" * 2048
@@ -191,13 +192,46 @@ def test_feishu_oauth_callback_persists_long_token_with_windows_credential_limit
     monkeypatch.setattr(main, "owner_knowledge_store", store)
     monkeypatch.setattr(main, "owner_knowledge_connector", Connector())
 
-    response = TestClient(main.app, raise_server_exceptions=False).get(
+    response = TestClient(main.app, raise_server_exceptions=False, follow_redirects=False).get(
         "/api/owner-knowledge/oauth/callback?code=auth-code&state=state-1"
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 303
+    assert response.headers["location"] == "http://localhost:5288/app?ownerKnowledge=connected"
     assert store.get_state("feishu_access_token") == access_token
     assert all(len(value.encode("utf-16-le")) <= 2560 for value in credentials.values())
+
+
+def test_feishu_authorization_remembers_local_frontend_for_same_tab_return(monkeypatch):
+    class Store:
+        def __init__(self):
+            self.values = {"feishu_app_id": "app-id", "feishu_app_secret": "app-secret"}
+
+        def get_state(self, key, default=""):
+            return self.values.get(key, default)
+
+        def set_state(self, key, value):
+            self.values[key] = value
+
+    store = Store()
+    monkeypatch.setattr(main, "owner_knowledge_store", store)
+
+    response = TestClient(main.app).post(
+        "/api/owner-knowledge/authorize",
+        headers={"origin": "http://localhost:5288"},
+    )
+
+    assert response.status_code == 200
+    assert store.values["oauth_return_url"] == "http://localhost:5288/app?ownerKnowledge=connected"
+    assert "state=" + store.values["oauth_state"] in response.json()["authorizationUrl"]
+
+    rejected_origin = TestClient(main.app).post(
+        "/api/owner-knowledge/authorize",
+        headers={"origin": "https://attacker.example"},
+    )
+
+    assert rejected_origin.status_code == 200
+    assert store.values["oauth_return_url"] == "http://127.0.0.1:5288/app?ownerKnowledge=connected"
 
 
 def test_role_avatar_can_be_uploaded_replaced_loaded_and_removed(tmp_path, monkeypatch):
