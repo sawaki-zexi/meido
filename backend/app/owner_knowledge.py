@@ -984,14 +984,14 @@ class OwnerKnowledgeStore:
             "error": str(row["last_error"] or ""),
         } for row in rows]
 
-    def search(self, query: str, vector: list[float], model_id: str, limit: int) -> list[OwnerKnowledgeHit]:
+    def search(self, query: str, vector: list[float] | None, model_id: str, limit: int) -> list[OwnerKnowledgeHit]:
         vector_matches: list[tuple[str, float]] = []
-        if self.vector_index is not None:
+        if vector is not None and self.vector_index is not None:
             try:
                 vector_matches = self.vector_index.search(model_id, vector, max(limit * 4, limit))
             except Exception:
                 vector_matches = []
-        if not vector_matches:
+        if vector is not None and not vector_matches:
             vector_matches = self._cosine_matches(vector, model_id, max(limit * 4, limit))
         lexical_matches = self._fts_matches(query, max(limit * 4, limit))
 
@@ -1424,6 +1424,10 @@ class OwnerKnowledgePlugin:
             last_error=self._last_error or self.store.get_state("last_error") or None,
         )
 
+    def _embedding_session(self) -> Embedder:
+        snapshot = getattr(self.embedder, "snapshot", None)
+        return snapshot() if callable(snapshot) else self.embedder
+
     def record_error(self, message: str) -> None:
         self._last_error = message[:300]
         self.store.set_state("last_error", self._last_error)
@@ -1554,6 +1558,8 @@ class OwnerKnowledgePlugin:
 
     async def _sync(self, trigger: str, *, force_read_all: bool = False) -> SyncReport:
         async with self._sync_lock:
+            embedder = self._embedding_session()
+            model_id = embedder.model_id
             if trigger in {"resume", "startup"}:
                 self._pause_requested = False
             run_id = self.store.create_sync_run(trigger)
@@ -1575,25 +1581,25 @@ class OwnerKnowledgePlugin:
                         skipped += 1
                         continue
                     try:
-                        if not force_read_all and not self.store.needs_update(document, self.embedder.model_id):
+                        if not force_read_all and not self.store.needs_update(document, model_id):
                             unchanged += 1
                             continue
                         content = await self.connector.read_document(document)
                         previous_hash = self.store.document_content_hash(document.document_id)
-                        if previous_hash == (_sha256(content), self.embedder.model_id):
+                        if previous_hash == (_sha256(content), model_id):
                             self.store.touch_unchanged_document(document)
                             unchanged += 1
                             continue
                         pieces = chunk_document(content, document.title)
                         vectors = await asyncio.to_thread(
-                            self.embedder.embed_documents,
+                            embedder.embed_documents,
                             [piece for piece, _ in pieces],
                         ) if pieces else []
                         if len(vectors) != len(pieces):
                             raise RuntimeError("embedding 输出数量与文档片段不匹配")
                         chunks = [
                             _Chunk(
-                                chunk_id=_sha256(f"{document.document_id}:{self.embedder.model_id}:{index}:{_sha256(piece)}"),
+                                chunk_id=_sha256(f"{document.document_id}:{model_id}:{index}:{_sha256(piece)}"),
                                 ordinal=index,
                                 text=piece,
                                 location=location,
@@ -1602,7 +1608,7 @@ class OwnerKnowledgePlugin:
                             for index, ((piece, location), vector) in enumerate(zip(pieces, vectors))
                         ]
                         existed = any(item.document_id == document.document_id for item in self.store.list_documents())
-                        self.store.replace_document(document, content, chunks, self.embedder.model_id)
+                        self.store.replace_document(document, content, chunks, model_id)
                         changed_document_ids.append(document.document_id)
                         if existed:
                             updated += 1
@@ -1660,9 +1666,14 @@ class OwnerKnowledgePlugin:
         if not query or len(query) > _MAX_QUERY_LENGTH:
             return []
         bounded_limit = max(1, min(limit, _MAX_RESULT_LIMIT))
-        vector = await asyncio.to_thread(self.embedder.embed_query, query)
-        understanding = self.store.search_understanding(role_id, vector, self.embedder.model_id)
-        hits = self.store.search(query, vector, self.embedder.model_id, max(1, bounded_limit - int(understanding is not None)))
+        embedder = self._embedding_session()
+        model_id = embedder.model_id
+        try:
+            vector = await asyncio.to_thread(embedder.embed_query, query)
+        except Exception:
+            vector = None
+        understanding = self.store.search_understanding(role_id, vector, model_id) if vector is not None else None
+        hits = self.store.search(query, vector, model_id, max(1, bounded_limit - int(understanding is not None)))
         if understanding is not None:
             hits.insert(0, understanding)
         bounded_hits: list[OwnerKnowledgeHit] = []
@@ -1761,10 +1772,12 @@ class OwnerKnowledgePlugin:
                 raise RuntimeError("角色理解输出无效")
             if role_id in self._deleting_roles:
                 raise RuntimeError("角色正在删除")
-            vector = await asyncio.to_thread(self.embedder.embed_query, body)
+            embedder = self._embedding_session()
+            model_id = embedder.model_id
+            vector = await asyncio.to_thread(embedder.embed_query, body)
             if role_id in self._deleting_roles:
                 raise RuntimeError("角色正在删除")
-            saved = self.store.save_understanding(role_id, body, vector, self.embedder.model_id)
+            saved = self.store.save_understanding(role_id, body, vector, model_id)
             self.store.finish_understanding(role_id, expected_updated_at=job_updated_at)
             return saved
         except Exception as error:

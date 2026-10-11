@@ -22,6 +22,11 @@ type PluginStatus = {
   connected: boolean;
   oauthConfigured: boolean;
   embeddingReady: boolean;
+  embeddingConfigured?: boolean;
+  embeddingModel?: string;
+  embeddingDimensions?: number;
+  embeddingProvider?: string;
+  embeddingLastError?: string | null;
   lastError: string | null;
   lastSync: SyncReport | null;
   redirectUri?: string;
@@ -145,10 +150,13 @@ export function OwnerKnowledgeSettings() {
     {error && <Notice>{error}</Notice>}
     {message && <Notice tone="success">{message}</Notice>}
     {status?.lastError && <Notice>{status.lastError}</Notice>}
+    {status?.embeddingLastError && <Notice>{status.embeddingLastError}</Notice>}
 
     <div className="owner-status-strip" aria-label="主人资料状态">
       <div><span>授权</span><strong>{status?.connected ? "已连接" : "待连接"}</strong></div>
-      <div><span>语义模型</span><strong>{status?.embeddingReady ? "本机可用" : "未就绪"}</strong></div>
+      <div><span>语义模型</span><strong>{status?.embeddingReady ? "可用" : status?.embeddingConfigured ? "不可用" : "未配置"}</strong></div>
+      <div><span>模型 ID</span><strong>{status?.embeddingModel ?? "未设置"}</strong></div>
+      {status?.embeddingDimensions && <div><span>向量维度</span><strong>{status.embeddingDimensions}</strong></div>}
       <div><span>本地文档</span><strong>{documents.filter((document) => document.status === "synced").length}</strong></div>
       {lastSync && <div><span>最近同步</span><strong>{syncFinishedAt ? new Date(syncFinishedAt).toLocaleString() : lastSync.complete ? "已完成" : "未完成"}</strong></div>}
     </div>

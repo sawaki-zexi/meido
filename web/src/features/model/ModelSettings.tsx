@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../api/client";
-import type { ModelConfiguration as Configuration, Provider } from "../../api/types";
+import type { EmbeddingConfiguration, ModelConfiguration as Configuration, Provider } from "../../api/types";
 import { Notice, Placeholder } from "../../ui/Status";
 
 type Draft = { providerId: string; provider: string; baseUrl: string; model: string; apiKey: string };
+type EmbeddingDraft = { provider: string; baseUrl: string; model: string; dimensions: number; apiKey: string };
 
 const emptyDraft: Draft = { providerId: "openai", provider: "openai", baseUrl: "", model: "", apiKey: "" };
+const emptyEmbeddingDraft: EmbeddingDraft = { provider: "dashscope", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "text-embedding-v3", dimensions: 1024, apiKey: "" };
 
 export function ModelSettings() {
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -18,6 +20,12 @@ export function ModelSettings() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [testResult, setTestResult] = useState("");
+  const [embedding, setEmbedding] = useState<EmbeddingConfiguration | null>(null);
+  const [embeddingDraft, setEmbeddingDraft] = useState<EmbeddingDraft>(emptyEmbeddingDraft);
+  const [embeddingLoading, setEmbeddingLoading] = useState(true);
+  const [embeddingBusy, setEmbeddingBusy] = useState(false);
+  const [embeddingError, setEmbeddingError] = useState("");
+  const [embeddingResult, setEmbeddingResult] = useState("");
   const formRef = useRef<HTMLFormElement>(null);
 
   const refreshConfigurations = async () => {
@@ -28,11 +36,18 @@ export function ModelSettings() {
   };
 
   useEffect(() => {
-    void Promise.all([api<{ providers: Provider[] }>("/api/model/providers"), refreshConfigurations()]).then(([providerData, configurationData]) => {
+    void Promise.all([api<{ providers: Provider[] }>("/api/model/providers"), refreshConfigurations()]).then(([providerData]) => {
       setProviders(providerData.providers);
       const initial = providerData.providers.find((item) => item.id === "openai");
       if (initial) setDraft({ ...emptyDraft, provider: initial.provider, baseUrl: initial.baseUrl });
     }).catch((cause) => setError(errorMessage(cause, "无法加载模型配置"))).finally(() => setLoading(false));
+    void api<{ configuration: EmbeddingConfiguration }>("/api/embedding/configuration")
+      .then(({ configuration }) => {
+        setEmbedding(configuration);
+        setEmbeddingDraft({ provider: configuration.provider, baseUrl: configuration.baseUrl, model: configuration.model, dimensions: configuration.dimensions, apiKey: "" });
+      })
+      .catch((cause) => setEmbeddingError(errorMessage(cause, "无法加载向量模型配置")))
+      .finally(() => setEmbeddingLoading(false));
   }, []);
 
   const editConfiguration = (configuration: Configuration) => {
@@ -93,6 +108,23 @@ export function ModelSettings() {
     } catch (cause) { setError(errorMessage(cause, "配置切换失败")); }
   };
 
+  const submitEmbedding = async (action: "test" | "save") => {
+    setEmbeddingError("");
+    setEmbeddingResult("");
+    setEmbeddingBusy(true);
+    try {
+      const result = await api<{ ok?: boolean; message?: string; latencyMs?: number; configuration?: EmbeddingConfiguration }>(`/api/embedding/configuration${action === "test" ? "/test" : ""}`, { method: action === "test" ? "POST" : "PUT", body: JSON.stringify(embeddingDraft) });
+      if (action === "test") {
+        setEmbeddingResult(result.ok && result.latencyMs !== undefined ? `连接成功 · ${result.latencyMs} ms` : `失败：${result.message ?? "连接失败"}`);
+      } else if (result.configuration) {
+        setEmbedding(result.configuration);
+        setEmbeddingDraft((current) => ({ ...current, apiKey: "" }));
+        setEmbeddingResult("向量模型配置已保存并生效");
+      }
+    } catch (cause) { setEmbeddingError(errorMessage(cause, action === "test" ? "向量模型连接测试失败" : "向量模型配置保存失败")); }
+    finally { setEmbeddingBusy(false); }
+  };
+
   const remove = async (configuration: Configuration) => {
     if (!window.confirm(`确定删除“${configuration.provider} · ${configuration.model}”吗？\n\n此配置将永久删除。`)) return;
     setError("");
@@ -109,7 +141,7 @@ export function ModelSettings() {
   const preset = providers.find((item) => item.id === draft.providerId);
   const active = configurations.find((item) => item.id === activeId);
   const editingConfiguration = configurations.find((item) => item.id === editingId);
-  const busy = saving || testing;
+  const busy = saving || testing || embeddingBusy;
   const testFailed = testResult.startsWith("失败");
 
   return <section className="model-settings page-narrow" aria-labelledby="model-settings-title">
@@ -150,5 +182,19 @@ export function ModelSettings() {
         <button type="submit" className="primary" disabled={busy || loading}>{saving ? "保存中…" : "保存"}</button>
       </div>
     </form>}
+    <section className="card-form embedding-settings" aria-labelledby="embedding-settings-title">
+      <div className="settings-subheading"><h3 id="embedding-settings-title">向量模型</h3><span className="muted">主人资料与长期记忆共用</span></div>
+      {embeddingLoading ? <Placeholder loading>正在加载向量模型配置…</Placeholder> : <>
+        <div className="field"><label htmlFor="embedding-provider">服务商</label><input id="embedding-provider" value={embeddingDraft.provider} disabled={embeddingBusy} onChange={(event) => setEmbeddingDraft({ ...embeddingDraft, provider: event.target.value })} /></div>
+        <div className="field"><label htmlFor="embedding-base-url">向量 API 地址</label><input id="embedding-base-url" required type="url" value={embeddingDraft.baseUrl} disabled={embeddingBusy} onChange={(event) => setEmbeddingDraft({ ...embeddingDraft, baseUrl: event.target.value })} /></div>
+        <div className="field"><label htmlFor="embedding-model-id">向量模型 ID</label><input id="embedding-model-id" required value={embeddingDraft.model} disabled={embeddingBusy} onChange={(event) => setEmbeddingDraft({ ...embeddingDraft, model: event.target.value })} /></div>
+        <div className="field"><label htmlFor="embedding-dimensions">向量维度</label><input id="embedding-dimensions" required type="number" min={1} max={4096} value={embeddingDraft.dimensions} disabled={embeddingBusy} onChange={(event) => setEmbeddingDraft({ ...embeddingDraft, dimensions: Number(event.target.value) })} /></div>
+        <div className="field"><label htmlFor="embedding-api-key">向量 API Key</label><input id="embedding-api-key" type="password" autoComplete="new-password" value={embeddingDraft.apiKey} placeholder={embedding?.apiKeyConfigured ? "已设置，留空保留现有密钥" : "请输入 DashScope API Key"} disabled={embeddingBusy} onChange={(event) => setEmbeddingDraft({ ...embeddingDraft, apiKey: event.target.value })} /></div>
+        {embeddingResult && <Notice tone={embeddingResult.startsWith("失败") ? "error" : "success"}>{embeddingResult}</Notice>}
+        {embeddingError && <Notice>{embeddingError}</Notice>}
+        <div className="form-actions"><button type="button" disabled={embeddingBusy} onClick={() => void submitEmbedding("test")}>{embeddingBusy ? "处理中…" : "测试连接"}</button><button type="button" className="primary" disabled={embeddingBusy} onClick={() => void submitEmbedding("save")}>保存向量配置</button></div>
+        <p className="muted">当前状态：{embedding?.apiKeyConfigured ? "已配置" : "未配置"} · {embedding?.model ?? "未设置"} · {embedding?.dimensions ?? "-"} 维</p>
+      </>}
+    </section>
   </section>;
 }

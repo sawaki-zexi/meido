@@ -22,7 +22,8 @@ from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
 from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryQueryFilters, MemoryScope
-from .embeddings import OpenAICompatibleEmbeddingAdapter
+from .embeddings import SharedEmbeddingProvider
+from .embedding_config import EmbeddingConfigurationStore, public_embedding_configuration, validate_embedding_configuration
 from .memory_maintenance import MemoryMaintenance
 from .memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
 from .memory_store import MemoryStore
@@ -32,7 +33,6 @@ from .owner_knowledge import (
     ApplicationPluginManager,
     FeishuApiConnector,
     FeishuApiError,
-    LocalEmbeddingAdapter,
     OAuthCallbackAccessLogFilter,
     OwnerKnowledgePlugin,
     OwnerKnowledgeScheduler,
@@ -41,7 +41,7 @@ from .owner_knowledge import (
     OwnerKnowledgeTool,
     RoleBoundOwnerKnowledgeReader,
 )
-from .models import AgentRun, MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, Message, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
+from .models import AgentRun, EmbeddingConfiguration, EmbeddingConfigurationInput, MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, Message, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
 from .storage import initialize_databases, resolve_owner_knowledge_database
@@ -93,6 +93,8 @@ memory_store = MemoryStore(data_root / "memory2.db")
 memory_event_bus = MemoryEventBus()
 model_adapter: ModelAdapter = OpenAICompatibleAdapter()
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
+embedding_configuration_store = EmbeddingConfigurationStore(data_root / "embedding-config.json")
+embedding_provider = SharedEmbeddingProvider(embedding_configuration_store.get)
 plugin_registry = PluginRegistry()
 owner_knowledge_store = OwnerKnowledgeStore(resolve_owner_knowledge_database(project_root, data_root))
 async def _refresh_feishu_access_token() -> None:
@@ -113,7 +115,7 @@ owner_knowledge_connector = FeishuApiConnector(
 owner_knowledge_plugin = OwnerKnowledgePlugin(
     owner_knowledge_store,
     owner_knowledge_connector,
-    LocalEmbeddingAdapter(os.getenv("MEIDO_OWNER_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")),
+    embedding_provider,
 )
 application_plugin_manager = ApplicationPluginManager()
 application_plugin_manager.register("owner-knowledge", owner_knowledge_plugin)
@@ -132,11 +134,6 @@ todo_plugin = TodoPlugin(
     reminder_sender=lambda role_id, event_id, kind, payload: _generate_todo_reminder(role_id, event_id, kind, payload),
     available_roles=lambda: [role.id for role in store.list() if role.id not in store.pending_role_deletions()],
 )
-
-
-def _embedding_configuration(role_id: str):
-    role = store.get(role_id)
-    return model_configuration_store.get(role.modelConfigurationId) if role and role.modelConfigurationId else model_configuration_store.get()
 
 
 def _role_model_configuration(role_id: str):
@@ -422,7 +419,6 @@ def _observe_consolidation_event(event: ConsolidationCommitted) -> None:
         raise
 
 
-embedding_provider = OpenAICompatibleEmbeddingAdapter(_embedding_configuration)
 memory_service = MemoryService(
     memory_store,
     embedding_provider,
@@ -679,7 +675,12 @@ def get_owner_knowledge_status() -> dict[str, object]:
             (owner_knowledge_store.get_state("feishu_app_id") or os.getenv("MEIDO_FEISHU_APP_ID"))
             and (owner_knowledge_store.get_state("feishu_app_secret") or os.getenv("MEIDO_FEISHU_APP_SECRET"))
         ),
-        "embeddingReady": getattr(owner_knowledge_plugin.embedder, "ready", False),
+        "embeddingReady": embedding_provider.ready,
+        "embeddingConfigured": bool(embedding_configuration_store.get().apiKey),
+        "embeddingModel": embedding_provider.model_name,
+        "embeddingDimensions": embedding_provider.dimensions,
+        "embeddingProvider": embedding_configuration_store.get().provider,
+        "embeddingLastError": embedding_provider.last_error,
         "appId": owner_knowledge_store.get_state("feishu_app_id"),
         "redirectUri": os.getenv(
             "MEIDO_FEISHU_REDIRECT_URI",
@@ -1028,6 +1029,66 @@ def todo_diagnostics() -> dict[str, object]:
 @app.get("/api/model/providers", response_model=ProviderPresetList)
 def list_model_providers() -> ProviderPresetList:
     return ProviderPresetList(providers=PROVIDER_PRESETS)
+
+
+def _embedding_configuration_with_saved_key(data: EmbeddingConfigurationInput) -> EmbeddingConfigurationInput:
+    if data.apiKey:
+        return data
+    current = embedding_configuration_store.get()
+    return data.model_copy(update={"apiKey": current.apiKey})
+
+
+@app.get("/api/embedding/configuration")
+def get_embedding_configuration() -> dict[str, object]:
+    configuration = embedding_configuration_store.get()
+    return {
+        "configuration": public_embedding_configuration(configuration),
+        "status": {
+            "configured": bool(configuration.apiKey),
+            "ready": embedding_provider.ready,
+            "model": configuration.model,
+            "dimensions": configuration.dimensions,
+            "lastError": embedding_provider.last_error,
+        },
+    }
+
+
+@app.put("/api/embedding/configuration")
+def save_embedding_configuration(data: EmbeddingConfigurationInput) -> dict[str, object]:
+    try:
+        configuration = embedding_configuration_store.save(_embedding_configuration_with_saved_key(data))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except OSError as error:
+        raise HTTPException(status_code=500, detail="向量模型配置保存失败，当前生效配置未改变") from error
+    embedding_provider.last_error = None
+    return {
+        "configuration": public_embedding_configuration(configuration),
+        "status": {
+            "configured": bool(configuration.apiKey),
+            "ready": embedding_provider.ready,
+            "model": configuration.model,
+            "dimensions": configuration.dimensions,
+            "lastError": embedding_provider.last_error,
+        },
+    }
+
+
+@app.post("/api/embedding/configuration/test")
+def test_embedding_configuration(data: EmbeddingConfigurationInput) -> dict[str, object]:
+    try:
+        candidate = _embedding_configuration_with_saved_key(data)
+        validate_embedding_configuration(candidate)
+        configuration = EmbeddingConfiguration.model_validate(candidate.model_dump())
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    tester = SharedEmbeddingProvider(lambda: configuration, timeout=10)
+    started_at = monotonic()
+    try:
+        tester.embed_query("ping")
+    except Exception as error:
+        return {"ok": False, "message": _safe_model_error(error, configuration.apiKey)}
+    return {"ok": True, "message": "连接成功", "latencyMs": round((monotonic() - started_at) * 1000)}
 
 
 @app.get("/api/model/configuration")
