@@ -2,9 +2,9 @@
 
 状态：当前
 
-最后核验：2026-10-08
+最后核验：2026-10-10
 
-基线：`main` `22be5534101451ccdea09237445681ae4cb3a226`
+基线：`main` `3ac71cd1454ca006626dde360b9867769e9a2763`（PR #90 已合并）
 
 事实来源：主人资料实现及测试、[`CONTEXT.md`](../../CONTEXT.md)、[`memory-system-spec.md`](memory-system-spec.md)、[`agent-runtime-tau-integration-spec.md`](agent-runtime-tau-integration-spec.md)、[`ADR-0003`](../adr/0003-tau-inspired-agent-runtime-boundary.md)、[`ADR-0004`](../adr/0004-role-scoped-shell-tool-boundary.md)。
 
@@ -27,7 +27,7 @@
 
 ### 2.1 主人资料
 
-主人资料是从主人连接的外部来源同步到本地的来源文档。第一版来源为飞书知识库，只导入普通文档。来源原文不属于角色记忆。
+主人资料是从主人连接的外部来源同步到本地的来源文档。当前来源为飞书知识库，只导入普通文档。来源原文不属于角色记忆。
 
 ### 2.2 角色理解
 
@@ -98,7 +98,7 @@ Application Plugin Manager
 
 远端文档 ID 与来源 ID 是身份依据，标题不能作为主键。向量结果必须能回取正文、标题、位置和来源链接。embedding 模型或维度变化时建立新索引版本并重建，不混用不同向量空间。
 
-文档与查询使用同一版本的本机 embedding。embedding 模型选择、Windows 打包与 `sqlite-vec` 扩展加载策略属于实现计划，需要在实现前验证；不得复用当前按角色模型服务请求 embedding 的 MemoryEngine provider 来替代本机 embedding 要求。发送给聊天模型的资料片段会随当前请求发送到该角色模型服务商；此数据边界已由主人接受。
+文档与查询使用同一版本的 embedding。应用在模型设置页配置一个 OpenAI-compatible embedding 服务，默认使用 DashScope `text-embedding-v3`（1024 维）；主人资料与长期记忆共用该配置，不能复用按角色变化的聊天模型配置。embedding 模型或维度变化时建立新的索引空间并重建，不混用不同向量空间。发送给聊天模型的资料片段会随当前请求发送到该角色模型服务商；此数据边界已由主人接受。
 
 切片优先保留文章、标题、日期和自然段：短日记可以整篇作为片段；长文按自然段或连续自然段组合；只在单段过长时继续拆分。每个片段保留文档 ID、顺序和位置。长度、重叠及中文解析参数通过代表性日记评估，不在领域规则中硬编码数值。
 

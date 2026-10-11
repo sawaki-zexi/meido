@@ -1,8 +1,8 @@
 # Meido 与 Shiori 记忆模块源码对照
 
 状态：当前研究记录  
-最后核验：2026-10-07
-Meido 基线：`a9cfb10`（Agent Runtime PR #81，包含记忆策略 PR #71/#73/#74）
+最后核验：2026-10-10
+Meido 基线：`3ac71cd`（已包含记忆策略 PR #71/#73/#74、Runtime #81、能力扩展 #86/#87/#88、主人资料 #90 和待办 #91）
 Shiori 基线：`629e5ba6967a9fa2f4477b38d55e315c8c2b58d7`（`main`）
 
 本文只记录源码核验结果，不把 Shiori 的群聊能力列为 Meido 的缺陷。Meido 当前明确采用单角色、单会话边界；Shiori 的 `channel`、`chat_id`、用户线程和旁听层是对照项，而不是本项目本轮的实现范围。
@@ -111,7 +111,7 @@ Meido `memory_items` 在相同核心字段上增加了 `role_id`，唯一索引�
 
 ### Meido
 
-1. 只有保存为 `completed` 的 assistant 消息才由 `main.py` 发布 `TurnCommitted`；事件只含当前角色、单会话和两个 `Message`，没有 Shiori 的 tool chain、channel/chat 或 request metadata。
+1. 只有保存为 `completed` 的 assistant 消息才由 `main.py` 发布 `TurnCommitted`；记忆事件仍只含当前角色、单会话和两个 `Message`，不复制 Shiori 的完整 tool chain、channel/chat 或 request metadata。Agent Runtime 的 tool transcript 在记忆流程外单独持久化。
 2. `MemoryWorker.publish()` 创建进程内 asyncio task，按角色锁串行；语义处理和 Markdown maintenance 在同一个角色锁内并行执行。
 3. `MemoryService.process_turn()` 先处理 `记住`、`忘记`、`拒绝记忆` 和偏好纠正，再按配置调用结构化 post-response LLM；模型失败或非法输出时回退规则提取。embedding 失败只记录错误，回复不会回滚。
 4. `MemoryMaintenance` 在每个成功回合被调用。未达到窗口阈值时重写确定性的最近 12 条消息；达到阈值时写 HISTORY/PENDING/journal，在 `.maintenance.json` 保存 `pendingEvent`，事件消费者再以 `source_key` 幂等写入 SQLite。
@@ -167,4 +167,4 @@ Meido 在同一端口上扩展了 `update`、`delete`、`reject`、`state_change
 4. Meido 当前 Optimizer 不负责 SQLite 镜像；`main.py` 中未接线的 `_persist_consolidated_memories` 不能作为运行时行为写入架构图。
 5. Meido 的 Markdown 近期上下文是确定性消息列表；若目标是继续向当前 Shiori 靠拢，最有价值的增量是近期 Compression、可见性来源标记和 durable consumer backlog，而不是复制群聊数据模型。
 
-本次调研未修改应用代码，也未运行完整测试；结论均来自上述固定提交源码、官方 README/handbook 和当前 Meido 源码。
+本次调研未修改应用代码，也未运行完整测试；结论均来自上述固定提交源码、官方 README/handbook 和当前 Meido 源码。邮件等外部事务仍不属于当前记忆模块边界。

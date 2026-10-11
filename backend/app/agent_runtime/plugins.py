@@ -26,6 +26,7 @@ KNOWN_CAPABILITIES = frozenset({
     "memory.write",
     "todo.read",
     "todo.write",
+    "browser.session",
 })
 HookMode = str
 Cleanup = Callable[[], object | Awaitable[object]]
@@ -214,6 +215,8 @@ class PluginContext:
     plugin_dir: str
     grants: frozenset[str]
     host_services: Mapping[str, object]
+    role_id: str = ""
+    run_id: str = ""
     _cleanups: list[Cleanup] = field(default_factory=list)
     _closed: bool = False
 
@@ -386,6 +389,8 @@ class PluginResolution:
         granted_capabilities: set[str] | frozenset[str] = frozenset(),
         host_services: Mapping[str, object] = MappingProxyType({}),
         plugin_dir: str = "",
+        role_id: str = "",
+        run_id: str = "",
     ) -> PluginResolution:
         await self.close()
         return await registry.load(
@@ -393,6 +398,8 @@ class PluginResolution:
             granted_capabilities=granted_capabilities,
             host_services=host_services,
             plugin_dir=plugin_dir,
+            role_id=role_id,
+            run_id=run_id,
         )
 
 
@@ -422,6 +429,8 @@ class PluginRegistry:
         granted_capabilities: set[str] | frozenset[str] = frozenset(),
         host_services: Mapping[str, object] = MappingProxyType({}),
         plugin_dir: str = "",
+        role_id: str = "",
+        run_id: str = "",
     ) -> PluginResolution:
         unknown_grants = set(granted_capabilities) - KNOWN_CAPABILITIES
         loaded: list[LoadedPlugin] = []
@@ -473,6 +482,8 @@ class PluginRegistry:
                     for capability, service in host_services.items()
                     if capability in manifest.requested_capabilities
                 }),
+                role_id=role_id,
+                run_id=run_id,
             )
             try:
                 contribution = registration.factory(context)

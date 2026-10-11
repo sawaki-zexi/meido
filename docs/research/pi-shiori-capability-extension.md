@@ -1,8 +1,8 @@
 # Agent 能力扩展机制调研：Pi、Shiori、Codex 与 Claude Code
 
-状态：当前研究记录
+状态：当前研究记录（包含已落地能力与后续缺口）
 
-最后核验：2026-10-07
+最后核验：2026-10-10
 
 事实来源：
 
@@ -10,13 +10,13 @@
 - Shiori-Agent `YinFengWindy/Shiori-Agent` main：`c7ad4423cc63ae5157cfada21e408dd40b360e63`
 - Codex 官方文档：[Skills and Plugins](https://learn.chatgpt.com/docs/skills-and-plugins.md)、[Build Skills](https://learn.chatgpt.com/docs/build-skills.md)、[Build Plugins](https://learn.chatgpt.com/docs/build-plugins.md)、[Hooks](https://learn.chatgpt.com/docs/hooks.md)、[MCP](https://learn.chatgpt.com/docs/extend/mcp.md)
 - Claude Code 官方文档：[Skills](https://code.claude.com/docs/en/skills.md)、[Plugins overview](https://code.claude.com/docs/en/plugins/overview.md)、[Plugin components](https://code.claude.com/docs/en/plugins/components.md)、[MCP](https://code.claude.com/docs/en/mcp.md)、[Hooks](https://code.claude.com/docs/en/hooks.md)、[Subagents](https://code.claude.com/docs/en/sub-agents.md)、[Permissions](https://code.claude.com/docs/en/permissions.md)
-- Meido 当前基线：`a9cfb10`（Agent Runtime PR #81 合入 `main`）
+- Meido 当前基线：`3ac71cd`（主人资料插件 PR #90 合入 `main`）
 
 本文只提取与 Meido 能力扩展层有关的源码事实和设计启发，不建议把 Pi 的 TypeScript Coding Agent、Codex CLI 或 Claude Code 的完整宿主直接移植到 Meido。
 
 ## 结论
 
-Meido 应在现有 Agent Loop 之上增加一个小型的 `Capability Layer`，但首版不应直接建设完整的动态插件市场。该层负责把可选能力解析成一次运行的稳定快照，再交给 Agent Loop 使用。
+Meido 已在现有 Agent Loop 之上落地一个小型 `Capability Layer`。该层把可选能力解析成一次运行的稳定快照，再交给 Agent Loop 使用；动态插件市场、远程 MCP 和长期任务仍明确留在后续范围。
 
 建议的职责分界是：
 
@@ -29,11 +29,11 @@ Transport        FastAPI、SSE、前端和管理 API
 
 工具、Skill 和插件不是同一个概念：
 
-| 类型 | 模型可见性 | 作用 | 首版建议 |
+| 类型 | 模型可见性 | 作用 | 当前采用方式 |
 | --- | --- | --- | --- |
-| Tool | 可选 | 一次模型可调用的结构化动作 | 立即支持，沿用 `AgentTool` |
-| Skill | 提示词/资源 | 一套行为规则、上下文资料和允许工具 | 先支持声明式 Markdown |
-| Plugin | 宿主能力 | 注册多个 Tool、Skill、Provider 或生命周期处理器 | 先做进程内、显式启用 |
+| Tool | 可选 | 一次模型可调用的结构化动作 | `AgentTool` + `ToolDefinition`，按角色策略进入快照 |
+| Skill | 提示词/资源 | 一套行为规则、上下文资料和允许工具 | 声明式 Markdown，descriptor-first 按需加载 |
+| Plugin | 宿主能力 | 注册多个 Tool、Skill 或生命周期处理器 | 进程内 manifest，显式启用并授予宿主 capability |
 
 ## Pi：扩展是 Agent Session 的一等公民
 
@@ -192,7 +192,7 @@ Meido 已有角色设定和核心运行 prompt，不应复制 `CLAUDE.md` 的整
 
 Claude Code Plugin 是带 `.claude-plugin/plugin.json` manifest 的目录，组件可以包括 Skills、Agents、Hooks、MCP servers、LSP servers、可执行文件、默认设置和 UI 资源。Plugin skill 使用命名空间，Plugin 中的 MCP server 只在插件启用时连接，组件路径必须保持在插件根目录内。Marketplace 是分发目录，不是运行时权限本身。
 
-这与 Meido 的目标相符，但首版只需要静态、进程内 Python Plugin manifest；不引入 marketplace、LSP、UI 资源或动态安装。
+这与 Meido 的目标相符；当前采用静态、进程内 Python Plugin manifest，不引入 marketplace、LSP、UI 资源或动态安装。
 
 ### Hook、权限和信任是独立层
 
@@ -224,25 +224,25 @@ Meido 当前不应把 Subagent 作为普通 Plugin 能力。Codex/Claude Executo
 
 四个系统共同说明能力扩展层至少要拆成六个边界：`Tool`（结构化动作）、`Skill`（按需指令/资源）、`Plugin`（分发和宿主装配）、`MCP`（外部工具连接）、`Hook`（生命周期策略）和 `Policy/Trust`（权限与来源）。Pi 和 Shiori 分别提供了运行时 API 与 capability grant 的实现参考；Codex 和 Claude Code 进一步证明 Skill 的 progressive disclosure、Plugin 的 bundle 边界、MCP 的连接/审批独立性以及 Hook 的 trust/decision 语义是可复用的通用设计。
 
-Meido 的首版应采用 Python 原生、provider-neutral 的能力层：启动时只解析 descriptors，运行开始前生成不可变 `CapabilitySnapshot`，Skill 正文在通过策略后按需编译，Tool schema 和 policy 在当前 run 内保持稳定。Plugin 只能访问显式授予的宿主端口；MemoryEngine 仍是核心服务，`memory.search` 等是受角色作用域约束的 Tool 视图。远程 MCP、Codex/Claude 调用和 Subagent 留给独立 TaskRuntime。
+当前实现采用 Python 原生、provider-neutral 的能力层：启动或请求时解析 descriptors，运行开始前生成不可变 `CapabilitySnapshot`，Skill 正文在通过策略后按需编译，Tool schema 和 policy 在当前 run 内保持稳定。Plugin 只能访问显式授予的宿主端口；MemoryEngine 仍是核心服务，记忆、主人资料和待办工具都以受角色作用域约束的 Tool/Plugin 视图接入。远程 MCP、Codex/Claude 调用和 Subagent 留给独立 TaskRuntime。
 
 ## Meido 当前缺口
 
-当前 Meido Runtime 已有：
+当前 Meido 已落地：
 
-- `AgentTool`、`ToolDefinition`、`ToolContext`、`ToolRegistry`；
-- `RuntimeManager` 的角色运行锁、取消、超时和持久化回调；
-- `MemoryEngine` 的查询、写入、admin 和 tool profile 端口；
-- ShellTool 的角色级 allowlist 和执行边界。
+- `AgentTool`、`ToolDefinition`、`ToolContext`、`ToolRegistry`，包含 source/version/risk/exposure/approval/timeout/output limit 元数据；
+- `CapabilitySnapshot` 与运行开始冻结逻辑，包含策略决策、Skill、Plugin generation 和诊断；
+- 声明式 Skill 的角色/项目目录发现、front matter 校验、progressive disclosure 和内容 hash；
+- 进程内 Plugin manifest、capability grant、PluginContext、Hook 生命周期和幂等 cleanup；
+- `MemoryEngine` 的查询、写入、admin 和 tool profile 端口，以及角色范围记忆工具；
+- ShellTool、主人资料和待办 Plugin 的角色级策略与执行边界。
 
-当前缺少：
+仍未接入或需要独立规格的能力：
 
-1. 工具的来源、暴露级别、风险提示、启用条件和版本；
-2. Skill 资源的发现、解析、优先级和运行快照；
-3. 插件 manifest、capability grant、配置和生命周期；
-4. 运行开始时的统一 capability snapshot；
-5. 工具调用前策略链、审计上下文和插件级资源清理；
-6. 能力变更对 prompt/tool loadout 的可诊断记录。
+1. 远程 MCP server 的连接、健康检查、审批和工具发现适配器；
+2. 动态安装、插件市场、第三方来源信任和用户可视化管理；
+3. 更强隔离的 Executor、审批工作流、Subagent 和长期 TaskRuntime；
+4. 外部事务工具，包括邮件、QQ、Telegram、浏览器和代表主人发送或修改外部内容的能力。
 
 ## 设计结论
 

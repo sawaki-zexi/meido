@@ -22,7 +22,8 @@ from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
 from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryQueryFilters, MemoryScope
-from .embeddings import OpenAICompatibleEmbeddingAdapter
+from .embeddings import SharedEmbeddingProvider
+from .embedding_config import EmbeddingConfigurationStore, public_embedding_configuration, validate_embedding_configuration
 from .memory_maintenance import MemoryMaintenance
 from .memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
 from .memory_store import MemoryStore
@@ -32,7 +33,6 @@ from .owner_knowledge import (
     ApplicationPluginManager,
     FeishuApiConnector,
     FeishuApiError,
-    LocalEmbeddingAdapter,
     OAuthCallbackAccessLogFilter,
     OwnerKnowledgePlugin,
     OwnerKnowledgeScheduler,
@@ -41,7 +41,7 @@ from .owner_knowledge import (
     OwnerKnowledgeTool,
     RoleBoundOwnerKnowledgeReader,
 )
-from .models import AgentRun, MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, Message, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
+from .models import AgentRun, EmbeddingConfiguration, EmbeddingConfigurationInput, MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, Message, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
 from .storage import initialize_databases, resolve_owner_knowledge_database
@@ -72,6 +72,9 @@ from .agent_runtime.skills import SkillRegistry
 from .todo import TodoPlugin, TodoStore
 from .todo.agent import register_todo_agent_plugin
 from .todo.application import TodoApplicationService
+from .browser_use import BrowserSessions, BrowserUseConfig, register_browser_use_plugin
+from .browser_use.safety import sanitize_browser_arguments, sanitize_browser_text
+from .browser_use.tool import BROWSER_USE_TOOL_NAMES
 from .todo.models import TodoCreate, TodoList, TodoReminderList, TodoReminderRoleInput, TodoSettingsInput, TodoStatusInput, TodoUpdate
 
 logging.getLogger("uvicorn.access").addFilter(OAuthCallbackAccessLogFilter())
@@ -90,6 +93,8 @@ memory_store = MemoryStore(data_root / "memory2.db")
 memory_event_bus = MemoryEventBus()
 model_adapter: ModelAdapter = OpenAICompatibleAdapter()
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
+embedding_configuration_store = EmbeddingConfigurationStore(data_root / "embedding-config.json")
+embedding_provider = SharedEmbeddingProvider(embedding_configuration_store.get)
 plugin_registry = PluginRegistry()
 owner_knowledge_store = OwnerKnowledgeStore(resolve_owner_knowledge_database(project_root, data_root))
 async def _refresh_feishu_access_token() -> None:
@@ -110,11 +115,17 @@ owner_knowledge_connector = FeishuApiConnector(
 owner_knowledge_plugin = OwnerKnowledgePlugin(
     owner_knowledge_store,
     owner_knowledge_connector,
-    LocalEmbeddingAdapter(os.getenv("MEIDO_OWNER_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")),
+    embedding_provider,
 )
 application_plugin_manager = ApplicationPluginManager()
 application_plugin_manager.register("owner-knowledge", owner_knowledge_plugin)
 register_todo_agent_plugin(plugin_registry)
+register_browser_use_plugin(plugin_registry)
+browser_use_sessions = BrowserSessions(
+    Path(os.getenv("MEIDO_BROWSER_USE_DATA_DIR", str(data_root / "browser-use"))).resolve(),
+    BrowserUseConfig(),
+    resources=Path(os.getenv("MEIDO_BROWSER_USE_RESOURCES", str(Path(__file__).resolve().parent))).resolve(),
+)
 todo_store = TodoStore(data_root / "todos.db")
 todo_application = TodoApplicationService(todo_store, session_store)
 todo_plugin = TodoPlugin(
@@ -123,11 +134,6 @@ todo_plugin = TodoPlugin(
     reminder_sender=lambda role_id, event_id, kind, payload: _generate_todo_reminder(role_id, event_id, kind, payload),
     available_roles=lambda: [role.id for role in store.list() if role.id not in store.pending_role_deletions()],
 )
-
-
-def _embedding_configuration(role_id: str):
-    role = store.get(role_id)
-    return model_configuration_store.get(role.modelConfigurationId) if role and role.modelConfigurationId else model_configuration_store.get()
 
 
 def _role_model_configuration(role_id: str):
@@ -413,7 +419,6 @@ def _observe_consolidation_event(event: ConsolidationCommitted) -> None:
         raise
 
 
-embedding_provider = OpenAICompatibleEmbeddingAdapter(_embedding_configuration)
 memory_service = MemoryService(
     memory_store,
     embedding_provider,
@@ -604,6 +609,7 @@ async def _close_memory_workers() -> None:
     await memory_optimizer_loop.close()
     await memory_worker.close()
     await memory_optimizer_worker.drain()
+    await browser_use_sessions.close()
 
 
 async def _start_memory_workers() -> None:
@@ -669,7 +675,12 @@ def get_owner_knowledge_status() -> dict[str, object]:
             (owner_knowledge_store.get_state("feishu_app_id") or os.getenv("MEIDO_FEISHU_APP_ID"))
             and (owner_knowledge_store.get_state("feishu_app_secret") or os.getenv("MEIDO_FEISHU_APP_SECRET"))
         ),
-        "embeddingReady": getattr(owner_knowledge_plugin.embedder, "ready", False),
+        "embeddingReady": embedding_provider.ready,
+        "embeddingConfigured": bool(embedding_configuration_store.get().apiKey),
+        "embeddingModel": embedding_provider.model_name,
+        "embeddingDimensions": embedding_provider.dimensions,
+        "embeddingProvider": embedding_configuration_store.get().provider,
+        "embeddingLastError": embedding_provider.last_error,
         "appId": owner_knowledge_store.get_state("feishu_app_id"),
         "redirectUri": os.getenv(
             "MEIDO_FEISHU_REDIRECT_URI",
@@ -1020,6 +1031,66 @@ def list_model_providers() -> ProviderPresetList:
     return ProviderPresetList(providers=PROVIDER_PRESETS)
 
 
+def _embedding_configuration_with_saved_key(data: EmbeddingConfigurationInput) -> EmbeddingConfigurationInput:
+    if data.apiKey:
+        return data
+    current = embedding_configuration_store.get()
+    return data.model_copy(update={"apiKey": current.apiKey})
+
+
+@app.get("/api/embedding/configuration")
+def get_embedding_configuration() -> dict[str, object]:
+    configuration = embedding_configuration_store.get()
+    return {
+        "configuration": public_embedding_configuration(configuration),
+        "status": {
+            "configured": bool(configuration.apiKey),
+            "ready": embedding_provider.ready,
+            "model": configuration.model,
+            "dimensions": configuration.dimensions,
+            "lastError": embedding_provider.last_error,
+        },
+    }
+
+
+@app.put("/api/embedding/configuration")
+def save_embedding_configuration(data: EmbeddingConfigurationInput) -> dict[str, object]:
+    try:
+        configuration = embedding_configuration_store.save(_embedding_configuration_with_saved_key(data))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except OSError as error:
+        raise HTTPException(status_code=500, detail="向量模型配置保存失败，当前生效配置未改变") from error
+    embedding_provider.last_error = None
+    return {
+        "configuration": public_embedding_configuration(configuration),
+        "status": {
+            "configured": bool(configuration.apiKey),
+            "ready": embedding_provider.ready,
+            "model": configuration.model,
+            "dimensions": configuration.dimensions,
+            "lastError": embedding_provider.last_error,
+        },
+    }
+
+
+@app.post("/api/embedding/configuration/test")
+def test_embedding_configuration(data: EmbeddingConfigurationInput) -> dict[str, object]:
+    try:
+        candidate = _embedding_configuration_with_saved_key(data)
+        validate_embedding_configuration(candidate)
+        configuration = EmbeddingConfiguration.model_validate(candidate.model_dump())
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    tester = SharedEmbeddingProvider(lambda: configuration, timeout=10)
+    started_at = monotonic()
+    try:
+        tester.embed_query("ping")
+    except Exception as error:
+        return {"ok": False, "message": _safe_model_error(error, configuration.apiKey)}
+    return {"ok": True, "message": "连接成功", "latencyMs": round((monotonic() - started_at) * 1000)}
+
+
 @app.get("/api/model/configuration")
 def get_model_configuration() -> dict[str, object]:
     return {"configuration": public_configuration(model_configuration_store.get())}
@@ -1171,9 +1242,16 @@ def get_role(role_id: str) -> RoleResponse:
 
 
 @app.put("/api/roles/{role_id}", response_model=RoleResponse)
-def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
+async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
     try:
-        return RoleResponse(role=store.update(role_id, data))
+        current = store.get(role_id)
+        updated = store.update(role_id, data)
+        if current is not None and current.agentConfig.browserUse.enabled != updated.agentConfig.browserUse.enabled:
+            # The role policy is the plugin's explicit authorization boundary.
+            # Disabling closes the current generation and blocks an old run's
+            # frozen capability snapshot from creating a replacement session.
+            await browser_use_sessions.set_role_enabled(role_id, updated.agentConfig.browserUse.enabled)
+        return RoleResponse(role=updated)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
     except OSError as error:
@@ -1374,6 +1452,7 @@ async def delete_role(role_id: str) -> None:
     staged_path = None
     deletion_phase = "preflight"
     try:
+        await browser_use_sessions.set_role_enabled(role_id, False)
         # Mark the gate before the first await so cancellation cannot leave a
         # role permanently blocked from future memory work.
         deletion_started = True
@@ -1465,6 +1544,11 @@ async def delete_role(role_id: str) -> None:
         if deletion_lock is not None and deletion_lock.locked():
             deletion_lock.release()
         lock.release()
+    if deletion_succeeded:
+        try:
+            browser_use_sessions.delete_role_data(role_id)
+        except (OSError, RuntimeError) as error:
+            memory_worker.errors.append(f"{role_id}: browser data cleanup deferred: {error}")
 
 
 @app.get("/api/roles/{role_id}/session", response_model=SessionResponse)
@@ -1871,6 +1955,13 @@ async def _runtime_capabilities(
         host_services = {"todo.write": _todo_application()}
     else:
         enabled_plugins.discard("todo")
+    if agent_config.browserUse.enabled:
+        enabled_plugins.add("browser_use")
+        enabled_tools.update(BROWSER_USE_TOOL_NAMES)
+        granted_capabilities.add("browser.session")
+        host_services["browser.session"] = browser_use_sessions
+    else:
+        enabled_plugins.discard("browser_use")
     return await CapabilityRegistry(
         _runtime_tool_candidates(role) if available_tools is None else available_tools,
         skills=SkillRegistry.discover_many((
@@ -2117,7 +2208,14 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     capabilities=capabilities,
                     max_turns=8,
                     provider_timeout=120.0,
-                    tool_timeout=shell_config.timeoutSeconds if runtime_tools else 30.0,
+                    # The outer timeout must not shorten Browser Use's own
+                    # per-action policy when a role also enables a shorter
+                    # shell timeout; each ToolDefinition still applies its
+                    # own limit inside the runtime.
+                    tool_timeout=max(
+                        shell_config.timeoutSeconds if runtime_tools else 30.0,
+                        browser_use_sessions.timeout_seconds if role.agentConfig.browserUse.enabled else 0.0,
+                    ),
                     on_message_end=persist_runtime_message,
                 ):
                     if isinstance(runtime_event, MessageStartEvent) and isinstance(runtime_event.message, AssistantMessage):
@@ -2141,6 +2239,10 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     elif isinstance(runtime_event, MessageEndEvent) and isinstance(runtime_event.message, AssistantMessage):
                         content = runtime_event.message.content
                     elif isinstance(runtime_event, ToolExecutionStartEvent):
+                        safe_arguments = sanitize_browser_arguments(
+                            runtime_event.tool_name,
+                            runtime_event.arguments,
+                        )
                         definition = (
                             capabilities.get(runtime_event.tool_name).definition
                             if capabilities is not None and capabilities.get(runtime_event.tool_name) is not None
@@ -2165,16 +2267,18 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         yield _event("tool_execution_start", runtime_event_payload({
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
-                            "arguments": runtime_event.arguments,
+                            "arguments": safe_arguments,
                         }, runtime_event.sequence))
                     elif isinstance(runtime_event, ToolExecutionUpdateEvent):
+                        safe_result, _ = sanitize_browser_text(runtime_event.result.content)
                         yield _event("tool_execution_update", runtime_event_payload({
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
-                            "result": runtime_event.result.content,
+                            "result": safe_result,
                             "isError": runtime_event.result.is_error,
                         }, runtime_event.sequence))
                     elif isinstance(runtime_event, ToolExecutionEndEvent):
+                        safe_result, _ = sanitize_browser_text(runtime_event.result.content)
                         details = runtime_event.result.details if isinstance(runtime_event.result.details, dict) else {}
                         session_store.finish_tool_audit(
                             run_id=run_id,
@@ -2186,7 +2290,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         yield _event("tool_execution_end", runtime_event_payload({
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
-                            "result": runtime_event.result.content,
+                            "result": safe_result,
                             "isError": runtime_event.result.is_error,
                         }, runtime_event.sequence))
                     elif isinstance(runtime_event, AgentEndEvent):
@@ -2263,6 +2367,12 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     await capabilities.close()
                 except Exception:
                     pass
+            try:
+                # Browser sessions are scoped to this run; the profile remains
+                # on disk while the owned MCP/Chrome generation is reaped.
+                await browser_use_sessions.close_run(role_id, run_id)
+            except Exception as error:
+                memory_worker.errors.append(f"{role_id}: browser run cleanup failed: {type(error).__name__}")
             if disconnect_watcher is not None:
                 disconnect_watcher.cancel()
                 await asyncio.gather(disconnect_watcher, return_exceptions=True)

@@ -33,9 +33,16 @@ class MemoryRecallToolConfig(BaseModel):
     enabled: bool = False
 
 
+class BrowserUseToolConfig(BaseModel):
+    """Role policy for the optional Shiori-compatible browser plugin."""
+
+    enabled: bool = False
+
+
 class AgentToolConfig(BaseModel):
     shell: ShellToolConfig = Field(default_factory=ShellToolConfig)
     memoryRecall: MemoryRecallToolConfig = Field(default_factory=MemoryRecallToolConfig)
+    browserUse: BrowserUseToolConfig = Field(default_factory=BrowserUseToolConfig)
     enabledTools: list[str] = Field(default_factory=list)
     enabledPlugins: list[str] = Field(default_factory=list)
     grantedCapabilities: list[str] = Field(default_factory=list)
@@ -307,6 +314,31 @@ class ModelConfigurationInput(BaseModel):
 
 class ModelConfiguration(ModelConfigurationInput):
     id: str = Field(default_factory=lambda: f"model-{uuid.uuid4().hex}")
+
+
+class EmbeddingConfigurationInput(BaseModel):
+    provider: str = "dashscope"
+    baseUrl: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    model: str = "text-embedding-v3"
+    dimensions: int = Field(default=1024, gt=0, le=4096)
+    apiKey: str = ""
+
+    @field_validator("provider", "baseUrl", "model")
+    @classmethod
+    def validate_required_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("服务商、地址和模型均不能为空")
+        return value
+
+    @field_validator("apiKey")
+    @classmethod
+    def normalize_api_key(cls, value: str) -> str:
+        return value.strip()
+
+
+class EmbeddingConfiguration(EmbeddingConfigurationInput):
+    pass
 
 
 class ProviderPreset(BaseModel):
