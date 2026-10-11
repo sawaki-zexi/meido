@@ -1,8 +1,8 @@
 # Meido Agent Runtime：Tau Loop 语义接入规格
 
-状态：当前（基础 Loop 已实现，角色 Shell 工具作为第二阶段能力接入）
+状态：当前（Runtime、能力快照、Skill、角色范围只读工具和角色 Shell 工具已接入）
 
-最后核验：2026-10-07
+最后核验：2026-10-10
 
 事实来源：
 
@@ -13,13 +13,13 @@
 - Tau 源码调研：[`tau-meido-agent-runtime.md`](../research/tau-meido-agent-runtime.md)
 - Tau 官方源码：[huggingface/tau](https://github.com/huggingface/tau/tree/0c233ff080ba261ec1178e9232301cbb6479e648)
 
-维护者已确认以下架构边界，本规格作为 #75 基础实现基线：Meido 自有 Runtime seam、SQLite 为运行与消息权威状态、启动时将未完成运行收束为失败。角色范围 Shell 工具作为独立的第二阶段增量，受本文 5.5 和 ADR-0004 约束；其余实现参数由实现计划确定。
+维护者最初在 #75 中确认以下架构边界：Meido 自有 Runtime seam、SQLite 为运行与消息权威状态、启动时将未完成运行收束为失败。该边界已经落地；后续 #81、#86、#87、#88、#90、#91 分别补齐了持久化 Runtime、能力快照、声明式 Skill、角色范围只读工具、主人资料和待办能力。本文继续作为当前行为和边界的规格，历史 Issue 只用于追溯来源。
 
 本文定义把 Tau 启发的 Agent Loop 语义接入 Meido 的目标行为和边界。Tau 上游核验提交为 `0c233ff080ba261ec1178e9232301cbb6479e648`；本文只采纳 portable loop 的行为语义，不引入完整 `tau-ai` 依赖。本文不是 Tau 完整项目的接入说明，也不授权直接引入 Coding Agent、外部事务工具或长期任务调度。
 
 ## 1. 问题与目标
 
-Meido 当前能够完成一次角色文本回复，但模型无法在一次运行中请求一个受控工具、接收工具结果并继续生成。对话编排、角色锁、消息落库、记忆召回和 SSE 传输也集中在 HTTP 路由中，后续增加工具会让路由继续膨胀。
+历史问题（#75 之前）是 Meido 只能完成一次角色文本回复，模型无法在一次运行中请求受控工具、接收工具结果并继续生成；对话编排、角色锁、消息落库、记忆召回和 SSE 传输也集中在 HTTP 路由中。当前 Runtime 已承接运行编排和工具循环，本节保留该问题作为设计来源。
 
 本规格把一次角色对话运行抽象为独立的 Agent Runtime，并复用 Tau 已验证的 Loop 形态：
 
@@ -47,7 +47,7 @@ Meido 当前能够完成一次角色文本回复，但模型无法在一次运�
 以下内容不在本次 Runtime 接入范围内：
 
 - Tau 的 `tau_coding`、CLI、TUI 和项目目录发现；
-- 任意文件写入、浏览器、邮件、聊天平台和其他外部事务工具；角色范围 Shell 工具由本规格的第二阶段增量定义；
+- 任意文件写入、浏览器、邮件、聊天平台和其他外部事务工具；角色范围 Shell 工具虽已按本文 5.5 接入，但不改变这些外部事务仍被排除的边界；
 - Tau 的 JSONL/tree session，或以 Tau Harness 的内存 transcript 替代 Meido SQLite；
 - 多角色协作、子 Agent、并行工具执行和跨会话共享上下文；
 - 定时任务、远程任务、审批工作流和 Codex/Claude 执行器；
@@ -335,11 +335,11 @@ RuntimeManager 接管现有 `role_locks` 的职责：
 
 ## 10. 实施阶段与验收
 
-### Phase 0：契约和 ADR
+### Phase 0：契约和 ADR（已完成）
 
 确认 Tau 上游 commit、MIT attribution、消息/event schema、SQLite migration 和工具安全边界，并记录到 `docs/adr/`。运行恢复策略按本规格执行；此阶段不改变用户运行行为。
 
-### Phase 1：文本行为平移
+### Phase 1：文本行为平移（已完成）
 
 验收：
 
@@ -350,7 +350,7 @@ RuntimeManager 接管现有 `role_locks` 的职责：
 - 成功回复仍触发记忆维护，失败回复不触发正常记忆任务；
 - 现有 API 和前端测试保持通过。
 
-### Phase 2：工具循环
+### Phase 2：工具循环（已完成）
 
 使用 fake provider 和 fake read-only tool 验收：
 
@@ -360,11 +360,11 @@ RuntimeManager 接管现有 `role_locks` 的职责：
 - 单个工具超时形成可诊断的错误 tool result；provider 超时、取消、provider error 和 max turns 都有明确 run 终态；
 - 运行终态幂等，锁不会泄漏。
 
-### Phase 3：Meido 只读工具
+### Phase 3：Meido 只读工具（已完成基础接入）
 
-首批实现记忆召回、角色上下文读取和主人资料搜索。验收重点是角色隔离、输入 schema、超时、审计和错误降级。
+已接入角色范围记忆召回、主人资料搜索和待办工具；验收重点仍是角色隔离、输入 schema、超时、审计和错误降级。后续新增外部能力不直接扩展本阶段边界。
 
-### Phase 4：运行时加固
+### Phase 4：运行时加固（持续维护）
 
 完成事件序号、启动失败收敛、原子化写入、工具审计、feature flag/legacy fallback 和上下文预算测试。
 
@@ -387,10 +387,8 @@ RuntimeManager 接管现有 `role_locks` 的职责：
 2. SQLite 是运行和消息的权威来源；以现有 `messages` 表兼容扩展的结构化列表示 tool call/result，并新增 `agent_runs`。任何可恢复的 message end 在下一轮 provider 请求前持久化。
 3. 进程启动时将所有遗留 `created` 或 `running` run 标记为 `failed`，原因写明服务重启；同时将关联的 `streaming` assistant 收束为 `failed`。不尝试恢复旧进程中的 provider/tool 执行。
 4. 每个 `run_id` 的事件序号单调递增；既有 SSE 事件名保持兼容，工具生命周期事件可作为新增事件暴露。
-5. 本票的生产 Registry 为空。Fake tools 只用于 Runtime 测试；角色范围记忆工具由 #78 在 #56 完成后实现。
+5. #75 实施时生产 Registry 为空，Fake tools 仅用于 Runtime 测试。当前 Registry 已按后续实现接入角色范围记忆、主人资料、待办和可选 Shell 工具；每项能力仍需经过角色配置、能力快照和策略校验。
 6. 客户端断开必须取消当前 Runtime，即使 provider/tool 正阻塞等待下一次输出；取消传播到可取消的 provider/tool 请求，并以终态和失败/中止 assistant 收尾。
 7. 角色运行期间，删除请求按当前 API 行为返回 409；运行结束后再删除。不得静默删除或遗留仍能写消息的运行。
 
-本实现固定 `max_turns=8`、provider timeout 为 120 秒、单个 tool timeout 为 30 秒；超时配置留在 Runtime 调用边界，后续再评估产品级配置入口。provider timeout 终止 run，单个工具超时产生错误 tool result。上下文预算保留完整回合与工具配对。现阶段无工具 OpenAI-compatible 路径直接使用现有文本 adapter；非空工具列表明确返回 unsupported，不做静默降级。
-
-#78 继续作为依赖 #56 和 #75 的后续票。
+当前 HTTP 入口固定 `max_turns=8`、provider timeout 为 120 秒；工具超时使用角色 Shell 配置，未配置时为 30 秒。provider timeout 终止 run，单个工具超时产生错误 tool result。上下文预算保留完整回合与工具配对。OpenAI-compatible adapter 已支持结构化 tool call；具体工具仍由本次运行的 `CapabilitySnapshot` 决定，不能把未启用或未授权的工具发送给 provider。

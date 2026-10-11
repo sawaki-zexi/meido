@@ -2,9 +2,9 @@
 
 状态：当前
 
-最后核验：2026-10-08
+最后核验：2026-10-10
 
-基线：`main` `22be5534101451ccdea09237445681ae4cb3a226`
+基线：`main` `3ac71cd1454ca006626dde360b9867769e9a2763`（PR #90 已合并）
 
 事实来源：主人资料实现及测试、[`CONTEXT.md`](../../CONTEXT.md)、[`memory-system-spec.md`](memory-system-spec.md)、[`agent-runtime-tau-integration-spec.md`](agent-runtime-tau-integration-spec.md)、[`ADR-0003`](../adr/0003-tau-inspired-agent-runtime-boundary.md)、[`ADR-0004`](../adr/0004-role-scoped-shell-tool-boundary.md)。
 
@@ -27,7 +27,7 @@
 
 ### 2.1 主人资料
 
-主人资料是从主人连接的外部来源同步到本地的来源文档。第一版来源为飞书知识库，只导入普通文档。来源原文不属于角色记忆。
+主人资料是从主人连接的外部来源同步到本地的来源文档。当前来源为飞书知识库，只导入普通文档。来源原文不属于角色记忆。
 
 ### 2.2 角色理解
 

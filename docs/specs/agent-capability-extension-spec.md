@@ -1,8 +1,8 @@
 # Meido Agent 能力扩展层规格
 
-状态：草案
+状态：当前
 
-最后核验：2026-10-07
+最后核验：2026-10-10
 
 事实来源：
 
@@ -53,7 +53,7 @@ Meido 已经有 provider-neutral Agent Loop 和基础 `ToolRegistry`。如果以
 
 ### 3.3 Plugin
 
-宿主可加载的能力包。Plugin 可以注册 Tool、Skill、Provider 或生命周期模块，并声明所需的宿主 capability、配置和资源清理方法。首版 Plugin 只允许进程内、静态装配和显式启用。
+宿主可加载的能力包。Plugin 可以注册 Tool、Skill、Provider 或生命周期模块，并声明所需的宿主 capability、配置和资源清理方法。当前 Plugin 只允许进程内、静态装配和显式启用。
 
 ### 3.4 Core service
 
@@ -106,7 +106,7 @@ Agent Loop 只接受已经解析好的 provider、messages、tools、timeouts �
 
 ## 5. 能力契约
 
-以下是稳定概念，不要求首版一次实现全部字段：
+以下是稳定概念，不要求当前一次实现全部字段：
 
 ```text
 CapabilityManifest
@@ -209,7 +209,7 @@ Tool 结果同时包含：
 
 ## 7. Skill 规格
 
-首版 Skill 使用 Markdown 文件和受限 front matter，并采用 progressive disclosure：启动时只读取 descriptor，只有在 Skill 被显式调用或策略激活后才读取正文和 supporting files。Skill 的目录可以兼容 `SKILL.md`、`references/` 和 `assets/`，但这些文件不具有执行权限。
+当前 Skill 使用 Markdown 文件和受限 front matter，并采用 progressive disclosure：启动时只读取 descriptor，只有在 Skill 被显式调用或策略激活后才读取正文和 supporting files。Skill 的目录可以兼容 `SKILL.md`、`references/` 和 `assets/`，但这些文件不具有执行权限。
 
 ```yaml
 id: study-plan
@@ -243,7 +243,7 @@ Skill 只影响 prompt，不拥有 MemoryStore、SessionStore 或 RuntimeManager
 
 ## 8. Plugin 规格
 
-首版 Plugin 使用进程内 Python 包，通过静态 manifest 和宿主装配加载。Plugin 是多个 Tool、Skill、Hook 和后续 MCP adapter 的分发/装配单元，不是一个新的 Agent Loop，也不是安全 sandbox：
+当前 Plugin 使用进程内 Python 包，通过静态 manifest 和宿主装配加载。Plugin 是多个 Tool、Skill、Hook 和后续 MCP adapter 的分发/装配单元，不是一个新的 Agent Loop，也不是安全 sandbox：
 
 ```text
 plugin/
@@ -277,12 +277,12 @@ Manifest 至少包含：
 
 插件只能从 `PluginContext` 获取服务。未声明的服务抛出 `CapabilityNotGranted`；声明了但宿主未装配时抛出明确的 `HostServiceUnavailable`。插件创建的后台任务、文件句柄、连接和 watcher 必须通过 effect 注册，并在 shutdown/reload/失败回滚时幂等释放。
 
-首版不支持：插件自定义 FastAPI 路由、直接修改 SQLite schema、覆盖核心角色状态、修改 Runtime 状态机和未声明的网络/进程访问。
-Plugin 可以声明 MCP adapter，但首版不连接远程 server；后续连接仍必须经过独立的 server/tool policy、审批、超时和输出限制。
+当前不支持：插件自定义 FastAPI 路由、直接修改 SQLite schema、覆盖核心角色状态、修改 Runtime 状态机和未声明的网络/进程访问。
+Plugin 可以声明 MCP adapter，但当前不连接远程 server；后续连接仍必须经过独立的 server/tool policy、审批、超时和输出限制。
 
 ## 9. Lifecycle slots
 
-首版只开放有限的稳定 phase：
+当前只开放有限的稳定 phase：
 
 ```text
 before_run
@@ -305,10 +305,10 @@ after_run
 - `observe` 失败只记录诊断；
 - `transform` 失败保留上一个合法值并阻止继续污染上下文；
 - `deny` 只能阻止当前 Tool，不得伪造成功结果；
-- `request_follow_up` 首版禁用，避免插件制造无限 Agent Loop；
+- `request_follow_up` 当前禁用，避免插件制造无限 Agent Loop；
 - `after_run` 不得改变已提交的运行终态。
 
-Hook 的 `transform` 和 `deny` 只对当前事件生效。并发 Hook 的执行顺序和合并规则必须由宿主定义；首版采用按 priority、plugin ID、contribution ID 的稳定顺序串行执行，避免不同启动顺序产生不同的工具参数或 prompt。
+Hook 的 `transform` 和 `deny` 只对当前事件生效。并发 Hook 的执行顺序和合并规则必须由宿主定义；当前采用按 priority、plugin ID、contribution ID 的稳定顺序串行执行，避免不同启动顺序产生不同的工具参数或 prompt。
 
 自动记忆召回和 MemoryWorker 提交仍由核心流程调用，不通过可选 lifecycle module 决定是否执行。
 
@@ -354,14 +354,14 @@ SQLite 新增或扩展的字段只记录可诊断快照：
 
 ## 12. 实施阶段
 
-### Phase 1：Capability Registry 基础
+### Phase 1：Capability Registry 基础（已完成）
 
 - 将现有 `ToolRegistry` 补充 descriptor、source、risk、exposure 和 policy；
 - 增加 `CapabilitySnapshot` 和运行开始冻结逻辑；
 - 让当前 ShellTool 通过统一策略进入 snapshot；
 - 不引入动态第三方插件。
 
-### Phase 2：声明式 Skill
+### Phase 2：声明式 Skill（已完成）
 
 - 支持角色/项目 Skill 目录发现；
 - 解析 front matter、工具引用和 activation；
@@ -369,12 +369,12 @@ SQLite 新增或扩展的字段只记录可诊断快照：
 - 将启用 Skill 编译进 system prompt，并记录版本；
 - 用 fake Skill 验证不会绕过 Tool policy。
 
-### Phase 3：进程内 Plugin
+### Phase 3：进程内 Plugin（已完成基础能力）
 
 - manifest 校验和 capability grant；
 - PluginContext、配置、effect cleanup、生命周期 slots；
 - 用内置 memory tool plugin 验证 MemoryEngine 端口；
-- 外部网络、远程任务和动态安装继续关闭。
+- 外部网络、远程任务和动态安装继续关闭；内置主人资料和待办 Plugin 已使用该边界。
 
 ### Phase 3.5：MCP adapter（后续，可独立 Ticket）
 

@@ -1,6 +1,8 @@
 # Meido 记忆系统 Shiori 对齐规格
 
-状态：已确认目标，待实现
+状态：当前规格（包含待核验的对齐验收清单）
+
+最后核验：2026-10-10
 
 目标：以 Shiori-Agent 当前实现为唯一行为基线，复刻其记忆契约、默认引擎、结构化存储、检索、回合后处理、Markdown maintenance 和管理语义；仅删除群聊及多人上下文能力。
 
@@ -10,9 +12,10 @@
 - Shiori-Agent `origin/main`：`096a4ecbfbcdae3ba77c179fedb852721846fcb9`（2026-10-03）
 - Shiori 调研：[`shiori-agent-memory.md`](../research/shiori-agent-memory.md)
 - Optimizer / consolidation 深度调研：[`shiori-memory-optimizer-deep-dive.md`](../research/shiori-memory-optimizer-deep-dive.md)
-- Meido 第一版规格：[`memory-system-spec.md`](memory-system-spec.md)
+- Meido 当前架构规格：[`current-architecture-spec.md`](current-architecture-spec.md)
+- Meido 记忆系统规格：[`memory-system-spec.md`](memory-system-spec.md)
 
-本文是实现和验收依据。除本文“Meido 宿主适配”与“明确排除”两节外，不新增 Meido 自有记忆语义。
+本文是当前实现和回归验收依据。除本文“Meido 宿主适配”与“明确排除”两节外，不新增 Meido 自有记忆语义。#55–#62、#70–#74 已完成本规格的主要落地；后续差异必须在规格或 ADR 中明确记录。第 12 节保留为对齐验收清单，未勾选项表示仍需逐项核验或补齐，不代表第 1–11 节全部尚未实现。
 
 ## 1. 对齐边界
 
@@ -296,7 +299,7 @@ recall_memory  -> MemoryQuery
 7. 迁移失败可重试、可恢复且不删除原始数据；稳定 source key 防止重复写入。
 8. 旧 `MemoryService`/`MemoryStore` facade 仅在迁移期间保留，最终由统一 `MemoryEngine` 接管调用。
 
-## 12. 验收标准
+## 12. 对齐验收清单
 
 ### 契约与隔离
 

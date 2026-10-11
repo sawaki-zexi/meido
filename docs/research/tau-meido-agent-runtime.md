@@ -1,14 +1,14 @@
 # Tau Agent Loop 与 Meido Runtime 结合调研
 
-状态：当前
+状态：当前研究记录（包含历史评估）
 
-最后核验：2026-10-07，Tau `main` `0c233ff080ba261ec1178e9232301cbb6479e648`；Meido `main` `987e6c9c462a30903811d9fed48808151388f56d`
+最后核验：2026-10-10，Tau `main` `0c233ff080ba261ec1178e9232301cbb6479e648`；Meido `main` `3ac71cd`
 
-事实来源：Tau 一手源码和测试、Meido 当前 `main` 的源码和测试、开放 Issue #75/#78。结论、计划和源码事实分开标记。
+事实来源：Tau 一手源码和测试、Meido 当前 `main` 的源码和测试、Issue #75/#78 及其后续合并 PR。历史结论、当前源码事实和后续计划分开标记。
 
 ## 评估结论
 
-Meido 当前只有“单次文本回复编排”，还没有独立的 Agent Runtime：HTTP 路由负责角色锁、消息落库、记忆召回、模型流式调用和完成后的记忆任务提交。Tau 的纯 Agent Loop 可以补上“模型回复 -> 工具调用 -> 工具结果 -> 下一轮模型回复”的执行内核，但不应整体替换 Meido 的角色、会话、SQLite 和记忆边界。
+历史评估（#75 之前）显示 Meido 只有“单次文本回复编排”，还没有独立的 Agent Runtime。该问题已由 #81 及后续能力扩展 PR 解决：当前 Runtime 负责运行状态、角色锁、持久化 transcript、取消/超时和工具循环，能力层负责工具、Skill、Plugin 的运行快照。Tau 的纯 Agent Loop 仍只作为行为参考，不替换 Meido 的角色、会话、SQLite 和记忆边界。
 
 推荐参考 Tau portable loop 的行为语义，由 Meido 自行定义 Runtime 契约和适配层：
 
@@ -114,7 +114,7 @@ POST /api/roles/{role_id}/messages
 1. **取消必须穿透阻塞点。** 只在 provider 产出下一条事件后轮询 HTTP 连接状态，无法打断正在等待的网络流。Runtime 需要把取消信号传到 provider/tool 的可取消 await；客户端断开、超时和显式取消都要最终写入 run 终态并收束 assistant。
 2. **删除与活动运行要有明确策略。** 角色仍在运行时，删除请求应沿用现有 409 保护；运行终态后再删除。静默删除会留下无法解释的 run、tool transcript 或后续写入竞争。
 3. **持久化不能按单个 tool call 行直接重放。** 一个 assistant message 可以包含多个 tool call；SQLite 行格式可以逐 call 存储，但 transcript converter 必须按回合合并 assistant calls，按 call ID 配对结果，丢弃重复/孤立结果，并为悬空调用生成确定性错误结果。
-4. **fake loop 与生产工具是两件事。** #75 用 fake provider/fake read-only tool 验证 loop，不等于 HTTP 已开放生产工具。第一版生产 Registry 保持为空；#78 在 #56 完成后再接入角色范围只读记忆工具。
+4. **fake loop 与生产工具是两件事。** #75 用 fake provider/fake read-only tool 验证 loop；当时 HTTP 没有生产工具。当前已通过后续 PR 接入角色范围记忆、主人资料、待办和可选 Shell 工具，但每次运行仍只使用能力快照中通过策略的工具。
 
 ## 推荐的实现边界
 
@@ -142,7 +142,7 @@ Meido 自己保留：
 
 ## 本轮评估后的落地切片
 
-现有 #75 是覆盖范围合适的父级开发 Issue，应实施前复用和细化，不再新开重复 Runtime 核心票。其垂直用户结果是文本对话切换到 Runtime 后仍可用，同时以 fake provider/fake read-only tool 证明一次完整循环。#75 不注册真实工具，也不要求新的前端工具 UI；保留当前 SSE 文本事件，并可附加兼容字段。后续 #78 已存在且依赖 #56，承接角色范围只读记忆工具，不能并入 #75。
+历史上的 #75 是覆盖范围合适的父级开发 Issue，已由 #81 合并交付；#78 也已由 #88 合并交付。当前 Runtime 保留原有 SSE 文本事件，并附加兼容字段；真实工具不直接写入 HTTP 路由，而是通过能力快照和策略层装配。
 
 基础 Runtime 的生产工具应另开 Ticket。当前已单独落地角色范围 Shell 工具，遵循 [ADR-0004](../adr/0004-role-scoped-shell-tool-boundary.md) 的 allowlist、workspace、最小环境和进程生命周期边界；这不等于引入 Tau/Pi coding 层。只读工具仍必须复用 Meido 的 `MemoryEngine`/资料查询边界，不能借此开放任意文件写入或外部事务。
 
@@ -178,13 +178,13 @@ Meido 自己保留：
 
 扩展消息表和 provider 解析，使用 fake provider 验证 `LLM -> tool call -> tool result -> LLM -> final`。加入 `max_turns`、取消、请求断开处理；工具异常变成带 `is_error` 的 tool result，由 Loop 决定是否继续。
 
-### Phase 3：Meido 首批工具
+### Phase 3：Meido 首批工具（已落地，后续继续扩展）
 
-角色范围 Shell 工具已作为独立第二阶段能力落地：默认关闭，显式命令 allowlist，固定 workspace、最小环境、超时/取消和有界输出。后续只读工具优先实现角色范围记忆召回、角色上下文读取和主人资料搜索；任意文件写入、浏览器、邮件或其他外部事务仍不在范围内。
+角色范围 Shell 工具已作为独立第二阶段能力落地：默认关闭，显式命令 allowlist，固定 workspace、最小环境、超时/取消和有界输出。角色范围记忆召回、主人资料搜索和待办工具也已通过能力层接入；任意文件写入、浏览器、邮件或其他外部事务仍不在范围内。
 
 ### Phase 4：运行时加固
 
-加入 run 状态机、事件序号、启动失败收敛、原子化 transcript 写入、工具审计、超时和 legacy fallback feature flag。再评估是否需要 steering/follow-up；第一版网页对话不必暴露它们。
+持续维护 run 状态机、事件序号、启动失败收敛、原子化 transcript 写入、工具审计、超时和 legacy fallback feature flag。steering/follow-up 仍未作为网页对话能力暴露。
 
 ### Phase 5：长期任务
 
@@ -256,4 +256,4 @@ Codex 当前官方提交 [`0b863c69f50335acd92164aab971cb58d298c2fe`](https://gi
 - 超时/取消使用统一 expiration；取消先给进程组约 50ms 清理时间再升级 kill，超时使用确定性超时状态/退出码。空 argv、无效 cwd 等输入在执行前拒绝。
 - `sandbox_permissions`、`additional_permissions`、`justification` 和 `prefix_rule` 与 `exec_policy`、`AskForApproval` 一起决定 Allow/Prompt/Forbidden；执行请求还经过 Linux/Windows sandbox、workspace roots 和 network policy。命令输入、审批、sandbox 和输出状态属于同一运行时契约。
 
-因此，Meido 第一版即使只做角色任务，也应复用其中的边界原则：固定且经过授权的工作目录、显式超时和取消、输出字节/事件上限、结构化执行结果、allowlist/审批/审计，以及独立的远程执行器接口。Tau/Pi 的本地 shell 代码本身不能提供这些安全保证；若未来委托 Codex 或其它远端执行器，应放在 `TaskRuntime`/Executor 边界，不塞进 portable Agent Loop。
+因此，Meido 的角色工具仍应复用其中的边界原则：固定且经过授权的工作目录、显式超时和取消、输出字节/事件上限、结构化执行结果、allowlist/审批/审计，以及独立的远程执行器接口。Tau/Pi 的本地 shell 代码本身不能提供这些安全保证；若未来委托 Codex 或其它远端执行器，应放在 `TaskRuntime`/Executor 边界，不塞进 portable Agent Loop。

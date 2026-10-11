@@ -17,7 +17,7 @@ Tau `main` 在提交 `0c233ff080ba261ec1178e9232301cbb6479e648` 提供了可复�
 1. Meido 新增自己的 `Agent Runtime` seam，采用 Tau portable loop 的可验证行为语义，不把完整 `tau-ai` 包作为生产依赖。
 2. Runtime 只负责一次运行内的 provider 轮次、顺序工具调用、取消、超时、事件和消息完成边界；角色设定、模型配置、记忆服务、SQLite 会话、HTTP/SSE 和权限仍由 Meido 自己负责。
 3. SQLite 是会话和运行状态的权威来源。Runtime 的内存 transcript 只作为当前运行工作集；每个完整 message end 必须先完成持久化，再进入下一次 provider 请求。
-4. 基础 Runtime 不引入 `tau_coding`、Coding Agent、任意文件写入、外部事务、steering/follow-up、并行工具或远程任务执行器。角色范围 Shell 工具作为后续独立增量，遵循 [ADR-0004](0004-role-scoped-shell-tool-boundary.md)；角色范围只读记忆工具由后续 #78 在 #56 完成后单独引入。
+4. 基础 Runtime 不引入 `tau_coding`、Coding Agent、任意文件写入、外部事务、steering/follow-up、并行工具或远程任务执行器。角色范围 Shell、只读记忆、待办和主人资料工具通过后续能力扩展接入，但不改变本 ADR 的运行边界。
 5. 如果实现复制或改写可识别的 Tau 源码，随实现保留 Tau 的 MIT license/attribution，并记录实际复制范围和同步策略；如果只按行为自行实现，则保留本 ADR 和研究链接作为选型依据，不声称是官方 Pi/Tau 移植。
 6. 客户端断开、provider 请求超时和显式取消必须穿透到正在等待的 provider/tool 操作并终止运行；单个工具超时形成错误 tool result，由模型决定是否继续。角色活动运行期间删除继续返回 409，运行终态后才允许删除。
 7. SQLite transcript converter 必须按 assistant 回合合并多个 tool call，并按 call ID 修复、配对或丢弃 tool result；不能把每一行直接当作独立 assistant turn 重放。
@@ -33,7 +33,7 @@ Tau `main` 在提交 `0c233ff080ba261ec1178e9232301cbb6479e648` 提供了可复�
 - `AgentLoop`、`ModelProvider`、`AgentTool` 和事件模型成为可测试的 provider-neutral 接口。
 - `SessionStore` 需要结构化保存 tool call/result 和 run 关联，并提供旧文本消息兼容和确定性的 transcript 修复。
 - 普通无工具 SSE 必须保持现有事件名；新增 `runId`/序号和工具事件必须允许旧客户端忽略。
-- Runtime 的 fake tool loop 测试覆盖通用循环；角色范围 Shell 工具另由 ADR-0004 的策略和行为测试覆盖，#78 仍负责后续只读记忆工具。
+- Runtime 的 fake tool loop 测试覆盖通用循环；角色范围 Shell 工具和应用级只读工具分别由能力策略和行为测试覆盖。
 - 未来要做 Coding Agent 或远程任务，需要另建 `CodingRuntime`/`TaskRuntime` 规格，不能把职责塞回本 ADR 的 Runtime。
 
 ## 事实来源
