@@ -201,6 +201,77 @@ describe("设置", () => {
 });
 
 describe("角色管理", () => {
+  it("新建角色时显示字段提示，并默认收起非核心设定", async () => {
+    fakeBackend({ "GET /api/roles": () => ({ body: { roles: [] } }) });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "创建角色" }));
+    const form = await dialog("创建角色");
+
+    expect(within(form).getByLabelText(/名称/)).toHaveAttribute("placeholder", "给她起个名字");
+    expect(within(form).getByLabelText(/角色设定/)).toHaveAttribute("placeholder", "描述她的身份、背景，以及你们之间的关系");
+    expect(within(form).queryByLabelText(/性格/)).toBeNull();
+    const more = within(form).getByRole("button", { name: "更多设定" });
+    expect(more).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(more);
+    expect(within(form).getByLabelText(/性格/)).toHaveAttribute("placeholder", "例如：温柔、细心，偶尔会开些小玩笑");
+    expect(within(form).getByRole("button", { name: "收起更多设定" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("预览角色卡后可取消保留原草稿，确认后只填充表单", async () => {
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [] } }),
+      "POST /api/role-card-import/preview": () => ({ body: {
+        draft: { name: "导入角色", description: "导入简介", profile: "导入设定", personality: "温柔", behaviorRules: "", responseConstraints: "", nickname: "主人" },
+        source: "card.json", assets: [], compatibility: { format: "json", warnings: [], discardedFields: [], unsupportedMacros: [], unsupportedResources: [] },
+      } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "创建角色" }));
+    const form = await dialog("创建角色");
+    await user.type(within(form).getByLabelText(/名称/), "当前草稿");
+    const file = new File([JSON.stringify({ name: "导入角色" })], "card.json", { type: "application/json" });
+    const input = within(form).getByLabelText("导入角色卡");
+    fireEvent.change(input, { target: { files: [file] } });
+    const preview = await within(form).findByRole("region", { name: "角色卡导入预览" });
+    await user.click(within(preview).getByRole("button", { name: "取消" }));
+    expect(within(form).getByLabelText(/名称/)).toHaveValue("当前草稿");
+
+    fireEvent.change(input, { target: { files: [file] } });
+    await within(form).findByRole("region", { name: "角色卡导入预览" });
+    await user.click(within(form).getByRole("button", { name: "填充到表单" }));
+    expect(within(form).getByLabelText(/名称/)).toHaveValue("导入角色");
+    expect(within(form).getByLabelText(/简介/)).toHaveValue("导入简介");
+    expect(within(form).getByLabelText(/角色设定/)).toHaveValue("导入设定");
+    expect(calls.filter((call) => call.method === "POST" && call.path === "/api/role-card-import/preview")).toHaveLength(2);
+    expect(calls.some((call) => call.method === "POST" && call.path === "/api/roles")).toBe(false);
+  });
+
+  it("角色卡素材按类型进入头像或卡片图裁剪", async () => {
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:import-preview"), revokeObjectURL: vi.fn() });
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [] } }),
+      "POST /api/role-card-import/preview": () => ({ body: {
+        draft: { name: "导入角色", description: "", profile: "设定", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" },
+        source: "card.charx", assets: [
+          { kind: "avatar", name: "main.png", mediaType: "image/png", size: 3, dataUrl: "data:image/png;base64,YWJj" },
+          { kind: "background", name: "background.png", mediaType: "image/png", size: 3, dataUrl: "data:image/png;base64,YWJj" },
+        ], compatibility: { format: "charx", warnings: [], discardedFields: [], unsupportedMacros: [], unsupportedResources: [] },
+      } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "创建角色" }));
+    const form = await dialog("创建角色");
+    const input = within(form).getByLabelText("导入角色卡");
+    fireEvent.change(input, { target: { files: [new File(["card"], "card.charx")] } });
+    const preview = await within(form).findByRole("region", { name: "角色卡导入预览" });
+    await user.click(within(preview).getByRole("button", { name: /main\.png.*头像/ }));
+    expect(within(form).getByRole("region", { name: "调整头像裁切" })).toBeTruthy();
+  });
+
   it("在角色酒馆中创建角色，生成她的专属卡牌，再从卡牌进入对话", async () => {
     const created = role({ id: "r2", name: "新角色", description: "新来的", profile: { ...alice.profile, profile: "她的设定" } });
     const { calls } = fakeBackend({

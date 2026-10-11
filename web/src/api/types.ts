@@ -1,4 +1,11 @@
 export type RoleProfile = { profile: string; personality: string; behaviorRules: string; responseConstraints: string; nickname: string };
+export type RoleCardImportAsset = { kind: string; name: string; mediaType: string; size: number; dataUrl?: string };
+export type RoleCardImportPreview = {
+  draft: { name: string; description: string; profile: string; personality: string; behaviorRules: string; responseConstraints: string; nickname: string };
+  source: string;
+  assets: RoleCardImportAsset[];
+  compatibility: { format: string; warnings: string[]; discardedFields: string[]; unsupportedMacros: string[]; unsupportedResources: string[] };
+};
 export type MemoryRecallToolConfig = { enabled: boolean };
 export type AgentToolConfig = { memoryRecall?: MemoryRecallToolConfig; browserUse?: { enabled: boolean }; enabledTools?: string[]; enabledPlugins?: string[]; grantedCapabilities?: string[]; shell?: { enabled: boolean; allowedCommands: string[]; timeoutSeconds: number; maxOutputChars: number } };
 export type Role = { id: string; name: string; description: string; profile: RoleProfile; agentConfig?: AgentToolConfig; createdAt: string; updatedAt: string; avatarUrl?: string | null; avatarMediaType?: string | null; avatarOriginalUrl?: string | null; avatarOriginalMediaType?: string | null; cardImageUrl?: string | null; cardImageMediaType?: string | null };
