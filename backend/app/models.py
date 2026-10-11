@@ -309,6 +309,31 @@ class ModelConfiguration(ModelConfigurationInput):
     id: str = Field(default_factory=lambda: f"model-{uuid.uuid4().hex}")
 
 
+class EmbeddingConfigurationInput(BaseModel):
+    provider: str = "dashscope"
+    baseUrl: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    model: str = "text-embedding-v3"
+    dimensions: int = Field(default=1024, gt=0, le=4096)
+    apiKey: str = ""
+
+    @field_validator("provider", "baseUrl", "model")
+    @classmethod
+    def validate_required_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("服务商、地址和模型均不能为空")
+        return value
+
+    @field_validator("apiKey")
+    @classmethod
+    def normalize_api_key(cls, value: str) -> str:
+        return value.strip()
+
+
+class EmbeddingConfiguration(EmbeddingConfigurationInput):
+    pass
+
+
 class ProviderPreset(BaseModel):
     id: str
     label: str
