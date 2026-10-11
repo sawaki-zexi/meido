@@ -47,7 +47,7 @@ from .provider import (
     ToolCallEndEvent,
 )
 from .tools import AgentTool, AgentToolResult, ToolContext, ToolDefinition, ToolRegistry, summarize_tool_arguments
-from .types import AgentMessage, AssistantMessage, ToolCall, ToolResultMessage, UserMessage
+from .types import AgentMessage, AssistantMessage, ImageContent, ToolCall, ToolResultMessage, UserMessage
 
 __all__ = [
     "AgentEndEvent",
@@ -81,6 +81,7 @@ __all__ = [
     "SkillResolution",
     "AssistantDoneEvent",
     "AssistantMessage",
+    "ImageContent",
     "CancellationToken",
     "MessageEndEvent",
     "MessageStartEvent",

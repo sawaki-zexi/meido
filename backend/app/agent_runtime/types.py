@@ -5,6 +5,15 @@ from typing import Literal, TypeAlias
 
 
 @dataclass(frozen=True, slots=True)
+class ImageContent:
+    """Ephemeral image content passed to the next provider request."""
+
+    media_type: str
+    data_base64: str
+    detail: Literal["low", "high", "auto"] = "low"
+
+
+@dataclass(frozen=True, slots=True)
 class ToolCall:
     id: str
     name: str
@@ -32,6 +41,7 @@ class ToolResultMessage:
     content: str
     is_error: bool = False
     details: object | None = None
+    images: tuple[ImageContent, ...] = ()
     role: Literal["tool"] = "tool"
 
 
