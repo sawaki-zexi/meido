@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from .provider import CancellationToken
+from .types import ImageContent
 
 _RISKS = frozenset({"read_only", "mutating", "external"})
 _EXPOSURES = frozenset({"direct", "model_only", "deferred", "hidden"})
@@ -86,6 +87,7 @@ class AgentToolResult:
     content: str
     details: object | None = None
     is_error: bool = False
+    images: tuple[ImageContent, ...] = ()
 
 
 class AgentTool(Protocol):
