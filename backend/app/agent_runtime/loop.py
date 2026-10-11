@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import nullcontext
+from dataclasses import replace
 import math
 import time
 from typing import Literal
@@ -146,6 +147,11 @@ async def run_agent_loop(
         except Exception as error:
             terminal_error = str(error)
             assistant = AssistantMessage(content=content, stop_reason="error")
+        finally:
+            # Images from a tool result are valid for exactly the provider
+            # request that follows that tool call. Keep text/details in the
+            # transcript while dropping the potentially large image bytes.
+            _expire_ephemeral_images(messages)
 
         if token.is_cancelled():
             assistant = AssistantMessage(content=content, tool_calls=tuple(tool_calls), stop_reason="aborted")
@@ -219,6 +225,7 @@ async def run_agent_loop(
                 content=final_result.content,
                 is_error=final_result.is_error,
                 details=final_result.details,
+                images=final_result.images,
             )
             messages.append(tool_message)
             results.append(tool_message)
@@ -271,6 +278,7 @@ async def _execute_tool(
             content=result.content[:output_limit],
             details=details,
             is_error=result.is_error,
+            images=result.images,
         ), output_chars
 
     def on_update(result: AgentToolResult) -> None:
@@ -430,4 +438,11 @@ def _finalize_tool_result(
         result.content,
         details=details,
         is_error=result.is_error or effective_status in {"unknown", "denied", "invalid_arguments", "timed_out", "cancelled", "failed"},
+        images=result.images,
     )
+
+
+def _expire_ephemeral_images(messages: list[AgentMessage]) -> None:
+    for index, message in enumerate(messages):
+        if isinstance(message, ToolResultMessage) and message.images:
+            messages[index] = replace(message, images=())

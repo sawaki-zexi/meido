@@ -208,6 +208,15 @@ class SessionStore:
                 sequence = int(row[0])
                 persisted: list[Message] = []
                 for index, call in enumerate(message.tool_calls):
+                    # Browser inputs can contain passwords, tokens, or page
+                    # scripts. Persist the safe transcript form only; the
+                    # actual arguments were already used by the current run.
+                    if call.name.startswith("agent_browser_"):
+                        from .browser_use.safety import sanitize_browser_arguments
+
+                        safe_arguments = sanitize_browser_arguments(call.name, call.arguments)
+                    else:
+                        safe_arguments = call.arguments
                     message_id = f"{session_key}:{uuid.uuid4().hex}"
                     metadata = {
                         "stopReason": message.stop_reason,
@@ -217,7 +226,7 @@ class SessionStore:
                     }
                     connection.execute(
                         "INSERT INTO messages (message_id, session_key, sequence, role, content, status, created_at, message_type, tool_call_id, tool_name, tool_arguments_json, run_id, metadata_json) VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'tool_call', ?, ?, ?, ?, ?)",
-                        (message_id, session_key, sequence, message.content, status, now, call.id, call.name, _dump(call.arguments), run_id, _dump(metadata)),
+                        (message_id, session_key, sequence, message.content, status, now, call.id, call.name, _dump(safe_arguments), run_id, _dump(metadata)),
                     )
                     persisted.append(Message(
                         id=message_id,
@@ -230,7 +239,7 @@ class SessionStore:
                         messageType="tool_call",
                         toolCallId=call.id,
                         toolName=call.name,
-                        toolArguments=call.arguments,
+                        toolArguments=safe_arguments,
                         runId=run_id,
                         metadata=metadata,
                     ))
@@ -238,11 +247,16 @@ class SessionStore:
                 connection.execute("UPDATE sessions SET updated_at = ? WHERE session_key = ?", (now, session_key))
             return persisted
         if isinstance(message, ToolResultMessage):
+            safe_content = message.content
+            if message.tool_name.startswith("agent_browser_"):
+                from .browser_use.safety import sanitize_browser_text
+
+                safe_content, _ = sanitize_browser_text(safe_content)
             return [
                 self.append_message(
                     session_key,
                     "tool",
-                    message.content,
+                    safe_content,
                     status,
                     message_type="tool_result",
                     tool_call_id=message.tool_call_id,
@@ -326,6 +340,9 @@ class SessionStore:
                                 content=replay_result.content,
                                 is_error=replay_result.isError,
                                 details=replay_result.toolResult,
+                                # Images are intentionally ephemeral and are not
+                                # reconstructed from SQLite on later runs.
+                                images=(),
                             ))
                     index = result_cursor
                     continue

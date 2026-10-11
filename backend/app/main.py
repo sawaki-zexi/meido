@@ -72,6 +72,9 @@ from .agent_runtime.skills import SkillRegistry
 from .todo import TodoPlugin, TodoStore
 from .todo.agent import register_todo_agent_plugin
 from .todo.application import TodoApplicationService
+from .browser_use import BrowserSessions, BrowserUseConfig, register_browser_use_plugin
+from .browser_use.safety import sanitize_browser_arguments, sanitize_browser_text
+from .browser_use.tool import BROWSER_USE_TOOL_NAMES
 from .todo.models import TodoCreate, TodoList, TodoReminderList, TodoReminderRoleInput, TodoSettingsInput, TodoStatusInput, TodoUpdate
 
 logging.getLogger("uvicorn.access").addFilter(OAuthCallbackAccessLogFilter())
@@ -117,6 +120,12 @@ owner_knowledge_plugin = OwnerKnowledgePlugin(
 application_plugin_manager = ApplicationPluginManager()
 application_plugin_manager.register("owner-knowledge", owner_knowledge_plugin)
 register_todo_agent_plugin(plugin_registry)
+register_browser_use_plugin(plugin_registry)
+browser_use_sessions = BrowserSessions(
+    Path(os.getenv("MEIDO_BROWSER_USE_DATA_DIR", str(data_root / "browser-use"))).resolve(),
+    BrowserUseConfig(),
+    resources=Path(os.getenv("MEIDO_BROWSER_USE_RESOURCES", str(Path(__file__).resolve().parent))).resolve(),
+)
 todo_store = TodoStore(data_root / "todos.db")
 todo_application = TodoApplicationService(todo_store, session_store)
 todo_plugin = TodoPlugin(
@@ -600,6 +609,7 @@ async def _close_memory_workers() -> None:
     await memory_optimizer_loop.close()
     await memory_worker.close()
     await memory_optimizer_worker.drain()
+    await browser_use_sessions.close()
 
 
 async def _start_memory_workers() -> None:
@@ -1232,9 +1242,16 @@ def get_role(role_id: str) -> RoleResponse:
 
 
 @app.put("/api/roles/{role_id}", response_model=RoleResponse)
-def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
+async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
     try:
-        return RoleResponse(role=store.update(role_id, data))
+        current = store.get(role_id)
+        updated = store.update(role_id, data)
+        if current is not None and current.agentConfig.browserUse.enabled != updated.agentConfig.browserUse.enabled:
+            # The role policy is the plugin's explicit authorization boundary.
+            # Disabling closes the current generation and blocks an old run's
+            # frozen capability snapshot from creating a replacement session.
+            await browser_use_sessions.set_role_enabled(role_id, updated.agentConfig.browserUse.enabled)
+        return RoleResponse(role=updated)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
     except OSError as error:
@@ -1435,6 +1452,7 @@ async def delete_role(role_id: str) -> None:
     staged_path = None
     deletion_phase = "preflight"
     try:
+        await browser_use_sessions.set_role_enabled(role_id, False)
         # Mark the gate before the first await so cancellation cannot leave a
         # role permanently blocked from future memory work.
         deletion_started = True
@@ -1526,6 +1544,11 @@ async def delete_role(role_id: str) -> None:
         if deletion_lock is not None and deletion_lock.locked():
             deletion_lock.release()
         lock.release()
+    if deletion_succeeded:
+        try:
+            browser_use_sessions.delete_role_data(role_id)
+        except (OSError, RuntimeError) as error:
+            memory_worker.errors.append(f"{role_id}: browser data cleanup deferred: {error}")
 
 
 @app.get("/api/roles/{role_id}/session", response_model=SessionResponse)
@@ -1932,6 +1955,13 @@ async def _runtime_capabilities(
         host_services = {"todo.write": _todo_application()}
     else:
         enabled_plugins.discard("todo")
+    if agent_config.browserUse.enabled:
+        enabled_plugins.add("browser_use")
+        enabled_tools.update(BROWSER_USE_TOOL_NAMES)
+        granted_capabilities.add("browser.session")
+        host_services["browser.session"] = browser_use_sessions
+    else:
+        enabled_plugins.discard("browser_use")
     return await CapabilityRegistry(
         _runtime_tool_candidates(role) if available_tools is None else available_tools,
         skills=SkillRegistry.discover_many((
@@ -2178,7 +2208,14 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     capabilities=capabilities,
                     max_turns=8,
                     provider_timeout=120.0,
-                    tool_timeout=shell_config.timeoutSeconds if runtime_tools else 30.0,
+                    # The outer timeout must not shorten Browser Use's own
+                    # per-action policy when a role also enables a shorter
+                    # shell timeout; each ToolDefinition still applies its
+                    # own limit inside the runtime.
+                    tool_timeout=max(
+                        shell_config.timeoutSeconds if runtime_tools else 30.0,
+                        browser_use_sessions.timeout_seconds if role.agentConfig.browserUse.enabled else 0.0,
+                    ),
                     on_message_end=persist_runtime_message,
                 ):
                     if isinstance(runtime_event, MessageStartEvent) and isinstance(runtime_event.message, AssistantMessage):
@@ -2202,6 +2239,10 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     elif isinstance(runtime_event, MessageEndEvent) and isinstance(runtime_event.message, AssistantMessage):
                         content = runtime_event.message.content
                     elif isinstance(runtime_event, ToolExecutionStartEvent):
+                        safe_arguments = sanitize_browser_arguments(
+                            runtime_event.tool_name,
+                            runtime_event.arguments,
+                        )
                         definition = (
                             capabilities.get(runtime_event.tool_name).definition
                             if capabilities is not None and capabilities.get(runtime_event.tool_name) is not None
@@ -2226,16 +2267,18 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         yield _event("tool_execution_start", runtime_event_payload({
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
-                            "arguments": runtime_event.arguments,
+                            "arguments": safe_arguments,
                         }, runtime_event.sequence))
                     elif isinstance(runtime_event, ToolExecutionUpdateEvent):
+                        safe_result, _ = sanitize_browser_text(runtime_event.result.content)
                         yield _event("tool_execution_update", runtime_event_payload({
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
-                            "result": runtime_event.result.content,
+                            "result": safe_result,
                             "isError": runtime_event.result.is_error,
                         }, runtime_event.sequence))
                     elif isinstance(runtime_event, ToolExecutionEndEvent):
+                        safe_result, _ = sanitize_browser_text(runtime_event.result.content)
                         details = runtime_event.result.details if isinstance(runtime_event.result.details, dict) else {}
                         session_store.finish_tool_audit(
                             run_id=run_id,
@@ -2247,7 +2290,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         yield _event("tool_execution_end", runtime_event_payload({
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
-                            "result": runtime_event.result.content,
+                            "result": safe_result,
                             "isError": runtime_event.result.is_error,
                         }, runtime_event.sequence))
                     elif isinstance(runtime_event, AgentEndEvent):
@@ -2324,6 +2367,12 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     await capabilities.close()
                 except Exception:
                     pass
+            try:
+                # Browser sessions are scoped to this run; the profile remains
+                # on disk while the owned MCP/Chrome generation is reaped.
+                await browser_use_sessions.close_run(role_id, run_id)
+            except Exception as error:
+                memory_worker.errors.append(f"{role_id}: browser run cleanup failed: {type(error).__name__}")
             if disconnect_watcher is not None:
                 disconnect_watcher.cancel()
                 await asyncio.gather(disconnect_watcher, return_exceptions=True)

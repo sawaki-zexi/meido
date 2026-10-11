@@ -33,9 +33,16 @@ class MemoryRecallToolConfig(BaseModel):
     enabled: bool = False
 
 
+class BrowserUseToolConfig(BaseModel):
+    """Role policy for the optional Shiori-compatible browser plugin."""
+
+    enabled: bool = False
+
+
 class AgentToolConfig(BaseModel):
     shell: ShellToolConfig = Field(default_factory=ShellToolConfig)
     memoryRecall: MemoryRecallToolConfig = Field(default_factory=MemoryRecallToolConfig)
+    browserUse: BrowserUseToolConfig = Field(default_factory=BrowserUseToolConfig)
     enabledTools: list[str] = Field(default_factory=list)
     enabledPlugins: list[str] = Field(default_factory=list)
     grantedCapabilities: list[str] = Field(default_factory=list)

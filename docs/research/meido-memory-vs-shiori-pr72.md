@@ -1,6 +1,10 @@
 # Meido 与 Shiori 记忆模块差异复核（PR #72）
 
-状态：实现前基线为 Meido `origin/main`（已包含 PR #71），Shiori 基线为提交 `096a4ecbfbcdae3ba77c179fedb852721846fcb9`。
+状态：历史实现前复核记录（不代表当前实现状态）
+
+最后核验：2026-10-10
+
+基线：Meido `origin/main`（当时已包含 PR #71），Shiori 基线为提交 `096a4ecbfbcdae3ba77c179fedb852721846fcb9`。当前记忆行为请以 [`meido-memory-vs-shiori-current.md`](meido-memory-vs-shiori-current.md) 和记忆规格为准。
 
 ## 本次补齐内容
 
