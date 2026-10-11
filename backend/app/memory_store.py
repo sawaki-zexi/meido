@@ -247,10 +247,14 @@ class MemoryStore:
                 """
                 CREATE TABLE IF NOT EXISTS memory_embedding_spaces (
                     role_id TEXT PRIMARY KEY,
-                    dimension INTEGER NOT NULL CHECK (dimension > 0)
+                    dimension INTEGER NOT NULL CHECK (dimension > 0),
+                    model_id TEXT
                 )
                 """
             )
+            embedding_space_columns = {row[1] for row in connection.execute("PRAGMA table_info(memory_embedding_spaces)")}
+            if "model_id" not in embedding_space_columns:
+                connection.execute("ALTER TABLE memory_embedding_spaces ADD COLUMN model_id TEXT")
             if schema_version < 1:
                 self._migrate_embedding_dimensions(connection)
             connection.execute("PRAGMA user_version = 1")
@@ -293,7 +297,7 @@ class MemoryStore:
                 connection.execute("DELETE FROM memory_embedding_spaces WHERE role_id = ?", (role_id,))
                 continue
             connection.execute(
-                "INSERT INTO memory_embedding_spaces(role_id, dimension) VALUES (?, ?) "
+                "INSERT INTO memory_embedding_spaces(role_id, dimension, model_id) VALUES (?, ?, NULL) "
                 "ON CONFLICT(role_id) DO UPDATE SET dimension = excluded.dimension",
                 (role_id, dimensions.pop()),
             )
@@ -564,12 +568,12 @@ class MemoryStore:
             return None
         return max(matching, key=lambda item: (sum(term in item.summary.casefold() for term in terms), item.updatedAt))
 
-    def set_embedding(self, role_id: str, item_id: str, vector: list[float]) -> None:
+    def set_embedding(self, role_id: str, item_id: str, vector: list[float], model_id: str | None = None) -> None:
         self._require_role_id(role_id)
         if not vector or any(not math.isfinite(float(value)) for value in vector):
             raise ValueError("embedding vector must contain finite values")
         with self._connect() as connection:
-            dimension_changed = self._register_embedding_dimension(connection, role_id, len(vector))
+            dimension_changed = self._register_embedding_space(connection, role_id, len(vector), model_id)
             connection.execute(
                 "UPDATE memory_items SET embedding_json = ? WHERE role_id = ? AND id = ? AND status = 'active'",
                 (json.dumps(vector), role_id, item_id),
@@ -584,27 +588,31 @@ class MemoryStore:
                 self.vector_index_available = False
 
     @staticmethod
-    def _register_embedding_dimension(connection: sqlite3.Connection, role_id: str, dimension: int) -> bool:
+    def _register_embedding_space(connection: sqlite3.Connection, role_id: str, dimension: int, model_id: str | None = None) -> bool:
         row = connection.execute(
-            "SELECT dimension FROM memory_embedding_spaces WHERE role_id = ?", (role_id,)
+            "SELECT dimension, model_id FROM memory_embedding_spaces WHERE role_id = ?", (role_id,)
         ).fetchone()
-        changed = row is not None and int(row["dimension"]) != dimension
+        changed = row is not None and (
+            int(row["dimension"]) != dimension
+            or (model_id is not None and row["model_id"] is not None and str(row["model_id"]) != model_id)
+            or (model_id is not None and row["model_id"] is None)
+        )
         if changed:
             connection.execute("UPDATE memory_items SET embedding_json = NULL WHERE role_id = ?", (role_id,))
         connection.execute(
-            "INSERT INTO memory_embedding_spaces(role_id, dimension) VALUES (?, ?) "
-            "ON CONFLICT(role_id) DO UPDATE SET dimension = excluded.dimension",
-            (role_id, dimension),
+            "INSERT INTO memory_embedding_spaces(role_id, dimension, model_id) VALUES (?, ?, ?) "
+            "ON CONFLICT(role_id) DO UPDATE SET dimension = excluded.dimension, model_id = COALESCE(excluded.model_id, memory_embedding_spaces.model_id)",
+            (role_id, dimension, model_id),
         )
         return changed
 
-    def observe_query_embedding(self, role_id: str, vector: list[float]) -> bool:
+    def observe_query_embedding(self, role_id: str, vector: list[float], model_id: str | None = None) -> bool:
         """Register a query vector's dimension; return whether old vectors were invalidated."""
         if not vector or any(not math.isfinite(float(value)) for value in vector):
             raise ValueError("embedding vector must contain finite values")
         self._require_role_id(role_id)
         with self._connect() as connection:
-            changed = self._register_embedding_dimension(connection, role_id, len(vector))
+            changed = self._register_embedding_space(connection, role_id, len(vector), model_id)
         if changed and self.vector_index is not None:
             try:
                 self.vector_index.delete_role(role_id)
