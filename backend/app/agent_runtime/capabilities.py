@@ -430,6 +430,8 @@ class CapabilityRegistry:
             granted_capabilities=granted_capabilities,
             host_services=host_services,
             plugin_dir=plugin_dir,
+            role_id=role_id,
+            run_id=run_id,
         )
         try:
             return self.resolve(
