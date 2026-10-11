@@ -31,6 +31,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
   const [showAdvanced, setShowAdvanced] = useState(!creating);
   const avatarInput = useRef<HTMLInputElement>(null);
   const cardInput = useRef<HTMLInputElement>(null);
+  const importInput = useRef<HTMLInputElement>(null);
 
   const submit = (event: FormEvent) => { event.preventDefault(); onSubmit(); };
 
@@ -45,6 +46,10 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
 
   return <form className={`role-editor${writable ? " is-writable" : ""}`} onSubmit={submit}>
     <fieldset>
+      {writable && <div className="role-import-control">
+        <button type="button" className="ghost" disabled={busy} onClick={() => importInput.current?.click()}>{state.importing ? "解析中…" : "导入角色卡"}</button>
+        <input ref={importInput} className="image-file-input" aria-label="导入角色卡" type="file" accept=".json,.png,.apng,.charx,application/json,image/png" disabled={busy} onChange={(event) => { void state.previewImport(event.currentTarget.files?.[0] ?? null); event.currentTarget.value = ""; }} />
+      </div>}
       <div className="role-image-settings">
         <section className="image-control">
           <span className="field-label">头像</span>
@@ -108,6 +113,22 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
       </label>
     </fieldset>
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
+    {state.importPreview && <section className="role-import-preview" aria-label="角色卡导入预览">
+      <div className="role-import-preview-header"><strong>导入预览</strong><button type="button" className="ghost" onClick={state.cancelImport}>取消</button></div>
+      <p className="role-import-source">{state.importPreview.source} · {state.importPreview.compatibility.format.toUpperCase()}</p>
+      <dl className="role-import-summary">
+        {(["name", "description", "profile", "personality", "behaviorRules", "responseConstraints", "nickname"] as const).map((key) => {
+          const labels = { name: "名称", description: "简介", profile: "角色设定", personality: "性格", behaviorRules: "行为规则", responseConstraints: "回复约束", nickname: "称呼" };
+          return <div key={key}><dt>{labels[key]}</dt><dd>{state.importPreview!.draft[key] || "未填写"}</dd></div>;
+        })}
+      </dl>
+      {state.importPreview.assets.length > 0 && <div className="role-import-assets"><span className="field-label">素材（头像会进入头像裁剪；其他图片可设为卡片图）</span>{state.importPreview.assets.map((asset, index) => <button type="button" className="role-import-asset" key={`${asset.kind}:${asset.name}:${index}`} disabled={!asset.dataUrl} onClick={() => void state.acceptImport(asset)}>{asset.dataUrl ? <img src={asset.dataUrl} alt="" /> : null}<span>{asset.name || "未命名素材"}</span><small>{asset.kind === "avatar" ? "头像" : asset.kind === "background" ? "背景 · 卡片图" : asset.kind === "emotion" ? "情绪图 · 卡片图" : "素材 · 卡片图"}</small></button>)}</div>}
+      {state.importPreview.compatibility.warnings.length > 0 && <ul className="role-import-warnings">{state.importPreview.compatibility.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
+      {state.importPreview.compatibility.discardedFields.length > 0 && <p className="role-import-discarded">未映射字段：{state.importPreview.compatibility.discardedFields.join("、")}</p>}
+      {state.importPreview.compatibility.unsupportedMacros.length > 0 && <p className="role-import-discarded">未处理宏：{state.importPreview.compatibility.unsupportedMacros.join("、")}</p>}
+      {state.importPreview.compatibility.unsupportedResources.length > 0 && <p className="role-import-discarded">未导入素材：{state.importPreview.compatibility.unsupportedResources.join("、")}</p>}
+      <div className="form-actions"><button type="button" className="primary" onClick={() => void state.acceptImport(null)}>填充到表单</button></div>
+    </section>}
     {writable && <div className="form-actions">
       <button type="button" className="ghost" disabled={busy} onClick={onCancel}>取消</button>
       {selected && !creating && <IconButton icon="trash" label="删除角色" className="danger" disabled={deleting || busy} onClick={onDelete} />}

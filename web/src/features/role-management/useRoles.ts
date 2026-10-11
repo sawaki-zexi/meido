@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../api/client";
-import type { Role } from "../../api/types";
+import type { Role, RoleCardImportPreview } from "../../api/types";
 import { clearCreateDraft, draftFromRole, emptyDraft, payloadFromDraft, readCreateDraft, writeCreateDraft, type RoleDraft } from "./draft";
 
 /** Role list plus the create / view / edit / delete state of the selected role. */
@@ -24,7 +24,10 @@ export function useRoles() {
   const [cardImageSource, setCardImageSource] = useState<File | null>(null);
   const [cardImagePreviewUrl, setCardImagePreviewUrl] = useState<string | null>(null);
   const [cardImageRemoved, setCardImageRemoved] = useState(false);
+  const [importPreview, setImportPreview] = useState<RoleCardImportPreview | null>(null);
+  const [importing, setImporting] = useState(false);
   const requestId = useRef(0);
+  const importRequestId = useRef(0);
 
   useEffect(() => {
     if (!avatarFile) { setAvatarPreviewUrl(null); return; }
@@ -51,6 +54,9 @@ export function useRoles() {
   useEffect(() => { if (creating) writeCreateDraft(draft); }, [creating, draft]);
 
   const select = useCallback((role: Role) => {
+    importRequestId.current += 1;
+    setImportPreview(null);
+    setImporting(false);
     clearCreateDraft();
     setSelected(role);
     setCreating(false);
@@ -65,6 +71,9 @@ export function useRoles() {
   }, []);
 
   const startCreate = () => {
+    importRequestId.current += 1;
+    setImportPreview(null);
+    setImporting(false);
     setError("");
     setSelected(null);
     // Re-entering create mode keeps whatever the user already typed.
@@ -81,6 +90,9 @@ export function useRoles() {
   const startEdit = () => setEditing(true);
 
   const cancel = () => {
+    importRequestId.current += 1;
+    setImportPreview(null);
+    setImporting(false);
     setError("");
     if (creating) {
       clearCreateDraft();
@@ -147,6 +159,53 @@ export function useRoles() {
     setAvatarOriginalFile(null);
     setAvatarSource(null);
     setAvatarRemoved(Boolean(selected?.avatarUrl));
+  };
+
+  const previewImport = async (file: File | null) => {
+    if (!file || importing || saving || deleting) return;
+    setError("");
+    if (!/\.(json|png|apng|charx)$/i.test(file.name)) { setError("仅支持 .json、.png、.apng 或 .charx 角色卡"); return; }
+    if (file.size > 50 * 1024 * 1024) { setError("角色卡文件不能超过 50 MB"); return; }
+    const id = ++importRequestId.current;
+    setImporting(true);
+    try {
+      const preview = await api<RoleCardImportPreview>("/api/role-card-import/preview", {
+        method: "POST", headers: { "content-type": "application/octet-stream", "x-role-card-filename": encodeURIComponent(file.name) }, body: file,
+      });
+      if (id === importRequestId.current) setImportPreview(preview);
+    } catch (cause) {
+      if (id === importRequestId.current) setError(errorMessage(cause, "角色卡导入失败"));
+    } finally {
+      if (id === importRequestId.current) setImporting(false);
+    }
+  };
+
+  const cancelImport = () => { importRequestId.current += 1; setImportPreview(null); setImporting(false); };
+  const acceptImport = async (asset: RoleCardImportPreview["assets"][number] | null) => {
+    if (!importPreview) return;
+    const preview = importPreview;
+    let importedImage: File | null = null;
+    if (asset?.dataUrl) {
+      try {
+        const binary = atob(asset.dataUrl.split(",", 2)[1]);
+        const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+        importedImage = new File([bytes], asset.name || `imported-${asset.kind}.png`, { type: asset.mediaType });
+      } catch {
+        setError("素材读取失败，请重新导入角色卡");
+        return;
+      }
+    }
+    setDraft({ ...draft, ...preview.draft });
+    if (importedImage) {
+      if (asset?.kind === "avatar") {
+        setAvatarSource(importedImage);
+        setAvatarRemoved(false);
+      } else {
+        setCardImageSource(importedImage);
+        setCardImageRemoved(false);
+      }
+    }
+    setImportPreview(null);
   };
 
   /** Saves the draft. Resolves the saved role, or null when saving failed. */
@@ -241,7 +300,7 @@ export function useRoles() {
     }
   };
 
-  return { roles, loading, loadFailed, selected, draft, setDraft, creating, editing, saving, deleting, busy: saving || deleting, error, setError, avatarFile, avatarSource, avatarOriginalFile, avatarRemoved, avatarPreviewUrl, chooseAvatar, acceptAvatarCrop, cancelAvatarCrop, clearAvatar, cardImageFile, cardImageSource, cardImagePreviewUrl, cardImageRemoved, chooseCardImage, acceptCardImageCrop, cancelCardImageCrop, clearCardImage, select, startCreate, startEdit, cancel, save, remove };
+  return { roles, loading, loadFailed, selected, draft, setDraft, creating, editing, saving, deleting, busy: saving || deleting || importing, error, setError, importing, importPreview, previewImport, cancelImport, acceptImport, avatarFile, avatarSource, avatarOriginalFile, avatarRemoved, avatarPreviewUrl, chooseAvatar, acceptAvatarCrop, cancelAvatarCrop, clearAvatar, cardImageFile, cardImageSource, cardImagePreviewUrl, cardImageRemoved, chooseCardImage, acceptCardImageCrop, cancelCardImageCrop, clearCardImage, select, startCreate, startEdit, cancel, save, remove };
 }
 
 export type RolesState = ReturnType<typeof useRoles>;

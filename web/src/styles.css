@@ -278,6 +278,18 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 
 /* Role profile / create form */
 .role-editor { display: grid; gap: 22px; padding: 20px 22px 22px; }
+.role-import-control { display: flex; align-items: center; justify-content: flex-start; gap: 8px; }
+.role-import-preview { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); background: #fffafb; }
+.role-import-preview-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.role-import-source, .role-import-discarded { margin: 0; color: var(--ink-faint); font-size: 12px; overflow-wrap: anywhere; }
+.role-import-summary { display: grid; gap: 8px; margin: 0; }
+.role-import-summary div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 10px; }
+.role-import-summary dt { color: var(--ink-faint); font-size: 12px; }
+.role-import-summary dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.role-import-assets { display: grid; gap: 8px; }
+.role-import-asset { display: flex; align-items: center; gap: 8px; justify-content: flex-start; min-height: 48px; padding: 6px 8px; border: 1px solid var(--line); background: #fff; color: var(--ink); text-align: left; }
+.role-import-asset img { width: 44px; height: 44px; object-fit: cover; }
+.role-import-warnings { margin: 0; padding-left: 18px; color: var(--ink-faint); font-size: 12px; }
 .profile-card { display: flex; align-items: center; gap: 14px; }
 .profile-card > div { flex: 1; display: grid; gap: 2px; min-width: 0; }
 .profile-card strong { font-size: 17px; }

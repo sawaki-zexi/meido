@@ -1,5 +1,9 @@
 # Shiori-Agent 角色（Character/Role）实现研究
 
+状态：当前
+事实来源：Shiori-Agent 源码链接，以及 Meido 的 `backend/app/role_card_import.py`、`web/src/features/role-management/RoleEditor.tsx` 和 `tests/python/test_role_card_import.py`
+最后核验：2026-10-10
+
 研究对象：[`YinFengWindy/Shiori-Agent`](https://github.com/YinFengWindy/Shiori-Agent)，以当前仓库源码为一手资料（浅克隆提交时间：2026-09-28）。本文只记录可借鉴的设计，不建议直接复制其完整架构。
 
 ## 1. 角色领域模型
@@ -50,7 +54,7 @@ Shiori-Agent 默认将角色保存为工作区下的 JSON 清单：[`apps/backen
 - `roles.list` 返回序列化后的角色列表。
 - `roles.create` 接收 `name`、`description`、`system_prompt`、`background`、可选 `profile`、`runtime_config` 和资源路径，创建后返回 `{ role }`。
 - `roles.update` 以 `role_id` 定位，支持字段更新；profile 使用 `_merge_profile_payload()` 合并嵌套对象，避免只编辑一个子字段时丢掉其他字段。
-- 参考项目还提供 `roles.delete`、角色卡导入预览/提交等能力，本 Issue 不需要这些扩展。
+- 参考项目还提供 `roles.delete`、角色卡导入预览/提交等能力。Meido 当前复刻其中的角色卡预览导入：只生成可审阅草稿，不直接创建角色；保存仍由现有角色编辑流程完成。
 
 **可借鉴点**：写入响应直接返回最新角色快照，前端可用它刷新当前详情；更新 profile 时做嵌套 patch merge；所有操作以稳定 ID 传递。
 

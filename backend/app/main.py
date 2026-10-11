@@ -6,6 +6,7 @@ import logging
 import uuid
 import sqlite3
 import secrets
+from urllib.parse import unquote
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from time import monotonic
@@ -73,6 +74,7 @@ from .todo import TodoPlugin, TodoStore
 from .todo.agent import register_todo_agent_plugin
 from .todo.application import TodoApplicationService
 from .todo.models import TodoCreate, TodoList, TodoReminderList, TodoReminderRoleInput, TodoSettingsInput, TodoStatusInput, TodoUpdate
+from .role_card_import import MAX_SOURCE_BYTES, RoleCardImportError, parse_role_card
 
 logging.getLogger("uvicorn.access").addFilter(OAuthCallbackAccessLogFilter())
 logger = logging.getLogger(__name__)
@@ -1178,6 +1180,26 @@ def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
         raise HTTPException(status_code=404, detail="角色不存在") from error
     except OSError as error:
         raise HTTPException(status_code=500, detail=f"角色保存失败：{error}") from error
+
+
+@app.post("/api/role-card-import/preview")
+async def preview_role_card_import(request: Request) -> dict[str, object]:
+    """Parse a role card without creating or modifying a role.
+
+    The browser sends the file bytes directly and supplies the original name in
+    ``x-role-card-filename``.  This avoids requiring a multipart parser for a
+    preview-only endpoint and keeps the payload bounded before parsing.
+    """
+    filename = unquote(request.headers.get("x-role-card-filename", "role-card.json").strip() or "role-card.json")
+    content = bytearray()
+    async for chunk in request.stream():
+        if len(content) + len(chunk) > MAX_SOURCE_BYTES:
+            raise HTTPException(status_code=413, detail="角色卡文件不能超过 50 MB")
+        content.extend(chunk)
+    try:
+        return parse_role_card(filename, bytes(content))
+    except RoleCardImportError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 def _avatar_signature_matches(content: bytes, media_type: str) -> bool:
