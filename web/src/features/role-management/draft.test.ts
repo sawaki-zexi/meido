@@ -11,6 +11,7 @@ const role: Role = {
     enabledPlugins: ["todo", "calendar"],
     grantedCapabilities: ["todo.read", "calendar.read"],
     enabledTools: ["todo.search", "calendar.search"],
+    browserUse: { enabled: true },
   },
   createdAt: "2026-10-08T00:00:00Z",
   updatedAt: "2026-10-08T00:00:00Z",
@@ -23,6 +24,7 @@ describe("role draft capability persistence", () => {
 
     expect(payloadFromDraft(draft).agentConfig).toEqual({
       memoryRecall: { enabled: false },
+      browserUse: { enabled: true },
       enabledPlugins: ["calendar"],
       grantedCapabilities: ["calendar.read"],
       enabledTools: ["calendar.search"],

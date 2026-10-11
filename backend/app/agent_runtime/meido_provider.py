@@ -8,6 +8,7 @@ from typing import cast
 
 from ..models import Message, ModelConfiguration, Role
 from ..model_adapter import ModelAdapter, ModelStreamError, ModelTextDelta, ModelToolCall
+from ..browser_use.safety import sanitize_browser_arguments, sanitize_browser_text
 from .provider import AssistantDoneEvent, CancellationToken, ProviderErrorEvent, ProviderEvent, ProviderStartEvent, TextDeltaEvent, ToolCallEndEvent
 from .types import AssistantMessage, ToolCall, UserMessage, ToolResultMessage
 
@@ -96,17 +97,39 @@ class MeidoProvider:
                             "type": "function",
                             "function": {
                                 "name": call.name,
-                                "arguments": json.dumps(call.arguments, ensure_ascii=False),
+                                "arguments": json.dumps(
+                                    sanitize_browser_arguments(call.name, call.arguments),
+                                    ensure_ascii=False,
+                                ),
                             },
                         }
                         for call in message.tool_calls
                     ]
                 result.append(item)
             elif isinstance(message, ToolResultMessage):
+                tool_content = message.content
+                if message.tool_name.startswith("agent_browser_"):
+                    tool_content, _ = sanitize_browser_text(tool_content)
+                content: object = tool_content
+                if message.images:
+                    multimodal_content: list[dict[str, object]] = [
+                        {"type": "text", "text": tool_content},
+                    ]
+                    multimodal_content.extend(
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{image.media_type};base64,{image.data_base64}",
+                                "detail": image.detail,
+                            },
+                        }
+                        for image in message.images
+                    )
+                    content = multimodal_content
                 result.append({
                     "role": "tool",
                     "tool_call_id": message.tool_call_id,
-                    "content": message.content,
+                    "content": content,
                 })
         return result
 
