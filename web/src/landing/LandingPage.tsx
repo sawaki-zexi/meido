@@ -14,12 +14,19 @@ const spriteBySegment: Record<Segment, string> = {
 };
 const githubUrl = "https://github.com/sawaki-zexi/meido";
 const speakerName = "女仆";
+const backgrounds = [
+  "/landing/night-sky.png",
+  "/landing/sunlit-room.webp",
+  "/landing/coastal-road.webp",
+  "/landing/summer-meadow.webp",
+];
 
 function getTopic(id: TopicId) {
   return topics.find((topic) => topic.id === id)!;
 }
 
 export function LandingPage() {
+  const [background] = useState(() => backgrounds[Math.floor(Math.random() * backgrounds.length)]);
   const [phase, setPhase] = useState<Phase>("title");
   const [segment, setSegment] = useState<Segment>("opening");
   const [lines, setLines] = useState(openingLines);
@@ -226,7 +233,7 @@ export function LandingPage() {
     className={`landing ${phase === "title" ? "landing-title" : "landing-scene"} ${reducedMotion ? "reduced-motion" : ""}`}
     onClick={handleSceneClick}
   >
-    <img className="landing-background" src="/landing/night-sky.png" alt="" aria-hidden="true" />
+    <img className="landing-background" src={background} alt="" aria-hidden="true" />
     <div className="landing-vignette" aria-hidden="true" />
     <div className="landing-grain" aria-hidden="true" />
 
