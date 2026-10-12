@@ -4,7 +4,7 @@ import json
 import httpx
 
 from backend.app.agent_runtime import AssistantDoneEvent, CancellationToken, MeidoProvider, ToolCallEndEvent, UserMessage
-from backend.app.agent_runtime.types import AssistantMessage, ToolResultMessage
+from backend.app.agent_runtime.types import AssistantMessage, AttachmentContent, ImageContent, ToolResultMessage, UserMessage
 from backend.app.model_adapter import ModelToolCall, ModelTextDelta, OpenAICompatibleAdapter
 from backend.app.models import ModelConfiguration, RoleInput, RoleProfile
 
@@ -99,6 +99,35 @@ def test_structured_adapter_uses_environment_configuration_when_unbound(monkeypa
     assert requests[0].headers["Authorization"] == "Bearer env-key"
 
 
+def test_meido_provider_sends_user_image_as_multimodal_content():
+    from backend.app.agent_runtime import MeidoProvider
+
+    class RecordingAdapter:
+        def __init__(self):
+            self.messages = None
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            self.messages = messages
+            yield ModelTextDelta("收到")
+
+    role = RoleInput(name="视觉角色", profile=RoleProfile(profile="设定")).model_copy(update={"id": "role-vision"})
+    adapter = RecordingAdapter()
+    provider = MeidoProvider(adapter, role, None)
+    user = UserMessage(
+        "看看这张图",
+        attachments=(AttachmentContent("photo.png", "image/png", image=ImageContent("image/png", "aW1hZ2U=")),),
+    )
+
+    async def collect():
+        return [event async for event in provider.stream_response(
+            model="m", system="", messages=[user], tools=[{"type": "function"}], signal=__import__("backend.app.agent_runtime", fromlist=["CancellationToken"]).CancellationToken(),
+        )]
+
+    asyncio.run(collect())
+    assert adapter.messages[1]["content"] == [
+        {"type": "text", "text": "看看这张图"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,aW1hZ2U=", "detail": "low"}},
+    ]
 def test_meido_provider_maps_structured_transcript_and_tool_call():
     role = RoleInput(name="工具角色", profile=RoleProfile(profile="设定"), agentConfig={})
     seen = []

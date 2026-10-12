@@ -1,4 +1,5 @@
-from .models import Role, SessionResponse
+from .chat_attachments import public_attachment
+from .models import Message, Role, SessionResponse
 from .role_store import RoleStore
 from .session_store import SessionStore
 
@@ -15,7 +16,7 @@ class SessionManager:
         return SessionResponse(
             session=session,
             messages=[
-                message for message in self.sessions.list_messages(session.sessionKey)
+                public_message(message) for message in self.sessions.list_messages(session.sessionKey)
                 if message.messageType in {"text", "proactive_reminder"}
             ],
         )
@@ -25,3 +26,14 @@ class SessionManager:
         if role is None:
             raise KeyError(role_id)
         return role, self.open_role_session(role_id)
+
+
+def public_message(message: Message) -> Message:
+    metadata = dict(message.metadata)
+    attachments = metadata.get("attachments")
+    if isinstance(attachments, list):
+        metadata["attachments"] = [
+            public_attachment(item) for item in attachments
+            if isinstance(item, dict) and item.get("id")
+        ]
+    return message.model_copy(update={"metadata": metadata})

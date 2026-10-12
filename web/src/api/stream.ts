@@ -26,8 +26,10 @@ export function parseStreamEvent(raw: string): StreamEvent | null {
 }
 
 /** Sends a message to a role's session and reports each stream event in order. */
-export async function streamRoleMessage(roleId: string, content: string, onEvent: (event: StreamEvent) => void): Promise<void> {
-  const response = await request(`/api/roles/${encodeURIComponent(roleId)}/messages`, { method: "POST", body: JSON.stringify({ content }) });
+export async function streamRoleMessage(roleId: string, content: string, attachments: string[], onEvent: (event: StreamEvent) => void): Promise<void> {
+  const body: { content: string; attachments?: string[] } = { content };
+  if (attachments.length > 0) body.attachments = attachments;
+  const response = await request(`/api/roles/${encodeURIComponent(roleId)}/messages`, { method: "POST", body: JSON.stringify(body) });
   if (!response.body) throw new Error("服务端没有返回流式响应");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

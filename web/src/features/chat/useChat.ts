@@ -61,19 +61,20 @@ export function useChat() {
   const reset = () => { setRoleId(null); setSession(null); setMessages([]); setError(""); };
 
   /** Sends a message. Resolves false when nothing was sent so the caller can keep the draft. */
-  const send = async (text: string): Promise<boolean> => {
+  const send = async (text: string, attachments: string[] = []): Promise<boolean> => {
     const content = text.trim();
-    if (!content || !roleId || sending) return false;
+    if ((!content && attachments.length === 0) || !roleId || sending) return false;
     setError("");
     setSending(true);
     const sessionKey = session?.sessionKey ?? `role:${roleId}`;
     try {
-      await streamRoleMessage(roleId, content, (event) => {
+      await streamRoleMessage(roleId, content, attachments, (event) => {
         setMessages((current) => applyStreamEvent(current, event, sessionKey));
         if (event.type === "assistant_failed") setError(event.error ?? "回复未能完成");
       });
     } catch (cause) {
       setError(errorMessage(cause, "发送失败"));
+      return false;
     } finally {
       setSending(false);
     }
