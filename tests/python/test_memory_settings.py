@@ -41,6 +41,20 @@ class _FailingEmbedder:
         raise RuntimeError("provider unavailable")
 
 
+class _Credentials:
+    def __init__(self):
+        self.values = {}
+
+    def get(self, key):
+        return self.values.get(key, "")
+
+    def set(self, key, value):
+        if value:
+            self.values[key] = value
+        else:
+            self.values.pop(key, None)
+
+
 def test_settings_api_persists_independent_switches_without_exposing_key(tmp_path, monkeypatch):
     settings = MemorySettingsStore(tmp_path / "memory-settings.json")
     embedding = EmbeddingConfigurationStore(tmp_path / "embedding-config.json")
@@ -117,7 +131,7 @@ def test_paused_vector_syncs_owner_documents_for_lexical_search(tmp_path):
     config = EmbeddingConfigurationStore(tmp_path / "embedding.json")
     config.save(EmbeddingConfigurationInput(apiKey="key", dimensions=2))
     provider = SharedEmbeddingProvider(config.get, enabled=lambda: settings.get().embeddingEnabled)
-    store = OwnerKnowledgeStore(tmp_path / "owner-knowledge.db")
+    store = OwnerKnowledgeStore(tmp_path / "owner-knowledge.db", credential_store=_Credentials())
     store.set_state("feishu_access_token", "token")
     plugin = OwnerKnowledgePlugin(store, _Reader(), provider)
 
@@ -132,7 +146,7 @@ def test_paused_vector_syncs_owner_documents_for_lexical_search(tmp_path):
 
 
 def test_failed_owner_embedding_keeps_full_text_index_and_can_retry(tmp_path):
-    store = OwnerKnowledgeStore(tmp_path / "owner-knowledge.db")
+    store = OwnerKnowledgeStore(tmp_path / "owner-knowledge.db", credential_store=_Credentials())
     store.set_state("feishu_access_token", "token")
     plugin = OwnerKnowledgePlugin(store, _Reader(), _FailingEmbedder())
 
