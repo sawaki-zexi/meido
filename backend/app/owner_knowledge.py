@@ -844,7 +844,8 @@ class OwnerKnowledgeStore:
         new_chunk_ids = {chunk.chunk_id for chunk in chunks}
         if self.vector_index is not None:
             for chunk in chunks:
-                self.vector_index.upsert(chunk.chunk_id, model_id, list(chunk.vector))
+                if chunk.vector:
+                    self.vector_index.upsert(chunk.chunk_id, model_id, list(chunk.vector))
         with self._connect() as connection:
             for chunk_id in old_chunk_ids:
                 connection.execute("DELETE FROM owner_chunks_fts WHERE chunk_id = ?", (chunk_id,))
@@ -1410,6 +1411,7 @@ class OwnerKnowledgePlugin:
         self._sync_lock = asyncio.Lock()
         self._last_sync: SyncReport | None = None
         self._last_error: str | None = None
+        self.embedding_last_error: str | None = None
         self._task_lock = threading.Lock()
         self._role_locks: dict[tuple[int, str], asyncio.Lock] = {}
         self._understanding_workers: set[asyncio.Task[dict[str, object]]] = set()
@@ -1559,7 +1561,10 @@ class OwnerKnowledgePlugin:
     async def _sync(self, trigger: str, *, force_read_all: bool = False) -> SyncReport:
         async with self._sync_lock:
             embedder = self._embedding_session()
+            vector_enabled = bool(getattr(embedder, "is_enabled", True))
             model_id = embedder.model_id
+            if vector_enabled:
+                self.embedding_last_error = None
             if trigger in {"resume", "startup"}:
                 self._pause_requested = False
             run_id = self.store.create_sync_run(trigger)
@@ -1591,10 +1596,19 @@ class OwnerKnowledgePlugin:
                             unchanged += 1
                             continue
                         pieces = chunk_document(content, document.title)
-                        vectors = await asyncio.to_thread(
-                            embedder.embed_documents,
-                            [piece for piece, _ in pieces],
-                        ) if pieces else []
+                        document_model_id = model_id
+                        if pieces and vector_enabled:
+                            try:
+                                vectors = await asyncio.to_thread(
+                                    embedder.embed_documents,
+                                    [piece for piece, _ in pieces],
+                                )
+                            except Exception as error:
+                                vectors = [[] for _ in pieces]
+                                document_model_id = f"{model_id}:lexical-only"
+                                self.embedding_last_error = f"向量索引暂不可用，已为“{document.title}”保留全文检索：{type(error).__name__}"
+                        else:
+                            vectors = [[] for _ in pieces]
                         if len(vectors) != len(pieces):
                             raise RuntimeError("embedding 输出数量与文档片段不匹配")
                         chunks = [
@@ -1608,7 +1622,7 @@ class OwnerKnowledgePlugin:
                             for index, ((piece, location), vector) in enumerate(zip(pieces, vectors))
                         ]
                         existed = any(item.document_id == document.document_id for item in self.store.list_documents())
-                        self.store.replace_document(document, content, chunks, model_id)
+                        self.store.replace_document(document, content, chunks, document_model_id)
                         changed_document_ids.append(document.document_id)
                         if existed:
                             updated += 1
@@ -1669,7 +1683,7 @@ class OwnerKnowledgePlugin:
         embedder = self._embedding_session()
         model_id = embedder.model_id
         try:
-            vector = await asyncio.to_thread(embedder.embed_query, query)
+            vector = await asyncio.to_thread(embedder.embed_query, query) if getattr(embedder, "is_enabled", True) else None
         except Exception:
             vector = None
         understanding = self.store.search_understanding(role_id, vector, model_id) if vector is not None else None
@@ -1773,8 +1787,9 @@ class OwnerKnowledgePlugin:
             if role_id in self._deleting_roles:
                 raise RuntimeError("角色正在删除")
             embedder = self._embedding_session()
-            model_id = embedder.model_id
-            vector = await asyncio.to_thread(embedder.embed_query, body)
+            vector_enabled = bool(getattr(embedder, "is_enabled", True))
+            model_id = embedder.model_id if vector_enabled else f"{embedder.model_id}:lexical-only"
+            vector = await asyncio.to_thread(embedder.embed_query, body) if vector_enabled else []
             if role_id in self._deleting_roles:
                 raise RuntimeError("角色正在删除")
             saved = self.store.save_understanding(role_id, body, vector, model_id)

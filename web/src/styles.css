@@ -409,7 +409,7 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
   .dialog-modal { padding: 0; }
   .dialog-modal .dialog-panel { width: 100%; height: 100%; border-radius: 0; }
   .settings-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
-  .settings-nav { display: flex; padding: 8px; }
+  .settings-nav { display: flex; flex-wrap: wrap; padding: 8px; }
   .settings-nav button { width: auto; }
   .settings-content { padding: 16px; }
   .settings-heading { flex-direction: column; }
