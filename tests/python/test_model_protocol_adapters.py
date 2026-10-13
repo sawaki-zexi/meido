@@ -71,6 +71,48 @@ def test_anthropic_messages_uses_native_path_and_tool_schema(monkeypatch):
     assert any(isinstance(event, ModelStreamDone) and "hi!" == event.message.content[0].text for event in events)
 
 
+def test_anthropic_tool_schema_drops_gateway_rejected_annotations():
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Lookup input",
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "default": "", "examples": ["status"]},
+        },
+    }
+
+    payload, _headers, _aliases = AnthropicMessagesAdapter()._prepare(
+        messages(), configuration("anthropic-messages"),
+        [{"name": "lookup", "parameters": schema}],
+        max_tokens=None, stream=True,
+    )
+
+    assert payload["tools"][0]["input_schema"] == {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+    }
+    assert schema["properties"]["query"]["default"] == ""
+
+
+@pytest.mark.parametrize("keyword, value", [
+    ("minimum", 1),
+    ("maximum", 10),
+    ("exclusiveMinimum", 0),
+    ("maxItems", 2),
+    ("minProperties", 1),
+    ("format", "regex"),
+])
+def test_anthropic_tool_schema_rejects_unsupported_constraints_before_request(keyword, value):
+    schema = {"type": "object", "properties": {"query": {"type": "string", keyword: value}}}
+
+    with pytest.raises(ValueError, match=r"\$\.properties\.query"):
+        AnthropicMessagesAdapter()._prepare(
+            messages(), configuration("anthropic-messages"),
+            [{"name": "lookup", "parameters": schema}],
+            max_tokens=None, stream=True,
+        )
+
+
 def test_anthropic_replays_thinking_blocks_with_their_signature():
     history = [
         ModelAssistantMessage(
@@ -598,6 +640,38 @@ def test_mistral_builds_its_own_tool_wire_format_and_restores_internal_names(mon
     call = next(block for block in done.message.content if isinstance(block, ModelToolCallBlock))
     assert call.name == "todo.write"
     assert call.arguments == {"title": "x"}
+
+
+def test_mistral_only_sends_images_to_vision_models():
+    history = [ModelUserMessage((ModelImageBlock("image/png", "aW1hZ2U="),))]
+
+    _configuration, text_model, _headers, _aliases = MistralConversationsAdapter()._prepare(
+        history, configuration("mistral-conversations"), (), stream=True, max_tokens=None,
+    )
+    assert text_model["messages"][0]["content"] == "(image omitted: model does not support images)"
+
+    vision_config = configuration("mistral-conversations")
+    vision_config.model = "pixtral-large-2411"
+    _configuration, vision_model, _headers, _aliases = MistralConversationsAdapter()._prepare(
+        history, vision_config, (), stream=True, max_tokens=None,
+    )
+    assert vision_model["messages"][0]["content"][0]["type"] == "image_url"
+
+
+@pytest.mark.parametrize("adapter, api", [
+    (AnthropicMessagesAdapter(), "anthropic-messages"),
+    (MistralConversationsAdapter(), "mistral-conversations"),
+    (GoogleGenerativeAdapter(), "google-generative"),
+    (BedrockConverseAdapter(), "bedrock-converse"),
+])
+def test_native_non_streaming_provider_errors_are_not_empty_successes(monkeypatch, adapter, api):
+    def handler(request):
+        del request
+        return httpx.Response(200, json={"error": {"message": "invalid tool schema"}})
+
+    patch_client(monkeypatch, handler)
+    with pytest.raises(RuntimeError, match="invalid tool schema"):
+        asyncio.run(adapter.complete_messages(messages(), configuration(api)))
 
 
 def test_pi_messages_repairs_tool_history_and_serializes_slotted_metadata():

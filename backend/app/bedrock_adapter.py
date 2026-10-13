@@ -11,7 +11,7 @@ from urllib.parse import quote
 import httpx
 
 from .message_transform import transform_messages
-from .model_adapter import _raise_for_status_with_details
+from .model_adapter import _payload_error_detail, _raise_for_status_with_details
 from .model_protocol import compatible_tool_names, effective_tools, model_cost, normalize_tools, remap_message_tool_names, safe_tool_id
 from .model_types import (
     ModelAssistantMessage, ModelCapabilities, ModelContentBlock, ModelImageBlock, ModelMessage,
@@ -131,9 +131,16 @@ class BedrockConverseAdapter:
         data = response.json()
         if not isinstance(data, Mapping):
             raise RuntimeError("模型响应不是 JSON 对象")
-        output = data.get("output") if isinstance(data.get("output"), Mapping) else {}
-        message = output.get("message") if isinstance(output.get("message"), Mapping) else {}
-        content = message.get("content") if isinstance(message.get("content"), list) else []
+        error = _payload_error_detail(data, configuration.apiKey)
+        if error:
+            raise RuntimeError(f"模型响应失败: {error}")
+        if not isinstance(data.get("output"), Mapping) or not isinstance(data["output"].get("message"), Mapping):
+            raise RuntimeError("模型响应缺少 output.message")
+        output = data["output"]
+        message = output["message"]
+        if not isinstance(message.get("content"), list):
+            raise RuntimeError("模型响应缺少 message.content")
+        content = message["content"]
         blocks: list[ModelContentBlock] = []
         for item in content:
             if not isinstance(item, Mapping):

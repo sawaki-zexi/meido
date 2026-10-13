@@ -5,6 +5,7 @@ import httpx
 
 from backend.app.model_types import (
     ModelAssistantMessage,
+    ModelCapabilities,
     ModelResponseMetadata,
     ModelStreamDone,
     ModelStreamError,
@@ -19,6 +20,7 @@ from backend.app.model_types import (
     ModelSystemMessage,
 )
 from backend.app.models import ModelConfiguration
+from backend.app.message_transform import transform_messages
 from backend.app.pi_openai_adapter import OpenAICompletionsOptions, OpenAICompletionsRichAdapter
 
 
@@ -695,3 +697,45 @@ def test_meido_provider_restores_model_metadata_for_transcript_replay():
         metadata={"model": "deepseek-reasoner", "stop_reason": "error"},
     )])[1]
     assert transform_messages((failed,), target_model="deepseek-reasoner") == ()
+
+
+def test_openai_completion_metadata_uses_wire_provider_for_replay(monkeypatch):
+    def handler(request):
+        del request
+        return httpx.Response(200, json={
+            "id": "response-1",
+            "model": "custom-model",
+            "choices": [{
+                "message": {"content": "ok", "reasoning_content": "private"},
+                "finish_reason": "stop",
+            }],
+        })
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+    configuration = ModelConfiguration(
+        providerId="custom",
+        provider="deepseek-compatible",
+        api="openai-completions",
+        baseUrl="https://provider.test/v1",
+        model="custom-model",
+        apiKey="secret",
+    )
+
+    message = asyncio.run(OpenAICompletionsRichAdapter().complete_messages(
+        [ModelUserMessage((ModelTextBlock("hello"),))], configuration,
+    ))
+
+    assert message.metadata.provider == "deepseek-compatible"
+    replayed = transform_messages(
+        (message,),
+        capabilities=ModelCapabilities(preserve_thinking_signatures=True),
+        target_provider="deepseek-compatible",
+        target_api="openai-completions",
+        target_model="custom-model",
+    )
+    assert any(isinstance(block, ModelThinkingBlock) and block.text == "private" for block in replayed[0].content)

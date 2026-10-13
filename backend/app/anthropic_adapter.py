@@ -11,7 +11,7 @@ import time
 import httpx
 
 from .message_transform import transform_messages
-from .model_adapter import _raise_for_status_with_details, _response_error_detail
+from .model_adapter import _payload_error_detail, _raise_for_status_with_details, _response_error_detail
 from .model_protocol import compatible_tool_names, effective_tools, json_object, model_cost, normalize_tools, remap_message_tool_names, safe_tool_id
 from .model_types import (
     ModelAssistantMessage,
@@ -116,8 +116,55 @@ def _tool_wire(tool: Mapping[str, object], aliases: Mapping[str, str]) -> dict[s
     return {
         "name": aliases.get(str(tool["name"]), str(tool["name"])),
         "description": str(tool.get("description", "")),
-        "input_schema": dict(tool["parameters"]),
+        "input_schema": _anthropic_schema(tool["parameters"]),
     }
+
+
+def _anthropic_schema(schema: object) -> object:
+    """Convert a tool schema to Anthropic's supported JSON Schema subset.
+
+    Anthropic's strict tool mode rejects several validation keywords with a
+    request-wide 400. Dropping those keywords would silently change tool
+    validation, so fail before sending the request and include the schema path.
+    Metadata that does not affect validation is safe to omit.
+    """
+    annotations = {"$schema", "$id", "title", "default", "examples", "deprecated", "readOnly", "writeOnly"}
+    unsupported = {
+        "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+        "maxItems", "uniqueItems", "minContains", "maxContains", "minProperties", "maxProperties",
+    }
+    formats = {"date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid"}
+
+    def convert(value: object, path: str) -> object:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, list):
+            return [convert(item, f"{path}[{index}]") for index, item in enumerate(value)]
+        if not isinstance(value, Mapping):
+            return value
+        result: dict[str, object] = {}
+        for key, child in value.items():
+            key = str(key)
+            child_path = f"{path}.{key}"
+            if key in unsupported or (key == "minItems" and child not in (0, 1)):
+                raise ValueError(f"Anthropic 工具 schema 不支持 {child_path} 约束")
+            if key == "format" and child not in formats:
+                raise ValueError(f"Anthropic 工具 schema 不支持 {child_path} 格式: {child}")
+            if key in annotations:
+                continue
+            if key == "properties" and isinstance(child, Mapping):
+                result[key] = {str(name): convert(item, f"{child_path}.{name}") for name, item in child.items()}
+            elif key in {"items", "additionalProperties", "additionalItems", "contains", "not", "if", "then", "else"}:
+                result[key] = convert(child, child_path)
+            elif key in {"allOf", "anyOf", "oneOf", "prefixItems"} and isinstance(child, list):
+                result[key] = [convert(item, f"{child_path}[{index}]") for index, item in enumerate(child)]
+            elif key in {"$defs", "definitions", "patternProperties", "dependentSchemas"} and isinstance(child, Mapping):
+                result[key] = {str(name): convert(item, f"{child_path}.{name}") for name, item in child.items()}
+            else:
+                result[key] = child
+        return result
+
+    return convert(schema, "$")
 
 
 def _messages_to_wire(
@@ -451,12 +498,17 @@ class AnthropicMessagesAdapter:
         data = response.json()
         if not isinstance(data, Mapping):
             raise RuntimeError("模型响应不是 JSON 对象")
+        error = _payload_error_detail(data, configuration.apiKey)
+        if error:
+            raise RuntimeError(f"模型响应失败: {error}")
+        if not isinstance(data.get("content"), list):
+            raise RuntimeError("模型响应缺少 content 内容块")
         accumulator = _Accumulator(name_aliases)
         accumulator.response_id = data.get("id") if isinstance(data.get("id"), str) else None
         accumulator.model = data.get("model") if isinstance(data.get("model"), str) else None
         accumulator.usage = _usage(data.get("usage"))
         accumulator.stop_reason = data.get("stop_reason") if isinstance(data.get("stop_reason"), str) else None
-        for index, block in enumerate(data.get("content", [])):
+        for index, block in enumerate(data["content"]):
             if not isinstance(block, Mapping):
                 continue
             kind = str(block.get("type", ""))

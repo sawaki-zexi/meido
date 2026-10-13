@@ -89,7 +89,12 @@ def _transform_blocks(
     result: list[ModelContentBlock] = []
     for block in blocks:
         if isinstance(block, ModelImageBlock):
-            if capabilities.supports_images:
+            # Tool-result images are rendered by the target adapter's text
+            # projection; keep them long enough to preserve their media type.
+            if capabilities.supports_images or (
+                image_placeholder == _TOOL_IMAGE_PLACEHOLDER
+                and capabilities.preserve_tool_result_images
+            ):
                 result.append(block)
             elif not result or not (
                 isinstance(result[-1], ModelTextBlock)

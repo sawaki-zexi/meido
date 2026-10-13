@@ -507,7 +507,7 @@ class OpenAICompletionsRichAdapter:
         )
         accumulator = _ResponseAccumulator(
             internal_names,
-            configuration.providerId,
+            configuration.provider,
             supports_finish_reason=self.options.supports_finish_reason,
         )
         completed = False
@@ -624,7 +624,7 @@ class OpenAICompletionsRichAdapter:
             raise RuntimeError(message)
         accumulator = _ResponseAccumulator(
             internal_names,
-            configuration.providerId,
+            configuration.provider,
             supports_finish_reason=self.options.supports_finish_reason,
         )
         accumulator.consume(payload)

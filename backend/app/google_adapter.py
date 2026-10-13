@@ -14,7 +14,7 @@ import time
 import httpx
 
 from .message_transform import transform_messages
-from .model_adapter import _raise_for_status_with_details, _response_error_detail
+from .model_adapter import _payload_error_detail, _raise_for_status_with_details, _response_error_detail
 from .model_protocol import compatible_tool_names, effective_tools, model_cost, normalize_tools, remap_message_tool_names, safe_tool_id, tool_result_text
 from .model_types import (
     ModelAssistantMessage, ModelCapabilities, ModelContentBlock, ModelImageBlock,
@@ -230,6 +230,10 @@ class GoogleGenerativeAdapter:
                             continue
                         if not isinstance(data, Mapping):
                             continue
+                        error = _payload_error_detail(data, redaction_key)
+                        if error:
+                            yield ModelStreamError(f"模型响应失败: {error}")
+                            return
                         usage = _usage(data.get("usageMetadata"))
                         candidates = data.get("candidates")
                         candidate = candidates[0] if isinstance(candidates, list) and candidates and isinstance(candidates[0], Mapping) else {}
@@ -329,8 +333,13 @@ class GoogleGenerativeAdapter:
         data = response.json()
         if not isinstance(data, Mapping):
             raise RuntimeError("模型响应不是 JSON 对象")
+        error = _payload_error_detail(data, redaction_key)
+        if error:
+            raise RuntimeError(f"模型响应失败: {error}")
         candidates = data.get("candidates")
-        candidate = candidates[0] if isinstance(candidates, list) and candidates and isinstance(candidates[0], Mapping) else {}
+        if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], Mapping):
+            raise RuntimeError("模型响应缺少 candidates")
+        candidate = candidates[0]
         content = candidate.get("content") if isinstance(candidate, Mapping) else {}
         parts = content.get("parts") if isinstance(content, Mapping) else []
         blocks: list[ModelContentBlock] = []

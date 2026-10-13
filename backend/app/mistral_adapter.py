@@ -11,12 +11,13 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 import json
+import re
 import time
 
 import httpx
 
 from .message_transform import transform_messages
-from .model_adapter import _raise_for_status_with_details, _response_error_detail
+from .model_adapter import _payload_error_detail, _raise_for_status_with_details, _response_error_detail
 from .model_protocol import compatible_tool_names, effective_tools, json_object, model_cost, normalize_tools, remap_message_tool_names, safe_tool_id, tool_result_text
 from .model_types import (
     ModelAssistantMessage, ModelCapabilities, ModelContentBlock, ModelImageBlock,
@@ -31,12 +32,30 @@ from .models import ModelConfiguration
 
 
 _CAPABILITIES = ModelCapabilities(
-    supports_images=True,
+    supports_images=False,
+    preserve_tool_result_images=True,
     supports_reasoning=True,
     preserve_thinking_signatures=False,
     tool_call_id_pattern=r"[A-Za-z0-9_-]+",
     max_tool_call_id_length=9,
 )
+
+_IMAGE_MODEL_PATTERN = re.compile(
+    r"(?:pixtral|mistral[-_]small[-_](?:3(?:\.\d+)?|2503)|mistral[-_]medium[-_]3|ministral[-_]3)",
+    re.IGNORECASE,
+)
+
+
+def _capabilities(model: str) -> ModelCapabilities:
+    """Use image blocks only for Mistral models documented with vision input."""
+    return ModelCapabilities(
+        supports_images=bool(_IMAGE_MODEL_PATTERN.search(model)),
+        preserve_tool_result_images=_CAPABILITIES.preserve_tool_result_images,
+        supports_reasoning=_CAPABILITIES.supports_reasoning,
+        preserve_thinking_signatures=_CAPABILITIES.preserve_thinking_signatures,
+        tool_call_id_pattern=_CAPABILITIES.tool_call_id_pattern,
+        max_tool_call_id_length=_CAPABILITIES.max_tool_call_id_length,
+    )
 
 
 def _configuration(configuration: ModelConfiguration) -> ModelConfiguration:
@@ -146,7 +165,7 @@ class MistralConversationsAdapter:
         configuration = _configuration(configuration)
         transformed = transform_messages(
             messages,
-            capabilities=_CAPABILITIES,
+            capabilities=_capabilities(configuration.model),
             target_provider=configuration.provider,
             target_api="mistral-conversations",
             target_model=configuration.model,
@@ -178,6 +197,7 @@ class MistralConversationsAdapter:
         response_model = None
         usage = ModelUsage()
         stop_reason = None
+        finish_seen = False
         completed = False
         text_open = thinking_open = False
         yield ModelStreamStart()
@@ -221,6 +241,7 @@ class MistralConversationsAdapter:
                         choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], Mapping) else {}
                         finish = choice.get("finish_reason")
                         if isinstance(finish, str) and finish:
+                            finish_seen = True
                             stop_reason = {"stop": "stop", "tool_calls": "tool_use", "length": "length"}.get(finish, finish)
                         delta = choice.get("delta") if isinstance(choice, Mapping) else {}
                         if not isinstance(delta, Mapping):
@@ -274,6 +295,9 @@ class MistralConversationsAdapter:
             if not completed:
                 yield ModelStreamError("模型流式响应未收到 [DONE] 终止事件")
                 return
+            if not finish_seen:
+                yield ModelStreamError("模型流式响应缺少 finish_reason")
+                return
             if text_open:
                 yield ModelTextEnd()
             if thinking_open:
@@ -318,9 +342,16 @@ class MistralConversationsAdapter:
         data = response.json()
         if not isinstance(data, Mapping):
             raise RuntimeError("模型响应不是 JSON 对象")
+        error = _payload_error_detail(data, configuration.apiKey)
+        if error:
+            raise RuntimeError(f"模型响应失败: {error}")
         choices = data.get("choices")
-        choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], Mapping) else {}
-        raw = choice.get("message") if isinstance(choice, Mapping) and isinstance(choice.get("message"), Mapping) else {}
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
+            raise RuntimeError("模型响应缺少 choices")
+        choice = choices[0]
+        if not isinstance(choice.get("message"), Mapping):
+            raise RuntimeError("模型响应缺少 message")
+        raw = choice["message"]
         blocks: list[ModelContentBlock] = []
         if isinstance(raw.get("reasoning_content"), str) and raw["reasoning_content"]:
             blocks.append(ModelThinkingBlock(raw["reasoning_content"]))
@@ -334,6 +365,8 @@ class MistralConversationsAdapter:
             name = aliases.get(str(function.get("name", "")), str(function.get("name", "")))
             blocks.append(ModelToolCallBlock(safe_tool_id(str(raw_call.get("id", "call-0")), max_length=9), name, arguments))
         finish = choice.get("finish_reason") if isinstance(choice, Mapping) else None
+        if not isinstance(finish, str) or not finish:
+            raise RuntimeError("模型响应缺少 finish_reason")
         reason = {"stop": "stop", "tool_calls": "tool_use", "length": "length"}.get(str(finish), str(finish or "stop"))
         return ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(
             provider=configuration.provider, api="mistral-conversations", model=str(data.get("model") or configuration.model),

@@ -121,6 +121,27 @@ def _response_error_detail(response: httpx.Response, api_key: str) -> str:
     return detail[:500]
 
 
+def _payload_error_detail(payload: object, api_key: str) -> str | None:
+    """Return a provider error from a successful HTTP response body."""
+    if not isinstance(payload, Mapping):
+        return None
+    error = payload.get("error")
+    if isinstance(error, Mapping):
+        detail = error.get("message") or error.get("detail") or error.get("code")
+    elif isinstance(error, str):
+        detail = error
+    elif payload.get("type") == "error":
+        detail = payload.get("message") or payload.get("errorMessage")
+    else:
+        return None
+    if detail is None:
+        detail = str(error)
+    text = str(detail).strip()
+    if api_key:
+        text = text.replace(api_key, "***")
+    return text[:500] or "模型服务返回错误"
+
+
 def _is_deepseek(configuration: ModelConfiguration) -> bool:
     return configuration.providerId == "deepseek" or configuration.baseUrl.rstrip("/").lower() == "https://api.deepseek.com"
 
