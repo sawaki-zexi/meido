@@ -731,7 +731,7 @@ def test_native_non_streaming_requires_provider_finish_reason(monkeypatch, adapt
     (
         BedrockConverseAdapter(),
         "bedrock-converse",
-        {"output": {"message": {"content": [{"text": "blocked"}], "stopReason": "guardrail_intervened"}}},
+        {"output": {"message": {"content": [{"text": "blocked"}]}}, "stopReason": "guardrail_intervened"},
     ),
     (
         MistralConversationsAdapter(),
