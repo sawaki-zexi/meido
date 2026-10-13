@@ -5,12 +5,38 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from .agent_runtime.types import AgentMessage, AssistantMessage, ToolCall, ToolResultMessage, UserMessage
+from .agent_runtime.types import AgentMessage, AssistantMessage, AttachmentContent, ImageContent, ToolCall, ToolResultMessage, UserMessage
+from .chat_attachments import load_image
 from .models import AgentRun, Message, SessionSummary
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _load_attachments(metadata: dict[str, Any]) -> tuple[AttachmentContent, ...]:
+    raw = metadata.get("attachments", []) if isinstance(metadata, dict) else []
+    if not isinstance(raw, list):
+        return ()
+    loaded: list[AttachmentContent] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        name = str(item.get("name") or "附件")
+        media_type = str(item.get("mediaType") or "application/octet-stream")
+        if not isinstance(path, str):
+            continue
+        text = str(item.get("text") or "")
+        image = None
+        if media_type.startswith("image/"):
+            try:
+                actual_type, encoded = load_image(path, media_type)
+                image = ImageContent(actual_type, encoded)
+            except (OSError, ValueError):
+                continue
+        loaded.append(AttachmentContent(name, media_type, text=text, image=image))
+    return tuple(loaded)
 
 
 class SessionStore:
@@ -352,7 +378,7 @@ class SessionStore:
                 continue
             elif stored.messageType == "text" and stored.status == "completed":
                 if stored.role == "user":
-                    messages.append(UserMessage(stored.content))
+                    messages.append(UserMessage(stored.content, attachments=_load_attachments(stored.metadata)))
                 elif stored.role == "assistant":
                     messages.append(AssistantMessage(stored.content))
             index += 1
@@ -385,6 +411,7 @@ class SessionStore:
         user_content: str,
         *,
         assistant_status: str = "streaming",
+        attachments: list[dict[str, object]] | None = None,
     ) -> tuple[AgentRun, Message, Message]:
         """Atomically create a run, its user message, and stream placeholder."""
 
@@ -404,14 +431,14 @@ class SessionStore:
             assistant_sequence = user_sequence + 1
             connection.execute(
                 "INSERT INTO messages (message_id, session_key, sequence, role, content, status, created_at, message_type, run_id, metadata_json) VALUES (?, ?, ?, 'user', ?, 'completed', ?, 'text', ?, ?)",
-                (user_id, run.sessionKey, user_sequence, user_content, now, run.runId, _dump({})),
+                (user_id, run.sessionKey, user_sequence, user_content, now, run.runId, _dump({"attachments": attachments or []})),
             )
             connection.execute(
                 "INSERT INTO messages (message_id, session_key, sequence, role, content, status, created_at, message_type, run_id, metadata_json) VALUES (?, ?, ?, 'assistant', '', ?, ?, 'text', ?, ?)",
                 (assistant_id, run.sessionKey, assistant_sequence, assistant_status, now, run.runId, _dump({"runtimePlaceholder": True})),
             )
             connection.execute("UPDATE sessions SET updated_at = ? WHERE session_key = ?", (now, run.sessionKey))
-        user_message = Message(id=user_id, sessionKey=run.sessionKey, sequence=user_sequence, role="user", content=user_content, status="completed", createdAt=datetime.fromisoformat(now), runId=run.runId)
+        user_message = Message(id=user_id, sessionKey=run.sessionKey, sequence=user_sequence, role="user", content=user_content, status="completed", createdAt=datetime.fromisoformat(now), runId=run.runId, metadata={"attachments": attachments or []})
         assistant_message = Message(id=assistant_id, sessionKey=run.sessionKey, sequence=assistant_sequence, role="assistant", content="", status=assistant_status, createdAt=datetime.fromisoformat(now), runId=run.runId, metadata={"runtimePlaceholder": True})
         return run, user_message, assistant_message
 

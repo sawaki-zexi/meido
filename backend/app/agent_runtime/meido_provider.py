@@ -10,7 +10,7 @@ from ..models import Message, ModelConfiguration, Role
 from ..model_adapter import ModelAdapter, ModelStreamError, ModelTextDelta, ModelToolCall
 from ..browser_use.safety import sanitize_browser_arguments, sanitize_browser_text
 from .provider import AssistantDoneEvent, CancellationToken, ProviderErrorEvent, ProviderEvent, ProviderStartEvent, TextDeltaEvent, ToolCallEndEvent
-from .types import AssistantMessage, ToolCall, UserMessage, ToolResultMessage
+from .types import AssistantMessage, AttachmentContent, ImageContent, ToolCall, UserMessage, ToolResultMessage
 
 
 class MeidoProvider:
@@ -87,7 +87,7 @@ class MeidoProvider:
         result: list[dict[str, object]] = [{"role": "system", "content": prompt}]
         for message in messages:
             if isinstance(message, UserMessage):
-                result.append({"role": "user", "content": message.content})
+                result.append({"role": "user", "content": _user_content(message)})
             elif isinstance(message, AssistantMessage):
                 item: dict[str, object] = {"role": "assistant", "content": message.content or None}
                 if message.tool_calls:
@@ -163,6 +163,10 @@ class MeidoProvider:
         return self.role.model_copy(deep=True, update={"profile": profile})
 
     async def _stream(self, messages: Sequence[object], signal: CancellationToken) -> AsyncIterator[ProviderEvent]:
+        if any(isinstance(message, UserMessage) and message.attachments for message in messages):
+            async for event in self._stream_multimodal(messages, signal):
+                yield event
+            return
         history: list[Message] = []
         for message in messages:
             if isinstance(message, UserMessage):
@@ -190,6 +194,28 @@ class MeidoProvider:
             yield TextDeltaEvent(delta)
         yield AssistantDoneEvent(AssistantMessage(content=content))
 
+    async def _stream_multimodal(self, messages: Sequence[object], signal: CancellationToken) -> AsyncIterator[ProviderEvent]:
+        prompt = self._role_system_prompt()
+        wire_messages: list[dict[str, object]] = [{"role": "system", "content": prompt}]
+        for message in messages:
+            if isinstance(message, UserMessage):
+                wire_messages.append({"role": "user", "content": _user_content(message)})
+            elif isinstance(message, AssistantMessage):
+                wire_messages.append({"role": "assistant", "content": message.content})
+            elif isinstance(message, ToolResultMessage):
+                wire_messages.append({"role": "tool", "content": message.content, "tool_call_id": message.tool_call_id})
+        yield ProviderStartEvent()
+        content = ""
+        try:
+            source = self.adapter.stream_messages(wire_messages, self.configuration)
+            async for delta in source:
+                signal.raise_if_cancelled()
+                content += delta
+                yield TextDeltaEvent(delta)
+            yield AssistantDoneEvent(AssistantMessage(content=content))
+        except Exception as error:
+            yield ProviderErrorEvent(str(error))
+
 
 def _message(role: str, content: str) -> Message:
     return Message(
@@ -201,3 +227,21 @@ def _message(role: str, content: str) -> Message:
         status="completed",
         createdAt=datetime.now(timezone.utc),
     )
+
+
+def _user_content(message: UserMessage) -> str | list[dict[str, object]]:
+    if not message.attachments:
+        return message.content
+    parts: list[dict[str, object]] = [{"type": "text", "text": message.content}]
+    for attachment in message.attachments:
+        if attachment.image is not None:
+            parts.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{attachment.image.media_type};base64,{attachment.image.data_base64}",
+                    "detail": attachment.image.detail,
+                },
+            })
+        elif attachment.text:
+            parts[0]["text"] = f"{parts[0]['text']}\n\n[{attachment.name}]\n{attachment.text}"
+    return parts
