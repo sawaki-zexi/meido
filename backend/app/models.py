@@ -306,8 +306,9 @@ class ModelConfigurationInput(BaseModel):
     baseUrl: str
     model: str
     apiKey: str = ""
+    api: str = "openai-completions"
 
-    @field_validator("providerId", "provider", "baseUrl", "model")
+    @field_validator("providerId", "provider", "baseUrl", "model", "api")
     @classmethod
     def validate_required_text(cls, value: str) -> str:
         value = value.strip()
@@ -356,6 +357,7 @@ class ProviderPreset(BaseModel):
     provider: str
     baseUrl: str
     modelHint: str
+    api: str = "openai-completions"
 
 
 class ProviderPresetList(BaseModel):

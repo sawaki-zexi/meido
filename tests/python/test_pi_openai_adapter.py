@@ -467,3 +467,45 @@ def test_meido_provider_persists_thinking_for_next_provider_turn_without_public_
 
     second = asyncio.run(second_collect())
     assert second[0].type == "provider_start"
+
+
+def test_meido_provider_restores_model_metadata_for_transcript_replay():
+    from backend.app.agent_runtime import MeidoProvider
+    from backend.app.agent_runtime.types import AssistantMessage
+    from backend.app.message_transform import transform_messages
+    from backend.app.model_types import ModelCapabilities
+    from backend.app.models import RoleInput, RoleProfile
+
+    role = RoleInput(name="metadata", profile=RoleProfile(profile="设定")).model_copy(update={"id": "role-metadata"})
+    provider = MeidoProvider(object(), role, None)
+    runtime_message = AssistantMessage(
+        content="answer",
+        metadata={
+            "provider": "deepseek",
+            "api": "openai-completions",
+            "model": "deepseek-reasoner",
+            "response_id": "response-1",
+            "stop_reason": "stop",
+            "usage": {"input_tokens": 12, "output_tokens": 4},
+            "thinking": [{"text": "private thought", "signature": "opaque"}],
+        },
+    )
+
+    restored = provider._rich_messages("system", [runtime_message])[1]
+    assert restored.metadata.model == "deepseek-reasoner"
+    assert restored.metadata.response_id == "response-1"
+    assert restored.metadata.usage.input_tokens == 12
+
+    replayed = transform_messages(
+        (restored,),
+        capabilities=ModelCapabilities(preserve_thinking_signatures=True),
+        target_model="deepseek-chat",
+    )
+    assert replayed[0].content == (ModelTextBlock("private thought"), ModelTextBlock("answer"))
+
+    failed = provider._rich_messages("system", [AssistantMessage(
+        content="partial",
+        stop_reason="error",
+        metadata={"model": "deepseek-reasoner", "stop_reason": "error"},
+    )])[1]
+    assert transform_messages((failed,), target_model="deepseek-reasoner") == ()

@@ -29,7 +29,12 @@ def test_provider_presets_and_saved_configuration_are_publicly_masked(tmp_path, 
     providers = client.get("/api/model/providers").json()["providers"]
     assert [item["id"] for item in providers] == [
         "openai", "deepseek", "dashscope", "moonshot", "zhipu", "siliconflow", "openrouter", "ollama",
+        "openai-responses", "anthropic", "google", "mistral", "bedrock", "pi-messages",
     ]
+    assert {item["api"] for item in providers} == {
+        "openai-completions", "openai-responses", "anthropic-messages", "google-generative",
+        "mistral-conversations", "bedrock-converse", "pi-messages",
+    }
     assert providers[1]["baseUrl"] == "https://api.deepseek.com"
     assert client.get("/api/model/configuration").json()["configuration"] is None
 

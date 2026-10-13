@@ -18,6 +18,7 @@ from .model_adapter import (
     _response_error_detail,
     _remap_function_names,
 )
+from .model_protocol import effective_tools, normalize_tools
 from .model_event_stream import AssistantEventStream
 from .model_types import (
     ModelAssistantMessage,
@@ -351,24 +352,11 @@ def _blocks_to_wire_content(blocks: Sequence[ModelContentBlock]) -> object:
     return parts
 
 
-def _tool_name(tool: Mapping[str, object]) -> str | None:
-    function = tool.get("function")
-    return function.get("name") if isinstance(function, Mapping) and isinstance(function.get("name"), str) else None
-
-
 def _effective_tools(
     messages: Sequence[ModelMessage],
     tools: Sequence[Mapping[str, object]],
 ) -> tuple[dict[str, object], ...]:
-    current: list[dict[str, object]] = [dict(tool) for tool in tools]
-    for message in messages:
-        if not isinstance(message, ModelSystemMessage):
-            continue
-        if message.tools_removed:
-            removed = set(message.tools_removed)
-            current = [tool for tool in current if _tool_name(tool) not in removed]
-        current.extend(dict(tool) for tool in message.tools_added)
-    return tuple(current)
+    return effective_tools(messages, tools)
 
 
 async def _sse_payloads(lines: AsyncIterator[str]) -> AsyncIterator[str]:
@@ -419,6 +407,15 @@ class OpenAICompletionsRichAdapter:
             target_model=configuration.model,
         )
         raw_tools = _effective_tools(transformed, tools)
+        normalized_tools = normalize_tools(raw_tools)
+        wire_definitions = [{
+            "type": "function",
+            "function": {
+                "name": tool["name"],
+                "description": tool["description"],
+                "parameters": tool["parameters"],
+            },
+        } for tool in normalized_tools]
         send_reasoning = options.send_reasoning_content and not (
             _is_deepseek(configuration)
             and raw_tools
@@ -428,8 +425,8 @@ class OpenAICompletionsRichAdapter:
             _message_to_wire(message, send_reasoning=send_reasoning)
             for message in transformed
         )
-        aliases = _compatible_function_names(raw_tools, raw_messages)
-        wire_tools = _remap_function_names(raw_tools, aliases, tools=True)
+        aliases = _compatible_function_names(wire_definitions, raw_messages)
+        wire_tools = _remap_function_names(wire_definitions, aliases, tools=True)
         wire_messages = _remap_function_names(raw_messages, aliases)
         request_data: dict[str, object] = {
             "model": configuration.model,

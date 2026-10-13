@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 from dataclasses import asdict
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import cast
 
@@ -13,6 +13,7 @@ from ..model_types import (
     ModelAssistantMessage as RichAssistantMessage,
     ModelImageBlock as RichImageBlock,
     ModelMessage as RichMessage,
+    ModelResponseMetadata as RichResponseMetadata,
     ModelStreamDone,
     ModelStreamError as RichStreamError,
     ModelTextBlock as RichTextBlock,
@@ -23,10 +24,15 @@ from ..model_types import (
     ModelToolResultMessage as RichToolResultMessage,
     ModelSystemMessage as RichSystemMessage,
     ModelUserMessage as RichUserMessage,
+    ModelUsage as RichUsage,
 )
 from ..browser_use.safety import sanitize_browser_arguments, sanitize_browser_text
 from .provider import AssistantDoneEvent, CancellationToken, ProviderErrorEvent, ProviderEvent, ProviderStartEvent, TextDeltaEvent, ToolCallEndEvent
 from .types import AssistantMessage, ToolCall, UserMessage, ToolResultMessage
+
+
+def _metadata_count(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 class MeidoProvider:
@@ -240,8 +246,11 @@ class MeidoProvider:
                         blocks[0] = RichTextBlock(f"{blocks[0].text}\n\n[{attachment.name}]\n{attachment.text}")
                 result.append(RichUserMessage(tuple(blocks)))
             elif isinstance(message, AssistantMessage):
+                metadata = message.metadata if isinstance(message.metadata, Mapping) else {}
+                raw_usage = metadata.get("usage")
+                usage = raw_usage if isinstance(raw_usage, Mapping) else {}
                 blocks: list[object] = []
-                raw_thinking = message.metadata.get("thinking")
+                raw_thinking = metadata.get("thinking")
                 if isinstance(raw_thinking, list):
                     for item in raw_thinking:
                         if not isinstance(item, dict):
@@ -263,7 +272,30 @@ class MeidoProvider:
                     )
                     for call in message.tool_calls
                 )
-                result.append(RichAssistantMessage(tuple(blocks)))
+                timestamp = metadata.get("timestamp")
+                result.append(RichAssistantMessage(
+                    tuple(blocks),
+                    RichResponseMetadata(
+                        provider=metadata.get("provider") if isinstance(metadata.get("provider"), str) else None,
+                        api=metadata.get("api") if isinstance(metadata.get("api"), str) else None,
+                        model=metadata.get("model") if isinstance(metadata.get("model"), str) else None,
+                        response_id=metadata.get("response_id") if isinstance(metadata.get("response_id"), str) else None,
+                        usage=RichUsage(
+                            input_tokens=_metadata_count(usage.get("input_tokens")),
+                            output_tokens=_metadata_count(usage.get("output_tokens")),
+                            cache_read_tokens=_metadata_count(usage.get("cache_read_tokens")),
+                            cache_write_tokens=_metadata_count(usage.get("cache_write_tokens")),
+                            reasoning_tokens=_metadata_count(usage.get("reasoning_tokens")),
+                        ),
+                        stop_reason=(
+                            metadata.get("stop_reason")
+                            if isinstance(metadata.get("stop_reason"), str)
+                            else message.stop_reason
+                        ),
+                        error_message=metadata.get("error_message") if isinstance(metadata.get("error_message"), str) else None,
+                        timestamp=_metadata_count(timestamp) if isinstance(timestamp, int) and not isinstance(timestamp, bool) else None,
+                    ),
+                ))
             elif isinstance(message, ToolResultMessage):
                 text = message.content
                 if message.tool_name.startswith("agent_browser_"):

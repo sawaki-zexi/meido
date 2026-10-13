@@ -44,12 +44,42 @@ def _normalize_id(value: str, capabilities: ModelCapabilities) -> str:
     return candidate[:max_length] if max_length else candidate
 
 
+def _unique_tool_call_id(
+    value: str,
+    capabilities: ModelCapabilities,
+    id_map: dict[str, str],
+    used_ids: set[str],
+) -> str:
+    existing = id_map.get(value)
+    if existing is not None:
+        return existing
+    candidate = _normalize_id(value, capabilities)
+    if candidate in used_ids:
+        max_length = capabilities.max_tool_call_id_length or 64
+        pattern = capabilities.tool_call_id_pattern
+        for counter in range(1024):
+            digest = hashlib.sha256(f"{value}\0{counter}".encode("utf-8")).hexdigest()
+            candidate = f"call_{digest}"[:max_length]
+            if pattern is not None and re.fullmatch(pattern, candidate) is None:
+                candidate = digest[:max_length]
+            if candidate not in used_ids and (
+                pattern is None or re.fullmatch(pattern, candidate)
+            ):
+                break
+        else:
+            raise ValueError("无法生成符合服务商约束的唯一工具调用 ID")
+    id_map[value] = candidate
+    used_ids.add(candidate)
+    return candidate
+
+
 def _transform_blocks(
     blocks: Iterable[ModelContentBlock] | str | None,
     *,
     capabilities: ModelCapabilities,
     cross_model: bool,
     id_map: dict[str, str],
+    used_ids: set[str],
 ) -> tuple[ModelContentBlock, ...]:
     if blocks is None:
         return ()
@@ -78,8 +108,7 @@ def _transform_blocks(
                 )
             continue
         if isinstance(block, ModelToolCallBlock):
-            normalized = _normalize_id(block.id, capabilities)
-            id_map.setdefault(block.id, normalized)
+            normalized = _unique_tool_call_id(block.id, capabilities, id_map, used_ids)
             result.append(
                 ModelToolCallBlock(normalized, block.name, dict(block.arguments))
             )
@@ -94,6 +123,7 @@ def _transform_message(
     capabilities: ModelCapabilities,
     cross_model: bool,
     id_map: dict[str, str],
+    used_ids: set[str],
 ) -> ModelMessage:
     if isinstance(message, ModelSystemMessage):
         blocks = _transform_blocks(
@@ -101,6 +131,7 @@ def _transform_message(
             capabilities=capabilities,
             cross_model=cross_model,
             id_map=id_map,
+            used_ids=used_ids,
         )
         return ModelSystemMessage(
             tuple(block for block in blocks if isinstance(block, ModelTextBlock)),
@@ -113,6 +144,7 @@ def _transform_message(
             capabilities=capabilities,
             cross_model=cross_model,
             id_map=id_map,
+            used_ids=used_ids,
         ))
     if isinstance(message, ModelAssistantMessage):
         return ModelAssistantMessage(
@@ -121,6 +153,7 @@ def _transform_message(
                 capabilities=capabilities,
                 cross_model=cross_model,
                 id_map=id_map,
+                used_ids=used_ids,
             ),
             message.metadata,
         )
@@ -130,6 +163,7 @@ def _transform_message(
             capabilities=capabilities,
             cross_model=cross_model,
             id_map=id_map,
+            used_ids=used_ids,
         ),
         id_map.get(
             message.tool_call_id,
@@ -159,6 +193,7 @@ def transform_messages(
     """
 
     id_map: dict[str, str] = {}
+    used_ids: set[str] = set()
     transformed: list[ModelMessage] = []
     for message in messages:
         if (
@@ -175,6 +210,7 @@ def transform_messages(
             capabilities=capabilities,
             cross_model=cross_model,
             id_map=id_map,
+            used_ids=used_ids,
         ))
 
     result: list[ModelMessage] = []

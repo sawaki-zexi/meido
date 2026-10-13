@@ -2,7 +2,7 @@
 
 ## 状态
 
-已接受
+已接受（协议接入范围由 [ADR-0006](0006-provider-specific-model-adapters.md) 扩展）
 
 ## 决定
 
@@ -19,7 +19,9 @@
 
 ## 范围
 
-当前支持 Shiori 参考范围内的服务商预设，以及 OpenAI Chat Completions 兼容的自定义服务商。配置由本地后端持久化，具体文件布局属于实现事实，不改变本 ADR 的边界。
+本 ADR 原先限定为 Shiori 参考范围内的服务商预设和 OpenAI Chat Completions 兼容的
+自定义服务商。后续协议范围由 ADR-0006 扩展；本 ADR 关于本地后端持有配置、网页
+维护草稿以及角色只绑定稳定连接 ID 的边界继续有效。
 
 ## 后果
 

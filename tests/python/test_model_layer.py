@@ -78,6 +78,29 @@ def test_transform_normalizes_tool_ids_and_keeps_results_paired():
     assert transformed[1].is_error is False
 
 
+def test_transform_disambiguates_colliding_short_tool_ids(monkeypatch):
+    from backend.app import message_transform
+
+    monkeypatch.setattr(message_transform, "_normalize_id", lambda _value, _capabilities: "collision")
+    first = ModelToolCallBlock("provider-call-1", "first")
+    second = ModelToolCallBlock("provider-call-2", "second")
+    messages = (
+        ModelAssistantMessage((first, second)),
+        ModelToolResultMessage((ModelTextBlock("one"),), first.id, first.name),
+        ModelToolResultMessage((ModelTextBlock("two"),), second.id, second.name),
+    )
+
+    transformed = transform_messages(
+        messages,
+        capabilities=ModelCapabilities(tool_call_id_pattern=r"[A-Za-z0-9_-]+", max_tool_call_id_length=9),
+    )
+
+    calls = transformed[0].content
+    results = transformed[1:]
+    assert calls[0].id != calls[1].id
+    assert [result.tool_call_id for result in results] == [call.id for call in calls]
+
+
 def test_transform_synthesizes_missing_results_and_drops_orphans():
     call = ModelToolCallBlock("call-1", "shell")
     orphan = ModelToolResultMessage((ModelTextBlock("orphan"),), "unknown", "shell")

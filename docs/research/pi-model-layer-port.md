@@ -1,7 +1,7 @@
 # Pi 模型调用层研究与移植边界
 
-状态：当前研究记录  
-事实来源：Pi 官方源码固定提交 [`7d75a0e3eb273dff753d49c066ea29fbe7b3b6f6`](https://github.com/earendil-works/pi/tree/7d75a0e3eb273dff753d49c066ea29fbe7b3b6f6)  
+状态：当前研究记录
+事实来源：Pi 官方源码固定提交 [`7d75a0e3eb273dff753d49c066ea29fbe7b3b6f6`](https://github.com/earendil-works/pi/tree/7d75a0e3eb273dff753d49c066ea29fbe7b3b6f6)
 最后核验：2026-10-13
 
 > `badlogic/pi-mono` 当前已重定向到 `earendil-works/pi`。以下链接均固定到该提交，避免跟随后续主分支变化。

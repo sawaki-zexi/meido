@@ -3,9 +3,19 @@ import { api, errorMessage } from "../../api/client";
 import type { ModelConfiguration as Configuration, Provider } from "../../api/types";
 import { Notice, Placeholder } from "../../ui/Status";
 
-type Draft = { providerId: string; provider: string; baseUrl: string; model: string; apiKey: string };
+type Draft = { providerId: string; provider: string; api: string; baseUrl: string; model: string; apiKey: string };
 
-const emptyDraft: Draft = { providerId: "openai", provider: "openai", baseUrl: "", model: "", apiKey: "" };
+const modelApis = [
+  { value: "openai-completions", label: "OpenAI Chat Completions" },
+  { value: "openai-responses", label: "OpenAI Responses" },
+  { value: "anthropic-messages", label: "Anthropic Messages" },
+  { value: "google-generative", label: "Google Generative AI" },
+  { value: "mistral-conversations", label: "Mistral Conversations" },
+  { value: "bedrock-converse", label: "Amazon Bedrock Converse" },
+  { value: "pi-messages", label: "Pi Messages" },
+];
+
+const emptyDraft: Draft = { providerId: "openai", provider: "openai", api: "openai-completions", baseUrl: "", model: "", apiKey: "" };
 
 export function ModelSettings() {
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -31,13 +41,13 @@ export function ModelSettings() {
     void Promise.all([api<{ providers: Provider[] }>("/api/model/providers"), refreshConfigurations()]).then(([providerData]) => {
       setProviders(providerData.providers);
       const initial = providerData.providers.find((item) => item.id === "openai");
-      if (initial) setDraft({ ...emptyDraft, provider: initial.provider, baseUrl: initial.baseUrl });
+      if (initial) setDraft({ ...emptyDraft, provider: initial.provider, api: initial.api ?? "openai-completions", baseUrl: initial.baseUrl });
     }).catch((cause) => setError(errorMessage(cause, "无法加载模型配置"))).finally(() => setLoading(false));
   }, []);
 
   const editConfiguration = (configuration: Configuration) => {
     setEditingId(configuration.id);
-    setDraft({ providerId: configuration.providerId, provider: configuration.provider, baseUrl: configuration.baseUrl, model: configuration.model, apiKey: "" });
+    setDraft({ providerId: configuration.providerId, provider: configuration.provider, api: configuration.api ?? "openai-completions", baseUrl: configuration.baseUrl, model: configuration.model, apiKey: "" });
     setTestResult("");
     setError("");
     requestAnimationFrame(() => formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -46,7 +56,7 @@ export function ModelSettings() {
   const startNewConfiguration = () => {
     const initial = providers.find((item) => item.id === "openai");
     setEditingId(null);
-    setDraft(initial ? { ...emptyDraft, provider: initial.provider, baseUrl: initial.baseUrl } : emptyDraft);
+    setDraft(initial ? { ...emptyDraft, provider: initial.provider, api: initial.api ?? "openai-completions", baseUrl: initial.baseUrl } : emptyDraft);
     setTestResult("");
     setError("");
     requestAnimationFrame(() => formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -55,11 +65,11 @@ export function ModelSettings() {
   const updateProvider = (providerId: string) => {
     setTestResult("");
     if (providerId === "custom") {
-      setDraft((current) => ({ ...current, providerId, provider: "", baseUrl: "", model: "", apiKey: "" }));
+      setDraft((current) => ({ ...current, providerId, provider: "", api: "openai-completions", baseUrl: "", model: "", apiKey: "" }));
       return;
     }
     const preset = providers.find((item) => item.id === providerId);
-    if (preset) setDraft((current) => ({ ...current, providerId, provider: preset.provider, baseUrl: preset.baseUrl, model: "", apiKey: "" }));
+    if (preset) setDraft((current) => ({ ...current, providerId, provider: preset.provider, api: preset.api ?? "openai-completions", baseUrl: preset.baseUrl, model: "", apiKey: "" }));
   };
 
   const submit = async (action: "test" | "save") => {
@@ -140,6 +150,7 @@ export function ModelSettings() {
       </div>
       <div className="field"><label htmlFor="model-provider">服务商</label><select id="model-provider" value={draft.providerId} disabled={busy} onChange={(event) => updateProvider(event.target.value)}>{providers.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}<option value="custom">自定义</option></select></div>
       {draft.providerId === "custom" && <div className="field"><label htmlFor="model-provider-id">服务商标识</label><input id="model-provider-id" required value={draft.provider} disabled={busy} onChange={(event) => setDraft({ ...draft, provider: event.target.value })} /></div>}
+      <div className="field"><label htmlFor="model-api">API 协议</label><select id="model-api" value={draft.api} disabled={busy || draft.providerId !== "custom"} onChange={(event) => setDraft({ ...draft, api: event.target.value })}>{modelApis.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></div>
       <div className="field"><label htmlFor="model-base-url">API 地址</label><input id="model-base-url" required type="url" value={draft.baseUrl} disabled={busy} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} /></div>
       <div className="field"><label htmlFor="model-id">模型 ID</label><input id="model-id" required value={draft.model} placeholder={preset?.modelHint ?? "例如：provider/model-name"} disabled={busy} onChange={(event) => setDraft({ ...draft, model: event.target.value })} /></div>
       <div className="field"><label htmlFor="model-api-key">API Key</label><input id="model-api-key" type="password" autoComplete="new-password" value={draft.apiKey} placeholder={editingConfiguration?.apiKeyConfigured ? "已设置，留空保留现有密钥" : "可选，本地模型服务可能不需要"} disabled={busy} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })} /></div>
