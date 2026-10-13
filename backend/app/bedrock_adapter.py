@@ -40,16 +40,17 @@ def _supports_thinking_signature(model: str) -> bool:
     return "claude" in model.lower()
 
 
-def _sanitize_document(value: object) -> object:
-    """Remove JSON object keys Bedrock rejects while preserving nested values."""
+def _sanitize_document(value: object, *, path: str = "$") -> object:
+    """Copy a tool document and reject object keys Bedrock cannot encode."""
     if isinstance(value, Mapping):
-        return {
-            str(key): _sanitize_document(item)
-            for key, item in value.items()
-            if str(key)
-        }
+        result: dict[str, object] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError(f"Bedrock 工具参数对象键不能为空: {path}")
+            result[key] = _sanitize_document(item, path=f"{path}.{key}")
+        return result
     if isinstance(value, (list, tuple)):
-        return [_sanitize_document(item) for item in value]
+        return [_sanitize_document(item, path=f"{path}[{index}]") for index, item in enumerate(value)]
     return value
 
 

@@ -16,6 +16,7 @@ from backend.app.model_types import (
 )
 from backend.app.mistral_adapter import MistralConversationsAdapter
 from backend.app.model_protocol import normalize_tools
+from backend.app.message_transform import transform_messages
 from backend.app.models import ModelConfiguration
 from backend.app.openai_responses_adapter import OpenAIResponsesAdapter
 from backend.app.azure_openai_responses_adapter import AzureOpenAIResponsesAdapter
@@ -131,6 +132,37 @@ def test_anthropic_replays_thinking_blocks_with_their_signature():
     assert payload["messages"][0]["content"][0] == {
         "type": "thinking", "thinking": "private reasoning", "signature": "anthropic-signature",
     }
+
+
+def test_anthropic_completion_preserves_custom_provider_identity_for_replay(monkeypatch):
+    def handler(request):
+        del request
+        return httpx.Response(200, json={
+            "id": "msg_custom",
+            "model": "claude",
+            "content": [
+                {"type": "thinking", "thinking": "private", "signature": "opaque"},
+                {"type": "text", "text": "answer"},
+            ],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 2, "output_tokens": 3},
+        })
+
+    patch_client(monkeypatch, handler)
+    config = configuration("anthropic-messages", provider="custom-anthropic")
+    config.model = "claude"
+    message = asyncio.run(AnthropicMessagesAdapter().complete_messages(
+        messages(), config,
+    ))
+
+    assert message.metadata.provider == "custom-anthropic"
+    replayed = transform_messages(
+        (message,),
+        target_provider="custom-anthropic",
+        target_api="anthropic-messages",
+        target_model="claude",
+    )
+    assert replayed[0].content[0] == ModelThinkingBlock("private", "opaque")
 
 
 @pytest.mark.parametrize("fragments, expected", [
@@ -797,7 +829,7 @@ def test_bedrock_repairs_history_and_preserves_supported_reasoning(monkeypatch):
 def test_bedrock_groups_consecutive_tool_results_and_omits_empty_assistant(monkeypatch):
     from backend.app.bedrock_adapter import BedrockConverseAdapter
 
-    first = ModelToolCallBlock("call-1", "first", {"": "ignored", "nested": {"": 1, "kept": 2}})
+    first = ModelToolCallBlock("call-1", "first", {"nested": {"kept": 2}})
     second = ModelToolCallBlock("call-2", "second", {})
     history = (
         ModelAssistantMessage((first, second)),
@@ -827,6 +859,26 @@ def test_bedrock_groups_consecutive_tool_results_and_omits_empty_assistant(monke
     assert [item["toolResult"]["toolUseId"] for item in payload["messages"][1]["content"]] == [
         "call-1", "call-2",
     ]
+
+
+def test_bedrock_rejects_empty_tool_argument_keys_before_request(monkeypatch):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "output": {"message": {"content": [{"text": "ok"}]}},
+            "stopReason": "end_turn",
+        })
+
+    patch_client(monkeypatch, handler)
+    history = (ModelAssistantMessage((ModelToolCallBlock("call-1", "first", {"": "value"}),)),)
+
+    with pytest.raises(ValueError, match="对象键不能为空"):
+        asyncio.run(BedrockConverseAdapter().complete_messages(
+            history, configuration("bedrock-converse"), (),
+        ))
+    assert requests == []
 
 
 def test_bedrock_omits_reasoning_signature_for_non_anthropic_models(monkeypatch):

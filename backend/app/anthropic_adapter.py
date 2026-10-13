@@ -258,8 +258,16 @@ def _sse_events(lines: AsyncIterator[str]) -> AsyncIterator[tuple[str, str]]:
 
 
 class _Accumulator:
-    def __init__(self, name_aliases: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        name_aliases: Mapping[str, str] | None = None,
+        *,
+        provider: str = "anthropic",
+        api: str = "anthropic-messages",
+    ) -> None:
         self.name_aliases = name_aliases or {}
+        self.provider = provider
+        self.api = api
         self.blocks: OrderedDict[int, _Block] = OrderedDict()
         self.usage = ModelUsage()
         self.response_id: str | None = None
@@ -372,8 +380,8 @@ class _Accumulator:
         message = ModelAssistantMessage(
             content=tuple(blocks),
             metadata=ModelResponseMetadata(
-                provider="anthropic",
-                api="anthropic-messages",
+                provider=self.provider,
+                api=self.api,
                 model=self.model,
                 response_id=self.response_id,
                 usage=self.usage,
@@ -436,7 +444,11 @@ class AnthropicMessagesAdapter:
         cancel_check: Callable[[], None] | None = None,
     ) -> AsyncIterator[ModelStreamEvent]:
         payload, headers, name_aliases = self._prepare(messages, configuration, tools, max_tokens=max_tokens, stream=True)
-        accumulator = _Accumulator(name_aliases)
+        accumulator = _Accumulator(
+            name_aliases,
+            provider=configuration.provider,
+            api="anthropic-messages",
+        )
         yield ModelStreamStart()
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -516,7 +528,11 @@ class AnthropicMessagesAdapter:
             raise RuntimeError(f"模型响应失败: {error}")
         if not isinstance(data.get("content"), list):
             raise RuntimeError("模型响应缺少 content 内容块")
-        accumulator = _Accumulator(name_aliases)
+        accumulator = _Accumulator(
+            name_aliases,
+            provider=configuration.provider,
+            api="anthropic-messages",
+        )
         accumulator.response_id = data.get("id") if isinstance(data.get("id"), str) else None
         accumulator.model = data.get("model") if isinstance(data.get("model"), str) else None
         accumulator.usage = _usage(data.get("usage"))
