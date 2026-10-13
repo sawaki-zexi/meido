@@ -752,6 +752,15 @@ def test_tool_schema_normalization_rejects_invalid_provider_neutral_shapes():
         }}])
 
 
+def test_tool_schema_normalization_accepts_boolean_property_schemas():
+    normalized = normalize_tools([{"name": "flags", "parameters": {
+        "type": "object",
+        "properties": {"enabled": True, "disabled": False},
+    }}])
+
+    assert normalized[0]["parameters"]["properties"] == {"enabled": True, "disabled": False}
+
+
 def test_all_registered_protocols_reject_invalid_tool_schemas_before_http(monkeypatch):
     requests = []
 

@@ -135,7 +135,7 @@ def _validate_schema(schema: object, name: str) -> None:
 def _validate_schema_properties(properties: Mapping[str, object], name: str) -> None:
     for property_name, schema in properties.items():
         if not isinstance(property_name, str) or not isinstance(schema, (Mapping, bool)):
-            raise ValueError(f"工具参数 schema.properties 成员必须是对象: {name}")
+            raise ValueError(f"工具参数 schema.properties 成员必须是对象或布尔值: {name}")
         if isinstance(schema, bool):
             continue
         _validate_schema(schema, name)
