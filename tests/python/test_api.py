@@ -3,13 +3,15 @@ from starlette.requests import Request
 from datetime import datetime, timezone
 import asyncio
 import json
+import re
 import sqlite3
+import httpx
 import pytest
 
 from backend.app import main
 from backend.app.agent_runtime import AgentToolResult, PluginContribution, PluginManifest, PluginRegistry, ToolContext, ToolDefinition
 from backend.app.agent_runtime.types import ToolResultMessage
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelTextDelta, ModelToolCall, OpenAICompatibleAdapter
 from backend.app.models import AgentRun, AgentToolConfig, MemoryRecallToolConfig, Message, ModelConfigurationInput, RoleInput, RoleProfile, RoleUpdateInput, SendMessageInput, ShellToolConfig
 from backend.app.memory_engine import MemoryQueryResult, MemoryScope
 from backend.app.model_config import ModelConfigurationStore
@@ -20,6 +22,8 @@ from backend.app.session_store import SessionStore
 from backend.app.storage import initialize_databases
 from backend.app.memory_service import MemoryService, MemoryWorker
 from backend.app.memory_store import MemoryStore
+from backend.app.todo import TodoPlugin, TodoStore
+from backend.app.todo.application import TodoApplicationService
 
 
 class FailingAdapter:
@@ -574,6 +578,73 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["timeoutSeconds"] == 30.0
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["outputLimit"] == 20000
     assert len(stored_run.modelSnapshot["capabilities"]["generation"]) == 24
+
+
+def test_deepseek_chat_maps_plugin_tool_names_across_a_tool_round_trip(tmp_path, monkeypatch):
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, OpenAICompatibleAdapter())
+    todos = TodoStore(tmp_path / "data" / "todos.db")
+    todo_application = TodoApplicationService(todos, sessions)
+    monkeypatch.setattr(main, "todo_store", todos)
+    monkeypatch.setattr(main, "todo_application", todo_application)
+    monkeypatch.setattr(main, "todo_plugin", TodoPlugin(todos, sessions))
+    configuration = main.model_configuration_store.save(ModelConfigurationInput(
+        providerId="deepseek",
+        provider="deepseek",
+        baseUrl="https://api.deepseek.com",
+        model="deepseek-flash",
+        apiKey="test-secret",
+    ))
+    main.store.set_model_configuration(role.id, configuration.id)
+    requests = []
+
+    def handler(request):
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if len(requests) == 1:
+            tool = next(
+                item for item in payload["tools"]
+                if item["function"]["description"].startswith("Manage the owner's todo list only")
+            )
+            chunk = {"choices": [{"delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call-create",
+                "function": {
+                    "name": tool["function"]["name"],
+                    "arguments": json.dumps({"operation": "create", "title": "测试事项"}, ensure_ascii=False),
+                },
+            }]}}]}
+        else:
+            chunk = {"choices": [{"delta": {"content": "已经添加。"}}]}
+        body = f"data: {json.dumps(chunk, ensure_ascii=False)}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "帮我添加一个测试事项"})
+
+    assert response.status_code == 200
+    assert "event: assistant_completed" in response.text
+    assert len(requests) >= 2
+    tool_names = [item["function"]["name"] for item in requests[0]["tools"]]
+    assert tool_names
+    assert all(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name) for name in tool_names)
+    write_alias = next(
+        item["function"]["name"] for item in requests[0]["tools"]
+        if item["function"]["description"].startswith("Manage the owner's todo list only")
+    )
+    assistant_call = next(
+        message for message in requests[1]["messages"]
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    assert assistant_call["tool_calls"][0]["function"]["name"] == write_alias
+    stored_tool_call = next(message for message in sessions.list_messages(f"role:{role.id}") if message.messageType == "tool_call")
+    assert stored_tool_call.toolName == "todo.write"
+    assert todos.list()[0]["title"] == "测试事项"
 
 
 def test_role_capability_config_controls_plugin_resolution(tmp_path, monkeypatch):

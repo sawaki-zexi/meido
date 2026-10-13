@@ -1,7 +1,10 @@
 from collections.abc import AsyncIterator, Mapping, Sequence
+import copy
 from dataclasses import dataclass
+import hashlib
 import json
 import os
+import re
 from typing import Protocol, Literal
 
 import httpx
@@ -30,6 +33,107 @@ class ModelStreamError:
 
 
 ModelStreamEvent = ModelTextDelta | ModelToolCall | ModelStreamError
+
+_FUNCTION_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
+
+
+def _compatible_function_names(
+    tools: Sequence[Mapping[str, object]],
+    messages: Sequence[Mapping[str, object]],
+) -> dict[str, str]:
+    names: list[str] = []
+    for tool in tools:
+        function = tool.get("function")
+        if isinstance(function, Mapping) and isinstance(function.get("name"), str):
+            names.append(function["name"])
+    for message in messages:
+        calls = message.get("tool_calls")
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            function = call.get("function") if isinstance(call, Mapping) else None
+            if isinstance(function, Mapping) and isinstance(function.get("name"), str):
+                names.append(function["name"])
+
+    unique_names = list(dict.fromkeys(names))
+    reserved = {name for name in unique_names if _FUNCTION_NAME_PATTERN.fullmatch(name)}
+    used: set[str] = set()
+    aliases: dict[str, str] = {}
+    for index, name in enumerate(unique_names):
+        if _FUNCTION_NAME_PATTERN.fullmatch(name) and name not in used:
+            alias = name
+        else:
+            digest = hashlib.sha256(name.encode("utf-8")).hexdigest()
+            for width in range(12, 53, 4):
+                alias = f"meido_tool_{digest[:width]}"
+                if alias not in reserved and alias not in used:
+                    break
+            else:
+                alias = f"meido_tool_{digest[:45]}_{index}"
+        aliases[name] = alias
+        used.add(alias)
+    return aliases
+
+
+def _remap_function_names(
+    values: Sequence[Mapping[str, object]],
+    aliases: Mapping[str, str],
+    *,
+    tools: bool = False,
+) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    for value in values:
+        copied = copy.deepcopy(dict(value))
+        if tools:
+            function = copied.get("function")
+            if isinstance(function, dict) and isinstance(function.get("name"), str):
+                function["name"] = aliases.get(function["name"], function["name"])
+        else:
+            calls = copied.get("tool_calls")
+            if isinstance(calls, list):
+                for call in calls:
+                    function = call.get("function") if isinstance(call, dict) else None
+                    if isinstance(function, dict) and isinstance(function.get("name"), str):
+                        function["name"] = aliases.get(function["name"], function["name"])
+        result.append(copied)
+    return result
+
+
+def _response_error_detail(response: httpx.Response, api_key: str) -> str:
+    try:
+        payload = json.loads(response.content)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = None
+    detail = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            detail = error["message"]
+        elif isinstance(payload.get("message"), str):
+            detail = payload["message"]
+        elif isinstance(payload.get("detail"), str):
+            detail = payload["detail"]
+    if not isinstance(detail, str) or not detail.strip():
+        detail = response.text.strip()
+    if api_key:
+        detail = detail.replace(api_key, "***")
+    return detail[:500]
+
+
+def _is_deepseek(configuration: ModelConfiguration) -> bool:
+    return configuration.providerId == "deepseek" or configuration.baseUrl.rstrip("/").lower() == "https://api.deepseek.com"
+
+
+async def _raise_for_status_with_details(response: httpx.Response, api_key: str) -> None:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as error:
+        await response.aread()
+        detail = _response_error_detail(response, api_key)
+        message = f"HTTP {response.status_code} {response.reason_phrase}"
+        if detail:
+            message = f"{message}: {detail}"
+        raise httpx.HTTPStatusError(message, request=error.request, response=response) from error
 
 
 class ModelAdapter(Protocol):
@@ -138,7 +242,7 @@ class OpenAICompatibleAdapter:
                 headers=headers,
                 json=request_data,
             ) as response:
-                response.raise_for_status()
+                await _raise_for_status_with_details(response, configuration.apiKey)
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -179,13 +283,22 @@ class OpenAICompatibleAdapter:
         configuration = self._effective_configuration(configuration)
         base_url = configuration.baseUrl.rstrip("/")
         headers = {"Authorization": f"Bearer {configuration.apiKey}"} if configuration.apiKey else {}
+        aliases = _compatible_function_names(tools, messages)
+        wire_tools = _remap_function_names(tools, aliases, tools=True)
+        wire_messages = _remap_function_names(messages, aliases)
+        internal_names = {alias: name for name, alias in aliases.items()}
         request_data: dict[str, object] = {
             "model": configuration.model,
-            "messages": messages,
-            "tools": tools,
+            "messages": wire_messages,
+            "tools": wire_tools,
             "tool_choice": "auto",
             "stream": True,
         }
+        # DeepSeek enables thinking by default, but its tool-call protocol
+        # requires replaying reasoning_content, which this runtime does not
+        # retain. Use the documented non-thinking mode for tool turns.
+        if _is_deepseek(configuration):
+            request_data["thinking"] = {"type": "disabled"}
         if max_tokens is not None:
             request_data["max_tokens"] = max_tokens
         calls: dict[int, dict[str, str]] = {}
@@ -197,7 +310,7 @@ class OpenAICompatibleAdapter:
                 headers=headers,
                 json=request_data,
             ) as response:
-                response.raise_for_status()
+                await _raise_for_status_with_details(response, configuration.apiKey)
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -257,7 +370,7 @@ class OpenAICompatibleAdapter:
                 return
             yield ModelToolCall(
                 id=aggregate["id"] or f"call-{index}",
-                name=aggregate["name"],
+                name=internal_names.get(aggregate["name"], aggregate["name"]),
                 arguments=arguments,
             )
 
