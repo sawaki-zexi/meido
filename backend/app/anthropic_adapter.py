@@ -327,6 +327,8 @@ class AnthropicMessagesAdapter:
         transformed = transform_messages(
             messages,
             capabilities=self.options.capabilities,
+            target_provider="anthropic",
+            target_api="anthropic-messages",
             target_model=configuration.model,
         )
         normalized = normalize_tools(effective_tools(transformed, tools))

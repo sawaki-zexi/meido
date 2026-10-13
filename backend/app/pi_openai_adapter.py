@@ -404,6 +404,8 @@ class OpenAICompletionsRichAdapter:
             messages,
             capabilities=options.capabilities,
             source_model=options.source_model,
+            target_provider=configuration.provider,
+            target_api=configuration.api,
             target_model=configuration.model,
         )
         raw_tools = _effective_tools(transformed, tools)

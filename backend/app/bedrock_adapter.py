@@ -100,6 +100,8 @@ class BedrockConverseAdapter:
         messages = transform_messages(
             messages,
             capabilities=_capabilities(),
+            target_provider=configuration.provider,
+            target_api="bedrock-converse",
             target_model=configuration.model,
         )
         normalized = normalize_tools(effective_tools(messages, tools))
@@ -193,7 +195,13 @@ class BedrockConverseAdapter:
             yield ModelStreamStart()
             yield ModelStreamError("Bedrock Converse 需要 AWS Bedrock API Key")
             return
-        messages = transform_messages(messages, capabilities=_capabilities(), target_model=configuration.model)
+        messages = transform_messages(
+            messages,
+            capabilities=_capabilities(),
+            target_provider=configuration.provider,
+            target_api="bedrock-converse",
+            target_model=configuration.model,
+        )
         normalized = normalize_tools(effective_tools(messages, tools))
         tool_aliases, name_aliases = compatible_tool_names(normalized, messages)
         messages = remap_message_tool_names(messages, tool_aliases)

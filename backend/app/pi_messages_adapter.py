@@ -91,6 +91,8 @@ class PiMessagesAdapter:
                 tool_call_id_pattern=r"[A-Za-z0-9_-]+",
                 max_tool_call_id_length=64,
             ),
+            target_provider=configuration.provider,
+            target_api="pi-messages",
             target_model=configuration.model,
         )
         context = {"messages": [_message(message) for message in messages]}

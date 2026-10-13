@@ -139,6 +139,48 @@ def test_transform_uses_each_assistant_model_for_cross_model_reasoning():
     assert transformed[0].content == (ModelTextBlock("reason"),)
 
 
+def test_transform_downgrades_thinking_when_provider_or_api_changes_with_same_model():
+    message = ModelAssistantMessage(
+        (ModelThinkingBlock("reason", "opaque-signature"),),
+        ModelResponseMetadata(provider="source-provider", api="source-api", model="shared-model"),
+    )
+    capabilities = ModelCapabilities(preserve_thinking_signatures=True)
+
+    by_provider = transform_messages(
+        (message,),
+        capabilities=capabilities,
+        target_provider="target-provider",
+        target_api="source-api",
+        target_model="shared-model",
+    )
+    by_api = transform_messages(
+        (message,),
+        capabilities=capabilities,
+        target_provider="source-provider",
+        target_api="target-api",
+        target_model="shared-model",
+    )
+
+    assert by_provider[0].content == (ModelTextBlock("reason"),)
+    assert by_api[0].content == (ModelTextBlock("reason"),)
+
+
+def test_transform_downgrades_signatures_when_source_protocol_metadata_is_missing():
+    message = ModelAssistantMessage(
+        (ModelThinkingBlock("reason", "opaque-signature"),),
+        ModelResponseMetadata(model="shared-model"),
+    )
+    transformed = transform_messages(
+        (message,),
+        capabilities=ModelCapabilities(preserve_thinking_signatures=True),
+        target_provider="target-provider",
+        target_api="target-api",
+        target_model="shared-model",
+    )
+
+    assert transformed[0].content == (ModelTextBlock("reason"),)
+
+
 def test_transform_skips_incomplete_assistant_turns():
     failed = ModelAssistantMessage(
         (ModelTextBlock("partial"),),

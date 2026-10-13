@@ -322,7 +322,13 @@ class OpenAIResponsesAdapter:
         return _Accumulator(aliases, provider=self.provider or configuration.provider, api=self.api)
 
     def _prepare(self, messages, configuration, tools, *, max_tokens, stream):
-        transformed = transform_messages(messages, capabilities=self.options.capabilities, target_model=configuration.model)
+        transformed = transform_messages(
+            messages,
+            capabilities=self.options.capabilities,
+            target_provider=self.provider or configuration.provider,
+            target_api=self.api,
+            target_model=configuration.model,
+        )
         normalized = normalize_tools(effective_tools(transformed, tools))
         aliases, reverse = compatible_tool_names(normalized, transformed)
         transformed = remap_message_tool_names(transformed, aliases)
@@ -392,6 +398,17 @@ class OpenAIResponsesAdapter:
         data = response.json()
         if not isinstance(data, Mapping):
             raise RuntimeError("模型响应不是 JSON 对象")
+        if isinstance(data.get("error"), Mapping):
+            error = data["error"]
+            detail = error.get("message") if isinstance(error.get("message"), str) else str(error)
+            if configuration.apiKey:
+                detail = detail.replace(configuration.apiKey, "***")
+            raise RuntimeError(f"模型响应失败: {detail}")
+        if str(data.get("status", "")).lower() in {"failed", "incomplete", "cancelled"}:
+            detail = str(data.get("incomplete_details") or data.get("status"))
+            if configuration.apiKey:
+                detail = detail.replace(configuration.apiKey, "***")
+            raise RuntimeError(f"模型响应失败: {detail}")
         accumulator = self._accumulator(name_aliases, configuration)
         accumulator.response_id = data.get("id") if isinstance(data.get("id"), str) else None
         accumulator.model = data.get("model") if isinstance(data.get("model"), str) else None

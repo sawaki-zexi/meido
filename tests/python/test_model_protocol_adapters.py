@@ -157,6 +157,23 @@ def test_responses_uses_input_and_function_call_output(monkeypatch):
     assert any(isinstance(event, ModelStreamDone) for event in events)
 
 
+@pytest.mark.parametrize("body, detail", [
+    ('{"error":{"message":"invalid tool schema"}}', "invalid tool schema"),
+    ('{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens","debug":"secret-key"}}', "max_output_tokens"),
+])
+def test_responses_complete_rejects_failure_bodies_with_http_200(monkeypatch, body, detail):
+    def handler(request):
+        del request
+        return httpx.Response(200, json=json.loads(body))
+
+    patch_client(monkeypatch, handler)
+    with pytest.raises(RuntimeError, match=detail) as error:
+        asyncio.run(OpenAIResponsesAdapter().complete_messages(
+            messages(), configuration("openai-responses"),
+        ))
+    assert "secret-key" not in str(error.value)
+
+
 def test_azure_responses_uses_v1_endpoint_and_api_key_header(monkeypatch):
     requests = []
 
@@ -405,7 +422,9 @@ def test_bedrock_repairs_history_and_preserves_supported_reasoning(monkeypatch):
 
     call = ModelToolCallBlock("bad|tool/id", "lookup", {"key": "value"})
     history = (
-        ModelAssistantMessage((ModelThinkingBlock("reason", "signature"), call), ModelResponseMetadata(model="model-1")),
+        ModelAssistantMessage((ModelThinkingBlock("reason", "signature"), call), ModelResponseMetadata(
+            provider="provider", api="bedrock-converse", model="model-1",
+        )),
         ModelToolResultMessage((ModelImageBlock("image/tiff", "aW1hZ2U="),), call.id, call.name),
         ModelToolResultMessage((ModelTextBlock("orphan"),), "unknown", "lookup"),
     )
@@ -423,7 +442,10 @@ def test_bedrock_repairs_history_and_preserves_supported_reasoning(monkeypatch):
 def test_google_replays_thinking_as_native_thought_part():
     from backend.app.google_adapter import GoogleGenerativeAdapter
 
-    history = (ModelAssistantMessage((ModelThinkingBlock("reason"), ModelTextBlock("answer"))),)
+    history = (ModelAssistantMessage(
+        (ModelThinkingBlock("reason"), ModelTextBlock("answer")),
+        ModelResponseMetadata(provider="provider", api="google-generative", model="model-1"),
+    ),)
     _, _, payload, _ = GoogleGenerativeAdapter()._prepare(history, configuration("google-generative"), (), stream=True, max_tokens=None)
     parts = payload["contents"][0]["parts"]
     assert parts == [{"text": "reason", "thought": True}, {"text": "answer"}]

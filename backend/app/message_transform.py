@@ -182,6 +182,10 @@ def transform_messages(
     messages: Sequence[ModelMessage],
     *,
     capabilities: ModelCapabilities = ModelCapabilities(),
+    source_provider: str | None = None,
+    target_provider: str | None = None,
+    source_api: str | None = None,
+    target_api: str | None = None,
     source_model: str | None = None,
     target_model: str | None = None,
 ) -> tuple[ModelMessage, ...]:
@@ -201,10 +205,25 @@ def transform_messages(
             and message.metadata.stop_reason in {"error", "aborted"}
         ):
             continue
-        message_source = source_model
-        if isinstance(message, ModelAssistantMessage) and message_source is None:
-            message_source = message.metadata.model
-        cross_model = bool(message_source and target_model and message_source != target_model)
+        message_source_model = source_model
+        message_source_provider = source_provider
+        message_source_api = source_api
+        if isinstance(message, ModelAssistantMessage):
+            message_source_model = message_source_model or message.metadata.model
+            message_source_provider = message_source_provider or message.metadata.provider
+            message_source_api = message_source_api or message.metadata.api
+        identity_pairs = (
+            (message_source_provider, target_provider),
+            (message_source_api, target_api),
+            (message_source_model, target_model),
+        )
+        target_identity_known = any(target for _source, target in identity_pairs)
+        identity_incomplete = target_identity_known and any(
+            bool(source) != bool(target) for source, target in identity_pairs
+        )
+        cross_model = identity_incomplete or any(
+            source and target and source != target for source, target in identity_pairs
+        )
         transformed.append(_transform_message(
             message,
             capabilities=capabilities,

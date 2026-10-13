@@ -28,7 +28,7 @@
 - 消息转换器：
   - 将空或空值内容规范化为内容块列表；
   - 对不支持图片的模型插入稳定占位文本，并合并连续占位符；
-  - 跨模型重放时降级 thinking，移除只对原模型有效的 thinking signature；
+  - provider、api 或 model 任一变化时按跨模型重放处理，降级 thinking 并移除只对原模型有效的 thinking signature；
   - 按 provider 能力规范化 tool call ID，并同步改写 tool result ID；
   - 清除 error/aborted assistant 的不完整回合；
   - 为孤立 tool call 合成确定性的错误 tool result；
@@ -59,7 +59,7 @@
 ```text
 Meido Runtime messages
   -> canonical provider-neutral messages
-  -> transform_messages(model capabilities)
+  -> transform_messages(source/target provider, api, model capabilities)
   -> 按 api 选择 provider-specific wire messages
   -> 对应协议的 HTTP/SSE 或 Event Stream parser
   -> canonical assistant events + final message
@@ -72,7 +72,7 @@ Meido Runtime messages
 ## 4. 验收标准
 
 - [x] 含图片的历史在支持图片的模型中保留；不支持图片的模型收到稳定占位文本，连续图片不重复插入占位符。
-- [x] 跨模型重放不会发送原模型的 redacted thinking 或 thought signature；普通 thinking 文本可降级为 text。
+- [x] provider、api 或 model 变化时不会发送原连接的 redacted thinking 或 thought signature；普通 thinking 文本可降级为 text。
 - [x] 任意被规范化的 tool call ID 都会在对应 tool result 中使用相同 ID；孤立调用会得到一个 `is_error=true` 的合成结果，孤立结果不会发送给 provider。
 - [x] 多个 ID 规范化后发生碰撞时仍生成唯一 ID，且工具结果继续指向对应调用。
 - [x] 对文本型工具结果协议，图片会变成可读占位文本而不是被静默丢弃。
@@ -110,7 +110,7 @@ Meido Runtime messages
 
 ## 6. 风险和决策
 
-- Pi 的 thinking signature 在不同 provider 上可能是不可解释的 opaque replay data；跨模型必须删除，原模型重放才保留。
+- Pi 的 thinking signature 在不同 provider 或 api 上可能是不可解释的 opaque replay data；provider、api 或 model 标识变化时必须删除，完全相同的模型连接才可保留。
 - JSON Schema 和工具函数名兼容只能做确定性校验与别名，不能猜测性改写 provider 专有字段。
 - Meido 现有 Runtime 的 `AssistantMessage.content` 是字符串。迁移期间 rich block 作为 adapter/model-layer 类型，Runtime 通过文本和工具调用兼容投影消费；只有在持久化和 SSE 需要展示 thinking 时再扩展领域消息。
 - 取消必须沿用 Meido `CancellationToken`，不能只在读到下一条 SSE 后检查。

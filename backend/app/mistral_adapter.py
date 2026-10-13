@@ -143,7 +143,13 @@ class MistralConversationsAdapter:
 
     def _prepare(self, messages, configuration, tools, *, stream: bool, max_tokens: int | None):
         configuration = _configuration(configuration)
-        transformed = transform_messages(messages, capabilities=_CAPABILITIES, target_model=configuration.model)
+        transformed = transform_messages(
+            messages,
+            capabilities=_CAPABILITIES,
+            target_provider=configuration.provider,
+            target_api="mistral-conversations",
+            target_model=configuration.model,
+        )
         normalized = normalize_tools(effective_tools(transformed, tools))
         aliases, reverse = compatible_tool_names(normalized, transformed)
         transformed = remap_message_tool_names(transformed, aliases)

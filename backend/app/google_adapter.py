@@ -160,7 +160,13 @@ class GoogleGenerativeAdapter:
         return configuration.apiKey
 
     def _prepare(self, messages: Sequence[ModelMessage], configuration: ModelConfiguration, tools: Sequence[Mapping[str, object]], *, stream: bool, max_tokens: int | None) -> tuple[str, dict[str, str], dict[str, object], dict[str, str]]:
-        transformed = transform_messages(messages, capabilities=self.capabilities, target_model=configuration.model)
+        transformed = transform_messages(
+            messages,
+            capabilities=self.capabilities,
+            target_provider=configuration.provider,
+            target_api=self.api,
+            target_model=configuration.model,
+        )
         normalized = normalize_tools(effective_tools(transformed, tools))
         aliases, reverse = compatible_tool_names(normalized, transformed, pattern=r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
         transformed = remap_message_tool_names(transformed, aliases)
