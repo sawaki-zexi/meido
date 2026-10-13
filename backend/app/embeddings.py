@@ -26,10 +26,12 @@ class SharedEmbeddingProvider:
         configuration: Callable[[], EmbeddingConfiguration],
         timeout: float = 10,
         *,
+        enabled: Callable[[], bool] | None = None,
         _state: dict[str, str | None] | None = None,
     ) -> None:
         self.configuration = configuration
         self.timeout = timeout
+        self.enabled = enabled or (lambda: True)
         self._state = _state if _state is not None else {"last_error": None}
 
     @property
@@ -41,9 +43,14 @@ class SharedEmbeddingProvider:
         self._state["last_error"] = value
 
     @property
+    def is_enabled(self) -> bool:
+        return bool(self.enabled())
+
+    @property
     def model_id(self) -> str:
         config = self.configuration()
-        return f"{config.provider}:{config.baseUrl.rstrip('/')}:{config.model}:dimensions={config.dimensions}"
+        suffix = "" if self.enabled() else ":disabled"
+        return f"{config.provider}:{config.baseUrl.rstrip('/')}:{config.model}:dimensions={config.dimensions}{suffix}"
 
     @property
     def model_name(self) -> str:
@@ -57,7 +64,7 @@ class SharedEmbeddingProvider:
     def ready(self) -> bool:
         try:
             config = self.configuration()
-            return bool(config.baseUrl and config.model and config.apiKey)
+            return bool(self.is_enabled and config.baseUrl and config.model and config.apiKey)
         except Exception:
             return False
 
@@ -66,10 +73,13 @@ class SharedEmbeddingProvider:
         return SharedEmbeddingProvider(
             lambda: config.model_copy(deep=True),
             timeout=self.timeout,
+            enabled=self.enabled,
             _state=self._state,
         )
 
     def _request(self, inputs: list[str], config: EmbeddingConfiguration | None = None) -> list[list[float]]:
+        if not self.is_enabled:
+            raise RuntimeError("向量模型已暂停")
         config = config or self.configuration()
         payload: dict[str, object] = {
             "model": config.model,
