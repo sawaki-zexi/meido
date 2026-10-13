@@ -25,6 +25,7 @@
 
 - 有序的 assistant 内容块：text、thinking、tool call；用户和工具结果支持 text/image 内容。
 - provider-neutral 的 user、assistant、tool result 和 system message 类型，保留 provider、api、model、timestamp、usage、stop reason 和错误诊断字段。
+- Usage 保留 input/output/cache/reasoning token 以及 provider 返回的可选成本明细；tool result 保留 details、usage、时间戳和有界的 nested-call 诊断，nested calls 只存 transcript、不发送给模型。
 - 消息转换器：
   - 将空或空值内容规范化为内容块列表；
   - 对不支持图片的模型插入稳定占位文本，并合并连续占位符；
@@ -77,6 +78,7 @@ Meido Runtime messages
 - [x] 多个 ID 规范化后发生碰撞时仍生成唯一 ID，且工具结果继续指向对应调用。
 - [x] 对文本型工具结果协议，图片会变成可读占位文本而不是被静默丢弃。
 - [x] Runtime 经 SQLite 往返后恢复 assistant 有序内容块、text/thinking/tool-call signatures、namespace、provider、api、model、usage 和 stop reason；公开消息不泄露内部 thinking 或 canonical blocks。
+- [x] Runtime 与 Pi transcript 保留 tool result details、usage/cost 和时间戳；nested-call 诊断能经 SQLite 重放但不会进入 provider 请求。
 - [x] 自定义模型可以选择已注册协议；预设仍使用各自固定协议。
 - [x] 错误工具类型和确定无效的嵌套 schema 在请求发送前被拒绝。
 - [x] 一个 assistant 回合中的多个 tool call 保持顺序，并能从分片 SSE、legacy function_call 和完整 message 响应恢复。

@@ -9,7 +9,7 @@ from backend.app.anthropic_adapter import AnthropicMessagesAdapter
 from backend.app.bedrock_adapter import BedrockConverseAdapter
 from backend.app.google_adapter import GoogleGenerativeAdapter
 from backend.app.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
-from backend.app.model_types import ModelStreamDone, ModelStreamError, ModelTextBlock, ModelSystemMessage, ModelUserMessage
+from backend.app.model_types import ModelCost, ModelStreamDone, ModelStreamError, ModelTextBlock, ModelSystemMessage, ModelUserMessage
 from backend.app.model_types import (
     ModelAssistantMessage, ModelImageBlock, ModelResponseMetadata, ModelThinkingBlock,
     ModelToolCallBlock, ModelToolResultMessage,
@@ -21,7 +21,7 @@ from backend.app.openai_responses_adapter import OpenAIResponsesAdapter
 from backend.app.azure_openai_responses_adapter import AzureOpenAIResponsesAdapter
 from backend.app.openai_codex_responses_adapter import OpenAICodexResponsesAdapter
 from backend.app.google_vertex_adapter import GoogleVertexAdapter
-from backend.app.pi_messages_adapter import PiMessagesAdapter
+from backend.app.pi_messages_adapter import PiMessagesAdapter, _message, _usage
 
 
 def configuration(api: str, base_url: str = "https://provider.test", provider: str = "provider"):
@@ -516,6 +516,32 @@ def test_pi_messages_puts_tools_in_system_transcript(monkeypatch):
     assert payload["context"]["messages"][0]["role"] == "system"
     assert payload["context"]["messages"][0]["toolsAdded"][0]["name"] == "todo.write"
     assert "tools" not in payload["context"]
+
+
+def test_pi_messages_preserves_tool_result_diagnostics_without_sending_nested_calls():
+    result = ModelToolResultMessage(
+        content=(ModelTextBlock("done"),),
+        tool_call_id="call-1",
+        tool_name="parent",
+        details={"status": "succeeded"},
+        usage=_usage({"input": 2, "output": 1, "cost": {"input": 0.01, "total": 0.02}}),
+        nested_calls=(ModelToolCallBlock("nested-1", "child", {"key": "value"}),),
+        timestamp=1234,
+    )
+
+    wire = _message(result)
+
+    assert wire["details"] == {"status": "succeeded"}
+    assert wire["usage"]["cost"] == {
+        "input": 0.01,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.02,
+    }
+    assert wire["timestamp"] == 1234
+    assert "nestedCalls" not in wire
+    assert _usage({"cost": {"input": 0.01}}).cost == ModelCost(input=0.01)
 
 
 def test_bedrock_converse_stream_uses_event_stream_endpoint(monkeypatch):

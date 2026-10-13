@@ -88,23 +88,23 @@ class ModelSystemMessage:
     content: tuple[ModelTextBlock, ...] = ()
     tools_added: tuple[dict[str, object], ...] = ()
     tools_removed: tuple[str, ...] = ()
-    timestamp: int | None = None
     role: Literal["system"] = "system"
+    timestamp: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ModelUserMessage:
     content: tuple[ModelContentBlock, ...] = ()
-    timestamp: int | None = None
     role: Literal["user"] = "user"
+    timestamp: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ModelAssistantMessage:
     content: tuple[ModelContentBlock, ...] = ()
     metadata: ModelResponseMetadata = field(default_factory=ModelResponseMetadata)
-    timestamp: int | None = None
     role: Literal["assistant"] = "assistant"
+    timestamp: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,11 +113,11 @@ class ModelToolResultMessage:
     tool_call_id: str = ""
     tool_name: str = ""
     is_error: bool = False
+    role: Literal["tool_result"] = "tool_result"
     details: object | None = None
     usage: ModelUsage = field(default_factory=ModelUsage)
     nested_calls: tuple[ModelToolCallBlock, ...] = ()
     timestamp: int | None = None
-    role: Literal["tool_result"] = "tool_result"
 
 
 ModelMessage: TypeAlias = (
