@@ -100,6 +100,7 @@ def test_transform_defers_system_updates_until_tool_result():
 def test_transform_normalizes_none_and_string_content():
     assert transform_messages((ModelUserMessage(None),))[0].content == ()
     assert transform_messages((ModelUserMessage("hello"),))[0].content == (ModelTextBlock("hello"),)
+    assert transform_messages((ModelSystemMessage(None),))[0].content == ()
 
 
 def test_transform_skips_incomplete_assistant_turns():

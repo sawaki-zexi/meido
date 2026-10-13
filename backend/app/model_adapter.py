@@ -10,6 +10,7 @@ from typing import Protocol, Literal
 import httpx
 
 from .models import Message, ModelConfiguration, Role
+from .model_types import ModelMessage, ModelStreamEvent as RichModelStreamEvent
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +154,15 @@ class ModelAdapter(Protocol):
         max_tokens: int | None = None,
     ) -> str: ...
 
+    async def complete_rich_messages(
+        self,
+        messages: Sequence[ModelMessage],
+        configuration: ModelConfiguration | None,
+        tools: Sequence[Mapping[str, object]] = (),
+        *,
+        max_tokens: int | None = None,
+    ): ...
+
     def stream_messages(
         self,
         messages: Sequence[Mapping[str, object]],
@@ -170,12 +180,65 @@ class ModelAdapter(Protocol):
         max_tokens: int | None = None,
     ) -> AsyncIterator[ModelStreamEvent]: ...
 
+    def stream_rich_messages(
+        self,
+        messages: Sequence[ModelMessage],
+        configuration: ModelConfiguration | None,
+        tools: Sequence[Mapping[str, object]] = (),
+        *,
+        max_tokens: int | None = None,
+        cancel_check=None,
+    ) -> AsyncIterator[RichModelStreamEvent]: ...
+
 
 class OpenAICompatibleAdapter:
     """Streams chat completions from an OpenAI-compatible endpoint."""
 
     def __init__(self, timeout: float | None = None) -> None:
         self.timeout = timeout
+
+    async def stream_rich_messages(
+        self,
+        messages,
+        configuration: ModelConfiguration | None,
+        tools: Sequence[Mapping[str, object]] = (),
+        *,
+        max_tokens: int | None = None,
+        cancel_check=None,
+    ):
+        """Expose the Pi-style stream while retaining legacy adapter methods."""
+
+        from .pi_openai_adapter import OpenAICompletionsRichAdapter
+
+        effective_configuration = self._effective_configuration(configuration)
+        adapter = OpenAICompletionsRichAdapter(timeout=self.timeout)
+        async for event in adapter.stream_rich_messages(
+            messages,
+            effective_configuration,
+            tools,
+            max_tokens=max_tokens,
+            cancel_check=cancel_check,
+        ):
+            yield event
+
+    async def complete_rich_messages(
+        self,
+        messages,
+        configuration: ModelConfiguration | None,
+        tools: Sequence[Mapping[str, object]] = (),
+        *,
+        max_tokens: int | None = None,
+    ):
+        from .pi_openai_adapter import OpenAICompletionsRichAdapter
+
+        effective_configuration = self._effective_configuration(configuration)
+        adapter = OpenAICompletionsRichAdapter(timeout=self.timeout)
+        return await adapter.complete_messages(
+            messages,
+            effective_configuration,
+            tools,
+            max_tokens=max_tokens,
+        )
 
     async def stream_reply(
         self,

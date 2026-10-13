@@ -2196,7 +2196,10 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         placeholder_id,
                         event.message.content,
                         "streaming",
-                        metadata={"runtimeStopReason": event.message.stop_reason},
+                        metadata={
+                            **event.message.metadata,
+                            "runtimeStopReason": event.message.stop_reason,
+                        },
                     )
                 else:
                     final_message = session_store.append_agent_message(

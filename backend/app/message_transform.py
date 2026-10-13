@@ -96,7 +96,17 @@ def _transform_message(
     id_map: dict[str, str],
 ) -> ModelMessage:
     if isinstance(message, ModelSystemMessage):
-        return message
+        blocks = _transform_blocks(
+            message.content,
+            capabilities=capabilities,
+            cross_model=cross_model,
+            id_map=id_map,
+        )
+        return ModelSystemMessage(
+            tuple(block for block in blocks if isinstance(block, ModelTextBlock)),
+            message.tools_added,
+            message.tools_removed,
+        )
     if isinstance(message, ModelUserMessage):
         return ModelUserMessage(_transform_blocks(
             message.content,

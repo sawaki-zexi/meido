@@ -2,15 +2,30 @@ from __future__ import annotations
 
 import inspect
 import json
+from dataclasses import asdict
 from collections.abc import AsyncIterator, Sequence
 from datetime import datetime, timezone
 from typing import cast
 
 from ..models import Message, ModelConfiguration, Role
 from ..model_adapter import ModelAdapter, ModelStreamError, ModelTextDelta, ModelToolCall
+from ..model_types import (
+    ModelAssistantMessage as RichAssistantMessage,
+    ModelImageBlock as RichImageBlock,
+    ModelMessage as RichMessage,
+    ModelStreamDone,
+    ModelStreamError as RichStreamError,
+    ModelTextBlock as RichTextBlock,
+    ModelTextDelta as RichTextDelta,
+    ModelToolCallBlock as RichToolCallBlock,
+    ModelToolCallEnd as RichToolCallEnd,
+    ModelToolResultMessage as RichToolResultMessage,
+    ModelSystemMessage as RichSystemMessage,
+    ModelUserMessage as RichUserMessage,
+)
 from ..browser_use.safety import sanitize_browser_arguments, sanitize_browser_text
 from .provider import AssistantDoneEvent, CancellationToken, ProviderErrorEvent, ProviderEvent, ProviderStartEvent, TextDeltaEvent, ToolCallEndEvent
-from .types import AssistantMessage, AttachmentContent, ImageContent, ToolCall, UserMessage, ToolResultMessage
+from .types import AssistantMessage, ToolCall, UserMessage, ToolResultMessage
 
 
 class MeidoProvider:
@@ -41,6 +56,9 @@ class MeidoProvider:
         session_id: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         del model, session_id
+        rich = getattr(self.adapter, "stream_rich_messages", None)
+        if rich is not None:
+            return self._stream_rich_structured(system, messages, tools, signal, rich)
         if tools:
             structured = getattr(self.adapter, "stream_structured_messages", None)
             if structured is None:
@@ -50,6 +68,70 @@ class MeidoProvider:
                 return unsupported()
             return self._stream_structured(system, messages, tools, signal, structured)
         return self._stream(messages, signal)
+
+    def _stream_rich_structured(self, system, messages, tools, signal, rich) -> AsyncIterator[ProviderEvent]:
+        async def stream() -> AsyncIterator[ProviderEvent]:
+            runtime_messages = self._rich_messages(system, messages)
+            yield ProviderStartEvent()
+            content = ""
+            tool_calls: list[ToolCall] = []
+            try:
+                try:
+                    accepts_cancel_check = "cancel_check" in inspect.signature(rich).parameters
+                except (TypeError, ValueError):
+                    accepts_cancel_check = False
+                source = (
+                    rich(
+                        runtime_messages,
+                        self.configuration,
+                        [dict(tool) for tool in tools],
+                        cancel_check=signal.raise_if_cancelled,
+                    )
+                    if accepts_cancel_check
+                    else rich(runtime_messages, self.configuration, [dict(tool) for tool in tools])
+                )
+                async for event in source:
+                    signal.raise_if_cancelled()
+                    if isinstance(event, RichTextDelta):
+                        content += event.text
+                        yield TextDeltaEvent(event.text)
+                    elif isinstance(event, RichToolCallEnd):
+                        call = ToolCall(event.call.id, event.call.name, dict(event.call.arguments))
+                        tool_calls.append(call)
+                        yield ToolCallEndEvent(call)
+                    elif isinstance(event, RichStreamError):
+                        yield ProviderErrorEvent(event.error)
+                        return
+                    elif isinstance(event, ModelStreamDone):
+                        final_content = "".join(
+                            block.text for block in event.message.content if isinstance(block, RichTextBlock)
+                        )
+                        final_calls = tuple(
+                            ToolCall(block.id, block.name, dict(block.arguments))
+                            for block in event.message.content
+                            if isinstance(block, RichToolCallBlock)
+                        )
+                        if final_content and not content:
+                            content = final_content
+                        if final_calls:
+                            tool_calls = list(final_calls)
+                        stop_reason = event.message.metadata.stop_reason or ("tool_use" if tool_calls else "stop")
+                        if stop_reason == "error":
+                            yield ProviderErrorEvent(event.message.metadata.error_message or "模型调用失败")
+                            return
+                        response_metadata = asdict(event.message.metadata)
+                        yield AssistantDoneEvent(AssistantMessage(
+                            content=content,
+                            tool_calls=tuple(tool_calls),
+                            stop_reason="tool_use" if tool_calls else stop_reason,
+                            metadata=response_metadata,
+                        ))
+                        return
+            except Exception as error:
+                if isinstance(error, RuntimeError) and str(error) == "agent run cancelled":
+                    raise
+                yield ProviderErrorEvent(str(error))
+        return stream()
 
     def _stream_structured(self, system, messages, tools, signal, structured) -> AsyncIterator[ProviderEvent]:
         async def stream() -> AsyncIterator[ProviderEvent]:
@@ -131,6 +213,51 @@ class MeidoProvider:
                     "tool_call_id": message.tool_call_id,
                     "content": content,
                 })
+        return result
+
+    def _rich_messages(self, system: str, messages: Sequence[object]) -> list[RichMessage]:
+        result: list[RichMessage] = [RichSystemMessage((RichTextBlock(self._structured_system_prompt(system)),))]
+        for message in messages:
+            if isinstance(message, UserMessage):
+                blocks: list[object] = [RichTextBlock(message.content)]
+                for attachment in message.attachments:
+                    if attachment.image is not None:
+                        blocks.append(RichImageBlock(
+                            attachment.image.media_type,
+                            attachment.image.data_base64,
+                            attachment.image.detail,
+                        ))
+                    elif attachment.text:
+                        blocks[0] = RichTextBlock(f"{blocks[0].text}\n\n[{attachment.name}]\n{attachment.text}")
+                result.append(RichUserMessage(tuple(blocks)))
+            elif isinstance(message, AssistantMessage):
+                blocks: list[object] = []
+                if message.content:
+                    blocks.append(RichTextBlock(message.content))
+                blocks.extend(
+                    RichToolCallBlock(
+                        call.id,
+                        call.name,
+                        sanitize_browser_arguments(call.name, call.arguments),
+                    )
+                    for call in message.tool_calls
+                )
+                result.append(RichAssistantMessage(tuple(blocks)))
+            elif isinstance(message, ToolResultMessage):
+                text = message.content
+                if message.tool_name.startswith("agent_browser_"):
+                    text, _ = sanitize_browser_text(text)
+                blocks = [RichTextBlock(text)]
+                blocks.extend(
+                    RichImageBlock(image.media_type, image.data_base64, image.detail)
+                    for image in message.images
+                )
+                result.append(RichToolResultMessage(
+                    content=tuple(blocks),
+                    tool_call_id=message.tool_call_id,
+                    tool_name=message.tool_name,
+                    is_error=message.is_error,
+                ))
         return result
 
     def _structured_system_prompt(self, system: str) -> str:

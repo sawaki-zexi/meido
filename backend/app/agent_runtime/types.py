@@ -43,6 +43,7 @@ class AssistantMessage:
     tool_calls: tuple[ToolCall, ...] = ()
     stop_reason: Literal["stop", "tool_use", "error", "aborted"] = "stop"
     role: Literal["assistant"] = "assistant"
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

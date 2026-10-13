@@ -39,6 +39,18 @@ def _load_attachments(metadata: dict[str, Any]) -> tuple[AttachmentContent, ...]
     return tuple(loaded)
 
 
+def _runtime_assistant_metadata(metadata: dict[str, Any]) -> dict[str, object]:
+    internal_keys = {
+        "stopReason",
+        "toolCallGroupId",
+        "toolCallIndex",
+        "toolCallCount",
+        "runtimeStopReason",
+        "runtimePlaceholder",
+    }
+    return {key: value for key, value in metadata.items() if key not in internal_keys}
+
+
 class SessionStore:
     def __init__(self, database_path: str | Path) -> None:
         self.database_path = str(database_path)
@@ -223,7 +235,14 @@ class SessionStore:
             return [self.append_message(session_key, "user", message.content, status, run_id=run_id)]
         if isinstance(message, AssistantMessage):
             if not message.tool_calls:
-                return [self.append_message(session_key, "assistant", message.content, status, run_id=run_id)]
+                return [self.append_message(
+                    session_key,
+                    "assistant",
+                    message.content,
+                    status,
+                    run_id=run_id,
+                    metadata=dict(message.metadata),
+                )]
             group_id = uuid.uuid4().hex
             now = _now()
             with sqlite3.connect(self.database_path) as connection:
@@ -245,6 +264,7 @@ class SessionStore:
                         safe_arguments = call.arguments
                     message_id = f"{session_key}:{uuid.uuid4().hex}"
                     metadata = {
+                        **message.metadata,
                         "stopReason": message.stop_reason,
                         "toolCallGroupId": group_id,
                         "toolCallIndex": index,
@@ -332,7 +352,12 @@ class SessionStore:
                     if raw_stop_reason not in {"stop", "tool_use", "error", "aborted"}:
                         raw_stop_reason = "tool_use"
                     stop_reason = cast(Literal["stop", "tool_use", "error", "aborted"], raw_stop_reason)
-                    messages.append(AssistantMessage(content=group[0].content, tool_calls=calls, stop_reason=stop_reason))
+                    messages.append(AssistantMessage(
+                        content=group[0].content,
+                        tool_calls=calls,
+                        stop_reason=stop_reason,
+                        metadata=_runtime_assistant_metadata(group[0].metadata),
+                    ))
 
                     # Results are expected immediately after the assistant call group.
                     # Only matching IDs are replayable; duplicates and orphan results
@@ -380,7 +405,10 @@ class SessionStore:
                 if stored.role == "user":
                     messages.append(UserMessage(stored.content, attachments=_load_attachments(stored.metadata)))
                 elif stored.role == "assistant":
-                    messages.append(AssistantMessage(stored.content))
+                    messages.append(AssistantMessage(
+                        stored.content,
+                        metadata=_runtime_assistant_metadata(stored.metadata),
+                    ))
             index += 1
         if max_messages is None or max_messages < 1 or len(messages) <= max_messages:
             return messages

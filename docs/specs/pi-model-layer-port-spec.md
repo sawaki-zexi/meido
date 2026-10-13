@@ -1,6 +1,6 @@
 # Pi 模型层语义移植规格
 
-状态：草案（第一阶段已实现，适配器接入待后续 PR）
+状态：草案（模型层基础与 OpenAI Completions rich adapter 已实现，原生协议仍未纳入）
 
 最后核验：2026-10-13
 
@@ -87,12 +87,15 @@ Meido Runtime messages
 
 ### 当前实现状态
 
-本变更完成第一阶段和第二阶段的可复用基础：
+本变更完成第一阶段至第三阶段的可复用实现：
 
 - `backend/app/model_types.py` 提供结构化内容块、响应 usage/metadata 和 FIFO 事件类型；
 - `backend/app/message_transform.py` 提供不修改输入历史的图片、thinking、工具 ID 和孤立工具结果转换；
 - `backend/app/model_event_stream.py` 提供终止事件和最终 assistant message 的异步结果；
-- 现有 `OpenAICompatibleAdapter` 和 Runtime 的接入留在后续变更，等待工具格式兼容 PR #111 合入后从最新 `main` 开始，避免同一适配器产生堆叠分支。
+- `backend/app/pi_openai_adapter.py` 实现 OpenAI Chat Completions 的 rich stream 和 complete 调用，解析 reasoning、usage、finish reason、legacy/new tool calls、SSE/HTTP 错误和取消；
+- `OpenAICompatibleAdapter` 与 `MeidoProvider` 提供兼容投影，旧纯文本/结构化调用方继续可用。
+
+仍未完成的范围是 Pi 的 Anthropic、Google、Responses、Bedrock、Mistral 和 Pi Messages 原生适配器，以及 SQLite 中 thinking/usage 的完整持久化；这些需要独立 provider 规格或后续增量迁移。
 
 ## 6. 风险和决策
 
