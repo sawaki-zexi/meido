@@ -9,6 +9,7 @@ import json
 import time
 
 import httpx
+from partial_json_parser import MalformedJSON, loads as parse_partial_json
 
 from .message_transform import transform_messages
 from .model_adapter import (
@@ -61,6 +62,7 @@ class OpenAICompletionsOptions:
     include_usage: bool = True
     use_max_completion_tokens: bool = False
     disable_deepseek_thinking_for_tools: bool = True
+    supports_finish_reason: bool = True
 
 
 @dataclass(slots=True)
@@ -147,9 +149,16 @@ def _safe_json(value: object) -> str:
 
 
 class _ResponseAccumulator:
-    def __init__(self, internal_names: Mapping[str, str], provider: str | None = None) -> None:
+    def __init__(
+        self,
+        internal_names: Mapping[str, str],
+        provider: str | None = None,
+        *,
+        supports_finish_reason: bool = True,
+    ) -> None:
         self.internal_names = internal_names
         self.provider = provider
+        self.supports_finish_reason = supports_finish_reason
         self.text_parts: list[str] = []
         self.thinking_parts: list[str] = []
         self.thinking_signature: str | None = None
@@ -159,6 +168,8 @@ class _ResponseAccumulator:
         self.response_id: str | None = None
         self.response_model: str | None = None
         self.stop_reason: str | None = None
+        self.error_message: str | None = None
+        self.tool_error: str | None = None
         self._text_started = False
         self._thinking_started = False
         self._tool_started: set[str] = set()
@@ -178,6 +189,8 @@ class _ResponseAccumulator:
         finish = choice.get("finish_reason")
         if isinstance(finish, str) and finish:
             self.stop_reason = _stop_reason(finish)
+            if self.stop_reason == "error":
+                self.error_message = f"Provider finish_reason: {finish}"
         delta = choice.get("delta")
         if not isinstance(delta, Mapping):
             delta = choice.get("message") if isinstance(choice.get("message"), Mapping) else {}
@@ -239,6 +252,9 @@ class _ResponseAccumulator:
         if isinstance(name, str):
             call.name += name
         arguments = function.get("arguments")
+        if arguments is not None and not isinstance(arguments, (str, Mapping)):
+            self.tool_error = f"模型工具参数格式无效: {call.name or key}"
+            return events
         fragment = _safe_json(arguments)
         if fragment:
             call.arguments += fragment
@@ -256,6 +272,8 @@ class _ResponseAccumulator:
             events.append(ModelTextEnd())
         if self._thinking_started:
             events.append(ModelThinkingEnd())
+        if self.tool_error:
+            return events, None, self.tool_error
         blocks: list[ModelContentBlock] = []
         for kind, key in self.block_order:
             if kind == "text":
@@ -267,7 +285,10 @@ class _ResponseAccumulator:
                 try:
                     arguments = json.loads(aggregate.arguments or "{}")
                 except json.JSONDecodeError:
-                    return events, None, f"模型工具参数不是有效 JSON: {aggregate.name or key}"
+                    try:
+                        arguments = parse_partial_json(aggregate.arguments)
+                    except MalformedJSON:
+                        return events, None, f"模型工具参数不是有效 JSON: {aggregate.name or key}"
                 if not isinstance(arguments, dict):
                     return events, None, f"模型工具参数必须是 JSON 对象: {aggregate.name or key}"
                 call_id = aggregate.id or f"call-{key}"
@@ -275,6 +296,13 @@ class _ResponseAccumulator:
                 call = ModelToolCallBlock(call_id, name, arguments)
                 blocks.append(call)
                 events.append(ModelToolCallEnd(call))
+        if self.stop_reason == "error":
+            return events, None, self.error_message or "模型服务以错误原因终止"
+        stop_reason = self.stop_reason
+        if stop_reason is None:
+            if self.supports_finish_reason:
+                return events, None, "Stream ended without finish_reason"
+            stop_reason = "tool_use" if self.tool_calls else "stop"
         message = ModelAssistantMessage(
             content=tuple(blocks),
             metadata=ModelResponseMetadata(
@@ -283,7 +311,7 @@ class _ResponseAccumulator:
                 model=self.response_model,
                 response_id=self.response_id,
                 usage=self.usage,
-                stop_reason=self.stop_reason or ("tool_use" if self.tool_calls else "stop"),
+                stop_reason=stop_reason,
                 timestamp=int(time.time() * 1000),
             ),
         )
@@ -297,7 +325,7 @@ def _stop_reason(value: str) -> str:
         "stop": "stop",
         "length": "length",
         "content_filter": "error",
-    }.get(value, value)
+    }.get(value, "error")
 
 
 def _message_to_wire(message: ModelMessage, *, send_reasoning: bool) -> dict[str, object]:
@@ -358,6 +386,17 @@ def _effective_tools(
     tools: Sequence[Mapping[str, object]],
 ) -> tuple[dict[str, object], ...]:
     return effective_tools(messages, tools)
+
+
+def _has_tool_history(messages: Sequence[ModelMessage]) -> bool:
+    for message in messages:
+        if isinstance(message, ModelToolResultMessage):
+            return True
+        if isinstance(message, ModelAssistantMessage) and any(
+            isinstance(block, ModelToolCallBlock) for block in message.content
+        ):
+            return True
+    return False
 
 
 async def _sse_payloads(lines: AsyncIterator[str]) -> AsyncIterator[str]:
@@ -441,6 +480,8 @@ class OpenAICompletionsRichAdapter:
             request_data["tool_choice"] = "auto"
             if _is_deepseek(configuration) and options.disable_deepseek_thinking_for_tools:
                 request_data["thinking"] = {"type": "disabled"}
+        elif _has_tool_history(transformed):
+            request_data["tools"] = []
         if stream and options.include_usage:
             request_data["stream_options"] = {"include_usage": True}
         if max_tokens is not None:
@@ -464,7 +505,11 @@ class OpenAICompletionsRichAdapter:
             max_tokens=max_tokens,
             stream=True,
         )
-        accumulator = _ResponseAccumulator(internal_names, configuration.providerId)
+        accumulator = _ResponseAccumulator(
+            internal_names,
+            configuration.providerId,
+            supports_finish_reason=self.options.supports_finish_reason,
+        )
         completed = False
         yield ModelStreamStart()
         try:
@@ -572,8 +617,16 @@ class OpenAICompletionsRichAdapter:
         if payload.get("error") is not None:
             detail = payload.get("error")
             message = detail.get("message") if isinstance(detail, Mapping) else str(detail)
-            raise RuntimeError(message if isinstance(message, str) else "模型服务返回错误")
-        accumulator = _ResponseAccumulator(internal_names, configuration.providerId)
+            if not isinstance(message, str) or not message:
+                message = "模型服务返回错误"
+            if configuration.apiKey:
+                message = message.replace(configuration.apiKey, "***")
+            raise RuntimeError(message)
+        accumulator = _ResponseAccumulator(
+            internal_names,
+            configuration.providerId,
+            supports_finish_reason=self.options.supports_finish_reason,
+        )
         accumulator.consume(payload)
         _, message, error = accumulator.finish()
         if message is None:

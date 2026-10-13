@@ -19,7 +19,7 @@ from backend.app.model_types import (
     ModelSystemMessage,
 )
 from backend.app.models import ModelConfiguration
-from backend.app.pi_openai_adapter import OpenAICompletionsRichAdapter
+from backend.app.pi_openai_adapter import OpenAICompletionsOptions, OpenAICompletionsRichAdapter
 
 
 def _patch_client(monkeypatch, body: str, requests: list[httpx.Request]):
@@ -88,6 +88,53 @@ def test_rich_adapter_parses_reasoning_usage_and_finish_reason(monkeypatch):
     assert done.message.metadata.usage.cost.total == 0.03
 
 
+def test_rich_adapter_rejects_stream_without_finish_reason(monkeypatch):
+    body = 'data: {"choices":[{"delta":{"content":"answer"}}]}\n\ndata: [DONE]\n\n'
+    _patch_client(monkeypatch, body, [])
+
+    async def collect():
+        return [event async for event in OpenAICompletionsRichAdapter().stream_messages(
+            (ModelUserMessage((ModelTextBlock("hello"),)),),
+            _configuration(),
+        )]
+
+    events = asyncio.run(collect())
+    assert isinstance(events[-1], ModelStreamError)
+    assert "finish_reason" in events[-1].error
+    assert not any(isinstance(event, ModelStreamDone) for event in events)
+
+
+def test_rich_adapter_can_allow_providers_without_finish_reason(monkeypatch):
+    body = 'data: {"choices":[{"delta":{"content":"answer"}}]}\n\ndata: [DONE]\n\n'
+    _patch_client(monkeypatch, body, [])
+    adapter = OpenAICompletionsRichAdapter(options=OpenAICompletionsOptions(supports_finish_reason=False))
+
+    async def collect():
+        return [event async for event in adapter.stream_messages(
+            (ModelUserMessage((ModelTextBlock("hello"),)),),
+            _configuration(),
+        )]
+
+    events = asyncio.run(collect())
+    assert isinstance(events[-1], ModelStreamDone)
+    assert events[-1].message.metadata.stop_reason == "stop"
+
+
+def test_rich_adapter_rejects_provider_error_finish_reason(monkeypatch):
+    body = 'data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\ndata: [DONE]\n\n'
+    _patch_client(monkeypatch, body, [])
+
+    async def collect():
+        return [event async for event in OpenAICompletionsRichAdapter().stream_messages(
+            (ModelUserMessage((ModelTextBlock("hello"),)),),
+            _configuration(),
+        )]
+
+    events = asyncio.run(collect())
+    assert isinstance(events[-1], ModelStreamError)
+    assert "content_filter" in events[-1].error
+
+
 def test_rich_adapter_aggregates_multiple_tool_call_fragments(monkeypatch):
     body = "\n".join([
         'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"todo","arguments":"{\\"a\\":"}},{"index":1,"id":"call-2","function":{"name":"shell","arguments":"{\\"cmd\\":"}}]}}]}',
@@ -117,6 +164,60 @@ def test_rich_adapter_aggregates_multiple_tool_call_fragments(monkeypatch):
         ModelToolCallBlock("call-2", "shell", {"cmd": "ls"}),
     ]
     assert sum(isinstance(event, ModelToolCallEnd) for event in events) == 2
+
+
+def test_rich_adapter_parses_partial_tool_arguments(monkeypatch):
+    body = "\n".join([
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"lookup","arguments":"{\\"key\\":\\"partial"}}]},"finish_reason":"tool_calls"}]}',
+        "data: [DONE]",
+        "",
+    ])
+    _patch_client(monkeypatch, body, [])
+
+    async def collect():
+        return [event async for event in OpenAICompletionsRichAdapter().stream_messages(
+            (ModelUserMessage((ModelTextBlock("lookup"),)),),
+            _configuration(),
+            tools=[{"type": "function", "function": {"name": "lookup"}}],
+        )]
+
+    events = asyncio.run(collect())
+    done = events[-1]
+    assert isinstance(done, ModelStreamDone)
+    call = next(block for block in done.message.content if isinstance(block, ModelToolCallBlock))
+    assert call.arguments == {"key": "partial"}
+
+
+def test_rich_adapter_rejects_malformed_tool_arguments(monkeypatch):
+    body = 'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"lookup","arguments":"not-json"}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n'
+    _patch_client(monkeypatch, body, [])
+
+    async def collect():
+        return [event async for event in OpenAICompletionsRichAdapter().stream_messages(
+            (ModelUserMessage((ModelTextBlock("lookup"),)),),
+            _configuration(),
+            tools=[{"type": "function", "function": {"name": "lookup"}}],
+        )]
+
+    events = asyncio.run(collect())
+    assert isinstance(events[-1], ModelStreamError)
+    assert "不是有效 JSON" in events[-1].error
+
+
+def test_rich_adapter_rejects_non_json_tool_argument_fragments(monkeypatch):
+    body = 'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"lookup","arguments":[]}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n'
+    _patch_client(monkeypatch, body, [])
+
+    async def collect():
+        return [event async for event in OpenAICompletionsRichAdapter().stream_messages(
+            (ModelUserMessage((ModelTextBlock("lookup"),)),),
+            _configuration(),
+            tools=[{"type": "function", "function": {"name": "lookup"}}],
+        )]
+
+    events = asyncio.run(collect())
+    assert isinstance(events[-1], ModelStreamError)
+    assert "参数格式无效" in events[-1].error
 
 
 def test_rich_adapter_supports_legacy_function_call_and_full_message(monkeypatch):
@@ -172,6 +273,26 @@ def test_rich_adapter_emits_deepseek_compat_request_and_replays_tool_history(mon
     assert payload["messages"][2]["tool_calls"][0]["function"]["name"] != "todo.write"
     assert payload["messages"][3]["tool_call_id"] == payload["messages"][2]["tool_calls"][0]["id"]
     assert payload["stream_options"] == {"include_usage": True}
+
+
+def test_rich_adapter_keeps_empty_tools_when_replaying_tool_history():
+    from backend.app.model_protocol import OPENAI_COMPLETIONS_API
+
+    call = ModelToolCallBlock("call-1", "lookup", {"key": "name"})
+    messages = (
+        ModelUserMessage((ModelTextBlock("find"),)),
+        ModelAssistantMessage((call,), ModelResponseMetadata(
+            provider="openai", api=OPENAI_COMPLETIONS_API, model="test-model", stop_reason="tool_use",
+        )),
+        ModelToolResultMessage((ModelTextBlock("found"),), "call-1", "lookup"),
+    )
+
+    request, _, _ = OpenAICompletionsRichAdapter()._prepare_request(
+        messages, _configuration(), (), max_tokens=None, stream=True,
+    )
+
+    assert request["tools"] == []
+    assert "tool_choice" not in request
 
 
 def test_rich_adapter_redacts_embedded_error_and_event_stream_result(monkeypatch):
@@ -268,6 +389,65 @@ def test_rich_adapter_complete_uses_same_full_message_parser(monkeypatch):
     assert requests[0].content and json.loads(requests[0].content)["stream"] is False
 
 
+def test_rich_adapter_complete_rejects_missing_finish_reason(monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "answer"}}]},
+            request=request,
+        )
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+
+    async def complete():
+        return await OpenAICompletionsRichAdapter().complete_messages(
+            (ModelUserMessage((ModelTextBlock("hello"),)),),
+            _configuration(),
+        )
+
+    try:
+        asyncio.run(complete())
+    except RuntimeError as error:
+        assert "finish_reason" in str(error)
+    else:
+        raise AssertionError("expected missing finish_reason to fail")
+
+
+def test_rich_adapter_complete_redacts_embedded_error(monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={"error": {"message": "provider rejected secret"}},
+            request=request,
+        )
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+
+    async def complete():
+        return await OpenAICompletionsRichAdapter().complete_messages(
+            (ModelUserMessage((ModelTextBlock("hello"),)),),
+            _configuration(api_key="secret"),
+        )
+
+    try:
+        asyncio.run(complete())
+    except RuntimeError as error:
+        assert "secret" not in str(error)
+        assert "***" in str(error)
+    else:
+        raise AssertionError("expected provider error to fail")
+
+
 def test_rich_adapter_replays_system_tool_add_remove_state(monkeypatch):
     body = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
     requests = []
@@ -331,7 +511,7 @@ def test_rich_adapter_joins_multiline_sse_data_and_ignores_comments(monkeypatch)
     body = "\n".join([
         ": keep-alive",
         'data: {"choices":[',
-        'data: {"delta":{"content":"hello"}}]}',
+        'data: {"delta":{"content":"hello"},"finish_reason":"stop"}]}',
         "",
         "data: [DONE]",
     ])

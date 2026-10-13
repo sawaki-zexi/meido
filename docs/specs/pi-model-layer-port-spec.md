@@ -41,9 +41,11 @@
 - OpenAI Chat Completions 兼容适配器：
   - 解析文本和 `reasoning`、`reasoning_content`、`reasoning_text`、`reasoning_details`；
   - 聚合新版 `tool_calls` 与旧版 `function_call`，支持多调用、分片 ID/name/arguments 和完整 message 响应；
+  - 对流式工具参数使用 partial JSON 解析；截断对象可继续重放，真正非法 JSON 或非 JSON 参数片段在完成前返回可诊断错误；
   - 解析 usage、cache tokens、reasoning tokens、finish reason、response id/model；
   - 对 DeepSeek 等需要 reasoning replay 的 provider 按能力配置发送兼容字段；
-  - 统一 HTTP/SSE 错误并脱敏 API Key。
+  - 有工具历史但当前工具集合为空时发送 `tools: []`；支持结束原因的端点缺少 `finish_reason` 时失败，不把未完成回合伪装成成功；
+  - 统一 HTTP/SSE 错误并脱敏 API Key，包括非流式响应体中的 provider error。
 - 兼容层：现有 `stream_messages`、`stream_structured_messages` 和 Runtime provider 继续可用，新的 rich stream 作为更完整的内部边界。
 - 外部行为测试覆盖正常文本、thinking、图片降级、跨模型重放、工具历史修复、多工具聚合、usage/finish reason、错误和取消。
 
@@ -82,6 +84,7 @@ Meido Runtime messages
 - [x] 自定义模型可以选择已注册协议；预设仍使用各自固定协议。
 - [x] 错误工具类型和确定无效的嵌套 schema 在请求发送前被拒绝。
 - [x] 一个 assistant 回合中的多个 tool call 保持顺序，并能从分片 SSE、legacy function_call 和完整 message 响应恢复。
+- [x] 截断的 OpenAI-compatible 工具参数按 partial JSON 恢复；真正非法参数、未知终止原因和缺失必需 `finish_reason` 的响应在完成前转为可诊断错误。
 - [x] provider usage、reasoning tokens、cache tokens、response id/model 和 finish reason 可在最终 assistant message 中读取；缺失字段使用明确的零值或 `None`，不抛解析异常。
 - [x] HTTP 400/401/429/5xx、SSE 内嵌 error、无终止事件和取消分别产生可诊断的统一错误；错误文本不包含 API Key。
 - [x] 现有纯文本对话、Runtime 工具循环、连接测试和前端构建保持通过。
