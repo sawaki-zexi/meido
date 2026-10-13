@@ -794,7 +794,7 @@ def test_bedrock_repairs_history_and_preserves_supported_reasoning(monkeypatch):
     assert tool_result["content"][0]["text"] == "[image omitted: image/tiff]"
 
 
-def test_bedrock_groups_consecutive_tool_results_and_omits_empty_assistant():
+def test_bedrock_groups_consecutive_tool_results_and_omits_empty_assistant(monkeypatch):
     from backend.app.bedrock_adapter import BedrockConverseAdapter
 
     first = ModelToolCallBlock("call-1", "first", {"": "ignored", "nested": {"": 1, "kept": 2}})
@@ -806,9 +806,20 @@ def test_bedrock_groups_consecutive_tool_results_and_omits_empty_assistant():
         ModelAssistantMessage(()),
     )
 
-    _, _, payload, _ = BedrockConverseAdapter()._prepare(
-        history, configuration("bedrock-converse"), (), None,
-    )
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "output": {"message": {"content": [{"text": "ok"}]}},
+            "stopReason": "end_turn",
+        })
+
+    patch_client(monkeypatch, handler)
+    asyncio.run(BedrockConverseAdapter().complete_messages(
+        history, configuration("bedrock-converse"), (),
+    ))
+    payload = requests[0]
 
     assert len(payload["messages"]) == 2
     assert payload["messages"][1]["role"] == "user"
@@ -818,7 +829,7 @@ def test_bedrock_groups_consecutive_tool_results_and_omits_empty_assistant():
     ]
 
 
-def test_bedrock_omits_reasoning_signature_for_non_anthropic_models():
+def test_bedrock_omits_reasoning_signature_for_non_anthropic_models(monkeypatch):
     from backend.app.bedrock_adapter import BedrockConverseAdapter
 
     history = (ModelAssistantMessage(
@@ -826,9 +837,20 @@ def test_bedrock_omits_reasoning_signature_for_non_anthropic_models():
         ModelResponseMetadata(provider="provider", api="bedrock-converse", model="model-1"),
     ),)
 
-    _, _, payload, _ = BedrockConverseAdapter()._prepare(
-        history, configuration("bedrock-converse"), (), None,
-    )
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "output": {"message": {"content": [{"text": "ok"}]}},
+            "stopReason": "end_turn",
+        })
+
+    patch_client(monkeypatch, handler)
+    asyncio.run(BedrockConverseAdapter().complete_messages(
+        history, configuration("bedrock-converse"), (),
+    ))
+    payload = requests[0]
 
     reasoning = payload["messages"][0]["content"][0]["reasoningContent"]["reasoningText"]
     assert reasoning == {"text": "reason"}
@@ -854,7 +876,7 @@ def test_google_replays_thinking_as_native_thought_part():
     ]
 
 
-def test_google_groups_consecutive_tool_results_with_output_and_error_fields():
+def test_google_groups_consecutive_tool_results_with_output_and_error_fields(monkeypatch):
     from backend.app.google_adapter import GoogleGenerativeAdapter
 
     history = (
@@ -863,9 +885,22 @@ def test_google_groups_consecutive_tool_results_with_output_and_error_fields():
         ModelToolResultMessage((ModelTextBlock("failed"),), "call-2", "lookup", is_error=True),
     )
 
-    _, _, payload, _ = GoogleGenerativeAdapter()._prepare(
-        history, configuration("google-generative"), (), stream=True, max_tokens=None,
-    )
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "candidates": [{
+                "content": {"parts": [{"text": "ok"}]},
+                "finishReason": "STOP",
+            }],
+        })
+
+    patch_client(monkeypatch, handler)
+    asyncio.run(GoogleGenerativeAdapter().complete_messages(
+        history, configuration("google-generative"), (),
+    ))
+    payload = requests[0]
 
     assert len(payload["contents"]) == 2
     responses = [part["functionResponse"]["response"] for part in payload["contents"][1]["parts"]]
