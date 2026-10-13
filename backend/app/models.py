@@ -307,6 +307,7 @@ class ModelConfigurationInput(BaseModel):
     model: str
     apiKey: str = ""
     api: str = "openai-completions"
+    apiOptions: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("providerId", "provider", "baseUrl", "model", "api")
     @classmethod
@@ -320,6 +321,15 @@ class ModelConfigurationInput(BaseModel):
     @classmethod
     def normalize_api_key(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("apiOptions")
+    @classmethod
+    def normalize_api_options(cls, value: dict[str, str]) -> dict[str, str]:
+        return {
+            key.strip(): item.strip()
+            for key, item in value.items()
+            if key.strip() and item.strip()
+        }
 
 
 class ModelConfiguration(ModelConfigurationInput):

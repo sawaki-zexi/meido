@@ -291,8 +291,9 @@ Google、Mistral、Bedrock 和 Pi Messages 不共享彼此的请求体转换。
 ## 9. 明确不包含
 
 - 同一会话自动切换或故障转移到其他服务商
-- OAuth、AWS SigV4、Vertex ADC 和广泛的模型能力目录；Bedrock 当前通过配置的
-  bearer API Key 认证，其他认证需使用前置代理
+- OAuth 登录/刷新/撤销生命周期、AWS SigV4 和广泛的模型能力目录；Codex 可使用
+  手动提供的 OAuth bearer token，Vertex 支持 ADC，Bedrock 当前通过配置的 bearer
+  API Key 认证
 - 模型自动发现、自动推荐和价格管理
 - 多用户账户、云端同步和远程配置
 - 模型配置版本比较、回滚和审计界面
@@ -316,8 +317,10 @@ Google、Mistral、Bedrock 和 Pi Messages 不共享彼此的请求体转换。
   协议的请求体发送到另一种协议 endpoint。
 - 通用工具格式检查不能证明某个模型部署支持每个 JSON Schema 关键字或工具调用；
   provider 特有能力仍以服务端响应为准。
-- Bedrock 当前使用配置的 bearer API Key，不包含 AWS SigV4、Vertex ADC 或 OAuth
-  凭据发现和刷新。
+- Vertex 使用 API Key 或 ADC；Codex OAuth token 需要手动配置，应用不管理其生命周期。
+- Bedrock 当前使用配置的 bearer API Key，不包含 AWS SigV4。
+- Google Generative AI/Vertex 会在发请求前拦截不支持的 schema 组合；通用 schema
+  校验不代表每个服务商或模型部署支持全部 JSON Schema 关键字。
 
 ## 12. 验收场景
 

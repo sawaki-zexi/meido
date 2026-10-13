@@ -35,6 +35,12 @@ def test_provider_presets_and_saved_configuration_are_publicly_masked(tmp_path, 
         "openai-completions", "openai-responses", "anthropic-messages", "google-generative",
         "mistral-conversations", "bedrock-converse", "pi-messages",
     }
+    from backend.app.model_config import SUPPORTED_MODEL_APIS
+    assert SUPPORTED_MODEL_APIS == {
+        "openai-completions", "openai-responses", "anthropic-messages", "google-generative",
+        "mistral-conversations", "bedrock-converse", "pi-messages", "azure-openai-responses",
+        "openai-codex-responses", "google-vertex",
+    }
     assert providers[1]["baseUrl"] == "https://api.deepseek.com"
     assert client.get("/api/model/configuration").json()["configuration"] is None
 
@@ -56,6 +62,36 @@ def test_invalid_configuration_does_not_replace_active_configuration(tmp_path, m
 
     assert response.status_code == 422
     assert store.get() == before
+
+
+def test_protocol_options_are_persisted_and_public_without_exposing_credentials(tmp_path, monkeypatch):
+    store, client = configure_api(tmp_path, monkeypatch)
+    options = {"project": "meido-project", "location": "asia-northeast1"}
+
+    response = client.post("/api/model/configurations", json=payload(
+        providerId="custom",
+        provider="vertex",
+        baseUrl="https://asia-northeast1-aiplatform.googleapis.com",
+        model="gemini-2.5-flash",
+        api="google-vertex",
+        apiKey="",
+        apiOptions=options,
+    ))
+
+    assert response.status_code == 200
+    assert response.json()["configuration"]["apiOptions"] == options
+    assert response.json()["configuration"]["apiKeyConfigured"] is False
+    assert store.get().apiOptions == options
+    assert ModelConfigurationStore(store.path).get().apiOptions == options
+
+
+def test_protocol_rejects_unknown_options(tmp_path, monkeypatch):
+    _, client = configure_api(tmp_path, monkeypatch)
+
+    response = client.post("/api/model/configurations", json=payload(apiOptions={"deploymentName": "unexpected"}))
+
+    assert response.status_code == 422
+    assert "模型协议不支持配置项" in response.text
 
 
 def test_provider_id_must_match_preset(tmp_path, monkeypatch):

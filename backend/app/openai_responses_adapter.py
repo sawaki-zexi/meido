@@ -159,8 +159,16 @@ def _sse_events(lines: AsyncIterator[str]) -> AsyncIterator[tuple[str, str]]:
 
 
 class _Accumulator:
-    def __init__(self, name_aliases: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        name_aliases: Mapping[str, str] | None = None,
+        *,
+        provider: str = "openai",
+        api: str = "openai-responses",
+    ) -> None:
         self.name_aliases = name_aliases or {}
+        self.provider = provider
+        self.api = api
         self.outputs: OrderedDict[str, _Output] = OrderedDict()
         self.order: list[str] = []
         self.usage = ModelUsage()
@@ -279,8 +287,8 @@ class _Accumulator:
         return events, ModelAssistantMessage(
             content=tuple(blocks),
             metadata=ModelResponseMetadata(
-                provider="openai",
-                api="openai-responses",
+                provider=self.provider,
+                api=self.api,
                 model=self.model,
                 response_id=self.response_id,
                 usage=self.usage,
@@ -291,9 +299,27 @@ class _Accumulator:
 
 
 class OpenAIResponsesAdapter:
-    def __init__(self, timeout: float | None = None, options: OpenAIResponsesOptions | None = None) -> None:
+    def __init__(
+        self,
+        timeout: float | None = None,
+        options: OpenAIResponsesOptions | None = None,
+        *,
+        api: str = "openai-responses",
+        provider: str | None = None,
+    ) -> None:
         self.timeout = timeout
         self.options = options or OpenAIResponsesOptions()
+        self.api = api
+        self.provider = provider
+
+    def _url(self, configuration) -> str:
+        return f"{configuration.baseUrl.rstrip('/')}/responses"
+
+    def _headers(self, configuration) -> dict[str, str]:
+        return {"Authorization": f"Bearer {configuration.apiKey}", "content-type": "application/json"}
+
+    def _accumulator(self, aliases, configuration) -> _Accumulator:
+        return _Accumulator(aliases, provider=self.provider or configuration.provider, api=self.api)
 
     def _prepare(self, messages, configuration, tools, *, max_tokens, stream):
         transformed = transform_messages(messages, capabilities=self.options.capabilities, target_model=configuration.model)
@@ -310,16 +336,16 @@ class OpenAIResponsesAdapter:
             payload["tools"] = wire_tools
         if max_tokens is not None:
             payload["max_output_tokens"] = max_tokens
-        headers = {"Authorization": f"Bearer {configuration.apiKey}", "content-type": "application/json"}
+        headers = self._headers(configuration)
         return payload, headers, reverse
 
     async def stream_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check=None) -> AsyncIterator[ModelStreamEvent]:
         payload, headers, name_aliases = self._prepare(messages, configuration, tools, max_tokens=max_tokens, stream=True)
-        accumulator = _Accumulator(name_aliases)
+        accumulator = self._accumulator(name_aliases, configuration)
         yield ModelStreamStart()
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                async with client.stream("POST", f"{configuration.baseUrl.rstrip('/')}/responses", headers=headers, json=payload) as response:
+                async with client.stream("POST", self._url(configuration), headers=headers, json=payload) as response:
                     await _raise_for_status_with_details(response, configuration.apiKey)
                     async for event_type, raw in _sse_events(response.aiter_lines()):
                         if cancel_check:
@@ -361,12 +387,12 @@ class OpenAIResponsesAdapter:
     async def complete_messages(self, messages, configuration, tools=(), *, max_tokens=None):
         payload, headers, name_aliases = self._prepare(messages, configuration, tools, max_tokens=max_tokens, stream=False)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(f"{configuration.baseUrl.rstrip('/')}/responses", headers=headers, json=payload)
+            response = await client.post(self._url(configuration), headers=headers, json=payload)
             await _raise_for_status_with_details(response, configuration.apiKey)
         data = response.json()
         if not isinstance(data, Mapping):
             raise RuntimeError("模型响应不是 JSON 对象")
-        accumulator = _Accumulator(name_aliases)
+        accumulator = self._accumulator(name_aliases, configuration)
         accumulator.response_id = data.get("id") if isinstance(data.get("id"), str) else None
         accumulator.model = data.get("model") if isinstance(data.get("model"), str) else None
         accumulator.usage = _usage(data.get("usage"))

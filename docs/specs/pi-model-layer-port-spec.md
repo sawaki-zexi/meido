@@ -35,8 +35,8 @@
   - 保持 system message 和工具声明的顺序。
 - 类 Pi 的 assistant 事件流：start、text start/delta/end、thinking start/delta/end、tool call start/delta/end、done、error，并提供最终 assistant message 结果。
 - Provider registry 与协议适配器：
-  - 根据配置的 `api` 选择 OpenAI Completions、OpenAI Responses、Anthropic Messages、Google Generative AI、Mistral Conversations、Amazon Bedrock Converse 或 Pi Messages；未设置时兼容旧配置并使用 OpenAI Completions。
-  - 每个协议独立转换消息、工具 schema、图片和工具结果，不能把其他协议的请求体直接复用到当前 endpoint。
+  - 根据配置的 `api` 选择 Pi 源码中定义的十种协议：OpenAI Completions/Responses、Azure OpenAI Responses、OpenAI Codex Responses、Anthropic Messages、Google Generative AI/Vertex、Mistral Conversations、Amazon Bedrock Converse 或 Pi Messages；未设置时兼容旧配置并使用 OpenAI Completions。
+  - 每个协议独立转换消息、工具 schema、图片和工具结果，不能把其他协议的请求体直接复用到当前 endpoint；无法表达的 provider schema 约束在请求前报出具体字段。
 - OpenAI Chat Completions 兼容适配器：
   - 解析文本和 `reasoning`、`reasoning_content`、`reasoning_text`、`reasoning_details`；
   - 聚合新版 `tool_calls` 与旧版 `function_call`，支持多调用、分片 ID/name/arguments 和完整 message 响应；
@@ -49,7 +49,7 @@
 ### 2.2 明确不包含
 
 - Pi Coding Agent、CLI/TUI、JSONL/tree session、OAuth、动态模型目录和扩展宿主。
-- AWS SigV4、Vertex ADC、OAuth 等外部认证编排；Bedrock 适配器使用配置提供的 bearer API key，其他认证需要在 endpoint 前置代理完成。
+- AWS SigV4 和 OAuth 登录/刷新/撤销等凭据生命周期；Codex 接收手动提供的 OAuth bearer token，Vertex 支持 API Key 或 ADC，Bedrock 使用配置提供的 bearer API key。
 - 改变 Meido 的角色、会话、SQLite、记忆、能力授权或工具安全边界。
 
 自定义服务商默认使用 OpenAI Chat Completions；原生协议必须通过明确的 `api` 配置选择对应适配器。
@@ -102,10 +102,11 @@ Meido Runtime messages
 - `backend/app/model_event_stream.py` 提供终止事件和最终 assistant message 的异步结果；
 - `backend/app/pi_openai_adapter.py` 实现 OpenAI Chat Completions 的 rich stream 和 complete 调用，解析 reasoning、usage、finish reason、legacy/new tool calls、SSE/HTTP 错误和取消；
 - `ModelAdapterRegistry` 按配置协议路由 OpenAI Completions、OpenAI Responses、Anthropic、Google、Mistral、Bedrock 和 Pi Messages；
+- registry 也支持 Azure OpenAI Responses、Codex Responses 和 Google Vertex；Vertex 可从 Google ADC 获取凭据，Codex 使用手动提供的 OAuth bearer token；
 - `MeidoProvider` 把 rich stream 投影给 Runtime，并从 Runtime transcript 还原模型响应元数据和 thinking；
 - 自定义连接可显式选择协议，历史配置缺省为 OpenAI Completions。
 
-当前已完成各协议的 HTTP/SSE 或 JSON 请求转换和统一 rich stream 投影；AWS SigV4、Vertex ADC、OAuth 不在本次范围。
+所有十种协议均通过 HTTP/SSE 或 JSON 转换投影到统一 rich stream。Codex 目前采用 HTTP SSE，不包含 Pi 的 WebSocket、自动重试和 OAuth 生命周期；Bedrock 不包含 AWS SigV4。
 
 ## 6. 风险和决策
 

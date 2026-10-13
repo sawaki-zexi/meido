@@ -78,20 +78,86 @@ def _messages_to_wire(messages: Sequence[ModelMessage]) -> tuple[str, list[dict[
 
 
 def _tools(tools: Sequence[Mapping[str, object]], aliases: Mapping[str, str]) -> list[dict[str, object]]:
+    def google_schema(schema: object) -> object:
+        if isinstance(schema, list):
+            return [google_schema(item) for item in schema]
+        if isinstance(schema, bool):
+            raise ValueError("Google Generative AI 工具 schema 不支持布尔子 schema")
+        if not isinstance(schema, Mapping):
+            raise ValueError("Google Generative AI 工具 schema 子节点必须是对象")
+        # Gemini function declarations use a restricted OpenAPI subset. Keep
+        # validation in the shared layer, then remove keywords Gemini rejects.
+        unsupported = {
+            "$defs", "$ref", "allOf", "anyOf", "contains", "dependentSchemas",
+            "if", "not", "oneOf", "patternProperties", "prefixItems",
+            "propertyNames", "then", "unevaluatedItems", "unevaluatedProperties",
+        }
+        found = unsupported.intersection(schema)
+        if found:
+            raise ValueError(f"Google Generative AI 工具 schema 暂不支持 {', '.join(sorted(found))}")
+        additional = schema.get("additionalProperties")
+        if additional is not None and not isinstance(additional, bool):
+            raise ValueError("Google Generative AI 工具 schema 不支持 additionalProperties schema")
+        if "additionalItems" in schema:
+            raise ValueError("Google Generative AI 工具 schema 不支持 additionalItems")
+        if isinstance(schema.get("items"), list):
+            raise ValueError("Google Generative AI 工具 schema 不支持 items 元组")
+        enum = schema.get("enum")
+        if isinstance(enum, list) and any(not isinstance(item, str) for item in enum):
+            raise ValueError("Google Generative AI 工具 schema.enum 只支持字符串")
+        result: dict[str, object] = {}
+        for key, value in schema.items():
+            if key in {"additionalProperties", "default"}:
+                continue
+            if key == "properties" and isinstance(value, Mapping):
+                result[str(key)] = {str(prop): google_schema(child) for prop, child in value.items()}
+            elif key == "items":
+                result[str(key)] = google_schema(value)
+            else:
+                result[str(key)] = value
+        schema_type = result.get("type")
+        if isinstance(schema_type, list):
+            types = [item for item in schema_type if item != "null"]
+            if len(types) != 1:
+                raise ValueError("Google Generative AI 工具 schema 只支持可空的单一类型")
+            result["type"] = types[0]
+            result["nullable"] = "null" in schema_type
+        return result
+
     declarations = []
     for tool in normalize_tools(tools):
         declarations.append({
             "name": aliases.get(str(tool["name"]), str(tool["name"])),
             "description": tool["description"],
-            "parameters": tool["parameters"],
+            "parameters": google_schema(tool["parameters"]),
         })
     return [{"functionDeclarations": declarations}] if declarations else []
 
 
 class GoogleGenerativeAdapter:
-    def __init__(self, timeout: float | None = None, capabilities: ModelCapabilities | None = None) -> None:
+    def __init__(
+        self,
+        timeout: float | None = None,
+        capabilities: ModelCapabilities | None = None,
+        *,
+        api: str = "google-generative",
+    ) -> None:
         self.timeout = timeout
         self.capabilities = capabilities or ModelCapabilities(supports_images=True, supports_reasoning=True)
+        self.api = api
+
+    def _url(self, configuration, *, stream: bool) -> str:
+        suffix = ":streamGenerateContent?alt=sse" if stream else ":generateContent"
+        return f"{configuration.baseUrl.rstrip('/')}/models/{configuration.model}{suffix}"
+
+    def _headers(self, configuration, *, stream: bool) -> dict[str, str]:
+        headers = {"content-type": "application/json", "accept": "text/event-stream" if stream else "application/json"}
+        if configuration.apiKey:
+            headers["x-goog-api-key"] = configuration.apiKey
+        return headers
+
+    async def _authorize(self, configuration, headers: dict[str, str]) -> str:
+        return configuration.apiKey
 
     def _prepare(self, messages: Sequence[ModelMessage], configuration: ModelConfiguration, tools: Sequence[Mapping[str, object]], *, stream: bool, max_tokens: int | None) -> tuple[str, dict[str, str], dict[str, object], dict[str, str]]:
         transformed = transform_messages(messages, capabilities=self.capabilities, target_model=configuration.model)
@@ -110,9 +176,8 @@ class GoogleGenerativeAdapter:
             payload["tools"] = function_tools
         if config:
             payload["generationConfig"] = config
-        suffix = ":streamGenerateContent?alt=sse" if stream else ":generateContent"
-        url = f"{configuration.baseUrl.rstrip('/')}/models/{configuration.model}{suffix}"
-        headers = {"x-goog-api-key": configuration.apiKey, "content-type": "application/json", "accept": "text/event-stream" if stream else "application/json"}
+        url = self._url(configuration, stream=stream)
+        headers = self._headers(configuration, stream=stream)
         return url, headers, payload, reverse
 
     async def stream_messages(self, messages: Sequence[ModelMessage], configuration: ModelConfiguration, tools: Sequence[Mapping[str, object]] = (), *, max_tokens: int | None = None, cancel_check: Callable[[], None] | None = None) -> AsyncIterator[ModelStreamEvent]:
@@ -125,11 +190,13 @@ class GoogleGenerativeAdapter:
         stop_reason = None
         text_open = thinking_open = False
         completed = False
+        redaction_key = configuration.apiKey
         yield ModelStreamStart()
         try:
+            redaction_key = await self._authorize(configuration, headers)
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 async with client.stream("POST", url, headers=headers, json=payload) as response:
-                    await _raise_for_status_with_details(response, configuration.apiKey)
+                    await _raise_for_status_with_details(response, redaction_key)
                     async for line in response.aiter_lines():
                         if cancel_check:
                             cancel_check()
@@ -196,23 +263,24 @@ class GoogleGenerativeAdapter:
             if not completed:
                 yield ModelStreamError("模型流式响应未正常结束")
                 return
-            yield ModelStreamDone(ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(provider=configuration.provider, api="google-generative", model=configuration.model, response_id=response_id, usage=usage, stop_reason=stop_reason or ("tool_use" if any(isinstance(item, ModelToolCallBlock) for item in blocks) else "stop"), timestamp=int(time.time() * 1000))))
+            yield ModelStreamDone(ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(provider=configuration.provider, api=self.api, model=configuration.model, response_id=response_id, usage=usage, stop_reason=stop_reason or ("tool_use" if any(isinstance(item, ModelToolCallBlock) for item in blocks) else "stop"), timestamp=int(time.time() * 1000))))
         except httpx.HTTPStatusError as error:
-            detail = _response_error_detail(error.response, configuration.apiKey)
+            detail = _response_error_detail(error.response, redaction_key)
             yield ModelStreamError(f"HTTP {error.response.status_code} {error.response.reason_phrase}: {detail}" if detail else f"HTTP {error.response.status_code} {error.response.reason_phrase}")
         except RuntimeError as error:
             if str(error) == "agent run cancelled":
                 raise
             yield ModelStreamError(str(error))
         except Exception as error:
-            message = str(error).replace(configuration.apiKey, "***") if configuration.apiKey else str(error)
+            message = str(error).replace(redaction_key, "***") if redaction_key else str(error)
             yield ModelStreamError(message)
 
     async def complete_messages(self, messages: Sequence[ModelMessage], configuration: ModelConfiguration, tools: Sequence[Mapping[str, object]] = (), *, max_tokens: int | None = None) -> ModelAssistantMessage:
         url, headers, payload, name_aliases = self._prepare(messages, configuration, tools, stream=False, max_tokens=max_tokens)
+        redaction_key = await self._authorize(configuration, headers)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(url, headers=headers, json=payload)
-            await _raise_for_status_with_details(response, configuration.apiKey)
+            await _raise_for_status_with_details(response, redaction_key)
         data = response.json()
         if not isinstance(data, Mapping):
             raise RuntimeError("模型响应不是 JSON 对象")
@@ -232,7 +300,7 @@ class GoogleGenerativeAdapter:
                 wire_name = str(function.get("name") or "")
                 blocks.append(ModelToolCallBlock(safe_tool_id(str(function.get("id") or f"call-{len(blocks)}")), name_aliases.get(wire_name, wire_name), dict(args)))
         reason = str(candidate.get("finishReason") or "STOP")
-        return ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(provider=configuration.provider, api="google-generative", model=configuration.model, usage=_usage(data.get("usageMetadata")), stop_reason={"STOP": "stop", "MAX_TOKENS": "length"}.get(reason, reason.lower()), timestamp=int(time.time() * 1000)))
+        return ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(provider=configuration.provider, api=self.api, model=configuration.model, usage=_usage(data.get("usageMetadata")), stop_reason={"STOP": "stop", "MAX_TOKENS": "length"}.get(reason, reason.lower()), timestamp=int(time.time() * 1000)))
 
     async def stream_rich_messages(self, *args, **kwargs) -> AsyncIterator[ModelStreamEvent]:
         async for event in self.stream_messages(*args, **kwargs):

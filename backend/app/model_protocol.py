@@ -18,6 +18,9 @@ GOOGLE_GENERATIVE_API = "google-generative"
 MISTRAL_CONVERSATIONS_API = "mistral-conversations"
 BEDROCK_CONVERSE_API = "bedrock-converse"
 PI_MESSAGES_API = "pi-messages"
+AZURE_OPENAI_RESPONSES_API = "azure-openai-responses"
+OPENAI_CODEX_RESPONSES_API = "openai-codex-responses"
+GOOGLE_VERTEX_API = "google-vertex"
 
 
 def copy_json(value: object) -> object:
@@ -78,6 +81,19 @@ def _validate_schema(schema: object, name: str) -> None:
         return
     if not isinstance(schema, Mapping):
         raise ValueError(f"工具参数 schema 子节点必须是对象或布尔值: {name}")
+    schema_type = schema.get("type")
+    valid_types = {"array", "boolean", "integer", "null", "number", "object", "string"}
+    if schema_type is not None:
+        types = schema_type if isinstance(schema_type, list) else [schema_type]
+        if (
+            not types
+            or any(not isinstance(item, str) or item not in valid_types for item in types)
+            or len(types) != len(set(types))
+        ):
+            raise ValueError(f"工具参数 schema.type 必须是有效类型: {name}")
+    enum = schema.get("enum")
+    if enum is not None and (not isinstance(enum, list) or not enum):
+        raise ValueError(f"工具参数 schema.enum 必须是非空数组: {name}")
     properties = schema.get("properties", {})
     if not isinstance(properties, Mapping):
         raise ValueError(f"工具参数 schema.properties 必须是对象: {name}")

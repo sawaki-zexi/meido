@@ -23,8 +23,14 @@
 规范化和通用工具 schema 结构校验。它不改写 provider 专属字段或假设所有模型
 支持相同的 JSON Schema 子集。
 
-当前注册协议为 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、
-Google Generative AI、Mistral Conversations、Amazon Bedrock Converse 和 Pi Messages。
+当前注册协议为 Pi 所定义的十种 chat API：OpenAI Chat Completions/Responses、
+Azure OpenAI Responses、OpenAI Codex Responses、Anthropic Messages、Google
+Generative AI/Vertex、Mistral Conversations、Amazon Bedrock Converse 和 Pi Messages。
+
+通用 schema 检查拦截确定的结构错误；adapter 可按协议限制或转换 schema 子集。
+不能表达的约束应明确报错，不能静默发送已知无效格式。Google Generative AI 和
+Vertex 对 `additionalProperties: false` 做兼容转换，可空单类型转换为 `nullable`；
+暂不支持的组合在请求前返回具体字段名。
 
 ## 取舍
 
@@ -34,8 +40,10 @@ Google Generative AI、Mistral Conversations、Amazon Bedrock Converse 和 Pi Me
   转换和行为测试。
 - 通用预检可以拦截确定的结构错误，但不能代替服务端验证模型是否支持工具调用、
   特定 schema 关键字或上下文长度。
-- 当前 API Key 配置不实现 OAuth、AWS SigV4 或 Vertex ADC。Bedrock 通过配置的
-  bearer API Key 访问 endpoint，需其他认证时由前置代理处理。
+- Codex Responses 接受手动提供的 OAuth bearer token，并可从 JWT 读取账户 ID；
+  不负责 OAuth 登录、刷新或撤销生命周期。
+- Vertex 可使用 API Key 或 ADC 获取访问令牌；Bedrock 当前通过配置的 bearer
+  API Key 访问 endpoint，不包含 AWS SigV4。
 
 ## 后果
 

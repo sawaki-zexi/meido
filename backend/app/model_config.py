@@ -8,10 +8,13 @@ from urllib.parse import urlsplit
 from .models import ModelConfiguration, ModelConfigurationInput
 from .model_protocol import (
     ANTHROPIC_MESSAGES_API,
+    AZURE_OPENAI_RESPONSES_API,
     BEDROCK_CONVERSE_API,
     GOOGLE_GENERATIVE_API,
+    GOOGLE_VERTEX_API,
     MISTRAL_CONVERSATIONS_API,
     OPENAI_COMPLETIONS_API,
+    OPENAI_CODEX_RESPONSES_API,
     OPENAI_RESPONSES_API,
     PI_MESSAGES_API,
 )
@@ -24,6 +27,9 @@ SUPPORTED_MODEL_APIS = frozenset({
     MISTRAL_CONVERSATIONS_API,
     BEDROCK_CONVERSE_API,
     PI_MESSAGES_API,
+    AZURE_OPENAI_RESPONSES_API,
+    OPENAI_CODEX_RESPONSES_API,
+    GOOGLE_VERTEX_API,
 })
 
 
@@ -151,6 +157,18 @@ def validate_model_configuration(data: ModelConfigurationInput) -> None:
         raise ValueError("不支持的模型协议")
     if preset and data.api != preset["api"]:
         raise ValueError("模型协议与所选预设不匹配")
+    option_keys = {
+        AZURE_OPENAI_RESPONSES_API: {"deploymentName"},
+        OPENAI_CODEX_RESPONSES_API: {"accountId"},
+        GOOGLE_VERTEX_API: {"project", "location"},
+    }.get(data.api, set())
+    unknown_options = set(data.apiOptions) - option_keys
+    if unknown_options:
+        raise ValueError(f"模型协议不支持配置项: {', '.join(sorted(unknown_options))}")
+    if data.api == GOOGLE_VERTEX_API and not data.apiOptions.get("project"):
+        raise ValueError("Google Vertex 协议需要填写 Google Cloud 项目 ID")
+    if data.api == OPENAI_CODEX_RESPONSES_API and not data.apiKey:
+        raise ValueError("OpenAI Codex Responses 协议需要提供 ChatGPT OAuth token")
     parsed = urlsplit(data.baseUrl)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("服务地址必须是有效的 HTTP 或 HTTPS URL")
@@ -171,6 +189,7 @@ def public_configuration(config: ModelConfiguration | None) -> dict | None:
         "baseUrl": config.baseUrl,
         "model": config.model,
         "apiKeyConfigured": bool(config.apiKey),
+        "apiOptions": config.apiOptions,
     }
 
 

@@ -53,4 +53,52 @@ describe("ModelSettings protocol selection", () => {
       model: "claude-test",
     });
   });
+
+  it("shows protocol-specific Azure options in the test payload", async () => {
+    const { calls } = fakeBackend({
+      "GET /api/model/providers": () => ({ body: { providers: [] } }),
+      "GET /api/model/configurations": () => ({ body: { configurations: [], activeId: null } }),
+      "POST /api/model/configuration/test": () => ({ body: { ok: true, message: "ok", latencyMs: 1 } }),
+    });
+
+    render(<ModelSettings />);
+    fireEvent.change(await screen.findByLabelText("服务商"), { target: { value: "custom" } });
+    fireEvent.change(screen.getByLabelText("服务商标识"), { target: { value: "azure" } });
+    fireEvent.change(screen.getByLabelText("API 协议"), { target: { value: "azure-openai-responses" } });
+    fireEvent.change(screen.getByLabelText("Azure 部署名称"), { target: { value: "chat-prod" } });
+    fireEvent.change(screen.getByLabelText("API 地址"), { target: { value: "https://resource.openai.azure.com" } });
+    fireEvent.change(screen.getByLabelText("模型 ID"), { target: { value: "gpt-4.1" } });
+    fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
+
+    await waitFor(() => expect(calls.some((call) => call.path === "/api/model/configuration/test")).toBe(true));
+    expect(calls.find((call) => call.path === "/api/model/configuration/test")?.body).toMatchObject({
+      api: "azure-openai-responses",
+      apiOptions: { deploymentName: "chat-prod" },
+    });
+  });
+
+  it("allows Codex to infer the account ID from its OAuth token", async () => {
+    const { calls } = fakeBackend({
+      "GET /api/model/providers": () => ({ body: { providers: [] } }),
+      "GET /api/model/configurations": () => ({ body: { configurations: [], activeId: null } }),
+      "POST /api/model/configuration/test": () => ({ body: { ok: true, message: "ok", latencyMs: 1 } }),
+    });
+
+    render(<ModelSettings />);
+    fireEvent.change(await screen.findByLabelText("服务商"), { target: { value: "custom" } });
+    fireEvent.change(screen.getByLabelText("服务商标识"), { target: { value: "codex" } });
+    fireEvent.change(screen.getByLabelText("API 协议"), { target: { value: "openai-codex-responses" } });
+    expect(screen.getByLabelText("ChatGPT Account ID（可选）")).not.toBeRequired();
+    fireEvent.change(screen.getByLabelText("API 地址"), { target: { value: "https://chatgpt.com/backend-api" } });
+    fireEvent.change(screen.getByLabelText("模型 ID"), { target: { value: "codex-model" } });
+    fireEvent.change(screen.getByLabelText("ChatGPT OAuth Token"), { target: { value: "oauth-token" } });
+    fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
+
+    await waitFor(() => expect(calls.some((call) => call.path === "/api/model/configuration/test")).toBe(true));
+    expect(calls.find((call) => call.path === "/api/model/configuration/test")?.body).toMatchObject({
+      api: "openai-codex-responses",
+      apiKey: "oauth-token",
+      apiOptions: {},
+    });
+  });
 });

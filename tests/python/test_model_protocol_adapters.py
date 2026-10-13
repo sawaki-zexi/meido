@@ -18,6 +18,9 @@ from backend.app.mistral_adapter import MistralConversationsAdapter
 from backend.app.model_protocol import normalize_tools
 from backend.app.models import ModelConfiguration
 from backend.app.openai_responses_adapter import OpenAIResponsesAdapter
+from backend.app.azure_openai_responses_adapter import AzureOpenAIResponsesAdapter
+from backend.app.openai_codex_responses_adapter import OpenAICodexResponsesAdapter
+from backend.app.google_vertex_adapter import GoogleVertexAdapter
 from backend.app.pi_messages_adapter import PiMessagesAdapter
 
 
@@ -151,6 +154,96 @@ def test_responses_uses_input_and_function_call_output(monkeypatch):
     payload = json.loads(requests[0].content)
     assert payload["input"][0]["role"] == "system"
     assert payload["input"][1]["content"][0]["type"] == "input_text"
+    assert any(isinstance(event, ModelStreamDone) for event in events)
+
+
+def test_azure_responses_uses_v1_endpoint_and_api_key_header(monkeypatch):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, text=(
+            'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_azure","model":"deployment"}}\n\n'
+            'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\n'
+            'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n'
+        ))
+
+    patch_client(monkeypatch, handler)
+    config = configuration("azure-openai-responses", "https://meido.openai.azure.com", "azure")
+    events = asyncio.run(collect(AzureOpenAIResponsesAdapter().stream_messages(messages(), config)))
+
+    assert requests[0].url == "https://meido.openai.azure.com/openai/v1/responses"
+    assert requests[0].headers["api-key"] == "secret-key"
+    assert "authorization" not in requests[0].headers
+    done = next(event for event in events if isinstance(event, ModelStreamDone))
+    assert done.message.metadata.api == "azure-openai-responses"
+
+
+def test_openai_codex_responses_sends_account_header_and_parses_native_events(monkeypatch):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, text=(
+            'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_codex","model":"codex-model"}}\n\n'
+            'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\n'
+            'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n'
+        ))
+
+    patch_client(monkeypatch, handler)
+    config = configuration("openai-codex-responses", "https://codex.provider.test/backend-api/codex", "openai-codex")
+    config.apiOptions = {"accountId": "acct-1"}
+    events = asyncio.run(collect(OpenAICodexResponsesAdapter().stream_messages(messages(), config)))
+
+    assert requests[0].url == "https://codex.provider.test/backend-api/codex/responses"
+    assert requests[0].headers["authorization"] == "Bearer secret-key"
+    assert requests[0].headers["chatgpt-account-id"] == "acct-1"
+    done = next(event for event in events if isinstance(event, ModelStreamDone))
+    assert done.message.metadata.api == "openai-codex-responses"
+
+
+def test_vertex_uses_project_location_and_api_key_header(monkeypatch):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, text=(
+            'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1}}\n\n'
+        ))
+
+    patch_client(monkeypatch, handler)
+    config = configuration("google-vertex", "https://us-central1-aiplatform.googleapis.com", "google-vertex")
+    config.apiOptions = {"project": "meido-test", "location": "us-central1"}
+    events = asyncio.run(collect(GoogleVertexAdapter().stream_messages(messages(), config)))
+
+    assert requests[0].url == "https://us-central1-aiplatform.googleapis.com/v1/projects/meido-test/locations/us-central1/publishers/google/models/model-1:streamGenerateContent?alt=sse"
+    assert requests[0].headers["x-goog-api-key"] == "secret-key"
+    done = next(event for event in events if isinstance(event, ModelStreamDone))
+    assert done.message.metadata.api == "google-vertex"
+
+
+def test_vertex_uses_adc_when_api_key_is_empty_and_normalizes_v1_base_url(monkeypatch):
+    from backend.app import google_vertex_adapter
+
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, text=(
+            'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n'
+        ))
+
+    patch_client(monkeypatch, handler)
+    monkeypatch.setattr(google_vertex_adapter, "_google_adc_token", lambda: "adc-access-token")
+    config = configuration("google-vertex", "https://us-central1-aiplatform.googleapis.com/v1", "google-vertex")
+    config.apiKey = ""
+    config.apiOptions = {"project": "meido-test", "location": "us-central1"}
+
+    events = asyncio.run(collect(GoogleVertexAdapter().stream_messages(messages(), config)))
+
+    assert requests[0].url == "https://us-central1-aiplatform.googleapis.com/v1/projects/meido-test/locations/us-central1/publishers/google/models/model-1:streamGenerateContent?alt=sse"
+    assert requests[0].headers["authorization"] == "Bearer adc-access-token"
+    assert requests[0].headers["x-goog-user-project"] == "meido-test"
     assert any(isinstance(event, ModelStreamDone) for event in events)
 
 
@@ -427,6 +520,82 @@ def test_tool_schema_normalization_rejects_invalid_provider_neutral_shapes():
         normalize_tools([{"name": "nested", "parameters": {
             "properties": {"options": {"properties": {}, "required": ["missing"]}},
         }}])
+
+
+@pytest.mark.parametrize("schema, message", [
+    ({"properties": {"value": {"type": "unknown"}}}, "type 必须是有效类型"),
+    ({"properties": {"value": {"type": "string", "enum": "single"}}}, "enum 必须是非空数组"),
+])
+def test_tool_schema_normalization_rejects_invalid_keyword_values(schema, message):
+    with pytest.raises(ValueError, match=message):
+        normalize_tools([{"name": "invalid", "parameters": schema}])
+
+
+def test_google_tool_schema_drops_only_unrepresentable_false_additional_properties():
+    schema = {
+        "type": "object",
+        "properties": {
+            "nested": {
+                "type": "object",
+                "properties": {"count": {"type": "integer"}},
+                "additionalProperties": False,
+            },
+        },
+        "additionalProperties": False,
+    }
+
+    _url, _headers, payload, _aliases = GoogleGenerativeAdapter()._prepare(
+        messages(), configuration("google-generative"), [{"name": "lookup", "parameters": schema}],
+        stream=True, max_tokens=None,
+    )
+
+    parameters = payload["tools"][0]["functionDeclarations"][0]["parameters"]
+    assert "additionalProperties" not in parameters
+    assert "additionalProperties" not in parameters["properties"]["nested"]
+    assert schema["additionalProperties"] is False
+
+
+def test_google_tool_schema_converts_nullable_types_without_mutating_input():
+    schema = {
+        "type": "object",
+        "properties": {"date": {"type": ["string", "null"], "format": "date"}},
+    }
+
+    _url, _headers, payload, _aliases = GoogleGenerativeAdapter()._prepare(
+        messages(), configuration("google-generative"), [{"name": "lookup", "parameters": schema}],
+        stream=True, max_tokens=None,
+    )
+
+    parameters = payload["tools"][0]["functionDeclarations"][0]["parameters"]
+    assert parameters["properties"]["date"] == {"type": "string", "format": "date", "nullable": True}
+    assert schema["properties"]["date"]["type"] == ["string", "null"]
+
+
+@pytest.mark.parametrize("property_schema, message", [
+    (True, "不支持布尔子 schema"),
+    ({"type": "array", "items": [{"type": "string"}]}, "不支持 items 元组"),
+    ({"type": "string", "enum": [1, 2]}, "enum 只支持字符串"),
+])
+def test_google_tool_schema_rejects_unrepresentable_shapes(property_schema, message):
+    with pytest.raises(ValueError, match=message):
+        GoogleGenerativeAdapter()._prepare(
+            messages(), configuration("google-generative"), [{
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {"value": property_schema}},
+            }],
+            stream=True, max_tokens=None,
+        )
+
+
+def test_google_tool_schema_rejects_unsupported_keywords_before_request():
+    with pytest.raises(ValueError, match=r"Google.*\$ref"):
+        GoogleGenerativeAdapter()._prepare(
+            messages(), configuration("google-generative"), [{
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {"value": {"$ref": "#/$defs/value"}}},
+            }],
+            stream=True, max_tokens=None,
+        )
 
 
 @pytest.mark.parametrize("nested", [

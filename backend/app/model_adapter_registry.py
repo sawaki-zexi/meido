@@ -5,13 +5,16 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping, Sequence
 
 from .anthropic_adapter import AnthropicMessagesAdapter
+from .azure_openai_responses_adapter import AzureOpenAIResponsesAdapter
 from .bedrock_adapter import BedrockConverseAdapter
 from .google_adapter import GoogleGenerativeAdapter
+from .google_vertex_adapter import GoogleVertexAdapter
 from .mistral_adapter import MistralConversationsAdapter
 from .model_protocol import (
     ANTHROPIC_MESSAGES_API, BEDROCK_CONVERSE_API, GOOGLE_GENERATIVE_API,
     MISTRAL_CONVERSATIONS_API, OPENAI_COMPLETIONS_API, OPENAI_RESPONSES_API,
-    PI_MESSAGES_API, json_object,
+    PI_MESSAGES_API, AZURE_OPENAI_RESPONSES_API, OPENAI_CODEX_RESPONSES_API,
+    GOOGLE_VERTEX_API, json_object,
 )
 from .model_types import (
     ModelAssistantMessage, ModelContentBlock, ModelImageBlock, ModelMessage,
@@ -21,6 +24,7 @@ from .model_types import (
 from .models import ModelConfiguration
 from .model_adapter import OpenAICompatibleAdapter
 from .openai_responses_adapter import OpenAIResponsesAdapter
+from .openai_codex_responses_adapter import OpenAICodexResponsesAdapter
 from .pi_messages_adapter import PiMessagesAdapter
 
 
@@ -34,6 +38,9 @@ class ModelAdapterRegistry:
             MISTRAL_CONVERSATIONS_API: MistralConversationsAdapter(timeout=timeout),
             BEDROCK_CONVERSE_API: BedrockConverseAdapter(timeout=timeout),
             PI_MESSAGES_API: PiMessagesAdapter(timeout=timeout),
+            AZURE_OPENAI_RESPONSES_API: AzureOpenAIResponsesAdapter(timeout=timeout),
+            OPENAI_CODEX_RESPONSES_API: OpenAICodexResponsesAdapter(timeout=timeout),
+            GOOGLE_VERTEX_API: GoogleVertexAdapter(timeout=timeout),
         }
 
     def get(self, configuration: ModelConfiguration | None):
