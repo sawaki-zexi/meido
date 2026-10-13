@@ -2,6 +2,7 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from backend.app.agent_runtime import AssistantDoneEvent, CancellationToken, MeidoProvider, ToolCallEndEvent, UserMessage
 from backend.app.agent_runtime.types import AssistantMessage, ToolResultMessage
@@ -50,6 +51,41 @@ def test_openai_compatible_adapter_aggregates_streamed_tool_call(monkeypatch):
     assert payload["tool_choice"] == "auto"
 
 
+def test_deepseek_structured_requests_disable_thinking_without_reasoning_replay(monkeypatch):
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            text='data: {"choices":[{"delta":{"content":"完成"}}]}\n\ndata: [DONE]\n\n',
+            headers={"content-type": "text/event-stream"},
+        )
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+    configuration = ModelConfiguration(
+        providerId="deepseek",
+        provider="deepseek",
+        baseUrl="https://api.deepseek.com",
+        model="deepseek-flash",
+    )
+
+    async def collect():
+        return [event async for event in OpenAICompatibleAdapter().stream_structured_messages(
+            [{"role": "user", "content": "hello"}],
+            configuration,
+            [{"type": "function", "function": {"name": "todo.write"}}],
+        )]
+
+    assert asyncio.run(collect()) == [ModelTextDelta("完成")]
+    assert requests[0]["thinking"] == {"type": "disabled"}
+
+
 def test_openai_compatible_adapter_keeps_text_deltas_with_tools(monkeypatch):
     def handler(request):
         del request
@@ -68,6 +104,47 @@ def test_openai_compatible_adapter_keeps_text_deltas_with_tools(monkeypatch):
         return [event async for event in OpenAICompatibleAdapter().stream_structured_messages([], configuration, [])]
 
     assert asyncio.run(collect()) == [ModelTextDelta("完成")]
+
+
+def test_openai_compatible_adapter_surfaces_redacted_http_error_detail(monkeypatch):
+    request_payloads = []
+
+    def handler(request):
+        request_payloads.append(json.loads(request.content))
+        return httpx.Response(
+            400,
+            json={"error": {"message": "Invalid function name; secret=test-secret"}},
+            request=request,
+        )
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+    configuration = ModelConfiguration(
+        providerId="deepseek",
+        provider="deepseek",
+        baseUrl="https://api.deepseek.com",
+        model="deepseek-flash",
+        apiKey="test-secret",
+    )
+
+    async def collect():
+        return [event async for event in OpenAICompatibleAdapter().stream_structured_messages(
+            [{"role": "user", "content": "hello"}],
+            configuration,
+            [{"type": "function", "function": {"name": "todo.write"}}],
+        )]
+
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        asyncio.run(collect())
+
+    assert raised.value.response.status_code == 400
+    assert "Invalid function name" in str(raised.value)
+    assert "test-secret" not in str(raised.value)
+    assert request_payloads[0]["tools"][0]["function"]["name"] != "todo.write"
 
 
 def test_structured_adapter_uses_environment_configuration_when_unbound(monkeypatch):

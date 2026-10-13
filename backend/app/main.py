@@ -1126,14 +1126,18 @@ def _configuration_with_saved_key(data: ModelConfigurationInput) -> ModelConfigu
 def _safe_model_error(error: Exception, api_key: str = "") -> str:
     if isinstance(error, httpx.HTTPStatusError):
         status = error.response.status_code
-        message = {
-            401: "认证失败 (HTTP 401)：请检查 API Key 是否有效，以及是否属于当前服务商账号。",
-            403: "服务商拒绝了请求 (HTTP 403)：请检查账号权限和可用额度。",
-            404: "服务地址或模型不存在 (HTTP 404)：请检查 API 地址和模型 ID。",
-            429: "请求过于频繁或额度不足 (HTTP 429)：请稍后重试并检查服务商额度。",
-        }.get(status, f"模型服务请求失败 (HTTP {status})")
-        if 500 <= status <= 599:
-            message = f"模型服务暂时不可用 (HTTP {status})，请稍后重试。"
+        if status == 400:
+            detail = str(error).strip()
+            message = f"模型服务拒绝了请求 (HTTP 400)：{detail}" if detail else "模型服务拒绝了请求 (HTTP 400)"
+        else:
+            message = {
+                401: "认证失败 (HTTP 401)：请检查 API Key 是否有效，以及是否属于当前服务商账号。",
+                403: "服务商拒绝了请求 (HTTP 403)：请检查账号权限和可用额度。",
+                404: "服务地址或模型不存在 (HTTP 404)：请检查 API 地址和模型 ID。",
+                429: "请求过于频繁或额度不足 (HTTP 429)：请稍后重试并检查服务商额度。",
+            }.get(status, f"模型服务请求失败 (HTTP {status})")
+            if 500 <= status <= 599:
+                message = f"模型服务暂时不可用 (HTTP {status})，请稍后重试。"
     else:
         message = str(error).strip() or "模型服务请求失败"
     if api_key:
