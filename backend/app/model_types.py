@@ -131,11 +131,11 @@ ModelMessage: TypeAlias = (
 @dataclass(frozen=True, slots=True)
 class ModelCapabilities:
     supports_images: bool = True
-    preserve_tool_result_images: bool = False
     supports_reasoning: bool = True
     preserve_thinking_signatures: bool = True
     tool_call_id_pattern: str | None = None
     max_tool_call_id_length: int | None = None
+    preserve_tool_result_images: bool = False
 
 
 @dataclass(frozen=True, slots=True)
