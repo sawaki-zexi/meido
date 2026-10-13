@@ -87,7 +87,7 @@ Meido Runtime messages
 - [x] 截断的 OpenAI-compatible 工具参数按 partial JSON 恢复；真正非法参数、未知终止原因和缺失必需 `finish_reason` 的响应在完成前转为可诊断错误。
 - [x] provider usage、reasoning tokens、cache tokens、response id/model 和 finish reason 可在最终 assistant message 中读取；缺失字段使用明确的零值或 `None`，不抛解析异常。
 - [x] HTTP 400/401/429/5xx、SSE 内嵌 error、无终止事件和取消分别产生可诊断的统一错误；错误文本不包含 API Key。
-- [x] 现有纯文本对话、Runtime 工具循环、连接测试和前端构建保持通过。
+- [x] 现有纯文本对话、Runtime 工具循环、连接测试（包括流错误事件）和前端构建保持通过。
 - [x] `python -m pytest`、本次文件 Ruff、compileall、`npm run build` 和 `git diff --check` 全部通过。
 
 ## 5. 实施阶段

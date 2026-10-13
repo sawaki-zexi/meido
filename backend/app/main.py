@@ -1262,10 +1262,12 @@ async def test_model_configuration(data: ModelConfigurationInput) -> dict[str, o
     configuration = ModelConfiguration.model_validate(candidate.model_dump())
     started_at = monotonic()
     try:
-        async for _ in connection_test_adapter.stream_messages(
+        async for event in connection_test_adapter.stream_messages(
             [{"role": "user", "content": "ping"}], configuration, max_tokens=8
         ):
-            pass
+            if getattr(event, "type", None) == "error":
+                message = getattr(event, "error", "模型服务请求失败")
+                return {"ok": False, "message": _safe_model_error(RuntimeError(str(message)), configuration.apiKey)}
     except Exception as error:
         return {"ok": False, "message": _safe_model_error(error, configuration.apiKey)}
     return {

@@ -207,6 +207,21 @@ def test_connection_test_returns_elapsed_latency(tmp_path, monkeypatch):
     assert result == {"ok": True, "message": "连接成功", "latencyMs": 688}
 
 
+def test_connection_test_reports_stream_error_event(tmp_path, monkeypatch):
+    _, client = configure_api(tmp_path, monkeypatch)
+    from backend.app.model_types import ModelStreamError
+
+    async def stream_messages(messages, configuration, *, max_tokens=None):
+        del messages, configuration, max_tokens
+        yield ModelStreamError("provider rejected the request")
+
+    monkeypatch.setattr(main.connection_test_adapter, "stream_messages", stream_messages)
+
+    result = client.post("/api/model/configuration/test", json=payload()).json()
+
+    assert result == {"ok": False, "message": "provider rejected the request"}
+
+
 def test_connection_test_scrubs_secret_from_failure_and_keeps_active_config(tmp_path, monkeypatch):
     store, client = configure_api(tmp_path, monkeypatch)
     store.save(ModelConfigurationInput(**payload()))
