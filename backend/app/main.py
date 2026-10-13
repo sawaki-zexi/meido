@@ -25,6 +25,7 @@ from .memory_service import MemoryService, MemoryWorker
 from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryQueryFilters, MemoryScope
 from .embeddings import SharedEmbeddingProvider
 from .embedding_config import EmbeddingConfigurationStore, public_embedding_configuration, validate_embedding_configuration
+from .memory_config import MemorySettings, MemorySettingsStore
 from .memory_maintenance import MemoryMaintenance
 from .memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
 from .memory_store import MemoryStore
@@ -97,7 +98,11 @@ memory_event_bus = MemoryEventBus()
 model_adapter: ModelAdapter = OpenAICompatibleAdapter()
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
 embedding_configuration_store = EmbeddingConfigurationStore(data_root / "embedding-config.json")
-embedding_provider = SharedEmbeddingProvider(embedding_configuration_store.get)
+memory_settings_store = MemorySettingsStore(data_root / "memory-settings.json")
+embedding_provider = SharedEmbeddingProvider(
+    embedding_configuration_store.get,
+    enabled=lambda: memory_settings_store.get().embeddingEnabled,
+)
 plugin_registry = PluginRegistry()
 owner_knowledge_store = OwnerKnowledgeStore(resolve_owner_knowledge_database(project_root, data_root))
 async def _refresh_feishu_access_token() -> None:
@@ -428,6 +433,7 @@ memory_service = MemoryService(
     _post_response_provider,
     memory_event_bus,
     implicit_extraction_enabled=_env_bool("MEIDO_MEMORY_IMPLICIT_EXTRACTION_ENABLED", True),
+    memory_enabled=lambda: memory_settings_store.get().enabled,
 )
 memory_engine = DefaultMemoryEngine(memory_service, role_exists=lambda role_id: store.get(role_id) is not None, event_bus=memory_event_bus, hyde_provider=_hyde_provider)
 memory_optimizer_enabled = os.getenv("MEIDO_MEMORY_OPTIMIZER_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
@@ -446,7 +452,8 @@ memory_optimizer_worker = MemoryOptimizerWorker(
             history,
             current_self,
         ),
-    )
+    ),
+    enabled=lambda: memory_settings_store.get().enabled,
 )
 memory_optimizer_loop = MemoryOptimizerLoop(
     memory_optimizer_worker,
@@ -461,6 +468,7 @@ memory_optimizer_loop = MemoryOptimizerLoop(
             else model_configuration_store.get()
         ) is not None
     ),
+    enabled_provider=lambda: memory_settings_store.get().enabled,
 )
 memory_maintenance = MemoryMaintenance(
     roles_root,
@@ -553,6 +561,8 @@ async def _mutate_and_sync_memory_locked(role_id: str, operation):
 
 
 def _role_memory_context(role_id: str) -> str:
+    if not memory_settings_store.get().enabled:
+        return ""
     documents = MemoryDocuments(roles_root)
     try:
         documents.memory_dir(role_id)
@@ -570,6 +580,8 @@ def _role_memory_context(role_id: str) -> str:
 
 
 def _role_owner_understanding_memory(role_id: str) -> str:
+    if not memory_settings_store.get().enabled:
+        return ""
     sections = [_role_memory_context(role_id)]
     records = memory_store.list_all(role_id)
     if records:
@@ -633,8 +645,10 @@ async def _start_memory_workers() -> None:
             memory_worker.errors.append(f"{role_id}: interrupted deletion recovery failed: {error}")
         finally:
             memory_worker.end_role_deletion(role_id, deleted=True)
-    await asyncio.to_thread(memory_maintenance.resume_pending)
-    memory_optimizer_loop.start()
+    if memory_settings_store.get().enabled:
+        await asyncio.to_thread(memory_maintenance.resume_pending)
+    if memory_settings_store.get().enabled:
+        memory_optimizer_loop.start()
     owner_startup_report = await owner_knowledge_plugin.startup()
     if owner_startup_report and (owner_startup_report.created or owner_startup_report.updated or owner_startup_report.deleted):
         _queue_owner_understanding_refresh(owner_startup_report)
@@ -679,11 +693,12 @@ def get_owner_knowledge_status() -> dict[str, object]:
             and (owner_knowledge_store.get_state("feishu_app_secret") or os.getenv("MEIDO_FEISHU_APP_SECRET"))
         ),
         "embeddingReady": embedding_provider.ready,
+        "embeddingEnabled": memory_settings_store.get().embeddingEnabled,
         "embeddingConfigured": bool(embedding_configuration_store.get().apiKey),
         "embeddingModel": embedding_provider.model_name,
         "embeddingDimensions": embedding_provider.dimensions,
         "embeddingProvider": embedding_configuration_store.get().provider,
-        "embeddingLastError": embedding_provider.last_error,
+        "embeddingLastError": owner_knowledge_plugin.embedding_last_error or embedding_provider.last_error,
         "appId": owner_knowledge_store.get_state("feishu_app_id"),
         "redirectUri": os.getenv(
             "MEIDO_FEISHU_REDIRECT_URI",
@@ -1034,6 +1049,34 @@ def list_model_providers() -> ProviderPresetList:
     return ProviderPresetList(providers=PROVIDER_PRESETS)
 
 
+def _public_memory_settings(settings: MemorySettings | None = None) -> dict[str, object]:
+    current = settings or memory_settings_store.get()
+    return {
+        "enabled": current.enabled,
+        "embeddingEnabled": current.embeddingEnabled,
+        "embedding": get_embedding_configuration(),
+    }
+
+
+@app.get("/api/memory/settings")
+def get_memory_settings() -> dict[str, object]:
+    return _public_memory_settings()
+
+
+@app.put("/api/memory/settings")
+async def update_memory_settings(data: MemorySettings) -> dict[str, object]:
+    previous = memory_settings_store.get()
+    try:
+        current = memory_settings_store.save(data)
+    except (OSError, ValueError) as error:
+        raise HTTPException(status_code=500, detail="记忆设置保存失败，当前设置未改变") from error
+    if current.enabled and not previous.enabled:
+        memory_worker.start()
+        memory_optimizer_loop.start()
+        await asyncio.to_thread(memory_maintenance.resume_pending)
+    return _public_memory_settings(current)
+
+
 def _embedding_configuration_with_saved_key(data: EmbeddingConfigurationInput) -> EmbeddingConfigurationInput:
     if data.apiKey:
         return data
@@ -1049,6 +1092,7 @@ def get_embedding_configuration() -> dict[str, object]:
         "status": {
             "configured": bool(configuration.apiKey),
             "ready": embedding_provider.ready,
+            "enabled": memory_settings_store.get().embeddingEnabled,
             "model": configuration.model,
             "dimensions": configuration.dimensions,
             "lastError": embedding_provider.last_error,
@@ -1070,6 +1114,7 @@ def save_embedding_configuration(data: EmbeddingConfigurationInput) -> dict[str,
         "status": {
             "configured": bool(configuration.apiKey),
             "ready": embedding_provider.ready,
+            "enabled": memory_settings_store.get().embeddingEnabled,
             "model": configuration.model,
             "dimensions": configuration.dimensions,
             "lastError": embedding_provider.last_error,
@@ -1960,7 +2005,7 @@ def _enabled_runtime_tool_names(role) -> set[str]:
     enabled: set[str] = set()
     if shell.enabled and shell.allowedCommands:
         enabled.add("shell")
-    if role.agentConfig.memoryRecall.enabled:
+    if memory_settings_store.get().enabled and role.agentConfig.memoryRecall.enabled:
         enabled.add("recall_memory")
     if owner_knowledge_plugin.status().enabled:
         enabled.add("search_owner_knowledge")
@@ -1990,6 +2035,8 @@ async def _runtime_capabilities(
     agent_config = role.agentConfig
     enabled_tools = _enabled_runtime_tool_names(role)
     enabled_tools.update(agent_config.enabledTools)
+    if not memory_settings_store.get().enabled:
+        enabled_tools.discard("recall_memory")
     enabled_plugins = set(agent_config.enabledPlugins)
     todo_enabled = bool(todo_store.settings()["enabled"]) and callable(
         getattr(model_adapter, "stream_structured_messages", None)
@@ -2173,7 +2220,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                 # the disconnect watcher can cancel even a slow recall query.
                 context_messages = session_store.context_messages(session.session.sessionKey)
                 try:
-                    if len(context_messages) > context_limit:
+                    if memory_settings_store.get().enabled and len(context_messages) > context_limit:
                         await asyncio.to_thread(
                             memory_maintenance.ensure_memory_for_window,
                             role_id,
@@ -2187,9 +2234,9 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         text=data.content,
                         intent="context",
                         scope=MemoryScope(role_id, session.session.sessionKey),
-                    ))
+                    )) if memory_settings_store.get().enabled else None
                     memory_context = memory_service.context_block([], _role_memory_context(role_id))
-                    if query_result.text_block:
+                    if query_result is not None and query_result.text_block:
                         memory_context = "\n".join(part for part in (memory_context, query_result.text_block) if part)
                 except Exception as error:
                     memory_worker.errors.append(f"{role_id}: recall failed: {error}")

@@ -395,6 +395,12 @@ class DefaultMemoryEngine:
                 trace={"intent": request.intent, "effect": request.effect, "role_id": scope.role_id, "lanes": []},
                 raw={"candidate_count": 0, "items": []},
             )
+        if not self.service.memory_enabled():
+            return MemoryQueryResult(
+                text_block="",
+                trace={"intent": request.intent, "effect": request.effect, "role_id": scope.role_id, "lanes": [], "disabled": True},
+                raw={"candidate_count": 0, "items": []},
+            )
 
         lanes = self._query_lanes(request)
         if request.intent == "answer" and self.hyde_provider is not None and request.text.strip() and not request.filters.hints.get("hyde_queries"):

@@ -118,6 +118,7 @@ describe("设置", () => {
       "GET /api/roles": () => ({ body: { roles: [] } }),
       "GET /api/model/providers": () => ({ body: { providers: [{ id: "openai", label: "OpenAI", provider: "openai", baseUrl: "https://api.openai.com/v1" }] } }),
       "GET /api/model/configurations": () => ({ body: { configurations: [], activeId: null } }),
+      "GET /api/memory/settings": () => ({ body: { enabled: true, embeddingEnabled: true, embedding: { configuration: { provider: "dashscope", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "text-embedding-v3", dimensions: 1024, apiKeyConfigured: false }, status: { configured: false, ready: false, enabled: true } } } }),
     });
     const user = userEvent.setup();
     render(<App />);
@@ -125,6 +126,9 @@ describe("设置", () => {
     const panel = await dialog("设置");
     expect(within(panel).getByRole("button", { name: /模型/ })).toBeTruthy();
     expect(await within(panel).findByLabelText("API 地址")).toHaveValue("https://api.openai.com/v1");
+    await user.click(within(panel).getByRole("button", { name: "记忆" }));
+    expect(await within(panel).findByRole("heading", { name: "记忆" })).toBeInTheDocument();
+    expect(await within(panel).findByLabelText("启用向量模型")).toBeChecked();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
   });

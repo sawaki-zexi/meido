@@ -16,6 +16,7 @@ export type Session = { sessionKey: string; roleId: string; createdAt: string; u
 export type Provider = { id: string; label: string; provider: string; baseUrl: string; modelHint: string };
 export type ModelConfiguration = { id: string; providerId: string; provider: string; baseUrl: string; model: string; apiKeyConfigured: boolean; active?: boolean };
 export type EmbeddingConfiguration = { provider: string; baseUrl: string; model: string; dimensions: number; apiKeyConfigured: boolean };
+export type MemorySettings = { enabled: boolean; embeddingEnabled: boolean };
 export type TodoStatus = "inbox" | "scheduled" | "completed" | "cancelled";
 export type TodoItem = { id: string; title: string; description: string; status: TodoStatus; dueDate: string | null; dueAt: string | null; reminderAt: string | null; reminderDate: string | null; timezone: string; sourceRoleId: string | null; sourceSessionKey: string | null; sourceMessageId: string | null; sourceAvailable: boolean; createdAt: string; updatedAt: string; completedAt: string | null; cancelledAt: string | null };
 export type TodoReminder = { id: string; todoId: string; dueKey: string; status: "pending" | "delivered" | "failed"; dueAt: string; attempts: number; lastError: string | null; createdAt: string; updatedAt: string; deliveredAt: string | null; readAt: string | null; title: string; todoStatus: TodoStatus; delayed?: boolean };

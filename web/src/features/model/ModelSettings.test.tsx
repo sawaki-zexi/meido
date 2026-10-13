@@ -1,21 +1,19 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ModelSettings } from "./ModelSettings";
+import { MemorySettings } from "../settings/MemorySettings";
 import { fakeBackend } from "../../test/fakeBackend";
 
-describe("ModelSettings embedding configuration", () => {
+describe("MemorySettings embedding configuration", () => {
   beforeEach(() => vi.unstubAllGlobals());
   afterEach(() => window.history.replaceState({}, "", "/"));
 
   it("loads the shared embedding defaults and saves the API key without displaying it", async () => {
     const { calls } = fakeBackend({
-      "GET /api/model/providers": () => ({ body: { providers: [{ id: "openai", label: "OpenAI", provider: "openai", baseUrl: "https://api.openai.com/v1", modelHint: "gpt" }] } }),
-      "GET /api/model/configurations": () => ({ body: { configurations: [], activeId: null } }),
-      "GET /api/embedding/configuration": () => ({ body: { configuration: { provider: "dashscope", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "text-embedding-v3", dimensions: 1024, apiKeyConfigured: false } } }),
-      "PUT /api/embedding/configuration": (init) => ({ body: { configuration: { ...(JSON.parse(String(init?.body)) as object), apiKeyConfigured: true } } }),
+      "GET /api/memory/settings": () => ({ body: { enabled: true, embeddingEnabled: true, embedding: { configuration: { provider: "dashscope", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "text-embedding-v3", dimensions: 1024, apiKeyConfigured: false }, status: { configured: false, ready: false, enabled: true } } } }),
+      "PUT /api/embedding/configuration": (init) => ({ body: { configuration: { ...(JSON.parse(String(init?.body)) as object), apiKeyConfigured: true }, status: { configured: true, ready: true, enabled: true } } }),
     });
 
-    render(<ModelSettings />);
+    render(<MemorySettings />);
     const key = await screen.findByLabelText("向量 API Key");
     fireEvent.change(key, { target: { value: "secret-key" } });
     fireEvent.click(screen.getByRole("button", { name: "保存向量配置" }));
