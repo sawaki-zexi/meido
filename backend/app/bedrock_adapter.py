@@ -12,7 +12,7 @@ import httpx
 
 from .message_transform import transform_messages
 from .model_adapter import _raise_for_status_with_details
-from .model_protocol import compatible_tool_names, effective_tools, normalize_tools, remap_message_tool_names, safe_tool_id
+from .model_protocol import compatible_tool_names, effective_tools, model_cost, normalize_tools, remap_message_tool_names, safe_tool_id
 from .model_types import (
     ModelAssistantMessage, ModelCapabilities, ModelContentBlock, ModelImageBlock, ModelMessage,
     ModelThinkingBlock,
@@ -158,6 +158,7 @@ class BedrockConverseAdapter:
             output_tokens=_nonnegative(usage_data.get("outputTokens")),
             cache_read_tokens=_nonnegative(usage_data.get("cacheReadInputTokens")),
             cache_write_tokens=_nonnegative(usage_data.get("cacheWriteInputTokens")),
+            cost=model_cost(usage_data),
         )
         stop = str(output.get("message", {}).get("stopReason", "end_turn")) if isinstance(output.get("message"), Mapping) else "end_turn"
         stop = {"end_turn": "stop", "tool_use": "tool_use", "max_tokens": "length"}.get(stop, stop)
@@ -292,6 +293,7 @@ class BedrockConverseAdapter:
                                 output_tokens=_nonnegative(usage_data.get("outputTokens")),
                                 cache_read_tokens=_nonnegative(usage_data.get("cacheReadInputTokens")),
                                 cache_write_tokens=_nonnegative(usage_data.get("cacheWriteInputTokens")),
+                                cost=model_cost(usage_data),
                             )
                         if isinstance(event.get("messageStart"), Mapping):
                             response_id = event["messageStart"].get("messageId") if isinstance(event["messageStart"].get("messageId"), str) else response_id

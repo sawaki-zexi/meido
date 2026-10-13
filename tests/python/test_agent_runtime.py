@@ -525,6 +525,27 @@ def test_session_store_rebuilds_structured_runtime_transcript(tmp_path):
     ]
 
 
+def test_session_store_round_trips_tool_result_diagnostics(tmp_path):
+    initialize_databases(tmp_path / "data")
+    store = SessionStore(tmp_path / "data" / "sessions.db")
+    session = store.open_role_session("role-diagnostics")
+    call = ToolCall("call-1", "read", {"key": "name"})
+    result = ToolResultMessage(
+        "call-1",
+        "read",
+        "value:name",
+        details={"status": "succeeded"},
+        usage={"input_tokens": 2, "output_tokens": 1},
+        nested_calls=(ToolCall("nested-1", "lookup", {"key": "name"}),),
+        timestamp=1234,
+    )
+    store.append_agent_message(session.sessionKey, AssistantMessage(tool_calls=(call,), stop_reason="tool_use"), run_id="run-1")
+    store.append_agent_message(session.sessionKey, result, run_id="run-1")
+
+    restored = store.runtime_messages(session.sessionKey)
+    assert restored[-1] == result
+
+
 def test_session_store_excludes_failed_runtime_tool_messages_from_context(tmp_path):
     initialize_databases(tmp_path / "data")
     store = SessionStore(tmp_path / "data" / "sessions.db")

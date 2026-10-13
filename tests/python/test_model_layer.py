@@ -2,6 +2,7 @@ from backend.app.message_transform import transform_messages
 from backend.app.model_types import (
     ModelAssistantMessage,
     ModelCapabilities,
+    ModelCost,
     ModelImageBlock,
     ModelResponseMetadata,
     ModelSystemMessage,
@@ -9,6 +10,7 @@ from backend.app.model_types import (
     ModelThinkingBlock,
     ModelToolCallBlock,
     ModelToolResultMessage,
+    ModelUsage,
     ModelUserMessage,
 )
 
@@ -236,3 +238,37 @@ def test_transform_skips_incomplete_assistant_turns():
     assert transform_messages((ModelSystemMessage(), failed, ModelUserMessage(()))) == (
         ModelSystemMessage(), ModelUserMessage(())
     )
+
+
+def test_transform_preserves_message_diagnostics_and_timestamps():
+    nested = ModelToolCallBlock("nested-1", "lookup", {"key": "name"})
+    usage = ModelUsage(input_tokens=3, output_tokens=2, cost=ModelCost(input=0.01, total=0.02))
+    result = ModelToolResultMessage(
+        (ModelTextBlock("done"),),
+        "call-1",
+        "shell",
+        details={"status": "succeeded"},
+        usage=usage,
+        nested_calls=(nested,),
+        timestamp=1234,
+    )
+    transformed = transform_messages(
+        (
+            ModelSystemMessage(timestamp=1000),
+            ModelUserMessage((ModelTextBlock("run"),), timestamp=1100),
+            ModelAssistantMessage(
+                (ModelToolCallBlock("call-1", "shell"),),
+                ModelResponseMetadata(provider="provider", api="api", model="model"),
+                timestamp=1200,
+            ),
+            result,
+        ),
+        target_provider="provider",
+        target_api="api",
+        target_model="model",
+    )
+
+    assert transformed[0].timestamp == 1000
+    assert transformed[1].timestamp == 1100
+    assert transformed[2].timestamp == 1200
+    assert transformed[3] == result

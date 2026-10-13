@@ -53,12 +53,22 @@ ModelContentBlock: TypeAlias = (
 
 
 @dataclass(frozen=True, slots=True)
+class ModelCost:
+    input: float = 0.0
+    output: float = 0.0
+    cache_read: float = 0.0
+    cache_write: float = 0.0
+    total: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
 class ModelUsage:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     reasoning_tokens: int = 0
+    cost: ModelCost = field(default_factory=ModelCost)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,12 +88,14 @@ class ModelSystemMessage:
     content: tuple[ModelTextBlock, ...] = ()
     tools_added: tuple[dict[str, object], ...] = ()
     tools_removed: tuple[str, ...] = ()
+    timestamp: int | None = None
     role: Literal["system"] = "system"
 
 
 @dataclass(frozen=True, slots=True)
 class ModelUserMessage:
     content: tuple[ModelContentBlock, ...] = ()
+    timestamp: int | None = None
     role: Literal["user"] = "user"
 
 
@@ -91,6 +103,7 @@ class ModelUserMessage:
 class ModelAssistantMessage:
     content: tuple[ModelContentBlock, ...] = ()
     metadata: ModelResponseMetadata = field(default_factory=ModelResponseMetadata)
+    timestamp: int | None = None
     role: Literal["assistant"] = "assistant"
 
 
@@ -100,6 +113,10 @@ class ModelToolResultMessage:
     tool_call_id: str = ""
     tool_name: str = ""
     is_error: bool = False
+    details: object | None = None
+    usage: ModelUsage = field(default_factory=ModelUsage)
+    nested_calls: tuple[ModelToolCallBlock, ...] = ()
+    timestamp: int | None = None
     role: Literal["tool_result"] = "tool_result"
 
 

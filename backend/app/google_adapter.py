@@ -15,7 +15,7 @@ import httpx
 
 from .message_transform import transform_messages
 from .model_adapter import _raise_for_status_with_details, _response_error_detail
-from .model_protocol import compatible_tool_names, effective_tools, normalize_tools, remap_message_tool_names, safe_tool_id, tool_result_text
+from .model_protocol import compatible_tool_names, effective_tools, model_cost, normalize_tools, remap_message_tool_names, safe_tool_id, tool_result_text
 from .model_types import (
     ModelAssistantMessage, ModelCapabilities, ModelContentBlock, ModelImageBlock,
     ModelMessage, ModelResponseMetadata, ModelStreamDone, ModelStreamError,
@@ -39,7 +39,7 @@ def _usage(value: object) -> ModelUsage:
     thoughts = _int(value.get("thoughtsTokenCount"))
     prompt = max(0, _int(value.get("promptTokenCount")) - cached)
     output = _int(value.get("candidatesTokenCount")) + thoughts
-    return ModelUsage(input_tokens=prompt, output_tokens=output, cache_read_tokens=cached, reasoning_tokens=thoughts)
+    return ModelUsage(input_tokens=prompt, output_tokens=output, cache_read_tokens=cached, reasoning_tokens=thoughts, cost=model_cost(value))
 
 
 def _text(blocks: Sequence[object]) -> str:

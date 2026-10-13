@@ -8,7 +8,7 @@ import json
 import re
 import hashlib
 
-from .model_types import ModelImageBlock, ModelTextBlock
+from .model_types import ModelCost, ModelImageBlock, ModelTextBlock
 
 
 OPENAI_COMPLETIONS_API = "openai-completions"
@@ -30,6 +30,28 @@ def copy_json(value: object) -> object:
     if isinstance(value, (list, tuple)):
         return [copy_json(item) for item in value]
     return copy.deepcopy(value)
+
+
+def model_cost(value: object) -> ModelCost:
+    """Parse optional provider cost fields without making usage parsing strict."""
+    if not isinstance(value, Mapping):
+        return ModelCost()
+    raw = value.get("cost") if isinstance(value.get("cost"), Mapping) else value
+
+    def number(*keys: str) -> float:
+        for key in keys:
+            candidate = raw.get(key) if isinstance(raw, Mapping) else None
+            if isinstance(candidate, (int, float)) and not isinstance(candidate, bool) and candidate >= 0:
+                return float(candidate)
+        return 0.0
+
+    return ModelCost(
+        input=number("input", "input_cost", "prompt"),
+        output=number("output", "output_cost", "completion"),
+        cache_read=number("cacheRead", "cache_read", "cache_read_cost"),
+        cache_write=number("cacheWrite", "cache_write", "cache_write_cost"),
+        total=number("total", "total_cost"),
+    )
 
 
 def tool_name(tool: Mapping[str, object]) -> str:

@@ -11,6 +11,7 @@ from ..models import Message, ModelConfiguration, Role
 from ..model_adapter import ModelAdapter, ModelStreamError, ModelTextDelta, ModelToolCall
 from ..model_types import (
     ModelAssistantMessage as RichAssistantMessage,
+    ModelCost as RichCost,
     ModelImageBlock as RichImageBlock,
     ModelContentBlock as RichContentBlock,
     ModelMessage as RichMessage,
@@ -34,6 +35,41 @@ from .types import AssistantMessage, ToolCall, UserMessage, ToolResultMessage
 
 def _metadata_count(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _metadata_cost(value: object) -> RichCost:
+    if not isinstance(value, Mapping):
+        return RichCost()
+
+    def number(*keys: str) -> float:
+        for key in keys:
+            candidate = value.get(key)
+            if isinstance(candidate, (int, float)) and not isinstance(candidate, bool) and candidate >= 0:
+                return float(candidate)
+        return 0.0
+
+    return RichCost(
+        input=number("input", "input_cost"),
+        output=number("output", "output_cost"),
+        cache_read=number("cache_read", "cacheRead", "cache_read_cost"),
+        cache_write=number("cache_write", "cacheWrite", "cache_write_cost"),
+        total=number("total", "total_cost"),
+    )
+
+
+def _rich_usage(value: object) -> RichUsage:
+    if isinstance(value, RichUsage):
+        return value
+    if not isinstance(value, Mapping):
+        return RichUsage()
+    return RichUsage(
+        input_tokens=_metadata_count(value.get("input_tokens", value.get("inputTokens", value.get("input")))),
+        output_tokens=_metadata_count(value.get("output_tokens", value.get("outputTokens", value.get("output")))),
+        cache_read_tokens=_metadata_count(value.get("cache_read_tokens", value.get("cacheReadTokens", value.get("cacheRead")))),
+        cache_write_tokens=_metadata_count(value.get("cache_write_tokens", value.get("cacheWriteTokens", value.get("cacheWrite")))),
+        reasoning_tokens=_metadata_count(value.get("reasoning_tokens", value.get("reasoningTokens", value.get("reasoning")))),
+        cost=_metadata_cost(value.get("cost")),
+    )
 
 
 def _content_block_from_metadata(value: object) -> RichContentBlock | None:
@@ -200,6 +236,8 @@ class MeidoProvider:
                             yield ProviderErrorEvent(event.message.metadata.error_message or "模型调用失败")
                             return
                         response_metadata = asdict(event.message.metadata)
+                        if event.message.timestamp is not None:
+                            response_metadata["timestamp"] = event.message.timestamp
                         response_metadata["thinking"] = [
                             {
                                 "text": block.text,
@@ -216,6 +254,7 @@ class MeidoProvider:
                             tool_calls=tuple(tool_calls),
                             stop_reason="tool_use" if tool_calls else stop_reason,
                             metadata=response_metadata,
+                            timestamp=event.message.timestamp or event.message.metadata.timestamp,
                         ))
                         return
             except Exception as error:
@@ -320,7 +359,7 @@ class MeidoProvider:
                         ))
                     elif attachment.text:
                         blocks[0] = RichTextBlock(f"{blocks[0].text}\n\n[{attachment.name}]\n{attachment.text}")
-                result.append(RichUserMessage(tuple(blocks)))
+                result.append(RichUserMessage(tuple(blocks), timestamp=message.timestamp))
             elif isinstance(message, AssistantMessage):
                 metadata = message.metadata if isinstance(message.metadata, Mapping) else {}
                 raw_usage = metadata.get("usage")
@@ -354,7 +393,7 @@ class MeidoProvider:
                         )
                         for call in message.tool_calls
                     )
-                timestamp = metadata.get("timestamp")
+                timestamp = metadata.get("timestamp", message.timestamp)
                 result.append(RichAssistantMessage(
                     tuple(blocks),
                     RichResponseMetadata(
@@ -362,13 +401,7 @@ class MeidoProvider:
                         api=metadata.get("api") if isinstance(metadata.get("api"), str) else None,
                         model=metadata.get("model") if isinstance(metadata.get("model"), str) else None,
                         response_id=metadata.get("response_id") if isinstance(metadata.get("response_id"), str) else None,
-                        usage=RichUsage(
-                            input_tokens=_metadata_count(usage.get("input_tokens")),
-                            output_tokens=_metadata_count(usage.get("output_tokens")),
-                            cache_read_tokens=_metadata_count(usage.get("cache_read_tokens")),
-                            cache_write_tokens=_metadata_count(usage.get("cache_write_tokens")),
-                            reasoning_tokens=_metadata_count(usage.get("reasoning_tokens")),
-                        ),
+                        usage=_rich_usage(usage),
                         stop_reason=(
                             metadata.get("stop_reason")
                             if isinstance(metadata.get("stop_reason"), str)
@@ -377,6 +410,7 @@ class MeidoProvider:
                         error_message=metadata.get("error_message") if isinstance(metadata.get("error_message"), str) else None,
                         timestamp=_metadata_count(timestamp) if isinstance(timestamp, int) and not isinstance(timestamp, bool) else None,
                     ),
+                    timestamp=_metadata_count(timestamp) if isinstance(timestamp, int) and not isinstance(timestamp, bool) else None,
                 ))
             elif isinstance(message, ToolResultMessage):
                 text = message.content
@@ -392,6 +426,13 @@ class MeidoProvider:
                     tool_call_id=message.tool_call_id,
                     tool_name=message.tool_name,
                     is_error=message.is_error,
+                    details=message.details,
+                    usage=_rich_usage(message.usage),
+                    nested_calls=tuple(
+                        RichToolCallBlock(call.id, call.name, sanitize_browser_arguments(call.name, call.arguments))
+                        for call in message.nested_calls
+                    ),
+                    timestamp=message.timestamp,
                 ))
         return result
 

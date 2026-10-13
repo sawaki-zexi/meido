@@ -167,22 +167,14 @@ def _transform_message(
             used_ids=used_ids,
         )
         return ModelSystemMessage(
-            tuple(block for block in blocks if isinstance(block, ModelTextBlock)),
-            message.tools_added,
-            message.tools_removed,
+            content=tuple(block for block in blocks if isinstance(block, ModelTextBlock)),
+            tools_added=message.tools_added,
+            tools_removed=message.tools_removed,
+            timestamp=message.timestamp,
         )
     if isinstance(message, ModelUserMessage):
-        return ModelUserMessage(_transform_blocks(
-            message.content,
-            capabilities=capabilities,
-            cross_model=cross_model,
-            image_placeholder=_USER_IMAGE_PLACEHOLDER,
-            id_map=id_map,
-            used_ids=used_ids,
-        ))
-    if isinstance(message, ModelAssistantMessage):
-        return ModelAssistantMessage(
-            _transform_blocks(
+        return ModelUserMessage(
+            content=_transform_blocks(
                 message.content,
                 capabilities=capabilities,
                 cross_model=cross_model,
@@ -190,10 +182,23 @@ def _transform_message(
                 id_map=id_map,
                 used_ids=used_ids,
             ),
-            message.metadata,
+            timestamp=message.timestamp,
+        )
+    if isinstance(message, ModelAssistantMessage):
+        return ModelAssistantMessage(
+            content=_transform_blocks(
+                message.content,
+                capabilities=capabilities,
+                cross_model=cross_model,
+                image_placeholder=_USER_IMAGE_PLACEHOLDER,
+                id_map=id_map,
+                used_ids=used_ids,
+            ),
+            metadata=message.metadata,
+            timestamp=message.timestamp,
         )
     return ModelToolResultMessage(
-        _transform_blocks(
+        content=_transform_blocks(
             message.content,
             capabilities=capabilities,
             cross_model=cross_model,
@@ -201,9 +206,13 @@ def _transform_message(
             id_map=id_map,
             used_ids=used_ids,
         ),
-        id_map.get(message.tool_call_id, message.tool_call_id),
-        message.tool_name,
-        message.is_error,
+        tool_call_id=id_map.get(message.tool_call_id, message.tool_call_id),
+        tool_name=message.tool_name,
+        is_error=message.is_error,
+        details=message.details,
+        usage=message.usage,
+        nested_calls=message.nested_calls,
+        timestamp=message.timestamp,
     )
 
 

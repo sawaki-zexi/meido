@@ -11,7 +11,7 @@ import httpx
 
 from .model_adapter import _raise_for_status_with_details, _response_error_detail
 from .message_transform import transform_messages
-from .model_protocol import copy_json, effective_tools, normalize_tools, safe_tool_id
+from .model_protocol import copy_json, effective_tools, model_cost, normalize_tools, safe_tool_id
 from .model_types import (
     ModelAssistantMessage, ModelCapabilities, ModelContentBlock, ModelImageBlock, ModelMessage,
     ModelResponseMetadata, ModelStreamDone, ModelStreamError, ModelStreamEvent,
@@ -30,6 +30,8 @@ def _message(message: ModelMessage) -> dict[str, object]:
             "role": "system",
             "content": "\n\n".join(block.text for block in message.content),
         }
+        if message.timestamp is not None:
+            output["timestamp"] = message.timestamp
         if message.tools_added:
             output["toolsAdded"] = [
                 {
@@ -43,10 +45,29 @@ def _message(message: ModelMessage) -> dict[str, object]:
             output["toolsRemoved"] = list(message.tools_removed)
         return output
     if isinstance(message, ModelUserMessage):
-        return {"role": "user", "content": [_block(block) for block in message.content]}
+        output = {"role": "user", "content": [_block(block) for block in message.content]}
+        if message.timestamp is not None:
+            output["timestamp"] = message.timestamp
+        return output
     if isinstance(message, ModelAssistantMessage):
-        return {"role": "assistant", "content": [_block(block) for block in message.content], "metadata": copy_json(asdict(message.metadata))}
-    return {"role": "toolResult", "toolCallId": safe_tool_id(message.tool_call_id), "toolName": message.tool_name, "isError": message.is_error, "content": [_block(block) for block in message.content]}
+        output = {"role": "assistant", "content": [_block(block) for block in message.content], "metadata": copy_json(asdict(message.metadata))}
+        if message.timestamp is not None:
+            output["timestamp"] = message.timestamp
+        return output
+    output = {
+        "role": "toolResult",
+        "toolCallId": safe_tool_id(message.tool_call_id),
+        "toolName": message.tool_name,
+        "isError": message.is_error,
+        "content": [_block(block) for block in message.content],
+    }
+    if message.details is not None:
+        output["details"] = copy_json(message.details)
+    if message.usage != ModelUsage():
+        output["usage"] = copy_json(asdict(message.usage))
+    if message.timestamp is not None:
+        output["timestamp"] = message.timestamp
+    return output
 
 
 def _block(block: object) -> dict[str, object]:
@@ -70,6 +91,7 @@ def _usage(value: object) -> ModelUsage:
         cache_read_tokens=_number(value.get("cacheRead", value.get("cache_read_tokens"))),
         cache_write_tokens=_number(value.get("cacheWrite", value.get("cache_write_tokens"))),
         reasoning_tokens=_number(value.get("reasoning", value.get("reasoning_tokens"))),
+        cost=model_cost(value),
     )
 
 

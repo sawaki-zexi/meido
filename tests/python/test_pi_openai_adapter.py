@@ -54,7 +54,7 @@ def test_rich_adapter_parses_reasoning_usage_and_finish_reason(monkeypatch):
     body = "\n".join([
         'data: {"id":"resp-1","model":"reasoner","choices":[{"delta":{"reasoning_content":"think"},"finish_reason":null}]}',
         'data: {"choices":[{"delta":{"content":"answer"},"finish_reason":null}]}',
-        'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":3},"completion_tokens_details":{"reasoning_tokens":2}}}',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":3},"completion_tokens_details":{"reasoning_tokens":2},"cost":{"input":0.01,"output":0.02,"total":0.03}}}',
         "data: [DONE]",
         "",
     ])
@@ -85,6 +85,7 @@ def test_rich_adapter_parses_reasoning_usage_and_finish_reason(monkeypatch):
     assert done.message.metadata.usage.output_tokens == 7
     assert done.message.metadata.usage.cache_read_tokens == 3
     assert done.message.metadata.usage.reasoning_tokens == 2
+    assert done.message.metadata.usage.cost.total == 0.03
 
 
 def test_rich_adapter_aggregates_multiple_tool_call_fragments(monkeypatch):

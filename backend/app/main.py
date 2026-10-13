@@ -2089,6 +2089,11 @@ def _runtime_message_snapshot(message: object) -> dict[str, object]:
     value = asdict(message)
     if not value.get("attachments"):
         value.pop("attachments", None)
+    for key in ("timestamp", "usage"):
+        if value.get(key) is None:
+            value.pop(key, None)
+    if not value.get("nested_calls"):
+        value.pop("nested_calls", None)
     return value
 
 

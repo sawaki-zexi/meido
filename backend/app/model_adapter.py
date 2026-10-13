@@ -360,8 +360,22 @@ class OpenAICompatibleAdapter:
         configuration = self._effective_configuration(configuration)
         base_url = configuration.baseUrl.rstrip("/")
         headers = {"Authorization": f"Bearer {configuration.apiKey}"} if configuration.apiKey else {}
-        aliases = _compatible_function_names(tools, messages)
-        wire_tools = _remap_function_names(tools, aliases, tools=True)
+        from .model_protocol import normalize_tools
+
+        normalized_tools = normalize_tools(tools)
+        wire_definitions = [
+            {
+                "type": "function",
+                "function": {
+                    "name": item["name"],
+                    "description": item["description"],
+                    "parameters": item["parameters"],
+                },
+            }
+            for item in normalized_tools
+        ]
+        aliases = _compatible_function_names(wire_definitions, messages)
+        wire_tools = _remap_function_names(wire_definitions, aliases, tools=True)
         wire_messages = _remap_function_names(messages, aliases)
         internal_names = {alias: name for name, alias in aliases.items()}
         request_data: dict[str, object] = {

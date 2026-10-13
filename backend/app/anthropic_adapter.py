@@ -12,7 +12,7 @@ import httpx
 
 from .message_transform import transform_messages
 from .model_adapter import _raise_for_status_with_details, _response_error_detail
-from .model_protocol import compatible_tool_names, effective_tools, json_object, normalize_tools, remap_message_tool_names, safe_tool_id
+from .model_protocol import compatible_tool_names, effective_tools, json_object, model_cost, normalize_tools, remap_message_tool_names, safe_tool_id
 from .model_types import (
     ModelAssistantMessage,
     ModelCapabilities,
@@ -81,6 +81,7 @@ def _usage(value: object) -> ModelUsage:
         output_tokens=_int(value.get("output_tokens")),
         cache_read_tokens=_int(value.get("cache_read_input_tokens")),
         cache_write_tokens=_int(value.get("cache_creation_input_tokens")),
+        cost=model_cost(value),
     )
 
 

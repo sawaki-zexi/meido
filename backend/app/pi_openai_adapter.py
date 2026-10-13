@@ -18,7 +18,7 @@ from .model_adapter import (
     _response_error_detail,
     _remap_function_names,
 )
-from .model_protocol import effective_tools, normalize_tools
+from .model_protocol import effective_tools, model_cost, normalize_tools
 from .model_event_stream import AssistantEventStream
 from .model_types import (
     ModelAssistantMessage,
@@ -94,6 +94,7 @@ def _usage(payload: object) -> ModelUsage:
         cache_read_tokens=cached,
         cache_write_tokens=cache_write,
         reasoning_tokens=reasoning,
+        cost=model_cost(payload),
     )
 
 
