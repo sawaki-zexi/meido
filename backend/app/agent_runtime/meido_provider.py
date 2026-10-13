@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from typing import cast
 
 from ..models import Message, ModelConfiguration, Role
-from ..model_adapter import ModelAdapter, ModelStreamError, ModelTextDelta, ModelToolCall
-from ..model_types import (
+from ..ai.model_adapter import ModelAdapter, ModelStreamError, ModelTextDelta, ModelToolCall
+from ..ai.model_types import (
     ModelAssistantMessage as RichAssistantMessage,
     ModelCost as RichCost,
     ModelImageBlock as RichImageBlock,

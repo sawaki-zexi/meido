@@ -59,5 +59,5 @@ Vertex 对 `additionalProperties: false` 做兼容转换，可空单类型转换
 - [模型接入架构方案](../specs/model-integration-spec.md)
 - [Pi 模型层语义移植规格](../specs/pi-model-layer-port-spec.md)
 - [`model_config.py`](../../backend/app/model_config.py)
-- [`model_adapter_registry.py`](../../backend/app/model_adapter_registry.py)
+- [`ai/model_adapter_registry.py`](../../backend/app/ai/model_adapter_registry.py)
 - [协议 adapter 行为测试](../../tests/python/test_model_protocol_adapters.py)

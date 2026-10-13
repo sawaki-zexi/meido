@@ -7,7 +7,7 @@
 事实来源：
 
 - Meido 对话入口：[`backend/app/main.py`](../../backend/app/main.py)
-- Meido 模型边界：[`backend/app/model_adapter.py`](../../backend/app/model_adapter.py)
+- Meido 模型边界：[`backend/app/ai/model_adapter.py`](../../backend/app/ai/model_adapter.py)
 - Meido 会话持久化：[`backend/app/session_store.py`](../../backend/app/session_store.py)
 - Meido 记忆规格：[`memory-system-spec.md`](memory-system-spec.md)
 - Tau 源码调研：[`tau-meido-agent-runtime.md`](../research/tau-meido-agent-runtime.md)

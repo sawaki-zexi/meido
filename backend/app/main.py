@@ -19,8 +19,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 import httpx
 
-from .model_adapter import ModelAdapter
-from .model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
+from .ai.model_adapter import ModelAdapter
+from .ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
 from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryQueryFilters, MemoryScope

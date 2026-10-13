@@ -7,7 +7,7 @@
 事实来源：
 
 - 模型配置和预设：[`backend/app/model_config.py`](../../backend/app/model_config.py)
-- 协议路由：[`backend/app/model_adapter_registry.py`](../../backend/app/model_adapter_registry.py)
+- 协议路由：[`backend/app/ai/model_adapter_registry.py`](../../backend/app/ai/model_adapter_registry.py)
 - 协议行为测试：[`tests/python/test_model_protocol_adapters.py`](../../tests/python/test_model_protocol_adapters.py)
 
 本文描述当前模型配置与模型调用的产品边界和架构约束。角色、会话和消息的

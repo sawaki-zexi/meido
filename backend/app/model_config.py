@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .models import ModelConfiguration, ModelConfigurationInput
-from .model_protocol import (
+from .ai.model_protocol import (
     ANTHROPIC_MESSAGES_API,
     AZURE_OPENAI_RESPONSES_API,
     BEDROCK_CONVERSE_API,

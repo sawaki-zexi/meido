@@ -102,10 +102,10 @@ Meido Runtime messages
 
 本变更完成模型层基础、Runtime rich stream 接入及 provider-specific adapters：
 
-- `backend/app/model_types.py` 提供结构化内容块、响应 usage/metadata 和 FIFO 事件类型；
-- `backend/app/message_transform.py` 提供不修改输入历史的图片、thinking、工具 ID 和孤立工具结果转换；
-- `backend/app/model_event_stream.py` 提供终止事件和最终 assistant message 的异步结果；
-- `backend/app/pi_openai_adapter.py` 实现 OpenAI Chat Completions 的 rich stream 和 complete 调用，解析 reasoning、usage、finish reason、legacy/new tool calls、SSE/HTTP 错误和取消；
+- `backend/app/ai/model_types.py` 提供结构化内容块、响应 usage/metadata 和 FIFO 事件类型；
+- `backend/app/ai/message_transform.py` 提供不修改输入历史的图片、thinking、工具 ID 和孤立工具结果转换；
+- `backend/app/ai/model_event_stream.py` 提供终止事件和最终 assistant message 的异步结果；
+- `backend/app/ai/pi_openai_adapter.py` 实现 OpenAI Chat Completions 的 rich stream 和 complete 调用，解析 reasoning、usage、finish reason、legacy/new tool calls、SSE/HTTP 错误和取消；
 - `ModelAdapterRegistry` 按配置协议路由 OpenAI Completions、OpenAI Responses、Anthropic、Google、Mistral、Bedrock 和 Pi Messages；
 - registry 也支持 Azure OpenAI Responses、Codex Responses 和 Google Vertex；Vertex 可从 Google ADC 获取凭据，Codex 使用手动提供的 OAuth bearer token；
 - `MeidoProvider` 把 rich stream 投影给 Runtime，并从 Runtime transcript 还原模型响应元数据和 thinking；
