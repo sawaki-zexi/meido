@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
+import hashlib
 import json
 import time
 
@@ -12,7 +13,7 @@ import httpx
 
 from .message_transform import transform_messages
 from .model_adapter import _raise_for_status_with_details, _response_error_detail
-from .model_protocol import compatible_tool_names, effective_tools, json_object, normalize_tools, remap_message_tool_names, safe_tool_id, tool_result_text
+from .model_protocol import compatible_tool_names, effective_tools, json_object, normalize_tools, remap_message_tool_names, tool_result_text
 from .model_types import (
     ModelAssistantMessage,
     ModelCapabilities,
@@ -52,6 +53,7 @@ class OpenAIResponsesOptions:
 @dataclass(slots=True)
 class _Output:
     kind: str
+    output_index: int | None = None
     id: str = ""
     name: str = ""
     text: str = ""
@@ -94,35 +96,154 @@ def _responses_content(blocks: Sequence[object], *, input_side: bool) -> list[di
     return result
 
 
-def _messages_to_input(messages: Sequence[ModelMessage]) -> list[dict[str, object]]:
+def _same_connection(message: ModelAssistantMessage, provider: str, api: str, model: str) -> bool:
+    metadata = message.metadata
+    return metadata.provider == provider and metadata.api == api and metadata.model == model
+
+
+def _text_signature(signature: str | None) -> tuple[str | None, str | None]:
+    if not signature:
+        return None, None
+    if not signature.startswith("{"):
+        return signature, None
+    try:
+        value = json.loads(signature)
+    except json.JSONDecodeError:
+        return None, None
+    if not isinstance(value, Mapping) or value.get("v") != 1 or not isinstance(value.get("id"), str):
+        return None, None
+    phase = value.get("phase")
+    return value["id"], phase if phase in {"commentary", "final_answer"} else None
+
+
+def _messages_to_input(
+    messages: Sequence[ModelMessage],
+    *,
+    target_provider: str,
+    target_api: str,
+    target_model: str,
+) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
+    message_index = 0
     for message in messages:
         if isinstance(message, ModelSystemMessage):
             result.append({"role": "system", "content": _text(message.content)})
         elif isinstance(message, ModelUserMessage):
             result.append({"role": "user", "content": _responses_content(message.content, input_side=True)})
         elif isinstance(message, ModelAssistantMessage):
+            same_connection = _same_connection(message, target_provider, target_api, target_model)
+            text_index = 0
             for block in message.content:
                 if isinstance(block, ModelTextBlock):
-                    result.append({"role": "assistant", "content": [{"type": "output_text", "text": block.text}]})
+                    fallback_id = f"msg_pi_{message_index}" if text_index == 0 else f"msg_pi_{message_index}_{text_index}"
+                    text_index += 1
+                    item_id, phase = _text_signature(block.text_signature)
+                    item_id = item_id or fallback_id
+                    if len(item_id) > 64:
+                        item_id = f"msg_{hashlib.sha256(item_id.encode('utf-8')).hexdigest()[:56]}"
+                    item: dict[str, object] = {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": block.text, "annotations": []}],
+                        "status": "completed",
+                        "id": item_id,
+                    }
+                    if phase:
+                        item["phase"] = phase
+                    result.append(item)
                 elif isinstance(block, ModelThinkingBlock):
-                    if block.text:
-                        result.append({"role": "assistant", "content": [{"type": "output_text", "text": block.text}]})
+                    if block.signature:
+                        try:
+                            item = json.loads(block.signature)
+                        except json.JSONDecodeError as error:
+                            raise ValueError("Responses reasoning 签名不是有效 JSON") from error
+                        if not isinstance(item, Mapping) or item.get("type") != "reasoning":
+                            raise ValueError("Responses reasoning 签名不是 reasoning item")
+                        result.append(dict(item))
+                    elif block.text:
+                        fallback_id = f"msg_pi_{message_index}" if text_index == 0 else f"msg_pi_{message_index}_{text_index}"
+                        text_index += 1
+                        result.append({
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": block.text, "annotations": []}],
+                            "status": "completed",
+                            "id": fallback_id,
+                        })
                 elif isinstance(block, ModelToolCallBlock):
-                    result.append({
+                    call_id, separator, item_id = block.id.partition("|")
+                    item: dict[str, object] = {
                         "type": "function_call",
-                        "call_id": safe_tool_id(block.id),
+                        "call_id": call_id,
                         "name": block.name,
                         "arguments": json.dumps(block.arguments, ensure_ascii=False, separators=(",", ":")),
-                    })
+                    }
+                    if separator and item_id.startswith("fc_") and same_connection:
+                        item["id"] = item_id
+                    if same_connection and block.namespace is not None:
+                        item["namespace"] = block.namespace
+                    result.append(item)
+            message_index += 1
         elif isinstance(message, ModelToolResultMessage):
             text = tool_result_text(message.content)
             result.append({
                 "type": "function_call_output",
-                "call_id": safe_tool_id(message.tool_call_id),
+                "call_id": message.tool_call_id.partition("|")[0],
                 "output": text,
             })
     return result
+
+
+def _response_output_blocks(
+    output: Sequence[object],
+    name_aliases: Mapping[str, str],
+) -> tuple[ModelContentBlock, ...]:
+    blocks: list[ModelContentBlock] = []
+    for item in output:
+        if not isinstance(item, Mapping):
+            continue
+        item_type = str(item.get("type", ""))
+        if item_type == "reasoning":
+            summary = item.get("summary")
+            content = item.get("content")
+            parts = summary if isinstance(summary, list) and summary else content
+            text = "\n\n".join(
+                str(part.get("text", ""))
+                for part in parts if isinstance(part, Mapping)
+            ) if isinstance(parts, list) else ""
+            blocks.append(ModelThinkingBlock(
+                text,
+                json.dumps(item, ensure_ascii=False, separators=(",", ":")),
+            ))
+        elif item_type == "message":
+            content = item.get("content")
+            parts = [
+                str(part.get("text", ""))
+                for part in content
+                if isinstance(part, Mapping) and part.get("type") == "output_text"
+            ] if isinstance(content, list) else []
+            item_id = item.get("id")
+            phase = item.get("phase")
+            signature = json.dumps(
+                {"v": 1, "id": item_id, **({"phase": phase} if phase in {"commentary", "final_answer"} else {})},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ) if isinstance(item_id, str) else None
+            blocks.append(ModelTextBlock("".join(parts), text_signature=signature))
+        elif item_type in {"function_call", "custom_tool_call"}:
+            call_id = item.get("call_id") if isinstance(item.get("call_id"), str) else ""
+            item_id = item.get("id") if isinstance(item.get("id"), str) else ""
+            identifier = f"{call_id}|{item_id}" if call_id and item_id else call_id or item_id
+            name = str(item.get("name") or "")
+            raw_arguments = item.get("arguments", item.get("input", "{}"))
+            arguments = json_object(raw_arguments)
+            blocks.append(ModelToolCallBlock(
+                identifier,
+                name_aliases.get(name, name),
+                arguments,
+                namespace=item.get("namespace") if isinstance(item.get("namespace"), str) else None,
+            ))
+    return tuple(blocks)
 
 
 def _tools_to_wire(tools: Sequence[Mapping[str, object]], aliases: Mapping[str, str]) -> list[dict[str, object]]:
@@ -176,13 +297,27 @@ class _Accumulator:
         self.model: str | None = None
         self.stop_reason: str | None = None
         self.completed = False
-        self.text_started = False
-        self.thinking_started = False
+        self.text_started: set[str] = set()
+        self.thinking_started: set[str] = set()
         self.tool_started: set[str] = set()
+        self.completed_output: list[object] | None = None
+        self.completed_items: dict[str, tuple[int | None, tuple[ModelContentBlock, ...]]] = {}
+        self.completed_item_order: list[str] = []
 
-    def _get(self, key: str, kind: str = "function_call") -> _Output:
+    @staticmethod
+    def _output_index(value: object) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+    def _output_key(self, data: Mapping[str, object], kind: str) -> str:
+        output_index = self._output_index(data.get("output_index"))
+        if output_index is not None:
+            return f"output:{output_index}"
+        item_id = data.get("item_id")
+        return f"item:{item_id}" if isinstance(item_id, str) else kind
+
+    def _get(self, key: str, kind: str = "function_call", output_index: int | None = None) -> _Output:
         if key not in self.outputs:
-            self.outputs[key] = _Output(kind=kind)
+            self.outputs[key] = _Output(kind=kind, output_index=output_index)
             self.order.append(key)
         return self.outputs[key]
 
@@ -201,34 +336,44 @@ class _Accumulator:
         if event_type == "response.output_text.delta":
             delta = data.get("delta")
             if isinstance(delta, str):
-                if not self.text_started:
-                    self.text_started = True
-                    key = "text"
-                    self._get(key, "text")
+                key = self._output_key(data, "text")
+                output_index = self._output_index(data.get("output_index"))
+                if key not in self.text_started:
+                    self.text_started.add(key)
+                    self._get(key, "text", output_index)
                     events.append(ModelTextStart())
-                self._get("text", "text").text += delta
+                self._get(key, "text", output_index).text += delta
                 events.append(ModelTextDelta(delta))
         elif event_type == "response.reasoning_summary_text.delta":
             delta = data.get("delta")
             if isinstance(delta, str):
-                if not self.thinking_started:
-                    self.thinking_started = True
-                    self._get("thinking", "thinking")
+                key = self._output_key(data, "thinking")
+                output_index = self._output_index(data.get("output_index"))
+                if key not in self.thinking_started:
+                    self.thinking_started.add(key)
+                    self._get(key, "thinking", output_index)
                     events.append(ModelThinkingStart())
-                self._get("thinking", "thinking").text += delta
+                self._get(key, "thinking", output_index).text += delta
                 events.append(ModelThinkingDelta(delta))
         elif event_type == "response.output_item.added":
             item = data.get("item")
-            if isinstance(item, Mapping) and item.get("type") in {"function_call", "custom_tool_call"}:
-                key = str(item.get("id") or item.get("call_id") or f"call-{len(self.order)}")
-                call = self._get(key)
-                call.id = str(item.get("call_id") or item.get("id") or key)
-                call.name = str(item.get("name") or "")
-                self.tool_started.add(key)
-                events.append(ModelToolCallStart(call.id, call.name))
+            if isinstance(item, Mapping):
+                output_index = self._output_index(data.get("output_index"))
+                item_type = item.get("type")
+                if item_type in {"function_call", "custom_tool_call"}:
+                    key = self._output_key(data, "function_call")
+                    call = self._get(key, str(item_type), output_index)
+                    call.id = str(item.get("call_id") or item.get("id") or key)
+                    call.name = str(item.get("name") or "")
+                    self.tool_started.add(key)
+                    events.append(ModelToolCallStart(call.id, call.name))
+                elif item_type == "message":
+                    self._get(self._output_key(data, "text"), "text", output_index)
+                elif item_type == "reasoning":
+                    self._get(self._output_key(data, "thinking"), "thinking", output_index)
         elif event_type == "response.function_call_arguments.delta":
-            key = str(data.get("item_id") or data.get("output_index") or f"call-{len(self.order)}")
-            call = self._get(key)
+            key = self._output_key(data, "function_call")
+            call = self._get(key, output_index=self._output_index(data.get("output_index")))
             if isinstance(data.get("call_id"), str):
                 call.id = data["call_id"]
             if isinstance(data.get("name"), str):
@@ -241,20 +386,34 @@ class _Accumulator:
                     events.append(ModelToolCallStart(call.id or key, call.name))
                 events.append(ModelToolCallDelta(call.id or key, fragment))
         elif event_type == "response.function_call_arguments.done":
-            key = str(data.get("item_id") or data.get("output_index") or f"call-{len(self.order)}")
-            call = self._get(key)
+            key = self._output_key(data, "function_call")
+            call = self._get(key, output_index=self._output_index(data.get("output_index")))
             if isinstance(data.get("call_id"), str):
                 call.id = data["call_id"]
             if isinstance(data.get("name"), str):
                 call.name = data["name"]
             if isinstance(data.get("arguments"), str):
                 call.arguments = data["arguments"]
+        elif event_type == "response.output_item.done":
+            item = data.get("item")
+            if isinstance(item, Mapping):
+                output_index = self._output_index(data.get("output_index"))
+                item_key = self._output_key(data, str(item.get("type") or "item"))
+                if item_key not in self.completed_item_order:
+                    self.completed_item_order.append(item_key)
+                self.completed_items[item_key] = (
+                    output_index,
+                    _response_output_blocks((item,), self.name_aliases),
+                )
         elif event_type == "response.completed":
             self.completed = True
             response = data.get("response")
             if isinstance(response, Mapping):
                 status = response.get("status")
                 self.stop_reason = "stop" if status == "completed" else str(status) if status else None
+                output = response.get("output")
+                if isinstance(output, list):
+                    self.completed_output = output
         elif event_type == "response.failed":
             error = data.get("response", data)
             return [ModelStreamError(str(error.get("error") if isinstance(error, Mapping) else error))]
@@ -264,12 +423,55 @@ class _Accumulator:
         if not self.completed:
             return [], None, "模型流式响应未正常结束"
         events: list[ModelStreamEvent] = []
-        if self.text_started:
-            events.append(ModelTextEnd())
-        if self.thinking_started:
-            events.append(ModelThinkingEnd())
+        events.extend(ModelTextEnd() for _ in self.text_started)
+        events.extend(ModelThinkingEnd() for _ in self.thinking_started)
+        if self.completed_output is not None:
+            try:
+                blocks = _response_output_blocks(self.completed_output, self.name_aliases)
+            except ValueError as error:
+                return events, None, str(error)
+            events.extend(ModelToolCallEnd(block) for block in blocks if isinstance(block, ModelToolCallBlock))
+            reason = self.stop_reason or (
+                "tool_use" if any(isinstance(block, ModelToolCallBlock) for block in blocks) else "stop"
+            )
+            return events, ModelAssistantMessage(
+                content=blocks,
+                metadata=ModelResponseMetadata(
+                    provider=self.provider,
+                    api=self.api,
+                    model=self.model,
+                    response_id=self.response_id,
+                    usage=self.usage,
+                    stop_reason=reason,
+                    timestamp=int(time.time() * 1000),
+                ),
+            ), None
         blocks: list[ModelContentBlock] = []
-        for key in self.order:
+        if self.completed_item_order:
+            fallback_order = {key: index for index, key in enumerate(self.completed_item_order)}
+            keys = sorted(
+                self.completed_item_order,
+                key=lambda key: (
+                    self.completed_items[key][0] is None,
+                    self.completed_items[key][0]
+                    if self.completed_items[key][0] is not None
+                    else fallback_order[key],
+                ),
+            )
+            for key in keys:
+                blocks.extend(self.completed_items[key][1])
+        else:
+            fallback_order = {key: index for index, key in enumerate(self.order)}
+            keys = sorted(
+                self.order,
+                key=lambda key: (
+                    self.outputs[key].output_index is None,
+                    self.outputs[key].output_index
+                    if self.outputs[key].output_index is not None
+                    else fallback_order[key],
+                ),
+            )
+        for key in (() if self.completed_item_order else keys):
             item = self.outputs[key]
             if item.kind == "text":
                 blocks.append(ModelTextBlock(item.text))
@@ -332,9 +534,15 @@ class OpenAIResponsesAdapter:
         normalized = normalize_tools(effective_tools(transformed, tools))
         aliases, reverse = compatible_tool_names(normalized, transformed)
         transformed = remap_message_tool_names(transformed, aliases)
+        provider = self.provider or configuration.provider
         payload: dict[str, object] = {
             "model": configuration.model,
-            "input": _messages_to_input(transformed),
+            "input": _messages_to_input(
+                transformed,
+                target_provider=provider,
+                target_api=self.api,
+                target_model=configuration.model,
+            ),
             "stream": stream,
         }
         wire_tools = _tools_to_wire(normalized, aliases)
@@ -409,34 +617,21 @@ class OpenAIResponsesAdapter:
             if configuration.apiKey:
                 detail = detail.replace(configuration.apiKey, "***")
             raise RuntimeError(f"模型响应失败: {detail}")
-        accumulator = self._accumulator(name_aliases, configuration)
-        accumulator.response_id = data.get("id") if isinstance(data.get("id"), str) else None
-        accumulator.model = data.get("model") if isinstance(data.get("model"), str) else None
-        accumulator.usage = _usage(data.get("usage"))
-        accumulator.stop_reason = "stop"
         output = data.get("output")
-        if isinstance(output, list):
-            for index, item in enumerate(output):
-                if not isinstance(item, Mapping):
-                    continue
-                item_type = str(item.get("type", ""))
-                key = str(item.get("id") or item.get("call_id") or index)
-                block = _Output(item_type, str(item.get("call_id") or item.get("id") or key), str(item.get("name") or ""))
-                if item_type == "message":
-                    block.kind = "text"
-                    block.text = _text([ModelTextBlock(str(part.get("text", ""))) for part in item.get("content", []) if isinstance(part, Mapping)]) if isinstance(item.get("content"), list) else str(item.get("content", ""))
-                elif item_type in {"function_call", "custom_tool_call"}:
-                    block.arguments = str(item.get("arguments", "{}"))
-                accumulator.outputs[key] = block
-                accumulator.order.append(key)
-        accumulator.completed = True
-        _, message, error = accumulator.finish()
-        if message is None:
-            detail = error or "模型响应无法完成"
-            if configuration.apiKey:
-                detail = detail.replace(configuration.apiKey, "***")
-            raise RuntimeError(detail)
-        return message
+        blocks = _response_output_blocks(output, name_aliases) if isinstance(output, list) else ()
+        stop_reason = "tool_use" if any(isinstance(block, ModelToolCallBlock) for block in blocks) else "stop"
+        return ModelAssistantMessage(
+            content=blocks,
+            metadata=ModelResponseMetadata(
+                provider=self.provider or configuration.provider,
+                api=self.api,
+                model=data.get("model") if isinstance(data.get("model"), str) else configuration.model,
+                response_id=data.get("id") if isinstance(data.get("id"), str) else None,
+                usage=_usage(data.get("usage")),
+                stop_reason=stop_reason,
+                timestamp=int(time.time() * 1000),
+            ),
+        )
 
     async def stream_rich_messages(self, *args, **kwargs):
         async for event in self.stream_messages(*args, **kwargs):

@@ -49,7 +49,7 @@ class AnthropicMessagesOptions:
     capabilities: ModelCapabilities = field(default_factory=lambda: ModelCapabilities(
         supports_images=True,
         supports_reasoning=True,
-        preserve_thinking_signatures=False,
+        preserve_thinking_signatures=True,
         tool_call_id_pattern=r"[A-Za-z0-9_-]+",
         max_tool_call_id_length=64,
     ))
@@ -66,6 +66,7 @@ class _Block:
     arguments: str = ""
     arguments_started: bool = False
     signature: str | None = None
+    redacted: bool = False
 
 
 def _int(value: object) -> int:
@@ -135,7 +136,16 @@ def _messages_to_wire(
                 if isinstance(block, ModelTextBlock):
                     content.append({"type": "text", "text": block.text})
                 elif isinstance(block, ModelThinkingBlock):
-                    if block.text:
+                    if block.redacted:
+                        if block.signature:
+                            content.append({"type": "redacted_thinking", "data": block.signature})
+                    elif block.signature:
+                        content.append({
+                            "type": "thinking",
+                            "thinking": block.text,
+                            "signature": block.signature,
+                        })
+                    elif block.text.strip():
                         content.append({"type": "text", "text": block.text})
                 elif isinstance(block, ModelToolCallBlock):
                     content.append({
@@ -223,6 +233,9 @@ class _Accumulator:
                 self.thinking_open.add(index)
                 events.append(ModelThinkingStart())
                 block.signature = raw.get("signature") if isinstance(raw.get("signature"), str) else None
+            elif kind == "redacted_thinking":
+                block.signature = raw.get("data") if isinstance(raw.get("data"), str) else None
+                block.redacted = True
             elif kind == "text":
                 self.text_open.add(index)
                 events.append(ModelTextStart())
@@ -279,8 +292,8 @@ class _Accumulator:
         for block in self.blocks.values():
             if block.kind == "text":
                 blocks.append(ModelTextBlock(block.text))
-            elif block.kind == "thinking":
-                blocks.append(ModelThinkingBlock(block.text, block.signature))
+            elif block.kind in {"thinking", "redacted_thinking"}:
+                blocks.append(ModelThinkingBlock(block.text, block.signature, redacted=block.redacted))
             elif block.kind == "tool_use":
                 try:
                     arguments = json_object(block.arguments)
@@ -452,7 +465,12 @@ class AnthropicMessagesAdapter:
                 name=str(block.get("name", "")),
                 text=str(block.get("text", block.get("thinking", ""))),
                 arguments=json.dumps(block.get("input", {}), ensure_ascii=False, separators=(",", ":")),
-                signature=block.get("signature") if isinstance(block.get("signature"), str) else None,
+                signature=(
+                    block.get("data") if kind == "redacted_thinking" and isinstance(block.get("data"), str)
+                    else block.get("signature") if isinstance(block.get("signature"), str)
+                    else None
+                ),
+                redacted=kind == "redacted_thinking",
             )
             accumulator.blocks[index] = item
         accumulator.completed = True

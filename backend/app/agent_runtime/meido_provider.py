@@ -12,6 +12,7 @@ from ..model_adapter import ModelAdapter, ModelStreamError, ModelTextDelta, Mode
 from ..model_types import (
     ModelAssistantMessage as RichAssistantMessage,
     ModelImageBlock as RichImageBlock,
+    ModelContentBlock as RichContentBlock,
     ModelMessage as RichMessage,
     ModelResponseMetadata as RichResponseMetadata,
     ModelStreamDone,
@@ -33,6 +34,78 @@ from .types import AssistantMessage, ToolCall, UserMessage, ToolResultMessage
 
 def _metadata_count(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _content_block_from_metadata(value: object) -> RichContentBlock | None:
+    if not isinstance(value, Mapping):
+        return None
+    block_type = value.get("type")
+    if block_type == "text":
+        text = value.get("text")
+        signature = value.get("text_signature")
+        if not isinstance(text, str) or (signature is not None and not isinstance(signature, str)):
+            return None
+        return RichTextBlock(text, text_signature=signature)
+    if block_type == "thinking":
+        text = value.get("text", "")
+        signature = value.get("signature")
+        redacted = value.get("redacted", False)
+        if not isinstance(text, str) or (signature is not None and not isinstance(signature, str)) or not isinstance(redacted, bool):
+            return None
+        return RichThinkingBlock(text, signature, redacted=redacted)
+    if block_type == "image":
+        media_type = value.get("media_type")
+        data_base64 = value.get("data_base64")
+        detail = value.get("detail", "auto")
+        if (
+            not isinstance(media_type, str)
+            or not isinstance(data_base64, str)
+            or not isinstance(detail, str)
+            or detail not in {"low", "high", "auto"}
+        ):
+            return None
+        return RichImageBlock(media_type, data_base64, detail)
+    if block_type == "tool_call":
+        call_id = value.get("id")
+        name = value.get("name")
+        arguments = value.get("arguments")
+        thought_signature = value.get("thought_signature")
+        namespace = value.get("namespace")
+        if (
+            not isinstance(call_id, str)
+            or not isinstance(name, str)
+            or not isinstance(arguments, Mapping)
+            or (thought_signature is not None and not isinstance(thought_signature, str))
+            or (namespace is not None and not isinstance(namespace, str))
+        ):
+            return None
+        safe_arguments = dict(arguments)
+        if name.startswith("agent_browser_"):
+            safe_arguments = sanitize_browser_arguments(name, safe_arguments)
+        return RichToolCallBlock(
+            call_id,
+            name,
+            safe_arguments,
+            thought_signature=thought_signature,
+            namespace=namespace,
+        )
+    return None
+
+
+def _content_block_metadata(block: RichContentBlock) -> dict[str, object]:
+    value = asdict(block)
+    if isinstance(block, RichToolCallBlock) and block.name.startswith("agent_browser_"):
+        value["arguments"] = sanitize_browser_arguments(block.name, block.arguments)
+    return value
+
+
+def _content_blocks_from_metadata(value: object) -> tuple[RichContentBlock, ...] | None:
+    if not isinstance(value, list):
+        return None
+    blocks = tuple(_content_block_from_metadata(item) for item in value)
+    if any(block is None for block in blocks):
+        return None
+    return tuple(block for block in blocks if block is not None)
 
 
 class MeidoProvider:
@@ -134,6 +207,9 @@ class MeidoProvider:
                             }
                             for block in event.message.content
                             if isinstance(block, RichThinkingBlock)
+                        ]
+                        response_metadata["content_blocks"] = [
+                            _content_block_metadata(block) for block in event.message.content
                         ]
                         yield AssistantDoneEvent(AssistantMessage(
                             content=content,
@@ -251,7 +327,12 @@ class MeidoProvider:
                 usage = raw_usage if isinstance(raw_usage, Mapping) else {}
                 blocks: list[object] = []
                 raw_thinking = metadata.get("thinking")
-                if isinstance(raw_thinking, list):
+                raw_content_blocks = _content_blocks_from_metadata(metadata.get("content_blocks"))
+                if raw_content_blocks == () and (message.content or message.tool_calls or raw_thinking):
+                    raw_content_blocks = None
+                if raw_content_blocks is not None:
+                    blocks.extend(raw_content_blocks)
+                elif isinstance(raw_thinking, list):
                     for item in raw_thinking:
                         if not isinstance(item, dict):
                             continue
@@ -262,16 +343,17 @@ class MeidoProvider:
                                 text,
                                 signature if isinstance(signature, str) else None,
                             ))
-                if message.content:
-                    blocks.append(RichTextBlock(message.content))
-                blocks.extend(
-                    RichToolCallBlock(
-                        call.id,
-                        call.name,
-                        sanitize_browser_arguments(call.name, call.arguments),
+                if raw_content_blocks is None:
+                    if message.content:
+                        blocks.append(RichTextBlock(message.content))
+                    blocks.extend(
+                        RichToolCallBlock(
+                            call.id,
+                            call.name,
+                            sanitize_browser_arguments(call.name, call.arguments),
+                        )
+                        for call in message.tool_calls
                     )
-                    for call in message.tool_calls
-                )
                 timestamp = metadata.get("timestamp")
                 result.append(RichAssistantMessage(
                     tuple(blocks),

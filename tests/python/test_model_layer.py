@@ -32,7 +32,7 @@ def test_transform_downgrades_thinking_and_deduplicates_unsupported_images():
 
     assert transformed[0].content == (
         ModelTextBlock("看图"),
-        ModelTextBlock("[image omitted: image/png]"),
+        ModelTextBlock("(image omitted: model does not support images)"),
     )
     assert transformed[1].content == (ModelTextBlock("先想想"),)
 
@@ -44,21 +44,62 @@ def test_transform_drops_redacted_thinking_when_replaying_other_model():
     )
 
 
-def test_transform_preserves_same_model_thinking_only_when_capability_allows_signature():
+def test_transform_preserves_same_model_thinking_signature():
     message = ModelAssistantMessage((ModelThinkingBlock("reason", "opaque"),))
-    without_signature = transform_messages(
+    same_model = transform_messages(
         (message,),
         source_model="same",
         target_model="same",
     )
-    with_signature = transform_messages(
-        (message,),
-        capabilities=ModelCapabilities(preserve_thinking_signatures=True),
-        source_model="same",
-        target_model="same",
+    assert same_model[0].content == message.content
+
+
+def test_transform_preserves_all_provider_signatures_only_for_same_connection():
+    call = ModelToolCallBlock("bad|id", "lookup", {}, thought_signature="tool-signature")
+    message = ModelAssistantMessage(
+        (
+            ModelTextBlock("answer", text_signature="text-signature"),
+            ModelThinkingBlock("", "opaque", redacted=True),
+            call,
+        ),
+        ModelResponseMetadata(provider="source", api="source-api", model="source-model"),
     )
-    assert without_signature[0].content == (ModelThinkingBlock("reason"),)
-    assert with_signature[0].content == message.content
+    result = ModelToolResultMessage((ModelTextBlock("done"),), call.id, call.name)
+    capabilities = ModelCapabilities(tool_call_id_pattern=r"[A-Za-z0-9_-]+", max_tool_call_id_length=16)
+
+    same = transform_messages(
+        (message, result),
+        capabilities=capabilities,
+        target_provider="source",
+        target_api="source-api",
+        target_model="source-model",
+    )
+    cross = transform_messages(
+        (message, result),
+        capabilities=capabilities,
+        target_provider="target",
+        target_api="source-api",
+        target_model="source-model",
+    )
+
+    assert same[0].content == message.content
+    assert same[1].tool_call_id == "bad|id"
+    assert cross[0].content[0] == ModelTextBlock("answer")
+    assert cross[0].content[1:] == (ModelToolCallBlock(cross[0].content[1].id, "lookup", {}),)
+    assert cross[0].content[1].id != "bad|id"
+    assert cross[1].tool_call_id == cross[0].content[1].id
+
+
+def test_transform_uses_distinct_placeholder_text_for_user_and_tool_images():
+    messages = (
+        ModelUserMessage((ModelImageBlock("image/png", "first"), ModelImageBlock("image/png", "second"))),
+        ModelAssistantMessage((ModelToolCallBlock("call-1", "inspect", {}),)),
+        ModelToolResultMessage((ModelImageBlock("image/png", "first"), ModelImageBlock("image/png", "second")), "call-1", "inspect"),
+    )
+    transformed = transform_messages(messages, capabilities=ModelCapabilities(supports_images=False))
+
+    assert transformed[0].content == (ModelTextBlock("(image omitted: model does not support images)"),)
+    assert transformed[-1].content == (ModelTextBlock("(tool image omitted: model does not support images)"),)
 
 
 def test_transform_normalizes_tool_ids_and_keeps_results_paired():
@@ -69,6 +110,9 @@ def test_transform_normalizes_tool_ids_and_keeps_results_paired():
     transformed = transform_messages(
         (ModelAssistantMessage((call,)), result),
         capabilities=ModelCapabilities(tool_call_id_pattern=r"[A-Za-z0-9_-]+", max_tool_call_id_length=16),
+        target_provider="target",
+        target_api="target-api",
+        target_model="target-model",
     )
     sent_call = transformed[0].content[0]
     assert isinstance(sent_call, ModelToolCallBlock)
@@ -93,6 +137,9 @@ def test_transform_disambiguates_colliding_short_tool_ids(monkeypatch):
     transformed = transform_messages(
         messages,
         capabilities=ModelCapabilities(tool_call_id_pattern=r"[A-Za-z0-9_-]+", max_tool_call_id_length=9),
+        target_provider="target",
+        target_api="target-api",
+        target_model="target-model",
     )
 
     calls = transformed[0].content

@@ -444,6 +444,10 @@ def test_meido_provider_persists_thinking_for_next_provider_turn_without_public_
     done = next(event for event in events if isinstance(event, AssistantDoneEvent))
     assistant = done.message
     assert assistant.metadata["thinking"][0]["signature"] == "opaque"
+    assert assistant.metadata["content_blocks"] == [
+        {"text": "内部思考", "signature": "opaque", "type": "thinking", "redacted": False},
+        {"text": "回复", "type": "text", "text_signature": None},
+    ]
     public = public_message(Message(
         id="m",
         sessionKey="s",
@@ -455,6 +459,7 @@ def test_meido_provider_persists_thinking_for_next_provider_turn_without_public_
         metadata=assistant.metadata,
     ))
     assert "thinking" not in public.metadata
+    assert "content_blocks" not in public.metadata
 
     async def second_collect():
         return [event async for event in provider.stream_response(

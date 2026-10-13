@@ -76,7 +76,7 @@ Meido Runtime messages
 - [x] 任意被规范化的 tool call ID 都会在对应 tool result 中使用相同 ID；孤立调用会得到一个 `is_error=true` 的合成结果，孤立结果不会发送给 provider。
 - [x] 多个 ID 规范化后发生碰撞时仍生成唯一 ID，且工具结果继续指向对应调用。
 - [x] 对文本型工具结果协议，图片会变成可读占位文本而不是被静默丢弃。
-- [x] Runtime 从持久化 assistant transcript 恢复 provider、api、model、usage、stop reason 和 thinking 元数据。
+- [x] Runtime 经 SQLite 往返后恢复 assistant 有序内容块、text/thinking/tool-call signatures、namespace、provider、api、model、usage 和 stop reason；公开消息不泄露内部 thinking 或 canonical blocks。
 - [x] 自定义模型可以选择已注册协议；预设仍使用各自固定协议。
 - [x] 错误工具类型和确定无效的嵌套 schema 在请求发送前被拒绝。
 - [x] 一个 assistant 回合中的多个 tool call 保持顺序，并能从分片 SSE、legacy function_call 和完整 message 响应恢复。
@@ -104,6 +104,7 @@ Meido Runtime messages
 - `ModelAdapterRegistry` 按配置协议路由 OpenAI Completions、OpenAI Responses、Anthropic、Google、Mistral、Bedrock 和 Pi Messages；
 - registry 也支持 Azure OpenAI Responses、Codex Responses 和 Google Vertex；Vertex 可从 Google ADC 获取凭据，Codex 使用手动提供的 OAuth bearer token；
 - `MeidoProvider` 把 rich stream 投影给 Runtime，并从 Runtime transcript 还原模型响应元数据和 thinking；
+- Runtime transcript 在 SQLite metadata 中保存有序 canonical assistant blocks，使签名、thought signature、namespace 和 redacted thinking 可在后续模型调用中重放；公开消息过滤这些内部块；
 - 自定义连接可显式选择协议，历史配置缺省为 OpenAI Completions。
 
 所有十种协议均通过 HTTP/SSE 或 JSON 转换投影到统一 rich stream。Codex 目前采用 HTTP SSE，不包含 Pi 的 WebSocket、自动重试和 OAuth 生命周期；Bedrock 不包含 AWS SigV4。

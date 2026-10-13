@@ -50,14 +50,23 @@ def _parts(blocks: Sequence[object], *, user: bool) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     for block in blocks:
         if isinstance(block, ModelTextBlock):
-            result.append({"text": block.text})
+            part: dict[str, object] = {"text": block.text}
+            if block.text_signature:
+                part["thoughtSignature"] = block.text_signature
+            result.append(part)
         elif isinstance(block, ModelImageBlock):
             result.append({"inlineData": {"mimeType": block.media_type, "data": block.data_base64}})
         elif not user and isinstance(block, ModelThinkingBlock):
-            if block.text:
-                result.append({"text": block.text, "thought": True})
+            if block.text or block.signature:
+                part = {"text": block.text, "thought": True}
+                if block.signature:
+                    part["thoughtSignature"] = block.signature
+                result.append(part)
         elif not user and isinstance(block, ModelToolCallBlock):
-            result.append({"functionCall": {"name": block.name, "args": dict(block.arguments), "id": safe_tool_id(block.id)}})
+            part = {"functionCall": {"name": block.name, "args": dict(block.arguments), "id": safe_tool_id(block.id)}}
+            if block.thought_signature:
+                part["thoughtSignature"] = block.thought_signature
+            result.append(part)
     return result or [{"text": ""}]
 
 
@@ -143,7 +152,11 @@ class GoogleGenerativeAdapter:
         api: str = "google-generative",
     ) -> None:
         self.timeout = timeout
-        self.capabilities = capabilities or ModelCapabilities(supports_images=True, supports_reasoning=True)
+        self.capabilities = capabilities or ModelCapabilities(
+            supports_images=True,
+            supports_reasoning=True,
+            preserve_thinking_signatures=True,
+        )
         self.api = api
 
     def _url(self, configuration, *, stream: bool) -> str:
@@ -194,7 +207,7 @@ class GoogleGenerativeAdapter:
         usage = ModelUsage()
         response_id = None
         stop_reason = None
-        text_open = thinking_open = False
+        current_kind: str | None = None
         completed = False
         redaction_key = configuration.apiKey
         yield ModelStreamStart()
@@ -234,37 +247,63 @@ class GoogleGenerativeAdapter:
                             part_text = part.get("text")
                             if isinstance(part_text, str) and part_text:
                                 is_thought = bool(part.get("thought"))
-                                if is_thought:
-                                    if not thinking_open:
-                                        thinking_open = True
-                                        blocks.append(ModelThinkingBlock(""))
+                                next_kind = "thinking" if is_thought else "text"
+                                if current_kind != next_kind:
+                                    if current_kind == "thinking":
+                                        yield ModelThinkingEnd()
+                                    elif current_kind == "text":
+                                        yield ModelTextEnd()
+                                    signature = part.get("thoughtSignature")
+                                    signature = signature if isinstance(signature, str) else None
+                                    if is_thought:
+                                        thinking = ""
+                                        blocks.append(ModelThinkingBlock("", signature))
                                         yield ModelThinkingStart()
+                                    else:
+                                        text = ""
+                                        blocks.append(ModelTextBlock("", text_signature=signature))
+                                        yield ModelTextStart()
+                                    current_kind = next_kind
+                                previous = blocks[-1]
+                                signature = part.get("thoughtSignature")
+                                signature = signature if isinstance(signature, str) else None
+                                if is_thought:
                                     thinking += part_text
-                                    blocks[-1] = ModelThinkingBlock(thinking)
+                                    retained_signature = previous.signature or signature if isinstance(previous, ModelThinkingBlock) else signature
+                                    blocks[-1] = ModelThinkingBlock(thinking, retained_signature)
                                     yield ModelThinkingDelta(part_text)
                                 else:
-                                    if not text_open:
-                                        text_open = True
-                                        blocks.append(ModelTextBlock(""))
-                                        yield ModelTextStart()
                                     text += part_text
-                                    blocks[-1] = ModelTextBlock(text)
+                                    retained_signature = previous.text_signature or signature if isinstance(previous, ModelTextBlock) else signature
+                                    blocks[-1] = ModelTextBlock(text, text_signature=retained_signature)
                                     yield ModelTextDelta(part_text)
                             function = part.get("functionCall")
                             if isinstance(function, Mapping):
+                                if current_kind == "thinking":
+                                    yield ModelThinkingEnd()
+                                    current_kind = None
+                                elif current_kind == "text":
+                                    yield ModelTextEnd()
+                                    current_kind = None
                                 call_id = safe_tool_id(str(function.get("id") or f"call-{len(blocks)}"))
                                 wire_name = str(function.get("name") or "")
                                 name = name_aliases.get(wire_name, wire_name)
                                 arguments = function.get("args") if isinstance(function.get("args"), Mapping) else {}
-                                call = ModelToolCallBlock(call_id, name, dict(arguments))
+                                signature = part.get("thoughtSignature")
+                                call = ModelToolCallBlock(
+                                    call_id,
+                                    name,
+                                    dict(arguments),
+                                    thought_signature=signature if isinstance(signature, str) else None,
+                                )
                                 blocks.append(call)
                                 encoded = json.dumps(dict(arguments), ensure_ascii=False, separators=(",", ":"))
                                 yield ModelToolCallStart(call_id, name)
                                 yield ModelToolCallDelta(call_id, encoded)
                                 yield ModelToolCallEnd(call)
-            if text_open:
+            if current_kind == "text":
                 yield ModelTextEnd()
-            if thinking_open:
+            if current_kind == "thinking":
                 yield ModelThinkingEnd()
             if not completed:
                 yield ModelStreamError("模型流式响应未正常结束")
@@ -299,12 +338,23 @@ class GoogleGenerativeAdapter:
             if not isinstance(part, Mapping):
                 continue
             if isinstance(part.get("text"), str):
-                blocks.append(ModelThinkingBlock(part["text"]) if part.get("thought") else ModelTextBlock(part["text"]))
+                signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else None
+                blocks.append(
+                    ModelThinkingBlock(part["text"], signature)
+                    if part.get("thought")
+                    else ModelTextBlock(part["text"], text_signature=signature)
+                )
             function = part.get("functionCall")
             if isinstance(function, Mapping):
                 args = function.get("args") if isinstance(function.get("args"), Mapping) else {}
                 wire_name = str(function.get("name") or "")
-                blocks.append(ModelToolCallBlock(safe_tool_id(str(function.get("id") or f"call-{len(blocks)}")), name_aliases.get(wire_name, wire_name), dict(args)))
+                signature = part.get("thoughtSignature")
+                blocks.append(ModelToolCallBlock(
+                    safe_tool_id(str(function.get("id") or f"call-{len(blocks)}")),
+                    name_aliases.get(wire_name, wire_name),
+                    dict(args),
+                    thought_signature=signature if isinstance(signature, str) else None,
+                ))
         reason = str(candidate.get("finishReason") or "STOP")
         return ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(provider=configuration.provider, api=self.api, model=configuration.model, usage=_usage(data.get("usageMetadata")), stop_reason={"STOP": "stop", "MAX_TOKENS": "length"}.get(reason, reason.lower()), timestamp=int(time.time() * 1000)))
 

@@ -9,7 +9,7 @@ from backend.app.anthropic_adapter import AnthropicMessagesAdapter
 from backend.app.bedrock_adapter import BedrockConverseAdapter
 from backend.app.google_adapter import GoogleGenerativeAdapter
 from backend.app.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
-from backend.app.model_types import ModelStreamDone, ModelTextBlock, ModelSystemMessage, ModelUserMessage
+from backend.app.model_types import ModelStreamDone, ModelStreamError, ModelTextBlock, ModelSystemMessage, ModelUserMessage
 from backend.app.model_types import (
     ModelAssistantMessage, ModelImageBlock, ModelResponseMetadata, ModelThinkingBlock,
     ModelToolCallBlock, ModelToolResultMessage,
@@ -69,6 +69,26 @@ def test_anthropic_messages_uses_native_path_and_tool_schema(monkeypatch):
     assert payload["system"] == "system"
     assert payload["tools"][0]["input_schema"]["type"] == "object"
     assert any(isinstance(event, ModelStreamDone) and "hi!" == event.message.content[0].text for event in events)
+
+
+def test_anthropic_replays_thinking_blocks_with_their_signature():
+    history = [
+        ModelAssistantMessage(
+            (ModelThinkingBlock("private reasoning", "anthropic-signature"),),
+            ModelResponseMetadata(provider="anthropic", api="anthropic-messages", model="claude"),
+        ),
+        ModelUserMessage((ModelTextBlock("continue"),)),
+    ]
+    config = configuration("anthropic-messages", provider="anthropic")
+    config.model = "claude"
+    payload, _headers, _aliases = AnthropicMessagesAdapter()._prepare(
+        history, config, (),
+        max_tokens=None, stream=True,
+    )
+
+    assert payload["messages"][0]["content"][0] == {
+        "type": "thinking", "thinking": "private reasoning", "signature": "anthropic-signature",
+    }
 
 
 @pytest.mark.parametrize("fragments, expected", [
@@ -155,6 +175,164 @@ def test_responses_uses_input_and_function_call_output(monkeypatch):
     assert payload["input"][0]["role"] == "system"
     assert payload["input"][1]["content"][0]["type"] == "input_text"
     assert any(isinstance(event, ModelStreamDone) for event in events)
+
+
+def test_responses_stream_restores_ordered_blocks_from_output_item_done(monkeypatch):
+    def handler(request):
+        del request
+        payloads = [
+            {"type": "response.output_item.added", "output_index": 0, "item": {
+                "id": "rs_1", "type": "reasoning", "summary": [],
+            }},
+            {"type": "response.reasoning_summary_text.delta", "output_index": 0, "item_id": "rs_1", "delta": "reason"},
+            {"type": "response.output_item.done", "output_index": 0, "item": {
+                "id": "rs_1", "type": "reasoning", "summary": [{"type": "summary_text", "text": "reason"}],
+            }},
+            {"type": "response.output_item.added", "output_index": 1, "item": {
+                "id": "msg_1", "type": "message", "role": "assistant", "content": [],
+            }},
+            {"type": "response.output_text.delta", "output_index": 1, "item_id": "msg_1", "delta": "answer"},
+            {"type": "response.output_item.done", "output_index": 1, "item": {
+                "id": "msg_1", "type": "message", "role": "assistant", "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "answer", "annotations": []}],
+            }},
+            {"type": "response.output_item.added", "output_index": 2, "item": {
+                "id": "fc_1", "call_id": "call_1", "type": "function_call", "name": "lookup",
+                "arguments": "{}", "namespace": "functions",
+            }},
+            {"type": "response.output_item.done", "output_index": 2, "item": {
+                "id": "fc_1", "call_id": "call_1", "type": "function_call", "name": "lookup",
+                "arguments": "{\"key\":\"name\"}", "namespace": "functions",
+            }},
+            {"type": "response.completed", "response": {
+                "id": "resp_1", "model": "o4", "status": "completed",
+            }},
+        ]
+        body = "".join(f"event: {item['type']}\ndata: {json.dumps(item)}\n\n" for item in payloads)
+        return httpx.Response(200, text=body)
+
+    patch_client(monkeypatch, handler)
+    events = asyncio.run(collect(OpenAIResponsesAdapter().stream_messages(
+        messages(), configuration("openai-responses"),
+    )))
+    done = next(event for event in events if isinstance(event, ModelStreamDone))
+
+    assert done.message.content == (
+        ModelThinkingBlock("reason", '{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"reason"}]}'),
+        ModelTextBlock("answer", text_signature='{"v":1,"id":"msg_1","phase":"final_answer"}'),
+        ModelToolCallBlock("call_1|fc_1", "lookup", {"key": "name"}, namespace="functions"),
+    )
+
+
+def test_responses_replays_reasoning_text_signatures_and_tool_namespace():
+    history = (
+        ModelAssistantMessage(
+            (
+                ModelThinkingBlock("reason", '{"type":"reasoning","id":"rs_1","summary":[]}'),
+                ModelTextBlock("answer", text_signature='{"v":1,"id":"msg_1","phase":"final_answer"}'),
+                ModelToolCallBlock("call_1|fc_1", "lookup", {"count": 1}, namespace="plugin"),
+            ),
+            ModelResponseMetadata(provider="provider", api="openai-responses", model="model-1"),
+        ),
+        ModelToolResultMessage((ModelTextBlock("done"),), "call_1|fc_1", "lookup"),
+    )
+    payload, _headers, _aliases = OpenAIResponsesAdapter()._prepare(
+        history, configuration("openai-responses"), (), max_tokens=None, stream=True,
+    )
+
+    assert payload["input"] == [
+        {"type": "reasoning", "id": "rs_1", "summary": []},
+        {
+            "type": "message", "role": "assistant", "content": [{
+                "type": "output_text", "text": "answer", "annotations": [],
+            }], "status": "completed", "id": "msg_1", "phase": "final_answer",
+        },
+        {
+            "type": "function_call", "id": "fc_1", "call_id": "call_1",
+            "name": "lookup", "arguments": '{"count":1}', "namespace": "plugin",
+        },
+        {"type": "function_call_output", "call_id": "call_1", "output": "done"},
+    ]
+
+
+def test_responses_replays_unsigned_thinking_as_assistant_text():
+    history = (ModelAssistantMessage(
+        (ModelThinkingBlock("reason without signature"),),
+        ModelResponseMetadata(provider="provider", api="openai-responses", model="model-1"),
+    ),)
+
+    payload, _headers, _aliases = OpenAIResponsesAdapter()._prepare(
+        history, configuration("openai-responses"), (), max_tokens=None, stream=True,
+    )
+
+    assert payload["input"] == [{
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "reason without signature", "annotations": []}],
+        "status": "completed",
+        "id": "msg_pi_0",
+    }]
+
+
+def test_responses_stream_reports_invalid_terminal_tool_arguments(monkeypatch):
+    def handler(request):
+        del request
+        payload = {
+            "type": "response.completed",
+            "response": {
+                "status": "completed",
+                "output": [{
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "lookup",
+                    "arguments": "not-json",
+                }],
+            },
+        }
+        body = f"event: response.completed\ndata: {json.dumps(payload)}\n\n"
+        return httpx.Response(200, text=body)
+
+    patch_client(monkeypatch, handler)
+    events = asyncio.run(collect(OpenAIResponsesAdapter().stream_messages(
+        messages(), configuration("openai-responses"),
+    )))
+
+    assert isinstance(events[-1], ModelStreamError)
+    assert "不是有效 JSON" in events[-1].error
+
+
+def test_responses_complete_restores_reasoning_and_item_signatures(monkeypatch):
+    reasoning = {
+        "type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "think"}],
+        "encrypted_content": "encrypted-reasoning",
+    }
+    response_message = {
+        "type": "message", "id": "msg_1", "phase": "final_answer", "content": [
+            {"type": "output_text", "text": "answer"},
+        ],
+    }
+    function_call = {
+        "type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "lookup",
+        "arguments": '{"count":1}', "namespace": "plugin",
+    }
+
+    def handler(request):
+        del request
+        return httpx.Response(200, json={
+            "id": "resp_1", "model": "model-1", "status": "completed",
+            "output": [reasoning, response_message, function_call],
+        })
+
+    patch_client(monkeypatch, handler)
+    result = asyncio.run(OpenAIResponsesAdapter().complete_messages(
+        messages(), configuration("openai-responses"),
+    ))
+
+    assert result.content == (
+        ModelThinkingBlock("think", json.dumps(reasoning, separators=(",", ":"))),
+        ModelTextBlock("answer", text_signature='{"v":1,"id":"msg_1","phase":"final_answer"}'),
+        ModelToolCallBlock("call_1|fc_1", "lookup", {"count": 1}, namespace="plugin"),
+    )
 
 
 @pytest.mark.parametrize("body, detail", [
@@ -443,12 +621,42 @@ def test_google_replays_thinking_as_native_thought_part():
     from backend.app.google_adapter import GoogleGenerativeAdapter
 
     history = (ModelAssistantMessage(
-        (ModelThinkingBlock("reason"), ModelTextBlock("answer")),
+        (
+            ModelThinkingBlock("reason", "thinking-signature"),
+            ModelTextBlock("answer", text_signature="text-signature"),
+            ModelToolCallBlock("call-1", "lookup", {"count": 1}, thought_signature="tool-signature"),
+        ),
         ModelResponseMetadata(provider="provider", api="google-generative", model="model-1"),
     ),)
     _, _, payload, _ = GoogleGenerativeAdapter()._prepare(history, configuration("google-generative"), (), stream=True, max_tokens=None)
     parts = payload["contents"][0]["parts"]
-    assert parts == [{"text": "reason", "thought": True}, {"text": "answer"}]
+    assert parts == [
+        {"text": "reason", "thought": True, "thoughtSignature": "thinking-signature"},
+        {"text": "answer", "thoughtSignature": "text-signature"},
+        {"functionCall": {"name": "lookup", "args": {"count": 1}, "id": "call-1"}, "thoughtSignature": "tool-signature"},
+    ]
+
+
+def test_google_stream_preserves_order_and_thought_signatures(monkeypatch):
+    def handler(request):
+        del request
+        return httpx.Response(200, text=(
+            'data: {"candidates":[{"content":{"parts":[{"text":"think","thought":true,"thoughtSignature":"sig-think"}]}}]}\n\n'
+            'data: {"candidates":[{"content":{"parts":[{"text":"answer","thoughtSignature":"sig-text"}]}}]}\n\n'
+            'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"count":1},"id":"call-1"},"thoughtSignature":"sig-tool"}]},"finishReason":"STOP"}]}\n\n'
+        ))
+
+    patch_client(monkeypatch, handler)
+    events = asyncio.run(collect(GoogleGenerativeAdapter().stream_messages(
+        messages(), configuration("google-generative"),
+    )))
+    done = next(event for event in events if isinstance(event, ModelStreamDone))
+
+    assert done.message.content == (
+        ModelThinkingBlock("think", "sig-think"),
+        ModelTextBlock("answer", text_signature="sig-text"),
+        ModelToolCallBlock("call-1", "lookup", {"count": 1}, thought_signature="sig-tool"),
+    )
 
 
 def test_native_protocols_alias_restricted_tool_names_in_schema_and_history():
@@ -542,6 +750,44 @@ def test_tool_schema_normalization_rejects_invalid_provider_neutral_shapes():
         normalize_tools([{"name": "nested", "parameters": {
             "properties": {"options": {"properties": {}, "required": ["missing"]}},
         }}])
+
+
+def test_all_registered_protocols_reject_invalid_tool_schemas_before_http(monkeypatch):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    patch_client(monkeypatch, handler)
+    routed = RoutedModelAdapter(ModelAdapterRegistry())
+    invalid_tools = [{
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "parameters": {"type": "object", "properties": {"count": "integer"}},
+        },
+    }]
+    apis = (
+        "openai-completions",
+        "openai-responses",
+        "azure-openai-responses",
+        "openai-codex-responses",
+        "anthropic-messages",
+        "google-generative",
+        "google-vertex",
+        "mistral-conversations",
+        "bedrock-converse",
+        "pi-messages",
+    )
+
+    for api in apis:
+        with pytest.raises(ValueError, match="schema.properties 成员必须是对象"):
+            asyncio.run(collect(routed.stream_rich_messages(
+                messages(), configuration(api), invalid_tools,
+            )))
+
+    assert requests == []
 
 
 @pytest.mark.parametrize("schema, message", [

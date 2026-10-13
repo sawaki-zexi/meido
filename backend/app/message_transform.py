@@ -20,12 +20,12 @@ from .model_types import (
     ModelUserMessage,
 )
 
-_PLACEHOLDER_PREFIX = "[image omitted:"
+_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)"
+_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)"
 
 
-def _image_placeholder(image: ModelImageBlock) -> ModelTextBlock:
-    media_type = image.media_type or "unknown"
-    return ModelTextBlock(f"{_PLACEHOLDER_PREFIX} {media_type}]")
+def _image_placeholder(*, tool_result: bool) -> ModelTextBlock:
+    return ModelTextBlock(_TOOL_IMAGE_PLACEHOLDER if tool_result else _USER_IMAGE_PLACEHOLDER)
 
 
 def _normalize_id(value: str, capabilities: ModelCapabilities) -> str:
@@ -78,6 +78,7 @@ def _transform_blocks(
     *,
     capabilities: ModelCapabilities,
     cross_model: bool,
+    image_placeholder: str,
     id_map: dict[str, str],
     used_ids: set[str],
 ) -> tuple[ModelContentBlock, ...]:
@@ -92,25 +93,56 @@ def _transform_blocks(
                 result.append(block)
             elif not result or not (
                 isinstance(result[-1], ModelTextBlock)
-                and result[-1].text.startswith(_PLACEHOLDER_PREFIX)
+                and result[-1].text == image_placeholder
             ):
-                result.append(_image_placeholder(block))
+                result.append(ModelTextBlock(image_placeholder))
+            continue
+        if isinstance(block, ModelTextBlock):
+            text_signature = (
+                block.text_signature
+                if not cross_model and capabilities.preserve_thinking_signatures
+                else None
+            )
+            result.append(
+                block if text_signature == block.text_signature
+                else ModelTextBlock(block.text, text_signature=text_signature)
+            )
             continue
         if isinstance(block, ModelThinkingBlock):
+            if block.redacted:
+                if (
+                    not cross_model
+                    and capabilities.supports_reasoning
+                    and capabilities.preserve_thinking_signatures
+                ):
+                    result.append(block)
+                continue
             if cross_model or not capabilities.supports_reasoning:
-                if block.text:
+                if block.text.strip():
                     result.append(ModelTextBlock(block.text))
-            else:
-                result.append(
-                    block
-                    if capabilities.preserve_thinking_signatures
-                    else ModelThinkingBlock(block.text)
-                )
+                continue
+            if not block.text.strip() and not block.signature:
+                continue
+            signature = block.signature if capabilities.preserve_thinking_signatures else None
+            result.append(ModelThinkingBlock(block.text, signature))
             continue
         if isinstance(block, ModelToolCallBlock):
-            normalized = _unique_tool_call_id(block.id, capabilities, id_map, used_ids)
+            normalized = (
+                _unique_tool_call_id(block.id, capabilities, id_map, used_ids)
+                if cross_model else block.id
+            )
             result.append(
-                ModelToolCallBlock(normalized, block.name, dict(block.arguments))
+                ModelToolCallBlock(
+                    normalized,
+                    block.name,
+                    dict(block.arguments),
+                    thought_signature=(
+                        block.thought_signature
+                        if not cross_model and capabilities.preserve_thinking_signatures
+                        else None
+                    ),
+                    namespace=block.namespace,
+                )
             )
             continue
         result.append(block)
@@ -130,6 +162,7 @@ def _transform_message(
             message.content,
             capabilities=capabilities,
             cross_model=cross_model,
+            image_placeholder=_USER_IMAGE_PLACEHOLDER,
             id_map=id_map,
             used_ids=used_ids,
         )
@@ -143,6 +176,7 @@ def _transform_message(
             message.content,
             capabilities=capabilities,
             cross_model=cross_model,
+            image_placeholder=_USER_IMAGE_PLACEHOLDER,
             id_map=id_map,
             used_ids=used_ids,
         ))
@@ -152,6 +186,7 @@ def _transform_message(
                 message.content,
                 capabilities=capabilities,
                 cross_model=cross_model,
+                image_placeholder=_USER_IMAGE_PLACEHOLDER,
                 id_map=id_map,
                 used_ids=used_ids,
             ),
@@ -162,13 +197,11 @@ def _transform_message(
             message.content,
             capabilities=capabilities,
             cross_model=cross_model,
+            image_placeholder=_TOOL_IMAGE_PLACEHOLDER,
             id_map=id_map,
             used_ids=used_ids,
         ),
-        id_map.get(
-            message.tool_call_id,
-            _normalize_id(message.tool_call_id, capabilities),
-        ),
+        id_map.get(message.tool_call_id, message.tool_call_id),
         message.tool_name,
         message.is_error,
     )

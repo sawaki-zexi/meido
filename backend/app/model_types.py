@@ -15,6 +15,7 @@ from typing import Literal, TypeAlias
 class ModelTextBlock:
     text: str
     type: Literal["text"] = "text"
+    text_signature: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,7 @@ class ModelThinkingBlock:
     text: str = ""
     signature: str | None = None
     type: Literal["thinking"] = "thinking"
+    redacted: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +40,8 @@ class ModelToolCallBlock:
     name: str
     arguments: dict[str, object] = field(default_factory=dict)
     type: Literal["tool_call"] = "tool_call"
+    thought_signature: str | None = None
+    namespace: str | None = None
 
 
 ModelContentBlock: TypeAlias = (
@@ -111,7 +115,7 @@ ModelMessage: TypeAlias = (
 class ModelCapabilities:
     supports_images: bool = True
     supports_reasoning: bool = True
-    preserve_thinking_signatures: bool = False
+    preserve_thinking_signatures: bool = True
     tool_call_id_pattern: str | None = None
     max_tool_call_id_length: int | None = None
 
