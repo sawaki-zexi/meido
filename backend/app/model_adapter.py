@@ -37,6 +37,18 @@ ModelStreamEvent = ModelTextDelta | ModelToolCall | ModelStreamError
 _FUNCTION_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 
 
+def _copy_wire_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _copy_wire_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_copy_wire_value(item) for item in value]
+    return copy.deepcopy(value)
+
+
+def _copy_wire_mapping(value: Mapping[str, object]) -> dict[str, object]:
+    return {key: _copy_wire_value(item) for key, item in value.items()}
+
+
 def _compatible_function_names(
     tools: Sequence[Mapping[str, object]],
     messages: Sequence[Mapping[str, object]],
@@ -48,12 +60,16 @@ def _compatible_function_names(
             names.append(function["name"])
     for message in messages:
         calls = message.get("tool_calls")
-        if not isinstance(calls, list):
-            continue
-        for call in calls:
-            function = call.get("function") if isinstance(call, Mapping) else None
-            if isinstance(function, Mapping) and isinstance(function.get("name"), str):
-                names.append(function["name"])
+        if isinstance(calls, list):
+            for call in calls:
+                function = call.get("function") if isinstance(call, Mapping) else None
+                if isinstance(function, Mapping) and isinstance(function.get("name"), str):
+                    names.append(function["name"])
+        function_call = message.get("function_call")
+        if isinstance(function_call, Mapping) and isinstance(function_call.get("name"), str):
+            names.append(function_call["name"])
+        if message.get("role") == "function" and isinstance(message.get("name"), str):
+            names.append(message["name"])
 
     unique_names = list(dict.fromkeys(names))
     reserved = {name for name in unique_names if _FUNCTION_NAME_PATTERN.fullmatch(name)}
@@ -75,6 +91,40 @@ def _compatible_function_names(
     return aliases
 
 
+def _normalize_tool_definitions(tools: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    seen_names: set[str] = set()
+    for index, tool in enumerate(tools):
+        copied = _copy_wire_mapping(tool)
+        if copied.get("type") not in (None, "function"):
+            raise ValueError(f"工具 {index + 1} 的类型必须是 function")
+        function = copied.get("function")
+        if not isinstance(function, Mapping):
+            raise ValueError(f"工具 {index + 1} 缺少 function 定义")
+        function = dict(function)
+        copied["function"] = function
+        name = function.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"工具 {index + 1} 缺少有效的 function.name")
+        if name in seen_names:
+            raise ValueError(f"工具名称重复: {name}")
+        seen_names.add(name)
+        copied["type"] = "function"
+        parameters = function.get("parameters")
+        if parameters is None or parameters == {}:
+            function["parameters"] = {"type": "object", "properties": {}}
+        elif not isinstance(parameters, Mapping):
+            raise ValueError(f"工具参数 schema 必须是对象: {name}")
+        elif parameters.get("type") not in (None, "object"):
+            raise ValueError(f"工具参数 schema 顶层必须是 object: {name}")
+        else:
+            function["parameters"] = dict(parameters)
+            if function["parameters"].get("type") is None:
+                function["parameters"]["type"] = "object"
+        normalized.append(copied)
+    return normalized
+
+
 def _remap_function_names(
     values: Sequence[Mapping[str, object]],
     aliases: Mapping[str, str],
@@ -83,20 +133,53 @@ def _remap_function_names(
 ) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     for value in values:
-        copied = copy.deepcopy(dict(value))
+        copied = _copy_wire_mapping(value)
         if tools:
             function = copied.get("function")
-            if isinstance(function, dict) and isinstance(function.get("name"), str):
+            if isinstance(function, Mapping) and isinstance(function.get("name"), str):
+                function = dict(function)
                 function["name"] = aliases.get(function["name"], function["name"])
+                copied["function"] = function
         else:
             calls = copied.get("tool_calls")
             if isinstance(calls, list):
-                for call in calls:
-                    function = call.get("function") if isinstance(call, dict) else None
-                    if isinstance(function, dict) and isinstance(function.get("name"), str):
+                for index, call in enumerate(calls):
+                    function = call.get("function") if isinstance(call, Mapping) else None
+                    if isinstance(call, Mapping) and isinstance(function, Mapping) and isinstance(function.get("name"), str):
+                        call = dict(call)
+                        function = dict(function)
                         function["name"] = aliases.get(function["name"], function["name"])
+                        call["function"] = function
+                        calls[index] = call
+            function_call = copied.get("function_call")
+            if isinstance(function_call, Mapping) and isinstance(function_call.get("name"), str):
+                function_call = dict(function_call)
+                function_call["name"] = aliases.get(function_call["name"], function_call["name"])
+                copied["function_call"] = function_call
+            if copied.get("role") == "function" and isinstance(copied.get("name"), str):
+                copied["name"] = aliases.get(copied["name"], copied["name"])
         result.append(copied)
     return result
+
+
+def _append_tool_call_fragment(
+    calls: dict[int, dict[str, str]],
+    index: int,
+    identifier: object,
+    function: object,
+) -> None:
+    if not isinstance(function, Mapping):
+        return
+    aggregate = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
+    if isinstance(identifier, str):
+        aggregate["id"] += identifier
+    if isinstance(function.get("name"), str):
+        aggregate["name"] += function["name"]
+    arguments = function.get("arguments", "")
+    if isinstance(arguments, str):
+        aggregate["arguments"] += arguments
+    elif isinstance(arguments, Mapping):
+        aggregate["arguments"] += json.dumps(dict(arguments), ensure_ascii=False)
 
 
 def _response_error_detail(response: httpx.Response, api_key: str) -> str:
@@ -283,8 +366,9 @@ class OpenAICompatibleAdapter:
         configuration = self._effective_configuration(configuration)
         base_url = configuration.baseUrl.rstrip("/")
         headers = {"Authorization": f"Bearer {configuration.apiKey}"} if configuration.apiKey else {}
-        aliases = _compatible_function_names(tools, messages)
-        wire_tools = _remap_function_names(tools, aliases, tools=True)
+        normalized_tools = _normalize_tool_definitions(tools)
+        aliases = _compatible_function_names(normalized_tools, messages)
+        wire_tools = _remap_function_names(normalized_tools, aliases, tools=True)
         wire_messages = _remap_function_names(messages, aliases)
         internal_names = {alias: name for name, alias in aliases.items()}
         request_data: dict[str, object] = {
@@ -332,30 +416,50 @@ class OpenAICompatibleAdapter:
                     choices = chunk.get("choices", []) if isinstance(chunk, dict) else []
                     choice = choices[0] if isinstance(choices, list) and choices else {}
                     delta = choice.get("delta", {}) if isinstance(choice, dict) else {}
+                    message = choice.get("message", {}) if isinstance(choice, dict) else {}
                     content = delta.get("content") if isinstance(delta, dict) else None
+                    if not isinstance(content, str) and isinstance(message, dict):
+                        content = message.get("content")
                     if isinstance(content, str) and content:
                         yield ModelTextDelta(content)
                     raw_calls = delta.get("tool_calls", []) if isinstance(delta, dict) else []
-                    if not isinstance(raw_calls, list):
-                        continue
-                    for raw_call in raw_calls:
-                        if not isinstance(raw_call, dict):
-                            continue
-                        raw_index = raw_call.get("index", 0)
-                        index = int(raw_index) if isinstance(raw_index, int) else 0
-                        aggregate = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
-                        if isinstance(raw_call.get("id"), str):
-                            aggregate["id"] += raw_call["id"]
-                        function = raw_call.get("function")
-                        if not isinstance(function, dict):
-                            continue
-                        if isinstance(function.get("name"), str):
-                            aggregate["name"] += function["name"]
-                        arguments = function.get("arguments", "")
-                        if isinstance(arguments, str):
-                            aggregate["arguments"] += arguments
-                        elif isinstance(arguments, dict):
-                            aggregate["arguments"] += json.dumps(arguments, ensure_ascii=False)
+                    if isinstance(raw_calls, list):
+                        for raw_call in raw_calls:
+                            if not isinstance(raw_call, dict):
+                                continue
+                            raw_index = raw_call.get("index", 0)
+                            index = raw_index if isinstance(raw_index, int) and not isinstance(raw_index, bool) else 0
+                            _append_tool_call_fragment(
+                                calls,
+                                index,
+                                raw_call.get("id"),
+                                raw_call.get("function"),
+                            )
+                    legacy_function = delta.get("function_call") if isinstance(delta, dict) else None
+                    if isinstance(legacy_function, Mapping):
+                        _append_tool_call_fragment(calls, 0, None, legacy_function)
+                    if (
+                        not calls
+                        and (not isinstance(raw_calls, list) or not raw_calls)
+                        and not isinstance(legacy_function, Mapping)
+                        and isinstance(message, Mapping)
+                    ):
+                        message_calls = message.get("tool_calls", [])
+                        if isinstance(message_calls, list):
+                            for position, raw_call in enumerate(message_calls):
+                                if not isinstance(raw_call, dict):
+                                    continue
+                                raw_index = raw_call.get("index", position)
+                                index = raw_index if isinstance(raw_index, int) and not isinstance(raw_index, bool) else position
+                                _append_tool_call_fragment(
+                                    calls,
+                                    index,
+                                    raw_call.get("id"),
+                                    raw_call.get("function"),
+                                )
+                        message_function = message.get("function_call")
+                        if isinstance(message_function, Mapping):
+                            _append_tool_call_fragment(calls, 0, None, message_function)
         if not completed:
             raise RuntimeError("模型流式响应未正常结束")
         for index in sorted(calls):
