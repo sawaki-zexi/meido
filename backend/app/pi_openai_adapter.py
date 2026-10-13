@@ -419,8 +419,13 @@ class OpenAICompletionsRichAdapter:
             target_model=configuration.model,
         )
         raw_tools = _effective_tools(transformed, tools)
+        send_reasoning = options.send_reasoning_content and not (
+            _is_deepseek(configuration)
+            and raw_tools
+            and options.disable_deepseek_thinking_for_tools
+        )
         raw_messages = tuple(
-            _message_to_wire(message, send_reasoning=options.send_reasoning_content)
+            _message_to_wire(message, send_reasoning=send_reasoning)
             for message in transformed
         )
         aliases = _compatible_function_names(raw_tools, raw_messages)

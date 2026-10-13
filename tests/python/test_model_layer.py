@@ -103,6 +103,19 @@ def test_transform_normalizes_none_and_string_content():
     assert transform_messages((ModelSystemMessage(None),))[0].content == ()
 
 
+def test_transform_uses_each_assistant_model_for_cross_model_reasoning():
+    message = ModelAssistantMessage(
+        (ModelThinkingBlock("reason", "opaque"),),
+        ModelResponseMetadata(model="source-model"),
+    )
+    transformed = transform_messages(
+        (message,),
+        target_model="target-model",
+        capabilities=ModelCapabilities(preserve_thinking_signatures=True),
+    )
+    assert transformed[0].content == (ModelTextBlock("reason"),)
+
+
 def test_transform_skips_incomplete_assistant_turns():
     failed = ModelAssistantMessage(
         (ModelTextBlock("partial"),),

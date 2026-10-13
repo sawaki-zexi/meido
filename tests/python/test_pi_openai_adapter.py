@@ -9,6 +9,7 @@ from backend.app.model_types import (
     ModelStreamDone,
     ModelStreamError,
     ModelTextDelta,
+    ModelThinkingBlock,
     ModelThinkingDelta,
     ModelToolCallBlock,
     ModelToolCallEnd,
@@ -149,11 +150,13 @@ def test_rich_adapter_emits_deepseek_compat_request_and_replays_tool_history(mon
     _patch_client(monkeypatch, body, requests)
     call = ModelToolCallBlock("bad|id", "todo.write", {"title": "x"})
     result = ModelToolResultMessage((ModelTextBlock("saved"),), "bad|id", "todo.write")
+    thinking = ModelAssistantMessage((ModelThinkingBlock("old reasoning", "opaque"),))
 
     async def collect():
         return [event async for event in OpenAICompletionsRichAdapter().stream_messages(
             (
                 ModelUserMessage((ModelTextBlock("save"),)),
+                thinking,
                 ModelAssistantMessage((call,)),
                 result,
             ),
@@ -164,8 +167,9 @@ def test_rich_adapter_emits_deepseek_compat_request_and_replays_tool_history(mon
     asyncio.run(collect())
     payload = json.loads(requests[0].content)
     assert payload["thinking"] == {"type": "disabled"}
-    assert payload["messages"][1]["tool_calls"][0]["function"]["name"] != "todo.write"
-    assert payload["messages"][2]["tool_call_id"] == payload["messages"][1]["tool_calls"][0]["id"]
+    assert "reasoning_content" not in payload["messages"][1]
+    assert payload["messages"][2]["tool_calls"][0]["function"]["name"] != "todo.write"
+    assert payload["messages"][3]["tool_call_id"] == payload["messages"][2]["tool_calls"][0]["id"]
     assert payload["stream_options"] == {"include_usage": True}
 
 
@@ -407,3 +411,59 @@ def test_meido_provider_uses_rich_stream_for_plain_reasoning_turns():
 
     events = asyncio.run(collect())
     assert any(isinstance(event, TextDeltaEvent) and event.delta == "普通回复" for event in events)
+
+
+def test_meido_provider_persists_thinking_for_next_provider_turn_without_public_leak():
+    from datetime import datetime, timezone
+
+    from backend.app.agent_runtime import AssistantDoneEvent, CancellationToken, MeidoProvider, UserMessage
+    from backend.app.models import Message, RoleInput, RoleProfile
+    from backend.app.session_manager import public_message
+
+    class Adapter:
+        async def stream_rich_messages(self, messages, configuration, tools):
+            assistant_messages = [message for message in messages if message.role == "assistant"]
+            if assistant_messages:
+                assert assistant_messages[0].content[0].type == "thinking"
+                assert assistant_messages[0].content[0].signature == "opaque"
+            yield ModelTextDelta("回复")
+            yield ModelStreamDone(ModelAssistantMessage(
+                (ModelThinkingBlock("内部思考", "opaque"), ModelTextBlock("回复")),
+                ModelResponseMetadata(stop_reason="stop", model="deepseek-chat"),
+            ))
+
+    role = RoleInput(name="thinking", profile=RoleProfile(profile="设定")).model_copy(update={"id": "role-thinking"})
+    provider = MeidoProvider(Adapter(), role, None)
+
+    async def first():
+        return [event async for event in provider.stream_response(
+            model="m", system="系统", messages=[UserMessage("hello")], tools=[], signal=CancellationToken()
+        )]
+
+    events = asyncio.run(first())
+    done = next(event for event in events if isinstance(event, AssistantDoneEvent))
+    assistant = done.message
+    assert assistant.metadata["thinking"][0]["signature"] == "opaque"
+    public = public_message(Message(
+        id="m",
+        sessionKey="s",
+        sequence=1,
+        role="assistant",
+        content="回复",
+        status="completed",
+        createdAt=datetime.now(timezone.utc),
+        metadata=assistant.metadata,
+    ))
+    assert "thinking" not in public.metadata
+
+    async def second_collect():
+        return [event async for event in provider.stream_response(
+            model="m",
+            system="系统",
+            messages=[UserMessage("hello"), assistant],
+            tools=[],
+            signal=CancellationToken(),
+        )]
+
+    second = asyncio.run(second_collect())
+    assert second[0].type == "provider_start"

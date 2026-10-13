@@ -30,6 +30,7 @@ class SessionManager:
 
 def public_message(message: Message) -> Message:
     metadata = dict(message.metadata)
+    metadata.pop("thinking", None)
     attachments = metadata.get("attachments")
     if isinstance(attachments, list):
         metadata["attachments"] = [

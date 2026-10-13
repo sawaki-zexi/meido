@@ -158,21 +158,24 @@ def transform_messages(
     omitted because providers reject those histories.
     """
 
-    cross_model = bool(source_model and target_model and source_model != target_model)
     id_map: dict[str, str] = {}
-    transformed = [
-        _transform_message(
+    transformed: list[ModelMessage] = []
+    for message in messages:
+        if (
+            isinstance(message, ModelAssistantMessage)
+            and message.metadata.stop_reason in {"error", "aborted"}
+        ):
+            continue
+        message_source = source_model
+        if isinstance(message, ModelAssistantMessage) and message_source is None:
+            message_source = message.metadata.model
+        cross_model = bool(message_source and target_model and message_source != target_model)
+        transformed.append(_transform_message(
             message,
             capabilities=capabilities,
             cross_model=cross_model,
             id_map=id_map,
-        )
-        for message in messages
-        if not (
-            isinstance(message, ModelAssistantMessage)
-            and message.metadata.stop_reason in {"error", "aborted"}
-        )
-    ]
+        ))
 
     result: list[ModelMessage] = []
     pending: dict[str, ModelToolCallBlock] = {}

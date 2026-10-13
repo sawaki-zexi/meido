@@ -211,7 +211,14 @@ class OpenAICompatibleAdapter:
         from .pi_openai_adapter import OpenAICompletionsRichAdapter
 
         effective_configuration = self._effective_configuration(configuration)
-        adapter = OpenAICompletionsRichAdapter(timeout=self.timeout)
+        from .pi_openai_adapter import OpenAICompletionsOptions
+
+        adapter = OpenAICompletionsRichAdapter(
+            timeout=self.timeout,
+            options=OpenAICompletionsOptions(
+                send_reasoning_content=_is_deepseek(effective_configuration),
+            ),
+        )
         async for event in adapter.stream_rich_messages(
             messages,
             effective_configuration,
@@ -232,7 +239,14 @@ class OpenAICompatibleAdapter:
         from .pi_openai_adapter import OpenAICompletionsRichAdapter
 
         effective_configuration = self._effective_configuration(configuration)
-        adapter = OpenAICompletionsRichAdapter(timeout=self.timeout)
+        from .pi_openai_adapter import OpenAICompletionsOptions
+
+        adapter = OpenAICompletionsRichAdapter(
+            timeout=self.timeout,
+            options=OpenAICompletionsOptions(
+                send_reasoning_content=_is_deepseek(effective_configuration),
+            ),
+        )
         return await adapter.complete_messages(
             messages,
             effective_configuration,

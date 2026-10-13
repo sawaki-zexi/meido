@@ -17,6 +17,7 @@ from ..model_types import (
     ModelStreamError as RichStreamError,
     ModelTextBlock as RichTextBlock,
     ModelTextDelta as RichTextDelta,
+    ModelThinkingBlock as RichThinkingBlock,
     ModelToolCallBlock as RichToolCallBlock,
     ModelToolCallEnd as RichToolCallEnd,
     ModelToolResultMessage as RichToolResultMessage,
@@ -120,6 +121,14 @@ class MeidoProvider:
                             yield ProviderErrorEvent(event.message.metadata.error_message or "模型调用失败")
                             return
                         response_metadata = asdict(event.message.metadata)
+                        response_metadata["thinking"] = [
+                            {
+                                "text": block.text,
+                                "signature": block.signature,
+                            }
+                            for block in event.message.content
+                            if isinstance(block, RichThinkingBlock)
+                        ]
                         yield AssistantDoneEvent(AssistantMessage(
                             content=content,
                             tool_calls=tuple(tool_calls),
@@ -232,6 +241,18 @@ class MeidoProvider:
                 result.append(RichUserMessage(tuple(blocks)))
             elif isinstance(message, AssistantMessage):
                 blocks: list[object] = []
+                raw_thinking = message.metadata.get("thinking")
+                if isinstance(raw_thinking, list):
+                    for item in raw_thinking:
+                        if not isinstance(item, dict):
+                            continue
+                        text = item.get("text")
+                        if isinstance(text, str) and text:
+                            signature = item.get("signature")
+                            blocks.append(RichThinkingBlock(
+                                text,
+                                signature if isinstance(signature, str) else None,
+                            ))
                 if message.content:
                     blocks.append(RichTextBlock(message.content))
                 blocks.extend(
