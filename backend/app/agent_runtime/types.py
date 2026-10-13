@@ -14,6 +14,16 @@ class ImageContent:
 
 
 @dataclass(frozen=True, slots=True)
+class AttachmentContent:
+    """A user attachment that is available to the provider for this turn."""
+
+    name: str
+    media_type: str
+    text: str = ""
+    image: ImageContent | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ToolCall:
     id: str
     name: str
@@ -23,6 +33,7 @@ class ToolCall:
 @dataclass(frozen=True, slots=True)
 class UserMessage:
     content: str
+    attachments: tuple[AttachmentContent, ...] = ()
     role: Literal["user"] = "user"
 
 

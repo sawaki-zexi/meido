@@ -6,7 +6,7 @@ import logging
 import uuid
 import sqlite3
 import secrets
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from time import monotonic
@@ -47,7 +47,7 @@ from .models import AgentRun, EmbeddingConfiguration, EmbeddingConfigurationInpu
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
 from .storage import initialize_databases, resolve_owner_knowledge_database
-from .session_manager import SessionManager
+from .session_manager import SessionManager, public_message
 from .session_store import SessionStore
 from .agent_runtime import (
     ActiveRunError,
@@ -79,6 +79,7 @@ from .browser_use.safety import sanitize_browser_arguments, sanitize_browser_tex
 from .browser_use.tool import BROWSER_USE_TOOL_NAMES
 from .todo.models import TodoCreate, TodoList, TodoReminderList, TodoReminderRoleInput, TodoSettingsInput, TodoStatusInput, TodoUpdate
 from .role_card_import import MAX_SOURCE_BYTES, RoleCardImportError, parse_role_card
+from .chat_attachments import public_attachment, read_request_bytes, resolve_attachment, save_attachment
 
 logging.getLogger("uvicorn.access").addFilter(OAuthCallbackAccessLogFilter())
 logger = logging.getLogger(__name__)
@@ -1171,14 +1172,18 @@ def _configuration_with_saved_key(data: ModelConfigurationInput) -> ModelConfigu
 def _safe_model_error(error: Exception, api_key: str = "") -> str:
     if isinstance(error, httpx.HTTPStatusError):
         status = error.response.status_code
-        message = {
-            401: "认证失败 (HTTP 401)：请检查 API Key 是否有效，以及是否属于当前服务商账号。",
-            403: "服务商拒绝了请求 (HTTP 403)：请检查账号权限和可用额度。",
-            404: "服务地址或模型不存在 (HTTP 404)：请检查 API 地址和模型 ID。",
-            429: "请求过于频繁或额度不足 (HTTP 429)：请稍后重试并检查服务商额度。",
-        }.get(status, f"模型服务请求失败 (HTTP {status})")
-        if 500 <= status <= 599:
-            message = f"模型服务暂时不可用 (HTTP {status})，请稍后重试。"
+        if status == 400:
+            detail = str(error).strip()
+            message = f"模型服务拒绝了请求 (HTTP 400)：{detail}" if detail else "模型服务拒绝了请求 (HTTP 400)"
+        else:
+            message = {
+                401: "认证失败 (HTTP 401)：请检查 API Key 是否有效，以及是否属于当前服务商账号。",
+                403: "服务商拒绝了请求 (HTTP 403)：请检查账号权限和可用额度。",
+                404: "服务地址或模型不存在 (HTTP 404)：请检查 API 地址和模型 ID。",
+                429: "请求过于频繁或额度不足 (HTTP 429)：请稍后重试并检查服务商额度。",
+            }.get(status, f"模型服务请求失败 (HTTP {status})")
+            if 500 <= status <= 599:
+                message = f"模型服务暂时不可用 (HTTP {status})，请稍后重试。"
     else:
         message = str(error).strip() or "模型服务请求失败"
     if api_key:
@@ -1323,6 +1328,31 @@ async def preview_role_card_import(request: Request) -> dict[str, object]:
         return parse_role_card(filename, bytes(content))
     except RoleCardImportError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/api/roles/{role_id}/attachments")
+async def upload_chat_attachment(role_id: str, request: Request) -> dict[str, object]:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    filename = unquote(request.headers.get("x-attachment-filename", "attachment").strip() or "attachment")
+    data = await read_request_bytes(request)
+    media_type = request.headers.get("content-type", "application/octet-stream")
+    return public_attachment(save_attachment(store.workspace_path(role_id), filename, media_type, data))
+
+
+@app.get("/api/roles/{role_id}/attachments/{attachment_id}")
+def get_chat_attachment(role_id: str, attachment_id: str) -> Response:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    item = resolve_attachment(store.workspace_path(role_id), attachment_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="附件不存在")
+    try:
+        content = Path(str(item["path"])).read_bytes()
+    except OSError as error:
+        raise HTTPException(status_code=404, detail="附件不存在") from error
+    filename = quote(str(item.get("name") or "attachment"), safe="")
+    return Response(content, media_type=str(item.get("mediaType") or "application/octet-stream"), headers={"Content-Disposition": f"inline; filename*=UTF-8''{filename}"})
 
 
 def _avatar_signature_matches(content: bytes, media_type: str) -> bool:
@@ -2052,8 +2082,23 @@ async def _runtime_capabilities(
     )
 
 
+def _runtime_message_snapshot(message: object) -> dict[str, object]:
+    value = asdict(message)
+    if not value.get("attachments"):
+        value.pop("attachments", None)
+    return value
+
+
 @app.post("/api/roles/{role_id}/messages")
 async def send_role_message(role_id: str, data: SendMessageInput, request: Request) -> StreamingResponse:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    attachments: list[dict[str, object]] = []
+    for attachment_id in data.attachments:
+        item = resolve_attachment(store.workspace_path(role_id), attachment_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="附件不存在或已失效")
+        attachments.append(item)
     try:
         role, session = session_manager.role_and_history(role_id)
     except KeyError as error:
@@ -2088,7 +2133,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         )
         runtime_manager.sessions = session_store
         runtime_manager.role_locks = role_locks
-        _, user_message, assistant_message = await runtime_manager.reserve_run(run, data.content)
+        _, user_message, assistant_message = await runtime_manager.reserve_run(run, data.content, attachments=attachments)
     except sqlite3.IntegrityError as error:
         raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试") from error
     except ActiveRunError as error:
@@ -2172,7 +2217,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
 
         try:
             disconnect_watcher = asyncio.create_task(watch_disconnect())
-            yield _event("user_message_accepted", runtime_event_payload({"message": user_message.model_dump(mode="json")}))
+            yield _event("user_message_accepted", runtime_event_payload({"message": public_message(user_message).model_dump(mode="json")}))
             yield _event("assistant_generation_started", runtime_event_payload({"messageId": assistant_message.id}))
             try:
                 # Run memory preparation after the response stream starts so
@@ -2232,7 +2277,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     max_messages=context_limit,
                 )
                 model_snapshot["context"] = {
-                    "messages": [asdict(message) for message in runtime_messages],
+                    "messages": [_runtime_message_snapshot(message) for message in runtime_messages],
                     "memoryContextMetadata": {
                         "included": bool(memory_context),
                         "characterCount": len(memory_context),
@@ -2377,7 +2422,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         "failed": terminal_error or "模型生成失败",
                     }.get(terminal_reason, terminal_error or "模型生成失败")
                     yield _event("assistant_failed", runtime_event_payload({
-                        "message": message.model_dump(mode="json"),
+                        "message": public_message(message).model_dump(mode="json"),
                         "error": reason_text,
                     }))
                     return
@@ -2398,7 +2443,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     ))
                 except Exception as error:
                     memory_worker.errors.append(f"{role_id}: TurnCommitted publish failed: {error}")
-                yield _event("assistant_completed", runtime_event_payload({"message": message.model_dump(mode="json")}))
+                yield _event("assistant_completed", runtime_event_payload({"message": public_message(message).model_dump(mode="json")}))
             except Exception as error:
                 runtime_manager.abandon_unstarted_run(run_id, str(error))
                 message = next(
@@ -2407,7 +2452,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     if item.runId == run_id and item.role == "assistant" and item.messageType == "text"
                 )
                 yield _event("assistant_failed", runtime_event_payload({
-                    "message": message.model_dump(mode="json"),
+                    "message": public_message(message).model_dump(mode="json"),
                     "error": _safe_model_error(error, configuration.apiKey if configuration else ""),
                 }))
         except asyncio.CancelledError:

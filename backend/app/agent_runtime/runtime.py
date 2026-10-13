@@ -37,7 +37,7 @@ class RuntimeManager:
     def lock_for(self, role_id: str) -> asyncio.Lock:
         return self.role_locks.setdefault(role_id, asyncio.Lock())
 
-    async def reserve_run(self, run: AgentRun, user_content: str) -> tuple[AgentRun, Message, Message]:
+    async def reserve_run(self, run: AgentRun, user_content: str, *, attachments: list[dict[str, object]] | None = None) -> tuple[AgentRun, Message, Message]:
         """Reserve a role and atomically create its run and initial messages."""
 
         lock = self.lock_for(run.roleId)
@@ -45,7 +45,7 @@ class RuntimeManager:
             raise ActiveRunError(f"role already has an active run: {run.roleId}")
         await lock.acquire()
         try:
-            result = self.sessions.create_run_with_messages(run, user_content)
+            result = self.sessions.create_run_with_messages(run, user_content, attachments=attachments)
         except BaseException:
             lock.release()
             raise

@@ -669,6 +669,48 @@ describe("唯一会话", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("该角色正在生成回复");
   });
 
+  it("输入区可以上传、预览、移除并单独发送附件", async () => {
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": emptySession,
+      "GET /api/model/configurations": () => ({ body: { configurations: [] } }),
+      "GET /api/roles/r1/model-configuration": () => ({ body: { configurationId: null, effectiveConfigurationId: null } }),
+      "POST /api/roles/r1/attachments": () => ({ body: { id: "att-1", name: "photo.png", mediaType: "image/png", size: 8, kind: "image" } }),
+      "POST /api/roles/r1/messages": () => ({ stream: [
+        sse("user_message_accepted", { message: { ...message({ id: "u1", role: "user", content: "" }), metadata: { attachments: [{ id: "att-1", name: "photo.png", mediaType: "image/png", size: 8, kind: "image" }] } } }),
+        sse("assistant_generation_started", { messageId: "a1" }),
+        sse("assistant_completed", { message: message({ id: "a1", role: "assistant", content: "看到了" }) }),
+      ] }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    await user.upload(screen.getByLabelText("附件文件"), new File(["png"], "photo.png", { type: "image/png" }));
+    expect(await screen.findByAltText("photo.png")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "移除 photo.png" }));
+    expect(screen.queryByAltText("photo.png")).toBeNull();
+    await user.upload(screen.getByLabelText("附件文件"), new File(["png"], "photo.png", { type: "image/png" }));
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(calls.find((call) => call.method === "POST" && call.path === "/api/roles/r1/messages")?.body).toEqual({ content: "", attachments: ["att-1"] }));
+    expect(await screen.findByAltText("photo.png")).toHaveAttribute("src", "/api/roles/r1/attachments/att-1");
+  });
+
+  it("拖放附件后保留文件条目，并在历史消息中显示附件", async () => {
+    const history = message({ id: "m1", role: "user", content: "", metadata: { attachments: [{ id: "att-2", name: "notes.txt", mediaType: "text/plain", size: 5, kind: "file" }] } });
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": () => ({ body: { session, messages: [history] } }),
+      "GET /api/model/configurations": () => ({ body: { configurations: [] } }),
+      "GET /api/roles/r1/model-configuration": () => ({ body: { configurationId: null, effectiveConfigurationId: null } }),
+      "POST /api/roles/r1/attachments": () => ({ body: { id: "att-2", name: "notes.txt", mediaType: "text/plain", size: 5, kind: "file" } }),
+    });
+    render(<App />);
+    await chatHeading("爱丽丝");
+    expect(screen.getByRole("link", { name: "notes.txt" })).toHaveAttribute("href", "/api/roles/r1/attachments/att-2");
+    fireEvent.drop(screen.getByRole("form", { name: "聊天输入" }), { dataTransfer: { files: [new File(["hello"], "notes.txt", { type: "text/plain" })] } });
+    expect(await screen.findByText("notes.txt")).toBeTruthy();
+  });
+
   it("打开会话失败时停留在首页并显示错误", async () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),

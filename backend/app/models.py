@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Literal
 import uuid
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class RoleProfile(BaseModel):
@@ -180,16 +180,20 @@ class SessionResponse(BaseModel):
 
 class SendMessageInput(BaseModel):
     content: str
+    attachments: list[str] = Field(default_factory=list)
     toolMemoryIds: list[str] = Field(default_factory=list)
     skillIds: list[str] = Field(default_factory=list)
 
     @field_validator("content")
     @classmethod
     def validate_content(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_message(self) -> "SendMessageInput":
+        if not self.content and not self.attachments:
             raise ValueError("消息不能为空")
-        return value
+        return self
 
     @field_validator("toolMemoryIds")
     @classmethod
@@ -199,6 +203,11 @@ class SendMessageInput(BaseModel):
     @field_validator("skillIds")
     @classmethod
     def validate_skill_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
+
+    @field_validator("attachments")
+    @classmethod
+    def validate_attachments(cls, value: list[str]) -> list[str]:
         return list(dict.fromkeys(item.strip() for item in value if isinstance(item, str) and item.strip()))
 
 

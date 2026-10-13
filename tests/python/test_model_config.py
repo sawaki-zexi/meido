@@ -200,6 +200,28 @@ def test_connection_test_turns_unauthorized_into_actionable_auth_error(tmp_path,
     assert result["message"] == "认证失败 (HTTP 401)：请检查 API Key 是否有效，以及是否属于当前服务商账号。"
 
 
+def test_connection_test_keeps_bad_request_detail_and_redacts_api_key(tmp_path, monkeypatch):
+    _, client = configure_api(tmp_path, monkeypatch)
+    request = httpx.Request("POST", "https://api.deepseek.com/chat/completions")
+    response = httpx.Response(400, request=request)
+
+    async def invalid_request(messages, configuration, *, max_tokens=None):
+        raise httpx.HTTPStatusError(
+            "HTTP 400 Bad Request: Invalid function name; secret-token",
+            request=request,
+            response=response,
+        )
+        yield "unreachable"
+
+    monkeypatch.setattr(main.connection_test_adapter, "stream_messages", invalid_request)
+
+    result = client.post("/api/model/configuration/test", json=payload()).json()
+
+    assert result["ok"] is False
+    assert "Invalid function name" in result["message"]
+    assert "secret-token" not in result["message"]
+
+
 def test_openai_compatible_adapter_posts_stream_to_preset_base_url(monkeypatch):
     from backend.app.model_adapter import OpenAICompatibleAdapter
     from backend.app.models import ModelConfiguration
