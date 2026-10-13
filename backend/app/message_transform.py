@@ -45,12 +45,16 @@ def _normalize_id(value: str, capabilities: ModelCapabilities) -> str:
 
 
 def _transform_blocks(
-    blocks: Iterable[ModelContentBlock],
+    blocks: Iterable[ModelContentBlock] | str | None,
     *,
     capabilities: ModelCapabilities,
     cross_model: bool,
     id_map: dict[str, str],
 ) -> tuple[ModelContentBlock, ...]:
+    if blocks is None:
+        return ()
+    if isinstance(blocks, str):
+        return (ModelTextBlock(blocks),) if blocks else ()
     result: list[ModelContentBlock] = []
     for block in blocks:
         if isinstance(block, ModelImageBlock):
@@ -67,7 +71,11 @@ def _transform_blocks(
                 if block.text:
                     result.append(ModelTextBlock(block.text))
             else:
-                result.append(block)
+                result.append(
+                    block
+                    if capabilities.preserve_thinking_signatures
+                    else ModelThinkingBlock(block.text)
+                )
             continue
         if isinstance(block, ModelToolCallBlock):
             normalized = _normalize_id(block.id, capabilities)
@@ -158,11 +166,20 @@ def transform_messages(
 
     result: list[ModelMessage] = []
     pending: dict[str, ModelToolCallBlock] = {}
+    deferred_system: list[ModelSystemMessage] = []
     for message in transformed:
+        if isinstance(message, ModelSystemMessage):
+            if pending:
+                deferred_system.append(message)
+            else:
+                result.append(message)
+            continue
         if isinstance(message, ModelAssistantMessage):
             if pending:
                 result.extend(_missing_results(pending.values()))
                 pending.clear()
+                result.extend(deferred_system)
+                deferred_system.clear()
             calls = _assistant_calls(message)
             pending.update({call.id: call for call in calls})
             result.append(message)
@@ -172,13 +189,19 @@ def transform_messages(
                 continue
             pending.pop(message.tool_call_id)
             result.append(message)
+            if not pending and deferred_system:
+                result.extend(deferred_system)
+                deferred_system.clear()
             continue
         if pending:
             result.extend(_missing_results(pending.values()))
             pending.clear()
+            result.extend(deferred_system)
+            deferred_system.clear()
         result.append(message)
     if pending:
         result.extend(_missing_results(pending.values()))
+    result.extend(deferred_system)
     return tuple(result)
 
 
