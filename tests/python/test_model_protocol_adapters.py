@@ -612,6 +612,21 @@ def test_bedrock_converse_stream_uses_event_stream_endpoint(monkeypatch):
     assert done.message.content == (ModelThinkingBlock("reason", "sig"), ModelTextBlock("ok"))
 
 
+def test_bedrock_complete_reads_top_level_stop_reason(monkeypatch):
+    def handler(request):
+        del request
+        return httpx.Response(200, json={
+            "output": {"message": {"role": "assistant", "content": [{"text": "use tool"}]}},
+            "stopReason": "tool_use",
+        })
+
+    patch_client(monkeypatch, handler)
+    result = asyncio.run(BedrockConverseAdapter().complete_messages(
+        messages(), configuration("bedrock-converse"),
+    ))
+    assert result.metadata.stop_reason == "tool_use"
+
+
 def test_mistral_builds_its_own_tool_wire_format_and_restores_internal_names(monkeypatch):
     requests = []
 

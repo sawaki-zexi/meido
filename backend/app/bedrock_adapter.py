@@ -215,8 +215,7 @@ class BedrockConverseAdapter:
             cache_write_tokens=_nonnegative(usage_data.get("cacheWriteInputTokens")),
             cost=model_cost(usage_data),
         )
-        raw_stop = output.get("message", {}).get("stopReason") if isinstance(output.get("message"), Mapping) else None
-        stop = _stop_reason(raw_stop)
+        stop = _stop_reason(data.get("stopReason"))
         return ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(
             provider=configuration.provider, api="bedrock-converse", model=configuration.model,
             response_id=None, usage=usage, stop_reason=stop, timestamp=int(time.time() * 1000),
@@ -411,6 +410,7 @@ def _stop_reason(value: object) -> str:
         raise RuntimeError("模型响应缺少 stopReason")
     mapped = {
         "end_turn": "stop",
+        "stop_sequence": "stop",
         "tool_use": "tool_use",
         "max_tokens": "length",
         "model_context_window_exceeded": "length",
