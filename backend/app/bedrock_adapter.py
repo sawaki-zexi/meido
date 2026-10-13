@@ -36,7 +36,24 @@ def _capabilities() -> ModelCapabilities:
     )
 
 
-def _content(blocks: Sequence[object]) -> list[dict[str, object]]:
+def _supports_thinking_signature(model: str) -> bool:
+    return "claude" in model.lower()
+
+
+def _sanitize_document(value: object) -> object:
+    """Remove JSON object keys Bedrock rejects while preserving nested values."""
+    if isinstance(value, Mapping):
+        return {
+            str(key): _sanitize_document(item)
+            for key, item in value.items()
+            if str(key)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_document(item) for item in value]
+    return value
+
+
+def _content(blocks: Sequence[object], *, supports_thinking_signature: bool = True) -> list[dict[str, object]]:
     output: list[dict[str, object]] = []
     for block in blocks:
         if isinstance(block, ModelTextBlock):
@@ -44,7 +61,7 @@ def _content(blocks: Sequence[object]) -> list[dict[str, object]]:
         elif isinstance(block, ModelThinkingBlock):
             if block.text:
                 reasoning: dict[str, object] = {"text": block.text}
-                if block.signature:
+                if supports_thinking_signature and block.signature:
                     reasoning["signature"] = block.signature
                 output.append({"reasoningContent": {"reasoningText": reasoning}})
         elif isinstance(block, ModelImageBlock):
@@ -58,7 +75,11 @@ def _content(blocks: Sequence[object]) -> list[dict[str, object]]:
     return output or [{"text": ""}]
 
 
-def _wire_messages(messages: Sequence[ModelMessage]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+def _wire_messages(
+    messages: Sequence[ModelMessage],
+    *,
+    supports_thinking_signature: bool = True,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     system: list[dict[str, object]] = []
     result: list[dict[str, object]] = []
     for message in messages:
@@ -67,18 +88,42 @@ def _wire_messages(messages: Sequence[ModelMessage]) -> tuple[list[dict[str, obj
             if value:
                 system.append({"text": value})
         elif isinstance(message, ModelUserMessage):
-            result.append({"role": "user", "content": _content(message.content)})
+            result.append({"role": "user", "content": _content(
+                message.content,
+                supports_thinking_signature=supports_thinking_signature,
+            )})
         elif isinstance(message, ModelAssistantMessage):
             non_tool_blocks = tuple(block for block in message.content if not isinstance(block, ModelToolCallBlock))
-            content = _content(non_tool_blocks) if non_tool_blocks else []
-            content.extend({"toolUse": {"toolUseId": safe_tool_id(block.id), "name": block.name, "input": dict(block.arguments)}} for block in message.content if isinstance(block, ModelToolCallBlock))
+            content = _content(
+                non_tool_blocks,
+                supports_thinking_signature=supports_thinking_signature,
+            ) if non_tool_blocks else []
+            content.extend({"toolUse": {
+                "toolUseId": safe_tool_id(block.id),
+                "name": block.name,
+                "input": _sanitize_document(block.arguments),
+            }} for block in message.content if isinstance(block, ModelToolCallBlock))
+            if not content:
+                continue
             result.append({"role": "assistant", "content": content})
         elif isinstance(message, ModelToolResultMessage):
-            result.append({"role": "user", "content": [{"toolResult": {
+            block = {"toolResult": {
                 "toolUseId": safe_tool_id(message.tool_call_id),
                 "status": "error" if message.is_error else "success",
-                "content": _content(message.content),
-            }}]})
+                "content": _content(
+                    message.content,
+                    supports_thinking_signature=supports_thinking_signature,
+                ),
+            }}
+            if (
+                result
+                and result[-1].get("role") == "user"
+                and isinstance(result[-1].get("content"), list)
+                and all(isinstance(item, Mapping) and "toolResult" in item for item in result[-1]["content"])
+            ):
+                result[-1]["content"].append(block)
+            else:
+                result.append({"role": "user", "content": [block]})
     return system, result
 
 
@@ -107,7 +152,10 @@ class BedrockConverseAdapter:
         normalized = normalize_tools(effective_tools(messages, tools))
         aliases, reverse = compatible_tool_names(normalized, messages)
         messages = remap_message_tool_names(messages, aliases)
-        system, wire = _wire_messages(messages)
+        system, wire = _wire_messages(
+            messages,
+            supports_thinking_signature=_supports_thinking_signature(configuration.model),
+        )
         payload: dict[str, object] = {"messages": wire}
         if system:
             payload["system"] = system
@@ -167,8 +215,8 @@ class BedrockConverseAdapter:
             cache_write_tokens=_nonnegative(usage_data.get("cacheWriteInputTokens")),
             cost=model_cost(usage_data),
         )
-        stop = str(output.get("message", {}).get("stopReason", "end_turn")) if isinstance(output.get("message"), Mapping) else "end_turn"
-        stop = {"end_turn": "stop", "tool_use": "tool_use", "max_tokens": "length"}.get(stop, stop)
+        raw_stop = output.get("message", {}).get("stopReason") if isinstance(output.get("message"), Mapping) else None
+        stop = _stop_reason(raw_stop)
         return ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(
             provider=configuration.provider, api="bedrock-converse", model=configuration.model,
             response_id=None, usage=usage, stop_reason=stop, timestamp=int(time.time() * 1000),
@@ -213,7 +261,10 @@ class BedrockConverseAdapter:
         normalized = normalize_tools(effective_tools(messages, tools))
         tool_aliases, name_aliases = compatible_tool_names(normalized, messages)
         messages = remap_message_tool_names(messages, tool_aliases)
-        system, wire = _wire_messages(messages)
+        system, wire = _wire_messages(
+            messages,
+            supports_thinking_signature=_supports_thinking_signature(configuration.model),
+        )
         payload: dict[str, object] = {"messages": wire}
         if system:
             payload["system"] = system
@@ -233,7 +284,7 @@ class BedrockConverseAdapter:
         tool_parts: dict[int, dict[str, str]] = {}
         usage = ModelUsage()
         response_id = None
-        stop_reason = "stop"
+        stop_reason: str | None = None
         terminal = False
         text_started = False
         thinking_started = False
@@ -290,7 +341,7 @@ class BedrockConverseAdapter:
                                     thinking_parts.setdefault(index, {"text": "", "signature": ""})["signature"] += signature
                         stop = event.get("messageStop")
                         if isinstance(stop, Mapping):
-                            stop_reason = {"end_turn": "stop", "tool_use": "tool_use", "max_tokens": "length"}.get(str(stop.get("stopReason")), str(stop.get("stopReason") or "stop"))
+                            stop_reason = _stop_reason(stop.get("stopReason"))
                             terminal = True
                         metadata = event.get("metadata")
                         if isinstance(metadata, Mapping) and isinstance(metadata.get("usage"), Mapping):
@@ -353,3 +404,17 @@ class BedrockConverseAdapter:
 
 def _nonnegative(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _stop_reason(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise RuntimeError("模型响应缺少 stopReason")
+    mapped = {
+        "end_turn": "stop",
+        "tool_use": "tool_use",
+        "max_tokens": "length",
+        "model_context_window_exceeded": "length",
+    }.get(value)
+    if mapped is None:
+        raise RuntimeError(f"模型响应包含未知 stopReason: {value}")
+    return mapped

@@ -173,6 +173,7 @@ def test_routed_native_structured_stream_preserves_tool_history_and_images(monke
         return httpx.Response(200, text=(
             'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
             'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n'
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n'
             'data: {"type":"message_stop"}\n\n'
         ))
 
@@ -674,6 +675,65 @@ def test_native_non_streaming_provider_errors_are_not_empty_successes(monkeypatc
         asyncio.run(adapter.complete_messages(messages(), configuration(api)))
 
 
+@pytest.mark.parametrize("adapter, api, payload", [
+    (
+        GoogleGenerativeAdapter(),
+        "google-generative",
+        {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]},
+    ),
+    (
+        AnthropicMessagesAdapter(),
+        "anthropic-messages",
+        {"content": [{"type": "text", "text": "ok"}]},
+    ),
+    (
+        BedrockConverseAdapter(),
+        "bedrock-converse",
+        {"output": {"message": {"content": [{"text": "ok"}]} }},
+    ),
+])
+def test_native_non_streaming_requires_provider_finish_reason(monkeypatch, adapter, api, payload):
+    def handler(request):
+        del request
+        return httpx.Response(200, json=payload)
+
+    patch_client(monkeypatch, handler)
+    with pytest.raises(RuntimeError, match="finishReason|stop_reason|stopReason"):
+        asyncio.run(adapter.complete_messages(messages(), configuration(api)))
+
+
+@pytest.mark.parametrize("adapter, api, payload", [
+    (
+        GoogleGenerativeAdapter(),
+        "google-generative",
+        {"candidates": [{"content": {"parts": [{"text": "blocked"}]}, "finishReason": "SAFETY"}]},
+    ),
+    (
+        AnthropicMessagesAdapter(),
+        "anthropic-messages",
+        {"content": [{"type": "text", "text": "refused"}], "stop_reason": "refusal"},
+    ),
+    (
+        BedrockConverseAdapter(),
+        "bedrock-converse",
+        {"output": {"message": {"content": [{"text": "blocked"}], "stopReason": "guardrail_intervened"}}},
+    ),
+    (
+        MistralConversationsAdapter(),
+        "mistral-conversations",
+        {"choices": [{"message": {"content": "blocked"}, "finish_reason": "error"}]},
+    ),
+])
+def test_native_non_streaming_rejects_provider_error_finish_reason(monkeypatch, adapter, api, payload):
+    def handler(request):
+        del request
+        return httpx.Response(200, json=payload)
+
+    patch_client(monkeypatch, handler)
+    with pytest.raises(RuntimeError, match="finish|stop_reason|stopReason"):
+        asyncio.run(adapter.complete_messages(messages(), configuration(api)))
+
+
 def test_pi_messages_repairs_tool_history_and_serializes_slotted_metadata():
     call = ModelToolCallBlock("bad|tool/id", "lookup", {"key": "value"})
     history = (
@@ -701,12 +761,14 @@ def test_bedrock_repairs_history_and_preserves_supported_reasoning(monkeypatch):
     call = ModelToolCallBlock("bad|tool/id", "lookup", {"key": "value"})
     history = (
         ModelAssistantMessage((ModelThinkingBlock("reason", "signature"), call), ModelResponseMetadata(
-            provider="provider", api="bedrock-converse", model="model-1",
+            provider="anthropic", api="bedrock-converse", model="anthropic.claude-3-7-sonnet",
         )),
         ModelToolResultMessage((ModelImageBlock("image/tiff", "aW1hZ2U="),), call.id, call.name),
         ModelToolResultMessage((ModelTextBlock("orphan"),), "unknown", "lookup"),
     )
-    _, _, payload, _ = BedrockConverseAdapter()._prepare(history, configuration("bedrock-converse"), (), None)
+    config = configuration("bedrock-converse", provider="anthropic")
+    config.model = "anthropic.claude-3-7-sonnet"
+    _, _, payload, _ = BedrockConverseAdapter()._prepare(history, config, (), None)
     assistant, result = payload["messages"]
     reasoning = next(block for block in assistant["content"] if "reasoningContent" in block)
     tool = next(block for block in assistant["content"] if "toolUse" in block)
@@ -715,6 +777,46 @@ def test_bedrock_repairs_history_and_preserves_supported_reasoning(monkeypatch):
     assert len(tool["toolUse"]["toolUseId"]) <= 64
     assert tool_result["toolUseId"] == tool["toolUse"]["toolUseId"]
     assert tool_result["content"][0]["text"] == "[image omitted: image/tiff]"
+
+
+def test_bedrock_groups_consecutive_tool_results_and_omits_empty_assistant():
+    from backend.app.bedrock_adapter import BedrockConverseAdapter
+
+    first = ModelToolCallBlock("call-1", "first", {"": "ignored", "nested": {"": 1, "kept": 2}})
+    second = ModelToolCallBlock("call-2", "second", {})
+    history = (
+        ModelAssistantMessage((first, second)),
+        ModelToolResultMessage((ModelTextBlock("one"),), first.id, first.name),
+        ModelToolResultMessage((ModelTextBlock("two"),), second.id, second.name),
+        ModelAssistantMessage(()),
+    )
+
+    _, _, payload, _ = BedrockConverseAdapter()._prepare(
+        history, configuration("bedrock-converse"), (), None,
+    )
+
+    assert len(payload["messages"]) == 2
+    assert payload["messages"][1]["role"] == "user"
+    assert payload["messages"][0]["content"][0]["toolUse"]["input"] == {"nested": {"kept": 2}}
+    assert [item["toolResult"]["toolUseId"] for item in payload["messages"][1]["content"]] == [
+        "call-1", "call-2",
+    ]
+
+
+def test_bedrock_omits_reasoning_signature_for_non_anthropic_models():
+    from backend.app.bedrock_adapter import BedrockConverseAdapter
+
+    history = (ModelAssistantMessage(
+        (ModelThinkingBlock("reason", "opaque-signature"),),
+        ModelResponseMetadata(provider="provider", api="bedrock-converse", model="model-1"),
+    ),)
+
+    _, _, payload, _ = BedrockConverseAdapter()._prepare(
+        history, configuration("bedrock-converse"), (), None,
+    )
+
+    reasoning = payload["messages"][0]["content"][0]["reasoningContent"]["reasoningText"]
+    assert reasoning == {"text": "reason"}
 
 
 def test_google_replays_thinking_as_native_thought_part():
@@ -735,6 +837,24 @@ def test_google_replays_thinking_as_native_thought_part():
         {"text": "answer", "thoughtSignature": "text-signature"},
         {"functionCall": {"name": "lookup", "args": {"count": 1}, "id": "call-1"}, "thoughtSignature": "tool-signature"},
     ]
+
+
+def test_google_groups_consecutive_tool_results_with_output_and_error_fields():
+    from backend.app.google_adapter import GoogleGenerativeAdapter
+
+    history = (
+        ModelAssistantMessage((ModelToolCallBlock("call-1", "lookup", {}), ModelToolCallBlock("call-2", "lookup", {}))),
+        ModelToolResultMessage((ModelTextBlock("ok"),), "call-1", "lookup"),
+        ModelToolResultMessage((ModelTextBlock("failed"),), "call-2", "lookup", is_error=True),
+    )
+
+    _, _, payload, _ = GoogleGenerativeAdapter()._prepare(
+        history, configuration("google-generative"), (), stream=True, max_tokens=None,
+    )
+
+    assert len(payload["contents"]) == 2
+    responses = [part["functionResponse"]["response"] for part in payload["contents"][1]["parts"]]
+    assert responses == [{"output": "ok"}, {"error": "failed"}]
 
 
 def test_google_stream_preserves_order_and_thought_signatures(monkeypatch):
@@ -830,7 +950,7 @@ def test_tool_result_images_are_preserved_as_placeholders_in_text_only_protocol_
     _url, _headers, google, _aliases = GoogleGenerativeAdapter()._prepare(
         history, configuration("google-generative"), (), stream=True, max_tokens=None,
     )
-    google_result = google["contents"][-1]["parts"][0]["functionResponse"]["response"]["result"]
+    google_result = google["contents"][-1]["parts"][0]["functionResponse"]["response"]["output"]
     assert "[image omitted: image/png]" in google_result
 
     responses, _headers, _aliases = OpenAIResponsesAdapter()._prepare(

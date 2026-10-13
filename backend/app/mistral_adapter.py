@@ -153,6 +153,20 @@ def _usage(value: object) -> ModelUsage:
     )
 
 
+def _stop_reason(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise RuntimeError("模型响应缺少 finish_reason")
+    mapped = {
+        "stop": "stop",
+        "length": "length",
+        "model_length": "length",
+        "tool_calls": "tool_use",
+    }.get(value)
+    if mapped is None:
+        raise RuntimeError(f"模型响应包含错误 finish_reason: {value}")
+    return mapped
+
+
 def _number(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
@@ -242,7 +256,7 @@ class MistralConversationsAdapter:
                         finish = choice.get("finish_reason")
                         if isinstance(finish, str) and finish:
                             finish_seen = True
-                            stop_reason = {"stop": "stop", "tool_calls": "tool_use", "length": "length"}.get(finish, finish)
+                            stop_reason = _stop_reason(finish)
                         delta = choice.get("delta") if isinstance(choice, Mapping) else {}
                         if not isinstance(delta, Mapping):
                             continue
@@ -367,7 +381,7 @@ class MistralConversationsAdapter:
         finish = choice.get("finish_reason") if isinstance(choice, Mapping) else None
         if not isinstance(finish, str) or not finish:
             raise RuntimeError("模型响应缺少 finish_reason")
-        reason = {"stop": "stop", "tool_calls": "tool_use", "length": "length"}.get(str(finish), str(finish or "stop"))
+        reason = _stop_reason(finish)
         return ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(
             provider=configuration.provider, api="mistral-conversations", model=str(data.get("model") or configuration.model),
             response_id=data.get("id") if isinstance(data.get("id"), str) else None, usage=_usage(data.get("usage")), stop_reason=reason, timestamp=int(time.time() * 1000),

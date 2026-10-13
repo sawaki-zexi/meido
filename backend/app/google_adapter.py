@@ -46,6 +46,15 @@ def _text(blocks: Sequence[object]) -> str:
     return "".join(block.text for block in blocks if isinstance(block, ModelTextBlock))
 
 
+def _stop_reason(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise RuntimeError("模型响应缺少 finishReason")
+    mapped = {"STOP": "stop", "MAX_TOKENS": "length"}.get(value)
+    if mapped is None:
+        raise RuntimeError(f"模型响应包含错误 finishReason: {value}")
+    return mapped
+
+
 def _parts(blocks: Sequence[object], *, user: bool) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     for block in blocks:
@@ -81,8 +90,22 @@ def _messages_to_wire(messages: Sequence[ModelMessage]) -> tuple[str, list[dict[
         elif isinstance(message, ModelAssistantMessage):
             result.append({"role": "model", "parts": _parts(message.content, user=False)})
         elif isinstance(message, ModelToolResultMessage):
-            response = {"name": message.tool_name, "response": {"result": tool_result_text(message.content)}}
-            result.append({"role": "user", "parts": [{"functionResponse": response}]})
+            response = {
+                "name": message.tool_name,
+                "response": {
+                    "error" if message.is_error else "output": tool_result_text(message.content),
+                },
+            }
+            part = {"functionResponse": response}
+            if (
+                result
+                and result[-1].get("role") == "user"
+                and isinstance(result[-1].get("parts"), list)
+                and all(isinstance(item, Mapping) and "functionResponse" in item for item in result[-1]["parts"])
+            ):
+                result[-1]["parts"].append(part)
+            else:
+                result.append({"role": "user", "parts": [part]})
     return "\n\n".join(item for item in system if item), result
 
 
@@ -239,7 +262,7 @@ class GoogleGenerativeAdapter:
                         candidate = candidates[0] if isinstance(candidates, list) and candidates and isinstance(candidates[0], Mapping) else {}
                         finish = candidate.get("finishReason")
                         if isinstance(finish, str):
-                            stop_reason = {"STOP": "stop", "MAX_TOKENS": "length", "SAFETY": "error"}.get(finish, finish.lower())
+                            stop_reason = _stop_reason(finish)
                             completed = True
                         content = candidate.get("content") if isinstance(candidate, Mapping) else None
                         parts = content.get("parts") if isinstance(content, Mapping) else None
@@ -312,7 +335,10 @@ class GoogleGenerativeAdapter:
             if not completed:
                 yield ModelStreamError("模型流式响应未正常结束")
                 return
-            yield ModelStreamDone(ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(provider=configuration.provider, api=self.api, model=configuration.model, response_id=response_id, usage=usage, stop_reason=stop_reason or ("tool_use" if any(isinstance(item, ModelToolCallBlock) for item in blocks) else "stop"), timestamp=int(time.time() * 1000))))
+            if stop_reason is None:
+                yield ModelStreamError("模型响应缺少 finishReason")
+                return
+            yield ModelStreamDone(ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(provider=configuration.provider, api=self.api, model=configuration.model, response_id=response_id, usage=usage, stop_reason=stop_reason, timestamp=int(time.time() * 1000))))
         except httpx.HTTPStatusError as error:
             detail = _response_error_detail(error.response, redaction_key)
             yield ModelStreamError(f"HTTP {error.response.status_code} {error.response.reason_phrase}: {detail}" if detail else f"HTTP {error.response.status_code} {error.response.reason_phrase}")
@@ -364,8 +390,8 @@ class GoogleGenerativeAdapter:
                     dict(args),
                     thought_signature=signature if isinstance(signature, str) else None,
                 ))
-        reason = str(candidate.get("finishReason") or "STOP")
-        return ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(provider=configuration.provider, api=self.api, model=configuration.model, usage=_usage(data.get("usageMetadata")), stop_reason={"STOP": "stop", "MAX_TOKENS": "length"}.get(reason, reason.lower()), timestamp=int(time.time() * 1000)))
+        reason = _stop_reason(candidate.get("finishReason"))
+        return ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(provider=configuration.provider, api=self.api, model=configuration.model, usage=_usage(data.get("usageMetadata")), stop_reason=reason, timestamp=int(time.time() * 1000)))
 
     async def stream_rich_messages(self, *args, **kwargs) -> AsyncIterator[ModelStreamEvent]:
         async for event in self.stream_messages(*args, **kwargs):

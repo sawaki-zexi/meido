@@ -85,6 +85,21 @@ def _usage(value: object) -> ModelUsage:
     )
 
 
+def _stop_reason(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise RuntimeError("模型响应缺少 stop_reason")
+    mapped = {
+        "end_turn": "stop",
+        "stop_sequence": "stop",
+        "pause_turn": "stop",
+        "tool_use": "tool_use",
+        "max_tokens": "length",
+    }.get(value)
+    if mapped is None:
+        raise RuntimeError(f"模型响应包含错误 stop_reason: {value}")
+    return mapped
+
+
 def _text(blocks: Sequence[object]) -> str:
     return "".join(item.get("text", "") for item in blocks if isinstance(item, Mapping) and isinstance(item.get("text"), str))
 
@@ -350,12 +365,10 @@ class _Accumulator:
                 call = ModelToolCallBlock(block.id or f"call-{len(blocks)}", self.name_aliases.get(block.name, block.name), arguments)
                 blocks.append(call)
                 events.append(ModelToolCallEnd(call))
-        reason = {
-            "end_turn": "stop",
-            "stop_sequence": "stop",
-            "tool_use": "tool_use",
-            "max_tokens": "length",
-        }.get(self.stop_reason or "", self.stop_reason or ("tool_use" if any(isinstance(item, ModelToolCallBlock) for item in blocks) else "stop"))
+        try:
+            reason = _stop_reason(self.stop_reason)
+        except RuntimeError as error:
+            return events, None, str(error)
         message = ModelAssistantMessage(
             content=tuple(blocks),
             metadata=ModelResponseMetadata(
