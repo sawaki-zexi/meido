@@ -7,7 +7,7 @@ import pytest
 
 from backend.app.agent_runtime import AssistantDoneEvent, CancellationToken, MeidoProvider, ToolCallEndEvent
 from backend.app.agent_runtime.types import AssistantMessage, AttachmentContent, ImageContent, ToolResultMessage, UserMessage
-from backend.app.model_adapter import ModelToolCall, ModelTextDelta, OpenAICompatibleAdapter
+from backend.app.model_adapter import ModelStreamError, ModelToolCall, ModelTextDelta, OpenAICompatibleAdapter
 from backend.app.models import ModelConfiguration, RoleInput, RoleProfile
 
 
@@ -141,6 +141,221 @@ def test_openai_compatible_adapter_accepts_multiple_complete_message_tool_calls(
     assert asyncio.run(collect()) == [
         ModelToolCall("call-complete-1", "shell", {"command": "echo hi"}),
         ModelToolCall("call-complete-2", "shell", {"command": "echo there"}),
+    ]
+
+
+def test_openai_compatible_adapter_normalizes_legacy_tool_shape_and_history(monkeypatch):
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            text='data: {"choices":[{"delta":{"content":"完成"}}]}\n\ndata: [DONE]\n\n',
+            headers={"content-type": "text/event-stream"},
+        )
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+    configuration = ModelConfiguration(providerId="custom", provider="custom", baseUrl="https://example.test", model="m")
+    tool = MappingProxyType({
+        "name": "plugin.echo",
+        "description": "echo",
+        "input_schema": MappingProxyType({
+            "properties": MappingProxyType({"message": MappingProxyType({"type": "string"})}),
+            "required": ["message"],
+        }),
+    })
+    messages = [
+        {"role": "assistant", "content": None, "function_call": {"name": "plugin.echo", "arguments": "{}"}},
+        {"role": "function", "name": "plugin.echo", "content": "{}"},
+        {"role": "user", "content": "run"},
+    ]
+
+    async def collect():
+        return [event async for event in OpenAICompatibleAdapter().stream_structured_messages(
+            messages, configuration, [tool]
+        )]
+
+    assert asyncio.run(collect()) == [ModelTextDelta("完成")]
+    payload = requests[0]
+    wire_name = payload["tools"][0]["function"]["name"]
+    assert wire_name != "plugin.echo"
+    assert payload["tools"][0]["function"]["parameters"] == {
+        "type": "object",
+        "properties": {"message": {"type": "string"}},
+        "required": ["message"],
+    }
+    assert payload["messages"][0]["function_call"]["name"] == wire_name
+    assert payload["messages"][1]["name"] == wire_name
+    assert messages[0]["function_call"]["name"] == "plugin.echo"
+
+
+def test_openai_compatible_adapter_rejects_invalid_nested_tool_schema_before_network(monkeypatch):
+    called = False
+
+    def handler(request):
+        nonlocal called
+        called = True
+        del request
+        return httpx.Response(500)
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+    configuration = ModelConfiguration(providerId="custom", provider="custom", baseUrl="https://example.test", model="m")
+
+    async def collect():
+        return [event async for event in OpenAICompatibleAdapter().stream_structured_messages(
+            [{"role": "user", "content": "run"}],
+            configuration,
+            [{"name": "ping", "parameters": {"properties": []}}],
+        )]
+
+    with pytest.raises(ValueError, match="schema.properties 必须是对象"):
+        asyncio.run(collect())
+    assert called is False
+
+
+def test_openai_compatible_adapter_rejects_invalid_property_schema_and_required_names(monkeypatch):
+    called = False
+
+    def handler(request):
+        nonlocal called
+        called = True
+        del request
+        return httpx.Response(500)
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+    configuration = ModelConfiguration(providerId="custom", provider="custom", baseUrl="https://example.test", model="m")
+
+    async def collect(tool):
+        return [event async for event in OpenAICompatibleAdapter().stream_structured_messages(
+            [{"role": "user", "content": "run"}], configuration, [tool]
+        )]
+
+    with pytest.raises(ValueError, match="properties 成员必须是对象"):
+        asyncio.run(collect({"name": "ping", "parameters": {"properties": {"value": "string"}}}))
+    with pytest.raises(ValueError, match="required 必须引用 properties"):
+        asyncio.run(collect({"name": "ping", "parameters": {"properties": {}, "required": ["value"]}}))
+    assert called is False
+
+
+def test_openai_compatible_adapter_keeps_tool_calls_with_string_indexes_and_duplicate_ids(monkeypatch):
+    def handler(request):
+        del request
+        chunks = [
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": "0", "id": "call-1", "function": {"name": "shell", "arguments": '{"command":"one'}},
+            ]}}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": "1", "id": "call-2", "function": {"name": "shell", "arguments": '{"command":"two"}'}},
+            ]}}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": "0", "id": "call-1", "function": {"name": "shell", "arguments": '"}'}},
+            ]}}]},
+        ]
+        body = "\n".join([
+            *(f"data: {json.dumps(chunk)}" for chunk in chunks),
+            "data: [DONE]",
+            "",
+        ])
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+    configuration = ModelConfiguration(providerId="custom", provider="custom", baseUrl="https://example.test", model="m")
+
+    async def collect():
+        return [event async for event in OpenAICompatibleAdapter().stream_structured_messages(
+            [{"role": "user", "content": "run"}],
+            configuration,
+            [{"name": "shell"}],
+        )]
+
+    assert asyncio.run(collect()) == [
+        ModelToolCall("call-1", "shell", {"command": "one"}),
+        ModelToolCall("call-2", "shell", {"command": "two"}),
+    ]
+
+
+def test_openai_compatible_adapter_preserves_repeated_incremental_argument_fragments(monkeypatch):
+    def handler(request):
+        del request
+        chunks = [
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "id": "call-1", "function": {"name": "shell", "arguments": '{"value":"x'}},
+            ]}}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"value":"x'}},
+            ]}}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '"}'}}]}}]},
+        ]
+        body = "\n".join([*(f"data: {json.dumps(chunk)}" for chunk in chunks), "data: [DONE]", ""])
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+    configuration = ModelConfiguration(providerId="custom", provider="custom", baseUrl="https://example.test", model="m")
+
+    async def collect():
+        return [event async for event in OpenAICompatibleAdapter().stream_structured_messages(
+            [{"role": "user", "content": "run"}], configuration, [{"name": "shell"}]
+        )]
+
+    assert asyncio.run(collect()) == [ModelStreamError("模型工具参数不是有效 JSON: shell")]
+
+
+def test_openai_compatible_adapter_accepts_complete_message_object_arguments(monkeypatch):
+    def handler(request):
+        del request
+        chunk = {"choices": [{"message": {"tool_calls": [
+            {"id": "call-complete", "type": "function", "function": {
+                "name": "shell", "arguments": {"command": "echo hi"},
+            }},
+        ]}}]}
+        return httpx.Response(
+            200,
+            text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+    configuration = ModelConfiguration(providerId="custom", provider="custom", baseUrl="https://example.test", model="m")
+
+    async def collect():
+        return [event async for event in OpenAICompatibleAdapter().stream_structured_messages(
+            [{"role": "user", "content": "run"}], configuration, [{"name": "shell"}]
+        )]
+
+    assert asyncio.run(collect()) == [
+        ModelToolCall("call-complete", "shell", {"command": "echo hi"}),
     ]
 
 
