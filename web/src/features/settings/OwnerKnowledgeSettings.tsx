@@ -22,6 +22,7 @@ type PluginStatus = {
   connected: boolean;
   oauthConfigured: boolean;
   embeddingReady: boolean;
+  embeddingEnabled?: boolean;
   embeddingConfigured?: boolean;
   embeddingModel?: string;
   embeddingDimensions?: number;
@@ -154,7 +155,7 @@ export function OwnerKnowledgeSettings() {
 
     <div className="owner-status-strip" aria-label="主人资料状态">
       <div><span>授权</span><strong>{status?.connected ? "已连接" : "待连接"}</strong></div>
-      <div><span>语义模型</span><strong>{status?.embeddingReady ? "可用" : status?.embeddingConfigured ? "不可用" : "未配置"}</strong></div>
+      <div><span>语义模型</span><strong>{status?.embeddingEnabled === false ? "已暂停" : status?.embeddingReady ? "可用" : status?.embeddingConfigured ? "不可用" : "未配置"}</strong></div>
       <div><span>模型 ID</span><strong>{status?.embeddingModel ?? "未设置"}</strong></div>
       {status?.embeddingDimensions && <div><span>向量维度</span><strong>{status.embeddingDimensions}</strong></div>}
       <div><span>本地文档</span><strong>{documents.filter((document) => document.status === "synced").length}</strong></div>

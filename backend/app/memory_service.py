@@ -29,12 +29,14 @@ class MemoryService:
         event_bus: object | None = None,
         *,
         implicit_extraction_enabled: bool = True,
+        memory_enabled: Callable[[], bool] | None = None,
     ) -> None:
         self.store = store
         self.embedding_provider = embedding_provider
         self.post_response_provider = post_response_provider
         self.event_bus = event_bus
         self.implicit_extraction_enabled = implicit_extraction_enabled
+        self.memory_enabled = memory_enabled or (lambda: True)
         self.embedding_errors: list[str] = []
         self.post_response_errors: list[str] = []
 
@@ -48,6 +50,8 @@ class MemoryService:
 
     def index_embedding(self, role_id: str, item: MemoryItem) -> None:
         if self.embedding_provider is None:
+            return
+        if not getattr(self.embedding_provider, "is_enabled", True):
             return
         try:
             provider, model_id = self._embedding_session()
@@ -105,6 +109,8 @@ class MemoryService:
         *,
         protected_item_ids: Iterable[str] = (),
     ) -> list[MemoryItem]:
+        if not self.memory_enabled():
+            return []
         if assistant_message.role != "assistant" or assistant_message.status != "completed":
             return []
         if user_message.role != "user":
@@ -261,9 +267,13 @@ class MemoryService:
         return created
 
     def recall(self, role_id: str, query: str, limit: int = 8) -> list[MemoryItem]:
+        if not self.memory_enabled():
+            return []
         if self.embedding_provider is None:
             return self.store.query(role_id, query, limit=limit)
         provider, model_id = self._embedding_session()
+        if provider is not None and not getattr(provider, "is_enabled", True):
+            return self.store.query(role_id, query, limit=limit)
         try:
             vector = provider.embed(role_id, query) if provider is not None else None
         except Exception:
@@ -282,9 +292,13 @@ class MemoryService:
         return self.store.query_hybrid(role_id, query, vector, limit=limit) if vector is not None else self.store.query(role_id, query, limit=limit)
 
     async def recall_async(self, role_id: str, query: str, limit: int = 8) -> list[MemoryItem]:
+        if not self.memory_enabled():
+            return []
         if self.embedding_provider is None:
             return await asyncio.to_thread(self.store.query, role_id, query, limit)
         provider, model_id = self._embedding_session()
+        if provider is not None and not getattr(provider, "is_enabled", True):
+            return await asyncio.to_thread(self.store.query, role_id, query, limit)
         lexical_task = asyncio.to_thread(self.store.query, role_id, query, limit)
         vector_task = asyncio.to_thread(provider.embed, role_id, query) if provider is not None else asyncio.sleep(0, result=None)
         lexical_result, vector_result = await asyncio.gather(lexical_task, vector_task, return_exceptions=True)
@@ -325,11 +339,11 @@ class MemoryService:
 
     async def recall_vector_async(self, role_id: str, query: str, limit: int = 8) -> list[MemoryItem]:
         """Semantic-only lane used by answer HyDE (no keyword recall)."""
-        if self.embedding_provider is None:
+        if not self.memory_enabled() or self.embedding_provider is None:
             return []
         provider, model_id = self._embedding_session()
         try:
-            if provider is None:
+            if provider is None or not getattr(provider, "is_enabled", True):
                 return []
             vector = await asyncio.to_thread(provider.embed, role_id, query)
             if vector is None:
@@ -537,6 +551,7 @@ class MemoryWorker:
         assistant_message = event.assistant_message
         if (
             self.closed
+            or not self.service.memory_enabled()
             or role_id in self._deleting
             or role_id in self._deleted
             or user_message.role != "user"
@@ -669,7 +684,7 @@ class MemoryWorker:
         )
 
     def _process_maintenance(self, role_id: str, session_key: str) -> None:
-        if self.maintenance is not None:
+        if self.service.memory_enabled() and self.maintenance is not None:
             self.maintenance.maintain(role_id, session_key)
 
     async def drain(self) -> None:

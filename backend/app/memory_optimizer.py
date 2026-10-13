@@ -564,8 +564,9 @@ class MemoryOptimizer:
 class MemoryOptimizerWorker:
     """Run optimizer jobs off the event loop with one serial lane per role."""
 
-    def __init__(self, optimizer: MemoryOptimizer) -> None:
+    def __init__(self, optimizer: MemoryOptimizer, *, enabled: Callable[[], bool] | None = None) -> None:
         self.optimizer = optimizer
+        self.enabled = enabled or (lambda: True)
         self._locks: dict[str, asyncio.Lock] = {}
         self._tasks: dict[asyncio.Task[object], str] = {}
         self._scheduled_roles: set[str] = set()
@@ -583,7 +584,7 @@ class MemoryOptimizerWorker:
         return self._locks.setdefault(role_id, asyncio.Lock())
 
     def submit(self, role_id: str) -> bool:
-        if self.closed or role_id in self._scheduled_roles or role_id in self._deleting or role_id in self._deleted:
+        if self.closed or not self.enabled() or role_id in self._scheduled_roles or role_id in self._deleting or role_id in self._deleted:
             return False
         self._scheduled_roles.add(role_id)
         task = asyncio.create_task(self._run(role_id))
@@ -628,7 +629,8 @@ class MemoryOptimizerWorker:
 
     async def run(self, role_id: str) -> None:
         """Run inside MemoryWorker's per-role lane after Markdown maintenance."""
-        await asyncio.to_thread(self.optimizer.optimize, role_id)
+        if self.enabled():
+            await asyncio.to_thread(self.optimizer.optimize, role_id)
 
     async def _run(self, role_id: str) -> None:
         try:
@@ -663,6 +665,7 @@ class MemoryOptimizerLoop:
         now: Callable[[], datetime] | None = None,
         sleep: Callable[[float], object] | None = None,
         model_available: Callable[[str], bool] | None = None,
+        enabled_provider: Callable[[], bool] | None = None,
     ) -> None:
         self.worker = worker
         self.roles_root = Path(roles_root).resolve()
@@ -671,6 +674,7 @@ class MemoryOptimizerLoop:
         self.now = now or (lambda: datetime.now(timezone.utc))
         self._sleep = sleep or asyncio.sleep
         self.model_available = model_available or (lambda role_id: True)
+        self.enabled_provider = enabled_provider or (lambda: True)
         self._task: asyncio.Task[object] | None = None
         self.closed = False
         self.errors: list[str] = []
@@ -695,7 +699,7 @@ class MemoryOptimizerLoop:
             self.errors.append(str(error))
 
     async def run_once(self, *, startup: bool = False) -> int:
-        if not self.enabled or self.closed or not self.roles_root.exists():
+        if not self.enabled or not self.enabled_provider() or self.closed or not self.roles_root.exists():
             return 0
         scheduled = 0
         for role_root in sorted(self.roles_root.iterdir(), key=lambda path: path.name):
