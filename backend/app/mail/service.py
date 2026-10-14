@@ -6,13 +6,13 @@ import json
 import logging
 import re
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
 from ..credentials import CredentialStore, SystemCredentialStore
 from ..models import ModelConfiguration
-from .adapter import MailAdapterError, QQMailAdapter, RemoteMail
-from .models import MailConnection, MailDraft, MailItem, MailSyncResult
+from .adapter import MailAdapterError, QQMailAdapter
+from .models import MailConnection, MailItem, MailSyncResult
 from .store import MailStore
 
 logger = logging.getLogger(__name__)
@@ -114,16 +114,28 @@ class MailService:
             result = adapter.verify(write_test=False)
             folders = result["folders"]
             assert isinstance(folders, dict)
-            marker = f"meido-test-{uuid.uuid4().hex}"
             if write_test:
-                adapter.append_test_draft(str(folders["drafts"]), marker, connection.username)
-                if not adapter.verify_test_draft_present(marker, str(folders["drafts"])):
-                    raise MailAdapterError("测试草稿写入后无法从 QQ 草稿箱核验")
+                marker = str(candidate.get("marker") or "")
+                if not marker or candidate.get("test_sent"):
+                    marker = f"meido-test-{uuid.uuid4().hex}"
+                self.store.set_candidate_marker(marker, folders, present=False)
                 self.store.create_test_draft(marker)
-            self.store.set_candidate_marker(marker, folders, present=bool(write_test))
+                try:
+                    present = adapter.verify_test_draft_present(marker, str(folders["drafts"]))
+                    if not present:
+                        adapter.append_test_draft(str(folders["drafts"]), marker, connection.username)
+                        present = adapter.verify_test_draft_present(marker, str(folders["drafts"]))
+                    if not present:
+                        raise MailAdapterError("测试草稿写入后无法从 QQ 草稿箱核验")
+                    self.store.mark_test_draft_created(marker)
+                except Exception as error:
+                    self.store.mark_test_draft_error(marker, _clean_error(error))
+                    raise
+                self.store.set_candidate_marker(marker, folders, present=True)
+            else:
+                marker = f"meido-test-{uuid.uuid4().hex}"
+                self.store.set_candidate_marker(marker, folders, present=False)
             return {"ok": True, **result, "candidate": self.store.candidate()}
-        except Exception as error:
-            raise
         finally:
             adapter.close()
 
@@ -552,10 +564,23 @@ class MailService:
 
     async def deliver_reminder_batches(self) -> None:
         role_id = self.store.setting("reminder_role_id")
-        if not role_id or role_id not in self.available_roles() or self.reminder_sender is None:
-            return
         account = self.store.connection().username
-        for batch in self.store.pending_reminder_batches(account=account):
+        batches = self.store.pending_reminder_batches(account=account)
+        if not batches:
+            return
+        if not role_id:
+            error = "尚未指定邮件提醒角色"
+        elif role_id not in self.available_roles():
+            error = "指定的邮件提醒角色不存在或不可用"
+        elif self.reminder_sender is None:
+            error = "邮件提醒投递能力未配置"
+        else:
+            error = ""
+        if error:
+            for batch in batches:
+                self.store.update_reminder_batch(str(batch["batchId"]), status="pending", role_id=role_id or None, error=error)
+            return
+        for batch in batches:
             batch_id = str(batch["batchId"])
             try:
                 drafts = []

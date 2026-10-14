@@ -19,6 +19,7 @@ type MailDetail = {
 };
 type Role = { id: string; name: string };
 type MailJob = { jobId: string; status: "queued" | "running" | "completed" | "failed"; error: string | null; result: unknown };
+type ReminderBatch = { batchId: string; status: "pending" | "failed" | "delivered" | "completed"; failureCount: number; failureSummaries: string[]; lastError: string | null; createdAt: string; deliveredAt: string | null };
 
 const labels: Record<string, string> = { new: "待处理", no_reply: "无需回复", queued: "排队中", processing: "处理中", drafted: "草稿已创建", failed: "失败", uncertain: "待核实", created: "QQ 草稿", manual_modified: "主人已修改", stale: "可能过时", missing: "已不在草稿箱" };
 const requestId = () => crypto.randomUUID();
@@ -28,6 +29,7 @@ export function MailSettings() {
   const [status, setStatus] = useState<MailStatus | null>(null);
   const [items, setItems] = useState<MailItem[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
+  const [reminderBatches, setReminderBatches] = useState<ReminderBatch[]>([]);
   const [detail, setDetail] = useState<MailDetail | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [reminderRoleId, setReminderRoleId] = useState("");
@@ -44,13 +46,14 @@ export function MailSettings() {
   const recoveringJob = useRef(false);
 
   const refresh = async () => {
-    const [mail, list, roleData, reminder] = await Promise.all([
+    const [mail, list, roleData, reminder, batches] = await Promise.all([
       api<MailStatus>("/api/mail/status"),
       api<{ items: MailItem[] }>(`/api/mail/items?limit=${pageSize}&offset=${page * pageSize}`),
       api<{ roles: Role[] }>("/api/roles"),
       api<{ roleId: string | null }>("/api/mail/reminder-role"),
+      api<{ batches: ReminderBatch[] }>("/api/mail/reminder-batches?limit=8"),
     ]);
-    setStatus(mail); setItems(list.items); setRoles(roleData.roles); setReminderRoleId(reminder.roleId ?? "");
+    setStatus(mail); setItems(list.items); setRoles(roleData.roles); setReminderRoleId(reminder.roleId ?? ""); setReminderBatches(batches.batches);
     if (mail.username) setUsername((value) => value || mail.username);
     if (mail.candidate?.username) { setUsername((value) => value || mail.candidate!.username); setHost(mail.candidate.host); setPort(mail.candidate.port); }
     if (selectedId && list.items.some((item) => item.id === selectedId)) {
@@ -159,6 +162,8 @@ export function MailSettings() {
       </div>
     </section>
 
-    <section className="mail-section" aria-labelledby="mail-reminder-title"><div className="mail-section-heading"><div><h3 id="mail-reminder-title">草稿提醒角色</h3><p className="muted">每批新建草稿汇总为一条会话主动消息，并报告处理失败数</p></div><select aria-label="邮件提醒角色" value={reminderRoleId} disabled={busy} onChange={(event) => { const value = event.target.value; setReminderRoleId(value); void run(() => api("/api/mail/reminder-role", { method: "PUT", body: JSON.stringify({ roleId: value || null }) }), () => "邮件提醒角色已更新"); }}><option value="">不发送提醒</option>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></div></section>
+    <section className="mail-section" aria-labelledby="mail-reminder-title"><div className="mail-section-heading"><div><h3 id="mail-reminder-title">草稿提醒角色</h3><p className="muted">每批新建草稿汇总为一条会话主动消息，并报告处理失败数</p></div><select aria-label="邮件提醒角色" value={reminderRoleId} disabled={busy} onChange={(event) => { const value = event.target.value; setReminderRoleId(value); void run(() => api("/api/mail/reminder-role", { method: "PUT", body: JSON.stringify({ roleId: value || null }) }), () => "邮件提醒角色已更新"); }}><option value="">不发送提醒</option>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></div>
+      {reminderBatches.length > 0 && <div className="mail-reminder-batches" aria-label="邮件提醒批次">{reminderBatches.map((batch) => <article className="mail-reminder-batch" key={batch.batchId}><div><strong>{batch.status === "delivered" ? "已提醒" : batch.status === "completed" ? "无需提醒" : batch.status === "failed" ? "投递失败" : "等待提醒"}</strong><time>{batch.createdAt ? new Date(batch.createdAt).toLocaleString() : ""}</time></div>{batch.failureCount > 0 && <p>本批有 {batch.failureCount} 封邮件处理失败或待核实。</p>}{batch.lastError && <p className="mail-item-error">{batch.lastError}</p>}{batch.failureSummaries.length > 0 && <ul>{batch.failureSummaries.slice(0, 3).map((summary, index) => <li key={`${index}-${summary}`}>{summary}</li>)}</ul>}</article>)}</div>}
+    </section>
   </section>;
 }

@@ -14,6 +14,7 @@ from backend.app.agent_runtime import CancellationToken, ToolContext
 from backend.app.mail.adapter import MailAdapterError, QQMailAdapter, RemoteDraft, RemoteMail
 from backend.app.mail.agent import MailManageTool
 from backend.app.mail import api as mail_api
+from backend.app.mail import service as mail_service_module
 from backend.app.mail.models import MailConnection
 from backend.app.mail.service import MailService
 from backend.app.mail.store import MailStore
@@ -204,6 +205,47 @@ def test_reminder_reports_failure_even_without_a_created_draft(tmp_path):
     assert store.pending_reminder_batches() == []
 
 
+def test_reminder_batch_waits_without_a_role_then_delivers_when_configured(tmp_path):
+    service, store, _adapter = make_service(tmp_path)
+    messages = []
+    service._create_reminder_batch([], ["主题：模型不可用"], batch_key="job:missing-role")
+
+    asyncio.run(service.deliver_reminder_batches())
+
+    batch = store.reminder_batches(account="owner@qq.com")[0]
+    assert batch["status"] == "pending"
+    assert batch["lastError"] == "尚未指定邮件提醒角色"
+    assert batch["failureCount"] == 1
+    assert messages == []
+
+    service.available_roles = lambda: ["role-1"]
+    service.reminder_sender = lambda role_id, event_id, content: messages.append((role_id, event_id, content)) or event_id
+    service.configure_reminder_role("role-1")
+    asyncio.run(service.deliver_reminder_batches())
+
+    delivered = store.reminder_batches(account="owner@qq.com")[0]
+    assert delivered["status"] == "delivered"
+    assert delivered["lastError"] is None
+    assert delivered["deliveredAt"]
+    assert len(messages) == 1
+
+
+def test_reminder_batch_api_returns_only_the_active_account(tmp_path, monkeypatch):
+    service, store, _adapter = make_service(tmp_path)
+    store.create_reminder_batch("owner-batch", [], failure_count=1, account="owner@qq.com")
+    store.create_reminder_batch("other-batch", [], failure_count=1, account="other@qq.com")
+    monkeypatch.setattr(mail_api, "mail_service", service)
+
+    app = FastAPI()
+    app.include_router(mail_api.router)
+    with TestClient(app) as client:
+        response = client.get("/api/mail/reminder-batches?limit=8")
+
+    assert response.status_code == 200
+    batches = response.json()["batches"]
+    assert [batch["batchId"] for batch in batches] == ["owner-batch"]
+
+
 def test_reminder_batches_and_content_are_scoped_to_the_active_account(tmp_path):
     service, store, _adapter = make_service(tmp_path)
     remote = SimpleNamespace(
@@ -235,6 +277,48 @@ def test_reminder_batch_deduplicates_replays_but_not_later_identical_windows(tmp
     batches = store.pending_reminder_batches(account="owner@qq.com")
     assert len(batches) == 2
     assert all(batch["failureCount"] == 1 for batch in batches)
+
+
+def test_connection_retry_reuses_test_draft_after_readback_failure(tmp_path, monkeypatch):
+    service, store, _adapter = make_service(tmp_path)
+    service.configure(host="imap.qq.com", port=993, username="owner@qq.com", password="candidate-secret")
+    state = {"markers": set(), "readback_error": True, "append_calls": 0}
+
+    class CandidateAdapter:
+        def __init__(self, _connection, _password):
+            pass
+
+        def verify(self, write_test=False):
+            assert write_test is False
+            return {"folders": {"inbox": "INBOX", "sent": "Sent", "drafts": "Drafts"}}
+
+        def verify_test_draft_present(self, marker, _folder):
+            if marker in state["markers"] and state["readback_error"]:
+                state["readback_error"] = False
+                raise MailAdapterError("草稿箱读取暂时失败")
+            return marker in state["markers"]
+
+        def append_test_draft(self, _folder, marker, _recipient):
+            state["append_calls"] += 1
+            state["markers"].add(marker)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mail_service_module, "QQMailAdapter", CandidateAdapter)
+
+    with pytest.raises(MailAdapterError, match="草稿箱读取暂时失败"):
+        service.test_connection(write_test=True)
+    first_marker = str(store.candidate()["marker"])
+    assert store.test_draft()["status"] == "failed"
+    assert state["append_calls"] == 1
+
+    result = service.test_connection(write_test=True)
+
+    assert result["candidate"]["marker"] == first_marker
+    assert result["candidate"]["test_draft_present"] == 1
+    assert store.test_draft()["status"] == "created"
+    assert state["append_calls"] == 1
 
 
 def test_retry_does_not_report_a_deleted_qq_draft_as_available(tmp_path):

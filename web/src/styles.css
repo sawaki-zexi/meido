@@ -460,6 +460,13 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .mail-draft p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
 .mail-draft small { overflow-wrap: anywhere; }
 .mail-settings select { min-width: 150px; max-width: 100%; }
+.mail-reminder-batches { display: grid; gap: 6px; }
+.mail-reminder-batch { display: grid; gap: 5px; min-width: 0; padding: 9px 10px; border-left: 2px solid var(--line); background: var(--side); }
+.mail-reminder-batch > div { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 10px; }
+.mail-reminder-batch strong, .mail-reminder-batch time, .mail-reminder-batch p, .mail-reminder-batch li { font-size: 12px; }
+.mail-reminder-batch time { color: var(--ink-faint); }
+.mail-reminder-batch p, .mail-reminder-batch ul { margin: 0; }
+.mail-reminder-batch ul { padding-left: 18px; color: var(--ink-soft); }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 

@@ -191,6 +191,13 @@ async def set_reminder_role(data: ReminderRoleInput) -> dict[str, object]:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
 
+@router.get("/reminder-batches")
+def list_reminder_batches(limit: int = 20) -> dict[str, object]:
+    service = _service()
+    account = service.store.connection().username
+    return {"batches": service.store.reminder_batches(limit, account=account)}
+
+
 @router.get("/audit")
 def list_audit(limit: int = 100) -> dict[str, object]:
     return {"events": _service().store.list_audits(limit)}

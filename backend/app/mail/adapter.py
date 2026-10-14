@@ -12,8 +12,6 @@ from datetime import datetime, timezone
 from email.header import decode_header, make_header
 from email.message import EmailMessage
 from email.parser import BytesParser
-from typing import Iterable
-
 from .models import MailConnection
 
 
@@ -293,7 +291,6 @@ class QQMailAdapter:
         status, _ = client.append(f'"{folder}"', '(\\Draft)', None, message.as_bytes())
         if status != "OK":
             raise MailAdapterError("QQ 草稿箱写入失败")
-        raw = message.as_bytes()
         return RemoteDraft(marker, "", folder, message["Message-ID"], subject, recipients, body, _draft_hash(subject, recipients, body, in_reply_to, references))
 
     def append_test_draft(self, folder: str, marker: str, recipient: str) -> None:

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import DraftStatus, MailConnection, MailDraft, MailItem, MailStatus
+from .models import DraftStatus, MailConnection, MailDraft, MailItem
 
 
 def _now() -> str:
@@ -446,8 +446,16 @@ class MailStore:
 
     def create_test_draft(self, marker: str) -> bool:
         with self._connect() as db:
-            cursor = db.execute("INSERT OR IGNORE INTO mail_test_drafts(marker,status,created_at) VALUES(?,?,?)", (marker, "created", _now()))
+            cursor = db.execute(
+                """INSERT INTO mail_test_drafts(marker,status,created_at) VALUES(?,?,?)
+                ON CONFLICT(marker) DO UPDATE SET status=CASE WHEN status='sent' THEN status ELSE 'pending' END,error=NULL""",
+                (marker, "pending", _now()),
+            )
             return cursor.rowcount > 0
+
+    def mark_test_draft_created(self, marker: str) -> None:
+        with self._connect() as db:
+            db.execute("UPDATE mail_test_drafts SET status='created',error=NULL WHERE marker=?", (marker,))
 
     def test_draft(self) -> dict[str, object] | None:
         with self._connect() as db:
@@ -522,12 +530,32 @@ class MailStore:
             return cursor.rowcount > 0
 
     def pending_reminder_batches(self, limit: int = 50, *, account: str = "") -> list[dict[str, object]]:
+        if not account:
+            return []
         with self._connect() as db:
-            if account:
-                rows = db.execute("SELECT * FROM mail_reminder_batches WHERE account_scope=? AND status IN ('pending','failed') ORDER BY created_at LIMIT ?", (_account_scope(account), limit)).fetchall()
-            else:
-                rows = db.execute("SELECT * FROM mail_reminder_batches WHERE status IN ('pending','failed') ORDER BY created_at LIMIT ?", (limit,)).fetchall()
-        return [{"batchId": row["batch_id"], "draftIds": json.loads(row["draft_ids_json"]), "status": row["status"], "failureCount": int(row["failure_count"] or 0), "failureSummaries": json.loads(row["failure_summary_json"] or "[]"), "roleId": row["role_id"], "lastError": row["last_error"]} for row in rows]
+            rows = db.execute("SELECT * FROM mail_reminder_batches WHERE account_scope=? AND status IN ('pending','failed') ORDER BY created_at LIMIT ?", (_account_scope(account), max(1, min(limit, 100)))).fetchall()
+        return [self._reminder_batch(row) for row in rows]
+
+    @staticmethod
+    def _reminder_batch(row: sqlite3.Row) -> dict[str, object]:
+        return {
+            "batchId": row["batch_id"], "draftIds": json.loads(row["draft_ids_json"]),
+            "status": row["status"], "failureCount": int(row["failure_count"] or 0),
+            "failureSummaries": json.loads(row["failure_summary_json"] or "[]"),
+            "roleId": row["role_id"], "lastError": row["last_error"],
+            "createdAt": row["created_at"], "deliveredAt": row["delivered_at"],
+        }
+
+    def reminder_batches(self, limit: int = 20, *, account: str) -> list[dict[str, object]]:
+        scope = _account_scope(account)
+        if not scope:
+            return []
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM mail_reminder_batches WHERE account_scope=? ORDER BY created_at DESC LIMIT ?",
+                (scope, max(1, min(limit, 100))),
+            ).fetchall()
+        return [self._reminder_batch(row) for row in rows]
 
     def update_reminder_batch(self, batch_id: str, *, status: str, role_id: str | None = None, error: str | None = None, delivered: bool = False) -> None:
         with self._connect() as db:
