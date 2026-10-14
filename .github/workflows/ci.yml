@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 concurrency:
-  # Push and pull_request events for the same branch share one run.
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  # Isolate push and PR runs; newer commits still cancel obsolete runs per event.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
