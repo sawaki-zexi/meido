@@ -43,6 +43,7 @@ from .owner_knowledge import (
     OwnerKnowledgeStore,
     OwnerKnowledgeTool,
     RoleBoundOwnerKnowledgeReader,
+    owner_knowledge_error_message,
 )
 from .mail import MailService, MailStore
 from .mail.agent import MailManageTool
@@ -900,7 +901,10 @@ def list_owner_knowledge_sync_runs() -> dict[str, object]:
 def get_owner_understanding(role_id: str) -> dict[str, object]:
     if store.get(role_id) is None:
         raise HTTPException(status_code=404, detail="角色不存在")
-    return {"understanding": owner_knowledge_store.get_understanding(role_id)}
+    return {
+        "understanding": owner_knowledge_store.get_understanding(role_id),
+        "job": owner_knowledge_store.understanding_job_status(role_id),
+    }
 
 
 def _queue_owner_understanding_refresh(report: SyncReport | None = None, *, full_refresh: bool = False) -> None:
@@ -960,13 +964,21 @@ async def regenerate_owner_understanding(role_id: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail="角色不存在")
     if not owner_knowledge_plugin.status().enabled:
         raise HTTPException(status_code=409, detail="主人资料插件已暂停")
+    if owner_knowledge_store.count_chunks() == 0:
+        raise HTTPException(status_code=409, detail="没有可用于生成角色理解的主人资料，请先完成知识库同步")
+    if getattr(owner_knowledge_plugin.embedder, "ready", True) is False:
+        raise HTTPException(status_code=409, detail="请先在模型设置中配置并启用向量模型")
+    configuration = _role_model_configuration(role_id)
+    if configuration is None:
+        raise HTTPException(status_code=409, detail="尚未配置角色模型，请先在模型设置中保存连接信息")
     try:
         owner_knowledge_store.enqueue_understanding(role_id, {"kind": "manual"}, full_refresh=True)
         await owner_knowledge_plugin.generate_understanding(
-            store.get(role_id), model_adapter, _role_model_configuration(role_id), _role_owner_understanding_memory(role_id)
+            store.get(role_id), model_adapter, configuration, _role_owner_understanding_memory(role_id)
         )
     except Exception as error:
-        raise HTTPException(status_code=502, detail="角色理解生成失败，已保留上一版本") from error
+        detail = owner_knowledge_error_message(error)
+        raise HTTPException(status_code=502, detail=f"角色理解生成失败，已保留上一版本：{detail}") from error
     return {"understanding": owner_knowledge_store.get_understanding(role_id)}
 
 

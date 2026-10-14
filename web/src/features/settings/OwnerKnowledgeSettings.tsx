@@ -34,6 +34,7 @@ type PluginStatus = {
 };
 type OwnerRole = { id: string; name: string };
 type OwnerUnderstanding = { roleId: string; body: string; updatedAt: string; version: number };
+type UnderstandingJob = { status: "pending" | "failed"; lastError: string | null };
 type OwnerDocument = { documentId: string; objectType: string; title: string; url: string; status: string; error: string };
 
 export function OwnerKnowledgeSettings() {
@@ -42,6 +43,8 @@ export function OwnerKnowledgeSettings() {
   const [documents, setDocuments] = useState<OwnerDocument[]>([]);
   const [selectedRoleId, setSelectedRoleId] = useState("");
   const [understanding, setUnderstanding] = useState<OwnerUnderstanding | null>(null);
+  const [understandingJob, setUnderstandingJob] = useState<UnderstandingJob | null>(null);
+  const [understandingRevision, setUnderstandingRevision] = useState(0);
   const [loadingUnderstanding, setLoadingUnderstanding] = useState(false);
   const [appId, setAppId] = useState("");
   const [appSecret, setAppSecret] = useState("");
@@ -61,6 +64,7 @@ export function OwnerKnowledgeSettings() {
     setDocuments(documentData.documents);
     setSelectedRoleId((current) => current || roleData.roles[0]?.id || "");
     if (result.appId) setAppId(result.appId);
+    setUnderstandingRevision((current) => current + 1);
   };
 
   useEffect(() => {
@@ -74,16 +78,31 @@ export function OwnerKnowledgeSettings() {
   }, []);
 
   useEffect(() => {
+    let current = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    setUnderstanding(null);
+    setUnderstandingJob(null);
     if (!selectedRoleId) {
-      setUnderstanding(null);
+      setLoadingUnderstanding(false);
       return;
     }
     setLoadingUnderstanding(true);
-    void api<{ understanding: OwnerUnderstanding | null }>(`/api/roles/${encodeURIComponent(selectedRoleId)}/owner-understanding`)
-      .then((result) => setUnderstanding(result.understanding))
-      .catch((cause) => setError(errorMessage(cause, "无法读取角色想法")))
-      .finally(() => setLoadingUnderstanding(false));
-  }, [selectedRoleId]);
+    const load = async () => {
+      try {
+        const result = await api<{ understanding: OwnerUnderstanding | null; job?: UnderstandingJob | null }>(`/api/roles/${encodeURIComponent(selectedRoleId)}/owner-understanding`);
+        if (!current) return;
+        setUnderstanding(result.understanding);
+        setUnderstandingJob(result.job ?? null);
+        if (result.job?.status === "pending" && status?.enabled) timer = setTimeout(() => void load(), 2000);
+      } catch (cause) {
+        if (current) setError(errorMessage(cause, "无法读取角色想法"));
+      } finally {
+        if (current) setLoadingUnderstanding(false);
+      }
+    };
+    void load();
+    return () => { current = false; clearTimeout(timer); };
+  }, [selectedRoleId, understandingRevision, status?.enabled]);
 
   const run = async (action: "save" | "authorize" | "refresh" | "enable" | "pause" | "sync" | "disconnect" | "regenerate") => {
     setBusy(true);
@@ -122,6 +141,7 @@ export function OwnerKnowledgeSettings() {
       await refresh();
     } catch (cause) {
       setError(errorMessage(cause, "主人资料操作失败"));
+      await refresh().catch(() => undefined);
     } finally {
       setBusy(false);
     }
@@ -181,6 +201,10 @@ export function OwnerKnowledgeSettings() {
     <section className="owner-plugin-section" aria-labelledby="understanding-title">
       <div className="owner-section-heading"><div><h3 id="understanding-title">角色对主人的想法</h3><p className="muted">按角色分别保存</p></div>{roles.length > 0 && <select aria-label="选择角色" value={selectedRoleId} onChange={(event) => setSelectedRoleId(event.target.value)}>{roles.map((role) => <option value={role.id} key={role.id}>{role.name}</option>)}</select>}</div>
       {roles.length === 0 ? <p className="owner-empty-line">尚无角色</p> : loadingUnderstanding ? <Placeholder loading>正在读取…</Placeholder> : understanding ? <div className="owner-understanding" aria-label="角色想法"><p>{understanding.body}</p><small className="muted">更新于 {new Date(understanding.updatedAt).toLocaleString()}</small></div> : <p className="owner-empty-line">该角色还没有生成想法</p>}
+      {!status?.enabled && <p className="muted">先启用主人资料并完成同步，才能生成角色想法</p>}
+      {status?.enabled && !status.embeddingReady && <p className="muted">生成角色想法需要在模型设置中配置并启用向量模型</p>}
+      {understandingJob?.status === "pending" && status?.enabled && <p className="muted" role="status">正在准备或生成角色想法…</p>}
+      {understandingJob?.status === "failed" && <Notice>上次角色想法生成失败，已保留上一版本：{understandingJob.lastError || "请检查模型连接后重试"}</Notice>}
       <div className="owner-actions"><button type="button" disabled={busy || !status?.enabled || !selectedRoleId} onClick={() => void run("regenerate")}>{busy ? "处理中…" : "重新生成想法"}</button></div>
     </section>
   </section>;

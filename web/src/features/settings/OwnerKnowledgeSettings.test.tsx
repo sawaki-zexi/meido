@@ -1,11 +1,11 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OwnerKnowledgeSettings } from "./OwnerKnowledgeSettings";
 import { fakeBackend } from "../../test/fakeBackend";
 
 describe("OwnerKnowledgeSettings", () => {
   beforeEach(() => vi.unstubAllGlobals());
-  afterEach(() => window.history.replaceState({}, "", "/"));
+  afterEach(() => { cleanup(); window.history.replaceState({}, "", "/"); });
 
   it("shows sync counts and lets the owner pause the application plugin", async () => {
     let enabled = true;
@@ -60,5 +60,40 @@ describe("OwnerKnowledgeSettings", () => {
     expect(await screen.findByText("飞书授权成功，可以启用主人资料插件")).toBeInTheDocument();
     expect(await screen.findAllByText("已连接")).not.toHaveLength(0);
     expect(window.location.search).toBe("");
+  });
+
+  it("refreshes sync results after enable fails and keeps dependent actions paused", async () => {
+    let failed = false;
+    fakeBackend({
+      "GET /api/owner-knowledge": () => ({ body: {
+        enabled: false, connected: true, oauthConfigured: true, embeddingReady: true, lastError: null,
+        lastSync: failed ? { complete: false, created: 0, updated: 0, deleted: 0, skipped: 0, failed: 0, unchanged: 0, errors: ["HTTP 400，飞书错误码 99991668，请重新授权飞书"] } : null,
+      } }),
+      "GET /api/roles": () => ({ body: { roles: [{ id: "role-a", name: "测试角色" }] } }),
+      "GET /api/roles/role-a/owner-understanding": () => ({ body: { understanding: null } }),
+      "GET /api/owner-knowledge/documents": () => ({ body: { documents: [] } }),
+      "POST /api/owner-knowledge/enable": () => { failed = true; return { status: 409, body: { detail: "请重新授权飞书" } }; },
+    });
+    render(<OwnerKnowledgeSettings />);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "启用主人资料插件" }));
+    expect(await screen.findByText("扫描未完成")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "立即同步" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重新生成想法" })).toBeDisabled();
+    expect(screen.getByText("先启用主人资料并完成同步，才能生成角色想法")).toBeInTheDocument();
+  });
+
+  it("shows the background generation failure alongside the previous understanding", async () => {
+    fakeBackend({
+      "GET /api/owner-knowledge": () => ({ body: { enabled: true, connected: true, oauthConfigured: true, embeddingReady: true, lastError: null, lastSync: null } }),
+      "GET /api/roles": () => ({ body: { roles: [{ id: "role-a", name: "测试角色" }] } }),
+      "GET /api/roles/role-a/owner-understanding": () => ({ body: {
+        understanding: { body: "上一版想法", updatedAt: "2026-10-14T00:00:00Z" },
+        job: { status: "failed", lastError: "模型服务请求失败（HTTP 401），请检查模型密钥和权限" },
+      } }),
+      "GET /api/owner-knowledge/documents": () => ({ body: { documents: [{ documentId: "diary", status: "synced" }] } }),
+    });
+    render(<OwnerKnowledgeSettings />);
+    expect(await screen.findByText("上一版想法")).toBeInTheDocument();
+    expect(screen.getByText(/模型服务请求失败.*HTTP 401/)).toBeInTheDocument();
   });
 });
