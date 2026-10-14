@@ -15,13 +15,19 @@ class CredentialStore(Protocol):
 
 
 class SystemCredentialStore:
-    """Keep Feishu secrets in the operating system credential vault."""
+    """Keep service credentials in the operating system credential vault."""
 
     _SERVICE = "meido.owner-knowledge"
     _CHUNK_MARKER = "meido.credential-chunks.v1:"
     # Windows Credential Manager accepts at most 1280 UTF-16 code units in a
     # generic credential blob. Leave headroom for backend encoding details.
     _CHUNK_SIZE_UNITS = 1000
+
+    def __init__(self, service: str | None = None) -> None:
+        if service:
+            self._service = service
+        else:
+            self._service = self._SERVICE
 
     @staticmethod
     def _utf16_units(value: str) -> int:
@@ -63,19 +69,17 @@ class SystemCredentialStore:
     def _chunk_key(key: str, generation: str, index: int) -> str:
         return f"{key}.chunk.{generation}.{index}"
 
-    @classmethod
-    def _delete_chunks(cls, keyring: Any, key: str, metadata: tuple[str, int, int]) -> None:
+    def _delete_chunks(self, keyring: Any, key: str, metadata: tuple[str, int, int]) -> None:
         generation, count, _total_units = metadata
         for index in range(count):
             try:
-                keyring.delete_password(cls._SERVICE, cls._chunk_key(key, generation, index))
+                keyring.delete_password(self._service, self._chunk_key(key, generation, index))
             except keyring.errors.PasswordDeleteError:
                 pass
 
-    @classmethod
-    def _delete_chunks_best_effort(cls, keyring: Any, key: str, metadata: tuple[str, int, int]) -> None:
+    def _delete_chunks_best_effort(self, keyring: Any, key: str, metadata: tuple[str, int, int]) -> None:
         try:
-            cls._delete_chunks(keyring, key, metadata)
+            self._delete_chunks(keyring, key, metadata)
         except Exception as error:
             logging.getLogger(__name__).warning(
                 "清理旧的系统凭据分片失败：%s", type(error).__name__
@@ -85,13 +89,13 @@ class SystemCredentialStore:
         try:
             import keyring  # type: ignore[import-not-found]
 
-            stored_value = keyring.get_password(self._SERVICE, key) or ""
+            stored_value = keyring.get_password(self._service, key) or ""
             metadata = self._chunk_metadata(stored_value)
             if metadata is None:
                 return stored_value
             generation, count, total_units = metadata
             chunks = [
-                keyring.get_password(self._SERVICE, self._chunk_key(key, generation, index))
+                keyring.get_password(self._service, self._chunk_key(key, generation, index))
                 for index in range(count)
             ]
             if any(chunk is None for chunk in chunks):
@@ -108,11 +112,11 @@ class SystemCredentialStore:
         try:
             import keyring  # type: ignore[import-not-found]
 
-            old_value = keyring.get_password(self._SERVICE, key) or ""
+            old_value = keyring.get_password(self._service, key) or ""
             old_metadata = self._chunk_metadata(old_value)
             if not value:
                 try:
-                    keyring.delete_password(self._SERVICE, key)
+                    keyring.delete_password(self._service, key)
                 except keyring.errors.PasswordDeleteError:
                     pass
                 if old_metadata is not None:
@@ -121,7 +125,7 @@ class SystemCredentialStore:
 
             chunks = self._split_value(value)
             if len(chunks) == 1:
-                keyring.set_password(self._SERVICE, key, value)
+                keyring.set_password(self._service, key, value)
                 if old_metadata is not None:
                     self._delete_chunks_best_effort(keyring, key, old_metadata)
                 return
@@ -132,14 +136,14 @@ class SystemCredentialStore:
             try:
                 for index, chunk in enumerate(chunks):
                     chunk_key = self._chunk_key(key, generation, index)
-                    keyring.set_password(self._SERVICE, chunk_key, chunk)
+                    keyring.set_password(self._service, chunk_key, chunk)
                     staged_keys.append(chunk_key)
                 marker = f"{self._CHUNK_MARKER}{generation}:{len(chunks)}:{total_units}"
-                keyring.set_password(self._SERVICE, key, marker)
+                keyring.set_password(self._service, key, marker)
             except Exception:
                 for chunk_key in staged_keys:
                     try:
-                        keyring.delete_password(self._SERVICE, chunk_key)
+                        keyring.delete_password(self._service, chunk_key)
                     except Exception:
                         pass
                 raise
@@ -147,4 +151,4 @@ class SystemCredentialStore:
             if old_metadata is not None:
                 self._delete_chunks_best_effort(keyring, key, old_metadata)
         except Exception as error:
-            raise RuntimeError("系统凭据库不可用，未保存飞书凭据") from error
+            raise RuntimeError("系统凭据库不可用，未保存服务凭据") from error

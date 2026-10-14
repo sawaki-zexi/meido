@@ -1,8 +1,8 @@
 # Meido Agent Runtime：Tau Loop 语义接入规格
 
-状态：当前（Runtime、能力快照、Skill、角色范围只读工具和角色 Shell 工具已接入）
+状态：当前（Runtime、能力快照、Skill、角色范围工具、角色 Shell 工具和按独立规格接入的邮件工具）
 
-最后核验：2026-10-10
+最后核验：2026-10-14
 
 事实来源：
 
@@ -10,12 +10,13 @@
 - Meido 模型边界：[`backend/app/ai/model_adapter.py`](../../backend/app/ai/model_adapter.py)
 - Meido 会话持久化：[`backend/app/session_store.py`](../../backend/app/session_store.py)
 - Meido 记忆规格：[`memory-system-spec.md`](memory-system-spec.md)
+- QQ 邮件受限能力：[`mail-integration-spec.md`](mail-integration-spec.md)
 - Tau 源码调研：[`tau-meido-agent-runtime.md`](../research/tau-meido-agent-runtime.md)
 - Tau 官方源码：[huggingface/tau](https://github.com/huggingface/tau/tree/0c233ff080ba261ec1178e9232301cbb6479e648)
 
 维护者最初在 #75 中确认以下架构边界：Meido 自有 Runtime seam、SQLite 为运行与消息权威状态、启动时将未完成运行收束为失败。该边界已经落地；后续 #81、#86、#87、#88、#90、#91 分别补齐了持久化 Runtime、能力快照、声明式 Skill、角色范围只读工具、主人资料和待办能力。本文继续作为当前行为和边界的规格，历史 Issue 只用于追溯来源。
 
-本文定义把 Tau 启发的 Agent Loop 语义接入 Meido 的目标行为和边界。Tau 上游核验提交为 `0c233ff080ba261ec1178e9232301cbb6479e648`；本文只采纳 portable loop 的行为语义，不引入完整 `tau-ai` 依赖。本文不是 Tau 完整项目的接入说明，也不授权直接引入 Coding Agent、外部事务工具或长期任务调度。
+本文定义把 Tau 启发的 Agent Loop 语义接入 Meido 的目标行为和边界。Tau 上游核验提交为 `0c233ff080ba261ec1178e9232301cbb6479e648`；本文只采纳 portable loop 的行为语义，不引入完整 `tau-ai` 依赖。本文不是 Tau 完整项目的接入说明，也不授权直接引入 Coding Agent、未单独规格化的外部事务工具或长期任务调度。QQ 邮件工具由邮件规格定义；它是后端受限能力，邮件处理任务由邮件服务管理，不改变 Agent Loop 的工具轮次职责。
 
 ## 1. 问题与目标
 
@@ -47,7 +48,7 @@
 以下内容不在本次 Runtime 接入范围内：
 
 - Tau 的 `tau_coding`、CLI、TUI 和项目目录发现；
-- 任意文件写入、浏览器、邮件、聊天平台和其他外部事务工具；角色范围 Shell 工具虽已按本文 5.5 接入，但不改变这些外部事务仍被排除的边界；
+- 任意文件写入、浏览器、聊天平台和其他外部事务工具；本规格不定义外部事务工具。QQ 邮件后续按独立邮件规格以受限 `mail.manage` 能力接入，不扩大普通 Agent Loop 的职责；角色范围 Shell 工具虽已按本文 5.5 接入，但不改变其他外部事务仍被排除的边界；
 - Tau 的 JSONL/tree session，或以 Tau Harness 的内存 transcript 替代 Meido SQLite；
 - 多角色协作、子 Agent、并行工具执行和跨会话共享上下文；
 - 定时任务、远程任务、审批工作流和 Codex/Claude 执行器；

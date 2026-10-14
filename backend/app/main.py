@@ -44,6 +44,9 @@ from .owner_knowledge import (
     OwnerKnowledgeTool,
     RoleBoundOwnerKnowledgeReader,
 )
+from .mail import MailService, MailStore
+from .mail.agent import MailManageTool
+from .mail.api import router as mail_router, set_mail_service
 from .models import AgentRun, EmbeddingConfiguration, EmbeddingConfigurationInput, MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, Message, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
@@ -144,6 +147,43 @@ todo_plugin = TodoPlugin(
     reminder_sender=lambda role_id, event_id, kind, payload: _generate_todo_reminder(role_id, event_id, kind, payload),
     available_roles=lambda: [role.id for role in store.list() if role.id not in store.pending_role_deletions()],
 )
+
+
+async def _mail_complete_model(messages: list[dict[str, object]], configuration) -> str:
+    complete = getattr(model_adapter, "complete_messages", None)
+    if not callable(complete):
+        raise RuntimeError("当前模型适配器不支持邮件草稿生成")
+    return await complete(messages, configuration, max_tokens=1800)
+
+
+async def _mail_owner_search(query: str):
+    return await owner_knowledge_plugin.search(query, role_id="mail-service", limit=5)
+
+
+def _mail_reminder_sender(role_id: str, event_id: str, content: str) -> str:
+    if store.get(role_id) is None:
+        raise RuntimeError("指定的邮件提醒角色不存在")
+    session = session_manager.open_role_session(role_id).sessionKey
+    session_store.append_proactive_message_once(
+        session,
+        content,
+        event_id=event_id,
+        metadata={"proactiveType": "mail_draft_summary", "mailBatchId": event_id},
+    )
+    return event_id
+
+
+mail_store = MailStore(data_root / "mail.db")
+mail_service = MailService(
+    mail_store,
+    complete_model=_mail_complete_model,
+    owner_search=_mail_owner_search,
+    configuration_getter=model_configuration_store.get,
+    reminder_sender=_mail_reminder_sender,
+    available_roles=lambda: [role.id for role in store.list() if role.id not in store.pending_role_deletions()],
+)
+set_mail_service(mail_service)
+mail_manage_tool = MailManageTool(mail_service)
 
 
 def _role_model_configuration(role_id: str):
@@ -620,6 +660,7 @@ async def _memory_engine_delete(mutation: MemoryMutation) -> None:
 
 
 async def _close_memory_workers() -> None:
+    await mail_service.close()
     await owner_knowledge_scheduler.close()
     await owner_knowledge_plugin.close()
     await todo_plugin.close()
@@ -630,6 +671,7 @@ async def _close_memory_workers() -> None:
 
 
 async def _start_memory_workers() -> None:
+    mail_service.start()
     todo_plugin.sessions = session_store
     await todo_plugin.start()
     memory_worker.start()
@@ -676,6 +718,7 @@ def _owner_knowledge_return_url(origin: str = "") -> str:
 
 
 app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown=[_close_memory_workers])
+app.include_router(mail_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=owner_knowledge_frontend_origins,
@@ -1992,7 +2035,7 @@ def _owner_knowledge_runtime_tool(role) -> OwnerKnowledgeTool:
     return OwnerKnowledgeTool(RoleBoundOwnerKnowledgeReader(role.id, owner_knowledge_plugin.search))
 
 
-def _runtime_tool_candidates(role) -> tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool, ...]:
+def _runtime_tool_candidates(role) -> tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool | MailManageTool, ...]:
     """Build every tool available to the host for a role snapshot."""
     shell = role.agentConfig.shell
     tools: list[ShellTool | MemoryRecallTool | OwnerKnowledgeTool] = [
@@ -2006,6 +2049,8 @@ def _runtime_tool_candidates(role) -> tuple[ShellTool | MemoryRecallTool | Owner
     ]
     if owner_knowledge_plugin.status().enabled:
         tools.append(_owner_knowledge_runtime_tool(role))
+    if mail_service.store.connection().auto_draft_ready:
+        tools.append(mail_manage_tool)
     return tuple(tools)
 
 
@@ -2018,14 +2063,16 @@ def _enabled_runtime_tool_names(role) -> set[str]:
         enabled.add("recall_memory")
     if owner_knowledge_plugin.status().enabled:
         enabled.add("search_owner_knowledge")
+    if mail_service.store.connection().auto_draft_ready:
+        enabled.add("mail.manage")
     return enabled
 
 
 def _runtime_tools(
     role,
     *,
-    candidates: tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool, ...] | None = None,
-) -> tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool, ...]:
+    candidates: tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool | MailManageTool, ...] | None = None,
+) -> tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool | MailManageTool, ...]:
     """Filter host tool candidates using the request-time role policy."""
     available = _runtime_tool_candidates(role) if candidates is None else candidates
     enabled = _enabled_runtime_tool_names(role)
@@ -2037,7 +2084,7 @@ async def _runtime_capabilities(
     *,
     session_key: str,
     run_id: str,
-    available_tools: tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool, ...] | None = None,
+    available_tools: tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool | MailManageTool, ...] | None = None,
     prompt_text: str = "",
     explicit_skill_ids: list[str] | None = None,
 ) -> CapabilityResolution:
