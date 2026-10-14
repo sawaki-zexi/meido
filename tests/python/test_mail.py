@@ -3,6 +3,8 @@ import json
 import time
 import pytest
 from contextlib import asynccontextmanager
+from email.parser import BytesParser
+from email import policy
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -33,6 +35,7 @@ class FakeAdapter:
         self.draft_rows = []
         self.counter = 0
         self.inbox_items = []
+        self.append_calls = []
 
     def close(self):
         pass
@@ -48,6 +51,7 @@ class FakeAdapter:
 
     def append_draft(self, folder, *, marker, recipients, subject, body, in_reply_to="", references=""):
         self.counter += 1
+        self.append_calls.append({"folder": folder, "marker": marker, "recipients": recipients, "subject": subject, "body": body, "in_reply_to": in_reply_to, "references": references})
         row = RemoteDraft(marker, str(self.counter), folder, f"<{marker}@meido>", subject, recipients, body, f"remote-{self.counter}")
         self.draft_rows.append(row)
         return row
@@ -91,6 +95,49 @@ def test_mail_processing_is_idempotent_and_keeps_reply_metadata(tmp_path):
     assert repeat.status == "drafted"
     assert len(store.list_drafts()) == 1
     assert len(adapter.draft_rows) == 1
+
+
+def test_reply_draft_references_include_the_source_message_id(tmp_path):
+    service, _store, adapter = make_service(tmp_path)
+    item, _ = add_owner_item(_store, SimpleNamespace(
+        uid="13", folder="INBOX", message_id="<source-root@example.com>", thread_id="thread-root", sender="Alice <alice@example.com>",
+        reply_to="alice@example.com", recipients="owner@qq.com", subject="根邮件", received_at="2026-10-14T00:00:00Z", body_text="请回复", in_reply_to="", references="",
+    ))
+
+    asyncio.run(service.process_item(item.id, adapter=adapter, folders={"inbox": "INBOX", "sent": "Sent", "drafts": "Drafts"}))
+
+    assert adapter.append_calls[0]["in_reply_to"] == "<source-root@example.com>"
+    assert adapter.append_calls[0]["references"] == "<source-root@example.com>"
+
+
+def test_reply_draft_preserves_existing_reference_chain(tmp_path):
+    service, _store, adapter = make_service(tmp_path)
+    item, _ = add_owner_item(_store, SimpleNamespace(
+        uid="14", folder="INBOX", message_id="<source-leaf@example.com>", thread_id="thread-chain", sender="Alice <alice@example.com>",
+        reply_to="alice@example.com", recipients="owner@qq.com", subject="回复", received_at="2026-10-14T00:00:00Z", body_text="请回复", in_reply_to="<source-parent@example.com>", references="<source-root@example.com> <source-parent@example.com>",
+    ))
+
+    asyncio.run(service.process_item(item.id, adapter=adapter, folders={"inbox": "INBOX", "sent": "Sent", "drafts": "Drafts"}))
+
+    assert adapter.append_calls[0]["references"] == "<source-root@example.com> <source-parent@example.com> <source-leaf@example.com>"
+
+
+def test_qq_adapter_serializes_reply_thread_headers():
+    class Client:
+        raw = b""
+
+        def append(self, _folder, _flags, _date, raw):
+            self.raw = raw
+            return "OK", [b"APPENDUID"]
+
+    adapter = QQMailAdapter(MailConnection(host="imap.qq.com", port=993, username="owner@qq.com"), "secret")
+    adapter._imap = Client()
+
+    adapter.append_draft("Drafts", marker="draft-thread-test", recipients="sender@example.com", subject="Re: topic", body="reply", in_reply_to="<leaf@example.com>", references="<root@example.com> <parent@example.com> <leaf@example.com>")
+    message = BytesParser(policy=policy.default).parsebytes(adapter._imap.raw)
+
+    assert message["In-Reply-To"] == "<leaf@example.com>"
+    assert message["References"] == "<root@example.com> <parent@example.com> <leaf@example.com>"
 
 
 def test_regenerate_creates_new_draft_without_overwriting_existing(tmp_path):
@@ -157,6 +204,81 @@ def test_reminder_reports_failure_even_without_a_created_draft(tmp_path):
     assert store.pending_reminder_batches() == []
 
 
+def test_reminder_batches_and_content_are_scoped_to_the_active_account(tmp_path):
+    service, store, _adapter = make_service(tmp_path)
+    remote = SimpleNamespace(
+        uid="1", folder="INBOX", message_id="<other@example.com>", thread_id="other-thread", sender="sender@example.com",
+        reply_to="sender@example.com", recipients="old@qq.com", subject="旧账号主题", received_at="2026-10-14T00:00:00Z", body_text="body", in_reply_to="", references="",
+    )
+    item, _ = store.upsert_item(remote, account="old@qq.com")
+    draft = store.save_draft(item.id, task_key="old-draft", remote_uid="1", folder="Drafts", body="reply", subject="Re: 旧账号主题", recipients="sender@example.com", message_id="<draft-old>", generated_hash="g", remote_hash="r")
+    store.create_reminder_batch("old-account-batch", [draft.id], account="old@qq.com")
+    messages = []
+    service.available_roles = lambda: ["role-1"]
+    service.reminder_sender = lambda role_id, event_id, content: messages.append(content) or event_id
+    store.set_setting("reminder_role_id", "role-1")
+
+    asyncio.run(service.deliver_reminder_batches())
+
+    assert messages == []
+    assert len(store.pending_reminder_batches(account="old@qq.com")) == 1
+    assert store.pending_reminder_batches(account="owner@qq.com") == []
+
+
+def test_reminder_batch_deduplicates_replays_but_not_later_identical_windows(tmp_path):
+    service, store, _adapter = make_service(tmp_path)
+
+    service._create_reminder_batch([], ["主题：模型不可用"], batch_key="job:one")
+    service._create_reminder_batch([], ["主题：模型不可用"], batch_key="job:one")
+    service._create_reminder_batch([], ["主题：模型不可用"], batch_key="job:two")
+
+    batches = store.pending_reminder_batches(account="owner@qq.com")
+    assert len(batches) == 2
+    assert all(batch["failureCount"] == 1 for batch in batches)
+
+
+def test_retry_does_not_report_a_deleted_qq_draft_as_available(tmp_path):
+    service, store, adapter = make_service(tmp_path)
+    item, _ = add_owner_item(store, SimpleNamespace(
+        uid="8", folder="INBOX", message_id="<deleted-draft@example.com>", thread_id="deleted-draft-thread", sender="sender@example.com",
+        reply_to="sender@example.com", recipients="owner@qq.com", subject="已删除草稿", received_at="2026-10-14T00:00:00Z", body_text="请回复", in_reply_to="", references="",
+    ))
+    asyncio.run(service.process_item(item.id, adapter=adapter, folders={"inbox": "INBOX", "sent": "Sent", "drafts": "Drafts"}))
+    adapter.draft_rows.clear()
+    service._refresh_remote_drafts(adapter, "Drafts", "owner@qq.com")
+    assert store.get_item(item.id, account="owner@qq.com").status == "uncertain"
+
+    retried = asyncio.run(service.process_item(item.id, adapter=adapter, folders={"inbox": "INBOX", "sent": "Sent", "drafts": "Drafts"}))
+
+    assert retried.status == "uncertain"
+    assert "已删除" in retried.last_error
+    assert store.list_drafts_for_mail(item.id, account="owner@qq.com")[0].status == "missing"
+    assert adapter.draft_rows == []
+
+
+def test_sync_reports_remote_draft_refresh_failure(tmp_path):
+    service, _store, adapter = make_service(tmp_path)
+    adapter.drafts = lambda _folder: (_ for _ in ()).throw(MailAdapterError("草稿箱读取失败"))
+
+    result = asyncio.run(service.sync(trigger="manual", process=False))
+
+    assert result.errors
+    assert "草稿箱读取失败" in result.errors[0]
+
+
+def test_role_thread_action_audits_partial_failures(tmp_path, monkeypatch):
+    service, store, _adapter = make_service(tmp_path)
+
+    async def process_thread(*_args, **_kwargs):
+        return {"threadId": "thread-1", "processed": 1, "draftIds": [], "errors": ["subject: model unavailable"]}
+
+    monkeypatch.setattr(service, "process_thread", process_thread)
+    result = asyncio.run(service.role_action("process_thread", thread_id="thread-1", role_id="role-1", run_id="run-1"))
+
+    assert result["errors"]
+    assert store.list_audits()[0]["status"] == "partial"
+
+
 def test_role_created_draft_is_idempotent_and_read_operations_are_audited(tmp_path):
     service, store, adapter = make_service(tmp_path)
     item, _ = add_owner_item(store, SimpleNamespace(
@@ -165,7 +287,7 @@ def test_role_created_draft_is_idempotent_and_read_operations_are_audited(tmp_pa
     ))
 
     first = asyncio.run(service.role_action("draft", mail_id=item.id, query="正在处理中。", request_id="draft-request", role_id="role-1", run_id="run-1"))
-    second = asyncio.run(service.role_action("draft", mail_id=item.id, query="正在处理中。", request_id="draft-request", role_id="role-1", run_id="run-1"))
+    second = asyncio.run(service.role_action("draft", mail_id=item.id, query="正在处理中。", request_id="draft-request", role_id="role-1", run_id="run-2"))
     asyncio.run(service.role_action("read", mail_id=item.id, role_id="role-1", run_id="run-2"))
 
     assert first["draftId"] == second["draftId"]
@@ -301,6 +423,7 @@ def test_legacy_mail_and_checkpoint_data_migrate_to_saved_account_scope(tmp_path
         uid="9", folder="INBOX", message_id="<legacy@example.com>", thread_id="legacy-thread", sender="sender@example.com",
         reply_to="sender@example.com", recipients="owner@qq.com", subject="legacy", received_at="2026-10-13T00:00:00Z", body_text="body", in_reply_to="", references="",
     ))
+    legacy_thread_job = store.enqueue_job(job_id="legacy-thread-job", request_key="legacy-thread-request", kind="process_thread", target_id=item.thread_id)
     store.set_checkpoint("INBOX", 9)
     store.save_connection(MailConnection(host="imap.qq.com", port=993, username="owner@qq.com"))
 
@@ -310,6 +433,12 @@ def test_legacy_mail_and_checkpoint_data_migrate_to_saved_account_scope(tmp_path
     assert current is not None
     assert current.source_uid.startswith("acct-")
     assert migrated.checkpoint("INBOX", account="owner@qq.com") == 9
+    assert migrated.get_job(legacy_thread_job["jobId"], account="owner@qq.com")["targetId"] == current.thread_id
+    follow_up, _ = migrated.upsert_item(SimpleNamespace(
+        uid="10", folder="INBOX", message_id="<legacy-reply@example.com>", thread_id=current.thread_id, sender="sender@example.com",
+        reply_to="sender@example.com", recipients="owner@qq.com", subject="Re: legacy", received_at="2026-10-14T00:00:00Z", body_text="reply", in_reply_to="<legacy@example.com>", references="<legacy@example.com>",
+    ), account="owner@qq.com")
+    assert follow_up.thread_id == current.thread_id
 
 
 def test_mail_api_rejects_item_and_thread_ids_from_another_account(tmp_path, monkeypatch):

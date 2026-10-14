@@ -50,9 +50,6 @@ class ProcessPendingInput(BaseModel):
     requestId: str = Field(min_length=1, max_length=100)
 
 
-    includeUncertain: bool = True
-
-
 class ReminderRoleInput(BaseModel):
     roleId: str | None = None
 

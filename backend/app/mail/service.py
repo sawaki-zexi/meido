@@ -30,6 +30,15 @@ def _clean_error(error: Exception) -> str:
     return str(error).replace("\n", " ").strip()[:300] or type(error).__name__
 
 
+def _reply_references(message_id: str, references: str) -> str:
+    """Build the References chain required for a reply draft."""
+    values = [value.strip() for value in (references or "").split() if value.strip()]
+    message_id = message_id.strip()
+    if message_id and message_id not in values:
+        values.append(message_id)
+    return " ".join(values)
+
+
 CompleteModel = Callable[[list[dict[str, object]], ModelConfiguration], Awaitable[str]]
 OwnerSearch = Callable[[str], Awaitable[list[object]]]
 
@@ -197,12 +206,12 @@ class MailService:
                     result_item = await self.process_item(target_id, regenerate=kind == "regenerate", request_id=str(payload.get("requestId") or job_id))
                     result = {"itemId": result_item.id, "status": result_item.status, "draftId": result_item.draft_id, "lastError": result_item.last_error}
                 elif kind == "sync":
-                    sync_result = await self.sync(trigger="manual", process=bool(payload.get("process", True)))
+                    sync_result = await self.sync(trigger="manual", process=bool(payload.get("process", True)), batch_key=f"job:{job_id}")
                     result = {"trigger": sync_result.trigger, "discovered": sync_result.discovered, "created": sync_result.created, "unchanged": sync_result.unchanged, "processed": sync_result.processed, "errors": list(sync_result.errors), "finishedAt": sync_result.finished_at}
                 elif kind == "process_pending":
-                    result = await self.process_pending(include_uncertain=bool(payload.get("includeUncertain", True)))
+                    result = await self.process_pending(include_uncertain=bool(payload.get("includeUncertain", True)), batch_key=f"job:{job_id}")
                 else:
-                    result = await self.process_thread(target_id)
+                    result = await self.process_thread(target_id, batch_key=f"job:{job_id}")
                 await asyncio.to_thread(self.store.finish_job, job_id, status="completed", result=result)
             except asyncio.CancelledError:
                 await asyncio.to_thread(self.store.finish_job, job_id, status="queued", error="邮件服务停止，任务保留并等待恢复")
@@ -230,7 +239,8 @@ class MailService:
         self.store.update_connection(paused=True, enabled=False)
         return self.public_status()
 
-    async def sync(self, *, trigger: str = "manual", process: bool = True) -> MailSyncResult:
+    async def sync(self, *, trigger: str = "manual", process: bool = True, batch_key: str = "") -> MailSyncResult:
+        batch_key = batch_key or uuid.uuid4().hex
         async with self._sync_lock:
             connection = self.store.connection()
             if trigger != "manual" and (not connection.enabled or connection.paused):
@@ -268,7 +278,7 @@ class MailService:
                     )
                     errors.extend(process_errors)
                     if created_draft_ids or errors:
-                        self._create_reminder_batch(created_draft_ids, errors)
+                        self._create_reminder_batch(created_draft_ids, errors, batch_key=f"sync:{batch_key}")
                 await self.deliver_reminder_batches()
                 self.store.update_connection(last_sync_at=_now(), last_error="; ".join(errors) if errors else None)
             except Exception as error:
@@ -309,17 +319,20 @@ class MailService:
                 errors.append(f"{item.subject or item.id}: {_clean_error(error)}")
         return processed, sorted(set(created_draft_ids)), errors
 
-    def _create_reminder_batch(self, draft_ids: list[str], errors: list[str]) -> None:
+    def _create_reminder_batch(self, draft_ids: list[str], errors: list[str], *, batch_key: str = "") -> None:
         unique_drafts = sorted(set(draft_ids))
-        digest = _hash(json.dumps({"drafts": unique_drafts, "errors": errors}, ensure_ascii=False))[:32]
+        account = self.store.connection().username
+        identity = f"{self.store.account_scope(account)}:{batch_key or uuid.uuid4().hex}"
         self.store.create_reminder_batch(
-            f"mail-batch-{digest}",
+            f"mail-batch-{_hash(identity)[:32]}",
             unique_drafts,
             failure_count=len(errors),
             failure_summaries=errors,
+            account=account,
         )
 
-    async def process_pending(self, *, include_uncertain: bool = True, source_role_id: str = "", run_id: str = "") -> dict[str, object]:
+    async def process_pending(self, *, include_uncertain: bool = True, source_role_id: str = "", run_id: str = "", batch_key: str = "") -> dict[str, object]:
+        batch_key = batch_key or uuid.uuid4().hex
         connection = self.store.connection()
         if not connection.auto_draft_ready:
             raise ValueError("请先验证 QQ 邮箱草稿能力")
@@ -338,13 +351,14 @@ class MailService:
                 run_id=run_id,
             )
             if draft_ids or errors:
-                self._create_reminder_batch(draft_ids, errors)
+                self._create_reminder_batch(draft_ids, errors, batch_key=f"pending:{batch_key}")
             await self.deliver_reminder_batches()
             return {"processed": processed, "draftIds": draft_ids, "errors": errors}
         finally:
             adapter.close()
 
-    async def process_thread(self, thread_id: str, *, source_role_id: str = "", run_id: str = "") -> dict[str, object]:
+    async def process_thread(self, thread_id: str, *, source_role_id: str = "", run_id: str = "", batch_key: str = "") -> dict[str, object]:
+        batch_key = batch_key or uuid.uuid4().hex
         thread = self.store.thread_items(thread_id, account=self.store.connection().username)
         if not thread:
             raise KeyError(thread_id)
@@ -367,26 +381,28 @@ class MailService:
                 run_id=run_id,
             )
             if draft_ids or errors:
-                self._create_reminder_batch(draft_ids, errors)
+                self._create_reminder_batch(draft_ids, errors, batch_key=f"thread:{thread_id}:{batch_key}")
             await self.deliver_reminder_batches()
             return {"threadId": thread_id, "processed": processed, "draftIds": draft_ids, "errors": errors}
         finally:
             adapter.close()
 
     def _refresh_remote_drafts(self, adapter: QQMailAdapter, folder: str, account: str) -> None:
-        try:
-            remote_by_marker = {draft.marker: draft for draft in adapter.drafts(folder)}
-        except Exception as error:
-            self._last_errors.append(_clean_error(error))
-            return
+        remote_by_marker = {draft.marker: draft for draft in adapter.drafts(folder)}
         for draft in self.store.all_drafts_for_account(account):
             marker = draft.id
             remote = remote_by_marker.get(marker)
             if remote is None:
                 if not draft.remote_missing:
                     self.store.update_draft(draft.id, remote_missing=True, status="missing")
+                item = self.store.get_item(draft.mail_id, account=account)
+                if item is not None and item.status == "drafted":
+                    self.store.update_item(item.id, status="uncertain", last_error="QQ 草稿已删除或无法核验；普通重试不会自动重建")
             elif draft.remote_missing:
                 self.store.update_draft(draft.id, remote_uid=remote.uid, remote_hash=remote.raw_hash, remote_missing=False, stale=True, status="manual_modified")
+                item = self.store.get_item(draft.mail_id, account=account)
+                if item is not None and item.status == "uncertain":
+                    self.store.update_item(item.id, status="drafted", last_error=None)
             elif remote.raw_hash != draft.remote_hash:
                 self.store.update_draft(draft.id, remote_uid=remote.uid, remote_hash=remote.raw_hash, stale=True, status="manual_modified")
 
@@ -400,18 +416,30 @@ class MailService:
             raise RuntimeError("该邮件已有处理任务正在运行")
         account = self.store.connection().username
         task_key = f"regen:{item_id}:{request_id or uuid.uuid4().hex}" if regenerate else f"auto:{item_id}:v1"
-        if self.store.draft_for_task(task_key, account=account) is not None:
-            return item
-        self._processing.add(item_id)
         own_adapter = adapter is None
         adapter = adapter or self._adapter()
+        connection = self.store.connection()
+        folders = folders or {"inbox": connection.inbox_folder, "sent": connection.sent_folder, "drafts": connection.drafts_folder}
+        existing_task_draft = self.store.draft_for_task(task_key, account=account)
+        if existing_task_draft is not None:
+            try:
+                remote_matches = await asyncio.to_thread(adapter.drafts, folders["drafts"])
+                current = next((draft for draft in remote_matches if draft.marker == existing_task_draft.id), None)
+                if current is None:
+                    self.store.update_draft(existing_task_draft.id, remote_missing=True, status="missing")
+                    return self.store.update_item(item_id, status="uncertain", last_error="QQ 草稿已删除或无法核验；普通重试不会自动重建")
+                if current.raw_hash != existing_task_draft.remote_hash:
+                    self.store.update_draft(existing_task_draft.id, remote_uid=current.uid, remote_hash=current.raw_hash, stale=True, status="manual_modified")
+                return self.store.get_item(item_id, account=account) or item
+            finally:
+                if own_adapter:
+                    adapter.close()
+        self._processing.add(item_id)
         try:
             if not self.store.task_claim(task_key, item_id, account=account):
                 if self.store.task_status(task_key, account=account) == "running":
                     raise RuntimeError("该邮件已有处理任务正在运行")
                 return self.store.get_item(item_id, account=account) or item
-            connection = self.store.connection()
-            folders = folders or {"inbox": connection.inbox_folder, "sent": connection.sent_folder, "drafts": connection.drafts_folder}
             marker = f"draft-{_hash(task_key)[:32]}"
             remote_matches = await asyncio.to_thread(adapter.drafts, folders["drafts"])
             local_drafts = self.store.list_drafts_for_mail(item_id, account=account)
@@ -432,7 +460,10 @@ class MailService:
                 return self.store.get_item(item_id, account=account) or item
             current_drafts = self.store.list_drafts_for_mail(item_id, account=account)
             if not regenerate and current_drafts:
-                existing = current_drafts[0]
+                existing = next((draft for draft in current_drafts if not draft.remote_missing and draft.status != "missing"), None)
+                if existing is None:
+                    self.store.task_finish(task_key, "uncertain", "已有 QQ 草稿已删除；需要明确创建新草稿版本", account=account)
+                    return self.store.update_item(item_id, status="uncertain", last_error="已有 QQ 草稿已删除；普通处理不会自动重建")
                 self.store.task_finish(task_key, "completed", account=account)
                 if source_role_id or run_id:
                     self.store.audit("regenerate" if regenerate else "process", source_role_id, run_id, item_id, "completed")
@@ -446,7 +477,7 @@ class MailService:
                 return self.store.update_item(item_id, status="no_reply", needs_reply=False)
             self.store.update_item(item_id, needs_reply=True)
             subject = item.subject if re.match(r"^\s*re:", item.subject, re.I) else f"Re: {item.subject}".strip()
-            await asyncio.to_thread(adapter.append_draft, folders["drafts"], marker=marker, recipients=item.reply_to or item.sender, subject=subject, body=body, in_reply_to=item.message_id, references=item.references)
+            await asyncio.to_thread(adapter.append_draft, folders["drafts"], marker=marker, recipients=item.reply_to or item.sender, subject=subject, body=body, in_reply_to=item.message_id, references=_reply_references(item.message_id, item.references))
             remote_after_append = await asyncio.to_thread(adapter.drafts, folders["drafts"])
             confirmed = next((remote for remote in remote_after_append if remote.marker == marker), None)
             if confirmed is None:
@@ -523,18 +554,19 @@ class MailService:
         role_id = self.store.setting("reminder_role_id")
         if not role_id or role_id not in self.available_roles() or self.reminder_sender is None:
             return
-        for batch in self.store.pending_reminder_batches():
+        account = self.store.connection().username
+        for batch in self.store.pending_reminder_batches(account=account):
             batch_id = str(batch["batchId"])
             try:
                 drafts = []
-                all_drafts = {item.id: item for item in self.store.all_drafts()}
+                all_drafts = {item.id: item for item in self.store.all_drafts_for_account(account)}
                 for draft_id in batch["draftIds"]:
                     draft = all_drafts.get(str(draft_id))
                     if draft is not None and (draft.status not in {"created", "manual_modified", "stale"} or draft.remote_missing):
                         draft = None
                     if draft is None:
                         continue
-                    mail = self.store.get_item(draft.mail_id)
+                    mail = self.store.get_item(draft.mail_id, account=account)
                     drafts.append(f"{mail.subject if mail else draft.subject}（{draft.recipients}）")
                 failure_summaries = [str(value) for value in batch.get("failureSummaries", [])]
                 failure_count = int(batch.get("failureCount", 0))
@@ -616,16 +648,17 @@ class MailService:
             self.store.audit(action, role_id, run_id, None, "completed")
             return result
         if action == "process_pending":
-            result = await self.process_pending(source_role_id=role_id, run_id=run_id)
+            result = await self.process_pending(source_role_id=role_id, run_id=run_id, batch_key=f"role:{role_id}:{request_id or uuid.uuid4().hex}")
             self.store.audit(action, role_id, run_id, None, "partial" if result["errors"] else "completed", "; ".join(result["errors"]) if result["errors"] else None)
             return result
         if action == "process_thread":
             target_thread = thread_id or mail_id
-            result = await self.process_thread(target_thread, source_role_id=role_id, run_id=run_id)
-            self.store.audit(action, role_id, run_id, None, "completed")
+            result = await self.process_thread(target_thread, source_role_id=role_id, run_id=run_id, batch_key=f"role:{role_id}:{request_id or uuid.uuid4().hex}")
+            errors = result.get("errors", [])
+            self.store.audit(action, role_id, run_id, None, "partial" if errors else "completed", "; ".join(str(error) for error in errors) if errors else None)
             return result
         if action == "sync":
-            result = await self.sync(trigger="manual", process=True)
+            result = await self.sync(trigger="manual", process=True, batch_key=f"role:{role_id}:{request_id or uuid.uuid4().hex}")
             value = {"trigger": result.trigger, "discovered": result.discovered, "created": result.created, "unchanged": result.unchanged, "processed": result.processed, "errors": list(result.errors), "finishedAt": result.finished_at}
             self.store.audit(action, role_id, run_id, None, "completed" if not result.errors else "failed", "; ".join(result.errors) if result.errors else None)
             return value
@@ -645,12 +678,18 @@ class MailService:
             if not query.strip():
                 raise ValueError("草稿正文不能为空")
             connection = self.store.connection()
-            adapter = self._adapter(connection)
-            task_key = f"{self.store.account_scope(connection.username)}:role:{run_id}:{request_id or uuid.uuid4().hex}"
+            task_key = f"{self.store.account_scope(connection.username)}:role-draft:{item.id}:{request_id or uuid.uuid4().hex}"
             marker = f"draft-{_hash(task_key)[:32]}"
+            if item.id in self._processing:
+                raise RuntimeError("该邮件已有草稿任务正在处理中")
+            adapter = self._adapter(connection)
+            self._processing.add(item.id)
             try:
+                await asyncio.to_thread(self._refresh_remote_drafts, adapter, connection.drafts_folder, connection.username)
                 existing = self.store.draft_for_task(task_key, account=connection.username)
                 if existing is not None:
+                    if existing.remote_missing:
+                        raise MailAdapterError("该 QQ 草稿已删除；普通重试不会自动重建，请明确创建新草稿版本")
                     self.store.audit(action, role_id, run_id, item.id, "completed")
                     return {"draftId": existing.id, "status": existing.status, "recipients": existing.recipients}
                 if not self.store.task_claim(task_key, item.id, account=connection.username):
@@ -663,7 +702,7 @@ class MailService:
                 verified = await asyncio.to_thread(adapter.drafts, connection.drafts_folder)
                 match = next((draft for draft in verified if draft.marker == marker), None)
                 if match is None:
-                    await asyncio.to_thread(adapter.append_draft, connection.drafts_folder, marker=marker, recipients=item.reply_to or item.sender, subject=subject, body=query, in_reply_to=item.message_id, references=item.references)
+                    await asyncio.to_thread(adapter.append_draft, connection.drafts_folder, marker=marker, recipients=item.reply_to or item.sender, subject=subject, body=query, in_reply_to=item.message_id, references=_reply_references(item.message_id, item.references))
                     verified = await asyncio.to_thread(adapter.drafts, connection.drafts_folder)
                     match = next((draft for draft in verified if draft.marker == marker), None)
                 if match is None:
@@ -680,6 +719,7 @@ class MailService:
                     self.store.task_finish(task_key, status, _clean_error(error), account=connection.username)
                 raise
             finally:
+                self._processing.discard(item.id)
                 adapter.close()
         raise ValueError("不支持的邮件操作")
 

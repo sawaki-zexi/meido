@@ -104,7 +104,7 @@ class MailStore:
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS mail_reminder_batches (
-                batch_id TEXT PRIMARY KEY, draft_ids_json TEXT NOT NULL, status TEXT NOT NULL,
+                batch_id TEXT PRIMARY KEY, account_scope TEXT NOT NULL DEFAULT '', draft_ids_json TEXT NOT NULL, status TEXT NOT NULL,
                 failure_count INTEGER NOT NULL DEFAULT 0, failure_summary_json TEXT NOT NULL DEFAULT '[]',
                 role_id TEXT, last_error TEXT,
                 created_at TEXT NOT NULL, delivered_at TEXT
@@ -131,17 +131,35 @@ class MailStore:
             active = db.execute("SELECT username FROM mail_connection WHERE id=1").fetchone()
             scope = _account_scope(str(active[0])) if active and active[0] else ""
             if scope:
-                legacy_items = db.execute("SELECT id,source_uid,thread_id FROM mail_items WHERE source_uid NOT LIKE 'acct-%::%'").fetchall()
+                legacy_items = db.execute("SELECT id,source_uid,thread_id,message_id,in_reply_to,references_text FROM mail_items WHERE source_uid NOT LIKE 'acct-%::%'").fetchall()
                 for row in legacy_items:
-                    thread_id = _thread_scope(str(row["thread_id"]), str(active[0]))
+                    references = str(row["references_text"] or "").split()
+                    root = references[0] if references else str(row["in_reply_to"] or row["message_id"] or "")
+                    account_thread = _hash(f"{str(active[0]).strip().casefold()}\0{root}")[:32]
+                    thread_id = account_thread
                     db.execute("UPDATE mail_items SET source_uid=?,thread_id=? WHERE id=?", (f"{scope}::{row['source_uid']}", thread_id, row["id"]))
+                    db.execute("UPDATE mail_jobs SET target_id=? WHERE kind='process_thread' AND target_id=?", (thread_id, row["thread_id"]))
                 legacy_states = db.execute("SELECT folder,last_uid,updated_at FROM mail_sync_state WHERE folder NOT LIKE 'acct-%::%'").fetchall()
                 for row in legacy_states:
                     db.execute("UPDATE OR IGNORE mail_sync_state SET folder=? WHERE folder=?", (f"{scope}::{row['folder']}", row["folder"]))
             db.execute("UPDATE mail_tasks SET account_scope=(SELECT substr(i.source_uid,1,instr(i.source_uid,'::')-1) FROM mail_items i WHERE i.id=mail_tasks.mail_id) WHERE account_scope='' AND mail_id IS NOT NULL")
-            db.execute("UPDATE mail_jobs SET account_scope=(SELECT substr(i.source_uid,1,instr(i.source_uid,'::')-1) FROM mail_items i WHERE i.id=mail_jobs.target_id) WHERE account_scope='' AND target_id IS NOT NULL")
+            db.execute("UPDATE mail_jobs SET account_scope=COALESCE((SELECT substr(i.source_uid,1,instr(i.source_uid,'::')-1) FROM mail_items i WHERE i.id=mail_jobs.target_id), ?) WHERE account_scope='' AND target_id IS NOT NULL", (scope,))
             if scope:
                 db.execute("UPDATE mail_jobs SET account_scope=? WHERE account_scope='' AND (target_id='' OR target_id IS NULL)", (scope,))
+            batch_columns = {row[1] for row in db.execute("PRAGMA table_info(mail_reminder_batches)")}
+            if "account_scope" not in batch_columns:
+                db.execute("ALTER TABLE mail_reminder_batches ADD COLUMN account_scope TEXT NOT NULL DEFAULT ''")
+            for batch in db.execute("SELECT batch_id,draft_ids_json FROM mail_reminder_batches WHERE account_scope=''").fetchall():
+                draft_ids = json.loads(batch["draft_ids_json"] or "[]")
+                batch_scope = ""
+                if draft_ids:
+                    row = db.execute("SELECT i.source_uid FROM mail_drafts d JOIN mail_items i ON i.id=d.mail_id WHERE d.id=?", (str(draft_ids[0]),)).fetchone()
+                    if row and "::" in str(row["source_uid"]):
+                        batch_scope = str(row["source_uid"]).split("::", 1)[0]
+                if not batch_scope:
+                    batch_scope = scope
+                if batch_scope:
+                    db.execute("UPDATE mail_reminder_batches SET account_scope=? WHERE batch_id=?", (batch_scope, batch["batch_id"]))
 
     def connection(self) -> MailConnection:
         with self._connect() as db:
@@ -216,7 +234,8 @@ class MailStore:
         with self._connect() as db:
             scope = _account_scope(account)
             source_uid = f"{scope}::{remote.folder}/{remote.uid}" if scope else f"{remote.folder}/{remote.uid}"
-            thread_id = _thread_scope(str(remote.thread_id), account)
+            remote_thread_id = str(remote.thread_id)
+            thread_id = remote_thread_id if scope and len(remote_thread_id) == 32 and all(char in "0123456789abcdef" for char in remote_thread_id.casefold()) else _thread_scope(remote_thread_id, account)
             existing = db.execute("SELECT * FROM mail_items WHERE source_uid=?", (source_uid,)).fetchone()
             if existing:
                 db.execute("UPDATE mail_items SET mailbox=?,message_id=?,thread_id=?,sender=?,reply_to=?,recipients=?,subject=?,received_at=?,body_text=?,in_reply_to=?,references_text=?,updated_at=? WHERE id=?", (remote.folder, remote.message_id, thread_id, remote.sender, remote.reply_to, remote.recipients, remote.subject, remote.received_at, remote.body_text, remote.in_reply_to, remote.references, now, existing["id"]))
@@ -490,19 +509,24 @@ class MailStore:
         *,
         failure_count: int = 0,
         failure_summaries: list[str] | None = None,
+        account: str = "",
     ) -> bool:
+        account = account or self.connection().username
         with self._connect() as db:
             cursor = db.execute(
                 """INSERT OR IGNORE INTO mail_reminder_batches
-                (batch_id,draft_ids_json,status,failure_count,failure_summary_json,created_at)
-                VALUES(?,?,?,?,?,?)""",
-                (batch_id, json.dumps(draft_ids), "pending", max(0, int(failure_count)), json.dumps(failure_summaries or [], ensure_ascii=False), _now()),
+                (batch_id,account_scope,draft_ids_json,status,failure_count,failure_summary_json,created_at)
+                VALUES(?,?,?,?,?,?,?)""",
+                (batch_id, _account_scope(account), json.dumps(draft_ids), "pending", max(0, int(failure_count)), json.dumps(failure_summaries or [], ensure_ascii=False), _now()),
             )
             return cursor.rowcount > 0
 
-    def pending_reminder_batches(self, limit: int = 50) -> list[dict[str, object]]:
+    def pending_reminder_batches(self, limit: int = 50, *, account: str = "") -> list[dict[str, object]]:
         with self._connect() as db:
-            rows = db.execute("SELECT * FROM mail_reminder_batches WHERE status IN ('pending','failed') ORDER BY created_at LIMIT ?", (limit,)).fetchall()
+            if account:
+                rows = db.execute("SELECT * FROM mail_reminder_batches WHERE account_scope=? AND status IN ('pending','failed') ORDER BY created_at LIMIT ?", (_account_scope(account), limit)).fetchall()
+            else:
+                rows = db.execute("SELECT * FROM mail_reminder_batches WHERE status IN ('pending','failed') ORDER BY created_at LIMIT ?", (limit,)).fetchall()
         return [{"batchId": row["batch_id"], "draftIds": json.loads(row["draft_ids_json"]), "status": row["status"], "failureCount": int(row["failure_count"] or 0), "failureSummaries": json.loads(row["failure_summary_json"] or "[]"), "roleId": row["role_id"], "lastError": row["last_error"]} for row in rows]
 
     def update_reminder_batch(self, batch_id: str, *, status: str, role_id: str | None = None, error: str | None = None, delivered: bool = False) -> None:
