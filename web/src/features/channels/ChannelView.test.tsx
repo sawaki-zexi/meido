@@ -128,7 +128,12 @@ describe("渠道会话查看", () => {
     });
     render(<ChannelView role={role({ id: "r1", name: "Elysia" })} onBack={() => undefined} initialSource={{ origin: { kind: "turn", sessionKey: "thread:t1", messageIds: ["deleted"], messageRange: null, stableSourceKey: "source" }, messageId: "deleted" }} />);
     expect(await screen.findByRole("alert")).toHaveTextContent("来源消息当前不可访问");
-    expect(calls.filter((call) => call.path.includes("/messages"))).toHaveLength(3);
+    // The normal thread head may load before or after the source lookup;
+    // only the source pagination must stop when its cursor stops advancing.
+    expect(calls.filter((call) => call.path.includes("/messages?limit=100")).map((call) => call.path)).toEqual([
+      "/api/roles/r1/channels/threads/t1/messages?limit=100",
+      "/api/roles/r1/channels/threads/t1/messages?limit=100&before=51",
+    ]);
   });
 
   it("引用原文未加载时仍展示引用消息的图片和文件附件", async () => {
