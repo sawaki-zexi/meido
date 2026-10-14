@@ -168,6 +168,29 @@ def test_rich_adapter_aggregates_multiple_tool_call_fragments(monkeypatch):
     assert sum(isinstance(event, ModelToolCallEnd) for event in events) == 2
 
 
+def test_rich_adapter_merges_cumulative_tool_id_and_name_deltas(monkeypatch):
+    body = "\n".join([
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-","function":{"name":"sh","arguments":"{\\"x\\":"}}]}}]}',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"shell","arguments":"1}"}}]},"finish_reason":"tool_calls"}]}',
+        "data: [DONE]",
+        "",
+    ])
+    _patch_client(monkeypatch, body, [])
+
+    async def collect():
+        return [event async for event in OpenAICompletionsRichAdapter().stream_messages(
+            (ModelUserMessage((ModelTextBlock("run"),)),),
+            _configuration(),
+            tools=[{"type": "function", "function": {"name": "shell"}}],
+        )]
+
+    events = asyncio.run(collect())
+    done = events[-1]
+    assert isinstance(done, ModelStreamDone)
+    calls = [block for block in done.message.content if isinstance(block, ModelToolCallBlock)]
+    assert calls == [ModelToolCallBlock("call-1", "shell", {"x": 1})]
+
+
 def test_rich_adapter_parses_partial_tool_arguments(monkeypatch):
     body = "\n".join([
         'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"lookup","arguments":"{\\"key\\":\\"partial"}}]},"finish_reason":"tool_calls"}]}',
@@ -246,6 +269,46 @@ def test_rich_adapter_supports_legacy_function_call_and_full_message(monkeypatch
     assert calls[0] == ModelToolCallBlock("call-legacy", "lookup", {"key": 1})
     assert calls[1] == ModelToolCallBlock("call-full", "lookup", {"key": "name"})
     assert ModelTextBlock("done") in done.message.content
+
+
+def test_rich_adapter_merges_complete_tool_snapshot_after_delta(monkeypatch):
+    body = "\n".join([
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-","function":{"name":"look","arguments":"{\\"key\\":"}}]}}]}',
+        'data: {"choices":[{"message":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{\\"key\\":1}"}}]},"finish_reason":"tool_calls"}]}',
+        "data: [DONE]",
+        "",
+    ])
+    _patch_client(monkeypatch, body, [])
+
+    async def collect():
+        return [event async for event in OpenAICompletionsRichAdapter().stream_messages(
+            (ModelUserMessage((ModelTextBlock("lookup"),)),),
+            _configuration(),
+            tools=[{"type": "function", "function": {"name": "lookup"}}],
+        )]
+
+    events = asyncio.run(collect())
+    done = events[-1]
+    assert isinstance(done, ModelStreamDone)
+    calls = [block for block in done.message.content if isinstance(block, ModelToolCallBlock)]
+    assert calls == [ModelToolCallBlock("call-1", "lookup", {"key": 1})]
+    assert sum(isinstance(event, ModelToolCallEnd) for event in events) == 1
+
+
+def test_rich_adapter_rejects_tool_call_without_function_name(monkeypatch):
+    body = 'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n'
+    _patch_client(monkeypatch, body, [])
+
+    async def collect():
+        return [event async for event in OpenAICompletionsRichAdapter().stream_messages(
+            (ModelUserMessage((ModelTextBlock("lookup"),)),),
+            _configuration(),
+            tools=[{"type": "function", "function": {"name": "lookup"}}],
+        )]
+
+    events = asyncio.run(collect())
+    assert isinstance(events[-1], ModelStreamError)
+    assert "缺少函数名" in events[-1].error
 
 
 def test_rich_adapter_emits_deepseek_compat_request_and_replays_tool_history(monkeypatch):

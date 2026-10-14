@@ -19,7 +19,7 @@ from .model_adapter import (
     _response_error_detail,
     _remap_function_names,
 )
-from .model_protocol import effective_tools, model_cost, normalize_tools
+from .model_protocol import copy_json, effective_tools, model_cost, normalize_tools
 from .model_event_stream import AssistantEventStream
 from .model_types import (
     ModelAssistantMessage,
@@ -144,7 +144,7 @@ def _safe_json(value: object) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, Mapping):
-        return json.dumps(dict(value), ensure_ascii=False, separators=(",", ":"))
+        return json.dumps(copy_json(value), ensure_ascii=False, separators=(",", ":"))
     return ""
 
 
@@ -192,15 +192,22 @@ class _ResponseAccumulator:
             if self.stop_reason == "error":
                 self.error_message = f"Provider finish_reason: {finish}"
         delta = choice.get("delta")
-        if not isinstance(delta, Mapping):
-            delta = choice.get("message") if isinstance(choice.get("message"), Mapping) else {}
-        events.extend(self._consume_delta(delta))
+        message = choice.get("message")
+        if isinstance(delta, Mapping):
+            events.extend(self._consume_delta(delta))
+            # A few compatible endpoints repeat the completed tool call in
+            # `message` after sending deltas. Merge that snapshot without
+            # replaying text or reasoning events.
+            if isinstance(message, Mapping):
+                events.extend(self._consume_tool_calls(message, complete=True))
+        elif isinstance(message, Mapping):
+            events.extend(self._consume_delta(message, complete=True))
         return events
 
-    def _consume_delta(self, delta: Mapping[str, object]) -> list[ModelStreamEvent]:
+    def _consume_delta(self, delta: Mapping[str, object], *, complete: bool = False) -> list[ModelStreamEvent]:
         events: list[ModelStreamEvent] = []
         content = _text_content(delta.get("content"))
-        if content:
+        if content and (not complete or not self._text_started):
             if not self._text_started:
                 self._text_started = True
                 self.block_order.append(("text", ""))
@@ -227,43 +234,84 @@ class _ResponseAccumulator:
             if reasoning_text:
                 events.append(ModelThinkingDelta(reasoning_text))
 
+        events.extend(self._consume_tool_calls(delta, complete=complete))
+        return events
+
+    def _consume_tool_calls(self, delta: Mapping[str, object], *, complete: bool = False) -> list[ModelStreamEvent]:
+        events: list[ModelStreamEvent] = []
         raw_calls = delta.get("tool_calls")
         if isinstance(raw_calls, list):
             for offset, raw_call in enumerate(raw_calls):
-                events.extend(self._consume_tool_call(raw_call, offset))
+                events.extend(self._consume_tool_call(raw_call, offset, complete=complete))
         legacy = delta.get("function_call")
         if isinstance(legacy, Mapping):
-            events.extend(self._consume_tool_call({"index": "legacy", "function": legacy}, 0))
+            events.extend(self._consume_tool_call({"index": "legacy", "function": legacy}, 0, complete=complete))
         return events
 
-    def _consume_tool_call(self, raw_call: object, fallback: int) -> list[ModelStreamEvent]:
+    def _consume_tool_call(self, raw_call: object, fallback: int, *, complete: bool = False) -> list[ModelStreamEvent]:
         if not isinstance(raw_call, Mapping):
             return []
         key = _index(raw_call.get("index"), fallback)
         call = self.tool_calls.setdefault(key, _ToolAggregate())
         events: list[ModelStreamEvent] = []
         raw_id = raw_call.get("id")
-        if isinstance(raw_id, str):
-            call.id += raw_id
+        if isinstance(raw_id, str) and raw_id:
+            if not call.id:
+                call.id = raw_id
+            elif complete:
+                if raw_id.startswith(call.id) or not call.id.startswith(raw_id):
+                    call.id = raw_id
+            elif raw_id != call.id and not call.id.endswith(raw_id):
+                call.id = raw_id if raw_id.startswith(call.id) else call.id + raw_id
         function = raw_call.get("function")
         if not isinstance(function, Mapping):
             function = raw_call
         name = function.get("name")
-        if isinstance(name, str):
-            call.name += name
+        if isinstance(name, str) and name:
+            if not call.name:
+                call.name = name
+            elif complete:
+                if name.startswith(call.name) or not call.name.startswith(name):
+                    call.name = name
+            elif name != call.name and not call.name.endswith(name):
+                call.name = name if name.startswith(call.name) else call.name + name
         arguments = function.get("arguments")
         if arguments is not None and not isinstance(arguments, (str, Mapping)):
             self.tool_error = f"模型工具参数格式无效: {call.name or key}"
             return events
         fragment = _safe_json(arguments)
-        if fragment:
+        emit_fragment = fragment
+        if complete and fragment:
+            previous = call.arguments
+            if not call.arguments:
+                call.arguments = fragment
+                emit_fragment = fragment
+            elif call.arguments.startswith(fragment):
+                emit_fragment = ""
+            elif fragment.startswith(call.arguments):
+                call.arguments = fragment
+                emit_fragment = fragment[len(previous):]
+            else:
+                call.arguments = fragment
+                emit_fragment = ""
+        elif isinstance(arguments, Mapping) and fragment:
+            previous = call.arguments
+            if not previous or fragment.startswith(previous):
+                call.arguments = fragment
+                emit_fragment = fragment[len(previous):]
+            elif previous.startswith(fragment):
+                emit_fragment = ""
+            else:
+                call.arguments = fragment
+                emit_fragment = ""
+        elif fragment:
             call.arguments += fragment
         if key not in self._tool_started:
             self._tool_started.add(key)
             self.block_order.append(("tool", key))
             events.append(ModelToolCallStart(call.id or f"call-{key}", call.name))
-        if fragment:
-            events.append(ModelToolCallDelta(call.id or f"call-{key}", fragment))
+        if emit_fragment:
+            events.append(ModelToolCallDelta(call.id or f"call-{key}", emit_fragment))
         return events
 
     def finish(self) -> tuple[list[ModelStreamEvent], ModelAssistantMessage | None, str | None]:
@@ -282,6 +330,8 @@ class _ResponseAccumulator:
                 blocks.append(ModelThinkingBlock("".join(self.thinking_parts), self.thinking_signature))
             elif kind == "tool":
                 aggregate = self.tool_calls[key]
+                if not aggregate.name:
+                    return events, None, f"模型工具调用缺少函数名: {aggregate.id or key}"
                 try:
                     arguments = json.loads(aggregate.arguments or "{}")
                 except json.JSONDecodeError:

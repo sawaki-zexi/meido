@@ -1,5 +1,4 @@
 from collections.abc import AsyncIterator, Mapping, Sequence
-import copy
 from dataclasses import dataclass
 import hashlib
 import json
@@ -11,6 +10,7 @@ import httpx
 
 from ..models import Message, ModelConfiguration, Role
 from .model_types import ModelMessage, ModelStreamEvent as RichModelStreamEvent
+from .model_protocol import copy_json
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,16 +45,28 @@ def _compatible_function_names(
     names: list[str] = []
     for tool in tools:
         function = tool.get("function")
-        if isinstance(function, Mapping) and isinstance(function.get("name"), str):
-            names.append(function["name"])
+        candidate = function if isinstance(function, Mapping) else tool
+        candidate_name = candidate.get("name") if isinstance(candidate, Mapping) else None
+        if isinstance(candidate_name, str):
+            names.append(candidate_name)
     for message in messages:
         calls = message.get("tool_calls")
-        if not isinstance(calls, list):
-            continue
-        for call in calls:
-            function = call.get("function") if isinstance(call, Mapping) else None
-            if isinstance(function, Mapping) and isinstance(function.get("name"), str):
-                names.append(function["name"])
+        if isinstance(calls, list):
+            for call in calls:
+                if not isinstance(call, Mapping):
+                    continue
+                function = call.get("function")
+                candidate = function if isinstance(function, Mapping) else call
+                candidate_name = candidate.get("name") if isinstance(candidate, Mapping) else None
+                if isinstance(candidate_name, str):
+                    names.append(candidate_name)
+        function_call = message.get("function_call")
+        legacy_name = function_call.get("name") if isinstance(function_call, Mapping) else None
+        if isinstance(legacy_name, str):
+            names.append(legacy_name)
+        role_name = message.get("name")
+        if message.get("role") in {"function", "tool"} and isinstance(role_name, str):
+            names.append(role_name)
 
     unique_names = list(dict.fromkeys(names))
     reserved = {name for name in unique_names if _FUNCTION_NAME_PATTERN.fullmatch(name)}
@@ -84,20 +96,87 @@ def _remap_function_names(
 ) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     for value in values:
-        copied = copy.deepcopy(dict(value))
+        copied = copy_json(value)
+        if not isinstance(copied, dict):
+            continue
         if tools:
             function = copied.get("function")
             if isinstance(function, dict) and isinstance(function.get("name"), str):
                 function["name"] = aliases.get(function["name"], function["name"])
+            elif isinstance(copied.get("name"), str):
+                copied["name"] = aliases.get(copied["name"], copied["name"])
         else:
             calls = copied.get("tool_calls")
             if isinstance(calls, list):
-                for call in calls:
+                for position, call in enumerate(calls):
+                    if not isinstance(call, Mapping):
+                        continue
+                    call = dict(call)
                     function = call.get("function") if isinstance(call, dict) else None
                     if isinstance(function, dict) and isinstance(function.get("name"), str):
                         function["name"] = aliases.get(function["name"], function["name"])
+                    elif isinstance(call.get("name"), str):
+                        call["name"] = aliases.get(call["name"], call["name"])
+                    calls[position] = call
+            function_call = copied.get("function_call")
+            if isinstance(function_call, Mapping) and isinstance(function_call.get("name"), str):
+                function_call = dict(function_call)
+                function_call["name"] = aliases.get(function_call["name"], function_call["name"])
+                copied["function_call"] = function_call
+            if copied.get("role") in {"function", "tool"} and isinstance(copied.get("name"), str):
+                copied["name"] = aliases.get(copied["name"], copied["name"])
         result.append(copied)
     return result
+
+
+def _call_index(raw_index: object, fallback: int) -> int:
+    if isinstance(raw_index, int) and not isinstance(raw_index, bool) and raw_index >= 0:
+        return raw_index
+    if isinstance(raw_index, str) and raw_index.isdigit():
+        return int(raw_index)
+    return fallback
+
+
+def _append_tool_call_fragment(
+    calls: dict[int, dict[str, str]],
+    index: int,
+    identifier: object,
+    function: object,
+    *,
+    complete: bool = False,
+) -> None:
+    if not isinstance(function, Mapping):
+        return
+    aggregate = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
+
+    def merge_text(field: str, value: object, *, authoritative: bool = False) -> None:
+        if not isinstance(value, str) or not value:
+            return
+        current = aggregate[field]
+        if not current:
+            aggregate[field] = value
+        elif authoritative:
+            if value.startswith(current):
+                aggregate[field] = value
+            elif not current.startswith(value):
+                aggregate[field] = value
+        elif field in {"id", "name"}:
+            if value == current or current.endswith(value):
+                return
+            if value.startswith(current):
+                aggregate[field] = value
+            else:
+                aggregate[field] += value
+        else:
+            aggregate[field] += value
+
+    merge_text("id", str(identifier) if isinstance(identifier, (str, int)) else None, authoritative=complete)
+    merge_text("name", function.get("name"), authoritative=complete)
+    arguments = function.get("arguments", "")
+    arguments_are_complete = isinstance(arguments, (Mapping, list))
+    if arguments_are_complete:
+        arguments = json.dumps(copy_json(arguments), ensure_ascii=False)
+    merge_text("arguments", arguments, authoritative=complete or arguments_are_complete)
 
 
 def _response_error_detail(response: httpx.Response, api_key: str) -> str:
@@ -444,34 +523,57 @@ class OpenAICompatibleAdapter:
                     choices = chunk.get("choices", []) if isinstance(chunk, dict) else []
                     choice = choices[0] if isinstance(choices, list) and choices else {}
                     delta = choice.get("delta", {}) if isinstance(choice, dict) else {}
-                    content = delta.get("content") if isinstance(delta, dict) else None
+                    message = choice.get("message", {}) if isinstance(choice, dict) else {}
+                    content = delta.get("content") if isinstance(delta, Mapping) else None
+                    if not isinstance(content, str) and isinstance(message, Mapping):
+                        content = message.get("content")
                     if isinstance(content, str) and content:
                         yield ModelTextDelta(content)
-                    raw_calls = delta.get("tool_calls", []) if isinstance(delta, dict) else []
-                    if not isinstance(raw_calls, list):
-                        continue
-                    for raw_call in raw_calls:
-                        if not isinstance(raw_call, dict):
-                            continue
-                        raw_index = raw_call.get("index", 0)
-                        index = int(raw_index) if isinstance(raw_index, int) else 0
-                        aggregate = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
-                        if isinstance(raw_call.get("id"), str):
-                            aggregate["id"] += raw_call["id"]
-                        function = raw_call.get("function")
-                        if not isinstance(function, dict):
-                            continue
-                        if isinstance(function.get("name"), str):
-                            aggregate["name"] += function["name"]
-                        arguments = function.get("arguments", "")
-                        if isinstance(arguments, str):
-                            aggregate["arguments"] += arguments
-                        elif isinstance(arguments, dict):
-                            aggregate["arguments"] += json.dumps(arguments, ensure_ascii=False)
+                    raw_calls = delta.get("tool_calls", []) if isinstance(delta, Mapping) else []
+                    if isinstance(raw_calls, list):
+                        for position, raw_call in enumerate(raw_calls):
+                            if not isinstance(raw_call, Mapping):
+                                continue
+                            function = raw_call.get("function")
+                            if not isinstance(function, Mapping):
+                                function = raw_call
+                            _append_tool_call_fragment(
+                                calls,
+                                _call_index(raw_call.get("index"), position),
+                                raw_call.get("id"),
+                                function,
+                            )
+                    legacy_function = delta.get("function_call") if isinstance(delta, Mapping) else None
+                    if isinstance(legacy_function, Mapping):
+                        _append_tool_call_fragment(calls, 0, None, legacy_function)
+                    # Some compatible servers return a complete message while
+                    # streaming. Merge it without duplicating received fragments.
+                    if isinstance(message, Mapping):
+                        message_calls = message.get("tool_calls", [])
+                        if isinstance(message_calls, list):
+                            for position, raw_call in enumerate(message_calls):
+                                if not isinstance(raw_call, Mapping):
+                                    continue
+                                function = raw_call.get("function")
+                                if not isinstance(function, Mapping):
+                                    function = raw_call
+                                _append_tool_call_fragment(
+                                    calls,
+                                    _call_index(raw_call.get("index"), position),
+                                    raw_call.get("id"),
+                                    function,
+                                    complete=True,
+                                )
+                        message_function = message.get("function_call")
+                        if isinstance(message_function, Mapping):
+                            _append_tool_call_fragment(calls, 0, None, message_function, complete=True)
         if not completed:
             raise RuntimeError("模型流式响应未正常结束")
         for index in sorted(calls):
             aggregate = calls[index]
+            if not aggregate["name"]:
+                yield ModelStreamError(f"模型工具调用缺少函数名: {aggregate['id'] or index}")
+                return
             try:
                 arguments = json.loads(aggregate["arguments"] or "{}")
             except json.JSONDecodeError:
