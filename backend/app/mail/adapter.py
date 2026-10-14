@@ -68,6 +68,14 @@ def _draft_hash(subject: str, recipients: str, body: str, in_reply_to: str = "",
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _test_marker_matches(message: email.message.Message, marker: str) -> bool:
+    if str(message.get("X-Meido-Test-ID") or "").strip() == marker:
+        return True
+    if str(message.get("Message-ID") or "").strip() == f"<{marker}@local.meido>":
+        return True
+    return marker in _decode(message.get("Subject"))
+
+
 def _body(message: email.message.Message) -> str:
     if message.is_multipart():
         parts = list(message.walk())
@@ -309,13 +317,13 @@ class QQMailAdapter:
     def verify_test_sent(self, marker: str, folders: dict[str, str]) -> bool:
         for _uid, raw in self._fetch(folders["sent"], "ALL"):
             message = BytesParser(policy=email.policy.default).parsebytes(raw)
-            if str(message.get("X-Meido-Test-ID") or "").strip() == marker:
+            if _test_marker_matches(message, marker):
                 return True
         return False
 
     def verify_test_draft_present(self, marker: str, folder: str) -> bool:
         for _uid, raw in self._fetch(folder, "ALL"):
             message = BytesParser(policy=email.policy.default).parsebytes(raw)
-            if str(message.get("X-Meido-Test-ID") or "").strip() == marker:
+            if _test_marker_matches(message, marker):
                 return True
         return False

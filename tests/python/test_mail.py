@@ -3,6 +3,7 @@ import json
 import time
 import pytest
 from contextlib import asynccontextmanager
+from email.message import EmailMessage
 from email.parser import BytesParser
 from email import policy
 from types import SimpleNamespace
@@ -169,6 +170,39 @@ def test_reply_draft_preserves_existing_reference_chain(tmp_path):
     asyncio.run(service.process_item(item.id, adapter=adapter, folders={"inbox": "INBOX", "sent": "Sent", "drafts": "Drafts"}))
 
     assert adapter.append_calls[0]["references"] == "<source-root@example.com> <source-parent@example.com> <source-leaf@example.com>"
+
+
+def test_auto_draft_prompt_includes_thread_owner_context_and_sent_samples_without_qq_credentials(tmp_path):
+    service, store, adapter = make_service(tmp_path)
+    root, _ = add_owner_item(store, SimpleNamespace(
+        uid="30", folder="INBOX", message_id="<prompt-root@example.com>", thread_id="prompt-thread", sender="sender@example.com",
+        reply_to="sender@example.com", recipients="owner@qq.com", subject="原邮件", received_at="2026-10-13T00:00:00Z", body_text="约定周五联系。", in_reply_to="", references="",
+    ))
+    current, _ = add_owner_item(store, SimpleNamespace(
+        uid="31", folder="INBOX", message_id="<prompt-current@example.com>", thread_id=root.thread_id, sender="sender@example.com",
+        reply_to="sender@example.com", recipients="owner@qq.com", subject="跟进", received_at="2026-10-14T00:00:00Z", body_text="请确认时间。", in_reply_to=root.message_id, references=root.message_id,
+    ))
+    service.owner_search = lambda _query: asyncio.sleep(0, result=[SimpleNamespace(text="主人偏好：工作日使用简洁称呼。")])
+    adapter.sent_samples = lambda _folder, _limit=8: [SimpleNamespace(subject="已发送样本", body_text="您好，我会在周五回复。")]
+    captured = {}
+
+    async def complete(messages, configuration):
+        captured["messages"] = messages
+        captured["configuration"] = configuration
+        return json.dumps({"needsReply": True, "body": "您好，周五可以。"}, ensure_ascii=False)
+
+    service.complete_model = complete
+
+    decision, body = asyncio.run(service._draft_content(current, adapter))
+
+    prompt = json.loads(captured["messages"][1]["content"])
+    assert decision is True
+    assert body == "您好，周五可以。"
+    assert any(entry["body"] == "约定周五联系。" for entry in prompt["thread"])
+    assert prompt["ownerContext"] == "主人偏好：工作日使用简洁称呼。"
+    assert prompt["sentSamples"] == [{"subject": "已发送样本", "body": "您好，我会在周五回复。"}]
+    assert "secret" not in json.dumps(captured["messages"], ensure_ascii=False)
+    assert "candidate-secret" not in json.dumps(captured["messages"], ensure_ascii=False)
 
 
 def test_qq_adapter_serializes_reply_thread_headers():
@@ -567,9 +601,11 @@ def test_role_can_create_a_new_version_from_an_existing_draft(tmp_path):
     original_remote = adapter.draft_rows[0]
     adapter.draft_rows[0] = RemoteDraft(original_remote.marker, original_remote.uid, original_remote.folder, original_remote.message_id, original_remote.subject, original_remote.recipients, "主人改过的回复", "manually-edited")
     second = asyncio.run(service.role_action("draft", mail_id=item.id, draft_id=first["draftId"], query="修改后的回复", request_id="draft-v2", role_id="role-1", run_id="run-2"))
+    retry = asyncio.run(service.role_action("draft", mail_id=item.id, draft_id=first["draftId"], query="修改后的回复", request_id="draft-v2", role_id="role-1", run_id="run-3"))
 
     drafts = store.list_drafts_for_mail(item.id, account="owner@qq.com")
     assert second["draftId"] != first["draftId"]
+    assert retry["draftId"] == second["draftId"]
     assert len(drafts) == 2
     assert {draft.body for draft in drafts} == {"原始回复", "修改后的回复"}
     original = next(draft for draft in drafts if draft.id == first["draftId"])
@@ -776,6 +812,54 @@ def test_mail_api_rejects_item_and_thread_ids_from_another_account(tmp_path, mon
     with TestClient(app) as client:
         assert client.get(f"/api/mail/items/{other_item.id}").status_code == 404
         assert client.post(f"/api/mail/threads/{other_item.thread_id}/process", json={"requestId": "cross-account"}).status_code == 404
+
+
+def test_folder_discovery_uses_special_use_flags_and_accepts_empty_folders():
+    class Client:
+        def __init__(self):
+            self.selected = []
+
+        def list(self):
+            return "OK", [
+                b'(\\HasNoChildren \\Inbox) "/" "INBOX"',
+                b'(\\HasNoChildren \\Sent) "/" "Owner Archive"',
+                b'(\\HasNoChildren \\Drafts) "/" "Working Copy"',
+            ]
+
+        def select(self, folder, readonly=True):
+            self.selected.append((folder, readonly))
+            return "OK", [b"0"]
+
+    client = Client()
+    adapter = QQMailAdapter(MailConnection(host="imap.qq.com", port=993, username="owner@qq.com"), "secret")
+    adapter._imap = client
+
+    result = adapter.verify()
+
+    assert result["folders"] == {"inbox": "INBOX", "sent": "Owner Archive", "drafts": "Working Copy"}
+    assert result["counts"] == {"inbox": 0, "sent": 0, "drafts": 0}
+    assert len(client.selected) == 3
+    assert all(readonly for _folder, readonly in client.selected)
+
+
+@pytest.mark.parametrize("identity", ["custom-header", "message-id", "subject"])
+def test_test_draft_verification_survives_server_rewriting_identity_headers(identity):
+    marker = "meido-test-unique-marker"
+    message = EmailMessage()
+    message["From"] = "owner@qq.com"
+    message["To"] = "owner@qq.com"
+    message["Subject"] = f"QQ 邮箱测试 {marker}" if identity == "subject" else "QQ 邮箱测试"
+    if identity == "custom-header":
+        message["X-Meido-Test-ID"] = marker
+    elif identity == "message-id":
+        message["Message-ID"] = f"<{marker}@local.meido>"
+    message.set_content("test")
+    raw = message.as_bytes()
+    adapter = QQMailAdapter(MailConnection(host="imap.qq.com", port=993, username="owner@qq.com"), "secret")
+    adapter._fetch = lambda _folder, _query="ALL", _limit=None: [("1", raw)]
+
+    assert adapter.verify_test_draft_present(marker, "Drafts") is True
+    assert adapter.verify_test_sent(marker, {"sent": "Sent"}) is True
 
 
 def test_failed_uid_fetch_aborts_instead_of_skipping_checkpoint_data():
