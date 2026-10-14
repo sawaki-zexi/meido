@@ -1613,12 +1613,18 @@ class OwnerKnowledgePlugin:
         if not self.store.is_enabled() or role_id in self._deleting_roles:
             raise RuntimeError("主人资料插件已暂停")
         complete_messages = getattr(model_adapter, "complete_messages", None)
-        if not callable(complete_messages):
-            raise RuntimeError("当前模型连接不支持角色理解生成")
         profile = getattr(role, "profile", None)
         role_name = str(getattr(role, "name", "角色"))
         self.store.enqueue_understanding(role_id, {"kind": "generation"})
         try:
+            if configuration is None:
+                raise OwnerKnowledgeError("尚未配置角色模型，请先在模型设置中保存连接信息")
+            if not callable(complete_messages):
+                raise OwnerKnowledgeError("当前模型连接不支持角色理解生成")
+            embedder = self._embedding_session()
+            vector_enabled = bool(getattr(embedder, "is_enabled", True))
+            if vector_enabled and getattr(embedder, "ready", True) is False:
+                raise OwnerKnowledgeError("请先在模型设置中配置并启用向量模型")
             job = self.store.understanding_job(role_id)
             job_payload, full_refresh, job_updated_at = job if job is not None else ({}, True, "")
             changed_ids = job_payload.get("changedDocumentIds", [])
@@ -1678,8 +1684,6 @@ class OwnerKnowledgePlugin:
                 raise OwnerKnowledgeError("角色理解输出无效，请检查模型连接后重试")
             if role_id in self._deleting_roles:
                 raise RuntimeError("角色正在删除")
-            embedder = self._embedding_session()
-            vector_enabled = bool(getattr(embedder, "is_enabled", True))
             model_id = embedder.model_id if vector_enabled else f"{embedder.model_id}:lexical-only"
             vector = await asyncio.to_thread(embedder.embed_query, body) if vector_enabled else []
             if role_id in self._deleting_roles:

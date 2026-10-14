@@ -461,7 +461,7 @@ def test_understanding_is_role_scoped_and_failed_regeneration_preserves_previous
                 del messages, configuration, max_tokens
                 return "我觉得主人会耐心追问概念之间的联系。"
 
-        first = await plugin.generate_understanding(role_a, WorkingModel(), None, "记忆只读上下文")
+        first = await plugin.generate_understanding(role_a, WorkingModel(), SimpleNamespace(), "记忆只读上下文")
         assert first["version"] == 1
         role_a_hits = await plugin.search("主人学习习惯", role_id="role-a")
         role_b_hits = await plugin.search("主人学习习惯", role_id="role-b")
@@ -473,7 +473,7 @@ def test_understanding_is_role_scoped_and_failed_regeneration_preserves_previous
                 raise RuntimeError("offline")
 
         try:
-            await plugin.generate_understanding(role_a, FailingModel(), None, "")
+            await plugin.generate_understanding(role_a, FailingModel(), SimpleNamespace(), "")
         except RuntimeError:
             pass
         assert store.get_understanding("role-a")["body"] == first["body"]
@@ -836,7 +836,7 @@ def test_deleting_role_cancels_inflight_understanding_and_prevents_resurrection(
                 started.set()
                 await asyncio.Event().wait()
 
-        plugin.queue_understanding_refresh("role-a", role, BlockingModel(), None, "")
+        plugin.queue_understanding_refresh("role-a", role, BlockingModel(), SimpleNamespace(), "")
         await started.wait()
         await plugin.begin_role_deletion("role-a")
         store.delete_role("role-a")
@@ -941,3 +941,63 @@ def test_manual_regeneration_updates_selected_role_and_clears_failure(owner_api,
     assert response.status_code == 200
     assert response.json()["understanding"]["body"] == "我觉得主人热爱学习"
     assert client.get(f"/api/roles/{role.id}/owner-understanding").json()["job"] is None
+
+
+@pytest.mark.parametrize("missing", ["model", "embedding"])
+def test_background_generation_records_precondition_failure_and_keeps_previous(tmp_path, missing):
+    async def scenario():
+        plugin, store, feishu, embedder = make_plugin(tmp_path)
+        feishu.documents = [make_document("diary")]
+        feishu.contents["diary"] = "主人喜欢学习"
+        await plugin.enable()
+        role = SimpleNamespace(id="role-a", name="角色", profile=SimpleNamespace())
+        old = store.save_understanding(role.id, "旧想法", [1, 0], embedder.model_id)
+        if missing == "embedding":
+            embedder.ready = False
+
+        class Model:
+            async def complete_messages(self, *args, **kwargs):
+                raise AssertionError("a missing prerequisite must stop before sending private documents")
+
+        plugin.queue_understanding_refresh(role.id, role, Model(), None if missing == "model" else SimpleNamespace(), "")
+        await asyncio.sleep(0)
+        status = store.understanding_job_status(role.id)
+        assert status["status"] == "failed"
+        assert ("尚未配置角色模型" if missing == "model" else "配置并启用向量模型") in status["lastError"]
+        assert store.get_understanding(role.id) == old
+        await plugin.close()
+
+    asyncio.run(scenario())
+
+
+def test_paused_vectors_allow_manual_and_background_understanding(owner_api, monkeypatch):
+    from backend.app import main
+
+    client, role, plugin, owner_store, feishu, embedder = owner_api
+    feishu.documents = [make_document("diary")]
+    feishu.contents["diary"] = "主人喜欢学习"
+    asyncio.run(plugin.enable())
+    embedder.is_enabled = False
+    embedder.ready = False
+
+    def forbidden_embedding(text):
+        raise AssertionError("paused vectors must not call the embedding service")
+
+    embedder.embed_query = forbidden_embedding
+
+    class Model:
+        async def complete_messages(self, *args, **kwargs):
+            return "我觉得主人热爱学习"
+
+    monkeypatch.setattr(main, "model_adapter", Model())
+    response = client.post(f"/api/roles/{role.id}/owner-understanding/regenerate")
+    assert response.status_code == 200
+
+    async def background():
+        plugin.queue_understanding_refresh(role.id, role, Model(), SimpleNamespace(), "", full_refresh=True)
+        await asyncio.sleep(0)
+        assert owner_store.get_understanding(role.id)["version"] == 2
+        assert owner_store.understanding_job_status(role.id) is None
+        await plugin.close()
+
+    asyncio.run(background())

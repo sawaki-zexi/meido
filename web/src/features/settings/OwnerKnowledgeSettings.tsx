@@ -202,7 +202,7 @@ export function OwnerKnowledgeSettings() {
       <div className="owner-section-heading"><div><h3 id="understanding-title">角色对主人的想法</h3><p className="muted">按角色分别保存</p></div>{roles.length > 0 && <select aria-label="选择角色" value={selectedRoleId} onChange={(event) => setSelectedRoleId(event.target.value)}>{roles.map((role) => <option value={role.id} key={role.id}>{role.name}</option>)}</select>}</div>
       {roles.length === 0 ? <p className="owner-empty-line">尚无角色</p> : loadingUnderstanding ? <Placeholder loading>正在读取…</Placeholder> : understanding ? <div className="owner-understanding" aria-label="角色想法"><p>{understanding.body}</p><small className="muted">更新于 {new Date(understanding.updatedAt).toLocaleString()}</small></div> : <p className="owner-empty-line">该角色还没有生成想法</p>}
       {!status?.enabled && <p className="muted">先启用主人资料并完成同步，才能生成角色想法</p>}
-      {status?.enabled && !status.embeddingReady && <p className="muted">生成角色想法需要在模型设置中配置并启用向量模型</p>}
+      {status?.enabled && status.embeddingEnabled !== false && !status.embeddingReady && <p className="muted">请在模型设置中配置向量模型；暂停向量模型后仍可生成角色想法</p>}
       {understandingJob?.status === "pending" && status?.enabled && <p className="muted" role="status">正在准备或生成角色想法…</p>}
       {understandingJob?.status === "failed" && <Notice>上次角色想法生成失败，已保留上一版本：{understandingJob.lastError || "请检查模型连接后重试"}</Notice>}
       <div className="owner-actions"><button type="button" disabled={busy || !status?.enabled || !selectedRoleId} onClick={() => void run("regenerate")}>{busy ? "处理中…" : "重新生成想法"}</button></div>

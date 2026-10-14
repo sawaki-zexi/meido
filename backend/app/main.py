@@ -966,7 +966,7 @@ async def regenerate_owner_understanding(role_id: str) -> dict[str, object]:
         raise HTTPException(status_code=409, detail="主人资料插件已暂停")
     if owner_knowledge_store.count_chunks() == 0:
         raise HTTPException(status_code=409, detail="没有可用于生成角色理解的主人资料，请先完成知识库同步")
-    if getattr(owner_knowledge_plugin.embedder, "ready", True) is False:
+    if getattr(owner_knowledge_plugin.embedder, "is_enabled", True) and getattr(owner_knowledge_plugin.embedder, "ready", True) is False:
         raise HTTPException(status_code=409, detail="请先在模型设置中配置并启用向量模型")
     configuration = _role_model_configuration(role_id)
     if configuration is None:
