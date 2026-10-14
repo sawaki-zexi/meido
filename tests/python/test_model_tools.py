@@ -4,7 +4,7 @@ import json
 import httpx
 import pytest
 
-from backend.app.agent_runtime import AssistantDoneEvent, CancellationToken, MeidoProvider, ToolCallEndEvent, UserMessage
+from backend.app.agent_runtime import AssistantDoneEvent, CancellationToken, MeidoProvider, ToolCallEndEvent
 from backend.app.agent_runtime.types import AssistantMessage, AttachmentContent, ImageContent, ToolResultMessage, UserMessage
 from backend.app.model_adapter import ModelToolCall, ModelTextDelta, OpenAICompatibleAdapter
 from backend.app.models import ModelConfiguration, RoleInput, RoleProfile
@@ -145,6 +145,42 @@ def test_openai_compatible_adapter_surfaces_redacted_http_error_detail(monkeypat
     assert "Invalid function name" in str(raised.value)
     assert "test-secret" not in str(raised.value)
     assert request_payloads[0]["tools"][0]["function"]["name"] != "todo.write"
+
+
+def test_openai_legacy_structured_rejects_invalid_tool_schema_before_http(monkeypatch):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, text="data: [DONE]\n\n")
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+    configuration = ModelConfiguration(
+        providerId="openai",
+        provider="openai",
+        baseUrl="https://api.openai.com/v1",
+        model="test-model",
+    )
+
+    async def collect():
+        return [event async for event in OpenAICompatibleAdapter().stream_structured_messages(
+            [{"role": "user", "content": "hello"}],
+            configuration,
+            [{"type": "function", "function": {
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {"count": "integer"}},
+            }}],
+        )]
+
+    with pytest.raises(ValueError, match="schema.properties 成员必须是对象"):
+        asyncio.run(collect())
+
+    assert requests == []
 
 
 def test_structured_adapter_uses_environment_configuration_when_unbound(monkeypatch):

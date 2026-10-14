@@ -612,9 +612,9 @@ def test_deepseek_chat_maps_plugin_tool_names_across_a_tool_round_trip(tmp_path,
                     "name": tool["function"]["name"],
                     "arguments": json.dumps({"operation": "create", "title": "测试事项"}, ensure_ascii=False),
                 },
-            }]}}]}
+            }]}, "finish_reason": "tool_calls"}]}
         else:
-            chunk = {"choices": [{"delta": {"content": "已经添加。"}}]}
+            chunk = {"choices": [{"delta": {"content": "已经添加。"}, "finish_reason": "stop"}]}
         body = f"data: {json.dumps(chunk, ensure_ascii=False)}\n\ndata: [DONE]\n\n"
         return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
 

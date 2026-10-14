@@ -163,18 +163,21 @@ async def run_agent_loop(
                 content=content,
                 tool_calls=assistant.tool_calls or tuple(tool_calls),
                 stop_reason=assistant.stop_reason,
+                metadata=dict(assistant.metadata),
             )
         elif tool_calls and not assistant.tool_calls:
             assistant = AssistantMessage(
                 content=assistant.content,
                 tool_calls=tuple(tool_calls),
                 stop_reason=assistant.stop_reason,
+                metadata=dict(assistant.metadata),
             )
         if assistant.tool_calls and assistant.stop_reason == "stop":
             assistant = AssistantMessage(
                 content=assistant.content,
                 tool_calls=assistant.tool_calls,
                 stop_reason="tool_use",
+                metadata=dict(assistant.metadata),
             )
 
         messages.append(assistant)

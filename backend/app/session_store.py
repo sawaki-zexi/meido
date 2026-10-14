@@ -1,6 +1,7 @@
 import sqlite3
 import uuid
 import json
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -37,6 +38,18 @@ def _load_attachments(metadata: dict[str, Any]) -> tuple[AttachmentContent, ...]
                 continue
         loaded.append(AttachmentContent(name, media_type, text=text, image=image))
     return tuple(loaded)
+
+
+def _runtime_assistant_metadata(metadata: dict[str, Any]) -> dict[str, object]:
+    internal_keys = {
+        "stopReason",
+        "toolCallGroupId",
+        "toolCallIndex",
+        "toolCallCount",
+        "runtimeStopReason",
+        "runtimePlaceholder",
+    }
+    return {key: value for key, value in metadata.items() if key not in internal_keys}
 
 
 class SessionStore:
@@ -220,10 +233,23 @@ class SessionStore:
         """
 
         if isinstance(message, UserMessage):
-            return [self.append_message(session_key, "user", message.content, status, run_id=run_id)]
+            metadata: dict[str, object] = {}
+            if message.timestamp is not None:
+                metadata["timestamp"] = message.timestamp
+            return [self.append_message(session_key, "user", message.content, status, run_id=run_id, metadata=metadata)]
         if isinstance(message, AssistantMessage):
+            assistant_metadata = dict(message.metadata)
+            if message.timestamp is not None:
+                assistant_metadata["timestamp"] = message.timestamp
             if not message.tool_calls:
-                return [self.append_message(session_key, "assistant", message.content, status, run_id=run_id)]
+                return [self.append_message(
+                    session_key,
+                    "assistant",
+                    message.content,
+                    status,
+                    run_id=run_id,
+                    metadata=assistant_metadata,
+                )]
             group_id = uuid.uuid4().hex
             now = _now()
             with sqlite3.connect(self.database_path) as connection:
@@ -245,6 +271,7 @@ class SessionStore:
                         safe_arguments = call.arguments
                     message_id = f"{session_key}:{uuid.uuid4().hex}"
                     metadata = {
+                        **assistant_metadata,
                         "stopReason": message.stop_reason,
                         "toolCallGroupId": group_id,
                         "toolCallIndex": index,
@@ -278,6 +305,13 @@ class SessionStore:
                 from .browser_use.safety import sanitize_browser_text
 
                 safe_content, _ = sanitize_browser_text(safe_content)
+            metadata: dict[str, object] = {}
+            if message.usage is not None:
+                metadata["usage"] = asdict(message.usage) if is_dataclass(message.usage) else message.usage
+            if message.nested_calls:
+                metadata["nestedCalls"] = [asdict(call) for call in message.nested_calls]
+            if message.timestamp is not None:
+                metadata["timestamp"] = message.timestamp
             return [
                 self.append_message(
                     session_key,
@@ -290,6 +324,7 @@ class SessionStore:
                     tool_result=message.details,
                     is_error=message.is_error,
                     run_id=run_id,
+                    metadata=metadata,
                 )
             ]
         raise TypeError(f"unsupported runtime message: {type(message)!r}")
@@ -332,7 +367,13 @@ class SessionStore:
                     if raw_stop_reason not in {"stop", "tool_use", "error", "aborted"}:
                         raw_stop_reason = "tool_use"
                     stop_reason = cast(Literal["stop", "tool_use", "error", "aborted"], raw_stop_reason)
-                    messages.append(AssistantMessage(content=group[0].content, tool_calls=calls, stop_reason=stop_reason))
+                    messages.append(AssistantMessage(
+                        content=group[0].content,
+                        tool_calls=calls,
+                        stop_reason=stop_reason,
+                        metadata=_runtime_assistant_metadata(group[0].metadata),
+                        timestamp=_timestamp(group[0].metadata),
+                    ))
 
                     # Results are expected immediately after the assistant call group.
                     # Only matching IDs are replayable; duplicates and orphan results
@@ -360,12 +401,16 @@ class SessionStore:
                                 details={"repaired": True},
                             ))
                         else:
+                            nested_calls = _nested_calls(replay_result.metadata)
                             messages.append(ToolResultMessage(
                                 tool_call_id=call.id,
                                 tool_name=call.name,
                                 content=replay_result.content,
                                 is_error=replay_result.isError,
                                 details=replay_result.toolResult,
+                                usage=replay_result.metadata.get("usage"),
+                                nested_calls=nested_calls,
+                                timestamp=_timestamp(replay_result.metadata),
                                 # Images are intentionally ephemeral and are not
                                 # reconstructed from SQLite on later runs.
                                 images=(),
@@ -378,9 +423,17 @@ class SessionStore:
                 continue
             elif stored.messageType == "text" and stored.status == "completed":
                 if stored.role == "user":
-                    messages.append(UserMessage(stored.content, attachments=_load_attachments(stored.metadata)))
+                    messages.append(UserMessage(
+                        stored.content,
+                        attachments=_load_attachments(stored.metadata),
+                        timestamp=_timestamp(stored.metadata),
+                    ))
                 elif stored.role == "assistant":
-                    messages.append(AssistantMessage(stored.content))
+                    messages.append(AssistantMessage(
+                        stored.content,
+                        metadata=_runtime_assistant_metadata(stored.metadata),
+                        timestamp=_timestamp(stored.metadata),
+                    ))
             index += 1
         if max_messages is None or max_messages < 1 or len(messages) <= max_messages:
             return messages
@@ -749,6 +802,31 @@ class SessionStore:
 
 def _dump(value: object | None) -> str | None:
     return json.dumps(value, ensure_ascii=False) if value is not None else None
+
+
+def _timestamp(metadata: dict[str, Any]) -> int | None:
+    value = metadata.get("timestamp")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _nested_calls(metadata: dict[str, Any]) -> tuple[ToolCall, ...]:
+    value = metadata.get("nestedCalls")
+    if not isinstance(value, list):
+        return ()
+    calls: list[ToolCall] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        call_id = item.get("id")
+        name = item.get("name")
+        arguments = item.get("arguments", {})
+        if (
+            isinstance(call_id, str)
+            and isinstance(name, str)
+            and isinstance(arguments, dict)
+        ):
+            calls.append(ToolCall(call_id, name, dict(arguments)))
+    return tuple(calls)
 
 
 def _load(value: object | None) -> object | None:

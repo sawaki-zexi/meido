@@ -19,7 +19,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 import httpx
 
-from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
+from .ai.model_adapter import ModelAdapter
+from .ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
 from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryQueryFilters, MemoryScope
@@ -95,7 +96,8 @@ session_store = SessionStore(data_root / "sessions.db")
 session_manager = SessionManager(store, session_store)
 memory_store = MemoryStore(data_root / "memory2.db")
 memory_event_bus = MemoryEventBus()
-model_adapter: ModelAdapter = OpenAICompatibleAdapter()
+model_adapter_registry = ModelAdapterRegistry()
+model_adapter: ModelAdapter = RoutedModelAdapter(model_adapter_registry)
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
 embedding_configuration_store = EmbeddingConfigurationStore(data_root / "embedding-config.json")
 memory_settings_store = MemorySettingsStore(data_root / "memory-settings.json")
@@ -482,7 +484,7 @@ memory_worker = MemoryWorker(
     memory_maintenance,
     memory_optimizer_worker,
 )
-connection_test_adapter = OpenAICompatibleAdapter(timeout=20)
+connection_test_adapter = RoutedModelAdapter(ModelAdapterRegistry(timeout=20))
 runtime_manager = RuntimeManager(session_store)
 role_locks = runtime_manager.role_locks
 
@@ -1160,10 +1162,11 @@ def _configuration_with_saved_key(data: ModelConfigurationInput) -> ModelConfigu
     if data.apiKey:
         return data
     current = model_configuration_store.get()
-    if current and (current.providerId, current.provider, current.baseUrl.rstrip("/")) == (
+    if current and (current.providerId, current.provider, current.baseUrl.rstrip("/"), current.api) == (
         data.providerId,
         data.provider,
         data.baseUrl.rstrip("/"),
+        data.api,
     ):
         return data.model_copy(update={"apiKey": current.apiKey})
     return data
@@ -1259,10 +1262,12 @@ async def test_model_configuration(data: ModelConfigurationInput) -> dict[str, o
     configuration = ModelConfiguration.model_validate(candidate.model_dump())
     started_at = monotonic()
     try:
-        async for _ in connection_test_adapter.stream_messages(
+        async for event in connection_test_adapter.stream_messages(
             [{"role": "user", "content": "ping"}], configuration, max_tokens=8
         ):
-            pass
+            if getattr(event, "type", None) == "error":
+                message = getattr(event, "error", "模型服务请求失败")
+                return {"ok": False, "message": _safe_model_error(RuntimeError(str(message)), configuration.apiKey)}
     except Exception as error:
         return {"ok": False, "message": _safe_model_error(error, configuration.apiKey)}
     return {
@@ -2086,6 +2091,11 @@ def _runtime_message_snapshot(message: object) -> dict[str, object]:
     value = asdict(message)
     if not value.get("attachments"):
         value.pop("attachments", None)
+    for key in ("timestamp", "usage"):
+        if value.get(key) is None:
+            value.pop(key, None)
+    if not value.get("nested_calls"):
+        value.pop("nested_calls", None)
     return value
 
 
@@ -2196,7 +2206,10 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         placeholder_id,
                         event.message.content,
                         "streaming",
-                        metadata={"runtimeStopReason": event.message.stop_reason},
+                        metadata={
+                            **event.message.metadata,
+                            "runtimeStopReason": event.message.stop_reason,
+                        },
                     )
                 else:
                     final_message = session_store.append_agent_message(
