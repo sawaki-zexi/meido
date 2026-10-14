@@ -24,6 +24,7 @@ class MailManageTool:
             "properties": {
                 "action": {"type": "string", "enum": ["status", "sync", "enable", "pause", "resume", "list", "read", "drafts", "sent_samples", "process_pending", "process_thread", "process", "retry", "regenerate", "draft"]},
                 "mailId": {"type": "string", "maxLength": 100},
+                "draftId": {"type": "string", "maxLength": 100},
                 "threadId": {"type": "string", "maxLength": 200},
                 "body": {"type": "string", "maxLength": 12000},
                 "requestId": {"type": "string", "maxLength": 100},
@@ -46,11 +47,12 @@ class MailManageTool:
         del on_update
         action = str(arguments.get("action", ""))
         mail_id = str(arguments.get("mailId", ""))
+        draft_id = str(arguments.get("draftId", ""))
         thread_id = str(arguments.get("threadId", ""))
         body = str(arguments.get("body", ""))
         request_id = str(arguments.get("requestId") or context.tool_call_id or "")
         try:
-            result = await self.service.role_action(action, mail_id=mail_id, query=body, request_id=request_id, thread_id=thread_id, role_id=context.role_id, run_id=context.run_id)
+            result = await self.service.role_action(action, mail_id=mail_id, draft_id=draft_id, query=body, request_id=request_id, thread_id=thread_id, role_id=context.role_id, run_id=context.run_id)
             return AgentToolResult(json.dumps(result, ensure_ascii=False), details={"action": action, "mailId": mail_id or None, "status": "completed"})
         except Exception as error:
             self.service.store.audit(action or "unknown", context.role_id, context.run_id, mail_id or None, "failed", str(error))

@@ -663,7 +663,7 @@ class MailService:
         self.store.set_setting("reminder_role_id", role_id or "")
         return {"roleId": role_id or None}
 
-    async def role_action(self, action: str, *, mail_id: str = "", query: str = "", request_id: str = "", thread_id: str = "", role_id: str, run_id: str) -> dict[str, object]:
+    async def role_action(self, action: str, *, mail_id: str = "", draft_id: str = "", query: str = "", request_id: str = "", thread_id: str = "", role_id: str, run_id: str) -> dict[str, object]:
         if action in {"enable", "resume"}:
             result = self.enable()
             self.store.audit(action, role_id, run_id, None, "completed")
@@ -735,7 +735,12 @@ class MailService:
             if not query.strip():
                 raise ValueError("草稿正文不能为空")
             connection = self._require_draft_ready()
-            task_key = f"{self.store.account_scope(connection.username)}:role-draft:{item.id}:{request_id or uuid.uuid4().hex}"
+            requested_draft = None
+            if draft_id:
+                requested_draft = next((draft for draft in self.store.list_drafts_for_mail(item.id, account=connection.username) if draft.id == draft_id), None)
+                if requested_draft is None:
+                    raise ValueError("指定草稿不存在或不属于当前邮件")
+            task_key = f"{self.store.account_scope(connection.username)}:role-draft:{item.id}:{draft_id or 'new'}:{request_id or uuid.uuid4().hex}"
             marker = f"draft-{_hash(task_key)[:32]}"
             if item.id in self._processing:
                 raise RuntimeError("该邮件已有草稿任务正在处理中")
@@ -743,6 +748,13 @@ class MailService:
             self._processing.add(item.id)
             try:
                 await asyncio.to_thread(self._refresh_remote_drafts, adapter, connection.drafts_folder, connection.username)
+                if requested_draft is not None:
+                    current = next((draft for draft in adapter.drafts(connection.drafts_folder) if draft.marker == requested_draft.id), None)
+                    if current is None:
+                        self.store.update_draft(requested_draft.id, remote_missing=True, status="missing")
+                        raise MailAdapterError("指定的 QQ 草稿已删除，无法基于它创建新版本")
+                    if current.raw_hash != requested_draft.remote_hash:
+                        self.store.update_draft(requested_draft.id, remote_uid=current.uid, remote_hash=current.raw_hash, stale=True, status="manual_modified")
                 existing = self.store.draft_for_task(task_key, account=connection.username)
                 if existing is not None:
                     if existing.remote_missing:

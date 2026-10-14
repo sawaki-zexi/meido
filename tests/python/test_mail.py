@@ -556,6 +556,28 @@ def test_role_created_draft_is_idempotent_and_read_operations_are_audited(tmp_pa
     assert operations.count("draft") == 2
 
 
+def test_role_can_create_a_new_version_from_an_existing_draft(tmp_path):
+    service, store, adapter = make_service(tmp_path)
+    item, _ = add_owner_item(store, SimpleNamespace(
+        uid="20", folder="INBOX", message_id="<source-20@example.com>", thread_id="thread-20", sender="Carol <carol@example.com>",
+        reply_to="carol@example.com", recipients="owner@qq.com", subject="版本", received_at="2026-10-14T00:00:00Z", body_text="请确认。", in_reply_to="", references="",
+    ))
+
+    first = asyncio.run(service.role_action("draft", mail_id=item.id, query="原始回复", request_id="draft-v1", role_id="role-1", run_id="run-1"))
+    original_remote = adapter.draft_rows[0]
+    adapter.draft_rows[0] = RemoteDraft(original_remote.marker, original_remote.uid, original_remote.folder, original_remote.message_id, original_remote.subject, original_remote.recipients, "主人改过的回复", "manually-edited")
+    second = asyncio.run(service.role_action("draft", mail_id=item.id, draft_id=first["draftId"], query="修改后的回复", request_id="draft-v2", role_id="role-1", run_id="run-2"))
+
+    drafts = store.list_drafts_for_mail(item.id, account="owner@qq.com")
+    assert second["draftId"] != first["draftId"]
+    assert len(drafts) == 2
+    assert {draft.body for draft in drafts} == {"原始回复", "修改后的回复"}
+    original = next(draft for draft in drafts if draft.id == first["draftId"])
+    assert original.status == "manual_modified"
+    assert original.stale is True
+    assert len(adapter.draft_rows) == 2
+
+
 def test_persisted_job_worker_returns_final_result(tmp_path):
     service, store, _adapter = make_service(tmp_path)
     item, _ = add_owner_item(store, SimpleNamespace(
