@@ -14,7 +14,7 @@ class MailManageTool:
             "Manage the owner's QQ mail service only when the owner clearly requests an email action. "
             "You may check status, sync, enable or pause processing, list or read synchronized mail, "
             "list QQ drafts, inspect recent sent-message samples, process pending mail or a thread, "
-            "retry work, create a draft, or create a new draft version. When asked to modify a draft, "
+            "retry work, resume processing, create a draft, or create a new draft version. When asked to modify a draft, "
             "create a new version and preserve the existing one. Never send, delete, archive, "
             "or move mail. Draft creation writes only to QQ Drafts; the owner reviews and sends there. "
             "Use an exact mailId or threadId from the list."
@@ -22,7 +22,7 @@ class MailManageTool:
         input_schema={
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["status", "sync", "enable", "pause", "list", "read", "drafts", "sent_samples", "process_pending", "process_thread", "process", "retry", "regenerate", "draft"]},
+                "action": {"type": "string", "enum": ["status", "sync", "enable", "pause", "resume", "list", "read", "drafts", "sent_samples", "process_pending", "process_thread", "process", "retry", "regenerate", "draft"]},
                 "mailId": {"type": "string", "maxLength": 100},
                 "threadId": {"type": "string", "maxLength": 200},
                 "body": {"type": "string", "maxLength": 12000},

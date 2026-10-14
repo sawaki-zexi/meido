@@ -99,6 +99,12 @@ class MailService:
         self.store.begin_candidate(host.strip(), port, username.strip())
         return self.store.public_status()
 
+    def _require_draft_ready(self) -> MailConnection:
+        connection = self.store.connection()
+        if not connection.verified or not connection.auto_draft_ready:
+            raise ValueError("请先完成 QQ 草稿能力验证，包括在 QQ 网页端修改并手动发送测试草稿")
+        return connection
+
     def test_connection(self, *, write_test: bool = False) -> dict[str, object]:
         candidate = self.store.candidate()
         if not candidate:
@@ -153,19 +159,36 @@ class MailService:
             marker = str(candidate["marker"])
             if not adapter.verify_test_sent(marker, folders):
                 raise ValueError("尚未在 QQ 网页端手动发送测试草稿")
-            self.store.confirm_candidate_test_sent()
-            self.store.mark_test_draft_sent(marker)
-            self.store.save_connection(MailConnection(host=candidate_connection.host, port=candidate_connection.port, username=candidate_connection.username, verified=True, auto_draft_ready=True, inbox_folder=folders["inbox"], sent_folder=folders["sent"], drafts_folder=folders["drafts"]))
-            self.credentials.set("qq-password", password)
-            self.credentials.set("candidate-password", "")
+            previous_password = self.credentials.get("qq-password")
+            activated = MailConnection(
+                host=candidate_connection.host,
+                port=candidate_connection.port,
+                username=candidate_connection.username,
+                verified=True,
+                auto_draft_ready=True,
+                inbox_folder=folders["inbox"],
+                sent_folder=folders["sent"],
+                drafts_folder=folders["drafts"],
+            )
+            try:
+                self.credentials.set("qq-password", password)
+                self.store.save_connection(activated, confirmed_test_marker=marker)
+            except Exception:
+                try:
+                    self.credentials.set("qq-password", previous_password)
+                except Exception as rollback_error:
+                    logger.error("无法恢复原 QQ 邮箱凭据：%s", type(rollback_error).__name__)
+                raise
+            try:
+                self.credentials.set("candidate-password", "")
+            except Exception as error:
+                logger.warning("无法清理 QQ 候选凭据：%s", type(error).__name__)
             return self.public_status()
         finally:
             adapter.close()
 
     def enable(self) -> dict[str, object]:
-        connection = self.store.connection()
-        if not connection.auto_draft_ready:
-            raise ValueError("请先完成 QQ 草稿可编辑和手动发送验证")
+        self._require_draft_ready()
         self.store.update_connection(enabled=True, paused=False, last_error=None)
         return self.public_status()
 
@@ -192,6 +215,10 @@ class MailService:
             raise ValueError("不支持的邮件任务")
         if not request_id.strip():
             raise ValueError("邮件任务缺少请求标识")
+        if kind in {"process", "retry", "regenerate", "process_pending", "process_thread"}:
+            self._require_draft_ready()
+        elif kind == "sync" and not self.store.connection().verified:
+            raise ValueError("请先验证并保存 QQ 邮箱连接")
         account_scope = self.store.account_scope(self.store.connection().username)
         request_key = f"{account_scope}:{kind}:{target_id}:{request_id.strip()}"
         job = self.store.enqueue_job(job_id=f"mail-job-{uuid.uuid4().hex}", request_key=request_key, kind=kind, target_id=target_id, payload=payload, account=self.store.connection().username)
@@ -315,6 +342,7 @@ class MailService:
         errors: list[str] = []
         for item in items:
             try:
+                existing_auto_draft = self.store.draft_for_task(f"auto:{item.id}:v1", account=self.store.connection().username)
                 result = await self.process_item(
                     item.id,
                     adapter=adapter,
@@ -325,8 +353,10 @@ class MailService:
                 processed += 1
                 if result.status == "drafted" and result.draft_id:
                     draft = self.store.draft_for_task(f"auto:{item.id}:v1", account=self.store.connection().username)
-                    if draft is not None and draft.id == result.draft_id:
+                    if existing_auto_draft is None and draft is not None and draft.id == result.draft_id:
                         created_draft_ids.append(result.draft_id)
+                elif result.status in {"failed", "uncertain"}:
+                    errors.append(f"{item.subject or item.id}: {result.last_error or result.status}")
             except Exception as error:
                 errors.append(f"{item.subject or item.id}: {_clean_error(error)}")
         return processed, sorted(set(created_draft_ids)), errors
@@ -345,9 +375,7 @@ class MailService:
 
     async def process_pending(self, *, include_uncertain: bool = True, source_role_id: str = "", run_id: str = "", batch_key: str = "") -> dict[str, object]:
         batch_key = batch_key or uuid.uuid4().hex
-        connection = self.store.connection()
-        if not connection.auto_draft_ready:
-            raise ValueError("请先验证 QQ 邮箱草稿能力")
+        connection = self._require_draft_ready()
         adapter = self._adapter(connection)
         errors: list[str] = []
         try:
@@ -374,9 +402,7 @@ class MailService:
         thread = self.store.thread_items(thread_id, account=self.store.connection().username)
         if not thread:
             raise KeyError(thread_id)
-        connection = self.store.connection()
-        if not connection.auto_draft_ready:
-            raise ValueError("请先验证 QQ 邮箱草稿能力")
+        connection = self._require_draft_ready()
         adapter = self._adapter(connection)
         errors: list[str] = []
         try:
@@ -427,10 +453,10 @@ class MailService:
         if item_id in self._processing:
             raise RuntimeError("该邮件已有处理任务正在运行")
         account = self.store.connection().username
+        connection = self._require_draft_ready()
         task_key = f"regen:{item_id}:{request_id or uuid.uuid4().hex}" if regenerate else f"auto:{item_id}:v1"
         own_adapter = adapter is None
         adapter = adapter or self._adapter()
-        connection = self.store.connection()
         folders = folders or {"inbox": connection.inbox_folder, "sent": connection.sent_folder, "drafts": connection.drafts_folder}
         existing_task_draft = self.store.draft_for_task(task_key, account=account)
         if existing_task_draft is not None:
@@ -442,7 +468,13 @@ class MailService:
                     return self.store.update_item(item_id, status="uncertain", last_error="QQ 草稿已删除或无法核验；普通重试不会自动重建")
                 if current.raw_hash != existing_task_draft.remote_hash:
                     self.store.update_draft(existing_task_draft.id, remote_uid=current.uid, remote_hash=current.raw_hash, stale=True, status="manual_modified")
-                return self.store.get_item(item_id, account=account) or item
+                return self.store.update_item(
+                    item_id,
+                    status="drafted",
+                    needs_reply=True,
+                    draft_id=existing_task_draft.id,
+                    last_error=None,
+                )
             finally:
                 if own_adapter:
                     adapter.close()
@@ -632,7 +664,7 @@ class MailService:
         return {"roleId": role_id or None}
 
     async def role_action(self, action: str, *, mail_id: str = "", query: str = "", request_id: str = "", thread_id: str = "", role_id: str, run_id: str) -> dict[str, object]:
-        if action == "enable":
+        if action in {"enable", "resume"}:
             result = self.enable()
             self.store.audit(action, role_id, run_id, None, "completed")
             return result
@@ -702,7 +734,7 @@ class MailService:
         if action == "draft":
             if not query.strip():
                 raise ValueError("草稿正文不能为空")
-            connection = self.store.connection()
+            connection = self._require_draft_ready()
             task_key = f"{self.store.account_scope(connection.username)}:role-draft:{item.id}:{request_id or uuid.uuid4().hex}"
             marker = f"draft-{_hash(task_key)[:32]}"
             if item.id in self._processing:

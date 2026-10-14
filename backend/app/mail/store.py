@@ -174,9 +174,17 @@ class MailStore:
             last_error=row["last_error"], last_sync_at=row["last_sync_at"], updated_at=row["updated_at"],
         )
 
-    def save_connection(self, connection: MailConnection) -> MailConnection:
+    def save_connection(self, connection: MailConnection, *, confirmed_test_marker: str = "") -> MailConnection:
         now = _now()
         with self._connect() as db:
+            if confirmed_test_marker:
+                db.execute("BEGIN IMMEDIATE")
+                candidate = db.execute(
+                    "SELECT test_draft_present FROM mail_connection_candidate WHERE id=1 AND marker=?",
+                    (confirmed_test_marker,),
+                ).fetchone()
+                if candidate is None or not candidate["test_draft_present"]:
+                    raise ValueError("QQ 测试草稿状态已变化，请重新验证")
             db.execute("""INSERT INTO mail_connection
                 (id,host,port,username,use_ssl,enabled,paused,verified,auto_draft_ready,inbox_folder,sent_folder,drafts_folder,last_error,last_sync_at,updated_at)
                 VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -185,6 +193,15 @@ class MailStore:
                 auto_draft_ready=excluded.auto_draft_ready,inbox_folder=excluded.inbox_folder,sent_folder=excluded.sent_folder,
                 drafts_folder=excluded.drafts_folder,last_error=excluded.last_error,last_sync_at=excluded.last_sync_at,updated_at=excluded.updated_at""",
                 (connection.host, connection.port, connection.username, int(connection.use_ssl), int(connection.enabled), int(connection.paused), int(connection.verified), int(connection.auto_draft_ready), connection.inbox_folder, connection.sent_folder, connection.drafts_folder, connection.last_error, connection.last_sync_at, now))
+            if confirmed_test_marker:
+                db.execute(
+                    "UPDATE mail_connection_candidate SET test_sent=1,tested_at=? WHERE id=1 AND marker=?",
+                    (now, confirmed_test_marker),
+                )
+                db.execute(
+                    "UPDATE mail_test_drafts SET status='sent',sent_at=?,error=NULL WHERE marker=?",
+                    (now, confirmed_test_marker),
+                )
         return MailConnection(
             host=connection.host, port=connection.port, username=connection.username, use_ssl=connection.use_ssl,
             enabled=connection.enabled, paused=connection.paused, verified=connection.verified,
@@ -235,7 +252,24 @@ class MailStore:
             scope = _account_scope(account)
             source_uid = f"{scope}::{remote.folder}/{remote.uid}" if scope else f"{remote.folder}/{remote.uid}"
             remote_thread_id = str(remote.thread_id)
-            thread_id = remote_thread_id if scope and len(remote_thread_id) == 32 and all(char in "0123456789abcdef" for char in remote_thread_id.casefold()) else _thread_scope(remote_thread_id, account)
+            references = [value.strip() for value in str(remote.references or "").split() if value.strip()]
+            parent_ids = [*references, str(remote.in_reply_to or "").strip()]
+            thread_id = ""
+            for parent_id in parent_ids:
+                if not parent_id:
+                    continue
+                sql = "SELECT thread_id FROM mail_items WHERE message_id=?"
+                args: tuple[object, ...] = (parent_id,)
+                if scope:
+                    sql += " AND source_uid LIKE ?"
+                    args += (f"{scope}::%",)
+                sql += " ORDER BY created_at LIMIT 1"
+                parent = db.execute(sql, args).fetchone()
+                if parent is not None:
+                    thread_id = str(parent["thread_id"])
+                    break
+            if not thread_id:
+                thread_id = remote_thread_id if scope and len(remote_thread_id) == 32 and all(char in "0123456789abcdef" for char in remote_thread_id.casefold()) else _thread_scope(remote_thread_id, account)
             existing = db.execute("SELECT * FROM mail_items WHERE source_uid=?", (source_uid,)).fetchone()
             if existing:
                 db.execute("UPDATE mail_items SET mailbox=?,message_id=?,thread_id=?,sender=?,reply_to=?,recipients=?,subject=?,received_at=?,body_text=?,in_reply_to=?,references_text=?,updated_at=? WHERE id=?", (remote.folder, remote.message_id, thread_id, remote.sender, remote.reply_to, remote.recipients, remote.subject, remote.received_at, remote.body_text, remote.in_reply_to, remote.references, now, existing["id"]))
@@ -462,10 +496,6 @@ class MailStore:
             row = db.execute("SELECT marker,status,created_at,sent_at,error FROM mail_test_drafts ORDER BY created_at DESC LIMIT 1").fetchone()
         return dict(row) if row else None
 
-    def mark_test_draft_sent(self, marker: str) -> None:
-        with self._connect() as db:
-            db.execute("UPDATE mail_test_drafts SET status='sent',sent_at=?,error=NULL WHERE marker=?", (_now(), marker))
-
     def mark_test_draft_error(self, marker: str, error: str) -> None:
         with self._connect() as db:
             db.execute("UPDATE mail_test_drafts SET status='failed',error=? WHERE marker=?", (error[:300], marker))
@@ -492,10 +522,6 @@ class MailStore:
         with self._connect() as db:
             row = db.execute("SELECT * FROM mail_connection_candidate WHERE id=1").fetchone()
         return dict(row) if row else None
-
-    def confirm_candidate_test_sent(self) -> None:
-        with self._connect() as db:
-            db.execute("UPDATE mail_connection_candidate SET test_sent=1 WHERE id=1")
 
     def setting(self, key: str, default: str = "") -> str:
         with self._connect() as db:

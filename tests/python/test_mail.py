@@ -98,6 +98,54 @@ def test_mail_processing_is_idempotent_and_keeps_reply_metadata(tmp_path):
     assert len(adapter.draft_rows) == 1
 
 
+def test_retry_repairs_item_state_when_local_draft_survived_a_crash(tmp_path):
+    service, store, adapter = make_service(tmp_path)
+    item, _ = add_owner_item(store, SimpleNamespace(
+        uid="18", folder="INBOX", message_id="<recovered-state@example.com>", thread_id="recovered-state-thread", sender="sender@example.com",
+        reply_to="sender@example.com", recipients="owner@qq.com", subject="恢复状态", received_at="2026-10-14T00:00:00Z", body_text="请回复", in_reply_to="", references="",
+    ))
+    asyncio.run(service.process_item(item.id, adapter=adapter, folders={"inbox": "INBOX", "sent": "Sent", "drafts": "Drafts"}))
+    saved = store.draft_for_task(f"auto:{item.id}:v1", account="owner@qq.com")
+    store.update_item(item.id, status="processing", needs_reply=None, draft_id=None, last_error="")
+
+    recovered = asyncio.run(service.process_item(item.id, adapter=adapter, folders={"inbox": "INBOX", "sent": "Sent", "drafts": "Drafts"}))
+
+    assert recovered.status == "drafted"
+    assert recovered.needs_reply is True
+    assert recovered.draft_id == saved.id
+    assert len(adapter.draft_rows) == 1
+
+
+def test_mail_processing_requires_completed_qq_draft_interop(tmp_path):
+    service, store, adapter = make_service(tmp_path)
+    store.update_connection(verified=False, auto_draft_ready=False)
+    item, _ = add_owner_item(store, SimpleNamespace(
+        uid="15", folder="INBOX", message_id="<not-ready@example.com>", thread_id="not-ready-thread", sender="sender@example.com",
+        reply_to="sender@example.com", recipients="owner@qq.com", subject="未验证", received_at="2026-10-14T00:00:00Z", body_text="请回复", in_reply_to="", references="",
+    ))
+
+    with pytest.raises(ValueError, match="QQ 草稿能力"):
+        asyncio.run(service.process_item(item.id, adapter=adapter, folders={"inbox": "INBOX", "sent": "Sent", "drafts": "Drafts"}))
+
+    assert adapter.append_calls == []
+    assert store.get_item(item.id, account="owner@qq.com").status == "new"
+
+
+def test_role_cannot_create_a_draft_before_qq_draft_interop(tmp_path):
+    service, store, adapter = make_service(tmp_path)
+    store.update_connection(verified=False, auto_draft_ready=False)
+    item, _ = add_owner_item(store, SimpleNamespace(
+        uid="16", folder="INBOX", message_id="<role-not-ready@example.com>", thread_id="role-not-ready-thread", sender="sender@example.com",
+        reply_to="sender@example.com", recipients="owner@qq.com", subject="未验证角色稿", received_at="2026-10-14T00:00:00Z", body_text="请回复", in_reply_to="", references="",
+    ))
+
+    with pytest.raises(ValueError, match="QQ 草稿能力"):
+        asyncio.run(service.role_action("draft", mail_id=item.id, query="回复内容", request_id="draft-before-ready", role_id="role-1", run_id="run-1"))
+
+    assert adapter.append_calls == []
+    assert store.list_drafts_for_mail(item.id, account="owner@qq.com") == []
+
+
 def test_reply_draft_references_include_the_source_message_id(tmp_path):
     service, _store, adapter = make_service(tmp_path)
     item, _ = add_owner_item(_store, SimpleNamespace(
@@ -203,6 +251,42 @@ def test_reminder_reports_failure_even_without_a_created_draft(tmp_path):
     assert "1 封邮件处理失败或待核实" in messages[0][2]
     assert "预算确认：模型不可用" in messages[0][2]
     assert store.pending_reminder_batches() == []
+
+
+def test_uncertain_draft_state_is_included_in_the_reminder_batch(tmp_path):
+    service, store, _adapter = make_service(tmp_path)
+    item, _ = add_owner_item(store, SimpleNamespace(
+        uid="19", folder="INBOX", message_id="<uncertain-reminder@example.com>", thread_id="uncertain-reminder-thread", sender="sender@example.com",
+        reply_to="sender@example.com", recipients="owner@qq.com", subject="草稿待核实", received_at="2026-10-14T00:00:00Z", body_text="请确认", in_reply_to="", references="",
+    ))
+    draft = store.save_draft(item.id, task_key=f"auto:{item.id}:v1", remote_uid="1", folder="Drafts", body="reply", subject="Re: 草稿待核实", recipients="sender@example.com", message_id="<old-draft>", generated_hash="g", remote_hash="r")
+    store.update_item(item.id, status="uncertain", needs_reply=True, draft_id=draft.id, last_error="QQ 草稿已删除")
+
+    result = asyncio.run(service.process_pending())
+
+    assert result["errors"]
+    assert "草稿待核实" in result["errors"][0]
+    assert "QQ 草稿已删除" in result["errors"][0]
+    batch = store.reminder_batches(account="owner@qq.com")[0]
+    assert batch["failureCount"] == 1
+    assert "QQ 草稿已删除" in batch["failureSummaries"][0]
+
+
+def test_recovered_existing_draft_is_not_reported_as_a_new_reminder(tmp_path):
+    service, store, adapter = make_service(tmp_path)
+    item, _ = add_owner_item(store, SimpleNamespace(
+        uid="20", folder="INBOX", message_id="<recovered-reminder@example.com>", thread_id="recovered-reminder-thread", sender="sender@example.com",
+        reply_to="sender@example.com", recipients="owner@qq.com", subject="已有草稿", received_at="2026-10-14T00:00:00Z", body_text="请回复", in_reply_to="", references="",
+    ))
+    asyncio.run(service.process_item(item.id, adapter=adapter, folders={"inbox": "INBOX", "sent": "Sent", "drafts": "Drafts"}))
+    original_draft = store.draft_for_task(f"auto:{item.id}:v1", account="owner@qq.com")
+    store.update_item(item.id, status="uncertain", needs_reply=True, draft_id=original_draft.id, last_error="服务重启后任务结果待核实")
+
+    result = asyncio.run(service.process_pending())
+
+    assert result["processed"] == 1
+    assert result["draftIds"] == []
+    assert store.reminder_batches(account="owner@qq.com") == []
 
 
 def test_reminder_batch_waits_without_a_role_then_delivers_when_configured(tmp_path):
@@ -321,6 +405,86 @@ def test_connection_retry_reuses_test_draft_after_readback_failure(tmp_path, mon
     assert state["append_calls"] == 1
 
 
+@pytest.mark.parametrize("failure_stage", ["credential", "database"])
+def test_candidate_activation_failure_preserves_the_existing_connection(tmp_path, monkeypatch, failure_stage):
+    service, store, _adapter = make_service(tmp_path)
+    credentials = service.credentials
+    service.configure(host="imap.qq.com", port=993, username="new@qq.com", password="candidate-secret")
+    marker = "meido-test-candidate"
+    folders = {"inbox": "INBOX", "sent": "Sent", "drafts": "Drafts"}
+    store.set_candidate_marker(marker, folders, present=True)
+    store.create_test_draft(marker)
+    store.mark_test_draft_created(marker)
+
+    class CandidateAdapter:
+        def __init__(self, _connection, _password):
+            pass
+
+        def verify_test_sent(self, _marker, _folders):
+            return True
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mail_service_module, "QQMailAdapter", CandidateAdapter)
+    if failure_stage == "credential":
+        original_set = credentials.set
+
+        def fail_active_secret(key, value):
+            if key == "qq-password" and value == "candidate-secret":
+                raise RuntimeError("credential write failed")
+            original_set(key, value)
+
+        credentials.set = fail_active_secret
+    else:
+        def fail_save(*_args, **_kwargs):
+            raise RuntimeError("connection save failed")
+
+        monkeypatch.setattr(store, "save_connection", fail_save)
+
+    with pytest.raises(RuntimeError):
+        service.confirm_test_draft_sent()
+
+    assert store.connection().username == "owner@qq.com"
+    assert store.connection().auto_draft_ready is True
+    assert credentials.get("qq-password") == "secret"
+    assert credentials.get("candidate-password") == "candidate-secret"
+    assert store.candidate()["test_sent"] == 0
+    assert store.test_draft()["status"] == "created"
+
+
+def test_candidate_activation_commits_connection_and_test_state_together(tmp_path, monkeypatch):
+    service, store, _adapter = make_service(tmp_path)
+    service.configure(host="imap.qq.com", port=993, username="new@qq.com", password="candidate-secret")
+    marker = "meido-test-success"
+    folders = {"inbox": "INBOX", "sent": "Sent", "drafts": "Drafts"}
+    store.set_candidate_marker(marker, folders, present=True)
+    store.create_test_draft(marker)
+    store.mark_test_draft_created(marker)
+
+    class CandidateAdapter:
+        def __init__(self, _connection, _password):
+            pass
+
+        def verify_test_sent(self, _marker, _folders):
+            return True
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mail_service_module, "QQMailAdapter", CandidateAdapter)
+
+    result = service.confirm_test_draft_sent()
+
+    assert result["username"] == "new@qq.com"
+    assert result["autoDraftReady"] is True
+    assert store.connection().username == "new@qq.com"
+    assert store.candidate()["test_sent"] == 1
+    assert store.test_draft()["status"] == "sent"
+    assert service.credentials.get("qq-password") == "candidate-secret"
+    assert service.credentials.get("candidate-password") == ""
+
+
 def test_retry_does_not_report_a_deleted_qq_draft_as_available(tmp_path):
     service, store, adapter = make_service(tmp_path)
     item, _ = add_owner_item(store, SimpleNamespace(
@@ -361,6 +525,17 @@ def test_role_thread_action_audits_partial_failures(tmp_path, monkeypatch):
 
     assert result["errors"]
     assert store.list_audits()[0]["status"] == "partial"
+
+
+def test_role_can_explicitly_resume_the_mail_service(tmp_path):
+    service, store, _adapter = make_service(tmp_path)
+    store.update_connection(enabled=False, paused=True)
+
+    result = asyncio.run(service.role_action("resume", role_id="role-1", run_id="resume-run"))
+
+    assert result["enabled"] is True
+    assert result["paused"] is False
+    assert store.list_audits()[0]["operation"] == "resume"
 
 
 def test_role_created_draft_is_idempotent_and_read_operations_are_audited(tmp_path):
@@ -456,6 +631,25 @@ def test_web_task_api_accepts_job_and_exposes_terminal_result(tmp_path, monkeypa
         assert response.json()["job"]["result"]["status"] == "drafted"
 
 
+def test_web_api_rejects_draft_work_until_qq_draft_interop_is_complete(tmp_path, monkeypatch):
+    service, store, _adapter = make_service(tmp_path)
+    store.update_connection(verified=False, auto_draft_ready=False)
+    item, _ = add_owner_item(store, SimpleNamespace(
+        uid="17", folder="INBOX", message_id="<api-not-ready@example.com>", thread_id="api-not-ready-thread", sender="sender@example.com",
+        reply_to="sender@example.com", recipients="owner@qq.com", subject="未验证 API", received_at="2026-10-14T00:00:00Z", body_text="请回复", in_reply_to="", references="",
+    ))
+    monkeypatch.setattr(mail_api, "mail_service", service)
+
+    app = FastAPI()
+    app.include_router(mail_api.router)
+    with TestClient(app) as client:
+        response = client.post(f"/api/mail/items/{item.id}/process", json={"requestId": "before-ready"})
+
+    assert response.status_code == 409
+    assert "QQ 草稿能力" in response.json()["detail"]
+    assert service.job_status(response.json().get("job", {}).get("jobId", "missing")) is None
+
+
 def test_mail_records_and_checkpoints_are_scoped_to_the_qq_account(tmp_path):
     store = MailStore(tmp_path / "mail.db")
     remote = SimpleNamespace(
@@ -474,6 +668,21 @@ def test_mail_records_and_checkpoints_are_scoped_to_the_qq_account(tmp_path):
     assert store.count_items(account="second@qq.com") == 1
     assert store.checkpoint("INBOX", account="first@qq.com") == 17
     assert store.checkpoint("INBOX", account="second@qq.com") == 3
+
+
+def test_reply_without_references_joins_the_known_parent_thread(tmp_path):
+    store = MailStore(tmp_path / "mail.db")
+    parent, _ = store.upsert_item(SimpleNamespace(
+        uid="1", folder="INBOX", message_id="<thread-root@example.com>", thread_id="remote-root", sender="sender@example.com",
+        reply_to="sender@example.com", recipients="owner@qq.com", subject="根邮件", received_at="2026-10-13T00:00:00Z", body_text="root", in_reply_to="", references="",
+    ), account="owner@qq.com")
+    reply, _ = store.upsert_item(SimpleNamespace(
+        uid="2", folder="INBOX", message_id="<thread-reply@example.com>", thread_id="remote-reply", sender="sender@example.com",
+        reply_to="sender@example.com", recipients="owner@qq.com", subject="回复", received_at="2026-10-14T00:00:00Z", body_text="reply", in_reply_to="<thread-root@example.com>", references="",
+    ), account="owner@qq.com")
+
+    assert reply.thread_id == parent.thread_id
+    assert [item.id for item in store.thread_items(parent.thread_id, account="owner@qq.com")] == [parent.id, reply.id]
 
 
 def test_account_switch_hides_other_mail_threads_and_jobs(tmp_path):
