@@ -54,6 +54,23 @@ class RuntimeManager:
         self._tokens[run.runId] = CancellationToken()
         return result
 
+    async def reserve_existing_user_message(self, run: AgentRun, message_id: str) -> tuple[AgentRun, Message, Message]:
+        """Reserve a run around a channel message already written to SQLite."""
+
+        lock = self.lock_for(run.roleId)
+        # Network intake has already durably accepted this message. Queue it
+        # behind the current role turn instead of dropping it as ActiveRunError.
+        await lock.acquire()
+        try:
+            result = self.sessions.create_run_with_existing_user_message(run, message_id)
+        except BaseException:
+            lock.release()
+            raise
+        self._reserved_roles[run.runId] = run.roleId
+        self._assistant_message_ids[run.runId] = result[2].id
+        self._tokens[run.runId] = CancellationToken()
+        return result
+
     def attach_current_task(self, run_id: str) -> bool:
         """Bind cancellation to the task consuming a reserved run's SSE stream."""
 

@@ -3,6 +3,7 @@ import type { Role } from "./api/types";
 import { ChatView, WelcomeView } from "./features/chat/ChatView";
 import { useChat } from "./features/chat/useChat";
 import { MemoryPanel, type MemoryOrigin } from "./features/memory/MemoryPanel";
+import { ChannelView, type ChannelMemorySource } from "./features/channels/ChannelView";
 import { RoleList } from "./features/role-management/RoleList";
 import { useRoles } from "./features/role-management/useRoles";
 import { SettingsDialog } from "./features/settings/SettingsDialog";
@@ -14,7 +15,7 @@ import { Icon, IconButton } from "./ui/Icon";
 import { Notice } from "./ui/Status";
 
 /** What the main pane shows: a conversation, the role tavern (all role cards), or the open role's memories. */
-type View = "chat" | "tavern" | "memories";
+type View = "chat" | "tavern" | "memories" | "channels";
 /** Overlay on top of the main pane; null means none. "card" reveals a newly created role's card. */
 type Panel = null | "create" | "profile" | "settings" | "card";
 
@@ -38,6 +39,7 @@ export function App() {
   const booted = useRef(false);
   // The message a memory came from; the chat scrolls to and marks it.
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const [channelSource, setChannelSource] = useState<ChannelMemorySource | null>(null);
   const [previewRole, setPreviewRole] = useState<Role | null>(null);
 
   const openChat = async (role: Role) => {
@@ -69,9 +71,13 @@ export function App() {
   const showProfile = (role: Role) => { roles.select(role); roles.startEdit(); setPanel("profile"); };
   const openTavern = () => { setView("tavern"); setShowList(false); };
   const backToChat = () => { setView("chat"); setShowList(false); setHighlightedId(null); };
+  const openChannels = () => { setChannelSource(null); setView("channels"); setShowList(false); };
 
   const openMemorySource = async (role: Role, origin: MemoryOrigin, messageId?: string) => {
     chat.setError("");
+    if (origin.sessionKey.startsWith("thread:")) {
+      setChannelSource({ origin, messageId }); setView("channels"); setShowList(false); return;
+    }
     if (origin.sessionKey !== `role:${role.id}`) { chat.setError("来源会话与当前角色不匹配"); setView("chat"); return; }
     const messages = await chat.open(role);
     setView("chat");
@@ -139,7 +145,8 @@ export function App() {
         <h1 className="brand">Meido</h1>
       </header>
       <nav className="side-tabs" aria-label="页面">
-        <button type="button" aria-current={view !== "tavern" ? "page" : undefined} onClick={backToChat}><Icon name="chat" size={17} />对话</button>
+        <button type="button" aria-current={view === "chat" ? "page" : undefined} onClick={backToChat}><Icon name="chat" size={17} />对话</button>
+        <button type="button" aria-current={view === "channels" ? "page" : undefined} onClick={openChannels}><Icon name="refresh" size={17} />手机会话</button>
         <button type="button" aria-current={view === "tavern" ? "page" : undefined} onClick={openTavern}><Icon name="cards" size={17} />角色</button>
       </nav>
       <div className="sidebar-body">
@@ -156,6 +163,8 @@ export function App() {
         ? <TavernView roles={roles.roles} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onCreate={startCreate} onShow={showProfile} onChat={chatWith} onPreviewAvatar={setPreviewRole} />
         : view === "memories" && chatRole
         ? <MemoryPanel key={chatRole.id} role={chatRole} onBack={backToChat} onOpenSource={(origin, messageId) => void openMemorySource(chatRole, origin, messageId)} />
+        : view === "channels" && chatRole
+        ? <ChannelView key={chatRole.id} role={chatRole} onBack={backToChat} initialSource={channelSource} />
         : chatRole
         ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showProfile(chatRole)} onShowMemories={() => setView("memories")} onOpenTodoSource={(roleId, sessionKey, messageId) => void openTodoSource(roleId, sessionKey, messageId)} />
         : <WelcomeView loading={roles.loading || openingId !== null} hasRoles={roles.roles.length > 0} error={chat.error} onDismissError={() => chat.setError("")} onCreate={startCreate} onBack={() => setShowList(true)} />}

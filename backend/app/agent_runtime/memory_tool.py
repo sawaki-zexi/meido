@@ -111,7 +111,10 @@ class MemoryRecallTool:
 
         from ..memory_engine import MemoryQuery, MemoryScope
 
-        scope = MemoryScope(context.role_id, context.session_key)
+        bound_scope = getattr(self._memory, "scope", None)
+        if bound_scope is not None and bound_scope.role_id != context.role_id:
+            raise PermissionError("memory query scope does not match the current role")
+        scope = bound_scope if bound_scope is not None else MemoryScope(context.role_id, context.session_key)
         result = await self._memory.query(MemoryQuery(
             text=query,
             intent=intent,

@@ -14,7 +14,7 @@ import zipfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Protocol
+from typing import Callable, Iterable, Mapping, Protocol
 from urllib.parse import urlencode
 
 import httpx
@@ -368,7 +368,6 @@ class FeishuApiConnector:
             result = await self._get(f"/drive/v1/export_tasks/{ticket}")
             task_result = result.get("result")
             if isinstance(task_result, dict) and task_result.get("file_token"):
-                file_token = str(task_result["file_token"])
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     response = await client.get(
                         f"{self.base_url}/drive/v1/export_tasks/{ticket}/download",

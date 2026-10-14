@@ -1,0 +1,136 @@
+.channel-thread-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-message-source {
+  display: block;
+  margin-top: 3px;
+  color: #66716d;
+  font-size: 10px;
+}
+
+.channel-message-reply {
+  margin-top: 7px;
+  padding: 5px 8px;
+  border-left: 2px solid #b4c7be;
+  border-radius: 2px;
+  background: #f1f5f3;
+  color: #596b61;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.channel-message-mentions {
+  margin-top: 5px;
+  color: #42675a;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.channel-message > .channel-delivery {
+  display: inline-block;
+  margin: 4px 8px 0 0;
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.channel-message > .channel-delivery-failed {
+  color: #a5322b;
+}
+
+.channel-message > .channel-delivery-uncertain {
+  color: #956119;
+}
+
+.channel-receipt {
+  margin: 4px 0;
+  color: #66716d;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.channel-receipt summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.channel-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.channel-group-actions .channel-group-toggle {
+  display: flex;
+  align-items: center;
+  margin: 0;
+}
+
+.channel-group-actions button {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid #cfd7d3;
+  border-radius: 4px;
+  background: #fff;
+  color: #34433d;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.channel-group-actions button:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+.channel-identities {
+  margin-top: 14px;
+}
+
+.channel-identities-heading,
+.channel-identity {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.channel-identities-heading h4 {
+  margin: 4px 0;
+}
+
+.channel-identity {
+  padding: 8px 0;
+  border-bottom: 1px solid #e4e8e5;
+}
+
+.channel-identity small {
+  display: block;
+  margin-top: 3px;
+  color: #66716d;
+  font-size: 11px;
+}
+
+.channel-message-sender {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.channel-contact-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+.channel-source-avatar {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  object-fit: cover;
+}
