@@ -96,4 +96,22 @@ describe("OwnerKnowledgeSettings", () => {
     expect(await screen.findByText("上一版想法")).toBeInTheDocument();
     expect(screen.getByText(/模型服务请求失败.*HTTP 401/)).toBeInTheDocument();
   });
+
+  it("refreshes a pending understanding until the background result is available", async () => {
+    let reads = 0;
+    fakeBackend({
+      "GET /api/owner-knowledge": () => ({ body: { enabled: true, connected: true, oauthConfigured: true, embeddingReady: true, lastError: null, lastSync: null } }),
+      "GET /api/roles": () => ({ body: { roles: [{ id: "role-a", name: "测试角色" }] } }),
+      "GET /api/roles/role-a/owner-understanding": () => ({ body: ++reads === 1
+        ? { understanding: null, job: { status: "pending", lastError: null } }
+        : { understanding: { body: "新的想法", updatedAt: "2026-10-15T00:00:00Z" }, job: null },
+      }),
+      "GET /api/owner-knowledge/documents": () => ({ body: { documents: [] } }),
+    });
+    render(<OwnerKnowledgeSettings />);
+    expect(await screen.findByText("正在准备或生成角色想法…")).toBeInTheDocument();
+    expect(await screen.findByText("新的想法", {}, { timeout: 3500 })).toBeInTheDocument();
+    expect(screen.queryByText("正在准备或生成角色想法…")).not.toBeInTheDocument();
+    expect(reads).toBe(2);
+  });
 });
