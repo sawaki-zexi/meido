@@ -6,6 +6,31 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .models import ModelConfiguration, ModelConfigurationInput
+from .ai.model_protocol import (
+    ANTHROPIC_MESSAGES_API,
+    AZURE_OPENAI_RESPONSES_API,
+    BEDROCK_CONVERSE_API,
+    GOOGLE_GENERATIVE_API,
+    GOOGLE_VERTEX_API,
+    MISTRAL_CONVERSATIONS_API,
+    OPENAI_COMPLETIONS_API,
+    OPENAI_CODEX_RESPONSES_API,
+    OPENAI_RESPONSES_API,
+    PI_MESSAGES_API,
+)
+
+SUPPORTED_MODEL_APIS = frozenset({
+    OPENAI_COMPLETIONS_API,
+    OPENAI_RESPONSES_API,
+    ANTHROPIC_MESSAGES_API,
+    GOOGLE_GENERATIVE_API,
+    MISTRAL_CONVERSATIONS_API,
+    BEDROCK_CONVERSE_API,
+    PI_MESSAGES_API,
+    AZURE_OPENAI_RESPONSES_API,
+    OPENAI_CODEX_RESPONSES_API,
+    GOOGLE_VERTEX_API,
+})
 
 
 PROVIDER_PRESETS = (
@@ -15,6 +40,7 @@ PROVIDER_PRESETS = (
         "provider": "openai",
         "baseUrl": "https://api.openai.com/v1",
         "modelHint": "gpt-4.1-mini",
+        "api": OPENAI_COMPLETIONS_API,
     },
     {
         "id": "deepseek",
@@ -22,6 +48,7 @@ PROVIDER_PRESETS = (
         "provider": "deepseek",
         "baseUrl": "https://api.deepseek.com",
         "modelHint": "deepseek-chat",
+        "api": OPENAI_COMPLETIONS_API,
     },
     {
         "id": "dashscope",
@@ -29,6 +56,7 @@ PROVIDER_PRESETS = (
         "provider": "dashscope",
         "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "modelHint": "qwen-plus",
+        "api": OPENAI_COMPLETIONS_API,
     },
     {
         "id": "moonshot",
@@ -36,6 +64,7 @@ PROVIDER_PRESETS = (
         "provider": "moonshot",
         "baseUrl": "https://api.moonshot.cn/v1",
         "modelHint": "kimi-k2-0905-preview",
+        "api": OPENAI_COMPLETIONS_API,
     },
     {
         "id": "zhipu",
@@ -43,6 +72,7 @@ PROVIDER_PRESETS = (
         "provider": "zhipu",
         "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
         "modelHint": "glm-4.5",
+        "api": OPENAI_COMPLETIONS_API,
     },
     {
         "id": "siliconflow",
@@ -50,6 +80,7 @@ PROVIDER_PRESETS = (
         "provider": "siliconflow",
         "baseUrl": "https://api.siliconflow.cn/v1",
         "modelHint": "Qwen/Qwen3-32B",
+        "api": OPENAI_COMPLETIONS_API,
     },
     {
         "id": "openrouter",
@@ -57,6 +88,7 @@ PROVIDER_PRESETS = (
         "provider": "openrouter",
         "baseUrl": "https://openrouter.ai/api/v1",
         "modelHint": "openai/gpt-4.1-mini",
+        "api": OPENAI_COMPLETIONS_API,
     },
     {
         "id": "ollama",
@@ -64,6 +96,55 @@ PROVIDER_PRESETS = (
         "provider": "ollama",
         "baseUrl": "http://localhost:11434/v1",
         "modelHint": "qwen3:8b",
+        "api": OPENAI_COMPLETIONS_API,
+    },
+    {
+        "id": "openai-responses",
+        "label": "OpenAI Responses",
+        "provider": "openai-responses",
+        "baseUrl": "https://api.openai.com/v1",
+        "modelHint": "gpt-4.1-mini",
+        "api": OPENAI_RESPONSES_API,
+    },
+    {
+        "id": "anthropic",
+        "label": "Anthropic",
+        "provider": "anthropic",
+        "baseUrl": "https://api.anthropic.com/v1",
+        "modelHint": "claude-sonnet-4-5",
+        "api": ANTHROPIC_MESSAGES_API,
+    },
+    {
+        "id": "google",
+        "label": "Google Gemini",
+        "provider": "google",
+        "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+        "modelHint": "gemini-2.5-flash",
+        "api": GOOGLE_GENERATIVE_API,
+    },
+    {
+        "id": "mistral",
+        "label": "Mistral",
+        "provider": "mistral",
+        "baseUrl": "https://api.mistral.ai/v1",
+        "modelHint": "mistral-large-latest",
+        "api": MISTRAL_CONVERSATIONS_API,
+    },
+    {
+        "id": "bedrock",
+        "label": "Amazon Bedrock",
+        "provider": "bedrock",
+        "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+        "modelHint": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "api": BEDROCK_CONVERSE_API,
+    },
+    {
+        "id": "pi-messages",
+        "label": "Pi Messages",
+        "provider": "pi-messages",
+        "baseUrl": "http://localhost:8080",
+        "modelHint": "default",
+        "api": PI_MESSAGES_API,
     },
 )
 def validate_model_configuration(data: ModelConfigurationInput) -> None:
@@ -72,6 +153,22 @@ def validate_model_configuration(data: ModelConfigurationInput) -> None:
         raise ValueError("未知的服务商预设")
     if preset and data.provider != preset["provider"]:
         raise ValueError("服务商标识与所选预设不匹配")
+    if data.api not in SUPPORTED_MODEL_APIS:
+        raise ValueError("不支持的模型协议")
+    if preset and data.api != preset["api"]:
+        raise ValueError("模型协议与所选预设不匹配")
+    option_keys = {
+        AZURE_OPENAI_RESPONSES_API: {"deploymentName"},
+        OPENAI_CODEX_RESPONSES_API: {"accountId"},
+        GOOGLE_VERTEX_API: {"project", "location"},
+    }.get(data.api, set())
+    unknown_options = set(data.apiOptions) - option_keys
+    if unknown_options:
+        raise ValueError(f"模型协议不支持配置项: {', '.join(sorted(unknown_options))}")
+    if data.api == GOOGLE_VERTEX_API and not data.apiOptions.get("project"):
+        raise ValueError("Google Vertex 协议需要填写 Google Cloud 项目 ID")
+    if data.api == OPENAI_CODEX_RESPONSES_API and not data.apiKey:
+        raise ValueError("OpenAI Codex Responses 协议需要提供 ChatGPT OAuth token")
     parsed = urlsplit(data.baseUrl)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("服务地址必须是有效的 HTTP 或 HTTPS URL")
@@ -88,9 +185,11 @@ def public_configuration(config: ModelConfiguration | None) -> dict | None:
         "id": config.id,
         "providerId": config.providerId,
         "provider": config.provider,
+        "api": config.api,
         "baseUrl": config.baseUrl,
         "model": config.model,
         "apiKeyConfigured": bool(config.apiKey),
+        "apiOptions": config.apiOptions,
     }
 
 

@@ -29,7 +29,18 @@ def test_provider_presets_and_saved_configuration_are_publicly_masked(tmp_path, 
     providers = client.get("/api/model/providers").json()["providers"]
     assert [item["id"] for item in providers] == [
         "openai", "deepseek", "dashscope", "moonshot", "zhipu", "siliconflow", "openrouter", "ollama",
+        "openai-responses", "anthropic", "google", "mistral", "bedrock", "pi-messages",
     ]
+    assert {item["api"] for item in providers} == {
+        "openai-completions", "openai-responses", "anthropic-messages", "google-generative",
+        "mistral-conversations", "bedrock-converse", "pi-messages",
+    }
+    from backend.app.model_config import SUPPORTED_MODEL_APIS
+    assert SUPPORTED_MODEL_APIS == {
+        "openai-completions", "openai-responses", "anthropic-messages", "google-generative",
+        "mistral-conversations", "bedrock-converse", "pi-messages", "azure-openai-responses",
+        "openai-codex-responses", "google-vertex",
+    }
     assert providers[1]["baseUrl"] == "https://api.deepseek.com"
     assert client.get("/api/model/configuration").json()["configuration"] is None
 
@@ -51,6 +62,36 @@ def test_invalid_configuration_does_not_replace_active_configuration(tmp_path, m
 
     assert response.status_code == 422
     assert store.get() == before
+
+
+def test_protocol_options_are_persisted_and_public_without_exposing_credentials(tmp_path, monkeypatch):
+    store, client = configure_api(tmp_path, monkeypatch)
+    options = {"project": "meido-project", "location": "asia-northeast1"}
+
+    response = client.post("/api/model/configurations", json=payload(
+        providerId="custom",
+        provider="vertex",
+        baseUrl="https://asia-northeast1-aiplatform.googleapis.com",
+        model="gemini-2.5-flash",
+        api="google-vertex",
+        apiKey="",
+        apiOptions=options,
+    ))
+
+    assert response.status_code == 200
+    assert response.json()["configuration"]["apiOptions"] == options
+    assert response.json()["configuration"]["apiKeyConfigured"] is False
+    assert store.get().apiOptions == options
+    assert ModelConfigurationStore(store.path).get().apiOptions == options
+
+
+def test_protocol_rejects_unknown_options(tmp_path, monkeypatch):
+    _, client = configure_api(tmp_path, monkeypatch)
+
+    response = client.post("/api/model/configurations", json=payload(apiOptions={"deploymentName": "unexpected"}))
+
+    assert response.status_code == 422
+    assert "模型协议不支持配置项" in response.text
 
 
 def test_provider_id_must_match_preset(tmp_path, monkeypatch):
@@ -164,6 +205,21 @@ def test_connection_test_returns_elapsed_latency(tmp_path, monkeypatch):
     result = client.post("/api/model/configuration/test", json=payload()).json()
 
     assert result == {"ok": True, "message": "连接成功", "latencyMs": 688}
+
+
+def test_connection_test_reports_stream_error_event(tmp_path, monkeypatch):
+    _, client = configure_api(tmp_path, monkeypatch)
+    from backend.app.model_types import ModelStreamError
+
+    async def stream_messages(messages, configuration, *, max_tokens=None):
+        del messages, configuration, max_tokens
+        yield ModelStreamError("provider rejected the request")
+
+    monkeypatch.setattr(main.connection_test_adapter, "stream_messages", stream_messages)
+
+    result = client.post("/api/model/configuration/test", json=payload()).json()
+
+    assert result == {"ok": False, "message": "provider rejected the request"}
 
 
 def test_connection_test_scrubs_secret_from_failure_and_keeps_active_config(tmp_path, monkeypatch):

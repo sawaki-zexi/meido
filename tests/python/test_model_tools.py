@@ -555,6 +555,42 @@ def test_openai_compatible_adapter_surfaces_redacted_http_error_detail(monkeypat
     assert request_payloads[0]["tools"][0]["function"]["name"] != "todo.write"
 
 
+def test_openai_legacy_structured_rejects_invalid_tool_schema_before_http(monkeypatch):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, text="data: [DONE]\n\n")
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+    configuration = ModelConfiguration(
+        providerId="openai",
+        provider="openai",
+        baseUrl="https://api.openai.com/v1",
+        model="test-model",
+    )
+
+    async def collect():
+        return [event async for event in OpenAICompatibleAdapter().stream_structured_messages(
+            [{"role": "user", "content": "hello"}],
+            configuration,
+            [{"type": "function", "function": {
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {"count": "integer"}},
+            }}],
+        )]
+
+    with pytest.raises(ValueError, match="schema.properties 成员必须是对象"):
+        asyncio.run(collect())
+
+    assert requests == []
+
+
 def test_structured_adapter_uses_environment_configuration_when_unbound(monkeypatch):
     requests = []
 
@@ -649,3 +685,54 @@ def test_meido_provider_maps_structured_transcript_and_tool_call():
     assert second[-1].message.content == "完成"
     assert seen[1][0] == {"role": "system", "content": "系统提示"}
     assert seen[1][-1] == {"role": "tool", "tool_call_id": "call-1", "content": "hi"}
+
+
+def test_meido_provider_merges_complete_tool_snapshot_on_rich_stream(monkeypatch):
+    chunks = [
+        {"choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call-",
+            "function": {"name": "sh", "arguments": '{"x":'},
+        }]}}]},
+        {"choices": [{"message": {"tool_calls": [{
+            "index": 0,
+            "id": "call-1",
+            "type": "function",
+            "function": {"name": "shell", "arguments": '{"x":1}'},
+        }]}, "finish_reason": "tool_calls"}]},
+    ]
+    body = "\n".join([*(f"data: {json.dumps(chunk)}" for chunk in chunks), "data: [DONE]", ""])
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+        )),
+    )
+    configuration = ModelConfiguration(
+        providerId="custom",
+        provider="custom",
+        baseUrl="https://compatible.example/v1",
+        model="test-model",
+    )
+    role = RoleInput(name="工具角色", profile=RoleProfile(profile="设定"))
+    provider = MeidoProvider(OpenAICompatibleAdapter(), role, configuration)
+
+    async def collect():
+        return [event async for event in provider.stream_response(
+            model="test-model",
+            system="系统提示",
+            messages=[UserMessage("运行工具")],
+            tools=[{"type": "function", "function": {"name": "shell"}}],
+            signal=CancellationToken(),
+        )]
+
+    events = asyncio.run(collect())
+    completed = next(event.message for event in events if isinstance(event, AssistantDoneEvent))
+    tool_events = [event.tool_call for event in events if isinstance(event, ToolCallEndEvent)]
+    assert len(tool_events) == 1
+    assert tool_events[0].id == "call-1"
+    assert tool_events[0].name == "shell"
+    assert tool_events[0].arguments == {"x": 1}
+    assert completed.tool_calls == tuple(tool_events)
