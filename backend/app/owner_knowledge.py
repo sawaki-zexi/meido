@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import math
+import os
 import re
 import sqlite3
 import threading
@@ -21,6 +22,7 @@ import httpx
 
 from .agent_runtime.tools import AgentToolResult, ToolContext, ToolDefinition
 from .credentials import CredentialStore, SystemCredentialStore
+from .models import ModelConfiguration
 
 
 _SUPPORTED_TYPES = frozenset({"doc", "docx"})
@@ -59,6 +61,20 @@ class DocumentScan:
 
 class OwnerKnowledgeError(RuntimeError):
     """A controlled, user-facing owner knowledge failure."""
+
+
+def owner_understanding_model_configuration(configuration: object | None) -> object:
+    """Pass a concrete snapshot to completions, including the legacy env fallback."""
+    if configuration is not None:
+        return configuration
+    base_url = os.getenv("MEIDO_MODEL_BASE_URL", "").strip().rstrip("/")
+    model = os.getenv("MEIDO_MODEL", "").strip()
+    if not base_url or not model:
+        raise OwnerKnowledgeError("尚未配置角色模型，请先在模型设置中保存连接信息")
+    return ModelConfiguration(
+        providerId="custom", provider="custom", baseUrl=base_url, model=model,
+        apiKey=os.getenv("MEIDO_API_KEY", "").strip(),
+    )
 
 
 class FeishuApiError(OwnerKnowledgeError):
@@ -1617,8 +1633,7 @@ class OwnerKnowledgePlugin:
         role_name = str(getattr(role, "name", "角色"))
         self.store.enqueue_understanding(role_id, {"kind": "generation"})
         try:
-            if configuration is None:
-                raise OwnerKnowledgeError("尚未配置角色模型，请先在模型设置中保存连接信息")
+            configuration = owner_understanding_model_configuration(configuration)
             if not callable(complete_messages):
                 raise OwnerKnowledgeError("当前模型连接不支持角色理解生成")
             embedder = self._embedding_session()

@@ -856,6 +856,8 @@ def owner_api(tmp_path, monkeypatch):
     from backend.app.role_store import RoleStore
     from backend.app.models import RoleInput, RoleProfile
     from fastapi.testclient import TestClient
+    for name in ("MEIDO_MODEL_BASE_URL", "MEIDO_MODEL", "MEIDO_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
     plugin, owner_store, feishu, embedder = make_plugin(tmp_path)
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="测试角色", profile=RoleProfile(profile="设定")))
@@ -944,7 +946,9 @@ def test_manual_regeneration_updates_selected_role_and_clears_failure(owner_api,
 
 
 @pytest.mark.parametrize("missing", ["model", "embedding"])
-def test_background_generation_records_precondition_failure_and_keeps_previous(tmp_path, missing):
+def test_background_generation_records_precondition_failure_and_keeps_previous(tmp_path, monkeypatch, missing):
+    monkeypatch.delenv("MEIDO_MODEL_BASE_URL", raising=False)
+    monkeypatch.delenv("MEIDO_MODEL", raising=False)
     async def scenario():
         plugin, store, feishu, embedder = make_plugin(tmp_path)
         feishu.documents = [make_document("diary")]
@@ -998,6 +1002,43 @@ def test_paused_vectors_allow_manual_and_background_understanding(owner_api, mon
         await asyncio.sleep(0)
         assert owner_store.get_understanding(role.id)["version"] == 2
         assert owner_store.understanding_job_status(role.id) is None
+        await plugin.close()
+
+    asyncio.run(background())
+
+
+def test_environment_model_configuration_works_for_manual_and_background(owner_api, monkeypatch):
+    from backend.app import main
+
+    client, role, plugin, owner_store, feishu, _ = owner_api
+    feishu.documents = [make_document("diary")]
+    feishu.contents["diary"] = "主人喜欢学习"
+    asyncio.run(plugin.enable())
+    monkeypatch.setattr(main, "_role_model_configuration", lambda role_id: None)
+    monkeypatch.setenv("MEIDO_MODEL_BASE_URL", "https://env.example/v1")
+    monkeypatch.setenv("MEIDO_MODEL", "env-model")
+    monkeypatch.setenv("MEIDO_API_KEY", "secret-env-key")
+
+    class Model:
+        async def complete_messages(self, messages, configuration, **kwargs):
+            assert configuration.baseUrl == "https://env.example/v1"
+            assert configuration.model == "env-model"
+            assert configuration.apiKey == "secret-env-key"
+            return "环境模型生成的想法"
+
+    monkeypatch.setattr(main, "model_adapter", Model())
+    response = client.post(f"/api/roles/{role.id}/owner-understanding/regenerate")
+    assert response.status_code == 200
+    assert "secret-env-key" not in response.text
+
+    async def background():
+        plugin.queue_understanding_refresh(role.id, role, Model(), None, "", full_refresh=True)
+        await asyncio.sleep(0)
+        for _ in range(100):
+            if owner_store.get_understanding(role.id)["version"] == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert owner_store.get_understanding(role.id)["version"] == 2
         await plugin.close()
 
     asyncio.run(background())

@@ -38,12 +38,14 @@ from .owner_knowledge import (
     FeishuApiError,
     OAuthCallbackAccessLogFilter,
     OwnerKnowledgePlugin,
+    OwnerKnowledgeError,
     OwnerKnowledgeScheduler,
     SyncReport,
     OwnerKnowledgeStore,
     OwnerKnowledgeTool,
     RoleBoundOwnerKnowledgeReader,
     owner_knowledge_error_message,
+    owner_understanding_model_configuration,
 )
 from .mail import MailService, MailStore
 from .mail.agent import MailManageTool
@@ -968,9 +970,10 @@ async def regenerate_owner_understanding(role_id: str) -> dict[str, object]:
         raise HTTPException(status_code=409, detail="没有可用于生成角色理解的主人资料，请先完成知识库同步")
     if getattr(owner_knowledge_plugin.embedder, "is_enabled", True) and getattr(owner_knowledge_plugin.embedder, "ready", True) is False:
         raise HTTPException(status_code=409, detail="请先在模型设置中配置并启用向量模型")
-    configuration = _role_model_configuration(role_id)
-    if configuration is None:
-        raise HTTPException(status_code=409, detail="尚未配置角色模型，请先在模型设置中保存连接信息")
+    try:
+        configuration = owner_understanding_model_configuration(_role_model_configuration(role_id))
+    except OwnerKnowledgeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     try:
         owner_knowledge_store.enqueue_understanding(role_id, {"kind": "manual"}, full_refresh=True)
         await owner_knowledge_plugin.generate_understanding(
