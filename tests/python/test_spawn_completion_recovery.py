@@ -242,7 +242,14 @@ def test_transient_sqlite_busy_during_recovery_does_not_stop_other_completions(c
         worker.start()
         try:
             async with asyncio.timeout(10):
-                while tasks.completion(another, origin)['status'] != 'sent':
+                while True:
+                    original = tasks.completion(task_id, origin)
+                    later = tasks.completion(another, origin)
+                    assert original is not None and later is not None
+                    # A send receipt can commit before an older SQLite-busy
+                    # message is reconciled on the worker's next pass.
+                    if later['status'] == 'sent' and original['message_synced'] and later['message_synced']:
+                        break
                     await asyncio.sleep(.02)
         finally:
             await worker.close()
