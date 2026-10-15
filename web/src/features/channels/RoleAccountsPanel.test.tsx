@@ -17,6 +17,17 @@ const settings = (enabled = true) => ({ channels: ["telegram", "qq", "qqbot", "f
 })) });
 
 describe("角色账号", () => {
+  it("无需先打开账号详情就能前往平台总开关", async () => {
+    const openSettings = vi.fn();
+    fakeBackend({
+      "GET /api/channels/settings": () => ({ body: settings() }),
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [] } }),
+    });
+    render(<RoleAccountsPanel roleId="r1" onOpenSettings={openSettings} />);
+    await userEvent.click(screen.getByRole("button", { name: "平台总开关" }));
+    expect(openSettings).toHaveBeenCalledOnce();
+  });
+
   it("列表只展示平台和状态，打开详情后创建并连接账号，再显示响应规则", async () => {
     let saved: Account | null = null;
     const { calls } = fakeBackend({

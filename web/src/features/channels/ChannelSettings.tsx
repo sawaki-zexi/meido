@@ -33,14 +33,17 @@ export function ChannelSettings() {
       if (current === request.current) setError(message);
     } finally { if (current === request.current) setBusy(null); }
   };
-  return <section className="channel-settings" aria-label="渠道">
-    <header><h3>渠道</h3><p>为全部角色启用或暂停平台连接。账号在角色详情的“账号”中添加。</p></header>
+  return <section className="channel-settings" aria-label="多端连接">
+    <header><h3>平台总开关</h3><p>分别控制各平台的全部角色连接。账号在角色资料 → 账号中添加。</p></header>
     {error && <p role="alert">{error} <button type="button" disabled={busy !== null} onClick={() => void load()}>重新读取</button></p>}
     {channels === null && !error && <p role="status">正在读取渠道…</p>}
-    {channels && <div className="channel-setting-card">{channels.map((channel) => <label className="channel-setting-row" key={channel.channel}>
-      <span><strong>{channel.name}</strong><small>{channel.configuredAccounts} 个账号 · {channel.connectedAccounts} 个已连接{busy === channel.channel ? " · 正在切换…" : channel.enabled ? "" : " · 已暂停"}</small></span>
-      <input type="checkbox" aria-label={`启用 ${channel.name} 渠道`} checked={channel.enabled} disabled={busy !== null} onChange={() => void toggle(channel)} />
-    </label>)}</div>}
+    {channels && <div className="channel-setting-card">{channels.map((channel) => <div className="channel-setting-row" role="group" aria-label={`${channel.name} 渠道`} key={channel.channel}>
+      <span><strong>{channel.name}</strong><small>{channel.configuredAccounts} 个账号 · {channel.connectedAccounts} 个已连接</small></span>
+      <div className="channel-setting-actions">
+        <span className={`channel-enabled-state${channel.enabled ? " enabled" : ""}`} aria-live="polite">{channel.enabled ? "已启用" : "已暂停"}</span>
+        <button type="button" className={channel.enabled ? "" : "primary"} aria-label={`${channel.enabled ? "暂停" : "启用"} ${channel.name} 渠道`} disabled={busy !== null} onClick={() => void toggle(channel)}>{busy === channel.channel ? "切换中…" : channel.enabled ? "暂停" : "启用"}</button>
+      </div>
+    </div>)}</div>}
     <p>暂停保留账号配置、配对身份和聊天记录；恢复后按各账号的连接状态重新连接。</p>
   </section>;
 }

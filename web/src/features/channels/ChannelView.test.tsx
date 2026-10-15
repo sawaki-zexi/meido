@@ -28,6 +28,71 @@ function setupBackend(accounts: ReturnType<typeof makeAccount>[] = []) {
   });
 }
 
+describe("渠道记忆来源只读查看", () => {
+  const sourceRole = role({ id: "r1", name: "Elysia" });
+  const thread = { threadId: "source", sessionKey: "thread:source", channel: "telegram", chatId: "42", chatType: "private", title: "来源私聊", lastActivity: "2026-10-14T00:00:00Z" };
+
+  it("直接验证角色所属线程并分页定位来源，不加载账号或线程目录，不显示管理控件", async () => {
+    const { calls } = fakeBackend({
+      "GET /api/roles/r1/channels/threads/source/messages\\?limit=1": () => ({ body: { thread } }),
+      "GET /api/roles/r1/channels/threads/source/messages\\?limit=100": () => ({ body: { messages: [], hasMore: true, nextBefore: 51 } }),
+      "GET /api/roles/r1/channels/threads/source/messages\\?limit=100&before=51": () => ({ body: { messages: [{ id: "origin", sequence: 7, role: "user", content: "分页找到的原文", createdAt: "2026-10-14T00:00:00Z", metadata: { threadId: "source" } }], hasMore: false, nextBefore: null } }),
+    });
+    render(<ChannelView role={sourceRole} sourceOnly onBack={() => undefined} initialSource={{ origin: { kind: "turn", sessionKey: "thread:source", messageIds: ["origin"], messageRange: null, stableSourceKey: "turn:source" } }} />);
+    expect((await screen.findByText("分页找到的原文")).closest("li")).toHaveClass("source-highlight");
+    expect(calls.map((call) => call.path)).toEqual([
+      "/api/roles/r1/channels/threads/source/messages?limit=1",
+      "/api/roles/r1/channels/threads/source/messages?limit=100",
+      "/api/roles/r1/channels/threads/source/messages?limit=100&before=51",
+    ]);
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
+    expect(screen.queryByRole("complementary", { name: "渠道会话列表" })).not.toBeInTheDocument();
+    expect(screen.queryByText("会话设置")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "角色账号" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /手机会话/ })).not.toBeInTheDocument();
+  });
+
+  it("群旁听来源从独立记录分页定位原文，只读展示且不挂载群管理面板", async () => {
+    const { calls } = fakeBackend({
+      "GET /api/roles/r1/channels/threads/source/messages\\?limit=1": () => ({ body: { thread: { ...thread, channel: "qq", chatType: "group" } } }),
+      "GET /api/roles/r1/channels/threads/source/listening/messages\\?limit=100": () => ({ body: { messages: [], hasMore: true, nextBefore: 20 } }),
+      "GET /api/roles/r1/channels/threads/source/listening/messages\\?limit=100&before=20": () => ({ body: { messages: [{ id: "heard", sequence: 3, role: "user", content: "旁听记忆的原始发言", createdAt: "2026-10-14T00:00:00Z", metadata: {} }], hasMore: false, nextBefore: null } }),
+    });
+    render(<ChannelView role={sourceRole} sourceOnly onBack={() => undefined} initialSource={{ origin: { kind: "listening", sessionKey: "thread:source", messageIds: ["heard"], messageRange: null, stableSourceKey: "listening:source" } }} />);
+    const source = await screen.findByRole("region", { name: "旁听记忆来源" });
+    expect(within(source).getByText("旁听记忆的原始发言")).toBeVisible();
+    expect(source).toHaveClass("source-highlight");
+    expect(screen.queryByText(/^群旁听记录/, { selector: "summary" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(calls).toHaveLength(3);
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
+  });
+
+  it("线程归属验证失败时不继续读取消息或旁听原文", async () => {
+    const { calls } = fakeBackend({
+      "GET /api/roles/r1/channels/threads/foreign/messages\\?limit=1": () => ({ status: 404, body: { detail: "此线程不属于当前角色" } }),
+    });
+    render(<ChannelView role={sourceRole} sourceOnly onBack={() => undefined} initialSource={{ origin: { kind: "listening", sessionKey: "thread:foreign", messageIds: ["secret"], messageRange: null, stableSourceKey: "foreign" } }} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("来源渠道会话当前不可访问");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("切换来源角色后立即清空旧原文，归属拒绝时不保留之前角色的消息", async () => {
+    const { calls } = fakeBackend({
+      "GET /api/roles/r1/channels/threads/source/messages\\?limit=1": () => ({ body: { thread } }),
+      "GET /api/roles/r1/channels/threads/source/messages\\?limit=100": () => ({ body: { messages: [{ id: "origin", sequence: 7, role: "user", content: "第一个角色的来源原文", createdAt: "2026-10-14T00:00:00Z", metadata: { threadId: "source" } }], hasMore: false, nextBefore: null } }),
+      "GET /api/roles/r2/channels/threads/source/messages\\?limit=1": () => ({ status: 404, body: { detail: "来源不存在" } }),
+    });
+    const initialSource = { origin: { kind: "turn", sessionKey: "thread:source", messageIds: ["origin"], messageRange: null, stableSourceKey: "turn:source" } };
+    const view = render(<ChannelView role={sourceRole} sourceOnly onBack={() => undefined} initialSource={initialSource} />);
+    await screen.findByText("第一个角色的来源原文");
+    view.rerender(<ChannelView role={role({ id: "r2", name: "另一角色" })} sourceOnly onBack={() => undefined} initialSource={initialSource} />);
+    expect(screen.queryByText("第一个角色的来源原文")).not.toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("来源渠道会话当前不可访问");
+    expect(calls.filter((call) => call.path.includes("/r2/"))).toHaveLength(1);
+  });
+});
+
 describe("渠道会话查看", () => {
   it("手机会话只展示聊天，账号接入通过角色账号入口打开", async () => {
     setupBackend([makeAccount("telegram", "telegram-1", { enabled: true })]);

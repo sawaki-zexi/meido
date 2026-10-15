@@ -150,3 +150,8 @@
 .channel-listening-caps input { display: block; width: 130px; max-width: 100%; margin-top: 5px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
 .channel-listening-panel button:disabled, .channel-push-targets button:disabled { opacity: .5; cursor: default; }
 .channel-identities .channel-identity > div { min-width: 0; overflow-wrap: anywhere; }
+.channel-view.channel-source-view { min-height: 200px; max-height: 70vh; height: auto; }
+.channel-source-view .channel-workspace { display: block; min-height: 0; overflow: auto; }
+.channel-source-view .channel-messages { min-height: 180px; }
+.channel-source-view .channel-messages > header { padding: 0 0 16px; }
+.channel-source-view .channel-group-settings { margin: 0 0 16px; }

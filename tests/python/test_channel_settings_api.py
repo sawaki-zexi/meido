@@ -365,6 +365,29 @@ def test_platform_switch_persists_without_changing_account_intent(channel_api, m
     assert restarted.get_account(account.account_id).enabled
 
 
+def test_legacy_desktop_thread_and_messages_remain_readable_without_channel_avatar_ids(channel_api):
+    role, channels, _, client = channel_api
+    session_key = f"role:{role.id}"
+    timestamp = datetime.now(timezone.utc).isoformat()
+    channels.register_desktop_thread(role.id, session_key, timestamp, timestamp)
+    channels.sessions.append_message(
+        session_key, "user", "desktop history", "completed",
+        metadata={"senderId": "desktop-owner", "viaAccount": {"platformAccountId": "desktop"}},
+    )
+
+    threads = client.get(f"/api/roles/{role.id}/channels/threads")
+    assert threads.status_code == 200
+    desktop = threads.json()["threads"][0]
+    assert desktop["channel"] == "desktop"
+    assert desktop["avatarUrl"] is None
+    messages = client.get(f"/api/roles/{role.id}/channels/threads/{desktop['threadId']}/messages")
+    assert messages.status_code == 200
+    message = messages.json()["messages"][0]
+    assert message["content"] == "desktop history"
+    assert message["metadata"]["senderAvatarUrl"] is None
+    assert message["metadata"]["viaAccount"]["avatarUrl"] is None
+
+
 def test_disabled_platform_rejects_events_and_sends_but_preserves_history(channel_api):
     role, channels, _, client = channel_api
     account = channels.register_channel_account(role.id, "qq", account_id="qq-gate", enabled=True)

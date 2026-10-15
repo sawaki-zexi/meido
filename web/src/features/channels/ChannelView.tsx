@@ -62,7 +62,7 @@ function ChannelAttachments({ roleId, attachments }: { roleId: string; attachmen
   })}</>;
 }
 
-export function ChannelView({ role, onBack, onAccounts, initialSource }: { role: Role; onBack: () => void; onAccounts?: () => void; initialSource?: ChannelMemorySource | null }) {
+export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnly = false }: { role: Role; onBack: () => void; onAccounts?: () => void; initialSource?: ChannelMemorySource | null; sourceOnly?: boolean }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [threads, setThreads] = useState<Thread[]>([]);
   const [threadsLoaded, setThreadsLoaded] = useState(false);
@@ -85,6 +85,7 @@ export function ChannelView({ role, onBack, onAccounts, initialSource }: { role:
   const selectedThread = useMemo(() => threads.find((thread) => thread.threadId === selected) ?? null, [threads, selected]);
   const account = accounts.find((item) => item.accountId === selectedThread?.accountId) ?? null;
   const load = useCallback(async () => {
+    if (sourceOnly) { setThreadsLoaded(true); return; }
     try {
       const [accountsData, threadsData] = await Promise.all([
         api<{ accounts: Account[] }>(`/api/roles/${encodeURIComponent(role.id)}/channels/accounts`),
@@ -101,7 +102,7 @@ export function ChannelView({ role, onBack, onAccounts, initialSource }: { role:
     } catch (cause) {
       setError(errorMessage(cause, "无法读取渠道会话"));
     }
-  }, [role.id]);
+  }, [role.id, sourceOnly]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -110,9 +111,13 @@ export function ChannelView({ role, onBack, onAccounts, initialSource }: { role:
     const request = ++sourceRequest.current;
     let cancelled = false;
     const current = () => !cancelled && request === sourceRequest.current;
-    const listedThread = threads.find((item) => item.sessionKey === initialSource.origin.sessionKey && item.channel !== "desktop");
+    const listedThread = sourceOnly ? undefined : threads.find((item) => item.sessionKey === initialSource.origin.sessionKey && item.channel !== "desktop");
     const listening = initialSource.origin.kind === "listening";
     setSourceError(""); setSourceHighlightedId(null); setListeningSource(null);
+    if (sourceOnly) {
+      setMessages([]); setThreads([]); setSelected(null);
+      verifiedSourceThread.current = null;
+    }
     const wantedId = initialSource.messageId ?? initialSource.origin.messageIds[0];
     const range = initialSource.origin.messageRange;
     const validRange = range && Number.isSafeInteger(range[0]) && Number.isSafeInteger(range[1]) && range[0] > 0 && range[1] >= range[0] && range[1] < Number.MAX_SAFE_INTEGER ? range : null;
@@ -166,10 +171,11 @@ export function ChannelView({ role, onBack, onAccounts, initialSource }: { role:
       } catch (cause) { if (current()) setSourceError(errorMessage(cause, "来源消息当前不可访问")); }
     })();
     return () => { cancelled = true; };
-    // Ownership is checked against the role-scoped initial list. Live
-    // refreshes must not restart pagination or replace the selected thread.
+    // The source viewer verifies its thread through the role-scoped API.
+    // The legacy history view can also use its verified role-scoped list;
+    // refreshing that list must not restart source pagination.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialSource, threadsLoaded, role.id]);
+  }, [initialSource, threadsLoaded, role.id, sourceOnly]);
 
   useEffect(() => {
     sourceElement.current?.scrollIntoView?.({ behavior: "smooth", block: "center" });
@@ -179,14 +185,15 @@ export function ChannelView({ role, onBack, onAccounts, initialSource }: { role:
   useEffect(() => () => { olderRequest.current += 1; }, []);
 
   useEffect(() => {
-    if (typeof EventSource === "undefined") return;
+    if (sourceOnly || typeof EventSource === "undefined") return;
     const source = new EventSource(`/api/roles/${encodeURIComponent(role.id)}/channels/events`);
     source.addEventListener("channel_update", () => { void load(); });
     source.onerror = () => { /* EventSource reconnects while the local API is available. */ };
     return () => source.close();
-  }, [load, role.id]);
+  }, [load, role.id, sourceOnly]);
 
   useEffect(() => {
+    if (sourceOnly) return;
     if (!selectedThread) {
       messageThreadId.current = null;
       messageRoleId.current = role.id;
@@ -225,7 +232,7 @@ export function ChannelView({ role, onBack, onAccounts, initialSource }: { role:
       })
       .catch((cause) => { if (!cancelled) setError(errorMessage(cause, "无法读取会话消息")); });
     return () => { cancelled = true; };
-  }, [role.id, selectedThread]);
+  }, [role.id, selectedThread, sourceOnly]);
 
   const loadOlderMessages = async () => {
     if (!selectedThread || olderCursor === null || loadingOlder) return;
@@ -252,16 +259,16 @@ export function ChannelView({ role, onBack, onAccounts, initialSource }: { role:
     }
   };
 
-  return <section className="channel-view" aria-labelledby="channel-view-title">
-    <header className="channel-view-header">
+  return <section className={`channel-view${sourceOnly ? " channel-source-view" : ""}`} aria-label={sourceOnly ? "渠道记忆来源" : undefined} aria-labelledby={sourceOnly ? undefined : "channel-view-title"}>
+    {!sourceOnly && <header className="channel-view-header">
       <IconButton icon="back" label="返回聊天" onClick={onBack} />
       <div><h1 id="channel-view-title">{role.name} · 手机会话</h1><p>{threads.length} 个会话</p></div>
       <div className="channel-view-actions">{onAccounts && <button type="button" onClick={onAccounts}>角色账号</button>}<IconButton icon="refresh" label="刷新会话" onClick={() => void load()} /></div>
-    </header>
+    </header>}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {sourceError && <Notice onDismiss={() => setSourceError("")}>{sourceError}</Notice>}
     <div className="channel-workspace">
-      <aside className="channel-thread-list" aria-label="渠道会话列表">
+      {!sourceOnly && <aside className="channel-thread-list" aria-label="渠道会话列表">
         <h2>会话</h2>
         {threads.length === 0 && <p className="channel-empty">暂无渠道会话</p>}
         {threads.map((thread) => <button key={thread.threadId} type="button" className={`channel-thread${selected === thread.threadId ? " active" : ""}`} onClick={() => { sourceRequest.current += 1; setSourceHighlightedId(null); setListeningSource(null); setSourceError(""); setSelected(thread.threadId); }}>
@@ -269,11 +276,11 @@ export function ChannelView({ role, onBack, onAccounts, initialSource }: { role:
           <span className="channel-thread-copy"><strong>{thread.title || thread.chatId}</strong><small>{channelName[thread.channel] ?? thread.channel} · {thread.chatType === "group" ? "群聊" : "私聊"}</small>{thread.latestMessage && <small>{thread.latestMessage.role === "assistant" ? role.name : thread.title || "访客"}：{thread.latestMessage.content || "（无内容）"}</small>}{sourceLabel(thread.viaAccount) && <small>{sourceLabel(thread.viaAccount)}</small>}{thread.accountRemoved && <small>账号已移除</small>}</span>
           <time>{new Date(thread.lastActivity).toLocaleDateString()}</time>
         </button>)}
-      </aside>
+      </aside>}
       <section className="channel-messages" aria-label="会话消息">
         {selectedThread ? <>
           <header><div><h2>{selectedThread.title || selectedThread.chatId}</h2><p>{channelName[selectedThread.channel] ?? selectedThread.channel} · {selectedThread.chatType === "group" ? "群聊" : "私聊"}</p>{sourceLabel(selectedThread.viaAccount) && <p>{sourceLabel(selectedThread.viaAccount)}{selectedThread.accountRemoved ? " · 账号已移除" : ""}</p>}</div></header>
-          {selectedThread.chatType === "private" && account && <details className="channel-conversation-settings"><summary>会话设置</summary><PushTargets key={selectedThread.threadId} roleId={role.id} accountId={account.accountId} chatId={selectedThread.chatId} /></details>}
+          {!sourceOnly && selectedThread.chatType === "private" && account && <details className="channel-conversation-settings"><summary>会话设置</summary><PushTargets key={selectedThread.threadId} roleId={role.id} accountId={account.accountId} chatId={selectedThread.chatId} /></details>}
           <ol>
             {hasOlderMessages && <li className="channel-older"><button type="button" disabled={loadingOlder} onClick={() => void loadOlderMessages()}>{loadingOlder ? "正在读取…" : "读取更早消息"}</button></li>}
             {messages.map((message) => {
@@ -317,11 +324,11 @@ export function ChannelView({ role, onBack, onAccounts, initialSource }: { role:
           }}>
             {listeningSource && <section className="channel-message source-highlight" style={{ boxShadow: "0 0 0 2px var(--rose)" }} aria-label="旁听记忆来源" ref={(node) => { sourceElement.current = node; }}>
               <span className="source-marker">记忆来源 · 当前群旁听记录</span><p>{listeningSource.content}</p>
-              <p>此来源独立保存在当前群的旁听记录中，下面已展开旁听面板。</p>
+              <p>{sourceOnly ? "此来源独立保存在当前群的旁听记录中。" : "此来源独立保存在当前群的旁听记录中，下面已展开旁听面板。"}</p>
             </section>}
-            <GroupListeningPanel key={`${role.id}:${selectedThread.threadId}`} roleId={role.id} threadId={selectedThread.threadId} accountId={account?.accountId} chatId={selectedThread.chatId} editable={Boolean(account && account.enabled && account.platformEnabled !== false && !selectedThread.accountRemoved)} />
+            {!sourceOnly && <GroupListeningPanel key={`${role.id}:${selectedThread.threadId}`} roleId={role.id} threadId={selectedThread.threadId} accountId={account?.accountId} chatId={selectedThread.chatId} editable={Boolean(account && account.enabled && account.platformEnabled !== false && !selectedThread.accountRemoved)} />}
           </div>}
-        </> : <div className="channel-no-selection"><Icon name="chat" size={22} /><p>选择一个会话</p></div>}
+        </> : <div className="channel-no-selection"><Icon name="chat" size={22} /><p>{sourceOnly ? sourceError ? "来源当前不可访问" : "正在读取记忆来源…" : "选择一个会话"}</p></div>}
       </section>
 
     </div>

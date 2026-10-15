@@ -17,7 +17,7 @@ const sections: { id: SettingsSectionId; label: string; icon: IconName; render: 
   { id: "owner-knowledge", label: "主人资料", icon: "memory", render: () => <OwnerKnowledgeSettings /> },
   { id: "todo", label: "待办", icon: "todo", render: () => <TodoSettings /> },
   { id: "mail", label: "邮件", icon: "todo", render: () => <MailSettings /> },
-  { id: "channels", label: "渠道", icon: "refresh", render: () => <ChannelSettings /> },
+  { id: "channels", label: "多端连接", icon: "refresh", render: () => <ChannelSettings /> },
   { id: "identity", label: "我的身份", icon: "people", render: () => <IdentitySettings /> },
 ];
 

@@ -47,7 +47,10 @@ function RoleAccountsForRole({ roleId, onOpenSettings }: { roleId: string; onOpe
   const selectedAccount = accounts.find((item) => item.channel === selected) ?? null;
   const platformEnabled = (channel: Channel) => settings.find((item) => item.channel === channel)?.enabled === true;
   return <section className="role-accounts" aria-label="角色账号">
-    <div className="role-accounts-heading"><div><h3>渠道账号</h3><p>为角色连接各平台账号，在对应平台与她聊天。</p></div><IconButton icon="refresh" label="刷新账号" disabled={loading} onClick={() => void load()} /></div>
+    <div className="role-accounts-heading"><div><h3>渠道账号</h3><p>为角色连接各平台账号，在对应平台与她聊天。</p></div><div className="role-accounts-actions">
+      {onOpenSettings && <button type="button" onClick={onOpenSettings}>平台总开关</button>}
+      <IconButton icon="refresh" label="刷新账号" disabled={loading} onClick={() => void load()} />
+    </div></div>
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {loading && settings.length === 0 ? <p role="status" className="role-accounts-empty">正在读取账号…</p> : <div className="role-account-list">
       {channels.map((channel) => {

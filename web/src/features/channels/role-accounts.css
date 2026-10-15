@@ -1,5 +1,7 @@
 .role-accounts { display: grid; gap: 18px; padding: 4px 0; }
-.role-accounts-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.role-accounts-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+.role-accounts-actions { display: flex; align-items: center; gap: 8px; }
+.role-accounts-actions button { white-space: nowrap; }
 .role-accounts-heading p, .role-accounts-hint, .role-accounts-empty { font-size: 13px; color: var(--ink-faint); }
 .role-accounts-heading p { margin-top: 5px; }
 .role-account-list { display: grid; border: 1px solid var(--line-strong); border-radius: var(--radius); overflow: hidden; }
