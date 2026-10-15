@@ -57,6 +57,7 @@ from .mail.api import router as mail_router, set_mail_service
 from .models import AgentRun, EmbeddingConfiguration, EmbeddingConfigurationInput, MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, Message, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
+from .network_tools import NetworkToolsConfig, WebFetchTool, WebSearchTool
 from .storage import initialize_databases, resolve_owner_knowledge_database
 from .session_manager import SessionManager, public_message
 from .session_store import SessionStore, load_runtime_attachments
@@ -177,6 +178,7 @@ embedding_provider = SharedEmbeddingProvider(
     enabled=lambda: memory_settings_store.get().embeddingEnabled,
 )
 plugin_registry = PluginRegistry()
+network_tools_config = NetworkToolsConfig.from_environment()
 owner_knowledge_store = OwnerKnowledgeStore(resolve_owner_knowledge_database(project_root, data_root))
 async def _refresh_feishu_access_token() -> None:
     refresh = owner_knowledge_store.get_state("feishu_refresh_token")
@@ -3422,6 +3424,8 @@ def _runtime_tool_candidates(
             max_output_chars=shell.maxOutputChars,
         ),
         _memory_runtime_tool(role),
+        WebFetchTool(network_tools_config),
+        WebSearchTool(network_tools_config),
         *build_file_tools(role.id, store.root / role.id / "workspace", is_owner=is_channel_owner),
     ]
     if owner_knowledge_plugin.status().enabled:
@@ -3464,6 +3468,7 @@ def _role_has_usable_channel_account(role_id: str) -> bool:
 def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[str]:
     shell = role.agentConfig.shell
     enabled: set[str] = set()
+    enabled.update(set(role.agentConfig.enabledTools) & {"web_search", "web_fetch"})
     enabled.update(FILE_TOOL_NAMES.intersection(role.agentConfig.enabledTools))
     if shell.enabled and shell.allowedCommands:
         enabled.add("shell")
@@ -4072,7 +4077,8 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
             capabilities=capabilities,
             max_turns=8,
             provider_timeout=120.0,
-            tool_timeout=30.0,
+            tool_timeout=max(30.0, network_tools_config.timeout_seconds + 1
+                             if {"web_fetch", "web_search"} & set(role.agentConfig.enabledTools) else 0.0),
             on_message_end=persist_runtime_message,
         ):
             if isinstance(event, MessageUpdateEvent) and isinstance(event.message, AssistantMessage) and event.message.content.strip():
@@ -4472,6 +4478,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     tool_timeout=max(
                         shell_config.timeoutSeconds if runtime_tools else 30.0,
                         browser_use_sessions.timeout_seconds if role.agentConfig.browserUse.enabled else 0.0,
+                        network_tools_config.timeout_seconds + 1 if {"web_fetch", "web_search"} & set(role.agentConfig.enabledTools) else 0.0,
                     ),
                     on_message_end=persist_runtime_message,
                 ):
