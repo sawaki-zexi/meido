@@ -57,6 +57,7 @@ from .mail.api import router as mail_router, set_mail_service
 from .models import AgentRun, EmbeddingConfiguration, EmbeddingConfigurationInput, MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, Message, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
+from .network_tools import NetworkToolsConfig, WebFetchTool, WebSearchTool
 from .storage import initialize_databases, resolve_owner_knowledge_database
 from .session_manager import SessionManager, public_message
 from .session_store import SessionStore, load_runtime_attachments
@@ -81,6 +82,8 @@ from .agent_runtime import (
     ToolResultMessage,
 )
 from .agent_runtime.capabilities import CapabilityResolution
+from .agent_runtime.message_history_tools import MESSAGE_HISTORY_TOOL_NAMES, build_message_history_tools
+from .agent_runtime.file_tools import FILE_TOOL_NAMES, build_file_tools
 from .agent_runtime.catalog import RuntimeCapabilityPolicy, tool_catalog
 from .agent_runtime.types import UserMessage
 from .channels.attachment_tool import ReadChannelAttachmentTool
@@ -176,6 +179,7 @@ embedding_provider = SharedEmbeddingProvider(
     enabled=lambda: memory_settings_store.get().embeddingEnabled,
 )
 plugin_registry = PluginRegistry()
+network_tools_config = NetworkToolsConfig.from_environment()
 owner_knowledge_store = OwnerKnowledgeStore(resolve_owner_knowledge_database(project_root, data_root))
 async def _refresh_feishu_access_token() -> None:
     refresh = owner_knowledge_store.get_state("feishu_refresh_token")
@@ -3421,7 +3425,14 @@ def _runtime_tool_candidates(
             max_output_chars=shell.maxOutputChars,
         ),
         _memory_runtime_tool(role),
+        WebFetchTool(network_tools_config),
+        WebSearchTool(network_tools_config),
+        *build_file_tools(role.id, store.root / role.id / "workspace", is_owner=is_channel_owner),
     ]
+    tools.extend(build_message_history_tools(
+        session_store, multichannel_store, role_id=role.id,
+        source_thread_id=source_thread_id, is_owner=is_channel_owner,
+    ))
     if owner_knowledge_plugin.status().enabled:
         tools.append(_owner_knowledge_runtime_tool(role))
     if mail_service.store.connection().auto_draft_ready:
@@ -3462,6 +3473,9 @@ def _role_has_usable_channel_account(role_id: str) -> bool:
 def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[str]:
     shell = role.agentConfig.shell
     enabled: set[str] = set()
+    enabled.update(set(role.agentConfig.enabledTools) & MESSAGE_HISTORY_TOOL_NAMES)
+    enabled.update(set(role.agentConfig.enabledTools) & {"web_search", "web_fetch"})
+    enabled.update(FILE_TOOL_NAMES.intersection(role.agentConfig.enabledTools))
     if shell.enabled and shell.allowedCommands:
         enabled.add("shell")
     if memory_settings_store.get().enabled and role.agentConfig.memoryRecall.enabled:
@@ -4069,7 +4083,8 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
             capabilities=capabilities,
             max_turns=8,
             provider_timeout=120.0,
-            tool_timeout=30.0,
+            tool_timeout=max(30.0, network_tools_config.timeout_seconds + 1
+                             if {"web_fetch", "web_search"} & set(role.agentConfig.enabledTools) else 0.0),
             on_message_end=persist_runtime_message,
         ):
             if isinstance(event, MessageUpdateEvent) and isinstance(event.message, AssistantMessage) and event.message.content.strip():
@@ -4277,6 +4292,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         placeholder_id: str | None = assistant_message.id
         final_message: Message | None = None
         disconnect_watcher: asyncio.Task[None] | None = None
+        disconnect_watcher_stopped = False
         capabilities: CapabilityResolution | None = None
         capabilities_owned_by_runtime = False
 
@@ -4290,7 +4306,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
             return payload
 
         async def watch_disconnect() -> None:
-            while True:
+            while not disconnect_watcher_stopped:
                 await asyncio.sleep(0.1)
                 if await request.is_disconnected():
                     runtime_manager.cancel_run(run_id)
@@ -4469,6 +4485,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     tool_timeout=max(
                         shell_config.timeoutSeconds if runtime_tools else 30.0,
                         browser_use_sessions.timeout_seconds if role.agentConfig.browserUse.enabled else 0.0,
+                        network_tools_config.timeout_seconds + 1 if {"web_fetch", "web_search"} & set(role.agentConfig.enabledTools) else 0.0,
                     ),
                     on_message_end=persist_runtime_message,
                 ):
@@ -4628,6 +4645,9 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
             except Exception as error:
                 memory_worker.errors.append(f"{role_id}: browser run cleanup failed: {type(error).__name__}")
             if disconnect_watcher is not None:
+                # Request's nonblocking AnyIO probe can absorb a concurrent
+                # Task.cancel(); the stop flag must also end its polling loop.
+                disconnect_watcher_stopped = True
                 disconnect_watcher.cancel()
                 await asyncio.gather(disconnect_watcher, return_exceptions=True)
     return StreamingResponse(
