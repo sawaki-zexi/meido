@@ -29,4 +29,4 @@
 
 当前实现与验收边界见 [后台 Shell Reference](../reference/owned-background-shell.md)；本决定不表示全部后续执行器已经完成。
 
-独立 spawn 的执行、有限工具子集和无工具完成整理见[子任务契约](../reference/owned-subagents.md)，同步不获取普通角色锁，后台完成阶段才协调原角色；本地实现仍待总 PR #162 集成与独立审查。
+独立 spawn 的执行、有限工具子集和无工具完成整理见[子任务契约](../reference/owned-subagents.md)，同步不获取普通角色锁，后台完成阶段才协调原角色；#157 已在两轴审查与修复复核后进入总 PR #162 集成分支，仍未合入 main。

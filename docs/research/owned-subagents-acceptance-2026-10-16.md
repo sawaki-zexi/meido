@@ -1,6 +1,6 @@
 # 独立子任务本地验收
 
-状态：当前，本地实现与验收，待总 PR #162 集成和独立两轴审查。最后核验：2026-10-16。
+状态：当前，独立两轴审查与修复复核完成，已进入总 PR #162 集成分支，未合入 main。最后核验：2026-10-16。
 
 事实来源：[Issue #157](https://github.com/sawaki-zexi/meido/issues/157)、[子任务契约](../reference/owned-subagents.md)、[AgentTool 行为测试](../../tests/python/test_spawn.py)、[HTTP 与渠道测试](../../tests/python/test_spawn_api.py)、[网页授权测试](../../web/src/features/role-management/SpawnSettings.test.tsx)。
 
@@ -42,6 +42,6 @@
 | compileall：backend、tests；git diff --check | 通过 |
 | 五份新增/修改契约、手册和 ADR 的相对链接 | 全部存在 |
 
-新增持久恢复证据见[完成恢复行为测试](../../tests/python/test_spawn_completion_recovery.py)。以上 35 / 107 项为首次提交阶段记录；90 / 32 项为独立审查修复阶段记录，不相加为唯一总数。修复仍待独立两轴复核。
+新增持久恢复证据见[完成恢复行为测试](../../tests/python/test_spawn_completion_recovery.py)。以上 35 / 107 项为首次提交阶段记录；91 / 32 项为独立审查修复阶段记录，不相加为唯一总数。最终 `7396324` 的独立两轴复核各自恢复专项 16 passed、无剩余 finding；汇入 `d332b30` 后相关交叉 100 passed，子任务/基础工具网页 4 passed、TypeScript/Vite 通过。MCP 的新 Linux CI 回收问题仍单独修复，不表示全范围 CI 已通过。
 
 扩大到现有 MeidoProvider / main / SessionStore 的全模块 mypy 检查仍有类型错误，未宣称全仓 mypy 通过；仓库 CI 的 Python gate 为 compileall 与 pytest。本票没有调用真实付费模型、真实平台账号或真实凭据；渠道回执是本地受控平台边界，不能解释为真实平台收件证据。完整 76 工具、调度、Coding Agent、桌面/屏幕和其余 Skills 仍由其他范围推进。
