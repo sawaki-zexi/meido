@@ -456,11 +456,14 @@ async def _await_authorized_tool(
         if not task.done():
             task.cancel()
         cleanup = asyncio.gather(task, return_exceptions=True)
-        try:
-            await asyncio.shield(cleanup)
-        except asyncio.CancelledError:
-            await cleanup
-            raise
+        interrupted: asyncio.CancelledError | None = None
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError as error:
+                interrupted = error
+        if interrupted is not None:
+            raise interrupted
 
 
 _TOOL_RESULT_STATUSES = frozenset({
