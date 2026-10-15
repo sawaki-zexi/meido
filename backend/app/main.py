@@ -130,6 +130,10 @@ from .channels.push import ChannelPushService, MessagePushTool
 from .channels.transports import NapCatWebSocketTransport, QQBotGatewayTransport, FeishuWebhookTransport, ChannelTransportError
 from .channels.media import MAX_CHANNEL_MEDIA_BYTES, media_filename
 from .channels.napcat_managed import ManagedNapCat
+from .credentials import SystemCredentialStore
+from .mcp_config import McpConfigStore, MCP_MANAGEMENT_NAMES
+from .mcp_runtime import McpHost, McpManagementTool, management_definitions
+from .mcp_api import mcp_router
 from .chat_attachments import public_attachment, read_request_bytes, resolve_attachment, save_attachment
 
 logging.getLogger("uvicorn.access").addFilter(OAuthCallbackAccessLogFilter())
@@ -138,6 +142,7 @@ logger = logging.getLogger(__name__)
 roles_root = Path(os.getenv("MEIDO_ROLES_DIR", "roles"))
 project_root = Path(os.getenv("MEIDO_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
 data_root = Path(os.getenv("MEIDO_DATA_DIR", ".data"))
+mcp_host = McpHost(McpConfigStore(data_root / "mcp.db", SystemCredentialStore("meido.mcp", strict_cleanup=True)))
 managed_napcat = ManagedNapCat(data_root)
 _managed_qq_pending: dict[str, str] = {}
 MAX_ROLE_AVATAR_BYTES = 10 * 1024 * 1024
@@ -764,6 +769,7 @@ async def _close_memory_workers() -> None:
     await memory_worker.close()
     await memory_optimizer_worker.drain()
     await browser_use_sessions.close()
+    await mcp_host.close()
 
 
 async def _start_memory_workers() -> None:
@@ -835,6 +841,7 @@ def _owner_knowledge_return_url(origin: str = "") -> str:
 
 app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown=[_close_memory_workers])
 app.include_router(mail_router)
+app.include_router(mcp_router(lambda: mcp_host, lambda: store))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=owner_knowledge_frontend_origins,
@@ -1855,6 +1862,7 @@ async def delete_role(role_id: str) -> None:
         _channel_push_service().clear_role(role_id)
         store.purge_staged_role_files(staged_path)
         deletion_succeeded = True
+        await mcp_host.delete_role(role_id)
         try:
             todo_store.mark_source_unavailable(role_id)
         except Exception as error:
@@ -3822,6 +3830,7 @@ def _runtime_tool_candidates(
         session_store, multichannel_store, role_id=role.id,
         source_thread_id=source_thread_id, is_owner=is_channel_owner,
     ))
+    tools.extend(McpManagementTool(item) for item in management_definitions())
     if owner_knowledge_plugin.status().enabled:
         tools.append(_owner_knowledge_runtime_tool(role))
     if mail_service.store.connection().auto_draft_ready:
@@ -3867,6 +3876,8 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
     enabled.update(set(role.agentConfig.enabledTools) & MESSAGE_HISTORY_TOOL_NAMES)
     enabled.update(set(role.agentConfig.enabledTools) & {"web_search", "web_fetch"})
     enabled.update(FILE_TOOL_NAMES.intersection(role.agentConfig.enabledTools))
+    if "tool_search" in role.agentConfig.enabledTools:
+        enabled.update(MCP_MANAGEMENT_NAMES.intersection(role.agentConfig.enabledTools))
     if shell.enabled and shell.allowedCommands:
         enabled.update(SHELL_TOOL_NAMES)
     if memory_settings_store.get().enabled and role.agentConfig.memoryRecall.enabled:
@@ -3903,7 +3914,7 @@ def _deferred_discovery_tools() -> frozenset[str]:
     # Fixed Shiori always_on metadata: these existing tools are deferred.
     # Meido-specific todo/mail retain their own declarations.
     return frozenset({*BROWSER_USE_TOOL_NAMES, "account_list", "account_targets", "account_send",
-        "lookup_group_context", "update_group_context", "set_group_listening", "lookup_group_member", "read_attachment"})
+        "lookup_group_context", "update_group_context", "set_group_listening", "lookup_group_member", "read_attachment", *MCP_MANAGEMENT_NAMES})
 
 
 def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabilityPolicy:
@@ -3963,6 +3974,26 @@ async def _runtime_capabilities(
         run_id=run_id, owner_context=not external_only,
     ) if "tool_search" in policy.enabled_tools and session_key.startswith("thread:") else None
 
+    def mcp_source_denial():
+        if external_only:
+            return "MCP is not allowed for external context"
+        current_role = store.get(role.id)
+        if current_role is None or "tool_search" not in current_role.agentConfig.enabledTools:
+            return "MCP discovery permission was revoked"
+        return source_authority.authorization_denial(multichannel_store) if source_authority is not None else None
+
+    def mcp_tool_enabled(name):
+        current_role = store.get(role.id)
+        return current_role is not None and name in current_role.agentConfig.enabledTools
+
+    mcp_run = mcp_host.freeze(
+        role_id=role.id, session_key=session_key, run_id=run_id,
+        source=source_authority.to_dict() if source_authority is not None else None,
+        source_denial=mcp_source_denial, tool_enabled=mcp_tool_enabled, owner=not external_only,
+    ) if "tool_search" in policy.enabled_tools and not external_only else None
+    if mcp_run is not None:
+        await mcp_run.prepare()
+
     def authorize_tool(definition, context):
         if source_authority is not None:
             origin_denial = source_authority.authorization_denial(multichannel_store)
@@ -3972,6 +4003,8 @@ async def _runtime_capabilities(
         if current_role is None:
             return "role permission was revoked"
         current = _runtime_capability_policy(current_role, include_channel=include_channel)
+        if definition.source.startswith("mcp:") or definition.source == "builtin:mcp":
+            return (mcp_run.authorization_denial(definition) or True) if mcp_run is not None else "MCP has no frozen service grant"
         if definition.name not in current.enabled_tools:
             return "tool permission was revoked"
         if definition.source.startswith("plugin:"):
@@ -3993,33 +4026,46 @@ async def _runtime_capabilities(
         host_services["todo.write"] = _todo_application()
     if "browser.session" in policy.provided_capabilities:
         host_services["browser.session"] = browser_use_sessions
-    return await CapabilityRegistry(
-        _runtime_tool_candidates(role, include_channel=include_channel) if available_tools is None else available_tools,
-        skills=SkillRegistry.discover_many((
-            (store.root / role.id / "workspace" / "skills", "role"),
-            (roles_root / role.id / "skills", "role"),
-            (project_root / ".agents" / "skills", "project"),
-            (Path(__file__).parent / "builtin_skills", "builtin"),
-        )),
-        plugins=plugin_registry,
-    ).resolve_async(
-        role_id=role.id,
-        session_key=session_key,
-        run_id=run_id,
-        enabled_tools=policy.enabled_tools,
-        allowed_risks={"read_only", "mutating", "external"},
-        external_only=external_only,
-        prompt_text=prompt_text,
-        explicit_skill_ids=set(explicit_skill_ids or ()),
-        enabled_plugin_ids=policy.enabled_plugins,
-        granted_capabilities=policy.granted_capabilities,
-        host_services=host_services,
-        discovery_enabled="tool_search" in policy.enabled_tools,
-        deferred_tool_names=_deferred_discovery_tools(),
-        authorize_tool=authorize_tool,
-        authorize_call=authorize_call,
-        restored_activation=session_store.latest_capability_revision(role.id, session_key) if "tool_search" in policy.enabled_tools else None,
-    )
+    candidates = _runtime_tool_candidates(role, include_channel=include_channel) if available_tools is None else available_tools
+    if mcp_run is not None:
+        candidates = tuple(tool for tool in candidates if tool.definition.name not in MCP_MANAGEMENT_NAMES) + mcp_run.tools
+    try:
+        resolution = await CapabilityRegistry(
+            candidates,
+            skills=SkillRegistry.discover_many((
+                (store.root / role.id / "workspace" / "skills", "role"),
+                (roles_root / role.id / "skills", "role"),
+                (project_root / ".agents" / "skills", "project"),
+                (Path(__file__).parent / "builtin_skills", "builtin"),
+            )),
+            plugins=plugin_registry,
+        ).resolve_async(
+            role_id=role.id,
+            session_key=session_key,
+            run_id=run_id,
+            enabled_tools=policy.enabled_tools | {tool.definition.name for items in mcp_run.remote_tools.values() for tool in items} if mcp_run is not None else policy.enabled_tools,
+            allowed_risks={"read_only", "mutating", "external"},
+            external_only=external_only,
+            prompt_text=prompt_text,
+            explicit_skill_ids=set(explicit_skill_ids or ()),
+            enabled_plugin_ids=policy.enabled_plugins,
+            granted_capabilities=policy.granted_capabilities,
+            host_services=host_services,
+            discovery_enabled="tool_search" in policy.enabled_tools,
+            deferred_tool_names=_deferred_discovery_tools(),
+            authorize_tool=authorize_tool,
+            authorize_call=authorize_call,
+            restored_activation=session_store.latest_capability_revision(role.id, session_key) if "tool_search" in policy.enabled_tools else None,
+            service_grants=mcp_run.grants if mcp_run is not None else (),
+            resource_close=mcp_run.close if mcp_run is not None else None,
+        )
+        if mcp_run is not None:
+            mcp_run.bind(resolution)
+        return resolution
+    except BaseException:
+        if mcp_run is not None:
+            await mcp_run.close()
+        raise
 
 
 def _runtime_message_snapshot(message: object) -> dict[str, object]:

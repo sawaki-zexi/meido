@@ -1,0 +1,23 @@
+.mcp-settings, .mcp-form > fieldset { display: grid; gap: 16px; }
+.mcp-settings h2, .mcp-settings h3, .mcp-settings h4, .mcp-settings p { margin: 0; }
+.mcp-settings h2 { font-size: 20px; }
+.mcp-settings p, .mcp-settings small { overflow-wrap: anywhere; }
+.mcp-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.mcp-heading > div:first-child { display: grid; gap: 6px; min-width: 0; }
+.mcp-heading > button { flex-shrink: 0; }
+.mcp-card { display: grid; gap: 12px; border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: rgb(255 255 255 / 55%); }
+.mcp-form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.mcp-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.mcp-state { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--ink-soft); font-size: 13px; }
+.mcp-environment { display: grid; gap: 10px; }
+.mcp-env-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.mcp-checkbox { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; }
+.mcp-checkbox input[type="checkbox"] { flex-shrink: 0; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--rose); }
+.mcp-form .mcp-grants { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.mcp-grants legend { margin-bottom: 8px; font-weight: 600; font-size: 13px; }
+.mcp-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.mcp-delete { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+@media (max-width: 640px) {
+  .mcp-heading { align-items: flex-start; flex-wrap: wrap; }
+  .mcp-grid, .mcp-env-row { grid-template-columns: minmax(0, 1fr); }
+}

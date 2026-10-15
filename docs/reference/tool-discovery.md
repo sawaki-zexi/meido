@@ -70,6 +70,6 @@ Runtime 为重复调用 ID 分配唯一宿主身份，供 `ToolContext`、持久
 - 不能覆盖原目录中的名称，也不能引入额外审批或宿主服务权限；
 - 新定义先冻结为延迟候选，宿主调用结果持久化后才发布带父版本的目录修订；之后可在当前运行搜索并调用。
 
-该接口不接收模型 command/env，不创建 MCP 管理工具。真实 MCP 连接、远端调用和移除由 T12 实施并验收。
+该接口不接收模型 command/env。T12 的 MCP 宿主通过独立管理工具使用该接口，真实连接、调用、按来源恢复及整树清理见 [MCP 服务契约](mcp-services.md)。服务移除通过 `stage_service_removal(context, grant_id, parent_snapshot_id)` 暂存带父版本的注销修订；结果持久化后移除可见定义及候选，旧版本保持不变。相同服务 grant 的重新添加可以恢复自己此前移除的名称，不能占用其他来源名称。
 
 上游行为依据：[Shiori-Agent 固定版本 tool_search.py](https://github.com/YinFengWindy/Shiori-Agent/blob/4f266aeaf42fcd611362e2456417b91f659341cf/apps/backend/agent/tools/tool_search.py)。协议经 Meido 的宿主身份、不可变快照和持久化边界重新实现；来源许可见 [MIT License](../../third_party/shiori-agent/LICENSE)。

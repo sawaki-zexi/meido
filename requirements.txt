@@ -12,5 +12,6 @@ partial-json-parser>=0.2,<0.3
 sqlite-vec>=0.1.9,<0.2
 fastembed>=0.7,<1
 keyring>=25,<26
+jsonschema>=4.25,<5
 google-auth>=2.35,<3
 pytest>=8,<9

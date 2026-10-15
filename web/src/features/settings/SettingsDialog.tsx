@@ -8,9 +8,10 @@ import { MemorySettings } from "./MemorySettings";
 import { MailSettings } from "./MailSettings";
 import { ChannelSettings } from "../channels/ChannelSettings";
 import { IdentitySettings } from "../channels/IdentitySettings";
+import { McpSettings } from "./McpSettings";
 
 /** Settings sections. Add an entry here to add a new section to the dialog. */
-export type SettingsSectionId = "model" | "memory" | "owner-knowledge" | "todo" | "mail" | "channels" | "identity";
+export type SettingsSectionId = "model" | "memory" | "owner-knowledge" | "todo" | "mail" | "channels" | "identity" | "mcp";
 const sections: { id: SettingsSectionId; label: string; icon: IconName; render: () => ReactNode }[] = [
   { id: "model", label: "模型", icon: "model", render: () => <ModelSettings /> },
   { id: "memory", label: "记忆", icon: "memory", render: () => <MemorySettings /> },
@@ -19,6 +20,7 @@ const sections: { id: SettingsSectionId; label: string; icon: IconName; render: 
   { id: "mail", label: "邮件", icon: "todo", render: () => <MailSettings /> },
   { id: "channels", label: "多端连接", icon: "refresh", render: () => <ChannelSettings /> },
   { id: "identity", label: "我的身份", icon: "people", render: () => <IdentitySettings /> },
+  { id: "mcp", label: "MCP 服务", icon: "refresh", render: () => <McpSettings /> },
 ];
 
 export function SettingsDialog({ onClose, initialSection }: { onClose: () => void; initialSection?: SettingsSectionId }) {
