@@ -29,3 +29,43 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## QQ 托管 NapCat
+
+托管 QQ 的安装、官方 QQ 运行时校验、私有目录、WebUI 与二维码流程改编自
+[Shiori QQ 插件](https://github.com/YinFengWindy/Shiori-Agent/tree/4f266aeaf42fcd611362e2456417b91f659341cf/plugins/qq/backend)，
+适用上文保留的 MIT 版权及许可声明。进程生命周期复用 Meido 已有 Windows Job 和目录租约。
+
+首次使用下载未修改的 [NapCat v4.18.28 官方 Windows Node 压缩包](https://github.com/NapNeko/NapCatQQ/releases/tag/v4.18.28)，
+文件名 `NapCat.Shell.Windows.Node.zip`，SHA-256 为
+`fb64fa3b036ad2df1a5d7c204c482694c20e4b763978c8a4968fd3474c05b4a8`。
+组件版权属于 © 2024 Mlikiowa；保留包内文件与许可。以下为该固定版本的
+[上游许可证](https://github.com/NapNeko/NapCatQQ/blob/v4.18.28/LICENSE)全文。
+该组件有非商业使用等限制，其许可不替代 Meido 其余代码的许可。
+
+Windows x64 托管模式还要求本机已安装官方 Tencent QQ `9.9.31-49738`。
+程序核验并使用安装目录的运行组件，不复制或分发 Tencent DLL。
+本机 OneBot/WebUI 的随机 IPC 令牌仅保存在运行内存及 NapCat 所需的运行配置中；
+停止后清理配置，重启重新生成，不写入持久账号元数据。QQ 原生登录资料按账号隔离保留。
+
+```text
+Limited Redistribution License for NapCat
+
+Copyright © 2024 Mlikiowa
+
+1. Usage and Reproduction:
+   - Unauthorized use, reproduction, modification, or distribution of this code is prohibited without explicit permission from the main author of the NapCat repository.
+
+2. Redistribution:
+   - Redistribution of this code is permitted, provided that the full text of this license is included, and the source and copyright information is clearly stated.
+   - Minor modifications and extensions are allowed for redistribution purposes, but the modified code must not be publicly released.
+
+3. Non-Commercial Use:
+   - This code is not to be used for any commercial purposes.
+
+4. Additional Permissions:
+   - Any rights not explicitly addressed in this license must be requested from and granted by the main author of the NapCat repository.
+
+5. Disclaimer:
+   - This code is provided "as is," without any express or implied warranties, including but not limited to the implied warranties of merchantability and fitness for a particular purpose. In no event shall the author be liable for any damages or other liability arising from, out of, or in connection with the use or distribution of this code.
+```

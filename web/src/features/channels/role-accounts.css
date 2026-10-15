@@ -1,0 +1,45 @@
+.role-accounts { display: grid; gap: 18px; padding: 4px 0; }
+.role-accounts-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+.role-accounts-actions { display: flex; align-items: center; gap: 8px; }
+.role-accounts-actions button { white-space: nowrap; }
+.role-accounts-heading p, .role-accounts-hint, .role-accounts-empty { font-size: 13px; color: var(--ink-faint); }
+.role-accounts-heading p { margin-top: 5px; }
+.role-account-list { display: grid; border: 1px solid var(--line-strong); border-radius: var(--radius); overflow: hidden; }
+.role-account-row { display: flex; align-items: center; gap: 12px; padding: 16px; text-align: left; border: 0; border-radius: 0; min-height: 78px; }
+.role-account-row + .role-account-row { border-top: 1px solid var(--line); }
+.role-account-copy { display: grid; flex: 1; min-width: 0; gap: 3px; }
+.role-account-copy strong { color: var(--ink); }
+.role-account-copy small { color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; }
+.role-account-avatar, .role-account-mark { flex: 0 0 38px; width: 38px; height: 38px; border-radius: 12px; object-fit: cover; }
+.role-account-mark { display: grid; place-items: center; background: var(--blush); color: var(--rose-deep); font-weight: 600; }
+.role-account-mark.telegram { background: #e5f2fb; color: #438bb5; }
+.role-account-mark.qq, .role-account-mark.qqbot { background: #f0eefe; color: #8b7baa; }
+.role-account-mark.feishu { background: #eaf5f4; color: #548d91; }
+.role-account-status { font-size: 12px; color: var(--ink-faint); white-space: nowrap; }
+.role-account-status.connected { color: var(--success); }
+.account-detail, .account-connection-fields { display: grid; gap: 16px; }
+.account-detail { padding: 18px 20px; }
+.account-summary { display: flex; align-items: center; gap: 12px; padding-bottom: 4px; }
+.account-summary > div { display: grid; flex: 1; }
+.account-summary small { color: var(--ink-faint); }
+.account-detail .field { font-size: 13px; color: var(--ink-soft); }
+.account-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.account-disclosure { border-top: 1px solid var(--line); padding-top: 14px; }
+.account-disclosure > summary { cursor: pointer; color: var(--ink-soft); font-size: 13px; }
+.account-disclosure > fieldset, .account-disclosure > div { margin-top: 16px; }
+.account-response-rules { display: grid; gap: 12px; padding-top: 16px; border-top: 1px solid var(--line); }
+.account-response-rules > p, .account-platform-paused p { color: var(--ink-faint); font-size: 13px; }
+.account-checkbox { display: flex; align-items: center; gap: 9px; font-size: 13px; }
+.account-checkbox input { width: auto; }
+.account-error { color: var(--danger); font-size: 13px; overflow-wrap: anywhere; }
+.account-feedback { color: var(--success); font-size: 13px; }
+.account-platform-paused { display: grid; gap: 10px; padding: 12px; border-radius: var(--radius-sm); background: var(--blush); }
+.account-platform-paused > button { justify-self: start; }
+.account-remove { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--line); padding-top: 12px; }
+.account-remove small { color: var(--ink-faint); }
+.managed-qq-login { display: grid; gap: 14px; }
+.managed-qq-login > p { color: var(--ink-soft); font-size: 13px; }
+.managed-qq-login > button { justify-self: start; }
+.managed-qq-login progress { width: 100%; accent-color: var(--rose); }
+.managed-qq-qrcode { width: 220px; max-width: 100%; justify-self: center; border-radius: var(--radius); border: 1px solid var(--line-strong); background: white; padding: 8px; }
+@media (max-width: 600px) { .role-account-row { gap: 9px; padding: 13px 10px; } .role-account-copy small { font-size: 11px; } }

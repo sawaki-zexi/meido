@@ -52,9 +52,10 @@ class ChannelPushService:
                 result.append({
                     "accountId": account.account_id, "channel": account.channel,
                     "accountName": account.display_name, "targetId": target.id,
+                    "chatId": target.chat_id,
                     "displayName": target.display_name or target.chat_id,
                     "enabled": selected.get(account.account_id) == target.id,
-                    "available": account.enabled,
+                    "available": self.store.account_effectively_enabled(account),
                 })
         return result
 
