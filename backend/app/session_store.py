@@ -1,6 +1,7 @@
 import sqlite3
 import uuid
 import json
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -14,7 +15,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _load_attachments(metadata: dict[str, Any]) -> tuple[AttachmentContent, ...]:
+def load_runtime_attachments(metadata: dict[str, Any]) -> tuple[AttachmentContent, ...]:
     raw = metadata.get("attachments", []) if isinstance(metadata, dict) else []
     if not isinstance(raw, list):
         return ()
@@ -37,6 +38,36 @@ def _load_attachments(metadata: dict[str, Any]) -> tuple[AttachmentContent, ...]
                 continue
         loaded.append(AttachmentContent(name, media_type, text=text, image=image))
     return tuple(loaded)
+
+
+def _channel_user_content(stored: Message) -> str:
+    metadata = stored.metadata
+    if not metadata.get("channel") or metadata.get("channel") == "desktop":
+        return stored.content
+    kind = "群友" if metadata.get("chatType") == "group" else "访客"
+    sender = "主人" if metadata.get("senderIsOwner") is True else kind
+    name = str(metadata.get("senderName") or metadata.get("senderId") or "")
+    lines = [f"[渠道 {metadata['channel']}；chat_id={metadata.get('chatId', '')}；{sender} {name}（ID {metadata.get('senderId', '')}）]"]
+    if metadata.get("groupName"):
+        lines.append(f"群名：{metadata['groupName']}")
+    if metadata.get("mentionedIds"):
+        lines.append("提及 ID：" + "、".join(str(value) for value in metadata["mentionedIds"]))
+    attachments = [item for key in ("attachments", "quotedAttachments") for item in metadata.get(key, []) if isinstance(item, dict) and item.get("id")]
+    if attachments:
+        lines.append("本消息附件：" + "；".join(f"{item.get('name', '附件')}（attachment_id={item['id']}）" for item in attachments))
+    return "\n".join([*lines, stored.content])
+
+
+def _runtime_assistant_metadata(metadata: dict[str, Any]) -> dict[str, object]:
+    internal_keys = {
+        "stopReason",
+        "toolCallGroupId",
+        "toolCallIndex",
+        "toolCallCount",
+        "runtimeStopReason",
+        "runtimePlaceholder",
+    }
+    return {key: value for key, value in metadata.items() if key not in internal_keys}
 
 
 class SessionStore:
@@ -220,10 +251,23 @@ class SessionStore:
         """
 
         if isinstance(message, UserMessage):
-            return [self.append_message(session_key, "user", message.content, status, run_id=run_id)]
+            metadata: dict[str, object] = {}
+            if message.timestamp is not None:
+                metadata["timestamp"] = message.timestamp
+            return [self.append_message(session_key, "user", message.content, status, run_id=run_id, metadata=metadata)]
         if isinstance(message, AssistantMessage):
+            assistant_metadata = dict(message.metadata)
+            if message.timestamp is not None:
+                assistant_metadata["timestamp"] = message.timestamp
             if not message.tool_calls:
-                return [self.append_message(session_key, "assistant", message.content, status, run_id=run_id)]
+                return [self.append_message(
+                    session_key,
+                    "assistant",
+                    message.content,
+                    status,
+                    run_id=run_id,
+                    metadata=assistant_metadata,
+                )]
             group_id = uuid.uuid4().hex
             now = _now()
             with sqlite3.connect(self.database_path) as connection:
@@ -245,6 +289,7 @@ class SessionStore:
                         safe_arguments = call.arguments
                     message_id = f"{session_key}:{uuid.uuid4().hex}"
                     metadata = {
+                        **assistant_metadata,
                         "stopReason": message.stop_reason,
                         "toolCallGroupId": group_id,
                         "toolCallIndex": index,
@@ -278,6 +323,13 @@ class SessionStore:
                 from .browser_use.safety import sanitize_browser_text
 
                 safe_content, _ = sanitize_browser_text(safe_content)
+            metadata: dict[str, object] = {}
+            if message.usage is not None:
+                metadata["usage"] = asdict(message.usage) if is_dataclass(message.usage) else message.usage
+            if message.nested_calls:
+                metadata["nestedCalls"] = [asdict(call) for call in message.nested_calls]
+            if message.timestamp is not None:
+                metadata["timestamp"] = message.timestamp
             return [
                 self.append_message(
                     session_key,
@@ -290,14 +342,39 @@ class SessionStore:
                     tool_result=message.details,
                     is_error=message.is_error,
                     run_id=run_id,
+                    metadata=metadata,
                 )
             ]
         raise TypeError(f"unsupported runtime message: {type(message)!r}")
 
-    def runtime_messages(self, session_key: str, *, max_messages: int | None = None) -> list[AgentMessage]:
+    def runtime_messages(self, session_key: str, *, max_messages: int | None = None, since: str | None = None, through_message_id: str | None = None) -> list[AgentMessage]:
         """Rebuild a provider transcript from the structured SQLite rows."""
 
         stored_messages = self.list_messages(session_key)
+        if through_message_id is not None:
+            source = next((item for item in stored_messages if item.id == through_message_id and item.role == "user"), None)
+            if source is None:
+                raise KeyError(through_message_id)
+            # Polling may persist another sender while this turn waits for the
+            # role lock. Never let a later request inherit this source's tools.
+            run_sources = {
+                item.runId: item.sequence for item in stored_messages
+                if item.role == "user" and item.runId and item.sequence < source.sequence
+            }
+            stored_messages = [
+                item for item in stored_messages
+                if item.sequence <= source.sequence or item.runId in run_sources
+            ]
+            # An earlier turn can finish after the next user's intake was saved.
+            # Replay that completed turn before this request, preserving its
+            # call/result sequence without admitting any later user's turn.
+            stored_messages.sort(key=lambda item: (run_sources.get(item.runId, item.sequence), item.sequence))
+        if since is not None:
+            source_dates = {item.runId: item.createdAt.isoformat() for item in stored_messages if item.role == "user" and item.runId}
+            stored_messages = [
+                item for item in stored_messages
+                if item.createdAt.isoformat() >= since and source_dates.get(item.runId, since) >= since
+            ]
         messages: list[AgentMessage] = []
         index = 0
         while index < len(stored_messages):
@@ -332,7 +409,13 @@ class SessionStore:
                     if raw_stop_reason not in {"stop", "tool_use", "error", "aborted"}:
                         raw_stop_reason = "tool_use"
                     stop_reason = cast(Literal["stop", "tool_use", "error", "aborted"], raw_stop_reason)
-                    messages.append(AssistantMessage(content=group[0].content, tool_calls=calls, stop_reason=stop_reason))
+                    messages.append(AssistantMessage(
+                        content=group[0].content,
+                        tool_calls=calls,
+                        stop_reason=stop_reason,
+                        metadata=_runtime_assistant_metadata(group[0].metadata),
+                        timestamp=_timestamp(group[0].metadata),
+                    ))
 
                     # Results are expected immediately after the assistant call group.
                     # Only matching IDs are replayable; duplicates and orphan results
@@ -360,12 +443,16 @@ class SessionStore:
                                 details={"repaired": True},
                             ))
                         else:
+                            nested_calls = _nested_calls(replay_result.metadata)
                             messages.append(ToolResultMessage(
                                 tool_call_id=call.id,
                                 tool_name=call.name,
                                 content=replay_result.content,
                                 is_error=replay_result.isError,
                                 details=replay_result.toolResult,
+                                usage=replay_result.metadata.get("usage"),
+                                nested_calls=nested_calls,
+                                timestamp=_timestamp(replay_result.metadata),
                                 # Images are intentionally ephemeral and are not
                                 # reconstructed from SQLite on later runs.
                                 images=(),
@@ -378,9 +465,20 @@ class SessionStore:
                 continue
             elif stored.messageType == "text" and stored.status == "completed":
                 if stored.role == "user":
-                    messages.append(UserMessage(stored.content, attachments=_load_attachments(stored.metadata)))
+                    messages.append(UserMessage(
+                        _channel_user_content(stored),
+                        attachments=load_runtime_attachments(stored.metadata),
+                        timestamp=_timestamp(stored.metadata),
+                    ))
                 elif stored.role == "assistant":
-                    messages.append(AssistantMessage(stored.content))
+                    if stored.metadata.get("channel") not in {None, "", "desktop"} and stored.metadata.get("deliveryStatus") != "sent":
+                        index += 1
+                        continue
+                    messages.append(AssistantMessage(
+                        stored.content,
+                        metadata=_runtime_assistant_metadata(stored.metadata),
+                        timestamp=_timestamp(stored.metadata),
+                    ))
             index += 1
         if max_messages is None or max_messages < 1 or len(messages) <= max_messages:
             return messages
@@ -440,6 +538,61 @@ class SessionStore:
             connection.execute("UPDATE sessions SET updated_at = ? WHERE session_key = ?", (now, run.sessionKey))
         user_message = Message(id=user_id, sessionKey=run.sessionKey, sequence=user_sequence, role="user", content=user_content, status="completed", createdAt=datetime.fromisoformat(now), runId=run.runId, metadata={"attachments": attachments or []})
         assistant_message = Message(id=assistant_id, sessionKey=run.sessionKey, sequence=assistant_sequence, role="assistant", content="", status=assistant_status, createdAt=datetime.fromisoformat(now), runId=run.runId, metadata={"runtimePlaceholder": True})
+        return run, user_message, assistant_message
+
+    def create_run_with_existing_user_message(
+        self,
+        run: AgentRun,
+        message_id: str,
+        *,
+        assistant_status: str = "streaming",
+    ) -> tuple[AgentRun, Message, Message]:
+        """Reserve a run for an already persisted external inbound message.
+
+        Channel intake commits its durable event before dispatching a model
+        turn. Reusing that row avoids duplicating the user's message while
+        still giving RuntimeManager the same atomic run/placeholder boundary
+        as the desktop path.
+        """
+
+        now = _now()
+        assistant_id = f"{run.sessionKey}:{uuid.uuid4().hex}"
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute(
+                "INSERT INTO agent_runs (run_id, role_id, session_key, status, model_configuration_id, model_snapshot_json, turn_count, started_at, ended_at, cancel_reason, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (run.runId, run.roleId, run.sessionKey, run.status, run.modelConfigurationId, json.dumps(run.modelSnapshot, ensure_ascii=False), run.turnCount, run.startedAt.isoformat(), run.endedAt.isoformat() if run.endedAt else None, run.cancelReason, run.error),
+            )
+            source = connection.execute(
+                "SELECT message_id, session_key, sequence, role, content, status, created_at, message_type, tool_call_id, tool_name, tool_arguments_json, tool_result_json, is_error, run_id, metadata_json FROM messages WHERE message_id=? AND session_key=?",
+                (message_id, run.sessionKey),
+            ).fetchone()
+            if source is None or source[3] != "user" or source[5] != "completed":
+                raise KeyError(message_id)
+            connection.execute("UPDATE messages SET run_id=? WHERE message_id=?", (run.runId, message_id))
+            assistant_sequence = int(source[2]) + 1
+            next_sequence = connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM messages WHERE session_key=?",
+                (run.sessionKey,),
+            ).fetchone()[0]
+            assistant_sequence = max(assistant_sequence, int(next_sequence))
+            connection.execute(
+                "INSERT INTO messages (message_id, session_key, sequence, role, content, status, created_at, message_type, run_id, metadata_json) VALUES (?, ?, ?, 'assistant', '', ?, ?, 'text', ?, ?)",
+                (assistant_id, run.sessionKey, assistant_sequence, assistant_status, now, run.runId, _dump({"runtimePlaceholder": True})),
+            )
+            connection.execute("UPDATE sessions SET updated_at=? WHERE session_key=?", (now, run.sessionKey))
+        user_message = self._message(source)
+        user_message = user_message.model_copy(update={"runId": run.runId})
+        assistant_message = Message(
+            id=assistant_id,
+            sessionKey=run.sessionKey,
+            sequence=assistant_sequence,
+            role="assistant",
+            content="",
+            status=assistant_status,
+            createdAt=datetime.fromisoformat(now),
+            runId=run.runId,
+            metadata={"runtimePlaceholder": True},
+        )
         return run, user_message, assistant_message
 
     def delete_role_session(self, role_id: str) -> None:
@@ -749,6 +902,31 @@ class SessionStore:
 
 def _dump(value: object | None) -> str | None:
     return json.dumps(value, ensure_ascii=False) if value is not None else None
+
+
+def _timestamp(metadata: dict[str, Any]) -> int | None:
+    value = metadata.get("timestamp")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _nested_calls(metadata: dict[str, Any]) -> tuple[ToolCall, ...]:
+    value = metadata.get("nestedCalls")
+    if not isinstance(value, list):
+        return ()
+    calls: list[ToolCall] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        call_id = item.get("id")
+        name = item.get("name")
+        arguments = item.get("arguments", {})
+        if (
+            isinstance(call_id, str)
+            and isinstance(name, str)
+            and isinstance(arguments, dict)
+        ):
+            calls.append(ToolCall(call_id, name, dict(arguments)))
+    return tuple(calls)
 
 
 def _load(value: object | None) -> object | None:

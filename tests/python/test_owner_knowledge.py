@@ -133,6 +133,148 @@ def make_plugin(tmp_path):
     return plugin, store, feishu, embedder
 
 
+def test_enable_reports_invalid_feishu_token_without_exposing_response(tmp_path, monkeypatch):
+    def handler(request):
+        return httpx.Response(400, json={"code": 99991668, "msg": "secret-user-token"})
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "backend.app.owner_knowledge.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    plugin, store, _, _ = make_plugin(tmp_path)
+    plugin.connector = FeishuApiConnector(lambda: "secret-user-token")
+
+    with pytest.raises(RuntimeError, match=r"飞书知识库列表.*HTTP 400.*99991668.*重新授权"):
+        asyncio.run(plugin.enable())
+
+    status = plugin.status()
+    assert not status.enabled
+    assert "HTTPStatusError" not in status.last_error
+    assert "secret-user-token" not in status.last_error
+    assert store.latest_sync_report().errors == status.last_sync.errors
+
+
+@pytest.mark.parametrize("status,code", [(401, None), (400, 99991668), (200, 99991677)])
+def test_feishu_scan_refreshes_once_and_uses_fresh_response(monkeypatch, status, code):
+    token = "old-user-token"
+    requests = []
+    refreshes = []
+
+    def handler(request):
+        requests.append(request.headers["Authorization"])
+        if len(requests) == 1:
+            return httpx.Response(status, json={"code": code})
+        return httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}})
+
+    async def refresh():
+        nonlocal token
+        refreshes.append(True)
+        token = "new-user-token"
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "backend.app.owner_knowledge.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    scan = asyncio.run(FeishuApiConnector(lambda: token, refresh_token=refresh).scan())
+    assert scan.complete, scan.errors
+    assert requests == ["Bearer old-user-token", "Bearer new-user-token"]
+    assert len(refreshes) == 1
+
+
+@pytest.mark.parametrize("refresh_fails", [False, True])
+def test_feishu_refresh_failure_stops_and_reports_reauthorization(monkeypatch, refresh_fails):
+    requests = []
+    refreshes = []
+
+    def handler(request):
+        requests.append(True)
+        return httpx.Response(400, json={"code": 99991668, "msg": "secret-token"})
+
+    async def refresh():
+        refreshes.append(True)
+        if refresh_fails:
+            raise RuntimeError("secret-refresh-token")
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "backend.app.owner_knowledge.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    scan = asyncio.run(FeishuApiConnector(lambda: "secret-token", refresh_token=refresh).scan())
+    assert not scan.complete
+    assert "重新授权" in scan.errors[0]
+    assert "secret" not in scan.errors[0]
+    assert len(requests) == (1 if refresh_fails else 2)
+    assert len(refreshes) == 1
+
+
+@pytest.mark.parametrize("status,payload", [(403, {"code": 99991672, "msg": "secret"}), (502, None)])
+def test_document_read_reports_safe_http_error(monkeypatch, status, payload):
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "backend.app.owner_knowledge.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(status, json=payload) if payload else httpx.Response(status, text="secret")
+        ), **kwargs),
+    )
+    with pytest.raises(RuntimeError, match=f"HTTP {status}") as error:
+        asyncio.run(FeishuApiConnector(lambda: "secret").read_document(make_document("diary")))
+    assert "secret" not in str(error.value)
+
+
+def test_enable_keeps_lexical_sync_when_embedding_is_unconfigured(tmp_path):
+    plugin, _, feishu, embedder = make_plugin(tmp_path)
+    embedder.ready = False
+    feishu.documents = [make_document("diary")]
+    feishu.contents["diary"] = "主人喜欢学习"
+
+    def unavailable_embedding(texts):
+        raise RuntimeError("secret-key")
+
+    embedder.embed_documents = unavailable_embedding
+    report = asyncio.run(plugin.enable())
+    assert report.complete
+    assert plugin.status().enabled
+    assert "secret-key" not in plugin.embedding_last_error
+
+
+def test_old_document_export_refreshes_then_downloads_by_file_token(monkeypatch):
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as document_zip:
+        document_zip.writestr("word/document.xml", '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>旧版日记</w:t></w:r></w:p></w:body></w:document>')
+    calls = []
+    token = "old-token"
+
+    def handler(request):
+        calls.append((request.method, request.url.path, request.headers["Authorization"]))
+        if len(calls) == 1:
+            return httpx.Response(400, json={"code": 99991668})
+        if request.method == "POST":
+            return httpx.Response(200, json={"code": 0, "data": {"ticket": "export-ticket"}})
+        if request.url.path.endswith("/export_tasks/export-ticket"):
+            assert request.url.params["token"] == "obj-diary"
+            return httpx.Response(200, json={"code": 0, "data": {"result": {"job_status": 0, "file_token": "export-file"}}})
+        if request.url.path.endswith("/export_tasks/file/export-file/download"):
+            return httpx.Response(200, content=archive.getvalue())
+        return httpx.Response(404, json={"code": 404})
+
+    async def refresh():
+        nonlocal token
+        token = "fresh-token"
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "backend.app.owner_knowledge.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    connector = FeishuApiConnector(lambda: token, refresh_token=refresh)
+    assert asyncio.run(connector.read_document(make_document("diary", obj_type="doc"))) == "旧版日记"
+    assert len(calls) == 4
+    assert all(auth == "Bearer fresh-token" for _, _, auth in calls[1:])
+
+
 def test_pause_preserves_the_local_index_and_blocks_retrieval(tmp_path):
     async def scenario():
         plugin, store, feishu, _ = make_plugin(tmp_path)
@@ -319,7 +461,7 @@ def test_understanding_is_role_scoped_and_failed_regeneration_preserves_previous
                 del messages, configuration, max_tokens
                 return "我觉得主人会耐心追问概念之间的联系。"
 
-        first = await plugin.generate_understanding(role_a, WorkingModel(), None, "记忆只读上下文")
+        first = await plugin.generate_understanding(role_a, WorkingModel(), SimpleNamespace(), "记忆只读上下文")
         assert first["version"] == 1
         role_a_hits = await plugin.search("主人学习习惯", role_id="role-a")
         role_b_hits = await plugin.search("主人学习习惯", role_id="role-b")
@@ -331,7 +473,7 @@ def test_understanding_is_role_scoped_and_failed_regeneration_preserves_previous
                 raise RuntimeError("offline")
 
         try:
-            await plugin.generate_understanding(role_a, FailingModel(), None, "")
+            await plugin.generate_understanding(role_a, FailingModel(), SimpleNamespace(), "")
         except RuntimeError:
             pass
         assert store.get_understanding("role-a")["body"] == first["body"]
@@ -694,7 +836,7 @@ def test_deleting_role_cancels_inflight_understanding_and_prevents_resurrection(
                 started.set()
                 await asyncio.Event().wait()
 
-        plugin.queue_understanding_refresh("role-a", role, BlockingModel(), None, "")
+        plugin.queue_understanding_refresh("role-a", role, BlockingModel(), SimpleNamespace(), "")
         await started.wait()
         await plugin.begin_role_deletion("role-a")
         store.delete_role("role-a")
@@ -706,3 +848,197 @@ def test_deleting_role_cancels_inflight_understanding_and_prevents_resurrection(
         assert all(task.get_name() != "owner-understanding:role-a" for task in plugin._understanding_workers)
 
     asyncio.run(scenario())
+
+
+@pytest.fixture
+def owner_api(tmp_path, monkeypatch):
+    from backend.app import main
+    from backend.app.role_store import RoleStore
+    from backend.app.models import RoleInput, RoleProfile
+    from fastapi.testclient import TestClient
+    for name in ("MEIDO_MODEL_BASE_URL", "MEIDO_MODEL", "MEIDO_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    plugin, owner_store, feishu, embedder = make_plugin(tmp_path)
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="测试角色", profile=RoleProfile(profile="设定")))
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "owner_knowledge_store", owner_store)
+    monkeypatch.setattr(main, "owner_knowledge_plugin", plugin)
+    monkeypatch.setattr(main, "_role_model_configuration", lambda role_id: SimpleNamespace(apiKey="secret-key"))
+    monkeypatch.setattr(main, "_role_owner_understanding_memory", lambda role_id: "")
+    return TestClient(main.app), role, plugin, owner_store, feishu, embedder
+
+
+def test_regenerate_explains_paused_and_empty_knowledge(owner_api):
+    client, role, plugin, _, _, _ = owner_api
+    endpoint = f"/api/roles/{role.id}/owner-understanding/regenerate"
+    response = client.post(endpoint)
+    assert response.status_code == 409
+    assert "暂停" in response.json()["detail"]
+
+    asyncio.run(plugin.enable())
+    response = client.post(endpoint)
+    assert response.status_code == 409
+    assert "没有可用于生成角色理解的主人资料" in response.json()["detail"]
+
+
+def test_regenerate_reports_model_failure_and_preserves_old_understanding(owner_api, monkeypatch):
+    from backend.app import main
+
+    client, role, plugin, owner_store, feishu, _ = owner_api
+    feishu.documents = [make_document("diary")]
+    feishu.contents["diary"] = "学习日记"
+    asyncio.run(plugin.enable())
+    old = owner_store.save_understanding(role.id, "上一版想法", [1, 0], "test-embedder-v1")
+
+    class FailingModel:
+        async def complete_messages(self, *args, **kwargs):
+            request = httpx.Request("POST", "https://example.test/secret-key")
+            raise httpx.HTTPStatusError("secret-key", request=request, response=httpx.Response(401, request=request))
+
+    monkeypatch.setattr(main, "model_adapter", FailingModel())
+    response = client.post(f"/api/roles/{role.id}/owner-understanding/regenerate")
+    assert response.status_code == 502
+    assert "HTTP 401" in response.json()["detail"]
+    assert "secret-key" not in response.text
+    state = client.get(f"/api/roles/{role.id}/owner-understanding").json()
+    assert state["understanding"] == old
+    assert state["job"]["status"] == "failed"
+    assert "HTTP 401" in state["job"]["lastError"]
+
+
+@pytest.mark.parametrize("missing", ["model", "embedding"])
+def test_regenerate_explains_missing_model_configuration(owner_api, monkeypatch, missing):
+    from backend.app import main
+
+    client, role, plugin, _, feishu, embedder = owner_api
+    feishu.documents = [make_document("diary")]
+    feishu.contents["diary"] = "主人喜欢学习"
+    asyncio.run(plugin.enable())
+    if missing == "model":
+        monkeypatch.setattr(main, "_role_model_configuration", lambda role_id: None)
+    else:
+        embedder.ready = False
+    response = client.post(f"/api/roles/{role.id}/owner-understanding/regenerate")
+    assert response.status_code == 409
+    assert ("尚未配置角色模型" if missing == "model" else "配置并启用向量模型") in response.json()["detail"]
+
+
+def test_manual_regeneration_updates_selected_role_and_clears_failure(owner_api, monkeypatch):
+    from backend.app import main
+
+    client, role, plugin, owner_store, feishu, _ = owner_api
+    feishu.documents = [make_document("diary")]
+    feishu.contents["diary"] = "主人喜欢学习"
+    asyncio.run(plugin.enable())
+    owner_store.enqueue_understanding(role.id, {"kind": "manual"})
+    owner_store.fail_understanding(role.id, "上次模型连接失败")
+
+    class Model:
+        async def complete_messages(self, *args, **kwargs):
+            return "我觉得主人热爱学习"
+
+    monkeypatch.setattr(main, "model_adapter", Model())
+    response = client.post(f"/api/roles/{role.id}/owner-understanding/regenerate")
+    assert response.status_code == 200
+    assert response.json()["understanding"]["body"] == "我觉得主人热爱学习"
+    assert client.get(f"/api/roles/{role.id}/owner-understanding").json()["job"] is None
+
+
+@pytest.mark.parametrize("missing", ["model", "embedding"])
+def test_background_generation_records_precondition_failure_and_keeps_previous(tmp_path, monkeypatch, missing):
+    monkeypatch.delenv("MEIDO_MODEL_BASE_URL", raising=False)
+    monkeypatch.delenv("MEIDO_MODEL", raising=False)
+    async def scenario():
+        plugin, store, feishu, embedder = make_plugin(tmp_path)
+        feishu.documents = [make_document("diary")]
+        feishu.contents["diary"] = "主人喜欢学习"
+        await plugin.enable()
+        role = SimpleNamespace(id="role-a", name="角色", profile=SimpleNamespace())
+        old = store.save_understanding(role.id, "旧想法", [1, 0], embedder.model_id)
+        if missing == "embedding":
+            embedder.ready = False
+
+        class Model:
+            async def complete_messages(self, *args, **kwargs):
+                raise AssertionError("a missing prerequisite must stop before sending private documents")
+
+        plugin.queue_understanding_refresh(role.id, role, Model(), None if missing == "model" else SimpleNamespace(), "")
+        await asyncio.sleep(0)
+        status = store.understanding_job_status(role.id)
+        assert status["status"] == "failed"
+        assert ("尚未配置角色模型" if missing == "model" else "配置并启用向量模型") in status["lastError"]
+        assert store.get_understanding(role.id) == old
+        await plugin.close()
+
+    asyncio.run(scenario())
+
+
+def test_paused_vectors_allow_manual_and_background_understanding(owner_api, monkeypatch):
+    from backend.app import main
+
+    client, role, plugin, owner_store, feishu, embedder = owner_api
+    feishu.documents = [make_document("diary")]
+    feishu.contents["diary"] = "主人喜欢学习"
+    asyncio.run(plugin.enable())
+    embedder.is_enabled = False
+    embedder.ready = False
+
+    def forbidden_embedding(text):
+        raise AssertionError("paused vectors must not call the embedding service")
+
+    embedder.embed_query = forbidden_embedding
+
+    class Model:
+        async def complete_messages(self, *args, **kwargs):
+            return "我觉得主人热爱学习"
+
+    monkeypatch.setattr(main, "model_adapter", Model())
+    response = client.post(f"/api/roles/{role.id}/owner-understanding/regenerate")
+    assert response.status_code == 200
+
+    async def background():
+        plugin.queue_understanding_refresh(role.id, role, Model(), SimpleNamespace(), "", full_refresh=True)
+        await asyncio.sleep(0)
+        assert owner_store.get_understanding(role.id)["version"] == 2
+        assert owner_store.understanding_job_status(role.id) is None
+        await plugin.close()
+
+    asyncio.run(background())
+
+
+def test_environment_model_configuration_works_for_manual_and_background(owner_api, monkeypatch):
+    from backend.app import main
+
+    client, role, plugin, owner_store, feishu, _ = owner_api
+    feishu.documents = [make_document("diary")]
+    feishu.contents["diary"] = "主人喜欢学习"
+    asyncio.run(plugin.enable())
+    monkeypatch.setattr(main, "_role_model_configuration", lambda role_id: None)
+    monkeypatch.setenv("MEIDO_MODEL_BASE_URL", "https://env.example/v1")
+    monkeypatch.setenv("MEIDO_MODEL", "env-model")
+    monkeypatch.setenv("MEIDO_API_KEY", "secret-env-key")
+
+    class Model:
+        async def complete_messages(self, messages, configuration, **kwargs):
+            assert configuration.baseUrl == "https://env.example/v1"
+            assert configuration.model == "env-model"
+            assert configuration.apiKey == "secret-env-key"
+            return "环境模型生成的想法"
+
+    monkeypatch.setattr(main, "model_adapter", Model())
+    response = client.post(f"/api/roles/{role.id}/owner-understanding/regenerate")
+    assert response.status_code == 200
+    assert "secret-env-key" not in response.text
+
+    async def background():
+        plugin.queue_understanding_refresh(role.id, role, Model(), None, "", full_refresh=True)
+        await asyncio.sleep(0)
+        for _ in range(100):
+            if owner_store.get_understanding(role.id)["version"] == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert owner_store.get_understanding(role.id)["version"] == 2
+        await plugin.close()
+
+    asyncio.run(background())

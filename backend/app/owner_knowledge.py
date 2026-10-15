@@ -6,10 +6,10 @@ import io
 import json
 import logging
 import math
+import os
 import re
 import sqlite3
 import threading
-import uuid
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import asdict, dataclass
@@ -21,9 +21,12 @@ from urllib.parse import urlencode
 import httpx
 
 from .agent_runtime.tools import AgentToolResult, ToolContext, ToolDefinition
+from .credentials import CredentialStore, SystemCredentialStore
+from .models import ModelConfiguration
 
 
 _SUPPORTED_TYPES = frozenset({"doc", "docx"})
+_INVALID_USER_TOKEN_CODES = frozenset({"99991663", "99991664", "99991668", "99991677"})
 _MAX_QUERY_LENGTH = 500
 _MAX_RESULT_LIMIT = 8
 _MAX_TOOL_OUTPUT = 12000
@@ -56,7 +59,25 @@ class DocumentScan:
     errors: tuple[str, ...] = ()
 
 
-class FeishuApiError(RuntimeError):
+class OwnerKnowledgeError(RuntimeError):
+    """A controlled, user-facing owner knowledge failure."""
+
+
+def owner_understanding_model_configuration(configuration: object | None) -> object:
+    """Pass a concrete snapshot to completions, including the legacy env fallback."""
+    if configuration is not None:
+        return configuration
+    base_url = os.getenv("MEIDO_MODEL_BASE_URL", "").strip().rstrip("/")
+    model = os.getenv("MEIDO_MODEL", "").strip()
+    if not base_url or not model:
+        raise OwnerKnowledgeError("尚未配置角色模型，请先在模型设置中保存连接信息")
+    return ModelConfiguration(
+        providerId="custom", provider="custom", baseUrl=base_url, model=model,
+        apiKey=os.getenv("MEIDO_API_KEY", "").strip(),
+    )
+
+
+class FeishuApiError(OwnerKnowledgeError):
     """Safe summary of an unsuccessful Feishu API response."""
 
     def __init__(self, operation: str, status_code: int, error_code: str | None) -> None:
@@ -64,7 +85,26 @@ class FeishuApiError(RuntimeError):
         self.status_code = status_code
         self.error_code = error_code
         suffix = f"，飞书错误码 {error_code}" if error_code else ""
+        if status_code == 401 or error_code in _INVALID_USER_TOKEN_CODES:
+            suffix += "，请重新授权飞书"
+        elif error_code in {"99991672", "99991676", "99991679"}:
+            suffix += "，请检查飞书应用权限和知识库访问权限"
         super().__init__(f"{operation}失败（HTTP {status_code}{suffix}）")
+
+
+def owner_knowledge_error_message(error: Exception) -> str:
+    """Do not persist provider response bodies, request URLs or credentials."""
+    if isinstance(error, OwnerKnowledgeError):
+        return str(error)[:300]
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        hint = "，请检查模型密钥和权限" if status in {401, 403} else "，请检查模型连接后重试"
+        return f"模型服务请求失败（HTTP {status}）{hint}"
+    if isinstance(error, httpx.TimeoutException):
+        return "服务请求超时，请稍后重试"
+    if isinstance(error, httpx.RequestError):
+        return "无法连接服务，请检查网络后重试"
+    return f"操作失败（{type(error).__name__}），请检查模型连接后重试"
 
 
 def _feishu_json(response: httpx.Response, operation: str) -> dict[str, object]:
@@ -231,48 +271,50 @@ class FeishuApiConnector:
         self.base_url = base_url.rstrip("/")
         self._refresh_token = refresh_token
 
-    async def _get(self, path: str, params: Mapping[str, object] | None = None) -> dict[str, object]:
+    async def _request(self, method: str, path: str, operation: str, **kwargs: Any) -> httpx.Response:
         token = self._token_getter()
         if not token:
-            raise RuntimeError("飞书尚未连接")
+            raise OwnerKnowledgeError("飞书尚未连接，请先授权飞书")
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                f"{self.base_url}{path}",
-                params=dict(params or {}),
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            payload = response.json() if response.status_code != 401 else {}
-            invalid_user_token = isinstance(payload, dict) and str(payload.get("code")) in {"99991663", "99991664"}
-            if (response.status_code == 401 or invalid_user_token) and self._refresh_token is not None:
-                refreshed = self._refresh_token()
-                if asyncio.iscoroutine(refreshed):
-                    await refreshed
-                token = self._token_getter()
-                response = await client.get(
-                    f"{self.base_url}{path}",
-                    params=dict(params or {}),
-                    headers={"Authorization": f"Bearer {token}"},
+            for attempt in range(2):
+                try:
+                    response = await client.request(
+                        method, f"{self.base_url}{path}",
+                        headers={"Authorization": f"Bearer {token}"}, **kwargs,
+                    )
+                except httpx.RequestError as error:
+                    raise OwnerKnowledgeError(f"{operation}：{owner_knowledge_error_message(error)}") from error
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = None
+                invalid_token = response.status_code == 401 or (
+                    isinstance(payload, dict) and str(payload.get("code")) in _INVALID_USER_TOKEN_CODES
                 )
-            response.raise_for_status()
-        if not isinstance(payload, dict) or payload.get("code", 0) not in (0, None):
-            raise RuntimeError("飞书接口返回错误")
+                if not invalid_token or attempt == 1 or self._refresh_token is None:
+                    return response
+                try:
+                    refreshed = self._refresh_token()
+                    if asyncio.iscoroutine(refreshed):
+                        await refreshed
+                except Exception as error:
+                    detail = str(error) if isinstance(error, FeishuApiError) else "飞书用户令牌刷新失败"
+                    raise OwnerKnowledgeError(f"{detail}，请重新授权飞书") from error
+                token = self._token_getter()
+                if not token:
+                    raise OwnerKnowledgeError("飞书用户令牌刷新失败，请重新授权飞书")
+        raise OwnerKnowledgeError("飞书请求失败")
+
+    async def _get(self, path: str, params: Mapping[str, object] | None = None) -> dict[str, object]:
+        operation = "飞书知识库列表" if path == "/wiki/v2/spaces" else "飞书资料读取"
+        response = await self._request("GET", path, operation, params=dict(params or {}))
+        payload = _feishu_json(response, operation)
         data = payload.get("data")
         return data if isinstance(data, dict) else {}
 
     async def _post(self, path: str, payload: Mapping[str, object]) -> dict[str, object]:
-        token = self._token_getter()
-        if not token:
-            raise RuntimeError("飞书尚未连接")
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{self.base_url}{path}",
-                json=dict(payload),
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            response.raise_for_status()
-            result = response.json()
-        if not isinstance(result, dict) or result.get("code", 0) not in (0, None):
-            raise RuntimeError("飞书接口返回错误")
+        response = await self._request("POST", path, "飞书文档导出", json=dict(payload))
+        result = _feishu_json(response, "飞书文档导出")
         data = result.get("data")
         return data if isinstance(data, dict) else {}
 
@@ -288,7 +330,7 @@ class FeishuApiConnector:
                     continue
                 await self._scan_nodes(space_id, "", documents, errors)
         except Exception as error:
-            errors.append(type(error).__name__)
+            errors.append(owner_knowledge_error_message(error))
         return DocumentScan(documents=documents, complete=not errors, errors=tuple(errors))
 
     async def _scan_nodes(self, space_id: str, parent: str, documents: list[RemoteDocument], errors: list[str]) -> None:
@@ -298,7 +340,7 @@ class FeishuApiConnector:
                 "user_id_type": "open_id",
             })
         except Exception as error:
-            errors.append(type(error).__name__)
+            errors.append(owner_knowledge_error_message(error))
             return
         for node in nodes:
             node_token = str(node.get("node_token", ""))
@@ -311,7 +353,7 @@ class FeishuApiConnector:
                     if not isinstance(node_info, dict):
                         node_info = node
                 except Exception as error:
-                    errors.append(f"node:{type(error).__name__}")
+                    errors.append(f"节点读取：{owner_knowledge_error_message(error)}")
                     continue
             obj_type = str(node_info.get("obj_type", node.get("obj_type", "")))
             object_token = str(node_info.get("obj_token", node.get("obj_token", "")))
@@ -340,13 +382,13 @@ class FeishuApiConnector:
             keys = (list_key,) if isinstance(list_key, str) else list_key
             items = next((data[key] for key in keys if key in data), None)
             if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
-                raise RuntimeError("飞书分页响应格式无效")
+                raise OwnerKnowledgeError("飞书分页响应格式无效")
             values.extend(items)
             if not data.get("has_more"):
                 return values
             page_token = str(data.get("page_token", ""))
             if not page_token or page_token in seen_page_tokens:
-                raise RuntimeError("飞书分页未提供新的 page token")
+                raise OwnerKnowledgeError("飞书分页未提供新的 page token")
             seen_page_tokens.add(page_token)
 
     async def read_document(self, document: RemoteDocument) -> str:
@@ -354,7 +396,7 @@ class FeishuApiConnector:
             data = await self._get(f"/docx/v1/documents/{document.object_token}/raw_content")
             content = data.get("content", "")
             if not isinstance(content, str):
-                raise RuntimeError("飞书文档正文格式无效")
+                raise OwnerKnowledgeError("飞书文档正文格式无效")
             return content
         task = await self._post("/drive/v1/export_tasks", {
             "file_extension": "docx",
@@ -363,24 +405,23 @@ class FeishuApiConnector:
         })
         ticket = str(task.get("ticket", ""))
         if not ticket:
-            raise RuntimeError("飞书文档导出任务未返回 ticket")
+            raise OwnerKnowledgeError("飞书文档导出任务未返回 ticket")
         for _ in range(30):
-            result = await self._get(f"/drive/v1/export_tasks/{ticket}")
+            result = await self._get(f"/drive/v1/export_tasks/{ticket}", {"token": document.object_token})
             task_result = result.get("result")
             if isinstance(task_result, dict) and task_result.get("file_token"):
                 file_token = str(task_result["file_token"])
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    response = await client.get(
-                        f"{self.base_url}/drive/v1/export_tasks/{ticket}/download",
-                        headers={"Authorization": f"Bearer {self._token_getter()}"},
-                    )
-                    response.raise_for_status()
+                response = await self._request(
+                    "GET", f"/drive/v1/export_tasks/file/{file_token}/download", "飞书导出文件下载",
+                )
+                if not response.is_success or "application/json" in response.headers.get("content-type", ""):
+                    _feishu_json(response, "飞书导出文件下载")
                 return _docx_text(response.content)
-            status = str(result.get("job_status", ""))
+            status = str(task_result.get("job_status", "")) if isinstance(task_result, dict) else ""
             if status in {"failed", "4", "5"}:
-                raise RuntimeError("飞书文档导出失败")
+                raise OwnerKnowledgeError("飞书文档导出失败")
             await asyncio.sleep(1)
-        raise TimeoutError("飞书文档导出超时")
+        raise OwnerKnowledgeError("飞书文档导出超时，请稍后重试")
 
     async def exchange_code(self, code: str, app_id: str, app_secret: str, redirect_uri: str) -> dict[str, object]:
         if not app_id or not app_secret or not code:
@@ -442,7 +483,7 @@ def _docx_text(data: bytes) -> str:
             xml = archive.read("word/document.xml")
         root = ET.fromstring(xml)
     except Exception as error:
-        raise RuntimeError("飞书导出的 Word 文档无法解析") from error
+        raise OwnerKnowledgeError("飞书导出的 Word 文档无法解析") from error
     namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
     paragraphs: list[str] = []
     for paragraph in root.findall(".//w:p", namespace):
@@ -458,148 +499,6 @@ class _VectorIndex(Protocol):
     def search(self, model_id: str, vector: list[float], limit: int) -> list[tuple[str, float]]: ...
 
     def delete(self, item_id: str) -> None: ...
-
-
-class CredentialStore(Protocol):
-    def get(self, key: str) -> str: ...
-
-    def set(self, key: str, value: str) -> None: ...
-
-
-class SystemCredentialStore:
-    """Keep Feishu secrets in the operating system credential vault."""
-
-    _SERVICE = "meido.owner-knowledge"
-    _CHUNK_MARKER = "meido.credential-chunks.v1:"
-    # Windows Credential Manager accepts at most 1280 UTF-16 code units in a
-    # generic credential blob. Leave headroom for backend encoding details.
-    _CHUNK_SIZE_UNITS = 1000
-
-    @staticmethod
-    def _utf16_units(value: str) -> int:
-        return len(value.encode("utf-16-le")) // 2
-
-    @classmethod
-    def _split_value(cls, value: str) -> list[str]:
-        chunks: list[str] = []
-        current: list[str] = []
-        current_units = 0
-        for character in value:
-            character_units = cls._utf16_units(character)
-            if current and current_units + character_units > cls._CHUNK_SIZE_UNITS:
-                chunks.append("".join(current))
-                current = []
-                current_units = 0
-            current.append(character)
-            current_units += character_units
-        if current:
-            chunks.append("".join(current))
-        return chunks
-
-    @classmethod
-    def _chunk_metadata(cls, value: str) -> tuple[str, int, int] | None:
-        if not value.startswith(cls._CHUNK_MARKER):
-            return None
-        parts = value.removeprefix(cls._CHUNK_MARKER).split(":")
-        if len(parts) != 3 or not re.fullmatch(r"[0-9a-f]{32}", parts[0]):
-            return None
-        try:
-            count, total_units = int(parts[1]), int(parts[2])
-        except ValueError:
-            return None
-        if count < 1 or total_units < 1:
-            return None
-        return parts[0], count, total_units
-
-    @staticmethod
-    def _chunk_key(key: str, generation: str, index: int) -> str:
-        return f"{key}.chunk.{generation}.{index}"
-
-    @classmethod
-    def _delete_chunks(cls, keyring: Any, key: str, metadata: tuple[str, int, int]) -> None:
-        generation, count, _total_units = metadata
-        for index in range(count):
-            try:
-                keyring.delete_password(cls._SERVICE, cls._chunk_key(key, generation, index))
-            except keyring.errors.PasswordDeleteError:
-                pass
-
-    @classmethod
-    def _delete_chunks_best_effort(cls, keyring: Any, key: str, metadata: tuple[str, int, int]) -> None:
-        try:
-            cls._delete_chunks(keyring, key, metadata)
-        except Exception as error:
-            logging.getLogger(__name__).warning(
-                "清理旧的系统凭据分片失败：%s", type(error).__name__
-            )
-
-    def get(self, key: str) -> str:
-        try:
-            import keyring  # type: ignore[import-not-found]
-
-            stored_value = keyring.get_password(self._SERVICE, key) or ""
-            metadata = self._chunk_metadata(stored_value)
-            if metadata is None:
-                return stored_value
-            generation, count, total_units = metadata
-            chunks = [
-                keyring.get_password(self._SERVICE, self._chunk_key(key, generation, index))
-                for index in range(count)
-            ]
-            if any(chunk is None for chunk in chunks):
-                return ""
-            value = "".join(chunk for chunk in chunks if chunk is not None)
-            return value if self._utf16_units(value) == total_units else ""
-        except Exception:
-            # An unavailable vault means the optional Feishu connection is not
-            # configured. Writes still fail loudly below so secrets are never
-            # silently persisted somewhere else.
-            return ""
-
-    def set(self, key: str, value: str) -> None:
-        try:
-            import keyring  # type: ignore[import-not-found]
-
-            old_value = keyring.get_password(self._SERVICE, key) or ""
-            old_metadata = self._chunk_metadata(old_value)
-            if not value:
-                try:
-                    keyring.delete_password(self._SERVICE, key)
-                except keyring.errors.PasswordDeleteError:
-                    pass
-                if old_metadata is not None:
-                    self._delete_chunks_best_effort(keyring, key, old_metadata)
-                return
-
-            chunks = self._split_value(value)
-            if len(chunks) == 1:
-                keyring.set_password(self._SERVICE, key, value)
-                if old_metadata is not None:
-                    self._delete_chunks_best_effort(keyring, key, old_metadata)
-                return
-
-            generation = uuid.uuid4().hex
-            total_units = self._utf16_units(value)
-            staged_keys: list[str] = []
-            try:
-                for index, chunk in enumerate(chunks):
-                    chunk_key = self._chunk_key(key, generation, index)
-                    keyring.set_password(self._SERVICE, chunk_key, chunk)
-                    staged_keys.append(chunk_key)
-                marker = f"{self._CHUNK_MARKER}{generation}:{len(chunks)}:{total_units}"
-                keyring.set_password(self._SERVICE, key, marker)
-            except Exception:
-                for chunk_key in staged_keys:
-                    try:
-                        keyring.delete_password(self._SERVICE, chunk_key)
-                    except Exception:
-                        pass
-                raise
-
-            if old_metadata is not None:
-                self._delete_chunks_best_effort(keyring, key, old_metadata)
-        except Exception as error:
-            raise RuntimeError("系统凭据库不可用，未保存飞书凭据") from error
 
 
 class SQLiteVecIndex:
@@ -1189,6 +1088,15 @@ class OwnerKnowledgeStore:
         payload = json.loads(str(row["payload_json"]))
         return (payload if isinstance(payload, dict) else {}, bool(row["full_refresh"]), str(row["updated_at"]))
 
+    def understanding_job_status(self, role_id: str) -> dict[str, object] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT status, last_error, updated_at FROM owner_understanding_jobs WHERE role_id = ?", (role_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return {"status": str(row["status"]), "lastError": row["last_error"], "updatedAt": str(row["updated_at"])}
+
     def finish_understanding(self, role_id: str, *, expected_updated_at: str | None = None) -> None:
         with self._connect() as connection:
             if expected_updated_at is None:
@@ -1630,7 +1538,7 @@ class OwnerKnowledgePlugin:
                             created += 1
                     except Exception as error:
                         failed += 1
-                        errors.append(f"{document.title}: {type(error).__name__}: {error}")
+                        errors.append(f"{document.title}: {owner_knowledge_error_message(error)}")
                 if self._pause_requested:
                     errors.append("主人资料插件已暂停")
                 complete = scan.complete and not errors
@@ -1664,7 +1572,7 @@ class OwnerKnowledgePlugin:
                     trigger=trigger,
                     complete=False,
                     failed=failed + 1,
-                    errors=tuple((*errors, f"{type(error).__name__}: {error}")),
+                    errors=tuple((*errors, owner_knowledge_error_message(error))),
                     finished_at=_now(),
                 )
                 self._last_sync = report
@@ -1721,12 +1629,17 @@ class OwnerKnowledgePlugin:
         if not self.store.is_enabled() or role_id in self._deleting_roles:
             raise RuntimeError("主人资料插件已暂停")
         complete_messages = getattr(model_adapter, "complete_messages", None)
-        if not callable(complete_messages):
-            raise RuntimeError("当前模型连接不支持角色理解生成")
         profile = getattr(role, "profile", None)
         role_name = str(getattr(role, "name", "角色"))
         self.store.enqueue_understanding(role_id, {"kind": "generation"})
         try:
+            configuration = owner_understanding_model_configuration(configuration)
+            if not callable(complete_messages):
+                raise OwnerKnowledgeError("当前模型连接不支持角色理解生成")
+            embedder = self._embedding_session()
+            vector_enabled = bool(getattr(embedder, "is_enabled", True))
+            if vector_enabled and getattr(embedder, "ready", True) is False:
+                raise OwnerKnowledgeError("请先在模型设置中配置并启用向量模型")
             job = self.store.understanding_job(role_id)
             job_payload, full_refresh, job_updated_at = job if job is not None else ({}, True, "")
             changed_ids = job_payload.get("changedDocumentIds", [])
@@ -1738,7 +1651,7 @@ class OwnerKnowledgePlugin:
             )
             total_chunks = self.store.count_chunks(changed_document_ids) if changed_document_ids is not None else self.store.count_chunks()
             if total_chunks == 0:
-                raise RuntimeError("没有可用于生成角色理解的主人资料")
+                raise OwnerKnowledgeError("没有可用于生成角色理解的主人资料，请先完成知识库同步")
             old = self.store.get_understanding(role_id)
             intermediate: list[str] = []
             batch_size = 12
@@ -1766,7 +1679,7 @@ class OwnerKnowledgePlugin:
                     max_tokens=700,
                 )
                 if not str(partial).strip():
-                    raise RuntimeError("角色理解中间结果为空")
+                    raise OwnerKnowledgeError("角色理解中间结果为空，请检查模型连接后重试")
                 intermediate.append(str(partial).strip()[:2500])
             final_prompt = (
                 "把分批观察、角色既有记忆和上一版理解整合成一段角色视角下对主人的整体认识。"
@@ -1783,11 +1696,9 @@ class OwnerKnowledgePlugin:
             )
             body = str(result).strip()
             if not body or len(body) > 12000:
-                raise RuntimeError("角色理解输出无效")
+                raise OwnerKnowledgeError("角色理解输出无效，请检查模型连接后重试")
             if role_id in self._deleting_roles:
                 raise RuntimeError("角色正在删除")
-            embedder = self._embedding_session()
-            vector_enabled = bool(getattr(embedder, "is_enabled", True))
             model_id = embedder.model_id if vector_enabled else f"{embedder.model_id}:lexical-only"
             vector = await asyncio.to_thread(embedder.embed_query, body) if vector_enabled else []
             if role_id in self._deleting_roles:
@@ -1799,7 +1710,7 @@ class OwnerKnowledgePlugin:
             if self._pause_requested and role_id not in self._deleting_roles:
                 self.store.defer_understanding(role_id)
             else:
-                self.store.fail_understanding(role_id, type(error).__name__)
+                self.store.fail_understanding(role_id, owner_knowledge_error_message(error))
             raise
 
 

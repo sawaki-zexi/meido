@@ -3,11 +3,15 @@ import asyncio
 import json
 import inspect
 import logging
+import re
+import threading
 import uuid
 import sqlite3
 import secrets
+import contextvars
+from contextlib import asynccontextmanager
 from urllib.parse import quote, unquote
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from time import monotonic
 from pathlib import Path
@@ -19,7 +23,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 import httpx
 
-from .model_adapter import ModelAdapter, OpenAICompatibleAdapter
+from .ai.model_adapter import ModelAdapter
+from .ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
 from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryQueryFilters, MemoryScope
@@ -37,18 +42,24 @@ from .owner_knowledge import (
     FeishuApiError,
     OAuthCallbackAccessLogFilter,
     OwnerKnowledgePlugin,
+    OwnerKnowledgeError,
     OwnerKnowledgeScheduler,
     SyncReport,
     OwnerKnowledgeStore,
     OwnerKnowledgeTool,
     RoleBoundOwnerKnowledgeReader,
+    owner_knowledge_error_message,
+    owner_understanding_model_configuration,
 )
+from .mail import MailService, MailStore
+from .mail.agent import MailManageTool
+from .mail.api import router as mail_router, set_mail_service
 from .models import AgentRun, EmbeddingConfiguration, EmbeddingConfigurationInput, MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, Message, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
 from .storage import initialize_databases, resolve_owner_knowledge_database
 from .session_manager import SessionManager, public_message
-from .session_store import SessionStore
+from .session_store import SessionStore, load_runtime_attachments
 from .agent_runtime import (
     ActiveRunError,
     CapabilityRegistry,
@@ -70,6 +81,9 @@ from .agent_runtime import (
     ToolResultMessage,
 )
 from .agent_runtime.capabilities import CapabilityResolution
+from .agent_runtime.types import UserMessage
+from .channels.attachment_tool import ReadChannelAttachmentTool
+from .channels.consolidation import ChannelMemoryMaintenance, finish_io
 from .agent_runtime.skills import SkillRegistry
 from .todo import TodoPlugin, TodoStore
 from .todo.agent import register_todo_agent_plugin
@@ -79,6 +93,33 @@ from .browser_use.safety import sanitize_browser_arguments, sanitize_browser_tex
 from .browser_use.tool import BROWSER_USE_TOOL_NAMES
 from .todo.models import TodoCreate, TodoList, TodoReminderList, TodoReminderRoleInput, TodoSettingsInput, TodoStatusInput, TodoUpdate
 from .role_card_import import MAX_SOURCE_BYTES, RoleCardImportError, parse_role_card
+from .multichannel import ChannelAccount, MultichannelStore, TelegramChannelService
+from .channels import (
+    ChannelHost,
+    ChannelAdapter,
+    FeishuAdapter,
+    FeishuConfig,
+    NapCatAdapter,
+    NapCatConfig,
+    QQBotAdapter,
+    QQBotConfig,
+    TelegramAccountAdapter,
+    ChannelAccountListTool,
+    ChannelTargetsTool,
+    ChannelSendTool,
+    LookupGroupContextTool,
+    LookupGroupMemberTool,
+    MultichannelGroupRepository,
+    SetGroupListeningTool,
+    UpdateGroupContextTool,
+    ChatType,
+    TargetKind,
+    target_from_chat,
+)
+from .channels.credentials import credential_key
+from .channels.push import ChannelPushService, MessagePushTool
+from .channels.transports import NapCatWebSocketTransport, QQBotGatewayTransport, FeishuWebhookTransport, ChannelTransportError
+from .channels.media import MAX_CHANNEL_MEDIA_BYTES, media_filename
 from .chat_attachments import public_attachment, read_request_bytes, resolve_attachment, save_attachment
 
 logging.getLogger("uvicorn.access").addFilter(OAuthCallbackAccessLogFilter())
@@ -93,9 +134,38 @@ initialize_databases(data_root)
 store = RoleStore(roles_root)
 session_store = SessionStore(data_root / "sessions.db")
 session_manager = SessionManager(store, session_store)
+multichannel_store = MultichannelStore(data_root / "sessions.db", session_store)
+channel_host = ChannelHost(
+    multichannel_store,
+    attachment_resolver=lambda role_id, attachment_id: resolve_attachment(
+        store.workspace_path(role_id), attachment_id
+    ),
+)
+group_repository = MultichannelGroupRepository(multichannel_store)
+_push_service_cache: ChannelPushService | None = None
+_channel_runtime_loop: asyncio.AbstractEventLoop | None = None
+channel_transports: dict[str, object] = {}
+channel_adapters: dict[str, ChannelAdapter] = {}
+telegram_services: dict[str, TelegramChannelService] = {}
+telegram_tasks: dict[str, asyncio.Task[None]] = {}
+telegram_stops: dict[str, asyncio.Event] = {}
+channel_tasks: dict[str, asyncio.Task[None]] = {}
+_channel_attachment_usage: dict[str, int] = {}
+_channel_attachment_lock = threading.Lock()
+_MAX_CHANNEL_ATTACHMENT_STORAGE_BYTES = 256 * 1024 * 1024
+channel_event_locks: dict[str, asyncio.Lock] = {}
+channel_lifecycle_locks: dict[str, asyncio.Lock] = {}
+_channel_roles_deleting: set[str] = set()
+_active_channel_lifecycles: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
+    "active_channel_lifecycles", default=frozenset()
+)
+_channel_handover_accounts: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
+    "channel_handover_accounts", default=frozenset()
+)
 memory_store = MemoryStore(data_root / "memory2.db")
 memory_event_bus = MemoryEventBus()
-model_adapter: ModelAdapter = OpenAICompatibleAdapter()
+model_adapter_registry = ModelAdapterRegistry()
+model_adapter: ModelAdapter = RoutedModelAdapter(model_adapter_registry)
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
 embedding_configuration_store = EmbeddingConfigurationStore(data_root / "embedding-config.json")
 memory_settings_store = MemorySettingsStore(data_root / "memory-settings.json")
@@ -140,8 +210,46 @@ todo_plugin = TodoPlugin(
     todo_store,
     session_store,
     reminder_sender=lambda role_id, event_id, kind, payload: _generate_todo_reminder(role_id, event_id, kind, payload),
+    external_delivery=lambda role_id, event_id, content: _deliver_todo_channel_reminder(role_id, event_id, content),
     available_roles=lambda: [role.id for role in store.list() if role.id not in store.pending_role_deletions()],
 )
+
+
+async def _mail_complete_model(messages: list[dict[str, object]], configuration) -> str:
+    complete = getattr(model_adapter, "complete_messages", None)
+    if not callable(complete):
+        raise RuntimeError("当前模型适配器不支持邮件草稿生成")
+    return await complete(messages, configuration, max_tokens=1800)
+
+
+async def _mail_owner_search(query: str):
+    return await owner_knowledge_plugin.search(query, role_id="mail-service", limit=5)
+
+
+def _mail_reminder_sender(role_id: str, event_id: str, content: str) -> str:
+    if store.get(role_id) is None:
+        raise RuntimeError("指定的邮件提醒角色不存在")
+    session = session_manager.open_role_session(role_id).sessionKey
+    session_store.append_proactive_message_once(
+        session,
+        content,
+        event_id=event_id,
+        metadata={"proactiveType": "mail_draft_summary", "mailBatchId": event_id},
+    )
+    return event_id
+
+
+mail_store = MailStore(data_root / "mail.db")
+mail_service = MailService(
+    mail_store,
+    complete_model=_mail_complete_model,
+    owner_search=_mail_owner_search,
+    configuration_getter=model_configuration_store.get,
+    reminder_sender=_mail_reminder_sender,
+    available_roles=lambda: [role.id for role in store.list() if role.id not in store.pending_role_deletions()],
+)
+set_mail_service(mail_service)
+mail_manage_tool = MailManageTool(mail_service)
 
 
 def _role_model_configuration(role_id: str):
@@ -476,13 +584,18 @@ memory_maintenance = MemoryMaintenance(
     _observe_consolidation_event,
     _consolidation_provider,
     role_exists=lambda role_id: store.get(role_id) is not None,
+    messages_provider=lambda role_id, session_key: (
+        multichannel_store.owner_context_messages(role_id)
+        if multichannel_store.sessions is session_store
+        else session_store.context_messages(session_key)
+    ),
 )
 memory_worker = MemoryWorker(
     memory_service,
     memory_maintenance,
     memory_optimizer_worker,
 )
-connection_test_adapter = OpenAICompatibleAdapter(timeout=20)
+connection_test_adapter = RoutedModelAdapter(ModelAdapterRegistry(timeout=20))
 runtime_manager = RuntimeManager(session_store)
 role_locks = runtime_manager.role_locks
 
@@ -563,6 +676,13 @@ async def _mutate_and_sync_memory_locked(role_id: str, operation):
 def _role_memory_context(role_id: str) -> str:
     if not memory_settings_store.get().enabled:
         return ""
+    recent_current = True
+    if multichannel_store.sessions is session_store and not memory_worker.role_deletion_blocked(role_id):
+        try:
+            recent_current = memory_maintenance.refresh_recent_context(role_id, f"role:{role_id}")
+        except (OSError, RuntimeError, sqlite3.Error, ValueError):
+            recent_current = False
+            logger.warning("主人近期上下文刷新失败 role=%s", role_id, exc_info=True)
     documents = MemoryDocuments(roles_root)
     try:
         documents.memory_dir(role_id)
@@ -570,6 +690,8 @@ def _role_memory_context(role_id: str) -> str:
         return ""
     sections = []
     for filename in ("SELF.md", "MEMORY.md", "RECENT_CONTEXT.md"):
+        if filename == "RECENT_CONTEXT.md" and not recent_current:
+            continue
         try:
             content = documents.read_document(role_id, filename).strip()
         except (OSError, RuntimeError, ValueError):
@@ -618,6 +740,7 @@ async def _memory_engine_delete(mutation: MemoryMutation) -> None:
 
 
 async def _close_memory_workers() -> None:
+    await mail_service.close()
     await owner_knowledge_scheduler.close()
     await owner_knowledge_plugin.close()
     await todo_plugin.close()
@@ -628,23 +751,41 @@ async def _close_memory_workers() -> None:
 
 
 async def _start_memory_workers() -> None:
+    global _channel_runtime_loop
+    _channel_runtime_loop = asyncio.get_running_loop()
+    mail_service.start()
     todo_plugin.sessions = session_store
     await todo_plugin.start()
     memory_worker.start()
     store.cleanup_staged_role_files()
     memory_worker.errors.extend(store.recovery_errors)
     for role_id in store.pending_role_deletions():
+        _channel_roles_deleting.add(role_id)
+        recovered = False
         try:
+            for account in multichannel_store.list_role_accounts(role_id):
+                multichannel_store.set_account_state(account.account_id, enabled=False, last_error="role_deleted")
+                await _stop_channel_account(account.account_id)
             await memory_worker.begin_role_deletion(role_id)
+            await channel_memory_maintenance.begin_role_deletion(role_id)
+            await owner_knowledge_plugin.begin_role_deletion(role_id)
             session_store.delete_role_session(role_id)
             memory_store.delete_role(role_id)
+            owner_knowledge_store.delete_role(role_id)
+            multichannel_store.delete_role(role_id)
+            _channel_push_service().clear_role(role_id)
             todo_store.mark_source_unavailable(role_id)
             for marker in store.root.glob(f".deleting-{role_id}-*.json"):
                 store.complete_role_deletion(marker)
+            recovered = True
         except Exception as error:
-            memory_worker.errors.append(f"{role_id}: interrupted deletion recovery failed: {error}")
+            memory_worker.errors.append(f"{role_id}: interrupted deletion recovery failed: {type(error).__name__}")
         finally:
             memory_worker.end_role_deletion(role_id, deleted=True)
+            channel_memory_maintenance.end_role_deletion(role_id, deleted=True)
+            await owner_knowledge_plugin.end_role_deletion(role_id)
+            if recovered:
+                _channel_roles_deleting.discard(role_id)
     if memory_settings_store.get().enabled:
         await asyncio.to_thread(memory_maintenance.resume_pending)
     if memory_settings_store.get().enabled:
@@ -674,6 +815,7 @@ def _owner_knowledge_return_url(origin: str = "") -> str:
 
 
 app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown=[_close_memory_workers])
+app.include_router(mail_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=owner_knowledge_frontend_origins,
@@ -855,7 +997,10 @@ def list_owner_knowledge_sync_runs() -> dict[str, object]:
 def get_owner_understanding(role_id: str) -> dict[str, object]:
     if store.get(role_id) is None:
         raise HTTPException(status_code=404, detail="角色不存在")
-    return {"understanding": owner_knowledge_store.get_understanding(role_id)}
+    return {
+        "understanding": owner_knowledge_store.get_understanding(role_id),
+        "job": owner_knowledge_store.understanding_job_status(role_id),
+    }
 
 
 def _queue_owner_understanding_refresh(report: SyncReport | None = None, *, full_refresh: bool = False) -> None:
@@ -915,13 +1060,22 @@ async def regenerate_owner_understanding(role_id: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail="角色不存在")
     if not owner_knowledge_plugin.status().enabled:
         raise HTTPException(status_code=409, detail="主人资料插件已暂停")
+    if owner_knowledge_store.count_chunks() == 0:
+        raise HTTPException(status_code=409, detail="没有可用于生成角色理解的主人资料，请先完成知识库同步")
+    if getattr(owner_knowledge_plugin.embedder, "is_enabled", True) and getattr(owner_knowledge_plugin.embedder, "ready", True) is False:
+        raise HTTPException(status_code=409, detail="请先在模型设置中配置并启用向量模型")
+    try:
+        configuration = owner_understanding_model_configuration(_role_model_configuration(role_id))
+    except OwnerKnowledgeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     try:
         owner_knowledge_store.enqueue_understanding(role_id, {"kind": "manual"}, full_refresh=True)
         await owner_knowledge_plugin.generate_understanding(
-            store.get(role_id), model_adapter, _role_model_configuration(role_id), _role_owner_understanding_memory(role_id)
+            store.get(role_id), model_adapter, configuration, _role_owner_understanding_memory(role_id)
         )
     except Exception as error:
-        raise HTTPException(status_code=502, detail="角色理解生成失败，已保留上一版本") from error
+        detail = owner_knowledge_error_message(error)
+        raise HTTPException(status_code=502, detail=f"角色理解生成失败，已保留上一版本：{detail}") from error
     return {"understanding": owner_knowledge_store.get_understanding(role_id)}
 
 
@@ -1160,10 +1314,11 @@ def _configuration_with_saved_key(data: ModelConfigurationInput) -> ModelConfigu
     if data.apiKey:
         return data
     current = model_configuration_store.get()
-    if current and (current.providerId, current.provider, current.baseUrl.rstrip("/")) == (
+    if current and (current.providerId, current.provider, current.baseUrl.rstrip("/"), current.api) == (
         data.providerId,
         data.provider,
         data.baseUrl.rstrip("/"),
+        data.api,
     ):
         return data.model_copy(update={"apiKey": current.apiKey})
     return data
@@ -1259,10 +1414,12 @@ async def test_model_configuration(data: ModelConfigurationInput) -> dict[str, o
     configuration = ModelConfiguration.model_validate(candidate.model_dump())
     started_at = monotonic()
     try:
-        async for _ in connection_test_adapter.stream_messages(
+        async for event in connection_test_adapter.stream_messages(
             [{"role": "user", "content": "ping"}], configuration, max_tokens=8
         ):
-            pass
+            if getattr(event, "type", None) == "error":
+                message = getattr(event, "error", "模型服务请求失败")
+                return {"ok": False, "message": _safe_model_error(RuntimeError(str(message)), configuration.apiKey)}
     except Exception as error:
         return {"ok": False, "message": _safe_model_error(error, configuration.apiKey)}
     return {
@@ -1532,6 +1689,10 @@ async def delete_role(role_id: str) -> None:
     if session_store.active_run(role_id) is not None:
         lock.release()
         raise HTTPException(status_code=409, detail="该角色正在生成回复，暂时无法删除")
+    # Close channel turn admission synchronously before any preflight await.
+    # A newly accepted source event must not wait for the role lock held here
+    # while deletion is trying to drain that same source event.
+    _channel_roles_deleting.add(role_id)
     deletion_started = False
     session_snapshot = None
     audit_snapshot = None
@@ -1548,12 +1709,15 @@ async def delete_role(role_id: str) -> None:
     deleted = None
     staged_path = None
     deletion_phase = "preflight"
+    channel_accounts_snapshot: list[ChannelAccount] = []
+    channel_snapshot = None
     try:
         await browser_use_sessions.set_role_enabled(role_id, False)
         # Mark the gate before the first await so cancellation cannot leave a
         # role permanently blocked from future memory work.
         deletion_started = True
         await memory_worker.begin_role_deletion(role_id)
+        await channel_memory_maintenance.begin_role_deletion(role_id)
         await owner_knowledge_plugin.begin_role_deletion(role_id)
         deletion_lock = memory_worker.role_lock_for(role_id)
         await deletion_lock.acquire()
@@ -1566,6 +1730,12 @@ async def delete_role(role_id: str) -> None:
         owner_knowledge_snapshot = owner_knowledge_store.snapshot_role(role_id)
         owner_knowledge_snapshot_taken = True
         deletion_marker = store.begin_role_deletion(role_id)
+        # Quiesce channel workers before removing the role.  The snapshot lets
+        # rollback restart the same accounts if a later cleanup step fails.
+        channel_accounts_snapshot = multichannel_store.list_role_accounts(role_id)
+        for account in channel_accounts_snapshot:
+            await _stop_channel_account(account.account_id)
+        channel_snapshot = multichannel_store.snapshot_role(role_id)
         deletion_phase = "files"
         staged_path = store.stage_role_files_for_deletion(role_id)
         deletion_phase = "role"
@@ -1576,6 +1746,9 @@ async def delete_role(role_id: str) -> None:
         deletion_phase = "memory"
         memory_store.delete_role(role_id)
         owner_knowledge_store.delete_role(role_id)
+        deletion_phase = "channels"
+        multichannel_store.delete_role(role_id)
+        _channel_push_service().clear_role(role_id)
         store.purge_staged_role_files(staged_path)
         deletion_succeeded = True
         try:
@@ -1588,7 +1761,7 @@ async def delete_role(role_id: str) -> None:
             memory_worker.errors.append(f"{role_id}: deletion marker cleanup deferred: {error}")
     except HTTPException:
         raise
-    except Exception as error:
+    except (Exception, asyncio.CancelledError) as error:
         rollback_errors: list[Exception] = []
         if session_snapshot_taken and session_snapshot is not None:
             try:
@@ -1622,11 +1795,28 @@ async def delete_role(role_id: str) -> None:
                 store.restore_staged_role_files(role_id, staged_path)
             except Exception as restore_error:
                 rollback_errors.append(restore_error)
+        if channel_snapshot is not None:
+            try:
+                multichannel_store.restore_role(role_id, channel_snapshot)
+            except Exception as restore_error:
+                rollback_errors.append(restore_error)
+        if channel_accounts_snapshot and not deletion_succeeded:
+            for account in channel_accounts_snapshot:
+                if not account.enabled:
+                    continue
+                try:
+                    await _start_channel_account(account.account_id)
+                except Exception as restart_error:
+                    rollback_errors.append(restart_error)
         if deletion_marker is not None and not deletion_succeeded and not rollback_errors:
             try:
                 store.complete_role_deletion(deletion_marker)
             except Exception as restore_error:
                 rollback_errors.append(restore_error)
+        if isinstance(error, asyncio.CancelledError):
+            if rollback_errors:
+                memory_worker.errors.append(f"{role_id}: cancelled deletion rollback failed")
+            raise
         if isinstance(error, KeyError) and role_delete_attempted and deleted is None and not rollback_errors:
             raise HTTPException(status_code=404, detail="角色不存在") from error
         if rollback_errors:
@@ -1637,11 +1827,18 @@ async def delete_role(role_id: str) -> None:
         await owner_knowledge_plugin.end_role_deletion(role_id)
         if deletion_started:
             memory_worker.end_role_deletion(role_id, deleted=deletion_succeeded)
+            channel_memory_maintenance.end_role_deletion(role_id, deleted=deletion_succeeded)
             store.end_role_deletion(role_id)
         if deletion_lock is not None and deletion_lock.locked():
             deletion_lock.release()
         lock.release()
+        _channel_roles_deleting.discard(role_id)
     if deletion_succeeded:
+        for account in channel_accounts_snapshot:
+            channel_host.unregister(account.account_id)
+            channel_adapters.pop(account.account_id, None)
+            channel_transports.pop(account.account_id, None)
+            telegram_services.pop(account.account_id, None)
         try:
             browser_use_sessions.delete_role_data(role_id)
         except (OSError, RuntimeError) as error:
@@ -1651,9 +1848,1163 @@ async def delete_role(role_id: str) -> None:
 @app.get("/api/roles/{role_id}/session", response_model=SessionResponse)
 def get_role_session(role_id: str) -> SessionResponse:
     try:
-        return session_manager.open_role_session(role_id)
+        response = session_manager.open_role_session(role_id)
+        multichannel_store.register_desktop_thread(
+            role_id,
+            response.session.sessionKey,
+            response.session.createdAt.isoformat(),
+            response.session.updatedAt.isoformat(),
+        )
+        return response
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
+
+
+def _channel_account_payload(account: ChannelAccount) -> dict[str, object]:
+    payload = account.public_dict(token_configured=_channel_credentials_configured(account))
+    payload["credentialsConfigured"] = _channel_credentials_configured(account)
+    payload["avatarUrl"] = multichannel_store.avatars.url(account.account_id, "account", account.platform_id or account.account_id)
+    config = multichannel_store.channel_config(account.account_id)
+    if config.get("endpoint"):
+        payload["endpoint"] = config["endpoint"]
+    app_id = config.get("appId") or account.platform_id
+    if app_id:
+        payload["appId"] = app_id
+    payload["connectionStatus"] = _channel_connection_status(account)
+    adapter = channel_adapters.get(account.account_id)
+    if adapter is not None:
+        capabilities = adapter.capabilities
+        payload["capabilities"] = {
+            "private": capabilities.private,
+            "group": capabilities.group,
+            "groupListening": capabilities.group_listening,
+            "media": capabilities.media,
+            "replies": capabilities.replies,
+            "streaming": capabilities.streaming,
+            "targets": sorted(item.value for item in capabilities.targets),
+        }
+    return payload
+
+
+@asynccontextmanager
+async def _channel_lifecycle(account_id: str):
+    """Serialize configuration, state, and transport changes per account."""
+
+    active = _active_channel_lifecycles.get()
+    if account_id in active:
+        yield
+        return
+    lock = channel_lifecycle_locks.setdefault(account_id, asyncio.Lock())
+    await lock.acquire()
+    token = _active_channel_lifecycles.set(active | {account_id})
+    try:
+        yield
+    finally:
+        _active_channel_lifecycles.reset(token)
+        lock.release()
+
+
+def _channel_connection_status(account: ChannelAccount) -> str:
+    if not account.enabled:
+        return "disconnected"
+    if account.last_error:
+        return "error"
+    if account.channel == "telegram":
+        task = telegram_tasks.get(account.account_id)
+        return "connected" if task is not None and not task.done() else "disconnected"
+    transport = channel_transports.get(account.account_id)
+    if transport is None:
+        return "disconnected"
+    if bool(getattr(transport, "connected", False)):
+        return "connected"
+    if account.channel == "feishu" and getattr(transport, "_handler", None) is not None:
+        return "connected"
+    task = getattr(transport, "_task", None)
+    return "connecting" if task is not None and not task.done() else "disconnected"
+
+
+def _channel_secret_key(account: ChannelAccount, name: str) -> str:
+    return credential_key(account.channel, account.account_id, name)
+
+
+def _channel_secret(account: ChannelAccount, name: str) -> str:
+    return multichannel_store.credentials.get(_channel_secret_key(account, name))
+
+
+def _channel_credentials_configured(account: ChannelAccount) -> bool:
+    if account.channel == "telegram":
+        return bool(multichannel_store.token(account.account_id))
+    required = {"qq": (), "qqbot": ("client_secret",), "feishu": ("app_secret",)}.get(account.channel, ())
+    if account.channel in {"qqbot", "feishu"} and not multichannel_store.channel_config(account.account_id).get("appId"):
+        return False
+    return all(bool(_channel_secret(account, key)) for key in required)
+
+
+def _channel_credential_names(channel: str) -> tuple[str, ...]:
+    return {
+        "qq": ("access_token",),
+        "qqbot": ("client_secret",),
+        "feishu": ("app_secret", "verification_token", "encrypt_key"),
+    }.get(channel, ())
+
+
+def _build_channel_adapter(account: ChannelAccount, *, register: bool = True) -> ChannelAdapter:
+    existing = channel_adapters.get(account.account_id)
+    if register and existing is not None:
+        return existing
+    config = multichannel_store.channel_config(account.account_id)
+    transport: object | None = None
+    if account.channel == "telegram":
+        transport = _telegram_service(account.account_id).transport
+        adapter = TelegramAccountAdapter(
+            account.account_id,
+            lambda: multichannel_store.token(account.account_id),
+            transport,
+        )
+    elif account.channel == "qq":
+        transport = NapCatWebSocketTransport(
+            str(config.get("endpoint") or "ws://127.0.0.1:6700"),
+            access_token=_channel_secret(account, "access_token"),
+        )
+        adapter: ChannelAdapter = NapCatAdapter(NapCatConfig(
+            account_id=account.account_id,
+            endpoint=str(config.get("endpoint") or "ws://127.0.0.1:6700"),
+            private_enabled=account.allow_private,
+            group_enabled=account.allow_group,
+            group_listening=True,
+            blocked_sender_ids=set(account.blocked_senders),
+        ), transport=transport)
+    elif account.channel == "qqbot":
+        transport = QQBotGatewayTransport(
+            str(config.get("appId") or ""),
+            _channel_secret(account, "client_secret"),
+            api_endpoint=str(config.get("endpoint") or "https://api.sgroup.qq.com"),
+        )
+        adapter = QQBotAdapter(QQBotConfig(
+            account_id=account.account_id,
+            app_id=str(config.get("appId") or ""),
+            endpoint=str(config.get("endpoint") or "https://api.sgroup.qq.com"),
+            private_enabled=account.allow_private,
+            blocked_sender_ids=set(account.blocked_senders),
+        ), transport=transport)
+    elif account.channel == "feishu":
+        transport = FeishuWebhookTransport(
+            str(config.get("appId") or ""),
+            _channel_secret(account, "app_secret"),
+            verification_token=_channel_secret(account, "verification_token"),
+            encrypt_key=_channel_secret(account, "encrypt_key"),
+            endpoint=str(config.get("endpoint") or "https://open.feishu.cn/open-apis"),
+            long_connection=True,
+        )
+        adapter = FeishuAdapter(FeishuConfig(
+            account_id=account.account_id,
+            app_id=str(config.get("appId") or ""),
+            endpoint=str(config.get("endpoint") or "https://open.feishu.cn/open-apis"),
+            private_enabled=account.allow_private,
+            blocked_sender_ids=set(account.blocked_senders),
+        ), transport=transport)
+    else:
+        raise ValueError("不支持的渠道类型")
+    if register:
+        adapter.set_event_handler(lambda payload: _dispatch_channel_payload(account.account_id, payload, source_adapter=adapter))
+        channel_host.register(adapter)
+        channel_adapters[account.account_id] = adapter
+        if transport is not None:
+            channel_transports[account.account_id] = transport
+    return adapter
+
+
+def _channel_identity_scope(channel: str) -> str:
+    return "platform" if channel in {"telegram", "qq"} else "account"
+
+
+async def _fetch_channel_avatar(account: ChannelAccount, kind: str, subject_id: str) -> bytes | None:
+    from .channels.avatars import download_avatar
+
+    if account.channel == "qq":
+        if not subject_id.isdigit():
+            return None
+        url = f"https://p.qlogo.cn/gh/{subject_id}/{subject_id}/100" if kind == "chat" else f"https://q1.qlogo.cn/g?b=qq&nk={subject_id}&s=100"
+        return await download_avatar(url)
+    if account.channel == "telegram":
+        service = _telegram_service(account.account_id)
+        api = service.transport
+        if not callable(getattr(api, "get_user_profile_photos", None)) or not callable(getattr(api, "get_chat", None)):
+            return None
+        token = multichannel_store.token(account.account_id)
+        if kind == "chat" or subject_id.startswith("chat:"):
+            profile = await api.get_chat(token, subject_id.removeprefix("chat:"))
+            photo = profile.get("photo") or {}
+            file_id = str(photo.get("small_file_id") or "")
+        else:
+            profile = await api.get_user_profile_photos(token, subject_id)
+            photos = profile.get("photos") or []
+            file_id = str(photos[0][0].get("file_id") or "") if photos and photos[0] else ""
+        if not file_id:
+            return None
+        file = await api.get_file(token, file_id)
+        data, _mime = await api.download_file(token, str(file.get("file_path") or ""))
+        return data
+    transport = channel_transports.get(account.account_id)
+    profile_request = getattr(transport, "profile", None)
+    if not callable(profile_request):
+        return None
+    if account.channel == "qqbot":
+        # C2C events do not expose an authorised profile endpoint for contacts.
+        if kind != "account":
+            return None
+        profile = await profile_request()
+        url = str(profile.get("avatar") or "")
+    else:
+        profile = await profile_request(None if kind == "account" else subject_id)
+        avatar = profile.get("avatar")
+        url = str(avatar.get("avatar_240") or avatar.get("avatar_72") or "") if isinstance(avatar, dict) else str(avatar or profile.get("avatar_url") or "")
+    return await download_avatar(url) if url else None
+
+
+def _refresh_channel_avatars(account: ChannelAccount, sender_id: str = "", chat_id: str = "", chat_type: str = "private") -> None:
+    own_id = account.platform_id or account.account_id
+    multichannel_store.avatars.refresh(account, "account", own_id, lambda: _fetch_channel_avatar(account, "account", own_id))
+    if sender_id:
+        multichannel_store.avatars.refresh(account, "sender", sender_id, lambda: _fetch_channel_avatar(account, "sender", sender_id))
+    if chat_id:
+        subject = chat_id if chat_type == "group" or account.channel == "telegram" else sender_id
+        kind = "chat" if chat_type == "group" or account.channel == "telegram" else "sender"
+        if subject:
+            multichannel_store.avatars.refresh(account, "chat", chat_id, lambda: _fetch_channel_avatar(account, kind, subject))
+
+
+async def _dispatch_channel_payload(account_id: str, payload: dict[str, object], *, source_adapter: ChannelAdapter | None = None) -> None:
+    account = multichannel_store.get_account(account_id)
+    if account is not None and account.role_id in _channel_roles_deleting:
+        original = source_adapter or channel_adapters.get(account_id)
+        if original is not None:
+            await _reject_channel_payload(original, payload)
+        return
+    try:
+        async with channel_host.event_scope(account_id) as admitted:
+            current_adapter = channel_adapters.get(account_id)
+            if not admitted or (source_adapter is not None and source_adapter is not current_adapter):
+                original = source_adapter or current_adapter
+                if original is not None and account is not None and account.enabled:
+                    if channel_host.intake.defer(
+                        account_id,
+                        lambda: _dispatch_channel_payload(account_id, payload),
+                        lambda: _reject_channel_payload(original, payload),
+                    ):
+                        return
+                    await _reject_channel_payload(original, payload)
+                return
+            if account is not None and account.channel == "qq" and payload.get("self_id"):
+                try:
+                    multichannel_store.set_platform_identity(account_id, str(payload["self_id"]))
+                except ValueError:
+                    multichannel_store.set_account_state(account_id, enabled=False, last_error="platform_identity_conflict")
+                    logger.warning("拒收渠道账号身份冲突消息 account=%s", account_id)
+                    return
+            event = await channel_host.accept_event(account_id, payload)
+            if event is not None:
+                await _handle_channel_event(event)
+    except Exception as error:
+        logger.warning("渠道入站处理失败 account=%s error=%s", account_id, type(error).__name__)
+
+
+async def _reject_channel_payload(adapter, payload) -> None:
+    try:
+        event = await adapter.accept_event(payload)
+        if event is not None and event.triggered:
+            await channel_host.send_retry_notice(adapter, event)
+    except Exception as error:
+        logger.warning("渠道拒收提示失败 account=%s error=%s", adapter.account_id, type(error).__name__)
+
+
+async def _persist_channel_attachments(event, role_id: str) -> list[dict[str, object]]:
+    if not event.attachments or (event.chat_type is ChatType.GROUP and not event.triggered):
+        return []
+    adapter = channel_adapters.get(event.account_id)
+    download_media = getattr(adapter, "download_media", None)
+    if not callable(download_media):
+        return []
+    try:
+        downloaded = await download_media(event)
+    except Exception as error:
+        logger.warning("渠道附件下载失败 account=%s error=%s", event.account_id, type(error).__name__)
+        return []
+
+    attachments: list[dict[str, object]] = []
+    for item in downloaded[:4]:
+        data = getattr(item, "data", None)
+        if not isinstance(data, bytes) or len(data) > MAX_CHANNEL_MEDIA_BYTES:
+            logger.warning("渠道附件超过大小限制 account=%s kind=%s", event.account_id, getattr(item, "kind", "unknown"))
+            continue
+        try:
+            attachments.append(_save_channel_attachment(
+                role_id,
+                media_filename(getattr(item, "file_name", None), getattr(item, "mime_type", None)),
+                str(getattr(item, "mime_type", None) or "application/octet-stream"),
+                data,
+            ))
+        except Exception as error:
+            logger.warning("渠道附件保存失败 account=%s kind=%s error=%s", event.account_id, getattr(item, "kind", "unknown"), type(error).__name__)
+    return attachments
+
+
+def _save_channel_attachment(role_id: str, name: str, mime_type: str, data: bytes) -> dict[str, object]:
+    with _channel_attachment_lock:
+        root = store.workspace_path(role_id)
+        if role_id not in _channel_attachment_usage:
+            directory = root / "attachments"
+            _channel_attachment_usage[role_id] = sum(
+                path.stat().st_size
+                for path in directory.iterdir()
+                if path.is_file() and not re.fullmatch(r"[0-9a-f]{32}\.json", path.name)
+            ) if directory.exists() else 0
+        used = _channel_attachment_usage[role_id]
+        if len(data) > MAX_CHANNEL_MEDIA_BYTES or used + len(data) > _MAX_CHANNEL_ATTACHMENT_STORAGE_BYTES:
+            raise RuntimeError("角色渠道附件存储已达到上限")
+        attachment = save_attachment(root, name, mime_type, data)
+        _channel_attachment_usage[role_id] = used + len(data)
+        return attachment
+
+
+async def _channel_command_reply(thread, command: str, sender_id: str) -> str:
+    from .channels.commands import identifier_reply
+
+    if command != "stop":
+        return identifier_reply(
+            command, channel=thread.channel, account_id=thread.account_id,
+            chat_id=thread.chat_id, sender_id=sender_id,
+        )
+    active = session_store.active_run(thread.role_id)
+    if active is not None and active.sessionKey == thread.session_key:
+        if runtime_manager.cancel_run(active.runId):
+            return "已停止当前回复。"
+    return "当前会话没有正在生成的回复。"
+
+
+async def _handle_channel_control_command(event) -> bool:
+    from .channels.commands import control_command
+
+    command = control_command(event.content)
+    if command is None:
+        return False
+    account = multichannel_store.get_account(event.account_id)
+    if account is None or not account.enabled or event.sender_id in account.blocked_senders:
+        return True
+    if (event.chat_type is ChatType.PRIVATE and not account.allow_private) or (
+        event.chat_type is ChatType.GROUP and not account.allow_group
+    ):
+        return True
+    thread = multichannel_store.ensure_channel_thread(
+        account.role_id, event.channel, event.account_id, event.chat_id, event.chat_type.value,
+        title=event.group_name or event.sender_name or event.chat_id,
+    )
+    text = await _channel_command_reply(thread, command, event.sender_id)
+    target = target_from_chat(
+        account_id=event.account_id, chat_id=event.chat_id,
+        kind=TargetKind.GROUP if event.chat_type is ChatType.GROUP else TargetKind.PRIVATE,
+        display_name=thread.title,
+    )
+    multichannel_store.remember_targets(account.role_id, [target])
+    await channel_host.account_send(
+        account.role_id, event.account_id, target.id, text, actor="reply",
+        source_thread_id=thread.thread_id, reply_to_message_id=event.external_message_id,
+        record_message=False,
+    )
+    return True
+
+
+async def _handle_channel_event(event) -> None:
+    """Process one account's events serially to make dedupe and attachment
+    persistence atomic from the event loop's point of view."""
+
+    if await _handle_channel_control_command(event):
+        return
+    lock = channel_event_locks.setdefault(event.account_id, asyncio.Lock())
+    async with lock:
+        await _handle_channel_event_locked(event)
+
+
+async def _handle_channel_event_locked(event) -> None:
+    account = multichannel_store.get_account(event.account_id)
+    if account is None or not account.enabled or account.role_id not in {role.id for role in store.list()}:
+        return
+    if account.role_id in _channel_roles_deleting:
+        adapter = channel_adapters.get(account.account_id)
+        if adapter is not None and event.triggered:
+            await channel_host.send_retry_notice(adapter, event)
+        return
+    _refresh_channel_avatars(account, event.sender_id, event.chat_id, event.chat_type.value)
+    if event.chat_type is ChatType.GROUP:
+        listening = multichannel_store.group_listening(account.role_id, event.account_id, event.chat_id)
+        if not event.triggered and not listening:
+            return
+    thread = multichannel_store.ensure_channel_thread(
+        account.role_id,
+        event.channel,
+        event.account_id,
+        event.chat_id,
+        event.chat_type.value,
+        title=event.group_name or event.sender_name or event.chat_id,
+        metadata={"senderId": event.sender_id},
+    )
+    if multichannel_store.has_external_event(thread.thread_id, event.external_message_id):
+        return
+    scope = _channel_identity_scope(event.channel)
+    from .channels.commands import pairing_code
+    code = pairing_code(event.content) if event.chat_type is ChatType.PRIVATE else None
+    if code is not None:
+        paired = multichannel_store.consume_pairing_code(
+            code,
+            role_id=account.role_id,
+            channel=event.channel,
+            scope=scope,
+            platform_user_id=event.sender_id,
+            account_id=event.account_id,
+            chat_id=event.chat_id,
+        )
+        if paired:
+            target_kind = TargetKind.PRIVATE
+            target = target_from_chat(
+                account_id=event.account_id,
+                chat_id=event.chat_id,
+                kind=target_kind,
+                display_name=event.sender_name,
+            )
+            try:
+                await channel_host.account_send(
+                    account.role_id,
+                    event.account_id,
+                    target.id,
+                    "配对成功。",
+                    actor="owner",
+                    record_message=False,
+                )
+            except Exception as error:
+                logger.warning("渠道配对确认发送失败 account=%s error=%s", event.account_id, type(error).__name__)
+        return
+    owner = multichannel_store.identity_is_owner(
+        role_id=account.role_id,
+        channel=event.channel,
+        scope=scope,
+        platform_user_id=event.sender_id,
+        account_id=event.account_id,
+    )
+    if owner and event.chat_type is ChatType.PRIVATE:
+        multichannel_store.remember_owner_chat(
+            role_id=account.role_id,
+            channel=event.channel,
+            scope=scope,
+            platform_user_id=event.sender_id,
+            account_id=event.account_id,
+            chat_id=event.chat_id,
+        )
+    enrich_reply = getattr(channel_adapters.get(event.account_id), "enrich_reply", None)
+    if event.triggered and callable(enrich_reply):
+        event = await enrich_reply(event)
+    attachments = await _persist_channel_attachments(event, account.role_id)
+    quoted_attachments = event.metadata.get("quotedAttachments", ())
+    saved_quote = await _persist_channel_attachments(replace(event, attachments=tuple(quoted_attachments)), account.role_id) if quoted_attachments else []
+    content = event.content.strip() or ("[收到附件]" if event.attachments else "")
+    metadata: dict[str, object] = {
+        "platformMessageId": event.external_message_id,
+        "senderId": event.sender_id,
+        "senderName": event.sender_name,
+        "chatType": event.chat_type.value,
+        "triggered": event.triggered,
+        "mentioned": event.mentioned,
+        "mentionedIds": list(event.mentioned_ids),
+        "replyTo": event.reply_to_message_id,
+        "replyToSenderId": event.reply_to_sender_id,
+        "replyToContent": str(event.metadata.get("replyToContent") or ""),
+        "replyToSenderName": str(event.metadata.get("replyToSenderName") or ""),
+        "quotedAttachments": saved_quote,
+        "attachments": attachments,
+        "listening": event.chat_type is ChatType.GROUP and not event.triggered,
+        "senderIsOwner": owner,
+    }
+    if event.chat_type is ChatType.GROUP and not event.triggered:
+        heard = multichannel_store.listening.hear(thread, content, event.external_message_id, metadata)
+        if heard is not None and heard["sequence"] is not None:
+            channel_memory_maintenance.heard(thread)
+        return
+    accepted, stored = multichannel_store.append_event(
+        thread,
+        direction="inbound",
+        content=content,
+        external_message_id=event.external_message_id,
+        metadata=metadata,
+    )
+    if not accepted:
+        return
+    if event.chat_type is ChatType.GROUP and not event.triggered:
+        return
+    await _handle_channel_message(
+        thread,
+        content,
+        {**metadata, "messageId": stored.id},
+        owner,
+    )
+
+
+def _require_channel_role(role_id: str):
+    if role_id in _channel_roles_deleting:
+        raise HTTPException(status_code=409, detail="角色正在删除，请稍后重试")
+    role = store.get(role_id)
+    if role is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    return role
+
+
+@app.get("/api/roles/{role_id}/channels/accounts")
+def list_channel_accounts(role_id: str) -> dict[str, object]:
+    _require_channel_role(role_id)
+    return {"accounts": [_channel_account_payload(item) for item in multichannel_store.list_role_accounts(role_id)]}
+
+
+@app.put("/api/roles/{role_id}/channels/telegram")
+async def save_telegram_account(role_id: str, data: dict[str, object]) -> dict[str, object]:
+    existing = multichannel_store.get_role_account(role_id, "telegram")
+    account_id = str(data.get("accountId") or (existing.account_id if existing else f"telegram-{uuid.uuid4().hex}"))
+    payload = dict(data)
+    payload["accountId"] = account_id
+    async with _channel_lifecycle(account_id):
+        token = _channel_handover_accounts.set(_channel_handover_accounts.get() | ({account_id} if data.get("enabled") is True else set()))
+        try:
+            return await _save_telegram_account_unlocked(role_id, payload)
+        finally:
+            _channel_handover_accounts.reset(token)
+
+
+async def _save_telegram_account_unlocked(role_id: str, data: dict[str, object]) -> dict[str, object]:
+    _require_channel_role(role_id)
+    previous = multichannel_store.get_role_account(role_id, "telegram")
+    previous_token = multichannel_store.token(previous.account_id) if previous is not None else ""
+    account_id = str(data.get("accountId") or (previous.account_id if previous else ""))
+    was_enabled = bool(previous and previous.enabled)
+    token = data.get("token")
+    if token is not None and (not isinstance(token, str) or not token.strip()):
+        raise HTTPException(status_code=422, detail="Telegram Bot Token 不能为空")
+    blocked = data.get("blockedSenders", [])
+    if not isinstance(blocked, list) or any(not isinstance(item, str) for item in blocked):
+        raise HTTPException(status_code=422, detail="屏蔽发送者格式无效")
+    for key in ("enabled", "allowPrivate", "allowGroup"):
+        if key in data and not isinstance(data[key], bool):
+            raise HTTPException(status_code=422, detail=f"{key} 必须是布尔值")
+    if previous is not None:
+        try:
+            await _stop_channel_account_unlocked(previous.account_id)
+        except Exception as error:
+            try:
+                await channel_host.resume(previous.account_id)
+            except Exception:
+                logger.warning("Telegram 旧连接停止失败后的恢复失败 account=%s", previous.account_id, exc_info=True)
+            raise HTTPException(status_code=502, detail="旧 Telegram 连接停止失败，配置未修改") from error
+    try:
+        account = multichannel_store.save_account(
+            role_id,
+            account_id=account_id or None,
+            token=token,
+            enabled=bool(data.get("enabled", False)),
+            allow_private=bool(data.get("allowPrivate", True)),
+            allow_group=bool(data.get("allowGroup", False)),
+            blocked_senders=list(blocked),
+            display_name=str(data.get("displayName", "")),
+        )
+    except (ValueError, RuntimeError, sqlite3.IntegrityError) as error:
+        if previous is not None and was_enabled:
+            try:
+                await _start_channel_account_unlocked(previous.account_id)
+            except Exception:
+                logger.warning("Telegram 旧配置恢复启动失败 account=%s", previous.account_id, exc_info=True)
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    try:
+        if account.enabled and multichannel_store.token(account.account_id):
+            await _start_channel_account(account.account_id)
+        else:
+            await _stop_channel_account_unlocked(account.account_id)
+    except Exception as error:
+        # Restore the previous Telegram row/token when a new poller cannot
+        # start.  ``save_account`` already restored the token on persistence
+        # failure; this covers transport/runtime failures after persistence.
+        try:
+            if previous is None:
+                multichannel_store.delete_account(account.account_id)
+            else:
+                multichannel_store.save_account(
+                    previous.role_id,
+                    account_id=previous.account_id,
+                    token=previous_token,
+                    enabled=previous.enabled,
+                    allow_private=previous.allow_private,
+                    allow_group=previous.allow_group,
+                    blocked_senders=list(previous.blocked_senders),
+                    display_name=previous.display_name,
+                )
+            if previous is not None and previous.enabled:
+                await _start_channel_account_unlocked(previous.account_id)
+        except Exception:
+            logger.warning("Telegram 配置回滚失败 account=%s", account.account_id, exc_info=True)
+        raise HTTPException(status_code=502, detail="Telegram 连接启动失败，已恢复旧配置") from error
+    return {"account": _channel_account_payload(account)}
+
+
+@app.put("/api/roles/{role_id}/channels/{channel}")
+async def save_platform_channel_account(role_id: str, channel: str, data: dict[str, object]) -> dict[str, object]:
+    _require_channel_role(role_id)
+    if channel not in {"qq", "qqbot", "feishu"}:
+        raise HTTPException(status_code=404, detail="渠道类型不存在")
+    existing = multichannel_store.get_role_account(role_id, channel)
+    account_id = str(data.get("accountId") or (existing.account_id if existing else f"{channel}-{uuid.uuid4().hex}"))
+    payload = dict(data)
+    payload["accountId"] = account_id
+    async with _channel_lifecycle(account_id):
+        token = _channel_handover_accounts.set(_channel_handover_accounts.get() | ({account_id} if data.get("enabled") is True else set()))
+        try:
+            return await _save_platform_channel_account_unlocked(role_id, channel, payload)
+        finally:
+            _channel_handover_accounts.reset(token)
+
+
+async def _save_platform_channel_account_unlocked(role_id: str, channel: str, data: dict[str, object]) -> dict[str, object]:
+    _require_channel_role(role_id)
+    if channel not in {"qq", "qqbot", "feishu"}:
+        raise HTTPException(status_code=404, detail="渠道类型不存在")
+    existing = multichannel_store.get_role_account(role_id, channel)
+    account_id = str(data.get("accountId") or (existing.account_id if existing else f"{channel}-{uuid.uuid4().hex}"))
+    if existing is not None and account_id != existing.account_id:
+        raise HTTPException(status_code=422, detail="已有渠道账号不能更换账号 ID")
+    old_config = multichannel_store.channel_config(existing.account_id) if existing else {}
+    old_credentials = {
+        name: multichannel_store.credentials.get(credential_key(channel, account_id, name))
+        for name in _channel_credential_names(channel)
+    }
+    config: dict[str, object] = {}
+    default_endpoint = {
+        "qq": "ws://127.0.0.1:6700",
+        "qqbot": "https://api.sgroup.qq.com",
+        "feishu": "https://open.feishu.cn/open-apis",
+    }[channel]
+    endpoint = data.get("endpoint", (multichannel_store.channel_config(account_id).get("endpoint") if existing else None) or default_endpoint)
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        raise HTTPException(status_code=422, detail="连接地址不能为空")
+    endpoint = endpoint.strip()
+    if channel == "qq" and not endpoint.startswith(("ws://", "wss://")):
+        raise HTTPException(status_code=422, detail="NapCat 地址必须使用 ws:// 或 wss://")
+    if channel != "qq" and not endpoint.startswith(("https://",)):
+        raise HTTPException(status_code=422, detail="平台 API 地址必须使用 HTTPS")
+    config["endpoint"] = endpoint
+    secrets_by_name = {
+        "qq": {"accessToken": "access_token"},
+        "qqbot": {"clientSecret": "client_secret"},
+        "feishu": {"appSecret": "app_secret", "verificationToken": "verification_token", "encryptKey": "encrypt_key"},
+    }[channel]
+    if channel in {"qqbot", "feishu"}:
+        app_id = data.get("appId", old_config.get("appId") if existing else "")
+        if not isinstance(app_id, str) or not app_id.strip():
+            raise HTTPException(status_code=422, detail="App ID 不能为空")
+        config["appId"] = app_id.strip()
+    blocked = data.get("blockedSenders", list(existing.blocked_senders) if existing else [])
+    if not isinstance(blocked, list) or any(not isinstance(item, str) for item in blocked):
+        raise HTTPException(status_code=422, detail="屏蔽发送者格式无效")
+    enabled = data.get("enabled", existing.enabled if existing else False)
+    allow_private = data.get("allowPrivate", existing.allow_private if existing else True)
+    allow_group = data.get("allowGroup", existing.allow_group if existing else channel == "qq")
+    if not all(isinstance(item, bool) for item in (enabled, allow_private, allow_group)):
+        raise HTTPException(status_code=422, detail="渠道开关必须是布尔值")
+
+    # Validate all plain fields before touching the credential vault.  The
+    # remaining mutation is wrapped below so partial secret writes are rolled
+    # back if persistence or connection startup fails.
+    for input_name, credential_name in secrets_by_name.items():
+        secret = data.get(input_name)
+        if secret is not None:
+            if not isinstance(secret, str):
+                raise HTTPException(status_code=422, detail=f"{input_name} 格式无效")
+            if not secret.strip() and existing is None:
+                raise HTTPException(status_code=422, detail=f"{input_name} 不能为空")
+
+    was_enabled = bool(existing and existing.enabled)
+    if existing is not None:
+        try:
+            await _stop_channel_account(account_id)
+        except Exception as error:
+            # Keep the old configuration live when the transport cannot be
+            # drained.  The account remains the source of truth; resuming the
+            # admission gate avoids stranding it in a permanently paused state.
+            try:
+                await channel_host.resume(account_id)
+            except Exception:
+                logger.warning("渠道账号停止失败后的恢复失败 account=%s", account_id, exc_info=True)
+            raise HTTPException(status_code=502, detail="旧渠道连接停止失败，配置未修改") from error
+        channel_host.unregister(account_id)
+        channel_adapters.pop(account_id, None)
+        channel_transports.pop(account_id, None)
+
+    async def rollback() -> None:
+        try:
+            current = multichannel_store.get_account(account_id)
+            if existing is None:
+                if current is not None:
+                    multichannel_store.delete_account(account_id)
+            else:
+                multichannel_store.register_channel_account(
+                    role_id,
+                    channel,
+                    account_id=existing.account_id,
+                    enabled=existing.enabled,
+                    allow_private=existing.allow_private,
+                    allow_group=existing.allow_group,
+                    blocked_senders=list(existing.blocked_senders),
+                    display_name=existing.display_name,
+                    platform_id=existing.platform_id,
+                )
+                multichannel_store.set_channel_config(account_id, old_config)
+                multichannel_store.set_account_state(account_id, enabled=existing.enabled, last_error=existing.last_error)
+        except Exception:
+            logger.warning("渠道账号配置回滚失败 account=%s", account_id, exc_info=True)
+        for name, value in old_credentials.items():
+            try:
+                multichannel_store.credentials.set(credential_key(channel, account_id, name), value)
+            except Exception:
+                logger.warning("渠道凭据回滚失败 account=%s name=%s", account_id, name, exc_info=True)
+        if existing is not None and was_enabled:
+            try:
+                await _start_channel_account(account_id)
+            except Exception:
+                logger.warning("渠道账号旧配置恢复启动失败 account=%s", account_id, exc_info=True)
+
+    try:
+        for input_name, credential_name in secrets_by_name.items():
+            secret = data.get(input_name)
+            if isinstance(secret, str) and secret.strip():
+                multichannel_store.credentials.set(credential_key(channel, account_id, credential_name), secret.strip())
+        account = multichannel_store.register_channel_account(
+            role_id,
+            channel,
+            account_id=account_id,
+            enabled=enabled,
+            allow_private=allow_private,
+            allow_group=allow_group if channel == "qq" else False,
+            blocked_senders=blocked,
+            display_name=str(data.get("displayName", existing.display_name if existing else "")),
+            platform_id=str(config.get("appId") or "") or None,
+        )
+        multichannel_store.set_channel_config(account_id, config)
+        if account.enabled and not _channel_credentials_configured(account):
+            raise HTTPException(status_code=422, detail="请先配置所需的渠道凭据")
+        if account.enabled:
+            await _start_channel_account(account_id)
+        return {"account": _channel_account_payload(multichannel_store.get_account(account_id) or account)}
+    except HTTPException:
+        await rollback()
+        raise
+    except (ValueError, sqlite3.IntegrityError) as error:
+        await rollback()
+        raise HTTPException(status_code=422, detail="渠道账号配置无效") from error
+    except RuntimeError as error:
+        await rollback()
+        raise HTTPException(status_code=502, detail="渠道连接启动失败，已恢复旧配置") from error
+    except Exception as error:
+        await rollback()
+        raise HTTPException(status_code=502, detail="渠道连接启动失败，已恢复旧配置") from error
+
+
+@app.post("/api/roles/{role_id}/channels/{channel}/{account_id}/test")
+async def test_platform_channel_account(role_id: str, channel: str, account_id: str) -> dict[str, object]:
+    if channel == "telegram":
+        return await test_telegram_account(role_id, account_id)
+    _require_channel_role(role_id)
+    account = multichannel_store.get_account(account_id)
+    if account is None or account.role_id != role_id or account.channel != channel:
+        raise HTTPException(status_code=404, detail="渠道账号不存在")
+    adapter: ChannelAdapter | None = None
+    try:
+        # A connection test must not replace or start the account's live
+        # adapter.  Build an unregistered candidate and always retire its
+        # transport below so a failed test cannot leak a socket or HTTP
+        # client into the process.
+        adapter = _build_channel_adapter(account, register=False)
+        if channel == "qq":
+            await adapter.start()
+            transport = getattr(adapter, "_transport", None)
+            for _ in range(30):
+                if bool(getattr(transport, "connected", False)):
+                    break
+                await asyncio.sleep(0.1)
+            if not bool(getattr(transport, "connected", False)):
+                raise RuntimeError("NapCat WebSocket 连接失败")
+        elif channel == "qqbot":
+            transport = getattr(adapter, "_transport", None)
+            await transport._gateway_url()
+        elif channel == "feishu":
+            transport = getattr(adapter, "_transport", None)
+            await transport._tenant_access_token()
+        else:
+            raise RuntimeError("不支持的渠道类型")
+        multichannel_store.set_account_state(account_id, last_error=None)
+        return {"ok": True, "account": _channel_account_payload(account)}
+    except Exception as error:
+        multichannel_store.set_account_state(account_id, last_error=type(error).__name__)
+        raise HTTPException(status_code=502, detail=f"{channel} 连接测试失败") from error
+    finally:
+        if adapter is not None:
+            try:
+                await adapter.stop()
+            except Exception:
+                logger.debug("渠道连接测试清理失败 account=%s", account_id, exc_info=True)
+
+
+@app.post("/api/channels/feishu/{account_id}/webhook")
+async def feishu_channel_webhook(account_id: str, request: Request) -> Response:
+    """Receive the raw Feishu event body for one configured bot account."""
+
+    account = multichannel_store.get_account(account_id)
+    if account is None or account.channel != "feishu":
+        raise HTTPException(status_code=404, detail="飞书渠道账号不存在")
+    if not account.enabled:
+        raise HTTPException(status_code=409, detail="飞书渠道账号未启用")
+    if not _channel_credentials_configured(account) or not any(
+        _channel_secret(account, key) for key in ("verification_token", "encrypt_key")
+    ):
+        raise HTTPException(status_code=503, detail="飞书 webhook 校验凭据未配置")
+    adapter = channel_adapters.get(account_id)
+    if adapter is None:
+        try:
+            adapter = _build_channel_adapter(account)
+            await channel_host.start(account_id)
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="飞书渠道连接尚未就绪") from error
+    transport = channel_transports.get(account_id)
+    if not isinstance(transport, FeishuWebhookTransport):
+        raise HTTPException(status_code=503, detail="飞书渠道传输不可用")
+    try:
+        result = await transport.handle_webhook(await request.body(), request.headers)
+    except ChannelTransportError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise HTTPException(status_code=400, detail="飞书 webhook 内容格式错误") from error
+    return Response(content=json.dumps(result, ensure_ascii=False), media_type="application/json")
+
+
+@app.post("/api/roles/{role_id}/channels/telegram/{account_id}/test")
+async def test_telegram_account(role_id: str, account_id: str) -> dict[str, object]:
+    _require_channel_role(role_id)
+    account = multichannel_store.get_account(account_id)
+    if account is None or account.role_id != role_id or account.channel != "telegram":
+        raise HTTPException(status_code=404, detail="渠道账号不存在")
+    try:
+        result = await _telegram_service(account_id).test_account(account_id)
+    except Exception as error:
+        multichannel_store.set_account_state(account_id, last_error=type(error).__name__)
+        raise HTTPException(status_code=502, detail="Telegram 连接测试失败") from error
+    current = multichannel_store.get_account(account_id)
+    assert current is not None
+    return {"ok": True, "account": _channel_account_payload(current), "bot": dict(result)}
+
+
+@app.post("/api/roles/{role_id}/channels/accounts/{account_id}/state")
+async def set_channel_account_state(role_id: str, account_id: str, data: dict[str, object]) -> dict[str, object]:
+    _require_channel_role(role_id)
+    account = multichannel_store.get_account(account_id)
+    if account is None or account.role_id != role_id:
+        raise HTTPException(status_code=404, detail="渠道账号不存在")
+    enabled = data.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=422, detail="enabled 必须是布尔值")
+    if enabled:
+        updated = multichannel_store.set_account_state(account_id, enabled=True, last_error=None)
+        if _channel_credentials_configured(updated):
+            try:
+                await _start_channel_account(account_id)
+            except Exception as error:
+                try:
+                    await _stop_channel_account(account_id)
+                except Exception:
+                    logger.debug("启用失败后的渠道清理失败 account=%s", account_id, exc_info=True)
+                channel_host.unregister(account_id)
+                channel_adapters.pop(account_id, None)
+                channel_transports.pop(account_id, None)
+                updated = multichannel_store.set_account_state(account_id, enabled=False, last_error=type(error).__name__)
+                raise HTTPException(status_code=502, detail="渠道连接启动失败，账号已停用") from error
+        else:
+            await _stop_channel_account(account_id)
+            multichannel_store.set_account_state(account_id, enabled=False, last_error="credentials_missing")
+            updated = multichannel_store.get_account(account_id) or updated
+    else:
+        try:
+            await _stop_channel_account(account_id)
+        except Exception as error:
+            # Stop failures must not leave an enabled account that will be
+            # resurrected on the next process start.
+            updated = multichannel_store.set_account_state(
+                account_id, enabled=False, last_error=type(error).__name__
+            )
+            raise HTTPException(status_code=503, detail="渠道连接停止失败，账号已停用，请重试") from error
+        updated = multichannel_store.set_account_state(account_id, enabled=False, last_error=None)
+    return {"account": _channel_account_payload(updated)}
+
+
+@app.delete("/api/roles/{role_id}/channels/accounts/{account_id}", status_code=204)
+async def delete_channel_account(role_id: str, account_id: str) -> None:
+    _require_channel_role(role_id)
+    account = multichannel_store.get_account(account_id)
+    if account is None or account.role_id != role_id:
+        raise HTTPException(status_code=404, detail="渠道账号不存在")
+    stop_error: Exception | None = None
+    try:
+        await _stop_channel_account(account_id)
+    except Exception as error:
+        # The admission gate is paused before transport shutdown.  Persist the
+        # disabled state even when a platform socket refuses to close so a
+        # restart cannot resurrect an account that is being deleted.
+        stop_error = error
+    multichannel_store.set_account_state(account_id, enabled=False, last_error=type(stop_error).__name__ if stop_error else None)
+    if stop_error is not None:
+        raise HTTPException(status_code=503, detail="渠道连接停止失败，账号已停用，请重试删除") from stop_error
+    try:
+        multichannel_store.delete_account(account_id)
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail="渠道凭据清理失败，账号已停用，请重试删除") from error
+    telegram_services.pop(account_id, None)
+    channel_adapters.pop(account_id, None)
+    channel_transports.pop(account_id, None)
+    channel_host.unregister(account_id)
+    _channel_push_service().clear_account(account_id)
+
+
+def _channel_push_service() -> ChannelPushService:
+    global _push_service_cache
+    if _push_service_cache is None or _push_service_cache.store is not multichannel_store or _push_service_cache.host is not channel_host:
+        _push_service_cache = ChannelPushService(multichannel_store, channel_host)
+    return _push_service_cache
+
+
+def _deliver_todo_channel_reminder(role_id: str, event_id: str, content: str) -> None:
+    service = _channel_push_service()
+    if not any(target["enabled"] for target in service.list_targets(role_id)):
+        return
+    loop = _channel_runtime_loop
+    if loop is None or not loop.is_running():
+        raise RuntimeError("渠道运行时尚未启动，桌面提醒已保存")
+    future = asyncio.run_coroutine_threadsafe(service.deliver_reminder(role_id, event_id, content), loop)
+    outcomes = future.result(timeout=30)
+    failures = [str(item["status"]) for item in outcomes if item["status"] != "sent"]
+    if failures:
+        raise RuntimeError("渠道提醒投递结果：" + "、".join(failures))
+
+
+@app.get("/api/roles/{role_id}/channels/push-targets")
+def list_channel_push_targets(role_id: str) -> dict[str, object]:
+    _require_channel_role(role_id)
+    return {"targets": _channel_push_service().list_targets(role_id)}
+
+
+@app.put("/api/roles/{role_id}/channels/accounts/{account_id}/push-target")
+def set_channel_push_target(role_id: str, account_id: str, data: dict[str, object]) -> dict[str, object]:
+    _require_channel_role(role_id)
+    target_id = data.get("targetId")
+    if target_id is not None and (not isinstance(target_id, str) or not target_id):
+        raise HTTPException(status_code=422, detail="targetId 必须是主人目录 ID 或 null")
+    try:
+        _channel_push_service().configure(role_id, account_id, target_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="渠道账号不存在") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {"targets": _channel_push_service().list_targets(role_id)}
+
+
+@app.get("/api/channels/identities")
+def list_channel_identities() -> dict[str, object]:
+    return {"identities": multichannel_store.list_identities()}
+
+
+@app.delete("/api/channels/identities/{identity_id}", status_code=204)
+def unbind_channel_identity(identity_id: str) -> Response:
+    try:
+        multichannel_store.unbind_identity(identity_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="渠道身份绑定不存在") from error
+    return Response(status_code=204)
+
+
+@app.post("/api/roles/{role_id}/channels/telegram/pairing")
+def create_telegram_pairing_code(role_id: str) -> dict[str, object]:
+    _require_channel_role(role_id)
+    account = multichannel_store.get_role_account(role_id, "telegram")
+    if account is None:
+        raise HTTPException(status_code=409, detail="请先配置 Telegram 账号")
+    return {"code": multichannel_store.create_pairing_code(role_id, "telegram"), "expiresInSeconds": 600}
+
+
+@app.post("/api/roles/{role_id}/channels/{channel}/pairing")
+def create_channel_pairing_code(role_id: str, channel: str) -> dict[str, object]:
+    _require_channel_role(role_id)
+    if channel not in {"qq", "qqbot", "feishu"}:
+        raise HTTPException(status_code=404, detail="渠道类型不存在")
+    account = multichannel_store.get_role_account(role_id, channel)
+    if account is None or not account.enabled:
+        raise HTTPException(status_code=409, detail="请先启用渠道账号")
+    return {"code": multichannel_store.create_pairing_code(role_id, channel), "expiresInSeconds": 600}
+
+
+@app.get("/api/roles/{role_id}/channels/accounts/{account_id}/targets")
+async def list_channel_targets(role_id: str, account_id: str) -> dict[str, object]:
+    _require_channel_role(role_id)
+    try:
+        targets = await channel_host.account_targets(role_id, account_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="渠道账号不存在") from error
+    return {"targets": targets}
+
+
+@app.get("/api/roles/{role_id}/channels/accounts/{account_id}/groups")
+def list_channel_groups(role_id: str, account_id: str) -> dict[str, object]:
+    _require_channel_role(role_id)
+    account = multichannel_store.get_account(account_id)
+    if account is None or account.role_id != role_id or account.channel != "qq":
+        raise HTTPException(status_code=404, detail="NapCat 账号不存在")
+    targets = [item for item in multichannel_store.list_targets(role_id, account_id) if item.kind.value == "group"]
+    groups = {str(item.chat_id): {"chatId": str(item.chat_id), "title": item.display_name, "listening": multichannel_store.group_listening(role_id, account_id, item.chat_id)} for item in targets}
+    for item in multichannel_store.list_group_settings(role_id, account_id):
+        groups.setdefault(str(item["chatId"]), {"chatId": item["chatId"], "title": str(item["chatId"]), "listening": item["listening"]})
+    return {"groups": list(groups.values())}
+
+
+@app.put("/api/roles/{role_id}/channels/accounts/{account_id}/groups/{chat_id}/listening")
+def set_channel_group_listening(role_id: str, account_id: str, chat_id: str, data: dict[str, object]) -> dict[str, object]:
+    _require_channel_role(role_id)
+    enabled = data.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=422, detail="enabled 必须是布尔值")
+    try:
+        multichannel_store.set_group_listening(role_id, account_id, chat_id, enabled)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="NapCat 账号不存在") from error
+    return {"chatId": chat_id, "listening": enabled}
+
+
+@app.delete("/api/roles/{role_id}/channels/accounts/{account_id}/groups/{chat_id}/listening/messages", status_code=204)
+def clear_channel_group_listening_messages(role_id: str, account_id: str, chat_id: str) -> None:
+    _require_channel_role(role_id)
+    account = multichannel_store.get_account(account_id)
+    if account is None or account.role_id != role_id or account.channel != "qq":
+        raise HTTPException(status_code=404, detail="NapCat 账号不存在")
+    try:
+        multichannel_store.clear_listening_messages(role_id, account_id, chat_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="NapCat 群不存在") from error
+
+
+@app.get("/api/roles/{role_id}/channels/threads")
+def list_channel_threads(role_id: str, limit: int = 100) -> dict[str, object]:
+    _require_channel_role(role_id)
+    threads = multichannel_store.list_threads(role_id, limit=limit)
+    return {"threads": [{**item.public_dict(), "avatarUrl": multichannel_store.avatars.url(item.account_id, "chat", item.chat_id)} for item in threads]}
+
+
+@app.get("/api/channels/avatars/{avatar_id}")
+def get_channel_avatar(avatar_id: str) -> Response:
+    path = multichannel_store.avatars.path(avatar_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="渠道头像不存在")
+    return Response(path.read_bytes(), media_type="image/png", headers={"Cache-Control": "private, max-age=300"})
+
+
+def _channel_message_payload(thread, message) -> dict[str, object]:
+    payload = public_message(message).model_dump(mode="json")
+    metadata = dict(payload.get("metadata") or {})
+    metadata["threadId"] = thread.thread_id
+    sender_id = str(metadata.get("senderId") or "")
+    metadata["senderAvatarUrl"] = multichannel_store.avatars.url(thread.account_id, "sender", sender_id)
+    metadata["senderIsOwner"] = bool(sender_id) and multichannel_store.identity_is_owner(
+        role_id=thread.role_id, channel=thread.channel, scope=_channel_identity_scope(thread.channel),
+        platform_user_id=sender_id, account_id=thread.account_id,
+    )
+    source = metadata.get("viaAccount")
+    if isinstance(source, dict):
+        source = dict(source)
+        own_id = str(source.get("platformAccountId") or thread.account_id)
+        source["avatarUrl"] = multichannel_store.avatars.url(thread.account_id, "account", own_id)
+        metadata["viaAccount"] = source
+    payload["metadata"] = metadata
+    return payload
+
+
+@app.get("/api/channels/listening/defaults")
+def channel_listening_defaults() -> dict[str, int]:
+    return {"defaultDailyCap": multichannel_store.listening.default_cap()}
+
+
+@app.put("/api/channels/listening/defaults")
+def update_channel_listening_defaults(data: dict[str, object]) -> dict[str, int]:
+    try:
+        cap = multichannel_store.listening.set_default_cap(data.get("defaultDailyCap"))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {"defaultDailyCap": cap}
+
+
+@app.get("/api/roles/{role_id}/channels/threads/{thread_id}/listening")
+def channel_listening_state(role_id: str, thread_id: str) -> dict[str, object]:
+    _require_channel_role(role_id)
+    try:
+        return multichannel_store.listening.state(role_id, thread_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="当前角色的旁听群不存在") from error
+
+
+@app.put("/api/roles/{role_id}/channels/threads/{thread_id}/listening/cap")
+def update_channel_listening_cap(role_id: str, thread_id: str, data: dict[str, object]) -> dict[str, object]:
+    _require_channel_role(role_id)
+    try:
+        return multichannel_store.listening.set_cap(role_id, thread_id, data.get("dailyCap"))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="当前角色的旁听群不存在") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.get("/api/roles/{role_id}/channels/threads/{thread_id}/listening/messages")
+def list_channel_listening_messages(role_id: str, thread_id: str, before: int | None = None, limit: int = 50) -> dict[str, object]:
+    _require_channel_role(role_id)
+    try:
+        return multichannel_store.listening.page(role_id, thread_id, before=before, limit=limit)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="当前角色的旁听群不存在") from error
+
+
+@app.get("/api/roles/{role_id}/channels/threads/{thread_id}/messages")
+def list_channel_thread_messages(role_id: str, thread_id: str, before: int | None = None, limit: int = 50) -> dict[str, object]:
+    _require_channel_role(role_id)
+    try:
+        thread, messages, has_more, next_before = multichannel_store.list_messages(role_id, thread_id, before=before, limit=limit)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="渠道线程不存在") from error
+    return {
+        "thread": thread.public_dict(),
+        "messages": [_channel_message_payload(thread, item) for item in messages],
+        "hasMore": has_more,
+        "nextBefore": next_before,
+    }
+
+
+@app.get("/api/roles/{role_id}/channels/deliveries")
+def list_channel_deliveries(role_id: str, limit: int = 100) -> dict[str, object]:
+    _require_channel_role(role_id)
+    return {"deliveries": multichannel_store.list_deliveries(role_id, limit=limit)}
+
+
+@app.get("/api/roles/{role_id}/channels/events")
+async def channel_events(role_id: str) -> StreamingResponse:
+    _require_channel_role(role_id)
+
+    async def stream():
+        async for payload in multichannel_store.subscribe(role_id):
+            yield _event("channel_update", payload)
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/roles/{role_id}/memories", response_model=MemoryList)
@@ -1987,10 +3338,17 @@ def _owner_knowledge_runtime_tool(role) -> OwnerKnowledgeTool:
     return OwnerKnowledgeTool(RoleBoundOwnerKnowledgeReader(role.id, owner_knowledge_plugin.search))
 
 
-def _runtime_tool_candidates(role) -> tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool, ...]:
+def _runtime_tool_candidates(
+    role,
+    *,
+    is_channel_owner: bool = True,
+    source_thread_id: str | None = None,
+    source_account_id: str | None = None,
+    include_channel: bool = False,
+) -> tuple[object, ...]:
     """Build every tool available to the host for a role snapshot."""
     shell = role.agentConfig.shell
-    tools: list[ShellTool | MemoryRecallTool | OwnerKnowledgeTool] = [
+    tools: list[object] = [
         ShellTool(
             store.workspace_path(role.id),
             allowed_commands=shell.allowedCommands,
@@ -2001,10 +3359,42 @@ def _runtime_tool_candidates(role) -> tuple[ShellTool | MemoryRecallTool | Owner
     ]
     if owner_knowledge_plugin.status().enabled:
         tools.append(_owner_knowledge_runtime_tool(role))
+    if mail_service.store.connection().auto_draft_ready:
+        tools.append(mail_manage_tool)
+    if include_channel:
+        tools.extend((
+            ChannelAccountListTool(channel_host),
+            ChannelTargetsTool(channel_host),
+            MessagePushTool(
+                _channel_push_service(), is_owner=is_channel_owner,
+                source_thread_id=source_thread_id, source_account_id=source_account_id,
+            ),
+            ChannelSendTool(
+                channel_host,
+                is_owner=is_channel_owner,
+                source_thread_id=source_thread_id,
+                source_account_id=source_account_id,
+            ),
+            LookupGroupContextTool(group_repository, is_owner=is_channel_owner),
+            UpdateGroupContextTool(group_repository, is_owner=is_channel_owner),
+            SetGroupListeningTool(
+                group_repository,
+                is_owner=is_channel_owner,
+                source_thread_id=source_thread_id,
+            ),
+            LookupGroupMemberTool(group_repository, source_thread_id=source_thread_id),
+        ))
     return tuple(tools)
 
 
-def _enabled_runtime_tool_names(role) -> set[str]:
+def _role_has_usable_channel_account(role_id: str) -> bool:
+    return any(
+        account.enabled and _channel_credentials_configured(account)
+        for account in multichannel_store.list_role_accounts(role_id)
+    )
+
+
+def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[str]:
     shell = role.agentConfig.shell
     enabled: set[str] = set()
     if shell.enabled and shell.allowedCommands:
@@ -2013,17 +3403,29 @@ def _enabled_runtime_tool_names(role) -> set[str]:
         enabled.add("recall_memory")
     if owner_knowledge_plugin.status().enabled:
         enabled.add("search_owner_knowledge")
+    if mail_service.store.connection().auto_draft_ready:
+        enabled.add("mail.manage")
+    if include_channel:
+        enabled.update({
+            "account_list", "account_targets", "account_send", "message_push",
+            "lookup_group_context", "update_group_context", "set_group_listening",
+            "lookup_group_member",
+            "read_attachment",
+        })
     return enabled
 
 
 def _runtime_tools(
     role,
     *,
-    candidates: tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool, ...] | None = None,
-) -> tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool, ...]:
+    candidates: tuple[object, ...] | None = None,
+) -> tuple[object, ...]:
     """Filter host tool candidates using the request-time role policy."""
     available = _runtime_tool_candidates(role) if candidates is None else candidates
-    enabled = _enabled_runtime_tool_names(role)
+    enabled = _enabled_runtime_tool_names(
+        role,
+        include_channel=any(getattr(tool.definition, "name", "") == "account_list" for tool in available),
+    )
     return tuple(tool for tool in available if tool.definition.name in enabled)
 
 
@@ -2032,12 +3434,16 @@ async def _runtime_capabilities(
     *,
     session_key: str,
     run_id: str,
-    available_tools: tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool, ...] | None = None,
+    available_tools: tuple[ShellTool | MemoryRecallTool | OwnerKnowledgeTool | MailManageTool, ...] | None = None,
     prompt_text: str = "",
     explicit_skill_ids: list[str] | None = None,
+    external_only: bool = False,
 ) -> CapabilityResolution:
     agent_config = role.agentConfig
-    enabled_tools = _enabled_runtime_tool_names(role)
+    include_channel = session_key.startswith("thread:") or (
+        session_key.startswith("role:") and _role_has_usable_channel_account(role.id)
+    )
+    enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     enabled_tools.update(agent_config.enabledTools)
     if not memory_settings_store.get().enabled:
         enabled_tools.discard("recall_memory")
@@ -2062,7 +3468,7 @@ async def _runtime_capabilities(
     else:
         enabled_plugins.discard("browser_use")
     return await CapabilityRegistry(
-        _runtime_tool_candidates(role) if available_tools is None else available_tools,
+        _runtime_tool_candidates(role, include_channel=include_channel) if available_tools is None else available_tools,
         skills=SkillRegistry.discover_many((
             (roles_root / role.id / "skills", "role"),
             (project_root / ".agents" / "skills", "project"),
@@ -2074,6 +3480,7 @@ async def _runtime_capabilities(
         run_id=run_id,
         enabled_tools=enabled_tools,
         allowed_risks={"read_only", "mutating", "external"},
+        external_only=external_only,
         prompt_text=prompt_text,
         explicit_skill_ids=set(explicit_skill_ids or ()),
         enabled_plugin_ids=enabled_plugins,
@@ -2086,7 +3493,624 @@ def _runtime_message_snapshot(message: object) -> dict[str, object]:
     value = asdict(message)
     if not value.get("attachments"):
         value.pop("attachments", None)
+    for key in ("timestamp", "usage"):
+        if value.get(key) is None:
+            value.pop(key, None)
+    if not value.get("nested_calls"):
+        value.pop("nested_calls", None)
     return value
+
+
+def _telegram_accepts_update(account_id: str) -> bool:
+    account = multichannel_store.get_account(account_id)
+    return bool(account and account.role_id not in _channel_roles_deleting and channel_host.accepts_events(account_id))
+
+
+def _defer_telegram_update(account_id: str, update) -> bool:
+    account = multichannel_store.get_account(account_id)
+    if account is None or not account.enabled or account.role_id in _channel_roles_deleting:
+        return False
+    service = _telegram_service(account_id)
+    token = multichannel_store.token(account_id)
+    message = update.get("message") or update.get("edited_message") or {}
+    chat_id = str((message.get("chat") or {}).get("id") or "")
+    async def reject():
+        from .channels.host import CHANNEL_INTAKE_RETRY_NOTICE
+        await service.transport.send_message(token, chat_id, CHANNEL_INTAKE_RETRY_NOTICE, reply_to=str(message.get("message_id") or "") or None, **({"message_thread_id": message["message_thread_id"]} if message.get("message_thread_id") else {}))
+    return channel_host.intake.defer(account_id, lambda: _dispatch_telegram_update(account_id, update), reject)
+
+
+async def _dispatch_telegram_update(account_id: str, update) -> None:
+    try:
+        async with channel_host.event_scope(account_id) as admitted:
+            service = _telegram_service(account_id)
+            if admitted or not _defer_telegram_update(account_id, update):
+                await service.handle_update(account_id, update)
+    except Exception as error:
+        logger.warning("Telegram 入站处理失败 account=%s error=%s", account_id, type(error).__name__)
+
+
+def _telegram_service(account_id: str) -> TelegramChannelService:
+    service = telegram_services.get(account_id)
+    if service is None:
+        service = TelegramChannelService(
+            multichannel_store,
+            account_id,
+            on_message=_handle_telegram_channel_message,
+            persist_attachment=_save_channel_attachment,
+            on_command=_channel_command_reply,
+            on_admit=_telegram_accepts_update,
+            on_defer=_defer_telegram_update,
+            on_update=_dispatch_telegram_update,
+        )
+        telegram_services[account_id] = service
+    return service
+
+
+async def _handle_telegram_channel_message(thread, content: str, metadata: dict[str, object], owner: bool) -> None:
+    if thread.role_id in _channel_roles_deleting:
+        await _notify_channel_turn_not_started(thread, metadata)
+        return
+    async with channel_host.event_scope(thread.account_id) as admitted:
+        if admitted:
+            account = multichannel_store.get_account(thread.account_id)
+            if account:
+                _refresh_channel_avatars(account, str(metadata.get("senderId") or ""), thread.chat_id, thread.chat_type)
+            await _handle_channel_message(thread, content, metadata, owner)
+        else:
+            from .channels.host import CHANNEL_INTAKE_RETRY_NOTICE
+            service = _telegram_service(thread.account_id)
+            await service.transport.send_message(
+                multichannel_store.token(thread.account_id), thread.chat_id, CHANNEL_INTAKE_RETRY_NOTICE,
+                reply_to=str(metadata.get("platformMessageId") or "") or None,
+                **({"message_thread_id": metadata["messageThreadId"]} if metadata.get("messageThreadId") else {}),
+            )
+
+
+async def _notify_channel_turn_not_started(thread, metadata: dict[str, object]) -> None:
+    """Tell an admitted sender their turn cannot start during role deletion."""
+
+    from .channels.models import InboundEvent
+    from .channels.host import CHANNEL_INTAKE_RETRY_NOTICE
+
+    adapter = channel_adapters.get(thread.account_id)
+    try:
+        if adapter is not None:
+            event = InboundEvent(
+                channel=thread.channel, account_id=thread.account_id,
+                external_event_id=str(metadata.get("platformMessageId") or ""),
+                external_message_id=str(metadata.get("platformMessageId") or ""),
+                chat_id=thread.chat_id, chat_type=ChatType.GROUP if thread.chat_type == "group" else ChatType.PRIVATE,
+                sender_id=str(metadata.get("senderId") or ""),
+            )
+            await channel_host.send_retry_notice(adapter, event)
+        elif thread.channel == "telegram" and thread.account_id in telegram_services:
+            service = telegram_services[thread.account_id]
+            await service.transport.send_message(multichannel_store.token(thread.account_id), thread.chat_id, CHANNEL_INTAKE_RETRY_NOTICE)
+    except Exception as error:
+        logger.warning("角色删除期间未启动回合提示失败 role=%s error=%s", thread.role_id, type(error).__name__)
+
+
+async def _start_telegram_account(account_id: str) -> None:
+    account = multichannel_store.get_account(account_id)
+    if account is not None and not _channel_owner_is_available(account):
+        multichannel_store.set_account_state(account_id, enabled=False, last_error="role_unavailable")
+        return
+    existing = telegram_tasks.get(account_id)
+    if existing is not None and not existing.done():
+        return
+    account = multichannel_store.get_account(account_id)
+    if account is None or not account.enabled or not multichannel_store.token(account_id):
+        return
+    await _telegram_service(account_id).test_account(account_id)
+    stop = asyncio.Event()
+    telegram_stops[account_id] = stop
+    telegram_tasks[account_id] = asyncio.create_task(_telegram_service(account_id).run_polling(stop))
+
+
+async def _stop_telegram_account(account_id: str) -> None:
+    stop = telegram_stops.get(account_id)
+    if stop is not None:
+        stop.set()
+    task = telegram_tasks.get(account_id)
+    if task is not None:
+        await asyncio.gather(task, return_exceptions=True)
+        telegram_tasks.pop(account_id, None)
+    telegram_stops.pop(account_id, None)
+
+
+async def _start_channel_account_unlocked(account_id: str) -> None:
+    account = multichannel_store.get_account(account_id)
+    if account is None or not account.enabled:
+        return
+    if not _channel_owner_is_available(account):
+        multichannel_store.set_account_state(account_id, enabled=False, last_error="role_unavailable")
+        return
+    if not _channel_credentials_configured(account):
+        multichannel_store.set_account_state(account_id, enabled=False, last_error="credentials_missing")
+        return
+    _build_channel_adapter(account)
+    if account.channel == "telegram":
+        await _start_telegram_account(account_id)
+    else:
+        await channel_host.start(account_id)
+        if account.channel == "qq":
+            transport = channel_transports[account_id]
+            await transport.wait_connected()
+            identity = await transport("get_login_info", {})
+            platform_id = str(identity.get("user_id") or "")
+            if not platform_id:
+                raise RuntimeError("NapCat 未返回 QQ 登录账号 ID")
+            multichannel_store.set_platform_identity(
+                account_id, platform_id, display_name=str(identity.get("nickname") or ""),
+            )
+    await channel_host.resume(account_id)
+    multichannel_store.set_account_state(account_id, last_error=None)
+    current = multichannel_store.get_account(account_id)
+    if current:
+        _refresh_channel_avatars(current)
+
+
+async def _stop_channel_account_unlocked(account_id: str) -> None:
+    await multichannel_store.avatars.stop_account(account_id)
+    await channel_host.pause_and_drain(account_id)
+    if account_id not in _channel_handover_accounts.get():
+        await channel_host.intake.close(account_id)
+    await _stop_telegram_account(account_id)
+    try:
+        await channel_host.stop(account_id)
+    except KeyError:
+        pass
+
+
+async def _start_channel_account(account_id: str) -> None:
+    account = multichannel_store.get_account(account_id)
+    if account is not None and not _channel_owner_is_available(account):
+        multichannel_store.set_account_state(account_id, enabled=False, last_error="role_unavailable")
+        return
+    async with _channel_lifecycle(account_id):
+        await _start_channel_account_unlocked(account_id)
+
+
+def _channel_owner_is_available(account: ChannelAccount) -> bool:
+    return store.get(account.role_id) is not None and account.role_id not in store.pending_role_deletions()
+
+
+async def _stop_channel_account(account_id: str) -> None:
+    async with _channel_lifecycle(account_id):
+        await _stop_channel_account_unlocked(account_id)
+
+
+async def _start_channel_workers() -> None:
+    await channel_memory_maintenance.start()
+    interrupted = multichannel_store.mark_interrupted_deliveries_uncertain()
+    if interrupted:
+        logger.warning("启动时发现未确认渠道投递 count=%s，已标记为 uncertain", interrupted)
+    for account in multichannel_store.list_role_accounts_for_all_roles():
+        if not _channel_owner_is_available(account):
+            multichannel_store.set_account_state(account.account_id, enabled=False, last_error="role_unavailable")
+            continue
+        if not account.enabled:
+            continue
+        try:
+            await _start_channel_account(account.account_id)
+        except Exception as error:
+            try:
+                await _stop_channel_account(account.account_id)
+            except Exception:
+                logger.debug("启动失败后的渠道清理失败 account=%s", account.account_id, exc_info=True)
+            channel_host.unregister(account.account_id)
+            channel_adapters.pop(account.account_id, None)
+            channel_transports.pop(account.account_id, None)
+            multichannel_store.set_account_state(account.account_id, enabled=False, last_error=type(error).__name__)
+            logger.warning("渠道账号启动失败 account=%s error=%s", account.account_id, type(error).__name__)
+
+
+async def _close_channel_workers() -> None:
+    account_ids = set(channel_adapters) | set(telegram_tasks)
+    for account_id in account_ids:
+        try:
+            await _stop_channel_account(account_id)
+        except Exception as error:
+            logger.warning("渠道账号关闭失败 account=%s error=%s", account_id, type(error).__name__)
+    await channel_memory_maintenance.close()
+
+
+# FastAPI 0.136 removed ``add_event_handler`` from the application object.
+# Register alongside the existing constructor-based lifecycle callbacks.
+async def _summarize_channel_memory(thread, messages, context, profiles):
+    role = store.get(thread.role_id)
+    if role is None:
+        raise KeyError(thread.role_id)
+    configuration = model_configuration_store.get(role.modelConfigurationId)
+    return await asyncio.to_thread(_complete_model_json, [
+        {"role": "system", "content": "只整理以下外部会话中可证实的内容，不把群友当主人。返回JSON：{groupNote:string,summary:string,members:[{senderId:string,name:string,profile:string,shorthand:string}]}。更新而非丢弃既有笔记/档案；senderId必须来自输入；不要推测身份。"},
+        {"role": "user", "content": json.dumps({"channel": thread.channel, "chatType": thread.chat_type, "context": context, "profiles": profiles, "messages": messages}, ensure_ascii=False)},
+    ], configuration, max_tokens=1500)
+
+
+def _ingest_owner_channel_memory(thread, user_message, assistant_message):
+    if store.get(thread.role_id) is None or memory_worker.role_deletion_blocked(thread.role_id):
+        return
+    memory_worker.service.process_turn(thread.role_id, thread.session_key, user_message, assistant_message)
+    if memory_worker.maintenance is not None:
+        memory_worker.maintenance.maintain(thread.role_id, f"role:{thread.role_id}")
+        memory_worker.maintenance.sync_structured_memory(thread.role_id, memory_worker.service.store.list_all(thread.role_id))
+
+
+async def _ingest_owner_listening_memory(thread, messages):
+    if memory_worker.role_deletion_blocked(thread.role_id):
+        return
+    role = store.get(thread.role_id)
+    if role is None:
+        return
+    source_key = f"listening:{thread.thread_id}:{messages[0]['sequence']}-{messages[-1]['sequence']}"
+    configuration = model_configuration_store.get(role.modelConfigurationId)
+    candidates = await asyncio.to_thread(_complete_model_json, [
+        {"role": "system", "content": "以下都是已经识别的主人在群中的发言。只提取主人明确表达的稳定事实、偏好或共同经历，不推测群友信息。返回JSON {memories:[{memoryType:fact|preference|profile|procedure|event,summary:string,messageIds:[string]}]}，messageIds必须来自输入。"},
+        {"role": "user", "content": json.dumps({"group": thread.title, "messages": messages}, ensure_ascii=False)},
+    ], configuration, max_tokens=900)
+    if not isinstance(candidates, dict) or not isinstance(candidates.get("memories"), list):
+        raise ValueError("主人旁听记忆提取结果无效")
+    allowed_ids = {str(message["id"]) for message in messages}
+    async with memory_worker.role_lock_for(thread.role_id):
+        if memory_worker.role_deletion_blocked(thread.role_id):
+            return
+        def commit():
+            for index, candidate in enumerate(candidates["memories"][:8]):
+                if not isinstance(candidate, dict) or candidate.get("memoryType") not in {"fact", "preference", "profile", "procedure", "event"} or not isinstance(candidate.get("summary"), str) or not candidate["summary"].strip():
+                    continue
+                ids = candidate.get("messageIds")
+                if not isinstance(ids, list) or not ids or any(not isinstance(item, str) or item not in allowed_ids for item in ids):
+                    continue
+                item = memory_worker.service.store.add_or_reinforce(
+                    thread.role_id, candidate["memoryType"], candidate["summary"].strip(),
+                    MemorySourceRef(kind="listening", sessionKey=thread.session_key, messageIds=ids, stableSourceKey=f"{source_key}:{index}"),
+                    extra={"memory_visibility": "owner_private"},
+                )
+                memory_worker.service.index_embedding(thread.role_id, item)
+            if memory_worker.maintenance is not None:
+                memory_worker.maintenance.sync_structured_memory(thread.role_id, memory_worker.service.store.list_all(thread.role_id))
+        await finish_io(asyncio.to_thread(commit))
+
+
+channel_memory_maintenance = ChannelMemoryMaintenance(
+    lambda: multichannel_store, lambda: group_repository,
+    _summarize_channel_memory, _ingest_owner_channel_memory,
+    owner_statements=_ingest_owner_listening_memory,
+    enabled=lambda: bool(memory_settings_store.get().enabled),
+)
+
+
+app.router.on_startup.append(_start_channel_workers)
+app.router.on_shutdown.append(_close_channel_workers)
+
+
+async def _handle_channel_message(thread, content: str, metadata: dict[str, object], owner: bool) -> None:
+    """Run one isolated network thread through the shared role runtime."""
+
+    if thread.role_id in _channel_roles_deleting:
+        await _notify_channel_turn_not_started(thread, metadata)
+        return
+
+    role = store.get(thread.role_id)
+    message_id = metadata.get("messageId")
+    if role is None or not isinstance(message_id, str):
+        return
+    configuration = model_configuration_store.get(role.modelConfigurationId)
+    if role.modelConfigurationId and configuration is None:
+        return
+    run_id = f"run-{uuid.uuid4().hex}"
+    model_snapshot = {
+        "channel": thread.channel,
+        "accountId": thread.account_id,
+        "threadId": thread.thread_id,
+        "ownerContext": owner,
+        "role": role.model_dump(mode="json", exclude={"modelConfig"}),
+    }
+    run = AgentRun(
+        runId=run_id,
+        roleId=thread.role_id,
+        sessionKey=thread.session_key,
+        status="created",
+        modelConfigurationId=configuration.id if configuration else None,
+        modelSnapshot=model_snapshot,
+        startedAt=datetime.now(timezone.utc),
+    )
+    try:
+        runtime_manager.sessions = session_store
+        runtime_manager.role_locks = role_locks
+        _, user_message, assistant_message = await runtime_manager.reserve_existing_user_message(run, message_id)
+    except (ActiveRunError, KeyError, sqlite3.IntegrityError):
+        return
+    if not runtime_manager.attach_current_task(run_id):
+        runtime_manager.cancel_unstarted_run(run_id)
+        return
+    owner = bool(owner and multichannel_store.identity_is_owner(
+        role_id=thread.role_id,
+        channel=thread.channel,
+        scope=_channel_identity_scope(thread.channel),
+        platform_user_id=str(metadata.get("senderId") or ""),
+        account_id=thread.account_id,
+    ))
+    model_snapshot["ownerContext"] = owner
+    placeholder_id: str | None = assistant_message.id
+    final_message_id: str | None = None
+    capabilities: CapabilityResolution | None = None
+    final_content = ""
+    streamed_content = ""
+    stream_queue: asyncio.Queue[str | None] | None = None
+    stream_task: asyncio.Task[object] | None = None
+
+    async def persist_runtime_message(event: MessageEndEvent) -> Message | None:
+        nonlocal placeholder_id, final_message_id
+        if isinstance(event.message, AssistantMessage):
+            sourced_message = replace(event.message, metadata={
+                **event.message.metadata,
+                "channel": thread.channel, "accountId": thread.account_id,
+                "threadId": thread.thread_id, "direction": "outbound",
+                "viaAccount": thread.metadata.get("viaAccount"),
+            })
+            if event.message.tool_calls:
+                if placeholder_id is not None:
+                    session_store.delete_message(placeholder_id)
+                    placeholder_id = None
+                final_message_id = None
+                return session_store.append_agent_message(
+                    thread.session_key,
+                    sourced_message,
+                    run_id=run_id,
+                    status="completed" if event.message.stop_reason == "tool_use" else "failed",
+                )[0]
+            if placeholder_id is not None:
+                message = session_store.update_message(
+                    placeholder_id,
+                    event.message.content,
+                    "streaming",
+                    metadata={
+                        **event.message.metadata,
+                        "channel": thread.channel,
+                        "accountId": thread.account_id,
+                        "threadId": thread.thread_id,
+                        "direction": "outbound",
+                        "viaAccount": thread.metadata.get("viaAccount"),
+                    },
+                )
+            else:
+                message = session_store.append_agent_message(
+                    thread.session_key,
+                    sourced_message,
+                    run_id=run_id,
+                    status="streaming",
+                )[0]
+            final_message_id = message.id
+            return message
+        if isinstance(event.message, ToolResultMessage):
+            return session_store.append_agent_message(thread.session_key, event.message, run_id=run_id, status="completed")[0]
+        return None
+
+    try:
+        owner_context_since = (
+            multichannel_store.owner_chat_context_since(
+                role_id=thread.role_id,
+                channel=thread.channel,
+                account_id=thread.account_id,
+                chat_id=thread.chat_id,
+            )
+            if owner and thread.chat_type == "private"
+            else None
+        )
+        runtime_messages = session_store.runtime_messages(
+            thread.session_key,
+            max_messages=MemoryMaintenance.RECENT_MESSAGE_LIMIT * 2,
+            since=owner_context_since,
+            through_message_id=message_id,
+        )
+        if runtime_messages and isinstance(runtime_messages[-1], UserMessage) and metadata.get("replyTo"):
+            quoted_text = str(metadata.get("replyToContent") or "")
+            speaker = str(metadata.get("replyToSenderName") or metadata.get("replyToSenderId") or "未知发送者")
+            prefix = f"引用 {speaker}：\n{quoted_text}\n\n" if quoted_text else ""
+            quoted_media = load_runtime_attachments({"attachments": metadata.get("quotedAttachments", [])})
+            runtime_messages[-1] = replace(runtime_messages[-1], content=prefix + runtime_messages[-1].content, attachments=(*runtime_messages[-1].attachments, *quoted_media))
+        if thread.chat_type == "group":
+            heard = multichannel_store.listening.context(thread.role_id, thread.thread_id) if thread.channel == "qq" else ""
+            frame = heard
+            if frame and runtime_messages and isinstance(runtime_messages[-1], UserMessage):
+                runtime_messages[-1] = replace(runtime_messages[-1], content=frame + "\n\n当前消息：\n" + runtime_messages[-1].content)
+        available = _runtime_tool_candidates(
+            role,
+            is_channel_owner=owner,
+            source_thread_id=thread.thread_id,
+            source_account_id=thread.account_id,
+            include_channel=True,
+        )
+        if thread.channel == "qq":
+            available = (*available, ReadChannelAttachmentTool(
+                thread.role_id, thread.session_key,
+                [item for key in ("attachments", "quotedAttachments") for item in metadata.get(key, []) if isinstance(item, dict)],
+            ))
+        runtime_tools = _runtime_tools(role, candidates=available)
+        capabilities = await _runtime_capabilities(
+            role,
+            session_key=thread.session_key,
+            run_id=run_id,
+            available_tools=available,
+            prompt_text=content,
+            external_only=not owner,
+        )
+        model_snapshot["capabilities"] = capabilities.snapshot.to_dict(include_prompt_sections=False)
+        session_store.update_run(run_id, status="created", model_snapshot=model_snapshot)
+        memory_context = _role_memory_context(thread.role_id) if owner and thread.chat_type == "private" else ""
+        if owner and thread.chat_type == "private":
+            authorized_history = multichannel_store.owner_context(thread.role_id, exclude_thread_id=thread.thread_id)
+            if authorized_history:
+                lines = [
+                    f"[{title or '桌面会话'} / {'主人' if message_role == 'user' else role.name}] {text}"
+                    for title, message_role, text, _created_at in authorized_history
+                ]
+                memory_context = "\n\n".join(part for part in (memory_context, "[配对主人授权的近期对话]\n" + "\n".join(lines)) if part)
+        if thread.chat_type == "group" or not owner:
+            external_context = group_repository.prompt_context(thread.role_id, thread.thread_id, str(metadata.get("senderId") or ""))
+            memory_context = "\n\n".join(part for part in (memory_context, external_context) if part)
+        provider = MeidoProvider(model_adapter, role, configuration, memory_context, capabilities.prompt_context())
+        target = target_from_chat(
+            account_id=thread.account_id,
+            chat_id=thread.chat_id,
+            kind=TargetKind.GROUP if thread.chat_type == "group" else TargetKind.PRIVATE,
+            display_name=thread.title,
+        )
+        target_id = target.id
+        async def stream_updates():
+            assert stream_queue is not None
+            while True:
+                update = await stream_queue.get()
+                if update is None:
+                    return
+                yield update
+
+        async for event in runtime_manager.run(
+            AgentRun(
+                runId=run_id,
+                roleId=thread.role_id,
+                sessionKey=thread.session_key,
+                status="created",
+                modelConfigurationId=configuration.id if configuration else None,
+                modelSnapshot=model_snapshot,
+                startedAt=datetime.now(timezone.utc),
+            ),
+            provider=provider,
+            model=configuration.model if configuration else "",
+            system="",
+            messages=runtime_messages,
+            tools=runtime_tools,
+            capabilities=capabilities,
+            max_turns=8,
+            provider_timeout=120.0,
+            tool_timeout=30.0,
+            on_message_end=persist_runtime_message,
+        ):
+            if isinstance(event, MessageUpdateEvent) and isinstance(event.message, AssistantMessage) and event.message.content.strip():
+                streamed_content = event.message.content
+                adapter = channel_adapters.get(thread.account_id)
+                if adapter is not None and adapter.capabilities.streaming and (
+                    thread.channel != "telegram" or thread.chat_type == "private"
+                ):
+                    if stream_queue is None:
+                        stream_queue = asyncio.Queue()
+                        stream_task = asyncio.create_task(channel_host.account_send(
+                            thread.role_id,
+                            thread.account_id,
+                            target_id,
+                            "",
+                            reply_to_message_id=str(metadata.get("platformMessageId")) if metadata.get("platformMessageId") else None,
+                            stream_updates=stream_updates(),
+                            actor="reply",
+                            source_thread_id=thread.thread_id,
+                            record_message=False,
+                            source_session_key=thread.session_key,
+                            source_run_id=run_id,
+                            source_kind="reply",
+                            mention_ids=(str(metadata["senderId"]),) if thread.chat_type == "group" and thread.channel == "qq" and metadata.get("senderId") else (),
+                            message_thread_id=metadata.get("messageThreadId"),
+                        ))
+                    stream_queue.put_nowait(event.message.content)
+            if isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage) and not event.message.tool_calls:
+                final_content = event.message.content
+        delivery_metadata: dict[str, object] | None = None
+        if stream_queue is not None and stream_task is not None:
+            terminal_content = final_content if final_content.strip() else streamed_content
+            if terminal_content.strip():
+                stream_queue.put_nowait(terminal_content)
+            stream_queue.put_nowait(None)
+            try:
+                result = await stream_task
+                delivery_metadata = {
+                    "deliveryStatus": result.status.value,
+                    "deliveryAttemptId": result.attempt_id,
+                    "platformMessageId": result.platform_message_id,
+                    "deliveryError": result.error,
+                }
+            except Exception as error:
+                logger.warning("渠道回复投递失败 role=%s thread=%s error=%s", thread.role_id, thread.thread_id, type(error).__name__)
+                delivery_metadata = {"deliveryStatus": "failed", "deliveryError": type(error).__name__}
+        elif final_content.strip():
+            try:
+                result = await channel_host.account_send(
+                    thread.role_id,
+                    thread.account_id,
+                    target.id,
+                    final_content,
+                    reply_to_message_id=str(metadata.get("platformMessageId")) if metadata.get("platformMessageId") else None,
+                    actor="reply",
+                    source_thread_id=thread.thread_id,
+                    record_message=False,
+                    source_session_key=thread.session_key,
+                    source_run_id=run_id,
+                    source_kind="reply",
+                    mention_ids=(str(metadata["senderId"]),) if thread.chat_type == "group" and thread.channel == "qq" and metadata.get("senderId") else (),
+                    message_thread_id=metadata.get("messageThreadId"),
+                )
+                delivery_metadata = {
+                    "deliveryStatus": result.status.value,
+                    "deliveryAttemptId": result.attempt_id,
+                    "platformMessageId": result.platform_message_id,
+                    "deliveryError": result.error,
+                }
+            except Exception as error:
+                logger.warning("渠道回复投递失败 role=%s thread=%s error=%s", thread.role_id, thread.thread_id, type(error).__name__)
+                delivery_metadata = {"deliveryStatus": "failed", "deliveryError": type(error).__name__}
+        if final_message_id is not None and delivery_metadata is not None:
+            message = next((item for item in session_store.list_messages(thread.session_key) if item.id == final_message_id), None)
+            if message is not None:
+                updated = session_store.update_message(
+                    final_message_id,
+                    message.content,
+                    message.status if delivery_metadata.get("deliveryStatus") == "sent" else "failed",
+                    metadata={**message.metadata, **delivery_metadata},
+                )
+                multichannel_store.publish(thread.role_id, {
+                    "type": "message",
+                    "roleId": thread.role_id,
+                    "thread": multichannel_store.get_thread(thread.role_id, thread.thread_id).public_dict(),
+                    "message": public_message(updated).model_dump(mode="json"),
+                })
+                try:
+                    if not memory_worker.role_deletion_blocked(thread.role_id):
+                        async with memory_worker.role_lock_for(thread.role_id):
+                            await channel_memory_maintenance.commit_turn(thread, owner, user_message, updated)
+                except Exception as error:
+                    logger.warning("渠道记忆维护失败 role=%s error=%s", thread.role_id, type(error).__name__)
+    except Exception as error:
+        logger.warning("渠道回合失败 role=%s thread=%s error=%s", thread.role_id, thread.thread_id, type(error).__name__)
+    finally:
+        try:
+            if stream_queue is not None and stream_task is not None:
+                if not stream_task.done():
+                    terminal_content = final_content if final_content.strip() else streamed_content
+                    if terminal_content.strip():
+                        stream_queue.put_nowait(terminal_content)
+                    stream_queue.put_nowait(None)
+                cleanup = asyncio.gather(stream_task, return_exceptions=True)
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    await cleanup
+                    raise
+        finally:
+            try:
+                if capabilities is not None:
+                    await finish_io(capabilities.close())
+            finally:
+                pending = session_store.get_run(run_id)
+                if pending is not None and pending.status in {"created", "running"}:
+                    runtime_manager.abandon_unstarted_run(run_id, "渠道回合在 Runtime 启动前中断")
+                terminal = next((item for item in reversed(session_store.list_messages(thread.session_key)) if item.runId == run_id and item.role == "assistant"), None)
+                if terminal is not None:
+                    multichannel_store.publish(thread.role_id, {
+                        "type": "message", "roleId": thread.role_id,
+                        "threadId": thread.thread_id,
+                        "message": public_message(terminal).model_dump(mode="json"),
+                    })
 
 
 @app.post("/api/roles/{role_id}/messages")
@@ -2115,7 +4139,11 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         if isinstance(configuration_snapshot, dict):
             configuration_snapshot.pop("apiKey", None)
         role_snapshot = role.model_dump(mode="json", exclude={"modelConfig"})
-        available_runtime_tools = _runtime_tool_candidates(role)
+        available_runtime_tools = _runtime_tool_candidates(
+            role,
+            include_channel=_role_has_usable_channel_account(role_id),
+            source_thread_id=f"desktop:{role_id}",
+        )
         runtime_tools = _runtime_tools(role, candidates=available_runtime_tools)
         shell_config = role.agentConfig.shell
         model_snapshot = {
@@ -2196,7 +4224,10 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         placeholder_id,
                         event.message.content,
                         "streaming",
-                        metadata={"runtimeStopReason": event.message.stop_reason},
+                        metadata={
+                            **event.message.metadata,
+                            "runtimeStopReason": event.message.stop_reason,
+                        },
                     )
                 else:
                     final_message = session_store.append_agent_message(
@@ -2242,6 +4273,18 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     memory_context = memory_service.context_block([], _role_memory_context(role_id))
                     if query_result is not None and query_result.text_block:
                         memory_context = "\n".join(part for part in (memory_context, query_result.text_block) if part)
+                    owner_history = multichannel_store.owner_context(
+                        role_id,
+                        exclude_thread_id=f"desktop:{role_id}",
+                    )
+                    if owner_history:
+                        owner_lines = [
+                            f"[{title or '主人授权会话'}] {text}"
+                            for title, _message_role, text, _created_at in owner_history
+                        ]
+                        memory_context = "\n\n".join(
+                            part for part in (memory_context, "[配对主人授权的近期对话]\n" + "\n".join(owner_lines)) if part
+                        )
                 except Exception as error:
                     memory_worker.errors.append(f"{role_id}: recall failed: {error}")
                     memory_context = ""

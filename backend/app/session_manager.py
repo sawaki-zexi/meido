@@ -30,10 +30,13 @@ class SessionManager:
 
 def public_message(message: Message) -> Message:
     metadata = dict(message.metadata)
-    attachments = metadata.get("attachments")
-    if isinstance(attachments, list):
-        metadata["attachments"] = [
-            public_attachment(item) for item in attachments
-            if isinstance(item, dict) and item.get("id")
-        ]
+    metadata.pop("thinking", None)
+    metadata.pop("content_blocks", None)
+    for key in ("attachments", "quotedAttachments"):
+        attachments = metadata.get(key)
+        if isinstance(attachments, list):
+            metadata[key] = [
+                public_attachment(item) for item in attachments
+                if isinstance(item, dict) and item.get("id")
+            ]
     return message.model_copy(update={"metadata": metadata})

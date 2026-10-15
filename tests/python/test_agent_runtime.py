@@ -525,6 +525,27 @@ def test_session_store_rebuilds_structured_runtime_transcript(tmp_path):
     ]
 
 
+def test_session_store_round_trips_tool_result_diagnostics(tmp_path):
+    initialize_databases(tmp_path / "data")
+    store = SessionStore(tmp_path / "data" / "sessions.db")
+    session = store.open_role_session("role-diagnostics")
+    call = ToolCall("call-1", "read", {"key": "name"})
+    result = ToolResultMessage(
+        "call-1",
+        "read",
+        "value:name",
+        details={"status": "succeeded"},
+        usage={"input_tokens": 2, "output_tokens": 1},
+        nested_calls=(ToolCall("nested-1", "lookup", {"key": "name"}),),
+        timestamp=1234,
+    )
+    store.append_agent_message(session.sessionKey, AssistantMessage(tool_calls=(call,), stop_reason="tool_use"), run_id="run-1")
+    store.append_agent_message(session.sessionKey, result, run_id="run-1")
+
+    restored = store.runtime_messages(session.sessionKey)
+    assert restored[-1] == result
+
+
 def test_session_store_excludes_failed_runtime_tool_messages_from_context(tmp_path):
     initialize_databases(tmp_path / "data")
     store = SessionStore(tmp_path / "data" / "sessions.db")
@@ -593,6 +614,82 @@ def test_session_store_rebuilds_multi_call_turn_and_repairs_results(tmp_path):
     assert transcript[3] == ToolResultMessage("call-2", "read", "value:city")
     assert transcript[4] == AssistantMessage("最终回答")
     assert store.runtime_messages(session.sessionKey, max_messages=2) == transcript
+
+
+def test_runtime_round_trips_ordered_rich_assistant_blocks_through_sqlite(tmp_path):
+    from backend.app.agent_runtime import AssistantDoneEvent, CancellationToken, MeidoProvider
+    from backend.app.model_types import (
+        ModelAssistantMessage,
+        ModelResponseMetadata,
+        ModelStreamDone,
+        ModelTextBlock,
+        ModelThinkingBlock,
+        ModelToolCallBlock,
+    )
+
+    initialize_databases(tmp_path / "data")
+    store = SessionStore(tmp_path / "data" / "sessions.db")
+    session = store.open_role_session("role-rich-transcript")
+    call = ToolCall("call-1", "lookup", {"key": "name"})
+    rich_blocks = (
+        ModelTextBlock("before", text_signature="text-signature"),
+        ModelThinkingBlock("reason", "thinking-signature", redacted=True),
+        ModelToolCallBlock(
+            call.id, call.name, call.arguments,
+            thought_signature="tool-signature", namespace="functions",
+        ),
+        ModelTextBlock("after"),
+    )
+
+    class Adapter:
+        async def stream_rich_messages(self, messages, configuration, tools):
+            del messages, configuration, tools
+            yield ModelStreamDone(ModelAssistantMessage(
+                rich_blocks,
+                ModelResponseMetadata(
+                    provider="google", api="google-generative-ai", model="gemini", stop_reason="tool_use",
+                ),
+            ))
+
+    role = RoleInput(name="rich transcript", profile=RoleProfile(profile="设定")).model_copy(
+        update={"id": "role-rich-transcript"}
+    )
+    provider = MeidoProvider(Adapter(), role, None)
+    events = asyncio.run(_collect(provider.stream_response(
+        model="gemini",
+        system="system",
+        messages=[],
+        tools=[],
+        signal=CancellationToken(),
+    )))
+    assistant = next(event.message for event in events if isinstance(event, AssistantDoneEvent))
+
+    store.append_agent_message(
+        session.sessionKey,
+        assistant,
+        run_id="run-rich-transcript",
+    )
+
+    restored = store.runtime_messages(session.sessionKey)[0]
+    model_message = provider._rich_messages("system", [restored])[1]
+
+    assert restored.metadata["content_blocks"] == [
+        {"text": "before", "type": "text", "text_signature": "text-signature"},
+        {"text": "reason", "signature": "thinking-signature", "type": "thinking", "redacted": True},
+        {
+            "id": "call-1", "name": "lookup", "arguments": {"key": "name"}, "type": "tool_call",
+            "thought_signature": "tool-signature", "namespace": "functions",
+        },
+        {"text": "after", "type": "text", "text_signature": None},
+    ]
+    assert model_message.content == (
+        ModelTextBlock("before", text_signature="text-signature"),
+        ModelThinkingBlock("reason", "thinking-signature", redacted=True),
+        ModelToolCallBlock(
+            "call-1", "lookup", {"key": "name"}, thought_signature="tool-signature", namespace="functions"
+        ),
+        ModelTextBlock("after"),
+    )
 
 
 def test_session_store_persists_assistant_tool_calls_atomically(tmp_path):

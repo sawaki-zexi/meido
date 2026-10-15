@@ -35,6 +35,7 @@ class UserMessage:
     content: str
     attachments: tuple[AttachmentContent, ...] = ()
     role: Literal["user"] = "user"
+    timestamp: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +44,8 @@ class AssistantMessage:
     tool_calls: tuple[ToolCall, ...] = ()
     stop_reason: Literal["stop", "tool_use", "error", "aborted"] = "stop"
     role: Literal["assistant"] = "assistant"
+    metadata: dict[str, object] = field(default_factory=dict)
+    timestamp: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +57,9 @@ class ToolResultMessage:
     details: object | None = None
     images: tuple[ImageContent, ...] = ()
     role: Literal["tool"] = "tool"
+    usage: object | None = None
+    nested_calls: tuple[ToolCall, ...] = ()
+    timestamp: int | None = None
 
 
 AgentMessage: TypeAlias = UserMessage | AssistantMessage | ToolResultMessage

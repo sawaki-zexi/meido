@@ -103,7 +103,7 @@ POST /api/roles/{role_id}/messages
 | `role_locks` | 路由级字典锁 | 迁入 Runtime Manager，保留每角色单运行约束 |
 | SSE | `assistant_delta` 等既有事件 | 保持兼容，新增 run/tool 字段或内部事件 |
 
-当前 [`ModelAdapter`](../../backend/app/model_adapter.py) 只暴露 `AsyncIterator[str]` 文本增量，没有工具定义、tool call ID、finish reason 或结构化 assistant message；[`SessionStore`](../../backend/app/session_store.py) 只持久化 user/assistant 文本行。因此不能只把 `run_agent_loop()` 文件复制进来就完成重构。模型连接配置通过 [`model_config.py`](../../backend/app/model_config.py) 由后端读取，不能将密钥放进 run 快照或事件。
+当前 [`ModelAdapter`](../../backend/app/ai/model_adapter.py) 只暴露 `AsyncIterator[str]` 文本增量，没有工具定义、tool call ID、finish reason 或结构化 assistant message；[`SessionStore`](../../backend/app/session_store.py) 只持久化 user/assistant 文本行。因此不能只把 `run_agent_loop()` 文件复制进来就完成重构。模型连接配置通过 [`model_config.py`](../../backend/app/model_config.py) 由后端读取，不能将密钥放进 run 快照或事件。
 
 当前 [`MemoryMaintenance`](../../backend/app/memory_maintenance.py) 从已完成的 user/assistant 消息对构造近期上下文和 consolidation 窗口。接入内部 tool message 后，维护层必须显式过滤 tool call/result，并以“用户消息 + 最终 completed assistant”作为可记忆回合；中间工具输出默认只用于当前运行和诊断，不直接触发普通长期记忆提取。
 

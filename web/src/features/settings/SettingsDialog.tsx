@@ -5,14 +5,16 @@ import { ModelSettings } from "../model/ModelSettings";
 import { OwnerKnowledgeSettings } from "./OwnerKnowledgeSettings";
 import { TodoSettings } from "../todo/TodoSettings";
 import { MemorySettings } from "./MemorySettings";
+import { MailSettings } from "./MailSettings";
 
 /** Settings sections. Add an entry here to add a new section to the dialog. */
-type SettingsSectionId = "model" | "memory" | "owner-knowledge" | "todo";
+type SettingsSectionId = "model" | "memory" | "owner-knowledge" | "todo" | "mail";
 const sections: { id: SettingsSectionId; label: string; icon: IconName; render: () => ReactNode }[] = [
   { id: "model", label: "模型", icon: "model", render: () => <ModelSettings /> },
   { id: "memory", label: "记忆", icon: "memory", render: () => <MemorySettings /> },
   { id: "owner-knowledge", label: "主人资料", icon: "memory", render: () => <OwnerKnowledgeSettings /> },
   { id: "todo", label: "待办", icon: "todo", render: () => <TodoSettings /> },
+  { id: "mail", label: "邮件", icon: "todo", render: () => <MailSettings /> },
 ];
 
 export function SettingsDialog({ onClose, initialSection }: { onClose: () => void; initialSection?: SettingsSectionId }) {

@@ -2,15 +2,146 @@ from __future__ import annotations
 
 import inspect
 import json
-from collections.abc import AsyncIterator, Sequence
+from dataclasses import asdict
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import cast
 
 from ..models import Message, ModelConfiguration, Role
-from ..model_adapter import ModelAdapter, ModelStreamError, ModelTextDelta, ModelToolCall
+from ..ai.model_adapter import ModelAdapter, ModelStreamError, ModelTextDelta, ModelToolCall
+from ..ai.model_types import (
+    ModelAssistantMessage as RichAssistantMessage,
+    ModelCost as RichCost,
+    ModelImageBlock as RichImageBlock,
+    ModelContentBlock as RichContentBlock,
+    ModelMessage as RichMessage,
+    ModelResponseMetadata as RichResponseMetadata,
+    ModelStreamDone,
+    ModelStreamError as RichStreamError,
+    ModelTextBlock as RichTextBlock,
+    ModelTextDelta as RichTextDelta,
+    ModelThinkingBlock as RichThinkingBlock,
+    ModelToolCallBlock as RichToolCallBlock,
+    ModelToolCallEnd as RichToolCallEnd,
+    ModelToolResultMessage as RichToolResultMessage,
+    ModelSystemMessage as RichSystemMessage,
+    ModelUserMessage as RichUserMessage,
+    ModelUsage as RichUsage,
+)
 from ..browser_use.safety import sanitize_browser_arguments, sanitize_browser_text
 from .provider import AssistantDoneEvent, CancellationToken, ProviderErrorEvent, ProviderEvent, ProviderStartEvent, TextDeltaEvent, ToolCallEndEvent
-from .types import AssistantMessage, AttachmentContent, ImageContent, ToolCall, UserMessage, ToolResultMessage
+from .types import AssistantMessage, ToolCall, UserMessage, ToolResultMessage
+
+
+def _metadata_count(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _metadata_cost(value: object) -> RichCost:
+    if not isinstance(value, Mapping):
+        return RichCost()
+
+    def number(*keys: str) -> float:
+        for key in keys:
+            candidate = value.get(key)
+            if isinstance(candidate, (int, float)) and not isinstance(candidate, bool) and candidate >= 0:
+                return float(candidate)
+        return 0.0
+
+    return RichCost(
+        input=number("input", "input_cost"),
+        output=number("output", "output_cost"),
+        cache_read=number("cache_read", "cacheRead", "cache_read_cost"),
+        cache_write=number("cache_write", "cacheWrite", "cache_write_cost"),
+        total=number("total", "total_cost"),
+    )
+
+
+def _rich_usage(value: object) -> RichUsage:
+    if isinstance(value, RichUsage):
+        return value
+    if not isinstance(value, Mapping):
+        return RichUsage()
+    return RichUsage(
+        input_tokens=_metadata_count(value.get("input_tokens", value.get("inputTokens", value.get("input")))),
+        output_tokens=_metadata_count(value.get("output_tokens", value.get("outputTokens", value.get("output")))),
+        cache_read_tokens=_metadata_count(value.get("cache_read_tokens", value.get("cacheReadTokens", value.get("cacheRead")))),
+        cache_write_tokens=_metadata_count(value.get("cache_write_tokens", value.get("cacheWriteTokens", value.get("cacheWrite")))),
+        reasoning_tokens=_metadata_count(value.get("reasoning_tokens", value.get("reasoningTokens", value.get("reasoning")))),
+        cost=_metadata_cost(value.get("cost")),
+    )
+
+
+def _content_block_from_metadata(value: object) -> RichContentBlock | None:
+    if not isinstance(value, Mapping):
+        return None
+    block_type = value.get("type")
+    if block_type == "text":
+        text = value.get("text")
+        signature = value.get("text_signature")
+        if not isinstance(text, str) or (signature is not None and not isinstance(signature, str)):
+            return None
+        return RichTextBlock(text, text_signature=signature)
+    if block_type == "thinking":
+        text = value.get("text", "")
+        signature = value.get("signature")
+        redacted = value.get("redacted", False)
+        if not isinstance(text, str) or (signature is not None and not isinstance(signature, str)) or not isinstance(redacted, bool):
+            return None
+        return RichThinkingBlock(text, signature, redacted=redacted)
+    if block_type == "image":
+        media_type = value.get("media_type")
+        data_base64 = value.get("data_base64")
+        detail = value.get("detail", "auto")
+        if (
+            not isinstance(media_type, str)
+            or not isinstance(data_base64, str)
+            or not isinstance(detail, str)
+            or detail not in {"low", "high", "auto"}
+        ):
+            return None
+        return RichImageBlock(media_type, data_base64, detail)
+    if block_type == "tool_call":
+        call_id = value.get("id")
+        name = value.get("name")
+        arguments = value.get("arguments")
+        thought_signature = value.get("thought_signature")
+        namespace = value.get("namespace")
+        if (
+            not isinstance(call_id, str)
+            or not isinstance(name, str)
+            or not isinstance(arguments, Mapping)
+            or (thought_signature is not None and not isinstance(thought_signature, str))
+            or (namespace is not None and not isinstance(namespace, str))
+        ):
+            return None
+        safe_arguments = dict(arguments)
+        if name.startswith("agent_browser_"):
+            safe_arguments = sanitize_browser_arguments(name, safe_arguments)
+        return RichToolCallBlock(
+            call_id,
+            name,
+            safe_arguments,
+            thought_signature=thought_signature,
+            namespace=namespace,
+        )
+    return None
+
+
+def _content_block_metadata(block: RichContentBlock) -> dict[str, object]:
+    value = asdict(block)
+    if isinstance(block, RichToolCallBlock) and block.name.startswith("agent_browser_"):
+        value["arguments"] = sanitize_browser_arguments(block.name, block.arguments)
+    return value
+
+
+def _content_blocks_from_metadata(value: object) -> tuple[RichContentBlock, ...] | None:
+    if not isinstance(value, list):
+        return None
+    blocks = tuple(_content_block_from_metadata(item) for item in value)
+    if any(block is None for block in blocks):
+        return None
+    return tuple(block for block in blocks if block is not None)
 
 
 class MeidoProvider:
@@ -41,6 +172,9 @@ class MeidoProvider:
         session_id: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         del model, session_id
+        rich = getattr(self.adapter, "stream_rich_messages", None)
+        if rich is not None:
+            return self._stream_rich_structured(system, messages, tools, signal, rich)
         if tools:
             structured = getattr(self.adapter, "stream_structured_messages", None)
             if structured is None:
@@ -50,6 +184,84 @@ class MeidoProvider:
                 return unsupported()
             return self._stream_structured(system, messages, tools, signal, structured)
         return self._stream(messages, signal)
+
+    def _stream_rich_structured(self, system, messages, tools, signal, rich) -> AsyncIterator[ProviderEvent]:
+        async def stream() -> AsyncIterator[ProviderEvent]:
+            runtime_messages = self._rich_messages(system, messages)
+            yield ProviderStartEvent()
+            content = ""
+            tool_calls: list[ToolCall] = []
+            try:
+                try:
+                    accepts_cancel_check = "cancel_check" in inspect.signature(rich).parameters
+                except (TypeError, ValueError):
+                    accepts_cancel_check = False
+                source = (
+                    rich(
+                        runtime_messages,
+                        self.configuration,
+                        [dict(tool) for tool in tools],
+                        cancel_check=signal.raise_if_cancelled,
+                    )
+                    if accepts_cancel_check
+                    else rich(runtime_messages, self.configuration, [dict(tool) for tool in tools])
+                )
+                async for event in source:
+                    signal.raise_if_cancelled()
+                    if isinstance(event, RichTextDelta):
+                        content += event.text
+                        yield TextDeltaEvent(event.text)
+                    elif isinstance(event, RichToolCallEnd):
+                        call = ToolCall(event.call.id, event.call.name, dict(event.call.arguments))
+                        tool_calls.append(call)
+                        yield ToolCallEndEvent(call)
+                    elif isinstance(event, RichStreamError):
+                        yield ProviderErrorEvent(event.error)
+                        return
+                    elif isinstance(event, ModelStreamDone):
+                        final_content = "".join(
+                            block.text for block in event.message.content if isinstance(block, RichTextBlock)
+                        )
+                        final_calls = tuple(
+                            ToolCall(block.id, block.name, dict(block.arguments))
+                            for block in event.message.content
+                            if isinstance(block, RichToolCallBlock)
+                        )
+                        if final_content and not content:
+                            content = final_content
+                        if final_calls:
+                            tool_calls = list(final_calls)
+                        stop_reason = event.message.metadata.stop_reason or ("tool_use" if tool_calls else "stop")
+                        if stop_reason == "error":
+                            yield ProviderErrorEvent(event.message.metadata.error_message or "模型调用失败")
+                            return
+                        response_metadata = asdict(event.message.metadata)
+                        if event.message.timestamp is not None:
+                            response_metadata["timestamp"] = event.message.timestamp
+                        response_metadata["thinking"] = [
+                            {
+                                "text": block.text,
+                                "signature": block.signature,
+                            }
+                            for block in event.message.content
+                            if isinstance(block, RichThinkingBlock)
+                        ]
+                        response_metadata["content_blocks"] = [
+                            _content_block_metadata(block) for block in event.message.content
+                        ]
+                        yield AssistantDoneEvent(AssistantMessage(
+                            content=content,
+                            tool_calls=tuple(tool_calls),
+                            stop_reason="tool_use" if tool_calls else stop_reason,
+                            metadata=response_metadata,
+                            timestamp=event.message.timestamp or event.message.metadata.timestamp,
+                        ))
+                        return
+            except Exception as error:
+                if isinstance(error, RuntimeError) and str(error) == "agent run cancelled":
+                    raise
+                yield ProviderErrorEvent(str(error))
+        return stream()
 
     def _stream_structured(self, system, messages, tools, signal, structured) -> AsyncIterator[ProviderEvent]:
         async def stream() -> AsyncIterator[ProviderEvent]:
@@ -131,6 +343,97 @@ class MeidoProvider:
                     "tool_call_id": message.tool_call_id,
                     "content": content,
                 })
+        return result
+
+    def _rich_messages(self, system: str, messages: Sequence[object]) -> list[RichMessage]:
+        result: list[RichMessage] = [RichSystemMessage((RichTextBlock(self._structured_system_prompt(system)),))]
+        for message in messages:
+            if isinstance(message, UserMessage):
+                blocks: list[object] = [RichTextBlock(message.content)]
+                for attachment in message.attachments:
+                    if attachment.image is not None:
+                        blocks.append(RichImageBlock(
+                            attachment.image.media_type,
+                            attachment.image.data_base64,
+                            attachment.image.detail,
+                        ))
+                    elif attachment.text:
+                        blocks[0] = RichTextBlock(f"{blocks[0].text}\n\n[{attachment.name}]\n{attachment.text}")
+                result.append(RichUserMessage(tuple(blocks), timestamp=message.timestamp))
+            elif isinstance(message, AssistantMessage):
+                metadata = message.metadata if isinstance(message.metadata, Mapping) else {}
+                raw_usage = metadata.get("usage")
+                usage = raw_usage if isinstance(raw_usage, Mapping) else {}
+                blocks: list[object] = []
+                raw_thinking = metadata.get("thinking")
+                raw_content_blocks = _content_blocks_from_metadata(metadata.get("content_blocks"))
+                if raw_content_blocks == () and (message.content or message.tool_calls or raw_thinking):
+                    raw_content_blocks = None
+                if raw_content_blocks is not None:
+                    blocks.extend(raw_content_blocks)
+                elif isinstance(raw_thinking, list):
+                    for item in raw_thinking:
+                        if not isinstance(item, dict):
+                            continue
+                        text = item.get("text")
+                        if isinstance(text, str) and text:
+                            signature = item.get("signature")
+                            blocks.append(RichThinkingBlock(
+                                text,
+                                signature if isinstance(signature, str) else None,
+                            ))
+                if raw_content_blocks is None:
+                    if message.content:
+                        blocks.append(RichTextBlock(message.content))
+                    blocks.extend(
+                        RichToolCallBlock(
+                            call.id,
+                            call.name,
+                            sanitize_browser_arguments(call.name, call.arguments),
+                        )
+                        for call in message.tool_calls
+                    )
+                timestamp = metadata.get("timestamp", message.timestamp)
+                result.append(RichAssistantMessage(
+                    tuple(blocks),
+                    RichResponseMetadata(
+                        provider=metadata.get("provider") if isinstance(metadata.get("provider"), str) else None,
+                        api=metadata.get("api") if isinstance(metadata.get("api"), str) else None,
+                        model=metadata.get("model") if isinstance(metadata.get("model"), str) else None,
+                        response_id=metadata.get("response_id") if isinstance(metadata.get("response_id"), str) else None,
+                        usage=_rich_usage(usage),
+                        stop_reason=(
+                            metadata.get("stop_reason")
+                            if isinstance(metadata.get("stop_reason"), str)
+                            else message.stop_reason
+                        ),
+                        error_message=metadata.get("error_message") if isinstance(metadata.get("error_message"), str) else None,
+                        timestamp=_metadata_count(timestamp) if isinstance(timestamp, int) and not isinstance(timestamp, bool) else None,
+                    ),
+                    timestamp=_metadata_count(timestamp) if isinstance(timestamp, int) and not isinstance(timestamp, bool) else None,
+                ))
+            elif isinstance(message, ToolResultMessage):
+                text = message.content
+                if message.tool_name.startswith("agent_browser_"):
+                    text, _ = sanitize_browser_text(text)
+                blocks = [RichTextBlock(text)]
+                blocks.extend(
+                    RichImageBlock(image.media_type, image.data_base64, image.detail)
+                    for image in message.images
+                )
+                result.append(RichToolResultMessage(
+                    content=tuple(blocks),
+                    tool_call_id=message.tool_call_id,
+                    tool_name=message.tool_name,
+                    is_error=message.is_error,
+                    details=message.details,
+                    usage=_rich_usage(message.usage),
+                    nested_calls=tuple(
+                        RichToolCallBlock(call.id, call.name, sanitize_browser_arguments(call.name, call.arguments))
+                        for call in message.nested_calls
+                    ),
+                    timestamp=message.timestamp,
+                ))
         return result
 
     def _structured_system_prompt(self, system: str) -> str:

@@ -43,6 +43,24 @@ def _plugin(tmp_path, *, roles=("role-1",)):
     return todos, sessions, plugin
 
 
+def test_external_delivery_failure_preserves_committed_desktop_reminder(tmp_path):
+    _, sessions, plugin = _plugin(tmp_path)
+    calls = []
+
+    def failed_delivery(role_id, event_id, content):
+        calls.append((role_id, event_id, content))
+        raise TimeoutError("渠道结果不确定")
+
+    plugin.external_delivery = failed_delivery
+    finished = []
+    result = plugin._deliver("role-1", "external-1", "exact", [{"title": "待办"}], finished.append)
+    assert result is not None
+    assert finished == [None]
+    assert sessions.list_messages("role:role-1")[0].content == "role-1:exact:待办"
+    assert calls == [("role-1", "external-1", "role-1:exact:待办")]
+    assert "external delivery" in plugin.errors[0]
+
+
 def test_role_tool_and_web_share_the_same_owner_todo_rules(tmp_path, monkeypatch):
     todos = TodoStore(tmp_path / "todos.db")
     sessions = _sessions(tmp_path)

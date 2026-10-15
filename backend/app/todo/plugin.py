@@ -12,6 +12,7 @@ from .store import TodoStore
 
 ReminderSender = Callable[[str, str, str, list[dict[str, object]]], str]
 ReminderRoleProvider = Callable[[], Iterable[str]]
+ReminderExternalDelivery = Callable[[str, str, str], object]
 
 
 class TodoPlugin:
@@ -27,11 +28,13 @@ class TodoPlugin:
         *,
         reminder_sender: ReminderSender | None = None,
         available_roles: ReminderRoleProvider | None = None,
+        external_delivery: ReminderExternalDelivery | None = None,
     ) -> None:
         self.store = store
         self.sessions = sessions
         self.reminder_sender = reminder_sender
         self.available_roles = available_roles or (lambda: ())
+        self.external_delivery = external_delivery
         self.errors: list[str] = []
         self._task: asyncio.Task[None] | None = None
         self._processing = threading.Lock()
@@ -194,6 +197,13 @@ class TodoPlugin:
             self._record_error(f"{event_id}: {failure}")
             return None
         finish(None)
+        # The desktop reminder is committed first.  A disconnected channel or
+        # an uncertain platform receipt must neither hide it nor reschedule it.
+        if self.external_delivery is not None:
+            try:
+                self.external_delivery(role_id, event_id, content)
+            except Exception as error:
+                self._record_error(f"{event_id}: external delivery: {type(error).__name__}: {error}")
         return {"messageId": message.id, "roleId": role_id, "kind": kind}
 
     def context_block(self, query: str) -> str:

@@ -27,6 +27,7 @@ class ToolDefinition:
     approval: str = "auto"
     timeout_seconds: float | None = None
     output_limit: int | None = None
+    external_allowed: bool = False
 
     def __post_init__(self) -> None:
         if not self.name.strip():

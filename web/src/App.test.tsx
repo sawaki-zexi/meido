@@ -18,6 +18,90 @@ const chatHeading = (name: string) => screen.findByRole("heading", { level: 1, n
 const dialog = (name: string) => screen.findByRole("dialog", { name });
 
 describe("首页", () => {
+  it("导航轨道可打开手机会话，保留角色侧栏并仅突出当前页面", async () => {
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": emptySession,
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [] } }),
+      "GET /api/roles/r1/channels/threads": () => ({ body: { threads: [] } }),
+    });
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    await chatHeading("爱丽丝");
+    const navigation = screen.getByRole("navigation", { name: "页面" });
+    const chatPage = within(navigation).getByRole("button", { name: "对话" });
+    const phonePage = within(navigation).getByRole("button", { name: "手机会话" });
+    expect(navigation).toHaveClass("app-rail");
+    expect(chatPage).toHaveAttribute("aria-current", "page");
+    await user.click(within(navigation).getByRole("button", { name: "搜索角色" }));
+    expect(container.querySelector(".shell")).toHaveClass("show-list");
+    await user.click(phonePage);
+    expect(await chatHeading("爱丽丝 · 渠道会话")).toBeInTheDocument();
+    expect(container.querySelector(".shell")).not.toHaveClass("show-list");
+    expect(phonePage).toHaveAttribute("aria-current", "page");
+    expect(chatPage).not.toHaveAttribute("aria-current");
+    expect(within(navigation).getAllByRole("button", { current: "page" })).toHaveLength(1);
+    expect(within(await roleList()).getByRole("button", { name: /爱丽丝/ })).toBeInTheDocument();
+    await user.click(chatPage);
+    expect(await chatHeading("爱丽丝")).toBeInTheDocument();
+    expect(chatPage).toHaveAttribute("aria-current", "page");
+    expect(phonePage).not.toHaveAttribute("aria-current");
+    expect(within(navigation).getByRole("button", { name: "设置" })).toBeInTheDocument();
+  });
+
+  it("从左侧搜索筛选角色，保留列表切换对话并可清除搜索", async () => {
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice, bella] } }),
+      "GET /api/roles/r1/session": emptySession,
+      "GET /api/roles/r2/session": () => ({ body: { session: sessionOf("r2"), messages: [] } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    const navigation = screen.getByRole("navigation", { name: "页面" });
+    expect(within(navigation).getByRole("button", { name: "设置" })).toBeTruthy();
+    await user.click(within(navigation).getByRole("button", { name: "搜索角色" }));
+    await user.type(screen.getByRole("searchbox", { name: "搜索角色" }), "贝拉");
+    expect(within(await roleList()).queryByText("爱丽丝")).toBeNull();
+    expect(within(await roleList()).getByText("贝拉")).toBeTruthy();
+    await user.click(within(navigation).getByRole("button", { name: "角色" }));
+    const cards = screen.getByRole("list", { name: "角色卡牌" });
+    expect(within(cards).queryByRole("button", { name: "与爱丽丝对话" })).toBeNull();
+    expect(within(cards).getByText("No.002")).toBeTruthy();
+    await user.click(within(await roleList()).getByRole("button", { name: /贝拉/ }));
+    expect(await chatHeading("贝拉")).toBeTruthy();
+    expect(calls.some((call) => call.path === "/api/roles/r2/session")).toBe(true);
+    await user.click(within(navigation).getByRole("button", { name: "角色" }));
+    await user.clear(screen.getByRole("searchbox", { name: "搜索角色" }));
+    await user.type(screen.getByRole("searchbox", { name: "搜索角色" }), "不存在");
+    expect(screen.getByText("没有找到匹配的角色")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "清除搜索" }));
+    expect(within(await roleList()).getAllByRole("button")).toHaveLength(2);
+    expect(within(screen.getByRole("list", { name: "角色卡牌" })).getByRole("button", { name: "与爱丽丝对话" })).toBeTruthy();
+  });
+
+  it("从酒馆侧栏导入角色卡，进入现有预览确认流程", async () => {
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [] } }),
+      "POST /api/role-card-import/preview": () => ({ body: {
+        draft: { name: "导入角色", description: "简介", profile: "设定", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" },
+        source: "card.json", assets: [], compatibility: { format: "json", warnings: [], discardedFields: [], unsupportedMacros: [], unsupportedResources: [] },
+      } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText(/还没有角色。/);
+    await user.click(screen.getByRole("button", { name: "角色" }));
+    const sidebar = screen.getByRole("complementary", { name: "角色管理" });
+    expect(within(sidebar).getByRole("button", { name: "导入角色卡" })).toBeEnabled();
+    fireEvent.change(within(sidebar).getByLabelText("导入角色卡文件"), { target: { files: [new File(["{}"], "card.json", { type: "application/json" })] } });
+    const form = await dialog("创建角色");
+    expect(await within(form).findByRole("region", { name: "角色卡导入预览" })).toBeTruthy();
+    await user.click(within(form).getByRole("button", { name: "填充到表单" }));
+    expect(within(form).getByLabelText(/名称/)).toHaveValue("导入角色");
+    expect(calls.some((call) => call.method === "POST" && call.path === "/api/roles")).toBe(false);
+  });
+
   it("没有角色时仍是对话界面，并提示创建角色", async () => {
     fakeBackend({ "GET /api/roles": () => ({ body: { roles: [] } }) });
     render(<App />);
@@ -747,5 +831,29 @@ describe("角色记忆", () => {
     const source = screen.getByText("我喜欢红茶").closest("li")!;
     expect(source).toHaveClass("source-highlight");
     expect(within(source).getByText("记忆来源")).toBeTruthy();
+  });
+
+  it("渠道记忆来源打开当前角色的手机会话并定位消息", async () => {
+    const channelOrigin = { kind: "turn", sessionKey: "thread:phone", messageIds: ["phone-source"], messageRange: [7, 8], stableSourceKey: "turn:phone" };
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": emptySession,
+      "GET /api/roles/r1/memories": () => ({ body: { memories: [{ ...memory, sourceRef: { ...channelOrigin, sourceKeys: [], sources: [channelOrigin] } }] } }),
+      "GET /api/roles/r1/memory-documents": () => ({ body: { documents: [], journals: [] } }),
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [] } }),
+      "GET /api/roles/r1/channels/threads": () => ({ body: { threads: [{ threadId: "phone", sessionKey: "thread:phone", channel: "telegram", chatId: "42", chatType: "private", title: "主人手机", lastActivity: "2026-10-14T00:00:00Z" }] } }),
+      "GET .*threads/phone/messages.*": () => ({ body: { messages: [{ id: "phone-source", sequence: 7, role: "user", content: "手机里我说喜欢红茶", createdAt: "2026-10-14T00:00:00Z", metadata: { threadId: "phone" } }], hasMore: false, nextBefore: null } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    await user.click(screen.getByRole("button", { name: "角色记忆" }));
+    await user.click(within(await screen.findByRole("list", { name: "记忆列表" })).getByRole("button", { name: "定位到消息" }));
+    expect(await screen.findByRole("heading", { name: "爱丽丝 · 渠道会话" })).toBeInTheDocument();
+    const navigation = screen.getByRole("navigation", { name: "页面" });
+    expect(within(navigation).getByRole("button", { name: "手机会话" })).toHaveAttribute("aria-current", "page");
+    expect(within(navigation).getByRole("button", { name: "对话" })).not.toHaveAttribute("aria-current");
+    expect((await screen.findByText("手机里我说喜欢红茶")).closest("li")).toHaveClass("source-highlight");
+    expect(screen.queryByText("来源会话与当前角色不匹配")).not.toBeInTheDocument();
   });
 });

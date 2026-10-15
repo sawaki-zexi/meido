@@ -2,7 +2,13 @@
 
 状态：当前
 
-最后核验：2026-10-10
+最后核验：2026-10-13
+
+事实来源：
+
+- 模型配置和预设：[`backend/app/model_config.py`](../../backend/app/model_config.py)
+- 协议路由：[`backend/app/ai/model_adapter_registry.py`](../../backend/app/ai/model_adapter_registry.py)
+- 协议行为测试：[`tests/python/test_model_protocol_adapters.py`](../../tests/python/test_model_protocol_adapters.py)
 
 本文描述当前模型配置与模型调用的产品边界和架构约束。角色、会话和消息的
 通用规则见 [`current-architecture-spec.md`](current-architecture-spec.md)。
@@ -37,21 +43,30 @@
 - 硅基流动
 - OpenRouter
 - Ollama
+- OpenAI Responses
+- Anthropic Messages
+- Google Generative AI
+- Mistral Conversations
+- Amazon Bedrock Converse
+- Pi Messages
 
-预设是界面和配置层的模板，至少可以提供服务商名称、默认 endpoint（如果
-适用）、认证方式提示和常用模型输入方式。预设不代表系统自动支持该服务商
-所有原生 API；具体请求必须由对应的模型适配器处理。
+预设是界面和配置层的模板，提供服务商名称、默认 endpoint、固定的模型协议和
+常用模型输入方式。预设不代表服务商的所有模型都支持工具调用或图片；具体
+能力仍由所选模型和服务端决定。
 
 ### 2.2 自定义服务商
 
 用户可以添加自定义服务商，填写：
 
-- OpenAI Chat Completions 兼容的 endpoint
+- endpoint
 - API Key（本地服务需要认证时）
 - model ID
+- API 协议
 
-自定义服务商只承诺兼容 OpenAI Chat Completions 的流式聊天请求。其他协议需
-在未来增加专用适配器。
+自定义服务商默认使用 OpenAI Chat Completions。用户可以选择 OpenAI Responses、
+Anthropic Messages、Google Generative AI、Mistral Conversations、Amazon Bedrock
+Converse 或 Pi Messages；每种协议由独立 adapter 转换消息、工具和响应。未填写
+协议的历史配置仍按 `openai-completions` 解释。
 
 ### 2.3 连接测试
 
@@ -119,13 +134,14 @@ ModelRegistration
   id: 稳定的连接 ID
   provider_type: preset | custom
   provider_id: 预设 ID 或 custom
+  api: 模型 wire 协议，默认 openai-completions
   endpoint: 可选或必填，取决于服务商
   api_key: 可选或必填，取决于服务商
   model_id: 必填
 ```
 
-实际字段名和存储格式仍由实现计划确定。角色只保存所选连接的稳定 ID，不直接
-持有服务商密钥。
+当前字段和存储事实以 `backend/app/models.py`、`backend/app/model_config.py` 及
+其测试为准。角色只保存所选连接的稳定 ID，不直接持有服务商密钥。
 
 ### 4.3 Draft Configuration
 
@@ -150,6 +166,7 @@ ModelRegistration
 负责：
 
 - 展示预设和自定义服务商选项
+- 为自定义服务商选择模型协议；预设协议固定
 - 管理一个或多个模型连接
 - 编辑 endpoint、API Key、model ID 等表单字段
 - 区分草稿值和已保存值
@@ -180,8 +197,8 @@ ModelRegistration
 
 ### 5.3 Provider Registry
 
-负责维护预设元数据和预设到适配器的映射。它不保存用户 API Key，也不负责
-模型连接目录的用户数据、会话历史或角色资料。
+负责维护预设元数据、协议标识和预设到适配器的映射。它不保存用户 API Key，
+也不负责模型连接目录的用户数据、会话历史或角色资料。
 
 ### 5.4 Model Adapter
 
@@ -198,6 +215,11 @@ ModelRegistration
 - 请求失败
 - 流式中断
 
+具体 wire 请求由配置的 `api` 选择；OpenAI Completions、Responses、Anthropic、
+Google、Mistral、Bedrock 和 Pi Messages 不共享彼此的请求体转换。
+工具 schema 会先执行通用结构校验；服务商额外支持的 schema 关键字和模型能力
+仍以所选 endpoint 的实际行为为准。
+
 ## 6. 关键流程
 
 ### 6.1 加载设置页
@@ -210,7 +232,7 @@ ModelRegistration
 
 1. 用户修改草稿并点击“测试连接”。
 2. 前端提交草稿到后端的测试入口。
-3. 后端校验草稿，创建临时适配器和请求配置。
+3. 后端校验草稿和协议，创建对应的临时适配器和请求配置。
 4. 适配器发送短小的流式聊天请求。
 5. 后端消费并关闭测试流，返回成功或可读的失败原因。
 6. 后端不写入生效配置。
@@ -245,6 +267,8 @@ ModelRegistration
 - 保存失败时，当前模型目录和可用对话能力保持不变。
 - 角色模型切换失败时，角色继续使用原绑定。
 - 对话请求失败或流式中断时，遵循 Runtime 的 `assistant_failed` 规则。
+- 不支持的协议和确定无效的通用工具 schema 在本地拒绝；服务商特有的请求限制
+  通过脱敏后的 provider 错误详情返回。
 - API Key 不出现在前端日志、模型请求错误文本或普通运行日志中。
 - 错误信息可以帮助用户修复 endpoint、认证或 model ID，但不得泄露密钥。
 
@@ -267,7 +291,9 @@ ModelRegistration
 ## 9. 明确不包含
 
 - 同一会话自动切换或故障转移到其他服务商
-- Pi 式多种原生协议、OAuth 和广泛的模型能力目录
+- OAuth 登录/刷新/撤销生命周期、AWS SigV4 和广泛的模型能力目录；Codex 可使用
+  手动提供的 OAuth bearer token，Vertex 支持 ADC，Bedrock 当前通过配置的 bearer
+  API Key 认证
 - 模型自动发现、自动推荐和价格管理
 - 多用户账户、云端同步和远程配置
 - 模型配置版本比较、回滚和审计界面
@@ -277,24 +303,24 @@ ModelRegistration
 | 决定 | 选择 | 影响 |
 | --- | --- | --- |
 | 配置入口 | 本地网页 | 需要本地后端提供配置读取、测试和保存能力 |
-| 接入范围 | Shiori 的预设范围 + 自定义 OpenAI Chat Completions 兼容服务 | 需要 Provider Registry 和统一适配器边界 |
+| 接入范围 | 固定协议的服务商预设 + 可选协议的自定义连接 | 需要按 `api` 路由到独立 wire adapter |
+| 工具格式 | 通用工具 schema 结构校验 + provider-specific 转换 | 常见结构错误在发送请求前被拒绝；协议差异由 adapter 处理 |
 | 流式方式 | 测试和实际对话都验证流式请求 | 适配器和测试入口都要处理增量、完成和中断 |
 | 保存交互 | 显式点击“保存”后生效 | 前端必须区分草稿与生效配置 |
 | 测试语义 | 使用未保存草稿，测试成功仍需保存 | 测试请求不能写入配置存储 |
 | 配置粒度 | 全局模型连接目录 + 角色级对话模型绑定 | 连接统一管理，角色可在会话中切换 |
 
-## 11. 尚未确定的实现选项
+## 11. 已实现边界与限制
 
-以下内容没有在产品讨论中拍板，开发前应由实现计划确认：
-
-1. 配置和角色模型绑定接口使用现有 HTTP API 的具体路径和请求结构。
-2. 本地网页和后端之间采用的流式测试传输方式。
-3. 配置存储的具体引擎、文件位置和迁移方式。
-4. 每个 Shiori 预设使用统一兼容适配器还是拆分专用适配器。
-5. endpoint 的默认值、路径拼接和尾部斜杠规范化规则。
-6. API Key 的本地加密方案和进程权限边界。
-7. Ollama 等本地服务是否允许无 API Key 配置。
-8. 服务商预设是否允许用户覆盖默认 endpoint。
+- 自定义连接的 `api` 必须是后端注册的协议；预设不能覆盖其固定协议。
+- 各 adapter 对工具、图片、thinking、消息历史和流式事件分别转换，不能把某个
+  协议的请求体发送到另一种协议 endpoint。
+- 通用工具格式检查不能证明某个模型部署支持每个 JSON Schema 关键字或工具调用；
+  provider 特有能力仍以服务端响应为准。
+- Vertex 使用 API Key 或 ADC；Codex OAuth token 需要手动配置，应用不管理其生命周期。
+- Bedrock 当前使用配置的 bearer API Key，不包含 AWS SigV4。
+- Google Generative AI/Vertex 会在发请求前拦截不支持的 schema 组合；通用 schema
+  校验不代表每个服务商或模型部署支持全部 JSON Schema 关键字。
 
 ## 12. 验收场景
 
@@ -308,21 +334,26 @@ ModelRegistration
 用户填写兼容 endpoint、API Key 和 model ID，使用当前草稿测试成功，保存后，
 在角色会话中选择该连接并得到流式回复。
 
-### 场景三：测试不保存
+### 场景三：自定义原生协议
+
+用户为自定义 endpoint 选择对应的 API 协议，使用当前草稿测试成功并保存；后续
+对话使用该协议的消息和工具转换，错误时返回脱敏后的服务端详情。
+
+### 场景四：测试不保存
 
 用户修改已保存连接后测试失败或成功，但不点击保存；刷新设置页和发送对话时，
 仍使用原来的模型目录和角色绑定。
 
-### 场景四：保存失败
+### 场景五：保存失败
 
 保存非法或不可持久化的模型目录时，界面显示错误，原模型目录仍可用于对话。
 
-### 场景五：生成期间改配置
+### 场景六：生成期间改配置
 
 对话开始生成后保存新连接或切换角色模型；当前回复继续使用旧配置，下一条新消息
 使用新配置。
 
-### 场景六：角色之间的模型隔离
+### 场景七：角色之间的模型隔离
 
 角色 A 在会话中切换到模型连接 B，角色 B 的绑定保持不变；刷新页面后角色 A
 仍显示模型连接 B，且两者继续使用各自的绑定。

@@ -60,6 +60,7 @@ class CapabilitySnapshot:
                     "approval": definition.approval,
                     "timeoutSeconds": definition.timeout_seconds,
                     "outputLimit": definition.output_limit,
+                    "externalAllowed": definition.external_allowed,
                     "inputSchema": _thaw_json(definition.input_schema),
                     "description": definition.description,
                 }
@@ -293,6 +294,7 @@ class CapabilityRegistry:
         activated_tools: set[str] | frozenset[str] = frozenset(),
         approved_tools: set[str] | frozenset[str] = frozenset(),
         allowed_risks: set[str] | frozenset[str] | None = None,
+        external_only: bool = False,
         prompt_text: str = "",
         explicit_skill_ids: set[str] | frozenset[str] = frozenset(),
         plugin_resolution: PluginResolution | None = None,
@@ -310,6 +312,10 @@ class CapabilityRegistry:
         denied: dict[str, str] = {}
         for tool in registered_tools:
             definition = tool.definition
+            if external_only and not definition.external_allowed:
+                denied[definition.name] = "tool is not allowed for external context"
+                decisions[definition.name] = "denied:external_context"
+                continue
             if enabled_tools is not None and definition.name not in enabled_tools:
                 denied[definition.name] = "tool is disabled for this run"
                 decisions[definition.name] = "denied:disabled"
@@ -355,6 +361,7 @@ class CapabilityRegistry:
                 approval=tool.definition.approval,
                 timeout_seconds=tool.definition.timeout_seconds,
                 output_limit=tool.definition.output_limit,
+                external_allowed=tool.definition.external_allowed,
             )
             for tool in selected
         )
@@ -418,6 +425,7 @@ class CapabilityRegistry:
         activated_tools: set[str] | frozenset[str] = frozenset(),
         approved_tools: set[str] | frozenset[str] = frozenset(),
         allowed_risks: set[str] | frozenset[str] | None = None,
+        external_only: bool = False,
         prompt_text: str = "",
         explicit_skill_ids: set[str] | frozenset[str] = frozenset(),
         enabled_plugin_ids: set[str] | frozenset[str] | None = None,
@@ -442,6 +450,7 @@ class CapabilityRegistry:
                 activated_tools=activated_tools,
                 approved_tools=approved_tools,
                 allowed_risks=allowed_risks,
+                external_only=external_only,
                 prompt_text=prompt_text,
                 explicit_skill_ids=explicit_skill_ids,
                 plugin_resolution=plugin_resolution,
@@ -474,6 +483,7 @@ def _snapshot_generation(
                 "approval": item.approval,
                 "timeoutSeconds": item.timeout_seconds,
                 "outputLimit": item.output_limit,
+                "externalAllowed": item.external_allowed,
             }
             for item in sorted(tools, key=lambda item: (item.name, item.version, item.source))
         ],
