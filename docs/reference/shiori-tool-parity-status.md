@@ -33,7 +33,7 @@
 | C10 MCP 3 工具 | #159 已进入集成分支；真实 stdio、版本化发现、配置 UI、持久连接意愿及严格凭据清理已两轴复核；Linux 回收、Windows asyncio 环境、中文 schema 编码及 peer_error 清理竞态均实证修复并两轴复核；`c03a9fb` 两条 CI 通过 | 总 PR 最终跨模块验收 |
 | P01 浏览器 28 工具 | main，PR #150；全部 28 schema 映射核验，21 项真实原生浏览器测试通过，无 skip | 后续 MCP/配置集成回归 |
 | P02 桌面控制 8 工具 | #169 具体规格已进入集成分支；固定 CUA 源码最小补丁、单普通权限驱动、单观察、独占 lease 与资源释放方案经独立提案复核，等待人工批准 | 批准后完整实现和专用受控窗口实机验收；当前无生产实现或原生构建 |
-| P03 Coding Agent 5 工具 | 待实现；[CLI 调研](../research/coding-agent-cli-portability-2026-10-16.md)及 [Herdr 固定源码核验](../research/herdr-runtime-isolation-2026-10-16.md)确认五工具、外部协议、Windows 环境和进程归属缺口；具体规格正在准备 | D05 具体方案审阅；真正启动/查询/继续/取消与交付核验，仓库和外部操作许可明确 |
+| P03 Coding Agent 5 工具 | [CLI 调研](../research/coding-agent-cli-portability-2026-10-16.md)、[Herdr 固定源码核验](../research/herdr-runtime-isolation-2026-10-16.md)及[具体规格](../specs/coding-agent-spec.md)已提交；独立提案复核通过，#174 Herdr、#175 codex-delegate、#176 确切成果批准发布已建立父子和阻塞关系 | 第3节架构批准后实施；尚无 owned 构建或真实 CLI 任务/认证/费用/发布验收，不能以 help 代替 |
 | P04 屏幕感知 1 工具 | #160 已进入集成分支；提前拒绝/重复取消连接回收最终两轴复核均无剩余 finding；相关后端 196 passed/1 native 条件 skip，前端 69 passed；真实受控 Windows 主屏/125% DPI/本地视觉及取消通过，无原图落盘 | 总 PR 最终集成；尚无双屏、混合 DPI、实际锁屏/远程断开或 frozen 分发实证，也未调用真实远端视觉服务 |
 | P05 桌宠 1 工具 | 待实现；Electron/PySide6 宿主选择待回答 | 真实透明置顶窗口、动作包、move/play 与完整生命周期 |
 | P06 生图 1 工具 | [NovelAI 调研](../research/novelai-generation-portability-2026-10-16.md)与[具体规格](../specs/novelai-generation-spec.md)已提交；一揽子方案经独立提案复核，#171 生图历史、#172 重生成/后台媒体、#173 人类回合 CG 已建立原生父子和依赖关系 | 第 3 节人工架构批准；随后按依赖实施与复核，真实生成和费用另批；尚无生产实现或真实账号调用 |
@@ -44,7 +44,7 @@
 | S04 meme-manage | #152 已进入集成分支；指令、资源与角色目录边界已有行为测试 | 最终媒体引用与整体验收 |
 | S05 skill-creater | #152 已进入集成分支；HTTP 写入新 Skill 后下一轮发现/显式激活，资源 hash、依赖名、真实 Windows junction 反例通过 | 总 PR 最终回归 |
 | S06 create-drift-skill | 待实现；[固定源码依赖核验](../research/proactive-drift-runtime-portability-2026-10-16.md)已明确长期技能创建、后续发现与真实 Drift 消费缺一不可 | Drift 目录创建、发现和真实执行 |
-| S07 codex-delegate | 待实现，依赖 TaskRuntime 和子任务 | 真实 CLI、后台执行、session/结果回读和原上下文回灌 |
+| S07 codex-delegate | 待实现，见 Coding 具体规格及 #175；复用 spawn coding 入口而不新增普通工具，依赖 #174 共享模块 | 第3节架构批准后，真实 CLI、后台执行、精确 session/结果回读和原上下文回灌 |
 | S08 create-proactive-source | 待实现；固定源码已核实来源产物/信任/ACK 契约，旧 Skill 的 severity 快通道/HyDE 文案不作为当前实现保证 | 来源创建、信任授权、事件消费、正文与持久 ACK |
 | A01 主动决策 | 待实现；[主动运行调研](../research/proactive-drift-runtime-portability-2026-10-16.md)已核验草稿/finish、投递和来源 ACK 的不同事实及恢复缺口；具体规格准备中 | 自主来源许可、候选/兴趣/去重、单次草稿、持久提交/投递/ACK 与独立验收 |
 | A02 Drift | 待实现；固定上游实际为主动 tick 的空输入分支，非 OS 空闲计时器；发送后执行门禁和整体预算须在迁移中补齐 | 具体方案批准、独立目录/预算、受限工具、挂载 MCP、单次推送尝试和真实发送状态收尾 |

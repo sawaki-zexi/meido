@@ -165,7 +165,13 @@ S07 Skill指引：先查CLI/profile可用性，用户已提供repo时直接传re
 
 所有fixture用独立数据/角色/认证目录、假凭据及localhost，不登录或读取真实vault/auth配置；缺依赖显式未验收，不能把skip/fake CLI/help计入真实任务成功。已有本地OSS provider可能提供不访问付费API的Codex候选，但不保证本机模型存在、质量、Claude免费资格或零资源成本；无可用免费路径须另获明确账户/费用许可。
 
-建议三张垂直票，Parent #137：①“主人通过Herdr在可信repo完成本地任务并安全查询/取消”，包含owned补丁与Codex/Claude真实入口、任务/来源、独立worktree和验证；Blocked by：本规格§3批准，以及 #158 完成规范/规格两轴复核并集成进入最新已验证总分支，确认上述Runtime幂等、保留/ACK seam及故障回归。②“主人通过codex-delegate后台完成并精确继续同一原生任务”，包含coding profile、Skill/管理路由、session和持久完成，依赖①共享模块；③“主人审阅确切成果后发布可信Draft PR”，包含本地commit、一次性发布批准与未知恢复，依赖①②。沿用主人已批准的总PR聚合分支例外，不重复等待main、不建立堆叠功能PR；依赖尚未复核集成时不实施消费该seam的生产改动。
+已建立三张垂直票，Parent #137，当前 needs-info 等待本规格§3批准：
+
+1. [#174：主人通过Herdr在可信repo完成本地任务并安全查询/取消](https://github.com/sawaki-zexi/meido/issues/174)，包含owned补丁与Codex/Claude真实入口、任务/来源、独立worktree和验证；Blocked by：本规格§3批准，以及 #158 完成规范/规格两轴复核并进入最新已验证总集成，确认Runtime幂等、保留/ACK seam及故障回归。
+2. [#175：主人通过codex-delegate后台完成并精确继续同一原生任务](https://github.com/sawaki-zexi/meido/issues/175)，包含coding profile、Skill/管理路由、session和持久完成，依赖 #174 共享模块。
+3. [#176：主人审阅确切成果后发布可信Draft PR](https://github.com/sawaki-zexi/meido/issues/176)，包含本地commit、一次性发布批准与未知恢复，依赖 #174/#175。
+
+沿用主人已批准的总PR聚合分支例外，不重复等待main、不建立堆叠功能PR；依赖尚未复核集成时不实施消费该seam的生产改动。
 
 最终P03/S07验收须三票全行为、相关测试/类型检查/构建、独立规范与规格两轴审查，以及上表真实原生/获准发布证据；仅本地模式或一款CLI通过不计全部完成。§3批准覆盖所选owned补丁实现、必要依赖的工作区隔离构建、发行资源验证和无账号/费用fixture，可随实施推进，不为每个可逆本地步骤另设审批。架构批准不等于原生验收完成；读取/设置真实CLI认证、实际账号/模型或付费请求、真实外部发布仍需相应明确授权。本轮仅写规格，不执行原生构建。
 
