@@ -1,10 +1,10 @@
 # 角色按需屏幕感知
 
-状态：**草案，待人工批准；未实施**。
+状态：当前设计（第 3 节已于 2026-10-16 获人工批准；运行时尚未实施）。
 
 关联：[#160](https://github.com/sawaki-zexi/meido/issues/160)，Parent [#137](https://github.com/sawaki-zexi/meido/issues/137)，[完整规格 P04/T16/D04](shiori-tool-parity-spec.md)。最后核验：2026-10-16，Meido `17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`，Shiori `4f266aeaf42fcd611362e2456417b91f659341cf`。
 
-事实来源：[固定源码核验](../research/screen-perception-source-audit.md)、[ADR-0001](../adr/0001-local-model-connection-boundary.md)、[ADR-0006](../adr/0006-provider-specific-model-adapters.md)、[ADR-0011](../adr/0011-versioned-tool-activation.md)。本文“已提取”描述当前源码；其余带“建议/计划”的内容均为待批准设计，不能当作现有能力。
+事实来源：[固定源码核验](../research/screen-perception-source-audit.md)、[ADR-0001](../adr/0001-local-model-connection-boundary.md)、[ADR-0006](../adr/0006-provider-specific-model-adapters.md)、[ADR-0011](../adr/0011-versioned-tool-activation.md)、[ADR-0014](../adr/0014-explicit-screen-vision-binding.md)。本文“已提取”描述核验基线源码；其余带“建议/计划”的内容为已批准的实施设计，不能当作现有能力或已通过验收。
 
 总体复刻目标及 D01–D03 的批准不替代本方案的架构批准。本票也不决定桌宠采用 Electron 还是 PySide6，不依赖 Computer Use 的控制驱动。
 
@@ -36,18 +36,18 @@ Shiori 成功输出为 JSON 字符串，字段恰为：
 
 计划工具 definition 为 risk=read_only、external_allowed=false、exposure=direct、source=builtin:screen_perception。符合宿主许可时直接可见，与上游 always_on 语义一致；开关未开或配置缺失时目录保留原因，运行能力集合不授予该工具。无需再加一个会与开关产生歧义的 enabledPlugins 许可。
 
-## 3. 待批准的具体选择
+## 3. 已批准的具体选择
 
-| 决策 | 建议 | 取舍/其他选择 |
+| 决策 | 采用方案 | 取舍/其他选择 |
 | --- | --- | --- |
 | 配置归属 | `agentConfig.screenPerception` 同时存 enabled 与 visionModelConfigurationId；复用已有模型配置 ID。 | 一次角色保存原子更新开关与绑定；无需新凭据库或只转发字段的 endpoint。另一方案是 Role 顶层 vision 字段和单独绑定 endpoint，但会增加多请求保存的一致性处理。 |
-| 视觉绑定 | 必须显式选择；可由主人明确选择与聊天相同的已保存 ID，仍是独立视觉请求。 | “独立绑定/用途”不等于“强制两个不同 ID”。无论选择何种 ID，都不自动取 chat/active 配置，也不把原图放入主聊天请求。此同 ID 选择尚待批准。 |
+| 视觉绑定 | 必须显式选择；可由主人明确选择与聊天相同的已保存 ID，仍是独立视觉请求。 | “独立绑定/用途”不等于“强制两个不同 ID”。无论选择何种 ID，都不自动取 chat/active 配置，也不把原图放入主聊天请求。 |
 | 实际采集 | Windows 主屏，Pillow ImageGrab，短命 Python 子进程。 | Pillow 已是依赖；子进程换取可终止的真实采集 deadline。见第 5 节。 |
 | 模型实现 | 直接复用已有 RoutedModelAdapter 的 rich stream 与 ModelAdapterRegistry。 | 保留现有十种协议/认证和图像编码，不再另写 vision HTTP gateway；能力与预算由屏幕模块约束。某个远端模型不支持图像时仍须明确报错。 |
 | 模型输出 | 专用中性 prompt，内部严格两字段 JSON，只归纳界面与活动。 | 角色侧三字段结果与上游一致；不请求不消费上游最终也不输出的坐标、气泡和经验候选，减少无用途实现。见第 6 节。 |
 | 许可范围 | 默认关闭；当前由主人发起的角色桌面回合。 | 群、访客、已配对私聊、定时/后台回合均不从桌面开关自动获得观察许可。若将来开放其他来源，另行给出显式授权设计。 |
 
-本表为一次完整待审方案，不是实施授权。批准时应明确是否接受 Windows 首发、可显式同 ID、短命采集进程及严格内部两字段 JSON。
+维护者在本次对话明确回答“批准该方案，继续实施”，批准 Windows 首发、可显式同 ID、短命采集进程及严格内部两字段 JSON。该批准允许继续实现本票；运行时效果仍须按第 9 节验收，不覆盖桌宠宿主选择或向未授权外部视觉服务上传。
 
 ## 4. 配置、UI 与不可用反馈
 
@@ -181,4 +181,4 @@ IPC 仅为有长度前缀的 ≤1 KiB 元数据与 PNG 二进制；父进程逐�
 
 现有正常聊天与其他工具继续使用原来的 model adapter；屏幕调用不得修改 active 模型、角色聊天绑定或已存在历史。实现前重新同步总 PR 的已验证集成基线，协调其他票对候选、角色保存和生命周期的改动；子 Issue 记录各自验收和依赖，统一在总 PR 审查。
 
-本阶段交付仅为本草案及源码核验文档的可审阅提交。实施还需要人工明确批准第 3 节具体选择；批准后记录到对应 ADR，按第 9 节公开 seams 实现与完整回归。新建总 PR 或总体“继续复刻”的指令均不等于上述具体架构审批。
+第 3 节已获人工明确批准，决定记录到 ADR-0014。后续按第 9 节公开 seams 实现、两轴审查及完整回归；具体实现和验收记录尚未完成时，不把架构批准当作运行时完成证据。总 PR 的合并仍需单独批准。
