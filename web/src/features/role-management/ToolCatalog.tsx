@@ -3,7 +3,7 @@ import { api, errorMessage } from "../../api/client";
 import type { RoleToolCatalog } from "../../api/types";
 import "./tool-catalog.css";
 
-export function ToolCatalog({ roleId }: { roleId: string }) {
+export function ToolCatalog({ roleId, hasUnsavedChanges = false }: { roleId: string; hasUnsavedChanges?: boolean }) {
   const [catalog, setCatalog] = useState<RoleToolCatalog | null>(null);
   const [opened, setOpened] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -23,9 +23,10 @@ export function ToolCatalog({ roleId }: { roleId: string }) {
     }
   };
   return <section className="tool-catalog" aria-label="工具目录">
+    {hasUnsavedChanges && <p role="status" className="field-hint">工具设置尚未保存；目录仍使用已保存的配置。</p>}
     <button type="button" className="ghost" disabled={loading} onClick={() => void refresh()}>{loading ? "检查工具配置中…" : opened ? "刷新工具目录" : "查看实际工具"}</button>
     {opened && <>
-      <p className="field-hint">按已保存配置预览下一次桌面对话；更改配置后请先保存再刷新。当前运行继续使用开始时的能力快照。</p>
+      <p className="field-hint">按已保存配置预览下一次桌面对话；更改配置后请先保存再刷新。当前运行开始时授权冻结，撤销许可仍可阻止执行；按需发现只会追加已授权工具的模型可见性版本。</p>
       {error && <p role="alert">{error}</p>}
       {catalog && <>
         <ul aria-label="实际工具">{catalog.tools.map((tool) => <li key={tool.name}>

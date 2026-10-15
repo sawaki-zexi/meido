@@ -1521,6 +1521,14 @@ def get_role_tools(role_id: str) -> dict[str, object]:
     if not mail_service.store.connection().auto_draft_ready:
         reasons["mail.manage"] = "邮件服务尚未就绪"
     dependencies = {name: browser_use_sessions.dependency_status() for name in BROWSER_USE_TOOL_NAMES}
+    for names, available, reason in (
+        (("web_search", "web_fetch"), network_tools_config.enabled, "宿主联网已关闭"),
+        (("memorize", "forget_memory"), memory_settings_store.get().enabled, "全局记忆已关闭"),
+    ):
+        if not available:
+            for name in names:
+                reasons[name] = reason
+                dependencies[name] = {"status": "unavailable", "reason": reason}
     import shutil
     missing_commands = [item for item in role.agentConfig.shell.allowedCommands if shutil.which(item) is None]
     dependencies["shell"] = {
