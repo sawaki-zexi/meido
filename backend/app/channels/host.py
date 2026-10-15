@@ -216,6 +216,7 @@ class ChannelHost:
                 return None
             if event.account_id != account_id or event.channel != account.channel:
                 raise ChannelAdapterError("适配器返回了其他账号或平台的事件")
+            self.store.remember_inbound_member(current.role_id, event)
             await self.refresh_targets(account_id)
         return event
 
