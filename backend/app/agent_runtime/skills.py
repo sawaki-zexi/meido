@@ -71,6 +71,8 @@ class SkillDescriptor:
     required_env: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "required_bins", _dependencies(self.required_bins, environment=False))
+        object.__setattr__(self, "required_env", _dependencies(self.required_env, environment=True))
         if self.trust_level not in _TRUST_LEVELS:
             raise ValueError(f"unsupported skill trust level: {self.trust_level}")
         _validate_relative_path(self.path, "skill path")
@@ -104,7 +106,7 @@ class SkillDescriptor:
             return self
         path = Path(self.body_path)
         root = Path(self.root_path) if self.root_path is not None else path.parent
-        if _is_link(root) or _is_link(path) or _is_link(path.parent):
+        if _path_has_link(root) or _path_has_link(path):
             raise ValueError("symlinked skills are not supported")
         resolved = path.resolve()
         try:
@@ -116,7 +118,7 @@ class SkillDescriptor:
             raise ValueError("skill changed after discovery")
         for resource in self.supporting_files:
             resource_path = root / resource.path
-            if _is_link(resource_path) or _is_link(resource_path.parent):
+            if _path_has_link(resource_path):
                 raise ValueError("symlinked skill resource is not supported")
             resolved_resource = resource_path.resolve()
             try:
@@ -170,8 +172,8 @@ class SkillRegistry:
     def discover(cls, root: str | Path, *, source: str = "project") -> SkillRegistry:
         if source not in _SOURCE_TRUST_LEVELS:
             raise ValueError(f"unsupported skill source: {source}")
-        configured_root = Path(root)
-        if _is_link(configured_root):
+        configured_root = Path(root).absolute()
+        if _path_has_link(configured_root):
             return cls(diagnostics=({"path": str(configured_root), "source": source,
                 "error": "linked skill discovery root is not supported"},))
         root_path = configured_root.resolve()
@@ -200,6 +202,7 @@ class SkillRegistry:
                         root_path=root_path,
                         source=source,
                         trust_level=_SOURCE_TRUST_LEVELS[source],
+                        discovery_root=configured_root,
                     )
                 )
             except (OSError, UnicodeError, ValueError) as error:
@@ -327,11 +330,11 @@ class SkillRegistry:
         return SkillResolution(
             skills=tuple(selected),
             prompt_sections=tuple(skill.body for skill in selected if skill.body) + tuple(dependency_sections),
-            diagnostics=tuple(MappingProxyType(item) for item in diagnostics),
+            diagnostics=tuple(MappingProxyType({key: _freeze_metadata(value) for key, value in item.items()}) for item in diagnostics),
         )
 
 
-def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str) -> SkillDescriptor:
+def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str, discovery_root: Path) -> SkillDescriptor:
     resolved = path.resolve()
     if resolved.parent != root_path and resolved.parent.parent != root_path:
         raise ValueError("skill path escapes discovery root")
@@ -368,7 +371,7 @@ def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str) 
         body="",
         trust_level=trust_level,
         body_path=str(resolved),
-        root_path=str(root_path),
+        root_path=str(discovery_root),
         supporting_files=supporting_files,
         required_bins=_dependencies(front_matter.get("requires.bins", []), environment=False),
         required_env=_dependencies(front_matter.get("requires.env", []), environment=True),
@@ -469,6 +472,18 @@ def _validate_relative_path(value: str, label: str) -> None:
 
 def _is_link(path: Path) -> bool:
     return path.is_symlink() or path.is_junction()
+
+
+def _path_has_link(path: Path) -> bool:
+    return any(_is_link(part) for part in (path, *path.parents))
+
+
+def _freeze_metadata(value: object) -> object:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze_metadata(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_metadata(item) for item in value)
+    return value
 
 
 def _split_front_matter(raw: str) -> tuple[dict[str, object], str]:
@@ -576,7 +591,7 @@ def _tools(value: object) -> tuple[str, ...]:
 
 
 def _dependencies(value: object, *, environment: bool) -> tuple[str, ...]:
-    if not isinstance(value, list) or len(value) > 32:
+    if not isinstance(value, (list, tuple)) or len(value) > 32:
         raise ValueError("skill dependencies must be a list of at most 32 names")
     pattern = r"[A-Za-z_][A-Za-z0-9_]{0,127}" if environment else r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}"
     if any(not isinstance(item, str) or re.fullmatch(pattern, item) is None for item in value):

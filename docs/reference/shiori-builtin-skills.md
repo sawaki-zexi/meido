@@ -30,11 +30,13 @@
 
 两者最多各 32 项，每项最多 128 字符，不得重复。支持 YAML 风格行列表或内联列表，不接受任意 YAML 对象。Shiori 的 `name/metadata/homepage` 不属于 Meido 格式。
 
+文件解析和公开 SkillDescriptor/Plugin 构造均校验依赖并复制为不可变 tuple。诊断嵌套数组同样冻结；导出快照返回新数组，不能反向改变已提交版本。
+
 `requires.env` 不读取或继承任意后端环境。`SkillRegistry.resolve(available_env=...)` 只接受宿主已许可的名称；当前聊天装配不暴露额外凭据变量，CLI 自身配置是独立路径。声明 `OPENAI_API_KEY` 等名称不会获得 Meido 模型密钥。
 
 选中的技能缺依赖时不注入正文，返回 `status:unavailable`、`missingBins`、`missingEnv`，并把具体缺项加入模型上下文。变量值不进入诊断。工具缺失或关闭仍按现有能力策略过滤，Skill 不能重新启用 Shell、文件、渠道或其他工具。
 
-`references/`、`assets/`、`scripts/` 下支持文件均验证范围、大小和 hash；每个文件最多 256 KiB，符号链接与越界资源拒绝。脚本只是支持资源，不自动执行；执行仍须现有 Shell 白名单和预算。
+`references/`、`assets/`、`scripts/` 下支持文件均验证范围、大小和 hash；每个文件最多 256 KiB，符号链接、Windows junction 与越界资源拒绝。发现保留原始绝对路径，在发现和激活时复查完整祖先链，角色目录或 workspace 的链接也不能绕过。脚本只是支持资源，不自动执行；执行仍须现有 Shell 白名单和预算。
 
 ## 四份流程
 

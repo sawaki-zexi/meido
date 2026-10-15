@@ -31,6 +31,8 @@ HTTP 摘要模型使用隔离 localhost fixture 与无效的测试 token；没�
 
 其他公开红绿验证：文件工具创建新技能后下一回合显式激活；正文中的 `$skill` 能在正常聊天触发；表情 manifest/真实图片进入下一模型请求；缺依赖具体诊断；角色版本覆盖内置；scripts 支持资源变化后拒绝加载。
 
+独立审查后补公开 Registry 回归：真实 Windows role/workspace 祖先 junction，在发现前建立或发现后替换四种情况均先红后绿；未将该证据扩大为 HTTP 逃逸，RoleStore 另有路径检查。公开描述符拒绝路径/带值依赖，原共享列表与导出诊断不再反向修改冻结快照。
+
 ## 可复核证据
 
 本次本地证据目录：`C:/Users/Elysia/.codex/visualizations/2026/10/15/01a13e82-f9da-7eb1-8b64-ae6ab21c48d0/skills-152-qa/`。

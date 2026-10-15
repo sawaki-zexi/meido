@@ -2,7 +2,10 @@ import json
 import os
 import subprocess
 
-from backend.app.agent_runtime.skills import SkillRegistry
+import pytest
+
+from backend.app.agent_runtime import CapabilityRegistry
+from backend.app.agent_runtime.skills import SkillDescriptor, SkillRegistry
 
 
 def write_skill(root, name, header="", body="技能正文"):
@@ -23,7 +26,7 @@ def test_missing_skill_dependencies_explain_unavailability_without_exposing_host
     result = registry.resolve(prompt="", explicit_ids={"needs-cli"})
 
     assert not result.skills
-    diagnostics = [dict(item) for item in result.diagnostics]
+    diagnostics = json.loads(json.dumps([dict(item) for item in result.diagnostics]))
     assert diagnostics == [{
         "skillId": "needs-cli", "status": "unavailable", "error": "skill dependencies are unavailable",
         "missingBins": ["meido-missing-command"], "missingEnv": ["MEIDO_SKILL_TEST_SECRET"],
@@ -61,6 +64,14 @@ def test_linked_skill_root_cannot_import_another_roles_skill(tmp_path):
     write_skill(tmp_path / "other-role" / "skills", "private", body="another role's private instructions")
     root = tmp_path / "skills"
     target = tmp_path / "other-role" / "skills"
+    directory_link(root, target)
+    registry = SkillRegistry.discover(root, source="role")
+    result = registry.resolve(prompt="", explicit_ids={"private"})
+    assert not result.skills
+    assert any("skill discovery root" in item.get("error", "") for item in result.diagnostics)
+
+
+def directory_link(root, target):
     if os.name == "nt":
         subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
             "New-Item -ItemType Junction -Path $env:MEIDO_TEST_SKILL_LINK -Target $env:MEIDO_TEST_SKILL_TARGET | Out-Null"],
@@ -68,7 +79,60 @@ def test_linked_skill_root_cannot_import_another_roles_skill(tmp_path):
             check=True, capture_output=True, timeout=10)
     else:
         os.symlink(target, root, target_is_directory=True)
-    registry = SkillRegistry.discover(root, source="role")
-    result = registry.resolve(prompt="", explicit_ids={"private"})
+
+
+@pytest.mark.parametrize("timing", ["before-discovery", "after-discovery"])
+@pytest.mark.parametrize("ancestor", ["role", "workspace"])
+def test_skill_ancestor_links_are_rejected_at_discovery_and_activation(tmp_path, timing, ancestor):
+    source = tmp_path / "role-a" / "workspace" / "skills"
+    destination = tmp_path / "role-b" / "workspace" / "skills"
+    write_skill(destination, "private", body="same bytes must not authorize a different role path")
+    link = tmp_path / "role-a" if ancestor == "role" else tmp_path / "role-a" / "workspace"
+    target = tmp_path / "role-b" if ancestor == "role" else tmp_path / "role-b" / "workspace"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if timing == "after-discovery":
+        write_skill(source, "private", body="same bytes must not authorize a different role path")
+        registry = SkillRegistry.discover(source, source="role")
+        retired = link.with_name(link.name + "-retired")
+        assert link.is_relative_to(tmp_path) and retired.is_relative_to(tmp_path)
+        link.rename(retired)
+    directory_link(link, target)
+    if timing == "before-discovery":
+        registry = SkillRegistry.discover(source, source="role")
+    result = registry.resolve(prompt="$private")
     assert not result.skills
-    assert any("skill discovery root" in item.get("error", "") for item in result.diagnostics)
+    assert result.diagnostics
+
+
+def descriptor(**overrides):
+    values = dict(skill_id="injected", version="1.0.0", description="host contribution", tools=(),
+        activation="explicit", source="project", path="injected/SKILL.md", content_hash="host-version-1", body="instructions")
+    return SkillDescriptor(**(values | overrides))
+
+
+def test_contributed_skill_dependencies_cannot_mutate_an_issued_snapshot():
+    commands, environment = [], []
+    registry = CapabilityRegistry(skills=SkillRegistry([descriptor(required_bins=commands, required_env=environment)]))
+    snapshot = registry.resolve(role_id="role-a", session_key="role:role-a", run_id="run-a", explicit_skill_ids={"injected"}).snapshot
+    commands.append("late-command")
+    environment.append("LATE_ENV")
+    assert snapshot.to_dict()["skills"][0]["requires"] == {"bins": [], "env": []}
+
+
+@pytest.mark.parametrize("dependencies", [
+    {"required_bins": ("../unapproved",)}, {"required_env": ("API_KEY=sentinel-value",)},
+])
+def test_contributed_skill_rejects_dependencies_containing_paths_or_values(dependencies):
+    with pytest.raises(ValueError, match="plain command or environment names"):
+        descriptor(**dependencies)
+
+
+def test_dependency_diagnostics_are_immutable_and_export_fresh_arrays(tmp_path):
+    write_skill(tmp_path, "missing", "requires.bins: [meido-missing-command]\n")
+    snapshot = CapabilityRegistry(skills=SkillRegistry.discover(tmp_path)).resolve(
+        role_id="role-a", session_key="role:role-a", run_id="run-a", explicit_skill_ids={"missing"}).snapshot
+    exported = snapshot.to_dict()
+    exported["skillDiagnostics"][0]["missingBins"].clear()
+    assert snapshot.to_dict()["skillDiagnostics"][0]["missingBins"] == ["meido-missing-command"]
+    with pytest.raises((TypeError, AttributeError)):
+        snapshot.skill_diagnostics[0]["missingBins"].append("injected")
