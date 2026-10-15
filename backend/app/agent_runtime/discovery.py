@@ -65,6 +65,7 @@ class DiscoveryState:
         self.revisions: list[CapabilityResolution] = []
         self.pending: dict[str | None, tuple[str, ...]] = {}
         self.extensions: dict[str, _ServiceExtension] = {}
+        self.removals: dict[str, tuple[str, str]] = {}
         self.grants = {item.grant_id: item for item in service_grants}
         if len(self.grants) != len(service_grants):
             raise ValueError("duplicate service grant")
@@ -77,6 +78,7 @@ class DiscoveryState:
             raise PermissionError("service grant belongs to another role")
         self.revisions.append(initial)
         self.reserved_names = frozenset(reserved_names)
+        self.name_sources = {item.name: item.source for item in initial.snapshot.candidates}
 
     @property
     def tools(self) -> Mapping[str, AgentTool]:
@@ -132,11 +134,13 @@ class DiscoveryState:
             )
         definitions = []
         names = set(self.definitions) | set(self.reserved_names)
+        seen: set[str] = set()
         for tool in tools:
             definition = tool.definition
-            if definition.name in names:
+            if definition.name in seen or definition.name in self.definitions or (definition.name in names and self.name_sources.get(definition.name) != f"mcp:{grant.service_id}"):
                 raise ValueError("service tool name collides with the frozen directory")
             names.add(definition.name)
+            seen.add(definition.name)
             if (
                 definition.source != f"mcp:{grant.service_id}"
                 or definition.risk not in grant.allowed_risks
@@ -163,6 +167,16 @@ class DiscoveryState:
         )
         return tuple(item.name for item in definitions)
 
+    def stage_service_removal(self, context: ToolContext, *, grant_id: str, parent_snapshot_id: str) -> None:
+        self.view(context)
+        context.signal.raise_if_cancelled()
+        grant = self.grants.get(grant_id)
+        if grant is None or grant.role_id != context.role_id:
+            raise PermissionError("service was not authorized at run start")
+        if parent_snapshot_id != self.current.snapshot.snapshot_id or not context.tool_call_id:
+            raise ValueError("service removal requires a current parent and host call")
+        self.removals[context.tool_call_id] = (parent_snapshot_id, f"mcp:{grant.service_id}")
+
     def propose(self, call_id: str) -> CapabilityResolution | None:
         from .capabilities import (
             _thaw_json,
@@ -172,9 +186,18 @@ class DiscoveryState:
 
         names = self.pending.pop(call_id, ())
         extension = self.extensions.pop(call_id, None)
+        removal = self.removals.pop(call_id, None)
         current = self.current
         candidate_definitions = self.definitions
         candidate_tools = dict(self.tools)
+        removed: set[str] = set()
+        if removal is not None:
+            if removal[0] != current.snapshot.snapshot_id:
+                raise ValueError("service capability revision has a stale parent")
+            removed = {name for name, definition in candidate_definitions.items() if definition.source == removal[1]}
+            for name in removed:
+                candidate_definitions.pop(name)
+                candidate_tools.pop(name, None)
         if extension is not None:
             if extension.parent != current.snapshot.snapshot_id:
                 raise ValueError("service capability revision has a stale parent")
@@ -191,16 +214,18 @@ class DiscoveryState:
             )
         visible = {item.name for item in current.snapshot.tools}
         added = [name for name in names if name not in visible]
-        if not added and extension is None:
+        added = [name for name in added if name in candidate_definitions]
+        if not added and extension is None and not removed:
             return None
         definitions = (
-            *current.snapshot.tools,
+            *(item for item in current.snapshot.tools if item.name not in removed),
             *(candidate_definitions[name] for name in added),
         )
         version = current.snapshot.visibility_version + 1
         decisions = {
             **current.snapshot.policy_decisions,
             **{name: "allowed" for name in added},
+            **{name: "denied:service_removed" for name in removed},
         }
         if extension is not None:
             decisions.update(
@@ -224,7 +249,7 @@ class DiscoveryState:
                 policy_decisions=snapshot.policy_decisions,
             ),
         )
-        if extension is not None:
+        if extension is not None or removed:
             snapshot = replace(
                 snapshot, candidate_catalog_id=_candidate_catalog_id(snapshot)
             )
@@ -233,6 +258,7 @@ class DiscoveryState:
             for name, reason in current.denied_tools.items()
             if name not in added
         }
+        denied.update({name: "MCP service connection was removed" for name in removed})
         if extension is not None:
             denied.update(
                 {
@@ -243,18 +269,18 @@ class DiscoveryState:
         return replace(
             current,
             snapshot=snapshot,
-            tools=(*current.tools, *(candidate_tools[name] for name in added)),
+            tools=(*(tool for tool in current.tools if tool.definition.name not in removed), *(candidate_tools[name] for name in added)),
             denied_tools=MappingProxyType(denied),
             _candidate_tools=MappingProxyType(candidate_tools),
             _tools_by_name=MappingProxyType(
                 {
-                    **current._tools_by_name,
+                    **{name: tool for name, tool in current._tools_by_name.items() if name not in removed},
                     **{name: candidate_tools[name] for name in added},
                 }
             ),
             _definitions_by_name=MappingProxyType(
                 {
-                    **current._definitions_by_name,
+                    **{name: definition for name, definition in current._definitions_by_name.items() if name not in removed},
                     **{
                         name: replace(
                             candidate_definitions[name],
@@ -276,6 +302,7 @@ class DiscoveryState:
         ):
             raise ValueError("capability revision parent does not match")
         self.revisions.append(revision)
+        self.name_sources.update({item.name: item.source for item in revision.snapshot.candidates})
 
 
 class ToolSearchTool:

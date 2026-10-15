@@ -8,7 +8,7 @@ import hashlib
 import json
 from types import MappingProxyType
 from typing import Mapping, cast, TYPE_CHECKING
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from .plugins import HookContext, PluginDescriptor, PluginResolution, PluginRegistry, run_hook
 from .skills import SkillDescriptor, SkillRegistry, SkillResolution
@@ -104,12 +104,18 @@ class CapabilityResolution:
     _authorize_tool: Callable[[ToolDefinition, ToolContext], bool | str] | None = field(default=None, repr=False, compare=False)
     _authorize_call: Callable[[ToolDefinition, ToolContext, Mapping[str, object]], bool | str] | None = field(default=None, repr=False, compare=False)
     _candidate_tools: MappingProxyType = field(default_factory=lambda: MappingProxyType({}), repr=False, compare=False)
+    _resource_close: Callable[[], Awaitable[None]] | None = field(default=None, repr=False, compare=False)
 
     def stage_service_tools(self, context: ToolContext, *, grant_id: str, parent_snapshot_id: str,
                             tools: tuple[AgentTool, ...]) -> tuple[str, ...]:
         if self._discovery is None:
             raise PermissionError("service revisions require a frozen discovery directory")
         return self._discovery.stage_service_tools(context, grant_id=grant_id, parent_snapshot_id=parent_snapshot_id, tools=tools)
+
+    def stage_service_removal(self, context: ToolContext, *, grant_id: str, parent_snapshot_id: str) -> None:
+        if self._discovery is None:
+            raise PermissionError("service revisions require a frozen discovery directory")
+        self._discovery.stage_service_removal(context, grant_id=grant_id, parent_snapshot_id=parent_snapshot_id)
 
     def authorization_denial(self, definition: ToolDefinition | None, context: ToolContext,
                              arguments: Mapping[str, object] | None = None) -> str | None:
@@ -248,8 +254,12 @@ class CapabilityResolution:
         return current, None
 
     async def close(self) -> None:
-        if self.plugin_resolution is not None:
-            await self.plugin_resolution.close()
+        try:
+            if self.plugin_resolution is not None:
+                await self.plugin_resolution.close()
+        finally:
+            if self._resource_close is not None:
+                await self._resource_close()
 
 
 def _readonly_arguments(arguments: dict[str, object]) -> Mapping[str, object]:
@@ -356,6 +366,7 @@ class CapabilityRegistry:
         deferred_tool_names: frozenset[str] = frozenset(),
         restored_activation: Mapping[str, object] | None = None,
         service_grants: tuple[ServiceGrant, ...] = (),
+        resource_close: Callable[[], Awaitable[None]] | None = None,
     ) -> CapabilityResolution:
         registered_tools = list(self._tools.values())
         if plugin_resolution is not None:
@@ -479,6 +490,7 @@ class CapabilityRegistry:
             _authorize_tool=authorize_tool,
             _authorize_call=authorize_call,
             _candidate_tools=MappingProxyType({tool.definition.name: tool for tool in candidates}),
+            _resource_close=resource_close,
         )
         if discovery is not None:
             snapshot = replace(snapshot, candidate_catalog_id=_candidate_catalog_id(snapshot))
@@ -509,6 +521,7 @@ class CapabilityRegistry:
         deferred_tool_names: frozenset[str] = frozenset(),
         restored_activation: Mapping[str, object] | None = None,
         service_grants: tuple[ServiceGrant, ...] = (),
+        resource_close: Callable[[], Awaitable[None]] | None = None,
     ) -> CapabilityResolution:
         plugin_resolution = await self.plugins.load(
             enabled_ids=enabled_plugin_ids,
@@ -537,6 +550,7 @@ class CapabilityRegistry:
                 deferred_tool_names=deferred_tool_names,
                 restored_activation=restored_activation,
                 service_grants=service_grants,
+                resource_close=resource_close,
             )
         except BaseException:
             try:
