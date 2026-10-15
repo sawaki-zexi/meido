@@ -19,6 +19,8 @@
 
 账号或平台关闭显示 `disconnected/false`；连接配置切换中显示 `connecting/null`。初始化失败且没有 adapter 时显示 `error/null`，不会回显底层错误中的敏感数据。
 
+Telegram 轮询和观测绑定账号创建身份及实际配置/权限代际。连接测试刷新显示资料、消息失败写入诊断、清除错误不会停止轮询或抹去当前连接证据；凭据、收件权限、账号/平台开关和连接配置的变化会使在途旧结果失效，即使随后恢复旧值也不会复活旧观测。
+
 ## 模型查询
 
 `account_targets` 保留必填 `account_id`；可选 `kind/group_id/member_id/limit/cursor`。省略 `kind` 使用 `known`，`limit` 默认 25、范围 1–50。`members/member` 必须指定 `group_id`，只有 `member` 指定 `member_id`。账号参数不改为平台名称。
@@ -41,7 +43,7 @@
 
 快照 60 秒失效，同时最多 8 个、每角色最多 2 个；平台查询同时最多 4 个、每角色 2 个、同账号 1 个。无容量时在请求平台前返回 `directory_busy`。取消或超时会取消并等待本次 RPC 退出；查询跨等待后、目录写入事务提交前与返回前都复核真实来源、角色、账号、配置、adapter 和取消状态，失效数据不得写入目录。
 
-失败返回安全的 `error`、`complete=false` 和该角色账号的 `supportedKinds`，不包含 token、平台 URL、原始响应正文或异常详情。常见原因：
+失败返回安全的 `error`、`complete=false`；`unsupported` 等目录领域错误另含该角色账号的 `supportedKinds`，超时、撤权及通用平台异常不附该字段。不包含 token、平台 URL、原始响应正文或异常详情。常见原因：
 
 | 原因 | 含义 |
 | --- | --- |

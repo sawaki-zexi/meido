@@ -601,16 +601,21 @@ class MultichannelStore:
             if token is not None and not token.strip():
                 raise ValueError("Telegram Bot Token 不能为空")
         old_token = self.credentials.get(self._credential_key(account_id))
+        policy = (int(enabled), int(allow_private), int(allow_group), _json(sorted(set(blocked_senders or []))))
         try:
             if token is not None:
                 self.credentials.set(self._credential_key(account_id), token.strip())
             with self._connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                previous = db.execute("SELECT enabled,allow_private,allow_group,blocked_senders_json FROM channel_accounts WHERE account_id=?", (account_id,)).fetchone()
                 db.execute(
                     """INSERT INTO channel_accounts(account_id,role_id,channel,enabled,allow_private,allow_group,blocked_senders_json,display_name,created_at,updated_at)
                        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET enabled=excluded.enabled,allow_private=excluded.allow_private,
                        allow_group=excluded.allow_group,blocked_senders_json=excluded.blocked_senders_json,display_name=excluded.display_name,updated_at=excluded.updated_at""",
-                    (account_id, role_id, "telegram", int(enabled), int(allow_private), int(allow_group), _json(sorted(set(blocked_senders or []))), display_name.strip(), now, now),
+                    (account_id, role_id, "telegram", *policy, display_name.strip(), now, now),
                 )
+                if previous is None or tuple(previous) != policy or token is not None and token.strip() != old_token:
+                    self._advance_account_revision(db, account_id)
         except Exception:
             try:
                 self.credentials.set(self._credential_key(account_id), old_token)
@@ -639,6 +644,12 @@ class MultichannelStore:
             account = db.execute("SELECT revision FROM channel_account_settings WHERE account_id=?", (account_id,)).fetchone()
             platform = db.execute("SELECT revision FROM channel_platform_settings WHERE channel=?", (channel,)).fetchone()
         return (int(account[0]) if account else 0, int(platform[0]) if platform else 0)
+
+    @staticmethod
+    def _advance_account_revision(db: sqlite3.Connection, account_id: str) -> None:
+        """Invalidate connection evidence for real credential/policy changes."""
+        db.execute("INSERT INTO channel_account_settings(account_id,config_json,revision) VALUES(?,'{}',1) "
+            "ON CONFLICT(account_id) DO UPDATE SET revision=channel_account_settings.revision+1", (account_id,))
 
     def set_group_listening(self, role_id: str, account_id: str, chat_id: str, enabled: bool, *,
                             operator: str = "user", authorize: Callable[[], None] | None = None) -> None:
@@ -924,6 +935,12 @@ class MultichannelStore:
         if account is None:
             raise KeyError(account_id)
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute("SELECT enabled FROM channel_accounts WHERE account_id=?", (account_id,)).fetchone()
+            if current is None:
+                raise KeyError(account_id)
+            if enabled is not None and bool(current[0]) != enabled:
+                self._advance_account_revision(db, account_id)
             db.execute("UPDATE channel_accounts SET enabled=COALESCE(?,enabled),last_error=?,updated_at=? WHERE account_id=?", (None if enabled is None else int(enabled), last_error, _now(), account_id))
         return self.get_account(account_id)  # type: ignore[return-value]
 
@@ -1395,7 +1412,7 @@ class TelegramChannelService:
         self._message_tasks: set[asyncio.Task[None]] = set()
         self._connection: dict[str, object] = {"connection": "unknown", "online": None,
             "observedAt": None, "reason": "poll_not_observed"}
-        self._connection_generation: tuple[str, str] | None = None
+        self._connection_generation: tuple[str, str, str, str, tuple[int, int]] | None = None
         # Keep the small pre-account-id constructor usable for adapter tests:
         # ``Service(store, fake_transport, handler)``.
         if not isinstance(account_id, str):
@@ -1412,14 +1429,19 @@ class TelegramChannelService:
             self.persist_attachment = persist_attachment
 
     def connection_snapshot(self) -> dict[str, object]:
-        account = self.store.get_account(self.account_id)
-        if account is not None and self._connection_generation not in {None, (account.created_at, account.updated_at)}:
+        if self._connection_generation is not None and self._poll_generation() != self._connection_generation:
             return {"connection": "unknown", "online": None, "observedAt": None, "reason": "configuration_changed"}
         return dict(self._connection)
 
-    def _observe_poll(self, online: bool, reason: str) -> None:
+    def _poll_generation(self) -> tuple[str, str, str, str, tuple[int, int]] | None:
         account = self.store.get_account(self.account_id)
-        self._connection_generation = (account.created_at, account.updated_at) if account is not None else None
+        if account is None:
+            return None
+        return (account.created_at, account.role_id, account.channel, account.platform_id or "",
+            self.store.directory_revision(self.account_id, account.channel))
+
+    def _observe_poll(self, online: bool, reason: str, generation: tuple[str, str, str, str, tuple[int, int]] | None) -> None:
+        self._connection_generation = generation
         self._connection = {"connection": "connected" if online else "disconnected", "online": online,
             "observedAt": _now(), "reason": reason}
 
@@ -1658,20 +1680,22 @@ class TelegramChannelService:
         """Long-poll updates for one enabled bot until its task is stopped."""
 
         offset: int | None = None
+        generation = None
         try:
             while not stop.is_set():
                 account = self.store.get_account(self.account_id)
-                if account is None or not account.enabled:
+                if account is None or not self.store.account_effectively_enabled(account):
                     return
+                generation = self._poll_generation()
                 token = self.store.token(self.account_id)
                 if not token:
                     await asyncio.sleep(1)
                     continue
                 try:
                     updates = await self.transport.get_updates(token, offset=offset)
-                    if self.store.get_account(self.account_id) != account:
+                    if stop.is_set() or self._poll_generation() != generation or self.store.token(self.account_id) != token:
                         return
-                    self._observe_poll(True, "poll_succeeded")
+                    self._observe_poll(True, "poll_succeeded", generation)
                     for update in updates:
                         update_id = update.get("update_id")
                         if isinstance(update_id, int):
@@ -1685,16 +1709,18 @@ class TelegramChannelService:
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
+                    if stop.is_set() or self._poll_generation() != generation or self.store.token(self.account_id) != token:
+                        return
                     account = self.store.get_account(self.account_id)
                     if account is not None:
                         self.store.set_account_state(self.account_id, last_error=type(error).__name__)
-                    self._observe_poll(False, "poll_failed")
+                    self._observe_poll(False, "poll_failed", generation)
                     try:
                         await asyncio.wait_for(stop.wait(), timeout=2)
                     except asyncio.TimeoutError:
                         pass
         finally:
-            self._observe_poll(False, "polling_stopped")
+            self._observe_poll(False, "polling_stopped", generation)
             if self._message_tasks:
                 cleanup = asyncio.gather(*self._message_tasks, return_exceptions=True)
                 try:
