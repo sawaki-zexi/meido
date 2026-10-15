@@ -154,3 +154,38 @@ def test_attachment_directory_cannot_redirect_to_another_roles_media(tmp_path):
         assert 'foreign-private-body' not in result.content
     finally:
         os.rmdir(link)
+
+
+@pytest.mark.parametrize('change', ['signal', 'permission', 'task'])
+def test_final_commit_rechecks_permission_after_attachment_resolution(tmp_path, change):
+    sessions = SessionStore(tmp_path / 'sessions.db')
+    attachment = save_attachment(tmp_path, 'push.txt', 'text/plain', b'owned')
+    entered, release = Event(), Event()
+    reads, allowed, signal = [0], [True], CancellationToken()
+    def workspace():
+        reads[0] += 1
+        if reads[0] == 2:
+            entered.set()
+            assert release.wait(5)
+        return tmp_path
+    tool = MessagePushTool(sessions, workspace, role_id='role', authorized=lambda _: allowed[0])
+    async def run():
+        pending = asyncio.create_task(tool.execute({'channel': 'desktop', 'chat_id': 'owner', 'file': attachment['id']}, context(signal=signal)))
+        assert await asyncio.to_thread(entered.wait, 2)
+        try:
+            if change == 'signal':
+                signal.cancel()
+            elif change == 'permission':
+                allowed[0] = False
+            else:
+                pending.cancel()
+                await asyncio.sleep(0)
+        finally:
+            release.set()
+        if change == 'task':
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+        else:
+            assert (await pending).is_error
+    asyncio.run(run())
+    assert sessions.list_messages('role:role') == []

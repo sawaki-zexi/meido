@@ -43,8 +43,8 @@ class MessagePushTool:
             attachments = self._attachments(ids, arguments)
             pending = asyncio.create_task(asyncio.to_thread(self.sessions.append_desktop_push_once,
                 self.role_id, context.run_id, str(context.tool_call_id), message,
-                attachments=attachments, authorized=lambda: self._allowed(context)
-                and self._attachments(ids, arguments) == attachments))
+                attachments=attachments, authorized=lambda: self._attachments(ids, arguments) == attachments
+                and self._allowed(context)))
             try:
                 saved = await asyncio.shield(pending)
             except asyncio.CancelledError:
@@ -86,4 +86,5 @@ class MessagePushTool:
 
     def _allowed(self, context: ToolContext) -> bool:
         return bool(context.role_id == self.role_id and context.run_id and context.tool_call_id
-                    and not context.signal.is_cancelled() and self.authorized(context))
+                    and not context.signal.is_cancelled() and self.authorized(context)
+                    and not context.signal.is_cancelled())

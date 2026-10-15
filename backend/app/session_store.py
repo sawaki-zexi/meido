@@ -72,6 +72,19 @@ def _runtime_assistant_metadata(metadata: dict[str, Any]) -> dict[str, object]:
     return {key: value for key, value in metadata.items() if key not in internal_keys}
 
 
+def _runtime_assistant_message(stored: Message) -> AssistantMessage:
+    content = stored.content
+    if stored.messageType == "desktop_push":
+        raw_attachments = stored.metadata.get("attachments", [])
+        attachments = raw_attachments if isinstance(raw_attachments, list) else []
+        labels = [f"{item.get('name', '附件')}（attachment_id={item['id']}）"
+                  for item in attachments if isinstance(item, dict) and item.get('id')]
+        if labels:
+            content = "\n".join(filter(None, (content, "已推送附件：" + "；".join(labels))))
+    return AssistantMessage(content, metadata=_runtime_assistant_metadata(stored.metadata),
+                            timestamp=_timestamp(stored.metadata))
+
+
 class SessionStore:
     def __init__(self, database_path: str | Path) -> None:
         self.database_path = str(database_path)
@@ -504,13 +517,22 @@ class SessionStore:
                         timestamp=_timestamp(group[0].metadata),
                     ))
 
-                    # Results are expected immediately after the assistant call group.
+                    # A push commits while its tool is executing, before the
+                    # result row. Keep its SQLite sequence but replay it only
+                    # after every result in this provider call group.
                     # Only matching IDs are replayable; duplicates and orphan results
                     # stay in SQLite for diagnostics but never poison provider context.
                     result_rows: dict[str, Message] = {}
+                    independent_messages: list[Message] = []
                     result_cursor = cursor
-                    while result_cursor < len(stored_messages) and stored_messages[result_cursor].messageType == "tool_result":
+                    while result_cursor < len(stored_messages):
                         result = stored_messages[result_cursor]
+                        if result.messageType == "desktop_push" and result.role == "assistant" and result.status == "completed":
+                            independent_messages.append(result)
+                            result_cursor += 1
+                            continue
+                        if result.messageType != "tool_result":
+                            break
                         if (
                             result.status == "completed"
                             and result.runId == group_run_id
@@ -544,6 +566,7 @@ class SessionStore:
                                 # reconstructed from SQLite on later runs.
                                 images=(),
                             ))
+                    messages.extend(_runtime_assistant_message(item) for item in independent_messages)
                     index = result_cursor
                     continue
             elif stored.messageType == "tool_result":
@@ -561,18 +584,7 @@ class SessionStore:
                     if stored.metadata.get("channel") not in {None, "", "desktop"} and stored.metadata.get("deliveryStatus") != "sent":
                         index += 1
                         continue
-                    content = stored.content
-                    if stored.messageType == "desktop_push":
-                        attachments = stored.metadata.get("attachments", [])
-                        labels = [f"{item.get('name', '附件')}（attachment_id={item['id']}）"
-                                  for item in attachments if isinstance(item, dict) and item.get('id')]
-                        if labels:
-                            content = "\n".join(filter(None, (content, "已推送附件：" + "；".join(labels))))
-                    messages.append(AssistantMessage(
-                        content,
-                        metadata=_runtime_assistant_metadata(stored.metadata),
-                        timestamp=_timestamp(stored.metadata),
-                    ))
+                    messages.append(_runtime_assistant_message(stored))
             index += 1
         if max_messages is None or max_messages < 1 or len(messages) <= max_messages:
             return messages

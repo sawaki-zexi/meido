@@ -173,3 +173,42 @@ def test_committed_push_survives_a_later_parent_failure_or_real_http_stop(api, m
     assert len(pushed) == 1 and pushed[0].status == 'completed' and pushed[0].runId is None
     assert pushed[0].content == 'durable-before-parent-terminal'
     assert len([item for item in messages if item.role == 'user']) == 1
+
+
+@pytest.mark.parametrize('call_count', [1, 2])
+def test_next_owner_turn_and_reopened_store_preserve_real_push_receipts(api, monkeypatch, call_count):  # noqa: F811
+    from backend.app import main
+    from backend.app.agent_runtime.types import ToolResultMessage
+    from backend.app.session_store import SessionStore
+
+    client, _roles, sessions, _tasks = api
+    requests = []
+    class Adapter:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            requests.append(messages)
+            receipts = [item for item in messages if item['role'] == 'tool']
+            if not receipts:
+                for index in range(call_count):
+                    yield ModelToolCall(f'push-{index}', 'message_push', {
+                        'channel': 'desktop', 'chat_id': 'owner', 'message': f'confirmed-push-{index}'})
+            else:
+                assert len(receipts) == call_count
+                assert all(json.loads(item['content'])['status'] == 'sent' for item in receipts)
+                yield ModelTextDelta('真实回执保留')
+    monkeypatch.setattr(main, 'model_adapter', Adapter())
+    role = client.post('/api/roles', json={'name': '回执重放', 'profile': {'profile': '测试'},
+        'agentConfig': {'enabledTools': ['message_push']}}).json()['role']
+    first = client.post(f"/api/roles/{role['id']}/messages", json={'content': '投递'})
+    assert 'assistant_completed' in first.text
+    reopened = SessionStore(sessions.database_path)
+    replay = reopened.runtime_messages(f"role:{role['id']}")
+    results = [item for item in replay if isinstance(item, ToolResultMessage)]
+    assert len(results) == call_count and all(not item.is_error and json.loads(item.content)['status'] == 'sent' for item in results)
+    # Provider protocol keeps every result directly after its full call group;
+    # independent push messages follow it, without changing SQLite chronology.
+    call_index = next(index for index, item in enumerate(replay) if getattr(item, 'tool_calls', ()))
+    assert all(isinstance(item, ToolResultMessage) for item in replay[call_index + 1:call_index + 1 + call_count])
+    following = client.post(f"/api/roles/{role['id']}/messages", json={'content': '继续读取历史'})
+    assert 'assistant_completed' in following.text, following.text
+    assert len(requests) == 3
+    assert len([item for item in sessions.list_messages(f"role:{role['id']}") if item.messageType == 'desktop_push']) == call_count
