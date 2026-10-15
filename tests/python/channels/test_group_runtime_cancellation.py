@@ -25,7 +25,8 @@ from backend.app.session_store import SessionStore
 
 
 @pytest.mark.parametrize("kind", ["update", "listening"])
-def test_parent_runtime_cancellation_cannot_commit_a_group_write_waiting_for_sqlite(tmp_path, kind):
+@pytest.mark.parametrize("cancel_delay,unlock_delay", [(0.1, 0.4), (0.01, 0.02)])
+def test_parent_runtime_cancellation_cannot_commit_a_group_write_waiting_for_sqlite(tmp_path, kind, cancel_delay, unlock_delay):
     database = tmp_path / "sessions.db"
     store = MultichannelStore(database, SessionStore(database))
     store.register_channel_account("role", "qq", account_id="a", enabled=True, allow_group=True)
@@ -36,14 +37,20 @@ def test_parent_runtime_cancellation_cannot_commit_a_group_write_waiting_for_sql
     blocker.execute("BEGIN IMMEDIATE")
     timers = []
     cancelled_before_unlock = []
+    cancellation_requested = Event()
 
     def cancel():
         cancelled_before_unlock.append(blocker.in_transaction)
         parent.cancel()
+        cancellation_requested.set()
+
+    def unlock():
+        cancellation_requested.wait(timeout=5)
+        blocker.commit()
 
     def authorized(context):
         if not timers:
-            for delay, operation in ((0.1, cancel), (0.4, blocker.commit)):
+            for delay, operation in ((cancel_delay, cancel), (unlock_delay, unlock)):
                 timer = Timer(delay, operation)
                 timers.append(timer)
                 timer.start()
