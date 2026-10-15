@@ -1,9 +1,9 @@
 # 通用时间任务实施契约
 
-状态：已批准目标；本地实现及受控验收完成，待两轴复核与总 PR #162 集成。最后核验：2026-10-16。
+状态：已批准目标；实现、受控验收、两轴复核和总 PR #162 本地集成完成，`4b1b3b8` 两套CI通过；未合main。最后核验：2026-10-16。
 事实来源：Issue #158、ADR0012/0013、已验证总集成 cb6347e 中的 TaskRuntime、SpawnExecutor、SessionStore 桌面推送接口。
 
-当前接口见[Reference](../reference/owned-schedules.md)，实际检查与限制见[验收记录](../research/owned-schedules-acceptance-2026-10-16.md)。本文记录实施前提交的计划及已批准范围，不将真实平台收件或总 PR 集成标为完成。
+当前接口见[Reference](../reference/owned-schedules.md)，实际检查与限制见[验收记录](../research/owned-schedules-acceptance-2026-10-16.md)。本文保留实施前计划及已批准范围；进入本地总集成不表示main已发布或真实平台收件已验收。
 
 主人通过实际对话调用 schedule / list_schedules / cancel_schedule，计划只属于当前角色及真实来源。通用计划独立于待办；不改变当天提醒者、当天暂停或次日资格。
 

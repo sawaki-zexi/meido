@@ -1,6 +1,6 @@
 # 角色通用时间任务契约
 
-状态：本地实现，待两轴复核与总 PR #162 集成；尚未合入 main。
+状态：已通过两轴复核并进入总 PR #162 集成分支；`4b1b3b8` 两套CI通过，尚未合入 main。
 最后核验：2026-10-16。
 事实来源：[应用服务](../../backend/app/schedules/application.py)、[时间规则](../../backend/app/schedules/time_rules.py)、[工具](../../backend/app/schedules/tools.py)、[HTTP验收](../../tests/python/test_schedules_api.py)、[恢复投递](../../tests/python/test_schedules.py)、[来源授权](../../tests/python/test_schedules_authority.py)、[任务交接](../../tests/python/test_task_runtime_handover.py)。决定见[ADR0013](../adr/0013-independent-generic-schedules.md)。
 

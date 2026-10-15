@@ -1,6 +1,6 @@
 # #158 本地受控验收
 
-状态：本地行为验证完成，待两轴审查与总 PR #162 集成；未合 main。
+状态：行为验证、两轴复核与总 PR #162 本地集成完成，`4b1b3b8` 两套CI通过；未合 main。
 最后核验：2026-10-16。基线：cb6347e；TaskRuntime 两 seam 独立提交0927686。
 事实来源：下列命令、行为测试与[调度契约](../reference/owned-schedules.md)。
 
@@ -24,7 +24,7 @@ Ruff、compileall、diff whitespace和改动文档相对链接通过。`python -
 
 ## 首次两轴审查后的修复
 
-初始快照a976edd的152项不覆盖下列四个正式问题。四项均独立复现、加入回归先红后绿，当前待原审查者独立复核：
+初始快照a976edd的152项不覆盖下列四个正式问题。四项均独立复现、加入回归先红后绿；该轮随后经原审查者复核，后续组合问题与最终结论见下文：
 
 - 实际使用应用默认模型的soft计划误将角色未显绑ID解析为无配置；现在按创建时实际resolved连接ID精确恢复。默认不变/换新默认继续原连接，原连接修改/删除明确拒绝；不接触真实凭据。
 - 结果已复制后ACK遇SQLite busy，后续ready/sent或重启丢失重试；现在持久ACK dirty且未确认记录不参与历史清理。覆盖ready、旧sent迁移、ACK成功后结果已prune但确认回写丢失；同origin通过墓碑幂等ACK，跨角色/会话/线程/账号/绑定、unknown、disabled和deleted均拒绝。另覆盖交接已执行、taskId回写丢失后cancel找回原任务并ACK。
@@ -59,8 +59,10 @@ ef3af2b两轴复核中，Spec发现PermissionError处理分支自身写入遭SQL
 
 最终源快照e992e0f的规范和规格两轴复核均无剩余finding；两位各自窄差异18项通过，继承此前固定ef3af2b的专项/共享及独立原探针证据，不将重叠计数相加。
 
-汇入总分支时仅状态表与第三方声明冲突，保留Feed与调度两份归属声明；调度、TaskRuntime及本票共享生产文件与经复核源逐文件一致。调度七文件、后台Shell、spawn/恢复、桌面推送、发现、渠道API、MCP HTTP/来源和Todo交叉 **400 passed、6条已有SDK警告**；全部前端 **174 passed /26 files**，TypeScript/Vite、5源mypy、compileall和12份改动文档相对链接检查通过。新Linux CI另行核验，本地结果不代替它。
+汇入总分支时仅状态表与第三方声明冲突，保留Feed与调度两份归属声明；调度、TaskRuntime及本票共享生产文件与经复核源逐文件一致。调度七文件、后台Shell、spawn/恢复、桌面推送、发现、渠道API、MCP HTTP/来源和Todo交叉 **400 passed、6条已有SDK警告**；全部前端 **174 passed /26 files**，TypeScript/Vite、5源mypy、compileall和12份改动文档相对链接检查通过。
+
+随后总集成 `4b1b3b8858896b907a147b65612de0bb02896305` 的 [push CI](https://github.com/sawaki-zexi/meido/actions/runs/38817647017) 与 [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38817638972) 均成功：Linux后端 **1712 passed、16 skipped、2 warnings**，前端 **174 passed /26 files** 及TypeScript/Vite构建。skip不计原生验收；两套CI结果不相加。
 
 ## 限制与尚待完成
 
-模型/渠道/凭据/文件/数据库均为临时本地fixture，没有真实平台收件、付费模型或原生桌面操作。pending/uncertain只能反映平台实际收据，不虚构确认API。两轴复核及本地总集成交叉已完成；仍需新CI及总PR最终验收，未合main、未关闭Issue。
+模型/渠道/凭据/文件/数据库均为临时本地fixture，没有真实平台收件、付费模型或原生桌面操作。pending/uncertain只能反映平台实际收据，不虚构确认API。两轴复核、本地总集成交叉及新CI已完成；总PR其他切片仍在实施，未合main、未关闭Issue。
