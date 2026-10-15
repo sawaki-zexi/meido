@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -65,6 +67,8 @@ class SkillDescriptor:
     body_path: str | None = None
     root_path: str | None = None
     supporting_files: tuple[SkillResourceDescriptor, ...] = ()
+    required_bins: tuple[str, ...] = ()
+    required_env: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.trust_level not in _TRUST_LEVELS:
@@ -90,6 +94,7 @@ class SkillDescriptor:
             "path": self.path,
             "contentHash": self.content_hash or None,
             "supportingFiles": [item.to_dict() for item in self.supporting_files],
+            "requires": {"bins": list(self.required_bins), "env": list(self.required_env)},
         }
 
     def materialize(self) -> SkillDescriptor:
@@ -235,8 +240,10 @@ class SkillRegistry:
         explicit_ids: set[str] | frozenset[str] = frozenset(),
         available_tools: set[str] | frozenset[str] | None = None,
         enabled_tools: set[str] | frozenset[str] | None = None,
+        available_env: set[str] | frozenset[str] = frozenset(),
     ) -> SkillResolution:
         selected: list[SkillDescriptor] = []
+        dependency_sections: list[str] = []
         diagnostics = [dict(item) for item in self.diagnostics]
         unknown_ids = set(explicit_ids) - set(self._skills)
         diagnostics.extend(
@@ -260,6 +267,21 @@ class SkillRegistry:
                 })
                 continue
             if not _is_active(skill, prompt=prompt, explicit_ids=explicit_ids):
+                continue
+            missing_bins = [name for name in skill.required_bins if shutil.which(name) is None]
+            # Only names explicitly exposed by the host count. Shell's minimal
+            # environment does not inherit arbitrary backend credentials.
+            missing_env = [name for name in skill.required_env if name not in available_env]
+            if missing_bins or missing_env:
+                diagnostic = {
+                    "skillId": skill.skill_id,
+                    "status": "unavailable",
+                    "error": "skill dependencies are unavailable",
+                    "missingBins": missing_bins,
+                    "missingEnv": missing_env,
+                }
+                diagnostics.append(diagnostic)
+                dependency_sections.append("Skill unavailable: " + json.dumps(diagnostic, ensure_ascii=False))
                 continue
             allowed_tools: list[str] = []
             for name in skill.tools:
@@ -296,7 +318,7 @@ class SkillRegistry:
             )
         return SkillResolution(
             skills=tuple(selected),
-            prompt_sections=tuple(skill.body for skill in selected if skill.body),
+            prompt_sections=tuple(skill.body for skill in selected if skill.body) + tuple(dependency_sections),
             diagnostics=tuple(MappingProxyType(item) for item in diagnostics),
         )
 
@@ -340,6 +362,8 @@ def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str) 
         body_path=str(resolved),
         root_path=str(root_path),
         supporting_files=supporting_files,
+        required_bins=_dependencies(front_matter.get("requires.bins", []), environment=False),
+        required_env=_dependencies(front_matter.get("requires.env", []), environment=True),
     )
 
 
@@ -408,7 +432,7 @@ def _discover_supporting_files(
     trust_level: str,
 ) -> tuple[SkillResourceDescriptor, ...]:
     resources: list[SkillResourceDescriptor] = []
-    for directory_name in ("references", "assets"):
+    for directory_name in ("references", "assets", "scripts"):
         directory = skill_directory / directory_name
         if not directory.exists():
             continue
@@ -465,11 +489,11 @@ def _parse_front_matter(lines: list[str]) -> dict[str, object]:
             raise ValueError(f"invalid front matter line: {raw_line}")
         key, raw_value = line.split(":", 1)
         key = key.strip()
-        if key not in {"id", "version", "description", "tools", "activation"}:
+        if key not in {"id", "version", "description", "tools", "activation", "requires.bins", "requires.env"}:
             raise ValueError(f"unsupported front matter field: {key}")
         if key in values:
             raise ValueError(f"duplicate front matter field: {key}")
-        if key == "tools":
+        if key in {"tools", "requires.bins", "requires.env"}:
             inline = raw_value.strip()
             if not inline:
                 values[key] = []
@@ -537,6 +561,17 @@ def _tools(value: object) -> tuple[str, ...]:
             raise ValueError(f"duplicate tool reference: {name}")
         cleaned.append(name)
     return tuple(cleaned)
+
+
+def _dependencies(value: object, *, environment: bool) -> tuple[str, ...]:
+    if not isinstance(value, list) or len(value) > 32:
+        raise ValueError("skill dependencies must be a list of at most 32 names")
+    pattern = r"[A-Za-z_][A-Za-z0-9_]{0,127}" if environment else r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}"
+    if any(not isinstance(item, str) or re.fullmatch(pattern, item) is None for item in value):
+        raise ValueError("skill dependencies must contain plain command or environment names")
+    if len(set(value)) != len(value):
+        raise ValueError("duplicate skill dependency")
+    return tuple(value)
 
 
 def _front_matter_metadata(path: Path) -> tuple[str | None, str | None]:
