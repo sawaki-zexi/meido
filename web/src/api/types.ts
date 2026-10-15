@@ -7,7 +7,7 @@ export type RoleCardImportPreview = {
   compatibility: { format: string; warnings: string[]; discardedFields: string[]; unsupportedMacros: string[]; unsupportedResources: string[] };
 };
 export type MemoryRecallToolConfig = { enabled: boolean };
-export type AgentToolConfig = { memoryRecall?: MemoryRecallToolConfig; browserUse?: { enabled: boolean }; enabledTools?: string[]; enabledPlugins?: string[]; grantedCapabilities?: string[]; shell?: { enabled: boolean; allowedCommands: string[]; timeoutSeconds: number; maxOutputChars: number } };
+export type AgentToolConfig = { memoryRecall?: MemoryRecallToolConfig; browserUse?: { enabled: boolean }; screenPerception?: { enabled: boolean; visionModelConfigurationId: string | null }; enabledTools?: string[]; enabledPlugins?: string[]; grantedCapabilities?: string[]; shell?: { enabled: boolean; allowedCommands: string[]; timeoutSeconds: number; maxOutputChars: number } };
 export type RoleToolCatalog = {
   roleId: string; sessionKey: string; preview: boolean;
   tools: { name: string; description: string; source: string; version: string | null; risk: string | null; exposure: string | null; registered: boolean; enabled: boolean; authorized: boolean; modelVisible: boolean | null; dependency: { status: "ready" | "unavailable" | "unchecked"; reason: string }; reason: string }[];
