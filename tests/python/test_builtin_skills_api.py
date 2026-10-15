@@ -54,10 +54,10 @@ def test_skill_created_by_real_file_tool_is_explicitly_usable_next_turn_without_
                 yield ModelTextDelta("已使用新技能")
 
     client, role_id, roles, sessions = skill_client(tmp_path, monkeypatch, Adapter(), ["write_file"])
-    first = client.post(f"/api/roles/{role_id}/messages", json={"content": "创建简报技能", "skillIds": ["skill-creater"]})
+    first = client.post(f"/api/roles/{role_id}/messages", json={"content": "$skill-creater 创建简报技能"})
     assert "技能已创建" in first.text
     assert (roles.workspace_path(role_id) / "skills/briefing/SKILL.md").is_file()
-    second = client.post(f"/api/roles/{role_id}/messages", json={"content": "做一份简报", "skillIds": ["briefing"]})
+    second = client.post(f"/api/roles/{role_id}/messages", json={"content": "$briefing 做一份简报"})
     assert "已使用新技能" in second.text
     run_id = sessions.list_messages(f"role:{role_id}")[-1].runId
     snapshot = sessions.get_run(run_id).modelSnapshot["capabilities"]
@@ -96,3 +96,21 @@ def test_meme_skill_updates_role_manifest_and_checks_actual_image_with_file_tool
     response = client.post(f"/api/roles/{role_id}/messages", json={"content": "更新高兴类别的描述与别名并核验图片", "skillIds": ["meme-manage"]})
     assert "已更新类别并核验真实图片" in response.text
     assert json.loads((directory.parent / "manifest.json").read_text(encoding="utf-8")) == manifest
+
+
+def test_missing_builtin_clis_reach_model_as_specific_dependency_diagnostics(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", "")
+
+    class Adapter:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            system = json.dumps([item for item in messages if item["role"] == "system"], ensure_ascii=False)
+            assert "missingBins" in system and "curl" in system and "summarize" in system
+            assert "shell" not in {item["function"]["name"] for item in tools}
+            yield ModelTextDelta("缺少 curl 与 summarize，需先配置依赖")
+
+    client, role_id, _, sessions = skill_client(tmp_path, monkeypatch, Adapter())
+    response = client.post(f"/api/roles/{role_id}/messages", json={"content": "查询天气并摘要网页", "skillIds": ["weather", "summarize"]})
+    assert "缺少 curl 与 summarize" in response.text
+    run_id = sessions.list_messages(f"role:{role_id}")[-1].runId
+    diagnostics = sessions.get_run(run_id).modelSnapshot["capabilities"]["skillDiagnostics"]
+    assert {item["skillId"] for item in diagnostics if item.get("status") == "unavailable"} == {"weather", "summarize"}

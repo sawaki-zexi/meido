@@ -104,7 +104,7 @@ class SkillDescriptor:
             return self
         path = Path(self.body_path)
         root = Path(self.root_path) if self.root_path is not None else path.parent
-        if path.is_symlink() or path.parent.is_symlink():
+        if _is_link(root) or _is_link(path) or _is_link(path.parent):
             raise ValueError("symlinked skills are not supported")
         resolved = path.resolve()
         try:
@@ -116,7 +116,7 @@ class SkillDescriptor:
             raise ValueError("skill changed after discovery")
         for resource in self.supporting_files:
             resource_path = root / resource.path
-            if resource_path.is_symlink() or resource_path.parent.is_symlink():
+            if _is_link(resource_path) or _is_link(resource_path.parent):
                 raise ValueError("symlinked skill resource is not supported")
             resolved_resource = resource_path.resolve()
             try:
@@ -170,7 +170,11 @@ class SkillRegistry:
     def discover(cls, root: str | Path, *, source: str = "project") -> SkillRegistry:
         if source not in _SOURCE_TRUST_LEVELS:
             raise ValueError(f"unsupported skill source: {source}")
-        root_path = Path(root).resolve()
+        configured_root = Path(root)
+        if _is_link(configured_root):
+            return cls(diagnostics=({"path": str(configured_root), "source": source,
+                "error": "linked skill discovery root is not supported"},))
+        root_path = configured_root.resolve()
         if not root_path.exists() or not root_path.is_dir():
             return cls()
         candidates = (
@@ -181,7 +185,7 @@ class SkillRegistry:
         loaded: list[SkillDescriptor] = []
         diagnostics: list[dict[str, object]] = []
         for path in candidates:
-            if path.is_symlink() or path.parent.is_symlink():
+            if _is_link(path) or _is_link(path.parent):
                 diagnostics.append({
                     "path": str(path),
                     "source": source,
@@ -224,14 +228,17 @@ class SkillRegistry:
             registry = cls.discover(root, source=source)
             loaded.extend(registry.skills)
             diagnostics.extend(registry.diagnostics)
-        try:
-            return cls(loaded, diagnostics=diagnostics)
-        except ValueError as error:
-            diagnostics.append({"error": str(error)})
-            unique: dict[str, SkillDescriptor] = {}
-            for skill in loaded:
-                unique.setdefault(skill.skill_id, skill)
-            return cls(unique.values(), diagnostics=diagnostics)
+        # Root order breaks ties within one source (workspace before legacy).
+        # A role's customization takes precedence over project and bundled text.
+        priority = {"role": 0, "project": 1, "installed": 2, "external": 3, "builtin": 4}
+        unique: dict[str, SkillDescriptor] = {}
+        for skill in sorted(loaded, key=lambda item: priority[item.source]):
+            if skill.skill_id in unique:
+                diagnostics.append({"skillId": skill.skill_id, "status": "shadowed", "source": skill.source,
+                                    "version": skill.version, "selectedSource": unique[skill.skill_id].source})
+            else:
+                unique[skill.skill_id] = skill
+        return cls(unique.values(), diagnostics=diagnostics)
 
     def resolve(
         self,
@@ -242,6 +249,7 @@ class SkillRegistry:
         enabled_tools: set[str] | frozenset[str] | None = None,
         available_env: set[str] | frozenset[str] = frozenset(),
     ) -> SkillResolution:
+        explicit_ids = set(explicit_ids) | set(re.findall(r"(?<![\w$])\$([a-z0-9][a-z0-9._-]*)", prompt))
         selected: list[SkillDescriptor] = []
         dependency_sections: list[str] = []
         diagnostics = [dict(item) for item in self.diagnostics]
@@ -273,7 +281,7 @@ class SkillRegistry:
             # environment does not inherit arbitrary backend credentials.
             missing_env = [name for name in skill.required_env if name not in available_env]
             if missing_bins or missing_env:
-                diagnostic = {
+                diagnostic: dict[str, object] = {
                     "skillId": skill.skill_id,
                     "status": "unavailable",
                     "error": "skill dependencies are unavailable",
@@ -436,10 +444,10 @@ def _discover_supporting_files(
         directory = skill_directory / directory_name
         if not directory.exists():
             continue
-        if directory.is_symlink():
+        if _is_link(directory):
             raise ValueError("symlinked skill resource directory is not supported")
         for candidate in sorted(directory.rglob("*")):
-            if candidate.is_symlink() or candidate.parent.is_symlink():
+            if _is_link(candidate) or _is_link(candidate.parent):
                 raise ValueError("symlinked skill resource is not supported")
             if not candidate.is_file():
                 continue
@@ -457,6 +465,10 @@ def _validate_relative_path(value: str, label: str) -> None:
     path = Path(value)
     if not value.strip() or path.is_absolute() or ".." in path.parts:
         raise ValueError(f"{label} must stay within the discovery root")
+
+
+def _is_link(path: Path) -> bool:
+    return path.is_symlink() or path.is_junction()
 
 
 def _split_front_matter(raw: str) -> tuple[dict[str, object], str]:

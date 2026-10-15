@@ -95,7 +95,7 @@ class ShellTool:
         clean_env = {
             key: value
             for key, value in os.environ.items()
-            if key in {"PATH", "SystemRoot", "WINDIR", "HOME", "USERPROFILE", "LANG", "LC_ALL", "TMP", "TEMP"}
+            if key.upper() in {"PATH", "SYSTEMROOT", "WINDIR", "HOME", "USERPROFILE", "LANG", "LC_ALL", "TMP", "TEMP"}
         }
         started = time.monotonic()
         process: asyncio.subprocess.Process | None = None

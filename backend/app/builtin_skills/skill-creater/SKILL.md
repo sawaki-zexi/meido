@@ -33,7 +33,7 @@ requires.env: []
 流程：先 list_dir/read_file 核对已有技能 → 用 write_file 创建或 edit_file 修改 → read_file 复核。
 正文保持简洁；参考文档放 references/，数据放 assets/，辅助脚本放 scripts/。
 支持文件会校验范围、大小与 hash；写入脚本不等于允许执行脚本，也不增加 Shell 白名单。
-同一运行的技能快照不会更新；告知主人在下一次对话用 skillIds 选中该技能。
+同一运行的技能快照不会更新；告知主人在下一次对话输入 `$my-skill` 选中该技能。
 如缺必要工具或依赖，具体说明，不声称创建或执行成功。
 
 来源：Shiori-Agent 4f266aeaf42fcd611362e2456417b91f659341cf，apps/backend/skills/skill-creater/SKILL.md（MIT）；按 Meido 权限与格式改写。
