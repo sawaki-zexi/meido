@@ -29,6 +29,51 @@ describe("MemorySettings embedding configuration", () => {
 });
 
 describe("ModelSettings protocol selection", () => {
+  it("masks a saved model key and only reads it when the eye is clicked", async () => {
+    vi.stubGlobal("requestAnimationFrame", vi.fn(() => 0));
+    const configuration = { id: "model-one", providerId: "openai", provider: "openai", api: "openai-completions", baseUrl: "https://api.openai.com/v1", model: "gpt-test", apiKeyConfigured: true };
+    let saved = false;
+    const { calls } = fakeBackend({
+      "GET /api/model/providers": () => ({ body: { providers: [{ id: "openai", label: "OpenAI", provider: "openai", baseUrl: "https://api.openai.com/v1", modelHint: "gpt-test" }] } }),
+      "GET /api/model/configurations": () => ({ body: { configurations: saved ? [configuration] : [], activeId: saved ? configuration.id : null } }),
+      "POST /api/model/configurations": () => { saved = true; return { body: { configuration } }; },
+      "PUT /api/model/configurations/model-one": () => ({ body: { configuration } }),
+      "POST /api/model/configurations/model-one/reveal-key": () => ({ body: { apiKey: "saved-model-secret" } }),
+    });
+
+    const view = render(<ModelSettings />);
+    let key = await screen.findByLabelText("API Key");
+    fireEvent.change(screen.getByLabelText("模型 ID"), { target: { value: "gpt-test" } });
+    fireEvent.change(key, { target: { value: "saved-model-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await screen.findByText("配置已保存并生效");
+
+    key = screen.getByLabelText("API Key");
+    expect(key).toHaveValue("");
+    expect(key).toHaveAttribute("placeholder", "••••••");
+    expect(calls.some((call) => call.path.endsWith("/reveal-key"))).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "显示API Key" }));
+    await waitFor(() => expect(key).toHaveValue("saved-model-secret"));
+    expect(key).toHaveAttribute("type", "text");
+    expect(calls.filter((call) => call.path === "/api/model/configurations/model-one/reveal-key")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "隐藏API Key" }));
+    expect(key).toHaveValue("");
+    expect(key).toHaveAttribute("type", "password");
+
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(calls.some((call) => call.method === "PUT")).toBe(true));
+    expect(calls.find((call) => call.method === "PUT")?.body).toMatchObject({ apiKey: "" });
+    await screen.findByText("配置已保存并生效");
+    view.unmount();
+    render(<ModelSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
+    expect(screen.getByLabelText("API Key")).toHaveValue("");
+    expect(screen.getByLabelText("API Key")).toHaveAttribute("placeholder", "••••••");
+    fireEvent.click(screen.getByRole("button", { name: "新建配置" }));
+    expect(screen.getByLabelText("API Key")).not.toHaveAttribute("placeholder", "••••••");
+    expect(screen.getByRole("button", { name: "显示API Key" })).toBeDisabled();
+  });
+
   it("sends the selected native protocol when testing a custom model", async () => {
     const { calls } = fakeBackend({
       "GET /api/model/providers": () => ({ body: { providers: [

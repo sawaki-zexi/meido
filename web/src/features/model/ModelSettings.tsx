@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../api/client";
 import type { ModelConfiguration as Configuration, Provider } from "../../api/types";
 import { Notice, Placeholder } from "../../ui/Status";
+import { ApiKeyInput } from "../../ui/ApiKeyInput";
 
 type Draft = { providerId: string; provider: string; api: string; apiOptions: Record<string, string>; baseUrl: string; model: string; apiKey: string };
 
@@ -162,7 +163,11 @@ export function ModelSettings() {
       {draft.api === "openai-codex-responses" && <div className="field"><label htmlFor="codex-account-id">ChatGPT Account ID（可选）</label><input id="codex-account-id" value={draft.apiOptions.accountId ?? ""} disabled={busy} onChange={(event) => setDraft({ ...draft, apiOptions: { ...draft.apiOptions, accountId: event.target.value } })} /></div>}
       <div className="field"><label htmlFor="model-base-url">API 地址</label><input id="model-base-url" required type="url" value={draft.baseUrl} disabled={busy} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} /></div>
       <div className="field"><label htmlFor="model-id">模型 ID</label><input id="model-id" required value={draft.model} placeholder={preset?.modelHint ?? "例如：provider/model-name"} disabled={busy} onChange={(event) => setDraft({ ...draft, model: event.target.value })} /></div>
-      <div className="field"><label htmlFor="model-api-key">{draft.api === "openai-codex-responses" ? "ChatGPT OAuth Token" : "API Key"}</label><input id="model-api-key" type="password" autoComplete="new-password" value={draft.apiKey} placeholder={editingConfiguration?.apiKeyConfigured ? "已设置，留空保留现有密钥" : draft.api === "openai-codex-responses" ? "粘贴 ChatGPT OAuth Token" : "可选，本地模型服务可能不需要"} disabled={busy} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })} /></div>
+      <ApiKeyInput key={`${editingId ?? "new"}:${draft.providerId}:${draft.api}`} id="model-api-key" label={draft.api === "openai-codex-responses" ? "ChatGPT OAuth Token" : "API Key"} value={draft.apiKey} configured={Boolean(editingConfiguration?.apiKeyConfigured)} placeholder={draft.api === "openai-codex-responses" ? "粘贴 ChatGPT OAuth Token" : "可选，本地模型服务可能不需要"} disabled={busy} onChange={(apiKey) => setDraft({ ...draft, apiKey })} onReveal={async () => {
+        if (!editingId) return "";
+        const result = await api<{ apiKey: string }>(`/api/model/configurations/${encodeURIComponent(editingId)}/reveal-key`, { method: "POST" });
+        return result.apiKey;
+      }} />
       {testResult && <Notice tone={testFailed ? "error" : "success"}>{testResult}</Notice>}
       {error && <Notice>{error}</Notice>}
       <div className="form-actions">

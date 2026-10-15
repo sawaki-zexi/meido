@@ -1,6 +1,7 @@
 /** Small line icons (24×24, currentColor). Decorative: the button carries the accessible name. */
 const paths = {
   plus: "M12 5v14M5 12h14",
+  stop: "M6 6h12v12H6V6Z",
   people: "M9 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z M2 21v-2a7 7 0 0 1 14 0v2 M17 4a4 4 0 0 1 0 8 M22 21v-2a7 7 0 0 0-4-6.3",
   upload: "M12 15V3M7 8l5-5 5 5 M4 14v6h16v-6",
   grid: "M3 3h7v7H3V3Z M14 3h7v7h-7V3Z M3 14h7v7H3v-7Z M14 14h7v7h-7v-7Z",
@@ -19,6 +20,8 @@ const paths = {
   model: "M12 3 3 7.5l9 4.5 9-4.5L12 3Z M3 12l9 4.5 9-4.5 M3 16.5 12 21l9-4.5",
   todo: "M8 4h8l2 2h3v15H3V6h3l2-2Z M8 11h8 M8 15h8 M8 18h5",
   refresh: "M20 7v5h-5 M4 17v-5h5 M5.6 9A7 7 0 0 1 18 6l2 2 M4 16l2 2a7 7 0 0 0 12.4-3",
+  eye: "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
+  eyeOff: "M3 3l18 18 M10.6 5.1A12.5 12.5 0 0 1 12 5c6.5 0 10 7 10 7a17.7 17.7 0 0 1-3.1 4.1 M6.2 6.2A19.2 19.2 0 0 0 2 12s3.5 7 10 7a12 12 0 0 0 5.8-1.5 M9.9 9.9a3 3 0 0 0 4.2 4.2",
 } as const;
 
 export type IconName = keyof typeof paths;
