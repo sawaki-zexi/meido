@@ -164,6 +164,14 @@ class TaskRuntime:
             self._db.execute("ALTER TABLE tasks ADD COLUMN log_error TEXT NOT NULL DEFAULT ''")
         if "completion" not in {row[1] for row in self._db.execute("PRAGMA table_info(tasks)")}:
             self._db.execute("ALTER TABLE tasks ADD COLUMN completion INTEGER NOT NULL DEFAULT 0")
+        if "retain_until_ack" not in {row[1] for row in self._db.execute("PRAGMA table_info(tasks)")}:
+            self._db.execute("ALTER TABLE tasks ADD COLUMN retain_until_ack INTEGER NOT NULL DEFAULT 0")
+        # Keep the handover identity after ordinary result retention expires.
+        # A retried occurrence must not start a second execution after ACK.
+        self._db.execute("""CREATE TABLE IF NOT EXISTS task_submissions (
+            scope TEXT NOT NULL, kind TEXT NOT NULL, submission_key TEXT NOT NULL,
+            task_id TEXT NOT NULL, role_id TEXT NOT NULL,
+            PRIMARY KEY(scope, kind, submission_key))""")
         self._db.execute("""CREATE TABLE IF NOT EXISTS task_completions (
             task_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending',
             content TEXT NOT NULL DEFAULT '', message_id TEXT, delivery_id TEXT)""")
@@ -187,7 +195,8 @@ class TaskRuntime:
         self._prune()
 
     def submit(self, origin: TaskOrigin, executor: TaskExecutor, *, budget: TaskBudget, kind: str, description: str = "",
-               authorized: Callable[[], bool] | None = None, completion: bool = False) -> str:
+               authorized: Callable[[], bool] | None = None, completion: bool = False,
+               submission_key: str | None = None, retain_until_ack: bool = False) -> str:
         if not origin.role_id or not origin.session_key:
             raise ValueError("task owner and original context are required")
         if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", kind):
@@ -196,9 +205,21 @@ class TaskRuntime:
             raise ValueError("task timeout exceeds host budget")
         if not 0 < budget.log_bytes <= self.max_log_bytes or not 0 < budget.output_chars <= 200_000:
             raise ValueError("task output exceeds host budget")
+        if submission_key is not None and (not isinstance(submission_key, str) or not 0 < len(submission_key) <= 512):
+            raise ValueError("invalid host submission key")
         with self._lock:
             if self._closed or origin.role_id in self._disabled_roles or (authorized is not None and not authorized()):
                 raise PermissionError("task execution is disabled")
+            scope = json.dumps(origin.scope())
+            if submission_key is not None:
+                previous = self._db.execute(
+                    "SELECT task_id FROM task_submissions WHERE scope=? AND kind=? AND submission_key=?",
+                    (scope, kind, submission_key),
+                ).fetchone()
+                if previous is not None:
+                    if self._db.execute("SELECT 1 FROM tasks WHERE task_id=?", (previous[0],)).fetchone() is None:
+                        raise KeyError("task result is no longer retained")
+                    return str(previous[0])
             if len(self._active) >= self.max_concurrent or sum(
                 self._snapshot(key).origin.role_id == origin.role_id for key in self._active
             ) >= self.max_per_role:
@@ -211,18 +232,23 @@ class TaskRuntime:
             retained = self._db.execute("SELECT budget,log_bytes,ended_at FROM tasks WHERE role_id=?", (origin.role_id,)).fetchall()
             retained_bytes = sum(json.loads(row["budget"])["log_bytes"] if row["ended_at"] is None else row["log_bytes"] for row in retained)
             if len(retained) >= self.max_retained_per_role or retained_bytes + budget.log_bytes > self.max_role_log_bytes:
-                raise ValueError("role task retention budget is occupied by undelivered completions")
+                raise ValueError("role task retention budget is occupied by unacknowledged results")
             task_id = f"{kind}_{uuid.uuid4().hex}"
             log_dir = self.root / "logs" / hashlib.sha256(origin.role_id.encode()).hexdigest()
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = log_dir / f"{task_id}.log"
             log_path.touch()
-            self._db.execute(
-                "INSERT INTO tasks (task_id,origin,role_id,kind,description,status,budget,started_at,log_path,completion) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (task_id, json.dumps(asdict(origin)), origin.role_id, kind, description[:500], "queued",
-                 json.dumps(asdict(budget)), time.time(), str(log_path), int(completion)),
-            )
-            self._db.commit()
+            with self._db:
+                self._db.execute(
+                    "INSERT INTO tasks (task_id,origin,role_id,kind,description,status,budget,started_at,log_path,completion,retain_until_ack) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (task_id, json.dumps(asdict(origin)), origin.role_id, kind, description[:500], "queued",
+                     json.dumps(asdict(budget)), time.time(), str(log_path), int(completion), int(retain_until_ack)),
+                )
+                if submission_key is not None:
+                    self._db.execute(
+                        "INSERT INTO task_submissions(scope,kind,submission_key,task_id,role_id) VALUES (?,?,?,?,?)",
+                        (scope, kind, submission_key, task_id, origin.role_id),
+                    )
             active = _Active(executor, authorized)
             self._active[task_id] = active
             active.thread = threading.Thread(target=self._run, args=(task_id, active, budget), daemon=True)
@@ -278,6 +304,15 @@ class TaskRuntime:
             self._db.execute("UPDATE task_completions SET message_synced=1 WHERE task_id=?", (task_id,))
             self._db.commit()
 
+    def acknowledge_result(self, task_id: str, origin: TaskOrigin) -> None:
+        """Release a result only after its owner has durably copied it."""
+        with self._lock:
+            self._authorize(task_id, origin)
+            if self._snapshot(task_id).ended_at is None:
+                raise ValueError("task result is not terminal")
+            self._db.execute("UPDATE tasks SET retain_until_ack=0 WHERE task_id=?", (task_id,))
+            self._db.commit()
+
     def query(self, task_id: str, origin: TaskOrigin, *, wait_seconds: float = 0) -> TaskSnapshot:
         with self._lock:
             self._prune()
@@ -325,12 +360,15 @@ class TaskRuntime:
                 self._remove_directory(row[0])
             self._db.execute("DELETE FROM tasks WHERE role_id=?", (role_id,))
             self._db.execute("DELETE FROM task_completions WHERE task_id NOT IN (SELECT task_id FROM tasks)")
+            self._db.execute("DELETE FROM task_submissions WHERE role_id=?", (role_id,))
             self._db.commit()
 
     def reconcile_roles(self, available_roles: set[str]) -> None:
         """Remove orphaned records/logs after an interrupted role deletion."""
         with self._lock:
-            role_ids = {row[0] for row in self._db.execute("SELECT DISTINCT role_id FROM tasks").fetchall()}
+            role_ids = {row[0] for row in self._db.execute(
+                "SELECT role_id FROM tasks UNION SELECT role_id FROM task_submissions"
+            ).fetchall()}
         for role_id in role_ids - available_roles:
             self.delete_role(role_id)
 
@@ -431,7 +469,7 @@ class TaskRuntime:
 
     def _prune(self, *, reserve_role: str = "", reserve_bytes: int = 0) -> None:
         with self._lock:
-            rows = self._db.execute("SELECT task_id,role_id,log_path,log_bytes,budget,ended_at FROM tasks ORDER BY started_at DESC").fetchall()
+            rows = self._db.execute("SELECT task_id,role_id,log_path,log_bytes,budget,ended_at,retain_until_ack FROM tasks ORDER BY started_at DESC").fetchall()
             counts: dict[str, int] = {reserve_role: 1} if reserve_role else {}
             sizes: dict[str, int] = {reserve_role: reserve_bytes} if reserve_role else {}
             for row in rows:
@@ -439,6 +477,8 @@ class TaskRuntime:
                 counts[role] = counts.get(role, 0) + 1
                 sizes[role] = sizes.get(role, 0) + (json.loads(row["budget"])["log_bytes"]
                                                   if row["ended_at"] is None else row["log_bytes"])
+                if row["retain_until_ack"]:
+                    continue
                 pending = self._db.execute("SELECT status,message_id,message_synced FROM task_completions WHERE task_id=?", (row["task_id"],)).fetchone()
                 if pending is not None and (pending[0] in {"pending", "sending"} or pending[1] and not pending[2]):
                     continue
