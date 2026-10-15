@@ -10,6 +10,7 @@ from typing import Any
 
 from .base import ChannelAdapter, ChannelAdapterError, PartialDeliveryError, UnsupportedTargetError, is_delivery_uncertain
 from .models import ChannelCapabilities, DeliveryResult, DeliveryStatus, InboundEvent, OutboundMessage, Target, TargetKind
+from .directory import DirectoryError, DirectoryObservation, DirectoryQuery
 
 
 @dataclass(slots=True)
@@ -37,12 +38,16 @@ class TelegramAccountAdapter(ChannelAdapter):
         targets=frozenset({TargetKind.PRIVATE, TargetKind.GROUP}),
     )
 
-    def __init__(self, account_id: str, token_getter, transport) -> None:
+    def __init__(self, account_id: str, token_getter, transport, *, connection_snapshot=None) -> None:
         super().__init__()
         self.account_id = account_id
         self._token_getter = token_getter
         self._transport = transport
         self._targets: dict[str, Any] = {}
+        self._connection_snapshot = connection_snapshot
+
+    def connection_snapshot(self) -> dict[str, object]:
+        return self._connection_snapshot() if self._connection_snapshot is not None else super().connection_snapshot()
 
     def parse_event(self, payload: Mapping[str, Any]) -> InboundEvent | None:
         del payload
@@ -135,6 +140,26 @@ class TelegramAccountAdapter(ChannelAdapter):
 
     async def list_targets(self):
         return list(self._targets.values())
+
+    async def query_directory(self, query: DirectoryQuery) -> DirectoryObservation:
+        if query.kind != "member":
+            raise DirectoryError("unsupported")
+        request = getattr(self._transport, "get_chat_member", None)
+        if not callable(request):
+            raise DirectoryError("unsupported")
+        result = await request(self._token_getter(), query.group_id, query.member_id)
+        user = result.get("user")
+        if not isinstance(user, Mapping) or str(user.get("id")) != query.member_id:
+            raise DirectoryError("invalid_platform_response")
+        status = result.get("status")
+        if status not in {"creator", "administrator", "member", "restricted", "left", "kicked"}:
+            raise DirectoryError("invalid_platform_response")
+        name = " ".join(str(user.get(key) or "").strip() for key in ("first_name", "last_name")).strip()
+        return DirectoryObservation(members=[{"kind": "member", "memberId": query.member_id,
+            "groupId": query.group_id, "accountId": self.account_id, "displayName": name,
+            "username": str(user.get("username") or ""), "status": status,
+            "isMember": status not in {"left", "kicked"} and (status != "restricted" or result.get("is_member") is True),
+            "canSend": False, "sendTargetId": None}])
 
     async def stream_start(self, target: Target, *, reply_to_message_id: str | None = None) -> TelegramStreamSession:
         self._validate_target(target)

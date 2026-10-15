@@ -15,6 +15,8 @@ from backend.app.channels.models import TargetKind, target_from_chat
 from backend.app.multichannel import MultichannelStore
 from backend.app.session_store import SessionStore
 from backend.app.models import AgentRun
+from backend.app.channels.directory import DirectoryQuery
+from channels.test_host import MemoryCredentials
 
 
 def test_real_sender_historical_names_survive_restart(tmp_path):
@@ -254,7 +256,7 @@ def test_member_profile_pages_thread_sources_without_losing_or_merging_them(tmp_
 
 def test_cached_directory_refresh_cannot_replace_the_last_observed_member_name(tmp_path):
     database = tmp_path / "sessions.db"
-    channels = MultichannelStore(database, SessionStore(database))
+    channels = MultichannelStore(database, SessionStore(database), MemoryCredentials())
     channels.register_channel_account("r", "qq", account_id="a", enabled=True, allow_group=True)
 
     directory_members = {}
@@ -289,7 +291,7 @@ def test_cached_directory_refresh_cannot_replace_the_last_observed_member_name(t
         # A successful fresh directory response is a real observation even
         # when the name is unchanged within that group's cached target.
         directory_members["200"] = [{"user_id": 22, "nickname": "Alice"}]
-        await host.refresh_targets("a")
+        await host.query_directory("r", "a", DirectoryQuery("members", group_id="200"), scope="role:r")
         current = json.loads((await tool.execute({"name": "Bob"}, context)).content)
         assert current["candidates"] == [
             {"channel": "qq", "member_id": "22", "name": "Alice", "nicknames": ["Alice", "Bob"]}]

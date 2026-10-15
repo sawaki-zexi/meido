@@ -10,6 +10,8 @@ from backend.app.agent_runtime.runtime import RuntimeManager
 from backend.app.channels import ChannelHost
 from backend.app.channels.group_tools import MultichannelGroupRepository
 from backend.app.channels.napcat import NapCatAdapter, NapCatConfig
+from backend.app.channels.directory import DirectoryQuery
+from test_channel_api import MemoryCredentials
 from backend.app.memory_config import MemorySettingsStore
 from backend.app.model_adapter import ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
@@ -23,7 +25,7 @@ from backend.app.session_store import SessionStore
 def test_qq_nickname_observations_are_queryable_from_desktop_when_account_is_offline(tmp_path, monkeypatch, fresh_directory):
     roles = RoleStore(tmp_path / "roles")
     sessions = SessionStore(tmp_path / "sessions.db")
-    channels = MultichannelStore(tmp_path / "sessions.db", sessions)
+    channels = MultichannelStore(tmp_path / "sessions.db", sessions, MemoryCredentials())
     settings = MemorySettingsStore(tmp_path / "memory.json")
     settings.update(enabled=False)
     host = ChannelHost(channels)
@@ -67,6 +69,11 @@ def test_qq_nickname_observations_are_queryable_from_desktop_when_account_is_off
             }, source_adapter=adapter)
 
     asyncio.run(observe())
+    if fresh_directory:
+        # #170 makes a platform member refresh an explicit group query;
+        # ordinary inbound observations never enumerate all group members.
+        asyncio.run(host.query_directory(role["id"], account.account_id,
+            DirectoryQuery("members", group_id="100"), scope=f"role:{role['id']}"))
     channels.set_account_state(account.account_id, enabled=False)
     catalog = client.get(f"/api/roles/{role['id']}/tools").json()
     lookup = next(item for item in catalog["tools"] if item["name"] == "lookup_group_member")

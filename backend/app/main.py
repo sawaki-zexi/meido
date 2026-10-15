@@ -97,6 +97,7 @@ from .agent_runtime.types import UserMessage
 from .channels.attachment_tool import ReadChannelAttachmentTool
 from .channels.source_authority import FrozenChannelSource, capture_channel_source
 from .channels.group_access import GroupToolAccess
+from .channels.tools import ChannelDirectoryAccess
 from .channels.consolidation import ChannelMemoryMaintenance, finish_io
 from .agent_runtime.skills import SkillRegistry
 from .agent_runtime.memory_write_tools import MemorizeTool, ForgetMemoryTool, RoleMemoryAccess
@@ -2069,6 +2070,7 @@ def _channel_account_payload(account: ChannelAccount) -> dict[str, object]:
     if app_id:
         payload["appId"] = app_id
     payload["connectionStatus"] = _channel_connection_status(account)
+    payload.update(channel_host.connection_snapshot(account.account_id))
     adapter = channel_adapters.get(account.account_id)
     if adapter is not None:
         capabilities = adapter.capabilities
@@ -2103,25 +2105,7 @@ async def _channel_lifecycle(account_id: str):
 
 
 def _channel_connection_status(account: ChannelAccount) -> str:
-    if not multichannel_store.account_effectively_enabled(account):
-        return "disconnected"
-    if account.last_error:
-        return "error"
-    pending = channel_tasks.get(account.account_id)
-    if pending is not None and not pending.done() and account.account_id not in channel_adapters:
-        return "connecting"
-    if account.channel == "telegram":
-        task = telegram_tasks.get(account.account_id)
-        return "connected" if task is not None and not task.done() else "disconnected"
-    transport = channel_transports.get(account.account_id)
-    if transport is None:
-        return "disconnected"
-    if bool(getattr(transport, "connected", False)):
-        return "connected"
-    if account.channel == "feishu" and getattr(transport, "_handler", None) is not None:
-        return "connected"
-    task = getattr(transport, "_task", None)
-    return "connecting" if task is not None and not task.done() else "disconnected"
+    return str(channel_host.connection_snapshot(account.account_id)["connection"])
 
 
 def _channel_secret_key(account: ChannelAccount, name: str) -> str:
@@ -2163,11 +2147,13 @@ def _build_channel_adapter(account: ChannelAccount, *, register: bool = True) ->
     config = multichannel_store.channel_config(account.account_id)
     transport: object | None = None
     if account.channel == "telegram":
-        transport = _telegram_service(account.account_id).transport
+        service = _telegram_service(account.account_id)
+        transport = service.transport
         adapter = TelegramAccountAdapter(
             account.account_id,
             lambda: multichannel_store.token(account.account_id),
             transport,
+            connection_snapshot=service.connection_snapshot,
         )
     elif account.channel == "qq":
         managed_ref = str(config.get("managedRef") or "")
@@ -3967,9 +3953,11 @@ def _runtime_tool_candidates(
     if mail_service.store.connection().auto_draft_ready:
         tools.append(mail_manage_tool)
     if include_channel:
+        directory_access = ChannelDirectoryAccess(authorized=schedule_source_authorized,
+            source_scope=lambda context: task_origin(context).source_scope_id)
         tools.extend((
-            ChannelAccountListTool(channel_host),
-            ChannelTargetsTool(channel_host),
+            ChannelAccountListTool(channel_host, access=directory_access),
+            ChannelTargetsTool(channel_host, access=directory_access),
             ChannelSendTool(
                 channel_host,
                 is_owner=is_channel_owner,
