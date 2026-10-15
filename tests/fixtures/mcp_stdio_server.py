@@ -10,6 +10,15 @@ import time
 
 root = Path(sys.argv[1])
 mode = sys.argv[2] if len(sys.argv) > 2 else "normal"
+if mode == "asyncio":
+    import asyncio
+
+    async def open_local_socket():
+        server = await asyncio.start_server(lambda _reader, writer: writer.close(), '127.0.0.1', 0)
+        server.close()
+        await server.wait_closed()
+
+    asyncio.run(open_local_socket())
 root.mkdir(parents=True, exist_ok=True)
 (root / "pid").write_text(str(os.getpid()))
 lock = threading.Lock()
