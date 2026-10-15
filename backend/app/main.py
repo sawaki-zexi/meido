@@ -86,6 +86,8 @@ from .agent_runtime.file_tools import FILE_TOOL_NAMES, build_file_tools
 from .agent_runtime.catalog import RuntimeCapabilityPolicy, tool_catalog
 from .agent_runtime.shell_tool import SHELL_TOOL_NAMES, TaskOutputTool, TaskStopTool
 from .task_runtime import TaskOrigin, TaskRuntime
+from .agent_runtime.spawn_tool import SPAWN_TOOL_NAMES, SpawnManageTool, SpawnTool
+from .task_runtime.completion import TaskCompletionWorker
 from .agent_runtime.discovery import ToolSearchTool
 from .agent_runtime.types import UserMessage
 from .channels.attachment_tool import ReadChannelAttachmentTool
@@ -760,6 +762,8 @@ async def _memory_engine_delete(mutation: MemoryMutation) -> None:
 
 
 async def _close_memory_workers() -> None:
+    if _spawn_completion_worker is not None:
+        await _spawn_completion_worker.close()
     await asyncio.to_thread(task_runtime.close)
     await mail_service.close()
     await owner_knowledge_scheduler.close()
@@ -776,6 +780,7 @@ async def _start_memory_workers() -> None:
     global _channel_runtime_loop
     _channel_runtime_loop = asyncio.get_running_loop()
     task_runtime.start()
+    _ensure_spawn_completion_worker()
     mail_service.start()
     todo_plugin.sessions = session_store
     await todo_plugin.start()
@@ -1562,6 +1567,8 @@ async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
         updated = store.update(role_id, data)
         if current is not None and current.agentConfig.shell != updated.agentConfig.shell:
             await asyncio.to_thread(task_runtime.cancel_role_tasks, role_id, kind="shell")
+        if current is not None and current.agentConfig.spawn != updated.agentConfig.spawn:
+            await asyncio.to_thread(task_runtime.cancel_role_tasks, role_id, kind="spawn")
         if current is not None and current.agentConfig.browserUse.enabled != updated.agentConfig.browserUse.enabled:
             # The role policy is the plugin's explicit authorization boundary.
             # Disabling closes the current generation and blocks an old run's
@@ -3804,8 +3811,23 @@ def _runtime_tool_candidates(
         return bool(shell_authorized(context) and current is not None
                     and ShellTool.command_is_allowed(command, current.agentConfig.shell.allowedCommands))
 
+    def spawn_authorized(context):
+        current = store.get(role.id)
+        if (context.role_id != role.id or current is None or role.id in _channel_roles_deleting
+                or not current.agentConfig.spawn.enabled or not is_channel_owner):
+            return False
+        if context.session_key.startswith("thread:"):
+            try:
+                task_source(context)
+            except PermissionError:
+                return False
+            return True
+        return context.session_key == f"role:{role.id}"
+
     memory_access = _memory_runtime_access(role, is_channel_owner=is_channel_owner, source_thread_id=source_thread_id)
     tools: list[object] = [
+        SpawnTool(task_runtime, role.agentConfig.spawn, origin_resolver=task_origin, authorized=spawn_authorized),
+        SpawnManageTool(task_runtime, origin_resolver=task_origin, authorized=spawn_authorized),
         ShellTool(
             store.root / role.id / "workspace" if preview else store.workspace_path(role.id),
             allowed_commands=shell.allowedCommands,
@@ -3880,6 +3902,8 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
         enabled.update(MCP_MANAGEMENT_NAMES.intersection(role.agentConfig.enabledTools))
     if shell.enabled and shell.allowedCommands:
         enabled.update(SHELL_TOOL_NAMES)
+    if role.agentConfig.spawn.enabled:
+        enabled.update(SPAWN_TOOL_NAMES)
     if memory_settings_store.get().enabled and role.agentConfig.memoryRecall.enabled:
         enabled.add("recall_memory")
     if owner_knowledge_plugin.status().enabled:
@@ -3922,7 +3946,7 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     host_enabled = set(enabled_tools)
     enabled_tools.update(agent_config.enabledTools)
-    enabled_tools.difference_update((SHELL_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage"}) - host_enabled)
+    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage"}) - host_enabled)
     if not include_channel:
         enabled_tools.difference_update({
             "account_list", "account_targets", "account_send", "message_push", "lookup_group_context",
@@ -4066,6 +4090,98 @@ async def _runtime_capabilities(
         if mcp_run is not None:
             await mcp_run.close()
         raise
+
+
+_spawn_completion_worker: TaskCompletionWorker | None = None
+
+
+def _spawn_origin_authorized(origin: TaskOrigin) -> bool:
+    role = store.get(origin.role_id)
+    if role is None or not role.agentConfig.spawn.enabled or role.id in _channel_roles_deleting:
+        return False
+    if origin.source_authority_json:
+        try:
+            source = FrozenChannelSource.from_dict(json.loads(origin.source_authority_json))
+            return ((source.role_id, source.session_key, source.thread_id, source.account_id)
+                    == (origin.role_id, origin.session_key, origin.source_thread_id, origin.source_account_id)
+                    and source.owner_context and source.authorization_denial(multichannel_store) is None)
+        except (ValueError, TypeError, KeyError):
+            return False
+    return origin.session_key == f"role:{origin.role_id}" and not origin.source_account_id
+
+
+async def _summarize_spawn_completion(snapshot) -> str:
+    from .agent_runtime.loop import run_agent_loop
+    from .agent_runtime.spawn_tool import BoundedModelProvider
+    from .agent_runtime.events import AgentEndEvent
+    from .agent_runtime.types import AssistantMessage
+    from .agent_runtime.types import AgentMessage
+    from .models import SpawnToolConfig
+    from .models import Role
+    role = store.get(snapshot.origin.role_id)
+    parent = session_store.get_run(snapshot.origin.parent_run_id)
+    if role is None or parent is None:
+        raise PermissionError("original role or run is unavailable")
+    frozen_configuration = parent.modelSnapshot.get("spawnModelConfiguration")
+    configuration = model_configuration_store.get(parent.modelConfigurationId) if parent.modelConfigurationId else None
+    if parent.modelConfigurationId and configuration is None:
+        raise PermissionError("original model connection is unavailable")
+    if configuration is not None and frozen_configuration != configuration.model_dump(mode="json", exclude={"apiKey"}):
+        raise PermissionError("original model connection changed before completion")
+    if isinstance(parent.modelSnapshot.get("role"), dict):
+        role = Role.model_validate(parent.modelSnapshot["role"])
+    provider = MeidoProvider(model_adapter, role, configuration, structured_without_tools=True, max_response_tokens=2048)
+    transcript: list[AgentMessage] = [UserMessage(f"Task {snapshot.task_id}; status={snapshot.status}; label={snapshot.description}\nResult:\n{snapshot.output[:20000]}")]
+    result = ""
+    async for event in run_agent_loop(provider=BoundedModelProvider(provider, SpawnToolConfig(maxTurns=1, maxModelOutputChars=8000)),
+            model="original-role-model", system="[internal spawn completion]\n" + provider.role_system_prompt() +
+            "\n这是内部子任务完成事件，不是主人发言。整理真实状态与结果，简短回复原会话。没有工具权限，不更新记忆或待办。",
+            messages=transcript, max_turns=1, provider_timeout=15):
+        if isinstance(event, AgentEndEvent):
+            if event.reason != "completed":
+                raise RuntimeError("completion summary failed")
+            result = next((item.content for item in reversed(transcript) if isinstance(item, AssistantMessage)), "")
+    return result
+
+
+async def _deliver_spawn_completion(snapshot, content) -> tuple[str, str | None]:
+    origin = snapshot.origin
+    if not _spawn_origin_authorized(origin):
+        return "failed", None
+    source = FrozenChannelSource.from_dict(json.loads(origin.source_authority_json))
+    target = target_from_chat(account_id=source.account_id, chat_id=source.chat_id,
+                              kind=TargetKind.GROUP if source.chat_type == "group" else TargetKind.PRIVATE)
+    result = await channel_host.account_send(origin.role_id, source.account_id, target.id, content, actor="reply",
+        source_thread_id=source.thread_id, source_session_key=origin.session_key,
+        source_run_id=origin.parent_run_id, source_tool_call_id=origin.tool_call_id,
+        source_kind="spawn_completion", record_message=False, authorize_source=lambda: _spawn_origin_authorized(origin))
+    return result.status.value, result.attempt_id
+
+
+def _ensure_spawn_completion_worker() -> None:
+    global _spawn_completion_worker
+    if (_spawn_completion_worker is None or _spawn_completion_worker.tasks is not task_runtime
+            or _spawn_completion_worker.sessions is not session_store):
+        _spawn_completion_worker = TaskCompletionWorker(task_runtime, session_store,
+            lock_for=_runtime_role_lock, authorized=_spawn_origin_authorized,
+            summarize=_summarize_spawn_completion, deliver=_deliver_spawn_completion)
+    _spawn_completion_worker.start()
+
+
+def _bind_spawn_runtime(capabilities: CapabilityResolution, provider: MeidoProvider) -> None:
+    # Capture the selected model configuration and adapter from the parent;
+    # a later role edit must never swap a running child's connection or tools.
+    frozen_role = provider.role.model_copy(deep=True)
+    frozen_config = provider.configuration.model_copy(deep=True) if provider.configuration is not None else None
+    for tool in capabilities.tools:
+        if isinstance(tool, SpawnTool):
+            parent = session_store.get_run(capabilities.snapshot.run_id)
+            if parent is not None:
+                session_store.update_run(parent.runId, status=parent.status, model_snapshot={**parent.modelSnapshot,
+                    "spawnModelConfiguration": frozen_config.model_dump(mode="json", exclude={"apiKey"}) if frozen_config else None})
+            tool.bind(capabilities, lambda: MeidoProvider(provider.adapter, frozen_role, frozen_config, structured_without_tools=True,
+                max_response_tokens=min(4096, frozen_role.agentConfig.spawn.maxModelOutputChars)))
+            _ensure_spawn_completion_worker()
 
 
 def _runtime_message_snapshot(message: object) -> dict[str, object]:
@@ -4652,6 +4768,7 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
             external_context = group_repository.prompt_context(thread.role_id, thread.thread_id, str(metadata.get("senderId") or ""))
             memory_context = "\n\n".join(part for part in (memory_context, external_context) if part)
         provider = MeidoProvider(model_adapter, role, configuration, memory_context, capabilities.prompt_context())
+        _bind_spawn_runtime(capabilities, provider)
         target = target_from_chat(
             account_id=thread.account_id,
             chat_id=thread.chat_id,
@@ -5062,6 +5179,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     memory_context,
                     capabilities.prompt_context(),
                 )
+                _bind_spawn_runtime(capabilities, provider)
                 capabilities_owned_by_runtime = True
                 async for runtime_event in runtime_manager.run(
                     AgentRun(

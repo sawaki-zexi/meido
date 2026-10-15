@@ -1099,7 +1099,7 @@ class MultichannelStore:
         threads: list[ChannelThread] = []
         for row in rows:
             thread = self._thread(row)
-            messages = [item for item in self.sessions.list_messages(thread.session_key) if item.messageType in {"text", "proactive_reminder"}]
+            messages = [item for item in self.sessions.list_messages(thread.session_key) if item.messageType in {"text", "proactive_reminder", "internal_completion"}]
             if messages:
                 latest = messages[-1]
                 thread = replace(thread, metadata={
@@ -1261,7 +1261,7 @@ class MultichannelStore:
         if thread is None:
             raise KeyError(thread_id)
         rows = self.sessions.list_messages(thread.session_key)
-        rows = [row for row in rows if row.messageType in {"text", "proactive_reminder"}]
+        rows = [row for row in rows if row.messageType in {"text", "proactive_reminder", "internal_completion"}]
         if before is not None:
             rows = [row for row in rows if row.sequence < before]
         rows = sorted(rows, key=lambda item: item.sequence)

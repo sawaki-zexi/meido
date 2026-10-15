@@ -10,7 +10,7 @@ import asyncio
 import contextvars
 import uuid
 from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -270,6 +270,7 @@ class ChannelHost:
         source_tool_call_id: str | None = None,
         source_kind: str | None = None,
         record_message: bool = True,
+        authorize_source: Callable[[], bool] | None = None,
     ) -> DeliveryResult:
         """Send to an observed target and persist the resulting delivery state.
 
@@ -372,6 +373,8 @@ class ChannelHost:
 
         adapter = await self._begin_send(account_id)
         try:
+            if authorize_source is not None and not authorize_source():
+                raise UnsupportedTargetError("原始任务来源授权已失效")
             if actor in {"external", "push"} and not any(
                 item.id == target.id for item in self.store.owner_targets(role_id, account_id)
             ):
