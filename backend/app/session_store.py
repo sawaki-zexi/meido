@@ -561,8 +561,15 @@ class SessionStore:
                     if stored.metadata.get("channel") not in {None, "", "desktop"} and stored.metadata.get("deliveryStatus") != "sent":
                         index += 1
                         continue
+                    content = stored.content
+                    if stored.messageType == "desktop_push":
+                        attachments = stored.metadata.get("attachments", [])
+                        labels = [f"{item.get('name', '附件')}（attachment_id={item['id']}）"
+                                  for item in attachments if isinstance(item, dict) and item.get('id')]
+                        if labels:
+                            content = "\n".join(filter(None, (content, "已推送附件：" + "；".join(labels))))
                     messages.append(AssistantMessage(
-                        stored.content,
+                        content,
                         metadata=_runtime_assistant_metadata(stored.metadata),
                         timestamp=_timestamp(stored.metadata),
                     ))

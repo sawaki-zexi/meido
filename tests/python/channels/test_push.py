@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 from backend.app.agent_runtime import CancellationToken, ToolContext
 from backend.app.channels import ChannelAdapter, ChannelHost, DeliveryResult, DeliveryStatus, OutboundMessage, TargetKind, target_from_chat
 from backend.app.channels.models import ChannelCapabilities
-from backend.app.channels.push import ChannelPushService, MessagePushTool
+from backend.app.channels.push import ChannelPushService
+from backend.app.desktop_push import MessagePushTool
 from backend.app.multichannel import MultichannelStore
 from backend.app.session_store import SessionStore
 
@@ -62,35 +63,24 @@ def context():
     return ToolContext("role-1", "role:role-1", "run-1", CancellationToken(), "call-1")
 
 
-def test_push_only_reaches_paired_owner_and_records_call_source(tmp_path):
-    store, adapter, service, target = setup_push(tmp_path)
-    tool = MessagePushTool(service, is_owner=True)
-    denied = asyncio.run(tool.execute({"channel": "qq", "chat_id": "stranger", "message": "不能发"}, context()))
-    sent = asyncio.run(tool.execute({"channel": "qq", "chat_id": target.id, "message": "提醒"}, context()))
-    assert denied.is_error and not sent.is_error
-    assert len(adapter.sent) == 1
-    delivery = store.list_deliveries("role-1")[0]
-    assert delivery["sourceSessionKey"] == "role:role-1"
-    assert delivery["sourceRunId"] == "run-1"
-    assert delivery["sourceToolCallId"] == "call-1"
-    assert delivery["sourceKind"] == "message_push"
-    assert delivery["accountGeneration"]
-    thread = next(thread for thread in store.list_threads("role-1") if thread.channel == "qq")
-    assert store.sessions.list_messages(thread.session_key)[0].content == "提醒"
+def test_ordinary_push_cannot_send_to_external_targets_even_when_paired(tmp_path):
+    store, adapter, _service, target = setup_push(tmp_path)
+    tool = MessagePushTool(store.sessions, lambda: tmp_path, role_id="role-1", authorized=lambda _: True)
+    for destination in ("owner", "user", target.id, "stranger"):
+        result = asyncio.run(tool.execute({"channel": "qq", "chat_id": destination, "message": "no"}, context()))
+        assert result.is_error and "account_send" in result.content
+    assert adapter.sent == [] and store.list_deliveries("role-1") == []
 
 
-def test_external_push_cannot_contact_other_channel_or_desktop(tmp_path):
-    store, adapter, service, _ = setup_push(tmp_path)
-    visitor = store.ensure_channel_thread("role-1", "qq", "qq-1", "visitor", "private")
-    tool = MessagePushTool(service, is_owner=False, source_thread_id=visitor.thread_id, source_account_id="qq-1")
-    assert tool.definition.input_schema["properties"]["channel"]["enum"] == ["qq"]
+def test_visitor_cannot_push_to_desktop_or_external_owner(tmp_path):
+    store, adapter, _service, _ = setup_push(tmp_path)
+    tool = MessagePushTool(store.sessions, lambda: tmp_path, role_id="role-1", authorized=lambda _: False)
+    assert tool.definition.input_schema["properties"]["channel"]["enum"] == ["desktop"]
     assert tool.definition.input_schema["properties"]["chat_id"]["enum"] == ["owner", "user"]
-    for channel, chat_id in (("desktop", "owner"), ("qq", "owner-chat"), ("telegram", "owner")):
-        result = asyncio.run(tool.execute({"channel": channel, "chat_id": chat_id, "message": "no"}, context()))
+    for channel in ("desktop", "qq", "telegram"):
+        result = asyncio.run(tool.execute({"channel": channel, "chat_id": "owner", "message": "no"}, context()))
         assert result.is_error
-    result = asyncio.run(tool.execute({"channel": "qq", "chat_id": "owner", "message": "帮我联系主人"}, context()))
-    assert not result.is_error
-    assert len(adapter.sent) == 1
+    assert adapter.sent == [] and store.sessions.list_messages("role:role-1") == []
 
 
 def test_reminders_require_explicit_paired_target_and_never_repeat_uncertain(tmp_path):

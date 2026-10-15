@@ -40,18 +40,11 @@ class MessagePushTool:
             ids = list(dict.fromkeys(ids))
             if (not message.strip() and not ids) or len(ids) > 4:
                 raise ValueError('provide text or at most four role attachments')
-            attachments = []
-            for identifier in ids:
-                item = resolve_attachment(self.workspace(), identifier)
-                if item is None or item.get('id') != identifier or not Path(str(item['path'])).is_file():
-                    raise ValueError('role attachment unavailable')
-                expected = 'image' if identifier == arguments.get('image') else 'file' if identifier == arguments.get('file') else None
-                if item.get('kind') not in {'image', 'file'} or expected and item.get('kind') != expected:
-                    raise ValueError('attachment kind does not match')
-                attachments.append(public_attachment(item))
+            attachments = self._attachments(ids, arguments)
             pending = asyncio.create_task(asyncio.to_thread(self.sessions.append_desktop_push_once,
                 self.role_id, context.run_id, str(context.tool_call_id), message,
-                attachments=attachments, authorized=lambda: self._allowed(context)))
+                attachments=attachments, authorized=lambda: self._allowed(context)
+                and self._attachments(ids, arguments) == attachments))
             try:
                 saved = await asyncio.shield(pending)
             except asyncio.CancelledError:
@@ -61,15 +54,35 @@ class MessagePushTool:
                         await asyncio.shield(pending)
                     except asyncio.CancelledError:
                         continue
+                    except Exception:
+                        break
                 # Consume an authorization rejection after releasing the write
                 # transaction, then preserve the caller's cancellation.
                 if not pending.cancelled():
                     pending.exception()
-                raise
+                raise asyncio.CancelledError
             receipt = {'status': 'sent', 'messageId': saved.id}
             return AgentToolResult(json.dumps(receipt, ensure_ascii=False), receipt)
         except (KeyError, ValueError, OSError, PermissionError):
+            if arguments.get('channel') != 'desktop':
+                return AgentToolResult('message_push 只投递当前角色桌面对话；对外消息请使用 account_send。', {'status': 'denied'}, is_error=True)
             return AgentToolResult('桌面消息未写入：权限或附件不可用，参数不符合要求。', {'status': 'denied'}, is_error=True)
+
+    def _attachments(self, ids: list[str], arguments: Mapping[str, object]) -> list[dict[str, object]]:
+        attachments = []
+        workspace = self.workspace()
+        directory = workspace / 'attachments'
+        if ids and (directory.is_symlink() or directory.is_junction()):
+            raise ValueError('role attachment directory was redirected')
+        for identifier in ids:
+            item = resolve_attachment(workspace, identifier)
+            if item is None or item.get('id') != identifier or not Path(str(item['path'])).is_file():
+                raise ValueError('role attachment unavailable')
+            if item.get('kind') not in {'image', 'file'} or any(
+                    item.get('kind') != kind for kind in ('image', 'file') if arguments.get(kind) == identifier):
+                raise ValueError('attachment kind does not match')
+            attachments.append(public_attachment(item))
+        return attachments
 
     def _allowed(self, context: ToolContext) -> bool:
         return bool(context.role_id == self.role_id and context.run_id and context.tool_call_id

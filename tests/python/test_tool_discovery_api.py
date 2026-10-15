@@ -282,7 +282,7 @@ def test_http_discovers_non_plugin_account_tool_from_real_role_account_store(
             self.count += 1
             names = {item["function"]["name"] for item in tools}
             if self.count == 1:
-                assert "account_list" not in names and "message_push" in names
+                assert "account_list" not in names and "message_push" not in names
                 yield ModelToolCall(
                     "provider-call" if repeat_ids else "find-account",
                     "tool_search",

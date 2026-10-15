@@ -1535,6 +1535,7 @@ def get_role_tools(role_id: str) -> dict[str, object]:
     if not mail_service.store.connection().auto_draft_ready:
         reasons["mail.manage"] = "邮件服务尚未就绪"
     dependencies = {name: browser_use_sessions.dependency_status() for name in BROWSER_USE_TOOL_NAMES}
+    dependencies['message_push'] = {'status': 'ready', 'reason': '只写入当前角色的桌面对话，无需外部渠道账号'}
     for names, available, reason in (
         (("web_search", "web_fetch"), network_tools_config.enabled, "宿主联网已关闭"),
         (("memorize", "forget_memory"), memory_settings_store.get().enabled, "全局记忆已关闭"),
@@ -3835,10 +3836,14 @@ def _runtime_tool_candidates(
         if (context.role_id != role.id or current is None or role.id in _channel_roles_deleting
                 or 'message_push' not in current.agentConfig.enabledTools or not is_channel_owner):
             return False
+        channel_origin = bool(source_account_id or source_thread_id and source_thread_id != f'desktop:{role.id}')
+        if channel_origin != context.session_key.startswith('thread:'):
+            return False
         run = session_store.get_run(context.run_id)
         user = session_store.user_message_for_run(context.run_id)
         if (run is None or run.roleId != role.id or run.sessionKey != context.session_key
                 or run.status not in {'created', 'running'} or user is None
+                or user.sessionKey != context.session_key
                 or user.status != 'completed' or user.messageType != 'text'):
             return False
         if context.session_key.startswith('thread:'):
