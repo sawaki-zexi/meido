@@ -22,9 +22,12 @@ export function MemorySettings() {
   const [settings, setSettings] = useState<MemorySettingsState | null>(null);
   const [draft, setDraft] = useState(defaultDraft);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
+  const [pendingAction, setPendingAction] = useState<"settings" | "test" | "save" | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [embeddingError, setEmbeddingError] = useState("");
+  const [embeddingMessage, setEmbeddingMessage] = useState("");
+  const busy = pendingAction !== null;
 
   const refresh = async () => {
     const result = await api<MemorySettingsState>("/api/memory/settings");
@@ -39,29 +42,29 @@ export function MemorySettings() {
 
   const saveSettings = async (next: Partial<Pick<MemorySettingsState, "enabled" | "embeddingEnabled">>) => {
     if (!settings) return;
-    setBusy(true); setError(""); setMessage("");
+    setPendingAction("settings"); setError(""); setMessage(""); setEmbeddingError(""); setEmbeddingMessage("");
     try {
       const result = await api<MemorySettingsState>("/api/memory/settings", { method: "PUT", body: JSON.stringify({ enabled: next.enabled ?? settings.enabled, embeddingEnabled: next.embeddingEnabled ?? settings.embeddingEnabled }) });
       setSettings(result);
       setMessage("记忆设置已保存");
     } catch (cause) { setError(errorMessage(cause, "记忆设置保存失败")); }
-    finally { setBusy(false); }
+    finally { setPendingAction(null); }
   };
 
   const submitEmbedding = async (action: "test" | "save") => {
-    setBusy(true); setError(""); setMessage("");
+    setPendingAction(action); setError(""); setMessage(""); setEmbeddingError(""); setEmbeddingMessage("");
     try {
       if (action === "test") {
         const result = await api<{ ok: boolean; message: string; latencyMs?: number }>("/api/embedding/configuration/test", { method: "POST", body: JSON.stringify(draft) });
-        setMessage(result.ok && result.latencyMs !== undefined ? `连接成功 · ${result.latencyMs} ms` : `失败：${result.message}`);
+        setEmbeddingMessage(result.ok ? `连接成功${result.latencyMs !== undefined ? ` · ${result.latencyMs} ms` : ""}` : `失败：${result.message}`);
       } else {
         const result = await api<MemorySettingsState["embedding"]>("/api/embedding/configuration", { method: "PUT", body: JSON.stringify(draft) });
         setSettings((current) => current ? { ...current, embedding: result } : current);
         setDraft((current) => ({ ...current, apiKey: "" }));
-        setMessage("向量模型配置已保存并生效");
+        setEmbeddingMessage("向量模型配置已保存并生效");
       }
-    } catch (cause) { setError(errorMessage(cause, action === "test" ? "向量模型连接测试失败" : "向量模型配置保存失败")); }
-    finally { setBusy(false); }
+    } catch (cause) { setEmbeddingError(errorMessage(cause, action === "test" ? "向量模型连接测试失败" : "向量模型配置保存失败")); }
+    finally { setPendingAction(null); }
   };
 
   if (loading) return <Placeholder loading>正在加载记忆设置…</Placeholder>;
@@ -84,7 +87,10 @@ export function MemorySettings() {
       <div className="field"><label htmlFor="embedding-dimensions">向量维度</label><input id="embedding-dimensions" required type="number" min={1} max={4096} value={draft.dimensions} disabled={busy} onChange={(event) => setDraft({ ...draft, dimensions: Number(event.target.value) })} /></div>
       <div className="field"><label htmlFor="embedding-api-key">向量 API Key</label><input id="embedding-api-key" type="password" autoComplete="new-password" value={draft.apiKey} placeholder={embedding.apiKeyConfigured ? "已设置，留空保留现有密钥" : "请输入 DashScope API Key"} disabled={busy} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })} /></div>
       {embeddingStatus.lastError && <Notice>{embeddingStatus.lastError}</Notice>}
-      <div className="form-actions"><button type="button" disabled={busy} onClick={() => void submitEmbedding("test")}>测试连接</button><button type="button" className="primary" disabled={busy} onClick={() => void submitEmbedding("save")}>保存向量配置</button></div>
+      {pendingAction === "test" && <p className="muted" role="status">正在测试向量模型连接…</p>}
+      {embeddingError && <Notice>{embeddingError}</Notice>}
+      {embeddingMessage && <Notice tone={embeddingMessage.startsWith("失败") ? "error" : "success"}>{embeddingMessage}</Notice>}
+      <div className="form-actions"><button type="button" disabled={busy} onClick={() => void submitEmbedding("test")}>{pendingAction === "test" ? "测试中…" : "测试连接"}</button><button type="button" className="primary" disabled={busy} onClick={() => void submitEmbedding("save")}>{pendingAction === "save" ? "保存中…" : "保存向量配置"}</button></div>
       <p className="muted">当前状态：{settings.embeddingEnabled ? (embeddingStatus.ready ? "可用" : embeddingStatus.configured ? "不可用" : "未配置") : "已暂停"} · {embedding.model} · {embedding.dimensions} 维</p>
     </section>
   </section>;
