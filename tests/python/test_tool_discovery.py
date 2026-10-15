@@ -408,6 +408,122 @@ def test_revoking_a_running_tool_cancels_it_before_its_file_effect(tmp_path):
     asyncio.run(execute())
 
 
+def test_repeated_parent_cancellation_waits_for_real_tool_resource_cleanup(tmp_path):
+    initialize_databases(tmp_path)
+    sessions = SessionStore(tmp_path / "sessions.db")
+
+    async def execute():
+        ready, cleanup_ready, release = (
+            asyncio.Event(),
+            asyncio.Event(),
+            asyncio.Event(),
+        )
+        cleanup_finished, cleanup_interrupted = asyncio.Event(), asyncio.Event()
+        handles = []
+        allowed = True
+
+        class HeldResource:
+            definition = ToolDefinition(
+                "held.resource", "Hold a real file until cleanup completes"
+            )
+
+            async def execute(self, arguments, context, on_update=None):
+                handle = (tmp_path / "held.txt").open("w", encoding="utf-8")
+                handles.append(handle)
+                ready.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cleanup_ready.set()
+                    try:
+                        await release.wait()
+                        handle.close()
+                        cleanup_finished.set()
+                    except asyncio.CancelledError:
+                        cleanup_interrupted.set()
+                        raise
+
+        class Provider:
+            requests = 0
+
+            async def stream_response(self, **kwargs):
+                self.requests += 1
+                assert self.requests == 1, (
+                    "cancelled cleanup must not resume the provider"
+                )
+                yield AssistantDoneEvent(
+                    AssistantMessage(
+                        tool_calls=(ToolCall("hold", "held.resource", {}),)
+                    )
+                )
+
+        manager = RuntimeManager(sessions)
+        run = AgentRun(
+            runId="repeat-cancel-cleanup",
+            roleId="r",
+            sessionKey="role:r",
+            status="created",
+            startedAt=datetime.now(timezone.utc),
+        )
+        capabilities = CapabilityRegistry([HeldResource()]).resolve(
+            role_id="r",
+            session_key="role:r",
+            run_id=run.runId,
+            enabled_tools={"held.resource", "tool_search"},
+            discovery_enabled=True,
+            authorize_tool=lambda definition, context: allowed,
+        )
+        await manager.reserve_run(run, "重复取消必须等待真实资源清理")
+
+        async def consume():
+            return [
+                event
+                async for event in manager.run(
+                    run,
+                    provider=Provider(),
+                    model="",
+                    system="",
+                    messages=[],
+                    capabilities=capabilities,
+                )
+            ]
+
+        running = asyncio.create_task(consume())
+        try:
+            await asyncio.wait_for(ready.wait(), 1)
+            allowed = False
+            await asyncio.wait_for(cleanup_ready.wait(), 1)
+            assert manager.cancel_run(run.runId)
+            for _ in range(6):
+                for _ in range(4):
+                    await asyncio.sleep(0)
+                running.cancel()
+            for _ in range(4):
+                await asyncio.sleep(0)
+            assert not cleanup_interrupted.is_set(), (
+                "parent cancellation reached the resource finalizer"
+            )
+            assert not running.done(), "run finished before its real file was closed"
+            assert sessions.get_run(run.runId).status == "running"
+            assert manager.lock_for("r").locked()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(running), 1)
+            assert cleanup_finished.is_set() and handles[0].closed
+            assert sessions.get_run(run.runId).status == "cancelled"
+            assert not manager.lock_for("r").locked()
+            assert sessions.list_tool_audits(run.runId)[0]["endedAt"] is not None
+        finally:
+            release.set()
+            if not running.done():
+                running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+            for handle in handles:
+                handle.close()
+
+    asyncio.run(execute())
+
+
 def test_restored_activation_requires_current_admission_and_exact_definition():
     original = CapabilityRegistry([ArchiveTool()]).resolve(
         role_id="r",
