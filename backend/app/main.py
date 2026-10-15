@@ -3357,7 +3357,7 @@ def _runtime_tool_candidates(
             max_output_chars=shell.maxOutputChars,
         ),
         _memory_runtime_tool(role),
-        *build_file_tools(role.id, store.workspace_path(role.id), is_owner=is_channel_owner),
+        *build_file_tools(role.id, store.root / role.id / "workspace", is_owner=is_channel_owner),
     ]
     if owner_knowledge_plugin.status().enabled:
         tools.append(_owner_knowledge_runtime_tool(role))
