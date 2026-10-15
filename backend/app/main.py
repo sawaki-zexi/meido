@@ -1278,6 +1278,13 @@ def save_embedding_configuration(data: EmbeddingConfigurationInput) -> dict[str,
     }
 
 
+@app.post("/api/embedding/configuration/reveal-key")
+def reveal_embedding_api_key(response: Response) -> dict[str, str]:
+    configuration = embedding_configuration_store.get()
+    response.headers["Cache-Control"] = "no-store"
+    return {"apiKey": configuration.apiKey}
+
+
 @app.post("/api/embedding/configuration/test")
 def test_embedding_configuration(data: EmbeddingConfigurationInput) -> dict[str, object]:
     try:
@@ -1386,6 +1393,15 @@ def update_model_configuration(configuration_id: str, data: ModelConfigurationIn
     except OSError as error:
         raise HTTPException(status_code=500, detail="模型配置保存失败") from error
     return {"configuration": public_configuration(configuration)}
+
+
+@app.post("/api/model/configurations/{configuration_id}/reveal-key")
+def reveal_model_api_key(configuration_id: str, response: Response) -> dict[str, str]:
+    configuration = model_configuration_store.get(configuration_id)
+    if configuration is None:
+        raise HTTPException(status_code=404, detail="模型配置不存在", headers={"Cache-Control": "no-store"})
+    response.headers["Cache-Control"] = "no-store"
+    return {"apiKey": configuration.apiKey}
 
 
 @app.post("/api/model/configurations/{configuration_id}/activate")
@@ -4180,6 +4196,20 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
                     })
 
 
+@app.post("/api/roles/{role_id}/runs/{run_id}/stop", response_model=SessionResponse)
+async def stop_role_reply(role_id: str, run_id: str) -> SessionResponse:
+    if store.get(role_id) is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    run = session_store.get_run(run_id)
+    if run is None or run.roleId != role_id or run.sessionKey != f"role:{role_id}":
+        raise HTTPException(status_code=404, detail="桌面回复不存在")
+    runtime_manager.sessions = session_store
+    runtime_manager.role_locks = role_locks
+    if not await runtime_manager.stop_run(run_id):
+        raise HTTPException(status_code=409, detail="当前回复暂时无法停止，请刷新后重试")
+    return session_manager.open_role_session(role_id)
+
+
 @app.post("/api/roles/{role_id}/messages")
 async def send_role_message(role_id: str, data: SendMessageInput, request: Request) -> StreamingResponse:
     if store.get(role_id) is None:
@@ -4603,6 +4633,6 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
     return StreamingResponse(
         stream(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Meido-Run-Id": run_id},
         background=BackgroundTask(runtime_manager.abandon_unstarted_run, run_id),
     )
