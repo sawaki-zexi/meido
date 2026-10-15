@@ -140,7 +140,7 @@ logger = logging.getLogger(__name__)
 roles_root = Path(os.getenv("MEIDO_ROLES_DIR", "roles"))
 project_root = Path(os.getenv("MEIDO_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
 data_root = Path(os.getenv("MEIDO_DATA_DIR", ".data"))
-mcp_host = McpHost(McpConfigStore(data_root / "mcp.db", SystemCredentialStore("meido.mcp")))
+mcp_host = McpHost(McpConfigStore(data_root / "mcp.db", SystemCredentialStore("meido.mcp", strict_cleanup=True)))
 managed_napcat = ManagedNapCat(data_root)
 _managed_qq_pending: dict[str, str] = {}
 MAX_ROLE_AVATAR_BYTES = 10 * 1024 * 1024

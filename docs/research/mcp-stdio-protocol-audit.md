@@ -28,3 +28,4 @@
 - watcher 一旦观察到原来源失效，就在当前 MCP run 内锁存撤权。公开平台开关 HTTP 用例先暂停、等待真实 peer 退出，再恢复平台并尝试旧 run 的 add，保证不复活。没有引入平台全局 epoch；两次复核之间的瞬时暂停/恢复不声称被捕获，新入站 run 仍须独立验证当前原绑定与连接意愿。
 - 独立规范复核发现凭据库清理异常被吞后，DELETE 错误返回 204，且旧 key 失去重试归属。公开 HTTP 故障用例已复现并修复：删除先撤权与整树断连，再清理凭据；失败返回 503 并保留停用配置及持久 key 队列。替换旧 revision、先写后抛的新 key 均留账；重建 Host/SQLite 后的实际保存/删除重试可消费队列并清理，测试只使用内存 Vault。
 - 独立规格复核发现响应等待超时没有包含 `_send().drain()`，取消通知也会被同一背压阻塞。真实 fixture 握手/目录后停止读取 stdin 并派生子进程，60000 个中文字符仍在参数字符预算内；旧实现请求超时及单次取消两秒后均 pending。请求现从写入起共享总超时，取消通知严格限 50ms 后进入整树清理；stdio 超时/单次和重复取消、公开 HTTP Stop/断连验证不再卡住，也不重放业务调用。
+- 后续两轴复核继续穿透实际 SystemCredentialStore，发现其默认分片 best-effort 清理会先删 manifest 再吞异常。2501 字符真实适配器/内存 keyring 的公开 DELETE 再次复现 204 及 3 个敏感分片遗留。MCP 现显式消费 strict_cleanup 模式：写分片前先保存 manifest，删除时逐项确认不存在、最后才删 manifest；RuntimeError、仍存在 key 的 PasswordDeleteError、静默未删均返回失败。6 个纯内存 HTTP 用例证明部分删除、替换旧 revision、新分片写后抛的清理归属均可在重建适配器/Host/SQLite 后实际消费，最终记录删净；未访问真实 OS 凭据，其他服务默认模式未变。

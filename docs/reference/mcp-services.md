@@ -4,7 +4,7 @@
 
 最后核验：2026-10-16
 
-事实来源：[配置](../../backend/app/mcp_config.py)、[主人 HTTP API](../../backend/app/mcp_api.py)、[运行宿主](../../backend/app/mcp_runtime.py)、[stdio 协议](../../backend/app/mcp_stdio.py)、[真实 HTTP 测试](../../tests/python/test_mcp_http.py)、[来源测试](../../tests/python/test_mcp_origin.py)、[恶意 schema 测试](../../tests/python/test_mcp_schema.py)。对应 [Issue #159](https://github.com/sawaki-zexi/meido/issues/159)、[ADR-0011](../adr/0011-versioned-tool-activation.md)。
+事实来源：[配置](../../backend/app/mcp_config.py)、[主人 HTTP API](../../backend/app/mcp_api.py)、[运行宿主](../../backend/app/mcp_runtime.py)、[stdio 协议](../../backend/app/mcp_stdio.py)、[真实 HTTP 测试](../../tests/python/test_mcp_http.py)、[分片凭据 HTTP 测试](../../tests/python/test_mcp_credentials.py)、[来源测试](../../tests/python/test_mcp_origin.py)、[恶意 schema 测试](../../tests/python/test_mcp_schema.py)。对应 [Issue #159](https://github.com/sawaki-zexi/meido/issues/159)、[ADR-0011](../adr/0011-versioned-tool-activation.md)。
 
 ## 主人配置 API
 
@@ -31,6 +31,8 @@
 成功保存生成新配置代际、清理该服务所有连接意愿并终止旧进程。env 凭据以配置代际寻址；SQLite 不保存 env 值。写入前先持久记录新凭据 key 的清理归属，发布配置时把旧 revision 的 key 放入待清理队列；失败写入及旧凭据清理失败均可跨重启重试。清理失败返回 503，已变更的配置停用、连接意愿清空且旧进程关闭，目录 errors 说明仍需重试。后续相同 ID 的保存/删除实际消费队列，不会把旧凭据默认为已删除。
 
 DELETE 在访问凭据库前先停用配置、清空意愿并关闭进程。凭据未清理完时保留停用配置及队列，返回安全的 503，重复 DELETE 会继续清理；全部成功后才移除配置并返回 204。只有显式保存或删除会重试队列，目录 GET 不读写凭据。子进程只继承 PATH、Windows 系统路径、临时目录、语言及用户目录这些基础变量，再叠加主人指定 env，不继承模型/API 密钥等其他环境变量。
+
+MCP 对系统 CredentialStore 显式启用 `strict_cleanup=True`。长凭据写入先保存分片 manifest，再写分片；中途失败时 manifest 与 SQLite 的主 key 清理归属仍能定位所有已写入或结果不明的分片。严格删除逐项确认分片不存在后才删 manifest，不能把 PasswordDeleteError 或静默未删除当作成功；部分删除后重新创建适配器仍可重试。其他服务的适配器默认行为保持不变。
 
 ## 模型工具与授权
 
