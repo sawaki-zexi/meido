@@ -9,7 +9,7 @@ from .azure_openai_responses_adapter import AzureOpenAIResponsesAdapter
 from .bedrock_adapter import BedrockConverseAdapter
 from .google_adapter import GoogleGenerativeAdapter
 from .google_vertex_adapter import GoogleVertexAdapter
-from .mistral_adapter import MistralConversationsAdapter
+from .mistral_adapter import MistralConversationsAdapter, _capabilities as mistral_capabilities
 from .model_protocol import (
     ANTHROPIC_MESSAGES_API, BEDROCK_CONVERSE_API, GOOGLE_GENERATIVE_API,
     MISTRAL_CONVERSATIONS_API, OPENAI_COMPLETIONS_API, OPENAI_RESPONSES_API,
@@ -49,6 +49,15 @@ class ModelAdapterRegistry:
             return self._adapters[api]
         except KeyError as error:
             raise ValueError(f"不支持的模型协议: {api}") from error
+
+    def supports_images(self, configuration: ModelConfiguration) -> bool:
+        adapter = self.get(configuration)
+        if configuration.api == MISTRAL_CONVERSATIONS_API:
+            return mistral_capabilities(configuration.model).supports_images
+        capabilities = getattr(adapter, "capabilities", None)
+        options = getattr(adapter, "options", None)
+        capabilities = capabilities or getattr(options, "capabilities", None)
+        return capabilities.supports_images if capabilities is not None else True
 
 
 class RoutedModelAdapter:
