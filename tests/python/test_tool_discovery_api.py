@@ -1,0 +1,430 @@
+import json
+import asyncio
+import httpx
+import shlex
+import sys
+import pytest
+
+from fastapi.testclient import TestClient
+
+from backend.app import main
+from backend.app.browser_use import BrowserSessions, BrowserUseConfig
+from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_config import ModelConfigurationStore
+from backend.app.role_store import RoleStore
+from backend.app.session_manager import SessionManager
+from backend.app.session_store import SessionStore
+from backend.app.storage import initialize_databases
+from backend.app.multichannel import MultichannelStore
+from backend.app.channels.host import ChannelHost
+from backend.app.memory_config import MemorySettingsStore
+
+
+@pytest.mark.parametrize("change", ["remove", "add", "retain"])
+def test_http_same_run_shell_uses_frozen_and_current_allowlist_intersection(
+    tmp_path, monkeypatch, change
+):
+    roles = RoleStore(tmp_path / "roles")
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data/sessions.db")
+    settings = MemorySettingsStore(tmp_path / "data/memory-settings.json")
+    settings.update(enabled=False)
+    for name, value in {
+        "store": roles,
+        "session_store": sessions,
+        "session_manager": SessionManager(roles, sessions),
+        "model_configuration_store": ModelConfigurationStore(
+            tmp_path / "data/models.json"
+        ),
+        "role_locks": {},
+        "memory_settings_store": settings,
+    }.items():
+        monkeypatch.setattr(main, name, value)
+    client = TestClient(main.app)
+    role = client.post(
+        "/api/roles",
+        json={
+            "name": "收紧命令授权",
+            "profile": {"profile": "设定"},
+            "agentConfig": {
+                "enabledTools": ["tool_search"],
+                "shell": {
+                    "enabled": True,
+                    "allowedCommands": ["whoami"]
+                    if change == "add"
+                    else [sys.executable, "whoami"],
+                },
+            },
+        },
+    ).json()["role"]
+    workspace = roles.workspace_path(role["id"])
+    effect = workspace / "revoked-command.txt"
+    command = shlex.join(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; Path('revoked-command.txt').write_text('revoked-command-ran')",
+        ]
+    )
+
+    class Adapter:
+        count = 0
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            self.count += 1
+            if self.count == 1:
+                changed = client.put(
+                    f"/api/roles/{role['id']}",
+                    json={
+                        "name": role["name"],
+                        "profile": role["profile"],
+                        "agentConfig": {
+                            "enabledTools": ["tool_search"],
+                            "shell": {
+                                "enabled": True,
+                                "allowedCommands": ["whoami"]
+                                if change == "remove"
+                                else [sys.executable],
+                            },
+                        },
+                    },
+                )
+                assert changed.status_code == 200
+                yield ModelToolCall("removed-command", "shell", {"command": command})
+            else:
+                yield ModelTextDelta("命令权限已收紧")
+
+    monkeypatch.setattr(main, "model_adapter", Adapter())
+    response = client.post(
+        f"/api/roles/{role['id']}/messages", json={"content": "执行命令"}
+    )
+    assert "命令权限已收紧" in response.text
+    assert effect.exists() is (change == "retain"), (
+        "execution must use the intersection of frozen and current command grants"
+    )
+    result = next(
+        item
+        for item in sessions.list_messages(f"role:{role['id']}")
+        if item.toolCallId == "removed-command" and item.messageType == "tool_result"
+    )
+    assert result.isError is (change != "retain")
+    assert result.toolResult["status"] == (
+        "succeeded" if change == "retain" else "denied"
+    )
+
+
+def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions(
+    tmp_path, monkeypatch
+):
+    class BrowserDriver:
+        async def call(self, name, arguments, **kwargs):
+            return {"text": "Actual driver title"}
+
+        async def close(self):
+            pass
+
+    class Adapter:
+        count = 0
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            self.count += 1
+            names = {item["function"]["name"] for item in tools}
+            if self.count == 1:
+                assert "tool_search" in names and "agent_browser_get_title" not in names
+                yield ModelToolCall(
+                    "search-browser",
+                    "tool_search",
+                    {"query": "select:agent_browser_get_title"},
+                )
+                yield ModelToolCall("premature-browser", "agent_browser_get_title", {})
+            elif self.count == 2:
+                assert "agent_browser_get_title" in names
+                results = [item for item in messages if item["role"] == "tool"]
+                assert json.loads(results[-2]["content"])["unlocked"] == [
+                    "agent_browser_get_title"
+                ]
+                assert "tool_search" in results[-1]["content"]
+                yield ModelToolCall("title-browser", "agent_browser_get_title", {})
+            else:
+                assert messages[-1]["content"] == "Actual driver title"
+                yield ModelTextDelta("已在同次对话发现并调用")
+
+    roles = RoleStore(tmp_path / "roles")
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data/sessions.db")
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))
+    monkeypatch.setattr(main, "model_adapter", Adapter())
+    monkeypatch.setattr(
+        main,
+        "model_configuration_store",
+        ModelConfigurationStore(tmp_path / "data/models.json"),
+    )
+    monkeypatch.setattr(main, "role_locks", {})
+    monkeypatch.setattr(
+        main,
+        "browser_use_sessions",
+        BrowserSessions(
+            tmp_path / "browser", BrowserUseConfig(), transport=BrowserDriver()
+        ),
+    )
+    client = TestClient(main.app)
+    role = client.post(
+        "/api/roles",
+        json={
+            "name": "发现工具",
+            "profile": {"profile": "设定"},
+            "agentConfig": {
+                "enabledTools": ["tool_search"],
+                "browserUse": {"enabled": True},
+            },
+        },
+    ).json()["role"]
+    catalog = client.get(f"/api/roles/{role['id']}/tools").json()
+    title = next(
+        item for item in catalog["tools"] if item["name"] == "agent_browser_get_title"
+    )
+    assert title["authorized"] and not title["modelVisible"]
+    response = client.post(
+        f"/api/roles/{role['id']}/messages", json={"content": "读取浏览器标题"}
+    )
+    assert "已在同次对话发现并调用" in response.text
+    messages = sessions.list_messages(f"role:{role['id']}")
+    run_id = next(
+        item.runId for item in messages if item.toolCallId == "search-browser"
+    )
+    audits = {item["callId"]: item for item in sessions.list_tool_audits(run_id)}
+    versions = sessions.get_run(run_id).modelSnapshot["capabilityRevisions"]
+    assert (
+        audits["search-browser"]["snapshotId"]
+        == audits["premature-browser"]["snapshotId"]
+        == versions[0]["snapshotId"]
+    )
+    assert audits["title-browser"]["snapshotId"] == versions[1]["snapshotId"]
+    assert audits["premature-browser"]["resultCategory"] == "denied"
+    assert audits["premature-browser"]["toolSource"] == "plugin:browser_use"
+    # Reopen the persistent store after revocation; old activation evidence must
+    # never restore browser authority into the new run.
+    updated = client.put(
+        f"/api/roles/{role['id']}",
+        json={
+            "name": role["name"],
+            "profile": role["profile"],
+            "agentConfig": {
+                "enabledTools": ["tool_search"],
+                "browserUse": {"enabled": False},
+            },
+        },
+    )
+    assert updated.status_code == 200
+    reopened = SessionStore(tmp_path / "data/sessions.db")
+    monkeypatch.setattr(main, "session_store", reopened)
+    monkeypatch.setattr(main, "session_manager", SessionManager(roles, reopened))
+
+    class RevokedAdapter:
+        count = 0
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            self.count += 1
+            assert "agent_browser_get_title" not in {
+                item["function"]["name"] for item in tools
+            }
+            if self.count == 1:
+                yield ModelToolCall(
+                    "search-revoked",
+                    "tool_search",
+                    {"query": "select:agent_browser_get_title"},
+                )
+            elif self.count == 2:
+                assert json.loads(messages[-1]["content"])["unlocked"] == []
+                yield ModelToolCall("call-revoked", "agent_browser_get_title", {})
+            else:
+                assert (
+                    "denied" in messages[-1]["content"]
+                    or "unknown" in messages[-1]["content"]
+                )
+                yield ModelTextDelta("重启后仍已撤权")
+
+    monkeypatch.setattr(main, "model_adapter", RevokedAdapter())
+    assert (
+        "重启后仍已撤权"
+        in client.post(
+            f"/api/roles/{role['id']}/messages", json={"content": "再试旧工具"}
+        ).text
+    )
+
+
+@pytest.mark.parametrize("repeat_ids", [False, True])
+def test_http_discovers_non_plugin_account_tool_from_real_role_account_store(
+    tmp_path, monkeypatch, repeat_ids
+):
+    class Adapter:
+        count = 0
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            self.count += 1
+            names = {item["function"]["name"] for item in tools}
+            if self.count == 1:
+                assert "account_list" not in names and "message_push" in names
+                yield ModelToolCall(
+                    "provider-call" if repeat_ids else "find-account",
+                    "tool_search",
+                    {"query": "账号", "allowed_risk": ["read-only"]},
+                )
+            elif self.count == 2:
+                assert "account_list" in names
+                yield ModelToolCall(
+                    "provider-call" if repeat_ids else "list-account",
+                    "account_list",
+                    {},
+                )
+            else:
+                accounts = json.loads(messages[-1]["content"])
+                assert accounts[0]["accountId"] == "test-account"
+                if repeat_ids:
+                    assert [
+                        message["tool_call_id"]
+                        for message in messages
+                        if message["role"] == "tool"
+                    ] == ["provider-call", "provider-call"]
+                    assert [
+                        call["id"]
+                        for message in messages
+                        for call in message.get("tool_calls", [])
+                    ] == ["provider-call", "provider-call"]
+                yield ModelTextDelta("已读取当前角色真实账号")
+
+    roles = RoleStore(tmp_path / "roles")
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data/sessions.db")
+    channels = MultichannelStore(tmp_path / "data/sessions.db", sessions)
+    settings = MemorySettingsStore(tmp_path / "data/memory-settings.json")
+    settings.update(enabled=False)
+    for name, value in {
+        "store": roles,
+        "session_store": sessions,
+        "session_manager": SessionManager(roles, sessions),
+        "model_adapter": Adapter(),
+        "model_configuration_store": ModelConfigurationStore(
+            tmp_path / "data/models.json"
+        ),
+        "role_locks": {},
+        "multichannel_store": channels,
+        "channel_host": ChannelHost(channels),
+        "memory_settings_store": settings,
+    }.items():
+        monkeypatch.setattr(main, name, value)
+    client = TestClient(main.app)
+    role = client.post(
+        "/api/roles",
+        json={
+            "name": "账号发现",
+            "profile": {"profile": "设定"},
+            "agentConfig": {"enabledTools": ["tool_search"]},
+        },
+    ).json()["role"]
+    channels.register_channel_account(
+        role["id"],
+        "qq",
+        account_id="test-account",
+        display_name="测试账号",
+        enabled=True,
+    )
+    response = client.post(
+        f"/api/roles/{role['id']}/messages", json={"content": "查看已配置账号"}
+    )
+    assert "已读取当前角色真实账号" in response.text
+    if repeat_ids:
+        results = [
+            item
+            for item in sessions.list_messages(f"role:{role['id']}")
+            if item.messageType == "tool_result"
+        ]
+        assert len({item.toolCallId for item in results}) == 2
+        audits = sessions.list_tool_audits(results[0].runId)
+        assert len(audits) == 2 and len({item["snapshotId"] for item in audits}) == 2
+
+
+def test_http_stop_after_discovery_keeps_versions_durable_without_executing_new_tool(
+    tmp_path, monkeypatch
+):
+    roles = RoleStore(tmp_path / "roles")
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data/sessions.db")
+    settings = MemorySettingsStore(tmp_path / "data/memory-settings.json")
+    settings.update(enabled=False)
+    for name, value in {
+        "store": roles,
+        "session_store": sessions,
+        "session_manager": SessionManager(roles, sessions),
+        "model_configuration_store": ModelConfigurationStore(
+            tmp_path / "data/models.json"
+        ),
+        "role_locks": {},
+        "memory_settings_store": settings,
+    }.items():
+        monkeypatch.setattr(main, name, value)
+
+    async def execute():
+        ready = asyncio.Event()
+
+        class Adapter:
+            count = 0
+
+            async def stream_structured_messages(self, messages, configuration, tools):
+                self.count += 1
+                if self.count == 1:
+                    yield ModelToolCall(
+                        "load-before-stop",
+                        "tool_search",
+                        {"query": "select:agent_browser_get_title"},
+                    )
+                else:
+                    assert "agent_browser_get_title" in {
+                        item["function"]["name"] for item in tools
+                    }
+                    ready.set()
+                    await asyncio.Event().wait()
+
+        monkeypatch.setattr(main, "model_adapter", Adapter())
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://meido.test"
+        ) as client:
+            role = (
+                await client.post(
+                    "/api/roles",
+                    json={
+                        "name": "停止发现",
+                        "profile": {"profile": "设定"},
+                        "agentConfig": {
+                            "enabledTools": ["tool_search"],
+                            "browserUse": {"enabled": True},
+                        },
+                    },
+                )
+            ).json()["role"]
+            request = asyncio.create_task(
+                client.post(
+                    f"/api/roles/{role['id']}/messages", json={"content": "发现后停止"}
+                )
+            )
+            try:
+                await asyncio.wait_for(ready.wait(), 5)
+                run = sessions.active_run(role["id"])
+                stopped = await client.post(
+                    f"/api/roles/{role['id']}/runs/{run.runId}/stop"
+                )
+                assert stopped.status_code == 200
+                terminal = sessions.get_run(run.runId)
+                assert terminal.status == "cancelled"
+                assert len(terminal.modelSnapshot["capabilityRevisions"]) == 2
+                assert set(terminal.modelSnapshot["capabilityCalls"]) == {
+                    "load-before-stop"
+                }
+            finally:
+                if not request.done():
+                    request.cancel()
+                await asyncio.gather(request, return_exceptions=True)
+
+    asyncio.run(execute())

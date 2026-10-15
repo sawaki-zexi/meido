@@ -6,12 +6,12 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, TypeAlias
 
 from ..models import AgentRun, Message
-from .events import AgentEndEvent, AgentEvent, MessageEndEvent, MessageUpdateEvent, TurnStartEvent
-from .capabilities import CapabilityResolution
+from .events import AgentEndEvent, AgentEvent, MessageEndEvent, MessageUpdateEvent, TurnStartEvent, ToolExecutionStartEvent, ToolExecutionEndEvent
+from .capabilities import CapabilityResolution, CapabilitySnapshot
 from .loop import run_agent_loop
 from .provider import CancellationToken, ModelProvider
-from .tools import AgentTool
-from .types import AgentMessage, AssistantMessage
+from .tools import AgentTool, summarize_tool_arguments
+from .types import AgentMessage, AssistantMessage, ToolResultMessage
 
 if TYPE_CHECKING:
     from ..session_store import SessionStore
@@ -204,6 +204,12 @@ class RuntimeManager:
             if self.sessions.get_run(run.runId) is None:
                 self.sessions.create_run(run)
             self.sessions.update_run(run.runId, status="running")
+            if capabilities is not None and capabilities.snapshot.candidates:
+                self.sessions.append_capability_revision(run.runId, capabilities.snapshot.to_dict(include_prompt_sections=False))
+
+            def persist_capability_revision(snapshot: CapabilitySnapshot) -> None:
+                self.sessions.append_capability_revision(run.runId, snapshot.to_dict(include_prompt_sections=False))
+
             async for event in run_agent_loop(
                 provider=provider,
                 model=model,
@@ -219,12 +225,30 @@ class RuntimeManager:
                 run_id=run.runId,
                 provider_timeout=provider_timeout,
                 tool_timeout=tool_timeout,
+                on_capability_revision=persist_capability_revision,
             ):
                 if isinstance(event, MessageUpdateEvent) and isinstance(event.message, AssistantMessage):
                     assistant_content = event.message.content
                 if isinstance(event, TurnStartEvent):
                     turn_count = event.turn
                     self.sessions.update_run(run.runId, status="running", turn_count=turn_count)
+                if isinstance(event, ToolExecutionStartEvent):
+                    if event.snapshot_id is not None and capabilities is not None and capabilities.snapshot.candidates:
+                        self.sessions.record_capability_call(run.runId, event.tool_call_id, event.snapshot_id)
+                    self.sessions.start_tool_audit(
+                        run_id=run.runId, role_id=run.roleId, tool_name=event.tool_name,
+                        call_id=event.tool_call_id, argument_summary=summarize_tool_arguments(event.arguments),
+                        snapshot_id=event.snapshot_id, tool_source=event.tool_source,
+                        tool_version=event.tool_version, policy_decision=event.policy_decision,
+                    )
+                if isinstance(event, ToolExecutionEndEvent):
+                    details = event.result.details if isinstance(event.result.details, dict) else {}
+                    self.sessions.finish_tool_audit(
+                        run_id=run.runId, call_id=event.tool_call_id,
+                        result_category=str(details.get("status") or ("error" if event.result.is_error else "succeeded")),
+                        error_type=str(details["errorType"]) if details.get("errorType") else None,
+                        error_message=str(details["message"]) if details.get("message") else None,
+                    )
                 if isinstance(event, MessageEndEvent):
                     if isinstance(event.message, AssistantMessage):
                         assistant_content = event.message.content
@@ -234,6 +258,9 @@ class RuntimeManager:
                             persisted = await persisted
                         if isinstance(event.message, AssistantMessage) and isinstance(persisted, Message):
                             self.set_assistant_message(run.runId, persisted.id)
+                    elif capabilities is not None and capabilities.snapshot.candidates and (
+                            isinstance(event.message, ToolResultMessage) or isinstance(event.message, AssistantMessage) and event.message.tool_calls):
+                        self.sessions.append_agent_message(run.sessionKey, event.message, run_id=run.runId)
                 if isinstance(event, AgentEndEvent):
                     assistant = next(
                         (message for message in reversed(event.messages) if isinstance(message, AssistantMessage)),
@@ -311,6 +338,8 @@ class RuntimeManager:
                 error=error,
             )
             self._assistant_message_ids[run_id] = message.id
+            self.sessions.finish_open_tool_audits(run_id, result_category=status,
+                error_type="RuntimeError" if error else None, error_message=error)
             return message
         except BaseException:
             raise

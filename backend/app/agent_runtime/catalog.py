@@ -55,10 +55,13 @@ def tool_catalog(
         plugin_id = definition.source.removeprefix("plugin:") if definition.source.startswith("plugin:") else ""
         if plugin_id and (plugin_id in plugin_denials or plugin_id not in plugin_by_id):
             enabled_tools.discard(definition.name)
-    resolution = CapabilityRegistry([_DeclaredTool(item) for item in definitions]).resolve(
+    registry = CapabilityRegistry([_DeclaredTool(item) for item in definitions])
+    resolution = registry.resolve(
         role_id=role_id, session_key=session_key, run_id="catalog-preview", enabled_tools=enabled_tools,
         allowed_risks={"read_only", "mutating", "external"},
     )
+    admission = registry.resolve(role_id=role_id, session_key=session_key, run_id="catalog-admission", enabled_tools=enabled_tools,
+                                 activated_tools={item.name for item in definitions}, allowed_risks={"read_only", "mutating", "external"})
     tools: list[dict[str, object]] = []
     known = {item.name for item in definitions}
     for definition in definitions:
@@ -69,7 +72,7 @@ def tool_catalog(
             "source": definition.source, "version": definition.version, "risk": definition.risk,
             "exposure": definition.exposure, "registered": True,
             "enabled": definition.name in policy.enabled_tools,
-            "authorized": resolution.get(definition.name) is not None,
+            "authorized": admission.get(definition.name) is not None,
             "modelVisible": resolution.get(definition.name) is not None,
             "dependency": dependencies.get(definition.name, {"status": "unchecked", "reason": "未执行工具；依赖将在调用时验证"}),
             "reason": tool_reason or "本次配置允许在桌面对话中提供此工具",

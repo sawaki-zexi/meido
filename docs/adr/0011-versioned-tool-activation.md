@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳，待实现。批准时间：2026-10-15。
+已采纳。批准时间：2026-10-15。2026-10-16 的 #148 实现冻结候选、版本激活、持久化和受限服务修订协议；MCP 连接及服务生命周期仍由后续 T12 实施。当前接口与验证见[工具发现契约](../reference/tool-discovery.md)。
 
 ## 背景
 
@@ -27,4 +27,4 @@
 - [能力扩展规格](../specs/agent-capability-extension-spec.md)。
 - [Shiori 调研](../research/shiori-tool-system-and-portability.md)。
 
-本文是已批准目标决定，不表示代码已经实现或验收。
+实现与验收范围以工具发现契约及其测试为准；后续 MCP 生命周期仍是计划。
