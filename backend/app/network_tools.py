@@ -78,6 +78,10 @@ def _result(data: dict, *, error: bool = False) -> AgentToolResult:
     return AgentToolResult(json.dumps(data, ensure_ascii=False), details=data, is_error=error)
 
 
+def _media_type(headers: Mapping[str, str]) -> str:
+    return headers.get("content-type", "").split(";", 1)[0].strip().lower()
+
+
 def _redact_search(value, config: NetworkToolsConfig):
     secrets = set(config.search_headers.values())
     for key, item in config.search_headers.items():
@@ -204,7 +208,7 @@ async def _download(config: NetworkToolsConfig, resolver: Resolver, transport, u
                     if len(body) + len(chunk) > config.max_bytes:
                         raise ValueError("响应过大（超过解压后字节上限）")
                     body.extend(chunk)
-                    if method == "POST" and "text/event-stream" in response.headers.get("content-type", ""):
+                    if method == "POST" and _media_type(response.headers) == "text/event-stream":
                         while separator := re.search(rb"\r?\n\r?\n", body[event_offset:]):
                             end = event_offset + separator.start()
                             event = body[event_offset:end]
@@ -279,7 +283,7 @@ class WebFetchTool:
             fmt = arguments.get("format", "markdown")
             body, response_headers, final_url, status = await _download(self.config, self.resolver, self.transport, url,
                 headers={"Accept": _ACCEPT[fmt], "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"})
-            content_type = response_headers.get("content-type", "").split(";")[0].strip().lower()
+            content_type = _media_type(response_headers)
             if content_type and not (content_type.startswith("text/") or content_type in {
                     "application/json", "application/xml", "application/xhtml+xml", "application/javascript"}
                     or content_type.endswith(("+json", "+xml"))):
@@ -344,7 +348,7 @@ class WebSearchTool:
                 httpx.URL(endpoint), method="POST", payload=payload,
                 headers={"Accept": "application/json, text/event-stream", **self.config.search_headers})
             parsed = await _worker({"kind": "search", "text": body.decode("utf-8"), "mcp": mcp,
-                                   "sse": "text/event-stream" in headers.get("content-type", ""), "limit": self.config.max_chars})
+                                   "sse": _media_type(headers) == "text/event-stream", "limit": self.config.max_chars})
             return _result(_redact_search({"query": arguments["query"], **parsed, "status": status}, self.config), error="error" in parsed)
         except (ValueError, UnicodeError, httpx.HTTPError, OSError, TypeError, httpx.InvalidURL, zlib.error, RecursionError):
             # Provider URLs, response bodies and exception strings can contain

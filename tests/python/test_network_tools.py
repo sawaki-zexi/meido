@@ -179,8 +179,8 @@ def test_network_errors_and_nontext_responses_do_not_masquerade_as_success(statu
     assert expected in result.details["error"]
 
 
-@pytest.mark.parametrize("sse", [True, False])
-def test_role_search_preserves_shiori_options_and_parses_all_results(sse):
+@pytest.mark.parametrize("media_type", ["text/event-stream", "Text/Event-Stream", "application/json", "Application/JSON"])
+def test_role_search_preserves_shiori_options_and_parses_all_results(media_type):
     requests = []
 
     def handler(request):
@@ -189,9 +189,9 @@ def test_role_search_preserves_shiori_options_and_parses_all_results(sse):
             {"type": "text", "text": "Title: 第一条\nURL: https://example.org/one\n摘要一"},
             {"type": "text", "text": "Title: 第二条\nURL: https://example.org/two\n摘要二"},
         ]}}
-        if sse:
-            return httpx.Response(200, text="event: message\ndata: " + json.dumps(data) + "\n\n", headers={"content-type": "text/event-stream"})
-        return httpx.Response(200, json=data)
+        if media_type.lower() == "text/event-stream":
+            return httpx.Response(200, text="event: message\ndata: " + json.dumps(data) + "\n\n", headers={"content-type": media_type})
+        return httpx.Response(200, json=data, headers={"content-type": media_type})
 
     tool = WebSearchTool(resolver=public_dns, transport=httpx.MockTransport(handler))
     result = asyncio.run(tool.execute({"query": "今日发布", "num_results": 2, "livecrawl": "preferred", "type": "deep"}, context()))
@@ -251,7 +251,8 @@ def test_network_tools_reject_forged_identity_or_host_parameters_without_io(tool
     assert result.is_error
 
 
-def test_search_accepts_completed_sse_result_without_waiting_for_connection_close():
+@pytest.mark.parametrize("media_type", ["text/event-stream", "Text/Event-Stream"])
+def test_search_accepts_completed_sse_result_without_waiting_for_connection_close(media_type):
     class Events(httpx.AsyncByteStream):
         async def __aiter__(self):
             yield b": keepalive\n\n"
@@ -259,7 +260,7 @@ def test_search_accepts_completed_sse_result_without_waiting_for_connection_clos
             await asyncio.sleep(10)
 
     tool = WebSearchTool(NetworkToolsConfig(timeout_seconds=3), resolver=public_dns, transport=httpx.MockTransport(
-        lambda request: httpx.Response(200, stream=Events(), headers={"content-type": "text/event-stream"})))
+        lambda request: httpx.Response(200, stream=Events(), headers={"content-type": media_type})))
     result = asyncio.run(tool.execute({"query": "article"}, context()))
     assert not result.is_error
     assert result.details["sources"] == ["https://example.org/one"]
