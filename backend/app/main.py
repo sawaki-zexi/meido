@@ -85,6 +85,7 @@ from .agent_runtime.types import UserMessage
 from .channels.attachment_tool import ReadChannelAttachmentTool
 from .channels.consolidation import ChannelMemoryMaintenance, finish_io
 from .agent_runtime.skills import SkillRegistry
+from .agent_runtime.memory_write_tools import MemorizeTool, ForgetMemoryTool, RoleMemoryAccess
 from .todo import TodoPlugin, TodoStore
 from .todo.agent import register_todo_agent_plugin
 from .todo.application import TodoApplicationService
@@ -3330,8 +3331,32 @@ def _stream_model_reply(role, history, configuration, memory_context):
     return stream_reply(role, history, configuration)
 
 
-def _memory_runtime_tool(role) -> MemoryRecallTool:
-    return MemoryRecallTool(RoleScopedMemoryReadPort(_current_memory_engine(), role.id))
+def _memory_runtime_access(role, *, is_channel_owner=True, source_thread_id=None) -> RoleMemoryAccess:
+    desktop = source_thread_id is None or source_thread_id == f"desktop:{role.id}"
+    thread = None if desktop else multichannel_store.get_thread(role.id, source_thread_id)
+    private_owner = bool(is_channel_owner and (desktop or (thread is not None and thread.chat_type == "private")))
+
+    def enabled():
+        return bool(private_owner and memory_settings_store.get().enabled and store.get(role.id) is not None)
+
+    def authorize(context):
+        if desktop:
+            return True
+        message = session_store.user_message_for_run(context.run_id)
+        return bool(message and multichannel_store.sessions is session_store and any(
+            item.id == message.id for item in multichannel_store.owner_context_messages(role.id)
+        ))
+
+    async def mutate(mutation, context):
+        async def apply():
+            access.user_source(context)  # Recheck after acquiring the shared memory write lock.
+            return await _current_memory_engine().mutate(mutation)
+        return await _mutate_and_sync_memory(role.id, apply)
+
+    access = RoleMemoryAccess(_current_memory_engine(), session_store, role.id,
+        session_key=thread.session_key if thread is not None else f"role:{role.id}",
+        enabled=enabled, authorize=authorize, mutate=mutate)
+    return access
 
 
 def _owner_knowledge_runtime_tool(role) -> OwnerKnowledgeTool:
@@ -3348,6 +3373,7 @@ def _runtime_tool_candidates(
 ) -> tuple[object, ...]:
     """Build every tool available to the host for a role snapshot."""
     shell = role.agentConfig.shell
+    memory_access = _memory_runtime_access(role, is_channel_owner=is_channel_owner, source_thread_id=source_thread_id)
     tools: list[object] = [
         ShellTool(
             store.workspace_path(role.id),
@@ -3355,7 +3381,9 @@ def _runtime_tool_candidates(
             timeout_seconds=shell.timeoutSeconds,
             max_output_chars=shell.maxOutputChars,
         ),
-        _memory_runtime_tool(role),
+        MemoryRecallTool(memory_access),
+        MemorizeTool(memory_access),
+        ForgetMemoryTool(memory_access),
     ]
     if owner_knowledge_plugin.status().enabled:
         tools.append(_owner_knowledge_runtime_tool(role))
@@ -3397,6 +3425,7 @@ def _role_has_usable_channel_account(role_id: str) -> bool:
 def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[str]:
     shell = role.agentConfig.shell
     enabled: set[str] = set()
+    enabled.update(set(role.agentConfig.enabledTools) & {"memorize", "forget_memory"})
     if shell.enabled and shell.allowedCommands:
         enabled.add("shell")
     if memory_settings_store.get().enabled and role.agentConfig.memoryRecall.enabled:
