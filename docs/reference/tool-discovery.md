@@ -47,9 +47,13 @@
 
 宿主可通过 `SessionStore.capability_revision_for_call(run_id, tool_call_id)` 读取调用实际使用的版本；工具收到的不可变 `ToolContext.capability_snapshot_id` 提供相同身份。任务来源应绑定调用版本，不能用“当前最新版本”代替同回复中的较早版本。
 
+Runtime 为重复调用 ID 分配唯一宿主身份，供 `ToolContext`、持久消息、审计及 `capabilityCalls` 使用。assistant metadata 的 `provider_tool_call_ids` 保存宿主 ID 到原 provider ID 的映射；rich/structured 请求回放恢复原 ID，并保留原生内容块及思考签名。Google/Vertex 无远端 ID、各响应重复生成 `call-0` 时，仍可在同一运行发现并执行新工具。
+
 `RuntimeManager` 在结果持久化后、下一次请求前写入修订。存储失败时不发布新版本；取消后不继续发请求。未提供自定义消息持久处理器时，启用发现的 Runtime 也会保存结构化调用和工具结果。
 
-新运行只参考同角色、同 session 的最近一个已完成运行。只有仍准入且完整定义一致的历史激活可进入新运行初始版本；关闭权限、变化的 schema/版本/来源、失败和取消运行不被复活。执行前和 pre hook 后再次检查当前许可，最终参数仍按被冻结的 schema 验证。
+新运行只参考同角色、同 session 的最近一个已完成运行。只有仍准入且完整定义一致的历史激活可进入新运行初始版本；关闭权限、变化的 schema/版本/来源、失败和取消运行不被复活。执行前和 pre hook 后再次检查当前许可，最终参数仍按被冻结的 schema 验证。Shell 最终命令同时受初始与当前白名单约束，添加命令不扩大旧运行权限，移除命令可撤权。
+
+异步工具执行期间按 50ms 间隔复核授权及运行取消信号；撤权会取消工具任务、传递工具取消信号并等待清理，再记录拒绝结果。超时和父运行取消同样等待清理，局部工具拒绝不会取消父运行，也不会被记为成功。该机制依赖工具遵守异步取消或合作信号，不能撤回已经提交的外部事务，也不能抢占阻塞事件循环的同步代码。
 
 启用发现的渠道运行额外冻结真实来源：[FrozenChannelSource](../../backend/app/channels/source_authority.py) 从实际 run 的入站消息及线程读取账号、平台发言者和主人绑定代际，不接收模型自报身份。每次搜索与执行复核账号启用、私聊/群范围、屏蔽名单、线程归属及原 `identity_id`/`paired_at`/私聊授权起点。解绑后重新配对或删除后重建同 ID 账号不能复活旧运行。原外部回合即使随后配对也不提升权限。JSON 接口 `to_dict`/`from_dict` 供后续后台任务保存相同来源事实，日期使用带时区的 ISO 字符串。
 

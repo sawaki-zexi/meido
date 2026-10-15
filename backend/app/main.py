@@ -3594,6 +3594,13 @@ async def _runtime_capabilities(
                     or set(manifest.requested_capabilities) - current.granted_capabilities):
                 return "plugin permission was revoked or its definition changed"
         return True
+
+    def authorize_call(definition, context, arguments):
+        if definition.name == "shell" and isinstance(arguments.get("command"), str):
+            current_role = store.get(role.id)
+            if current_role is None or not ShellTool.command_is_allowed(arguments["command"], current_role.agentConfig.shell.allowedCommands):
+                return "command permission was revoked by the current role policy"
+        return True
     host_services: dict[str, object] = {}
     if "todo.write" in policy.provided_capabilities:
         host_services["todo.write"] = _todo_application()
@@ -3621,6 +3628,7 @@ async def _runtime_capabilities(
         discovery_enabled="tool_search" in policy.enabled_tools,
         deferred_tool_names=_deferred_discovery_tools(),
         authorize_tool=authorize_tool,
+        authorize_call=authorize_call,
         restored_activation=session_store.latest_capability_revision(role.id, session_key) if "tool_search" in policy.enabled_tools else None,
     )
 

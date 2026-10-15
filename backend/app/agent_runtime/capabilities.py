@@ -102,6 +102,7 @@ class CapabilityResolution:
     )
     _discovery: DiscoveryState | None = field(default=None, repr=False, compare=False)
     _authorize_tool: Callable[[ToolDefinition, ToolContext], bool | str] | None = field(default=None, repr=False, compare=False)
+    _authorize_call: Callable[[ToolDefinition, ToolContext, Mapping[str, object]], bool | str] | None = field(default=None, repr=False, compare=False)
     _candidate_tools: MappingProxyType = field(default_factory=lambda: MappingProxyType({}), repr=False, compare=False)
 
     def stage_service_tools(self, context: ToolContext, *, grant_id: str, parent_snapshot_id: str,
@@ -110,7 +111,8 @@ class CapabilityResolution:
             raise PermissionError("service revisions require a frozen discovery directory")
         return self._discovery.stage_service_tools(context, grant_id=grant_id, parent_snapshot_id=parent_snapshot_id, tools=tools)
 
-    def authorization_denial(self, definition: ToolDefinition | None, context: ToolContext) -> str | None:
+    def authorization_denial(self, definition: ToolDefinition | None, context: ToolContext,
+                             arguments: Mapping[str, object] | None = None) -> str | None:
         if definition is None:
             return "tool has no frozen definition"
         if (context.role_id, context.session_key, context.run_id) != (self.snapshot.role_id, self.snapshot.session_key, self.snapshot.run_id):
@@ -119,6 +121,10 @@ class CapabilityResolution:
             decision = self._authorize_tool(definition, context)
             if decision is not True:
                 return str(decision) if isinstance(decision, str) else "tool permission was revoked"
+        if arguments is not None and self._authorize_call is not None:
+            decision = self._authorize_call(definition, context, arguments)
+            if decision is not True:
+                return str(decision) if isinstance(decision, str) else "tool call permission was revoked"
         return None
 
     def current(self) -> CapabilityResolution:
@@ -346,6 +352,7 @@ class CapabilityRegistry:
         plugin_resolution: PluginResolution | None = None,
         discovery_enabled: bool = False,
         authorize_tool: Callable[[ToolDefinition, ToolContext], bool | str] | None = None,
+        authorize_call: Callable[[ToolDefinition, ToolContext, Mapping[str, object]], bool | str] | None = None,
         deferred_tool_names: frozenset[str] = frozenset(),
         restored_activation: Mapping[str, object] | None = None,
         service_grants: tuple[ServiceGrant, ...] = (),
@@ -470,6 +477,7 @@ class CapabilityRegistry:
             }),
             _discovery=discovery,
             _authorize_tool=authorize_tool,
+            _authorize_call=authorize_call,
             _candidate_tools=MappingProxyType({tool.definition.name: tool for tool in candidates}),
         )
         if discovery is not None:
@@ -497,6 +505,7 @@ class CapabilityRegistry:
         plugin_dir: str = "",
         discovery_enabled: bool = False,
         authorize_tool: Callable[[ToolDefinition, ToolContext], bool | str] | None = None,
+        authorize_call: Callable[[ToolDefinition, ToolContext, Mapping[str, object]], bool | str] | None = None,
         deferred_tool_names: frozenset[str] = frozenset(),
         restored_activation: Mapping[str, object] | None = None,
         service_grants: tuple[ServiceGrant, ...] = (),
@@ -524,6 +533,7 @@ class CapabilityRegistry:
                 plugin_resolution=plugin_resolution,
                 discovery_enabled=discovery_enabled,
                 authorize_tool=authorize_tool,
+                authorize_call=authorize_call,
                 deferred_tool_names=deferred_tool_names,
                 restored_activation=restored_activation,
                 service_grants=service_grants,

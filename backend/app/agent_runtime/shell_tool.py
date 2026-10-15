@@ -7,7 +7,7 @@ import signal as signal_module
 import subprocess
 import time
 from pathlib import Path
-from collections.abc import Mapping, Callable
+from collections.abc import Mapping, Callable, Sequence
 from dataclasses import replace
 
 from .tools import AgentToolResult, ToolContext, ToolDefinition
@@ -71,23 +71,7 @@ class ShellTool:
             return AgentToolResult(f"invalid command: {error}", is_error=True)
         if not argv:
             return AgentToolResult("command must be a non-empty string", is_error=True)
-        executable = Path(argv[0]).name
-        raw_executable = argv[0]
-        allowed = any(
-            (
-                Path(item).is_absolute()
-                and os.path.normcase(str(Path(argv[0]).resolve()))
-                == os.path.normcase(str(Path(item).resolve()))
-            )
-            or (
-                not Path(item).is_absolute()
-                and "/" not in raw_executable
-                and "\\" not in raw_executable
-                and os.path.normcase(executable) == os.path.normcase(item)
-            )
-            for item in self.allowed_commands
-        )
-        if not allowed:
+        if not self._executable_is_allowed(argv[0], self.allowed_commands):
             return self._result("command denied by role policy", status="denied", exit_code=None)
         if not self.workspace.is_dir():
             return self._result("workspace is unavailable", status="failed", exit_code=None)
@@ -152,6 +136,26 @@ class ShellTool:
             if process is not None:
                 await self._terminate(process)
             return self._result(str(error), status="failed", exit_code=None, started=started)
+
+    @staticmethod
+    def command_is_allowed(command: str, allowed_commands: Sequence[str]) -> bool:
+        """Check the same argv policy used by execution without starting a process."""
+        try:
+            argv = shlex.split(command, posix=True)
+        except ValueError:
+            return False
+        return bool(argv) and ShellTool._executable_is_allowed(argv[0], allowed_commands)
+
+    @staticmethod
+    def _executable_is_allowed(executable: str, allowed_commands: Sequence[str]) -> bool:
+        return any(
+            Path(item).is_absolute()
+            and os.path.normcase(str(Path(executable).resolve())) == os.path.normcase(str(Path(item).resolve()))
+            or not Path(item).is_absolute() and "/" not in executable and "\\" not in executable
+            and os.path.normcase(Path(executable).name) == os.path.normcase(item)
+            for item in (value.strip() for value in allowed_commands)
+            if item
+        )
 
     async def _read_stream(self, stream: asyncio.StreamReader | None) -> tuple[str, bool, int]:
         if stream is None:

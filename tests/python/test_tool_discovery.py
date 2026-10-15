@@ -317,6 +317,97 @@ def test_live_revocation_blocks_execution_without_mutating_issued_schema_version
     asyncio.run(execute())
 
 
+def test_revoking_a_running_tool_cancels_it_before_its_file_effect(tmp_path):
+    initialize_databases(tmp_path)
+    sessions = SessionStore(tmp_path / "sessions.db")
+    effect = tmp_path / "effect.txt"
+
+    async def execute():
+        ready, release, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        allowed = True
+
+        class DelayedWrite:
+            definition = ToolDefinition(
+                "delayed.write", "Write a local effect", risk="mutating"
+            )
+
+            async def execute(self, arguments, context, on_update=None):
+                ready.set()
+                try:
+                    await release.wait()
+                    effect.write_text("permission was revoked", encoding="utf-8")
+                    return AgentToolResult("written")
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+
+        class Provider:
+            count = 0
+
+            async def stream_response(self, **kwargs):
+                self.count += 1
+                if self.count == 1:
+                    yield AssistantDoneEvent(
+                        AssistantMessage(
+                            tool_calls=(ToolCall("write", "delayed.write", {}),)
+                        )
+                    )
+                else:
+                    yield AssistantDoneEvent(AssistantMessage("done"))
+
+        run = AgentRun(
+            runId="running-revocation",
+            roleId="r",
+            sessionKey="role:r",
+            status="created",
+            startedAt=datetime.now(timezone.utc),
+        )
+        manager = RuntimeManager(sessions)
+        capabilities = CapabilityRegistry([DelayedWrite()]).resolve(
+            role_id="r",
+            session_key="role:r",
+            run_id=run.runId,
+            enabled_tools={"delayed.write", "tool_search"},
+            discovery_enabled=True,
+            authorize_tool=lambda definition, context: allowed,
+        )
+        await manager.reserve_run(run, "执行期间撤权")
+
+        async def consume():
+            return [
+                event
+                async for event in manager.run(
+                    run,
+                    provider=Provider(),
+                    model="",
+                    system="",
+                    messages=[],
+                    capabilities=capabilities,
+                )
+            ]
+
+        running = asyncio.create_task(consume())
+        try:
+            await asyncio.wait_for(ready.wait(), 1)
+            allowed = False
+            try:
+                await asyncio.wait_for(cancelled.wait(), 0.5)
+            except asyncio.TimeoutError:
+                pass
+            release.set()
+            await asyncio.wait_for(running, 1)
+            assert not effect.exists(), "revoked tool still committed its file effect"
+            assert cancelled.is_set(), "revocation must reach the in-flight tool"
+            assert sessions.list_tool_audits(run.runId)[0]["resultCategory"] == "denied"
+        finally:
+            release.set()
+            if not running.done():
+                running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+
+    asyncio.run(execute())
+
+
 def test_restored_activation_requires_current_admission_and_exact_definition():
     original = CapabilityRegistry([ArchiveTool()]).resolve(
         role_id="r",

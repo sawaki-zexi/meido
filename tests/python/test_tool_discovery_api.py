@@ -1,6 +1,9 @@
 import json
 import asyncio
 import httpx
+import shlex
+import sys
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -15,6 +18,99 @@ from backend.app.storage import initialize_databases
 from backend.app.multichannel import MultichannelStore
 from backend.app.channels.host import ChannelHost
 from backend.app.memory_config import MemorySettingsStore
+
+
+@pytest.mark.parametrize("change", ["remove", "add", "retain"])
+def test_http_same_run_shell_uses_frozen_and_current_allowlist_intersection(
+    tmp_path, monkeypatch, change
+):
+    roles = RoleStore(tmp_path / "roles")
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data/sessions.db")
+    settings = MemorySettingsStore(tmp_path / "data/memory-settings.json")
+    settings.update(enabled=False)
+    for name, value in {
+        "store": roles,
+        "session_store": sessions,
+        "session_manager": SessionManager(roles, sessions),
+        "model_configuration_store": ModelConfigurationStore(
+            tmp_path / "data/models.json"
+        ),
+        "role_locks": {},
+        "memory_settings_store": settings,
+    }.items():
+        monkeypatch.setattr(main, name, value)
+    client = TestClient(main.app)
+    role = client.post(
+        "/api/roles",
+        json={
+            "name": "收紧命令授权",
+            "profile": {"profile": "设定"},
+            "agentConfig": {
+                "enabledTools": ["tool_search"],
+                "shell": {
+                    "enabled": True,
+                    "allowedCommands": ["whoami"]
+                    if change == "add"
+                    else [sys.executable, "whoami"],
+                },
+            },
+        },
+    ).json()["role"]
+    workspace = roles.workspace_path(role["id"])
+    effect = workspace / "revoked-command.txt"
+    command = shlex.join(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; Path('revoked-command.txt').write_text('revoked-command-ran')",
+        ]
+    )
+
+    class Adapter:
+        count = 0
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            self.count += 1
+            if self.count == 1:
+                changed = client.put(
+                    f"/api/roles/{role['id']}",
+                    json={
+                        "name": role["name"],
+                        "profile": role["profile"],
+                        "agentConfig": {
+                            "enabledTools": ["tool_search"],
+                            "shell": {
+                                "enabled": True,
+                                "allowedCommands": ["whoami"]
+                                if change == "remove"
+                                else [sys.executable],
+                            },
+                        },
+                    },
+                )
+                assert changed.status_code == 200
+                yield ModelToolCall("removed-command", "shell", {"command": command})
+            else:
+                yield ModelTextDelta("命令权限已收紧")
+
+    monkeypatch.setattr(main, "model_adapter", Adapter())
+    response = client.post(
+        f"/api/roles/{role['id']}/messages", json={"content": "执行命令"}
+    )
+    assert "命令权限已收紧" in response.text
+    assert effect.exists() is (change == "retain"), (
+        "execution must use the intersection of frozen and current command grants"
+    )
+    result = next(
+        item
+        for item in sessions.list_messages(f"role:{role['id']}")
+        if item.toolCallId == "removed-command" and item.messageType == "tool_result"
+    )
+    assert result.isError is (change != "retain")
+    assert result.toolResult["status"] == (
+        "succeeded" if change == "retain" else "denied"
+    )
 
 
 def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions(
@@ -159,8 +255,9 @@ def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions
     )
 
 
+@pytest.mark.parametrize("repeat_ids", [False, True])
 def test_http_discovers_non_plugin_account_tool_from_real_role_account_store(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, repeat_ids
 ):
     class Adapter:
         count = 0
@@ -171,16 +268,31 @@ def test_http_discovers_non_plugin_account_tool_from_real_role_account_store(
             if self.count == 1:
                 assert "account_list" not in names and "message_push" in names
                 yield ModelToolCall(
-                    "find-account",
+                    "provider-call" if repeat_ids else "find-account",
                     "tool_search",
                     {"query": "账号", "allowed_risk": ["read-only"]},
                 )
             elif self.count == 2:
                 assert "account_list" in names
-                yield ModelToolCall("list-account", "account_list", {})
+                yield ModelToolCall(
+                    "provider-call" if repeat_ids else "list-account",
+                    "account_list",
+                    {},
+                )
             else:
                 accounts = json.loads(messages[-1]["content"])
                 assert accounts[0]["accountId"] == "test-account"
+                if repeat_ids:
+                    assert [
+                        message["tool_call_id"]
+                        for message in messages
+                        if message["role"] == "tool"
+                    ] == ["provider-call", "provider-call"]
+                    assert [
+                        call["id"]
+                        for message in messages
+                        for call in message.get("tool_calls", [])
+                    ] == ["provider-call", "provider-call"]
                 yield ModelTextDelta("已读取当前角色真实账号")
 
     roles = RoleStore(tmp_path / "roles")
@@ -223,6 +335,15 @@ def test_http_discovers_non_plugin_account_tool_from_real_role_account_store(
         f"/api/roles/{role['id']}/messages", json={"content": "查看已配置账号"}
     )
     assert "已读取当前角色真实账号" in response.text
+    if repeat_ids:
+        results = [
+            item
+            for item in sessions.list_messages(f"role:{role['id']}")
+            if item.messageType == "tool_result"
+        ]
+        assert len({item.toolCallId for item in results}) == 2
+        audits = sessions.list_tool_audits(results[0].runId)
+        assert len(audits) == 2 and len({item["snapshotId"] for item in audits}) == 2
 
 
 def test_http_stop_after_discovery_keeps_versions_durable_without_executing_new_tool(
