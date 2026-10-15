@@ -104,7 +104,7 @@ class FrozenChannelSource:
             account is None
             or (account.role_id, account.channel, account.created_at)
             != (self.role_id, self.channel, self.account_created_at)
-            or not account.enabled
+            or not channels.account_effectively_enabled(account)
         ):
             return "source channel account permission was revoked"
         if (

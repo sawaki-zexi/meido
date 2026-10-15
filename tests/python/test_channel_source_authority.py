@@ -73,7 +73,16 @@ def pair(channels):
 
 @pytest.mark.parametrize(
     "change",
-    ["unbind", "rebind", "disable", "block", "private_scope", "delete", "recreate"],
+    [
+        "unbind",
+        "rebind",
+        "disable",
+        "platform",
+        "block",
+        "private_scope",
+        "delete",
+        "recreate",
+    ],
 )
 def test_frozen_source_rejects_revoked_origin_and_rebound_owner(tmp_path, change):
     channels, sessions, thread = channel_run(tmp_path)
@@ -94,6 +103,8 @@ def test_frozen_source_rejects_revoked_origin_and_rebound_owner(tmp_path, change
             pair(channels)
     elif change == "disable":
         channels.set_account_state("a", enabled=False)
+    elif change == "platform":
+        channels.set_channel_enabled("qq", False)
     elif change in {"delete", "recreate"}:
         channels.delete_account("a")
         if change == "recreate":
