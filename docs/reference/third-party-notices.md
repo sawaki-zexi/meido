@@ -30,6 +30,15 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Feed Skill
+
+`backend/app/builtin_skills/feed-manage/SKILL.md` 改编自 Shiori-Agent
+`4f266aeaf42fcd611362e2456417b91f659341cf` 的 `apps/backend/skills/feed-manage/SKILL.md`，
+适用上文 MIT 版权与许可声明。改写范围包括 Meido frontmatter、实际 MCP 目录/授权和已验证的缓存、分页及删除语义。
+
+协议匹配的 `kachofugetsu09/feed-mcp@210a79512c5cec008dd24c70f7c9c4e2616f5034`
+只作为外部独立验收服务，未复制进本仓库；没有声称它就是 Shiori 实际部署服务。
+
 ## QQ 托管 NapCat
 
 托管 QQ 的安装、官方 QQ 运行时校验、私有目录、WebUI 与二维码流程改编自

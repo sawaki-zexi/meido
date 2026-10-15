@@ -40,7 +40,7 @@
 | P07 QQ 附件 1 工具 | #164 已进入集成分支；多字节长行自动字符分页、当前/引用真实入站与存储/Runtime 往返、旧附件/跨群拒绝均经过两轴独立审查 | 平台实机验收另列；传输夹具不是 QQ 真人收件证据 |
 | S01 weather | #152 已进入集成分支；真实 curl、wttr.in、Open-Meteo 和公开 HTTP 工具往返 | 最终配置集成；Shell 仍须主人显式授权 |
 | S02 summarize | #152 已进入集成分支；真实 summarize 0.25.2、Node 24、URL 提取及本地模型夹具摘要回传 | 两个公开视频仅得到 `transcriptSource: unavailable` 和网页模板，未取得真实字幕；不能以 exit 0 宣称视频摘要成功 |
-| S03 feed-manage | #168 已有完整计划；固定外部服务在隔离依赖和默认生产 MCP 环境下完成 49 项检查、24 次真实工具调用，覆盖七动作与重启持久化 | Skill 实现、真实动态授权与公开 HTTP 对话闭环；协议检查不等于 Skill 验收 |
+| S03 feed-manage | #168 已在任务分支完成内置 Skill、动态服务目录/授权和真实公开 HTTP 七动作；2 项原生 HTTP 用例通过，含 RSS/Atom、下一模型请求、fresh list、重启、503 旧缓存与撤权；详见[验收](../research/feed-skill-native-acceptance-2026-10-16.md) | 两轴复核及总 PR 集成；主动来源/ACK/通知和 Drift 仍不属于此项完成范围 |
 | S04 meme-manage | #152 已进入集成分支；指令、资源与角色目录边界已有行为测试 | 最终媒体引用与整体验收 |
 | S05 skill-creater | #152 已进入集成分支；HTTP 写入新 Skill 后下一轮发现/显式激活，资源 hash、依赖名、真实 Windows junction 反例通过 | 总 PR 最终回归 |
 | S06 create-drift-skill | 待实现 | Drift 目录创建、发现和真实执行 |

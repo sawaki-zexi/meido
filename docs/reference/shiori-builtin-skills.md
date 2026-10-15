@@ -4,7 +4,7 @@
 最后核验：2026-10-16
 事实来源：[SkillRegistry](../../backend/app/agent_runtime/skills.py)、[宿主装配](../../backend/app/main.py)、[公开行为测试](../../tests/python/test_builtin_skills.py)、[HTTP 测试](../../tests/python/test_builtin_skills_api.py)。
 
-本批内置 `weather`、`summarize`、`meme-manage`、`skill-creater`，均显式激活。普通聊天输入 `$weather` 等名称即可选择；HTTP 的 `skillIds` 保持兼容。Skill 是指导与资源，不是执行工具或权限授予。
+当前内置 `weather`、`summarize`、`feed-manage`、`meme-manage`、`skill-creater`，均显式激活。普通聊天输入 `$weather` 等名称即可选择；HTTP 的 `skillIds` 保持兼容。Skill 是指导与资源，不是执行工具或权限授予。
 
 ## 发现与覆盖
 
@@ -38,13 +38,16 @@
 
 `references/`、`assets/`、`scripts/` 下支持文件均验证范围、大小和 hash；每个文件最多 256 KiB，符号链接、Windows junction 与越界资源拒绝。发现保留原始绝对路径，在发现和激活时复查完整祖先链，角色目录或 workspace 的链接也不能绕过。脚本只是支持资源，不自动执行；执行仍须现有 Shell 白名单和预算。
 
-## 四份流程
+## 五份流程
 
 | Skill | 依赖与实际结果 |
 | --- | --- |
 | weather | curl + 角色 Shell；wttr.in 优先，Open-Meteo 备用，无 API key |
 | summarize | npm 安装的 summarize + Node 24+ + 角色 Shell；本批核验 CLI 0.25.2，服务凭据独立配置 |
+| feed-manage | 主人已配置并授权的 MCP；按实际 serverId、工具名和 schema 管理订阅与查询文章；不自动推送 |
 | meme-manage | 当前角色 workspace 的文件工具；维护 manifest 与真实图片，复制二进制另需获准命令 |
 | skill-creater | 当前角色文件工具；创建合法 SKILL.md、参考/资源/脚本，下一次对话显式激活 |
 
 summarize 的 Windows `.cmd` 仅作为真实 npm 安装的 PATH 发现入口；执行使用 Node 和实际 `dist/cli.js`，不经 cmd.exe。CLI 的 `--extract` 支持 URL；本地纯文本使用常规文件模式加 `--json`。`llm:null` 表示可能直接返回短文本，不表示已完成模型调用。完整配置与验收见[操作手册](../handbook/shiori-builtin-skills.md)。
+
+Feed 的服务依赖通过真实 MCP 目录/连接诊断，不要求服务 Python 位于 Meido PATH，也没有新增 `requires.mcp`。七动作、名称批量删除风险和旧缓存的新鲜度限制见 [Feed 契约](feed-skill.md)。
