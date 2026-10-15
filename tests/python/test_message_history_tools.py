@@ -9,9 +9,22 @@ from backend.app.multichannel import MultichannelStore
 from backend.app.session_store import SessionStore
 
 
+class TestCredentials:
+    __test__ = False
+
+    def __init__(self):
+        self.values = {}
+
+    def get(self, key):
+        return self.values.get(key, "")
+
+    def set(self, key, value):
+        self.values[key] = value
+
+
 def setup_history(tmp_path, *, thread=None, owner=True):
     sessions = SessionStore(tmp_path / "sessions.db")
-    channels = MultichannelStore(tmp_path / "sessions.db", sessions)
+    channels = MultichannelStore(tmp_path / "sessions.db", sessions, TestCredentials())
     sessions.open_role_session("r1")
     tools = {tool.definition.name: tool for tool in build_message_history_tools(
         sessions, channels, role_id="r1", source_thread_id=thread, is_owner=owner,

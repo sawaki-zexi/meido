@@ -12,6 +12,16 @@ from backend.app.session_store import SessionStore
 from backend.app.storage import initialize_databases
 
 
+class TestCredentials:
+    __test__ = False
+
+    def get(self, key):
+        return ""
+
+    def set(self, key, value):
+        pass
+
+
 def test_http_history_tools_are_opt_in_and_results_reach_next_model_request(tmp_path, monkeypatch):
     class Adapter:
         phase = "off"
@@ -49,7 +59,7 @@ def test_http_history_tools_are_opt_in_and_results_reach_next_model_request(tmp_
     roles = RoleStore(tmp_path / "roles")
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data/sessions.db")
-    channels = MultichannelStore(tmp_path / "data/sessions.db", sessions)
+    channels = MultichannelStore(tmp_path / "data/sessions.db", sessions, TestCredentials())
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "multichannel_store", channels)
