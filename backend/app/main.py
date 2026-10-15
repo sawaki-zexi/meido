@@ -1276,6 +1276,13 @@ def save_embedding_configuration(data: EmbeddingConfigurationInput) -> dict[str,
     }
 
 
+@app.post("/api/embedding/configuration/reveal-key")
+def reveal_embedding_api_key(response: Response) -> dict[str, str]:
+    configuration = embedding_configuration_store.get()
+    response.headers["Cache-Control"] = "no-store"
+    return {"apiKey": configuration.apiKey}
+
+
 @app.post("/api/embedding/configuration/test")
 def test_embedding_configuration(data: EmbeddingConfigurationInput) -> dict[str, object]:
     try:
@@ -1384,6 +1391,15 @@ def update_model_configuration(configuration_id: str, data: ModelConfigurationIn
     except OSError as error:
         raise HTTPException(status_code=500, detail="模型配置保存失败") from error
     return {"configuration": public_configuration(configuration)}
+
+
+@app.post("/api/model/configurations/{configuration_id}/reveal-key")
+def reveal_model_api_key(configuration_id: str, response: Response) -> dict[str, str]:
+    configuration = model_configuration_store.get(configuration_id)
+    if configuration is None:
+        raise HTTPException(status_code=404, detail="模型配置不存在", headers={"Cache-Control": "no-store"})
+    response.headers["Cache-Control"] = "no-store"
+    return {"apiKey": configuration.apiKey}
 
 
 @app.post("/api/model/configurations/{configuration_id}/activate")

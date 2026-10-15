@@ -79,6 +79,13 @@ input:disabled, textarea:disabled, select:disabled { background: transparent; co
 .field { display: grid; gap: 4px; }
 .field label { font-size: 13px; font-weight: 600; color: var(--ink-soft); }
 .field-hint { color: var(--ink-faint); margin-top: -2px; }
+.api-key-field { min-width: 0; }
+.api-key-input-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.api-key-input-row input { flex: 1; min-width: 0; border-radius: var(--radius); }
+.api-key-saved::placeholder { color: var(--ink); font-family: Arial, sans-serif; opacity: 1; }
+.api-key-visibility { display: inline-grid; place-items: center; flex: 0 0 36px; width: 36px; height: 36px; min-height: 0; padding: 0; border: 0; background: transparent; color: var(--ink-soft); }
+.api-key-visibility:hover:not(:disabled) { color: var(--rose-deep); }
+.api-key-error { color: var(--danger); overflow-wrap: anywhere; }
 .required { color: var(--rose); margin-left: 3px; }
 fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 14px; min-width: 0; }
 legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; letter-spacing: .12em; color: var(--ink-faint); }

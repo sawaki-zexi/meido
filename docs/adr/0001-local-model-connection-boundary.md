@@ -2,7 +2,8 @@
 
 ## 状态
 
-已接受（协议接入范围由 [ADR-0006](0006-provider-specific-model-adapters.md) 扩展）
+已接受（协议接入范围由 [ADR-0006](0006-provider-specific-model-adapters.md) 扩展；
+显式查看已保存密钥的例外由 [ADR-0010](0010-explicit-api-key-reveal.md) 定义）
 
 ## 决定
 
