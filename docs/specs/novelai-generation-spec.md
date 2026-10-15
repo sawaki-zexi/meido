@@ -161,7 +161,7 @@ CAS失败只保留新图历史并提示“已生成，原消息已改变”；�
 
 已按完整用户结果拆三票，Parent均为#137，当前标记needs-info等待本规格第3节批准；按依赖串行而不分数据库/API/UI层：
 
-1. [**#171：主人按请求生图并在原会话看到唯一图片与历史。**](https://github.com/sawaki-zexi/meido/issues/171) 配置/许可/有限预算、txt2img+img2img、TaskRuntime、attempt unknown、媒体outbox和本地HTTP全闭环；Blocked by：本规格§3批准及 #158 完成两轴复核并进入最新已验证总集成。沿用主人已批准的本地总PR分支流程，不重复等待main或建立堆叠功能PR。
+1. [**#171：主人按请求生图并在原会话看到唯一图片与历史。**](https://github.com/sawaki-zexi/meido/issues/171) 配置/许可/有限预算、txt2img+img2img、TaskRuntime、attempt unknown、媒体outbox和本地HTTP全闭环；Blocked by：本规格§3批准。#158 已完成两轴复核并进入经两套CI验证的总集成 `4b1b3b8`，实施依赖已满足。沿用主人已批准的本地总PR分支流程，不重复等待main或建立堆叠功能PR。
 2. [**#172：主人明确重生成指定图片并可靠接收后台结果。**](https://github.com/sawaki-zexi/meido/issues/172) 新付费动作、CAS、真实receipt/不确定投递、重启恢复、多附件不丢失；Blocked by：前票。
 3. [**#173：主人输入场景后角色自动生成获准CG。**](https://github.com/sawaki-zexi/meido/issues/173) 辅助连接、宿主场景事件、冷却/去重/取消/手动互斥、标签与显式资产写回；Blocked by：前两票；不依赖P04、桌宠或无人值守主动扩展。
 

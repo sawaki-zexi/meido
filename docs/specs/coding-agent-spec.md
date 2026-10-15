@@ -17,7 +17,7 @@
 - Shiori实际调用外部Herdr CLI；需要CLI及server兼容且≥0.9.4，使用worktree/agent/pane协议，不是Python Coding SDK。其固定源码默认强加Codex bypass或Claude skip-permissions、完整os.environ及commit/push/Draft PR指令；本方案全部改写。[固定协议与行号](../research/coding-agent-cli-portability-2026-10-16.md#已提取外部依赖身份与-cli-协议)。
 - Herdr官方0.9.4的Windows PTY会补回注册表环境，daemon可能经WMI脱离Job；TerminateProcess权限/返回与等待不足以证明树退出。只给短命客户端minenv、设置CODEX_HOME或看到socket消失都不能称隔离。[源码证据§3–4](../research/herdr-runtime-isolation-2026-10-16.md#3-已提取agent-从既有-pane-shell-启动不接受每次调用的独立-envcwd)。
 - Herdr原生session关联依赖集成hook；其自动恢复可能丢失原权限/model参数。默认禁止自动restore，不能用pane名、idle/done或`--last`替代精确native ID。[源码证据§5](../research/herdr-runtime-isolation-2026-10-16.md#5-已提取attach-与-native-resume-的身份不同)。
-- [TaskRuntime](../../backend/app/task_runtime/runtime.py#L129)已有全局8/角色3并发、每attempt≤600秒、日志/保留配额、原来源与取消；上述aggregate基线没有submission_key。本票明确依赖 #158 完成两轴复核并进入最新已验证总集成后的submission_key/retain_until_ack/acknowledge_result接口；已只读核对任务分支接口，未将它标为当前aggregate已有。现有[SpawnExecutor](../../backend/app/agent_runtime/spawn_tool.py#L155)限制任务目录，不适合作为任意repo/env/stdin入口。
+- [TaskRuntime](../../backend/app/task_runtime/runtime.py#L129)已有全局8/角色3并发、每attempt≤600秒、日志/保留配额、原来源与取消；上述历史取证基线没有submission_key，当时仅只读核对任务分支接口。#158 的submission_key/retain_until_ack/acknowledge_result接口现已完成两轴复核并进入经两套CI验证的总集成 `4b1b3b8`，本票复用同一接口。现有[SpawnExecutor](../../backend/app/agent_runtime/spawn_tool.py#L155)限制任务目录，不适合作为任意repo/env/stdin入口。
 - 本轮只运行help/version：Codex 0.159.3、Claude 2.1.283；版本不等于登录/额度/真实任务成功。Codex exec/resume参数不同，Claude permission模式不等于OS沙箱；滚动官方文档不能代替固定版本原生探针。[OpenAI官方CLI](https://learn.chatgpt.com/docs/cli/reference)、[非交互事件](https://learn.chatgpt.com/docs/non-interactive-mode)、[Claude官方CLI](https://code.claude.com/docs/en/cli-reference)。
 
 依循[ADR-0004](../adr/0004-role-scoped-shell-tool-boundary.md)、[ADR-0009](../adr/0009-multichannel-conversation-threads.md)、[ADR-0011](../adr/0011-versioned-tool-activation.md)、[ADR-0012](../adr/0012-owned-task-runtime.md)。独立Coding实现不扩大通用Shell的cwd/env/stdin/白名单。
@@ -169,7 +169,7 @@ S07 Skill指引：先查CLI/profile可用性，用户已提供repo时直接传re
 
 已建立三张垂直票，Parent #137，当前 needs-info 等待本规格§3批准：
 
-1. [#174：主人通过Herdr在可信repo完成本地任务并安全查询/取消](https://github.com/sawaki-zexi/meido/issues/174)，包含owned补丁与Codex/Claude真实入口、任务/来源、独立worktree和验证；Blocked by：本规格§3批准，以及 #158 完成规范/规格两轴复核并进入最新已验证总集成，确认Runtime幂等、保留/ACK seam及故障回归。
+1. [#174：主人通过Herdr在可信repo完成本地任务并安全查询/取消](https://github.com/sawaki-zexi/meido/issues/174)，包含owned补丁与Codex/Claude真实入口、任务/来源、独立worktree和验证；Blocked by：本规格§3批准。#158 的Runtime幂等、保留/ACK seam及故障回归已在两轴复核与 `4b1b3b8` 两套CI中满足，不再构成当前阻塞。
 2. [#175：主人通过codex-delegate后台完成并精确继续同一原生任务](https://github.com/sawaki-zexi/meido/issues/175)，包含coding profile、Skill/管理路由、session和持久完成，依赖 #174 共享模块。
 3. [#176：主人审阅确切成果后发布可信Draft PR](https://github.com/sawaki-zexi/meido/issues/176)，包含本地commit、一次性发布批准与未知恢复，依赖 #174/#175。
 
