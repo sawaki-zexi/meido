@@ -70,12 +70,13 @@ class ChannelHost:
         self._adapters[adapter.account_id] = adapter
         self._adapter_generations.setdefault(id(adapter), uuid.uuid4().hex)
 
-    def unregister(self, account_id: str) -> None:
+    def unregister(self, account_id: str, *, keep_paused: bool = False) -> None:
         adapter = self._adapters.pop(account_id, None)
         if adapter is not None:
             self._adapter_generations.pop(id(adapter), None)
         if not self._inflight_sends.get(account_id) and not self._inflight_events.get(account_id):
-            self._paused_accounts.discard(account_id)
+            if not keep_paused:
+                self._paused_accounts.discard(account_id)
             self._account_idle.pop(account_id, None)
 
     async def pause_and_drain(self, account_id: str) -> None:

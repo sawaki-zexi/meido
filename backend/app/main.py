@@ -1936,7 +1936,7 @@ def _channel_connection_status(account: ChannelAccount) -> str:
     if account.last_error:
         return "error"
     pending = channel_tasks.get(account.account_id)
-    if pending is not None and not pending.done():
+    if pending is not None and not pending.done() and account.account_id not in channel_adapters:
         return "connecting"
     if account.channel == "telegram":
         task = telegram_tasks.get(account.account_id)
@@ -2467,6 +2467,8 @@ async def set_channel_settings(data: dict[str, object]) -> dict[str, object]:
 
 
 def _managed_qq_error(error: Exception) -> HTTPException:
+    if isinstance(error, RuntimeError) and str(error) == "托管 NapCat 仅支持 Windows x64":
+        return HTTPException(status_code=422, detail="内置 QQ 扫码仅支持 Windows x64；其他平台请使用手动连接已有 NapCat。")
     if isinstance(error, (KeyError, PermissionError)):
         return HTTPException(status_code=404, detail="QQ 登录不存在或不属于此角色")
     if isinstance(error, ValueError):
@@ -3890,11 +3892,24 @@ async def _start_channel_account_unlocked(account_id: str) -> None:
     managed_ref = str(config.get("managedRef") or "")
     if account.channel == "qq" and managed_ref:
         await managed_napcat.connect(managed_ref, role_id=account.role_id, expected_uin=account.platform_id or "")
+        endpoint, access_token = managed_napcat.endpoint(managed_ref, role_id=account.role_id)
+        previous_transport = channel_transports.get(account_id)
+        if previous_transport is not None and (
+            getattr(previous_transport, "endpoint", None) != endpoint
+            or getattr(previous_transport, "access_token", None) != access_token
+        ):
+            # A restarted managed process owns fresh IPC credentials. Retire
+            # its predecessor before admitting work on the replacement socket.
+            await channel_host.pause_and_drain(account_id)
+            try:
+                await channel_host.stop(account_id)
+            finally:
+                _forget_managed_channel_adapter(account_id)
         status = await managed_napcat.status(managed_ref, role_id=account.role_id)
+        existing = channel_tasks.get(account_id)
+        if existing is None or existing.done():
+            channel_tasks[account_id] = asyncio.create_task(_monitor_managed_qq_account(account_id, managed_ref))
         if status.get("login", {}).get("phase") != "online":
-            existing = channel_tasks.get(account_id)
-            if existing is None or existing.done():
-                channel_tasks[account_id] = asyncio.create_task(_wait_managed_qq_login(account_id, managed_ref))
             return
     _build_channel_adapter(account)
     if account.channel == "telegram":
@@ -3921,6 +3936,8 @@ async def _start_channel_account_unlocked(account_id: str) -> None:
     current = multichannel_store.get_account(account_id)
     if current:
         _refresh_channel_avatars(current)
+        if managed_ref:
+            multichannel_store.publish(current.role_id, {"type": "account", "roleId": current.role_id, "accountId": account_id})
 
 
 async def _stop_channel_account_unlocked(account_id: str) -> None:
@@ -3942,10 +3959,21 @@ async def _stop_channel_account_unlocked(account_id: str) -> None:
         account = multichannel_store.get_account(account_id)
         config = multichannel_store.channel_config(account_id)
         if account is not None and account.channel == "qq" and config.get("managedRef"):
-            await managed_napcat.stop(str(config["managedRef"]), role_id=account.role_id)
+            try:
+                await managed_napcat.stop(str(config["managedRef"]), role_id=account.role_id)
+            finally:
+                _forget_managed_channel_adapter(account_id)
 
 
-async def _wait_managed_qq_login(account_id: str, ref: str) -> None:
+def _forget_managed_channel_adapter(account_id: str) -> None:
+    # The persisted account may still be enabled until its caller commits the
+    # switch. Keep admission paused through rebuild and explicit resume.
+    channel_host.unregister(account_id, keep_paused=True)
+    channel_adapters.pop(account_id, None)
+    channel_transports.pop(account_id, None)
+
+
+async def _monitor_managed_qq_account(account_id: str, ref: str) -> None:
     try:
         while True:
             account = multichannel_store.get_account(account_id)
@@ -3953,11 +3981,18 @@ async def _wait_managed_qq_login(account_id: str, ref: str) -> None:
                 return
             status = await managed_napcat.status(ref, role_id=account.role_id)
             phase = status.get("login", {}).get("phase")
-            if phase == "online":
+            if phase == "online" and account_id not in channel_adapters:
                 await _start_channel_account(account_id)
-                return
             if phase == "error":
-                multichannel_store.set_account_state(account_id, last_error="managed_login_failed")
+                async with _channel_lifecycle(account_id):
+                    multichannel_store.set_account_state(account_id, last_error="managed_process_failed")
+                    multichannel_store.publish(account.role_id, {"type": "account", "roleId": account.role_id, "accountId": account_id})
+                    await channel_host.pause_and_drain(account_id)
+                    await channel_host.intake.close(account_id)
+                    try:
+                        await channel_host.stop(account_id)
+                    finally:
+                        _forget_managed_channel_adapter(account_id)
                 return
             await asyncio.sleep(.5)
     except asyncio.CancelledError:
@@ -3969,6 +4004,7 @@ async def _wait_managed_qq_login(account_id: str, ref: str) -> None:
             logger.debug("托管 QQ 登录失败后的清理失败 account=%s", account_id, exc_info=True)
         if multichannel_store.get_account(account_id) is not None:
             multichannel_store.set_account_state(account_id, last_error=type(error).__name__)
+            multichannel_store.publish(account.role_id, {"type": "account", "roleId": account.role_id, "accountId": account_id})
     finally:
         if channel_tasks.get(account_id) is asyncio.current_task():
             channel_tasks.pop(account_id, None)

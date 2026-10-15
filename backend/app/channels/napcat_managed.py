@@ -355,6 +355,13 @@ class ManagedNapCat:
 
     async def stop(self, ref: str, *, role_id: str) -> None:
         async with self._locks.setdefault(ref, asyncio.Lock()):
+            # Account/vault deletion may be retried after this profile was
+            # already removed. Never suppress a surviving profile's ownership
+            # check, or a missing metadata file while its process is still live.
+            if not self._directory(ref).exists() and ref not in self._tasks:
+                self._logins.pop(ref, None)
+                self._ipc_secrets.pop(ref, None)
+                return
             self._metadata(ref, role_id)
             task = self._tasks.pop(ref, None)
             if task is not None:
@@ -371,6 +378,8 @@ class ManagedNapCat:
     async def delete(self, ref: str, *, role_id: str) -> None:
         await self.stop(ref, role_id=role_id)
         async with self._locks.setdefault(ref, asyncio.Lock()):
+            if not self._directory(ref).exists():
+                return
             self._metadata(ref, role_id)
             lease = ProfileLease(self._directory(ref))
             lease.close()
