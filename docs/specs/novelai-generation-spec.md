@@ -16,7 +16,7 @@
 
 ## 2. 已有事实与复用边界
 
-- [TaskRuntime](../../backend/app/task_runtime/runtime.py#L129) 已有 submit/query/list/stop、TaskOrigin、默认全局8/每角色3并发及每任务600秒硬上限；启动后不盲重跑 interrupted 任务。当前提交不含 submission_key；本票明确依赖 #158 经复核集成后的幂等交接、结果保留/ACK seam，不能将任务分支当现状或另造第三套交接协议。
+- [TaskRuntime](../../backend/app/task_runtime/runtime.py#L129) 已有 submit/query/list/stop、TaskOrigin、默认全局8/每角色3并发及每任务600秒硬上限；启动后不盲重跑 interrupted 任务。本文取证基线未含 submission_key；#158 的最终源快照 `e992e0f` 已完成幂等交接、结果保留/ACK 并通过两轴复核，本轮总集成后复用同一 seam，不另造第三套交接协议。
 - [ToolContext](../../backend/app/agent_runtime/tools.py#L78) 只有宿主 role/session/run/call/取消信息；渠道授权通过 [FrozenChannelSource](../../backend/app/channels/source_authority.py#L39) 捕获真实账号、发送者、配对与来源代际，后续检查只能收回权限。
 - [SystemCredentialStore](../../backend/app/credentials.py#L17)、[角色附件](../../backend/app/chat_attachments.py#L90)、[SessionStore](../../backend/app/session_store.py#L151) 和 [ChatView](../../web/src/features/chat/ChatView.tsx#L21) 可复用。普通 update_message 没有附件 CAS；TaskCompletionWorker 当前回灌文本，不能直接声称它已可靠交付图片。
 - [ChannelHost.account_send](../../backend/app/channels/host.py#L253) 支持 attachments、attachment_ids、原来源和授权回调；adapter.send 返回 [DeliveryResult](../../backend/app/channels/models.py#L111)，状态为 pending/sent/failed/uncertain。媒体能力依具体 adapter 核验，不伪造所有平台均支持图片。

@@ -11,6 +11,7 @@ import sqlite3
 import secrets
 import contextvars
 import sys
+import time
 from contextlib import asynccontextmanager
 from urllib.parse import quote, unquote
 from dataclasses import asdict, replace
@@ -83,6 +84,7 @@ from .agent_runtime import (
     ToolResultMessage,
 )
 from .agent_runtime.capabilities import CapabilityResolution
+from .agent_runtime.provider import CancellationToken
 from .agent_runtime.message_history_tools import MESSAGE_HISTORY_TOOL_NAMES, build_message_history_tools
 from .agent_runtime.file_tools import FILE_TOOL_NAMES, build_file_tools
 from .agent_runtime.catalog import RuntimeCapabilityPolicy, tool_catalog
@@ -111,6 +113,8 @@ from .multichannel import ChannelAccount, MultichannelStore, TelegramChannelServ
 from .channels import (
     ChannelHost,
     ChannelAdapter,
+    ChannelAdapterError,
+    UnsupportedTargetError,
     FeishuAdapter,
     FeishuConfig,
     NapCatAdapter,
@@ -133,6 +137,8 @@ from .channels import (
 from .channels.credentials import credential_key
 from .channels.push import ChannelPushService
 from .desktop_push import MessagePushTool
+from .schedules.application import ScheduleApplication, DeliveryDeferred
+from .schedules.tools import ScheduleTool, ScheduleManageTool, SCHEDULE_NAMES, SOFT_TOOLS
 from .channels.transports import NapCatWebSocketTransport, QQBotGatewayTransport, FeishuWebhookTransport, ChannelTransportError
 from .channels.media import MAX_CHANNEL_MEDIA_BYTES, media_filename
 from .channels.napcat_managed import ManagedNapCat
@@ -773,6 +779,8 @@ async def _memory_engine_delete(mutation: MemoryMutation) -> None:
 
 
 async def _close_memory_workers() -> None:
+    if _schedules is not None:
+        await _schedules.close()
     if _spawn_completion_worker is not None:
         await _spawn_completion_worker.close()
     await screen_perception.close()
@@ -792,6 +800,7 @@ async def _start_memory_workers() -> None:
     global _channel_runtime_loop
     _channel_runtime_loop = asyncio.get_running_loop()
     task_runtime.start()
+    _schedule_application().start()
     _ensure_spawn_completion_worker()
     mail_service.start()
     todo_plugin.sessions = session_store
@@ -2006,6 +2015,8 @@ async def delete_role(role_id: str) -> None:
     if deletion_succeeded:
         try:
             await asyncio.to_thread(task_runtime.delete_role, role_id)
+            if _schedules is not None and _schedules.sessions is session_store:
+                await asyncio.to_thread(_schedules.delete_role, role_id)
         except (OSError, sqlite3.Error, RuntimeError) as error:
             memory_worker.errors.append(f"{role_id}: task cleanup deferred: {type(error).__name__}")
         for account in channel_accounts_snapshot:
@@ -2274,7 +2285,8 @@ def _refresh_channel_avatars(account: ChannelAccount, sender_id: str = "", chat_
             multichannel_store.avatars.refresh(account, "chat", chat_id, lambda: _fetch_channel_avatar(account, kind, subject))
 
 
-async def _dispatch_channel_payload(account_id: str, payload: dict[str, object], *, source_adapter: ChannelAdapter | None = None) -> None:
+async def _dispatch_channel_payload(account_id: str, payload: dict[str, object], *, source_adapter: ChannelAdapter | None = None, received_at: float | None = None) -> None:
+    received_at = _schedule_clock() if received_at is None else received_at
     account = multichannel_store.get_account(account_id)
     if account is not None and account.role_id in _channel_roles_deleting:
         original = source_adapter or channel_adapters.get(account_id)
@@ -2289,7 +2301,7 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
                 if original is not None and account is not None and account.enabled:
                     if channel_host.intake.defer(
                         account_id,
-                        lambda: _dispatch_channel_payload(account_id, payload),
+                        lambda: _dispatch_channel_payload(account_id, payload, received_at=received_at),
                         lambda: _reject_channel_payload(original, payload),
                     ):
                         return
@@ -2304,7 +2316,7 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
                     return
             event = await channel_host.accept_event(account_id, payload)
             if event is not None:
-                await _handle_channel_event(event)
+                await _handle_channel_event(replace(event, received_at=received_at))
     except Exception as error:
         logger.warning("渠道入站处理失败 account=%s error=%s", account_id, type(error).__name__)
 
@@ -2418,6 +2430,8 @@ async def _handle_channel_event(event) -> None:
     """Process one account's events serially to make dedupe and attachment
     persistence atomic from the event loop's point of view."""
 
+    if event.received_at is None:
+        event = replace(event, received_at=_schedule_clock())
     if await _handle_channel_control_command(event):
         return
     lock = channel_event_locks.setdefault(event.account_id, asyncio.Lock())
@@ -2507,6 +2521,7 @@ async def _handle_channel_event_locked(event) -> None:
     saved_quote = await _persist_channel_attachments(replace(event, attachments=tuple(quoted_attachments)), account.role_id) if quoted_attachments else []
     content = event.content.strip() or ("[收到附件]" if event.attachments else "")
     metadata: dict[str, object] = {
+        "hostReceivedAt": event.received_at,
         "platformMessageId": event.external_message_id,
         "senderId": event.sender_id,
         "senderName": event.sender_name,
@@ -3891,11 +3906,32 @@ def _runtime_tool_candidates(
         return (context.session_key == f'role:{role.id}'
                 and user.metadata.get('channel', 'desktop') == 'desktop')
 
+    def schedule_source_authorized(context):
+        current = store.get(role.id)
+        if current is None or context.role_id != role.id or role.id in _channel_roles_deleting or not is_channel_owner:
+            return False
+        run = session_store.get_run(context.run_id)
+        user = session_store.user_message_for_run(context.run_id)
+        if (run is None or user is None or run.roleId != role.id or run.sessionKey != context.session_key
+                or user.sessionKey != context.session_key or run.status not in {'created', 'running'}):
+            return False
+        if context.session_key.startswith('thread:'):
+            try:
+                task_source(context)
+                return True
+            except PermissionError:
+                return False
+        return context.session_key == f'role:{role.id}' and user.metadata.get('channel', 'desktop') == 'desktop'
+
     memory_access = _memory_runtime_access(role, is_channel_owner=is_channel_owner, source_thread_id=source_thread_id)
     group_access = GroupToolAccess(multichannel_store, role_id=role.id,
         source_thread_id=source_thread_id, is_owner=is_channel_owner,
         authorized=lambda context: store.get(role.id) is not None and role.id not in _channel_roles_deleting)
     tools: list[object] = [
+        ScheduleTool(_schedule_application, session_store, origin_resolver=task_origin,
+            authorized=schedule_source_authorized),
+        *(ScheduleManageTool(name, _schedule_application, origin_resolver=task_origin, authorized=schedule_source_authorized)
+          for name in ('list_schedules', 'cancel_schedule')),
         MessagePushTool(session_store, lambda: store.workspace_path(role.id), role_id=role.id, authorized=desktop_push_authorized),
         SpawnTool(task_runtime, role.agentConfig.spawn, origin_resolver=task_origin, authorized=spawn_authorized),
         SpawnManageTool(task_runtime, origin_resolver=task_origin, authorized=spawn_authorized),
@@ -3993,6 +4029,7 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
     enabled.update(set(role.agentConfig.enabledTools) & {"web_search", "web_fetch"})
     enabled.update(FILE_TOOL_NAMES.intersection(role.agentConfig.enabledTools))
     enabled.update({'message_push'}.intersection(role.agentConfig.enabledTools))
+    enabled.update(SCHEDULE_NAMES.intersection(role.agentConfig.enabledTools))
     if "tool_search" in role.agentConfig.enabledTools:
         enabled.update(MCP_MANAGEMENT_NAMES.intersection(role.agentConfig.enabledTools))
     if shell.enabled and shell.allowedCommands:
@@ -4274,6 +4311,8 @@ def _bind_spawn_runtime(capabilities: CapabilityResolution, provider: MeidoProvi
     frozen_role = provider.role.model_copy(deep=True)
     frozen_config = provider.configuration.model_copy(deep=True) if provider.configuration is not None else None
     for tool in capabilities.tools:
+        if isinstance(tool, ScheduleTool):
+            tool.bind(capabilities, frozen_role, frozen_config)
         if isinstance(tool, SpawnTool):
             parent = session_store.get_run(capabilities.snapshot.run_id)
             if parent is not None:
@@ -4282,6 +4321,156 @@ def _bind_spawn_runtime(capabilities: CapabilityResolution, provider: MeidoProvi
             tool.bind(capabilities, lambda: MeidoProvider(provider.adapter, frozen_role, frozen_config, structured_without_tools=True,
                 max_response_tokens=min(4096, frozen_role.agentConfig.spawn.maxModelOutputChars)))
             _ensure_spawn_completion_worker()
+
+
+_schedule_clock = time.time
+_schedules: ScheduleApplication | None = None
+
+
+def _schedule_origin_authorized(origin: TaskOrigin) -> bool:
+    role = store.get(origin.role_id)
+    if role is None or 'schedule' not in role.agentConfig.enabledTools or role.id in _channel_roles_deleting:
+        return False
+    if origin.source_authority_json:
+        try:
+            source = FrozenChannelSource.from_dict(json.loads(origin.source_authority_json))
+            return (source.role_id == origin.role_id and source.session_key == origin.session_key
+                    and source.owner_context and source.authorization_denial(multichannel_store) is None)
+        except (ValueError, KeyError, TypeError):
+            return False
+    return origin.session_key == f'role:{origin.role_id}' and not origin.source_account_id
+
+
+def _schedule_target(origin, arguments):
+    channel = arguments.get('channel')
+    chat = arguments.get('chat_id')
+    if channel == 'desktop' or channel is None and not origin.source_account_id:
+        if chat not in {None, 'owner', 'user'}:
+            raise ValueError('desktop schedule target must be owner or user')
+        return {'channel': 'desktop', 'sessionKey': f'role:{origin.role_id}'}
+    source = FrozenChannelSource.from_dict(json.loads(origin.source_authority_json)) if origin.source_authority_json else None
+    accounts = [a for a in multichannel_store.list_role_accounts(origin.role_id)
+                if (channel is None and source is not None and a.account_id == source.account_id) or a.channel == channel]
+    if len(accounts) != 1:
+        raise ValueError('schedule channel account is unavailable or ambiguous')
+    account = accounts[0]
+    targets = multichannel_store.list_targets(origin.role_id, account.account_id)
+    if chat == 'owner':
+        targets = multichannel_store.owner_targets(origin.role_id, account.account_id)
+    else:
+        targets = [t for t in targets if t.chat_id == (chat if chat is not None else source.chat_id if source else '') or t.id == chat]
+    if len(targets) != 1:
+        raise ValueError('schedule target is unavailable or ambiguous')
+    target = targets[0]
+    thread = multichannel_store.get_thread_by_chat(origin.role_id, account.account_id, target.chat_id,
+        chat_type='group' if target.kind.value == 'group' else 'private')
+    if thread is None:
+        raise ValueError('schedule destination requires an existing observed conversation')
+    return {'channel': account.channel, 'accountId': account.account_id, 'accountCreatedAt': account.created_at,
+        'targetId': target.id, 'chatId': target.chat_id, 'kind': target.kind.value,
+        'sessionKey': thread.session_key, 'threadId': thread.thread_id,
+        'ownerBinding': multichannel_store.owner_target_binding(origin.role_id, account.account_id, target.chat_id)
+            if target in multichannel_store.owner_targets(origin.role_id, account.account_id) else None}
+
+
+def _schedule_authorized(plan):
+    origin = TaskOrigin(**plan['data']['origin'])
+    if not _schedule_origin_authorized(origin):
+        return False
+    target = plan['data']['target']
+    if target['channel'] == 'desktop':
+        return True
+    account = multichannel_store.get_account(target['accountId'])
+    current = multichannel_store.get_target(origin.role_id, target['accountId'], target['targetId'])
+    if (account is None or account.created_at != target['accountCreatedAt']
+            or not multichannel_store.account_effectively_enabled(account) or current is None
+            or current.chat_id != target['chatId'] or current.kind.value != target['kind']):
+        return False
+    return target.get('ownerBinding') is None or target['ownerBinding'] == multichannel_store.owner_target_binding(
+        origin.role_id, account.account_id, target['chatId'])
+
+
+async def _schedule_execute(plan):
+    from .agent_runtime.spawn_tool import SpawnExecutor
+    from .agent_runtime.tools import ToolContext
+    from .models import Role, SpawnToolConfig
+    data = plan['data']
+    origin = TaskOrigin(**data['origin'])
+    role = Role.model_validate(data['frozen']['role'])
+    frozen_configuration = data['frozen']['configuration']
+    configuration_id = frozen_configuration.get('id') if isinstance(frozen_configuration, dict) else None
+    if frozen_configuration is not None and (not isinstance(configuration_id, str) or not configuration_id):
+        raise PermissionError('original model connection has no frozen identity')
+    configuration = model_configuration_store.get(configuration_id) if configuration_id else None
+    if (configuration_id and configuration is None
+            or (configuration.model_dump(mode='json', exclude={'apiKey'}) if configuration else None) != frozen_configuration):
+        raise PermissionError('original model connection changed or was deleted')
+    definitions = {item['name']: item for item in data['frozen']['tools']}
+    candidates = tuple(tool for tool in _runtime_tool_candidates(role, preview=True)
+        if tool.definition.name in SOFT_TOOLS and asdict(tool.definition) == definitions.get(tool.definition.name))
+    current = store.get(role.id)
+    if current is None:
+        raise PermissionError('original role was deleted')
+    enabled = _enabled_runtime_tool_names(current) & set(definitions)
+    def authorize(definition, context):
+        current = store.get(role.id)
+        return bool(_schedule_authorized(plan) and current is not None and definition.name in _enabled_runtime_tool_names(current))
+    def authorize_call(definition, context, arguments):
+        current = store.get(role.id)
+        return bool(current is not None and (definition.name != 'shell' or ShellTool.command_is_allowed(str(arguments.get('command', '')), current.agentConfig.shell.allowedCommands)))
+    frozen = await CapabilityRegistry(candidates).resolve_async(role_id=role.id, session_key=origin.session_key,
+        run_id=plan['id'], enabled_tools=enabled, allowed_risks={'read_only', 'mutating', 'external'},
+        authorize_tool=authorize, authorize_call=authorize_call)
+    context = ToolContext(role.id, origin.session_key, plan['id'], CancellationToken())
+    provider = MeidoProvider(model_adapter, role, configuration, structured_without_tools=True, max_response_tokens=4096)
+    return SpawnExecutor(task=data['prompt'], profile='general', config=SpawnToolConfig(), provider=provider,
+        frozen=frozen, context=context, authorized=lambda: _schedule_authorized(plan))
+
+
+async def _schedule_deliver(plan, occurrence, authorized):
+    origin = TaskOrigin(**plan['data']['origin'])
+    target = plan['data']['target']
+    try:
+        result = await channel_host.account_send(origin.role_id, target['accountId'], target['targetId'], occurrence['content'],
+            actor='owner', source_thread_id=origin.source_thread_id, source_session_key=origin.session_key,
+            source_run_id=origin.parent_run_id, source_tool_call_id=occurrence['id'], source_kind='schedule',
+            record_message=False, authorize_source=authorized)
+    except (ChannelAdapterError, UnsupportedTargetError) as error:
+        if _schedule_receipt(plan, occurrence) is not None:
+            raise
+        if not authorized():
+            raise PermissionError('original schedule authority revoked') from error
+        raise DeliveryDeferred('transport unavailable before attempt') from error
+    return result.status.value, result.attempt_id
+
+
+def _schedule_receipt(plan, occurrence):
+    return multichannel_store.delivery_for_source(plan['role_id'], source_kind='schedule', source_tool_call_id=occurrence['id'])
+
+
+def _schedule_offline(plan):
+    target = plan['data']['target']
+    if target['channel'] == 'desktop':
+        return False
+    account = multichannel_store.get_account(target['accountId'])
+    if account is None or not account.enabled or account.created_at != target['accountCreatedAt']:
+        return False
+    if not multichannel_store.channel_enabled(account.channel):
+        return True
+    try:
+        channel_host.adapter(account.account_id)
+        return False
+    except (KeyError, ChannelAdapterError):
+        return True
+
+
+def _schedule_application():
+    global _schedules
+    if _schedules is None or _schedules.sessions is not session_store or _schedules.tasks is not task_runtime:
+        _schedules = ScheduleApplication(session_store, task_runtime, clock=lambda: _schedule_clock(),
+            authorized=_schedule_authorized, target_resolver=_schedule_target, execute=_schedule_execute,
+            deliver=_schedule_deliver, receipt=_schedule_receipt, offline=_schedule_offline)
+    return _schedules
 
 
 def _runtime_message_snapshot(message: object) -> dict[str, object]:
@@ -4301,7 +4490,8 @@ def _telegram_accepts_update(account_id: str) -> bool:
     return bool(account and account.role_id not in _channel_roles_deleting and channel_host.accepts_events(account_id))
 
 
-def _defer_telegram_update(account_id: str, update) -> bool:
+def _defer_telegram_update(account_id: str, update, *, received_at: float | None = None) -> bool:
+    received_at = _schedule_clock() if received_at is None else received_at
     account = multichannel_store.get_account(account_id)
     if account is None or not multichannel_store.account_effectively_enabled(account) or account.role_id in _channel_roles_deleting:
         return False
@@ -4312,15 +4502,16 @@ def _defer_telegram_update(account_id: str, update) -> bool:
     async def reject():
         from .channels.host import CHANNEL_INTAKE_RETRY_NOTICE
         await service.transport.send_message(token, chat_id, CHANNEL_INTAKE_RETRY_NOTICE, reply_to=str(message.get("message_id") or "") or None, **({"message_thread_id": message["message_thread_id"]} if message.get("message_thread_id") else {}))
-    return channel_host.intake.defer(account_id, lambda: _dispatch_telegram_update(account_id, update), reject)
+    return channel_host.intake.defer(account_id, lambda: _dispatch_telegram_update(account_id, update, received_at=received_at), reject)
 
 
-async def _dispatch_telegram_update(account_id: str, update) -> None:
+async def _dispatch_telegram_update(account_id: str, update, *, received_at: float | None = None) -> None:
+    received_at = _schedule_clock() if received_at is None else received_at
     try:
         async with channel_host.event_scope(account_id) as admitted:
             service = _telegram_service(account_id)
-            if admitted or not _defer_telegram_update(account_id, update):
-                await service.handle_update(account_id, update)
+            if admitted or not _defer_telegram_update(account_id, update, received_at=received_at):
+                await service.handle_update(account_id, update, received_at=received_at)
     except Exception as error:
         logger.warning("Telegram 入站处理失败 account=%s error=%s", account_id, type(error).__name__)
 
@@ -5047,6 +5238,7 @@ async def stop_role_reply(role_id: str, run_id: str) -> SessionResponse:
 
 @app.post("/api/roles/{role_id}/messages")
 async def send_role_message(role_id: str, data: SendMessageInput, request: Request) -> StreamingResponse:
+    received_at = _schedule_clock()
     if store.get(role_id) is None:
         raise HTTPException(status_code=404, detail="角色不存在")
     attachments: list[dict[str, object]] = []
@@ -5094,7 +5286,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         )
         runtime_manager.sessions = session_store
         runtime_manager.role_locks = role_locks
-        _, user_message, assistant_message = await runtime_manager.reserve_run(run, data.content, attachments=attachments)
+        _, user_message, assistant_message = await runtime_manager.reserve_run(run, data.content, attachments=attachments, received_at=received_at)
     except sqlite3.IntegrityError as error:
         raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试") from error
     except ActiveRunError as error:

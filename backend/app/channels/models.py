@@ -77,6 +77,7 @@ class InboundEvent:
     attachments: tuple[Attachment, ...] = ()
     triggered: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
+    received_at: float | None = None
 
     @property
     def thread_id(self) -> str:

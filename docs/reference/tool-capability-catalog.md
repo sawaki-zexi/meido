@@ -38,4 +38,4 @@
 
 原生 rich 和 structured 模型请求根据当前请求的实际 schema 添加简短能力说明，工具名不从旧会话或静态文案复制。未启用工具时原生模型获得明确的空清单。已有角色设定、Skill 提示词、工具结果与冻结能力策略继续保留；仅支持旧式文本 `stream_reply` 的第三方适配器沿用原有文本协议。
 
-`enabledTools` 包含 `tool_search` 时，已获授权的延迟工具可以显示 `authorized=true`、`modelVisible=false`，发现后在同次运行的下一次请求提供 schema。配置和版本语义见[工具发现契约](tool-discovery.md)。后台任务和通用调度仍由对应后续功能提供；目录或发现功能不代表整体 Shiori 复刻目标完成。
+`enabledTools` 包含 `tool_search` 时，已获授权的延迟工具可以显示 `authorized=true`、`modelVisible=false`，发现后在同次运行的下一次请求提供 schema。配置和版本语义见[工具发现契约](tool-discovery.md)。后台任务和[通用调度](owned-schedules.md)使用独立宿主生命周期；目录或发现功能不代表整体 Shiori 复刻目标完成。

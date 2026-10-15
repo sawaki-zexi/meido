@@ -22,6 +22,9 @@ const groups = [
   { title: "桌面对话", hint: "将文本、图片或文件推送到当前角色自己的桌面对话。", tools: [
     ["message_push", "桌面推送"],
   ] },
+  { title: "时间任务", hint: "按主人要求创建、查询和取消时间任务。关闭创建授权会停止计划执行。", tools: [
+    ["schedule", "创建时间任务"], ["list_schedules", "查询时间任务"], ["cancel_schedule", "取消时间任务"],
+  ] },
 ] as const;
 
 export function BasicToolSettings({ draft, onChange, disabled }: { draft: RoleDraft; onChange: (draft: RoleDraft) => void; disabled: boolean }) {

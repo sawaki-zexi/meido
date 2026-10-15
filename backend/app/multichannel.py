@@ -1003,6 +1003,17 @@ class MultichannelStore:
             ).fetchone()
         return str(row[0]) if row else None
 
+    def owner_target_binding(self, role_id: str, account_id: str, chat_id: str) -> dict[str, str] | None:
+        """Freeze only the selected owner destination's binding generation."""
+        with self._connect() as db:
+            row = db.execute('''SELECT i.identity_id,i.paired_at,c.context_since
+                FROM channel_owner_chats c JOIN channel_identities i
+                ON i.channel=c.channel AND (i.scope='platform' OR i.account_id=c.account_id)
+                AND i.scope=c.scope AND i.platform_user_id=c.platform_user_id AND i.owner=1
+                WHERE c.role_id=? AND c.account_id=? AND c.chat_id=? ORDER BY c.last_seen DESC LIMIT 1''',
+                (role_id, account_id, chat_id)).fetchone()
+        return {'identityId': str(row[0]), 'pairedAt': str(row[1]), 'contextSince': str(row[2])} if row else None
+
     def owner_context(self, role_id: str, *, exclude_thread_id: str, limit: int = 24) -> list[tuple[str, str, str, str]]:
         """Return recent desktop and paired-private text after each pairing boundary."""
 
@@ -1260,6 +1271,13 @@ class MultichannelStore:
             "sourceSessionKey": row["source_session_key"], "sourceRunId": row["source_run_id"], "sourceToolCallId": row["source_tool_call_id"], "sourceKind": row["source_kind"], "accountGeneration": row["account_generation"],
         } for row in rows]
 
+    def delivery_for_source(self, role_id: str, *, source_kind: str, source_tool_call_id: str) -> tuple[str, str] | None:
+        """Find an authoritative receipt by its stable host outbox marker."""
+        with self._connect() as db:
+            row = db.execute('SELECT status,attempt_id FROM channel_delivery_attempts WHERE role_id=? AND source_kind=? AND source_tool_call_id=? ORDER BY created_at LIMIT 1',
+                             (role_id, source_kind, source_tool_call_id)).fetchone()
+        return (str(row[0]), str(row[1])) if row else None
+
     async def subscribe(self, role_id: str):
         queue: asyncio.Queue[dict[str, object]] = asyncio.Queue(maxsize=128)
         self._subscribers.setdefault(role_id, set()).add(queue)
@@ -1369,7 +1387,8 @@ class TelegramChannelService:
         self.store.publish(thread.role_id, {"type": "delivery", "roleId": thread.role_id, "attemptId": attempt_id})
         return result
 
-    async def handle_update(self, account_id: str, update: Mapping[str, Any], *, background: bool = False) -> bool:
+    async def handle_update(self, account_id: str, update: Mapping[str, Any], *, background: bool = False, received_at: float | None = None) -> bool:
+        received_at = datetime.now(timezone.utc).timestamp() if received_at is None else received_at
         account = self.store.get_account(account_id)
         if account is None or not account.enabled:
             return False
@@ -1496,7 +1515,7 @@ class TelegramChannelService:
         if owner and chat_type == "private":
             self.store.remember_owner_chat(role_id=account.role_id, channel="telegram", scope="platform", platform_user_id=sender_id, account_id=account_id, chat_id=chat_id)
         quoted_attachments = await self._download_attachments(account, reply) if reply else []
-        metadata = {"platformMessageId": external_id, "senderId": sender_id, "senderName": sender_name, "senderIsOwner": owner, "senderKind": "chat" if sender_chat else "user", "chatType": chat_type, "triggered": triggered, "mentioned": mentioned, "mentionedIds": mentioned_ids, "replyTo": str(reply.get("message_id") or "") if reply else None, "replyToSenderId": str(reply_from.get("id") or "") if reply else None, "replyToContent": str(reply.get("text") or reply.get("caption") or "") if reply else None, "replyToSenderName": str(reply_from.get("first_name") or reply_from.get("username") or "") if reply else None, "quotedAttachments": quoted_attachments, "attachments": attachment_items}
+        metadata = {"hostReceivedAt": received_at, "platformMessageId": external_id, "senderId": sender_id, "senderName": sender_name, "senderIsOwner": owner, "senderKind": "chat" if sender_chat else "user", "chatType": chat_type, "triggered": triggered, "mentioned": mentioned, "mentionedIds": mentioned_ids, "replyTo": str(reply.get("message_id") or "") if reply else None, "replyToSenderId": str(reply_from.get("id") or "") if reply else None, "replyToContent": str(reply.get("text") or reply.get("caption") or "") if reply else None, "replyToSenderName": str(reply_from.get("first_name") or reply_from.get("username") or "") if reply else None, "quotedAttachments": quoted_attachments, "attachments": attachment_items}
         if topic_id is not None:
             metadata["messageThreadId"] = topic_id
         accepted, stored_message = self.store.append_event(thread, direction="inbound", content=content, external_message_id=external_id, metadata=metadata)

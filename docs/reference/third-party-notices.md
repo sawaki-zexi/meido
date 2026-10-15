@@ -39,6 +39,10 @@ SOFTWARE.
 协议匹配的 `kachofugetsu09/feed-mcp@210a79512c5cec008dd24c70f7c9c4e2616f5034`
 只作为外部独立验收服务，未复制进本仓库；没有声称它就是 Shiori 实际部署服务。
 
+## 通用调度
+
+通用调度的公开 tier/trigger、duration 和五/六字段 cron 语法参考固定 Shiori `4f266aeaf42fcd611362e2456417b91f659341cf` 的 `apps/backend/agent/tools/schedule.py`、`scheduler.py`、`scheduler_cron.py`。Meido 的 SQLite occurrence/outbox、批量日历计数、DST和宿主接收时间规则独立实现；没有复制上游 JSON store 或 schedule→message_push 路径。引用适用上文保留的 Shiori MIT 声明，当前契约见[角色通用时间任务](owned-schedules.md)。
+
 ## QQ 托管 NapCat
 
 托管 QQ 的安装、官方 QQ 运行时校验、私有目录、WebUI 与二维码流程改编自

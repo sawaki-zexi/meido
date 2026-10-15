@@ -16,7 +16,7 @@
 ## 2. 已有事实与依赖
 
 [研究 §2–6](../research/proactive-drift-runtime-portability-2026-10-16.md#2-上游实际如何触发)证明固定 Shiori 共用主动 tick、空输入才分支 Drift，A01 草稿与 Drift 立即单次发送不同；其 ACK 回调没有宿主持久恢复，发送后只缩 schema 也不足以执行拒绝。
-[TaskRuntime](../../backend/app/task_runtime/runtime.py#L137)已有全局8/角色3并发、最长600秒、不可变 origin、预算和受管取消；当前聚合没有 keyed submit/retain-ACK，本票不把 #158 任务分支当现状。
+[TaskRuntime](../../backend/app/task_runtime/runtime.py#L137)已有全局8/角色3并发、最长600秒、不可变 origin、预算和受管取消；本文取证基线未含 keyed submit/retain-ACK。#158 最终源快照 `e992e0f` 已实现并通过两轴复核，本票使用其经验证总集成后的同一接口，不把未集成的任务分支当现状。
 [ModelProvider/loop](../../backend/app/agent_runtime/loop.py#L39)、[MCP](../../backend/app/mcp_runtime.py#L165)、[文件](../../backend/app/agent_runtime/file_tools.py#L91)、[SkillRegistry](../../backend/app/agent_runtime/skills.py#L246)、[ChannelHost](../../backend/app/channels/host.py#L253)和[SessionStore](../../backend/app/session_store.py#L237)可复用；普通聊天推送的 user-row 授权不能直接用于自主 run。
 遵守 [ADR-0011](../adr/0011-versioned-tool-activation.md)、[ADR-0012](../adr/0012-owned-task-runtime.md)、[ADR-0013](../adr/0013-independent-generic-schedules.md)；新增自主许可及业务恢复由本规格明确，不泛化 spawn 完成 worker。
 
