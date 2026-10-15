@@ -323,6 +323,10 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 
 /* Role profile / create form */
 .role-editor { display: grid; gap: 22px; padding: 20px 22px 22px; }
+.role-editor .checkbox-field { grid-template-columns: 16px minmax(0, 1fr); align-items: center; column-gap: 8px; }
+.role-editor .checkbox-field > input[type="checkbox"] { grid-column: 1; grid-row: 1; width: 16px; height: 16px; margin: 0; padding: 0; accent-color: var(--rose); }
+.role-editor .checkbox-field > span { grid-column: 2; grid-row: 1; }
+.role-editor .checkbox-field > .field-hint { grid-column: 2; }
 .role-import-control { display: flex; align-items: center; justify-content: flex-start; gap: 8px; }
 .role-import-preview { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); background: #fff8fd; }
 .role-import-preview-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
