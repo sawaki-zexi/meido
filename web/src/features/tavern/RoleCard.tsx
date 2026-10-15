@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { Role } from "../../api/types";
-import { roleStyle } from "../../ui/Avatar";
+import { Avatar, roleStyle } from "../../ui/Avatar";
 
 const glyphs = ["❀", "✦", "☾", "♡", "✧", "❁"];
 const motifs = 5;
@@ -25,14 +25,19 @@ export function RoleCard({ role, number, className = "", children, onPreviewAvat
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const { motif, glyph } = cardTraits(role.id);
   const initial = Array.from(role.name.trim())[0] ?? "?";
+  const imageUrl = role.cardImageUrl ?? role.avatarUrl;
+  const hasCardImage = Boolean(role.cardImageUrl && failedUrl !== role.cardImageUrl);
   useEffect(() => setFailedUrl(null), [role.avatarUrl, role.cardImageUrl]);
-  return <div className={`role-card motif-${motif} ${className}`.trim()} style={roleStyle(role.id)}>
+  return <div className={`role-card motif-${motif}${hasCardImage ? " has-card-image" : ""} ${className}`.trim()} style={roleStyle(role.id)}>
     <div className="card-top"><span>No.{String(number).padStart(3, "0")}</span><span aria-hidden="true">{glyph}</span></div>
-    <div className={`card-art${role.cardImageUrl ? " has-card-image" : ""}`}>
+    <div className="card-art">
       <span className="card-initial" aria-hidden="true">{initial}</span>
-      {(role.cardImageUrl ?? role.avatarUrl) && failedUrl !== (role.cardImageUrl ?? role.avatarUrl) && <img className="card-portrait" src={role.cardImageUrl ?? role.avatarUrl!} alt={`${role.name}卡片图片`} onError={() => setFailedUrl(role.cardImageUrl ?? role.avatarUrl!)} />}
-      {onPreviewAvatar && (role.avatarOriginalUrl ?? role.avatarUrl) && <button type="button" className="card-portrait-hit" aria-label={`预览${role.name}头像`} onClick={() => onPreviewAvatar(role)} />}
+      {imageUrl && failedUrl !== imageUrl && <img className="card-portrait" src={imageUrl} alt={`${role.name}卡片图片`} onError={() => setFailedUrl(imageUrl)} />}
+      {onPreviewAvatar && !hasCardImage && (role.avatarOriginalUrl ?? role.avatarUrl) && <button type="button" className="card-portrait-hit" aria-label={`预览${role.name}头像`} onClick={() => onPreviewAvatar(role)} />}
     </div>
+    {onPreviewAvatar && hasCardImage && (role.avatarOriginalUrl ?? role.avatarUrl) && <button type="button" className="card-avatar-preview" aria-label={`预览${role.name}头像`} onClick={() => onPreviewAvatar(role)}>
+      <Avatar id={role.id} name={role.name} avatarUrl={role.avatarUrl ?? role.avatarOriginalUrl} size="sm" />
+    </button>}
     <div className="card-foot">
       <strong>{role.name}</strong>
       <small>{role.description || "暂无简介"}</small>

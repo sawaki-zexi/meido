@@ -27,13 +27,14 @@ type Props = { state: RolesState; onSubmit: () => void; onCancel: () => void; on
 export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
   const { selected, draft, setDraft, creating, editing, saving, deleting, busy, error, setError } = state;
   const writable = creating || editing;
+  const cropping = Boolean(state.avatarSource || state.cardImageSource);
   const locked = !writable || busy;
   const [showAdvanced, setShowAdvanced] = useState(!creating);
   const avatarInput = useRef<HTMLInputElement>(null);
   const cardInput = useRef<HTMLInputElement>(null);
   const importInput = useRef<HTMLInputElement>(null);
 
-  const submit = (event: FormEvent) => { event.preventDefault(); onSubmit(); };
+  const submit = (event: FormEvent) => { event.preventDefault(); if (!cropping) onSubmit(); };
 
   const renderField = (field: Field) => {
     const id = `role-${field.key}`;
@@ -68,7 +69,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
     <fieldset>
       <legend>身份</legend>
       {state.avatarSource && <AvatarCropper file={state.avatarSource} shape="circle" onCancel={state.cancelAvatarCrop} onAccept={state.acceptAvatarCrop} onError={setError} />}
-      {state.cardImageSource && <AvatarCropper file={state.cardImageSource} onCancel={state.cancelCardImageCrop} onAccept={(image) => state.acceptCardImageCrop(image)} onError={setError} />}
+      {state.cardImageSource && <AvatarCropper file={state.cardImageSource} shape="card" onCancel={state.cancelCardImageCrop} onAccept={(image) => state.acceptCardImageCrop(image)} onError={setError} />}
       {identityFields.map(renderField)}
     </fieldset>
     <fieldset>
@@ -140,7 +141,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
       {state.importPreview.compatibility.unsupportedResources.length > 0 && <p className="role-import-discarded">未导入素材：{state.importPreview.compatibility.unsupportedResources.join("、")}</p>}
       <div className="form-actions"><button type="button" className="primary" onClick={() => void state.acceptImport(null)}>填充到表单</button></div>
     </section>}
-    {writable && <div className="form-actions">
+    {writable && !cropping && <div className="form-actions">
       <button type="button" className="ghost" disabled={busy} onClick={onCancel}>取消</button>
       {selected && !creating && <IconButton icon="trash" label="删除角色" className="danger" disabled={deleting || busy} onClick={onDelete} />}
       <button type="submit" className="primary" disabled={busy}>{saving ? "保存中…" : "保存"}</button>
