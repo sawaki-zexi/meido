@@ -12,8 +12,7 @@ from backend.app.session_store import SessionStore
 from backend.app.agent_runtime import ActiveRunError, RuntimeManager
 from backend.app.models import AgentRun
 from channels.test_host import FakeAdapter, make_target
-
-pytest_plugins = ["test_channel_api"]
+from test_channel_api import channel_api as channel_api
 
 
 @pytest.fixture(autouse=True)
