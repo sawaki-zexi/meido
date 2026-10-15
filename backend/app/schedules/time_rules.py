@@ -3,7 +3,7 @@
 from bisect import bisect_left, bisect_right
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 import calendar
 import math
@@ -14,7 +14,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 MAX_DURATION_SECONDS = 365 * 24 * 60 * 60
 MAX_CRON_SEARCH_YEARS = 5
+_GREGORIAN_CYCLE_YEARS = 400
 MAX_WHEN_LENGTH = 200
+_UTC_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _WEEKDAYS = {name: value for value, name in enumerate(("sun", "mon", "tue", "wed", "thu", "fri", "sat"))}
 
 
@@ -48,7 +50,10 @@ def prepare_trigger(
         return Trigger(trigger, when, zone_name, _at(when.strip(), zone, received_at))
     if trigger == "cron" or trigger == "every" and len(when.split()) in (5, 6):
         expression = " ".join(when.split())
-        return Trigger("cron", when, zone_name, _cron_next(expression, zone, received_at), cron=expression)
+        first = _cron_next(expression, zone, received_at, search_years=MAX_CRON_SEARCH_YEARS)
+        if first is None:
+            raise ValueError("cron has no matching occurrence within five years")
+        return Trigger("cron", when, zone_name, first, cron=expression)
     match = re.fullmatch(r"(?:(\d+)d\s*)?(?:(\d+)h\s*)?(?:(\d+)m\s*)?(?:(\d+)s)?", when.strip())
     if match is None:
         raise ValueError("invalid duration")
@@ -104,7 +109,7 @@ def _utc(instant: float) -> datetime:
     try:
         if not math.isfinite(instant):
             raise ValueError("instant must be a finite UTC timestamp")
-        return datetime.fromtimestamp(instant, UTC)
+        return _UTC_EPOCH + timedelta(seconds=instant)
     except (OverflowError, OSError) as error:
         raise ValueError("instant is outside the supported datetime range") from error
 
@@ -114,7 +119,7 @@ def _local_instants(local: datetime, zone: ZoneInfo) -> list[float]:
     instants: list[float] = []
     for fold in (0, 1):
         candidate = local.replace(tzinfo=zone, fold=fold).timestamp()
-        round_trip = datetime.fromtimestamp(candidate, UTC).astimezone(zone)
+        round_trip = _utc(candidate).astimezone(zone)
         if round_trip.replace(tzinfo=None) == local and candidate not in instants:
             instants.append(candidate)
     return instants
@@ -123,7 +128,7 @@ def _local_instants(local: datetime, zone: ZoneInfo) -> list[float]:
 def _at(when: str, zone: ZoneInfo, received_at: float) -> float:
     clock = re.fullmatch(r"(\d{1,2}):(\d{2})", when)
     if clock is not None:
-        received_local = datetime.fromtimestamp(received_at, UTC).astimezone(zone).replace(tzinfo=None)
+        received_local = _utc(received_at).astimezone(zone).replace(tzinfo=None)
         local = received_local.replace(hour=int(clock[1]), minute=int(clock[2]), second=0, microsecond=0)
         if local <= received_local:
             local += timedelta(days=1)
@@ -186,7 +191,11 @@ def _wall_segments(
     def offset(second: int) -> int | None:
         local = midnight + timedelta(seconds=second)
         aware = local.replace(tzinfo=zone, fold=0)
-        if datetime.fromtimestamp(aware.timestamp(), UTC).astimezone(zone).replace(tzinfo=None) != local:
+        try:
+            round_trip = _utc(aware.timestamp()).astimezone(zone)
+        except (ValueError, OverflowError):
+            return None  # A valid local datetime can lie outside the UTC datetime range.
+        if round_trip.replace(tzinfo=None) != local:
             return None
         delta = aware.utcoffset()
         assert delta is not None
@@ -207,9 +216,10 @@ def _cron_due(trigger: Trigger, first: float, until: float, limit: int | None) -
     rule = _parse_cron(trigger.cron)
     zone = ZoneInfo(trigger.timezone)
     day = _utc(first).astimezone(zone).date()
-    last_day = _utc(until).astimezone(zone).date()
+    last_day = _local_date(_utc(until), zone)
     count, latest = 0, first
-    while day <= last_day:
+    for ordinal in range(day.toordinal(), last_day.toordinal() + 1):
+        day = date.fromordinal(ordinal)
         if day.month in rule.months and day.day in rule.days and (day.weekday() + 1) % 7 in rule.weekdays:
             midnight = datetime(day.year, day.month, day.day)
             utc_base = midnight.replace(tzinfo=UTC).timestamp()
@@ -228,7 +238,6 @@ def _cron_due(trigger: Trigger, first: float, until: float, limit: int | None) -
                     count += taken
                     if count == limit:
                         return count, latest, None
-        day += timedelta(days=1)
     if not count:
         raise ValueError("first must be a valid nominal cron slot")
     return count, latest, next_occurrence(trigger, until)
@@ -288,19 +297,34 @@ def _parse_cron(expression: str) -> _Cron:
     )
 
 
-def _cron_next(expression: str, zone: ZoneInfo, after: float) -> float:
-    """Search calendar days, then allowed hours/minutes/seconds, for at most five years."""
+def _cron_next(
+    expression: str, zone: ZoneInfo, after: float, *, search_years: int = _GREGORIAN_CYCLE_YEARS
+) -> float | None:
+    """Search calendar days within the acceptance window or one Gregorian cycle."""
     rule = _parse_cron(expression)
-    utc_after = datetime.fromtimestamp(after, UTC)
-    end_year = utc_after.year + MAX_CRON_SEARCH_YEARS
-    end_day = min(utc_after.day, calendar.monthrange(end_year, utc_after.month)[1])
-    horizon = utc_after.replace(year=end_year, day=end_day)
-    local_after = utc_after.astimezone(zone)
-    day = local_after.date()
-    last_day = horizon.astimezone(zone).date()
-    while day <= last_day:
+    utc_after = _utc(after)
+    end_year = utc_after.year + search_years
+    if end_year > datetime.max.year:
+        horizon = datetime.max.replace(tzinfo=UTC, microsecond=0)
+    else:
+        end_day = min(utc_after.day, calendar.monthrange(end_year, utc_after.month)[1])
+        horizon = utc_after.replace(year=end_year, day=end_day)
+    try:
+        local_after = utc_after.astimezone(zone)
+    except OverflowError:
+        if utc_after.year == datetime.max.year:
+            return None
+        local_after = None
+    first_day = local_after.date() if local_after is not None else date.min
+    last_day = _local_date(horizon, zone)
+    horizon_at = horizon.timestamp()
+    for ordinal in range(first_day.toordinal(), last_day.toordinal() + 1):
+        day = date.fromordinal(ordinal)
         if day.month in rule.months and day.day in rule.days and (day.weekday() + 1) % 7 in rule.weekdays:
-            floor = (local_after.hour, local_after.minute, local_after.second) if day == local_after.date() else (-1, -1, -1)
+            floor = (
+                (local_after.hour, local_after.minute, local_after.second)
+                if local_after is not None and day == first_day else (-1, -1, -1)
+            )
             for hour in rule.hours:
                 if hour < floor[0]:
                     continue
@@ -313,10 +337,21 @@ def _cron_next(expression: str, zone: ZoneInfo, after: float) -> float:
                         local = datetime(day.year, day.month, day.day, hour, minute, second)
                         # fold=0 is the first occurrence of an ambiguous local slot.
                         candidate = local.replace(tzinfo=zone, fold=0).timestamp()
-                        round_trip = datetime.fromtimestamp(candidate, UTC).astimezone(zone)
+                        if not after < candidate <= horizon_at:
+                            continue
+                        try:
+                            round_trip = _utc(candidate).astimezone(zone)
+                        except OverflowError:
+                            continue
                         if round_trip.replace(tzinfo=None) != local:
                             continue  # Spring gap, including zones that skipped an entire date.
-                        if after < candidate <= horizon.timestamp():
-                            return candidate
-        day += timedelta(days=1)
-    raise ValueError("cron has no matching occurrence within five years")
+                        return candidate
+    return None
+
+
+def _local_date(instant: datetime, zone: ZoneInfo) -> date:
+    """Clip dates when a timezone offset crosses the supported datetime boundary."""
+    try:
+        return instant.astimezone(zone).date()
+    except OverflowError:
+        return date.min if instant.year == datetime.min.year else date.max

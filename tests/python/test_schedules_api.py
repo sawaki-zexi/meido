@@ -191,3 +191,65 @@ def test_relative_time_is_captured_before_history_preparation_and_model_delay(ap
     assert receipts[0]['receivedAt'] == received and receipts[0]['receivedTimeSource'] == 'hostReceivedAt'
     asyncio.run(main._schedule_application().tick())
     assert any(m.content == 'received-based' for m in sessions.list_messages(f"role:{role['id']}"))
+
+
+@pytest.mark.parametrize('change', ['unchanged', 'new_default', 'edited', 'deleted'])
+def test_soft_freezes_the_resolved_default_connection_by_id(api, monkeypatch, tmp_path, change):  # noqa: F811
+    import time
+    from backend.app import main
+    from backend.app.credentials import SystemCredentialStore
+    from backend.app.models import ModelConfigurationInput
+    from backend.app.owner_knowledge import OwnerKnowledgePlugin, OwnerKnowledgeStore
+    from backend.app.task_runtime import TaskOrigin
+    from test_background_shell_api import MemoryCredentials
+    client, _, _, _ = api
+    knowledge = OwnerKnowledgeStore(tmp_path / 'schedule-knowledge.db', credential_store=MemoryCredentials())
+    monkeypatch.setattr(main, 'owner_knowledge_store', knowledge)
+    monkeypatch.setattr(main, 'owner_knowledge_plugin', OwnerKnowledgePlugin(knowledge, main.owner_knowledge_connector, main.embedding_provider))
+    def reject_vault(self, key):
+        pytest.fail('real credential vault must not be read by a fixture')
+    monkeypatch.setattr(SystemCredentialStore, 'get', reject_vault)
+    now = [1780000000.0]
+    monkeypatch.setattr(main, '_schedule_clock', lambda: now[0])
+    monkeypatch.setattr(main, '_schedules', None)
+    def configuration(model):
+        return ModelConfigurationInput(providerId='openai', provider='openai', baseUrl='http://127.0.0.1:1/v1', model=model, apiKey='')
+    original = main.model_configuration_store.save(configuration('frozen-default-model'))
+    child_calls = []
+    class Adapter:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            if 'independent delegated task' in str(messages[0]):
+                child_calls.append(configuration)
+                assert configuration.id == original.id and configuration.model == 'frozen-default-model'
+                yield ModelTextDelta('resolved-default-proof')
+            elif not any(m['role'] == 'tool' for m in messages):
+                assert configuration.id == original.id
+                yield ModelToolCall('default-soft', 'schedule', {'tier': 'soft', 'trigger': 'after', 'when': '1s', 'prompt': 'return a proof'})
+            else:
+                yield ModelTextDelta('已创建')
+    monkeypatch.setattr(main, 'model_adapter', Adapter())
+    role = client.post('/api/roles', json={'name': '默认连接计划', 'profile': {'profile': '测试'},
+        'agentConfig': {'enabledTools': ['schedule']}}).json()['role']
+    assert role['modelConfigurationId'] is None
+    response = client.post(f"/api/roles/{role['id']}/messages", json={'content': '一秒后执行'})
+    assert 'assistant_completed' in response.text
+    if change == 'new_default':
+        main.model_configuration_store.create(configuration('new-default-must-not-be-used'))
+    elif change == 'edited':
+        main.model_configuration_store.update(original.id, configuration('edited-model'))
+    elif change == 'deleted':
+        main.model_configuration_store.delete(original.id)
+    now[0] += 1
+    origin = TaskOrigin(role['id'], f"role:{role['id']}", source_thread_id=f"desktop:{role['id']}")
+    async def run():
+        deadline = time.monotonic() + 3
+        while True:
+            await main._schedule_application().tick()
+            occurrence = main._schedule_application().list(origin)[0]['latestOccurrence']
+            if occurrence['deliveryStatus'] in {'sent', 'revoked', 'failed'}:
+                return occurrence
+            assert time.monotonic() < deadline
+            await asyncio.sleep(.01)
+    occurrence = asyncio.run(run())
+    assert occurrence['deliveryStatus'] == ('sent' if change in {'unchanged', 'new_default'} else 'revoked')
+    assert len(child_calls) == (1 if change in {'unchanged', 'new_default'} else 0)

@@ -20,7 +20,7 @@ schedule 必填 tier（instant/soft）、trigger（at/after/every/cron）、when
 
 默认固定 IANA Asia/Shanghai，存 UTC instant，不读主机时区。at 接受 HH:MM 或 ISO，显式时刻不得早于宿主接收时间、最远365天。after/every duration 为按 d/h/m/s 顺序的组合，1秒至365天；interval 为 UTC elapsed time。after 基点为入站持久 hostReceivedAt，覆盖排队/准备/推理延迟；旧消息标记 createdAt_fallback。拒绝模型 request_time。
 
-every 也接受五/六字段 cron，cron 是显式同义入口；六字段秒在前。支持集合/范围/步长，weekday名称及0/7均指周日；DOM/DOW 为 AND，搜索上限五年。无 offset 本地 DST gap拒绝、fold要求明确offset，显式offset须符合选定zone；cron跳过gap、只取fold0。多年秒级 missed slots 按日历批量计数。
+every 也接受五/六字段 cron，cron 是显式同义入口；六字段秒在前。支持集合/范围/步长，weekday名称及0/7均指周日；DOM/DOW 为 AND。创建时首个时刻必须在五年内；已接受规则的后继按公历400年周期有界查找，保留间隔超过五年的合法稀疏slot。若支持的日历范围确无后继，当前合法slot仍投递，计划进入blocked_time_range并保存原因，未消耗次数不视为已完成。无 offset 本地 DST gap拒绝、fold要求明确offset，显式offset须符合选定zone；cron跳过gap、只取fold0。多年秒级 missed slots 按日历批量计数；单条持久时间规则无效时只将该计划标为failed并保存原因，不终止其他角色的调度。
 
 单次count缺省1且只能1；循环缺省无限，或1..1000整数，bool拒绝。所有越过名义slot消耗次数，送达另计。单次迟到≤300秒补一次，之后expired；重启重复计划历史slot全跳过并推进严格未来。正常tick仅执行最近仍在grace内的slot，其余计skipped；长执行不并发，时钟回拨不复用已占slot。
 
@@ -30,7 +30,9 @@ every 也接受五/六字段 cron，cron 是显式同义入口；六字段秒在
 
 instant 原样投递冻结文本。soft 使用独立 TaskRuntime(kind=schedule, completion=False)，120秒/12轮/最终20000字符/累计60000字符及既有宿主任务日志配额。复用 general SpawnExecutor，只运行创建时冻结且当前仍许可的 read/list/web、任务目录write/edit和argv白名单Shell。禁屏幕、browser/computer、MCP、发现、递归委托、schedule、记忆/Todo写及渠道发送。独立工作集只接收prompt，不创建普通run、主人消息或第二会话。
 
-模型非秘密配置、角色与工具定义创建时冻结；到时连接消失/改变则失败，不换模型。当前许可持续复核，新增许可不扩权。soft使用宿主submission_key原子交接；崩溃窗口可找回同一task，重启queued/running为interrupted而不重跑。结果复制持久后ACK，ACK前仍占任务/日志额度；ACK后普通回收，幂等墓碑保留到角色删除。
+模型非秘密配置、角色与工具定义创建时冻结，使用当时实际解析的连接ID（包括应用默认连接），到时按该ID精确恢复；切换默认连接不改投，原连接消失/改变则失败。当前许可持续复核，新增许可不扩权。soft使用宿主submission_key原子交接；崩溃窗口可找回同一task，重启queued/running为interrupted而不重跑。结果复制持久时同时保存ACK待确认状态；ready/sent和重启后均能独立重试本地ACK，不重跑执行或投递。ACK前仍占任务/日志额度且不清理对应occurrence；ACK后普通回收，幂等墓碑保留到角色删除。ACK已成功而确认回写丢失、结果已回收时，同原来源的keyed ACK仍幂等成功，未知/跨范围或已删除角色保持拒绝。
+
+宿主关闭、工具停止及连续取消均等待交接/停止线程退出；等待中的线程随后抛普通错误时，仍保留原调用取消语义，不能把关闭转换成重试。
 
 尚未实际dispatch的离线/预算/SQLite busy在原scheduledAt+300秒内按1/5/30秒退避，不推迟名义时刻。模型已提交或外部attempt已建立后不重新执行/发送。渠道最初本地消息为pending，收据先持久，再同步消息；本地失败只留dirty修复。sent才计送达，pending等待原attempt，uncertain阻塞重复计划且不盲重发。账本按稳定occurrence marker精确查找，不限最近100条。
 

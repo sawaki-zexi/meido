@@ -4397,8 +4397,13 @@ async def _schedule_execute(plan):
     data = plan['data']
     origin = TaskOrigin(**data['origin'])
     role = Role.model_validate(data['frozen']['role'])
-    configuration = model_configuration_store.get(role.modelConfigurationId) if role.modelConfigurationId else None
-    if role.modelConfigurationId and configuration is None or (configuration.model_dump(mode='json', exclude={'apiKey'}) if configuration else None) != data['frozen']['configuration']:
+    frozen_configuration = data['frozen']['configuration']
+    configuration_id = frozen_configuration.get('id') if isinstance(frozen_configuration, dict) else None
+    if frozen_configuration is not None and (not isinstance(configuration_id, str) or not configuration_id):
+        raise PermissionError('original model connection has no frozen identity')
+    configuration = model_configuration_store.get(configuration_id) if configuration_id else None
+    if (configuration_id and configuration is None
+            or (configuration.model_dump(mode='json', exclude={'apiKey'}) if configuration else None) != frozen_configuration):
         raise PermissionError('original model connection changed or was deleted')
     definitions = {item['name']: item for item in data['frozen']['tools']}
     candidates = tuple(tool for tool in _runtime_tool_candidates(role, preview=True)

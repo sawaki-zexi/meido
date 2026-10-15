@@ -22,6 +22,19 @@ Ruff、compileall、diff whitespace和改动文档相对链接通过。`python -
 
 对 main.py、session_store.py、agent_runtime/runtime.py、multichannel.py、channels/models.py 使用同一mypy参数，与独立固定cb6347e工作树逐条比较：两者均83条既有错误；仅归一化诊断行号/引述行号后，错误消息及数量完全相同，新增0、移除0。未声称全仓mypy通过。
 
+## 首次两轴审查后的修复
+
+初始快照a976edd的152项不覆盖下列四个正式问题。四项均独立复现、加入回归先红后绿，当前待原审查者独立复核：
+
+- 实际使用应用默认模型的soft计划误将角色未显绑ID解析为无配置；现在按创建时实际resolved连接ID精确恢复。默认不变/换新默认继续原连接，原连接修改/删除明确拒绝；不接触真实凭据。
+- 结果已复制后ACK遇SQLite busy，后续ready/sent或重启丢失重试；现在持久ACK dirty且未确认记录不参与历史清理。覆盖ready、旧sent迁移、ACK成功后结果已prune但确认回写丢失；同origin通过墓碑幂等ACK，跨角色/会话/线程/账号/绑定、unknown、disabled和deleted均拒绝。另覆盖交接已执行、taskId回写丢失后cancel找回原任务并ACK。
+- 合法稀疏cron后继超过五年使共享worker退出；现在首次仍限五年，后继在400年公历周期内按日历有界搜索。2028-02-29 Tue续排2056，2044 Mon续排2072。支持日历确实耗尽时当前slot仍投递，剩余次数保留并进入blocked_time_range；无效持久规则只使本计划failed并持久原因，其他角色照常投递。补Windows年份9999的UTC/时区边界。
+- owned-call等待线程以额度错误结束时吞掉已收到的取消，导致close挂住；现在先join线程，再优先传播原CancelledError。真实ProcessExecutor占满并发时，一次close即可完成。cancel工具也使用同一回收能力，连续取消和底层ValueError/PermissionError保持取消语义；此项工具加固未单列为审查finding。
+
+当前完整专项命令在原5组基础上加`tests/python/test_schedule_cancellation.py`：**177 passed**（应用33、时间105、HTTP13、来源9、交接14、取消3）。必要共享消费者回归：`python -m pytest tests/python/test_background_shell.py tests/python/test_spawn.py tests/python/test_spawn_completion_recovery.py tests/python/test_spawn_api.py tests/python/test_desktop_push.py -q`：**84 passed**。本轮无前端改动，未重复原173项前端和无关全后端。
+
+修复后5源mypy、Ruff、compileall、相对链接和diff检查通过；共享文件仍与固定cb6347e逐条83/83一致，无新增诊断。
+
 ## 限制与尚待完成
 
 模型/渠道/凭据/文件/数据库均为临时本地fixture，没有真实平台收件、付费模型或原生桌面操作。pending/uncertain只能反映平台实际收据，不虚构确认API。仍需仓库规范/需求规格两轴复核和总集成交叉检查；未推送、未合并、未关闭Issue。

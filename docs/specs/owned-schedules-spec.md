@@ -19,7 +19,7 @@ soft 保存创建时角色、非秘密模型连接和许可工具定义快照。
 
 ## 时间、次数与恢复
 
-支持 instant/soft，at/after/every/cron；every 接受 duration 或五/六字段 cron。默认固定 Asia/Shanghai，UTC instant 存储；interval 为 UTC elapsed time。after 基于宿主 receivedAt，不基于模型/工具调用时刻。duration 1秒至365天，显式 at 最远365天。无 offset 的 DST gap 拒绝、fold 要求明确 offset；cron gap 跳过、fold0，DOM/DOW 为 AND。cron 搜索上限五年。
+支持 instant/soft，at/after/every/cron；every 接受 duration 或五/六字段 cron。默认固定 Asia/Shanghai，UTC instant 存储；interval 为 UTC elapsed time。after 基于宿主 receivedAt，不基于模型/工具调用时刻。duration 1秒至365天，显式 at 最远365天。无 offset 的 DST gap 拒绝、fold 要求明确 offset；cron gap 跳过、fold0，DOM/DOW 为 AND。cron 首次接受范围五年，已接受规则后继按公历400年周期有界搜索；真正日历范围耗尽持久blocked原因，仍投递当前合法slot，单计划错误不终止共享worker。
 
 单次 count 仅1，循环可省略或1..1000，bool拒绝。所有越过的名义 occurrence 都消耗次数，送达另计。单次迟到300秒内执行一次，超过 expired；启动时重复计划历史 slot 跳过并推进严格未来，正常 tick 只取最近仍在 grace 内的 slot，不集中补发。每角色100活动计划、1000未封存 occurrence；name100、when200、message4000、prompt20000字符。历史30天、每角色1000条，未封存记录不静默删除。
 

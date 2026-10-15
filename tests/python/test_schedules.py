@@ -134,6 +134,62 @@ def test_normal_tick_uses_latest_slot_and_fixed_count_and_clock_rollback(system)
     assert app.list(origin)[0]['remainingRuns'] == 0
 
 
+def test_accepted_sparse_cron_delivers_current_slot_and_keeps_its_later_successor(system):
+    from datetime import UTC, datetime
+    factory, sessions, now, _, origin = system
+    now[0] = datetime(2026, 10, 16, tzinfo=UTC).timestamp()
+    app = factory()
+    plan = create(app, origin, now, trigger='cron', when='0 0 29 2 tue', timezone='UTC')
+    assert plan['nextAt'] == datetime(2028, 2, 29, tzinfo=UTC).timestamp()
+    now[0] = plan['nextAt']
+    asyncio.run(app.tick())
+    current = app.list(origin)[0]
+    assert current['nextAt'] == datetime(2056, 2, 29, tzinfo=UTC).timestamp()
+    assert current['planStatus'] == 'active' and current['remainingRuns'] is None
+    assert len(sessions.list_messages(origin.session_key)) == 1
+
+
+def test_one_invalid_persisted_time_rule_is_failed_without_stopping_another_role(system):
+    import json
+    import sqlite3
+    factory, sessions, now, _, origin = system
+    app = factory()
+    broken = create(app, origin, now, trigger='cron', when='* * * * *')
+    sessions.open_role_session('other')
+    other = TaskOrigin('other', 'role:other', 'other-parent', 'other-call')
+    create(app, other, now, when='1s')
+    with sqlite3.connect(sessions.database_path) as db:
+        data = json.loads(db.execute('SELECT data FROM schedules WHERE id=?', (broken['id'],)).fetchone()[0])
+        data['trigger']['cron'] = 'invalid persisted rule'
+        db.execute('UPDATE schedules SET data=?,next_at=? WHERE id=?', (json.dumps(data), now[0] + 1, broken['id']))
+    now[0] += 1
+    async def run():
+        app.start()
+        try:
+            await asyncio.sleep(.05)
+            assert len(sessions.list_messages(other.session_key)) == 1
+            failed = app.list(origin)[0]
+            assert failed['planStatus'] == 'failed' and failed['nextAt'] is None
+            assert 'time rule' in failed['error']
+        finally:
+            await app.close()
+    asyncio.run(run())
+
+
+def test_calendar_exhaustion_is_explicitly_blocked_after_delivering_the_current_slot(system):
+    from datetime import UTC, datetime
+    factory, sessions, now, _, origin = system
+    now[0] = datetime(9998, 12, 31, 23, 59, 1, tzinfo=UTC).timestamp()
+    app = factory()
+    plan = create(app, origin, now, trigger='cron', when='59 23 31 12 *', timezone='UTC')
+    now[0] = plan['nextAt']
+    asyncio.run(app.tick())
+    current = app.list(origin)[0]
+    assert len(sessions.list_messages(origin.session_key)) == 1
+    assert current['planStatus'] == 'blocked_time_range' and current['nextAt'] is None
+    assert current['remainingRuns'] is None and 'calendar' in current['error']
+
+
 def test_delayed_model_registration_uses_received_time_and_expiration(system):
     factory, _, now, _, origin = system
     app = factory()
@@ -260,6 +316,104 @@ def test_soft_handover_crash_finds_retained_real_execution_without_running_again
     assert reopened.list(origin)[0]['deliveredRuns'] == 1
 
 
+def test_cancel_after_handover_receipt_loss_acknowledges_the_original_task(system, monkeypatch, tmp_path):
+    import sys
+    from backend.app.task_runtime.process import ProcessExecutor
+    factory, sessions, now, _, origin = system
+    app = factory()
+    app.tasks.retention_seconds = -1
+    class Executor(ProcessExecutor):
+        def is_authorized(self):
+            return True
+    async def execute(plan):
+        return Executor([sys.executable, '-c', 'print("cancel-retained-proof")'], tmp_path, {})
+    monkeypatch.setattr(app, 'execute', execute)
+    plan = app.create(origin, {'tier': 'soft', 'trigger': 'after', 'when': '1s', 'prompt': 'owned result'},
+        received_at=now[0], received_source='hostReceivedAt', frozen={})
+    submit = app.tasks.submit
+    def lost_receipt(*args, **kwargs):
+        task_id = submit(*args, **kwargs)
+        app.tasks.query(task_id, origin, wait_seconds=3)
+        raise OSError('lost schedule taskId acknowledgement')
+    monkeypatch.setattr(app.tasks, 'submit', lost_receipt)
+    now[0] += 1
+    asyncio.run(app.tick())
+    assert app.cancel(origin, identifier=plan['id'])['cancelled'] == 1
+    asyncio.run(factory().tick())
+    assert app.tasks.list(origin, kind='schedule') == ()
+    assert sessions.list_messages(origin.session_key) == []
+
+
+@pytest.mark.parametrize('failure_window', ['before_ack', 'after_ack_and_prune'])
+@pytest.mark.parametrize('persisted_delivery', ['ready', 'legacy_sent'])
+def test_result_ack_retries_after_restart_without_execution_or_delivery_replay(system, monkeypatch, tmp_path, failure_window, persisted_delivery):
+    import sqlite3
+    import sys
+    import time
+    from backend.app.task_runtime.process import ProcessExecutor
+    factory, sessions, now, _, origin = system
+    app = factory()
+    app.tasks.retention_seconds = -1
+    app.tasks.max_retained_per_role = 1
+    constructors = []
+    class Executor(ProcessExecutor):
+        def is_authorized(self):
+            return True
+    async def execute(plan):
+        constructors.append(plan['id'])
+        return Executor([sys.executable, '-c', 'print("ack-recovery-proof")'], tmp_path, {})
+    monkeypatch.setattr(app, 'execute', execute)
+    app.create(origin, {'tier': 'soft', 'trigger': 'after', 'when': '1s', 'prompt': 'bounded local execution'},
+        received_at=now[0], received_source='hostReceivedAt', frozen={})
+    original, calls = app.tasks.acknowledge_result, []
+    def fail_first_ack(task_id, owner):
+        calls.append(task_id)
+        if failure_window == 'after_ack_and_prune':
+            original(task_id, owner)
+            assert app.tasks.list(origin, kind='schedule') == ()
+        raise sqlite3.OperationalError('process lost local acknowledgement')
+    monkeypatch.setattr(app.tasks, 'acknowledge_result', fail_first_ack)
+    now[0] += 1
+    async def reach_window():
+        deadline = time.monotonic() + 3
+        while not calls:
+            await app.tick()
+            assert time.monotonic() < deadline
+            await asyncio.sleep(.01)
+    asyncio.run(reach_window())
+    assert len(constructors) == 1 and sessions.list_messages(origin.session_key) == []
+    if persisted_delivery == 'legacy_sent':
+        # The previous schema could deliver an already copied result after a
+        # failed ACK, then lose its only retry marker. Reopen that exact state.
+        with sqlite3.connect(sessions.database_path) as db:
+            db.execute('UPDATE schedule_occurrences SET result_ack_pending=0')
+        asyncio.run(app.tick())
+        assert len(sessions.list_messages(origin.session_key)) == 1
+        with sqlite3.connect(sessions.database_path) as db:
+            db.execute('ALTER TABLE schedule_occurrences DROP COLUMN result_ack_pending')
+    app.tasks.close()
+    restarted = TaskRuntime(app.tasks.root, retention_seconds=-1, max_retained_per_role=1)
+    retries = []
+    acknowledge = restarted.acknowledge_result
+    def observe_ack(task_id, owner):
+        retries.append(task_id)
+        return acknowledge(task_id, owner)
+    monkeypatch.setattr(restarted, 'acknowledge_result', observe_ack)
+    reopened = ScheduleApplication(sessions, restarted, clock=app.clock, authorized=app.authorized,
+        target_resolver=app.target_resolver, execute=app.execute, deliver=app.deliver, receipt=app.receipt)
+    try:
+        asyncio.run(reopened.tick())
+        asyncio.run(reopened.tick())
+        assert retries, 'the persisted result acknowledgement must be retried after restart'
+        assert restarted.list(origin, kind='schedule') == ()
+        assert len(constructors) == 1 and len(sessions.list_messages(origin.session_key)) == 1
+        assert reopened.list(origin)[0]['latestOccurrence']['deliveryStatus'] == 'sent'
+        with sqlite3.connect(sessions.database_path) as db:
+            assert db.execute('SELECT result_ack_pending FROM schedule_occurrences').fetchone()[0] == 0
+    finally:
+        restarted.close()
+
+
 def test_cancel_during_soft_setup_prevents_task_submission(system, monkeypatch):
     factory, sessions, now, _, origin = system
     app = factory()
@@ -358,6 +512,50 @@ def test_shutdown_waits_for_cross_thread_handover_before_runtime_joins_process(s
         await asyncio.to_thread(app.tasks.close)
     asyncio.run(run())
     assert app.tasks.list(origin, kind='schedule')[0].status == 'interrupted'
+
+
+def test_close_keeps_cancellation_when_drained_submission_raises_real_quota_error(system, monkeypatch, tmp_path):
+    import sys
+    from threading import Event
+    from backend.app.task_runtime import TaskBudget
+    from backend.app.task_runtime.process import ProcessExecutor
+    factory, _, now, _, origin = system
+    app = factory()
+    app.tasks.max_concurrent = 1
+    app.tasks.submit(origin, ProcessExecutor([sys.executable, '-c', 'import time; time.sleep(20)'], tmp_path, {}),
+        budget=TaskBudget(timeout_seconds=30), kind='shell')
+    class Executor(ProcessExecutor):
+        def is_authorized(self):
+            return True
+    async def execute(plan):
+        return Executor([sys.executable, '-c', 'print("never starts")'], tmp_path, {})
+    monkeypatch.setattr(app, 'execute', execute)
+    app.create(origin, {'tier': 'soft', 'trigger': 'after', 'when': '1s', 'prompt': 'bounded quota'},
+        received_at=now[0], received_source='hostReceivedAt', frozen={})
+    submit, entered, release, finished = app.tasks.submit, Event(), Event(), Event()
+    def delayed_submit(*args, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        try:
+            return submit(*args, **kwargs)
+        finally:
+            finished.set()
+    monkeypatch.setattr(app.tasks, 'submit', delayed_submit)
+    now[0] += 1
+    async def run():
+        app.start()
+        assert await asyncio.to_thread(entered.wait, 2)
+        closing = asyncio.create_task(app.close())
+        await asyncio.sleep(.02)
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 2)
+        await asyncio.sleep(.1)
+        try:
+            assert closing.done(), 'the original cancellation must survive the drained quota error'
+        finally:
+            await app.close()
+            await asyncio.gather(closing, return_exceptions=True)
+    asyncio.run(run())
 
 
 def test_thirty_day_cleanup_preserves_unconfirmed_occurrences(system):

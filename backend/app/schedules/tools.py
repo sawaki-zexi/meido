@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import asyncio
 from dataclasses import asdict
 
 from ..agent_runtime.tools import AgentToolResult, ToolDefinition, ToolRegistry
+from .application import _owned_call
 
 
 SCHEDULE_NAMES = frozenset({'schedule', 'list_schedules', 'cancel_schedule'})
@@ -85,7 +85,7 @@ class ScheduleManageTool:
             if not self.authorized(context):
                 raise PermissionError('schedule management requires the actual owner source')
             origin = self.origin_resolver(context)
-            result = {'schedules': self.application().list(origin)} if self.definition.name == 'list_schedules' else await asyncio.to_thread(self.application().cancel,
+            result = {'schedules': self.application().list(origin)} if self.definition.name == 'list_schedules' else await _owned_call(self.application().cancel,
                 origin, identifier=str(arguments.get('id', '')), name=str(arguments.get('name', '')))
             return AgentToolResult(json.dumps(result, ensure_ascii=False), result)
         except (ValueError, KeyError, PermissionError) as error:

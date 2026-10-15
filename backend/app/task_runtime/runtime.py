@@ -307,6 +307,14 @@ class TaskRuntime:
     def acknowledge_result(self, task_id: str, origin: TaskOrigin) -> None:
         """Release a result only after its owner has durably copied it."""
         with self._lock:
+            if self._db.execute('SELECT 1 FROM tasks WHERE task_id=?', (task_id,)).fetchone() is None:
+                owned = self._db.execute('SELECT 1 FROM task_submissions WHERE task_id=? AND role_id=? AND scope=?',
+                    (task_id, origin.role_id, json.dumps(origin.scope()))).fetchone()
+                if owned is not None and origin.role_id not in self._disabled_roles:
+                    # A successful ACK may outlive its result but not the
+                    # immutable handover identity. This never restarts work.
+                    return
+                raise KeyError('task not found in this role and original context')
             self._authorize(task_id, origin)
             if self._snapshot(task_id).ended_at is None:
                 raise ValueError("task result is not terminal")

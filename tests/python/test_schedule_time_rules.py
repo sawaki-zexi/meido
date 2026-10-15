@@ -125,6 +125,50 @@ def test_cron_can_skip_to_leap_day_without_scanning_each_second():
     assert trigger.next_at == epoch("2032-02-29T00:00:00Z")
 
 
+@pytest.mark.parametrize("weekday, received, first, following", [
+    ("tue", "2026-01-01T00:00:00Z", "2028-02-29T00:00:00Z", "2056-02-29T00:00:00Z"),
+    ("mon", "2042-01-01T00:00:00Z", "2044-02-29T00:00:00Z", "2072-02-29T00:00:00Z"),
+])
+def test_accepted_sparse_cron_retains_successor_beyond_five_years(weekday, received, first, following):
+    trigger = prepare_trigger("cron", f"0 0 29 2 {weekday}", "UTC", epoch(received))
+
+    assert trigger.next_at == epoch(first)
+    assert next_occurrence(trigger, trigger.next_at) == epoch(following)
+    assert due_occurrences(trigger, trigger.next_at, trigger.next_at) == (
+        1, epoch(first), epoch(following),
+    )
+
+
+@pytest.mark.parametrize("zone, first", [
+    ("UTC", "9999-12-31T00:00:00Z"),
+    ("Asia/Shanghai", "9999-12-30T16:00:00Z"),
+    ("America/New_York", "9999-12-31T05:00:00Z"),
+])
+def test_cron_clips_search_at_datetime_upper_bound(zone, first):
+    trigger = prepare_trigger("cron", "0 0 31 12 *", zone, epoch("9998-12-31T12:00:00Z"))
+
+    assert trigger.next_at == epoch(first)
+    assert next_occurrence(trigger, trigger.next_at) is None
+    assert due_occurrences(trigger, trigger.next_at, trigger.next_at) == (1, epoch(first), None)
+
+
+@pytest.mark.parametrize("zone, received, last", [
+    ("UTC", "9999-12-31T23:59:58Z", "9999-12-31T23:59:59Z"),
+    ("Asia/Shanghai", "9999-12-31T15:59:58Z", "9999-12-31T15:59:59Z"),
+    ("America/New_York", "9999-12-31T23:59:58Z", "9999-12-31T23:59:59Z"),
+])
+def test_cron_counts_last_representable_slot_and_rejects_creation_after_it(zone, received, last):
+    trigger = prepare_trigger("cron", "* * * * * *", zone, epoch(received))
+
+    assert trigger.next_at == epoch(last)
+    assert next_occurrence(trigger, trigger.next_at) is None
+    assert due_occurrences(trigger, trigger.next_at, epoch("9999-12-31T23:59:59Z")) == (
+        1, epoch(last), None,
+    )
+    with pytest.raises(ValueError, match="five years"):
+        prepare_trigger("cron", "* * * * * *", zone, epoch(last))
+
+
 @pytest.mark.parametrize("when", [
     "* * * *", "* * * * * * *", "60 * * * *", "* 24 * * *", "* * 0 * *",
     "* * * 13 *", "* * * * 8", "*/0 * * * *", "3-1 * * * *", "1,,2 * * * *",

@@ -247,3 +247,32 @@ def test_role_reconciliation_cleans_handover_identity_after_result_expiry(tmp_pa
         assert restarted.query(replacement, origin, wait_seconds=3).status == "succeeded"
     finally:
         restarted.close()
+
+
+def test_pruned_keyed_result_ack_is_idempotent_only_for_the_same_owned_submission(tmp_path):
+    origin = TaskOrigin('role', 'role:role', source_thread_id='source', source_scope_id='binding')
+    tasks = TaskRuntime(tmp_path / 'tasks', retention_seconds=-1)
+    try:
+        task_id = tasks.submit(origin, MarkerExecutor(tmp_path), budget=TaskBudget(), kind='schedule',
+            submission_key='owned-occurrence', retain_until_ack=True)
+        assert tasks.query(task_id, origin, wait_seconds=3).status == 'succeeded'
+        tasks.acknowledge_result(task_id, origin)
+        assert tasks.list(origin, kind='schedule') == ()
+        tasks.acknowledge_result(task_id, origin)
+        for foreign in [replace(origin, role_id='other'), replace(origin, session_key='other'),
+                        replace(origin, source_thread_id='other'), replace(origin, source_account_id='other'),
+                        replace(origin, source_scope_id='other')]:
+            with pytest.raises(KeyError):
+                tasks.acknowledge_result(task_id, foreign)
+        with pytest.raises(KeyError):
+            tasks.acknowledge_result('unknown-task', origin)
+        tasks.set_role_enabled(origin.role_id, False)
+        with pytest.raises(KeyError):
+            tasks.acknowledge_result(task_id, origin)
+        tasks.set_role_enabled(origin.role_id, True)
+        tasks.delete_role(origin.role_id)
+        tasks.set_role_enabled(origin.role_id, True)
+        with pytest.raises(KeyError):
+            tasks.acknowledge_result(task_id, origin)
+    finally:
+        tasks.close()
