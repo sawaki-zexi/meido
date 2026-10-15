@@ -1,6 +1,6 @@
 # Feed Skill 真实依赖与 HTTP 验收
 
-状态：当前实验记录；任务分支完成验收，待两轴复核及总 PR 集成
+状态：当前实验记录；两轴独立复核通过，已进入总 PR 集成分支
 最后核验：2026-10-16（Windows）
 事实来源：[Skill](../../backend/app/builtin_skills/feed-manage/SKILL.md)、[公开 HTTP 回归](../../tests/python/test_feed_skill.py)、[原生 HTTP 用例](../../tests/python/test_feed_skill_native.py)、下列固定上游与外部实证目录。
 
@@ -40,5 +40,7 @@
 | http-failure-evidence.json | `702ce4477019095889af59c65dc5829c78ea4121241760a46dbeb4ad760ea434` |
 
 证据包含模型实际收到的上下文/工具目录/结果、SSE 回复、持久工具记录和源日志 hash。安装 report/freeze、运行服务、数据库和大体积证据只保存在外部目录，未提交仓库。准备和完整复验命令见[手册](../handbook/feed-skill.md)。
+
+最终源码 `256c2cc819e62238da4c34f03e1f9d0dc89a1c32` 经规范与规格两路独立审查，均无剩余 finding。规格审查另在隔离 Windows 环境复跑 8 HTTP 与 2 原生用例，共 **10 passed / 44.11s**；再次确认 18 次 provider 请求、19 次真实远端调用、17 次 localhost 请求，撤权返回失败而 503 缓存不冒充成功刷新。汇入总集成提交为 `8bb2a2ec779c77a979bd5174932d35b3df47475f`。集成后 Feed、内置 Skills/激活、MCP schema、桌面推送 HTTP 与 Runtime 历史交叉 **94 passed / 107.13s**，包含两条实际 Feed 原生用例，无 skip；新证据独立保存 `feed-168-aggregate-8bb/`，保留原任务分支 red/control 记录。
 
 测试模型是脚本化外部边界，不是付费模型；其断言确认实际 Skill 上下文、目录、schema 和工具返回进入下一模型请求，不能证明任意模型均遵守自然语言指令。未调用真实账号、主动通知或 ACK，本票不能计作 A01/S08/Drift 完成。
