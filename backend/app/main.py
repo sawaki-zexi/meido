@@ -81,6 +81,7 @@ from .agent_runtime import (
     ToolResultMessage,
 )
 from .agent_runtime.capabilities import CapabilityResolution
+from .agent_runtime.file_tools import FILE_TOOL_NAMES, build_file_tools
 from .agent_runtime.types import UserMessage
 from .channels.attachment_tool import ReadChannelAttachmentTool
 from .channels.consolidation import ChannelMemoryMaintenance, finish_io
@@ -3356,6 +3357,7 @@ def _runtime_tool_candidates(
             max_output_chars=shell.maxOutputChars,
         ),
         _memory_runtime_tool(role),
+        *build_file_tools(role.id, store.workspace_path(role.id), is_owner=is_channel_owner),
     ]
     if owner_knowledge_plugin.status().enabled:
         tools.append(_owner_knowledge_runtime_tool(role))
@@ -3397,6 +3399,7 @@ def _role_has_usable_channel_account(role_id: str) -> bool:
 def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[str]:
     shell = role.agentConfig.shell
     enabled: set[str] = set()
+    enabled.update(FILE_TOOL_NAMES.intersection(role.agentConfig.enabledTools))
     if shell.enabled and shell.allowedCommands:
         enabled.add("shell")
     if memory_settings_store.get().enabled and role.agentConfig.memoryRecall.enabled:
