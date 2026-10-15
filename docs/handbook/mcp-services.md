@@ -25,12 +25,23 @@
 无需第三方服务、网络账号或付费 API。fixture 是真实 Python 子进程；模型与平台传输使用测试替身。执行：
 
 ```powershell
-python -m pytest tests/python/test_mcp_stdio.py tests/python/test_mcp_http.py tests/python/test_mcp_origin.py tests/python/test_mcp_schema.py -q
+python -m pytest tests/python/test_mcp_stdio.py tests/python/test_mcp_http.py tests/python/test_mcp_origin.py tests/python/test_mcp_schema.py tests/python/test_mcp_credentials.py -q -W error::pytest.PytestUnraisableExceptionWarning
 python -m compileall -q backend tests
 python -m mypy backend/app/mcp_config.py backend/app/mcp_api.py backend/app/mcp_runtime.py backend/app/mcp_stdio.py --follow-imports=silent
 ```
 
 用例覆盖主人保存不连接、无密钥目录、两页握手发现、同 run 搜索/执行、真实文件效果、宿主/SQLite 重建恢复意愿、移除和重新添加版本链、跨角色/线程/绑定隔离、初始握手与在途撤权、重复取消及真实子孙清理。协议用例覆盖坏消息、输出/目录/页数/工具数/名字预算、超时、schema 深度和离线引用。恶意正则/引用膨胀用例自身运行在有整树所有权的隔离测试进程中，15 秒外层超时防止错误实现卡死测试运行器。
+
+进程与管道行为必须分别在 Windows 和 Linux 验证；Windows 通过不能替代 POSIX 验收。Linux 清理同时等待管道 EOF 和整个原进程组消失，子进程是否继承 stdio 都要保持 PID 不存活断言。可用 `-W error::pytest.PytestUnraisableExceptionWarning` 运行 stdio/生命周期用例，将遗留 subprocess transport 的析构错误作为失败。
+
+WSL 与 Windows 共用源码时，使用已安装 requirements 的独立 Linux venv，并把数据、角色和主人知识目录都放在 Linux 文件系统；不要让两种系统同时打开工作树中的默认 SQLite 文件。Linux shell 中执行：
+
+```sh
+MEIDO_DATA_DIR=/tmp/meido-mcp159-linux-data \
+MEIDO_ROLES_DIR=/tmp/meido-mcp159-linux-roles \
+MEIDO_OWNER_KNOWLEDGE_DATA_DIR=/tmp/meido-mcp159-linux-knowledge \
+python -m pytest tests/python/test_mcp_stdio.py tests/python/test_mcp_http.py tests/python/test_mcp_origin.py tests/python/test_mcp_schema.py tests/python/test_mcp_credentials.py -q --tb=short -W error::pytest.PytestUnraisableExceptionWarning
+```
 
 ## 故障处理
 

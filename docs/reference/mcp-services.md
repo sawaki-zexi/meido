@@ -54,4 +54,4 @@ inputSchema 和 outputSchema 必须描述对象，仅支持 2020-12（缺省）�
 
 远端结果最多 64 个 content 块。structuredContent 必须是对象；文本及结构化内容有界保留，已知配置凭据在字符串节点和 JSON 转义形式中清理；带凭据的工具声明不能入目录。图像接受 PNG/JPEG/WebP/GIF 的有效 Base64，最多 4 张、每张解码最多 1 MiB；解码后包含已配置凭据字节时拒绝，其他图像按既有运行器规则短暂提供给模型。resource/resource_link/audio 只作为数据返回，不跟随 URL。远端 JSON-RPC error、工具 isError、格式错误及宿主超时分别处理，错误不回显远端异常或启动参数。
 
-每个请求的 timeoutSeconds 从写入开始计时，覆盖 write/drain 与响应等待，远端不读 stdin 也不能绕过预算。普通请求取消可尝试发送 notifications/cancelled，最多等待 50ms；失败、超时或再次取消都继续关闭，initialize 不发送该通知。Windows 使用 Job 所有权，POSIX 使用独立进程组；取消、重复 Stop、移除及坏流都等待进程树清理。取消/断连后的业务事务可能结果未知，宿主不会自动重试。浏览器固定客户端与 28 个工具维持独立实现。
+每个请求的 timeoutSeconds 从写入开始计时，覆盖 write/drain 与响应等待，远端不读 stdin 也不能绕过预算。普通请求取消可尝试发送 notifications/cancelled，最多等待 50ms；失败、超时或再次取消都继续关闭，initialize 不发送该通知。Windows 使用 Job 所有权，POSIX 使用独立进程组；取消、重复 Stop、移除及坏流都等待进程树清理。协议 reader 退出后，清理任务以固定大小块丢弃剩余 stdout 并等待 stdout/stderr EOF，避免超限输出使管道暂停读取而阻塞 process.wait。POSIX 的 killpg 仅发送信号，因此在同一个 5 秒清理预算内还要确认整个 owned group 已不存在，不能只等父进程退出；僵尸不会被当作已回收。取消/断连后的业务事务可能结果未知，宿主不会自动重试。浏览器固定客户端与 28 个工具维持独立实现。

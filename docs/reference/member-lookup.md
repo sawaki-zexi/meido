@@ -2,7 +2,7 @@
 
 状态：当前（#165 实现，待汇入总 PR #162）。最后核验：2026-10-16。
 
-事实来源：[工具与查询](../../backend/app/channels/group_tools.py)、[昵称观察和旧库迁移](../../backend/app/multichannel.py)、[可信来源](../../backend/app/channels/source_authority.py)、[公开 HTTP 往返](../../tests/python/test_member_lookup_api.py)、[范围与持久化测试](../../tests/python/channels/test_member_lookup.py)。对应完整规格 C09，保留 Meido 名称 `lookup_group_member`，映射 Shiori 的 `lookup_member`。
+事实来源：[工具与查询](../../backend/app/channels/group_tools.py)、[昵称观察和旧库迁移](../../backend/app/multichannel.py)、[群/成员共用宿主检查](../../backend/app/channels/group_access.py)、[可信来源](../../backend/app/channels/source_authority.py)、[公开 HTTP 往返](../../tests/python/test_member_lookup_api.py)、[范围与持久化测试](../../tests/python/channels/test_member_lookup.py)。对应完整规格 C09，保留 Meido 名称 `lookup_group_member`，映射 Shiori 的 `lookup_member`。
 
 | 参数 | 行为 |
 | --- | --- |

@@ -368,7 +368,7 @@ async def _execute_tool(
                 ),
                 status="invalid_arguments",
             ), updates
-        tool_signal = CancellationToken()
+        tool_signal = CancellationToken(parent=signal)
         tool_context = replace(context, signal=tool_signal)
         pending = resolve_tool_result(tool.execute(arguments, tool_context, on_update))
         definition = (

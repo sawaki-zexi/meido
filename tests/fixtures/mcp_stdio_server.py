@@ -99,7 +99,9 @@ def handle(message):
     elif method == "tools/call":
         name = message["params"]["name"]
         if name == "slow":
-            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+            child_pipes = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL} if mode == "child_without_pipes" else {}
+            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                **child_pipes)
             (root / "child_pid").write_text(str(child.pid))
             (root / "started").write_text("yes")
             time.sleep(30)
