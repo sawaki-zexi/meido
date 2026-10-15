@@ -14,9 +14,11 @@ from backend.app.models import AgentRun
 from channels.test_host import FakeAdapter, make_target
 from test_channel_api import channel_api as channel_api
 
+pytestmark = pytest.mark.usefixtures("local_platform_only")
+
 
 @pytest.fixture(autouse=True)
-def isolated_channel_settings_runtime(monkeypatch):
+def isolated_channel_settings_runtime(monkeypatch, local_platform_only):
     monkeypatch.setattr(main, "_managed_qq_pending", {})
     monkeypatch.setattr(main, "channel_platform_locks", {})
 
