@@ -32,6 +32,8 @@ Shell 只支持 command 字段和 POSIX 引号，不支持 env/cwd/stdin；本�
 `--extract` 为本次核验版本的参数；不要沿用旧文档 `--extract-only`。URL 可无密钥提取。
 本地纯文本不支持 `--extract`；用常规文件输入加 `--json`。PDF、音视频的提取可能需要独立媒体依赖。
 YouTube 优先已有字幕；缺字幕、转录服务未配置或失败要区分，不能编造完整转录。
+使用 `--json` 时检查 `extracted.transcriptSource` 与字幕字符数；`unavailable` 不等于取得字幕，即使 CLI exit 0。
+只得到 `- YouTube` 标题或站点通用正文时，报告未取得视频内容，不能把这些文字总结成视频观点。
 
 需要 CLI 调用模型时，主人须单独配置其服务与凭据，配置文件为 `~/.summarize/config.json`（非旧 config.toml）。
 不得复制 Meido 模型密钥、输出凭据或把宿主环境变量当作已授予 CLI 的密钥。Shell 最小环境不会继承任意 API key。

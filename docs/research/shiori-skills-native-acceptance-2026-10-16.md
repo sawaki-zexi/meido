@@ -33,6 +33,8 @@ HTTP 摘要模型使用隔离 localhost fixture 与无效的测试 token；没�
 
 独立审查后补公开 Registry 回归：真实 Windows role/workspace 祖先 junction，在发现前建立或发现后替换四种情况均先红后绿；未将该证据扩大为 HTTP 逃逸，RoleStore 另有路径检查。公开描述符拒绝路径/带值依赖，原共享列表与导出诊断不再反向修改冻结快照。
 
+补充公网 YouTube 观察：以 CLI 官方示例 `I845O57ZSy4` 及 `aircAruvnKk` 执行 `--extract --youtube web --json --max-extract-characters 6000 --firecrawl off --no-slides`，两次 exit 0，但均为 `transcriptSource:unavailable`、标题 `- YouTube` 与 126 字符站点正文。未取得真实字幕，不能作为成功转录证据；Skill 明确要求检查该状态，不能用退出码或通用页正文编造视频内容。未使用账号 cookies、付费转录或未经配置的下载工具。该环境的真实字幕成功验收仍未完成。
+
 ## 可复核证据
 
 本次本地证据目录：`C:/Users/Elysia/.codex/visualizations/2026/10/15/01a13e82-f9da-7eb1-8b64-ae6ab21c48d0/skills-152-qa/`。
