@@ -35,6 +35,18 @@ Ruff、compileall、diff whitespace和改动文档相对链接通过。`python -
 
 修复后5源mypy、Ruff、compileall、相对链接和diff检查通过；共享文件仍与固定cb6347e逐条83/83一致，无新增诊断。
 
+## 复核后的任务清理闭环
+
+53c1275复核暴露两条相关遗漏：taskId确认丢失后过期/撤权封存未找回原任务，以及cancel找回taskId后状态写入遇真实SQLite busy而遗漏ACK。两份外部原探针在53c1275重现；新增三条行为回归先红，再统一修改清理责任转绿。
+
+soft现在从claim起保存清理责任，taskId与dirty同事务关联；所有终态保留该责任，统一找回、stop、ACK，成功后才清除。还验证内层PermissionError/KeyError、外层source PermissionError、链接/状态写入真实SQLite busy、31天清理保护与旧封存无id记录恢复。并行提交回归覆盖尚未进入Runtime时取消/过期，以及已接受但未返回id时取消、迟到返回或抛错；晚到错误改写expired终态及计划状态的回归也先红后绿。
+
+真实角色disable→封存→删除回滚enable组合先红后绿。既有TaskRuntime.list在同锁内对disabled角色明确抛PermissionError，调度保持dirty，恢复后找回并ACK；不新增Runtime seam或参数，不放宽ACK、unknown及跨来源权限。现有真实消费者为schedule和spawn_manage，后者已有PermissionError处理。TaskRuntime marker查找受默认每角色100条保留额度约束，不宣称无界查询。
+
+两份外部原探针在新实现转绿：Standards expired/revoked两项retainedTasks均0；Spec原脚本使用全新临时目录原样执行，cancelled/synced1且retain_until_ack从1恢复0。后者保留普通历史符合默认保留期，不等同于结果必须立即删除。
+
+本轮完整专项在上轮命令加入`tests/python/test_schedule_cleanup.py`：**191 passed**（新增14项）；必要共享消费者原命令：**84 passed**。5源mypy、Ruff、compileall、改动文档相对链接和diff检查通过。共享mypy与固定cb6347e仍为83条错误逐条一致（另14条note也一致），新增0、移除0；本轮无前端或其他共享生产文件改动。
+
 ## 限制与尚待完成
 
 模型/渠道/凭据/文件/数据库均为临时本地fixture，没有真实平台收件、付费模型或原生桌面操作。pending/uncertain只能反映平台实际收据，不虚构确认API。仍需仓库规范/需求规格两轴复核和总集成交叉检查；未推送、未合并、未关闭Issue。

@@ -30,7 +30,11 @@ every 也接受五/六字段 cron，cron 是显式同义入口；六字段秒在
 
 instant 原样投递冻结文本。soft 使用独立 TaskRuntime(kind=schedule, completion=False)，120秒/12轮/最终20000字符/累计60000字符及既有宿主任务日志配额。复用 general SpawnExecutor，只运行创建时冻结且当前仍许可的 read/list/web、任务目录write/edit和argv白名单Shell。禁屏幕、browser/computer、MCP、发现、递归委托、schedule、记忆/Todo写及渠道发送。独立工作集只接收prompt，不创建普通run、主人消息或第二会话。
 
-模型非秘密配置、角色与工具定义创建时冻结，使用当时实际解析的连接ID（包括应用默认连接），到时按该ID精确恢复；切换默认连接不改投，原连接消失/改变则失败。当前许可持续复核，新增许可不扩权。soft使用宿主submission_key原子交接；崩溃窗口可找回同一task，重启queued/running为interrupted而不重跑。结果复制持久时同时保存ACK待确认状态；ready/sent和重启后均能独立重试本地ACK，不重跑执行或投递。ACK前仍占任务/日志额度且不清理对应occurrence；ACK后普通回收，幂等墓碑保留到角色删除。ACK已成功而确认回写丢失、结果已回收时，同原来源的keyed ACK仍幂等成功，未知/跨范围或已删除角色保持拒绝。
+模型非秘密配置、角色与工具定义创建时冻结，使用当时实际解析的连接ID（包括应用默认连接），到时按该ID精确恢复；切换默认连接不改投，原连接消失/改变则失败。当前许可持续复核，新增许可不扩权。soft使用宿主submission_key原子交接；崩溃窗口可找回同一task，重启queued/running为interrupted而不重跑。
+
+soft从claim起持久保存任务清理责任，taskId关联与ACK待确认标记同事务写入。过期、撤权、取消和异常终态均保留该责任；找回原任务、停止和ACK由同一恢复路径处理，SQLite busy或重启不会使其丢失。结果复制后ready/sent均可独立重试本地ACK，不重跑执行或投递。无taskId时按原来源和occurrence marker查找，受TaskRuntime既有每角色100条保留额度约束；终态同时关闭提交的最终授权门，经过同一Runtime锁确认无任务后才标记not_submitted并解除责任。任务管理暂时禁用时list明确抛PermissionError，不能把不可管理误认为空列表；角色删除失败恢复enable后继续清理，实际删除仍全量清除任务和调度。该错误不放宽ACK或跨来源访问权限。
+
+ACK前仍占任务/日志额度且不清理对应occurrence；ACK后普通回收，幂等墓碑保留到角色删除。ACK已成功而确认回写丢失、结果已回收时，同原来源的keyed ACK仍幂等成功，未知/跨范围或已删除角色保持拒绝。所有投递终态均受持久写门保护，晚到的提交错误不能改写已确定的终态。
 
 宿主关闭、工具停止及连续取消均等待交接/停止线程退出；等待中的线程随后抛普通错误时，仍保留原调用取消语义，不能把关闭转换成重试。
 

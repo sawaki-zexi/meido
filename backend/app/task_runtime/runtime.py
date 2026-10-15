@@ -258,6 +258,10 @@ class TaskRuntime:
     def list(self, origin: TaskOrigin, *, kind: str) -> tuple[TaskSnapshot, ...]:
         """Observe only executions in the caller's original source scope."""
         with self._lock:
+            if origin.role_id in self._disabled_roles:
+                # A deletion preflight can roll back. Hidden owned results
+                # must not be mistaken for proof that no handover occurred.
+                raise PermissionError("task management is disabled")
             self._prune()
             items = []
             for row in self._db.execute("SELECT task_id FROM tasks WHERE role_id=? AND kind=? ORDER BY started_at DESC LIMIT 100",

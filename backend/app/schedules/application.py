@@ -87,6 +87,11 @@ class ScheduleApplication:
             if 'result_ack_pending' not in columns:
                 db.execute('ALTER TABLE schedule_occurrences ADD COLUMN result_ack_pending INTEGER NOT NULL DEFAULT 0')
                 db.execute("UPDATE schedule_occurrences SET result_ack_pending=1 WHERE task_id IS NOT NULL AND (execution='ready' OR delivery IN ('sent','failed','expired','revoked','cancelled','interrupted','uncertain'))")
+            # Upgrade incomplete handovers from the earlier local schema. A
+            # missing task id never proves that TaskRuntime did not accept it.
+            db.execute("""UPDATE schedule_occurrences SET result_ack_pending=1
+                WHERE (execution IN ('claimed','running') OR (task_id IS NULL AND execution!='not_submitted'))
+                AND schedule_id IN (SELECT id FROM schedules WHERE json_valid(data) AND json_extract(data,'$.tier')='soft')""")
             # A process loss beyond dispatch cannot prove the platform did not send.
             db.execute("UPDATE schedule_occurrences SET delivery='uncertain',error='process interrupted during dispatch' WHERE delivery='dispatching'")
             self._recovered_plans = {row[0] for row in db.execute("SELECT id FROM schedules WHERE status='active'")}
@@ -188,28 +193,16 @@ class ScheduleApplication:
             if identifier and len(ids) != 1 or name and not names or identifier and name and {r['id'] for r in ids} != {r['id'] for r in names}:
                 raise ValueError('schedule is unavailable in this source')
             chosen = ids if identifier else names
-            tasks: builtins.list[tuple[str, TaskOrigin]] = []
-            unresolved: builtins.list[tuple[str, TaskOrigin]] = []
+            cleanup: builtins.list[tuple[str, TaskOrigin]] = []
             for row in chosen:
                 db.execute("UPDATE schedules SET status='cancelled',next_at=NULL WHERE id=?", (row['id'],))
-                db.execute("UPDATE schedule_occurrences SET delivery='cancelled',error='plan cancelled',result_ack_pending=CASE WHEN task_id IS NOT NULL THEN 1 ELSE 0 END WHERE schedule_id=? AND dispatched=0 AND delivery NOT IN ('sent','failed','expired','revoked','interrupted','uncertain')", (row['id'],))
-                tasks.extend((r[0], TaskOrigin(**json.loads(row['data'])['origin'])) for r in db.execute('SELECT task_id FROM schedule_occurrences WHERE schedule_id=? AND task_id IS NOT NULL', (row['id'],)))
+                db.execute("UPDATE schedule_occurrences SET delivery='cancelled',error='plan cancelled' WHERE schedule_id=? AND dispatched=0 AND delivery NOT IN ('sent','failed','expired','revoked','interrupted','uncertain')", (row['id'],))
                 data = json.loads(row['data'])
                 if data['tier'] == 'soft':
-                    unresolved.extend((r[0], TaskOrigin(**data['origin'])) for r in db.execute(
-                        'SELECT id FROM schedule_occurrences WHERE schedule_id=? AND task_id IS NULL', (row['id'],)))
-        for occurrence_id, task_origin in unresolved:
-            previous = self._previous_task(task_origin, occurrence_id)
-            if previous is not None:
-                self._update(occurrence_id, task_id=previous.task_id)
-                tasks.append((previous.task_id, task_origin))
-        for task, task_origin in tasks:
-            try:
-                snapshot = self.tasks.stop(task, task_origin)
-                self._update_task_status(task, snapshot.status)
-                self._ack_result(task, task_origin)
-            except KeyError:
-                pass
+                    cleanup.extend((r[0], TaskOrigin(**data['origin'])) for r in db.execute(
+                        'SELECT id FROM schedule_occurrences WHERE schedule_id=? AND result_ack_pending=1', (row['id'],)))
+        for occurrence_id, task_origin in cleanup:
+            self._settle_terminal_task(occurrence_id, task_origin)
         return {'cancelled': len(chosen), 'ids': [r['id'] for r in chosen]}
 
     def _claim(self):
@@ -245,9 +238,9 @@ class ScheduleApplication:
         if db.execute('SELECT COUNT(*) FROM schedule_occurrences o JOIN schedules s ON s.id=o.schedule_id WHERE s.role_id=? AND (o.delivery NOT IN (\'sent\',\'failed\',\'expired\',\'revoked\',\'cancelled\',\'interrupted\') OR o.result_ack_pending=1)', (row['role_id'],)).fetchone()[0] >= 1000:
             return
         missed = skipped + int(delivery == 'expired')
-        db.execute('INSERT OR IGNORE INTO schedule_occurrences(id,schedule_id,nominal,execution,delivery,content,skipped_count,skipped_from,error) VALUES(?,?,?,?,?,?,?,?,?)',
+        db.execute('INSERT OR IGNORE INTO schedule_occurrences(id,schedule_id,nominal,execution,delivery,content,skipped_count,skipped_from,error,result_ack_pending) VALUES(?,?,?,?,?,?,?,?,?,?)',
             (uuid.uuid4().hex, row['id'], nominal, 'ready' if data['tier'] == 'instant' else 'claimed', delivery, data.get('message', ''),
-             missed, row['next_at'] if missed else None, 'missed repeating slots on restart' if recovered_repeat else 'nominal time expired' if delivery == 'expired' else ''))
+             missed, row['next_at'] if missed else None, 'missed repeating slots on restart' if recovered_repeat else 'nominal time expired' if delivery == 'expired' else '', int(data['tier'] == 'soft')))
         status = 'blocked_time_range' if exhausted_calendar else 'active' if next_at is not None else 'completed'
         reason = 'recurrence has no successor within the supported calendar range' if exhausted_calendar else ''
         db.execute('UPDATE schedules SET next_at=?,remaining=?,started=started+?,skipped=skipped+?,status=?,error=? WHERE id=?',
@@ -269,10 +262,14 @@ class ScheduleApplication:
                     for occ in db.execute("SELECT * FROM schedule_occurrences WHERE schedule_id=? AND (delivery NOT IN ('sent','failed','expired','revoked','cancelled','interrupted','uncertain') OR synced=0 OR result_ack_pending=1)", (row['id'],)).fetchall()]
 
     def _update(self, identifier, **changes):
+        if changes.get('task_id') is not None:
+            # Linkage and its cleanup obligation are one durable write, even
+            # when the following status/ACK operation encounters SQLite busy.
+            changes['result_ack_pending'] = 1
         with self._transaction() as db:
-            gate = " AND delivery NOT IN ('cancelled','sent','revoked')" if 'delivery' in changes else ''
-            db.execute('UPDATE schedule_occurrences SET ' + ','.join(f'{key}=?' for key in changes) + ' WHERE id=?' + gate, (*changes.values(), identifier))
-            if changes.get('delivery') == 'revoked':
+            gate = " AND delivery NOT IN ('cancelled','sent','revoked','failed','expired','interrupted','uncertain')" if 'delivery' in changes else ''
+            changed = db.execute('UPDATE schedule_occurrences SET ' + ','.join(f'{key}=?' for key in changes) + ' WHERE id=?' + gate, (*changes.values(), identifier)).rowcount
+            if changed and changes.get('delivery') == 'revoked':
                 db.execute("UPDATE schedules SET status='revoked',next_at=NULL WHERE id=(SELECT schedule_id FROM schedule_occurrences WHERE id=?) AND status!='cancelled'", (identifier,))
 
     def _update_task_status(self, task_id, status):
@@ -293,13 +290,46 @@ class ScheduleApplication:
         marker = 'schedule occurrence ' + occurrence_id
         return next((task for task in self.tasks.list(origin, kind='schedule') if task.description == marker), None)
 
+    def _settle_terminal_task(self, occurrence_id, origin):
+        """Retire a terminal occurrence's handover without executing or sending.
+
+        Never hold the schedule write transaction while entering TaskRuntime:
+        its submit lock and final schedule authorization gate order a missing
+        lookup against every in-flight submission.
+        """
+        with self._transaction() as db:
+            row = db.execute('SELECT * FROM schedule_occurrences WHERE id=?', (occurrence_id,)).fetchone()
+        if row is None or not row['result_ack_pending']:
+            return True
+        if row['delivery'] not in FINAL:
+            return False
+        task_id = row['task_id']
+        if task_id is None:
+            previous = self._previous_task(origin, occurrence_id)
+            if previous is None:
+                # The terminal gate prevents a later submit. list() acquired
+                # the same runtime lock as submit, so an earlier accepted task
+                # would already be visible within its bounded retained quota.
+                self._update(occurrence_id, execution='not_submitted', result_ack_pending=0)
+                return True
+            task_id = previous.task_id
+            self._update(occurrence_id, task_id=task_id)
+        try:
+            snapshot = self.tasks.stop(task_id, origin)
+        except KeyError:
+            # ACK may have succeeded before the local clear was committed and
+            # normal runtime retention may already have reclaimed the result.
+            return self._ack_result(task_id, origin)
+        self._update_task_status(task_id, snapshot.status)
+        return self._ack_result(task_id, origin)
+
     def _allowed(self, plan, occurrence, db=None):
         if not self.authorized(plan):
             return False
         if db is not None:
             row = db.execute('SELECT status FROM schedules WHERE id=?', (plan['id'],)).fetchone()
             occ = db.execute('SELECT delivery FROM schedule_occurrences WHERE id=?', (occurrence['id'],)).fetchone()
-            return row is not None and row[0] != 'cancelled' and occ is not None and occ[0] not in {'cancelled', 'revoked'}
+            return row is not None and row[0] != 'cancelled' and occ is not None and occ[0] not in FINAL
         with self._transaction() as connection:
             return self._allowed(plan, occurrence, connection)
 
@@ -323,13 +353,9 @@ class ScheduleApplication:
     async def _advance(self, plan, occurrence):
         data, oid = plan['data'], occurrence['id']
         origin = TaskOrigin(**data['origin'])
-        if data['tier'] == 'soft' and occurrence['task_id'] is None and occurrence['delivery'] in FINAL:
-            previous = self._previous_task(origin, oid)
-            if previous is not None:
-                stopped = await _owned_call(self.tasks.stop, previous.task_id, origin)
-                self._update(oid, task_id=previous.task_id, execution=stopped.status, result_ack_pending=1)
-                occurrence.update(task_id=previous.task_id, result_ack_pending=1)
-        if occurrence['result_ack_pending']:
+        if data['tier'] == 'soft' and occurrence['delivery'] in FINAL:
+            await _owned_call(self._settle_terminal_task, oid, origin)
+        elif occurrence['result_ack_pending'] and occurrence['execution'] == 'ready':
             acknowledged = self._ack_result(occurrence['task_id'], origin)
             if not acknowledged and not occurrence['dispatched']:
                 return
@@ -348,12 +374,9 @@ class ScheduleApplication:
                 self._update(oid, synced=1)
             return
         if occurrence['nominal'] + GRACE < self.clock():
-            self._update(oid, delivery='expired', error='occurrence grace expired', synced=1,
-                         result_ack_pending=int(occurrence['task_id'] is not None))
-            if occurrence['task_id']:
-                snapshot = await _owned_call(self.tasks.stop, occurrence['task_id'], origin)
-                self._update_task_status(occurrence['task_id'], snapshot.status)
-                self._ack_result(occurrence['task_id'], origin)
+            self._update(oid, delivery='expired', error='occurrence grace expired', synced=1)
+            if data['tier'] == 'soft':
+                await _owned_call(self._settle_terminal_task, oid, origin)
             return
         if occurrence['retry_at'] > self.clock():
             return
@@ -361,12 +384,9 @@ class ScheduleApplication:
             self._retry(occurrence, 'channel is temporarily offline')
             return
         if not self._allowed(plan, occurrence):
-            self._update(oid, delivery='revoked', error='original permission or source revoked', synced=1,
-                         result_ack_pending=int(occurrence['task_id'] is not None))
-            if occurrence['task_id']:
-                snapshot = await _owned_call(self.tasks.stop, occurrence['task_id'], origin)
-                self._update_task_status(occurrence['task_id'], snapshot.status)
-                self._ack_result(occurrence['task_id'], origin)
+            self._update(oid, delivery='revoked', error='original permission or source revoked', synced=1)
+            if data['tier'] == 'soft':
+                await _owned_call(self._settle_terminal_task, oid, origin)
             return
         if data['tier'] == 'soft' and occurrence['execution'] != 'ready':
             try:
