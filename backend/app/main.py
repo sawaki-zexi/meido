@@ -4120,11 +4120,10 @@ async def stop_role_reply(role_id: str, run_id: str) -> SessionResponse:
     run = session_store.get_run(run_id)
     if run is None or run.roleId != role_id or run.sessionKey != f"role:{role_id}":
         raise HTTPException(status_code=404, detail="桌面回复不存在")
-    if run.status in {"created", "running"}:
-        runtime_manager.sessions = session_store
-        runtime_manager.role_locks = role_locks
-        if not await runtime_manager.stop_run(run_id):
-            raise HTTPException(status_code=409, detail="当前回复暂时无法停止，请刷新后重试")
+    runtime_manager.sessions = session_store
+    runtime_manager.role_locks = role_locks
+    if not await runtime_manager.stop_run(run_id):
+        raise HTTPException(status_code=409, detail="当前回复暂时无法停止，请刷新后重试")
     return session_manager.open_role_session(role_id)
 
 

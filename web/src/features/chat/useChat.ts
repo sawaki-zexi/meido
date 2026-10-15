@@ -66,6 +66,15 @@ export function useChat() {
 
   const reset = () => { setRoleId(null); setSession(null); setMessages([]); setError(""); };
 
+  const reconcileReply = async (reply: ActiveReply, id: string) => {
+    const data = await api<SessionData>(`/api/roles/${encodeURIComponent(id)}/session`);
+    const accepted = data.messages.find((item) => item.role === "user" && item.content === reply.content && !reply.previousIds.has(item.id));
+    reply.accepted = Boolean(accepted);
+    reply.runId = accepted?.runId ?? undefined;
+    setSession(data.session);
+    setMessages(data.messages);
+  };
+
   /** Sends a message. Resolves false when nothing was sent so the caller can keep the draft. */
   const send = async (text: string, attachments: string[] = []): Promise<boolean> => {
     const content = text.trim();
@@ -86,6 +95,10 @@ export function useChat() {
     } catch (cause) {
       if (reply.stopPromise) await reply.stopPromise.catch(() => undefined);
       if (!reply.controller.signal.aborted) {
+        if (!reply.accepted) {
+          // A lost response header does not mean the server rejected the POST.
+          try { await reconcileReply(reply, roleId); } catch { /* Keep the original request error. */ }
+        }
         setError(errorMessage(cause, "发送失败"));
         setMessages((current) => current.map((item) => item.status === "streaming" ? { ...item, status: "failed" } : item));
       }
@@ -109,12 +122,7 @@ export function useChat() {
         // The request may already be persisted even when its response headers
         // have not reached the browser. Reconcile before restoring a draft.
         reply.controller.abort();
-        const data = await api<SessionData>(`/api/roles/${encodeURIComponent(roleId)}/session`);
-        const accepted = data.messages.find((item) => item.role === "user" && item.content === reply.content && !reply.previousIds.has(item.id));
-        reply.accepted = Boolean(accepted);
-        reply.runId = accepted?.runId ?? undefined;
-        setSession(data.session);
-        setMessages(data.messages);
+        await reconcileReply(reply, roleId);
       }
       if (reply.runId) {
         const data = await api<SessionData>(`/api/roles/${encodeURIComponent(roleId)}/runs/${encodeURIComponent(reply.runId)}/stop`, { method: "POST" });

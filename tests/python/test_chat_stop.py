@@ -1,6 +1,7 @@
 import json
 import socket
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 import httpx
 import pytest
@@ -8,6 +9,7 @@ import uvicorn
 
 from backend.app import main
 from backend.app.agent_runtime.runtime import RuntimeManager
+from backend.app.agent_runtime.capabilities import CapabilityResolution
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.models import RoleInput, RoleProfile
 from backend.app.role_store import RoleStore
@@ -95,3 +97,40 @@ def test_stop_desktop_reply_before_or_after_first_token(chat_server, monkeypatch
     assert "后续回复" in response.text
     history = client.get(f"/api/roles/{role.id}/session").json()["messages"]
     assert [item["content"] for item in history] == ["第一句", "部分回复" if partial else "", "下一句", "后续回复"]
+
+
+def test_stop_waits_for_completed_run_cleanup_before_allowing_next_send(chat_server, monkeypatch):
+    import asyncio
+
+    client, role, _ = chat_server
+    cleaning = threading.Event()
+    release = threading.Event()
+    original_close = CapabilityResolution.close
+
+    async def slow_close(self):
+        if not cleaning.is_set():
+            cleaning.set()
+            await asyncio.to_thread(release.wait, 5)
+        await original_close(self)
+
+    class Adapter:
+        async def stream_reply(self, role, history, configuration=None):
+            yield "完整回复"
+
+    monkeypatch.setattr(CapabilityResolution, "close", slow_close)
+    monkeypatch.setattr(main, "model_adapter", Adapter())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        sending = pool.submit(client.post, f"/api/roles/{role.id}/messages", json={"content": "第一句"})
+        try:
+            assert cleaning.wait(timeout=3)
+            run_id = main.session_store.list_messages(f"role:{role.id}")[0].runId
+            assert main.session_store.get_run(run_id).status == "completed"
+            stopping = pool.submit(client.post, f"/api/roles/{role.id}/runs/{run_id}/stop")
+            with pytest.raises(TimeoutError):
+                stopping.result(timeout=0.15)
+        finally:
+            release.set()
+        assert stopping.result(timeout=3).status_code == 200
+        assert sending.result(timeout=3).status_code == 200
+    assert not main.runtime_manager.lock_for(role.id).locked()
+    assert client.post(f"/api/roles/{role.id}/messages", json={"content": "下一句"}).status_code == 200

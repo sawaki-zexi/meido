@@ -10,6 +10,27 @@ beforeEach(() => { sessionStorage.clear(); localStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("聊天输入与停止", () => {
+  it("后端已接收但响应头丢失时，从历史确认消息，避免回填后重复发送", async () => {
+    let posted = false;
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": () => ({ body: { session, messages: posted ? [
+        message({ id: "u1", role: "user", content: "已收到的消息", runId: "run-lost-header" }),
+      ] : [] } }),
+      "POST /api/roles/r1/messages": () => { posted = true; throw new TypeError("响应头丢失"); },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: "爱丽丝" });
+    const input = screen.getByRole("textbox", { name: "消息内容" });
+    await user.type(input, "已收到的消息{Enter}");
+    await screen.findByRole("alert");
+    await waitFor(() => expect(screen.queryByRole("button", { name: "停止回复" })).toBeNull());
+    expect(input).toHaveValue("");
+    expect(screen.getByText("已收到的消息")).toBeTruthy();
+    expect(screen.queryByText(/未发送的消息/)).toBeNull();
+  });
+
   it("未接收的失败提交恢复文字和附件，重试不会丢失附件", async () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),

@@ -111,6 +111,13 @@ class RuntimeManager:
         """Cancel one owned run and wait for its task and role lock to finish."""
 
         task = self._tasks.get(run_id)
+        run = self.sessions.get_run(run_id)
+        if run is not None and run.status not in {"created", "running"}:
+            # Persistence precedes capability cleanup and releasing the lock.
+            # Preserve a completed answer while waiting for its owner to exit.
+            if task is not None and task is not asyncio.current_task():
+                await asyncio.gather(task, return_exceptions=True)
+            return True
         if not self.cancel_run(run_id):
             return False
         if task is not None and task is not asyncio.current_task():
