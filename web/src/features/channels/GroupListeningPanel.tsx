@@ -5,7 +5,7 @@ type Heard = { id: string; sequence: number; content: string; createdAt: string;
 type State = { enabled: boolean; dailyCap: number | null; defaultDailyCap: number; toggles: { enabled: boolean; operator: string; at: string }[] };
 type Page = { messages: Heard[]; hasMore: boolean; nextBefore: number | null };
 
-export function GroupListeningPanel({ roleId, threadId, editable }: { roleId: string; threadId: string; editable: boolean }) {
+export function GroupListeningPanel({ roleId, threadId, editable, accountId, chatId }: { roleId: string; threadId: string; editable: boolean; accountId?: string; chatId?: string }) {
   const [state, setState] = useState<State | null>(null);
   const [messages, setMessages] = useState<Heard[]>([]);
   const [cap, setCap] = useState("");
@@ -81,10 +81,34 @@ export function GroupListeningPanel({ roleId, threadId, editable }: { roleId: st
     } catch (cause) { setError(errorMessage(cause, "保存旁听上限失败")); }
     finally { setBusy(false); }
   };
+  const change = async (enabled?: boolean) => {
+    if (!accountId || !chatId || !editable || busy) return;
+    if (enabled === undefined && !window.confirm("清理本群旁听记录？正常对话会保留。")) return;
+    setBusy(true); setError("");
+    const current = generation.current;
+    const group = `/api/roles/${encodeURIComponent(roleId)}/channels/accounts/${encodeURIComponent(accountId)}/groups/${encodeURIComponent(chatId)}/listening`;
+    try {
+      if (enabled === undefined) {
+        await api(`${group}/messages`, { method: "DELETE" });
+        if (current !== generation.current) return;
+        generation.current += 1; initialized.current = false;
+        setMessages([]); setCursor(null); setHasMore(false);
+      } else {
+        await api(group, { method: "PUT", body: JSON.stringify({ enabled }) });
+        if (current !== generation.current) return;
+        setState((value) => value ? { ...value, enabled } : value);
+      }
+    } catch (cause) { if (current === generation.current) setError(errorMessage(cause, "更新本群旁听失败")); }
+    finally { setBusy(false); }
+  };
   return <details className="channel-listening-panel">
     <summary>群旁听记录{state ? ` · ${state.enabled ? "已开启" : "已暂停"}` : ""}</summary>
     <p>未点名角色的消息单独保存。超过每日上限的消息只保留在最近窗口，不在此处显示。</p>
     {error && <p role="status">{error}</p>}
+    {state && accountId && chatId && <div className="channel-listening-actions">
+      <label><input type="checkbox" aria-label="开启本群旁听" checked={state.enabled} disabled={!editable || busy} onChange={(event) => void change(event.target.checked)} />开启本群旁听</label>
+      <button type="button" disabled={!editable || busy} onClick={() => void change()}>清理本群旁听记录</button>
+    </div>}
     {state && <div className="channel-listening-caps">
       <label>本群每日上限<input aria-label="本群每日旁听上限" type="number" min="1" value={cap} onChange={(e) => setCap(e.target.value)} placeholder={`默认 ${state.defaultDailyCap}`} disabled={!editable || busy} /></label>
       <label>默认每日上限<input aria-label="默认每日旁听上限" type="number" min="1" value={defaultCap} onChange={(e) => setDefaultCap(e.target.value)} disabled={!editable || busy} /></label>
