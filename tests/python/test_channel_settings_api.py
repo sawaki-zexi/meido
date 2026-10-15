@@ -7,6 +7,7 @@ import httpx
 from backend.app import main
 from backend.app.channels import ChannelHost
 from backend.app.channels import ChannelAdapterError
+from backend.app.channels.transports import FeishuWebhookTransport
 from backend.app.multichannel import MultichannelStore
 from backend.app.session_store import SessionStore
 from backend.app.agent_runtime import ActiveRunError, RuntimeManager
@@ -14,11 +15,58 @@ from backend.app.models import AgentRun
 from channels.test_host import FakeAdapter, make_target
 from test_channel_api import channel_api as channel_api
 
+pytestmark = pytest.mark.usefixtures("local_platform_only")
+
+
+class LocalFeishuConnection:
+    def __init__(self):
+        self.connected = False
+
+    async def connect(self):
+        self.connected = True
+
+    def is_connected(self):
+        return self.connected
+
+    async def keepalive(self):
+        await asyncio.Future()
+
+    async def disconnect(self):
+        self.connected = False
+
 
 @pytest.fixture(autouse=True)
-def isolated_channel_settings_runtime(monkeypatch):
+def isolated_channel_settings_runtime(monkeypatch, local_platform_only):
     monkeypatch.setattr(main, "_managed_qq_pending", {})
     monkeypatch.setattr(main, "channel_platform_locks", {})
+    transports, connections = [], []
+
+    async def absent_avatar(account, kind, subject_id):
+        # Avatar/profile fetching is outside these lifecycle/settings tests.
+        return None
+
+    def connection_factory(on_event):
+        connection = LocalFeishuConnection()
+        connections.append(connection)
+        return connection
+
+    def feishu_transport(*args, **kwargs):
+        transport = FeishuWebhookTransport(*args, **kwargs, long_connection_factory=connection_factory)
+        transports.append(transport)
+        return transport
+
+    monkeypatch.setattr(main, "_fetch_channel_avatar", absent_avatar)
+    monkeypatch.setattr(main, "FeishuWebhookTransport", feishu_transport)
+    yield
+
+    async def close_transports():
+        for transport in transports:
+            runner = transport._long_connection
+            await transport.stop()
+            assert runner is None or not runner.alive
+
+    asyncio.run(close_transports())
+    assert all(not connection.connected for connection in connections)
 
 
 class RecordingNapCatTransport:
