@@ -94,6 +94,45 @@ def test_cancelling_real_stdio_repeatedly_finishes_entire_process_tree_disposal(
             await client.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("interrupt", ["timeout", "cancel", "cancel_repeated"])
+def test_unread_stdin_write_is_bounded_and_cancellation_cannot_block_tree_cleanup(tmp_path, interrupt):
+    store, config = configure(tmp_path, "blocked_stdin", timeoutSeconds=1 if interrupt == "timeout" else 60)
+
+    async def run():
+        client = McpStdioClient(config, store.environment(config))
+        task = None
+        try:
+            await client.connect()
+            async with asyncio.timeout(5):
+                while not (tmp_path / "peer/not_reading").exists():
+                    await asyncio.sleep(.01)
+            parent = int((tmp_path / "peer/pid").read_text())
+            child = int((tmp_path / "peer/child_pid").read_text())
+            task = asyncio.create_task(client.call("echo", {"text": "evidence " + "笔" * 60000}))
+            await asyncio.sleep(.1)
+            if interrupt != "timeout":
+                assert task.cancel()
+                if interrupt == "cancel_repeated":
+                    await asyncio.sleep(.01)
+                    assert task.cancel()
+                    await asyncio.sleep(.01)
+                    assert task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=2)
+            assert task in done, "request writes and best-effort cancellation must have a strict budget"
+            assert client.closed
+            assert not process_alive(parent) and not process_alive(child)
+            result = (await asyncio.gather(task, return_exceptions=True))[0]
+            assert isinstance(result, asyncio.TimeoutError if interrupt == "timeout" else asyncio.CancelledError)
+            assert not (tmp_path / "peer/business.jsonl").exists()
+        finally:
+            # Explicit close also keeps the pre-fix red probe bounded.
+            await client.close()
+            if task is not None:
+                await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
     events = [json.loads(line) for line in (tmp_path / "peer/events.jsonl").read_text().splitlines()]
     assert [item["method"] for item in events][:4] == ["initialize", "notifications/initialized", "tools/list", "tools/list"]
     assert events[3]["params"] == {"cursor": "page-2"}

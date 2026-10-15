@@ -27,4 +27,4 @@
 - [能力扩展规格](../specs/agent-capability-extension-spec.md)。
 - [Shiori 调研](../research/shiori-tool-system-and-portability.md)。
 
-实现与验收范围以工具发现契约及其测试为准；后续 MCP 生命周期仍是计划。
+实现与验收范围以工具发现契约、MCP 服务契约及其测试为准；#159 已实现预授权 stdio MCP 的连接、按来源恢复、调用、移除与进程树清理。

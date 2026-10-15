@@ -134,6 +134,11 @@ def handle(message):
     send({"jsonrpc": "2.0", "id": request_id, "result": result})
     if mode == "exit_after_list" and method == "tools/list" and message.get("params", {}).get("cursor"):
         threading.Timer(.1, lambda: os._exit(0)).start()
+    if mode == "blocked_stdin" and method == "tools/list" and message.get("params", {}).get("cursor"):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        (root / "child_pid").write_text(str(child.pid))
+        (root / "not_reading").write_text("yes")
+        time.sleep(60)
 
 
 for line in sys.stdin:

@@ -1,7 +1,7 @@
 """Owner-authored stdio launch grants and durable, source-bound connection intent."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 import os
 from pathlib import Path
@@ -65,6 +65,10 @@ class McpServerInput(BaseModel):
         return value
 
 
+class McpCredentialCleanupError(RuntimeError):
+    """The owner must retry an operation; cleanup ownership remains durable."""
+
+
 @dataclass(frozen=True)
 class McpServer:
     server_id: str
@@ -106,6 +110,8 @@ class McpConfigStore:
                     scope_id TEXT NOT NULL, role_id TEXT NOT NULL, session_key TEXT NOT NULL,
                     server_id TEXT NOT NULL, revision TEXT NOT NULL,
                     PRIMARY KEY(scope_id, server_id));
+                CREATE TABLE IF NOT EXISTS mcp_credential_cleanup (
+                    server_id TEXT NOT NULL, credential_key TEXT PRIMARY KEY);
             """)
 
     def _connection(self) -> sqlite3.Connection:
@@ -131,6 +137,7 @@ class McpConfigStore:
 
     def save(self, data: McpServerInput) -> McpServer:
         with self._lock:
+            self._drain_cleanup(data.serverId)
             old = self.get(data.serverId)
             requested = data.env if data.env is not None else {key: "" for key in old.env_keys} if old else {}
             values: dict[str, str] = {}
@@ -141,42 +148,82 @@ class McpConfigStore:
             item = McpServer(data.serverId, data.name.strip(), tuple(data.command), data.cwd, tuple(sorted(values)),
                              tuple(sorted(set(data.roleIds))), data.enabled, data.risk, data.timeoutSeconds,
                              data.maxOutputChars, uuid4().hex)
-            written: list[str] = []
+            # Reserve ownership before the first vault write: even a vault
+            # operation that writes and then raises remains safely retryable.
+            with self._connection() as db:
+                self._queue_cleanup(db, item)
             try:
                 for key, value in values.items():
                     credential_key = item.credential_key(key)
                     self.credentials.set(credential_key, value)
-                    written.append(credential_key)
                 with self._connection() as db:
                     db.execute("INSERT OR REPLACE INTO mcp_servers VALUES (?,?)", (item.server_id, json.dumps(asdict(item))))
                     db.execute("DELETE FROM mcp_intents WHERE server_id=?", (item.server_id,))
+                    db.executemany("DELETE FROM mcp_credential_cleanup WHERE credential_key=?", ((item.credential_key(key),) for key in item.env_keys))
+                    if old is not None:
+                        self._queue_cleanup(db, old)
             except Exception:
-                for key in written:
-                    self._clear_credential(key)
+                try:
+                    self._drain_cleanup(item.server_id)
+                except McpCredentialCleanupError:
+                    self._disable_server(item.server_id)
+                    raise
                 raise RuntimeError("MCP configuration could not be saved") from None
-            if old:
-                for key in old.env_keys:
-                    self._clear_credential(old.credential_key(key))
+            try:
+                self._drain_cleanup(item.server_id)
+            except McpCredentialCleanupError:
+                self._disable_server(item.server_id)
+                raise
             return item
 
-    def _clear_credential(self, key: str) -> None:
-        try:
-            self.credentials.set(key, "")
-        except Exception:
-            # Stale vault entries are unreachable by the published revision.
-            pass
+    def _disable_server(self, server_id: str) -> None:
+        current = self.get(server_id)
+        with self._connection() as db:
+            if current is not None:
+                db.execute("UPDATE mcp_servers SET configuration=? WHERE server_id=?", (json.dumps(asdict(replace(current, enabled=False))), server_id))
+            db.execute("DELETE FROM mcp_intents WHERE server_id=?", (server_id,))
+
+    def cleanup_pending(self, server_id: str) -> bool:
+        with self._lock, self._connection() as db:
+            return db.execute("SELECT 1 FROM mcp_credential_cleanup WHERE server_id=? LIMIT 1", (server_id,)).fetchone() is not None
+
+    def _queue_cleanup(self, db: sqlite3.Connection, config: McpServer) -> None:
+        db.executemany("INSERT OR IGNORE INTO mcp_credential_cleanup VALUES (?,?)",
+            ((config.server_id, config.credential_key(key)) for key in config.env_keys))
+
+    def _drain_cleanup(self, server_id: str) -> None:
+        with self._connection() as db:
+            keys = db.execute("SELECT credential_key FROM mcp_credential_cleanup WHERE server_id=?", (server_id,)).fetchall()
+        failed = False
+        for (key,) in keys:
+            try:
+                self.credentials.set(key, "")
+            except Exception:
+                failed = True
+            else:
+                with self._connection() as db:
+                    db.execute("DELETE FROM mcp_credential_cleanup WHERE credential_key=?", (key,))
+        if failed:
+            raise McpCredentialCleanupError("MCP credential cleanup is pending; retry saving or deleting")
+
+    def prepare_delete(self, server_id: str) -> bool:
+        """Revoke before awaiting process disposal or touching the vault."""
+        with self._lock:
+            old = self.get(server_id)
+            with self._connection() as db:
+                if old is not None:
+                    self._queue_cleanup(db, old)
+                    db.execute("UPDATE mcp_servers SET configuration=? WHERE server_id=?", (json.dumps(asdict(replace(old, enabled=False))), server_id))
+                db.execute("DELETE FROM mcp_intents WHERE server_id=?", (server_id,))
+            return old is not None
 
     def delete(self, server_id: str) -> bool:
         with self._lock:
-            old = self.get(server_id)
-            if old is None:
-                return False
+            existed = self.prepare_delete(server_id)
+            self._drain_cleanup(server_id)
             with self._connection() as db:
                 db.execute("DELETE FROM mcp_servers WHERE server_id=?", (server_id,))
-                db.execute("DELETE FROM mcp_intents WHERE server_id=?", (server_id,))
-            for key in old.env_keys:
-                self._clear_credential(old.credential_key(key))
-            return True
+            return existed
 
     def environment(self, config: McpServer) -> dict[str, str]:
         # An explicit small platform baseline, never the host's credentials.

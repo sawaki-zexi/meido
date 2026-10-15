@@ -27,6 +27,7 @@ MAX_CATALOG_BYTES = 512 * 1024
 MAX_TOOLS = 128
 MAX_PAGES = 16
 SCHEMA_VALIDATION_SECONDS = 2
+CANCEL_NOTIFICATION_SECONDS = .05
 
 # Fixed host code, never a server-supplied command. Isolated Python ignores cwd
 # and PYTHONPATH; the empty registry never retrieves remote references.
@@ -230,18 +231,30 @@ class McpStdioClient:
         future = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
         try:
-            await self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
-            return await asyncio.wait_for(future, self.config.timeout_seconds)
+            # A peer can stop reading stdin. The request deadline must include
+            # transport backpressure, not begin only after drain has completed.
+            async with asyncio.timeout(self.config.timeout_seconds):
+                await self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+                return await future
         except (asyncio.CancelledError, asyncio.TimeoutError):
             # MCP forbids cancelling initialize; process ownership still bounds it.
             if method != "initialize":
                 try:
-                    await self._send({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": request_id, "reason": "host cancelled"}})
-                except Exception:
+                    async with asyncio.timeout(CANCEL_NOTIFICATION_SECONDS):
+                        await self._send({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": request_id, "reason": "host cancelled"}})
+                except (Exception, asyncio.CancelledError):
+                    # Best effort only. Repeated Stop must reach close even if
+                    # another cancellation interrupts this notification.
                     pass
             raise
         finally:
             self._pending.pop(request_id, None)
+            if not future.done():
+                future.cancel()
+            elif not future.cancelled():
+                # The reader may fail a response while this request is still
+                # blocked in drain; consume that otherwise unobserved failure.
+                future.exception()
 
     async def _read(self) -> None:
         assert self._process is not None and self._process.stdout is not None

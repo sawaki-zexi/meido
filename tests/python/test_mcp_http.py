@@ -88,6 +88,139 @@ def test_owner_http_configuration_does_not_launch_and_rejects_model_launch_argum
     assert message.isError and message.toolResult["status"] == "invalid_arguments"
 
 
+def test_failed_old_revision_cleanup_is_durable_and_consumed_by_owner_save_retry(tmp_path, monkeypatch):
+    client, role, sessions, configs = setup_host(tmp_path, monkeypatch)
+    assert save_server(client, role, tmp_path).status_code == 201
+    original = configs.get("notes")
+    key = original.credential_key("MCP_TEST_SECRET")
+    # The service has a persisted source intent before the owner changes it.
+    configs.set_intent("source", role["id"], f"role:{role['id']}", original)
+    vault_set = configs.credentials.set
+
+    def fail_clear(credential_key, value):
+        if value == "":
+            raise RuntimeError("vault-sensitive-token")
+        vault_set(credential_key, value)
+
+    monkeypatch.setattr(configs.credentials, "set", fail_clear)
+    values = original.public()
+    values.pop("revision")
+    values.pop("envKeys")
+    values["env"] = {"MCP_TEST_SECRET": "replacement-sensitive-token"}
+    response = client.put("/api/mcp/servers/notes", json=values)
+    assert response.status_code == 503, response.text
+    assert "sensitive-token" not in response.text
+    state = client.get("/api/mcp/servers").json()["servers"][0]
+    assert state["enabled"] is False and state["errors"]
+    assert state["connectionCount"] == 0
+    assert configs.credentials.get(key) == "vault-sensitive-token"
+    unpublished = configs.get("notes")
+    assert unpublished.revision != original.revision
+    intermediate_key = unpublished.credential_key("MCP_TEST_SECRET")
+    assert configs.credentials.get(intermediate_key) == "replacement-sensitive-token"
+    # Reopen before retrying: no in-memory list can stand in for durable cleanup.
+    monkeypatch.setattr(main, "mcp_host", McpHost(McpConfigStore(configs.path, configs.credentials)))
+    monkeypatch.setattr(configs.credentials, "set", vault_set)
+    response = client.put("/api/mcp/servers/notes", json=values)
+    assert response.status_code == 200, response.text
+    assert response.json()["server"]["enabled"] is True
+    assert not response.json()["server"]["errors"]
+    assert configs.credentials.get(key) == ""
+    assert configs.credentials.get(intermediate_key) == ""
+    final = main.mcp_host.store.get("notes")
+    assert configs.credentials.get(final.credential_key("MCP_TEST_SECRET")) == "replacement-sensitive-token"
+
+
+def test_partial_vault_write_failure_keeps_unpublished_credential_cleanup_retryable(tmp_path, monkeypatch):
+    client, role, sessions, configs = setup_host(tmp_path, monkeypatch)
+    assert save_server(client, role, tmp_path).status_code == 201
+    original = configs.get("notes")
+    original_key = original.credential_key("MCP_TEST_SECRET")
+    vault_set = configs.credentials.set
+    attempted = []
+
+    def fail_after_write(key, value):
+        if value:
+            vault_set(key, value)
+            attempted.append(key)
+        raise RuntimeError("replacement-sensitive-token")
+
+    monkeypatch.setattr(configs.credentials, "set", fail_after_write)
+    values = original.public()
+    values.pop("revision")
+    values.pop("envKeys")
+    values["env"] = {"MCP_TEST_SECRET": "replacement-sensitive-token"}
+    response = client.put("/api/mcp/servers/notes", json=values)
+    assert response.status_code == 503
+    assert "sensitive-token" not in response.text
+    assert configs.credentials.get(attempted[0]) == "replacement-sensitive-token"
+    assert configs.credentials.get(original_key) == "vault-sensitive-token"
+    assert client.get("/api/mcp/servers").json()["servers"][0]["enabled"] is False
+    monkeypatch.setattr(main, "mcp_host", McpHost(McpConfigStore(configs.path, configs.credentials)))
+    monkeypatch.setattr(configs.credentials, "set", vault_set)
+    assert client.put("/api/mcp/servers/notes", json=values).status_code == 200
+    assert configs.credentials.get(attempted[0]) == ""
+    assert configs.credentials.get(original_key) == ""
+    assert [value for value in configs.credentials.values.values() if value] == ["replacement-sensitive-token"]
+
+
+@pytest.mark.parametrize("interrupt", ["stop", "disconnect"])
+def test_http_stop_or_disconnect_reaps_peer_and_descendant_when_stdin_is_backpressured(tmp_path, monkeypatch, interrupt):
+    client, role, sessions, configs = setup_host(tmp_path, monkeypatch)
+    fixture = Path(__file__).resolve().parents[1] / "fixtures/mcp_stdio_server.py"
+    assert save_server(client, role, tmp_path, command=[sys.executable, str(fixture), str(tmp_path / "peer"), "blocked_stdin"], timeoutSeconds=60).status_code == 201
+
+    class Adapter:
+        count = 0
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            self.count += 1
+            calls = {1: ("tool_search", {"query": "select:mcp_add"}), 2: ("mcp_add", {"server_id": "notes"}), 3: ("tool_search", {"query": "select:mcp_notes__echo"}), 4: ("mcp_notes__echo", {"text": "evidence " + "笔" * 60000})}
+            if self.count in calls:
+                name, arguments = calls[self.count]
+                yield ModelToolCall(f"backpressure-{self.count}", name, arguments)
+            else:
+                yield ModelTextDelta("工具已结束")
+
+    monkeypatch.setattr(main, "model_adapter", Adapter())
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://meido.test") as http:
+            request = asyncio.create_task(http.post(f"/api/roles/{role['id']}/messages", json={"content": "处理长笔记"}))
+            try:
+                async with asyncio.timeout(5):
+                    while True:
+                        active = sessions.active_run(role["id"])
+                        if active and any(item["callId"] == "backpressure-4" for item in sessions.list_tool_audits(active.runId)):
+                            break
+                        await asyncio.sleep(.01)
+                parent = int((tmp_path / "peer/pid").read_text())
+                child = int((tmp_path / "peer/child_pid").read_text())
+                assert (tmp_path / "peer/not_reading").exists()
+                # The independent schema worker has a 2s bound. Remaining
+                # pending after 3s proves this run reached the blocked write.
+                done, _ = await asyncio.wait({request}, timeout=3)
+                assert not done and process_alive(parent) and process_alive(child)
+                if interrupt == "stop":
+                    response = await asyncio.wait_for(http.post(f"/api/roles/{role['id']}/runs/{active.runId}/stop"), 3)
+                    assert response.status_code == 200
+                else:
+                    request.cancel()
+                    await asyncio.sleep(.01)
+                    request.cancel()
+                await asyncio.wait_for(asyncio.gather(request, return_exceptions=True), 3)
+                assert sessions.get_run(active.runId).status == "cancelled"
+                assert not process_alive(parent) and not process_alive(child)
+                assert not (tmp_path / "peer/business.jsonl").exists()
+            finally:
+                await main.mcp_host.close()
+                if not request.done():
+                    request.cancel()
+                await asyncio.gather(request, return_exceptions=True)
+
+    asyncio.run(run())
+
+
 def test_public_http_real_stdio_same_run_revision_remove_and_restart_intent(tmp_path, monkeypatch):
     client, role, sessions, configs = setup_host(tmp_path, monkeypatch)
     saved = save_server(client, role, tmp_path)
@@ -180,7 +313,7 @@ def process_alive(pid):
         return False
 
 
-@pytest.mark.parametrize("change", ["delete", "grant", "discovery", "stop"])
+@pytest.mark.parametrize("change", ["delete", "delete_credentials", "grant", "discovery", "stop"])
 def test_http_revocation_or_stop_cancels_remote_work_and_owned_descendant(tmp_path, monkeypatch, change):
     client, role, sessions, configs = setup_host(tmp_path, monkeypatch)
     assert save_server(client, role, tmp_path, timeoutSeconds=60).status_code == 201
@@ -213,7 +346,32 @@ def test_http_revocation_or_stop_cancels_remote_work_and_owned_descendant(tmp_pa
                 parent = int((tmp_path / "peer/pid").read_text())
                 child = int((tmp_path / "peer/child_pid").read_text())
                 assert process_alive(parent) and process_alive(child)
-                if change == "delete":
+                if change == "delete_credentials":
+                    old = configs.get("notes")
+                    credential_key = old.credential_key("MCP_TEST_SECRET")
+                    vault_set = configs.credentials.set
+
+                    def fail_clear(key, value):
+                        if value == "":
+                            raise RuntimeError("vault-sensitive-token")
+                        vault_set(key, value)
+
+                    monkeypatch.setattr(configs.credentials, "set", fail_clear)
+                    response = await http.delete("/api/mcp/servers/notes")
+                    assert response.status_code == 503, response.text
+                    assert "vault-sensitive-token" not in response.text
+                    saved = (await http.get("/api/mcp/servers")).json()["servers"]
+                    assert len(saved) == 1 and saved[0]["enabled"] is False
+                    assert saved[0]["connectionCount"] == 0 and saved[0]["errors"]
+                    assert configs.credentials.get(credential_key) == "vault-sensitive-token"
+                    # A real host/SQLite rebuild must retain cleanup ownership.
+                    monkeypatch.setattr(main, "mcp_host", McpHost(McpConfigStore(configs.path, configs.credentials)))
+                    monkeypatch.setattr(configs.credentials, "set", vault_set)
+                    retried = await http.delete("/api/mcp/servers/notes")
+                    assert retried.status_code == 204
+                    assert configs.credentials.get(credential_key) == ""
+                    assert (await http.get("/api/mcp/servers")).json()["servers"] == []
+                elif change == "delete":
                     response = await http.delete("/api/mcp/servers/notes")
                     assert response.status_code == 204
                 elif change == "grant":

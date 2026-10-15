@@ -192,6 +192,8 @@ class McpHost:
         result = []
         for config in self.store.all():
             errors = set()
+            if self.store.cleanup_pending(config.server_id):
+                errors.add("MCP credential cleanup is pending; retry saving or deleting")
             active = 0
             for run in runs:
                 client = run.clients.get(config.server_id)
