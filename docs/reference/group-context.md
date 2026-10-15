@@ -2,7 +2,7 @@
 
 状态：当前（#166 实现，待汇入总 PR #162）。最后核验：2026-10-16。
 
-事实来源：[群工具与本地资料](../../backend/app/channels/group_tools.py)、[共用来源校验](../../backend/app/channels/group_access.py)、[冻结实际入站来源](../../backend/app/channels/source_authority.py)、[旁听事务](../../backend/app/multichannel.py)、[公开工具测试](../../tests/python/channels/test_group_tools.py)、[HTTP/provider 往返](../../tests/python/test_group_context_api.py)。对应规格 C09，固定 Shiori `4f266aeaf42fcd611362e2456417b91f659341cf` 的三个群工具。
+事实来源：[群工具与本地资料](../../backend/app/channels/group_tools.py)、[共用来源校验](../../backend/app/channels/group_access.py)、[冻结实际入站来源](../../backend/app/channels/source_authority.py)、[旁听事务](../../backend/app/multichannel.py)、[公开工具测试](../../tests/python/channels/test_group_tools.py)、[Runtime 取消测试](../../tests/python/channels/test_group_runtime_cancellation.py)、[HTTP/provider 往返](../../tests/python/test_group_context_api.py)。对应规格 C09，固定 Shiori `4f266aeaf42fcd611362e2456417b91f659341cf` 的三个群工具。
 
 | 工具与参数 | 行为 |
 | --- | --- |
@@ -26,6 +26,6 @@
 
 四个群/成员工具共用宿主访问检查。渠道来源固定到实际 run 对应的入站消息、线程、发送者、账号创建代际和主人绑定；`is_owner` 构造标记不能单独授权。每次调用复核平台、账号、会话范围、屏蔽、绑定、角色存活和取消。解绑重绑、同 ID 账号重建后，旧回合与首次捕获旧消息均拒绝。成员工具保持[原当前线程范围](member-lookup.md)，不会把其群来源限制误套在主人群笔记上。
 
-笔记更新和旁听开关在 SQLite `BEGIN IMMEDIATE` 取得写入位置后重新检查许可和取消；等待锁期间失效的调用不能提交。省略字段在同一写事务读取并保留，避免两个并发 patch 相互覆盖。旁听继续通过既有存储入口，变更时将 `operator=role` 的 toggle 与设置一起提交。
+笔记更新和旁听开关将阻塞数据库写入放在线程中，运行事件循环可继续把父回合取消传给工具。SQLite `BEGIN IMMEDIATE` 取得写入位置后重新检查许可和取消；等待锁期间失效的调用不能提交。取消时工具等待写线程实际退出；连续取消也不会提前返回并留下继续写入的线程。省略字段在同一写事务读取并保留，避免两个并发 patch 相互覆盖。旁听继续通过既有存储入口，变更时将 `operator=role` 的 toggle 与设置一起提交。
 
-验收使用真实 SQLite、工具执行、实际来源服务及 HTTP/SSE 对话；模型是传输夹具。覆盖 500 条混合线程外的旧群、20 项分页、字段保留/清空、离线 schema/result 往返、主人与访客范围、每种撤权、锁等待后拒绝和并发 patch。未连接真实渠道账号或执行外部发送。
+验收使用真实 SQLite、工具执行、实际来源服务、`run_agent_loop` 父回合取消及 HTTP/SSE 对话；模型是传输夹具。覆盖 500 条混合线程外的旧群、20 项分页、字段保留/清空、离线 schema/result 往返、主人与访客范围、每种撤权、锁等待后拒绝、连续取消等待线程退出和并发 patch。未连接真实渠道账号或执行外部发送。

@@ -1,14 +1,17 @@
 """Recheck the real run source for structured group and member tools."""
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from ..agent_runtime.tools import ToolContext
 from .source_authority import FrozenChannelSource, capture_channel_source
 
 if TYPE_CHECKING:
     from ..multichannel import MultichannelStore
+
+_T = TypeVar("_T")
 
 
 class GroupToolAccess:
@@ -47,3 +50,22 @@ class GroupToolAccess:
 
     def owner(self, context: ToolContext) -> None:
         self.source(context, owner=True)
+
+    async def run_write(self, context: ToolContext, work: Callable[[], _T]) -> _T:
+        """Keep cancellation responsive and join the write before returning."""
+        pending = asyncio.create_task(asyncio.to_thread(work))
+        cancellation = None
+        while not pending.done():
+            try:
+                await asyncio.shield(pending)
+            except asyncio.CancelledError as error:
+                context.signal.cancel()
+                cancellation = error
+            except Exception:
+                if cancellation is None:
+                    raise
+        if cancellation is not None:
+            if not pending.cancelled():
+                pending.exception()
+            raise cancellation
+        return pending.result()

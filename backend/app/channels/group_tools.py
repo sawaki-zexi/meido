@@ -307,8 +307,8 @@ class UpdateGroupContextTool:
             group = self.repository.get_group(context.role_id, thread_id)
             if group is None:
                 raise ValueError("群不存在或不属于当前角色。")
-            data = self.repository.update_context(context.role_id, thread_id,
-                authorize=lambda: self.access.owner(context), **changes)
+            data = await self.access.run_write(context, lambda: self.repository.update_context(
+                context.role_id, thread_id, authorize=lambda: self.access.owner(context), **changes))
             return _result({"groupThreadId": thread_id, "channel": group.channel, "name": group.name, **dict(data)})
         except (ValueError, PermissionError) as error:
             return AgentToolResult(str(error), is_error=True)
@@ -344,8 +344,9 @@ class SetGroupListeningTool:
                 raise ValueError("目标不是当前角色可旁听的 NapCat 群。")
             if source_group is not None and source_group.thread_id != target.thread_id:
                 raise PermissionError("主人在群中只能设置当前群的旁听。")
-            self.repository.set_listening(context.role_id, target.account_id, target.chat_id, enabled,
-                authorize=lambda: self.access.owner(context))
+            await self.access.run_write(context, lambda: self.repository.set_listening(
+                context.role_id, target.account_id, target.chat_id, enabled,
+                authorize=lambda: self.access.owner(context)))
             return _result({"channel": channel, "chatId": chat_id, "listening": enabled})
         except (ValueError, PermissionError, KeyError) as error:
             return AgentToolResult(str(error), is_error=True)

@@ -4,7 +4,7 @@
 
 最后核验：2026-10-16。实施基点：`af61ad33c50599ccbd101d05f76689abfd1eab96`（已集成 #165）。
 
-事实来源：[Issue #166](https://github.com/sawaki-zexi/meido/issues/166)、固定 Shiori `4f266aeaf42fcd611362e2456417b91f659341cf` 的 `group_context.py/group_context_update.py/group_listening.py`、[当前接口契约](../reference/group-context.md)、[工具行为测试](../../tests/python/channels/test_group_tools.py)、[公开 HTTP/provider 测试](../../tests/python/test_group_context_api.py)。
+事实来源：[Issue #166](https://github.com/sawaki-zexi/meido/issues/166)、固定 Shiori `4f266aeaf42fcd611362e2456417b91f659341cf` 的 `group_context.py/group_context_update.py/group_listening.py`、[当前接口契约](../reference/group-context.md)、[工具行为测试](../../tests/python/channels/test_group_tools.py)、[真实 Runtime 父回合取消](../../tests/python/channels/test_group_runtime_cancellation.py)、[公开 HTTP/provider 测试](../../tests/python/test_group_context_api.py)。
 
 ## 已验证行为
 
@@ -13,6 +13,7 @@
 - 群笔记由真实主人桌面、主人私聊和主人群回合跨当前角色的群维护；访客拒绝。主人群旁听只限当前群。成员工具仍是群/访客当前线程、主人桌面/有效私聊角色范围。
 - 四工具逐项覆盖平台暂停、账号关闭、屏蔽、会话范围关闭、解绑、重绑、同 ID 账号重建和取消；初次捕获旧入站时也拒绝新账号代际或新绑定。
 - 群笔记事务及既有旁听存储入口在 `BEGIN IMMEDIATE` 后消费来源检查。真实 SQLite 锁等待时取消或删除角色均拒绝写入，不产生笔记、设置或 toggle；两个并发 patch 保留彼此未提供字段。
+- 独立规格审查发现 `7fd35e3` 的同步写锁等待阻塞运行事件循环，父 token 取消未能传到派生工具 token：100ms 取消、400ms 释放锁时，两个真实 `run_agent_loop` 均报告取消却仍提交。保留该父回合红例，写入移到受保护线程后转绿；追加两个 Runtime 连续取消两次的反例，锁释放前 run 不提前结束，线程退出后笔记、旁听与 toggle 均无写入。
 - 公开 HTTP/SSE 从空白角色无用工具不可见，走到保存资料后账号离线仍能列群、读笔记并清空摘要；三个工具结果进入下一次模型请求，目录/schema 一致。原聊天与旁听记录逐项保持不变。
 - 私聊及其他角色群 ID 不能读写；账号删除后，主人桌面仍可读取并维护保存的结构化群资料。
 
@@ -23,6 +24,8 @@
 ```powershell
 python -m pytest tests/python/channels tests/python/test_multichannel.py tests/python/test_channel_source_authority.py tests/python/test_member_lookup_api.py tests/python/test_group_context_api.py tests/python/test_tool_discovery.py tests/python/test_tool_discovery_api.py tests/python/test_role_capabilities.py -q
 ```
+
+独立审查的父回合取消修复后，新增 Runtime 取消用例 4 passed；以上同一组合最终重跑 **315 passed**。审查提供的原始锁等待 probe 两工具均再次通过：父 token 在解锁前取消、终态 `cancelled`、笔记空串、旁听关闭、toggle 数为 0。该修复的群工具/访问模块 mypy 为 0 错误，相关 Ruff、compileall、差异与文档链接检查通过。
 
 类型检查使用同一 Python/mypy，对基点和当前分别运行 `group_tools.py/multichannel.py/napcat.py --follow-imports=silent --ignore-missing-imports`，当前额外纳入 `group_access.py`。按文件、错误文本与类型码去除行号后逐条比对：基点 40 项，当前 39 项，无新增；仅消除原 `GroupRepository.update_context(**dict[str, object])` 错误。余下 Telegram 20 项、NapCat 19 项均为原有错误。新群访问/工具两文件单独检查为 0 错误。
 
