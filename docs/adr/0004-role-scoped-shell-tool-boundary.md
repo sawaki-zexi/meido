@@ -24,5 +24,7 @@ Agent Runtime 的 Loop 已能执行 provider 返回的结构化工具调用，�
 
 ## 事实来源
 
+2026-10-16：经 ADR-0012 批准的后台任务扩展增加 `description`、有宿主上限的 `timeout`、`run_in_background` 和 `auto_promote` 参数；宿主仍控制全部权限、工作目录、环境和硬截止。现行协议见 [后台 Shell Reference](../reference/owned-background-shell.md)，不开放模型选择 shell、cwd、env 或 stdin。
+
 - [Tau/Pi/Codex 命令工具调研](../research/agent-runtime-shell-tools.md)
 - [Agent Runtime 规格](../specs/agent-runtime-tau-integration-spec.md)

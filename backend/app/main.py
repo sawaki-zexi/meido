@@ -82,6 +82,8 @@ from .agent_runtime import (
 )
 from .agent_runtime.capabilities import CapabilityResolution
 from .agent_runtime.catalog import RuntimeCapabilityPolicy, tool_catalog
+from .agent_runtime.shell_tool import SHELL_TOOL_NAMES, TaskOutputTool, TaskStopTool
+from .task_runtime import TaskOrigin, TaskRuntime
 from .agent_runtime.types import UserMessage
 from .channels.attachment_tool import ReadChannelAttachmentTool
 from .channels.consolidation import ChannelMemoryMaintenance, finish_io
@@ -206,6 +208,7 @@ browser_use_sessions = BrowserSessions(
     BrowserUseConfig(),
     resources=Path(os.getenv("MEIDO_BROWSER_USE_RESOURCES", str(Path(__file__).resolve().parent))).resolve(),
 )
+task_runtime = TaskRuntime(data_root / "tasks")
 todo_store = TodoStore(data_root / "todos.db")
 todo_application = TodoApplicationService(todo_store, session_store)
 todo_plugin = TodoPlugin(
@@ -742,6 +745,7 @@ async def _memory_engine_delete(mutation: MemoryMutation) -> None:
 
 
 async def _close_memory_workers() -> None:
+    await asyncio.to_thread(task_runtime.close)
     await mail_service.close()
     await owner_knowledge_scheduler.close()
     await owner_knowledge_plugin.close()
@@ -755,6 +759,7 @@ async def _close_memory_workers() -> None:
 async def _start_memory_workers() -> None:
     global _channel_runtime_loop
     _channel_runtime_loop = asyncio.get_running_loop()
+    task_runtime.start()
     mail_service.start()
     todo_plugin.sessions = session_store
     await todo_plugin.start()
@@ -771,6 +776,7 @@ async def _start_memory_workers() -> None:
             await memory_worker.begin_role_deletion(role_id)
             await channel_memory_maintenance.begin_role_deletion(role_id)
             await owner_knowledge_plugin.begin_role_deletion(role_id)
+            await asyncio.to_thread(task_runtime.delete_role, role_id)
             session_store.delete_role_session(role_id)
             memory_store.delete_role(role_id)
             owner_knowledge_store.delete_role(role_id)
@@ -788,6 +794,7 @@ async def _start_memory_workers() -> None:
             await owner_knowledge_plugin.end_role_deletion(role_id)
             if recovered:
                 _channel_roles_deleting.discard(role_id)
+    await asyncio.to_thread(task_runtime.reconcile_roles, {role.id for role in store.list()})
     if memory_settings_store.get().enabled:
         await asyncio.to_thread(memory_maintenance.resume_pending)
     if memory_settings_store.get().enabled:
@@ -1489,6 +1496,9 @@ def get_role_tools(role_id: str) -> dict[str, object]:
         reasons["shell"] = "角色的 Shell 开关已关闭"
     elif not role.agentConfig.shell.allowedCommands:
         reasons["shell"] = "Shell 命令白名单为空"
+    for name in ("task_output", "task_stop"):
+        if "shell" in reasons:
+            reasons[name] = reasons["shell"]
     if not memory_settings_store.get().enabled:
         reasons["recall_memory"] = "全局记忆已关闭"
     elif not role.agentConfig.memoryRecall.enabled:
@@ -1519,6 +1529,8 @@ async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
     try:
         current = store.get(role_id)
         updated = store.update(role_id, data)
+        if current is not None and current.agentConfig.shell != updated.agentConfig.shell:
+            await asyncio.to_thread(task_runtime.cancel_role_tasks, role_id, kind="shell")
         if current is not None and current.agentConfig.browserUse.enabled != updated.agentConfig.browserUse.enabled:
             # The role policy is the plugin's explicit authorization boundary.
             # Disabling closes the current generation and blocks an old run's
@@ -1781,6 +1793,7 @@ async def delete_role(role_id: str) -> None:
         # role permanently blocked from future memory work.
         deletion_started = True
         await memory_worker.begin_role_deletion(role_id)
+        await asyncio.to_thread(task_runtime.set_role_enabled, role_id, False)
         await channel_memory_maintenance.begin_role_deletion(role_id)
         await owner_knowledge_plugin.begin_role_deletion(role_id)
         deletion_lock = memory_worker.role_lock_for(role_id)
@@ -1889,6 +1902,8 @@ async def delete_role(role_id: str) -> None:
         raise HTTPException(status_code=500, detail=detail) from error
     finally:
         await owner_knowledge_plugin.end_role_deletion(role_id)
+        if not deletion_succeeded:
+            task_runtime.set_role_enabled(role_id, True)
         if deletion_started:
             memory_worker.end_role_deletion(role_id, deleted=deletion_succeeded)
             channel_memory_maintenance.end_role_deletion(role_id, deleted=deletion_succeeded)
@@ -1898,6 +1913,10 @@ async def delete_role(role_id: str) -> None:
         lock.release()
         _channel_roles_deleting.discard(role_id)
     if deletion_succeeded:
+        try:
+            await asyncio.to_thread(task_runtime.delete_role, role_id)
+        except (OSError, sqlite3.Error, RuntimeError) as error:
+            memory_worker.errors.append(f"{role_id}: task cleanup deferred: {type(error).__name__}")
         for account in channel_accounts_snapshot:
             channel_host.unregister(account.account_id)
             channel_adapters.pop(account.account_id, None)
@@ -3413,13 +3432,40 @@ def _runtime_tool_candidates(
 ) -> tuple[object, ...]:
     """Build every tool available to the host for a role snapshot."""
     shell = role.agentConfig.shell
+
+    def task_origin(context):
+        if context.role_id != role.id:
+            raise ValueError("task role does not match host role")
+        run = session_store.get_run(context.run_id)
+        version = getattr(context, "capability_snapshot_id", None)
+        if not version and run is not None:
+            version = run.modelSnapshot.get("capabilities", {}).get("snapshotId", "")
+        return TaskOrigin(role.id, context.session_key, context.run_id, context.tool_call_id, version or "",
+                          source_thread_id or f"desktop:{role.id}", source_account_id or "")
+
+    def shell_authorized(context):
+        current = store.get(role.id)
+        if context.role_id != role.id or current is None or role.id in _channel_roles_deleting or not current.agentConfig.shell.enabled:
+            return False
+        if not current.agentConfig.shell.allowedCommands or current.agentConfig.shell != shell:
+            return False
+        if source_account_id:
+            account = multichannel_store.get_account(source_account_id)
+            thread = multichannel_store.get_thread(role.id, source_thread_id or "")
+            return bool(account and account.enabled and account.role_id == role.id and thread
+                        and thread.account_id == source_account_id and thread.session_key == context.session_key)
+        return context.session_key == f"role:{role.id}"
+
     tools: list[object] = [
         ShellTool(
             store.root / role.id / "workspace" if preview else store.workspace_path(role.id),
             allowed_commands=shell.allowedCommands,
             timeout_seconds=shell.timeoutSeconds,
             max_output_chars=shell.maxOutputChars,
+            tasks=task_runtime, origin_resolver=task_origin, authorized=shell_authorized,
         ),
+        TaskOutputTool(task_runtime, origin_resolver=task_origin, authorized=shell_authorized),
+        TaskStopTool(task_runtime, origin_resolver=task_origin, authorized=shell_authorized),
         _memory_runtime_tool(role),
     ]
     if owner_knowledge_plugin.status().enabled:
@@ -3463,7 +3509,7 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
     shell = role.agentConfig.shell
     enabled: set[str] = set()
     if shell.enabled and shell.allowedCommands:
-        enabled.add("shell")
+        enabled.update(SHELL_TOOL_NAMES)
     if memory_settings_store.get().enabled and role.agentConfig.memoryRecall.enabled:
         enabled.add("recall_memory")
     if owner_knowledge_plugin.status().enabled:
@@ -3499,7 +3545,7 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     host_enabled = set(enabled_tools)
     enabled_tools.update(agent_config.enabledTools)
-    enabled_tools.difference_update({"shell", "recall_memory", "search_owner_knowledge", "mail.manage"} - host_enabled)
+    enabled_tools.difference_update((SHELL_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage"}) - host_enabled)
     if not include_channel:
         enabled_tools.difference_update({
             "account_list", "account_targets", "account_send", "message_push", "lookup_group_context",
@@ -4069,7 +4115,7 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
             capabilities=capabilities,
             max_turns=8,
             provider_timeout=120.0,
-            tool_timeout=30.0,
+            tool_timeout=max(32.0, role.agentConfig.shell.timeoutSeconds + 2),
             on_message_end=persist_runtime_message,
         ):
             if isinstance(event, MessageUpdateEvent) and isinstance(event.message, AssistantMessage) and event.message.content.strip():
@@ -4467,7 +4513,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     # shell timeout; each ToolDefinition still applies its
                     # own limit inside the runtime.
                     tool_timeout=max(
-                        shell_config.timeoutSeconds if runtime_tools else 30.0,
+                        max(32.0, shell_config.timeoutSeconds + 2) if runtime_tools else 30.0,
                         browser_use_sessions.timeout_seconds if role.agentConfig.browserUse.enabled else 0.0,
                     ),
                     on_message_end=persist_runtime_message,

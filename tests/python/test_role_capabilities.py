@@ -124,8 +124,8 @@ def test_model_capability_description_matches_actual_schemas_and_preserves_role_
     assert "shell" in prompt
     assert "todo.write" in prompt
     assert "agent_browser_open" not in prompt
-    assert {item["function"]["name"] for item in schemas} == {"shell", "todo.write", "todo.reminder_control"}
-    assert {item["name"] for item in catalog["tools"] if item["modelVisible"]} == {"shell", "todo.write", "todo.reminder_control"}
+    assert {item["function"]["name"] for item in schemas} == {"shell", "task_output", "task_stop", "todo.write", "todo.reminder_control"}
+    assert {item["name"] for item in catalog["tools"] if item["modelVisible"]} == {"shell", "task_output", "task_stop", "todo.write", "todo.reminder_control"}
     assert role_api.get(f"/api/roles/{role['id']}").json()["role"]["profile"]["profile"] == "核心身份设定"
 
 
