@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import replace
 import math
+import inspect
 import time
 from typing import Literal
 
@@ -22,7 +23,7 @@ from .events import (
     TurnStartEvent,
     stamp_event,
 )
-from .capabilities import CapabilityResolution
+from .capabilities import CapabilityResolution, CapabilitySnapshot
 from .provider import (
     AssistantDoneEvent,
     CancellationToken,
@@ -51,6 +52,7 @@ async def run_agent_loop(
     run_id: str = "",
     provider_timeout: float | None = None,
     tool_timeout: float | None = None,
+    on_capability_revision: Callable[[CapabilitySnapshot], Awaitable[None] | None] | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run the provider/tool loop while keeping the transcript mutable.
 
@@ -73,6 +75,8 @@ async def run_agent_loop(
     turn = 0
 
     while True:
+        if capabilities is not None:
+            registry = capabilities.current()
         if token.is_cancelled():
             aborted = AssistantMessage(stop_reason="aborted")
             messages.append(aborted)
@@ -196,7 +200,14 @@ async def run_agent_loop(
 
         results: list[ToolResultMessage] = []
         for call in assistant.tool_calls:
-            async for event in emit(ToolExecutionStartEvent(call.id, call.name, dict(call.arguments))):
+            definition = registry.candidate_definition(call.name) if isinstance(registry, CapabilityResolution) else None
+            async for event in emit(ToolExecutionStartEvent(
+                call.id, call.name, dict(call.arguments),
+                snapshot_id=registry.snapshot.snapshot_id if isinstance(registry, CapabilityResolution) else None,
+                tool_source=definition.source if definition is not None else None,
+                tool_version=definition.version if definition is not None else None,
+                policy_decision=registry.snapshot.policy_decisions.get(call.name) if isinstance(registry, CapabilityResolution) else None,
+            )):
                 yield event
             tool_context = (
                 ToolContext(
@@ -205,6 +216,7 @@ async def run_agent_loop(
                     run_id=registry.snapshot.run_id,
                     signal=token,
                     tool_call_id=call.id,
+                    capability_snapshot_id=registry.snapshot.snapshot_id,
                 )
                 if isinstance(registry, CapabilityResolution)
                 else ToolContext(role_id=role_id, session_key=session_key, run_id=run_id, signal=token, tool_call_id=call.id)
@@ -236,6 +248,15 @@ async def run_agent_loop(
                 yield event
             async for event in emit(MessageEndEvent(tool_message)):
                 yield event
+            if capabilities is not None and not tool_message.is_error and not token.is_cancelled():
+                revision = capabilities.pending_revision(call.id)
+                if revision is not None:
+                    if on_capability_revision is not None:
+                        persisted = on_capability_revision(revision.snapshot)
+                        if inspect.isawaitable(persisted):
+                            await persisted
+                    if not token.is_cancelled():
+                        capabilities.publish_revision(revision)
         async for event in emit(TurnEndEvent(assistant, tuple(results))):
             yield event
         if not assistant.tool_calls:
@@ -306,9 +327,15 @@ async def _execute_tool(
         signal.raise_if_cancelled()
         arguments = dict(call.arguments)
         if isinstance(registry, CapabilityResolution):
+            denial = registry.authorization_denial(registry.definition(call.name), context)
+            if denial is not None:
+                return finish(AgentToolResult(denial, details={"reason": denial}, is_error=True), status="denied"), updates
             arguments, hook_error = await registry.prepare_tool_call(call.name, arguments, context)
             if hook_error is not None:
                 return finish(hook_error), updates
+            denial = registry.authorization_denial(registry.definition(call.name), context)
+            if denial is not None:
+                return finish(AgentToolResult(denial, details={"reason": denial}, is_error=True), status="denied"), updates
         try:
             registry.validate_arguments(call.name, arguments)
         except ValueError as error:

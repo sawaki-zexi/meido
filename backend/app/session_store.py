@@ -771,6 +771,58 @@ class SessionStore:
             )
         return run
 
+    def latest_capability_revision(self, role_id: str, session_key: str) -> dict[str, Any] | None:
+        """Read activation evidence only from a completed run of this origin."""
+        with sqlite3.connect(self.database_path) as connection:
+            row = connection.execute("""SELECT model_snapshot_json FROM agent_runs WHERE role_id=? AND session_key=?
+                AND status='completed' AND json_array_length(json_extract(model_snapshot_json,'$.capabilityRevisions'))>0
+                ORDER BY started_at DESC LIMIT 1""", (role_id, session_key)).fetchone()
+        return json.loads(row[0])["capabilityRevisions"][-1] if row is not None else None
+
+    def capability_revision_for_call(self, run_id: str, call_id: str) -> dict[str, Any] | None:
+        """Return the persisted provider version bound to a tool call."""
+        run = self.get_run(run_id)
+        if run is None:
+            return None
+        snapshot_id = run.modelSnapshot.get("capabilityCalls", {}).get(call_id)
+        return next((item for item in run.modelSnapshot.get("capabilityRevisions", []) if item["snapshotId"] == snapshot_id), None)
+
+    def record_capability_call(self, run_id: str, call_id: str, snapshot_id: str) -> None:
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT model_snapshot_json FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            snapshot = json.loads(row[0])
+            if not any(item["snapshotId"] == snapshot_id for item in snapshot.get("capabilityRevisions", [])):
+                raise ValueError("tool call references an unknown capability revision")
+            calls = snapshot.setdefault("capabilityCalls", {})
+            if call_id in calls and calls[call_id] != snapshot_id:
+                raise ValueError("tool call cannot change capability revision")
+            calls[call_id] = snapshot_id
+            connection.execute("UPDATE agent_runs SET model_snapshot_json=? WHERE run_id=?", (json.dumps(snapshot, ensure_ascii=False), run_id))
+
+    def append_capability_revision(self, run_id: str, revision: dict[str, Any]) -> None:
+        """Durably append one immutable visibility version before it is used."""
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT model_snapshot_json,role_id,session_key FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            if (revision.get("runId"), revision.get("roleId"), revision.get("sessionKey")) != (run_id, row[1], row[2]):
+                raise PermissionError("capability revision scope does not match its run")
+            snapshot = json.loads(row[0])
+            versions = snapshot.setdefault("capabilityRevisions", [])
+            if any(item["snapshotId"] == revision["snapshotId"] for item in versions):
+                if next(item for item in versions if item["snapshotId"] == revision["snapshotId"]) != revision:
+                    raise ValueError("cannot overwrite an immutable capability revision")
+                return
+            expected_parent = versions[-1]["snapshotId"] if versions else None
+            if revision.get("parentSnapshotId") != expected_parent or revision.get("visibilityVersion") != len(versions):
+                raise ValueError("capability revision is out of sequence")
+            versions.append(revision)
+            connection.execute("UPDATE agent_runs SET model_snapshot_json=? WHERE run_id=?", (json.dumps(snapshot, ensure_ascii=False), run_id))
+
     def update_run(self, run_id: str, *, status: str, turn_count: int | None = None, ended_at: datetime | None = None, cancel_reason: str | None = None, error: str | None = None, model_snapshot: dict[str, Any] | None = None) -> AgentRun:
         with sqlite3.connect(self.database_path) as connection:
             current = connection.execute("SELECT role_id, session_key, status, model_configuration_id, model_snapshot_json, turn_count, started_at, ended_at, cancel_reason, error FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()

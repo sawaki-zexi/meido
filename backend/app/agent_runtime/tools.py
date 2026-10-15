@@ -81,6 +81,7 @@ class ToolContext:
     run_id: str
     signal: CancellationToken
     tool_call_id: str | None = None
+    capability_snapshot_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

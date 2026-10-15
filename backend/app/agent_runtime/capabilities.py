@@ -7,11 +7,15 @@ from collections.abc import Mapping as MappingABC
 import hashlib
 import json
 from types import MappingProxyType
-from typing import Mapping, cast
+from typing import Mapping, cast, TYPE_CHECKING
+from collections.abc import Callable
 
 from .plugins import HookContext, PluginDescriptor, PluginResolution, PluginRegistry, run_hook
 from .skills import SkillDescriptor, SkillRegistry, SkillResolution
 from .tools import AgentTool, AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
+
+if TYPE_CHECKING:
+    from .discovery import DiscoveryState, ServiceGrant
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +34,11 @@ class CapabilitySnapshot:
     plugins: tuple[PluginDescriptor, ...] = ()
     plugin_diagnostics: tuple[MappingProxyType, ...] = ()
     generation: str = ""
+    candidates: tuple[ToolDefinition, ...] = ()
+    visibility_version: int = 0
+    parent_snapshot_id: str | None = None
+    candidate_catalog_id: str = ""
+    service_grants: tuple[ServiceGrant, ...] = ()
 
     def provider_schemas(self) -> list[dict[str, object]]:
         return [
@@ -50,22 +59,7 @@ class CapabilitySnapshot:
             "runId": self.run_id,
             "roleId": self.role_id,
             "sessionKey": self.session_key,
-            "tools": [
-                {
-                    "name": definition.name,
-                    "version": definition.version,
-                    "source": definition.source,
-                    "risk": definition.risk,
-                    "exposure": definition.exposure,
-                    "approval": definition.approval,
-                    "timeoutSeconds": definition.timeout_seconds,
-                    "outputLimit": definition.output_limit,
-                    "externalAllowed": definition.external_allowed,
-                    "inputSchema": _thaw_json(definition.input_schema),
-                    "description": definition.description,
-                }
-                for definition in self.tools
-            ],
+            "tools": [_definition_payload(definition) for definition in self.tools],
             "policyDecisions": dict(self.policy_decisions),
             "skills": [
                 skill.to_dict()
@@ -78,6 +72,12 @@ class CapabilitySnapshot:
         }
         if include_prompt_sections:
             snapshot["promptSections"] = list(self.prompt_sections)
+        if self.candidates:
+            snapshot["candidates"] = [_definition_payload(item) for item in self.candidates]
+            snapshot["visibilityVersion"] = self.visibility_version
+            snapshot["parentSnapshotId"] = self.parent_snapshot_id
+            snapshot["candidateCatalogId"] = self.candidate_catalog_id
+            snapshot["serviceGrants"] = [item.to_dict() for item in self.service_grants]
         return snapshot
 
 
@@ -100,6 +100,37 @@ class CapabilityResolution:
         repr=False,
         compare=False,
     )
+    _discovery: DiscoveryState | None = field(default=None, repr=False, compare=False)
+    _authorize_tool: Callable[[ToolDefinition, ToolContext], bool | str] | None = field(default=None, repr=False, compare=False)
+    _candidate_tools: MappingProxyType = field(default_factory=lambda: MappingProxyType({}), repr=False, compare=False)
+
+    def stage_service_tools(self, context: ToolContext, *, grant_id: str, parent_snapshot_id: str,
+                            tools: tuple[AgentTool, ...]) -> tuple[str, ...]:
+        if self._discovery is None:
+            raise PermissionError("service revisions require a frozen discovery directory")
+        return self._discovery.stage_service_tools(context, grant_id=grant_id, parent_snapshot_id=parent_snapshot_id, tools=tools)
+
+    def authorization_denial(self, definition: ToolDefinition | None, context: ToolContext) -> str | None:
+        if definition is None:
+            return "tool has no frozen definition"
+        if (context.role_id, context.session_key, context.run_id) != (self.snapshot.role_id, self.snapshot.session_key, self.snapshot.run_id):
+            return "tool context does not match the frozen run scope"
+        if self._authorize_tool is not None:
+            decision = self._authorize_tool(definition, context)
+            if decision is not True:
+                return str(decision) if isinstance(decision, str) else "tool permission was revoked"
+        return None
+
+    def current(self) -> CapabilityResolution:
+        return self._discovery.current if self._discovery is not None else self
+
+    def pending_revision(self, call_id: str) -> CapabilityResolution | None:
+        return self._discovery.propose(call_id) if self._discovery is not None else None
+
+    def publish_revision(self, revision: CapabilityResolution) -> None:
+        if self._discovery is None:
+            raise ValueError("tool discovery is not enabled")
+        self._discovery.publish(revision)
 
     def provider_schemas(self) -> list[dict[str, object]]:
         if self._definitions_by_name:
@@ -114,6 +145,11 @@ class CapabilityResolution:
 
         definition = self._definitions_by_name.get(name)
         return deepcopy(definition) if definition is not None else None
+
+    def candidate_definition(self, name: str) -> ToolDefinition | None:
+        """Inspect the frozen declaration for audit, without granting execution."""
+        definition = next((item for item in self.snapshot.candidates if item.name == name), None)
+        return replace(definition, input_schema=cast(dict[str, object], _thaw_json(definition.input_schema))) if definition is not None else self.definition(name)
 
     def denial_reason(self, name: str) -> str | None:
         reason = self.denied_tools.get(name)
@@ -262,6 +298,16 @@ def _thaw_json(value: object) -> object:
     return deepcopy(value)
 
 
+def _definition_payload(definition: ToolDefinition) -> dict[str, object]:
+    return {
+        "name": definition.name, "description": definition.description,
+        "inputSchema": _thaw_json(definition.input_schema), "source": definition.source,
+        "version": definition.version, "risk": definition.risk, "exposure": definition.exposure,
+        "approval": definition.approval, "timeoutSeconds": definition.timeout_seconds,
+        "outputLimit": definition.output_limit, "externalAllowed": definition.external_allowed,
+    }
+
+
 class CapabilityRegistry:
     """Resolve registered tools into a stable, role-scoped run snapshot."""
 
@@ -298,20 +344,38 @@ class CapabilityRegistry:
         prompt_text: str = "",
         explicit_skill_ids: set[str] | frozenset[str] = frozenset(),
         plugin_resolution: PluginResolution | None = None,
+        discovery_enabled: bool = False,
+        authorize_tool: Callable[[ToolDefinition, ToolContext], bool | str] | None = None,
+        deferred_tool_names: frozenset[str] = frozenset(),
+        restored_activation: Mapping[str, object] | None = None,
+        service_grants: tuple[ServiceGrant, ...] = (),
     ) -> CapabilityResolution:
         registered_tools = list(self._tools.values())
         if plugin_resolution is not None:
             registered_tools.extend(plugin_resolution.tools)
+        discovery = None
+        if discovery_enabled:
+            from .discovery import DiscoveryState, ToolSearchTool
+            discovery = DiscoveryState(service_grants=service_grants, external_only=external_only)
+            registered_tools.append(ToolSearchTool(discovery))
         names: set[str] = set()
         for tool in registered_tools:
             if tool.definition.name in names:
                 raise ValueError(f"duplicate tool: {tool.definition.name}")
             names.add(tool.definition.name)
         selected: list[AgentTool] = []
+        candidates: list[AgentTool] = []
+        admitted_definitions: dict[str, ToolDefinition] = {}
         decisions: dict[str, str] = {}
         denied: dict[str, str] = {}
+        restored_definitions = {}
+        if (discovery_enabled and restored_activation is not None and restored_activation.get("roleId") == role_id
+                and restored_activation.get("sessionKey") == session_key):
+            restored_tools = restored_activation.get("tools", [])
+            if isinstance(restored_tools, list):
+                restored_definitions = {item["name"]: item for item in restored_tools if isinstance(item, dict) and isinstance(item.get("name"), str)}
         for tool in registered_tools:
-            definition = tool.definition
+            definition = replace(tool.definition, exposure="deferred") if discovery_enabled and tool.definition.name in deferred_tool_names else tool.definition
             if external_only and not definition.external_allowed:
                 denied[definition.name] = "tool is not allowed for external context"
                 decisions[definition.name] = "denied:external_context"
@@ -336,8 +400,12 @@ class CapabilityRegistry:
                 denied[definition.name] = "tool is hidden"
                 decisions[definition.name] = "denied:hidden"
                 continue
-            if definition.exposure == "deferred" and definition.name not in activated_tools:
-                denied[definition.name] = "tool is deferred and not activated"
+            candidates.append(tool)
+            admitted_definitions[definition.name] = definition
+            restored = restored_definitions.get(definition.name) == _definition_payload(definition)
+            if definition.exposure == "deferred" and definition.name not in activated_tools and not restored:
+                denied[definition.name] = "tool is deferred and not activated" + (
+                    f"; use tool_search(query='select:{definition.name}') and call it in the next provider request" if discovery_enabled else "")
                 decisions[definition.name] = "denied:deferred"
                 continue
             selected.append(tool)
@@ -349,22 +417,7 @@ class CapabilityRegistry:
                 denied[name] = "tool is not registered"
                 decisions[name] = "denied:unknown"
 
-        execution_definitions = tuple(
-            ToolDefinition(
-                name=tool.definition.name,
-                description=tool.definition.description,
-                input_schema=deepcopy(tool.definition.input_schema),
-                risk=tool.definition.risk,
-                source=tool.definition.source,
-                version=tool.definition.version,
-                exposure=tool.definition.exposure,
-                approval=tool.definition.approval,
-                timeout_seconds=tool.definition.timeout_seconds,
-                output_limit=tool.definition.output_limit,
-                external_allowed=tool.definition.external_allowed,
-            )
-            for tool in selected
-        )
+        execution_definitions = tuple(replace(admitted_definitions[tool.definition.name], input_schema=deepcopy(admitted_definitions[tool.definition.name].input_schema)) for tool in selected)
         snapshot_definitions = tuple(
             replace(
                 definition,
@@ -402,8 +455,10 @@ class CapabilityRegistry:
                 plugins=plugin_resolution.descriptors if plugin_resolution is not None else (),
                 policy_decisions=decisions,
             ),
+            candidates=tuple(replace(definition, input_schema=cast(dict[str, object], _freeze_json(definition.input_schema))) for definition in admitted_definitions.values()) if discovery is not None else (),
+            service_grants=tuple(service_grants) if discovery is not None else (),
         )
-        return CapabilityResolution(
+        resolution = CapabilityResolution(
             snapshot=snapshot,
             tools=tuple(selected),
             denied_tools=MappingProxyType(dict(denied)),
@@ -413,7 +468,15 @@ class CapabilityRegistry:
                 definition.name: definition
                 for definition in execution_definitions
             }),
+            _discovery=discovery,
+            _authorize_tool=authorize_tool,
+            _candidate_tools=MappingProxyType({tool.definition.name: tool for tool in candidates}),
         )
+        if discovery is not None:
+            snapshot = replace(snapshot, candidate_catalog_id=_candidate_catalog_id(snapshot))
+            resolution = replace(resolution, snapshot=snapshot)
+            discovery.bind(resolution, names)
+        return resolution
 
     async def resolve_async(
         self,
@@ -432,6 +495,11 @@ class CapabilityRegistry:
         granted_capabilities: set[str] | frozenset[str] = frozenset(),
         host_services: Mapping[str, object] = MappingProxyType({}),
         plugin_dir: str = "",
+        discovery_enabled: bool = False,
+        authorize_tool: Callable[[ToolDefinition, ToolContext], bool | str] | None = None,
+        deferred_tool_names: frozenset[str] = frozenset(),
+        restored_activation: Mapping[str, object] | None = None,
+        service_grants: tuple[ServiceGrant, ...] = (),
     ) -> CapabilityResolution:
         plugin_resolution = await self.plugins.load(
             enabled_ids=enabled_plugin_ids,
@@ -454,6 +522,11 @@ class CapabilityRegistry:
                 prompt_text=prompt_text,
                 explicit_skill_ids=explicit_skill_ids,
                 plugin_resolution=plugin_resolution,
+                discovery_enabled=discovery_enabled,
+                authorize_tool=authorize_tool,
+                deferred_tool_names=deferred_tool_names,
+                restored_activation=restored_activation,
+                service_grants=service_grants,
             )
         except BaseException:
             try:
@@ -472,19 +545,7 @@ def _snapshot_generation(
 ) -> str:
     payload = {
         "tools": [
-            {
-                "name": item.name,
-                "description": item.description,
-                "inputSchema": _thaw_json(item.input_schema),
-                "version": item.version,
-                "source": item.source,
-                "risk": item.risk,
-                "exposure": item.exposure,
-                "approval": item.approval,
-                "timeoutSeconds": item.timeout_seconds,
-                "outputLimit": item.output_limit,
-                "externalAllowed": item.external_allowed,
-            }
+            _definition_payload(item)
             for item in sorted(tools, key=lambda item: (item.name, item.version, item.source))
         ],
         "skills": [
@@ -505,3 +566,9 @@ def _snapshot_generation(
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:24]
+
+
+def _candidate_catalog_id(snapshot: CapabilitySnapshot) -> str:
+    return "catalog-" + _snapshot_generation(tools=snapshot.candidates, skills=(), plugins=snapshot.plugins,
+        policy_decisions={"scope": json.dumps([snapshot.role_id, snapshot.session_key], ensure_ascii=False),
+                          "serviceGrants": json.dumps([item.to_dict() for item in snapshot.service_grants], sort_keys=True)})

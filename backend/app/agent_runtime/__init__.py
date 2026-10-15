@@ -14,6 +14,7 @@ from .events import (
     TurnStartEvent,
 )
 from .capabilities import CapabilityRegistry, CapabilityResolution, CapabilitySnapshot
+from .discovery import ServiceGrant, ToolSearchTool
 from .plugins import (
     AgentToolHook,
     CapabilityNotGranted,
@@ -60,6 +61,8 @@ __all__ = [
     "CapabilityRegistry",
     "CapabilityResolution",
     "CapabilitySnapshot",
+    "ServiceGrant",
+    "ToolSearchTool",
     "AgentToolHook",
     "CapabilityNotGranted",
     "HookContext",

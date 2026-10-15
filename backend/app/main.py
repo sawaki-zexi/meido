@@ -74,7 +74,6 @@ from .agent_runtime import (
     PluginRegistry,
     RuntimeManager,
     ShellTool,
-    summarize_tool_arguments,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
@@ -82,8 +81,10 @@ from .agent_runtime import (
 )
 from .agent_runtime.capabilities import CapabilityResolution
 from .agent_runtime.catalog import RuntimeCapabilityPolicy, tool_catalog
+from .agent_runtime.discovery import ToolSearchTool
 from .agent_runtime.types import UserMessage
 from .channels.attachment_tool import ReadChannelAttachmentTool
+from .channels.source_authority import capture_channel_source
 from .channels.consolidation import ChannelMemoryMaintenance, finish_io
 from .agent_runtime.skills import SkillRegistry
 from .todo import TodoPlugin, TodoStore
@@ -1479,11 +1480,14 @@ def get_role_tools(role_id: str) -> dict[str, object]:
     policy = replace(policy, enabled_tools=policy.enabled_tools - {"read_attachment"})
     definitions = {tool.definition.name: tool.definition for tool in _runtime_tool_candidates(role, include_channel=True, preview=True)}
     for definition in (
+        ToolSearchTool.definition,
         OwnerKnowledgeTool.definition, MailManageTool.definition, ReadChannelAttachmentTool.definition,
         TodoSearchTool.definition, TodoWriteTool.definition, TodoReminderControlTool.definition,
         *(tool.definition for tool in load_browser_tools(browser_use_sessions)),
     ):
         definitions.setdefault(definition.name, definition)
+    if "tool_search" in policy.enabled_tools:
+        definitions = {name: replace(definition, exposure="deferred") if name in _deferred_discovery_tools() else definition for name, definition in definitions.items()}
     reasons: dict[str, str] = {"read_attachment": "仅在当前 QQ 回合存在可读取附件时提供"}
     if not role.agentConfig.shell.enabled:
         reasons["shell"] = "角色的 Shell 开关已关闭"
@@ -3494,6 +3498,13 @@ def _runtime_tools(
     return tuple(tool for tool in available if tool.definition.name in enabled)
 
 
+def _deferred_discovery_tools() -> frozenset[str]:
+    # Fixed Shiori always_on metadata: these existing tools are deferred.
+    # Meido-specific todo/mail retain their own declarations.
+    return frozenset({*BROWSER_USE_TOOL_NAMES, "account_list", "account_targets", "account_send",
+        "lookup_group_context", "update_group_context", "set_group_listening", "lookup_group_member", "read_attachment"})
+
+
 def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabilityPolicy:
     agent_config = role.agentConfig
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
@@ -3545,6 +3556,30 @@ async def _runtime_capabilities(
         session_key.startswith("role:") and _role_has_usable_channel_account(role.id)
     )
     policy = _runtime_capability_policy(role, include_channel=include_channel)
+    frozen_manifests = {item.plugin_id: item for item in plugin_registry.manifests()}
+    source_authority = capture_channel_source(
+        multichannel_store, session_store, role_id=role.id, session_key=session_key,
+        run_id=run_id, owner_context=not external_only,
+    ) if "tool_search" in policy.enabled_tools and session_key.startswith("thread:") else None
+
+    def authorize_tool(definition, context):
+        if source_authority is not None:
+            origin_denial = source_authority.authorization_denial(multichannel_store)
+            if origin_denial is not None:
+                return origin_denial
+        current_role = store.get(role.id)
+        if current_role is None:
+            return "role permission was revoked"
+        current = _runtime_capability_policy(current_role, include_channel=include_channel)
+        if definition.name not in current.enabled_tools:
+            return "tool permission was revoked"
+        if definition.source.startswith("plugin:"):
+            plugin_id = definition.source.removeprefix("plugin:")
+            manifest = next((item for item in plugin_registry.manifests() if item.plugin_id == plugin_id), None)
+            if (plugin_id not in current.enabled_plugins or manifest is None or manifest != frozen_manifests.get(plugin_id)
+                    or set(manifest.requested_capabilities) - current.granted_capabilities):
+                return "plugin permission was revoked or its definition changed"
+        return True
     host_services: dict[str, object] = {}
     if "todo.write" in policy.provided_capabilities:
         host_services["todo.write"] = _todo_application()
@@ -3569,6 +3604,10 @@ async def _runtime_capabilities(
         enabled_plugin_ids=policy.enabled_plugins,
         granted_capabilities=policy.granted_capabilities,
         host_services=host_services,
+        discovery_enabled="tool_search" in policy.enabled_tools,
+        deferred_tool_names=_deferred_discovery_tools(),
+        authorize_tool=authorize_tool,
+        restored_activation=session_store.latest_capability_revision(role.id, session_key) if "tool_search" in policy.enabled_tools else None,
     )
 
 
@@ -4497,27 +4536,6 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                             runtime_event.tool_name,
                             runtime_event.arguments,
                         )
-                        definition = (
-                            capabilities.get(runtime_event.tool_name).definition
-                            if capabilities is not None and capabilities.get(runtime_event.tool_name) is not None
-                            else None
-                        )
-                        policy_decision = (
-                            capabilities.snapshot.policy_decisions.get(runtime_event.tool_name)
-                            if capabilities is not None
-                            else None
-                        )
-                        session_store.start_tool_audit(
-                            run_id=run_id,
-                            role_id=role_id,
-                            tool_name=runtime_event.tool_name,
-                            call_id=runtime_event.tool_call_id,
-                            argument_summary=summarize_tool_arguments(runtime_event.arguments),
-                            snapshot_id=capabilities.snapshot.snapshot_id if capabilities is not None else None,
-                            tool_source=definition.source if definition is not None else None,
-                            tool_version=definition.version if definition is not None else None,
-                            policy_decision=str(policy_decision) if policy_decision is not None else None,
-                        )
                         yield _event("tool_execution_start", runtime_event_payload({
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
@@ -4533,14 +4551,6 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         }, runtime_event.sequence))
                     elif isinstance(runtime_event, ToolExecutionEndEvent):
                         safe_result, _ = sanitize_browser_text(runtime_event.result.content)
-                        details = runtime_event.result.details if isinstance(runtime_event.result.details, dict) else {}
-                        session_store.finish_tool_audit(
-                            run_id=run_id,
-                            call_id=runtime_event.tool_call_id,
-                            result_category=str(details.get("status") or ("error" if runtime_event.result.is_error else "succeeded")),
-                            error_type=str(details["errorType"]) if details.get("errorType") else None,
-                            error_message=str(details["message"]) if details.get("message") else None,
-                        )
                         yield _event("tool_execution_end", runtime_event_payload({
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
