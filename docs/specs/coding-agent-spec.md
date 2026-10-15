@@ -155,6 +155,8 @@ S07 Skill指引：先查CLI/profile可用性，用户已提供repo时直接传re
 
 ## 11. 验收、垂直 Tickets 与仍需补证
 
+#158 的实施依赖已在总集成 `4b1b3b8` 满足并通过两套CI；对应Ticket已移除当前阻塞边并保留完成证据。第3节架构批准仍待回答，不能由依赖满足推导Coding生产实现或账号许可。
+
 | 层次 | 必须观察到的通过条件 |
 | --- | --- |
 | 公开HTTP+真实CLI fixture | P03五工具与S07 Skill/spawn/manage完整往返，真实临时Git worktree与SQLite；UTF-8分块、坏/超大JSON、旧结果、错session/role/source、同call/continue竞争及父回合结束回灌。 |

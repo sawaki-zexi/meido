@@ -157,6 +157,8 @@ CAS失败只保留新图历史并提示“已生成，原消息已改变”；�
 
 ## 10. 垂直 Ticket 与最终门槛
 
+#158 的实施依赖已在总集成 `4b1b3b8` 满足并通过两套CI；对应Ticket已移除当前阻塞边并保留完成证据。第3节架构批准仍待回答，不能据此开始未经批准的生图生产实现。
+
 已按完整用户结果拆三票，Parent均为#137，当前标记needs-info等待本规格第3节批准；按依赖串行而不分数据库/API/UI层：
 
 1. [**#171：主人按请求生图并在原会话看到唯一图片与历史。**](https://github.com/sawaki-zexi/meido/issues/171) 配置/许可/有限预算、txt2img+img2img、TaskRuntime、attempt unknown、媒体outbox和本地HTTP全闭环；Blocked by：本规格§3批准及 #158 完成两轴复核并进入最新已验证总集成。沿用主人已批准的本地总PR分支流程，不重复等待main或建立堆叠功能PR。

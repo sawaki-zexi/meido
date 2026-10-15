@@ -155,6 +155,8 @@ S08使用现有文件/Shell白名单准备可启动server、配置草稿与fixtu
 
 ## 10. 验收与垂直 Ticket 建议
 
+#158 的实施依赖已在总集成 `4b1b3b8` 满足并通过两套CI；对应Ticket已移除当前阻塞边并保留完成证据。第3节架构批准仍待回答，自主读取、ACK或发送许可不因Runtime就绪而产生。
+
 - 真实HTTP/AgentTool/SQLite+合成MCP完成alert/content/context→正文→兴趣→草稿/finish→一次投递→持久ACK；覆盖跨来源ID、空候选伪ID、failed不等于empty、缓存重复读无网络、可信最近聊天。
 - 注入草稿/finish并发、post-guard超时、accepted human seal与dispatch竞态、submit返回丢失、结果副本与dirty事务切点、所有终态漏扫、ACK成功但清标记前崩溃/已prune、角色临时disabled后恢复、真实SQLite busy及retention满；证明保留额度最终释放、不重做执行，主聊天不等清理但下一自主准入必须join。
 - 在远端已接受、本地receipt/消息投影/ACK各窗口断开，真实状态保留；旧key/新call/改目标/跨日/重预算不得重发，原expiry不延长，旧来源版本不被ACK。

@@ -35,6 +35,10 @@ HTTP 摘要模型使用隔离 localhost fixture 与无效的测试 token；没�
 
 补充公网 YouTube 观察：以 CLI 官方示例 `I845O57ZSy4` 及 `aircAruvnKk` 执行 `--extract --youtube web --json --max-extract-characters 6000 --firecrawl off --no-slides`，两次 exit 0，但均为 `transcriptSource:unavailable`、标题 `- YouTube` 与 126 字符站点正文。未取得真实字幕，不能作为成功转录证据；Skill 明确要求检查该状态，不能用退出码或通用页正文编造视频内容。未使用账号 cookies、付费转录或未经配置的下载工具。该环境的真实字幕成功验收仍未完成。
 
+2026-10-16补验准备另外两个有TED官方转录页面的公开候选，并核准固定0.25.2的`web`源码路径仅走youtubei/captionTracks。隔离CLI启动命令被本次执行工具的自动审批审查拒绝，仅返回`blocked by policy`，未给具体原因；**实际CLI执行0次**。没有换启动方式绕过，也未使用cookies、收费转录、音视频下载或第三方文本充数。
+
+这不是Meido ShellTool或summarize返回的错误，不能据此断言候选字幕失败或工具不可用；本次也没有新增字幕成功证据。安全元数据保存在仓库外`D:/meido-artifacts/summarize-youtube-check-20261016/evidence.json`，SHA256 `B7125B94EE31F91FF1299A84B4AECEE4413877271A5AB4F356882AA1C020969B`。即使日后提取成功，仍需公开Meido HTTP→真实CLI→下一模型请求的字幕闭环，不能仅凭extract exit0完成验收。
+
 ## 可复核证据
 
 本次本地证据目录：`C:/Users/Elysia/.codex/visualizations/2026/10/15/01a13e82-f9da-7eb1-8b64-ae6ab21c48d0/skills-152-qa/`。
