@@ -179,6 +179,127 @@ def test_managed_qq_process_exit_is_reported_and_user_can_retry(channel_api, mon
 
     asyncio.run(scenario())
 
+
+def test_managed_qq_retry_waits_for_fault_cleanup_and_keeps_new_connection(channel_api, monkeypatch):
+    role, channels, _, _ = channel_api
+    manager = RotatingManagedNapCat()
+    monkeypatch.setattr(main, "managed_napcat", manager)
+
+    async def scenario():
+        cleanup_started = asyncio.Event()
+        finish_cleanup = asyncio.Event()
+        event_started = asyncio.Event()
+        finish_event = asyncio.Event()
+        delayed_stop = {"active": False, "held": False}
+
+        class PausedCleanupTransport(ManagedNapCatTransport):
+            async def stop(self):
+                if delayed_stop["active"] and not delayed_stop["held"]:
+                    delayed_stop["held"] = True
+                    cleanup_started.set()
+                    await finish_cleanup.wait()
+                await super().stop()
+
+        monkeypatch.setattr(main, "NapCatWebSocketTransport", PausedCleanupTransport)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+            prefix = f"/api/roles/{role.id}/channels/qq/managed"
+            ref = (await client.post(f"{prefix}/begin")).json()["ref"]
+            committed = await client.post(f"{prefix}/{ref}/commit", json={})
+            assert committed.status_code == 200
+            account_id = committed.json()["account"]["accountId"]
+            accounts_url = f"/api/roles/{role.id}/channels/accounts"
+            state_url = f"{accounts_url}/{account_id}/state"
+
+            async def admitted_event():
+                async with main.channel_host.event_scope(account_id) as admitted:
+                    assert admitted
+                    event_started.set()
+                    await finish_event.wait()
+
+            active_event = asyncio.create_task(admitted_event())
+            await event_started.wait()
+            events = channels.subscribe(role.id)
+
+            async def fault_published():
+                async for event in events:
+                    if event["type"] == "account":
+                        return event
+
+            published = asyncio.create_task(fault_published())
+            await asyncio.sleep(0)
+            delayed_stop["active"] = True
+            manager.process_exited(ref)
+            retry = None
+            try:
+                await asyncio.wait_for(published, 2)
+                retry = asyncio.create_task(client.post(state_url, json={"enabled": True}))
+                finish_event.set()
+                await asyncio.wait_for(cleanup_started.wait(), 2)
+                completed, _ = await asyncio.wait({retry}, timeout=.05)
+                assert not completed, "retry completed before the predecessor's cleanup released its lifecycle lock"
+                finish_cleanup.set()
+                assert (await asyncio.wait_for(retry, 2)).status_code == 200
+                await asyncio.sleep(0)
+                account = (await client.get(accounts_url)).json()["accounts"][0]
+                assert account["connectionStatus"] == "connected"
+                assert main.channel_host.accepts_events(account_id)
+            finally:
+                finish_event.set()
+                finish_cleanup.set()
+                delayed_stop["active"] = False
+                await active_event
+                if retry is not None:
+                    await asyncio.gather(retry, return_exceptions=True)
+                published.cancel()
+                await asyncio.gather(published, return_exceptions=True)
+                await events.aclose()
+                await client.post(state_url, json={"enabled": False})
+
+    asyncio.run(scenario())
+
+
+def test_managed_qq_requires_scan_again_without_claiming_connected(channel_api, monkeypatch):
+    role, channels, _, _ = channel_api
+    manager = RotatingManagedNapCat()
+    monkeypatch.setattr(main, "managed_napcat", manager)
+    monkeypatch.setattr(main, "NapCatWebSocketTransport", ManagedNapCatTransport)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+            prefix = f"/api/roles/{role.id}/channels/qq/managed"
+            ref = (await client.post(f"{prefix}/begin")).json()["ref"]
+            committed = await client.post(f"{prefix}/{ref}/commit", json={})
+            assert committed.status_code == 200
+            account_id = committed.json()["account"]["accountId"]
+            accounts_url = f"/api/roles/{role.id}/channels/accounts"
+            events = channels.subscribe(role.id)
+
+            async def account_changed():
+                async for event in events:
+                    if event["type"] == "account":
+                        return event
+
+            changed = asyncio.create_task(account_changed())
+            await asyncio.sleep(0)
+            manager.online = False
+            try:
+                await asyncio.wait_for(changed, 2)
+                account = (await client.get(accounts_url)).json()["accounts"][0]
+                assert account["connectionStatus"] == "connecting"
+                assert (await client.get(f"{prefix}/{ref}")).json()["login"]["phase"] == "login_required"
+                changed = asyncio.create_task(account_changed())
+                await asyncio.sleep(0)
+                manager.online = True
+                await asyncio.wait_for(changed, 2)
+                assert (await client.get(accounts_url)).json()["accounts"][0]["connectionStatus"] == "connected"
+            finally:
+                changed.cancel()
+                await asyncio.gather(changed, return_exceptions=True)
+                await events.aclose()
+                await client.post(f"{accounts_url}/{account_id}/state", json={"enabled": False})
+
+    asyncio.run(scenario())
+
 @pytest.mark.parametrize("restart", ["account", "platform", "process_exit"])
 def test_managed_qq_reconnect_uses_current_process_credentials(channel_api, monkeypatch, restart):
     role, channels, _, client = channel_api

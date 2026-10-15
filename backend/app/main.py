@@ -3908,7 +3908,11 @@ async def _start_channel_account_unlocked(account_id: str) -> None:
         status = await managed_napcat.status(managed_ref, role_id=account.role_id)
         existing = channel_tasks.get(account_id)
         if existing is None or existing.done():
-            channel_tasks[account_id] = asyncio.create_task(_monitor_managed_qq_account(account_id, managed_ref))
+            # Supervision outlives this request's lifecycle lock and any
+            # admitted event lease; neither authority may be inherited.
+            channel_tasks[account_id] = asyncio.create_task(
+                _monitor_managed_qq_account(account_id, managed_ref), context=contextvars.Context(),
+            )
         if status.get("login", {}).get("phase") != "online":
             return
     _build_channel_adapter(account)
@@ -3983,17 +3987,26 @@ async def _monitor_managed_qq_account(account_id: str, ref: str) -> None:
             phase = status.get("login", {}).get("phase")
             if phase == "online" and account_id not in channel_adapters:
                 await _start_channel_account(account_id)
-            if phase == "error":
+            if phase == "error" or (phase == "login_required" and account_id in channel_adapters):
                 async with _channel_lifecycle(account_id):
-                    multichannel_store.set_account_state(account_id, last_error="managed_process_failed")
-                    multichannel_store.publish(account.role_id, {"type": "account", "roleId": account.role_id, "accountId": account_id})
+                    # A user retry may have changed the process while this
+                    # supervisor was waiting for the account's lifecycle lock.
+                    latest = await managed_napcat.status(ref, role_id=account.role_id)
+                    if latest.get("login", {}).get("phase") != phase:
+                        continue
+                    if phase == "error":
+                        multichannel_store.set_account_state(account_id, last_error="managed_process_failed")
+                        multichannel_store.publish(account.role_id, {"type": "account", "roleId": account.role_id, "accountId": account_id})
                     await channel_host.pause_and_drain(account_id)
                     await channel_host.intake.close(account_id)
                     try:
                         await channel_host.stop(account_id)
                     finally:
                         _forget_managed_channel_adapter(account_id)
-                return
+                    if phase == "login_required":
+                        multichannel_store.publish(account.role_id, {"type": "account", "roleId": account.role_id, "accountId": account_id})
+                if phase == "error":
+                    return
             await asyncio.sleep(.5)
     except asyncio.CancelledError:
         raise
