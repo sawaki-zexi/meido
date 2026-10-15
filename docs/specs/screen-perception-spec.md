@@ -1,10 +1,10 @@
 # 角色按需屏幕感知
 
-状态：当前设计（第 3 节已于 2026-10-16 获人工批准；运行时尚未实施）。
+状态：已实施，待总集成两轴审查。第 3 节已于 2026-10-16 获人工批准；独立分支已通过公开协议/故障进程测试和 Windows 单屏受控原生验收。双屏、混合 DPI、真实锁屏/断开场景仍未验收，见[验收记录](../research/screen-perception-acceptance-2026-10-16.md)。
 
 关联：[#160](https://github.com/sawaki-zexi/meido/issues/160)，Parent [#137](https://github.com/sawaki-zexi/meido/issues/137)，[完整规格 P04/T16/D04](shiori-tool-parity-spec.md)。最后核验：2026-10-16，Meido `17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`，Shiori `4f266aeaf42fcd611362e2456417b91f659341cf`。
 
-事实来源：[固定源码核验](../research/screen-perception-source-audit.md)、[ADR-0001](../adr/0001-local-model-connection-boundary.md)、[ADR-0006](../adr/0006-provider-specific-model-adapters.md)、[ADR-0011](../adr/0011-versioned-tool-activation.md)、[ADR-0014](../adr/0014-explicit-screen-vision-binding.md)。本文“已提取”描述核验基线源码；其余带“建议/计划”的内容为已批准的实施设计，不能当作现有能力或已通过验收。
+事实来源：[固定源码核验](../research/screen-perception-source-audit.md)、[运行契约](../reference/screen-perception.md)、[ADR-0001](../adr/0001-local-model-connection-boundary.md)、[ADR-0006](../adr/0006-provider-specific-model-adapters.md)、[ADR-0011](../adr/0011-versioned-tool-activation.md)、[ADR-0014](../adr/0014-explicit-screen-vision-binding.md)。本文保留批准时的“建议/计划”措辞；“已提取”描述固定上游基线。当前实现、验收证据与尚未验证的边界以运行契约及独立验收记录为准，不把架构批准当作全部运行时证据。
 
 总体复刻目标及 D01–D03 的批准不替代本方案的架构批准。本票也不决定桌宠采用 Electron 还是 PySide6，不依赖 Computer Use 的控制驱动。
 
@@ -173,7 +173,7 @@ IPC 仅为有长度前缀的 ≤1 KiB 元数据与 PNG 二进制；父进程逐�
 | 截图阻塞/超字节/坏 PNG/尺寸不符、vision 长连；运行中关闭/换连接/删连接/stop/delete | AgentTool.execute + HTTP 控制动作；受控采集进程/视觉服务器使用事件控制。心跳证明 loop 响应；确认真实 child terminal、HTTP 断开、迟到输出不发布、名额不提前重用，连第二次取消也不留下上传工作。 |
 | 主屏、DPI、锁屏、权限缺失、native cleanup | Windows opt-in：用户先在主屏打开仅含验收标记的受控窗口，确保其他敏感内容移开；真实生产 worker + 本地 vision fixture 解码并确认标记，双屏时副屏另一标记不得出现在帧中。默认 skip，明确开启后依赖缺失 fail；不上传真实桌面到付费/用户视觉服务。 |
 
-受控 native 证据记录 OS、Pillow/Python 版本、显示器/DPI、处理后尺寸/字节、工具/HTTP 状态、取消时延和 worker 终态；不保存截图、base64、用户视觉 endpoint 密钥。实际采集须在具体方案获批后、受控桌面已准备好时进行，本阶段不执行。
+受控 native 证据记录 OS、Pillow/Python 版本、显示器/DPI、处理后尺寸/字节、工具/HTTP 状态、取消时延和 worker 终态；不保存截图、base64、用户视觉 endpoint 密钥。实际采集须在具体方案获批后、受控桌面已准备好时进行。2026-10-16 已按此边界完成单屏主屏与取消验收；未采集任意用户桌面，也未向用户或付费视觉连接上传。
 
 ## 10. 变更落点与审批交付
 
@@ -181,4 +181,4 @@ IPC 仅为有长度前缀的 ≤1 KiB 元数据与 PNG 二进制；父进程逐�
 
 现有正常聊天与其他工具继续使用原来的 model adapter；屏幕调用不得修改 active 模型、角色聊天绑定或已存在历史。实现前重新同步总 PR 的已验证集成基线，协调其他票对候选、角色保存和生命周期的改动；子 Issue 记录各自验收和依赖，统一在总 PR 审查。
 
-第 3 节已获人工明确批准，决定记录到 ADR-0014。后续按第 9 节公开 seams 实现、两轴审查及完整回归；具体实现和验收记录尚未完成时，不把架构批准当作运行时完成证据。总 PR 的合并仍需单独批准。
+第 3 节已获人工明确批准，决定记录到 ADR-0014。实现后继续按第 9 节公开 seams 做两轴审查及总集成回归；独立验收不替代尚未验证的平台场景。总 PR 的合并仍需单独批准。

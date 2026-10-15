@@ -1,4 +1,4 @@
-"""Owner-bound pushes and opt-in reminder destinations.
+"""Explicitly selected owner reminder destinations.
 
 The destination remains a host-owned pairing fact.  Neither a model nor a
 reminder can turn a raw platform ID into authorization to contact a stranger.

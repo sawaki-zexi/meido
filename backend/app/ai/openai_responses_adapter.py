@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -554,7 +555,7 @@ class OpenAIResponsesAdapter:
         headers = self._headers(configuration)
         return payload, headers, reverse
 
-    async def stream_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check=None) -> AsyncIterator[ModelStreamEvent]:
+    async def stream_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check=None) -> AsyncGenerator[ModelStreamEvent, None]:
         payload, headers, name_aliases = self._prepare(messages, configuration, tools, max_tokens=max_tokens, stream=True)
         accumulator = self._accumulator(name_aliases, configuration)
         yield ModelStreamStart()
@@ -635,5 +636,6 @@ class OpenAIResponsesAdapter:
         )
 
     async def stream_rich_messages(self, *args, **kwargs):
-        async for event in self.stream_messages(*args, **kwargs):
-            yield event
+        async with aclosing(self.stream_messages(*args, **kwargs)) as stream:
+            async for event in stream:
+                yield event

@@ -9,7 +9,8 @@ cannot accidentally inherit another provider's payload assumptions.
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from contextlib import aclosing
 import json
 import re
 import time
@@ -201,7 +202,7 @@ class MistralConversationsAdapter:
         headers = {"Authorization": f"Bearer {configuration.apiKey}", "content-type": "application/json"}
         return configuration, payload, headers, reverse
 
-    async def stream_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check: Callable[[], None] | None = None) -> AsyncIterator[ModelStreamEvent]:
+    async def stream_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check: Callable[[], None] | None = None) -> AsyncGenerator[ModelStreamEvent, None]:
         configuration, payload, headers, aliases = self._prepare(messages, configuration, tools, stream=True, max_tokens=max_tokens)
         text = ""
         thinking = ""
@@ -387,6 +388,7 @@ class MistralConversationsAdapter:
             response_id=data.get("id") if isinstance(data.get("id"), str) else None, usage=_usage(data.get("usage")), stop_reason=reason, timestamp=int(time.time() * 1000),
         ))
 
-    async def stream_rich_messages(self, *args, **kwargs) -> AsyncIterator[ModelStreamEvent]:
-        async for event in self.stream_messages(*args, **kwargs):
-            yield event
+    async def stream_rich_messages(self, *args, **kwargs) -> AsyncGenerator[ModelStreamEvent, None]:
+        async with aclosing(self.stream_messages(*args, **kwargs)) as stream:
+            async for event in stream:
+                yield event

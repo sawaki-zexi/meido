@@ -10,6 +10,7 @@ import uuid
 import sqlite3
 import secrets
 import contextvars
+import sys
 from contextlib import asynccontextmanager
 from urllib.parse import quote, unquote
 from dataclasses import asdict, replace
@@ -26,6 +27,7 @@ import httpx
 
 from .ai.model_adapter import ModelAdapter
 from .ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
+from .screen_perception import ObserveScreenTool, ScreenPerception
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
 from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryQueryFilters, MemoryScope
@@ -189,6 +191,13 @@ memory_event_bus = MemoryEventBus()
 model_adapter_registry = ModelAdapterRegistry()
 model_adapter: ModelAdapter = RoutedModelAdapter(model_adapter_registry)
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
+screen_perception = ScreenPerception(
+    role_getter=lambda role_id: store.get(role_id),
+    configuration_getter=lambda configuration_id: model_configuration_store.get(configuration_id),
+    sessions=lambda: session_store,
+    adapter=RoutedModelAdapter(ModelAdapterRegistry(timeout=12)),
+    role_unavailable=lambda role_id: role_id in _channel_roles_deleting,
+)
 embedding_configuration_store = EmbeddingConfigurationStore(data_root / "embedding-config.json")
 memory_settings_store = MemorySettingsStore(data_root / "memory-settings.json")
 embedding_provider = SharedEmbeddingProvider(
@@ -766,6 +775,7 @@ async def _memory_engine_delete(mutation: MemoryMutation) -> None:
 async def _close_memory_workers() -> None:
     if _spawn_completion_worker is not None:
         await _spawn_completion_worker.close()
+    await screen_perception.close()
     await asyncio.to_thread(task_runtime.close)
     await mail_service.close()
     await owner_knowledge_scheduler.close()
@@ -1387,10 +1397,11 @@ def _safe_model_error(error: Exception, api_key: str = "") -> str:
 
 
 @app.put("/api/model/configuration")
-def save_model_configuration(data: ModelConfigurationInput) -> dict[str, object]:
+async def save_model_configuration(data: ModelConfigurationInput) -> dict[str, object]:
     try:
         candidate = _configuration_with_saved_key(data)
         configuration = model_configuration_store.save(candidate)
+        await screen_perception.invalidate(configuration_id=configuration.id)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except OSError as error:
@@ -1411,12 +1422,13 @@ def create_model_configuration(data: ModelConfigurationInput) -> dict[str, objec
 
 
 @app.put("/api/model/configurations/{configuration_id}")
-def update_model_configuration(configuration_id: str, data: ModelConfigurationInput) -> dict[str, object]:
+async def update_model_configuration(configuration_id: str, data: ModelConfigurationInput) -> dict[str, object]:
     try:
         current = model_configuration_store.get(configuration_id)
         if current and not data.apiKey:
             data = data.model_copy(update={"apiKey": current.apiKey})
         configuration = model_configuration_store.update(configuration_id, data)
+        await screen_perception.invalidate(configuration_id=configuration_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="模型配置不存在") from error
     except ValueError as error:
@@ -1445,9 +1457,10 @@ def activate_model_configuration(configuration_id: str) -> dict[str, object]:
 
 
 @app.delete("/api/model/configurations/{configuration_id}")
-def delete_model_configuration(configuration_id: str) -> dict[str, object]:
+async def delete_model_configuration(configuration_id: str) -> dict[str, object]:
     try:
         active_id = model_configuration_store.delete(configuration_id)
+        await screen_perception.invalidate(configuration_id=configuration_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="模型配置不存在") from error
     return {"activeId": active_id}
@@ -1485,6 +1498,7 @@ def list_roles() -> RoleList:
 
 @app.post("/api/roles", response_model=RoleResponse, status_code=201)
 def create_role(data: RoleInput) -> RoleResponse:
+    _validate_screen_configuration(data.agentConfig.screenPerception)
     try:
         return RoleResponse(role=store.create(data))
     except OSError as error:
@@ -1536,6 +1550,13 @@ def get_role_tools(role_id: str) -> dict[str, object]:
         reasons["mail.manage"] = "邮件服务尚未就绪"
     dependencies = {name: browser_use_sessions.dependency_status() for name in BROWSER_USE_TOOL_NAMES}
     dependencies['message_push'] = {'status': 'ready', 'reason': '只写入当前角色的桌面对话，无需外部渠道账号'}
+    screen_reason = _screen_unavailable_reason(role)
+    if screen_reason:
+        reasons["observe_screen"] = screen_reason
+    dependencies["observe_screen"] = {
+        "status": "unavailable" if screen_reason else "unchecked",
+        "reason": screen_reason or "采集桌面及远端模型视觉能力将在调用时验证",
+    }
     for names, available, reason in (
         (("web_search", "web_fetch"), network_tools_config.enabled, "宿主联网已关闭"),
         (("memorize", "forget_memory"), memory_settings_store.get().enabled, "全局记忆已关闭"),
@@ -1571,7 +1592,12 @@ def get_role_tools(role_id: str) -> dict[str, object]:
 async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
     try:
         current = store.get(role_id)
+        if current is not None and data.agentConfig is not None and "screenPerception" in data.agentConfig.model_fields_set:
+            screen = current.agentConfig.screenPerception.model_copy(update=data.agentConfig.screenPerception.model_dump(exclude_unset=True))
+            _validate_screen_configuration(screen)
         updated = store.update(role_id, data)
+        if current is not None and current.agentConfig.screenPerception != updated.agentConfig.screenPerception:
+            await screen_perception.invalidate(role_id=role_id)
         if current is not None and current.agentConfig.shell != updated.agentConfig.shell:
             await asyncio.to_thread(task_runtime.cancel_role_tasks, role_id, kind="shell")
         if current is not None and current.agentConfig.spawn != updated.agentConfig.spawn:
@@ -1586,6 +1612,15 @@ async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
         raise HTTPException(status_code=404, detail="角色不存在") from error
     except OSError as error:
         raise HTTPException(status_code=500, detail=f"角色保存失败：{error}") from error
+
+
+def _validate_screen_configuration(setting) -> None:
+    if not setting.enabled:
+        return
+    configuration_id = setting.visionModelConfigurationId
+    configuration = model_configuration_store.get(configuration_id) if configuration_id else None
+    if configuration is None or not configuration.baseUrl or not configuration.model:
+        raise HTTPException(status_code=422, detail="请先选择存在且完整的已保存视觉模型连接")
 
 
 @app.post("/api/role-card-import/preview")
@@ -1836,6 +1871,7 @@ async def delete_role(role_id: str) -> None:
     try:
         for ref in pending_qq_refs:
             await managed_napcat.stop(ref, role_id=role_id)
+        await screen_perception.invalidate(role_id=role_id)
         await browser_use_sessions.set_role_enabled(role_id, False)
         # Mark the gate before the first await so cancellation cannot leave a
         # role permanently blocked from future memory work.
@@ -3863,6 +3899,7 @@ def _runtime_tool_candidates(
         MessagePushTool(session_store, lambda: store.workspace_path(role.id), role_id=role.id, authorized=desktop_push_authorized),
         SpawnTool(task_runtime, role.agentConfig.spawn, origin_resolver=task_origin, authorized=spawn_authorized),
         SpawnManageTool(task_runtime, origin_resolver=task_origin, authorized=spawn_authorized),
+        ObserveScreenTool(screen_perception, role.agentConfig.screenPerception.visionModelConfigurationId, role_id=role.id),
         ShellTool(
             store.root / role.id / "workspace" if preview else store.workspace_path(role.id),
             allowed_commands=shell.allowedCommands,
@@ -3921,9 +3958,32 @@ def _role_has_usable_channel_account(role_id: str) -> bool:
     )
 
 
+def _screen_unavailable_reason(role) -> str:
+    setting = role.agentConfig.screenPerception
+    if not setting.enabled:
+        return "角色的屏幕感知开关已关闭"
+    if not setting.visionModelConfigurationId:
+        return "尚未显式绑定视觉模型连接"
+    configuration = model_configuration_store.get(setting.visionModelConfigurationId)
+    if configuration is None:
+        return "视觉模型连接已不存在，请重新选择"
+    if not configuration.baseUrl or not configuration.model:
+        return "视觉模型连接不完整"
+    try:
+        if not model_adapter_registry.supports_images(configuration):
+            return "所选协议或模型不支持图像编码"
+    except ValueError:
+        return "所选视觉模型协议不可用"
+    if sys.platform != "win32" or getattr(sys, "frozen", False):
+        return "仅支持 Windows 交互桌面主屏；当前平台或打包入口不可用"
+    return ""
+
+
 def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[str]:
     shell = role.agentConfig.shell
     enabled: set[str] = set()
+    if not _screen_unavailable_reason(role):
+        enabled.add("observe_screen")
     if include_channel or group_repository.has_member_data(role.id):
         enabled.add("lookup_group_member")
     if include_channel or group_repository.has_group_data(role.id):
@@ -3981,7 +4041,7 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     host_enabled = set(enabled_tools)
     enabled_tools.update(agent_config.enabledTools)
-    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage"}) - host_enabled)
+    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen"}) - host_enabled)
     if not include_channel:
         enabled_tools.difference_update({
             "account_list", "account_targets", "account_send", "set_group_listening", "read_attachment",
@@ -4028,6 +4088,10 @@ async def _runtime_capabilities(
         session_key.startswith("role:") and _role_has_usable_channel_account(role.id)
     )
     policy = _runtime_capability_policy(role, include_channel=include_channel)
+    source_run = session_store.get_run(run_id)
+    if (session_key != f"role:{role.id}" or source_run is None
+            or source_run.modelSnapshot.get("screenPerceptionSource") != "desktop_owner"):
+        policy = replace(policy, enabled_tools=policy.enabled_tools - {"observe_screen"})
     frozen_manifests = {item.plugin_id: item for item in plugin_registry.manifests()}
     source_authority = capture_channel_source(
         multichannel_store, session_store, role_id=role.id, session_key=session_key,
@@ -5017,6 +5081,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         model_snapshot = {
             "modelConfiguration": configuration_snapshot,
             "role": role_snapshot,
+            "screenPerceptionSource": "desktop_owner",
         }
         run = AgentRun(
             runId=run_id,

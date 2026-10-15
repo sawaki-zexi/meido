@@ -9,6 +9,7 @@ import { ShellSettings } from "./ShellSettings";
 import { SpawnSettings } from "./SpawnSettings";
 import { ToolCatalog } from "./ToolCatalog";
 import { BasicToolSettings } from "./BasicToolSettings";
+import { ScreenPerceptionSettings } from "./ScreenPerceptionSettings";
 import { draftFromRole, payloadFromDraft } from "./draft";
 
 type TextFieldKey = keyof RoleProfile | "name" | "description";
@@ -96,6 +97,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
     </fieldset>
     <fieldset>
       <legend>能力</legend>
+      <ScreenPerceptionSettings draft={draft} onChange={setDraft} disabled={locked} />
       <label className="field checkbox-field">
         <input
           type="checkbox"

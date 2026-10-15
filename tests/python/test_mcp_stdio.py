@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 from pathlib import Path
 import sys
 
@@ -44,6 +43,18 @@ def test_configuration_is_durable_but_secrets_and_processes_are_not_in_catalog(t
     reopened = McpConfigStore(tmp_path / "mcp.db", store.credentials)
     assert reopened.get("notes") == config
     assert reopened.environment(config)["MCP_TEST_SECRET"] == "vault-sensitive-token"
+
+
+def test_real_asyncio_service_can_open_local_socket_with_minimal_environment(tmp_path):
+    store, config = configure(tmp_path, "asyncio")
+    async def run():
+        client = McpStdioClient(config, store.environment(config))
+        try:
+            tools = await client.connect()
+            assert tools
+        finally:
+            await client.close()
+    asyncio.run(run())
 
 
 def test_real_stdio_handshake_pagination_call_and_minimal_environment(tmp_path, monkeypatch):
