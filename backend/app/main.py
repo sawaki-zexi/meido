@@ -4292,6 +4292,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         placeholder_id: str | None = assistant_message.id
         final_message: Message | None = None
         disconnect_watcher: asyncio.Task[None] | None = None
+        disconnect_watcher_stopped = False
         capabilities: CapabilityResolution | None = None
         capabilities_owned_by_runtime = False
 
@@ -4305,7 +4306,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
             return payload
 
         async def watch_disconnect() -> None:
-            while True:
+            while not disconnect_watcher_stopped:
                 await asyncio.sleep(0.1)
                 if await request.is_disconnected():
                     runtime_manager.cancel_run(run_id)
@@ -4644,6 +4645,9 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
             except Exception as error:
                 memory_worker.errors.append(f"{role_id}: browser run cleanup failed: {type(error).__name__}")
             if disconnect_watcher is not None:
+                # Request's nonblocking AnyIO probe can absorb a concurrent
+                # Task.cancel(); the stop flag must also end its polling loop.
+                disconnect_watcher_stopped = True
                 disconnect_watcher.cancel()
                 await asyncio.gather(disconnect_watcher, return_exceptions=True)
     return StreamingResponse(
