@@ -1,6 +1,7 @@
 /** Small line icons (24×24, currentColor). Decorative: the button carries the accessible name. */
 const paths = {
   plus: "M12 5v14M5 12h14",
+  stop: "M6 6h12v12H6V6Z",
   people: "M9 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z M2 21v-2a7 7 0 0 1 14 0v2 M17 4a4 4 0 0 1 0 8 M22 21v-2a7 7 0 0 0-4-6.3",
   upload: "M12 15V3M7 8l5-5 5 5 M4 14v6h16v-6",
   grid: "M3 3h7v7H3V3Z M14 3h7v7h-7V3Z M3 14h7v7H3v-7Z M14 14h7v7h-7v-7Z",
