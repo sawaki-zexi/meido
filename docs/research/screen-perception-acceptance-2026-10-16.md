@@ -22,6 +22,12 @@ Standards 审查在 `bbe41e1` 发现：多个 role/config invalidate、signal �
 
 修正后的 screen/HTTP、Agent Runtime、工具发现 HTTP 综合命令为 `python -m pytest tests/python/test_screen_perception.py tests/python/test_screen_perception_api.py tests/python/test_screen_perception_native.py tests/python/test_agent_runtime.py tests/python/test_tool_discovery_api.py -q`：99 passed、1 个默认原生 skip。随后独立补充/复跑慢 close 的两种触发和普通视觉 deadline：3 passed。新模块 Ruff、mypy、compileall 通过；这些数量包含重叠用例，不相加。两轴仍待最终修复复核。
 
+Spec 完整审查随后在 `52bccec` 发现另一条提前释放路径：文本预算或工具事件提前拒绝时，关闭最外层 iterator 未向内层 `async for/yield` adapter 包装传播，HTTP 清理落给 asyncgen finalizer。修正在已有 rich adapter 每一层以 `contextlib.aclosing` 传播并等待关闭；不新增 gateway/SDK。Responses 的 Azure/Codex 子类和 Google 的 Vertex 子类沿同一实现继承；legacy→rich 委托也明确收尾其拥有的 iterator。
+
+真实 PNG 子进程与 localhost 持续响应验证十种已注册协议的文本/工具事件提前拒绝，共 20 项：旧 OpenAI/Anthropic 四个最小红例均在真实 close 前返回；修正后全部在底层关闭期间保持 pending、第二调用为 busy、只启动一个采集 worker，释放后生产路径先断开 peer 才交付 invalid_observation。夹具只在失败时回收逃逸 socket，不参与通过条件。AI 模块 mypy 的 51 项旧错误与 `52bccec` shadow 基线逐条一致，无新增；同样未重复原生采集或调用远端服务。
+
+包含上述矩阵的完整命令 `python -m pytest tests/python/test_model_protocol_adapters.py tests/python/test_model_layer.py tests/python/test_model_tools.py tests/python/test_model_event_stream.py tests/python/test_screen_perception.py tests/python/test_screen_perception_api.py tests/python/test_screen_perception_native.py -q`：196 passed、1 个默认原生 skip。Ruff、screen 模块 mypy、compileall 和 diff 检查通过。该批包含先前用例，不与前面的通过数相加。
+
 ## Windows 受控原生
 
 明确开启 `MEIDO_SCREEN_NATIVE=1` 后单独执行原生用例。测试先建立不透明、置顶、覆盖完整主屏的 Tk 四色窗口，确认尺寸及 5×5 网格点的实际顶层窗口归属；在启动真实采集前再确认覆盖。生产 worker 的图像只发到本机临时 HTTP fixture，fixture 收到的 PNG 在内存解码后精确匹配四个象限标记；不保存截图/base64。finally 销毁窗口、恢复线程 DPI。

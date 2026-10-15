@@ -6,8 +6,10 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 import json
+import struct
 import sys
 import threading
+import zlib
 
 from PIL import Image
 import pytest
@@ -23,7 +25,7 @@ from backend.app.screen_perception import ScreenPerception, ObserveScreenTool
 
 
 @contextmanager
-def vision_server(reply='{"interface_summary":"fixture editor","activity_key":"writing"}', *, api="openai-completions", chat=False, tool_call=False, status=200, hang=False, thinking=""):
+def vision_server(reply='{"interface_summary":"fixture editor","activity_key":"writing"}', *, api="openai-completions", chat=False, tool_call=False, status=200, hang=False, thinking="", keep_open=False):
     connected = threading.Event()
     disconnected = threading.Event()
     class Requests(list):
@@ -39,7 +41,7 @@ def vision_server(reply='{"interface_summary":"fixture editor","activity_key":"w
         def do_POST(self):
             requests.append((self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
             self.send_response(status)
-            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Type", "application/vnd.amazon.eventstream" if api == "bedrock-converse" else "text/event-stream")
             self.end_headers()
             connected.set()
             if hang:
@@ -65,12 +67,44 @@ def vision_server(reply='{"interface_summary":"fixture editor","activity_key":"w
                     ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 20}}),
                     ("message_stop", {"type": "message_stop"}),
                 ]
+                if tool_call:
+                    events[1] = ("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "forbidden", "name": "forbidden", "input": {}}})
+                    events[2] = ("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{}"}})
+                if keep_open and not disconnected.is_set():
+                    events = events[:3]
                 body = "".join(f"event: {kind}\ndata: {json.dumps(payload)}\n\n" for kind, payload in events)
+            elif api in {"openai-responses", "azure-openai-responses", "openai-codex-responses"}:
+                payload = {"type": "response.output_item.added", "output_index": 0, "item": {"type": "function_call", "id": "fc1", "call_id": "call1", "name": "forbidden", "arguments": "{}"}} if tool_call else {"type": "response.output_text.delta", "delta": answer}
+                body = f"event: {payload['type']}\ndata: {json.dumps(payload)}\n\n"
+            elif api in {"google-generative", "google-vertex"}:
+                part = {"functionCall": {"name": "forbidden", "args": {}}} if tool_call else {"text": answer}
+                body = "data: " + json.dumps({"candidates": [{"content": {"parts": [part]}}]}) + "\n\n"
+            elif api == "pi-messages":
+                payload = {"type": "toolcall_start", "contentIndex": 0, "id": "forbidden", "name": "forbidden"} if tool_call else {"type": "text_delta", "contentIndex": 0, "delta": answer}
+                body = f"event: {payload['type']}\ndata: {json.dumps(payload)}\n\n"
+            elif api == "bedrock-converse":
+                payload = {"contentBlockStart": {"contentBlockIndex": 0, "start": {"toolUse": {"toolUseId": "forbidden", "name": "forbidden"}}}} if tool_call else {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": answer}}}
+                encoded = json.dumps(payload).encode()
+                prelude = struct.pack(">II", len(encoded) + 16, 0)
+                frame = prelude + struct.pack(">I", zlib.crc32(prelude)) + encoded
+                body = frame + struct.pack(">I", zlib.crc32(frame))
             else:
                 calls = tool_call or (chat and len(requests) == 1)
                 delta = {"tool_calls": [{"index": 0, "id": "screen-call", "type": "function", "function": {"name": "observe_screen", "arguments": "{}"}}]} if calls else {"content": "I saw the fixture editor" if chat else answer, "reasoning_content": thinking}
                 body = "data: " + json.dumps({"choices": [{"delta": delta, "finish_reason": None}]}) + "\n\ndata: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "tool_calls" if calls else "stop"}]}) + "\n\ndata: [DONE]\n\n"
-            self.wfile.write(body.encode())
+                if keep_open and not disconnected.is_set():
+                    body = "data: " + json.dumps({"choices": [{"delta": delta, "finish_reason": None}]}) + "\n\n"
+            self.wfile.write(body.encode() if isinstance(body, str) else body)
+            self.wfile.flush()
+            if keep_open:
+                while not disconnected.is_set():
+                    try:
+                        self.wfile.write(b": heartbeat\n\n")
+                        self.wfile.flush()
+                        disconnected.wait(0.025)
+                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                        disconnected.set()
+                        return
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -88,7 +122,8 @@ def observation_host(tmp_path, url, *, api="openai-completions", code=None):
     initialize_databases(tmp_path / "data")
     roles = RoleStore(tmp_path / "roles")
     models = ModelConfigurationStore(tmp_path / "models.json")
-    config = models.create(ModelConfigurationInput(providerId="custom", provider="fixture", api=api, baseUrl=url, model="vision-only", apiKey="fixture-secret"))
+    options = {"accountId": "fixture-account"} if api == "openai-codex-responses" else {"project": "fixture-project"} if api == "google-vertex" else {}
+    config = models.create(ModelConfigurationInput(providerId="custom", provider="fixture", api=api, baseUrl=url, model="pixtral-12b" if api == "mistral-conversations" else "vision-only", apiKey="fixture-secret", apiOptions=options))
     role = roles.create(RoleInput(name="Private role marker", profile={"profile": "PRIVATE ROLE HISTORY MUST NOT ENTER VISION"}, agentConfig={"screenPerception": {"enabled": True, "visionModelConfigurationId": config.id}}))
     sessions = SessionStore(tmp_path / "data/sessions.db")
     session = sessions.open_role_session(role.id)
@@ -352,6 +387,56 @@ def test_overlapping_revocations_wait_for_slow_real_http_close(tmp_path, monkeyp
 
     with vision_server(hang=True) as (url, requests):
         asyncio.run(run(url, requests))
+
+
+@pytest.mark.parametrize("api", [
+    "openai-completions", "anthropic-messages", "openai-responses", "azure-openai-responses", "openai-codex-responses",
+    "google-generative", "google-vertex", "mistral-conversations", "pi-messages", "bedrock-converse",
+])
+@pytest.mark.parametrize("rejection", ["text", "tool"])
+def test_early_vision_rejection_waits_for_owned_real_http_close(tmp_path, monkeypatch, api, rejection):
+    from httpcore._async.http11 import AsyncHTTP11Connection
+
+    with vision_server(reply="x" * 17000, api=api, tool_call=rejection == "tool", keep_open=True) as (url, requests):
+        async def run():
+            service, tool, context, _, _, _, processes = observation_host(tmp_path, url, api=api)
+            original_close = AsyncHTTP11Connection.aclose
+            closing = asyncio.Event()
+            release = asyncio.Event()
+            connections = []
+            disconnected = False
+
+            async def slow_close(connection):
+                connections.append(connection)
+                closing.set()
+                await release.wait()
+                await original_close(connection)
+
+            monkeypatch.setattr(AsyncHTTP11Connection, "aclose", slow_close)
+            observation = asyncio.create_task(tool.execute({}, context))
+            try:
+                async with asyncio.timeout(5):
+                    await closing.wait()
+                    await asyncio.sleep(0.025)
+                    assert not observation.done(), "invalid observation returned before the underlying HTTP close"
+                    assert not requests.disconnected.is_set()
+                    second = await tool.execute({}, context)
+                    assert json.loads(second.content)["error"] == "busy"
+                    assert len(processes) == 1 and processes[0].returncode == 0
+            finally:
+                release.set()
+                await asyncio.gather(observation, return_exceptions=True)
+                disconnected = await asyncio.to_thread(requests.disconnected.wait, 2)
+                if not disconnected:
+                    # Only failed production cleanup is repaired by the fixture.
+                    for connection in connections:
+                        await original_close(connection)
+            result = await observation
+            assert result.is_error and json.loads(result.content)["error"] == "invalid_observation"
+            assert disconnected, "production early rejection did not disconnect its real peer"
+            await service.invalidate(role_id=context.role_id)
+            assert all(process.returncode is not None for process in processes)
+        asyncio.run(run())
 
 
 def test_discarded_thinking_counts_toward_vision_text_budget(tmp_path):

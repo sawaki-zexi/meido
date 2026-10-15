@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import aclosing
 
 from .anthropic_adapter import AnthropicMessagesAdapter
 from .azure_openai_responses_adapter import AzureOpenAIResponsesAdapter
@@ -209,10 +210,11 @@ def _legacy_content_blocks(content: object) -> tuple[ModelContentBlock, ...]:
 async def _stream_legacy_structured(adapter, messages, configuration, tools, *, max_tokens):
     from .model_adapter import ModelStreamError, ModelTextDelta, ModelToolCall
     from .model_types import ModelStreamError as RichError, ModelTextDelta as RichTextDelta, ModelToolCallEnd
-    async for event in adapter.stream_rich_messages(_convert_legacy_messages(messages), configuration, tools, max_tokens=max_tokens):
-        if isinstance(event, RichTextDelta):
-            yield ModelTextDelta(event.text)
-        elif isinstance(event, ModelToolCallEnd):
-            yield ModelToolCall(event.call.id, event.call.name, event.call.arguments)
-        elif isinstance(event, RichError):
-            yield ModelStreamError(event.error)
+    async with aclosing(adapter.stream_rich_messages(_convert_legacy_messages(messages), configuration, tools, max_tokens=max_tokens)) as stream:
+        async for event in stream:
+            if isinstance(event, RichTextDelta):
+                yield ModelTextDelta(event.text)
+            elif isinstance(event, ModelToolCallEnd):
+                yield ModelToolCall(event.call.id, event.call.name, event.call.arguments)
+            elif isinstance(event, RichError):
+                yield ModelStreamError(event.error)

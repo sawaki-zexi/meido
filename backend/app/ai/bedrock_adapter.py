@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
+from contextlib import aclosing
 import json
 import struct
 import time
@@ -246,7 +247,7 @@ class BedrockConverseAdapter:
         if buffer:
             raise RuntimeError("Bedrock Event Stream 未完整结束")
 
-    async def stream_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check: Callable[[], None] | None = None) -> AsyncIterator[ModelStreamEvent]:
+    async def stream_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check: Callable[[], None] | None = None) -> AsyncGenerator[ModelStreamEvent, None]:
         if not configuration.apiKey:
             yield ModelStreamStart()
             yield ModelStreamError("Bedrock Converse 需要 AWS Bedrock API Key")
@@ -397,9 +398,10 @@ class BedrockConverseAdapter:
     async def complete_messages(self, messages, configuration, tools=(), *, max_tokens=None) -> ModelAssistantMessage:
         return await self._complete(messages, configuration, tools, max_tokens=max_tokens, cancel_check=None)
 
-    async def stream_rich_messages(self, *args, **kwargs) -> AsyncIterator[ModelStreamEvent]:
-        async for event in self.stream_messages(*args, **kwargs):
-            yield event
+    async def stream_rich_messages(self, *args, **kwargs) -> AsyncGenerator[ModelStreamEvent, None]:
+        async with aclosing(self.stream_messages(*args, **kwargs)) as stream:
+            async for event in stream:
+                yield event
 
 
 def _nonnegative(value: object) -> int:

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass, field
 import json
 import time
@@ -547,7 +548,7 @@ class OpenAICompletionsRichAdapter:
         *,
         max_tokens: int | None = None,
         cancel_check: Callable[[], None] | None = None,
-    ) -> AsyncIterator[ModelStreamEvent]:
+    ) -> AsyncGenerator[ModelStreamEvent, None]:
         request_data, headers, internal_names = self._prepare_request(
             messages,
             configuration,
@@ -691,15 +692,16 @@ class OpenAICompletionsRichAdapter:
         *,
         max_tokens: int | None = None,
         cancel_check: Callable[[], None] | None = None,
-    ) -> AsyncIterator[ModelStreamEvent]:
-        async for event in self.stream_messages(
+    ) -> AsyncGenerator[ModelStreamEvent, None]:
+        async with aclosing(self.stream_messages(
             messages,
             configuration,
             tools,
             max_tokens=max_tokens,
             cancel_check=cancel_check,
-        ):
-            yield event
+        )) as stream:
+            async for event in stream:
+                yield event
 
     def stream(
         self,
