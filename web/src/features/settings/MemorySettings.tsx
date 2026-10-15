@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, errorMessage } from "../../api/client";
 import type { EmbeddingConfiguration } from "../../api/types";
 import { Notice, Placeholder } from "../../ui/Status";
+import { ApiKeyInput } from "../../ui/ApiKeyInput";
 
 type EmbeddingDraft = { provider: string; baseUrl: string; model: string; dimensions: number; apiKey: string };
 type MemorySettingsState = {
@@ -85,12 +86,15 @@ export function MemorySettings() {
       <div className="field"><label htmlFor="embedding-base-url">向量 API 地址</label><input id="embedding-base-url" required type="url" value={draft.baseUrl} disabled={busy} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} /></div>
       <div className="field"><label htmlFor="embedding-model-id">向量模型 ID</label><input id="embedding-model-id" required value={draft.model} disabled={busy} onChange={(event) => setDraft({ ...draft, model: event.target.value })} /></div>
       <div className="field"><label htmlFor="embedding-dimensions">向量维度</label><input id="embedding-dimensions" required type="number" min={1} max={4096} value={draft.dimensions} disabled={busy} onChange={(event) => setDraft({ ...draft, dimensions: Number(event.target.value) })} /></div>
-      <div className="field"><label htmlFor="embedding-api-key">向量 API Key</label><input id="embedding-api-key" type="password" autoComplete="new-password" value={draft.apiKey} placeholder={embedding.apiKeyConfigured ? "已设置，留空保留现有密钥" : "请输入 DashScope API Key"} disabled={busy} onChange={(event) => setDraft({ ...draft, apiKey: event.target.value })} /></div>
+      <ApiKeyInput id="embedding-api-key" label="向量 API Key" value={draft.apiKey} configured={embedding.apiKeyConfigured} placeholder="请输入 DashScope API Key" disabled={busy} onChange={(apiKey) => setDraft({ ...draft, apiKey })} onReveal={async () => {
+        const result = await api<{ apiKey: string }>("/api/embedding/configuration/reveal-key", { method: "POST" });
+        return result.apiKey;
+      }} />
+      <div className="form-actions"><button type="button" disabled={busy} onClick={() => void submitEmbedding("test")}>{pendingAction === "test" ? "测试中…" : "测试连接"}</button><button type="button" className="primary" disabled={busy} onClick={() => void submitEmbedding("save")}>{pendingAction === "save" ? "保存中…" : "保存向量配置"}</button></div>
       {embeddingStatus.lastError && <Notice>{embeddingStatus.lastError}</Notice>}
       {pendingAction === "test" && <p className="muted" role="status">正在测试向量模型连接…</p>}
       {embeddingError && <Notice>{embeddingError}</Notice>}
       {embeddingMessage && <Notice tone={embeddingMessage.startsWith("失败") ? "error" : "success"}>{embeddingMessage}</Notice>}
-      <div className="form-actions"><button type="button" disabled={busy} onClick={() => void submitEmbedding("test")}>{pendingAction === "test" ? "测试中…" : "测试连接"}</button><button type="button" className="primary" disabled={busy} onClick={() => void submitEmbedding("save")}>{pendingAction === "save" ? "保存中…" : "保存向量配置"}</button></div>
       <p className="muted">当前状态：{settings.embeddingEnabled ? (embeddingStatus.ready ? "可用" : embeddingStatus.configured ? "不可用" : "未配置") : "已暂停"} · {embedding.model} · {embedding.dimensions} 维</p>
     </section>
   </section>;
