@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "../../App";
 import { fakeBackend, message, role, sse } from "../../test/fakeBackend";
@@ -10,6 +10,91 @@ beforeEach(() => { sessionStorage.clear(); localStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("聊天输入与停止", () => {
+  it("收到回复完成事件后立即恢复发送，即使响应连接还没有关闭", async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; }, cancel });
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": () => ({ body: { session, messages: [] } }),
+      "POST /api/roles/r1/messages": () => {
+        controller.enqueue(new TextEncoder().encode(
+          sse("user_message_accepted", { message: message({ id: "u1", role: "user", content: "第一句" }), runId: "run-1" })
+          + sse("assistant_generation_started", { messageId: "a1", runId: "run-1" })
+          + sse("assistant_completed", { message: message({ id: "a1", role: "assistant", content: "回复已经完成", sequence: 2 }), runId: "run-1" }),
+        ));
+        return { stream };
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: "爱丽丝" });
+    const input = screen.getByRole("textbox", { name: "消息内容" });
+    await user.type(input, "第一句{Enter}");
+    await screen.findByText("回复已经完成");
+    await waitFor(() => expect(screen.queryByRole("button", { name: "停止回复" })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(screen.queryByText("正在输入…")).not.toBeInTheDocument();
+    expect(input).toHaveValue("");
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(calls.some((call) => call.path.endsWith("/stop"))).toBe(false);
+  });
+
+  it.each(["assistant_completed", "assistant_failed"] as const)("%s 终态不等待连接回收，保留生成期间的新草稿并可继续发送", async (terminal) => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const cancel = vi.fn(() => new Promise<void>(() => undefined));
+    const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; }, cancel });
+    let turn = 0;
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice, role({ id: "r2", name: "贝拉" })] } }),
+      "GET /api/roles/r1/session": () => ({ body: { session, messages: [] } }),
+      "GET /api/model/configurations": () => ({ body: { configurations: [{ id: "model-1", model: "test-model" }] } }),
+      "GET /api/roles/r1/model-configuration": () => ({ body: { configurationId: null, effectiveConfigurationId: "model-1" } }),
+      "POST /api/roles/r1/messages": () => {
+        if (++turn > 1) return { stream: [
+          sse("user_message_accepted", { message: message({ id: "u2", role: "user", content: "下一句草稿", sequence: 3 }) }),
+          sse("assistant_generation_started", { messageId: "a2" }),
+          sse("assistant_completed", { message: message({ id: "a2", role: "assistant", content: "第二轮回复", sequence: 4 }) }),
+        ] };
+        controller.enqueue(new TextEncoder().encode(
+          sse("user_message_accepted", { message: message({ id: "u1", role: "user", content: "第一句" }), runId: "run-1" })
+          + sse("assistant_generation_started", { messageId: "a1", runId: "run-1" })
+          + sse("assistant_delta", { messageId: "a1", delta: "已保留的回复", runId: "run-1" }),
+        ));
+        return { stream };
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: "爱丽丝" });
+    const input = screen.getByRole("textbox", { name: "消息内容" });
+    await user.type(input, "第一句{Enter}");
+    await screen.findByText("已保留的回复");
+    await user.type(input, "下一句草稿");
+    expect(screen.getByRole("button", { name: "选择聊天模型" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /贝拉/ })).toBeDisabled();
+    act(() => controller.enqueue(new TextEncoder().encode(sse(terminal, {
+      message: message({ id: "a1", role: "assistant", content: "已保留的回复", sequence: 2, status: terminal === "assistant_completed" ? "completed" : "failed" }),
+      error: terminal === "assistant_failed" ? "模型回复未能完成" : undefined,
+      runId: "run-1",
+    }))));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "停止回复" })).not.toBeInTheDocument());
+    expect(screen.queryByText("正在输入…")).not.toBeInTheDocument();
+    expect(input).toHaveValue("下一句草稿");
+    expect(screen.getByRole("button", { name: "选择聊天模型" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /贝拉/ })).toBeEnabled();
+    if (terminal === "assistant_failed") {
+      expect(screen.getByRole("alert")).toHaveTextContent("模型回复未能完成");
+      expect(screen.getByText("未完成")).toBeInTheDocument();
+    } else expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    expect(await screen.findByText("第二轮回复")).toBeInTheDocument();
+    expect(input).toHaveValue("");
+    expect(calls.filter((call) => call.path.endsWith("/messages")).map((call) => call.body)).toEqual([{ content: "第一句" }, { content: "下一句草稿" }]);
+    expect(calls.some((call) => call.path.endsWith("/stop"))).toBe(false);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it("后端已接收但响应头丢失时，从历史确认消息，避免回填后重复发送", async () => {
     let posted = false;
     fakeBackend({

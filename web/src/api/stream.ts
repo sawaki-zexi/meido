@@ -49,13 +49,18 @@ export async function streamRoleMessage(roleId: string, content: string, attachm
       buffer = blocks.pop() ?? "";
       for (const block of blocks) {
         const event = parseStreamEvent(block);
-        if (event) onEvent(event);
+        if (event) {
+          onEvent(event);
+          if (event.type === "assistant_completed" || event.type === "assistant_failed") return;
+        }
       }
       if (done) break;
     }
   } finally {
     options.signal?.removeEventListener("abort", cancel);
-    await reader.cancel().catch(() => undefined);
+    // Stream completion releases the chat immediately; transport cleanup may
+    // continue after the final event and must not hold the next message.
+    cancel();
     reader.releaseLock();
   }
 }
