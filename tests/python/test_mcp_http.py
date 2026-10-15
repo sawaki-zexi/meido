@@ -592,6 +592,7 @@ def test_exited_peer_is_reported_unhealthy_and_add_reconnects_without_replaying_
     ("output_mismatch", "MCP structured result does not match output schema"),
     ("tool_error", "evidence result"),
     ("peer_error", "MCP peer rejected the request"),
+    ("peer_error_delayed_exit", "MCP peer rejected the request"),
 ])
 def test_real_remote_results_preserve_bounded_content_and_safe_actionable_failures(tmp_path, monkeypatch, mode, expected):
     client, role, sessions, configs = setup_host(tmp_path, monkeypatch)
@@ -620,3 +621,5 @@ def test_real_remote_results_preserve_bounded_content_and_safe_actionable_failur
     assert len(result.content) <= 1024
     if mode == "large_result":
         assert result.toolResult["truncated"] is True
+    if mode == "peer_error_delayed_exit":
+        assert not process_alive(int((tmp_path / "peer/pid").read_text()))

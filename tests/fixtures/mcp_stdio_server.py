@@ -135,7 +135,7 @@ def handle(message):
             result["content"] = [{"type": "image", "mimeType": "image/png", "data": base64.b64encode(os.environ["MCP_TEST_SECRET"].encode()).decode()}]
         if mode == "tool_error":
             result["isError"] = True
-        if mode == "peer_error":
+        if mode in {"peer_error", "peer_error_delayed_exit"}:
             send({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32000, "message": os.environ["MCP_TEST_SECRET"]}})
             return
     else:
@@ -159,3 +159,7 @@ for line in sys.stdin:
         threading.Thread(target=handle, args=(message,), daemon=True).start()
     else:
         handle(message)
+
+if mode == "peer_error_delayed_exit":
+    # Keep the real close operation pending across the host's authority poll.
+    time.sleep(.15)

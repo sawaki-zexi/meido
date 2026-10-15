@@ -207,7 +207,11 @@ class McpStdioClient:
         except asyncio.CancelledError:
             await self.close()
             raise
-        except Exception:
+        except Exception as error:
+            if isinstance(error, McpProtocolError):
+                # Authority polling can observe closed while disposal is still
+                # pending. Preserve the host's precise error before that await.
+                self._failure = error
             await self.close()
             raise
 
@@ -297,7 +301,8 @@ class McpStdioClient:
         except asyncio.CancelledError:
             raise
         except Exception:
-            self._failure = McpProtocolError("MCP protocol stream is invalid or closed")
+            if self._failure is None:
+                self._failure = McpProtocolError("MCP protocol stream is invalid or closed")
             for future in self._pending.values():
                 if not future.done():
                     future.set_exception(self._failure)
