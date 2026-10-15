@@ -8,6 +8,11 @@ export type RoleCardImportPreview = {
 };
 export type MemoryRecallToolConfig = { enabled: boolean };
 export type AgentToolConfig = { memoryRecall?: MemoryRecallToolConfig; browserUse?: { enabled: boolean }; enabledTools?: string[]; enabledPlugins?: string[]; grantedCapabilities?: string[]; shell?: { enabled: boolean; allowedCommands: string[]; timeoutSeconds: number; maxOutputChars: number } };
+export type RoleToolCatalog = {
+  roleId: string; sessionKey: string; preview: boolean;
+  tools: { name: string; description: string; source: string; version: string | null; risk: string | null; exposure: string | null; registered: boolean; enabled: boolean; authorized: boolean; modelVisible: boolean | null; dependency: { status: "ready" | "unavailable" | "unchecked"; reason: string }; reason: string }[];
+  plugins: { id: string; version: string; source: string; enabled: boolean; authorized: boolean; requestedCapabilities: string[]; reason: string }[];
+};
 export type Role = { id: string; name: string; description: string; profile: RoleProfile; agentConfig?: AgentToolConfig; createdAt: string; updatedAt: string; avatarUrl?: string | null; avatarMediaType?: string | null; avatarOriginalUrl?: string | null; avatarOriginalMediaType?: string | null; cardImageUrl?: string | null; cardImageMediaType?: string | null };
 export type MessageStatus = "streaming" | "completed" | "failed";
 export type ChatAttachment = { id: string; name: string; mediaType: string; size: number; kind: "image" | "file" };
