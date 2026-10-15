@@ -85,7 +85,7 @@ class ChannelAvatarStore:
         return hashlib.sha256(f"{account_id}\0{kind}\0{subject_id}".encode()).hexdigest()
 
     def url(self, account_id: str, kind: str, subject_id: str) -> str | None:
-        if not subject_id:
+        if not account_id or not subject_id:
             return None
         avatar_id = self.key(account_id, kind, subject_id)
         return f"/api/channels/avatars/{avatar_id}" if self.path(avatar_id) else None

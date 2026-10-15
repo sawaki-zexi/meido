@@ -97,6 +97,65 @@ def configure_session_api(tmp_path, monkeypatch, adapter):
     monkeypatch.setattr(main, "model_configuration_store", ModelConfigurationStore(tmp_path / "data" / "model-config.json"))
     monkeypatch.setattr(main, "role_locks", {})
     return role, sessions, TestClient(main.app)
+
+
+def test_completed_http_reply_finishes_when_disconnect_poll_and_cleanup_cancel_overlap(tmp_path, monkeypatch):
+    import anyio
+    from backend.app.agent_runtime.runtime import RuntimeManager
+
+    poll_started = asyncio.Event()
+    aligned = False
+
+    class Adapter:
+        async def stream_reply(self, role, history, configuration=None):
+            del role, history, configuration
+            yield "已完成的回复"
+
+    role, sessions, _ = configure_session_api(tmp_path, monkeypatch, Adapter())
+    monkeypatch.setattr(main, "runtime_manager", RuntimeManager(sessions))
+
+    async def connected_client(scope, receive, send):
+        async def controlled_receive():
+            nonlocal aligned
+            if not aligned and anyio.current_effective_deadline() == float("-inf"):
+                aligned = True
+                poll_started.set()
+                # CancelScope's queued cancellation wakes this Future first;
+                # model completion then cancels the poll task before it resumes.
+                # This is an ASGI receive scheduling boundary, not a replacement
+                # of Request.is_disconnected or Meido's watcher implementation.
+                try:
+                    await asyncio.get_running_loop().create_future()
+                except asyncio.CancelledError as first_cancellation:
+                    # ASGI receive implementations may yield while cleaning up
+                    # cancelled reads before propagating the first exception.
+                    for _ in range(4):
+                        try:
+                            await asyncio.sleep(0)
+                        except asyncio.CancelledError:
+                            pass
+                    raise first_cancellation
+            return await receive()
+
+        async def controlled_send(message):
+            if b"event: assistant_completed" in message.get("body", b""):
+                # Resume final response delivery while the next nonblocking
+                # probe has cancellation queued but has not resumed yet.
+                await poll_started.wait()
+            await send(message)
+
+        await asyncio.wait_for(main.app(scope, controlled_receive, controlled_send), timeout=2)
+
+    response = TestClient(connected_client).post(
+        f"/api/roles/{role.id}/messages", json={"content": "完成这条回复"},
+    )
+
+    assert aligned
+    assert response.status_code == 200
+    assert "event: assistant_completed" in response.text
+    assert "已完成的回复" in response.text
+
+
 def test_role_api_crud_and_duplicate_names(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "store", RoleStore(tmp_path / "roles"))
     client = TestClient(main.app)

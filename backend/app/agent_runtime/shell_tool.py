@@ -5,7 +5,7 @@ import hashlib
 import os
 import shlex
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -68,6 +68,7 @@ class ShellTool:
         tasks: TaskRuntime | None = None, promote_after_seconds: float = 15,
         origin_resolver: Callable[[ToolContext], TaskOrigin] = _origin,
         authorized: Callable[[ToolContext], bool] | None = None,
+        authorized_command: Callable[[ToolContext, str], bool] | None = None,
     ) -> None:
         self.definition = replace(self.definition, source="role", timeout_seconds=timeout_seconds + 2,
                                   output_limit=max_output_chars)
@@ -76,6 +77,7 @@ class ShellTool:
         self.timeout_seconds, self.max_output_chars = timeout_seconds, max_output_chars
         self.tasks, self.promote_after_seconds = tasks, promote_after_seconds
         self.origin_resolver, self.authorized = origin_resolver, authorized
+        self.authorized_command = authorized_command
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
         del on_update
@@ -96,40 +98,39 @@ class ShellTool:
             return _error(f"invalid command: {error}")
         if not argv:
             return _error("command must be a non-empty string")
-        raw_executable, executable = argv[0], Path(argv[0]).name
-        allowed = any(
-            (Path(item).is_absolute() and os.path.normcase(str(Path(argv[0]).resolve())) == os.path.normcase(str(Path(item).resolve())))
-            or (not Path(item).is_absolute() and "/" not in raw_executable and "\\" not in raw_executable
-                and os.path.normcase(executable) == os.path.normcase(item))
-            for item in self.allowed_commands
-        )
-        if not allowed:
+        if not self._executable_is_allowed(argv[0], self.allowed_commands):
             return _error("command denied by role policy")
+
+        def authority():
+            return ((self.authorized is None or self.authorized(context))
+                    and (self.authorized_command is None or self.authorized_command(context, command)))
+
+        if not authority():
+            return _error("Shell command authorization has been revoked")
         if not self.workspace.is_dir():
             return _error("workspace is unavailable", "failed")
         timeout = arguments.get("timeout", self.timeout_seconds)
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= self.timeout_seconds:
             return _error("timeout exceeds role host budget")
         clean_env = {key: value for key, value in os.environ.items()
-                     if key in {"PATH", "SystemRoot", "WINDIR", "HOME", "USERPROFILE", "LANG", "LC_ALL", "TMP", "TEMP"}}
+                     if key.upper() in {"PATH", "SYSTEMROOT", "WINDIR", "HOME", "USERPROFILE", "LANG", "LC_ALL", "TMP", "TEMP"}}
         # Lazy standalone ownership keeps catalog construction read-only. The
         # application always injects its shared runtime and closes it on exit.
         if self.tasks is None:
             self.tasks = TaskRuntime(self.workspace.parent / ".meido-tasks" / hashlib.sha256(str(self.workspace).encode()).hexdigest())
-        tasks, origin = self.tasks, self.origin_resolver(context)
-        authority = self.authorized
         try:
+            tasks, origin = self.tasks, self.origin_resolver(context)
             task_id = tasks.submit(origin, ProcessExecutor(argv, self.workspace, clean_env),
                                    budget=TaskBudget(timeout, self.max_output_chars, tasks.max_log_bytes), kind="shell",
                                    description=str(arguments.get("description", "")),
-                                   authorized=(lambda: authority(context)) if authority is not None else None)
+                                   authorized=authority)
         except (PermissionError, ValueError) as error:
             return _error(str(error))
         detached = False
         started = time.monotonic()
         try:
             while True:
-                if self.authorized is not None and not self.authorized(context):
+                if not authority():
                     return _error("Shell authorization has been revoked")
                 snapshot = tasks.query(task_id, origin)
                 if snapshot.ended_at is not None:
@@ -147,6 +148,27 @@ class ShellTool:
                 stopping = asyncio.create_task(asyncio.to_thread(tasks.stop, task_id, origin))
                 await asyncio.shield(stopping)
             raise
+
+
+    @staticmethod
+    def command_is_allowed(command: str, allowed_commands: Sequence[str]) -> bool:
+        """Check the same argv policy used by execution without starting a process."""
+        try:
+            argv = shlex.split(command, posix=True)
+        except ValueError:
+            return False
+        return bool(argv) and ShellTool._executable_is_allowed(argv[0], allowed_commands)
+
+    @staticmethod
+    def _executable_is_allowed(executable: str, allowed_commands: Sequence[str]) -> bool:
+        return any(
+            Path(item).is_absolute()
+            and os.path.normcase(str(Path(executable).resolve())) == os.path.normcase(str(Path(item).resolve()))
+            or not Path(item).is_absolute() and "/" not in executable and "\\" not in executable
+            and os.path.normcase(Path(executable).name) == os.path.normcase(item)
+            for item in (value.strip() for value in allowed_commands)
+            if item
+        )
 
 
 class TaskOutputTool:
@@ -180,7 +202,7 @@ class TaskOutputTool:
                 if snapshot.ended_at is not None or time.monotonic() >= deadline or context.signal.is_cancelled():
                     return _result(snapshot)
                 await asyncio.sleep(min(.025, max(0, deadline - time.monotonic())))
-        except (KeyError, ValueError):
+        except (KeyError, ValueError, PermissionError):
             return _error("task not found in this role and original context", "not_found")
 
 
@@ -200,5 +222,5 @@ class TaskStopTool(TaskOutputTool):
                 return _error("Shell authorization has been revoked")
             snapshot = await asyncio.to_thread(self.tasks.stop, str(arguments["task_id"]), self.origin_resolver(context))
             return _result(snapshot)
-        except (KeyError, ValueError):
+        except (KeyError, ValueError, PermissionError):
             return _error("task not found in this role and original context", "not_found")

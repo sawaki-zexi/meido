@@ -731,11 +731,9 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .channel-view-header h1 { margin: 0; font-size: 18px; font-weight: 650; overflow-wrap: anywhere; }
 .channel-view-header p { margin: 3px 0 0; color: var(--ink-faint); font-size: 12px; }
 .channel-view-header > :last-child { margin-left: auto; }
-.channel-workspace { display: grid; grid-template-columns: minmax(210px, 280px) minmax(300px, 1fr) minmax(240px, 300px); flex: 1; min-height: 0; }
-.channel-thread-list, .channel-account-panel { min-width: 0; min-height: 0; overflow: auto; padding: 16px; background: rgb(255 255 255 / 24%); }
-.channel-thread-list { border-right: 1px solid var(--line); }
-.channel-account-panel { border-left: 1px solid var(--line); }
-.channel-thread-list h2, .channel-account-panel h2 { margin: 0 0 14px; font-size: 15px; }
+.channel-workspace { display: grid; grid-template-columns: minmax(190px, 250px) minmax(0, 1fr); flex: 1; min-height: 0; }
+.channel-thread-list, .channel-thread-list { border-right: 1px solid var(--line); }
+.channel-thread-list h2 { margin: 0 0 14px; font-size: 15px; }
 .channel-thread { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 9px; width: 100%; padding: 9px 7px; border: 0; border-radius: 5px; background: transparent; text-align: left; cursor: pointer; }
 .channel-thread:hover, .channel-thread.active { background: var(--accent-gradient-soft); }
 .channel-mark { display: grid; place-items: center; width: 32px; aspect-ratio: 1; border-radius: 50%; color: #fff; font-size: 14px; font-weight: 700; background: var(--accent-gradient); }
@@ -747,7 +745,7 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .channel-messages > header { padding: 15px 20px; border-bottom: 1px solid var(--line); background: rgb(255 255 255 / 35%); }
 .channel-messages > header h2 { margin: 0; font-size: 15px; }
 .channel-messages > header p { margin: 4px 0 0; color: var(--ink-faint); font-size: 12px; }
-.channel-messages ol { display: flex; flex: 1; flex-direction: column; gap: 12px; overflow: auto; margin: 0; padding: 20px; list-style: none; }
+.channel-messages > ol { display: flex; flex: 1; flex-direction: column; gap: 12px; overflow: auto; margin: 0; padding: 20px; list-style: none; }
 .channel-older { align-self: center; }
 .channel-older button { min-height: 32px; padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--bg); color: var(--ink-soft); cursor: pointer; }
 .channel-older button:disabled { opacity: .55; cursor: default; }
@@ -760,53 +758,17 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .channel-message time { color: var(--ink-faint); font-size: 10px; }
 .channel-no-selection { display: grid; flex: 1; place-content: center; justify-items: center; color: var(--ink-faint); }
 .channel-no-selection p, .channel-empty { font-size: 13px; }
-.channel-account-state { margin: -6px 0 18px; color: var(--ink-soft); font-size: 12px; }
-.channel-account-panel label { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; }
-.channel-account-panel input { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--bg); color: var(--ink); }
-.channel-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 10px; }
-.channel-actions > button:not(.icon-button), .channel-pairing button { min-height: 34px; padding: 6px 11px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--bg); color: var(--ink); cursor: pointer; }
-.channel-actions > button.primary { border-color: var(--rose); background: var(--accent-gradient); color: #fff; }
-.channel-actions button:disabled, .channel-pairing button:disabled { opacity: .5; cursor: default; }
-.channel-pairing { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
-.channel-pairing h3 { margin: 0 0 6px; font-size: 13px; }
-.channel-pairing p { color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
-.channel-pairing output { display: block; margin-top: 10px; padding: 10px; border-radius: 4px; background: var(--blush); color: var(--rose-deep); font-family: ui-monospace, monospace; text-align: center; }
 .channel-error { color: var(--danger); font-size: 12px; }
 @container (max-width: 920px) {
-  .channel-workspace { grid-template-columns: minmax(170px, 220px) minmax(250px, 1fr); }
-  .channel-account-panel { grid-column: 1 / -1; border-top: 1px solid var(--line); border-left: 0; }
-}
+  .channel-workspace { grid-template-columns: minmax(160px, 210px) minmax(0, 1fr); }
+  }
 @container (max-width: 640px) {
   .channel-view-header { padding: 8px 12px; }
-  .channel-workspace { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(110px, 25vh) minmax(220px, 1fr) minmax(250px, auto); overflow-y: auto; }
+  .channel-workspace { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(110px, 25vh) minmax(220px, 1fr); overflow-y: auto; }
   .channel-thread-list { border-right: 0; border-bottom: 1px solid var(--line); }
   .channel-messages { min-height: 220px; }
-  .channel-account-panel { border-left: 0; }
-  .channel-message { max-width: 90%; }
+    .channel-message { max-width: 90%; }
 }
-.channel-platform-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; margin: -4px 0 14px; }
-.channel-platform-tabs button { display: flex; min-width: 0; min-height: 42px; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--ink-soft); text-align: left; cursor: pointer; }
-.channel-platform-tabs button.active { border-color: var(--rose); background: var(--accent-gradient-soft); color: var(--rose-deep); }
-.channel-platform-tabs button span { overflow: hidden; max-width: 100%; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.channel-platform-tabs button small { color: var(--ink-faint); font-size: 10px; }
-.channel-platform-tabs button:focus-visible, .channel-group-heading button:focus-visible, .channel-group-option input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.channel-account-panel .channel-capabilities { display: flex; flex-wrap: wrap; gap: 5px; margin: -8px 0 16px; }
-.channel-capabilities span { max-width: 100%; padding: 3px 7px; border: 1px solid var(--line); border-radius: 4px; background: rgb(255 255 255 / 36%); color: var(--ink-soft); font-size: 10px; overflow-wrap: anywhere; }
-.channel-account-panel .channel-account-options { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 10px 0 14px; }
-.channel-account-panel .channel-account-options label { display: flex; align-items: center; gap: 6px; margin: 0; cursor: pointer; }
-.channel-account-panel .channel-account-options input[type="checkbox"], .channel-group-option input[type="checkbox"] { width: 16px; height: 16px; margin: 0; padding: 0; accent-color: var(--rose); }
-.channel-account-panel textarea { width: 100%; min-width: 0; resize: vertical; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--bg); color: var(--ink); font: inherit; font-size: 12px; }
-.channel-group-listening { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
-.channel-group-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.channel-group-heading h3 { margin: 0; font-size: 13px; }
-.channel-group-heading button { min-height: 30px; padding: 4px 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--bg); color: var(--ink-soft); font-size: 11px; cursor: pointer; }
-.channel-group-listening > p { margin: 8px 0; color: var(--ink-soft); font-size: 11px; line-height: 1.45; }
-.channel-group-option { display: flex !important; align-items: center; justify-content: space-between; gap: 10px; margin: 0 !important; padding: 8px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
-.channel-group-option span { display: grid; min-width: 0; gap: 2px; }
-.channel-group-option strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.channel-group-option small { color: var(--ink-faint); font-size: 10px; }
-.channel-group-option input[type="checkbox"] { flex: 0 0 16px; }
-
 /* Soft pink continuum: keep the app on one canvas and use translucency for hierarchy. */
 body { background: var(--surface-gradient); background-attachment: fixed; }
 .shell { background: var(--surface-gradient); }

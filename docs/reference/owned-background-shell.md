@@ -2,7 +2,7 @@
 
 状态：当前。最后核验：2026-10-16。
 
-审查修正中：当前分支的渠道来源授权撤销（解绑/重绑、屏蔽、私聊/群响应范围）尚未接入 #148 的共用来源授权模块，9 个公开 AgentTool 反例仍为红；不能据下文目标边界声明这些渠道情况已通过。输出预算兼容和日志消费故障已独立修复，尚未建立 PR。
+当前分支已复用 #148 的共用来源授权，原 9 个公开 AgentTool 反例由红转绿；另验证平台暂停、同 ID 账号重建、同源后续回合与重新配对后的日志隔离。代码等待总 PR #162 集成与独立审查，不代表完整 Shiori 目标完成。
 
 事实来源：[ADR-0012](../adr/0012-owned-task-runtime.md)、[TaskRuntime](../../backend/app/task_runtime/runtime.py)、[真实进程执行器](../../backend/app/task_runtime/process.py)、[AgentTool](../../backend/app/agent_runtime/shell_tool.py)、[进程验收](../../tests/python/test_background_shell.py)、[HTTP 验收](../../tests/python/test_background_shell_api.py)。对应 #149 / 完整复刻规格 C03、D02、T07。
 
@@ -18,13 +18,19 @@
 
 `timeout` 默认取角色 Shell 超时，不能超过角色上限或宿主 600 秒上限；后台与自动提升均保留原始截止，不获得无限运行许可。自动提升阈值由宿主设置，模型不能修改。普通前台调用随父回合取消，已返回后台的任务继续由应用持有，完成默认通过 `task_output` 拉取。
 
-结果 `details` 包含 `taskId`、`status`、`exitCode`、`background`、`durationSeconds`、`description`、`kind`、`timeoutSeconds`、`outputChars`、`truncated`、`logPath`、`logBytes`、`logComplete`、`logTruncated`、`logError`、`progress` 和 `origin`。`origin` 固定角色、会话、来源线程/账号、父 run、tool call 和能力版本；后续同来源回合可查询，跨角色或跨来源不能查询、停止或取得日志定位。不存在与不属于当前来源使用相同错误，不泄漏记录是否存在。
+渠道任务从真实入站消息冻结 sender、角色/线程/账号及创建代际、配对 identity/pairedAt 和主人私聊边界；不读取正文自报身份。提交、查询和后台授权观察复用 `FrozenChannelSource`，平台/账号暂停、响应范围关闭、屏蔽、解绑或重绑均会拒绝日志访问并停止原执行。来源 scope 不包含单条消息时间，因而同一绑定/发送者的后续回合可查询；重新配对即使还是同一平台 ID，也不能继承旧任务。前台工具 child token 结束不撤销已返回的后台任务。
+
+Shell 同时遵守冻结实例白名单与当前最终命令白名单；后台观察也检查原命令是否仍许可。Windows 环境变量名按大小写不敏感匹配既有许可集合，保留 `SYSTEMROOT`，不扩大可继承环境范围。
+
+结果 `details` 包含 `taskId`、`status`、`exitCode`、`background`、`durationSeconds`、`description`、`kind`、`timeoutSeconds`、`outputChars`、`truncated`、`logPath`、`logBytes`、`logComplete`、`logTruncated`、`logError`、`progress` 和 `origin`。`origin` 固定角色、会话、来源线程/账号、父 run、宿主唯一 tool call、该调用实际能力版本及 `sourceScopeId/sourceAuthority`；后续同来源回合读取时仍返回原 origin。不存在与不属于当前来源使用相同错误，不泄漏记录是否存在。
 
 状态为 `queued`、`running` 或 `succeeded` 时工具结果不是错误；非零退出为 `failed`，硬截止为 `timed_out`，主动停止/撤销为 `cancelled`，关闭和重启后缺失句柄为 `interrupted`。失败终态不会被重复 stop 改成成功。
 
 ## 输出、存储与回收
 
-stdout/stderr 持续消费，UTF-8 分块使用增量解码；模型展示角色配置限定的尾部，stderr 片段带 `stderr:` 前缀。超过展示预算的输出仍进入独立日志。`truncated=true` 表示展示尾部被截断；只有 `logComplete=true` 才表示日志保存了完整输出。达到日志存储上限后继续消费管道，明确返回 `logTruncated=true`，保留文件不能称为完整输出。
+stdout/stderr 持续消费，UTF-8 分块使用增量解码。运行中尾部和保留日志按泵到达次序记录，stderr 片段带 `stderr:` 前缀；正常排空后的终态展示则先组合 stdout，再附加 `\nstderr: ` 和 stderr，共同受角色展示预算截断。`shell` 与后续 `task_output` 返回相同终态展示，不将 stderr 插入 stdout JSON 中；超出预算时仍可能截去 JSON 前缀，并明确报告截断，不保证截断内容可解析。执行器只保留每条流有界尾部，不无限缓存输出。
+
+超过展示预算的输出仍进入独立日志。`truncated=true` 表示展示尾部被截断；只有 `logComplete=true` 才表示日志保存了完整输出。达到日志存储上限后继续消费管道，明确返回 `logTruncated=true`，保留文件不能称为完整输出。
 
 展示预算兼容角色设置的完整有效范围（最多 200000 字符）。日志路径不可写等消费故障会停止真实进程并返回 `failed`、`logComplete=false` 和仅含异常类型的 `logError`；失败终态写入独立 SQLite，不再次依赖已经损坏的日志路径，也不把写入故障解释为预算耗尽。
 
@@ -36,7 +42,7 @@ Windows 使用以挂起方式创建的进程和 `KILL_ON_JOB_CLOSE` Job，启动
 
 ## 可复用的应用边界
 
-`TaskRuntime.submit(origin, executor, budget, kind, description, authorized)` 提交真实执行；`query` 只观察，`stop` 取消，`cancel_role_tasks`、`set_role_enabled`、`delete_role`、`reconcile_roles`、`close/start` 管理归属和应用生命周期。`TaskExecutor.run(TaskExecution)` 必须返回 `TaskOutcome`，`cancel()` 必须释放其资源。`TaskExecution` 提供冻结 deadline 和有界日志/进度写入。
+`TaskRuntime.submit(origin, executor, budget, kind, description, authorized)` 提交真实执行；`query` 只观察，`stop` 取消，`cancel_role_tasks`、`set_role_enabled`、`delete_role`、`reconcile_roles`、`close/start` 管理归属和应用生命周期。`TaskExecutor.run(TaskExecution)` 必须返回 `TaskOutcome`，`cancel()` 必须释放其资源。`TaskExecution` 提供冻结 budget/deadline 和有界日志/进度写入；`TaskOutcome.output_tail` 可提供终态展示，Runtime 再次按同一预算截断，保留日志与实际消费计数不被它替换。
 
 Shell 是此边界的首个完整执行器。后续子 agent、调度和 Coding 执行器可复用任务身份、SQLite、预算、日志与取消；本票没有注册尚未实现的工具或伪装为主人回合。spawn 的完成回灌和调度交付仍属于后续 Ticket。
 

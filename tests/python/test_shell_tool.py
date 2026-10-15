@@ -97,6 +97,18 @@ def test_shell_tool_does_not_forward_model_api_key_to_child(tmp_path, monkeypatc
     assert "missing" in result.content
 
 
+def test_shell_tool_preserves_uppercase_windows_system_root_without_forwarding_secrets(tmp_path, monkeypatch):
+    root = os.environ.get("SYSTEMROOT", "/test-system-root")
+    monkeypatch.setenv("SYSTEMROOT", root)
+    monkeypatch.setenv("MEIDO_SHELL_TEST_SECRET", "must-not-leak")
+    tool, executable = _tool(tmp_path)
+    code = "import os; print(os.environ.get('SYSTEMROOT', 'missing')); print(os.environ.get('MEIDO_SHELL_TEST_SECRET', 'absent'))"
+    result = asyncio.run(tool.execute({"command": f'{executable} -c "{code}"'}, _context()))
+
+    assert not result.is_error
+    assert result.content.splitlines() == [root, "absent"]
+
+
 def test_shell_tool_cancellation_terminates_process(tmp_path):
     tool, executable = _tool(tmp_path, timeout_seconds=10)
     token = CancellationToken()

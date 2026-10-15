@@ -172,7 +172,7 @@ def test_http_role_revocation_or_deletion_releases_real_background_process(api, 
 
 
 @pytest.mark.parametrize("chat_type", ["private", "group"])
-@pytest.mark.parametrize("revoke", ["unbind", "rebind", "scope", "block"])
+@pytest.mark.parametrize("revoke", ["unbind", "rebind", "scope", "block", "platform", "recreate"])
 def test_channel_owner_revocation_stops_process_and_seals_original_task_log(api, monkeypatch, chat_type, revoke):
     from test_background_shell import command, process_alive
 
@@ -221,6 +221,11 @@ def test_channel_owner_revocation_stops_process_and_seals_original_task_log(api,
             channels.unbind_identity(str(channels.list_identities()[0]["identityId"]))
             if revoke == "rebind":
                 pair()
+        elif revoke == "platform":
+            channels.set_channel_enabled("qq", False)
+        elif revoke == "recreate":
+            channels.delete_account(account.account_id)
+            channels.register_channel_account(role_id, "qq", account_id=account.account_id, enabled=True, allow_group=True)
         else:
             channels.register_channel_account(role_id, "qq", account_id=account.account_id, enabled=True,
                 allow_private=not (revoke == "scope" and chat_type == "private"),
@@ -229,6 +234,81 @@ def test_channel_owner_revocation_stops_process_and_seals_original_task_log(api,
         denied = await tools["task_output"].execute({"task_id": submitted.details["taskId"]}, ctx)
         assert denied.is_error is True
         assert "logPath" not in denied.details
+        deadline = time.monotonic() + 2
+        while process_alive(pid) and time.monotonic() < deadline:
+            await asyncio.sleep(.02)
+        assert not process_alive(pid)
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("chat_type", ["private", "group"])
+def test_channel_task_keeps_original_authority_across_turns_and_cannot_transfer_to_repaired_owner(api, monkeypatch, chat_type):
+    from test_background_shell import command, process_alive
+
+    client, roles, sessions, _tasks = api
+    channels = MultichannelStore(sessions.database_path, sessions)
+    monkeypatch.setattr(main, "multichannel_store", channels)
+    role_id = client.post("/api/roles", json={"name": "原来源任务", "profile": {"profile": "设定"}, "agentConfig": {
+        "shell": {"enabled": True, "allowedCommands": [sys.executable], "timeoutSeconds": 10}
+    }}).json()["role"]["id"]
+    account = channels.register_channel_account(role_id, "qq", account_id="qq-origin", enabled=True, allow_group=True)
+    thread = channels.ensure_channel_thread(role_id, "qq", account.account_id,
+        "owner" if chat_type == "private" else "group", chat_type)
+
+    def pair():
+        code = channels.create_pairing_code(role_id, "qq")
+        assert channels.consume_pairing_code(code, role_id=role_id, channel="qq", scope="platform",
+            platform_user_id="owner", account_id=account.account_id, chat_id="owner")
+
+    def turn(run_id):
+        active = sessions.active_run(role_id)
+        if active is not None:
+            sessions.update_run(active.runId, status="completed", ended_at=datetime.now(timezone.utc))
+        _, user = channels.append_event(thread, direction="inbound", content="处理我的任务", external_message_id=run_id,
+            metadata={"senderId": "owner", "senderIsOwner": True})
+        sessions.create_run_with_existing_user_message(AgentRun(runId=run_id, roleId=role_id, sessionKey=thread.session_key,
+            status="running", startedAt=datetime.now(timezone.utc)), user.id)
+        tools = {tool.definition.name: tool for tool in main._runtime_tool_candidates(
+            roles.get(role_id), is_channel_owner=True, source_thread_id=thread.thread_id,
+            source_account_id=account.account_id, include_channel=True)}
+        return tools, ToolContext(role_id, thread.session_key, run_id, CancellationToken(), "actual-host-call", "frozen-call-version"), user
+
+    pair()
+    initial_identity = channels.list_identities()[0]
+    tools, context, user = turn("initial-run")
+
+    async def check():
+        submitted = await tools["shell"].execute({"command": command(
+            "import os,time; from pathlib import Path; Path('origin-pid').write_text(str(os.getpid())); print('owned-log'); time.sleep(10)"
+        ), "run_in_background": True}, context)
+        assert submitted.is_error is False
+        origin = submitted.details["origin"]
+        assert origin["sourceScopeId"]
+        assert origin["sourceAuthority"]["sender_id"] == "owner"
+        assert origin["sourceAuthority"]["identity_id"] == initial_identity["identityId"]
+        assert origin["sourceAuthority"]["paired_at"] == initial_identity["pairedAt"]
+        assert origin["sourceAuthority"]["message_created_at"] == user.createdAt.isoformat()
+        assert origin["capabilityVersion"] == "frozen-call-version"
+        context.signal.cancel()  # The foreground child token ends after returning a background ID.
+        pid_file = roles.workspace_path(role_id) / "origin-pid"
+        deadline = time.monotonic() + 2
+        while not pid_file.exists() or not pid_file.read_text():
+            assert time.monotonic() < deadline
+            await asyncio.sleep(.01)
+        pid = int(pid_file.read_text())
+        later_tools, later_context, _ = turn("later-owner-run")
+        observed = await later_tools["task_output"].execute({"task_id": submitted.details["taskId"], "block": True, "timeout_ms": 100}, later_context)
+        assert observed.is_error is False
+        assert observed.details["origin"] == origin
+        assert "owned-log" in observed.content and process_alive(pid)
+        channels.unbind_identity(str(initial_identity["identityId"]))
+        pair()
+        rebound_tools, rebound_context, _ = turn("repaired-owner-run")
+        for tool_name in ("task_output", "task_stop"):
+            denied = await rebound_tools[tool_name].execute({"task_id": submitted.details["taskId"]}, rebound_context)
+            assert denied.is_error is True
+            assert "logPath" not in denied.details
         deadline = time.monotonic() + 2
         while process_alive(pid) and time.monotonic() < deadline:
             await asyncio.sleep(.02)

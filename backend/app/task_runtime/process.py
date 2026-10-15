@@ -45,15 +45,21 @@ class ProcessExecutor:
             process = self._process
 
         errors: list[Exception] = []
+        tails = {"": "", "stderr: ": ""}
 
         def pump(stream, prefix):
             decoder = codecs.getincrementaldecoder("utf-8")("replace")
+
+            def emit(text):
+                tails[prefix] = (tails[prefix] + text)[-execution.budget.output_chars:]
+                execution.write(prefix + text)
+
             try:
                 while chunk := stream.read1(4096):
-                    execution.write(prefix + decoder.decode(chunk))
+                    emit(decoder.decode(chunk))
                 tail = decoder.decode(b"", final=True)
                 if tail:
-                    execution.write(prefix + tail)
+                    emit(tail)
             except Exception as error:
                 errors.append(error)
                 self.cancel()
@@ -74,7 +80,11 @@ class ProcessExecutor:
                 reader.join()
         if errors:
             raise LogPumpError("task log consumption failed") from errors[0]
-        return TaskOutcome("succeeded" if exit_code == 0 else "failed", exit_code)
+        # The retained log records pump arrival order. The completed preview
+        # keeps each stream intact, preserving stdout JSON and the prior Shell
+        # contract of appending stderr after stdout, within the same budget.
+        output = tails[""] + ("\nstderr: " + tails["stderr: "] if tails["stderr: "] else "")
+        return TaskOutcome("succeeded" if exit_code == 0 else "failed", exit_code, output)
 
     def cancel(self) -> None:
         with self._lock:

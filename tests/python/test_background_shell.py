@@ -399,6 +399,52 @@ def test_nonzero_exit_and_model_timeout_cannot_escape_host_budget(tmp_path):
         tasks.close()
 
 
+def test_completed_task_preserves_stdout_json_and_appends_stderr_without_interleaving(tmp_path):
+    from backend.app.task_runtime import TaskRuntime
+    from backend.app.agent_runtime.shell_tool import TaskOutputTool
+
+    tasks = TaskRuntime(tmp_path / "tasks")
+    shell = ShellTool(tmp_path, allowed_commands=[sys.executable], tasks=tasks)
+    output = TaskOutputTool(tasks)
+    code = (
+        "import sys,time; from pathlib import Path\n"
+        "sys.stdout.write('{\"value\":\"' + 'a' * 6000); sys.stdout.flush()\n"
+        "sys.stderr.write('native CLI progress\\n'); sys.stderr.flush()\n"
+        "while not Path('release-stream').exists(): time.sleep(.01)\n"
+        "sys.stdout.write('\"}'); sys.stdout.flush()"
+    )
+
+    async def run():
+        submitted = await shell.execute({"command": command(code), "run_in_background": True}, context())
+        task_id = submitted.details["taskId"]
+        deadline = time.monotonic() + 2
+        while True:
+            progress = await output.execute({"task_id": task_id}, context(run="observer"))
+            if "native CLI progress" in progress.content and "a" * 1000 in progress.content:
+                break
+            assert time.monotonic() < deadline
+            await asyncio.sleep(.01)
+        # The public progress proves both pumps consumed their first chunks
+        # before the producer is allowed to finish its stdout JSON.
+        (tmp_path / "release-stream").touch()
+        result = await output.execute({"task_id": task_id, "block": True, "timeout_ms": 2000}, context(run="observer"))
+        assert result.is_error is False
+        payload, end = json.JSONDecoder().raw_decode(result.content)
+        assert payload == {"value": "a" * 6000}
+        expected_stderr = "\nstderr: native CLI progress" + ("\r\n" if os.name == "nt" else "\n")
+        assert result.content[end:] == expected_stderr
+        assert result.details["truncated"] is False
+        observed = await output.execute({"task_id": task_id}, context(run="later"))
+        assert observed.content == result.content
+        retained_log = Path(result.details["logPath"]).read_text(encoding="utf-8")
+        assert "native CLI progress" in retained_log and retained_log.endswith('"}')
+
+    try:
+        asyncio.run(run())
+    finally:
+        tasks.close()
+
+
 def test_role_log_budget_reserves_running_tasks_before_retaining_old_logs(tmp_path):
     from backend.app.task_runtime import TaskRuntime
     from backend.app.agent_runtime.shell_tool import TaskOutputTool

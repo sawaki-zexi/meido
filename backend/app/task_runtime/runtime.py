@@ -52,6 +52,7 @@ class TaskBudget:
 class TaskOutcome:
     status: str
     exit_code: int | None = None
+    output_tail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,7 @@ class TaskExecution:
     def __init__(self, runtime: TaskRuntime, task_id: str, budget: TaskBudget):
         self._runtime = runtime
         self.task_id = task_id
+        self.budget = budget
         self.deadline = time.monotonic() + budget.timeout_seconds
 
     def write(self, text: str) -> None:
@@ -288,7 +290,9 @@ class TaskRuntime:
             self._update(task_id, progress=f"executor failed: {type(error).__name__}")
             outcome = TaskOutcome("failed")
         with self._lock:
-            self._update(task_id, status=active.cancel_reason or outcome.status, exit_code=outcome.exit_code, ended_at=time.time())
+            output = outcome.output_tail if outcome.output_tail is not None else self._snapshot(task_id).output
+            self._update(task_id, status=active.cancel_reason or outcome.status, exit_code=outcome.exit_code,
+                         ended_at=time.time(), output=output[-budget.output_chars:])
             self._active.pop(task_id, None)
             active.done.set()
             self._prune()

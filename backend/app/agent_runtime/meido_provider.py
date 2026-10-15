@@ -144,6 +144,13 @@ def _content_blocks_from_metadata(value: object) -> tuple[RichContentBlock, ...]
     return tuple(block for block in blocks if block is not None)
 
 
+def _provider_call_ids(message: AssistantMessage) -> dict[str, str]:
+    raw = message.metadata.get("provider_tool_call_ids", {})
+    mapping = raw if isinstance(raw, Mapping) else {}
+    return {call.id: value if isinstance(value := mapping.get(call.id), str) and value else call.id
+            for call in message.tool_calls}
+
+
 class MeidoProvider:
     """Adapt Meido's model boundary to the provider-neutral Runtime contract."""
 
@@ -309,15 +316,17 @@ class MeidoProvider:
     def _structured_messages(self, system: str, messages: Sequence[object]) -> list[dict[str, object]]:
         prompt = self._structured_system_prompt(system)
         result: list[dict[str, object]] = [{"role": "system", "content": prompt}]
+        provider_ids: dict[str, str] = {}
         for message in messages:
             if isinstance(message, UserMessage):
                 result.append({"role": "user", "content": _user_content(message)})
             elif isinstance(message, AssistantMessage):
+                provider_ids.update(_provider_call_ids(message))
                 item: dict[str, object] = {"role": "assistant", "content": message.content or None}
                 if message.tool_calls:
                     item["tool_calls"] = [
                         {
-                            "id": call.id,
+                            "id": provider_ids.get(call.id, call.id),
                             "type": "function",
                             "function": {
                                 "name": call.name,
@@ -352,13 +361,14 @@ class MeidoProvider:
                     content = multimodal_content
                 result.append({
                     "role": "tool",
-                    "tool_call_id": message.tool_call_id,
+                    "tool_call_id": provider_ids.get(message.tool_call_id, message.tool_call_id),
                     "content": content,
                 })
         return result
 
     def _rich_messages(self, system: str, messages: Sequence[object]) -> list[RichMessage]:
         result: list[RichMessage] = [RichSystemMessage((RichTextBlock(self._structured_system_prompt(system)),))]
+        provider_ids: dict[str, str] = {}
         for message in messages:
             if isinstance(message, UserMessage):
                 blocks: list[object] = [RichTextBlock(message.content)]
@@ -373,6 +383,7 @@ class MeidoProvider:
                         blocks[0] = RichTextBlock(f"{blocks[0].text}\n\n[{attachment.name}]\n{attachment.text}")
                 result.append(RichUserMessage(tuple(blocks), timestamp=message.timestamp))
             elif isinstance(message, AssistantMessage):
+                provider_ids.update(_provider_call_ids(message))
                 metadata = message.metadata if isinstance(message.metadata, Mapping) else {}
                 raw_usage = metadata.get("usage")
                 usage = raw_usage if isinstance(raw_usage, Mapping) else {}
@@ -399,7 +410,7 @@ class MeidoProvider:
                         blocks.append(RichTextBlock(message.content))
                     blocks.extend(
                         RichToolCallBlock(
-                            call.id,
+                            provider_ids.get(call.id, call.id),
                             call.name,
                             sanitize_browser_arguments(call.name, call.arguments),
                         )
@@ -435,7 +446,7 @@ class MeidoProvider:
                 )
                 result.append(RichToolResultMessage(
                     content=tuple(blocks),
-                    tool_call_id=message.tool_call_id,
+                    tool_call_id=provider_ids.get(message.tool_call_id, message.tool_call_id),
                     tool_name=message.tool_name,
                     is_error=message.is_error,
                     details=message.details,

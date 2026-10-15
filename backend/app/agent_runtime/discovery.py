@@ -1,0 +1,399 @@
+"""Run-local discovery: freeze admission, stage activation, publish after persistence."""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, replace
+from types import MappingProxyType
+from typing import TYPE_CHECKING, cast
+from collections.abc import Mapping, Sequence
+
+from .tools import AgentTool, AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
+
+if TYPE_CHECKING:
+    from .capabilities import CapabilityResolution
+
+
+@dataclass(frozen=True)
+class ServiceGrant:
+    """A host-admitted service permission, never supplied by model arguments."""
+
+    grant_id: str
+    service_id: str
+    role_id: str
+    allowed_risks: frozenset[str]
+    external_allowed: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "allowed_risks", frozenset(self.allowed_risks))
+        if not all(
+            value.strip() for value in (self.grant_id, self.service_id, self.role_id)
+        ):
+            raise ValueError("service grant identity is required")
+        if not self.allowed_risks or self.allowed_risks - {
+            "read_only",
+            "mutating",
+            "external",
+        }:
+            raise ValueError("invalid service risk ceiling")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "grantId": self.grant_id,
+            "serviceId": self.service_id,
+            "roleId": self.role_id,
+            "allowedRisks": sorted(self.allowed_risks),
+            "externalAllowed": self.external_allowed,
+        }
+
+
+@dataclass(frozen=True)
+class _ServiceExtension:
+    parent: str
+    tools: tuple[AgentTool, ...]
+    definitions: tuple[ToolDefinition, ...]
+
+
+class DiscoveryState:
+    def __init__(
+        self,
+        *,
+        service_grants: Sequence[ServiceGrant] = (),
+        external_only: bool = False,
+    ) -> None:
+        self.revisions: list[CapabilityResolution] = []
+        self.pending: dict[str | None, tuple[str, ...]] = {}
+        self.extensions: dict[str, _ServiceExtension] = {}
+        self.grants = {item.grant_id: item for item in service_grants}
+        if len(self.grants) != len(service_grants):
+            raise ValueError("duplicate service grant")
+        self.external_only = external_only
+
+    def bind(self, initial: CapabilityResolution, reserved_names: set[str]) -> None:
+        if any(
+            item.role_id != initial.snapshot.role_id for item in self.grants.values()
+        ):
+            raise PermissionError("service grant belongs to another role")
+        self.revisions.append(initial)
+        self.reserved_names = frozenset(reserved_names)
+
+    @property
+    def tools(self) -> Mapping[str, AgentTool]:
+        return self.current._candidate_tools
+
+    @property
+    def definitions(self) -> dict[str, ToolDefinition]:
+        return {item.name: item for item in self.current.snapshot.candidates}
+
+    @property
+    def current(self) -> CapabilityResolution:
+        return self.revisions[-1]
+
+    def view(self, context: ToolContext) -> CapabilityResolution:
+        current = self.current
+        if (context.role_id, context.session_key, context.run_id) != (
+            current.snapshot.role_id,
+            current.snapshot.session_key,
+            current.snapshot.run_id,
+        ):
+            raise PermissionError("tool discovery scope does not match this run")
+        version = getattr(context, "capability_snapshot_id", None)
+        if version is None:
+            return current
+        view = next(
+            (item for item in self.revisions if item.snapshot.snapshot_id == version),
+            None,
+        )
+        if view is None:
+            raise PermissionError("unknown provider capability version")
+        return view
+
+    def stage_service_tools(
+        self,
+        context: ToolContext,
+        *,
+        grant_id: str,
+        parent_snapshot_id: str,
+        tools: Sequence[AgentTool],
+    ) -> tuple[str, ...]:
+        from .capabilities import _freeze_json
+
+        self.view(context)
+        context.signal.raise_if_cancelled()
+        grant = self.grants.get(grant_id)
+        if grant is None or grant.role_id != context.role_id:
+            raise PermissionError("service was not authorized at run start")
+        if parent_snapshot_id != self.current.snapshot.snapshot_id:
+            raise ValueError("service capability revision has a stale parent")
+        if not context.tool_call_id or not tools:
+            raise ValueError(
+                "service revision requires a successful host tool call and concrete tools"
+            )
+        definitions = []
+        names = set(self.definitions) | set(self.reserved_names)
+        for tool in tools:
+            definition = tool.definition
+            if definition.name in names:
+                raise ValueError("service tool name collides with the frozen directory")
+            names.add(definition.name)
+            if (
+                definition.source != f"mcp:{grant.service_id}"
+                or definition.risk not in grant.allowed_risks
+                or definition.approval != "auto"
+                or self.external_only
+                and not (grant.external_allowed and definition.external_allowed)
+            ):
+                raise PermissionError(
+                    "service tool exceeds the frozen source/risk/origin grant"
+                )
+            definitions.append(
+                replace(
+                    definition,
+                    exposure="deferred",
+                    external_allowed=grant.external_allowed
+                    and definition.external_allowed,
+                    input_schema=cast(
+                        dict[str, object], _freeze_json(definition.input_schema)
+                    ),
+                )
+            )
+        self.extensions[context.tool_call_id] = _ServiceExtension(
+            parent_snapshot_id, tuple(tools), tuple(definitions)
+        )
+        return tuple(item.name for item in definitions)
+
+    def propose(self, call_id: str) -> CapabilityResolution | None:
+        from .capabilities import (
+            _thaw_json,
+            _snapshot_generation,
+            _candidate_catalog_id,
+        )
+
+        names = self.pending.pop(call_id, ())
+        extension = self.extensions.pop(call_id, None)
+        current = self.current
+        candidate_definitions = self.definitions
+        candidate_tools = dict(self.tools)
+        if extension is not None:
+            if extension.parent != current.snapshot.snapshot_id:
+                raise ValueError("service capability revision has a stale parent")
+            candidate_definitions.update(
+                {item.name: item for item in extension.definitions}
+            )
+            candidate_tools.update(
+                {
+                    definition.name: tool
+                    for definition, tool in zip(
+                        extension.definitions, extension.tools, strict=True
+                    )
+                }
+            )
+        visible = {item.name for item in current.snapshot.tools}
+        added = [name for name in names if name not in visible]
+        if not added and extension is None:
+            return None
+        definitions = (
+            *current.snapshot.tools,
+            *(candidate_definitions[name] for name in added),
+        )
+        version = current.snapshot.visibility_version + 1
+        decisions = {
+            **current.snapshot.policy_decisions,
+            **{name: "allowed" for name in added},
+        }
+        if extension is not None:
+            decisions.update(
+                {item.name: "denied:deferred" for item in extension.definitions}
+            )
+        snapshot = replace(
+            current.snapshot,
+            snapshot_id=f"cap-{current.snapshot.run_id}-v{version}",
+            visibility_version=version,
+            parent_snapshot_id=current.snapshot.snapshot_id,
+            tools=definitions,
+            policy_decisions=MappingProxyType(decisions),
+            candidates=tuple(candidate_definitions.values()),
+        )
+        snapshot = replace(
+            snapshot,
+            generation=_snapshot_generation(
+                tools=snapshot.tools,
+                skills=snapshot.skills,
+                plugins=snapshot.plugins,
+                policy_decisions=snapshot.policy_decisions,
+            ),
+        )
+        if extension is not None:
+            snapshot = replace(
+                snapshot, candidate_catalog_id=_candidate_catalog_id(snapshot)
+            )
+        denied = {
+            name: reason
+            for name, reason in current.denied_tools.items()
+            if name not in added
+        }
+        if extension is not None:
+            denied.update(
+                {
+                    item.name: f"tool is deferred; use tool_search(query='select:{item.name}')"
+                    for item in extension.definitions
+                }
+            )
+        return replace(
+            current,
+            snapshot=snapshot,
+            tools=(*current.tools, *(candidate_tools[name] for name in added)),
+            denied_tools=MappingProxyType(denied),
+            _candidate_tools=MappingProxyType(candidate_tools),
+            _tools_by_name=MappingProxyType(
+                {
+                    **current._tools_by_name,
+                    **{name: candidate_tools[name] for name in added},
+                }
+            ),
+            _definitions_by_name=MappingProxyType(
+                {
+                    **current._definitions_by_name,
+                    **{
+                        name: replace(
+                            candidate_definitions[name],
+                            input_schema=cast(
+                                dict[str, object],
+                                _thaw_json(candidate_definitions[name].input_schema),
+                            ),
+                        )
+                        for name in added
+                    },
+                }
+            ),
+        )
+
+    def publish(self, revision: CapabilityResolution) -> None:
+        if (
+            revision._discovery is not self
+            or revision.snapshot.parent_snapshot_id != self.current.snapshot.snapshot_id
+        ):
+            raise ValueError("capability revision parent does not match")
+        self.revisions.append(revision)
+
+
+class ToolSearchTool:
+    definition = ToolDefinition(
+        "tool_search",
+        "搜索已授权工具；select:A,B 精确加载。持久化后下一次模型请求可调用。",
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "maxLength": 2000},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 10},
+                "allowed_risk": {
+                    "type": "array",
+                    "maxItems": 3,
+                    "items": {
+                        "type": "string",
+                        "enum": ["read-only", "write", "external-side-effect"],
+                    },
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        source="builtin:discovery",
+        external_allowed=True,
+        timeout_seconds=5,
+        output_limit=16000,
+    )
+
+    def __init__(self, discovery: DiscoveryState) -> None:
+        self.discovery = discovery
+
+    async def execute(
+        self, arguments: Mapping[str, object], context: ToolContext, on_update=None
+    ) -> AgentToolResult:
+        context.signal.raise_if_cancelled()
+        ToolRegistry.validate_definition(self.definition, dict(arguments))
+        view = self.discovery.view(context)
+        query = cast(str, arguments["query"]).strip()
+        visible = {item.name for item in view.snapshot.tools}
+        risks = {
+            "read-only": "read_only",
+            "write": "mutating",
+            "external-side-effect": "external",
+        }
+        allowed = {
+            risks[value] for value in cast(list[str], arguments.get("allowed_risk", []))
+        }
+        eligible = {
+            definition.name: definition
+            for definition in view.snapshot.candidates
+            if (not allowed or definition.risk in allowed)
+            and view.authorization_denial(definition, context) is None
+        }
+        if query.lower().startswith("select:"):
+            names = list(
+                dict.fromkeys(
+                    name.strip() for name in query[7:].split(",") if name.strip()
+                )
+            )
+            if len(names) > 50:
+                raise ValueError("select accepts at most 50 tool names")
+            found = [name for name in names if name in eligible and name not in visible]
+            loaded = [name for name in names if name in eligible and name in visible]
+        else:
+            terms = list(dict.fromkeys(re.findall(r"[\w]+", query.casefold())))
+            ranked = []
+            for name, definition in eligible.items():
+                context.signal.raise_if_cancelled()
+                if name in visible:
+                    continue
+                description = definition.description.casefold()
+                score = sum(
+                    4 * (term in name.casefold()) + (term in description)
+                    for term in terms
+                )
+                if score:
+                    ranked.append((score, name))
+            ranked.sort(key=lambda item: (-item[0], item[1]))
+            found = [name for _, name in ranked[: cast(int, arguments.get("top_k", 5))]]
+            loaded = []
+        matched: list[dict[str, object]] = [
+            {
+                "name": name,
+                "description": eligible[name].description[:160],
+                "risk": next(
+                    key for key, value in risks.items() if value == eligible[name].risk
+                ),
+            }
+            for name in found
+        ]
+        payload: dict[str, object] = {
+            "matched": matched,
+            "unlocked": found,
+            "already_loaded": loaded,
+            "tip": "结果持久化后下一次模型请求加载完整 schema；直接调用 unlocked 工具。"
+            if found
+            else "已加载，可直接调用。"
+            if loaded
+            else "没有匹配的已授权工具；检查名称、风险过滤或换关键词。",
+        }
+        content = json.dumps(payload, ensure_ascii=False)
+        output_limit = self.definition.output_limit
+        assert output_limit is not None
+        for description_limit in (80, 40, 0):
+            if len(content) <= output_limit:
+                break
+            payload["truncated"] = True
+            for item in matched:
+                item["description"] = cast(str, item["description"])[:description_limit]
+            content = json.dumps(payload, ensure_ascii=False)
+        while len(content) > output_limit and (found or loaded):
+            payload["truncated"] = True
+            if found:
+                found.pop()
+                matched.pop()
+            else:
+                loaded.pop()
+            content = json.dumps(payload, ensure_ascii=False)
+        self.discovery.pending[context.tool_call_id] = tuple(found)
+        return AgentToolResult(content, details=payload)
