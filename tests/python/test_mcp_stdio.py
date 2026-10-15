@@ -67,8 +67,9 @@ def test_real_stdio_handshake_pagination_call_and_minimal_environment(tmp_path, 
     asyncio.run(run())
 
 
-def test_cancelling_real_stdio_repeatedly_finishes_entire_process_tree_disposal(tmp_path):
-    store, config = configure(tmp_path, timeoutSeconds=60)
+@pytest.mark.parametrize("mode", ["normal", "child_without_pipes"])
+def test_cancelling_real_stdio_repeatedly_finishes_entire_process_tree_disposal(tmp_path, mode):
+    store, config = configure(tmp_path, mode, timeoutSeconds=60)
 
     async def run():
         client = McpStdioClient(config, store.environment(config))
@@ -147,5 +148,8 @@ def test_real_stdio_rejects_invalid_or_unbounded_peer_and_cleans_owned_process(t
         with pytest.raises(McpProtocolError):
             await client.connect()
         assert client.closed
+        pid_file = tmp_path / "peer/pid"
+        if pid_file.exists():
+            assert not process_alive(int(pid_file.read_text()))
 
     asyncio.run(run())

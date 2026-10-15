@@ -312,6 +312,23 @@ class McpStdioClient:
         while await self._process.stderr.read(8192):
             pass
 
+    async def _discard_stdout(self) -> None:
+        assert self._process is not None and self._process.stdout is not None
+        # A rejected oversized line can leave StreamReader's pipe paused.
+        # Keep draining without parsing/retaining while the owned peer exits.
+        while await self._process.stdout.read(65536):
+            pass
+
+    async def _wait_owned_group_exit(self, group_id: int) -> None:
+        # killpg queues signals; reaping the leader alone does not prove that
+        # descendants have exited. Do not count a zombie as disposed either.
+        while True:
+            try:
+                os.killpg(group_id, 0)  # type: ignore[attr-defined]
+            except ProcessLookupError:
+                return
+            await asyncio.sleep(.005)
+
     async def close(self) -> None:
         if self._closing is None:
             self._closing = asyncio.create_task(self._close())
@@ -322,6 +339,10 @@ class McpStdioClient:
         process = self._process
         try:
             if process is not None:
+                if self._reader is not None:
+                    self._reader.cancel()
+                    await asyncio.gather(self._reader, return_exceptions=True)
+                self._reader = asyncio.create_task(self._discard_stdout())
                 if process.stdin:
                     process.stdin.close()
                 try:
@@ -337,7 +358,10 @@ class McpStdioClient:
                         pass
                 elif process.returncode is None:
                     process.kill()
-                await asyncio.wait_for(process.wait(), 5)
+                async with asyncio.timeout(5):
+                    await asyncio.gather(process.wait(), *(task for task in (self._reader, self._stderr) if task))
+                    if os.name != "nt":
+                        await self._wait_owned_group_exit(process.pid)
         finally:
             for task in (self._reader, self._stderr):
                 if task is not None and not task.done():
