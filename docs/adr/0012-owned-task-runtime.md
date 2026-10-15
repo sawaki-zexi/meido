@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳，待实现。批准时间：2026-10-15。
+已采纳。批准时间：2026-10-15。#149 实现首个 Shell 垂直切片；spawn、调度和 Coding 执行器仍待对应 Ticket。
 
 ## 背景
 
@@ -27,4 +27,4 @@
 - [完整复刻规格](../specs/shiori-tool-parity-spec.md)，D02。
 - [ADR-0003](0003-tau-inspired-agent-runtime-boundary.md)、[ADR-0004](0004-role-scoped-shell-tool-boundary.md)。
 
-本文是已批准目标决定，不表示代码已经实现或验收。
+当前实现与验收边界见 [后台 Shell Reference](../reference/owned-background-shell.md)；本决定不表示全部后续执行器已经完成。

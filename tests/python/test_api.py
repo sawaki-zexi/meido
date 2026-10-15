@@ -634,7 +634,9 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
     assert stored_run.modelSnapshot["context"]["toolAllowlist"] == [executable]
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["name"] == "shell"
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["source"] == "role"
-    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["timeoutSeconds"] == 30.0
+    # The runner retains a 30s execution budget; its tool envelope allows 2s
+    # for owned-process cleanup and persisting the terminal result.
+    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["timeoutSeconds"] == 32.0
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["outputLimit"] == 20000
     assert len(stored_run.modelSnapshot["capabilities"]["generation"]) == 24
 
