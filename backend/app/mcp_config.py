@@ -21,8 +21,8 @@ _ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 
 def minimal_environment() -> dict[str, str]:
-    allowed = {"PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LANG", "LC_ALL", "HOME", "USERPROFILE"}
-    return {key: value for key, value in os.environ.items() if key in allowed}
+    allowed = {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "LANG", "LC_ALL", "HOME", "USERPROFILE"}
+    return {key: value for key, value in os.environ.items() if key.upper() in allowed}
 
 
 class McpServerInput(BaseModel):
