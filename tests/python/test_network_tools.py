@@ -309,3 +309,15 @@ def test_search_redacts_configured_credentials_even_if_provider_echoes_them():
         lambda request: httpx.Response(200, json=payload))).execute({"query": "article"}, context()))
     assert not result.is_error
     assert "host-secret" not in result.content
+
+
+def test_fetch_negotiates_requested_format_and_recognizes_case_insensitive_html():
+    def handler(request):
+        assert "text/markdown;q=1.0" in request.headers["accept"]
+        assert "zh-CN" in request.headers["accept-language"]
+        return httpx.Response(200, text="<h1>Article</h1>", headers={"content-type": "Text/HTML; charset=UTF-8"})
+
+    result = asyncio.run(WebFetchTool(resolver=public_dns, transport=httpx.MockTransport(handler))
+        .execute({"url": "https://example.org", "format": "markdown"}, context()))
+    assert not result.is_error
+    assert result.details["text"] == "# Article"

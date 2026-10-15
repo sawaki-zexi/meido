@@ -26,6 +26,11 @@ import httpx
 from .agent_runtime.tools import AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
 
 Resolver = Callable[[str, int], Awaitable[Sequence[str]]]
+_ACCEPT = {
+    "markdown": "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1",
+    "text": "text/plain;q=1.0, text/markdown;q=0.9, text/html;q=0.8, */*;q=0.1",
+    "html": "text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, */*;q=0.1",
+}
 
 
 @dataclass(frozen=True)
@@ -271,7 +276,9 @@ class WebFetchTool:
             if not self.config.enabled:
                 raise ValueError("宿主未允许网络工具")
             url = httpx.URL(arguments["url"])
-            body, response_headers, final_url, status = await _download(self.config, self.resolver, self.transport, url)
+            fmt = arguments.get("format", "markdown")
+            body, response_headers, final_url, status = await _download(self.config, self.resolver, self.transport, url,
+                headers={"Accept": _ACCEPT[fmt], "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"})
             content_type = response_headers.get("content-type", "").split(";")[0].strip().lower()
             if content_type and not (content_type.startswith("text/") or content_type in {
                     "application/json", "application/xml", "application/xhtml+xml", "application/javascript"}
@@ -287,8 +294,7 @@ class WebFetchTool:
                 raise ValueError("正文编码解析失败") from None
             if any(ord(char) < 32 and char not in "\t\n\r" for char in text[:4096]):
                 raise ValueError("响应包含二进制内容")
-            fmt = arguments.get("format", "markdown")
-            converted = await _convert(text, fmt, "html" in response_headers.get("content-type", ""), self.config.max_chars)
+            converted = await _convert(text, fmt, content_type in {"text/html", "application/xhtml+xml"}, self.config.max_chars)
             text, truncated = converted["text"], converted["truncated"]
             return _result({"url": str(url), "final_url": final_url, "status": status,
                             "content_type": response_headers.get("content-type", ""),
