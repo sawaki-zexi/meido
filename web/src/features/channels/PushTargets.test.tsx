@@ -34,3 +34,13 @@ it("未配对时显示需要先配对的提示", async () => {
   expect(await screen.findByText("请先在此账号私聊配对，再刷新目标。")).toBeInTheDocument();
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
 });
+
+it("会话设置只显示当前私聊的提醒目标", async () => {
+  fakeBackend({ "GET /api/roles/r1/channels/push-targets": () => ({ body: { targets: [
+    { accountId: "qq-1", targetId: "here", chatId: "42", displayName: "当前私聊", enabled: true, available: true },
+    { accountId: "qq-1", targetId: "other", chatId: "99", displayName: "其他私聊", enabled: false, available: true },
+  ] } }) });
+  render(<PushTargets roleId="r1" accountId="qq-1" chatId="42" />);
+  expect(await screen.findByRole("checkbox", { name: "当前私聊" })).toBeChecked();
+  expect(screen.queryByText("其他私聊")).not.toBeInTheDocument();
+});
