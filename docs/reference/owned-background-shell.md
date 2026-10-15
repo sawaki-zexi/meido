@@ -44,7 +44,7 @@ Windows 使用以挂起方式创建的进程和 `KILL_ON_JOB_CLOSE` Job，启动
 
 `TaskRuntime.submit(origin, executor, budget, kind, description, authorized)` 提交真实执行；`query` 只观察，`stop` 取消，`cancel_role_tasks`、`set_role_enabled`、`delete_role`、`reconcile_roles`、`close/start` 管理归属和应用生命周期。`TaskExecutor.run(TaskExecution)` 必须返回 `TaskOutcome`，`cancel()` 必须释放其资源。`TaskExecution` 提供冻结 budget/deadline 和有界日志/进度写入；`TaskOutcome.output_tail` 可提供终态展示，Runtime 再次按同一预算截断，保留日志与实际消费计数不被它替换。
 
-Shell 是此边界的首个完整执行器。#157 的[独立子任务](owned-subagents.md)已在本地复用任务身份、SQLite、预算、日志与取消，并增加实际消费的任务目录、原来源列表和持久完成 outbox。调度和 Coding 执行器仍由后续 Ticket 实施。
+Shell 是此边界的首个完整执行器。#157 的[独立子任务](owned-subagents.md)已在本地复用任务身份、SQLite、预算、日志与取消，并增加实际消费的任务目录、原来源列表和持久完成 outbox。未交付 pending/sending 任务占用有限保留额度，不能被普通清理静默移除；额度无法释放时新任务提交被拒绝。调度和 Coding 执行器仍由后续 Ticket 实施。
 
 ## 与 Shiori 的明确差异
 

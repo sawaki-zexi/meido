@@ -44,7 +44,9 @@
 
 桌面追加成功后完成状态为 `sent`。渠道通过已有 ChannelHost 目录和 delivery 账本投向原账号、原目标，保留 `pending`、`sent`、`failed`、`uncertain`，不改投其他目标；未确认消息不会作为已送达 transcript 回放。外发前先持久化 `sending`，发送超时、取消或进程中断转为 `uncertain`，不盲目重发。重启同步尚未确认的本地消息状态。来源失效则封存为失败，不向新绑定发送。
 
-执行状态保留 `succeeded`、`failed`、`cancelled`、`timed_out`、`interrupted`。关闭释放真实模型/进程资源；重启将缺句柄的 queued/running 标记 interrupted，不自动重跑。未交付终态事件继续保留，角色删除和保留期清理同时回收日志、任务目录和完成记录。
+执行状态保留 `succeeded`、`failed`、`cancelled`、`timed_out`、`interrupted`。关闭释放真实模型/进程资源；重启将缺句柄的 queued/running 标记 interrupted，不自动重跑。连续取消不能跳过资源释放：同步 spawn 和子 Shell 等待实际清理完成，之后才允许宿主记录终态。
+
+未交付的 `pending/sending` 完成事件连同任务、日志和目录保留，避免父锁被占用或应用关闭期间被普通保留期/配额清理静默丢弃；它们仍占用每角色记录数和日志总预算。容量被占满时拒绝新任务，直到已有完成交付或失效，而不无限扩大存储。已确认、确定失败或 uncertain 的记录沿用正常保留期；角色删除会清理全部归属数据。
 
 ## 已验证与边界
 

@@ -35,6 +35,21 @@ def _error() -> AgentToolResult:
                            {"status": "denied"}, True)
 
 
+async def _finish_owned_cleanup(pending):
+    """Repeated cancellation cannot detach a task's resource release."""
+    cleanup = asyncio.ensure_future(pending)
+    interrupted = None
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError as error:
+            interrupted = error
+    result = cleanup.result()
+    if interrupted is not None:
+        raise interrupted
+    return result
+
+
 def _result(snapshot: TaskSnapshot, tasks: TaskRuntime, *, background: bool = False) -> AgentToolResult:
     details = {**snapshot.details(), "job_id": snapshot.task_id, "background": background,
                "completion": tasks.completion(snapshot.task_id, snapshot.origin)}
@@ -123,11 +138,11 @@ class _ChildShell:
                 outcome = await asyncio.wait_for(asyncio.shield(running), timeout=self.parent.timeout_seconds)
             except TimeoutError:
                 process.cancel()
-                await asyncio.shield(running)
+                await _finish_owned_cleanup(running)
                 return AgentToolResult("Child Shell exceeded the frozen parent command timeout.", {"status": "timed_out"}, True)
             except asyncio.CancelledError:
                 process.cancel()
-                await asyncio.shield(running)
+                await _finish_owned_cleanup(running)
                 raise
             return AgentToolResult(outcome.output_tail or "", {"status": outcome.status, "exitCode": outcome.exit_code},
                                    outcome.status != "succeeded")
@@ -288,7 +303,7 @@ class SpawnTool:
                         return _result(snapshot, self.tasks)
                     await asyncio.sleep(.01)
             except asyncio.CancelledError:
-                await asyncio.shield(asyncio.to_thread(self.tasks.stop, task_id, origin))
+                await _finish_owned_cleanup(asyncio.to_thread(self.tasks.stop, task_id, origin))
                 raise
         except (KeyError, ValueError, PermissionError):
             return _error()

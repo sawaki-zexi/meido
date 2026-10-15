@@ -201,6 +201,10 @@ class TaskRuntime:
             if reserved + budget.log_bytes > self.max_role_log_bytes:
                 raise ValueError("role task log budget reached")
             self._prune(reserve_role=origin.role_id, reserve_bytes=budget.log_bytes)
+            retained = self._db.execute("SELECT budget,log_bytes,ended_at FROM tasks WHERE role_id=?", (origin.role_id,)).fetchall()
+            retained_bytes = sum(json.loads(row["budget"])["log_bytes"] if row["ended_at"] is None else row["log_bytes"] for row in retained)
+            if len(retained) >= self.max_retained_per_role or retained_bytes + budget.log_bytes > self.max_role_log_bytes:
+                raise ValueError("role task retention budget is occupied by undelivered completions")
             task_id = f"{kind}_{uuid.uuid4().hex}"
             log_dir = self.root / "logs" / hashlib.sha256(origin.role_id.encode()).hexdigest()
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -422,6 +426,9 @@ class TaskRuntime:
                 counts[role] = counts.get(role, 0) + 1
                 sizes[role] = sizes.get(role, 0) + (json.loads(row["budget"])["log_bytes"]
                                                   if row["ended_at"] is None else row["log_bytes"])
+                pending = self._db.execute("SELECT status FROM task_completions WHERE task_id=?", (row["task_id"],)).fetchone()
+                if pending is not None and pending[0] in {"pending", "sending"}:
+                    continue
                 if row["ended_at"] is not None and (
                     time.time() - row["ended_at"] > self.retention_seconds or counts[role] > self.max_retained_per_role
                     or sizes[role] > self.max_role_log_bytes

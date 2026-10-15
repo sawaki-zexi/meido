@@ -121,7 +121,7 @@ def test_background_completion_survives_parent_and_is_appended_once(api, monkeyp
 
 
 
-@pytest.mark.parametrize('change', ['unbind', 'rebind', 'platform', 'recreate', 'role', 'sender', 'thread'])
+@pytest.mark.parametrize('change', ['unbind', 'rebind', 'platform', 'recreate', 'recreate_before', 'role', 'sender', 'thread'])
 def test_channel_management_and_watchdog_preserve_frozen_actual_source(api, monkeypatch, change):
     import asyncio
     import time
@@ -161,15 +161,27 @@ def test_channel_management_and_watchdog_preserve_frozen_actual_source(api, monk
         context = ToolContext(role_id, target.session_key, run_id, CancellationToken(), 'host-spawn-call')
         return candidates, tools, context
     class Provider:
+        calls = 0
         async def stream_response(self, **kwargs):
+            self.calls += 1
             await asyncio.sleep(10)
             yield AssistantDoneEvent(AssistantMessage('private-source-log'))
     async def run():
         candidates, tools, context = turn('first-parent')
         frozen = CapabilityRegistry(candidates).resolve(role_id=role_id, session_key=context.session_key,
             run_id=context.run_id, enabled_tools={'spawn', 'spawn_manage', 'read_file'}, allowed_risks={'read_only', 'mutating', 'external'})
-        tools['spawn'].bind(frozen, lambda: Provider())
+        provider = Provider()
+        tools['spawn'].bind(frozen, lambda: provider)
+        if change == 'recreate_before':
+            channels.delete_account(account.account_id)
+            channels.register_channel_account(role_id, 'qq', account_id=account.account_id, enabled=True, allow_group=True)
         result = await tools['spawn'].execute({'task': 'controlled work', 'run_in_background': True}, context)
+        if change == 'recreate_before':
+            assert result.is_error
+            assert 'logPath' not in result.details
+            assert provider.calls == 0
+            assert not tuple(tasks.root.glob('logs/*/*.log'))
+            return
         assert not result.is_error
         task_id = result.details['taskId']
         origin = TaskOrigin(role_id, context.session_key, source_thread_id=thread.thread_id,
@@ -286,7 +298,7 @@ def test_real_http_model_parent_and_child_use_independent_transcripts_and_frozen
         worker.join(2)
 
 
-@pytest.mark.parametrize('delivery', ['sent', 'failed', 'uncertain', 'revoked'])
+@pytest.mark.parametrize('delivery', ['sent', 'failed', 'uncertain', 'revoked', 'recover'])
 def test_background_channel_completion_uses_original_delivery_ledger_without_replay(api, monkeypatch, delivery):
     import asyncio
     from datetime import datetime, timezone
@@ -299,6 +311,7 @@ def test_background_channel_completion_uses_original_delivery_ledger_without_rep
     from backend.app.task_runtime import TaskOrigin, TaskRuntime
 
     client, roles, sessions, tasks = api
+    expected = 'sent' if delivery == 'recover' else 'failed' if delivery == 'revoked' else delivery
     channels = main.multichannel_store
     role = client.post('/api/roles', json={'name': '完成投递', 'profile': {'profile': '测试'},
         'agentConfig': {'spawn': {'enabled': True}, 'enabledTools': ['read_file']}}).json()['role']
@@ -374,26 +387,40 @@ def test_background_channel_completion_uses_original_delivery_ledger_without_rep
         while tasks.completion(task_id, origin)['status'] in {'pending', 'sending'}:
             assert asyncio.get_running_loop().time() < deadline
             await asyncio.sleep(.02)
-        assert tasks.completion(task_id, origin)['status'] == ('failed' if delivery == 'revoked' else delivery), str(tasks.completion(task_id, origin))
+        assert tasks.completion(task_id, origin)['status'] == expected, str(tasks.completion(task_id, origin))
         messages = [item for item in sessions.list_messages(thread.session_key) if item.messageType == 'internal_completion']
         if delivery == 'revoked':
             assert not messages
             assert adapter.calls == 0
         else:
             assert len(messages) == 1
-            assert messages[0].metadata['deliveryStatus'] == delivery
+            assert messages[0].metadata['deliveryStatus'] == expected
             assert adapter.calls == 1
             attempts = channels.list_deliveries(role_id)
             assert len(attempts) == 1 and attempts[0]['sourceKind'] == 'spawn_completion'
-            assert attempts[0]['status'] == delivery
-            if delivery != 'sent':
+            assert attempts[0]['status'] == expected
+            if expected != 'sent':
                 assert not any('summary' in item.content for item in sessions.runtime_messages(thread.session_key))
         await main._spawn_completion_worker.close()
+        if delivery == 'recover':
+            # Crash window: the send may have reached the platform, but the
+            # task outbox and local message have not recorded the receipt.
+            tasks.update_completion(task_id, status='sending', content=messages[0].content)
+            sessions.update_message(messages[0].id, messages[0].content, 'completed', metadata={**messages[0].metadata,
+                'deliveryStatus': 'pending'})
         # Reopening persistence must preserve sent/failed/uncertain without a second send.
         restarted = TaskRuntime(tasks.root)
         try:
-            assert restarted.completion(task_id, origin)['status'] == ('failed' if delivery == 'revoked' else delivery)
+            assert restarted.completion(task_id, origin)['status'] == ('uncertain' if delivery == 'recover' else expected)
             assert restarted.pending_completions() == ()
+            if delivery == 'recover':
+                monkeypatch.setattr(main, 'task_runtime', restarted)
+                main._ensure_spawn_completion_worker()
+                await asyncio.sleep(.1)
+                await main._spawn_completion_worker.close()
+                restored = [item for item in sessions.list_messages(thread.session_key) if item.messageType == 'internal_completion']
+                assert len(restored) == 1 and restored[0].metadata['deliveryStatus'] == 'uncertain'
+                assert adapter.calls == 1
         finally:
             restarted.close()
         await resolution.close()
@@ -474,3 +501,45 @@ def test_restart_preserves_interrupted_child_and_delivers_internal_completion_on
         asyncio.run(run())
     finally:
         restarted.close()
+
+
+def test_http_later_turn_can_list_get_and_cancel_the_same_background_child(api, monkeypatch):
+    import asyncio
+    from backend.app import main
+    client, _roles, sessions, _tasks = api
+    class Adapter:
+        task_id = None
+        async def stream_structured_messages(self, messages, configuration, tools):
+            system = str(messages[0])
+            if 'independent delegated task' in system:
+                await asyncio.sleep(20)
+                yield ModelTextDelta('late-child')
+                return
+            if 'internal spawn completion' in system:
+                yield ModelTextDelta('child-cancelled')
+                return
+            last_user = max(index for index, item in enumerate(messages) if item['role'] == 'user')
+            action = messages[last_user]['content']
+            if any(item['role'] == 'tool' for item in messages[last_user + 1:]):
+                yield ModelTextDelta('observed-current-task')
+            elif action == 'start':
+                yield ModelToolCall('start', 'spawn', {'task': 'wait for cancellation', 'run_in_background': True})
+            else:
+                yield ModelToolCall('manage', 'spawn_manage', {'action': action, **({'job_id': self.task_id} if action != 'list' else {})})
+    adapter = Adapter()
+    monkeypatch.setattr(main, 'model_adapter', adapter)
+    role = client.post('/api/roles', json={'name': '跨回合管理', 'profile': {'profile': '测试'},
+        'agentConfig': {'spawn': {'enabled': True}, 'enabledTools': ['read_file']}}).json()['role']
+    key = f"role:{role['id']}"
+    with client:
+        assert 'assistant_completed' in client.post(f"/api/roles/{role['id']}/messages", json={'content': 'start'}).text
+        adapter.task_id = next(item.details['taskId'] for item in sessions.runtime_messages(key) if isinstance(item, ToolResultMessage))
+        for action in ['list', 'get', 'cancel']:
+            assert 'assistant_completed' in client.post(f"/api/roles/{role['id']}/messages", json={'content': action}).text
+            result = [item for item in sessions.runtime_messages(key) if isinstance(item, ToolResultMessage)][-1]
+            assert not result.is_error or action == 'cancel'
+            if action == 'list':
+                assert result.details['tasks'][0]['taskId'] == adapter.task_id
+            else:
+                assert result.details['taskId'] == adapter.task_id
+                assert result.details['status'] == ('cancelled' if action == 'cancel' else 'running')

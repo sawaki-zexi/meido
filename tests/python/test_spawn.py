@@ -258,3 +258,80 @@ def test_global_concurrency_budget_denies_extra_child_before_starting_model(tmp_
         finally:
             tasks.close()
     asyncio.run(run())
+
+
+def test_pending_completion_is_retained_and_new_work_is_denied_at_storage_limit(tmp_path):
+    class Provider:
+        async def stream_response(self, **kwargs):
+            yield AssistantDoneEvent(AssistantMessage('must-deliver-once'))
+    async def run():
+        tasks, context, tool, _manage, result = await delegate(tmp_path, Provider())
+        task_id = result.details['taskId']
+        try:
+            await completed(tasks, context, task_id)
+            tasks.max_retained_per_role = 1
+            denied = await tool.execute({'task': 'cannot evict an undelivered result', 'run_in_background': True}, context)
+            assert denied.is_error
+            assert tasks.pending_completions()[0].task_id == task_id
+            tasks.retention_seconds = -1
+            assert tasks.query(task_id, TaskOrigin(context.role_id, context.session_key)).output == 'must-deliver-once'
+            assert tasks.completion(task_id, TaskOrigin(context.role_id, context.session_key))['status'] == 'pending'
+        finally:
+            tasks.close()
+    asyncio.run(run())
+
+
+def test_repeated_foreground_cancel_waits_for_owned_cleanup_after_real_process(tmp_path):
+    import threading
+    released, cleanup_entered, process_observed = threading.Event(), threading.Event(), threading.Event()
+    class Provider:
+        async def stream_response(self, *, messages, **kwargs):
+            results = [item for item in messages if isinstance(item, ToolResultMessage)]
+            if not results:
+                command = shlex.join([sys.executable.replace('\\', '/'), '-c', "print('real-process-before-cleanup-441')"])
+                yield AssistantDoneEvent(AssistantMessage(tool_calls=(ToolCall('real-process', 'shell', {'command': command}),)))
+            else:
+                assert 'real-process-before-cleanup-441' in results[-1].content
+                process_observed.set()
+                try:
+                    await asyncio.sleep(30)
+                finally:
+                    cleanup_entered.set()
+                    while not released.is_set():
+                        await asyncio.sleep(.01)
+    async def run():
+        workspace = tmp_path / 'workspace'
+        workspace.mkdir()
+        tasks = TaskRuntime(tmp_path / 'tasks')
+        context = ToolContext('r', 'role:r', 'parent', CancellationToken(), 'spawn')
+        frozen = CapabilityRegistry([ShellTool(workspace, allowed_commands=[sys.executable])]).resolve(role_id='r',
+            session_key='role:r', run_id='parent', enabled_tools={'shell'}, allowed_risks={'external'})
+        tool = SpawnTool(tasks, SpawnToolConfig(enabled=True), origin_resolver=lambda ctx: TaskOrigin('r', 'role:r'), authorized=lambda ctx: True)
+        tool.bind(frozen, lambda: Provider())
+        foreground = asyncio.create_task(tool.execute({'task': 'run one controlled process', 'profile': 'scripting'}, context))
+        try:
+            deadline = asyncio.get_running_loop().time() + 3
+            while not process_observed.is_set():
+                assert asyncio.get_running_loop().time() < deadline
+                await asyncio.sleep(.01)
+            foreground.cancel()
+            while not cleanup_entered.is_set():
+                assert asyncio.get_running_loop().time() < deadline
+                await asyncio.sleep(.01)
+            for _ in range(3):
+                foreground.cancel()
+                await asyncio.sleep(.02)
+                assert not foreground.done(), 'foreground detached from live owned cleanup'
+            snapshot = tasks.list(TaskOrigin('r', 'role:r'), kind='spawn')[0]
+            assert snapshot.ended_at is None
+            released.set()
+            with pytest.raises(asyncio.CancelledError):
+                await foreground
+            snapshot = tasks.query(snapshot.task_id, TaskOrigin('r', 'role:r'))
+            assert snapshot.status == 'cancelled'
+            assert snapshot.ended_at is not None
+        finally:
+            released.set()
+            await asyncio.gather(foreground, return_exceptions=True)
+            tasks.close()
+    asyncio.run(run())
