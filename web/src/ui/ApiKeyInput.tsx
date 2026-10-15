@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { errorMessage } from "../api/client";
 import { Icon } from "./Icon";
 
@@ -20,7 +20,9 @@ export function ApiKeyInput({ id, label, value, onChange, configured, disabled, 
   const [error, setError] = useState("");
   const revealRequest = useRef(0);
 
-  useEffect(() => {
+  // Reset the read generation before this committed control can be clicked.
+  // A passive mount effect could otherwise discard its first valid read.
+  useLayoutEffect(() => {
     revealRequest.current += 1;
     setVisible(false);
     setSavedKey("");
@@ -28,7 +30,7 @@ export function ApiKeyInput({ id, label, value, onChange, configured, disabled, 
     setError("");
     return () => { revealRequest.current += 1; };
   }, [id, configured, disabled]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     revealRequest.current += 1;
     setSavedKey("");
     setReading(false);
