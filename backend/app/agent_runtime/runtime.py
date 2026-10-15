@@ -54,7 +54,7 @@ class RuntimeManager:
         self._tokens[run.runId] = CancellationToken()
         return result
 
-    async def reserve_existing_user_message(self, run: AgentRun, message_id: str) -> tuple[AgentRun, Message, Message]:
+    async def reserve_existing_user_message(self, run: AgentRun, message_id: str, *, can_start: Callable[[], bool] | None = None) -> tuple[AgentRun, Message, Message]:
         """Reserve a run around a channel message already written to SQLite."""
 
         lock = self.lock_for(run.roleId)
@@ -62,6 +62,8 @@ class RuntimeManager:
         # behind the current role turn instead of dropping it as ActiveRunError.
         await lock.acquire()
         try:
+            if can_start is not None and not can_start():
+                raise ActiveRunError("message is no longer admitted")
             result = self.sessions.create_run_with_existing_user_message(run, message_id)
         except BaseException:
             lock.release()

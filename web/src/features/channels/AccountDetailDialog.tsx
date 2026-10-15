@@ -1,0 +1,140 @@
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { api, errorMessage } from "../../api/client";
+import { Dialog } from "../../ui/Dialog";
+import { Notice } from "../../ui/Status";
+import { accountStatus, channelName, defaultCapabilities, type Account, type Channel } from "./channelAccounts";
+import { ManagedQQLogin } from "./ManagedQQLogin";
+
+type ConnectionForm = {
+  displayName: string;
+  endpoint: string;
+  appId: string;
+  token: string;
+  accessToken: string;
+  clientSecret: string;
+  appSecret: string;
+  verificationToken: string;
+  encryptKey: string;
+  allowPrivate: boolean;
+  allowGroup: boolean;
+  blockedSenders: string;
+};
+
+export function AccountDetailDialog({ roleId, channel, account, platformEnabled, onAccountChange, onClose, onOpenSettings }: {
+  roleId: string;
+  channel: Channel;
+  account: Account | null;
+  platformEnabled: boolean;
+  onAccountChange: (account: Account | null) => void;
+  onClose: () => void;
+  onOpenSettings?: () => void;
+}) {
+  const [form, setForm] = useState<ConnectionForm>(() => ({
+    displayName: account?.displayName ?? "", endpoint: account?.endpoint ?? "", appId: account?.appId ?? account?.platformId ?? "",
+    token: "", accessToken: "", clientSecret: "", appSecret: "", verificationToken: "", encryptKey: "",
+    allowPrivate: account?.allowPrivate ?? true, allowGroup: account?.allowGroup ?? Boolean(defaultCapabilities[channel].group),
+    blockedSenders: account?.blockedSenders.join("\n") ?? "",
+  }));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [manualQQ, setManualQQ] = useState(false);
+  const live = useRef(true);
+  const credentialsDetails = useRef<HTMLDetailsElement>(null);
+  const previousAccountId = useRef(account?.accountId);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+  useEffect(() => {
+    if (previousAccountId.current === account?.accountId) return;
+    previousAccountId.current = account?.accountId;
+    if (account) setForm((current) => ({ ...current,
+      displayName: account.displayName, endpoint: account.endpoint ?? "", appId: account.appId ?? account.platformId ?? "",
+      allowPrivate: account.allowPrivate, allowGroup: account.allowGroup, blockedSenders: account.blockedSenders.join("\n"),
+    }));
+  }, [account]);
+  const capabilities = { ...defaultCapabilities[channel], ...account?.capabilities };
+  const canConnect = platformEnabled && account?.platformEnabled !== false;
+  const connected = canConnect && account?.enabled && account.connectionStatus === "connected";
+  const base = `/api/roles/${encodeURIComponent(roleId)}/channels`;
+  const update = <K extends keyof ConnectionForm>(key: K, value: ConnectionForm[K]) => setForm((current) => ({ ...current, [key]: value }));
+  const rules = () => ({
+    displayName: form.displayName.trim(), allowPrivate: form.allowPrivate,
+    allowGroup: Boolean(capabilities.group && form.allowGroup),
+    blockedSenders: form.blockedSenders.split(/[\n,]/).map((item) => item.trim()).filter(Boolean),
+  });
+  const valid = channel === "telegram" ? Boolean(form.token.trim() || account?.tokenConfigured)
+    : channel === "qq" ? Boolean(form.endpoint.trim())
+      : Boolean(form.appId.trim() && (account?.tokenConfigured || (channel === "qqbot" ? form.clientSecret.trim() : form.appSecret.trim())));
+
+  async function action(task: () => Promise<void>, fallback: string) {
+    setBusy(true); setError(""); setNotice("");
+    try { await task(); }
+    catch (cause) { if (live.current) setError(errorMessage(cause, fallback)); }
+    finally { if (live.current) setBusy(false); }
+  }
+
+  const saveConnection = () => action(async () => {
+    const body: Record<string, unknown> = { ...rules(), enabled: account?.enabled ?? false, ...(account ? { accountId: account.accountId } : {}) };
+    const keys: (keyof Pick<ConnectionForm, "token" | "endpoint" | "appId" | "accessToken" | "clientSecret" | "appSecret" | "verificationToken" | "encryptKey">)[] = channel === "telegram" ? ["token"] : channel === "qq" ? ["endpoint", "accessToken"] : channel === "qqbot" ? ["endpoint", "appId", "clientSecret"] : ["endpoint", "appId", "appSecret", "verificationToken", "encryptKey"];
+    for (const key of keys) {
+      if (form[key].trim()) body[key] = form[key].trim();
+    }
+    const result = await api<{ account: Account }>(`${base}/${channel}`, { method: "PUT", body: JSON.stringify(body) });
+    if (!live.current) return;
+    onAccountChange(result.account);
+    setForm((current) => ({ ...current, token: "", accessToken: "", clientSecret: "", appSecret: "", verificationToken: "", encryptKey: "" }));
+    if (credentialsDetails.current) credentialsDetails.current.open = false;
+    if (!account && !result.account.enabled) {
+      const enabled = await api<{ account: Account }>(`${base}/accounts/${encodeURIComponent(result.account.accountId)}/state`, { method: "POST", body: JSON.stringify({ enabled: true }) });
+      if (!live.current) return;
+      onAccountChange(enabled.account);
+    }
+    setNotice("连接配置已保存");
+  }, "保存连接配置失败");
+
+  const setConnection = (enabled: boolean) => account && action(async () => {
+    const result = await api<{ account: Account }>(`${base}/accounts/${encodeURIComponent(account.accountId)}/state`, { method: "POST", body: JSON.stringify({ enabled }) });
+    if (live.current) onAccountChange(result.account);
+  }, "修改连接状态失败");
+
+  const saveRules = () => account && action(async () => {
+    const result = await api<{ account: Account }>(`${base}/${channel}`, { method: "PUT", body: JSON.stringify({ ...rules(), accountId: account.accountId, enabled: account.enabled }) });
+    if (live.current) { onAccountChange(result.account); setNotice("响应规则已保存"); }
+  }, "保存响应规则失败");
+
+  const test = () => account && action(async () => {
+    const result = await api<{ account: Account }>(`${base}/${channel}/${encodeURIComponent(account.accountId)}/test`, { method: "POST" });
+    if (live.current) { onAccountChange(result.account); setNotice("连接测试通过"); }
+  }, "连接测试失败");
+
+  const remove = () => account && window.confirm(`移除${channelName[channel]}账号？历史会话会保留。`) && action(async () => {
+    await api(`${base}/accounts/${encodeURIComponent(account.accountId)}`, { method: "DELETE" });
+    if (live.current) { onAccountChange(null); onClose(); }
+  }, "移除账号失败");
+
+  const fields = <fieldset disabled={busy || !canConnect} className="account-connection-fields">
+    {channel !== "telegram" && account?.mode !== "managed" && <label className="field">{channel === "qq" ? "NapCat WebSocket 地址" : "平台 API 地址"}<input type="url" value={form.endpoint} onChange={(event) => update("endpoint", event.target.value)} placeholder={channel === "qq" ? "ws://127.0.0.1:6700" : channel === "qqbot" ? "https://api.sgroup.qq.com" : "https://open.feishu.cn/open-apis"} /></label>}
+    {(channel === "qqbot" || channel === "feishu") && <label className="field">{channel === "qqbot" ? "QQ Bot App ID" : "飞书 App ID"}<input autoComplete="off" value={form.appId} onChange={(event) => update("appId", event.target.value)} /></label>}
+    {channel === "telegram" && <label className="field">Telegram Bot Token<input type="password" autoComplete="new-password" value={form.token} onChange={(event) => update("token", event.target.value)} placeholder={account?.tokenConfigured ? "已保存；留空则不更换" : "从 BotFather 获取"} /></label>}
+    {channel === "qq" && account?.mode !== "managed" && <label className="field">NapCat Access Token<input type="password" autoComplete="new-password" value={form.accessToken} onChange={(event) => update("accessToken", event.target.value)} placeholder={account?.tokenConfigured ? "已保存；留空则不更换" : "如 NapCat 配置了访问令牌"} /></label>}
+    {channel === "qqbot" && <label className="field">QQ Bot Client Secret<input type="password" autoComplete="new-password" value={form.clientSecret} onChange={(event) => update("clientSecret", event.target.value)} placeholder={account?.tokenConfigured ? "已保存；留空则不更换" : "从 QQ 开放平台获取"} /></label>}
+    {channel === "feishu" && <><label className="field">飞书 App Secret<input type="password" autoComplete="new-password" value={form.appSecret} onChange={(event) => update("appSecret", event.target.value)} placeholder={account?.tokenConfigured ? "已保存；留空则不更换" : "从飞书开放平台获取"} /></label><details className="account-disclosure"><summary>Webhook 设置（可选）</summary><div className="account-connection-fields"><label className="field">Verification Token<input type="password" autoComplete="new-password" value={form.verificationToken} onChange={(event) => update("verificationToken", event.target.value)} /></label><label className="field">Encrypt Key<input type="password" autoComplete="new-password" value={form.encryptKey} onChange={(event) => update("encryptKey", event.target.value)} /></label></div></details></>}
+    <label className="field">显示名称<input value={form.displayName} onChange={(event) => update("displayName", event.target.value)} placeholder="可选" /></label>
+    <div className="account-actions"><button type="button" className="primary" disabled={!valid && account?.mode !== "managed"} onClick={() => void saveConnection()}>{busy ? "正在保存…" : account ? "保存连接配置" : "保存并连接"}</button></div>
+  </fieldset>;
+
+  return createPortal(<Dialog title={`${channelName[channel]} 账号`} variant="compact" onClose={onClose}>
+    <div className="account-detail">
+      {account && <div className="account-summary">{account.avatarUrl && <img src={account.avatarUrl} alt="账号头像" className="role-account-avatar" />}<div><strong>{account.displayName || channelName[channel]}</strong>{account.platformId && <small>{account.platformId}</small>}</div><span className={`role-account-status${connected ? " connected" : ""}`}>{accountStatus(account, platformEnabled)}</span></div>}
+      {!canConnect && <div className="account-platform-paused" role="status"><p>此平台已在全局设置中暂停。启用后才能连接账号。</p>{onOpenSettings && <button type="button" onClick={() => { onClose(); onOpenSettings(); }}>打开渠道设置</button>}</div>}
+      {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
+      {notice && <p className="account-feedback" role="status">{notice}</p>}
+      {account?.lastError && <p role="status" className="account-error">连接错误：{account.lastError}</p>}
+      {account ? <><div className="account-actions"><button type="button" disabled={busy || !canConnect} onClick={() => void setConnection(!account.enabled)}>{account.enabled ? "断开连接" : "连接"}</button>{(account.lastError || account.connectionStatus === "error") && <button type="button" disabled={busy || !canConnect} onClick={() => void setConnection(true)}>重试连接</button>}<button type="button" disabled={busy || !canConnect} onClick={() => void test()}>测试连接</button></div><details className="account-disclosure" ref={credentialsDetails}><summary>更改连接配置</summary>{fields}</details></>
+        : channel === "qq" ? <><ManagedQQLogin roleId={roleId} canConnect={canConnect} getRules={rules} onConnected={onAccountChange} /><details className="account-disclosure" onToggle={(event) => setManualQQ(event.currentTarget.open)}><summary>高级：手动连接已有 NapCat</summary>{manualQQ && fields}</details></> : fields}
+      {channel === "qq" && account?.mode === "managed" && account.managedRef && !connected && (account.enabled ? <ManagedQQLogin roleId={roleId} existingAccount={{ managedRef: account.managedRef, accountId: account.accountId }} canConnect={canConnect} getRules={rules} onConnected={onAccountChange} /> : <p className="role-accounts-hint">点击连接以启动 QQ 扫码登录。</p>)}
+      {connected && <section className="account-response-rules" aria-label="响应规则"><h3>响应规则</h3>{capabilities.group && <p>群聊在 @ 角色或回复角色消息时响应。</p>}<fieldset disabled={busy}><label className="account-checkbox"><input type="checkbox" checked={form.allowPrivate} disabled={!capabilities.private} onChange={(event) => update("allowPrivate", event.target.checked)} />响应私聊</label>{capabilities.group && <label className="account-checkbox"><input type="checkbox" checked={form.allowGroup} onChange={(event) => update("allowGroup", event.target.checked)} />响应群聊</label>}<label className="field">屏蔽发送者（ID 或平台别名）<textarea rows={3} value={form.blockedSenders} onChange={(event) => update("blockedSenders", event.target.value)} placeholder="每行一个 ID 或别名" /></label><div className="account-actions"><button type="button" onClick={() => void saveRules()}>保存响应规则</button></div></fieldset></section>}
+      {account && <div className="account-remove"><button type="button" className="danger" disabled={busy} onClick={() => void remove()}>移除账号</button><small>历史会话会保留。</small></div>}
+    </div>
+  </Dialog>, document.body);
+}
