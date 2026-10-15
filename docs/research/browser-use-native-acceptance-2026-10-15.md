@@ -27,22 +27,24 @@
 
 原有单条真实页面流程首次执行结果为 `1 passed, 19 deselected in 21.22s`，但原测试没有实际调用全部 28 工具，不能据此声称完整映射已验收。本票增加剩余工具及可观察清理行为。
 
+审查发现第一版扩充测试只调用 select、switch、close，未充分核对其结果。当前验收使用独立已知页面状态：选择框从初始 `one` 变为 `two`；两个标签页具有不同 URL 和标题，先切回原标签页，再切到新标签页，分别精确检查当前 URL 和标题；关闭新标签页后，重新列出标签页并确认只剩原标签页的 ID 和 URL。忽略这些操作的驱动无法满足这些状态断言。
+
 最终命令（从仓库根执行，资源变量指向上述已校验安装）：
 
 ```powershell
 python -m pytest -q --tb=short tests/python/test_browser_use.py --junitxml=.data/browser-use-native-acceptance.xml
 ```
 
-已提取：最终结果为 **`21 passed in 51.43s`**；本机 JUnit 报告 `.data/browser-use-native-acceptance.xml` 记录 `tests="21"`、`errors="0"`、`failures="0"`、`skipped="0"`，开始时间为 `2026-10-15T23:46:49+08:00`。两条 native 验收分别实际执行约 29.64 秒和 15.14 秒。报告属于本机临时验收产物，不随源码分发；上面的命令可重新生成。
+已提取：强化状态断言后的最终结果为 **`21 passed in 40.55s`**；本机 JUnit 报告 `.data/browser-use-native-acceptance.xml` 记录 `tests="21"`、`errors="0"`、`failures="0"`、`skipped="0"`，开始时间为 `2026-10-15T23:58:43+08:00`。两条 native 验收分别实际执行约 24.06 秒和 9.78 秒。报告属于本机临时验收产物，不随源码分发；上面的命令可重新生成。
 
 浏览器生产包 mypy（11 个源码文件）、Python 编译、测试文件 Ruff、TypeScript 和 Vite 构建、`git diff --check` 均通过。下表逐项对应真实 native 流程中的断言，而不是仅靠模拟 transport 的结果。
 
 | 验收范围 | 直接证据 |
 | --- | --- |
 | 全 28 工具映射 | 公开 AgentTool 实际调用成功集合等于固定目录，所有名称都被执行；本地 HTTP 页面支持全部用例 |
-| 表单及观察 | snapshot 获取 ref，fill/type/select/press/click 改变可读状态；check/uncheck 和 scroll 通过页面求值核对真实状态 |
+| 表单及观察 | snapshot 获取 ref，fill/type/press/click 改变可读状态；select 前后通过 DOM 求值精确核对 `one` → `two`；check/uncheck 和 scroll 通过页面求值核对真实状态 |
 | 阅读和等待 | read 读取本地 HTTP 正文，wait_ms、wait_for_selector/text/load 均执行 |
-| 导航和标签页 | open/get_url/get_title/back/forward/reload 与 tab_new/list/switch/close 验证真实页面或当前 URL |
+| 导航和标签页 | open/get_url/get_title/back/forward/reload 验证真实页面或当前 URL；不同 URL/标题的两个标签页先切旧再切新，每次精确核对当前页面，close 后通过列表确认仅新标签页消失，旧标签页 ID/URL 保留 |
 | 截图和错误恢复 | 原生返回 PNG 图像；过期 ref 形成失败结果，重新 snapshot 后可继续 |
 | 持久化和角色隔离 | 关闭并重新创建整个 BrowserSessions 服务后，角色 A 的 Cookie/localStorage 仍存在；角色 B 没有这些状态 |
 | 取消与关闭 | 取消 20 秒等待后，同角色可重新启动；关闭后 profile 锁可重新获取，IPC port/config 文件已清理 |

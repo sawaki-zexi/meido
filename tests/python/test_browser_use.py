@@ -697,6 +697,10 @@ def test_real_windows_browser_page_workflow_when_native_resources_are_configured
 <label>Choice<select id="choice"><option value="one">One</option><option value="two">Two</option></select></label>
 <button id="save" onclick="document.querySelector('#status').textContent = 'saved:' + document.querySelector('#name').value; localStorage.setItem('browser-use', 'role-a'); document.cookie = 'browser-owner=role-a; Max-Age=3600; path=/'">Save</button>
 <p id="status">Waiting</p><div style="height:1500px">Scroll area</div></body></html>'''
+            if self.path == "/second":
+                body = body.replace(b"Meido browser acceptance", b"Meido second tab").replace(
+                    b"Local browser acceptance", b"Second browser acceptance"
+                )
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -730,6 +734,12 @@ def test_real_windows_browser_page_workflow_when_native_resources_are_configured
         assert result.is_error is False, (name, result.content, result.details)
         return result
 
+    async def assert_current_page(expected_url, expected_title):
+        current_url = await call("role-a", "agent_browser_get_url")
+        current_title = await call("role-a", "agent_browser_get_title")
+        assert current_url.content == expected_url
+        assert current_title.content == expected_title
+
     async def run():
         nonlocal sessions, tools
         await call("role-a", "agent_browser_open", {"url": url})
@@ -748,7 +758,11 @@ def test_real_windows_browser_page_workflow_when_native_resources_are_configured
         assert textbox_ref is not None and button_ref is not None
         await call("role-a", "agent_browser_fill", {"selector": f"@{textbox_ref.group(1)}", "text": "Meido"})
         await call("role-a", "agent_browser_type", {"selector": "#name", "text": "-native"})
+        initial_choice = await call("role-a", "agent_browser_eval", {"script": "document.querySelector('#choice').value"})
+        assert json.loads(initial_choice.content) == "one"
         await call("role-a", "agent_browser_select", {"selector": "#choice", "values": ["two"]})
+        selected_choice = await call("role-a", "agent_browser_eval", {"script": "document.querySelector('#choice').value"})
+        assert json.loads(selected_choice.content) == "two"
         await call("role-a", "agent_browser_check", {"selector": "#subscribe"})
         checked = await call("role-a", "agent_browser_eval", {"script": "document.querySelector('#subscribe').checked"})
         assert "true" in checked.content
@@ -765,11 +779,31 @@ def test_real_windows_browser_page_workflow_when_native_resources_are_configured
         assert "saved:Meido-native" in text.content
         screenshot = await call("role-a", "agent_browser_screenshot")
         assert screenshot.images and len(screenshot.images[0].data_base64) < 2_700_000
-        await call("role-a", "agent_browser_tab_new", {"label": "second", "url": url})
+        initial_tabs = await call("role-a", "agent_browser_tab_list")
+        original_tabs = json.loads(initial_tabs.content)["data"]["tabs"]
+        assert len(original_tabs) == 1
+        original_tab_id = original_tabs[0]["tabId"]
+        assert original_tabs[0]["url"] == url
+        second_url = url + "second"
+        await call("role-a", "agent_browser_tab_new", {"label": "second", "url": second_url})
+        await call("role-a", "agent_browser_wait_for_text", {"text": "Second browser acceptance", "waitTimeoutMs": 2000})
+        await assert_current_page(second_url, "Meido second tab")
         tabs = await call("role-a", "agent_browser_tab_list")
-        assert "second" in tabs.content or url in tabs.content
+        opened_tabs = json.loads(tabs.content)["data"]["tabs"]
+        second_tab = next(tab for tab in opened_tabs if tab["label"] == "second")
+        second_tab_id = second_tab["tabId"]
+        assert second_tab["url"] == second_url
+        assert {tab["tabId"] for tab in opened_tabs} == {original_tab_id, second_tab_id}
+        await call("role-a", "agent_browser_tab_switch", {"tab": original_tab_id})
+        await assert_current_page(url, "Meido browser acceptance")
         await call("role-a", "agent_browser_tab_switch", {"tab": "second"})
+        await assert_current_page(second_url, "Meido second tab")
         await call("role-a", "agent_browser_tab_close", {"tab": "second"})
+        remaining = await call("role-a", "agent_browser_tab_list")
+        remaining_tabs = json.loads(remaining.content)["data"]["tabs"]
+        assert {tab["tabId"] for tab in remaining_tabs} == {original_tab_id}
+        assert remaining_tabs[0]["url"] == url
+        await assert_current_page(url, "Meido browser acceptance")
         await call("role-a", "agent_browser_open", {"url": url})
         stale = await invoke("role-a", "agent_browser_click", {"selector": f"@{button_ref.group(1)}"})
         assert stale.is_error is True
