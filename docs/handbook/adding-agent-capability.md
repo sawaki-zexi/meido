@@ -26,7 +26,7 @@
 
 使用 **Tool** 处理需要模型主动调用的可执行动作。Tool 应声明唯一名称、输入 JSON Schema、来源、版本、风险、暴露方式、审批策略、超时和输出上限。执行函数只接收宿主注入的 `ToolContext`，不能从全局对象读取角色、会话或密钥。
 
-使用 **Skill** 提供工作说明、提示词片段和资源索引。Skill 放在角色目录的 `skills/<id>/SKILL.md` 或项目目录的 `.agents/skills/<id>/SKILL.md`，正文只能通过受控 Markdown front matter 激活。Skill 可以引用 Tool，但不能执行代码、启用未授权 Tool 或直接访问宿主服务。
+使用 **Skill** 提供工作说明、提示词片段和资源索引。角色文件工具创建的 Skill 放在 workspace 的 `skills/<id>/SKILL.md`；兼容角色旧目录 `skills/<id>/SKILL.md` 和项目 `.agents/skills/<id>/SKILL.md`，并提供四份内置技能。聊天可用 `$<id>` 显式激活。Skill 可以引用 Tool，但不能执行代码、启用未授权 Tool 或直接访问宿主服务。目录优先级、依赖和支持资源约束见[Skill 契约](../reference/shiori-builtin-skills.md)。
 
 使用 **Plugin** 组合多个 Tool、Skill 或 Tool Hook，并管理它们的生命周期。当前 Plugin 是静态、进程内 Python manifest/factory，必须声明宿主 capability grant；低信任 Plugin 需要显式启用。Plugin 的 cleanup 必须可重复执行，setup 失败必须能回滚已经创建的资源。关闭期间收到取消时，已启动的异步 cleanup 会完成，随后继续清理其他资源并传播取消。
 

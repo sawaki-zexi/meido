@@ -11,3 +11,7 @@ Exa MCP 请求结构和 HTML 转换选项。上游版权和 MIT 许可见 [LICEN
 Meido 自行适配 AgentTool、角色授权、宿主搜索配置、DNS 固定连接、逐跳校验、
 流式容量控制、可终止解析进程和取消协议；不引入上游工具宿主、数据库或身份系统。
 更新以人工核对固定上游版本和公开行为测试为准，不自动同步。
+
+## Skill 指令适配
+
+`backend/app/builtin_skills/` 的 weather、summarize、meme-manage、skill-creater 改写自同一固定上游的 `apps/backend/skills/`，保留 MIT 授权。Meido 的 frontmatter、角色 workspace、CLI 版本和权限行为差异见 `docs/reference/shiori-builtin-skills.md`。

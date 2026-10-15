@@ -71,7 +71,7 @@ class CapabilitySnapshot:
                 skill.to_dict()
                 for skill in self.skills
             ],
-            "skillDiagnostics": [dict(item) for item in self.skill_diagnostics],
+            "skillDiagnostics": [_thaw_json(item) for item in self.skill_diagnostics],
             "plugins": [plugin.to_dict() for plugin in self.plugins],
             "pluginDiagnostics": [dict(item) for item in self.plugin_diagnostics],
             "generation": self.generation,

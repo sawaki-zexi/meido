@@ -3856,8 +3856,10 @@ async def _runtime_capabilities(
     return await CapabilityRegistry(
         _runtime_tool_candidates(role, include_channel=include_channel) if available_tools is None else available_tools,
         skills=SkillRegistry.discover_many((
+            (store.root / role.id / "workspace" / "skills", "role"),
             (roles_root / role.id / "skills", "role"),
             (project_root / ".agents" / "skills", "project"),
+            (Path(__file__).parent / "builtin_skills", "builtin"),
         )),
         plugins=plugin_registry,
     ).resolve_async(
