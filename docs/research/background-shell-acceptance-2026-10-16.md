@@ -72,3 +72,9 @@ TaskRuntime 与 Shell 四个源码文件 mypy、变更测试及模块 Ruff、Pyt
 ## 实际限制
 
 Windows 的突发宿主退出树清理已用真实进程验证；POSIX 使用进程组的正常取消/关闭路径，不借此声称突发宿主崩溃也有 Windows Job 的保证。已执行上述3项真实CLI的公开只读来源/本地受控provider；未操作用户账号、发送消息或执行外部写事务。spawn 回灌、通用调度和 Coding 执行器尚未由本票实现，也没有注册空工具占位。
+
+## 总集成 CI 的测试资源隔离修正
+
+总 PR #162 在 `e5ba0ba` 的 Linux CI 为 1109 passed、3 failed、12 skipped；前端通过。这三个失败没有计入通过记录：两个账号重建反例依赖不存在的系统凭据库，另一个 Shell 许可交集用例复用了前序应用关闭测试已关闭的全局 TaskRuntime。
+
+在 Windows 顺序运行 `test_memory.py::test_fastapi_shutdown_closes_memory_worker` 后再执行三个 Shell 许可交集参数，得到相同的 retain 失败（3 passed、1 failed）。为该 HTTP 用例注入临时 TaskRuntime，并在渠道后台任务测试中注入内存凭据接口后，关闭测试、完整发现 HTTP 和后台任务 HTTP 共 27 passed（31.98s）。仍运行真实 SQLite、真实进程、真实账号删除/重建服务和原许可断言；未放宽生产凭据故障或任务关闭规则。Linux CI 将在推送此修正后重新验证。

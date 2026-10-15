@@ -18,11 +18,20 @@ from backend.app.storage import initialize_databases
 from backend.app.multichannel import MultichannelStore
 from backend.app.channels.host import ChannelHost
 from backend.app.memory_config import MemorySettingsStore
+from backend.app.task_runtime import TaskRuntime
+
+
+@pytest.fixture
+def owned_tasks(tmp_path, monkeypatch):
+    tasks = TaskRuntime(tmp_path / "tasks")
+    monkeypatch.setattr(main, "task_runtime", tasks)
+    yield tasks
+    tasks.close()
 
 
 @pytest.mark.parametrize("change", ["remove", "add", "retain"])
 def test_http_same_run_shell_uses_frozen_and_current_allowlist_intersection(
-    tmp_path, monkeypatch, change
+    tmp_path, monkeypatch, change, owned_tasks
 ):
     roles = RoleStore(tmp_path / "roles")
     initialize_databases(tmp_path / "data")
