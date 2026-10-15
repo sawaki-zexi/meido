@@ -144,7 +144,7 @@ class MultichannelGroupRepository:
         with self.store._connect() as db:
             rows = db.execute(
                 "SELECT n.channel,n.sender_id,n.name FROM channel_member_names n "
-                "LEFT JOIN channel_threads t ON t.role_id=n.role_id AND t.account_id=n.account_id "
+                "LEFT JOIN channel_threads t ON t.role_id=n.role_id AND t.channel=n.channel AND t.account_id=n.account_id "
                 "AND t.chat_id=n.chat_id AND t.chat_type=n.chat_type WHERE n.role_id=? "
                 + ("AND t.thread_id=? " if thread_id is not None else "")
                 + "ORDER BY n.last_seen DESC,n.rowid DESC", (role_id, thread_id) if thread_id is not None else (role_id,),
@@ -175,7 +175,7 @@ class MultichannelGroupRepository:
             observed = db.execute(
                 "SELECT DISTINCT t.thread_id,n.account_id,n.chat_id,n.chat_type,"
                 "COALESCE(p.profile,'') AS profile,COALESCE(p.shorthand,'') AS shorthand "
-                "FROM channel_member_names n LEFT JOIN channel_threads t ON t.role_id=n.role_id "
+                "FROM channel_member_names n LEFT JOIN channel_threads t ON t.role_id=n.role_id AND t.channel=n.channel "
                 "AND t.account_id=n.account_id AND t.chat_id=n.chat_id AND t.chat_type=n.chat_type "
                 "LEFT JOIN channel_member_profiles p ON p.role_id=t.role_id AND p.thread_id=t.thread_id AND p.sender_id=n.sender_id "
                 "WHERE n.role_id=? AND n.channel=? AND n.sender_id=?"

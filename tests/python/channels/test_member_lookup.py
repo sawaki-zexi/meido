@@ -318,3 +318,67 @@ def test_old_listening_nicknames_remain_queryable_after_upgrade(tmp_path):
     assert json.loads(result.content) == {"total": 1, "candidates": [
         {"channel": "qq", "member_id": "22", "name": "Beth", "nicknames": ["Beth", "Alice"]}]}
     assert "LISTENING_RAW_MUST_NOT_LEAK" not in result.content
+
+
+def test_reused_account_id_keeps_channels_and_profile_sources_separate(tmp_path):
+    class Credentials:
+        def get(self, key):
+            return ""
+
+        def set(self, key, value):
+            pass
+
+    database = tmp_path / "sessions.db"
+    channels = MultichannelStore(database, SessionStore(database), Credentials())
+    repository = MultichannelGroupRepository(channels)
+    for channel in ("qq", "feishu"):
+        channels.register_channel_account("r", channel, account_id="reused", enabled=True, allow_group=True)
+        # Archived threads can retain a removed account ID across platforms.
+        # Seed that valid persisted shape before querying the public tool.
+        with channels._connect() as db:
+            db.execute("INSERT INTO channel_threads VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (f"archive-{channel}", f"thread:archive-{channel}", "r", channel, "reused", "100", "group", "",
+                 datetime.now(timezone.utc).isoformat(), "{}"))
+        thread = channels.get_thread("r", f"archive-{channel}")
+        assert thread is not None
+        channels.append_event(thread, direction="inbound", content="RAW",
+            external_message_id=channel, metadata={"senderId": "22", "senderName": "Alice"})
+        with channels._connect() as db:
+            db.execute("INSERT INTO channel_member_profiles VALUES(?,?,?,?,?,?,?)",
+                ("r", thread.thread_id, "22", "Alice", f"{channel} profile", "", "old"))
+        channels.delete_account("reused")
+    tool = LookupGroupMemberTool(repository, role_id="r")
+    context = ToolContext("r", "role:r", "run", CancellationToken())
+    found = json.loads(asyncio.run(tool.execute({"name": "Alice"}, context)).content)
+    assert found["total"] == 2
+    assert {(item["channel"], item["member_id"]) for item in found["candidates"]} == {("qq", "22"), ("feishu", "22")}
+    for channel in ("qq", "feishu"):
+        profile = json.loads(asyncio.run(tool.execute({"member_id": "22", "member_channel": channel}, context)).content)
+        assert profile["sources_total"] == 1
+        assert [item["profile"] for item in profile["sources"]] == [f"{channel} profile"]
+
+
+def test_role_deletion_rollback_restores_historical_member_names(tmp_path):
+    class Credentials:
+        def get(self, key):
+            return ""
+
+        def set(self, key, value):
+            pass
+
+    database = tmp_path / "sessions.db"
+    channels = MultichannelStore(database, SessionStore(database), Credentials())
+    channels.register_channel_account("r", "qq", account_id="a", enabled=True, allow_group=True)
+    thread = channels.ensure_channel_thread("r", "qq", "a", "100", "group")
+    for number, name in enumerate(("Alice", "Beth")):
+        channels.append_event(thread, direction="inbound", content="RAW",
+            external_message_id=str(number), metadata={"senderId": "22", "senderName": name})
+    tool = LookupGroupMemberTool(MultichannelGroupRepository(channels), role_id="r")
+    context = ToolContext("r", "role:r", "run", CancellationToken())
+    snapshot = channels.snapshot_role("r")
+    channels.delete_role("r")
+    assert json.loads(asyncio.run(tool.execute({"name": "Alice"}, context)).content)["total"] == 0
+    channels.restore_role("r", snapshot)
+    restored = json.loads(asyncio.run(tool.execute({"name": "Alice"}, context)).content)
+    assert restored == {"total": 1, "candidates": [
+        {"channel": "qq", "member_id": "22", "name": "Beth", "nicknames": ["Beth", "Alice"]}]}

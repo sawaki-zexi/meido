@@ -2,6 +2,7 @@
 import asyncio
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import main
@@ -18,7 +19,8 @@ from backend.app.session_manager import SessionManager
 from backend.app.session_store import SessionStore
 
 
-def test_qq_nickname_observations_are_queryable_from_desktop_when_account_is_offline(tmp_path, monkeypatch):
+@pytest.mark.parametrize("fresh_directory", [False, True])
+def test_qq_nickname_observations_are_queryable_from_desktop_when_account_is_offline(tmp_path, monkeypatch, fresh_directory):
     roles = RoleStore(tmp_path / "roles")
     sessions = SessionStore(tmp_path / "sessions.db")
     channels = MultichannelStore(tmp_path / "sessions.db", sessions)
@@ -47,6 +49,8 @@ def test_qq_nickname_observations_are_queryable_from_desktop_when_account_is_off
 
     async def rpc(operation, params):
         assert operation in {"get_friend_list", "get_group_list", "get_group_member_list"}
+        if fresh_directory and operation == "get_group_member_list":
+            return {"data": [{"user_id": 22, "card": "DirectoryName"}]}
         return {"data": []}
 
     adapter = NapCatAdapter(NapCatConfig(account.account_id), transport=rpc)
@@ -84,10 +88,12 @@ def test_qq_nickname_observations_are_queryable_from_desktop_when_account_is_off
                 data = json.loads(result["content"])
                 assert "UNTRIGGERED_RAW_CHAT" not in result["content"]
                 if self.calls == 2:
-                    assert data == {"total": 1, "candidates": [{"channel": "qq", "member_id": "22", "name": "艾丽丝", "nicknames": ["艾丽丝", "Alice"]}]}
+                    assert data == {"total": 1, "candidates": [{"channel": "qq", "member_id": "22",
+                        "name": "DirectoryName" if fresh_directory else "艾丽丝",
+                        "nicknames": ["DirectoryName", "艾丽丝", "Alice"] if fresh_directory else ["艾丽丝", "Alice"]}]}
                     yield ModelToolCall("read-profile", "lookup_group_member", {"member_id": "22", "member_channel": "qq"})
                 else:
-                    assert data["found"] and data["member_id"] == "22" and data["name"] == "艾丽丝"
+                    assert data["found"] and data["member_id"] == "22" and data["name"] == ("DirectoryName" if fresh_directory else "艾丽丝")
                     assert data["sources"][0]["chat_id"] == "100"
                     yield ModelTextDelta("已按旧昵称查到当前成员")
 
