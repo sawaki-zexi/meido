@@ -107,6 +107,18 @@ class RuntimeManager:
             return self.cancel_run(run_id) if run_id is not None else False
         return self.cancel_run(active.runId)
 
+    async def stop_run(self, run_id: str) -> bool:
+        """Cancel one owned run and wait for its task and role lock to finish."""
+
+        task = self._tasks.get(run_id)
+        if not self.cancel_run(run_id):
+            return False
+        if task is not None and task is not asyncio.current_task():
+            await asyncio.gather(task, return_exceptions=True)
+        else:
+            self.cancel_unstarted_run(run_id, "主人停止回复")
+        return True
+
     def abandon_unstarted_run(self, run_id: str, reason: str = "SSE 流在启动前中断") -> None:
         """Fail a reserved run when its response iterator never begins."""
 

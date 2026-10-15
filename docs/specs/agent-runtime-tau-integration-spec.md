@@ -95,6 +95,8 @@ assistant_failed
 
 新增的 `runId`、turn 序号和工具事件使用可选字段或新增 SSE 事件，旧客户端忽略后仍能完成普通文本对话。
 
+桌面发送接口在响应头 `X-Meido-Run-Id` 返回已持久化运行的身份，便于首个 SSE 事件或模型 token 到达前停止。`POST /api/roles/{role_id}/runs/{run_id}/stop` 只接受属于该角色桌面会话的运行；不存在、其他角色或渠道线程运行返回 404。停止会取消当前 provider/tool 等待，并等待该运行任务退出和角色锁释放，再返回最新 `SessionResponse`；已结束运行的重复停止不影响后续运行。取消回复仍使用兼容的 `failed` 消息状态，`metadata.runtimeReason = cancelled` 供界面显示“已停止”。
+
 ## 4. 目标架构
 
 ```text

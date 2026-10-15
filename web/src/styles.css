@@ -206,6 +206,8 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .message-status { font-size: 11px; padding: 0 7px; border-radius: 999px; }
 .message-status.streaming { color: var(--role); background: var(--role-soft); animation: breathe 1.6s ease-in-out infinite; }
 .message-status.failed { color: var(--danger); background: var(--danger-soft); }
+.message-status.stopped { color: var(--ink-soft); background: var(--hover); }
+.chat-title .reply-state { color: var(--rose-deep); }
 .typing { color: var(--ink-faint); animation: breathe 1.6s ease-in-out infinite; }
 
 .empty-create { margin: auto; display: grid; justify-items: center; gap: 14px; color: var(--ink-faint); text-align: center; font-size: 14px; }
@@ -235,6 +237,7 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .composer .send { flex: none; width: 36px; height: 36px; min-height: 0; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--rose); }
 .composer .send:hover:not(:disabled) { background: var(--accent-gradient-soft); color: var(--rose-deep); }
 .composer .send:disabled { color: var(--ink-faint); opacity: .5; }
+.composer .send.stop { color: var(--ink-soft); background: var(--accent-gradient-soft); }
 .composer-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 3px 0; }
 .attachment-preview, .attachment-file { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--hover); color: var(--ink-soft); font-size: 12px; }
 .attachment-preview { width: 58px; height: 58px; overflow: hidden; }
@@ -244,6 +247,8 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .attachment-file { max-width: 220px; padding: 5px 6px 5px 9px; }
 .attachment-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-error { padding: 0 5px; color: var(--danger); font-size: 12px; }
+.composer-unsent { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 10px; color: var(--ink-soft); background: var(--hover); font-size: 13px; }
+.composer-unsent p { flex: 1; min-width: 0; max-height: 100px; overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
 .message-attachments { display: flex; flex-wrap: wrap; gap: 6px; }
 .message-attachments img { display: block; width: 150px; max-width: 100%; max-height: 180px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
 .message-file { display: inline-flex; max-width: 240px; padding: 6px 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--line); border-radius: 7px; color: var(--role); background: var(--hover); font-size: 12px; }
