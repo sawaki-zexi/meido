@@ -7,7 +7,22 @@ import pytest
 
 from backend.app import main
 from backend.app.ai.model_adapter import ModelTextDelta, ModelToolCall
-from test_mcp_http import save_server, setup_host
+from backend.app.credentials import SystemCredentialStore
+from backend.app.owner_knowledge import OwnerKnowledgePlugin, OwnerKnowledgeStore
+from test_mcp_http import Credentials, save_server, setup_host
+
+
+@pytest.fixture(autouse=True)
+def isolated_owner_components(tmp_path, monkeypatch):
+    owner_store = OwnerKnowledgeStore(tmp_path / "owner-knowledge.db", credential_store=Credentials())
+    plugin = OwnerKnowledgePlugin(owner_store, main.owner_knowledge_connector, main.embedding_provider)
+    monkeypatch.setattr(main, "owner_knowledge_store", owner_store)
+    monkeypatch.setattr(main, "owner_knowledge_plugin", plugin)
+
+    def reject_real_vault_read(self, key):
+        pytest.fail("Feed checks must use isolated credentials, not the actual system vault")
+
+    monkeypatch.setattr(SystemCredentialStore, "get", reject_real_vault_read)
 
 
 def test_explicit_feed_skill_reaches_model_without_granting_mcp_or_shell(tmp_path, monkeypatch):

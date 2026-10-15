@@ -25,6 +25,7 @@ from backend.app import main
 from backend.app.ai.model_adapter import ModelTextDelta, ModelToolCall
 from backend.app.mcp_config import McpConfigStore, minimal_environment
 from backend.app.mcp_runtime import McpHost
+from test_feed_skill import isolated_owner_components
 from test_mcp_http import setup_host
 
 
