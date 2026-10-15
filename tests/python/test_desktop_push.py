@@ -189,3 +189,33 @@ def test_final_commit_rechecks_permission_after_attachment_resolution(tmp_path, 
             assert (await pending).is_error
     asyncio.run(run())
     assert sessions.list_messages('role:role') == []
+
+
+def test_stop_after_commit_gate_waits_for_the_authorized_write_and_preserves_it(tmp_path, monkeypatch):
+    sessions = SessionStore(tmp_path / 'sessions.db')
+    entered, release = Event(), Event()
+    connect = sqlite3.connect
+    def traced_connection(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        def trace(statement):
+            if statement.startswith('INSERT INTO messages'):
+                entered.set()
+                release.wait(5)
+        connection.set_trace_callback(trace)
+        return connection
+    monkeypatch.setattr(sqlite3, 'connect', traced_connection)
+    tool = MessagePushTool(sessions, lambda: tmp_path, role_id='role', authorized=lambda _: True)
+    async def run():
+        pending = asyncio.create_task(tool.execute({'channel': 'desktop', 'chat_id': 'owner', 'message': 'gate already won'}, context()))
+        assert await asyncio.to_thread(entered.wait, 2)
+        try:
+            pending.cancel()
+            await asyncio.sleep(.01)
+            assert not pending.done()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+    asyncio.run(run())
+    messages = sessions.list_messages('role:role')
+    assert len(messages) == 1 and messages[0].content == 'gate already won' and messages[0].status == 'completed'

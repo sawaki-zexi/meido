@@ -14,6 +14,6 @@
 
 同步屏幕集成后，桌面推送/来源、提醒/发现、屏幕 HTTP、子任务与群 HTTP 交叉 **131 passed**；网页基础工具、屏幕/子任务配置、草稿及桌面媒体 **15 passed**，TypeScript/Vite 通过。新增工具 mypy、三个相关模块检查和 Ruff/compileall 通过；SessionStore 仍有 4 项既有 mypy 错误，使用固定基线 shadow-file 比对错误类别与文本逐项一致，无新增，并未声称全仓类型检查通过。
 
-独立 Standards 初审发现两个 P2：事务内先检查权限再读附件留下取消窗口，且独立消息插在 tool_call/result 之间导致下一轮重放误报中断。三个媒体解析中取消/撤权用例和一/两调用组的真实 HTTP→新 SessionStore→下一主人回合共 **5 项先红后绿**。最终权限校验移到媒体解析后；重放扫描只暂存组内独立消息、按原 run/call 保留全部结果后再放回。修复后的桌面/真实 HTTP、核心 Runtime 和 Google 调用身份交叉 **62 passed**；最终两轴复核尚未完成。
+独立 Standards 初审发现两个 P2：事务内先检查权限再读附件留下取消窗口，且独立消息插在 tool_call/result 之间导致下一轮重放误报中断。三个媒体解析中取消/撤权用例和一/两调用组的真实 HTTP→新 SessionStore→下一主人回合共 **5 项先红后绿**。最终权限校验移到媒体解析后；重放扫描只暂存组内独立消息、按原 run/call 保留全部结果后再放回。修复后的桌面/真实 HTTP、核心 Runtime 和 Google 调用身份交叉 **62 passed**；最终 Standards 独立 **13 passed**，Spec 独立 Python **96 passed**、React **4 passed**，两轴均无剩余 finding。提交门禁线性化与单字段/合并附件两项上限另在 Reference 明确。
 
 现有账号在线状态、目录种类/群成员分页和真实平台收件仍是 C06 的后续差距；此票不代表 C06 整体完成。
