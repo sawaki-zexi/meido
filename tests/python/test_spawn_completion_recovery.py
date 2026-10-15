@@ -3,6 +3,7 @@ import asyncio
 import json
 import sqlite3
 import sys
+import threading
 import time
 
 import pytest
@@ -206,3 +207,50 @@ def test_desktop_completed_message_is_sent_even_when_sync_ack_encounters_sqlite_
         assert 'desktop-completed-marker' in sessions.runtime_messages(origin.session_key)[0].content
     finally:
         tasks.close()
+
+
+def test_transient_sqlite_busy_during_recovery_does_not_stop_other_completions(channel_task, tmp_path):
+    tasks, sessions, origin, task_id = channel_task
+    message = sessions.append_task_completion('r', origin.session_key, task_id, 'confirmed-before-lock', task_status='succeeded')
+    tasks.update_completion(task_id, status='sending', content=message.content, message_id=message.id)
+    tasks.update_completion(task_id, status='sent', content=message.content, delivery_id='confirmed-attempt')
+    another = tasks.submit(origin, ProcessExecutor([sys.executable, '-c', 'print("another-real-child")'], tmp_path, {}),
+                           budget=TaskBudget(), kind='spawn', completion=True)
+    deadline = time.monotonic() + 3
+    while tasks.query(another, origin).ended_at is None:
+        assert time.monotonic() < deadline
+        time.sleep(.01)
+    locked, release = threading.Event(), threading.Event()
+    def block_database():
+        with sqlite3.connect(sessions.database_path) as connection:
+            connection.execute('BEGIN EXCLUSIVE')
+            locked.set()
+            release.wait(6.5)
+            connection.rollback()
+    blocker = threading.Thread(target=block_database)
+    blocker.start()
+    assert locked.wait(3)
+    sends = []
+    async def summarize(_snapshot):
+        return 'another-completion-marker'
+    async def deliver(snapshot, _content):
+        sends.append(snapshot.task_id)
+        return 'sent', 'another-confirmed-attempt'
+    async def run():
+        worker = TaskCompletionWorker(tasks, sessions, lock_for=lambda _: asyncio.Lock(), authorized=lambda _: True,
+                                      summarize=summarize, deliver=deliver)
+        worker.start()
+        try:
+            async with asyncio.timeout(10):
+                while tasks.completion(another, origin)['status'] != 'sent':
+                    await asyncio.sleep(.02)
+        finally:
+            await worker.close()
+    try:
+        asyncio.run(run())
+        assert sends == [another]
+        assert {item.content for item in sessions.runtime_messages(origin.session_key)} == {
+            'confirmed-before-lock', f'[内部子任务完成 / {another} / succeeded]\nanother-completion-marker'}
+    finally:
+        release.set()
+        blocker.join(2)

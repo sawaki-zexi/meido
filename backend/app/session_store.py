@@ -172,7 +172,7 @@ class SessionStore:
         crash window between this database and the task outbox acknowledgement.
         """
         message_id = f"{session_key}:task-completion:{task_id}"
-        with sqlite3.connect(self.database_path) as connection:
+        with sqlite3.connect(self.database_path, timeout=.05) as connection:
             connection.execute("BEGIN IMMEDIATE")
             session = connection.execute("SELECT role_id FROM sessions WHERE session_key=?", (session_key,)).fetchone()
             if session is None and session_key.startswith("thread:"):
@@ -199,6 +199,25 @@ class SessionStore:
                 connection.execute("UPDATE channel_threads SET last_activity=? WHERE session_key=?", (now, session_key))
         return Message(id=message_id, sessionKey=session_key, sequence=sequence, role="assistant", content=content,
                        status="completed", createdAt=datetime.fromisoformat(now), messageType="internal_completion", metadata=metadata)
+
+    def reconcile_task_completion(self, role_id: str, session_key: str, task_id: str, *,
+                                  delivery_status: str, delivery_attempt_id: object) -> None:
+        """Repair an existing channel completion without a long event-loop lock wait."""
+        if delivery_status not in {"pending", "sent", "failed", "uncertain"}:
+            raise ValueError("invalid task delivery status")
+        message_id = f"{session_key}:task-completion:{task_id}"
+        with sqlite3.connect(self.database_path, timeout=.05) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT m.metadata_json,t.channel FROM messages m JOIN channel_threads t ON t.session_key=m.session_key "
+                "WHERE m.message_id=? AND m.session_key=? AND t.role_id=? AND m.role='assistant' AND m.message_type='internal_completion'",
+                (message_id, session_key, role_id),
+            ).fetchone()
+            if row is None:
+                return
+            metadata = {**(_load_dict(row[0]) or {}), "channel": row[1], "deliveryStatus": delivery_status,
+                        "deliveryAttemptId": delivery_attempt_id}
+            connection.execute("UPDATE messages SET metadata_json=? WHERE message_id=?", (_dump(metadata), message_id))
 
     def append_proactive_message_once(
         self,

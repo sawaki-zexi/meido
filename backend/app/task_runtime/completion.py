@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from collections.abc import Awaitable, Callable
 
 from ..session_store import SessionStore
@@ -28,24 +29,39 @@ class TaskCompletionWorker:
             self._task = None
 
     async def _run(self) -> None:
-        for snapshot in self.tasks.recorded_completions():
-            retained = self.tasks.completion(snapshot.task_id, snapshot.origin)
-            message_id = retained.get("message_id") if retained else None
-            message = next((item for item in self.sessions.list_messages(snapshot.origin.session_key) if item.id == message_id), None)
-            if message is not None and snapshot.origin.source_account_id and retained is not None:
-                self.sessions.update_message(message.id, message.content, "completed", metadata={**message.metadata,
-                    "channel": str(json.loads(snapshot.origin.source_authority_json).get("channel", "")),
-                    "deliveryStatus": retained["status"], "deliveryAttemptId": retained["delivery_id"]})
-            self.tasks.acknowledge_completion_message(snapshot.task_id)
         while True:
-            for snapshot in self.tasks.pending_completions():
+            try:
+                recorded = self.tasks.recorded_completions()
+                pending = self.tasks.pending_completions()
+            except sqlite3.OperationalError:
+                await asyncio.sleep(.05)
+                continue
+            for snapshot in recorded:
+                try:
+                    retained = self.tasks.completion(snapshot.task_id, snapshot.origin)
+                    if retained is not None and snapshot.origin.source_account_id:
+                        status = str(retained["status"])
+                        if status == "sending":
+                            status = "uncertain"
+                            self.tasks.update_completion(snapshot.task_id, status=status, content=str(retained["content"]))
+                        self.sessions.reconcile_task_completion(snapshot.origin.role_id, snapshot.origin.session_key,
+                            snapshot.task_id, delivery_status=status, delivery_attempt_id=retained["delivery_id"])
+                    self.tasks.acknowledge_completion_message(snapshot.task_id)
+                except (sqlite3.OperationalError, KeyError):
+                    # Keep the receipt dirty and retry. One unavailable local
+                    # row must not permanently stop every other completion.
+                    continue
+            for snapshot in pending:
                 lock = self.lock_for(snapshot.origin.role_id)
                 try:
                     await asyncio.wait_for(lock.acquire(), timeout=.05)
                 except TimeoutError:
                     continue
                 try:
-                    await self._complete(snapshot)
+                    try:
+                        await self._complete(snapshot)
+                    except (sqlite3.OperationalError, KeyError):
+                        continue
                 finally:
                     lock.release()
             await asyncio.sleep(.05)
@@ -99,6 +115,12 @@ class TaskCompletionWorker:
             self.tasks.acknowledge_completion_message(task_id)
         except asyncio.CancelledError:
             raise
+        except sqlite3.OperationalError:
+            # A temporary local lock is not a failed model task or delivery.
+            # Pending events stay retryable; an entered send stays uncertain.
+            retained = self.tasks.completion(task_id, origin)
+            if retained is not None and retained["status"] == "sending":
+                self.tasks.update_completion(task_id, status="uncertain", content=content)
         except Exception as error:
             retained = self.tasks.completion(task_id, origin)
             # A local message acknowledgement failure cannot contradict a
