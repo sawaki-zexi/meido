@@ -1,0 +1,7 @@
+.tool-catalog { margin: 1rem 0; min-width: 0; }
+.tool-catalog ul { display: grid; gap: .75rem; padding: 0; list-style: none; }
+.tool-catalog li { display: grid; gap: .4rem; border: 1px solid rgba(155, 122, 152, .25); border-radius: .75rem; padding: .85rem; overflow-wrap: anywhere; }
+.tool-catalog li p { margin: 0; }
+.tool-catalog li small { opacity: .8; }
+.tool-catalog-states { display: flex; flex-wrap: wrap; gap: .35rem; font-size: .85rem; }
+.tool-catalog-states span { border-radius: .4rem; padding: .15rem .4rem; background: rgba(180, 139, 174, .12); }

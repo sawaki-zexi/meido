@@ -118,6 +118,21 @@ class BrowserSessions:
     def _key(role_id: str, run_id: str | None) -> tuple[str, str]:
         return role_id, run_id or ""
 
+    def dependency_status(self) -> dict[str, str]:
+        """Check local requirements without creating a session or process."""
+        if self._closed:
+            return {"status": "unavailable", "reason": "Browser Use 插件已停用"}
+        if self._transport is not None:
+            return {"status": "ready", "reason": "已配置浏览器传输；尚未验证实际连接"}
+        try:
+            from .runtime import BrowserRuntime
+            runtime = self._runtime or BrowserRuntime.resolve(self._resources)
+            if not runtime.agent_browser.is_file() or not runtime.chrome.is_file():
+                raise BrowserRuntimeUnavailable("Browser Use 运行组件缺失")
+        except BrowserRuntimeUnavailable as error:
+            return {"status": "unavailable", "reason": str(error)}
+        return {"status": "ready", "reason": "本机运行组件存在；尚未启动或验证浏览器"}
+
     async def call(
         self,
         role_id: str,

@@ -14,6 +14,7 @@ function MessageItem({ message, role, highlighted }: { message: Message; role: R
   const mine = message.role === "user";
   const streaming = message.status === "streaming";
   const failed = message.status === "failed";
+  const stopped = failed && message.metadata?.runtimeReason === "cancelled";
   const ref = useRef<HTMLLIElement>(null);
   // A memory source opens the chat scrolled to the message it came from.
   useEffect(() => { if (highlighted) ref.current?.scrollIntoView?.({ behavior: "smooth", block: "center" }); }, [highlighted]);
@@ -27,7 +28,7 @@ function MessageItem({ message, role, highlighted }: { message: Message; role: R
         <strong>{mine ? "我" : role.name}</strong>
         <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString()}</time>
         {streaming && <span className="message-status streaming">生成中</span>}
-        {failed && <span className="message-status failed">未完成</span>}
+        {failed && <span className={`message-status ${stopped ? "stopped" : "failed"}`}>{stopped ? "已停止" : "未完成"}</span>}
         {highlighted && <span className="source-marker">记忆来源</span>}
       </div>
       {message.content && <p className="bubble">{message.content}</p>}
@@ -39,27 +40,40 @@ function MessageItem({ message, role, highlighted }: { message: Message; role: R
             : <a className="message-file" href={href} target="_blank" rel="noreferrer" key={attachment.id}>{attachment.name}</a>;
         })}
       </div>}
-      {!message.content && attachments.length === 0 && <p className="bubble">{streaming ? <span className="typing" aria-label="正在回复">正在回复…</span> : "（无内容）"}</p>}
+      {!message.content && attachments.length === 0 && <p className="bubble">{streaming ? <span className="typing" aria-label="正在回复">正在回复…</span> : stopped ? "已停止回复" : "（无内容）"}</p>}
     </div>
   </li>;
 }
 
 /** Message box shared by the conversation and the welcome screen, so home always looks like a chat. */
-function Composer({ roleId, placeholder, disabled, sending, onSend }: { roleId?: string; placeholder: string; disabled?: boolean; sending?: boolean; onSend: (text: string, attachmentIds: string[]) => Promise<boolean> }) {
+function Composer({ roleId, placeholder, disabled, sending, stopping, onSend, onStop }: { roleId?: string; placeholder: string; disabled?: boolean; sending?: boolean; stopping?: boolean; onSend: (text: string, attachmentIds: string[]) => Promise<boolean>; onStop?: () => void }) {
   const [draft, setDraft] = useState("");
-  const { attachments, uploading, dragging, setDragging, error, setError, upload, remove, clear } = useChatAttachments(roleId, Boolean(disabled), Boolean(sending));
+  const [unsentText, setUnsentText] = useState("");
+  const { attachments, uploading, dragging, setDragging, error, setError, upload, remove, clear, restore } = useChatAttachments(roleId, Boolean(disabled), Boolean(sending));
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const draftRevision = useRef(0);
+  const submitting = useRef(false);
   useEffect(() => { if (!sending && !disabled) inputRef.current?.focus(); }, [sending, disabled]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const text = draft;
-    if ((!text.trim() && attachments.length === 0) || sending || disabled || uploading) return;
-    const sent = await onSend(text, attachments.map((item) => item.id));
-    if (sent) {
-      setDraft("");
-      clear();
+    if ((!text.trim() && attachments.length === 0) || sending || disabled || uploading || submitting.current) return;
+    submitting.current = true;
+    const revision = ++draftRevision.current;
+    const sentAttachments = attachments;
+    setDraft("");
+    clear();
+    try {
+      const sent = await onSend(text, sentAttachments.map((item) => item.id));
+      if (!sent) {
+        if (draftRevision.current === revision) setDraft(text);
+        else if (text) setUnsentText(text);
+        restore(sentAttachments);
+      }
+    } finally {
+      submitting.current = false;
     }
   };
 
@@ -82,14 +96,15 @@ function Composer({ roleId, placeholder, disabled, sending, onSend }: { roleId?:
         : <div className="attachment-file" key={attachment.id}><span>{attachment.name}</span><button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => remove(attachment.id)}>×</button></div>)}
     </div>}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
+    {unsentText && <div className="composer-unsent" role="note"><p>未发送的消息：{unsentText}</p><IconButton icon="close" label="忽略未发送消息" onClick={() => setUnsentText("")} /></div>}
     <div className="composer-row">
       <input ref={fileRef} type="file" aria-label="附件文件" multiple accept="image/png,image/jpeg,image/webp,.txt,.md,.csv,.json,.pdf,.docx" hidden onChange={(event) => { const input = event.currentTarget; const files = [...input.files ?? []]; void upload(files).finally(() => { input.value = ""; }); }} />
       <button type="button" className="composer-attach" aria-label="添加附件" title="添加附件" disabled={disabled || sending || uploading} onClick={() => fileRef.current?.click()}><Icon name="plus" size={18} /></button>
-      <textarea ref={inputRef} aria-label="消息内容" placeholder={placeholder} rows={1} value={draft} disabled={disabled || sending} onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} />
+      <textarea ref={inputRef} aria-label="消息内容" placeholder={placeholder} rows={1} value={draft} disabled={disabled} onChange={(event) => { draftRevision.current += 1; setDraft(event.target.value); }} onKeyDown={onKeyDown} />
       {roleId && <RoleModelSelector roleId={roleId} disabled={disabled || sending || uploading} />}
-      <button type="submit" className="send" aria-label="发送" title="发送（Enter）" disabled={disabled || sending || uploading || (!draft.trim() && attachments.length === 0)}>
-      {sending ? <span className="spinner" aria-hidden="true" /> : <Icon name="send" size={18} />}
-      </button>
+      {sending
+        ? <button type="button" className="send stop" aria-label="停止回复" title={stopping ? "正在停止…" : "停止回复"} disabled={stopping} onClick={onStop}>{stopping ? <span className="spinner" aria-hidden="true" /> : <Icon name="stop" size={18} />}</button>
+        : <button type="submit" className="send" aria-label="发送" title="发送（Enter）" disabled={disabled || uploading || (!draft.trim() && attachments.length === 0)}><Icon name="send" size={18} /></button>}
     </div>
   </form>;
 }
@@ -144,7 +159,7 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
       <Avatar id={role.id} name={role.name} size="sm" avatarUrl={role.avatarUrl} />
       <div className="chat-title">
         <h1>{role.name}</h1>
-        {role.description && <small>{role.description}</small>}
+        {chat.sending ? <small className="reply-state" role="status">{chat.stopping ? "正在停止…" : "正在输入…"}</small> : role.description && <small>{role.description}</small>}
       </div>
       {todoSettings?.enabled && <button type="button" className="icon-button todo-entry" aria-label={todoUnread ? `待办提醒 ${todoUnread}` : "待办"} title="待办" onClick={() => setTodoOpen(true)}><Icon name="todo" />{todoUnread > 0 && <span>{todoUnread > 99 ? "99+" : todoUnread}</span>}</button>}
       <IconButton icon="memory" label="角色记忆" onClick={onShowMemories} />
@@ -158,7 +173,7 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
     </div>
     <div className="composer-dock">
       {chat.error && <Notice onDismiss={() => chat.setError("")}>{chat.error}</Notice>}
-      <Composer key={role.id} roleId={role.id} placeholder={`对${role.name}说点什么…`} sending={chat.sending} disabled={chat.opening} onSend={chat.send} />
+      <Composer key={role.id} roleId={role.id} placeholder={`对${role.name}说点什么…`} sending={chat.sending} stopping={chat.stopping} disabled={chat.opening} onSend={chat.send} onStop={chat.stop} />
     </div>
     {todoOpen && <TodoDrawer onClose={() => setTodoOpen(false)} onOpenSource={(roleId, sessionKey, messageId) => { setTodoOpen(false); onOpenTodoSource(roleId, sessionKey, messageId); }} />}
   </section>;

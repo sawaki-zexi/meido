@@ -160,6 +160,7 @@ class MeidoProvider:
         self.configuration = configuration
         self.memory_context = memory_context
         self.capability_prompt = capability_prompt
+        self._tool_prompt = ""
 
     def stream_response(
         self,
@@ -172,6 +173,17 @@ class MeidoProvider:
         session_id: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         del model, session_id
+        names = []
+        for tool in tools:
+            function = tool.get("function")
+            if isinstance(function, Mapping) and isinstance(function.get("name"), str):
+                names.append(function["name"])
+        self._tool_prompt = "\n".join((
+            "[本次运行工具]",
+            "当前提供给模型的工具：" + ("、".join(names) if names else "无"),
+            "仅以上名称可在本次运行调用。不要根据旧对话或其他角色的工具清单声称具备能力。",
+            "工具可见不等于外部依赖已验证；实际执行状态以工具结果为准。",
+        ))
         rich = getattr(self.adapter, "stream_rich_messages", None)
         if rich is not None:
             return self._stream_rich_structured(system, messages, tools, signal, rich)
@@ -439,7 +451,7 @@ class MeidoProvider:
     def _structured_system_prompt(self, system: str) -> str:
         if not system:
             return self._role_system_prompt()
-        return "\n\n".join(part for part in (system, self.capability_prompt) if part)
+        return "\n\n".join(part for part in (system, self.capability_prompt, self._tool_prompt) if part)
 
     def _role_system_prompt(self) -> str:
         profile = self.role.profile
@@ -453,6 +465,7 @@ class MeidoProvider:
             f"称呼用户：{profile.nickname}" if profile.nickname else "",
             self.memory_context,
             self.capability_prompt,
+            self._tool_prompt,
         ] if part)
 
     def _combined_memory_context(self) -> str:
