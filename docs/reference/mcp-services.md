@@ -40,7 +40,7 @@ MCP 对系统 CredentialStore 显式启用 `strict_cleanup=True`。长凭据写�
 
 运行开始冻结当前角色的服务配置、代际与 ServiceGrant，以及角色/session/真实来源身份。`mcp_add` 只连接这份集合中的服务：initialize → initialized → 全部分页 tools/list → 验证目录 → 暂存带父版本的远端候选。管理结果持久化后提交不可变目录修订；下一次 provider 请求可用 tool_search 激活 `mcp_<serverId>__<remoteName>` 并在同 run 真实 tools/call。同一 provider 回复不能抢先使用新目录。风险、角色与外部范围全部继承原 grant。
 
-`mcp_list` 仅观察，返回 serverId/name/risk、connectionDesired、status、error 及真实发现工具的名称/loaded。status 为 connected、disconnected、failed 或 revoked。退出、坏流或 stdout 关闭会自动回收进程并报告失败；再次 add 重新握手。同 run 重连要求完整远端声明版本一致，变化必须等新 run。
+`mcp_list` 仅观察，返回 serverId/name/risk、connectionDesired、status、error 及真实发现工具的名称/loaded。status 为 connected、disconnected、failed 或 revoked。退出、坏流或 stdout 关闭会自动回收进程并报告失败；再次 add 重新握手。同 run 重连要求完整远端声明版本一致，变化必须等新 run。远端 RPC 错误只转成宿主安全错误，开始清理前即保留；慢退出期间不会被普通断连提示覆盖，真实来源/服务撤权仍优先。下一模型请求前等待进程回收，业务调用不自动重试。
 
 成功 add 保存按角色、线程及原始绑定代际隔离的连接意愿。每个 run 创建自己的 stdio 进程，结束时释放；相同仍获准来源的后续 run、宿主和 SQLite 重建可以自动握手恢复候选。它只重做握手与发现，从不重放 tools/call。其他角色/线程及解绑重绑后的来源不能继承意愿。
 
