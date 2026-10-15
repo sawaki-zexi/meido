@@ -178,10 +178,13 @@ class MemoryMutation:
     status: str = ""
     ids: tuple[str, ...] = ()
     metadata: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
+    source: MemorySourceRef | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "ids", tuple(value for item in self.ids if (value := str(item).strip())))
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+        if self.source is not None:
+            object.__setattr__(self, "source", self.source.model_copy(deep=True))
 
 
 @dataclass
@@ -707,17 +710,19 @@ class DefaultMemoryEngine:
         if request.kind == "remember":
             if not request.summary.strip():
                 raise ValueError("summary is required for remember")
-            source = MemorySourceRef(
+            source = request.source or MemorySourceRef(
                 kind="manual",
                 sessionKey=scope.session_key,
                 stableSourceKey=request.source_ref or f"manual:{uuid.uuid4().hex}",
             )
+            if source.sessionKey != scope.session_key:
+                raise PermissionError("memory source scope does not match the current role")
             item = self.store.add_or_reinforce(
                 scope.role_id,
                 request.memory_kind or "fact",
                 request.summary,
                 source,
-                extra=dict(request.metadata),
+                extra={**dict(request.metadata), **({"memory_domain": request.memory_domain} if request.memory_domain else {})},
                 happened_at=datetime.fromisoformat(request.happened_at) if request.happened_at else None,
             )
             self.service.index_embedding(scope.role_id, item)
@@ -778,7 +783,12 @@ class DefaultMemoryEngine:
             )
         affected: list[str] = []
         missing: list[str] = []
+        already_forgotten: list[str] = []
         for item_id in request.ids:
+            existing = self.store.get(scope.role_id, item_id)
+            if existing is not None and existing.status == "forgotten":
+                already_forgotten.append(item_id)
+                continue
             try:
                 self.store.set_status(scope.role_id, item_id, "forgotten")
             except KeyError:
@@ -790,6 +800,7 @@ class DefaultMemoryEngine:
             status="forgotten" if affected else "unchanged",
             affected_ids=affected,
             missing_ids=missing,
+            raw={"already_forgotten_ids": already_forgotten},
         )
 
     async def ingest(self, request: MemoryIngestRequest) -> MemoryIngestResult:

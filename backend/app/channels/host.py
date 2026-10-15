@@ -70,12 +70,13 @@ class ChannelHost:
         self._adapters[adapter.account_id] = adapter
         self._adapter_generations.setdefault(id(adapter), uuid.uuid4().hex)
 
-    def unregister(self, account_id: str) -> None:
+    def unregister(self, account_id: str, *, keep_paused: bool = False) -> None:
         adapter = self._adapters.pop(account_id, None)
         if adapter is not None:
             self._adapter_generations.pop(id(adapter), None)
         if not self._inflight_sends.get(account_id) and not self._inflight_events.get(account_id):
-            self._paused_accounts.discard(account_id)
+            if not keep_paused:
+                self._paused_accounts.discard(account_id)
             self._account_idle.pop(account_id, None)
 
     async def pause_and_drain(self, account_id: str) -> None:
@@ -110,7 +111,7 @@ class ChannelHost:
             account = self.store.get_account(account_id)
             admitted = (
                 account is not None
-                and account.enabled
+                and self.store.account_effectively_enabled(account)
                 and account_id not in self._paused_accounts
                 and account_id in self._adapters
             )
@@ -135,7 +136,7 @@ class ChannelHost:
 
     def accepts_events(self, account_id: str) -> bool:
         account = self.store.get_account(account_id)
-        return bool(account and account.enabled and account_id in self._adapters and account_id not in self._paused_accounts)
+        return bool(account and self.store.account_effectively_enabled(account) and account_id in self._adapters and account_id not in self._paused_accounts)
 
     async def send_retry_notice(self, adapter: ChannelAdapter, event: InboundEvent) -> DeliveryResult:
         """Answer rejected intake through the original connection, without history."""
@@ -169,6 +170,8 @@ class ChannelHost:
                 "channel": account.channel,
                 "displayName": account.display_name,
                 "enabled": account.enabled,
+                "platformEnabled": self.store.channel_enabled(account.channel),
+                "effectiveEnabled": self.store.account_effectively_enabled(account),
                 "capabilities": ({
                     "private": capabilities.private,
                     "group": capabilities.group,
@@ -182,6 +185,9 @@ class ChannelHost:
         return accounts
 
     async def start(self, account_id: str) -> None:
+        account = self.store.get_account(account_id)
+        if account is None or not self.store.account_effectively_enabled(account):
+            return
         await self.adapter(account_id).start()
 
     async def stop(self, account_id: str) -> None:
@@ -195,7 +201,7 @@ class ChannelHost:
         account = self.store.get_account(account_id)
         if account is None:
             raise KeyError(account_id)
-        if (not account.enabled and not self._has_active_event(account_id)) or (
+        if (not self.store.account_effectively_enabled(account) and not self._has_active_event(account_id)) or (
             account_id in self._paused_accounts and not self._has_active_event(account_id)
         ):
             return None
@@ -204,7 +210,7 @@ class ChannelHost:
         if event is not None:
             current = self.store.get_account(account_id)
             if current is None or (
-                (not current.enabled or account_id in self._paused_accounts)
+                (not self.store.account_effectively_enabled(current) or account_id in self._paused_accounts)
                 and not self._has_active_event(account_id)
             ) or self._adapters.get(account_id) is not adapter:
                 return None
@@ -218,6 +224,8 @@ class ChannelHost:
         account = self.store.get_account(account_id)
         if account is None:
             raise KeyError(account_id)
+        if not self.store.account_effectively_enabled(account) and not self._has_active_event(account_id):
+            raise ChannelAdapterError("渠道账号或平台未启用")
         targets = await adapter.list_targets()
         if self._adapters.get(account_id) is not adapter or (
             account_id in self._paused_accounts and not self._has_active_event(account_id)
@@ -232,7 +240,7 @@ class ChannelHost:
         account = self.store.get_account(account_id)
         if account is None or account.role_id != role_id:
             raise KeyError(account_id)
-        if account_id in self._adapters:
+        if account_id in self._adapters and self.store.account_effectively_enabled(account):
             await self.refresh_targets(account_id)
         targets = self.store.list_targets(role_id, account_id)
         adapter = self._adapters.get(account_id)
@@ -271,7 +279,7 @@ class ChannelHost:
         account = self.store.get_account(account_id)
         if account is None or account.role_id != role_id:
             raise KeyError(account_id)
-        if not account.enabled and not self._has_active_event(account_id):
+        if not self.store.account_effectively_enabled(account) and not self._has_active_event(account_id):
             raise ChannelAdapterError("渠道账号未启用")
         if actor == "owner":
             target = self.store.get_target(role_id, account_id, target_id)
@@ -459,7 +467,7 @@ class ChannelHost:
         async with self._send_state_lock:
             account = self.store.get_account(account_id)
             has_event_lease = self._has_active_event(account_id)
-            if account is None or (not account.enabled and not has_event_lease):
+            if account is None or (not self.store.account_effectively_enabled(account) and not has_event_lease):
                 raise ChannelAdapterError("渠道账号未启用")
             if account_id in self._paused_accounts and not has_event_lease:
                 raise ChannelAdapterError("渠道账号连接正在切换")
