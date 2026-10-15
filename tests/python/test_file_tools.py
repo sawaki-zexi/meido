@@ -370,3 +370,25 @@ def test_windows_namespace_aliases_and_alternate_streams_cannot_bypass_scope(tmp
     result = run(WriteFileTool("role-a", tmp_path), {"path": target, "content": "no"})
     assert result.is_error and result.details["status"] == "denied"
     assert not (tmp_path / "notes.txt").exists()
+
+
+@pytest.mark.parametrize("source,old,new,expected", [
+    (b"\xef\xbb\xbfa\r\n", "a\n", "bbb\n", b"\xef\xbb\xbfbbb\r\n"),
+    (b"\xef\xbb\xbfa\r\n", "a\n", "bbbb\n", None),
+    (b"aa", "a", "你", "你你".encode()),
+    (b"aaa", "a", "你", None),
+])
+def test_edit_output_byte_budget_counts_bom_crlf_and_every_utf8_match(tmp_path, monkeypatch, source, old, new, expected):
+    monkeypatch.setattr("backend.app.agent_runtime.file_tools.MAX_FILE_BYTES", 8)
+    path = tmp_path / "notes.txt"
+    path.write_bytes(source)
+    result = run(EditFileTool("role-a", tmp_path), {
+        "path": "notes.txt", "old_text": old, "new_text": new, "replace_all": True,
+    })
+    assert result.is_error is (expected is None)
+    assert path.read_bytes() == (source if expected is None else expected)
+    if expected is None:
+        assert result.details["status"] == "denied"
+        assert result.details["truncatedBy"] == "file_limit"
+    else:
+        assert result.details["bytesWritten"] == len(expected)

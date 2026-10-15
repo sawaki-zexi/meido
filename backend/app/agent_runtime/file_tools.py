@@ -397,6 +397,12 @@ class EditFileTool(_FileTool):
         if count > 1 and not arguments.get("replace_all", False):
             raise _FileFailure(f"old_text matches {count} times; include more context or explicitly set replace_all=true.", "denied", matchCount=count)
         replaced_count = count if arguments.get("replace_all", False) else 1
+        # raw already includes the original BOM and exact newline bytes. The
+        # operands reflect CRLF compatibility above; count is non-overlapping,
+        # matching str.replace. Reject expansion before allocating its result.
+        updated_bytes = len(raw) + replaced_count * (len(new.encode("utf-8")) - len(old.encode("utf-8")))
+        if updated_bytes > MAX_FILE_BYTES:
+            raise _FileFailure("Edited file exceeds 4 MiB write limit.", "denied", truncated=True, truncatedBy="file_limit")
         updated = content.replace(old, new, replaced_count)
         encoded = (b"\xef\xbb\xbf" if bom else b"") + updated.encode("utf-8")
         if len(encoded) > MAX_FILE_BYTES:
