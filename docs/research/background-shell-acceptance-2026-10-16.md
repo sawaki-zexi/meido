@@ -4,6 +4,18 @@
 
 事实来源：[#149](https://github.com/sawaki-zexi/meido/issues/149)、[ADR-0012](../adr/0012-owned-task-runtime.md)、[当前协议](../reference/owned-background-shell.md)、[真实进程测试](../../tests/python/test_background_shell.py)、[角色 HTTP 测试](../../tests/python/test_background_shell_api.py)。独立分支基线为 `main@7f4a804`，未合并其他功能分支。本记录只对应 C03 / D02 的 Shell 切片 T07，不代表完整 Shiori 复刻目标完成。
 
+## 独立审查后的修正进度
+
+下文的 118 + 105 项通过结果对应固定提交 `2ec4e5e`，不能代替后续修正的最终验收。当前后续提交尚未完成 P1 来源授权，未建立 PR，不能合并或宣称 #149 已验收。
+
+- 输出兼容 P2：公开角色 HTTP 保存合法 `maxOutputChars=200000` 后，短命令曾被 TaskRuntime 的 100000 限制拒绝（红）；统一支持既有 200000 上限后，该真实 Shell 回合通过（绿）。
+- 日志消费 P2：将预创建日志文件替换为同名目录，再释放真实 Python 进程输出，原来出现 pump PermissionError 但任务被记为 succeeded（红）。现在消费错误向任务执行器传播，停止进程，并独立在 SQLite 记录 failed、logComplete=false 和仅含异常类型的 logError。打印后正常 exit0 与继续 sleep10 两种真实进程均通过，PID 消失；故障后角色删除也能非递归移除这个受管空目录（绿）。失败收尾不会重试坏日志路径，也不把写入故障称为预算耗尽。
+- 来源授权 P1：真实 SQLite 私聊/群聊 × 解绑、解绑重绑、响应范围关闭、屏蔽发言者共 8 个反例，均在撤权后仍能读取 owner-only-log 处失败；另一个群访客伪造正文 owner JSON 的 AgentTool 反例仍会执行命令。这 **9 项仍为红**。等待 #148 的 FrozenChannelSource 合入 main 后，复用其真实发言者、账号创建代际、绑定 ID/pairedAt 和当前授权检查，再接入后台持续验证及持久化来源 scope。尚未复制该功能分支实现。
+- TaskOrigin 已增加可选的不可变宿主 source_scope_id/source_authority_json，以便接入共用模块；当前主机装配尚未填充，因此这两个字段不构成 P1 已修复证据。
+- 后续同步需保留 #147 聊天断连取消修正、渠道设置和回复按钮改动；Windows 最小环境变量大小写兼容由 #152 负责，当前未独立改写该过滤式。
+
+当前修正的独立检查：`test_background_shell.py` 与 `test_background_shell_api.py` 通过 `-k 'not channel_owner_revocation and not group_guest'` 明确排除上述 9 个待修反例，结果为 **20 passed, 9 deselected in 26.26s**。mypy（4 源码文件）、Ruff、compileall、diff check 通过。排除的反例没有被标 skip/xfail，也不包含在通过数中；全量验收仍未通过。
+
 ## 环境和公开边界
 
 Windows 11 AMD64、Python 3.13.9、pytest 9.1.1。测试通过公开 AgentTool.execute、真实 Python 子进程及子孙、固定工作目录、本地临时 SQLite/日志和公开角色 HTTP API 执行；只替换外部模型服务的选择结果，不使用假 process/transport 证明进程生命周期。自动提升阈值由测试宿主设为 30 毫秒；没有等待生产默认的 15 秒。

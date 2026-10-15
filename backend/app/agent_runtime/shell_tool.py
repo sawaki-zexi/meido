@@ -27,7 +27,9 @@ def _result(snapshot: TaskSnapshot, *, background: bool = False) -> AgentToolRes
     output = snapshot.output
     if details["truncated"]:
         output = f"[output truncated to {snapshot.budget.output_chars} chars; see retained log]\n{output}"
-    if snapshot.log_truncated:
+    if snapshot.log_error:
+        output = "[log write failed; retained log is incomplete]\n" + output
+    elif snapshot.log_truncated:
         output = "[log storage budget reached; retained log is incomplete]\n" + output
     if background:
         output = f"[background task {snapshot.task_id}; use task_output or task_stop]\n{output}"

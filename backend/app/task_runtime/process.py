@@ -11,6 +11,10 @@ from ..browser_use.process import WindowsJob
 from .runtime import TaskExecution, TaskOutcome
 
 
+class LogPumpError(RuntimeError):
+    """A failed output consumer cannot yield a successful task result."""
+
+
 class ProcessExecutor:
     """A real argv process whose descendants stay owned after its parent exits."""
 
@@ -40,6 +44,8 @@ class ProcessExecutor:
                 raise
             process = self._process
 
+        errors: list[Exception] = []
+
         def pump(stream, prefix):
             decoder = codecs.getincrementaldecoder("utf-8")("replace")
             try:
@@ -48,6 +54,9 @@ class ProcessExecutor:
                 tail = decoder.decode(b"", final=True)
                 if tail:
                     execution.write(prefix + tail)
+            except Exception as error:
+                errors.append(error)
+                self.cancel()
             finally:
                 stream.close()
 
@@ -63,6 +72,8 @@ class ProcessExecutor:
             self._terminate()
             for reader in readers:
                 reader.join()
+        if errors:
+            raise LogPumpError("task log consumption failed") from errors[0]
         return TaskOutcome("succeeded" if exit_code == 0 else "failed", exit_code)
 
     def cancel(self) -> None:

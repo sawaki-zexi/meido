@@ -421,3 +421,42 @@ def test_role_log_budget_reserves_running_tasks_before_retaining_old_logs(tmp_pa
         asyncio.run(run())
     finally:
         tasks.close()
+
+
+@pytest.mark.parametrize("keep_running", [False, True])
+def test_real_log_write_failure_stops_execution_and_reports_incomplete_failed_result(tmp_path, keep_running):
+    from backend.app.task_runtime import TaskRuntime
+    from backend.app.agent_runtime.shell_tool import TaskOutputTool
+
+    tasks = TaskRuntime(tmp_path / "tasks")
+    shell = ShellTool(tmp_path, allowed_commands=[sys.executable], tasks=tasks)
+    output = TaskOutputTool(tasks)
+
+    async def run():
+        submitted = await shell.execute({"command": command(
+            "import os,time; from pathlib import Path\n"
+            "Path('owned.pid').write_text(str(os.getpid()))\n"
+            "while not Path('release-output').exists(): time.sleep(.01)\n"
+            "print('must-not-be-silently-lost')\n"
+            + ("time.sleep(10)" if keep_running else "")
+        ), "run_in_background": True}, context())
+        log_path = Path(submitted.details["logPath"])
+        log_path.unlink()
+        log_path.mkdir()
+        (tmp_path / "release-output").touch()
+        observed = await output.execute({"task_id": submitted.details["taskId"], "block": True, "timeout_ms": 2000}, context())
+        assert observed.details["status"] == "failed"
+        assert observed.is_error is True
+        assert observed.details["logComplete"] is False
+        assert observed.details["logTruncated"] is True
+        assert observed.details["logError"] in {"PermissionError", "IsADirectoryError"}
+        assert "log write failed" in observed.content
+        assert "log" in observed.details["progress"].lower()
+        assert not process_alive(int((tmp_path / "owned.pid").read_text()))
+        await asyncio.to_thread(tasks.delete_role, "role-a")
+        assert not log_path.exists()
+
+    try:
+        asyncio.run(run())
+    finally:
+        tasks.close()

@@ -2,6 +2,8 @@
 
 状态：当前。最后核验：2026-10-16。
 
+审查修正中：当前分支的渠道来源授权撤销（解绑/重绑、屏蔽、私聊/群响应范围）尚未接入 #148 的共用来源授权模块，9 个公开 AgentTool 反例仍为红；不能据下文目标边界声明这些渠道情况已通过。输出预算兼容和日志消费故障已独立修复，尚未建立 PR。
+
 事实来源：[ADR-0012](../adr/0012-owned-task-runtime.md)、[TaskRuntime](../../backend/app/task_runtime/runtime.py)、[真实进程执行器](../../backend/app/task_runtime/process.py)、[AgentTool](../../backend/app/agent_runtime/shell_tool.py)、[进程验收](../../tests/python/test_background_shell.py)、[HTTP 验收](../../tests/python/test_background_shell_api.py)。对应 #149 / 完整复刻规格 C03、D02、T07。
 
 ## 工具协议
@@ -16,13 +18,15 @@
 
 `timeout` 默认取角色 Shell 超时，不能超过角色上限或宿主 600 秒上限；后台与自动提升均保留原始截止，不获得无限运行许可。自动提升阈值由宿主设置，模型不能修改。普通前台调用随父回合取消，已返回后台的任务继续由应用持有，完成默认通过 `task_output` 拉取。
 
-结果 `details` 包含 `taskId`、`status`、`exitCode`、`background`、`durationSeconds`、`description`、`kind`、`timeoutSeconds`、`outputChars`、`truncated`、`logPath`、`logBytes`、`logComplete`、`logTruncated`、`progress` 和 `origin`。`origin` 固定角色、会话、来源线程/账号、父 run、tool call 和能力版本；后续同来源回合可查询，跨角色或跨来源不能查询、停止或取得日志定位。不存在与不属于当前来源使用相同错误，不泄漏记录是否存在。
+结果 `details` 包含 `taskId`、`status`、`exitCode`、`background`、`durationSeconds`、`description`、`kind`、`timeoutSeconds`、`outputChars`、`truncated`、`logPath`、`logBytes`、`logComplete`、`logTruncated`、`logError`、`progress` 和 `origin`。`origin` 固定角色、会话、来源线程/账号、父 run、tool call 和能力版本；后续同来源回合可查询，跨角色或跨来源不能查询、停止或取得日志定位。不存在与不属于当前来源使用相同错误，不泄漏记录是否存在。
 
 状态为 `queued`、`running` 或 `succeeded` 时工具结果不是错误；非零退出为 `failed`，硬截止为 `timed_out`，主动停止/撤销为 `cancelled`，关闭和重启后缺失句柄为 `interrupted`。失败终态不会被重复 stop 改成成功。
 
 ## 输出、存储与回收
 
 stdout/stderr 持续消费，UTF-8 分块使用增量解码；模型展示角色配置限定的尾部，stderr 片段带 `stderr:` 前缀。超过展示预算的输出仍进入独立日志。`truncated=true` 表示展示尾部被截断；只有 `logComplete=true` 才表示日志保存了完整输出。达到日志存储上限后继续消费管道，明确返回 `logTruncated=true`，保留文件不能称为完整输出。
+
+展示预算兼容角色设置的完整有效范围（最多 200000 字符）。日志路径不可写等消费故障会停止真实进程并返回 `failed`、`logComplete=false` 和仅含异常类型的 `logError`；失败终态写入独立 SQLite，不再次依赖已经损坏的日志路径，也不把写入故障解释为预算耗尽。
 
 宿主默认最多同时运行 8 个任务、每角色 3 个；每任务日志最多 4 MiB、每角色日志最多 32 MiB。提交时预留运行任务的完整日志额度，必要时删除较旧的已结束记录和日志。每角色最多保留 100 条记录；终态默认保留 24 小时，在启动、提交、查询和完成时清理过期记录。运行任务不会因为日志保留期或观察超时被盲目重启。日志路径使用角色身份摘要和宿主生成的任务 ID，模型不能指定路径、cwd、env 或执行类型。
 

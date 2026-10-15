@@ -24,9 +24,11 @@ class TaskOrigin:
     capability_version: str = ""
     source_thread_id: str = ""
     source_account_id: str = ""
+    source_scope_id: str = ""
+    source_authority_json: str = ""
 
     def scope(self) -> tuple[str, ...]:
-        return self.role_id, self.session_key, self.source_thread_id, self.source_account_id
+        return self.role_id, self.session_key, self.source_thread_id, self.source_account_id, self.source_scope_id
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -34,6 +36,8 @@ class TaskOrigin:
             "parentRunId": self.parent_run_id, "toolCallId": self.tool_call_id,
             "capabilityVersion": self.capability_version,
             "sourceThreadId": self.source_thread_id, "sourceAccountId": self.source_account_id,
+            "sourceScopeId": self.source_scope_id,
+            "sourceAuthority": json.loads(self.source_authority_json) if self.source_authority_json else None,
         }
 
 
@@ -67,6 +71,7 @@ class TaskSnapshot:
     log_bytes: int
     log_truncated: bool
     progress: str
+    log_error: str = ""
 
     def details(self) -> dict[str, object]:
         return {
@@ -76,8 +81,8 @@ class TaskSnapshot:
             "durationSeconds": round((self.ended_at or time.time()) - self.started_at, 3),
             "truncated": self.output_chars > self.budget.output_chars,
             "outputChars": self.output_chars, "logPath": self.log_path,
-            "logBytes": self.log_bytes, "logComplete": not self.log_truncated,
-            "logTruncated": self.log_truncated, "progress": self.progress,
+            "logBytes": self.log_bytes, "logComplete": not self.log_truncated and not self.log_error,
+            "logTruncated": self.log_truncated, "logError": self.log_error or None, "progress": self.progress,
         }
 
 
@@ -144,7 +149,10 @@ class TaskRuntime:
             budget TEXT NOT NULL, started_at REAL NOT NULL, ended_at REAL,
             exit_code INTEGER, output TEXT NOT NULL DEFAULT '', output_chars INTEGER NOT NULL DEFAULT 0,
             log_path TEXT NOT NULL, log_bytes INTEGER NOT NULL DEFAULT 0,
-            log_truncated INTEGER NOT NULL DEFAULT 0, progress TEXT NOT NULL DEFAULT '')""")
+            log_truncated INTEGER NOT NULL DEFAULT 0, progress TEXT NOT NULL DEFAULT '',
+            log_error TEXT NOT NULL DEFAULT '')""")
+        if "log_error" not in {row[1] for row in self._db.execute("PRAGMA table_info(tasks)")}:
+            self._db.execute("ALTER TABLE tasks ADD COLUMN log_error TEXT NOT NULL DEFAULT ''")
         self._db.execute(
             "UPDATE tasks SET status='interrupted', ended_at=? WHERE status IN ('queued','running')", (time.time(),)
         )
@@ -159,7 +167,7 @@ class TaskRuntime:
             raise ValueError("invalid host execution kind")
         if not 0 < budget.timeout_seconds <= self.max_timeout_seconds:
             raise ValueError("task timeout exceeds host budget")
-        if not 0 < budget.log_bytes <= self.max_log_bytes or not 0 < budget.output_chars <= 100_000:
+        if not 0 < budget.log_bytes <= self.max_log_bytes or not 0 < budget.output_chars <= 200_000:
             raise ValueError("task output exceeds host budget")
         with self._lock:
             if self._closed or origin.role_id in self._disabled_roles or (authorized is not None and not authorized()):
@@ -233,7 +241,7 @@ class TaskRuntime:
         self.set_role_enabled(role_id, False)
         with self._lock:
             for row in self._db.execute("SELECT log_path FROM tasks WHERE role_id=?", (role_id,)).fetchall():
-                Path(row[0]).unlink(missing_ok=True)
+                self._remove_log(Path(row[0]))
             self._db.execute("DELETE FROM tasks WHERE role_id=?", (role_id,))
             self._db.commit()
 
@@ -275,7 +283,9 @@ class TaskRuntime:
         except Exception as error:
             active.executor.cancel()
             # Exception messages may contain command arguments or credentials.
-            self._append(task_id, f"[executor failed: {type(error).__name__}]\n")
+            # Persist the error independently: the log path itself may be the
+            # failed resource, and retrying it would lose the terminal state.
+            self._update(task_id, progress=f"executor failed: {type(error).__name__}")
             outcome = TaskOutcome("failed")
         with self._lock:
             self._update(task_id, status=active.cancel_reason or outcome.status, exit_code=outcome.exit_code, ended_at=time.time())
@@ -305,7 +315,7 @@ class TaskRuntime:
         return TaskSnapshot(
             task_id, TaskOrigin(**json.loads(row["origin"])), row["kind"], row["description"], row["status"],
             TaskBudget(**json.loads(row["budget"])), row["started_at"], row["ended_at"], row["exit_code"],
-            row["output"], row["output_chars"], row["log_path"], row["log_bytes"], bool(row["log_truncated"]), row["progress"],
+            row["output"], row["output_chars"], row["log_path"], row["log_bytes"], bool(row["log_truncated"]), row["progress"], row["log_error"],
         )
 
     def _append(self, task_id: str, text: str) -> None:
@@ -314,8 +324,15 @@ class TaskRuntime:
             raw = text.encode("utf-8")
             remaining = snapshot.budget.log_bytes - snapshot.log_bytes
             kept = raw[:remaining].decode("utf-8", errors="ignore").encode("utf-8")
-            with Path(snapshot.log_path).open("ab") as log:
-                log.write(kept)
+            try:
+                with Path(snapshot.log_path).open("ab") as log:
+                    log.write(kept)
+            except OSError as error:
+                self._update(task_id, output=(snapshot.output + text)[-snapshot.budget.output_chars:],
+                             output_chars=snapshot.output_chars + len(text), log_truncated=1,
+                             log_error=type(error).__name__,
+                             progress=f"log write failed: {type(error).__name__}")
+                raise
             self._update(task_id, output=(snapshot.output + text)[-snapshot.budget.output_chars:],
                          output_chars=snapshot.output_chars + len(text), log_bytes=snapshot.log_bytes + len(kept),
                          log_truncated=int(snapshot.log_truncated or len(kept) < len(raw)))
@@ -340,6 +357,18 @@ class TaskRuntime:
                     time.time() - row["ended_at"] > self.retention_seconds or counts[role] > self.max_retained_per_role
                     or sizes[role] > self.max_role_log_bytes
                 ):
-                    Path(row["log_path"]).unlink(missing_ok=True)
+                    self._remove_log(Path(row["log_path"]))
                     self._db.execute("DELETE FROM tasks WHERE task_id=?", (row["task_id"],))
             self._db.commit()
+
+    def _remove_log(self, path: Path) -> None:
+        if not path.parent.resolve().is_relative_to((self.root / "logs").resolve()):
+            raise ValueError("task log path is outside its storage root")
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            if not path.is_dir():
+                raise
+            # A failed log may have been replaced by an empty directory. Never
+            # walk or recursively delete content supplied at this path.
+            path.rmdir()
