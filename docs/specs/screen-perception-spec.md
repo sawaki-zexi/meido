@@ -179,6 +179,6 @@ IPC 仅为有长度前缀的 ≤1 KiB 元数据与 PNG 二进制；父进程逐�
 
 计划落点：一个 backend screen_perception module（含固定 capture worker）；一个薄 ObserveScreenTool；现有 models/RoleStore 的配置保留；main 的候选/目录/配置撤销/删除/shutdown 局部装配；RoleEditor/draft/api types 的开关与选择器。使用当前 Pillow/httpx，不新增驱动、桌宠宿主、AI SDK 或持久观察存储。
 
-现有正常聊天与其他工具继续使用原来的 model adapter；屏幕调用不得修改 active 模型、角色聊天绑定或已存在历史。实现前重新同步聚合目标分支，协调其他票对候选、角色保存和生命周期的改动，不从尚未合并功能分支堆叠实现。
+现有正常聊天与其他工具继续使用原来的 model adapter；屏幕调用不得修改 active 模型、角色聊天绑定或已存在历史。实现前重新同步总 PR 的已验证集成基线，协调其他票对候选、角色保存和生命周期的改动；子 Issue 记录各自验收和依赖，统一在总 PR 审查。
 
 本阶段交付仅为本草案及源码核验文档的可审阅提交。实施还需要人工明确批准第 3 节具体选择；批准后记录到对应 ADR，按第 9 节公开 seams 实现与完整回归。新建总 PR 或总体“继续复刻”的指令均不等于上述具体架构审批。
