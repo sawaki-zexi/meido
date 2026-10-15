@@ -417,15 +417,19 @@ class MultichannelStore:
             self._remember_member_name(db, str(row["role_id"]), str(row["channel"]), str(row["account_id"]),
                 str(metadata.get("group_id") or metadata.get("groupId") or ""), "group", str(row["chat_id"]),
                 str(row["display_name"]), str(row["last_seen"]))
-        for row in db.execute(
-            "SELECT t.role_id,t.channel,t.account_id,t.chat_id,t.chat_type,e.metadata_json,e.created_at "
-            "FROM channel_events e JOIN channel_threads t ON t.thread_id=e.thread_id WHERE e.direction='inbound'"
-        ):
-            metadata = _loads(row["metadata_json"])
-            sender, name = metadata.get("senderId"), metadata.get("senderName")
-            if isinstance(sender, str) and isinstance(name, str):
-                self._remember_member_name(db, str(row["role_id"]), str(row["channel"]), str(row["account_id"]),
-                    str(row["chat_id"]), str(row["chat_type"]), sender, name, str(row["created_at"]))
+        for table, condition in (("channel_events", "WHERE e.direction='inbound'"),
+                                 ("channel_listening_records", "")):
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                continue
+            for row in db.execute(
+                "SELECT t.role_id,t.channel,t.account_id,t.chat_id,t.chat_type,e.metadata_json,e.created_at "
+                f"FROM {table} e JOIN channel_threads t ON t.thread_id=e.thread_id {condition}"
+            ):
+                metadata = _loads(row["metadata_json"])
+                sender, name = metadata.get("senderId"), metadata.get("senderName")
+                if isinstance(sender, str) and isinstance(name, str):
+                    self._remember_member_name(db, str(row["role_id"]), str(row["channel"]), str(row["account_id"]),
+                        str(row["chat_id"]), str(row["chat_type"]), sender, name, str(row["created_at"]))
         db.execute("INSERT INTO channel_member_name_schema VALUES(1)")
 
     @staticmethod
@@ -716,7 +720,7 @@ class MultichannelStore:
                 kind = getattr(getattr(target, "kind", None), "value", getattr(target, "kind", ""))
                 capabilities = [getattr(item, "value", str(item)) for item in (getattr(target, "capabilities", ()) or ())]
                 metadata = getattr(target, "metadata", {}) or {}
-                row = db.execute("SELECT first_seen FROM channel_targets WHERE target_id=?", (target_id,)).fetchone()
+                row = db.execute("SELECT first_seen,display_name FROM channel_targets WHERE target_id=?", (target_id,)).fetchone()
                 first_seen = str(row[0]) if row else now
                 account = db.execute("SELECT channel FROM channel_accounts WHERE account_id=? AND role_id=?", (account_id, role_id)).fetchone()
                 if account is None:
@@ -732,9 +736,22 @@ class MultichannelStore:
                      _json(capabilities), _json(metadata), first_seen, now),
                 )
                 if kind == "group_member":
-                    self._remember_member_name(db, role_id, str(account["channel"]), account_id,
-                        str(metadata.get("group_id") or metadata.get("groupId") or ""), "group",
-                        str(getattr(target, "chat_id", "")), str(getattr(target, "display_name", "")), now)
+                    name = str(getattr(target, "display_name", ""))
+                    observed_at = now if row is None or str(row["display_name"]) != name else None
+                    raw_time = metadata.get("name_observed_at")
+                    if isinstance(raw_time, str):
+                        try:
+                            stamp = datetime.fromisoformat(raw_time)
+                            if stamp.tzinfo is not None:
+                                observed_at = min(now, stamp.astimezone(timezone.utc).isoformat())
+                        except ValueError:
+                            pass
+                    # Cached directory entries retain their observation time;
+                    # refreshing another member is not a new name observation.
+                    if observed_at is not None:
+                        self._remember_member_name(db, role_id, str(account["channel"]), account_id,
+                            str(metadata.get("group_id") or metadata.get("groupId") or ""), "group",
+                            str(getattr(target, "chat_id", "")), name, observed_at)
 
     @staticmethod
     def _remember_member_name(db: sqlite3.Connection, role_id: str, channel: str, account_id: str,
@@ -742,6 +759,7 @@ class MultichannelStore:
         """Record a host observation, never a model-generated profile name."""
         if not chat_id or not sender_id or not name.strip():
             return
+        now = datetime.fromisoformat(now).astimezone(timezone.utc).isoformat()
         db.execute(
             "INSERT INTO channel_member_names VALUES(?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(role_id,account_id,chat_id,chat_type,sender_id,name) DO UPDATE SET "

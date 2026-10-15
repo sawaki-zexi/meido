@@ -250,3 +250,71 @@ def test_member_profile_pages_thread_sources_without_losing_or_merging_them(tmp_
     second = json.loads(asyncio.run(tool.execute({"member_id": "22", "member_channel": "qq", "source_page": 2}, context)).content)
     assert second["sources_total"] == 7 and len(second["sources"]) == 2 and second["next_source_page"] is None
     assert {item["chat_id"] for item in (*first["sources"], *second["sources"])} == {str(group) for group in range(7)}
+
+
+def test_cached_directory_refresh_cannot_replace_the_last_observed_member_name(tmp_path):
+    database = tmp_path / "sessions.db"
+    channels = MultichannelStore(database, SessionStore(database))
+    channels.register_channel_account("r", "qq", account_id="a", enabled=True, allow_group=True)
+
+    directory_members = {}
+
+    async def transport(operation, params):
+        if operation == "get_group_member_list":
+            return {"data": directory_members.get(str(params["group_id"]), [])}
+        return {"data": []}
+
+    host = ChannelHost(channels)
+    host.register(NapCatAdapter(NapCatConfig("a"), transport=transport))
+    tool = LookupGroupMemberTool(MultichannelGroupRepository(channels), role_id="r")
+    context = ToolContext("r", "role:r", "run", CancellationToken())
+
+    async def observe():
+        for number, (group, sender, name) in enumerate(((100, 22, "Bob"), (200, 22, "Alice"),
+                                                     (100, 22, "Bob"), (300, 33, "Charlie"))):
+            event = await host.accept_event("a", {
+                "post_type": "message", "message_type": "group", "self_id": 99,
+                "group_id": group, "message_id": number + 1,
+                "sender": {"user_id": sender, "nickname": name},
+                "message": [{"type": "text", "data": {"text": "ordinary message"}}],
+            })
+            assert event is not None
+            thread = channels.ensure_channel_thread("r", "qq", "a", event.chat_id, "group")
+            channels.append_event(thread, direction="inbound", content=event.content,
+                external_message_id=event.external_message_id,
+                metadata={"senderId": event.sender_id, "senderName": event.sender_name})
+        result = await tool.execute({"name": "Alice"}, context)
+        assert json.loads(result.content)["candidates"] == [
+            {"channel": "qq", "member_id": "22", "name": "Bob", "nicknames": ["Bob", "Alice"]}]
+        # A successful fresh directory response is a real observation even
+        # when the name is unchanged within that group's cached target.
+        directory_members["200"] = [{"user_id": 22, "nickname": "Alice"}]
+        await host.refresh_targets("a")
+        current = json.loads((await tool.execute({"name": "Bob"}, context)).content)
+        assert current["candidates"] == [
+            {"channel": "qq", "member_id": "22", "name": "Alice", "nicknames": ["Alice", "Bob"]}]
+
+    asyncio.run(observe())
+
+
+def test_old_listening_nicknames_remain_queryable_after_upgrade(tmp_path):
+    database = tmp_path / "sessions.db"
+    channels = MultichannelStore(database, SessionStore(database))
+    channels.register_channel_account("r", "qq", account_id="a", enabled=True, allow_group=True)
+    thread = channels.ensure_channel_thread("r", "qq", "a", "100", "group")
+    channels.set_group_listening("r", "a", "100", True)
+    for number, name in enumerate(("Alice", "Beth")):
+        assert channels.listening.hear(thread, "LISTENING_RAW_MUST_NOT_LEAK", str(number),
+            {"senderId": "22", "senderName": name}) is not None
+    channels.remember_targets("r", [target_from_chat(account_id="a", chat_id="22",
+        kind=TargetKind.GROUP_MEMBER, display_name="Beth", group_id="100")])
+    with channels._connect() as db:
+        db.execute("DROP TABLE channel_member_names")
+        db.execute("DROP TABLE channel_member_name_schema")
+    restarted = MultichannelStore(database, SessionStore(database))
+    tool = LookupGroupMemberTool(MultichannelGroupRepository(restarted), role_id="r")
+    result = asyncio.run(tool.execute({"name": "Alice"}, ToolContext("r", "role:r", "run", CancellationToken())))
+    assert not result.is_error
+    assert json.loads(result.content) == {"total": 1, "candidates": [
+        {"channel": "qq", "member_id": "22", "name": "Beth", "nicknames": ["Beth", "Alice"]}]}
+    assert "LISTENING_RAW_MUST_NOT_LEAK" not in result.content
