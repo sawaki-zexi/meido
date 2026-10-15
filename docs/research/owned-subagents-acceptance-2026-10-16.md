@@ -21,6 +21,7 @@
 - 两路独立审查发现跨库完成状态窗口、子 provider 连续取消和合法 pending 回执重发。新增真实 SQLite/TaskRuntime/ChannelHost/TCP 回归首先得到 13 failed / 5 passed；修复后同组 18 passed。初次消息事务即写渠道/pending，outbox 另持久化已提交标记，重启按所有已记录收据恢复消息，pending 不重发。旧版本 schema 迁移也保留已提交意愿。
 - 另以本地消息确认写入一次 OSError 先复现已发送被改成 failed；修复后持久 sent/attempt 保留，消息可恢复且发送计数始终为一。连续四个管理取消在真实 localhost TCP 的 provider finally 屏障前保持未终态，释放连接后才共同返回 cancelled。
 - 过期收据恢复另先红后绿：应用重启时任务已超过保留期，仍先同步已确认消息，再释放保留保护按正常规则清理，不永久固定过期任务，也不丢失恢复所需收据。
+- 修复复核又发现桌面完成追加后同步 ack 遇 SQLite_BUSY 会把 sent 改为 failed。使用真实 SQLite 独占锁竞争先红后绿，桌面与渠道都保留已提交的终态收据，仅把同步工作留待恢复。
 - 网页独立启用、有限预算保存、重新打开和关闭保留配置，以及原有 11 项基础工具、Shell 和未知配置保留均通过公开 React 操作验证。后端专用关闭不能被 enabledTools 中同名项绕过。
 
 ## 检查记录

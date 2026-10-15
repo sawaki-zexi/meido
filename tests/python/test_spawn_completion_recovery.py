@@ -157,3 +157,52 @@ def test_expired_task_still_repairs_its_unsynchronized_confirmed_message(channel
         assert restarted.list(origin, kind='spawn') == ()
     finally:
         restarted.close()
+
+
+def test_desktop_completed_message_is_sent_even_when_sync_ack_encounters_sqlite_busy(tmp_path):
+    class BusyOnceRuntime(TaskRuntime):
+        failed_once = False
+        def acknowledge_completion_message(self, task_id):
+            if self.failed_once:
+                return super().acknowledge_completion_message(task_id)
+            self.failed_once = True
+            with self._lock:
+                self._db.execute('PRAGMA busy_timeout=1')
+                blocker = sqlite3.connect(self.root / 'tasks.db')
+                blocker.execute('BEGIN EXCLUSIVE')
+                try:
+                    return super().acknowledge_completion_message(task_id)
+                finally:
+                    blocker.rollback()
+                    blocker.close()
+                    self._db.execute('PRAGMA busy_timeout=5000')
+    initialize_databases(tmp_path / 'data')
+    sessions = SessionStore(tmp_path / 'data' / 'sessions.db')
+    sessions.open_role_session('r')
+    tasks = BusyOnceRuntime(tmp_path / 'tasks')
+    origin = TaskOrigin('r', 'role:r')
+    task_id = tasks.submit(origin, ProcessExecutor([sys.executable, '-c', 'print("real-child")'], tmp_path, {}),
+                           budget=TaskBudget(), kind='spawn', completion=True)
+    deadline = time.monotonic() + 3
+    while tasks.query(task_id, origin).ended_at is None:
+        assert time.monotonic() < deadline
+        time.sleep(.01)
+    async def summarize(_snapshot):
+        return 'desktop-completed-marker'
+    async def forbidden(*_args):
+        raise AssertionError('Desktop completion cannot send externally')
+    async def run():
+        worker = TaskCompletionWorker(tasks, sessions, lock_for=lambda _: asyncio.Lock(), authorized=lambda _: True,
+                                      summarize=summarize, deliver=forbidden)
+        worker.start()
+        try:
+            await asyncio.sleep(.15)
+        finally:
+            await worker.close()
+    try:
+        asyncio.run(run())
+        assert tasks.failed_once
+        assert tasks.completion(task_id, origin)['status'] == 'sent'
+        assert 'desktop-completed-marker' in sessions.runtime_messages(origin.session_key)[0].content
+    finally:
+        tasks.close()

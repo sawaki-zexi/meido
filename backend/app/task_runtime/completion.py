@@ -107,7 +107,7 @@ class TaskCompletionWorker:
             if retained is not None:
                 if retained["status"] == "sending":
                     status = "uncertain"
-                elif retained["dispatched"]:
+                elif retained["dispatched"] or retained["status"] in {"sent", "failed", "uncertain"}:
                     status = str(retained["status"])
             self.tasks.update_completion(task_id, status=status, content=content, error_type=type(error).__name__)
             if message is not None and origin.source_account_id:
