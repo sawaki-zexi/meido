@@ -36,6 +36,7 @@ class TaskCompletionWorker:
                 self.sessions.update_message(message.id, message.content, "completed", metadata={**message.metadata,
                     "channel": str(json.loads(snapshot.origin.source_authority_json).get("channel", "")),
                     "deliveryStatus": retained["status"], "deliveryAttemptId": retained["delivery_id"]})
+            self.tasks.acknowledge_completion_message(snapshot.task_id)
         while True:
             for snapshot in self.tasks.pending_completions():
                 lock = self.lock_for(snapshot.origin.role_id)
@@ -70,6 +71,7 @@ class TaskCompletionWorker:
                                                            task_status=snapshot.status)
             if not origin.source_account_id:
                 self.tasks.update_completion(task_id, status="sent", content=content, message_id=message.id)
+                self.tasks.acknowledge_completion_message(task_id)
                 return
             # Persist uncertainty *before* entering an external send. A crash
             # cannot replay it, even between platform receipt and local ack.
@@ -83,15 +85,18 @@ class TaskCompletionWorker:
                 self.tasks.update_completion(task_id, status="uncertain", content=content, message_id=message.id)
                 self.sessions.update_message(message.id, content, "completed", metadata={**message.metadata,
                     "channel": channel, "deliveryStatus": "uncertain"})
+                self.tasks.acknowledge_completion_message(task_id)
                 return
             except asyncio.CancelledError:
                 self.tasks.update_completion(task_id, status="uncertain", content=content, message_id=message.id)
                 self.sessions.update_message(message.id, content, "completed", metadata={**message.metadata,
                     "channel": channel, "deliveryStatus": "uncertain"})
+                self.tasks.acknowledge_completion_message(task_id)
                 raise
             self.tasks.update_completion(task_id, status=status, content=content, message_id=message.id, delivery_id=delivery_id)
             self.sessions.update_message(message.id, content, "completed", metadata={**message.metadata,
                 "channel": channel, "deliveryStatus": status, "deliveryAttemptId": delivery_id})
+            self.tasks.acknowledge_completion_message(task_id)
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -109,3 +114,4 @@ class TaskCompletionWorker:
                 self.sessions.update_message(message.id, content, "completed", metadata={**message.metadata,
                     "channel": str(json.loads(origin.source_authority_json).get("channel", "")), "deliveryStatus": status,
                     "deliveryAttemptId": retained["delivery_id"] if retained else None})
+                self.tasks.acknowledge_completion_message(task_id)

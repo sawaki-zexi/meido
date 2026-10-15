@@ -131,3 +131,29 @@ def test_confirmed_receipt_survives_a_local_message_ack_error(channel_task, monk
     message = sessions.list_messages(origin.session_key)[0]
     assert message.metadata['deliveryStatus'] == 'sent'
     assert message.metadata['deliveryAttemptId'] == 'confirmed-attempt'
+
+
+def test_expired_task_still_repairs_its_unsynchronized_confirmed_message(channel_task):
+    tasks, sessions, origin, task_id = channel_task
+    message = sessions.append_task_completion('r', origin.session_key, task_id, 'expired-confirmed', task_status='succeeded')
+    tasks.update_completion(task_id, status='sending', content=message.content, message_id=message.id)
+    tasks.update_completion(task_id, status='sent', content=message.content, delivery_id='confirmed-before-crash')
+    tasks.close()
+    restarted = TaskRuntime(tasks.root, retention_seconds=-1)
+    async def forbidden(*args):
+        raise AssertionError('Confirmed delivery cannot be resent during recovery')
+    async def run():
+        worker = TaskCompletionWorker(restarted, sessions, lock_for=lambda _: asyncio.Lock(), authorized=lambda _: True,
+                                      summarize=forbidden, deliver=forbidden)
+        worker.start()
+        try:
+            await asyncio.sleep(.1)
+        finally:
+            await worker.close()
+    try:
+        asyncio.run(run())
+        assert [item.content for item in sessions.runtime_messages(origin.session_key)] == ['expired-confirmed']
+        # Repaired terminal events may now expire normally; no unbounded pin.
+        assert restarted.list(origin, kind='spawn') == ()
+    finally:
+        restarted.close()

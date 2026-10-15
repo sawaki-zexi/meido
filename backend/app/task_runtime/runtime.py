@@ -174,6 +174,8 @@ class TaskRuntime:
             # Older versions stored a message ID only when entering a send.
             # A pending receipt is not permission to issue another attempt.
             self._db.execute("UPDATE task_completions SET dispatched=1 WHERE message_id IS NOT NULL")
+        if "message_synced" not in {row[1] for row in self._db.execute("PRAGMA table_info(task_completions)")}:
+            self._db.execute("ALTER TABLE task_completions ADD COLUMN message_synced INTEGER NOT NULL DEFAULT 0")
         # An interrupted external send may already have reached the platform.
         self._db.execute("UPDATE task_completions SET status='uncertain' WHERE status='sending'")
         self._db.execute(
@@ -252,7 +254,7 @@ class TaskRuntime:
         """Reconcile local messages with every durably recorded delivery state."""
         with self._lock:
             return tuple(self._snapshot(row[0]) for row in self._db.execute(
-                "SELECT c.task_id FROM task_completions c JOIN tasks t ON t.task_id=c.task_id WHERE c.message_id IS NOT NULL ORDER BY t.started_at"
+                "SELECT c.task_id FROM task_completions c JOIN tasks t ON t.task_id=c.task_id WHERE c.message_id IS NOT NULL AND c.message_synced=0 ORDER BY t.started_at"
             ).fetchall())
 
     def completion(self, task_id: str, origin: TaskOrigin) -> dict[str, object] | None:
@@ -266,8 +268,14 @@ class TaskRuntime:
         if status not in {"pending", "sending", "sent", "failed", "uncertain"}:
             raise ValueError("invalid completion status")
         with self._lock:
-            self._db.execute("UPDATE task_completions SET status=?,content=?,message_id=COALESCE(?,message_id),delivery_id=COALESCE(?,delivery_id),error_type=?,dispatched=MAX(dispatched,?) WHERE task_id=?",
+            self._db.execute("UPDATE task_completions SET status=?,content=?,message_id=COALESCE(?,message_id),delivery_id=COALESCE(?,delivery_id),error_type=?,dispatched=MAX(dispatched,?),message_synced=0 WHERE task_id=?",
                              (status, content[:100000], message_id, delivery_id, error_type[:100], int(status == "sending"), task_id))
+            self._db.commit()
+
+    def acknowledge_completion_message(self, task_id: str) -> None:
+        """Allow normal retention only after the local message matches its receipt."""
+        with self._lock:
+            self._db.execute("UPDATE task_completions SET message_synced=1 WHERE task_id=?", (task_id,))
             self._db.commit()
 
     def query(self, task_id: str, origin: TaskOrigin, *, wait_seconds: float = 0) -> TaskSnapshot:
@@ -431,8 +439,8 @@ class TaskRuntime:
                 counts[role] = counts.get(role, 0) + 1
                 sizes[role] = sizes.get(role, 0) + (json.loads(row["budget"])["log_bytes"]
                                                   if row["ended_at"] is None else row["log_bytes"])
-                pending = self._db.execute("SELECT status FROM task_completions WHERE task_id=?", (row["task_id"],)).fetchone()
-                if pending is not None and pending[0] in {"pending", "sending"}:
+                pending = self._db.execute("SELECT status,message_id,message_synced FROM task_completions WHERE task_id=?", (row["task_id"],)).fetchone()
+                if pending is not None and (pending[0] in {"pending", "sending"} or pending[1] and not pending[2]):
                     continue
                 if row["ended_at"] is not None and (
                     time.time() - row["ended_at"] > self.retention_seconds or counts[role] > self.max_retained_per_role

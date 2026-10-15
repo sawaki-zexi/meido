@@ -20,6 +20,7 @@
 - 保留额度回归先证实旧清理会用新任务挤掉 pending 事件。修复后 pending/sending 持续占用有限额度，容量满拒绝新任务，普通过期查询也不丢未投结果。
 - 两路独立审查发现跨库完成状态窗口、子 provider 连续取消和合法 pending 回执重发。新增真实 SQLite/TaskRuntime/ChannelHost/TCP 回归首先得到 13 failed / 5 passed；修复后同组 18 passed。初次消息事务即写渠道/pending，outbox 另持久化已提交标记，重启按所有已记录收据恢复消息，pending 不重发。旧版本 schema 迁移也保留已提交意愿。
 - 另以本地消息确认写入一次 OSError 先复现已发送被改成 failed；修复后持久 sent/attempt 保留，消息可恢复且发送计数始终为一。连续四个管理取消在真实 localhost TCP 的 provider finally 屏障前保持未终态，释放连接后才共同返回 cancelled。
+- 过期收据恢复另先红后绿：应用重启时任务已超过保留期，仍先同步已确认消息，再释放保留保护按正常规则清理，不永久固定过期任务，也不丢失恢复所需收据。
 - 网页独立启用、有限预算保存、重新打开和关闭保留配置，以及原有 11 项基础工具、Shell 和未知配置保留均通过公开 React 操作验证。后端专用关闭不能被 enabledTools 中同名项绕过。
 
 ## 检查记录
@@ -29,7 +30,7 @@
 | 检查 | 结果 |
 | --- | --- |
 | 最终独立子任务行为与公开 API 全组 | 35 passed |
-| 审查修复后 spawn / API / 完成恢复 / 后台 Shell / 工具发现 | 90 passed |
+| 审查修复后 spawn / API / 完成恢复 / 后台 Shell / 工具发现 | 91 passed（保留期修复前为 90） |
 | 完成恢复 / 角色能力 / 能力层交叉组（与上组重叠） | 32 passed |
 | spawn、spawn API、后台 Shell、Shell API、来源授权、ChannelHost、角色能力、工具发现 API、成员 HTTP 交叉组 | 107 passed；其后新增的 recovery 参数场景所在完整渠道完成组另为 5 passed |
 | 全部角色管理 React 用例 | 5 files / 16 tests passed |
