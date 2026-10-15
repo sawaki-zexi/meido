@@ -162,11 +162,12 @@ S08使用现有文件/Shell白名单准备可启动server、配置草稿与fixtu
 - 真实前后端展示默认关闭、许可/默认目标/依赖原因、run与ACK状态；零外部发送的本地平台fixture验证目录/receipt，不能据此称真实账号在线或真人收到。
 - 获准实机验收另记录实际MCP版本/哈希、角色目标和许可、真实事件/ACK/收件证据；没有该授权保留未验收gate，不伪造成功、不删除整个功能。
 
-建议四张用户纵切票，均Parent #137，采用Matt Pocock的What to build/Acceptance criteria/Blocked by结构：
-1. **主人启用一个真实获准来源，角色提交或跳过主动消息。** 覆盖配置、可信autonomy origin、tick、A01完整管线与桌面receipt；Blocked by：§3批准、#158两轴复核并获准集成的真实seam。
-2. **主人安全创建新来源并看到持久ACK和重启恢复。** 覆盖S08作者产物、合成验证、trust/grant激活、ACK契约/expiry/故障恢复；Blocked by：①共享source/提交模块。
-3. **角色空闲时执行长期Drift技能并如实收尾。** 覆盖S06、私有工作根、版本挂载、有限Shell、单次发送、finish与取消join；Blocked by：①②共享主动/来源管线。
-4. **主人配置真实外部默认目标并验收完整主动/Drift投递。** 覆盖已绑定主人私聊选择、目录真实性/能力、撤权和receipt；Blocked by：①③、[#170](https://github.com/sawaki-zexi/meido/issues/170)真实目录集成，以及具体真实账号验收许可。
+已建立四张用户纵切票，均Parent #137，当前needs-info等待§3批准；采用Matt Pocock的What to build/Acceptance criteria/Blocked by结构：
+
+1. [**#177：主人启用一个真实获准来源，角色提交或跳过主动消息。**](https://github.com/sawaki-zexi/meido/issues/177) 覆盖配置、可信autonomy origin、tick、A01完整管线与桌面receipt；Blocked by：§3批准、#158两轴复核并获准集成的真实seam。
+2. [**#178：主人安全创建新来源并看到持久ACK和重启恢复。**](https://github.com/sawaki-zexi/meido/issues/178) 覆盖S08作者产物、合成验证、trust/grant激活、ACK契约/expiry/故障恢复；Blocked by：#177共享source/提交模块。
+3. [**#179：角色空闲时执行长期Drift技能并如实收尾。**](https://github.com/sawaki-zexi/meido/issues/179) 覆盖S06、私有工作根、版本挂载、有限Shell、单次发送、finish与取消join；Blocked by：#177/#178共享主动/来源管线。
+4. [**#180：主人配置真实外部默认目标并验收完整主动/Drift投递。**](https://github.com/sawaki-zexi/meido/issues/180) 覆盖已绑定主人私聊选择、目录真实性/能力、撤权和receipt；Blocked by：#177/#179、[#170](https://github.com/sawaki-zexi/meido/issues/170)真实目录集成，以及具体真实账号验收许可。
 
 实施从协调者确认的最新已验证aggregate建独立本地任务分支，按主人已批准流程统一交付[总PR #162](https://github.com/sawaki-zexi/meido/pull/162)；不额外等待main、不建堆叠功能PR、不自行合并或关闭Issue。
 开始前重读依赖实际Interface与开放工作；本票只扩必要自主MCP/投递适配及业务状态，不重建模型网关、Todo、第二套任务队列或全局MCP管理器。

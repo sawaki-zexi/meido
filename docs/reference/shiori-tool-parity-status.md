@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；本轮集成核验：`feat/137-shiori-tool-parity@c03a9fbdd2450e4df5171f7272c4abbd0e4258b4`。
+最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；本地生产集成核验：`de550f8ed505a04476c439a8dd95a54d47514680`。此前 `c32c738` 两条 CI 全通过；调度合入后的新 CI 待核验。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -11,7 +11,7 @@
 - 总目标是 31 个核心工具、45 个插件工具、8 个 Skill、主动决策和 Drift。工具名字或 schema 存在不等于行为验收完成。
 - 已获批准并合并 PR #145、#143、#146、#147、#150、#151，对应 #138–#144 中的六张实施票已关闭。
 - 用户随后明确要求剩余多个 PR 汇总为一个大 PR；剩余改动汇入 [草稿 PR #162](https://github.com/sawaki-zexi/meido/pull/162)。原 Skills 草稿 PR #161 已关闭为被替代，未单独合并，#152 保持开放。
-- D01–D03 已批准，见 ADR [0011](../adr/0011-versioned-tool-activation.md)、[0012](../adr/0012-owned-task-runtime.md)、[0013](../adr/0013-independent-generic-schedules.md)。屏幕感知具体方案随后已获明确批准并记录到 [0014](../adr/0014-explicit-screen-vision-binding.md)；[Windows 桌面控制具体方案](../specs/computer-use-spec.md)及桌宠宿主选择仍待回答。
+- D01–D03 已批准，见 ADR [0011](../adr/0011-versioned-tool-activation.md)、[0012](../adr/0012-owned-task-runtime.md)、[0013](../adr/0013-independent-generic-schedules.md)。屏幕感知具体方案随后已获明确批准并记录到 [0014](../adr/0014-explicit-screen-vision-binding.md)；[Windows 桌面控制](../specs/computer-use-spec.md)、[NovelAI](../specs/novelai-generation-spec.md)、[Coding Agent](../specs/coding-agent-spec.md)、[主动决策/Drift](../specs/proactive-drift-spec.md)具体方案及桌宠宿主选择分别仍待人工批准，不相互替代。
 - 汇总 PR 不具有合并批准；实现、审查、CI 和必要验收完成后仍需人工批准。剩余 Issue 不因进入集成分支而关闭。
 
 ## 范围追踪
@@ -46,8 +46,8 @@
 | S06 create-drift-skill | 待实现；[固定源码依赖核验](../research/proactive-drift-runtime-portability-2026-10-16.md)已明确长期技能创建、后续发现与真实 Drift 消费缺一不可 | Drift 目录创建、发现和真实执行 |
 | S07 codex-delegate | 待实现，见 Coding 具体规格及 #175；复用 spawn coding 入口而不新增普通工具，依赖 #174 共享模块 | 第3节架构批准后，真实 CLI、后台执行、精确 session/结果回读和原上下文回灌 |
 | S08 create-proactive-source | 待实现；固定源码已核实来源产物/信任/ACK 契约，旧 Skill 的 severity 快通道/HyDE 文案不作为当前实现保证 | 来源创建、信任授权、事件消费、正文与持久 ACK |
-| A01 主动决策 | [主动运行调研](../research/proactive-drift-runtime-portability-2026-10-16.md)及[具体规格](../specs/proactive-drift-spec.md)已完成独立提案复核；明确草稿/finish、投递、来源 ACK 与 Runtime 结果 ACK 的不同持久状态，尚无生产实现 | 第3节架构批准；自主来源许可、候选/兴趣/去重、单次草稿、持久提交/投递/ACK 与独立验收 |
-| A02 Drift | 待实现；具体规格已提案复核，采用主动 tick 的空输入分支、独立开关与显式目标；发送后 schema 和执行门同时收窄，补完整运行预算 | 第3节架构批准、独立目录/预算、受限工具、挂载 MCP、单次推送尝试和真实发送状态收尾 |
+| A01 主动决策 | [调研](../research/proactive-drift-runtime-portability-2026-10-16.md)及[具体规格](../specs/proactive-drift-spec.md)已独立提案复核；#177 桌面主动、#178 S08来源、#180 外部目标已建原生父子/依赖，明确草稿/finish、投递、来源 ACK 与 Runtime 结果 ACK 的不同状态，尚无生产实现 | 第3节架构批准；自主来源许可、候选/兴趣/去重、单次草稿、持久提交/投递/ACK 与独立验收 |
+| A02 Drift | #179 及 #180 已建票，具体规格已提案复核，尚未实施；采用主动 tick 的空输入分支、独立开关与显式目标，发送后 schema 和执行门同时收窄，补完整运行预算 | 第3节架构批准、独立目录/预算、受限工具、挂载 MCP、单次推送尝试和真实发送状态收尾 |
 
 剩余渠道差距已拆成可验收后续切片：#166 完整群资料分页、字段保留/清空与真实来源，#167 纯桌面文本/媒体推送均已完成两轴复核并集成。C06 的账号与真实平台验收仍未完成。
 
