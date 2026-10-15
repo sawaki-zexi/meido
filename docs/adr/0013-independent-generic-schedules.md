@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳，待实现。批准时间：2026-10-15。
+已采纳。批准时间：2026-10-15。#158 本地实现待两轴复核及总 PR #162 集成，未合入 main；当前行为与限制见[调度契约](../reference/owned-schedules.md)。
 
 ## 背景
 
@@ -27,4 +27,4 @@ Shiori schedule 支持固定文本、到时模型执行、绝对/相对时刻、
 - [完整复刻规格](../specs/shiori-tool-parity-spec.md)，D03。
 - [ADR-0005](0005-todo-tools-and-proactive-reminders.md)、[ADR-0012](0012-owned-task-runtime.md)。
 
-本文是已批准目标决定，不表示代码已经实现或验收。
+本文记录已批准决定；实现与验收状态以调度契约和测试为准，不表示已合入 main 或完成真实平台验收。

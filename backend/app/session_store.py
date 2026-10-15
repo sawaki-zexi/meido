@@ -242,27 +242,49 @@ class SessionStore:
         message_id = f"{session_key}:desktop-push:{event}"
         with sqlite3.connect(self.database_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            if not authorized():
-                raise PermissionError("desktop push permission was revoked")
-            columns = "message_id,session_key,sequence,role,content,status,created_at,message_type,tool_call_id,tool_name,tool_arguments_json,tool_result_json,is_error,run_id,metadata_json"
-            existing = connection.execute(f"SELECT {columns} FROM messages WHERE message_id=?", (message_id,)).fetchone()
-            if existing is not None:
-                return self._message(existing)
-            now = _now()
-            connection.execute("INSERT OR IGNORE INTO sessions(session_key,role_id,created_at,updated_at) VALUES(?,?,?,?)",
-                               (session_key, role_id, now, now))
-            session = connection.execute("SELECT role_id FROM sessions WHERE session_key=?", (session_key,)).fetchone()
-            if session is None or session[0] != role_id:
-                raise PermissionError("desktop session belongs to another role")
-            sequence = connection.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE session_key=?", (session_key,)).fetchone()[0]
             metadata = {"internalEvent": "desktop_push", "channel": "desktop", "deliveryStatus": "sent",
                         "sourceRunId": source_run_id, "sourceToolCallId": call_id, "attachments": attachments}
-            connection.execute("INSERT INTO messages(message_id,session_key,sequence,role,content,status,created_at,message_type,metadata_json) VALUES(?,?,?,'assistant',?,'completed',?,'desktop_push',?)",
-                               (message_id, session_key, sequence, content, now, _dump(metadata)))
-            connection.execute("UPDATE sessions SET updated_at=? WHERE session_key=?", (now, session_key))
-            stored = connection.execute(f"SELECT {columns} FROM messages WHERE message_id=?", (message_id,)).fetchone()
-        assert stored is not None
+            return self._append_owned_message_once(connection, role_id, session_key, message_id, content,
+                message_type='desktop_push', metadata=metadata, authorized=authorized, create_session=True)
+
+    def _append_owned_message_once(self, connection, role_id, session_key, message_id, content, *,
+                                   message_type, metadata, authorized, create_session=False):
+        """Called inside the owning application's write transaction."""
+        if not authorized():
+            raise PermissionError('internal delivery permission was revoked')
+        columns = 'message_id,session_key,sequence,role,content,status,created_at,message_type,tool_call_id,tool_name,tool_arguments_json,tool_result_json,is_error,run_id,metadata_json'
+        now = _now()
+        if create_session:
+            connection.execute('INSERT OR IGNORE INTO sessions(session_key,role_id,created_at,updated_at) VALUES(?,?,?,?)',
+                               (session_key, role_id, now, now))
+        session = connection.execute('SELECT role_id FROM sessions WHERE session_key=?', (session_key,)).fetchone()
+        if session is None and session_key.startswith('thread:'):
+            session = connection.execute('SELECT role_id FROM channel_threads WHERE session_key=?', (session_key,)).fetchone()
+        if session is None or session[0] != role_id:
+            raise PermissionError('original delivery session is unavailable')
+        existing = connection.execute(f'SELECT {columns} FROM messages WHERE message_id=?', (message_id,)).fetchone()
+        if existing is not None:
+            return self._message(existing)
+        sequence = connection.execute('SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE session_key=?', (session_key,)).fetchone()[0]
+        connection.execute("INSERT INTO messages(message_id,session_key,sequence,role,content,status,created_at,message_type,metadata_json) VALUES(?,?,?,'assistant',?,'completed',?,?,?)",
+                           (message_id, session_key, sequence, content, now, message_type, _dump(metadata)))
+        connection.execute('UPDATE sessions SET updated_at=? WHERE session_key=?', (now, session_key))
+        if session_key.startswith('thread:'):
+            connection.execute('UPDATE channel_threads SET last_activity=? WHERE session_key=?', (now, session_key))
+        stored = connection.execute(f'SELECT {columns} FROM messages WHERE message_id=?', (message_id,)).fetchone()
         return self._message(stored)
+
+    def append_schedule_message_once(self, role_id, session_key, schedule_id, occurrence_id, content, *,
+                                      authorized, connection, channel='desktop', delivery_status='sent', attempt_id=None):
+        """Schedule's own transaction includes both its cancel gate and receipt."""
+        message_id = f'{session_key}:schedule:{occurrence_id}'
+        metadata = {'internalEvent': 'schedule', 'scheduleId': schedule_id, 'occurrenceId': occurrence_id,
+                    'channel': channel, 'deliveryStatus': delivery_status, 'deliveryAttemptId': attempt_id}
+        message = self._append_owned_message_once(connection, role_id, session_key, message_id, content,
+            message_type='internal_completion', metadata=metadata, authorized=authorized)
+        if message.metadata != metadata:
+            connection.execute('UPDATE messages SET metadata_json=? WHERE message_id=?', (_dump(metadata), message_id))
+        return message
 
     def append_proactive_message_once(
         self,
@@ -616,6 +638,7 @@ class SessionStore:
         *,
         assistant_status: str = "streaming",
         attachments: list[dict[str, object]] | None = None,
+        received_at: float | None = None,
     ) -> tuple[AgentRun, Message, Message]:
         """Atomically create a run, its user message, and stream placeholder."""
 
@@ -635,14 +658,14 @@ class SessionStore:
             assistant_sequence = user_sequence + 1
             connection.execute(
                 "INSERT INTO messages (message_id, session_key, sequence, role, content, status, created_at, message_type, run_id, metadata_json) VALUES (?, ?, ?, 'user', ?, 'completed', ?, 'text', ?, ?)",
-                (user_id, run.sessionKey, user_sequence, user_content, now, run.runId, _dump({"attachments": attachments or []})),
+                (user_id, run.sessionKey, user_sequence, user_content, now, run.runId, _dump({"attachments": attachments or [], **({'hostReceivedAt': received_at} if received_at is not None else {})})),
             )
             connection.execute(
                 "INSERT INTO messages (message_id, session_key, sequence, role, content, status, created_at, message_type, run_id, metadata_json) VALUES (?, ?, ?, 'assistant', '', ?, ?, 'text', ?, ?)",
                 (assistant_id, run.sessionKey, assistant_sequence, assistant_status, now, run.runId, _dump({"runtimePlaceholder": True})),
             )
             connection.execute("UPDATE sessions SET updated_at = ? WHERE session_key = ?", (now, run.sessionKey))
-        user_message = Message(id=user_id, sessionKey=run.sessionKey, sequence=user_sequence, role="user", content=user_content, status="completed", createdAt=datetime.fromisoformat(now), runId=run.runId, metadata={"attachments": attachments or []})
+        user_message = Message(id=user_id, sessionKey=run.sessionKey, sequence=user_sequence, role="user", content=user_content, status="completed", createdAt=datetime.fromisoformat(now), runId=run.runId, metadata={"attachments": attachments or [], **({'hostReceivedAt': received_at} if received_at is not None else {})})
         assistant_message = Message(id=assistant_id, sessionKey=run.sessionKey, sequence=assistant_sequence, role="assistant", content="", status=assistant_status, createdAt=datetime.fromisoformat(now), runId=run.runId, metadata={"runtimePlaceholder": True})
         return run, user_message, assistant_message
 

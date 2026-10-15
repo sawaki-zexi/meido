@@ -12,6 +12,7 @@ const toolLabels = [
   "搜索网页（web_search）", "抓取网页（web_fetch）", "搜索消息原文（search_messages）", "读取消息原文（fetch_messages）",
   "记住信息（memorize）", "撤销记忆（forget_memory）", "按需发现工具（tool_search）",
   "桌面推送（message_push）",
+  "创建时间任务（schedule）", "查询时间任务（list_schedules）", "取消时间任务（cancel_schedule）",
 ];
 
 it("分别授权已实现工具，保存重开时保留部分选择、未知能力和嵌套配置", async () => {
@@ -40,10 +41,11 @@ it("分别授权已实现工具，保存重开时保留部分选择、未知能�
   await user.click(form.getByLabelText("记住信息（memorize）"));
   await user.click(form.getByLabelText("按需发现工具（tool_search）"));
   await user.click(form.getByLabelText("桌面推送（message_push）"));
+  await user.click(form.getByLabelText("创建时间任务（schedule）"));
   await user.click(form.getByRole("button", { name: "保存" }));
   await waitFor(() => expect(calls.some((call) => call.method === "PUT")).toBe(true));
   expect(saved.agentConfig).toMatchObject({
-    ...existing, enabledTools: ["read_file", "calendar.search", "write_file", "web_search", "search_messages", "memorize", "tool_search", "message_push"],
+    ...existing, enabledTools: ["read_file", "calendar.search", "write_file", "web_search", "search_messages", "memorize", "tool_search", "message_push", "schedule"],
   });
   await user.click(form.getByRole("button", { name: "关闭" }));
   await user.click(screen.getByRole("button", { name: "角色资料" }));
@@ -52,11 +54,12 @@ it("分别授权已实现工具，保存重开时保留部分选择、未知能�
   expect(reopened.getByLabelText("抓取网页（web_fetch）")).not.toBeChecked();
   expect(reopened.getByLabelText("撤销记忆（forget_memory）")).not.toBeChecked();
   expect(reopened.getByLabelText("桌面推送（message_push）")).toBeChecked();
+  expect(reopened.getByLabelText("创建时间任务（schedule）")).toBeChecked();
   await user.click(reopened.getByLabelText("写入文件（write_file）"));
   await user.type(reopened.getByRole("textbox", { name: /^名称/ }), "改名");
   await user.click(reopened.getByRole("button", { name: "保存" }));
   await waitFor(() => expect(calls.filter((call) => call.method === "PUT")).toHaveLength(2));
-  expect(saved.agentConfig?.enabledTools).toEqual(["read_file", "calendar.search", "web_search", "search_messages", "memorize", "tool_search", "message_push"]);
+  expect(saved.agentConfig?.enabledTools).toEqual(["read_file", "calendar.search", "web_search", "search_messages", "memorize", "tool_search", "message_push", "schedule"]);
   expect(saved.agentConfig).toMatchObject({ extension: existing.extension, shell: existing.shell });
 });
 
