@@ -594,22 +594,39 @@ class MultichannelStore:
             row = db.execute("SELECT config_json FROM channel_account_settings WHERE account_id=?", (account_id,)).fetchone()
         return _loads(str(row[0])) if row else {}
 
-    def set_group_listening(self, role_id: str, account_id: str, chat_id: str, enabled: bool, *, operator: str = "user") -> None:
+    def set_group_listening(self, role_id: str, account_id: str, chat_id: str, enabled: bool, *,
+                            operator: str = "user", authorize: Callable[[], None] | None = None) -> None:
+        if operator not in {"user", "role"}:
+            raise ValueError("未知旁听操作方")
         account = self.get_account(account_id)
         if account is None or account.role_id != role_id or account.channel != "qq":
             raise KeyError(account_id)
-        if operator not in {"user", "role"}:
-            raise ValueError("未知旁听操作方")
-        changed = self.group_listening(role_id, account_id, chat_id) != bool(enabled)
-        now = _now()
+        thread = self.get_thread_by_chat(role_id, account_id, str(chat_id), chat_type="group")
+        if thread is None and authorize is not None:
+            raise KeyError(chat_id)
+        if thread is None and self.group_listening(role_id, account_id, chat_id) != bool(enabled):
+            thread = self.ensure_channel_thread(role_id, "qq", account_id, str(chat_id), "group")
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if authorize is not None:
+                authorize()
+            account = self.get_account(account_id)
+            if account is None or account.role_id != role_id or account.channel != "qq":
+                raise KeyError(account_id)
+            if thread is not None:
+                current = self.get_thread(role_id, thread.thread_id)
+                if current is None or (current.account_id, current.channel, current.chat_id, current.chat_type) != (account_id, "qq", str(chat_id), "group"):
+                    raise KeyError(chat_id)
+            row = db.execute("SELECT listening FROM channel_group_settings WHERE role_id=? AND account_id=? AND chat_id=?",
+                (role_id, account_id, str(chat_id))).fetchone()
+            changed = bool(row and row[0]) != bool(enabled)
+            now = _now()
             db.execute(
                 "INSERT INTO channel_group_settings(role_id,account_id,chat_id,listening,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(role_id,account_id,chat_id) DO UPDATE SET listening=excluded.listening,updated_at=excluded.updated_at",
                 (role_id, account_id, str(chat_id), int(enabled), now),
             )
-        if changed:
-            thread = self.ensure_channel_thread(role_id, "qq", account_id, str(chat_id), "group")
-            self.listening.log_toggle(thread.thread_id, enabled, operator)
+            if changed and thread is not None:
+                db.execute("INSERT INTO channel_listening_toggles VALUES(?,?,?,?)", (thread.thread_id, int(enabled), operator, now))
 
     def group_listening(self, role_id: str, account_id: str, chat_id: str) -> bool:
         with self._connect() as db:
