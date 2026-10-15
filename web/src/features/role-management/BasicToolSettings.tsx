@@ -19,6 +19,9 @@ const groups = [
   { title: "按需发现", hint: "只发现并激活已授权的候选工具，不能增加权限。", tools: [
     ["tool_search", "按需发现工具"],
   ] },
+  { title: "桌面对话", hint: "将文本、图片或文件推送到当前角色自己的桌面对话。", tools: [
+    ["message_push", "桌面推送"],
+  ] },
 ] as const;
 
 export function BasicToolSettings({ draft, onChange, disabled }: { draft: RoleDraft; onChange: (draft: RoleDraft) => void; disabled: boolean }) {

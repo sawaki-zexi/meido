@@ -1,6 +1,8 @@
 import sqlite3
 import uuid
 import json
+import hashlib
+from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,6 +70,19 @@ def _runtime_assistant_metadata(metadata: dict[str, Any]) -> dict[str, object]:
         "runtimePlaceholder",
     }
     return {key: value for key, value in metadata.items() if key not in internal_keys}
+
+
+def _runtime_assistant_message(stored: Message) -> AssistantMessage:
+    content = stored.content
+    if stored.messageType == "desktop_push":
+        raw_attachments = stored.metadata.get("attachments", [])
+        attachments = raw_attachments if isinstance(raw_attachments, list) else []
+        labels = [f"{item.get('name', '附件')}（attachment_id={item['id']}）"
+                  for item in attachments if isinstance(item, dict) and item.get('id')]
+        if labels:
+            content = "\n".join(filter(None, (content, "已推送附件：" + "；".join(labels))))
+    return AssistantMessage(content, metadata=_runtime_assistant_metadata(stored.metadata),
+                            timestamp=_timestamp(stored.metadata))
 
 
 class SessionStore:
@@ -218,6 +233,36 @@ class SessionStore:
             metadata = {**(_load_dict(row[0]) or {}), "channel": row[1], "deliveryStatus": delivery_status,
                         "deliveryAttemptId": delivery_attempt_id}
             connection.execute("UPDATE messages SET metadata_json=? WHERE message_id=?", (_dump(metadata), message_id))
+
+    def append_desktop_push_once(self, role_id: str, source_run_id: str, call_id: str, content: str, *,
+                                 attachments: list[dict[str, object]], authorized: Callable[[], bool]) -> Message:
+        """Persist a role's own message independently of the parent run outcome."""
+        session_key = f"role:{role_id}"
+        event = hashlib.sha256(json.dumps([role_id, source_run_id, call_id]).encode()).hexdigest()
+        message_id = f"{session_key}:desktop-push:{event}"
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if not authorized():
+                raise PermissionError("desktop push permission was revoked")
+            columns = "message_id,session_key,sequence,role,content,status,created_at,message_type,tool_call_id,tool_name,tool_arguments_json,tool_result_json,is_error,run_id,metadata_json"
+            existing = connection.execute(f"SELECT {columns} FROM messages WHERE message_id=?", (message_id,)).fetchone()
+            if existing is not None:
+                return self._message(existing)
+            now = _now()
+            connection.execute("INSERT OR IGNORE INTO sessions(session_key,role_id,created_at,updated_at) VALUES(?,?,?,?)",
+                               (session_key, role_id, now, now))
+            session = connection.execute("SELECT role_id FROM sessions WHERE session_key=?", (session_key,)).fetchone()
+            if session is None or session[0] != role_id:
+                raise PermissionError("desktop session belongs to another role")
+            sequence = connection.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE session_key=?", (session_key,)).fetchone()[0]
+            metadata = {"internalEvent": "desktop_push", "channel": "desktop", "deliveryStatus": "sent",
+                        "sourceRunId": source_run_id, "sourceToolCallId": call_id, "attachments": attachments}
+            connection.execute("INSERT INTO messages(message_id,session_key,sequence,role,content,status,created_at,message_type,metadata_json) VALUES(?,?,?,'assistant',?,'completed',?,'desktop_push',?)",
+                               (message_id, session_key, sequence, content, now, _dump(metadata)))
+            connection.execute("UPDATE sessions SET updated_at=? WHERE session_key=?", (now, session_key))
+            stored = connection.execute(f"SELECT {columns} FROM messages WHERE message_id=?", (message_id,)).fetchone()
+        assert stored is not None
+        return self._message(stored)
 
     def append_proactive_message_once(
         self,
@@ -472,13 +517,22 @@ class SessionStore:
                         timestamp=_timestamp(group[0].metadata),
                     ))
 
-                    # Results are expected immediately after the assistant call group.
+                    # A push commits while its tool is executing, before the
+                    # result row. Keep its SQLite sequence but replay it only
+                    # after every result in this provider call group.
                     # Only matching IDs are replayable; duplicates and orphan results
                     # stay in SQLite for diagnostics but never poison provider context.
                     result_rows: dict[str, Message] = {}
+                    independent_messages: list[Message] = []
                     result_cursor = cursor
-                    while result_cursor < len(stored_messages) and stored_messages[result_cursor].messageType == "tool_result":
+                    while result_cursor < len(stored_messages):
                         result = stored_messages[result_cursor]
+                        if result.messageType == "desktop_push" and result.role == "assistant" and result.status == "completed":
+                            independent_messages.append(result)
+                            result_cursor += 1
+                            continue
+                        if result.messageType != "tool_result":
+                            break
                         if (
                             result.status == "completed"
                             and result.runId == group_run_id
@@ -512,13 +566,14 @@ class SessionStore:
                                 # reconstructed from SQLite on later runs.
                                 images=(),
                             ))
+                    messages.extend(_runtime_assistant_message(item) for item in independent_messages)
                     index = result_cursor
                     continue
             elif stored.messageType == "tool_result":
                 # A result without a replayable assistant call is an orphan.
                 index += 1
                 continue
-            elif stored.messageType in {"text", "internal_completion"} and stored.status == "completed":
+            elif stored.messageType in {"text", "internal_completion", "desktop_push"} and stored.status == "completed":
                 if stored.role == "user":
                     messages.append(UserMessage(
                         _channel_user_content(stored),
@@ -529,11 +584,7 @@ class SessionStore:
                     if stored.metadata.get("channel") not in {None, "", "desktop"} and stored.metadata.get("deliveryStatus") != "sent":
                         index += 1
                         continue
-                    messages.append(AssistantMessage(
-                        stored.content,
-                        metadata=_runtime_assistant_metadata(stored.metadata),
-                        timestamp=_timestamp(stored.metadata),
-                    ))
+                    messages.append(_runtime_assistant_message(stored))
             index += 1
         if max_messages is None or max_messages < 1 or len(messages) <= max_messages:
             return messages

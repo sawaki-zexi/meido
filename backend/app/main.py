@@ -131,7 +131,8 @@ from .channels import (
     target_from_chat,
 )
 from .channels.credentials import credential_key
-from .channels.push import ChannelPushService, MessagePushTool
+from .channels.push import ChannelPushService
+from .desktop_push import MessagePushTool
 from .channels.transports import NapCatWebSocketTransport, QQBotGatewayTransport, FeishuWebhookTransport, ChannelTransportError
 from .channels.media import MAX_CHANNEL_MEDIA_BYTES, media_filename
 from .channels.napcat_managed import ManagedNapCat
@@ -1548,6 +1549,7 @@ def get_role_tools(role_id: str) -> dict[str, object]:
     if not mail_service.store.connection().auto_draft_ready:
         reasons["mail.manage"] = "邮件服务尚未就绪"
     dependencies = {name: browser_use_sessions.dependency_status() for name in BROWSER_USE_TOOL_NAMES}
+    dependencies['message_push'] = {'status': 'ready', 'reason': '只写入当前角色的桌面对话，无需外部渠道账号'}
     screen_reason = _screen_unavailable_reason(role)
     if screen_reason:
         reasons["observe_screen"] = screen_reason
@@ -1569,7 +1571,7 @@ def get_role_tools(role_id: str) -> dict[str, object]:
         "status": "unavailable" if missing_commands else "ready" if role.agentConfig.shell.allowedCommands else "unchecked",
         "reason": "白名单中有本机无法找到的程序" if missing_commands else "已检查程序路径；未执行命令" if role.agentConfig.shell.allowedCommands else "尚未配置命令白名单",
     }
-    for name in ("account_list", "account_targets", "account_send", "message_push", "set_group_listening"):
+    for name in ("account_list", "account_targets", "account_send", "set_group_listening"):
         dependencies[name] = {"status": "unchecked", "reason": "网络连接和目标能力将在调用时验证"}
         if not include_channel:
             reasons[name] = "没有可用渠道账号，桌面对话不提供此工具"
@@ -3865,11 +3867,36 @@ def _runtime_tool_candidates(
             return True
         return context.session_key == f"role:{role.id}"
 
+    def desktop_push_authorized(context):
+        current = store.get(role.id)
+        if (context.role_id != role.id or current is None or role.id in _channel_roles_deleting
+                or 'message_push' not in current.agentConfig.enabledTools or not is_channel_owner):
+            return False
+        channel_origin = bool(source_account_id or source_thread_id and source_thread_id != f'desktop:{role.id}')
+        if channel_origin != context.session_key.startswith('thread:'):
+            return False
+        run = session_store.get_run(context.run_id)
+        user = session_store.user_message_for_run(context.run_id)
+        if (run is None or run.roleId != role.id or run.sessionKey != context.session_key
+                or run.status not in {'created', 'running'} or user is None
+                or user.sessionKey != context.session_key
+                or user.status != 'completed' or user.messageType != 'text'):
+            return False
+        if context.session_key.startswith('thread:'):
+            try:
+                task_source(context)
+            except PermissionError:
+                return False
+            return True
+        return (context.session_key == f'role:{role.id}'
+                and user.metadata.get('channel', 'desktop') == 'desktop')
+
     memory_access = _memory_runtime_access(role, is_channel_owner=is_channel_owner, source_thread_id=source_thread_id)
     group_access = GroupToolAccess(multichannel_store, role_id=role.id,
         source_thread_id=source_thread_id, is_owner=is_channel_owner,
         authorized=lambda context: store.get(role.id) is not None and role.id not in _channel_roles_deleting)
     tools: list[object] = [
+        MessagePushTool(session_store, lambda: store.workspace_path(role.id), role_id=role.id, authorized=desktop_push_authorized),
         SpawnTool(task_runtime, role.agentConfig.spawn, origin_resolver=task_origin, authorized=spawn_authorized),
         SpawnManageTool(task_runtime, origin_resolver=task_origin, authorized=spawn_authorized),
         ObserveScreenTool(screen_perception, role.agentConfig.screenPerception.visionModelConfigurationId, role_id=role.id),
@@ -3907,10 +3934,6 @@ def _runtime_tool_candidates(
         tools.extend((
             ChannelAccountListTool(channel_host),
             ChannelTargetsTool(channel_host),
-            MessagePushTool(
-                _channel_push_service(), is_owner=is_channel_owner,
-                source_thread_id=source_thread_id, source_account_id=source_account_id,
-            ),
             ChannelSendTool(
                 channel_host,
                 is_owner=is_channel_owner,
@@ -3969,6 +3992,7 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
     enabled.update(set(role.agentConfig.enabledTools) & MESSAGE_HISTORY_TOOL_NAMES)
     enabled.update(set(role.agentConfig.enabledTools) & {"web_search", "web_fetch"})
     enabled.update(FILE_TOOL_NAMES.intersection(role.agentConfig.enabledTools))
+    enabled.update({'message_push'}.intersection(role.agentConfig.enabledTools))
     if "tool_search" in role.agentConfig.enabledTools:
         enabled.update(MCP_MANAGEMENT_NAMES.intersection(role.agentConfig.enabledTools))
     if shell.enabled and shell.allowedCommands:
@@ -3983,7 +4007,7 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
         enabled.add("mail.manage")
     if include_channel:
         enabled.update({
-            "account_list", "account_targets", "account_send", "message_push",
+            "account_list", "account_targets", "account_send",
             "lookup_group_context", "update_group_context", "set_group_listening",
             "lookup_group_member",
             "read_attachment",
@@ -4020,8 +4044,7 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen"}) - host_enabled)
     if not include_channel:
         enabled_tools.difference_update({
-            "account_list", "account_targets", "account_send", "message_push",
-            "set_group_listening", "read_attachment",
+            "account_list", "account_targets", "account_send", "set_group_listening", "read_attachment",
         })
         if not group_repository.has_group_data(role.id):
             enabled_tools.difference_update({"lookup_group_context", "update_group_context"})
