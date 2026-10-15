@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；本轮集成核验：`feat/137-shiori-tool-parity@2afd73abcefb674f54b40e78416d1b42eecd3d43`。
+最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；本轮集成核验：`feat/137-shiori-tool-parity@c03a9fbdd2450e4df5171f7272c4abbd0e4258b4`。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -28,9 +28,9 @@
 | C05 记忆/消息 5 工具 | main，PR #147、#151；真实 MemoryEngine/SQLite/HTTP，取消后写入回滚与范围验证 | 后续任务和来源集成回归 |
 | C06 投递/账号 4 工具 | main 复用 PR #128、#136 的渠道宿主、目录与账本；#167 桌面文本/媒体、实际来源、取消事务及下一轮模型历史已完成两轴复核并进入集成分支 | 在线状态、目标种类/成员查询、明确授权后的真实平台收件证据 |
 | C07 子任务 2 工具 | #157 已进入集成分支；真实 TaskRuntime 子 loop、冻结 profile/模型、预算、原来源管理和完成交付已两轴审查；连续取消、pending 去重、跨库恢复与锁冲突修复的最终复核均无剩余 finding | 总 PR 跨模块集成与最终验收；未使用真实平台账号或付费模型 |
-| C08 调度 3 工具 | #158 已从包含 #157、#167 的固定集成创建独立任务分支，ADR-0013 已批准；instant 与 soft 真实 HTTP/TaskRuntime/文件读取/桌面回传初链红绿通过，时间规则专项 97 passed，受管任务交接与 ACK 专项 13 passed | 完成故障恢复、时区、来源及取消竞态，两轴复核和总集成；现有待办不计作此项实现 |
+| C08 调度 3 工具 | #158 已在独立任务分支固定 `a976edd`；instant 与 soft 真实 HTTP/TaskRuntime/文件读取/桌面回传、故障恢复与取消线程回收已完成作者验证，调度/交接 152 passed，后端回归 195 passed、前端 173 passed | 两轴独立复核和总集成；现有待办不计作此项实现 |
 | C09 群/成员 4 工具 | #165、#166 已进入集成分支；可信历史昵称、成员来源、完整群分页、笔记字段省略/清空及离线资料；两轴最终复核通过，事务直接读取父取消并等待写线程退出 | 总 PR 跨模块回归和最终验收；不得扩大来源范围 |
-| C10 MCP 3 工具 | #159 已进入集成分支；真实 stdio、版本化发现、配置 UI、持久连接意愿及严格凭据清理已两轴复核；Linux 回收、Windows asyncio 环境、中文 schema 编码及 peer_error 清理竞态均实证修复并两轴复核 | 最新修复 CI 与总 PR 最终跨模块验收 |
+| C10 MCP 3 工具 | #159 已进入集成分支；真实 stdio、版本化发现、配置 UI、持久连接意愿及严格凭据清理已两轴复核；Linux 回收、Windows asyncio 环境、中文 schema 编码及 peer_error 清理竞态均实证修复并两轴复核；`c03a9fb` 两条 CI 通过 | 总 PR 最终跨模块验收 |
 | P01 浏览器 28 工具 | main，PR #150；全部 28 schema 映射核验，21 项真实原生浏览器测试通过，无 skip | 后续 MCP/配置集成回归 |
 | P02 桌面控制 8 工具 | #169 具体规格已进入集成分支；固定 CUA 源码最小补丁、单普通权限驱动、单观察、独占 lease 与资源释放方案经独立提案复核，等待人工批准 | 批准后完整实现和专用受控窗口实机验收；当前无生产实现或原生构建 |
 | P03 Coding Agent 5 工具 | 待实现；[CLI 调研](../research/coding-agent-cli-portability-2026-10-16.md)已核实固定 Shiori 五工具、外部 Herdr 协议、危险默认值与本机 help/version；TaskRuntime 可复用 | D05 具体方案审阅；真正启动/查询/继续/取消与交付核验，仓库和外部操作许可明确 |
@@ -88,6 +88,8 @@
 MCP 故障已在 Windows 原命令和 Linux 真实慢退出 fixture 复现：RPC 错误已收到，等待进程清理时的授权轮询却用普通断连覆盖精确错误。`2bb57ea` 在开始清理前保存宿主安全错误，reader 不再覆盖，未改变撤权优先级或提前返回。Windows/Linux 相关五组各 **72 passed**，新 fixture 真正重复 **20 passed**；规范独立 **16 passed**，规格 Windows/Linux 各 **21 passed**，额外真实进程与公开 HTTP 探针均确认下一模型请求前 PID 已退出、仅一次业务调用且无秘密回显。两轴无剩余 finding，汇入 `750874e` 后 MCP HTTP、Feed、发现 HTTP 交叉 **43 passed / 104.28s**，包含两条实际 Feed 原生用例，无 skip。
 
 密钥问题已用真实 React concurrent root 和 DOM 提交后的已启用按钮点击确定性复现：初始化 passive effect 会作废刚发起的显式读取。`c597ddd` 将两处清理改为 layout effect，保留原请求代际、隐藏、草稿和卸载边界；既有 MemorySettings 测试未放宽。新增竞态 red→green，重点 **23 passed**，全前端 **174 passed / 26 files**，TypeScript/Vite 通过；两轴各独立重点 **23 passed**，无剩余 finding。汇入 `2afd73a` 后完整前端及构建输入与已验证任务分支逐字相同，未把这些检查描述为再次全量执行。最新 CI 仍须重新核验。
+
+上述修复的 `c03a9fb` 两条 CI 均通过；Linux 全后端 **1520 passed、16 skipped、2 warnings / 235.19s**，前端 **174 passed / 26 files**，TypeScript/Vite 构建通过。此为该固定提交的全量验证，不是仅重跑原失败项。
 
 #168 规范审查无 finding；规格审查独立 Windows **10 passed / 44.11s**，确认 18 次脚本化模型请求、19 次真实远端调用、17 次 localhost 请求及撤权失败结果。最终源码 `256c2cc` 汇入 `8bb2a2e` 后，Feed、内置 Skills/显式激活、MCP schema、桌面推送 HTTP 与 Runtime 历史交叉 **94 passed / 107.13s**，包含两条实际 Feed 原生用例，无 skip。服务源码与隔离 venv 仅保存在外部证据目录，未新增项目依赖或访问真实账号。
 
