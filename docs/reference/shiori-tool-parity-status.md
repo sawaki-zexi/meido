@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；本轮集成核验：`feat/137-shiori-tool-parity@3765ac2`。
+最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；本轮集成核验：`feat/137-shiori-tool-parity@e474e7c426107a48fecfd061d3b438877b0a9688`。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -30,7 +30,7 @@
 | C07 子任务 2 工具 | #157 已进入集成分支；真实 TaskRuntime 子 loop、冻结 profile/模型、预算、原来源管理和完成交付已两轴审查；连续取消、pending 去重、跨库恢复与锁冲突修复的最终复核均无剩余 finding | 总 PR 跨模块集成与最终验收；未使用真实平台账号或付费模型 |
 | C08 调度 3 工具 | #158 已有垂直规格及具体实施准备，ADR-0013 已批准；真实依赖 #157 与桌面交付 #167 已记录；现有待办不计作此项实现 | 待 #167 复核集成后实施独立调度、时区与恢复、查询取消和实际执行/投递 |
 | C09 群/成员 4 工具 | #165、#166 已进入集成分支；可信历史昵称、成员来源、完整群分页、笔记字段省略/清空及离线资料；两轴最终复核通过，事务直接读取父取消并等待写线程退出 | 总 PR 跨模块回归和最终验收；不得扩大来源范围 |
-| C10 MCP 3 工具 | #159 已进入集成分支；真实 stdio、版本化发现、配置 UI、持久连接意愿及严格凭据清理已两轴复核；Linux 进程回收和 Windows asyncio 环境修复已两轴复核 | Feed 真实 HTTP 新发现中文 schema worker 解码故障的修正复核；最新集成 Linux CI 与总 PR 最终跨模块验收 |
+| C10 MCP 3 工具 | #159 已进入集成分支；真实 stdio、版本化发现、配置 UI、持久连接意愿及严格凭据清理已两轴复核；Linux 回收、Windows asyncio 环境与中文 schema worker 解码均已实证修复并两轴复核 | 最新集成 Linux CI 与总 PR 最终跨模块验收 |
 | P01 浏览器 28 工具 | main，PR #150；全部 28 schema 映射核验，21 项真实原生浏览器测试通过，无 skip | 后续 MCP/配置集成回归 |
 | P02 桌面控制 8 工具 | 待实现；目标为 Windows 原生驱动、窗口引用、独占 lease 与资源释放 | 完整实现和受控实机验收 |
 | P03 Coding Agent 5 工具 | 待实现；使用已批准 TaskRuntime 归属和生命周期 | 真正启动/查询/继续/取消与交付核验；仓库和外部操作许可明确 |
@@ -76,6 +76,8 @@
 #166 的父取消直读修复通过两轴最终复核，原始锁等待与更窄取消窗口探针均通过。汇入 `94dad87` 后，群资料/HTTP、真实 Runtime 取消、子任务/恢复、发现和 MCP 来源交叉 **181 passed**。独立任务取消不会反向取消父任务或兄弟任务。具体契约见[群资料](group-context.md)。
 
 `0ae83ac` 的 Linux CI 原 MCP 两项故障已通过，但整组仍为 **1324 passed、12 skipped、11 failed**：群/子任务账号重建夹具使用真实系统凭据，以及旧渠道 Runtime provider 夹具未补齐内部执行器需要的接口。正以实际失败复现修正测试隔离，不放宽权限或真实投递断言；当前不能声称全部 CI 通过。
+
+上述测试隔离及 provider 夹具修正后，Linux 受影响三文件 **90 passed**；同期真实 Feed HTTP 又发现隔离 schema worker 未明确 UTF-8 编码，合法中文结果被错误拒绝，两行编码边界修复保留所有 schema/预算规则。Windows MCP 五文件 **71 passed**，两轴独立复核分别 **50 passed** 和 **7 passed**，强制 CP936 探针确认合法中文通过、非法类型仍拒绝。隔离 Linux 全后端原始结果为 **1418 passed、14 skipped、1 failed**；唯一失败是恢复测试在另一条回执修复前提前关闭 worker。改为等待两条持久同步确认并保留原精确历史/发送断言后，Windows/Linux 恢复专项各 **16 passed**；未以这些专项结果声称整组重跑成功。上述修复汇入 `e474e7c` 后，schema、渠道交付及恢复交叉 **25 passed**，新 CI 仍须核验。
 
 #160 最终两轴独立复核分别完成重点 **23 passed** 和屏幕/HTTP **82 passed、1 skipped**，并有独立真实 TCP 探针确认原早退资源释放问题已关闭。汇入 `3765ac2` 后，屏幕、子任务/恢复、群、MCP 来源与角色能力交叉 **139 passed**；角色屏幕/子任务/基础工具/草稿 React **14 passed**，TypeScript/Vite 通过。受控原生证据仍使用[屏幕验收记录](../research/screen-perception-acceptance-2026-10-16.md)，未重复捕获或把跳过项当作实机通过。
 
