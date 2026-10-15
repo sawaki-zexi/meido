@@ -683,7 +683,8 @@ def test_meido_provider_maps_structured_transcript_and_tool_call():
         ToolResultMessage(call.id, call.name, "hi"),
     ]))
     assert second[-1].message.content == "完成"
-    assert seen[1][0] == {"role": "system", "content": "系统提示"}
+    assert seen[1][0]["role"] == "system"
+    assert seen[1][0]["content"].startswith("系统提示\n\n[本次运行工具]")
     assert seen[1][-1] == {"role": "tool", "tool_call_id": "call-1", "content": "hi"}
 
 

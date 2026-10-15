@@ -81,16 +81,18 @@ from .agent_runtime import (
     ToolResultMessage,
 )
 from .agent_runtime.capabilities import CapabilityResolution
+from .agent_runtime.catalog import RuntimeCapabilityPolicy, tool_catalog
 from .agent_runtime.types import UserMessage
 from .channels.attachment_tool import ReadChannelAttachmentTool
 from .channels.consolidation import ChannelMemoryMaintenance, finish_io
 from .agent_runtime.skills import SkillRegistry
 from .todo import TodoPlugin, TodoStore
 from .todo.agent import register_todo_agent_plugin
+from .todo.agent import TodoSearchTool, TodoWriteTool, TodoReminderControlTool
 from .todo.application import TodoApplicationService
 from .browser_use import BrowserSessions, BrowserUseConfig, register_browser_use_plugin
 from .browser_use.safety import sanitize_browser_arguments, sanitize_browser_text
-from .browser_use.tool import BROWSER_USE_TOOL_NAMES
+from .browser_use.tool import BROWSER_USE_TOOL_NAMES, load_tools as load_browser_tools
 from .todo.models import TodoCreate, TodoList, TodoReminderList, TodoReminderRoleInput, TodoSettingsInput, TodoStatusInput, TodoUpdate
 from .role_card_import import MAX_SOURCE_BYTES, RoleCardImportError, parse_role_card
 from .multichannel import ChannelAccount, MultichannelStore, TelegramChannelService
@@ -1464,6 +1466,52 @@ def get_role(role_id: str) -> RoleResponse:
     if role is None:
         raise HTTPException(status_code=404, detail="角色不存在")
     return RoleResponse(role=role)
+
+
+@app.get("/api/roles/{role_id}/tools")
+def get_role_tools(role_id: str) -> dict[str, object]:
+    role = store.get(role_id)
+    if role is None:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    include_channel = _role_has_usable_channel_account(role_id)
+    policy = _runtime_capability_policy(role, include_channel=include_channel)
+    # Attachment tools exist only in an actual QQ turn with host-bound files.
+    policy = replace(policy, enabled_tools=policy.enabled_tools - {"read_attachment"})
+    definitions = {tool.definition.name: tool.definition for tool in _runtime_tool_candidates(role, include_channel=True, preview=True)}
+    for definition in (
+        OwnerKnowledgeTool.definition, MailManageTool.definition, ReadChannelAttachmentTool.definition,
+        TodoSearchTool.definition, TodoWriteTool.definition, TodoReminderControlTool.definition,
+        *(tool.definition for tool in load_browser_tools(browser_use_sessions)),
+    ):
+        definitions.setdefault(definition.name, definition)
+    reasons: dict[str, str] = {"read_attachment": "仅在当前 QQ 回合存在可读取附件时提供"}
+    if not role.agentConfig.shell.enabled:
+        reasons["shell"] = "角色的 Shell 开关已关闭"
+    elif not role.agentConfig.shell.allowedCommands:
+        reasons["shell"] = "Shell 命令白名单为空"
+    if not memory_settings_store.get().enabled:
+        reasons["recall_memory"] = "全局记忆已关闭"
+    elif not role.agentConfig.memoryRecall.enabled:
+        reasons["recall_memory"] = "角色主动记忆检索已关闭"
+    if not owner_knowledge_plugin.status().enabled:
+        reasons["search_owner_knowledge"] = "主人资料服务未启用"
+    if not mail_service.store.connection().auto_draft_ready:
+        reasons["mail.manage"] = "邮件服务尚未就绪"
+    dependencies = {name: browser_use_sessions.dependency_status() for name in BROWSER_USE_TOOL_NAMES}
+    import shutil
+    missing_commands = [item for item in role.agentConfig.shell.allowedCommands if shutil.which(item) is None]
+    dependencies["shell"] = {
+        "status": "unavailable" if missing_commands else "ready" if role.agentConfig.shell.allowedCommands else "unchecked",
+        "reason": "白名单中有本机无法找到的程序" if missing_commands else "已检查程序路径；未执行命令" if role.agentConfig.shell.allowedCommands else "尚未配置命令白名单",
+    }
+    for name in ("account_list", "account_targets", "account_send", "message_push", "lookup_group_context", "update_group_context", "set_group_listening", "lookup_group_member"):
+        dependencies[name] = {"status": "unchecked", "reason": "网络连接和目标能力将在调用时验证"}
+        if not include_channel:
+            reasons[name] = "没有可用渠道账号，桌面对话不提供此工具"
+    return tool_catalog(
+        role_id=role_id, session_key=f"role:{role_id}", definitions=tuple(definitions.values()),
+        policy=policy, manifests=plugin_registry.manifests(), dependencies=dependencies, reasons=reasons,
+    )
 
 
 @app.put("/api/roles/{role_id}", response_model=RoleResponse)
@@ -3361,12 +3409,13 @@ def _runtime_tool_candidates(
     source_thread_id: str | None = None,
     source_account_id: str | None = None,
     include_channel: bool = False,
+    preview: bool = False,
 ) -> tuple[object, ...]:
     """Build every tool available to the host for a role snapshot."""
     shell = role.agentConfig.shell
     tools: list[object] = [
         ShellTool(
-            store.workspace_path(role.id),
+            store.root / role.id / "workspace" if preview else store.workspace_path(role.id),
             allowed_commands=shell.allowedCommands,
             timeout_seconds=shell.timeoutSeconds,
             max_output_chars=shell.maxOutputChars,
@@ -3445,6 +3494,43 @@ def _runtime_tools(
     return tuple(tool for tool in available if tool.definition.name in enabled)
 
 
+def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabilityPolicy:
+    agent_config = role.agentConfig
+    enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
+    host_enabled = set(enabled_tools)
+    enabled_tools.update(agent_config.enabledTools)
+    enabled_tools.difference_update({"shell", "recall_memory", "search_owner_knowledge", "mail.manage"} - host_enabled)
+    if not include_channel:
+        enabled_tools.difference_update({
+            "account_list", "account_targets", "account_send", "message_push", "lookup_group_context",
+            "update_group_context", "set_group_listening", "lookup_group_member", "read_attachment",
+        })
+    enabled_plugins = set(agent_config.enabledPlugins)
+    todo_enabled = bool(todo_store.settings()["enabled"]) and callable(
+        getattr(model_adapter, "stream_structured_messages", None)
+    )
+    granted_capabilities = set(agent_config.grantedCapabilities)
+    provided_capabilities: set[str] = set()
+    if todo_enabled:
+        enabled_plugins.add("todo")
+        enabled_tools.update({"todo.write", "todo.reminder_control"})
+        granted_capabilities.add("todo.write")
+        provided_capabilities.add("todo.write")
+    else:
+        enabled_plugins.discard("todo")
+    if agent_config.browserUse.enabled:
+        enabled_plugins.add("browser_use")
+        enabled_tools.update(BROWSER_USE_TOOL_NAMES)
+        granted_capabilities.add("browser.session")
+        provided_capabilities.add("browser.session")
+    else:
+        enabled_plugins.discard("browser_use")
+    return RuntimeCapabilityPolicy(
+        frozenset(enabled_tools), frozenset(enabled_plugins),
+        frozenset(granted_capabilities), frozenset(provided_capabilities),
+    )
+
+
 async def _runtime_capabilities(
     role,
     *,
@@ -3455,34 +3541,15 @@ async def _runtime_capabilities(
     explicit_skill_ids: list[str] | None = None,
     external_only: bool = False,
 ) -> CapabilityResolution:
-    agent_config = role.agentConfig
     include_channel = session_key.startswith("thread:") or (
         session_key.startswith("role:") and _role_has_usable_channel_account(role.id)
     )
-    enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
-    enabled_tools.update(agent_config.enabledTools)
-    if not memory_settings_store.get().enabled:
-        enabled_tools.discard("recall_memory")
-    enabled_plugins = set(agent_config.enabledPlugins)
-    todo_enabled = bool(todo_store.settings()["enabled"]) and callable(
-        getattr(model_adapter, "stream_structured_messages", None)
-    )
-    granted_capabilities = set(agent_config.grantedCapabilities)
+    policy = _runtime_capability_policy(role, include_channel=include_channel)
     host_services: dict[str, object] = {}
-    if todo_enabled:
-        enabled_plugins.add("todo")
-        enabled_tools.update({"todo.write", "todo.reminder_control"})
-        granted_capabilities.add("todo.write")
-        host_services = {"todo.write": _todo_application()}
-    else:
-        enabled_plugins.discard("todo")
-    if agent_config.browserUse.enabled:
-        enabled_plugins.add("browser_use")
-        enabled_tools.update(BROWSER_USE_TOOL_NAMES)
-        granted_capabilities.add("browser.session")
+    if "todo.write" in policy.provided_capabilities:
+        host_services["todo.write"] = _todo_application()
+    if "browser.session" in policy.provided_capabilities:
         host_services["browser.session"] = browser_use_sessions
-    else:
-        enabled_plugins.discard("browser_use")
     return await CapabilityRegistry(
         _runtime_tool_candidates(role, include_channel=include_channel) if available_tools is None else available_tools,
         skills=SkillRegistry.discover_many((
@@ -3494,13 +3561,13 @@ async def _runtime_capabilities(
         role_id=role.id,
         session_key=session_key,
         run_id=run_id,
-        enabled_tools=enabled_tools,
+        enabled_tools=policy.enabled_tools,
         allowed_risks={"read_only", "mutating", "external"},
         external_only=external_only,
         prompt_text=prompt_text,
         explicit_skill_ids=set(explicit_skill_ids or ()),
-        enabled_plugin_ids=enabled_plugins,
-        granted_capabilities=granted_capabilities,
+        enabled_plugin_ids=policy.enabled_plugins,
+        granted_capabilities=policy.granted_capabilities,
         host_services=host_services,
     )
 
