@@ -1,6 +1,6 @@
 # Shiori 多端会话复刻核验矩阵
 
-状态：当前核验记录；最终全量检查由交付 PR 记录。
+状态：PR #128 的历史核验记录；配置入口与托管 QQ 的后续实现见[多端配置规格](../specs/shiori-channel-settings-spec.md)。
 
 最后核验：2026-10-15。
 
@@ -39,9 +39,9 @@
 | 启停/删除生命周期 | 账号切换排空已接受事件和发送，失败回滚；角色删除排空后保存内存快照，后期故障恢复历史/凭据/旁听/档案/推送/头像与连接；删除期间未启动回合明确拒收，避免锁排空死锁；启动恢复清理渠道/凭据/角色资料理解/推送，失败保留删除标记并禁止孤儿账号连接；遗留投递标不确定 | [`main.py`](../../backend/app/main.py)、[`role_snapshot.py`](../../backend/app/channels/role_snapshot.py)、[`test_role_deletion_recovery.py`](../../tests/python/channels/test_role_deletion_recovery.py)、[`test_channel_api.py`](../../tests/python/test_channel_api.py)、[`test_consolidation_parity.py`](../../tests/python/channels/test_consolidation_parity.py) |
 | 配置换代入站缓冲 | 每账号最多 64 条进程内缓冲；恢复通过当前连接重新准入，禁止继承旧来源租约；溢出/禁用/删除回复原来源重发提示 | [`intake.py`](../../backend/app/channels/intake.py)、[`test_intake.py`](../../tests/python/channels/test_intake.py) |
 
-## 部署差异与验证边界
+## PR #128 的部署差异与验证边界
 
-1. 部署差异：Shiori 的 QQ 插件提供 NapCat 托管安装、扫码和登录管理；本轮 Meido 以已运行 OneBot/NapCat WebSocket 为接入前置，不内嵌托管 QQ 客户端。账号收发、响应规则、群旁听、权限与生命周期的实现不能被写成已经包含扫码部署功能。
+1. PR #128 当时的部署差异：Shiori 的 QQ 插件提供 NapCat 托管安装、扫码和登录管理；该 PR 的 Meido 以已运行 OneBot/NapCat WebSocket 为接入前置，不包含扫码部署功能。Issue #134 随后增加 Windows x64 托管 NapCat、二维码登录与进程管理，保留外部模式；当前配置流程以[接入手册](../handbook/multichannel-setup.md)为准。
 2. 配对、切换、引用媒体、授权记忆及投递已经过完整串行回归；自动测试使用传输契约模拟，不能证明真实账号权限和网络可达性。
 
 ## 本轮定向结果
