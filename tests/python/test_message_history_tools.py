@@ -173,3 +173,61 @@ def test_multiple_search_terms_match_any_and_rank_by_coverage_then_recentness(tm
     recent = sessions.append_message("role:r1", "user", "config latest")
     result = execute(tools["search_messages"], {"query": "executable config"}, context)
     assert [message["id"] for message in result["messages"]] == [both.id, recent.id, single.id]
+
+
+def test_large_history_search_keeps_event_loop_responsive(tmp_path):
+    sessions, _, tools, context = setup_history(tmp_path)
+    for _ in range(10):
+        sessions.append_message("role:r1", "user", "a" * 1_000_000)
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        gaps = []
+        finished = False
+
+        async def heartbeat():
+            previous = loop.time()
+            while not finished:
+                await asyncio.sleep(.01)
+                now = loop.time()
+                gaps.append(now - previous)
+                previous = now
+
+        pulse = asyncio.create_task(heartbeat())
+        await asyncio.sleep(0)
+        try:
+            result = await tools["search_messages"].execute({"query": " ".join(f"q{i:03}" for i in range(100))}, context)
+            assert json.loads(result.content)["count"] == 0
+        finally:
+            finished = True
+            await pulse
+        assert max(gaps) < .25, "history search prevented cancellation and HTTP requests from running"
+
+    asyncio.run(run())
+
+
+def test_history_deadline_and_running_cancel_leave_parent_scope_usable(tmp_path):
+    sessions, _, tools, context = setup_history(tmp_path)
+    for _ in range(10):
+        sessions.append_message("role:r1", "user", "a" * 1_000_000)
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(tools["search_messages"].execute({"query": "not-present"}, context), timeout=.001)
+        assert loop.time() - started < .25
+        context.signal.raise_if_cancelled()
+        result = await tools["fetch_messages"].execute({}, context)
+        assert json.loads(result.content)["count"] == 0
+
+        async def cancel_soon():
+            await asyncio.sleep(.001)
+            context.signal.cancel()
+
+        cancellation = asyncio.create_task(cancel_soon())
+        with pytest.raises(RuntimeError, match="cancelled"):
+            await tools["search_messages"].execute({"query": "not-present"}, context)
+        await cancellation
+
+    asyncio.run(run())

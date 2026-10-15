@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from threading import Event
 from collections.abc import Mapping
 from typing import cast
 
@@ -85,17 +86,33 @@ class MessageHistoryTool:
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
         ToolRegistry.validate_definition(self.definition, dict(arguments))
-        messages = await asyncio.to_thread(self.history.read, context)
+        stopped = Event()
+        try:
+            return await asyncio.to_thread(self._execute, arguments, context, stopped)
+        finally:
+            stopped.set()
+
+    def _execute(self, arguments: Mapping[str, object], context: ToolContext, stopped: Event) -> AgentToolResult:
+        messages = self.history.read(context)
+        _check_cancelled(context, stopped)
         if self.search:
             term = str(arguments["query"]).strip()
             terms = term.casefold().split()
-            matches = [message for message in messages if terms
-                       and any(word in message.content.casefold() for word in terms)
-                       and (not arguments.get("role") or message.role == arguments["role"])
-                       and (not arguments.get("session_key") or message.sessionKey == arguments["session_key"])]
-            matches.sort(key=lambda message: (
-                sum(word in message.content.casefold() for word in terms), message.createdAt, message.sequence, message.id,
-            ), reverse=True)
+            ranked: list[tuple[int, Message]] = []
+            for message in messages:
+                _check_cancelled(context, stopped)
+                if (not terms or (arguments.get("role") and message.role != arguments["role"])
+                        or (arguments.get("session_key") and message.sessionKey != arguments["session_key"])):
+                    continue
+                folded = message.content.casefold()
+                score = 0
+                for word in terms:
+                    _check_cancelled(context, stopped)
+                    score += word in folded
+                if score:
+                    ranked.append((score, message))
+            ranked.sort(key=lambda item: (item[0], item[1].createdAt, item[1].sequence, item[1].id), reverse=True)
+            matches = [message for _, message in ranked]
             offset, limit = cast(int, arguments.get("offset", 0)), cast(int, arguments.get("limit", 10))
             selected = matches[offset:offset + limit]
             next_offset = offset + len(selected)
@@ -109,21 +126,29 @@ class MessageHistoryTool:
             radius = cast(int, arguments.get("context", 0))
             selected_ids = set(matched)
             for session_key in {message.sessionKey for message in messages if message.id in matched}:
+                _check_cancelled(context, stopped)
                 transcript = [message for message in messages if message.sessionKey == session_key]
                 for index, message in enumerate(transcript):
+                    _check_cancelled(context, stopped)
                     if message.id in matched:
                         selected_ids.update(neighbor.id for neighbor in transcript[max(0, index-radius):index+radius+1])
             selected = [message for message in messages if message.id in selected_ids]
             payload = {"count": len(selected), "matched_count": len(matched),
                        "messages": [{**_public(message), "content": message.content,
                                      "in_source_ref": message.id in matched} for message in selected]}
-        context.signal.raise_if_cancelled()
+        _check_cancelled(context, stopped)
         return AgentToolResult(json.dumps(payload, ensure_ascii=False), details={"status": "succeeded", "count": payload["count"]})
 
 
 def _public(message: Message) -> dict[str, object]:
     return {"id": message.id, "source_ref": message.id, "session_key": message.sessionKey,
             "seq": message.sequence, "role": message.role, "timestamp": message.createdAt.isoformat()}
+
+
+def _check_cancelled(context: ToolContext, stopped: Event) -> None:
+    context.signal.raise_if_cancelled()
+    if stopped.is_set():
+        raise RuntimeError("message history tool cancelled")
 
 
 def _original_sequences(messages: list[Message]) -> list[Message]:
