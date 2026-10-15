@@ -41,6 +41,14 @@ export function App() {
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [channelSource, setChannelSource] = useState<ChannelMemorySource | null>(null);
   const [previewRole, setPreviewRole] = useState<Role | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+  const importRef = useRef<HTMLInputElement>(null);
+  const searchTerm = query.trim().toLocaleLowerCase();
+  const filteredRoles = roles.roles.filter((role) => `${role.name} ${role.description}`.toLocaleLowerCase().includes(searchTerm));
+
+  useEffect(() => { if (searchOpen && showList) searchRef.current?.focus(); }, [searchOpen, showList]);
 
   const openChat = async (role: Role) => {
     roles.setError("");
@@ -140,27 +148,41 @@ export function App() {
   const lockSwitch = chat.sending || openingId !== null;
 
   return <div className={`shell${showList ? " show-list" : ""}`}>
-    <aside className="sidebar" aria-label="对话列表">
-      <header className="sidebar-header">
-        <h1 className="brand">Meido</h1>
-      </header>
-      <nav className="side-tabs" aria-label="页面">
-        <button type="button" aria-current={view === "chat" ? "page" : undefined} onClick={backToChat}><Icon name="chat" size={17} />对话</button>
-        <button type="button" aria-current={view === "channels" ? "page" : undefined} onClick={openChannels}><Icon name="refresh" size={17} />手机会话</button>
-        <button type="button" aria-current={view === "tavern" ? "page" : undefined} onClick={openTavern}><Icon name="cards" size={17} />角色</button>
-      </nav>
+    <nav className="app-rail" aria-label="页面">
+      <button type="button" className="rail-search" aria-label="搜索角色" title="搜索角色" aria-expanded={searchOpen} aria-controls={searchOpen ? "role-search" : undefined} onClick={() => { setSearchOpen(true); setShowList(true); searchRef.current?.focus(); }}><Icon name="search" size={21} /></button>
+      <span className="rail-divider" aria-hidden="true" />
+      <div className="side-tabs">
+        <button type="button" aria-label="对话" title="对话" aria-current={view === "chat" || view === "memories" ? "page" : undefined} onClick={backToChat}><Icon name="chat" size={22} /></button>
+        <button type="button" aria-label="手机会话" title="手机会话" aria-current={view === "channels" ? "page" : undefined} onClick={openChannels}><Icon name="refresh" size={22} /></button>
+        <button type="button" aria-label="角色" title="角色" aria-current={view === "tavern" ? "page" : undefined} onClick={openTavern}><Icon name="people" size={22} /></button>
+      </div>
+      <footer className="rail-footer"><IconButton icon="settings" label="设置" onClick={() => setPanel("settings")} /></footer>
+    </nav>
+    <aside className="sidebar" aria-label={view === "tavern" ? "角色管理" : "对话列表"}>
+      <div className="sidebar-tools">
+        {view === "tavern" && <>
+          <div className="tavern-actions">
+            <button type="button" className="sidebar-create" aria-label="新建角色" onClick={startCreate}><Icon name="plus" size={18} /><span>新建</span></button>
+            <button type="button" onClick={() => importRef.current?.click()} disabled={roles.busy}><Icon name="upload" size={17} /><span>导入角色卡</span></button>
+            <input ref={importRef} type="file" className="image-file-input" aria-label="导入角色卡文件" accept=".json,.png,.apng,.charx,application/json,image/png" disabled={roles.busy} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) { startCreate(); void roles.previewImport(file); } }} />
+          </div>
+          <div className="all-roles"><Icon name="grid" size={17} /><span>全部角色</span><small>{roles.roles.length}</small></div>
+        </>}
+        {searchOpen && <div className="sidebar-search">
+          <Icon name="search" size={16} />
+          <input ref={searchRef} id="role-search" type="search" aria-label="搜索角色" placeholder="搜索角色…" value={query} onChange={(event) => setQuery(event.target.value)} />
+          <IconButton icon="close" label="清除搜索" onClick={() => { setQuery(""); setSearchOpen(false); }} />
+        </div>}
+      </div>
       <div className="sidebar-body">
         {roles.error && panel === null && view !== "tavern" && <Notice onDismiss={() => roles.setError("")}>{roles.error}</Notice>}
-        <RoleList roles={roles.roles} loading={roles.loading} loadFailed={roles.loadFailed} activeId={view === "tavern" ? null : chat.roleId} disabled={lockSwitch} onOpen={chatWith} />
+        <RoleList roles={filteredRoles} loading={roles.loading} loadFailed={roles.loadFailed} searching={Boolean(searchTerm)} activeId={view === "tavern" ? null : chat.roleId} disabled={lockSwitch} onOpen={chatWith} />
       </div>
-      <footer className="sidebar-footer">
-        <IconButton icon="settings" label="设置" onClick={() => setPanel("settings")} />
-      </footer>
     </aside>
 
     <main className="main">
       {view === "tavern"
-        ? <TavernView roles={roles.roles} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onCreate={startCreate} onShow={showProfile} onChat={chatWith} onPreviewAvatar={setPreviewRole} />
+        ? <TavernView roles={roles.roles} query={searchTerm} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onShow={showProfile} onChat={chatWith} onPreviewAvatar={setPreviewRole} />
         : view === "memories" && chatRole
         ? <MemoryPanel key={chatRole.id} role={chatRole} onBack={backToChat} onOpenSource={(origin, messageId) => void openMemorySource(chatRole, origin, messageId)} />
         : view === "channels" && chatRole
