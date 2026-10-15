@@ -81,6 +81,7 @@ from .agent_runtime import (
     ToolResultMessage,
 )
 from .agent_runtime.capabilities import CapabilityResolution
+from .agent_runtime.message_history_tools import MESSAGE_HISTORY_TOOL_NAMES, build_message_history_tools
 from .agent_runtime.types import UserMessage
 from .channels.attachment_tool import ReadChannelAttachmentTool
 from .channels.consolidation import ChannelMemoryMaintenance, finish_io
@@ -3357,6 +3358,10 @@ def _runtime_tool_candidates(
         ),
         _memory_runtime_tool(role),
     ]
+    tools.extend(build_message_history_tools(
+        session_store, multichannel_store, role_id=role.id,
+        source_thread_id=source_thread_id, is_owner=is_channel_owner,
+    ))
     if owner_knowledge_plugin.status().enabled:
         tools.append(_owner_knowledge_runtime_tool(role))
     if mail_service.store.connection().auto_draft_ready:
@@ -3397,6 +3402,7 @@ def _role_has_usable_channel_account(role_id: str) -> bool:
 def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[str]:
     shell = role.agentConfig.shell
     enabled: set[str] = set()
+    enabled.update(set(role.agentConfig.enabledTools) & MESSAGE_HISTORY_TOOL_NAMES)
     if shell.enabled and shell.allowedCommands:
         enabled.add("shell")
     if memory_settings_store.get().enabled and role.agentConfig.memoryRecall.enabled:
