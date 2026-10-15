@@ -170,6 +170,40 @@ class TelegramBotApi:
     async def get_chat(self, token: str, chat_id: str) -> Mapping[str, Any]:
         return await self._profile_request(token, "getChat", {"chat_id": chat_id})
 
+    async def get_chat_member(self, token: str, chat_id: str, user_id: str) -> Mapping[str, Any]:
+        """Read one member with a hard streamed response budget."""
+        from .channels.directory import DirectoryError, MAX_RESPONSE_BYTES
+        async with httpx.AsyncClient(timeout=10) as client:
+            async with client.stream("GET", f"{self.base_url}/bot{token}/getChatMember",
+                                     params={"chat_id": chat_id, "user_id": user_id},
+                                     headers={"Accept-Encoding": "identity"}) as response:
+                if response.status_code in {401, 403}:
+                    raise DirectoryError("permission_denied")
+                if not 200 <= response.status_code < 300:
+                    raise DirectoryError("platform_rejected")
+                if response.headers.get("content-encoding", "identity").strip().lower() not in {"", "identity"}:
+                    raise DirectoryError("unsupported_response_encoding")
+                length = response.headers.get("content-length", "0")
+                if not length.isdecimal():
+                    raise DirectoryError("invalid_platform_response")
+                if int(length) > MAX_RESPONSE_BYTES:
+                    raise DirectoryError("directory_too_large")
+                data = bytearray()
+                async for chunk in response.aiter_raw(chunk_size=64 * 1024):
+                    if len(data) + len(chunk) > MAX_RESPONSE_BYTES:
+                        raise DirectoryError("directory_too_large")
+                    data.extend(chunk)
+        try:
+            payload = json.loads(data)
+        except (ValueError, UnicodeError) as error:
+            raise DirectoryError("invalid_platform_response") from error
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise DirectoryError("platform_rejected")
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise DirectoryError("invalid_platform_response")
+        return result
+
     async def get_user_profile_photos(self, token: str, user_id: str) -> Mapping[str, Any]:
         return await self._profile_request(token, "getUserProfilePhotos", {"user_id": user_id, "limit": 1})
 
@@ -375,6 +409,8 @@ class MultichannelStore:
                 CREATE INDEX IF NOT EXISTS channel_threads_role_activity ON channel_threads(role_id, last_activity DESC);
                 CREATE INDEX IF NOT EXISTS channel_events_thread_time ON channel_events(thread_id, created_at);
                 CREATE INDEX IF NOT EXISTS channel_targets_account_seen ON channel_targets(account_id, last_seen DESC);
+                CREATE INDEX IF NOT EXISTS channel_targets_role_account_id ON channel_targets(role_id,account_id,target_id);
+                CREATE INDEX IF NOT EXISTS channel_targets_group_lookup ON channel_targets(role_id,account_id,kind,chat_id);
                 """
             )
             self._migrate_thread_chat_type(db)
@@ -383,6 +419,9 @@ class MultichannelStore:
             for column in ("source_session_key", "source_run_id", "source_tool_call_id", "source_kind", "account_generation"):
                 if column not in delivery_columns:
                     db.execute(f"ALTER TABLE channel_delivery_attempts ADD COLUMN {column} TEXT")
+            for table in ("channel_account_settings", "channel_platform_settings"):
+                if "revision" not in {row[1] for row in db.execute(f"PRAGMA table_info({table})")}:
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
             # Platform identities describe the desktop owner, rather than a
             # role. Preserve the oldest binding when upgrading the previous
             # role/account-scoped representation to Shiori's global scope.
@@ -468,8 +507,8 @@ class MultichannelStore:
             raise ValueError("渠道或启停状态无效")
         with self._connect() as db:
             db.execute(
-                "INSERT INTO channel_platform_settings(channel,enabled,updated_at) VALUES(?,?,?) "
-                "ON CONFLICT(channel) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at",
+                "INSERT INTO channel_platform_settings(channel,enabled,updated_at,revision) VALUES(?,?,?,1) "
+                "ON CONFLICT(channel) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at,revision=channel_platform_settings.revision+1",
                 (channel, int(enabled), _now()),
             )
 
@@ -585,7 +624,7 @@ class MultichannelStore:
             if db.execute("SELECT 1 FROM channel_accounts WHERE account_id=?", (account_id,)).fetchone() is None:
                 raise KeyError(account_id)
             db.execute(
-                "INSERT INTO channel_account_settings(account_id,config_json) VALUES(?,?) ON CONFLICT(account_id) DO UPDATE SET config_json=excluded.config_json",
+                "INSERT INTO channel_account_settings(account_id,config_json,revision) VALUES(?,?,1) ON CONFLICT(account_id) DO UPDATE SET config_json=excluded.config_json,revision=channel_account_settings.revision+1",
                 (account_id, _json(config)),
             )
 
@@ -593,6 +632,13 @@ class MultichannelStore:
         with self._connect() as db:
             row = db.execute("SELECT config_json FROM channel_account_settings WHERE account_id=?", (account_id,)).fetchone()
         return _loads(str(row[0])) if row else {}
+
+    def directory_revision(self, account_id: str, channel: str) -> tuple[int, int]:
+        """Monotonic config/permission generations prevent cursor revival."""
+        with self._connect() as db:
+            account = db.execute("SELECT revision FROM channel_account_settings WHERE account_id=?", (account_id,)).fetchone()
+            platform = db.execute("SELECT revision FROM channel_platform_settings WHERE channel=?", (channel,)).fetchone()
+        return (int(account[0]) if account else 0, int(platform[0]) if platform else 0)
 
     def set_group_listening(self, role_id: str, account_id: str, chat_id: str, enabled: bool, *,
                             operator: str = "user", authorize: Callable[[], None] | None = None) -> None:
@@ -734,11 +780,13 @@ class MultichannelStore:
             self._remember_member_name(db, role_id, event.channel, event.account_id,
                 event.chat_id, event.chat_type.value, event.sender_id, event.sender_name, _now())
 
-    def remember_targets(self, role_id: str, targets: list[Any]) -> None:
+    def remember_targets(self, role_id: str, targets: list[Any], *, authorized: Callable[[], bool] | None = None) -> None:
         """Persist an adapter's observed/reachable target directory."""
 
         now = _now()
         with self._connect() as db:
+            if authorized is not None and not authorized():
+                raise PermissionError("directory_permission_revoked")
             for target in targets:
                 account_id = str(getattr(target, "account_id", ""))
                 target_id = str(getattr(target, "id", ""))
@@ -779,6 +827,8 @@ class MultichannelStore:
                         self._remember_member_name(db, role_id, str(account["channel"]), account_id,
                             str(metadata.get("group_id") or metadata.get("groupId") or ""), "group",
                             str(getattr(target, "chat_id", "")), name, observed_at)
+            if authorized is not None and not authorized():
+                raise PermissionError("directory_permission_revoked")
 
     @staticmethod
     def _remember_member_name(db: sqlite3.Connection, role_id: str, channel: str, account_id: str,
@@ -794,16 +844,29 @@ class MultichannelStore:
             (role_id, channel, account_id, chat_id, chat_type, sender_id, name, now, now),
         )
 
-    def list_targets(self, role_id: str, account_id: str) -> list[Any]:
+    def list_targets(self, role_id: str, account_id: str, *, limit: int | None = None, stable: bool = False,
+                     max_bytes: int | None = None) -> list[Any]:
         """Read one role-owned account's durable target directory."""
 
         from .channels.models import Target, TargetKind
 
         with self._connect() as db:
-            rows = db.execute(
-                "SELECT * FROM channel_targets WHERE role_id=? AND account_id=? ORDER BY last_seen DESC, target_id",
-                (role_id, account_id),
-            ).fetchall()
+            if max_bytes is not None:
+                db.execute("BEGIN")
+            order = "target_id" if stable else "last_seen DESC, target_id"
+            sql = f"SELECT * FROM channel_targets WHERE role_id=? AND account_id=? ORDER BY {order}"
+            parameters: tuple = (role_id, account_id)
+            if limit is not None:
+                sql += " LIMIT ?"
+                parameters += (limit,)
+            if max_bytes is not None:
+                size = db.execute("SELECT COALESCE(SUM(length(CAST(display_name AS BLOB))+length(CAST(metadata_json AS BLOB))"
+                    "+length(CAST(capabilities_json AS BLOB))+length(CAST(target_id AS BLOB))+length(CAST(chat_id AS BLOB))+128),0) FROM ("
+                    + sql + ")", parameters).fetchone()[0]
+                if size > max_bytes:
+                    from .channels.directory import DirectoryError
+                    raise DirectoryError("directory_too_large")
+            rows = db.execute(sql, parameters).fetchall()
         result: list[Target] = []
         for row in rows:
             try:
@@ -825,6 +888,11 @@ class MultichannelStore:
         """Resolve the paired owner's private chat for one role account."""
 
         return next(iter(self.owner_targets(role_id, account_id)), None)
+
+    def known_group(self, role_id: str, account_id: str, group_id: str) -> bool:
+        with self._connect() as db:
+            return db.execute("SELECT 1 FROM channel_targets WHERE role_id=? AND account_id=? AND kind='group' AND chat_id=? LIMIT 1",
+                (role_id, account_id, group_id)).fetchone() is not None
 
     def owner_targets(self, role_id: str, account_id: str) -> list[Any]:
         """Return every currently bound private target, newest chat first."""
@@ -1325,6 +1393,9 @@ class TelegramChannelService:
         self.on_defer = on_defer
         self.on_update = on_update
         self._message_tasks: set[asyncio.Task[None]] = set()
+        self._connection: dict[str, object] = {"connection": "unknown", "online": None,
+            "observedAt": None, "reason": "poll_not_observed"}
+        self._connection_generation: tuple[str, str] | None = None
         # Keep the small pre-account-id constructor usable for adapter tests:
         # ``Service(store, fake_transport, handler)``.
         if not isinstance(account_id, str):
@@ -1339,6 +1410,18 @@ class TelegramChannelService:
             self.transport = transport if transport is not None and hasattr(transport, "get_me") else TelegramBotApi()
             self.on_message = on_message
             self.persist_attachment = persist_attachment
+
+    def connection_snapshot(self) -> dict[str, object]:
+        account = self.store.get_account(self.account_id)
+        if account is not None and self._connection_generation not in {None, (account.created_at, account.updated_at)}:
+            return {"connection": "unknown", "online": None, "observedAt": None, "reason": "configuration_changed"}
+        return dict(self._connection)
+
+    def _observe_poll(self, online: bool, reason: str) -> None:
+        account = self.store.get_account(self.account_id)
+        self._connection_generation = (account.created_at, account.updated_at) if account is not None else None
+        self._connection = {"connection": "connected" if online else "disconnected", "online": online,
+            "observedAt": _now(), "reason": reason}
 
     async def test_account(self, account_id: str) -> Mapping[str, Any]:
         token = self.store.token(account_id)
@@ -1586,6 +1669,9 @@ class TelegramChannelService:
                     continue
                 try:
                     updates = await self.transport.get_updates(token, offset=offset)
+                    if self.store.get_account(self.account_id) != account:
+                        return
+                    self._observe_poll(True, "poll_succeeded")
                     for update in updates:
                         update_id = update.get("update_id")
                         if isinstance(update_id, int):
@@ -1602,11 +1688,13 @@ class TelegramChannelService:
                     account = self.store.get_account(self.account_id)
                     if account is not None:
                         self.store.set_account_state(self.account_id, last_error=type(error).__name__)
+                    self._observe_poll(False, "poll_failed")
                     try:
                         await asyncio.wait_for(stop.wait(), timeout=2)
                     except asyncio.TimeoutError:
                         pass
         finally:
+            self._observe_poll(False, "polling_stopped")
             if self._message_tasks:
                 cleanup = asyncio.gather(*self._message_tasks, return_exceptions=True)
                 try:

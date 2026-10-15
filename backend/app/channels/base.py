@@ -7,7 +7,8 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import Any
 
-from .models import ChannelCapabilities, DeliveryResult, DeliveryStatus, InboundEvent, OutboundMessage, Target
+from .models import ChannelCapabilities, DeliveryResult, DeliveryStatus, InboundEvent, OutboundMessage, Target, TargetKind, make_target_id
+from .directory import DirectoryError, DirectoryQuery, DirectoryObservation
 
 
 class ChannelAdapterError(RuntimeError):
@@ -138,6 +139,31 @@ class ChannelAdapter(ABC):
     channel: str
     account_id: str
     capabilities: ChannelCapabilities
+
+    async def query_directory(self, query: DirectoryQuery) -> DirectoryObservation:
+        raise DirectoryError("unsupported")
+
+    def connection_snapshot(self) -> dict[str, object]:
+        transport = getattr(self, "_transport", None)
+        snapshot = getattr(transport, "connection_snapshot", None)
+        if callable(snapshot):
+            return snapshot()
+        return {"connection": "unknown", "online": None, "observedAt": None, "reason": "no_connection_evidence"}
+
+    def inbound_targets(self, event: InboundEvent) -> list[Target]:
+        """Read only this event's cached conversation/member observations."""
+        known = getattr(self, "_targets", {})
+        kind = TargetKind.GROUP if event.is_group else TargetKind.PRIVATE
+        identities = [(event.chat_id, kind, "")]
+        if event.is_group:
+            identities.append((event.sender_id, TargetKind.GROUP_MEMBER, event.chat_id))
+        targets = []
+        for chat_id, target_kind, scope in identities:
+            identifier = make_target_id(self.account_id, chat_id, target_kind, scope=scope)
+            target = known.get(identifier) or known.get(chat_id)
+            if isinstance(target, Target) and target.id == identifier:
+                targets.append(target)
+        return targets
 
     @abstractmethod
     def parse_event(self, payload: Mapping[str, Any]) -> InboundEvent | None:

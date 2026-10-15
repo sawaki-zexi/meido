@@ -1,13 +1,33 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from typing import cast
+import httpx
 from copy import deepcopy
 from dataclasses import replace
 
 from .host import ChannelHost
 from .models import DeliveryStatus
-from ..agent_runtime.tools import AgentToolResult, ToolContext, ToolDefinition
+from .directory import DirectoryError, DirectoryQuery, supported_kinds
+from .base import ChannelAdapterError
+from ..agent_runtime.tools import AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
+
+
+class ChannelDirectoryAccess:
+    """Bind directory observations to the real caller across platform waits."""
+    def __init__(self, *, authorized: Callable[[ToolContext], bool] | None = None,
+                 source_scope: Callable[[ToolContext], str] | None = None):
+        self.authorized, self.source_scope = authorized, source_scope
+
+    def allowed(self, context: ToolContext) -> bool:
+        return (not context.signal.is_cancelled() and (self.authorized is None or self.authorized(context))
+                and not context.signal.is_cancelled())
+
+    def scope(self, context: ToolContext) -> str:
+        if not self.allowed(context):
+            raise PermissionError("directory_source_revoked")
+        return context.session_key + ":" + (self.source_scope(context) if self.source_scope else "")
 
 
 class ChannelAccountListTool:
@@ -18,36 +38,62 @@ class ChannelAccountListTool:
         external_allowed=False,
     )
 
-    def __init__(self, host: ChannelHost) -> None:
+    def __init__(self, host: ChannelHost, *, access: ChannelDirectoryAccess | None = None) -> None:
         self.host = host
+        self.access = access or ChannelDirectoryAccess()
 
     def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
         del arguments, on_update
+        if not self.access.allowed(context):
+            return AgentToolResult("directory_source_revoked", is_error=True)
         return AgentToolResult(json.dumps(self.host.account_list(context.role_id), ensure_ascii=False))
 
 
 class ChannelTargetsTool:
     definition = ToolDefinition(
         "account_targets",
-        "列出指定渠道账号实际可达的联系人、群或群成员；只能向返回的目标 ID 投递。",
+        "按种类分页查询账号目录；省略kind取本地known观察缓存。member仅群资料，不授予发送目标；只有可发送的id可用于account_send。",
         {
             "type": "object",
-            "properties": {"account_id": {"type": "string", "minLength": 1, "maxLength": 160}},
+            "properties": {"account_id": {"type": "string", "minLength": 1, "maxLength": 160},
+                "kind": {"type": "string", "enum": ["known", "friends", "groups", "members", "member"]},
+                "group_id": {"type": "string", "minLength": 1, "maxLength": 160},
+                "member_id": {"type": "string", "minLength": 1, "maxLength": 160},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "cursor": {"type": "string", "maxLength": 512}},
             "required": ["account_id"],
             "additionalProperties": False,
         },
         external_allowed=False,
     )
 
-    def __init__(self, host: ChannelHost) -> None:
+    def __init__(self, host: ChannelHost, *, access: ChannelDirectoryAccess | None = None) -> None:
         self.host = host
+        self.access = access or ChannelDirectoryAccess()
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
         del on_update
         try:
-            targets = await self.host.account_targets(context.role_id, str(arguments["account_id"]))
+            ToolRegistry.validate_definition(self.definition, arguments)
+            query = DirectoryQuery(kind=cast(str, arguments.get("kind", "known")),
+                group_id=cast(str, arguments.get("group_id", "")), member_id=cast(str, arguments.get("member_id", "")),
+                limit=cast(int, arguments.get("limit", 25)), cursor=cast(str, arguments.get("cursor", "")))
+            targets = await self.host.query_directory(context.role_id, str(arguments["account_id"]), query,
+                scope=self.access.scope(context), authorized=lambda: self.access.allowed(context))
+        except DirectoryError as error:
+            account = self.host.store.get_account(str(arguments["account_id"]))
+            return AgentToolResult(json.dumps({"error": error.code, "complete": False,
+                "supportedKinds": supported_kinds(account.channel) if account and account.role_id == context.role_id else []}), is_error=True)
         except KeyError:
-            return AgentToolResult("该渠道账号不属于当前角色。", is_error=True)
+            return AgentToolResult('{"error":"account_not_found","complete":false}', is_error=True)
+        except PermissionError:
+            return AgentToolResult('{"error":"permission_revoked","complete":false}', is_error=True)
+        except TimeoutError:
+            return AgentToolResult('{"error":"timeout","complete":false}', is_error=True)
+        except (ChannelAdapterError, httpx.HTTPError, OSError):
+            return AgentToolResult('{"error":"platform_error","complete":false}', is_error=True)
+        except ValueError:
+            return AgentToolResult('{"error":"invalid_query_or_response","complete":false}', is_error=True)
         return AgentToolResult(json.dumps(targets, ensure_ascii=False))
 
 

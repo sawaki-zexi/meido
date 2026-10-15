@@ -4,6 +4,7 @@ import logging
 import re
 import asyncio
 import base64
+import json
 from dataclasses import replace
 from urllib.parse import unquote
 from dataclasses import dataclass, field
@@ -11,7 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from .base import ChannelAdapter, ChannelAdapterError, SendTransport, UnsupportedTargetError, delivery_status_for_error, is_blocked_identity
+from .base import ChannelAdapter, ChannelAdapterError, PlatformRejectedError, SendTransport, UnsupportedTargetError, delivery_status_for_error, is_blocked_identity
+from .directory import DirectoryError, DirectoryObservation, DirectoryQuery, MAX_RECORDS, MAX_RESPONSE_BYTES
 from .models import (
     Attachment,
     ChannelCapabilities,
@@ -329,50 +331,47 @@ class NapCatAdapter(ChannelAdapter):
             raise ChannelAdapterError("NapCat 图片只支持 PNG、JPEG、GIF、WebP 和 BMP")
         return {"type": "image", "data": {"file": "base64://" + base64.b64encode(data).decode("ascii")}}
 
+    async def query_directory(self, query: DirectoryQuery) -> DirectoryObservation:
+        operations = {"friends": "get_friend_list", "groups": "get_group_list", "members": "get_group_member_list"}
+        if query.kind not in operations:
+            raise DirectoryError("unsupported")
+        if self._transport is None:
+            raise DirectoryError("disconnected")
+        params = {"group_id": query.group_id, "no_cache": True} if query.kind == "members" else {}
+        try:
+            payload = await self._transport(operations[query.kind], params)
+        except PlatformRejectedError:
+            raise DirectoryError("platform_rejected") from None
+        if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > MAX_RESPONSE_BYTES:
+            raise DirectoryError("directory_too_large")
+        items = payload.get("items", payload.get("data"))
+        if not isinstance(items, list):
+            raise DirectoryError("invalid_platform_response")
+        if len(items) > MAX_RECORDS:
+            raise DirectoryError("directory_too_large")
+        targets = {}
+        for item in items:
+            id_field = "group_id" if query.kind == "groups" else "user_id"
+            if not isinstance(item, dict) or not item.get(id_field):
+                raise DirectoryError("invalid_platform_response")
+            kind = {"friends": TargetKind.PRIVATE, "groups": TargetKind.GROUP, "members": TargetKind.GROUP_MEMBER}[query.kind]
+            target = target_from_chat(account_id=self.account_id, chat_id=str(item[id_field]), kind=kind,
+                display_name=str(item.get("group_name") or item.get("card") or item.get("remark") or item.get("nickname") or item[id_field]),
+                **({"group_id": query.group_id, "name_observed_at": datetime.now(timezone.utc).isoformat()} if query.kind == "members" else {}))
+            targets[target.id] = target
+        return DirectoryObservation(targets=list(targets.values()))
+
     async def list_targets(self) -> list[Target]:
+        # Legacy callers retain discovery of sendable friends/groups. Members
+        # are fetched only by an explicit authorized group directory query.
         if self._transport is not None:
-            try:
-                friends_payload = await self._transport("get_friend_list", {})
-                friends = friends_payload.get("items", friends_payload.get("data", []))
-                if isinstance(friends, list):
-                    for item in friends:
-                        if isinstance(item, dict) and item.get("user_id"):
-                            friend = target_from_chat(account_id=self.account_id, chat_id=str(item["user_id"]), kind=TargetKind.PRIVATE, display_name=str(item.get("remark") or item.get("nickname") or item["user_id"]))
-                            self._targets[friend.id] = friend
-            except Exception:
-                pass
-            try:
-                groups_payload = await self._transport("get_group_list", {})
-                groups = groups_payload.get("items", groups_payload.get("data", []))
-                if isinstance(groups, list):
-                    self._group_ids.update(str(item.get("group_id")) for item in groups if isinstance(item, dict) and item.get("group_id"))
-                    for item in groups:
-                        if not isinstance(item, dict) or not item.get("group_id"):
-                            continue
-                        target = target_from_chat(account_id=self.account_id, chat_id=str(item["group_id"]), kind=TargetKind.GROUP, display_name=str(item.get("group_name", "")))
-                        self._targets[target.id] = target
-            except Exception:
-                pass
-            for group_id in sorted(self._group_ids)[:100]:
+            for kind in ("friends", "groups"):
                 try:
-                    members_payload = await self._transport("get_group_member_list", {"group_id": group_id, "no_cache": True})
-                except Exception:
+                    observation = await self.query_directory(DirectoryQuery(kind))
+                    for target in observation.targets:
+                        self._targets[target.id] = target
+                except (ChannelAdapterError, DirectoryError, OSError, TimeoutError):
                     continue
-                members = members_payload.get("items", members_payload.get("data", []))
-                if not isinstance(members, list):
-                    continue
-                for item in members:
-                    if not isinstance(item, dict) or not item.get("user_id"):
-                        continue
-                    member = target_from_chat(
-                        account_id=self.account_id,
-                        chat_id=str(item["user_id"]),
-                        kind=TargetKind.GROUP_MEMBER,
-                        display_name=str(item.get("card") or item.get("nickname", "")),
-                        group_id=group_id,
-                        name_observed_at=datetime.now(timezone.utc).isoformat(),
-                    )
-                    self._targets[member.id] = member
         return list(self._targets.values())
 
     def _validate_target(self, target: Target) -> None:

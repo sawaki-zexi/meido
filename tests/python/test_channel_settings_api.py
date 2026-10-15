@@ -27,13 +27,21 @@ class RecordingNapCatTransport:
     def __init__(self, endpoint, **_kwargs):
         self.endpoint = endpoint
         self.connected = False
+        self.online = None
+        self.observed_at = None
         self.instances.append(self)
 
     async def start(self, _handler):
         self.connected = True
+        self.observed_at = datetime.now(timezone.utc).isoformat()
 
     async def stop(self):
         self.connected = False
+        self.online = None
+
+    def connection_snapshot(self):
+        return {"connection": "connected" if self.connected else "disconnected",
+                "online": self.online, "observedAt": self.observed_at, "reason": "fixture_transport_observation"}
 
     async def wait_connected(self):
         pass
@@ -42,6 +50,8 @@ class RecordingNapCatTransport:
         if action == "get_login_info":
             return {"user_id": self.endpoint, "nickname": "QQ"}
         if action == "get_status":
+            self.online = True
+            self.observed_at = datetime.now(timezone.utc).isoformat()
             return {"online": True, "good": True}
         return {"data": []}
 

@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any
 from .base import ChannelAdapter, ChannelAdapterError, UnsupportedTargetError, is_delivery_uncertain
 from .models import Attachment, ChatType, DeliveryResult, DeliveryStatus, InboundEvent, OutboundMessage, Target, TargetKind, target_from_chat
 from .intake import ChannelIntake
+from . import directory
+from .directory import DirectoryError, DirectoryPages, DirectoryQuery, MAX_RECORDS, bound_records, observed_now, supported_kinds
 
 
 CHANNEL_INTAKE_RETRY_NOTICE = "渠道配置正在切换，这条消息尚未处理，请稍后重新发送。"
@@ -60,6 +62,8 @@ class ChannelHost:
         self._inflight_events: dict[str, int] = {}
         self._account_idle: dict[str, asyncio.Event] = {}
         self.intake = ChannelIntake()
+        self._directory_pages = DirectoryPages()
+        self._directory_requests: set[tuple[str, str]] = set()
 
     def register(self, adapter: ChannelAdapter) -> None:
         account = self.store.get_account(adapter.account_id)
@@ -172,6 +176,8 @@ class ChannelHost:
                 "enabled": account.enabled,
                 "platformEnabled": self.store.channel_enabled(account.channel),
                 "effectiveEnabled": self.store.account_effectively_enabled(account),
+                **self.connection_snapshot(account.account_id),
+                "supportedKinds": supported_kinds(account.channel),
                 "capabilities": ({
                     "private": capabilities.private,
                     "group": capabilities.group,
@@ -183,6 +189,104 @@ class ChannelHost:
                 } if capabilities is not None else {}),
             })
         return accounts
+
+    def connection_snapshot(self, account_id: str) -> dict[str, object]:
+        account = self.store.get_account(account_id)
+        adapter = self._adapters.get(account_id)
+        if account is None or not self.store.account_effectively_enabled(account):
+            return {"connection": "disconnected", "online": False, "observedAt": observed_now(), "reason": "disabled"}
+        if adapter is None and account.last_error:
+            return {"connection": "error", "online": None, "observedAt": account.updated_at, "reason": "connection_unavailable"}
+        if account_id in self._paused_accounts:
+            return {"connection": "connecting", "online": None, "observedAt": observed_now(), "reason": "configuration_switch"}
+        if adapter is not None:
+            return adapter.connection_snapshot()
+        return {"connection": "unknown", "online": None, "observedAt": observed_now(), "reason": "no_connection_evidence"}
+
+    async def query_directory(self, role_id: str, account_id: str, query: DirectoryQuery, *,
+                              scope: str, authorized: Callable[[], bool] | None = None) -> dict:
+        key = (role_id, account_id)
+        if not query.cursor:
+            if (key in self._directory_requests or len(self._directory_requests) >= 4
+                    or sum(item[0] == role_id for item in self._directory_requests) >= 2):
+                raise DirectoryError("directory_busy")
+            self._directory_requests.add(key)
+        try:
+            return await self._query_directory(role_id, account_id, query, scope=scope, authorized=authorized)
+        finally:
+            if not query.cursor:
+                self._directory_requests.discard(key)
+
+    async def _query_directory(self, role_id: str, account_id: str, query: DirectoryQuery, *,
+                               scope: str, authorized: Callable[[], bool] | None) -> dict:
+        account = self.store.get_account(account_id)
+        if account is None or account.role_id != role_id:
+            raise KeyError(account_id)
+        if query.kind not in supported_kinds(account.channel):
+            raise DirectoryError("unsupported")
+        adapter = self._adapters.get(account_id)
+        frozen = (account, self.store.channel_config(account_id), self._adapter_generations.get(id(adapter)),
+                  self.store.directory_revision(account_id, account.channel), adapter.configuration_key() if adapter else None)
+
+        def check():
+            current = self.store.get_account(account_id)
+            if (current is None or current != account or self.store.channel_config(account_id) != frozen[1]
+                    or self.store.directory_revision(account_id, account.channel) != frozen[3]
+                    or adapter is not None and adapter.configuration_key() != frozen[4]
+                    or not self.store.account_effectively_enabled(current) or account_id in self._paused_accounts
+                    or self._adapters.get(account_id) is not adapter
+                    or authorized is not None and not authorized()):
+                raise PermissionError("directory_permission_revoked")
+
+        check()
+        owner = (role_id, account_id, scope, repr(frozen))
+        if query.cursor:
+            result = self._directory_pages.read(owner, query)
+            check()
+            return result
+        self._directory_pages.ensure_capacity(owner)
+        if query.kind == "known":
+            targets = self.store.list_targets(role_id, account_id, limit=MAX_RECORDS + 1, stable=True,
+                max_bytes=directory.MAX_RESPONSE_BYTES)
+            records = [target_payload(target) for target in targets]
+        else:
+            if adapter is None:
+                raise DirectoryError("disconnected")
+            if query.kind in {"members", "member"}:
+                if not account.allow_group or not self.store.known_group(role_id, account_id, query.group_id):
+                    raise DirectoryError("group_not_authorized")
+            pending = asyncio.create_task(adapter.query_directory(query))
+            try:
+                observation = await asyncio.wait_for(asyncio.shield(pending), timeout=directory.QUERY_TIMEOUT)
+            except (asyncio.CancelledError, TimeoutError):
+                pending.cancel()
+                while not pending.done():
+                    try:
+                        await asyncio.shield(pending)
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        break
+                if not pending.cancelled():
+                    pending.exception()
+                raise
+            targets = observation.targets
+            records = [target_payload(target) for target in targets] + observation.members
+            for record in records:
+                record.setdefault("canSend", True)
+            bound_records(records)
+            check()
+            def still_allowed():
+                check()
+                return True
+
+            self.store.remember_targets(role_id, targets, authorized=still_allowed)
+            for target in targets:
+                adapter.remember_target(target)
+        check()
+        result = self._directory_pages.create(owner, query, records, coverage="known" if query.kind == "known" else "platform")
+        check()
+        return result
 
     async def start(self, account_id: str) -> None:
         account = self.store.get_account(account_id)
@@ -217,17 +321,17 @@ class ChannelHost:
             if event.account_id != account_id or event.channel != account.channel:
                 raise ChannelAdapterError("适配器返回了其他账号或平台的事件")
             self.store.remember_inbound_member(current.role_id, event)
-            await self.refresh_targets(account_id)
+            await self.refresh_targets(account_id, event=event)
         return event
 
-    async def refresh_targets(self, account_id: str) -> list[Target]:
+    async def refresh_targets(self, account_id: str, *, event: InboundEvent | None = None) -> list[Target]:
         adapter = self.adapter(account_id)
         account = self.store.get_account(account_id)
         if account is None:
             raise KeyError(account_id)
         if not self.store.account_effectively_enabled(account) and not self._has_active_event(account_id):
             raise ChannelAdapterError("渠道账号或平台未启用")
-        targets = await adapter.list_targets()
+        targets = adapter.inbound_targets(event) if event is not None else await adapter.list_targets()
         if self._adapters.get(account_id) is not adapter or (
             account_id in self._paused_accounts and not self._has_active_event(account_id)
         ):
