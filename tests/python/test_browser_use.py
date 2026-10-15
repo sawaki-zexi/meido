@@ -1,13 +1,16 @@
 import asyncio
 import hashlib
+import json
 import os
 import re
+import subprocess
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from fastapi.testclient import TestClient
 
 import pytest
+import httpx
 
 from backend.app import main
 from backend.app.agent_runtime import CapabilityRegistry, ImageContent, ToolContext
@@ -19,7 +22,7 @@ from backend.app.browser_use.config import BrowserUseConfig
 from backend.app.browser_use.plugin import BROWSER_USE_MANIFEST, browser_use_plugin_factory
 from backend.app.browser_use.runtime import BrowserRuntime
 from backend.app.browser_use.safety import sanitize_browser_arguments, sanitize_browser_text
-from backend.app.browser_use.tool import BrowserSessions, load_tools
+from backend.app.browser_use.tool import BrowserSessions, load_tools, load_tool_specs
 from backend.app.agent_runtime.plugins import PluginContext, PluginRegistry
 from backend.app.models import AgentToolConfig, Role, RoleProfile
 from backend.app.session_store import SessionStore
@@ -83,6 +86,10 @@ def test_browser_core_schema_has_all_shiori_tools_without_starting_browser(tmp_p
         "agent_browser_open", "agent_browser_snapshot", "agent_browser_click",
         "agent_browser_screenshot", "agent_browser_tab_list", "agent_browser_close",
     }
+    # Independent contract digest from Shiori 4f266ae's complete tools.json,
+    # including all 28 names, descriptions, titles and input schemas.
+    canonical = json.dumps(load_tool_specs(), sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    assert hashlib.sha256(canonical).hexdigest() == "f7241bc43017bd3ae5590a9f250fe4b982e9bcd91e6e983682bfa83e965f2e59"
 
 
 def test_browser_tool_rejects_host_owned_arguments(tmp_path):
@@ -679,15 +686,17 @@ def test_real_windows_browser_page_workflow_when_native_resources_are_configured
     if not resource_root:
         pytest.skip("set MEIDO_BROWSER_USE_RESOURCES to run the native Windows browser acceptance")
     runtime = BrowserRuntime.resolve(Path(resource_root))
+    original_processes = _native_browser_process_ids(runtime)
 
     class PageHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             body = b'''<!doctype html>
 <html><head><title>Meido browser acceptance</title></head>
 <body><h1>Local browser acceptance</h1><label>Name<input id="name"></label>
+<label>Subscribe<input id="subscribe" type="checkbox"></label>
 <label>Choice<select id="choice"><option value="one">One</option><option value="two">Two</option></select></label>
-<button id="save" onclick="document.querySelector('#status').textContent = 'saved:' + document.querySelector('#name').value; localStorage.setItem('browser-use', 'role-a')">Save</button>
-<p id="status">Waiting</p></body></html>'''
+<button id="save" onclick="document.querySelector('#status').textContent = 'saved:' + document.querySelector('#name').value; localStorage.setItem('browser-use', 'role-a'); document.cookie = 'browser-owner=role-a; Max-Age=3600; path=/'">Save</button>
+<p id="status">Waiting</p><div style="height:1500px">Scroll area</div></body></html>'''
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -703,14 +712,33 @@ def test_real_windows_browser_page_workflow_when_native_resources_are_configured
     url = f"http://127.0.0.1:{server.server_port}/"
     sessions = BrowserSessions(tmp_path / "browser", BrowserUseConfig(), resources=Path(resource_root), runtime=runtime)
     signal = CancellationToken()
+    tools = {tool.definition.name: tool for tool in load_tools(sessions)}
+    invoked = set()
+    observed_processes = set()
+
+    async def invoke(role_id, name, arguments=None, token=None):
+        if name == "agent_browser_close":
+            observed_processes.update(_native_browser_process_ids(runtime))
+        result = await tools[name].execute(arguments or {}, ToolContext(role_id, f"role:{role_id}", "native-acceptance", token or signal))
+        if name == "agent_browser_open" and not result.is_error:
+            observed_processes.update(_native_browser_process_ids(runtime))
+        invoked.add(name)
+        return result
 
     async def call(role_id, name, arguments=None, token=None):
-        result = await sessions.call(role_id, name, arguments or {}, token or signal)
+        result = await invoke(role_id, name, arguments, token)
         assert result.is_error is False, (name, result.content, result.details)
         return result
 
     async def run():
+        nonlocal sessions, tools
         await call("role-a", "agent_browser_open", {"url": url})
+        read = await call("role-a", "agent_browser_read", {"url": url})
+        assert "Local browser acceptance" in read.content
+        await call("role-a", "agent_browser_wait_for_selector", {"selector": "#name", "waitTimeoutMs": 2000})
+        await call("role-a", "agent_browser_wait_for_text", {"text": "Local browser acceptance", "waitTimeoutMs": 2000})
+        await call("role-a", "agent_browser_wait_for_load", {"state": "load", "waitTimeoutMs": 2000})
+        await call("role-a", "agent_browser_wait_ms", {"ms": 10})
         snapshot = await call("role-a", "agent_browser_snapshot")
         assert "Local browser acceptance" in snapshot.content
         textbox = next(line for line in snapshot.content.splitlines() if "textbox" in line and "Name" in line)
@@ -719,11 +747,22 @@ def test_real_windows_browser_page_workflow_when_native_resources_are_configured
         button_ref = re.search(r"\[ref=([^\]]+)\]", button)
         assert textbox_ref is not None and button_ref is not None
         await call("role-a", "agent_browser_fill", {"selector": f"@{textbox_ref.group(1)}", "text": "Meido"})
+        await call("role-a", "agent_browser_type", {"selector": "#name", "text": "-native"})
         await call("role-a", "agent_browser_select", {"selector": "#choice", "values": ["two"]})
+        await call("role-a", "agent_browser_check", {"selector": "#subscribe"})
+        checked = await call("role-a", "agent_browser_eval", {"script": "document.querySelector('#subscribe').checked"})
+        assert "true" in checked.content
+        await call("role-a", "agent_browser_uncheck", {"selector": "#subscribe"})
+        unchecked = await call("role-a", "agent_browser_eval", {"script": "document.querySelector('#subscribe').checked"})
+        assert "false" in unchecked.content
+        await call("role-a", "agent_browser_scroll", {"direction": "down", "amount": 200})
+        scrolled = await call("role-a", "agent_browser_eval", {"script": "window.scrollY > 0"})
+        assert "true" in scrolled.content
+        await call("role-a", "agent_browser_scroll", {"direction": "up", "amount": 200})
         await call("role-a", "agent_browser_press", {"key": "Tab"})
         await call("role-a", "agent_browser_click", {"selector": f"@{button_ref.group(1)}"})
         text = await call("role-a", "agent_browser_get_text", {"selector": "#status"})
-        assert "saved:Meido" in text.content
+        assert "saved:Meido-native" in text.content
         screenshot = await call("role-a", "agent_browser_screenshot")
         assert screenshot.images and len(screenshot.images[0].data_base64) < 2_700_000
         await call("role-a", "agent_browser_tab_new", {"label": "second", "url": url})
@@ -732,25 +771,42 @@ def test_real_windows_browser_page_workflow_when_native_resources_are_configured
         await call("role-a", "agent_browser_tab_switch", {"tab": "second"})
         await call("role-a", "agent_browser_tab_close", {"tab": "second"})
         await call("role-a", "agent_browser_open", {"url": url})
-        stale = await sessions.call("role-a", "agent_browser_click", {"selector": f"@{button_ref.group(1)}"}, signal)
+        stale = await invoke("role-a", "agent_browser_click", {"selector": f"@{button_ref.group(1)}"})
         assert stale.is_error is True
         assert stale.details["status"] == "failed"
         await call("role-a", "agent_browser_snapshot")
+        await call("role-a", "agent_browser_open", {"url": url + "next"})
+        await call("role-a", "agent_browser_back")
+        previous = await call("role-a", "agent_browser_get_url")
+        assert url in previous.content and "/next" not in previous.content
+        await call("role-a", "agent_browser_forward")
+        following = await call("role-a", "agent_browser_get_url")
+        assert url + "next" in following.content
+        await call("role-a", "agent_browser_reload")
         await call("role-a", "agent_browser_close")
         await sessions.close_role("role-a")
+        await sessions.close()
+
+        # Restart the host service as well as Chrome, retaining only disk data.
+        sessions = BrowserSessions(tmp_path / "browser", BrowserUseConfig(), resources=Path(resource_root), runtime=runtime)
+        tools = {tool.definition.name: tool for tool in load_tools(sessions)}
 
         await call("role-a", "agent_browser_open", {"url": url})
         persisted = await call("role-a", "agent_browser_eval", {"script": "localStorage.getItem('browser-use')"})
         assert "role-a" in persisted.content
+        cookie = await call("role-a", "agent_browser_eval", {"script": "document.cookie"})
+        assert "browser-owner=role-a" in cookie.content
         await call("role-a", "agent_browser_close")
         await sessions.close_role("role-a")
 
         await call("role-b", "agent_browser_open", {"url": url})
         isolated = await call("role-b", "agent_browser_eval", {"script": "localStorage.getItem('browser-use')"})
         assert "role-a" not in isolated.content
+        other_cookie = await call("role-b", "agent_browser_eval", {"script": "document.cookie"})
+        assert "browser-owner" not in other_cookie.content
 
         wait_signal = CancellationToken()
-        waiting = asyncio.create_task(sessions.call("role-b", "agent_browser_wait_ms", {"ms": 20000}, wait_signal))
+        waiting = asyncio.create_task(invoke("role-b", "agent_browser_wait_ms", {"ms": 20000}, wait_signal))
         await asyncio.sleep(0.75)
         wait_signal.cancel()
         with pytest.raises(RuntimeError, match="cancelled"):
@@ -758,7 +814,145 @@ def test_real_windows_browser_page_workflow_when_native_resources_are_configured
         await call("role-b", "agent_browser_open", {"url": url})
         title = await call("role-b", "agent_browser_get_title")
         assert "Meido browser acceptance" in title.content
+        assert invoked == set(tools), "the native acceptance must exercise every declared tool"
         await sessions.close()
+        from backend.app.browser_use.profile import ProfileLease
+        for role_id in ("role-a", "role-b"):
+            lease = ProfileLease(tmp_path / "browser" / "profiles" / hashlib.sha256(role_id.encode()).hexdigest())
+            lease.close()
+        assert not list((tmp_path / "browser" / "run").rglob("*.port"))
+        assert not list((tmp_path / "browser" / "run").rglob("*.config"))
+        assert _native_browser_process_ids(runtime, tracked=observed_processes) <= original_processes
+
+    async def run_with_cleanup():
+        try:
+            await run()
+        finally:
+            await sessions.close()
+
+    try:
+        asyncio.run(run_with_cleanup())
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2)
+
+
+def _native_browser_process_ids(runtime, *, tracked=()):
+    """Observe this test process's native descendants, including tracked orphans."""
+    command = (
+        "$paths = ConvertFrom-Json $env:MEIDO_TEST_NATIVE_PATHS; "
+        "$tracked = ConvertFrom-Json $env:MEIDO_TEST_NATIVE_PIDS; "
+        "$all = @(Get-CimInstance Win32_Process); "
+        "$owned = [System.Collections.Generic.HashSet[int]]::new(); "
+        "$null = $owned.Add([int]$env:MEIDO_TEST_OWNER_PID); "
+        "do { $changed = $false; foreach ($process in $all) { "
+        "if ($owned.Contains([int]$process.ParentProcessId)) { "
+        "if ($owned.Add([int]$process.ProcessId)) { $changed = $true } } } } while ($changed); "
+        "ConvertTo-Json -Compress -InputObject @($all | Where-Object { "
+        r"$image = $_.ExecutablePath; if ($image -and $image.StartsWith('\\?\')) { $image = $image.Substring(4) }; "
+        "($owned.Contains([int]$_.ProcessId) -or $tracked -contains $_.ProcessId) -and $paths -contains $image "
+        "} | ForEach-Object { $_.ProcessId })"
+    )
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+        env={**os.environ,
+             "MEIDO_TEST_NATIVE_PATHS": json.dumps([str(runtime.agent_browser), str(runtime.chrome)]),
+             "MEIDO_TEST_NATIVE_PIDS": json.dumps(list(tracked)), "MEIDO_TEST_OWNER_PID": str(os.getpid())},
+        check=True, capture_output=True, text=True, timeout=30,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    return set(json.loads(result.stdout.strip() or "[]"))
+
+
+def test_native_browser_http_tool_round_trip_and_active_role_deletion(tmp_path, monkeypatch):
+    resource_root = os.getenv("MEIDO_BROWSER_USE_RESOURCES")
+    if not resource_root:
+        pytest.skip("set MEIDO_BROWSER_USE_RESOURCES to run the native Windows browser acceptance")
+    runtime = BrowserRuntime.resolve(Path(resource_root))
+    original_processes = _native_browser_process_ids(runtime)
+
+    class PageHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"<!doctype html><title>Native HTTP acceptance</title><h1>Real browser from role chat</h1>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            del format, args
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PageHandler)
+    server_thread = Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/"
+    browser = BrowserSessions(tmp_path / "browser", BrowserUseConfig(), runtime=runtime)
+
+    class Adapter:
+        requests = []
+        native_pids = set()
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            self.requests.append((messages, tools))
+            if len(self.requests) > 1:
+                self.native_pids.update(_native_browser_process_ids(runtime))
+            if len(self.requests) == 1:
+                yield ModelToolCall("native-open", "agent_browser_open", {"url": url})
+            elif len(self.requests) == 2:
+                yield ModelToolCall("native-screenshot", "agent_browser_screenshot", {})
+            else:
+                assert messages[-1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+                yield ModelTextDelta("真实浏览器完成")
+
+    roles = main.RoleStore(tmp_path / "roles")
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    from backend.app.todo import TodoStore
+    monkeypatch.setattr(main, "store", roles)
+    monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "session_manager", main.SessionManager(roles, sessions))
+    monkeypatch.setattr(main, "model_adapter", Adapter())
+    monkeypatch.setattr(main, "model_configuration_store", main.ModelConfigurationStore(tmp_path / "data" / "models.json"))
+    monkeypatch.setattr(main, "todo_store", TodoStore(tmp_path / "data" / "todos.db"))
+    monkeypatch.setattr(main, "role_locks", {})
+    monkeypatch.setattr(main, "browser_use_sessions", browser)
+
+    async def run():
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://meido.test") as client:
+                created = await client.post("/api/roles", json={
+                    "name": "原生浏览器验收", "profile": {"profile": "使用本地测试网页"},
+                    "agentConfig": {"browserUse": {"enabled": True}},
+                })
+                assert created.status_code == 201
+                role_id = created.json()["role"]["id"]
+                response = await client.post(f"/api/roles/{role_id}/messages", json={"content": "打开本地页面并截图"})
+                assert "assistant_completed" in response.text
+                assert "真实浏览器完成" in response.text
+                assert {
+                    item["function"]["name"] for item in main.model_adapter.requests[0][1]
+                    if item["function"]["name"].startswith("agent_browser_")
+                } == set(BROWSER_USE_MANIFEST.declared_tools)
+                assert "iVBORw0KGgo" not in str(sessions.list_messages(f"role:{role_id}"))
+                assert _native_browser_process_ids(runtime, tracked=main.model_adapter.native_pids) <= original_processes
+
+                # Delete through the real role API while a new native run owns
+                # an active Chrome/profile, using the same application loop.
+                tool = next(item for item in load_tools(browser) if item.definition.name == "agent_browser_open")
+                opened = await tool.execute({"url": url}, ToolContext(role_id, f"role:{role_id}", "active-delete", CancellationToken()))
+                assert not opened.is_error, (opened.content, opened.details)
+                active_processes = _native_browser_process_ids(runtime)
+                assert active_processes - original_processes
+                response = await client.delete(f"/api/roles/{role_id}")
+                assert response.status_code == 204, response.text
+                identity = hashlib.sha256(role_id.encode()).hexdigest()
+                assert not (tmp_path / "browser" / "profiles" / identity).exists()
+                assert not (tmp_path / "browser" / "screenshots" / identity).exists()
+                assert _native_browser_process_ids(runtime, tracked=active_processes | main.model_adapter.native_pids) <= original_processes
+        finally:
+            await browser.close()
 
     try:
         asyncio.run(run())
