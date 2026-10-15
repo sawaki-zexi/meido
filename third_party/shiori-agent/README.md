@@ -1,0 +1,13 @@
+# Shiori-Agent attribution
+
+状态：当前。最后核验：2026-10-15。
+
+本项目的 `backend/app/network_tools.py`、`backend/app/network_extract.py` 改写了
+[Shiori-Agent](https://github.com/YinFengWindy/Shiori-Agent) 提交
+`4f266aeaf42fcd611362e2456417b91f659341cf` 中的
+`apps/backend/agent/tools/web_fetch.py` 和 `web_search.py`：业务参数、默认值、
+Exa MCP 请求结构和 HTML 转换选项。上游版权和 MIT 许可见 [LICENSE](LICENSE)。
+
+Meido 自行适配 AgentTool、角色授权、宿主搜索配置、DNS 固定连接、逐跳校验、
+流式容量控制、可终止解析进程和取消协议；不引入上游工具宿主、数据库或身份系统。
+更新以人工核对固定上游版本和公开行为测试为准，不自动同步。
