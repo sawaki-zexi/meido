@@ -79,6 +79,13 @@ input:disabled, textarea:disabled, select:disabled { background: transparent; co
 .field { display: grid; gap: 4px; }
 .field label { font-size: 13px; font-weight: 600; color: var(--ink-soft); }
 .field-hint { color: var(--ink-faint); margin-top: -2px; }
+.api-key-field { min-width: 0; }
+.api-key-input-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.api-key-input-row input { flex: 1; min-width: 0; border-radius: var(--radius); }
+.api-key-saved::placeholder { color: var(--ink); font-family: Arial, sans-serif; opacity: 1; }
+.api-key-visibility { display: inline-grid; place-items: center; flex: 0 0 36px; width: 36px; height: 36px; min-height: 0; padding: 0; border: 0; background: transparent; color: var(--ink-soft); }
+.api-key-visibility:hover:not(:disabled) { color: var(--rose-deep); }
+.api-key-error { color: var(--danger); overflow-wrap: anywhere; }
 .required { color: var(--rose); margin-left: 3px; }
 fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 14px; min-width: 0; }
 legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; letter-spacing: .12em; color: var(--ink-faint); }
@@ -206,6 +213,8 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .message-status { font-size: 11px; padding: 0 7px; border-radius: 999px; }
 .message-status.streaming { color: var(--role); background: var(--role-soft); animation: breathe 1.6s ease-in-out infinite; }
 .message-status.failed { color: var(--danger); background: var(--danger-soft); }
+.message-status.stopped { color: var(--ink-soft); background: var(--hover); }
+.chat-title .reply-state { color: var(--rose-deep); }
 .typing { color: var(--ink-faint); animation: breathe 1.6s ease-in-out infinite; }
 
 .empty-create { margin: auto; display: grid; justify-items: center; gap: 14px; color: var(--ink-faint); text-align: center; font-size: 14px; }
@@ -235,6 +244,7 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .composer .send { flex: none; width: 36px; height: 36px; min-height: 0; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--rose); }
 .composer .send:hover:not(:disabled) { background: var(--accent-gradient-soft); color: var(--rose-deep); }
 .composer .send:disabled { color: var(--ink-faint); opacity: .5; }
+.composer .send.stop { color: var(--ink-soft); background: var(--accent-gradient-soft); }
 .composer-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 3px 0; }
 .attachment-preview, .attachment-file { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--hover); color: var(--ink-soft); font-size: 12px; }
 .attachment-preview { width: 58px; height: 58px; overflow: hidden; }
@@ -244,6 +254,8 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .attachment-file { max-width: 220px; padding: 5px 6px 5px 9px; }
 .attachment-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-error { padding: 0 5px; color: var(--danger); font-size: 12px; }
+.composer-unsent { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 10px; color: var(--ink-soft); background: var(--hover); font-size: 13px; }
+.composer-unsent p { flex: 1; min-width: 0; max-height: 100px; overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
 .message-attachments { display: flex; flex-wrap: wrap; gap: 6px; }
 .message-attachments img { display: block; width: 150px; max-width: 100%; max-height: 180px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
 .message-file { display: inline-flex; max-width: 240px; padding: 6px 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--line); border-radius: 7px; color: var(--role); background: var(--hover); font-size: 12px; }
@@ -323,6 +335,10 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 
 /* Role profile / create form */
 .role-editor { display: grid; gap: 22px; padding: 20px 22px 22px; }
+.role-editor .checkbox-field { grid-template-columns: 16px minmax(0, 1fr); align-items: center; column-gap: 8px; }
+.role-editor .checkbox-field > input[type="checkbox"] { grid-column: 1; grid-row: 1; width: 16px; height: 16px; margin: 0; padding: 0; accent-color: var(--rose); }
+.role-editor .checkbox-field > span { grid-column: 2; grid-row: 1; }
+.role-editor .checkbox-field > .field-hint { grid-column: 2; }
 .role-import-control { display: flex; align-items: center; justify-content: flex-start; gap: 8px; }
 .role-import-preview { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); background: #fff8fd; }
 .role-import-preview-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -349,8 +365,9 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .image-control small { color: var(--ink-faint); overflow-wrap: anywhere; }
 .image-remove { min-height: 28px; padding: 2px 6px; font-size: 12px; }
 .avatar-cropper { display: grid; justify-items: center; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--side); }
-.avatar-crop-window { position: relative; width: min(260px, 100%); aspect-ratio: 1; overflow: hidden; overscroll-behavior: contain; touch-action: none; cursor: grab; background-color: #eee9f4; background-image: linear-gradient(45deg, #e4d8ef 25%, transparent 25%), linear-gradient(-45deg, #e4d8ef 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #e4d8ef 75%), linear-gradient(-45deg, transparent 75%, #e4d8ef 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0; }
+.avatar-crop-window { position: relative; width: min(260px, 100%, max(80px, calc(100dvh - 280px))); aspect-ratio: 1; overflow: hidden; overscroll-behavior: contain; touch-action: none; cursor: grab; background-color: #eee9f4; background-image: linear-gradient(45deg, #e4d8ef 25%, transparent 25%), linear-gradient(-45deg, #e4d8ef 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #e4d8ef 75%), linear-gradient(-45deg, transparent 75%, #e4d8ef 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0; }
 .avatar-crop-window.crop-circle { border-radius: 50%; }
+.avatar-crop-window.crop-card { width: min(260px, 100%, max(80px, calc((100dvh - 280px) * .8))); aspect-ratio: 4 / 5; border-radius: 12px; }
 .avatar-crop-window.is-dragging { cursor: grabbing; }
 .avatar-crop-window img { position: absolute; left: 50%; top: 50%; max-width: none; user-select: none; pointer-events: none; }
 .avatar-crop-zoom { display: grid; grid-template-columns: auto minmax(120px, 1fr); align-items: center; gap: 12px; width: min(260px, 100%); font-size: 13px; color: var(--ink-soft); }
@@ -548,14 +565,14 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 /* Role tavern: a shelf of role cards. Each card derives hue, motif and glyph from the role ID. */
 .tavern { position: relative; flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); }
 .tavern-header { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); }
-.tavern-scroll { min-height: 0; overflow-y: auto; padding: 40px; display: grid; align-content: start; gap: 16px; }
-.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 390px)); gap: 28px; }
-.card-grid > li { display: grid; }
+.tavern-scroll { min-height: 0; overflow-y: auto; padding: clamp(20px, 2.2vw, 32px); display: grid; align-content: start; gap: 16px; }
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: 20px; }
+.card-grid > li { display: grid; min-width: 0; }
 
 .role-card {
   --card: hsl(var(--role-hue) 55% 62%);
   --card-soft: hsl(var(--role-hue) 70% 94%);
-  position: relative; aspect-ratio: 5 / 7; display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
+  position: relative; aspect-ratio: 4 / 5; display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
   padding: 10px; border-radius: 14px; background: linear-gradient(145deg, #fffafd 0%, #fff6fa 58%, #fbf2f8 100%); overflow: hidden; isolation: isolate;
   border: 1px solid hsl(var(--role-hue) 50% 88%);
   box-shadow: 0 1px 2px rgb(83 45 63 / 6%), 0 8px 20px hsl(var(--role-hue) 40% 60% / 12%);
@@ -588,25 +605,21 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .card-hit:focus-visible { outline-offset: -2px; }
 .card-edit { position: absolute; z-index: 4; top: 14px; right: 14px; background: var(--bg); box-shadow: 0 2px 8px rgb(83 45 63 / 10%); }
 
-.tavern .role-card { aspect-ratio: 4 / 5; grid-template-rows: 24px minmax(0, 1fr) auto; padding: 20px; border-radius: 20px; border-color: rgb(234 153 196 / 65%); }
+.tavern .role-card { grid-template-rows: 24px minmax(0, 1fr) auto; padding: 18px; border-radius: 18px; border-color: rgb(234 153 196 / 65%); }
 .tavern .role-card::after { display: none; }
 .tavern .card-top { padding: 0; color: var(--rose); font-weight: 400; }
 .tavern .card-top span:first-child { opacity: .55; font-size: 10px; }
 .tavern .card-top span:last-child { display: none; }
 .tavern .card-art { margin: 0; overflow: visible; background: transparent; }
-.tavern .card-initial, .tavern .card-portrait { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); width: 140px; height: 140px; border-radius: 50%; border: 5px solid rgb(255 255 255 / 90%); box-shadow: 0 14px 36px rgb(109 70 103 / 12%); }
+.tavern .card-initial, .tavern .card-portrait { position: absolute; top: 16%; left: 50%; transform: translateX(-50%); width: 112px; height: 112px; border-radius: 50%; border: 5px solid rgb(255 255 255 / 90%); box-shadow: 0 14px 36px rgb(109 70 103 / 12%); }
 .tavern .card-initial { display: grid; place-items: center; font-size: 52px; background: var(--role-soft); }
 .tavern .card-art::before, .tavern .card-art::after { position: absolute; color: #daa5c2; pointer-events: none; font-size: 26px; }
 .tavern .card-art::before { content: "✧"; left: 11%; top: 10%; text-shadow: 225px 185px 0 #c7b4de; }
 .tavern .card-art::after { content: "♧"; right: 12%; top: 35%; transform: rotate(20deg); font-size: 19px; color: #cdbbde; }
-.tavern .card-portrait-hit { inset: 44px auto auto 50%; transform: translateX(-50%); width: 140px; height: 140px; border-radius: 50%; }
-.tavern .has-card-image { margin-block: 10px 18px; overflow: hidden; border-radius: 12px; }
-.tavern .has-card-image .card-portrait { inset: 0; transform: none; width: 100%; height: 100%; border: 0; border-radius: 12px; box-shadow: none; }
-.tavern .has-card-image .card-portrait-hit { inset: 0; transform: none; width: 100%; height: 100%; border-radius: 12px; }
-.tavern .has-card-image::before, .tavern .has-card-image::after { display: none; }
+.tavern .card-portrait-hit { inset: 16% auto auto 50%; transform: translateX(-50%); width: 112px; height: 112px; border-radius: 50%; }
 .tavern .card-foot { gap: 6px; padding: 0; }
-.tavern .card-foot strong { font-family: inherit; font-size: 22px; font-weight: 600; }
-.tavern .card-foot small { min-height: 0; -webkit-line-clamp: 1; font-size: 15px; color: var(--ink-soft); }
+.tavern .card-foot strong { font-family: inherit; font-size: 19px; font-weight: 600; }
+.tavern .card-foot small { min-height: 0; -webkit-line-clamp: 1; font-size: 13px; color: var(--ink-soft); }
 .tavern .card-edit { top: 15px; right: 15px; width: 40px; height: 40px; border-radius: 50%; background: rgb(255 255 255 / 84%); box-shadow: 0 6px 24px rgb(111 62 92 / 5%); }
 
 /* New card reveal */
@@ -625,11 +638,20 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
   .tavern .role-card { padding: 16px; }
   .tavern .card-initial, .tavern .card-portrait { top: 20px; width: 110px; height: 110px; }
   .tavern .card-portrait-hit { top: 20px; width: 110px; height: 110px; }
-  .tavern .has-card-image .card-portrait, .tavern .has-card-image .card-portrait-hit { inset: 0; width: 100%; height: 100%; }
   .tavern .card-foot strong { font-size: 18px; }
   .tavern .card-foot small { font-size: 13px; }
   .card-initial { font-size: 48px; }
 }
+
+/* Dedicated card art shares the crop's 4:5 frame, including editor and reveal previews. */
+.role-card.has-card-image .card-art { position: absolute; inset: 0; z-index: -1; margin: 0; border-radius: 0; overflow: hidden; background: transparent; }
+.role-card.has-card-image .card-portrait { inset: 0; transform: none; width: 100%; height: 100%; border: 0; border-radius: 0; box-shadow: none; }
+.role-card.has-card-image .card-art::before, .role-card.has-card-image .card-art::after, .role-card.has-card-image .card-initial, .role-card.has-card-image::after { display: none; }
+.role-card.has-card-image .card-top { color: #fff; text-shadow: 0 1px 4px rgb(0 0 0 / 70%); }
+.role-card.has-card-image .card-top span:first-child { opacity: 1; }
+.role-card.has-card-image .card-foot { position: absolute; inset: auto 0 0; padding: 48px 16px 16px; gap: 4px; color: #fff; background: linear-gradient(transparent, rgb(29 19 31 / 80%)); pointer-events: none; }
+.role-card.has-card-image .card-foot small, .role-card.has-card-image .card-foot em { color: rgb(255 255 255 / 90%); }
+.card-avatar-preview { position: absolute; z-index: 3; top: 64px; right: 14px; padding: 3px; min-height: 0; border: 1px solid rgb(255 255 255 / 70%); border-radius: 50%; background: rgb(255 255 255 / 85%); }
 
 /* Create-role page: a centred sheet with the form beside a live card preview */
 .dialog-page { align-items: center; justify-content: center; padding: 24px; }
