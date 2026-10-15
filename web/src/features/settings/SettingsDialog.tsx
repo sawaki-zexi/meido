@@ -6,15 +6,19 @@ import { OwnerKnowledgeSettings } from "./OwnerKnowledgeSettings";
 import { TodoSettings } from "../todo/TodoSettings";
 import { MemorySettings } from "./MemorySettings";
 import { MailSettings } from "./MailSettings";
+import { ChannelSettings } from "../channels/ChannelSettings";
+import { IdentitySettings } from "../channels/IdentitySettings";
 
 /** Settings sections. Add an entry here to add a new section to the dialog. */
-type SettingsSectionId = "model" | "memory" | "owner-knowledge" | "todo" | "mail";
+export type SettingsSectionId = "model" | "memory" | "owner-knowledge" | "todo" | "mail" | "channels" | "identity";
 const sections: { id: SettingsSectionId; label: string; icon: IconName; render: () => ReactNode }[] = [
   { id: "model", label: "模型", icon: "model", render: () => <ModelSettings /> },
   { id: "memory", label: "记忆", icon: "memory", render: () => <MemorySettings /> },
   { id: "owner-knowledge", label: "主人资料", icon: "memory", render: () => <OwnerKnowledgeSettings /> },
   { id: "todo", label: "待办", icon: "todo", render: () => <TodoSettings /> },
   { id: "mail", label: "邮件", icon: "todo", render: () => <MailSettings /> },
+  { id: "channels", label: "渠道", icon: "refresh", render: () => <ChannelSettings /> },
+  { id: "identity", label: "我的身份", icon: "people", render: () => <IdentitySettings /> },
 ];
 
 export function SettingsDialog({ onClose, initialSection }: { onClose: () => void; initialSection?: SettingsSectionId }) {

@@ -11,6 +11,25 @@ const heard = (sequence: number, content: string) => ({
 });
 const settings = { enabled: true, dailyCap: 200, defaultDailyCap: 200, toggles: [] };
 
+it("当前群内启停与清理旁听，不展示其他群配置", async () => {
+  let enabled = false;
+  const { calls } = fakeBackend({
+    "GET .*threads/t1/listening": () => ({ body: { ...settings, enabled } }),
+    "GET .*threads/t1/listening/messages": () => ({ body: { messages: [heard(1, "待清理消息")], hasMore: false, nextBefore: null } }),
+    "PUT /api/roles/r1/channels/accounts/qq-1/groups/group-7/listening": () => { enabled = true; return { body: { listening: true } }; },
+    "DELETE /api/roles/r1/channels/accounts/qq-1/groups/group-7/listening/messages": () => ({ status: 204 }),
+  });
+  vi.stubGlobal("confirm", () => true);
+  const user = userEvent.setup();
+  render(<GroupListeningPanel roleId="r1" threadId="t1" accountId="qq-1" chatId="group-7" editable />);
+  await user.click(screen.getByText(/群旁听记录/));
+  await user.click(await screen.findByRole("checkbox", { name: "开启本群旁听" }));
+  expect(await screen.findByRole("checkbox", { name: "开启本群旁听" })).toBeChecked();
+  await user.click(screen.getByRole("button", { name: "清理本群旁听记录" }));
+  expect(screen.queryByText("待清理消息")).not.toBeInTheDocument();
+  expect(calls.filter((call) => call.method === "PUT").at(-1)?.body).toEqual({ enabled: true });
+});
+
 function events() {
   const sources: TestEventSource[] = [];
   class TestEventSource extends EventTarget {

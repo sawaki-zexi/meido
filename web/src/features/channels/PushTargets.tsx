@@ -7,9 +7,10 @@ type PushTarget = {
   displayName: string;
   enabled: boolean;
   available: boolean;
+  chatId?: string;
 };
 
-export function PushTargets({ roleId, accountId }: { roleId: string; accountId?: string }) {
+export function PushTargets({ roleId, accountId, chatId }: { roleId: string; accountId?: string; chatId?: string }) {
   const [targets, setTargets] = useState<PushTarget[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -19,13 +20,13 @@ export function PushTargets({ roleId, accountId }: { roleId: string; accountId?:
     try {
       const result = await api<{ targets: PushTarget[] }>(`/api/roles/${encodeURIComponent(roleId)}/channels/push-targets`);
       if (sequence === request.current) {
-        setTargets(result.targets.filter((target) => target.accountId === accountId));
+        setTargets(result.targets.filter((target) => target.accountId === accountId && (!chatId || target.chatId === chatId)));
         setError("");
       }
     } catch (failure) {
       if (sequence === request.current) setError(errorMessage(failure, "读取提醒投递目标失败"));
     }
-  }, [roleId, accountId]);
+  }, [roleId, accountId, chatId]);
   useEffect(() => {
     setBusy(false);
     setError("");
@@ -42,7 +43,7 @@ export function PushTargets({ roleId, accountId }: { roleId: string; accountId?:
         method: "PUT", body: JSON.stringify({ targetId: enabled ? target.targetId : null }),
       });
       if (sequence === request.current) {
-        setTargets(result.targets.filter((item) => item.accountId === accountId));
+        setTargets(result.targets.filter((item) => item.accountId === accountId && (!chatId || item.chatId === chatId)));
         setError("");
       }
     } catch (failure) {

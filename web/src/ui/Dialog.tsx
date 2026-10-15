@@ -10,7 +10,13 @@ export function Dialog({ title, variant = "modal", onClose, children }: { title:
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     panelRef.current?.focus();
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onCloseRef.current(); };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      const panels = document.querySelectorAll(".dialog-panel");
+      if (panels.item(panels.length - 1) !== panelRef.current) return;
+      event.stopImmediatePropagation();
+      onCloseRef.current();
+    };
     document.addEventListener("keydown", onKey);
     return () => { document.removeEventListener("keydown", onKey); previous?.focus?.(); };
   }, []);

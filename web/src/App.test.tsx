@@ -18,6 +18,33 @@ const chatHeading = (name: string) => screen.findByRole("heading", { level: 1, n
 const dialog = (name: string) => screen.findByRole("dialog", { name });
 
 describe("首页", () => {
+  it("从手机会话进入角色账号，关闭账号详情后仍留在角色页，全局身份独立可用", async () => {
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": emptySession,
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [] } }),
+      "GET /api/roles/r1/channels/threads": () => ({ body: { threads: [] } }),
+      "GET /api/channels/settings": () => ({ body: { channels: [{ channel: "telegram", name: "Telegram", enabled: true, configuredAccounts: 0, connectedAccounts: 0 }] } }),
+      "GET /api/channels/identities": () => ({ body: { identities: [] } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    await user.click(screen.getByRole("button", { name: "手机会话" }));
+    await user.click(screen.getByRole("button", { name: "角色账号" }));
+    const profile = await screen.findByRole("dialog", { name: "角色资料" });
+    expect(within(profile).getByRole("tab", { name: "账号" })).toHaveAttribute("aria-selected", "true");
+    await user.click(await within(profile).findByRole("button", { name: /Telegram/ }));
+    expect(await screen.findByLabelText("Telegram Bot Token")).toBeVisible();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByLabelText("Telegram Bot Token")).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "角色资料" })).toBeVisible();
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "我的身份" }));
+    expect(screen.getByRole("button", { name: "生成配对码" })).toBeEnabled();
+    expect(screen.queryByLabelText("Telegram Bot Token")).not.toBeInTheDocument();
+  });
   it("导航轨道可打开手机会话，保留角色侧栏并仅突出当前页面", async () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
@@ -36,7 +63,7 @@ describe("首页", () => {
     await user.click(within(navigation).getByRole("button", { name: "搜索角色" }));
     expect(container.querySelector(".shell")).toHaveClass("show-list");
     await user.click(phonePage);
-    expect(await chatHeading("爱丽丝 · 渠道会话")).toBeInTheDocument();
+    expect(await chatHeading("爱丽丝 · 手机会话")).toBeInTheDocument();
     expect(container.querySelector(".shell")).not.toHaveClass("show-list");
     expect(phonePage).toHaveAttribute("aria-current", "page");
     expect(chatPage).not.toHaveAttribute("aria-current");
@@ -849,7 +876,7 @@ describe("角色记忆", () => {
     await chatHeading("爱丽丝");
     await user.click(screen.getByRole("button", { name: "角色记忆" }));
     await user.click(within(await screen.findByRole("list", { name: "记忆列表" })).getByRole("button", { name: "定位到消息" }));
-    expect(await screen.findByRole("heading", { name: "爱丽丝 · 渠道会话" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "爱丽丝 · 手机会话" })).toBeInTheDocument();
     const navigation = screen.getByRole("navigation", { name: "页面" });
     expect(within(navigation).getByRole("button", { name: "手机会话" })).toHaveAttribute("aria-current", "page");
     expect(within(navigation).getByRole("button", { name: "对话" })).not.toHaveAttribute("aria-current");

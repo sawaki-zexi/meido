@@ -1,0 +1,22 @@
+.channel-settings { display: grid; gap: 20px; min-width: 0; }
+.channel-settings h3, .channel-settings h4 { margin: 0 0 8px; }
+.channel-settings p { margin: 8px 0; color: var(--ink-soft); font-size: 13px; line-height: 1.65; }
+.channel-setting-card { padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: rgb(255 255 255 / 45%); min-width: 0; }
+.channel-settings button { min-height: 34px; padding: 7px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg); color: var(--ink); cursor: pointer; }
+.channel-settings button.primary { background: var(--accent-gradient); color: white; border-color: transparent; }
+.channel-settings button:disabled { opacity: .55; cursor: default; }
+.channel-settings .channel-identities { margin-top: 0; }
+.channel-identities button { flex-shrink: 0; white-space: nowrap; }
+.pairing-code-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin: 16px 0; }
+.pairing-code-row output { font-size: clamp(22px, 5vw, 32px); font-family: ui-monospace, monospace; letter-spacing: .14em; color: var(--rose-deep); user-select: all; }
+.pairing-code-row [role="timer"] { color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.channel-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 0; border-bottom: 1px solid var(--line); }
+.channel-setting-row:first-child { padding-top: 0; }
+.channel-setting-row:last-child { padding-bottom: 0; border-bottom: 0; }
+.channel-setting-row strong, .channel-setting-row small { display: block; }
+.channel-setting-row small { margin-top: 5px; color: var(--ink-faint); font-size: 12px; }
+.channel-setting-row input { width: 18px; height: 18px; accent-color: var(--rose); cursor: pointer; }
+.role-detail-tabs { display: flex; gap: 6px; margin-bottom: 20px; padding: 0 18px; border-bottom: 1px solid var(--line); }
+.role-detail-tabs + [role="tabpanel"] > .role-accounts { padding: 0 22px 22px; }
+.role-detail-tabs button { padding: 10px 18px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--ink-soft); cursor: pointer; }
+.role-detail-tabs button[aria-selected="true"] { color: var(--rose-deep); border-bottom-color: var(--rose); }
