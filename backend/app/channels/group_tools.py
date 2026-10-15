@@ -10,15 +10,17 @@ while all group ownership checks happen again in the repository.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Protocol
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from ..agent_runtime.tools import AgentToolResult, ToolContext, ToolDefinition
+from ..agent_runtime.tools import AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
+from .source_authority import FrozenChannelSource, capture_channel_source
 
 _PAGE_SIZE = 20
+_MEMBER_SOURCE_PAGE_SIZE = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +139,67 @@ class MultichannelGroupRepository:
                 continue
             result.append({"id": sender_id, "name": display, "targetId": str(getattr(target, "id", "")), "profile": str(profile.get("profile") or ""), "shorthand": str(profile.get("shorthand") or "")})
         return result
+
+    def find_members(self, role_id: str, *, name: str, channel: str = "", thread_id: str | None = None) -> list[dict[str, Any]]:
+        with self.store._connect() as db:
+            rows = db.execute(
+                "SELECT n.channel,n.sender_id,n.name FROM channel_member_names n "
+                "LEFT JOIN channel_threads t ON t.role_id=n.role_id AND t.account_id=n.account_id "
+                "AND t.chat_id=n.chat_id AND t.chat_type=n.chat_type WHERE n.role_id=? "
+                + ("AND t.thread_id=? " if thread_id is not None else "")
+                + "ORDER BY n.last_seen DESC,n.rowid DESC", (role_id, thread_id) if thread_id is not None else (role_id,),
+            ).fetchall()
+        members: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            key = (str(row["channel"]), str(row["sender_id"]))
+            if channel and key[0] != channel:
+                continue
+            item = members.setdefault(key, {"channel": key[0], "member_id": key[1], "name": str(row["name"]), "nicknames": []})
+            if row["name"] not in item["nicknames"]:
+                item["nicknames"].append(str(row["name"]))
+        return [item for item in members.values() if any(name.casefold() in nickname.casefold() for nickname in item["nicknames"])]
+
+    def has_member_data(self, role_id: str) -> bool:
+        with self.store._connect() as db:
+            return bool(db.execute(
+                "SELECT EXISTS(SELECT 1 FROM channel_member_names WHERE role_id=?) "
+                "OR EXISTS(SELECT 1 FROM channel_member_profiles WHERE role_id=?)",
+                (role_id, role_id),
+            ).fetchone()[0])
+
+    def member_profile(self, role_id: str, channel: str, member_id: str, *, thread_id: str | None = None,
+                       source_page: int = 1) -> dict[str, Any]:
+        member = next((item for item in self.find_members(role_id, name="", channel=channel, thread_id=thread_id)
+                       if item["member_id"] == member_id), None)
+        with self.store._connect() as db:
+            observed = db.execute(
+                "SELECT DISTINCT t.thread_id,n.account_id,n.chat_id,n.chat_type,"
+                "COALESCE(p.profile,'') AS profile,COALESCE(p.shorthand,'') AS shorthand "
+                "FROM channel_member_names n LEFT JOIN channel_threads t ON t.role_id=n.role_id "
+                "AND t.account_id=n.account_id AND t.chat_id=n.chat_id AND t.chat_type=n.chat_type "
+                "LEFT JOIN channel_member_profiles p ON p.role_id=t.role_id AND p.thread_id=t.thread_id AND p.sender_id=n.sender_id "
+                "WHERE n.role_id=? AND n.channel=? AND n.sender_id=?"
+                + (" AND t.thread_id=?" if thread_id is not None else ""),
+                (role_id, channel, member_id, thread_id) if thread_id is not None else (role_id, channel, member_id),
+            ).fetchall()
+            legacy = db.execute(
+                "SELECT t.thread_id,t.account_id,t.chat_id,t.chat_type,p.profile,p.shorthand "
+                "FROM channel_member_profiles p JOIN channel_threads t ON t.role_id=p.role_id AND t.thread_id=p.thread_id "
+                "WHERE p.role_id=? AND t.channel=? AND p.sender_id=?"
+                + (" AND t.thread_id=?" if thread_id is not None else ""),
+                (role_id, channel, member_id, thread_id) if thread_id is not None else (role_id, channel, member_id),
+            ).fetchall()
+        sources = {(str(row["account_id"]), str(row["chat_id"]), str(row["chat_type"])): {
+            "thread_id": str(row["thread_id"] or ""), "account_id": str(row["account_id"]),
+            "chat_id": str(row["chat_id"]), "chat_type": str(row["chat_type"]),
+            "profile": str(row["profile"]), "shorthand": str(row["shorthand"]),
+        } for row in (*observed, *legacy)}
+        ordered = [sources[key] for key in sorted(sources)]
+        start = (source_page - 1) * _MEMBER_SOURCE_PAGE_SIZE
+        end = start + _MEMBER_SOURCE_PAGE_SIZE
+        return {**(member or {"channel": channel, "member_id": member_id, "name": "", "nicknames": []}),
+                "found": bool(member or sources), "sources": ordered[start:end], "sources_total": len(ordered),
+                "source_page": source_page, "next_source_page": source_page + 1 if end < len(ordered) else None}
 
     def prompt_context(self, role_id: str, thread_id: str, sender_id: str = "") -> str:
         """Read only the current thread's notes and relevant member profiles."""
@@ -261,18 +324,66 @@ class SetGroupListeningTool:
 
 class LookupGroupMemberTool:
     definition = ToolDefinition(
-        "lookup_group_member", "查询已观察到的当前群成员资料。",
-        {"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": False},
+        "lookup_group_member", "按 name（含旧昵称）找成员，或按 member_id 与 member_channel 读档案；二选一。主人桌面/有效私聊可跨渠道，群聊和访客只限当前线程。档案来源每页5条，用 source_page 继续。对应 Shiori lookup_member。",
+        {"type": "object", "properties": {"name": {"type": "string"}, "member_id": {"type": "string"}, "member_channel": {"type": "string"},
+            "source_page": {"type": "integer", "minimum": 1}}, "additionalProperties": False},
         external_allowed=True,
     )
 
-    def __init__(self, repository: GroupRepository, *, source_thread_id: str | None) -> None:
-        self.repository, self.source_thread_id = repository, source_thread_id
+    def __init__(self, repository: MultichannelGroupRepository, *, role_id: str, source_thread_id: str | None = None,
+                 is_owner: bool = True, authorized: Callable[[ToolContext], bool] | None = None) -> None:
+        self.repository, self.role_id, self.source_thread_id = repository, role_id, source_thread_id
+        self.is_owner, self.authorized = is_owner, authorized
+        self._sources: dict[str, FrozenChannelSource] = {}
+
+    def _read_scope(self, context: ToolContext) -> str | None:
+        if context.role_id != self.role_id or (self.authorized is not None and not self.authorized(context)):
+            raise PermissionError("成员查询来源无效或许可已撤销。")
+        if self.source_thread_id in {None, f"desktop:{self.role_id}"}:
+            if context.session_key != f"role:{self.role_id}":
+                raise PermissionError("成员查询来源无效。")
+            return None
+        source = self._sources.get(context.run_id)
+        if source is None:
+            source = capture_channel_source(self.repository.store, self.repository.store.sessions,
+                role_id=self.role_id, session_key=context.session_key, run_id=context.run_id,
+                owner_context=self.is_owner)
+            if source.thread_id != self.source_thread_id:
+                raise PermissionError("成员查询来源线程不符。")
+            self._sources[context.run_id] = source
+        if (context.session_key != source.session_key
+                or source.authorization_denial(self.repository.store) is not None):
+            raise PermissionError("成员查询来源已失效或主人已解绑。")
+        return None if source.owner_context and source.chat_type == "private" else source.thread_id
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
         del on_update
-        group = self.repository.get_group(context.role_id, str(self.source_thread_id or ""))
-        if group is None:
-            return AgentToolResult("成员查询只能读取当前群。", is_error=True)
-        members = self.repository.list_members(context.role_id, group.thread_id, str(arguments.get("name") or ""))
-        return _result({"groupThreadId": group.thread_id, "members": [dict(item) for item in members]})
+        try:
+            ToolRegistry.validate_definition(self.definition, dict(arguments))
+            name = str(arguments.get("name") or "").strip()
+            member_id = str(arguments.get("member_id") or "").strip()
+            channel = str(arguments.get("member_channel") or "").strip()
+            source_page = arguments.get("source_page", 1)
+            if bool(name) == bool(member_id):
+                raise ValueError("member_id 与 name 必须且只能给一个。")
+            if member_id and not channel:
+                raise ValueError("按 member_id 查需要给出 member_channel。")
+            if name and "source_page" in arguments:
+                raise ValueError("source_page 只用于按 member_id 读取档案。")
+            if isinstance(source_page, bool) or not isinstance(source_page, int) or source_page < 1:
+                raise ValueError("source_page 必须从 1 开始。")
+            thread_id = self._read_scope(context)
+            if thread_id is not None:
+                source = self._sources[context.run_id]
+                if channel and channel != source.channel:
+                    raise PermissionError("当前回合只能查询当前线程的成员。")
+                channel = source.channel
+            if member_id:
+                data = self.repository.member_profile(context.role_id, channel, member_id, thread_id=thread_id, source_page=source_page)
+            else:
+                members = self.repository.find_members(context.role_id, name=name, channel=channel, thread_id=thread_id)
+                data = {"total": len(members), "candidates": members[:10]}
+            self._read_scope(context)
+            return _result(data)
+        except (ValueError, PermissionError) as error:
+            return AgentToolResult(str(error), is_error=True)

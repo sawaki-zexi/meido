@@ -1535,10 +1535,13 @@ def get_role_tools(role_id: str) -> dict[str, object]:
         "status": "unavailable" if missing_commands else "ready" if role.agentConfig.shell.allowedCommands else "unchecked",
         "reason": "白名单中有本机无法找到的程序" if missing_commands else "已检查程序路径；未执行命令" if role.agentConfig.shell.allowedCommands else "尚未配置命令白名单",
     }
-    for name in ("account_list", "account_targets", "account_send", "message_push", "lookup_group_context", "update_group_context", "set_group_listening", "lookup_group_member"):
+    for name in ("account_list", "account_targets", "account_send", "message_push", "lookup_group_context", "update_group_context", "set_group_listening"):
         dependencies[name] = {"status": "unchecked", "reason": "网络连接和目标能力将在调用时验证"}
         if not include_channel:
             reasons[name] = "没有可用渠道账号，桌面对话不提供此工具"
+    dependencies["lookup_group_member"] = {"status": "ready", "reason": "仅读取本地保存的当前角色成员昵称与结构化档案"}
+    if "lookup_group_member" not in policy.enabled_tools:
+        reasons["lookup_group_member"] = "尚无已保存成员资料或可用渠道账号"
     return tool_catalog(
         role_id=role_id, session_key=f"role:{role_id}", definitions=tuple(definitions.values()),
         policy=policy, manifests=plugin_registry.manifests(), dependencies=dependencies, reasons=reasons,
@@ -3810,6 +3813,9 @@ def _runtime_tool_candidates(
         ForgetMemoryTool(memory_access),
         WebFetchTool(network_tools_config),
         WebSearchTool(network_tools_config),
+        LookupGroupMemberTool(group_repository, role_id=role.id, is_owner=is_channel_owner,
+            source_thread_id=source_thread_id,
+            authorized=lambda context: store.get(role.id) is not None and role.id not in _channel_roles_deleting),
         *build_file_tools(role.id, store.root / role.id / "workspace", is_owner=is_channel_owner),
     ]
     tools.extend(build_message_history_tools(
@@ -3841,7 +3847,6 @@ def _runtime_tool_candidates(
                 is_owner=is_channel_owner,
                 source_thread_id=source_thread_id,
             ),
-            LookupGroupMemberTool(group_repository, source_thread_id=source_thread_id),
         ))
     return tuple(tools)
 
@@ -3856,6 +3861,8 @@ def _role_has_usable_channel_account(role_id: str) -> bool:
 def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[str]:
     shell = role.agentConfig.shell
     enabled: set[str] = set()
+    if include_channel or group_repository.has_member_data(role.id):
+        enabled.add("lookup_group_member")
     enabled.update(set(role.agentConfig.enabledTools) & {"memorize", "forget_memory"})
     enabled.update(set(role.agentConfig.enabledTools) & MESSAGE_HISTORY_TOOL_NAMES)
     enabled.update(set(role.agentConfig.enabledTools) & {"web_search", "web_fetch"})
@@ -3908,7 +3915,7 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     if not include_channel:
         enabled_tools.difference_update({
             "account_list", "account_targets", "account_send", "message_push", "lookup_group_context",
-            "update_group_context", "set_group_listening", "lookup_group_member", "read_attachment",
+            "update_group_context", "set_group_listening", "read_attachment",
         })
     enabled_plugins = set(agent_config.enabledPlugins)
     todo_enabled = bool(todo_store.settings()["enabled"]) and callable(

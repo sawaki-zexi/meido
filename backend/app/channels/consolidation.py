@@ -181,7 +181,8 @@ class ChannelMemoryMaintenance:
                 summary = str(result.get("summary", snapshot.get("summary", "")))[:12000]
                 db.execute("INSERT INTO channel_group_context VALUES(?,?,?,?,?,?) ON CONFLICT(role_id,thread_id) DO UPDATE SET group_note=excluded.group_note,summary=excluded.summary,summary_updated_at=excluded.summary_updated_at,updated_at=excluded.updated_at", (thread.role_id, thread_id, note, summary, now, now))
             for item in members:
-                db.execute("INSERT INTO channel_member_profiles VALUES(?,?,?,?,?,?,?) ON CONFLICT(role_id,thread_id,sender_id) DO UPDATE SET name=excluded.name,profile=excluded.profile,shorthand=excluded.shorthand,updated_at=excluded.updated_at", (thread.role_id, thread_id, str(item["senderId"]), str(item.get("name") or "")[:200], str(item.get("profile") or "")[:8000], str(item.get("shorthand") or "")[:200], now))
+                observed = db.execute("SELECT name FROM channel_member_names WHERE role_id=? AND account_id=? AND chat_id=? AND chat_type=? AND sender_id=? ORDER BY last_seen DESC,rowid DESC LIMIT 1", (thread.role_id, thread.account_id, thread.chat_id, thread.chat_type, str(item["senderId"]))).fetchone()
+                db.execute("INSERT INTO channel_member_profiles VALUES(?,?,?,?,?,?,?) ON CONFLICT(role_id,thread_id,sender_id) DO UPDATE SET name=excluded.name,profile=excluded.profile,shorthand=excluded.shorthand,updated_at=excluded.updated_at", (thread.role_id, thread_id, str(item["senderId"]), str(observed[0]) if observed else "", str(item.get("profile") or "")[:8000], str(item.get("shorthand") or "")[:200], now))
             db.execute(f"INSERT INTO {cursor_table} VALUES(?,?) ON CONFLICT(thread_id) DO UPDATE SET sequence=excluded.sequence", (thread_id, up_to))
         store.publish(thread.role_id, {"type": "group_memory", "roleId": thread.role_id, "threadId": thread_id})
         return True

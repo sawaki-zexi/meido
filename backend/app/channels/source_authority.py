@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from ..multichannel import MultichannelStore
-from ..session_store import SessionStore
+if TYPE_CHECKING:
+    from ..multichannel import MultichannelStore
+    from ..session_store import SessionStore
 
 
 def _binding(
@@ -78,6 +79,8 @@ class FrozenChannelSource:
         ):
             raise ValueError("invalid channel source scope")
         created = _timestamp(self.message_created_at)
+        if _timestamp(self.account_created_at) > created:
+            raise ValueError("message predates its channel account generation")
         if self.owner_context:
             if (
                 not self.identity_id

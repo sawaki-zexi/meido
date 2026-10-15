@@ -139,6 +139,15 @@ def test_old_owner_message_cannot_capture_a_new_binding_generation(tmp_path):
         )
 
 
+def test_old_message_cannot_first_capture_a_recreated_account_generation(tmp_path):
+    channels, sessions, thread = channel_run(tmp_path, owner=False)
+    channels.delete_account("a")
+    channels.register_channel_account("r", "qq", account_id="a", enabled=True)
+    with pytest.raises(PermissionError, match="account"):
+        capture_channel_source(channels, sessions, role_id="r", session_key=thread.session_key,
+            run_id="run", owner_context=False)
+
+
 def test_unpaired_original_sender_cannot_be_upgraded_by_model_or_later_pairing(
     tmp_path,
 ):
