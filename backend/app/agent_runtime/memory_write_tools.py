@@ -6,6 +6,8 @@ Copyright (c) 2026 YinFengWindy; third_party/shiori-agent/LICENSE.
 from __future__ import annotations
 
 import hashlib
+import asyncio
+import math
 import inspect
 import json
 from collections.abc import Callable, Mapping
@@ -13,11 +15,12 @@ from collections.abc import Callable, Mapping
 from ..memory_engine import MemoryMutation, MemoryScope
 from ..models import MemorySourceRef
 from .tools import AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
+from .memory_io import run_memory_io, run_async_memory_io
 
 
 class RoleMemoryAccess:
     def __init__(self, engine, sessions, role_id: str, *, session_key: str | None = None,
-                 enabled: Callable[[], bool] = lambda: True, authorize=None, mutate=None):
+                 enabled: Callable[[], bool] = lambda: True, authorize=None, mutate=None, io_timeout_seconds: float = 15):
         self.engine = engine
         self.sessions = sessions
         self.scope = MemoryScope(role_id, f"role:{role_id}")
@@ -25,6 +28,10 @@ class RoleMemoryAccess:
         self.enabled = enabled
         self.authorize = authorize
         self.mutate_operation = mutate
+        if isinstance(io_timeout_seconds, bool) or not math.isfinite(io_timeout_seconds) or not 0 < io_timeout_seconds <= 15:
+            raise ValueError("memory IO timeout must be positive and at most 15 seconds")
+        self.io_timeout_seconds = io_timeout_seconds
+        self._mutation_lock = asyncio.Lock()
 
     def check_context(self, context: ToolContext):
         context.signal.raise_if_cancelled()
@@ -49,12 +56,36 @@ class RoleMemoryAccess:
     async def query(self, request):
         if request.scope != self.scope or request.effect != "read_only" or not self.enabled():
             raise PermissionError("memory query scope/effect is not authorized")
-        return await self.engine.query(request)
+        return await run_async_memory_io(lambda: self.engine.query(request), timeout=self.io_timeout_seconds)
+
+    async def query_with_context(self, request, context):
+        self.check_context(context)
+        if request.scope != self.scope or request.effect != "read_only":
+            raise PermissionError("memory query scope/effect is not authorized")
+        result = await run_async_memory_io(lambda: self.engine.query(request), signal=context.signal, timeout=self.io_timeout_seconds)
+        self.check_context(context)
+        return result
 
     async def mutate(self, mutation, context):
         self.check_context(context)
-        result = self.mutate_operation(mutation, context) if self.mutate_operation is not None else self.engine.mutate(mutation)
-        return await result if inspect.isawaitable(result) else result
+        if self.mutate_operation is not None:
+            result = self.mutate_operation(mutation, context)
+            return await result if inspect.isawaitable(result) else result
+        async with self._mutation_lock:
+            self.check_context(context)
+            snapshot = self.engine.store.snapshot_role(self.scope.role_id)
+            try:
+                return await self.run_mutation_io(mutation, context)
+            except BaseException:
+                await run_memory_io(lambda: self.engine.store.restore_role(self.scope.role_id, snapshot))
+                raise
+
+    async def run_mutation_io(self, mutation, context):
+        self.check_context(context)
+
+        result = await run_async_memory_io(lambda: self.engine.mutate(mutation), signal=context.signal, timeout=self.io_timeout_seconds)
+        self.check_context(context)
+        return result
 
 
 def _result(data, *, error=False, limit=None):

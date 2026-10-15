@@ -27,6 +27,13 @@ def setup_memory(tmp_path):
     return engine, access, context, sessions, user
 
 
+async def wait_for_embedding(event):
+    deadline = asyncio.get_running_loop().time() + 3
+    while not event.is_set():
+        assert asyncio.get_running_loop().time() < deadline, "embedding was never reached"
+        await asyncio.sleep(.001)
+
+
 def test_role_memorizes_with_actual_user_message_evidence_and_domain(tmp_path):
     engine, access, context, sessions, user = setup_memory(tmp_path)
 
@@ -243,3 +250,128 @@ def test_all_shiori_time_presets_and_inclusive_dates_select_real_event_times(tmp
     assert actual == {"today": ["今日海边"], "yesterday": ["昨日海边"], "recent_3d": ["今日海边", "昨日海边"],
         "recent_7d": ["今日海边", "昨日海边"], "recent_30d": ["今日海边", "昨日海边"], "2026-10-14": ["昨日海边"],
         "2026-10-14~2026-10-15": ["今日海边", "昨日海边"], "2026-10-16": []}
+
+
+@pytest.mark.parametrize("interrupt", ["deadline", "cancel"])
+def test_running_embedding_write_keeps_loop_responsive_and_rolls_back_after_worker_finishes(tmp_path, interrupt):
+    import time
+    import threading
+
+    engine, access, context, _, _ = setup_memory(tmp_path)
+    entered = threading.Event()
+    finished = threading.Event()
+
+    class Embeddings:
+        def embed(self, role_id, text):
+            entered.set()
+            time.sleep(.3)
+            finished.set()
+            return [1.0, 0.0]
+
+    engine.service.embedding_provider = Embeddings()
+
+    async def run():
+        ticks = []
+        started = asyncio.get_running_loop().time()
+
+        async def heartbeat():
+            await asyncio.sleep(.01)
+            ticks.append(asyncio.get_running_loop().time() - started)
+
+        timer = asyncio.create_task(heartbeat())
+        task = asyncio.create_task(MemorizeTool(access).execute({"summary": "不要迟到写入"}, context))
+        await wait_for_embedding(entered)
+        if interrupt == "deadline":
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(task, .05)
+        else:
+            await asyncio.sleep(.05)
+            context.signal.cancel()
+            with pytest.raises(RuntimeError, match="cancelled"):
+                await task
+        await timer
+        assert entered.is_set() and finished.is_set()
+        assert ticks[0] < .15
+        assert engine.list_active_items("role-a") == []
+        await asyncio.sleep(.35)
+        assert engine.list_active_items("role-a") == []
+
+    asyncio.run(run())
+
+
+def test_cancelled_mutation_holds_write_lock_until_worker_and_rollback_are_finished(tmp_path):
+    import time
+    import threading
+
+    engine, access, context, _, _ = setup_memory(tmp_path)
+    entered = threading.Event()
+
+    class Embeddings:
+        def embed(self, role_id, text):
+            if text == "超时写入":
+                entered.set()
+                time.sleep(.3)
+            return [1.0, 0.0]
+
+    engine.service.embedding_provider = Embeddings()
+
+    async def run():
+        async def first():
+            operation = asyncio.create_task(MemorizeTool(access).execute({"summary": "超时写入"}, context))
+            await wait_for_embedding(entered)
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(operation, .05)
+
+        interrupted = asyncio.create_task(first())
+        await wait_for_embedding(entered)
+        await asyncio.sleep(.1)
+        second = asyncio.create_task(MemorizeTool(access).execute({"summary": "后续合法写入"}, context))
+        await asyncio.sleep(.02)
+        assert not interrupted.done() and not second.done()
+        await interrupted
+        result = await second
+        assert not result.is_error
+        await asyncio.sleep(.35)
+        assert [item.summary for item in engine.list_active_items("role-a")] == ["后续合法写入"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("phase", ["query", "backfill"])
+def test_recall_embedding_is_cancellable_without_blocking_loop_or_late_backfill(tmp_path, phase):
+    import time
+    import threading
+
+    engine, access, context, _, _ = setup_memory(tmp_path)
+    saved = asyncio.run(MemorizeTool(access).execute({"summary": "海边事实"}, context))
+    entered = threading.Event()
+
+    class Embeddings:
+        def embed(self, role_id, text):
+            if phase == "query" or text == "海边事实":
+                entered.set()
+                time.sleep(.3)
+            return [1.0, 0.0]
+
+    engine.service.embedding_provider = Embeddings()
+
+    async def run():
+        started = asyncio.get_running_loop().time()
+        ticks = []
+
+        async def heartbeat():
+            await asyncio.sleep(.01)
+            ticks.append(asyncio.get_running_loop().time() - started)
+
+        timer = asyncio.create_task(heartbeat())
+        operation = asyncio.create_task(MemoryRecallTool(access).execute({"query": "海边"}, context))
+        await wait_for_embedding(entered)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(operation, .05)
+        await timer
+        assert ticks[0] < .15
+        await asyncio.sleep(.4)
+        item = engine.get_item_for_admin("role-a", saved.details["item_id"], include_embedding=True)
+        assert item["status"] == "active" and item["embedding"] is None
+
+    asyncio.run(run())

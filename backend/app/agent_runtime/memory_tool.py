@@ -143,7 +143,7 @@ class MemoryRecallTool:
         if bound_scope is not None and bound_scope.role_id != context.role_id:
             raise PermissionError("memory query scope does not match the current role")
         scope = bound_scope if bound_scope is not None else MemoryScope(context.role_id, context.session_key)
-        result = await self._memory.query(MemoryQuery(
+        request = MemoryQuery(
             text=query,
             intent=intent,
             effect="read_only",
@@ -155,8 +155,13 @@ class MemoryRecallTool:
                 time_start=time_window[0] if time_window else None,
                 time_end=time_window[1] if time_window else None,
             ),
-        ))
+        )
+        query_with_context = getattr(self._memory, "query_with_context", None)
+        result = (await query_with_context(request, context) if callable(query_with_context)
+                  else await self._memory.query(request))
         context.signal.raise_if_cancelled()
+        if callable(check_context):
+            check_context(context)
         records: list[dict[str, object]] = []
         payload: dict[str, object] = {
             "query": query,

@@ -1,4 +1,9 @@
 import json
+import asyncio
+import time
+import threading
+import httpx
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -106,3 +111,87 @@ def test_global_memory_switch_hides_all_tools_and_rejects_manual_enabled_tools(t
     results = [item for item in sessions.runtime_messages(f"role:{role.id}") if isinstance(item, ToolResultMessage)]
     assert len(results) == 3 and all(item.is_error for item in results)
     assert engine.list_active_items(role.id) == []
+
+
+@pytest.mark.parametrize("interrupt", ["deadline", "cancel_request"])
+def test_memory_io_deadline_rolls_back_http_sqlite_and_documents_after_embedding_finishes(tmp_path, monkeypatch, interrupt):
+    from backend.app.memory_engine import MemoryMutation, MemoryScope
+
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="超时记忆", profile=RoleProfile(profile="设定"),
+        agentConfig=AgentToolConfig(enabledTools=["memorize"])))
+    initialize_databases(tmp_path / "data")
+    sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    settings = MemorySettingsStore(tmp_path / "data" / "settings.json")
+    memories = MemoryStore(tmp_path / "data" / "memory.db")
+    service = MemoryService(memories, implicit_extraction_enabled=False, memory_enabled=lambda: settings.get().enabled)
+    engine = DefaultMemoryEngine(service, role_exists=lambda value: roles.get(value) is not None)
+    saved = asyncio.run(engine.mutate(MemoryMutation(kind="remember", scope=MemoryScope(role.id, f"role:{role.id}"), summary="保留的原始记忆")))
+    documents = MemoryDocuments(tmp_path / "roles")
+    documents.sync_structured_memory(role.id, engine.list_active_items(role.id))
+    original = documents.read_document(role.id, "MEMORY.md")
+    embedding_started = threading.Event()
+
+    class Embeddings:
+        def embed(self, role_id, text):
+            if text == "本次不应写入":
+                embedding_started.set()
+                time.sleep(.5)
+            return [1.0, 0.0]
+
+    class Provider:
+        calls = 0
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            self.calls += 1
+            if self.calls == 1:
+                yield ModelToolCall("write-timeout", "memorize", {"summary": "本次不应写入"})
+            else:
+                yield ModelTextDelta("操作超时，原记忆已保留")
+
+    service.embedding_provider = Embeddings()
+    monkeypatch.setenv("MEIDO_MEMORY_TOOL_IO_TIMEOUT_SECONDS", ".2" if interrupt == "deadline" else "15")
+    for name, value in {"store": roles, "session_store": sessions, "session_manager": SessionManager(roles, sessions),
+            "model_adapter": Provider(), "model_configuration_store": ModelConfigurationStore(tmp_path / "data" / "models.json"),
+            "roles_root": tmp_path / "roles", "role_locks": {}, "memory_store": memories, "memory_service": service,
+            "memory_engine": engine, "memory_worker": MemoryWorker(service), "memory_settings_store": settings}.items():
+        monkeypatch.setattr(main, name, value)
+
+    async def run():
+        ticks = []
+
+        async def wait_for_embedding():
+            end = asyncio.get_running_loop().time() + 3
+            while not embedding_started.is_set():
+                assert asyncio.get_running_loop().time() < end, "embedding was never reached"
+                await asyncio.sleep(.001)
+
+        async def heartbeat():
+            await wait_for_embedding()
+            started = asyncio.get_running_loop().time()
+            await asyncio.sleep(.01)
+            ticks.append(asyncio.get_running_loop().time() - started)
+
+        timer = asyncio.create_task(heartbeat())
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+            request = asyncio.create_task(client.post(f"/api/roles/{role.id}/messages", json={"content": "执行一次显式工具操作"}))
+            if interrupt == "cancel_request":
+                await wait_for_embedding()
+                await asyncio.sleep(.05)
+                request.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await request
+            else:
+                response = await request
+        await timer
+        assert ticks[0] < .15
+        if interrupt == "deadline":
+            assert "event: assistant_completed" in response.text
+        results = [item for item in sessions.runtime_messages(f"role:{role.id}") if isinstance(item, ToolResultMessage)]
+        if interrupt == "deadline":
+            assert len(results) == 1 and results[0].is_error
+        await asyncio.sleep(.4)
+        assert [item.id for item in engine.list_active_items(role.id)] == [saved.item_id]
+        assert documents.read_document(role.id, "MEMORY.md") == original
+
+    asyncio.run(run())

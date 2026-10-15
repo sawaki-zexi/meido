@@ -647,7 +647,7 @@ async def _mutate_and_sync_memory_locked(role_id: str, operation):
         path: path.read_text(encoding="utf-8") if path.exists() else None
         for path in document_paths
     }
-    def restore(error: Exception) -> None:
+    def restore(error: BaseException) -> None:
         try:
             memory_store.restore_role(role_id, snapshot)
             writes = {path: content for path, content in previous_documents.items() if content is not None}
@@ -663,7 +663,7 @@ async def _mutate_and_sync_memory_locked(role_id: str, operation):
         result = operation()
         if inspect.isawaitable(result):
             result = await result
-    except Exception as error:
+    except BaseException as error:
         restore(error)
         raise
     try:
@@ -3350,12 +3350,13 @@ def _memory_runtime_access(role, *, is_channel_owner=True, source_thread_id=None
     async def mutate(mutation, context):
         async def apply():
             access.user_source(context)  # Recheck after acquiring the shared memory write lock.
-            return await _current_memory_engine().mutate(mutation)
+            return await access.run_mutation_io(mutation, context)
         return await _mutate_and_sync_memory(role.id, apply)
 
     access = RoleMemoryAccess(_current_memory_engine(), session_store, role.id,
         session_key=thread.session_key if thread is not None else f"role:{role.id}",
-        enabled=enabled, authorize=authorize, mutate=mutate)
+        enabled=enabled, authorize=authorize, mutate=mutate,
+        io_timeout_seconds=float(os.getenv("MEIDO_MEMORY_TOOL_IO_TIMEOUT_SECONDS", "15")))
     return access
 
 

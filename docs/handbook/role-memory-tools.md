@@ -48,6 +48,16 @@ superseded_ids；另返 requested_ids/count、missing_ids/count、already_forgot
 大批结果保留总数并对列表标记截断，保持 JSON 完整。每次修改复用宿主现有角色写锁、结构化记忆与
 MEMORY.md/PENDING.md 同步回滚流程；后续正常召回不会返回已忘记的条目。
 
+同步引擎写入和 embedding 在普通 IO 线程中执行。宿主可通过
+`MEIDO_MEMORY_TOOL_IO_TIMEOUT_SECONDS` 设置 0–15 秒之间的正数（默认 15），模型不能覆盖。
+运行中取消或超时后，宿主继续持有原角色写锁，等待实际 IO 线程结束，再恢复 SQLite 和记忆文档；
+不会提前释放锁或让迟到线程覆盖后续写入。清理阶段保持事件循环响应，但需等待底层请求的有界超时
+（内置 SharedEmbeddingProvider 默认 10 秒）收尾。召回已有异步 embedding 路径，取消后不会继续回填。
+
+Windows 时区数据由显式依赖 tzdata 提供。2026-10-16 在全新隔离 venv、安装完整 requirements、
+无系统 site-packages 且 TZPATH 为空时，已验证 Asia/Shanghai 构造、main 导入、应用完整 lifespan 和
+`GET /api/roles` 返回 200，不依赖机器中偶然安装的 tzdata。
+
 运行 `python -m pytest tests/python/test_memory_write_tools.py tests/python/test_memory_tools_api.py tests/python/test_memory_tool.py tests/python/test_memory_engine.py`。
 公开 HTTP 测试用真实 SQLite/MemoryEngine 完成 memorize→recall→forget→无有效命中，
 并核对每次工具结果先持久化再进入下一次模型请求、真实来源 ID 和文档同步。已配对私聊与解绑用真实
