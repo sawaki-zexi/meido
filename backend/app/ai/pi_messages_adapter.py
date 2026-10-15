@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from contextlib import aclosing
 from dataclasses import asdict
 import json
 import time
@@ -137,7 +138,7 @@ class PiMessagesAdapter:
             "content-type": "application/json",
         }, {"model": configuration.model, "context": context, "options": options}
 
-    async def stream_messages(self, messages: Sequence[ModelMessage], configuration: ModelConfiguration, tools: Sequence[Mapping[str, object]] = (), *, max_tokens: int | None = None, cancel_check: Callable[[], None] | None = None) -> AsyncIterator[ModelStreamEvent]:
+    async def stream_messages(self, messages: Sequence[ModelMessage], configuration: ModelConfiguration, tools: Sequence[Mapping[str, object]] = (), *, max_tokens: int | None = None, cancel_check: Callable[[], None] | None = None) -> AsyncGenerator[ModelStreamEvent, None]:
         url, headers, payload = self._prepare(messages, configuration, tools, stream=True, max_tokens=max_tokens)
         blocks: list[ModelContentBlock] = []
         text_parts: dict[int, str] = {}
@@ -271,6 +272,7 @@ class PiMessagesAdapter:
             return done.message
         raise RuntimeError(error.error if error else "模型响应无法完成")
 
-    async def stream_rich_messages(self, *args, **kwargs) -> AsyncIterator[ModelStreamEvent]:
-        async for event in self.stream_messages(*args, **kwargs):
-            yield event
+    async def stream_rich_messages(self, *args, **kwargs) -> AsyncGenerator[ModelStreamEvent, None]:
+        async with aclosing(self.stream_messages(*args, **kwargs)) as stream:
+            async for event in stream:
+                yield event

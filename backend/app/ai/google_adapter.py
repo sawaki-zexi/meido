@@ -7,7 +7,8 @@ schemas and function results from being sent with the wrong shape.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from contextlib import aclosing
 import json
 import time
 
@@ -222,7 +223,7 @@ class GoogleGenerativeAdapter:
         headers = self._headers(configuration, stream=stream)
         return url, headers, payload, reverse
 
-    async def stream_messages(self, messages: Sequence[ModelMessage], configuration: ModelConfiguration, tools: Sequence[Mapping[str, object]] = (), *, max_tokens: int | None = None, cancel_check: Callable[[], None] | None = None) -> AsyncIterator[ModelStreamEvent]:
+    async def stream_messages(self, messages: Sequence[ModelMessage], configuration: ModelConfiguration, tools: Sequence[Mapping[str, object]] = (), *, max_tokens: int | None = None, cancel_check: Callable[[], None] | None = None) -> AsyncGenerator[ModelStreamEvent, None]:
         url, headers, payload, name_aliases = self._prepare(messages, configuration, tools, stream=True, max_tokens=max_tokens)
         text = ""
         thinking = ""
@@ -393,6 +394,7 @@ class GoogleGenerativeAdapter:
         reason = _stop_reason(candidate.get("finishReason"))
         return ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(provider=configuration.provider, api=self.api, model=configuration.model, usage=_usage(data.get("usageMetadata")), stop_reason=reason, timestamp=int(time.time() * 1000)))
 
-    async def stream_rich_messages(self, *args, **kwargs) -> AsyncIterator[ModelStreamEvent]:
-        async for event in self.stream_messages(*args, **kwargs):
-            yield event
+    async def stream_rich_messages(self, *args, **kwargs) -> AsyncGenerator[ModelStreamEvent, None]:
+        async with aclosing(self.stream_messages(*args, **kwargs)) as stream:
+            async for event in stream:
+                yield event

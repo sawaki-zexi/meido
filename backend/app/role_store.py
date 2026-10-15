@@ -80,6 +80,11 @@ class RoleStore:
             current = self._roles[index]
             values = current.model_dump(exclude={"id", "createdAt", "updatedAt"})
             values.update(data.model_dump(exclude_unset=True, exclude_none=True))
+            if data.agentConfig is not None:
+                screen = current.agentConfig.screenPerception.model_dump()
+                if "screenPerception" in data.agentConfig.model_fields_set:
+                    screen.update(data.agentConfig.screenPerception.model_dump(exclude_unset=True))
+                values["agentConfig"]["screenPerception"] = screen
             updated = Role(**values, id=current.id, createdAt=current.createdAt, updatedAt=utc_now())
             candidate = [*self._roles]
             candidate[index] = updated

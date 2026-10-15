@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass
 import hashlib
 import json
@@ -319,14 +320,15 @@ class OpenAICompatibleAdapter:
                 send_reasoning_content=_is_deepseek(effective_configuration),
             ),
         )
-        async for event in adapter.stream_rich_messages(
+        async with aclosing(adapter.stream_rich_messages(
             messages,
             effective_configuration,
             tools,
             max_tokens=max_tokens,
             cancel_check=cancel_check,
-        ):
-            yield event
+        )) as stream:
+            async for event in stream:
+                yield event
 
     async def complete_rich_messages(
         self,

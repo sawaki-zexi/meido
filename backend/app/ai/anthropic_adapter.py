@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass, field
 import json
 import time
@@ -442,7 +443,7 @@ class AnthropicMessagesAdapter:
         *,
         max_tokens: int | None = None,
         cancel_check: Callable[[], None] | None = None,
-    ) -> AsyncIterator[ModelStreamEvent]:
+    ) -> AsyncGenerator[ModelStreamEvent, None]:
         payload, headers, name_aliases = self._prepare(messages, configuration, tools, max_tokens=max_tokens, stream=True)
         accumulator = _Accumulator(
             name_aliases,
@@ -561,6 +562,7 @@ class AnthropicMessagesAdapter:
             raise RuntimeError(error or "模型响应无法完成")
         return message
 
-    async def stream_rich_messages(self, *args, **kwargs) -> AsyncIterator[ModelStreamEvent]:
-        async for event in self.stream_messages(*args, **kwargs):
-            yield event
+    async def stream_rich_messages(self, *args, **kwargs) -> AsyncGenerator[ModelStreamEvent, None]:
+        async with aclosing(self.stream_messages(*args, **kwargs)) as stream:
+            async for event in stream:
+                yield event
