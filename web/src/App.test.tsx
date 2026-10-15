@@ -18,6 +18,59 @@ const chatHeading = (name: string) => screen.findByRole("heading", { level: 1, n
 const dialog = (name: string) => screen.findByRole("dialog", { name });
 
 describe("首页", () => {
+  it("从左侧搜索筛选角色，保留列表切换对话并可清除搜索", async () => {
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice, bella] } }),
+      "GET /api/roles/r1/session": emptySession,
+      "GET /api/roles/r2/session": () => ({ body: { session: sessionOf("r2"), messages: [] } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    const navigation = screen.getByRole("navigation", { name: "页面" });
+    expect(within(navigation).getByRole("button", { name: "设置" })).toBeTruthy();
+    await user.click(within(navigation).getByRole("button", { name: "搜索角色" }));
+    await user.type(screen.getByRole("searchbox", { name: "搜索角色" }), "贝拉");
+    expect(within(await roleList()).queryByText("爱丽丝")).toBeNull();
+    expect(within(await roleList()).getByText("贝拉")).toBeTruthy();
+    await user.click(within(navigation).getByRole("button", { name: "角色" }));
+    const cards = screen.getByRole("list", { name: "角色卡牌" });
+    expect(within(cards).queryByRole("button", { name: "与爱丽丝对话" })).toBeNull();
+    expect(within(cards).getByText("No.002")).toBeTruthy();
+    await user.click(within(await roleList()).getByRole("button", { name: /贝拉/ }));
+    expect(await chatHeading("贝拉")).toBeTruthy();
+    expect(calls.some((call) => call.path === "/api/roles/r2/session")).toBe(true);
+    await user.click(within(navigation).getByRole("button", { name: "角色" }));
+    await user.clear(screen.getByRole("searchbox", { name: "搜索角色" }));
+    await user.type(screen.getByRole("searchbox", { name: "搜索角色" }), "不存在");
+    expect(screen.getByText("没有找到匹配的角色")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "清除搜索" }));
+    expect(within(await roleList()).getAllByRole("button")).toHaveLength(2);
+    expect(within(screen.getByRole("list", { name: "角色卡牌" })).getByRole("button", { name: "与爱丽丝对话" })).toBeTruthy();
+  });
+
+  it("从酒馆侧栏导入角色卡，进入现有预览确认流程", async () => {
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [] } }),
+      "POST /api/role-card-import/preview": () => ({ body: {
+        draft: { name: "导入角色", description: "简介", profile: "设定", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" },
+        source: "card.json", assets: [], compatibility: { format: "json", warnings: [], discardedFields: [], unsupportedMacros: [], unsupportedResources: [] },
+      } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText(/还没有角色。/);
+    await user.click(screen.getByRole("button", { name: "角色" }));
+    const sidebar = screen.getByRole("complementary", { name: "角色管理" });
+    expect(within(sidebar).getByRole("button", { name: "导入角色卡" })).toBeEnabled();
+    fireEvent.change(within(sidebar).getByLabelText("导入角色卡文件"), { target: { files: [new File(["{}"], "card.json", { type: "application/json" })] } });
+    const form = await dialog("创建角色");
+    expect(await within(form).findByRole("region", { name: "角色卡导入预览" })).toBeTruthy();
+    await user.click(within(form).getByRole("button", { name: "填充到表单" }));
+    expect(within(form).getByLabelText(/名称/)).toHaveValue("导入角色");
+    expect(calls.some((call) => call.method === "POST" && call.path === "/api/roles")).toBe(false);
+  });
+
   it("没有角色时仍是对话界面，并提示创建角色", async () => {
     fakeBackend({ "GET /api/roles": () => ({ body: { roles: [] } }) });
     render(<App />);

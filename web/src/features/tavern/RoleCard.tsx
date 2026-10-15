@@ -28,7 +28,7 @@ export function RoleCard({ role, number, className = "", children, onPreviewAvat
   useEffect(() => setFailedUrl(null), [role.avatarUrl, role.cardImageUrl]);
   return <div className={`role-card motif-${motif} ${className}`.trim()} style={roleStyle(role.id)}>
     <div className="card-top"><span>No.{String(number).padStart(3, "0")}</span><span aria-hidden="true">{glyph}</span></div>
-    <div className="card-art">
+    <div className={`card-art${role.cardImageUrl ? " has-card-image" : ""}`}>
       <span className="card-initial" aria-hidden="true">{initial}</span>
       {(role.cardImageUrl ?? role.avatarUrl) && failedUrl !== (role.cardImageUrl ?? role.avatarUrl) && <img className="card-portrait" src={role.cardImageUrl ?? role.avatarUrl!} alt={`${role.name}卡片图片`} onError={() => setFailedUrl(role.cardImageUrl ?? role.avatarUrl!)} />}
       {onPreviewAvatar && (role.avatarOriginalUrl ?? role.avatarUrl) && <button type="button" className="card-portrait-hit" aria-label={`预览${role.name}头像`} onClick={() => onPreviewAvatar(role)} />}
