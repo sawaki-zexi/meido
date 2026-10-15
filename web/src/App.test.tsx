@@ -456,6 +456,7 @@ describe("角色管理", () => {
     await user.upload(within(form).getByLabelText("角色头像"), image);
 
     const crop = within(form).getByRole("region", { name: "调整头像裁切" });
+    expect(within(form).getAllByRole("button", { name: "保存" })).toHaveLength(1);
     expect(crop.querySelector(".avatar-crop-window")).toHaveClass("crop-circle");
     const cropImage = within(crop).getByRole("img", { name: "头像裁切预览" });
     Object.defineProperties(cropImage, { naturalWidth: { configurable: true, value: 800 }, naturalHeight: { configurable: true, value: 600 } });
@@ -468,8 +469,8 @@ describe("角色管理", () => {
     expect(within(form).getByRole("img", { name: "新角色卡片图片" })).toHaveAttribute("src", previewUrl);
     const cardImage = new File(["card"], "card.png", { type: "image/png" });
     await user.upload(within(form).getByLabelText("卡片图片"), cardImage);
-    const cardCrop = within(form).getByRole("region", { name: "调整头像裁切" });
-    const cardCropImage = within(cardCrop).getByRole("img", { name: "头像裁切预览" });
+    const cardCrop = within(form).getByRole("region", { name: "调整卡片裁切" });
+    const cardCropImage = within(cardCrop).getByRole("img", { name: "卡片裁切预览" });
     Object.defineProperties(cardCropImage, { naturalWidth: { configurable: true, value: 600 }, naturalHeight: { configurable: true, value: 800 } });
     fireEvent.load(cardCropImage);
     await user.click(within(cardCrop).getByRole("button", { name: "保存" }));
