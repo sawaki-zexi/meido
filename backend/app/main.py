@@ -82,6 +82,7 @@ from .agent_runtime import (
     ToolResultMessage,
 )
 from .agent_runtime.capabilities import CapabilityResolution
+from .agent_runtime.message_history_tools import MESSAGE_HISTORY_TOOL_NAMES, build_message_history_tools
 from .agent_runtime.file_tools import FILE_TOOL_NAMES, build_file_tools
 from .agent_runtime.catalog import RuntimeCapabilityPolicy, tool_catalog
 from .agent_runtime.types import UserMessage
@@ -3428,6 +3429,10 @@ def _runtime_tool_candidates(
         WebSearchTool(network_tools_config),
         *build_file_tools(role.id, store.root / role.id / "workspace", is_owner=is_channel_owner),
     ]
+    tools.extend(build_message_history_tools(
+        session_store, multichannel_store, role_id=role.id,
+        source_thread_id=source_thread_id, is_owner=is_channel_owner,
+    ))
     if owner_knowledge_plugin.status().enabled:
         tools.append(_owner_knowledge_runtime_tool(role))
     if mail_service.store.connection().auto_draft_ready:
@@ -3468,6 +3473,7 @@ def _role_has_usable_channel_account(role_id: str) -> bool:
 def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[str]:
     shell = role.agentConfig.shell
     enabled: set[str] = set()
+    enabled.update(set(role.agentConfig.enabledTools) & MESSAGE_HISTORY_TOOL_NAMES)
     enabled.update(set(role.agentConfig.enabledTools) & {"web_search", "web_fetch"})
     enabled.update(FILE_TOOL_NAMES.intersection(role.agentConfig.enabledTools))
     if shell.enabled and shell.allowedCommands:
@@ -4288,6 +4294,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         placeholder_id: str | None = assistant_message.id
         final_message: Message | None = None
         disconnect_watcher: asyncio.Task[None] | None = None
+        disconnect_watcher_stopped = False
         capabilities: CapabilityResolution | None = None
         capabilities_owned_by_runtime = False
 
@@ -4301,7 +4308,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
             return payload
 
         async def watch_disconnect() -> None:
-            while True:
+            while not disconnect_watcher_stopped:
                 await asyncio.sleep(0.1)
                 if await request.is_disconnected():
                     runtime_manager.cancel_run(run_id)
@@ -4640,6 +4647,9 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
             except Exception as error:
                 memory_worker.errors.append(f"{role_id}: browser run cleanup failed: {type(error).__name__}")
             if disconnect_watcher is not None:
+                # Request's nonblocking AnyIO probe can absorb a concurrent
+                # Task.cancel(); the stop flag must also end its polling loop.
+                disconnect_watcher_stopped = True
                 disconnect_watcher.cancel()
                 await asyncio.gather(disconnect_watcher, return_exceptions=True)
     return StreamingResponse(
