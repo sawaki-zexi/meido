@@ -1,4 +1,4 @@
-# 使用四个 Shiori 内置 Skill
+# 使用 Shiori 内置 Skill
 
 状态：当前
 最后核验：2026-10-16
@@ -41,6 +41,10 @@ node "D:/tools/meido-summarize/node_modules/@steipete/summarize/dist/cli.js" "ht
 表情包目录为当前角色 workspace 的 `memes/`。先放入真实、已授权图片，再让角色维护 `manifest.json` 的类别、描述、别名和启停状态。文件工具的 write_file 写 UTF-8 文本；复制图片需要独立获准命令，不能写一个路径字符串充当图片文件。read_file 可核验实际图像。
 
 新技能写在当前 workspace 的 `skills/<id>/SKILL.md`；可附带 references、assets 和 scripts。创建完成后，下一次对话输入 `$<id>`。技能正文、脚本和支持资源变化会重新校验，声明工具不会获得许可；同名角色技能优先于项目和内置版本。
+
+## Feed 订阅与查询
+
+`$feed-manage 查看当前订阅` 使用主人已在 MCP 设置中配置并授权的真实服务。服务 ID 不必为 feed，多候选时先选择；每次询问信息来源都重新 list。原验收服务的文章分页、聚合概况和名称匹配删除有明确限制，缓存结果不能当作刷新成功。独立依赖准备、授权与仅 localhost 的真实 HTTP 复验见 [Feed 手册](feed-skill.md)。
 
 ## 复验
 
