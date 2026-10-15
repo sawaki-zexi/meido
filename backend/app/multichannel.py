@@ -307,6 +307,10 @@ class MultichannelStore:
                 CREATE TABLE IF NOT EXISTS channel_account_settings (
                     account_id TEXT PRIMARY KEY, config_json TEXT NOT NULL DEFAULT '{}'
                 );
+                CREATE TABLE IF NOT EXISTS channel_platform_settings (
+                    channel TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS channel_identities (
                     identity_id TEXT PRIMARY KEY, role_id TEXT NOT NULL, channel TEXT NOT NULL,
                     scope TEXT NOT NULL, platform_user_id TEXT NOT NULL, account_id TEXT NOT NULL,
@@ -419,6 +423,24 @@ class MultichannelStore:
         db.execute("DROP TABLE channel_threads")
         db.execute("ALTER TABLE channel_threads_with_chat_type RENAME TO channel_threads")
         db.execute("CREATE INDEX channel_threads_role_activity ON channel_threads(role_id,last_activity DESC)")
+
+    def channel_enabled(self, channel: str) -> bool:
+        with self._connect() as db:
+            row = db.execute("SELECT enabled FROM channel_platform_settings WHERE channel=?", (channel,)).fetchone()
+        return bool(row["enabled"]) if row is not None else True
+
+    def set_channel_enabled(self, channel: str, enabled: bool) -> None:
+        if channel not in {"telegram", "qq", "qqbot", "feishu"} or not isinstance(enabled, bool):
+            raise ValueError("渠道或启停状态无效")
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO channel_platform_settings(channel,enabled,updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(channel) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at",
+                (channel, int(enabled), _now()),
+            )
+
+    def account_effectively_enabled(self, account: ChannelAccount) -> bool:
+        return account.enabled and self.channel_enabled(account.channel)
 
     def register_desktop_thread(self, role_id: str, session_key: str, created_at: str, updated_at: str) -> None:
         with self._connect() as db:
@@ -770,7 +792,7 @@ class MultichannelStore:
             if remaining is None:
                 db.execute("DELETE FROM channel_pairing_codes WHERE role_id=? AND channel=?", (role_id, channel))
 
-    def create_pairing_code(self, role_id: str, channel: str = "telegram", *, ttl_seconds: int = 600) -> str:
+    def create_pairing_code(self, role_id: str = "", channel: str = "telegram", *, ttl_seconds: int = 600) -> str:
         del role_id, channel  # Issuing UI location does not limit the receiver.
         if ttl_seconds < 1:
             raise ValueError("配对码有效期必须为正数")

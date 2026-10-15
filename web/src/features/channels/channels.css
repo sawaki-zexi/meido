@@ -134,3 +134,24 @@
   border-radius: 50%;
   object-fit: cover;
 }
+
+.channel-view-actions { display: flex; align-items: center; gap: 8px; }
+.channel-view-actions > button:not(.icon-button) { padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: rgb(255 255 255 / 50%); color: var(--ink-soft); cursor: pointer; white-space: nowrap; }
+.channel-conversation-settings, .channel-group-settings { flex-shrink: 0; max-height: 42%; padding: 12px 20px; overflow: auto; border-bottom: 1px solid var(--line); background: rgb(255 255 255 / 25%); font-size: 13px; }
+.channel-group-settings { border-top: 1px solid var(--line); border-bottom: 0; }
+.channel-conversation-settings summary, .channel-listening-panel summary { cursor: pointer; color: var(--ink-soft); }
+.channel-listening-panel ol { max-height: 200px; margin: 12px 0; padding: 0; list-style: none; overflow: auto; }
+.channel-listening-panel li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.channel-listening-panel p { color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
+.channel-listening-panel time { color: var(--ink-faint); font-size: 11px; }
+.channel-listening-actions, .channel-listening-caps { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; }
+.channel-listening-actions label, .channel-push-targets label { display: flex; align-items: center; gap: 8px; }
+.channel-listening-actions button, .channel-listening-caps button, .channel-listening-panel > button, .channel-push-targets button { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink-soft); cursor: pointer; }
+.channel-listening-caps input { display: block; width: 130px; max-width: 100%; margin-top: 5px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+.channel-listening-panel button:disabled, .channel-push-targets button:disabled { opacity: .5; cursor: default; }
+.channel-identities .channel-identity > div { min-width: 0; overflow-wrap: anywhere; }
+.channel-view.channel-source-view { min-height: 200px; max-height: 70vh; height: auto; }
+.channel-source-view .channel-workspace { display: block; min-height: 0; overflow: auto; }
+.channel-source-view .channel-messages { min-height: 180px; }
+.channel-source-view .channel-messages > header { padding: 0 0 16px; }
+.channel-source-view .channel-group-settings { margin: 0 0 16px; }
