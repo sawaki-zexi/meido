@@ -422,6 +422,10 @@ class PluginRegistry:
             raise ValueError(f"duplicate plugin: {manifest.plugin_id}")
         self._registrations[manifest.plugin_id] = _Registration(manifest, factory)
 
+    def manifests(self) -> tuple[PluginManifest, ...]:
+        """Inspect immutable declarations without calling plugin factories."""
+        return tuple(item.manifest for item in self._registrations.values())
+
     async def load(
         self,
         *,

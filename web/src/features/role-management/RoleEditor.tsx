@@ -1,12 +1,14 @@
 import type { FormEvent } from "react";
 import type { RolesState } from "./useRoles";
-import type { RoleDraft } from "./draft";
+import type { RoleProfile } from "../../api/types";
 import { useRef, useState } from "react";
 import { IconButton } from "../../ui/Icon";
 import { Notice } from "../../ui/Status";
 import { AvatarCropper } from "./AvatarCropper";
+import { ShellSettings } from "./ShellSettings";
+import { ToolCatalog } from "./ToolCatalog";
 
-type TextFieldKey = Exclude<keyof RoleDraft, "memoryRecallEnabled" | "todoSearchEnabled" | "browserUseEnabled" | "otherEnabledTools" | "otherEnabledPlugins" | "otherGrantedCapabilities">;
+type TextFieldKey = keyof RoleProfile | "name" | "description";
 type Field = { key: TextFieldKey; label: string; placeholder?: string; hint?: string; multiline?: boolean; required?: boolean };
 
 const identityFields: Field[] = [
@@ -124,6 +126,8 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
         <small className="field-hint">只允许读取与当前问题相关的事项。</small>
       </label>
     </fieldset>
+    <ShellSettings draft={draft} onChange={setDraft} disabled={locked} />
+    {selected && !creating && <ToolCatalog key={`${selected.id}:${selected.updatedAt}`} roleId={selected.id} />}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {state.importPreview && <section className="role-import-preview" aria-label="角色卡导入预览">
       <div className="role-import-preview-header"><strong>导入预览</strong><button type="button" className="ghost" onClick={state.cancelImport}>取消</button></div>
