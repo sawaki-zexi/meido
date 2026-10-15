@@ -12,6 +12,16 @@
 - 坏元数据/PNG/过大长度/过大 stderr、采集阻塞 deadline、JSON 围栏/重复 key/非有限值/额外动作/错误类型/空值/超字段或总文本预算、provider 工具事件和请求回显错误均得到安全失败。合法文本按 400/80 归一化。
 - 真实阻塞采集、视觉长连接、全局 busy、token/Task/重复取消、role/config/shutdown invalidate；角色/模型 HTTP 修改及删除等真实收尾后才成功。stop 等待 child terminal，DELETE 运行中为 409，stop 后为 204。
 
+## 审查发现与取消修正
+
+Standards 审查在 `bbe41e1` 发现：多个 role/config invalidate、signal 和外层 Task 取消会重复取消观察任务，打断 provider 的 `__anext__` 内部 response/client finally。仅在后面 shield `iterator.aclose()` 不能恢复已被中断的 HTTP 清理，旧实现在真实 peer 仍连接时就归还名额。
+
+修正用同一观察对象持有一次性取消 latch。撤权、signal、外层停止和 capture/vision/overall deadline 都只能首次通知操作取消；后续调用等待原收尾。三个宿主 deadline 使用相同取消入口，避免嵌套 timeout 在慢关闭期间再次注入取消。
+
+新增公开 AgentTool/invalidate 回归保留真实 PNG 子进程、RoutedModelAdapter 和 localhost SSE，只延迟外部 httpcore 的真实连接关闭，以稳定观察慢清理。旧提交出现“observation returned before real HTTP close”红例；修正后连续 role→config→role、signal、重复 Task 取消均等待，另一合法角色保持 busy。另一个用例实际等过 12 秒视觉和 18 秒整体预算，确认 deadline 叠加也不打断 close；释放后 peer 真实断开、首个 worker 终止，下一合法观察能重新采集并成功。此次修正不重复原生桌面采集，不调用外部模型。
+
+修正后的 screen/HTTP、Agent Runtime、工具发现 HTTP 综合命令为 `python -m pytest tests/python/test_screen_perception.py tests/python/test_screen_perception_api.py tests/python/test_screen_perception_native.py tests/python/test_agent_runtime.py tests/python/test_tool_discovery_api.py -q`：99 passed、1 个默认原生 skip。随后独立补充/复跑慢 close 的两种触发和普通视觉 deadline：3 passed。新模块 Ruff、mypy、compileall 通过；这些数量包含重叠用例，不相加。两轴仍待最终修复复核。
+
 ## Windows 受控原生
 
 明确开启 `MEIDO_SCREEN_NATIVE=1` 后单独执行原生用例。测试先建立不透明、置顶、覆盖完整主屏的 Tk 四色窗口，确认尺寸及 5×5 网格点的实际顶层窗口归属；在启动真实采集前再确认覆盖。生产 worker 的图像只发到本机临时 HTTP fixture，fixture 收到的 PNG 在内存解码后精确匹配四个象限标记；不保存截图/base64。finally 销毁窗口、恢复线程 DPI。

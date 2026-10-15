@@ -87,7 +87,19 @@ async def _settle(task: asyncio.Task[_T]) -> _T:
 class _Observation:
     role_id: str
     configuration_id: str
-    task: asyncio.Task[AgentToolResult]
+    task: asyncio.Task[AgentToolResult] | None = None
+    cancellation_requested: bool = False
+    timed_out: bool = False
+
+    def cancel(self, timed_out: bool = False) -> None:
+        # The first cancellation owns unwinding __anext__ and its provider
+        # response/client contexts. Later revocations/deadlines only join it.
+        if not timed_out:
+            self.timed_out = False
+        if not self.cancellation_requested and self.task is not None and not self.task.done():
+            self.cancellation_requested = True
+            self.timed_out = timed_out
+            self.task.cancel()
 
 
 class ScreenPerception:
@@ -169,14 +181,15 @@ class ScreenPerception:
                     or self._configuration_generations.get(configuration.id, 0) != configuration_generation):
                 raise _Failure("configuration_changed")
 
-        task = asyncio.create_task(self._observe(context, configuration, validate))
-        observation = _Observation(context.role_id, configuration.id, task)
+        observation = _Observation(context.role_id, configuration.id)
+        task = asyncio.create_task(self._observe(context, configuration, validate, observation))
+        observation.task = task
         self._active = observation
-        monitor = asyncio.create_task(self._watch(context, task))
+        monitor = asyncio.create_task(self._watch(context, observation))
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
-            task.cancel()
+            observation.cancel()
             try:
                 await _settle(task)
             except asyncio.CancelledError:
@@ -191,10 +204,10 @@ class ScreenPerception:
             # The operation has reaped its process and closed its HTTP iterator.
             self._active = None
 
-    async def _watch(self, context: ToolContext, task: asyncio.Task[AgentToolResult]) -> None:
-        while not task.done():
+    async def _watch(self, context: ToolContext, observation: _Observation) -> None:
+        while observation.task is not None and not observation.task.done():
             if context.signal.cancelled:
-                task.cancel()
+                observation.cancel()
                 return
             await asyncio.sleep(0.025)
 
@@ -210,8 +223,8 @@ class ScreenPerception:
                 gates.append((identifier, revoking))
         try:
             active = self._active
-            if active is not None and (active.role_id == role_id or active.configuration_id == configuration_id):
-                active.task.cancel()
+            if active is not None and active.task is not None and (active.role_id == role_id or active.configuration_id == configuration_id):
+                active.cancel()
                 try:
                     await _settle(active.task)
                 except asyncio.CancelledError:
@@ -227,29 +240,36 @@ class ScreenPerception:
         if self._active is not None:
             await self.invalidate(role_id=self._active.role_id)
 
-    async def _observe(self, context: ToolContext, configuration: ModelConfiguration, validate: Callable[[], None]) -> AgentToolResult:
+    async def _observe(self, context: ToolContext, configuration: ModelConfiguration, validate: Callable[[], None], observation: _Observation) -> AgentToolResult:
         started = monotonic()
+        loop = asyncio.get_running_loop()
+        overall_deadline = loop.call_later(18, observation.cancel, True)
+        stage_deadline = loop.call_later(5, observation.cancel, True)
         try:
-            async with asyncio.timeout(18):
-                validate()
-                async with asyncio.timeout(5):
-                    png, width, height = await self._capture()
-                validate()
-                byte_count = len(png)
-                image = ModelImageBlock("image/png", base64.b64encode(png).decode("ascii"))
-                del png
-                validate()
-                async with asyncio.timeout(12):
-                    text = await self._vision(image, configuration, context)
-                del image
-                validate()
-                summary, activity = _observation_text(text)
-                del text
-                result = json.dumps({"available": True, "interface_summary": summary, "activity_key": activity}, ensure_ascii=False)
-                # Character limits are not byte limits for non-ASCII responses.
-                if len(result.encode("utf-8")) > 4096:
-                    raise _Failure("invalid_observation")
-                return AgentToolResult(result, {"status": "available", "configurationId": configuration.id, "width": width, "height": height, "bytes": byte_count, "elapsedMs": round((monotonic() - started) * 1000)})
+            validate()
+            png, width, height = await self._capture()
+            stage_deadline.cancel()
+            validate()
+            byte_count = len(png)
+            image = ModelImageBlock("image/png", base64.b64encode(png).decode("ascii"))
+            del png
+            validate()
+            stage_deadline = loop.call_later(12, observation.cancel, True)
+            text = await self._vision(image, configuration, context)
+            stage_deadline.cancel()
+            del image
+            validate()
+            summary, activity = _observation_text(text)
+            del text
+            result = json.dumps({"available": True, "interface_summary": summary, "activity_key": activity}, ensure_ascii=False)
+            # Character limits are not byte limits for non-ASCII responses.
+            if len(result.encode("utf-8")) > 4096:
+                raise _Failure("invalid_observation")
+            return AgentToolResult(result, {"status": "available", "configurationId": configuration.id, "width": width, "height": height, "bytes": byte_count, "elapsedMs": round((monotonic() - started) * 1000)})
+        except asyncio.CancelledError:
+            if observation.timed_out:
+                return _error("timeout")
+            raise
         except TimeoutError:
             return _error("timeout")
         except _Failure as error:
@@ -257,6 +277,9 @@ class ScreenPerception:
         except Exception:
             # Provider errors may echo entire requests, including image and key.
             return _error("vision_failed")
+        finally:
+            stage_deadline.cancel()
+            overall_deadline.cancel()
 
     async def _capture(self) -> tuple[bytes, int, int]:
         process = None

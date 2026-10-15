@@ -273,12 +273,105 @@ def test_vision_cancellation_closes_real_http_stream(tmp_path):
         assert requests.disconnected.wait(2), "vision server did not observe client disconnect"
 
 
+@pytest.mark.parametrize("initial_cancel", ["role", "deadline"])
+def test_overlapping_revocations_wait_for_slow_real_http_close(tmp_path, monkeypatch, initial_cancel):
+    from httpcore._async.http11 import AsyncHTTP11Connection
+
+    async def run(url, requests):
+        service, tool, context, roles, models, sessions, processes = observation_host(tmp_path, url)
+        other_configuration = models.create(ModelConfigurationInput(providerId="custom", provider="fixture", baseUrl=url, model="vision-other"))
+        other_role = roles.create(RoleInput(name="Other observer", profile={"profile": "other"}, agentConfig={"screenPerception": {"enabled": True, "visionModelConfigurationId": other_configuration.id}}))
+        other_session = sessions.open_role_session(other_role.id)
+        other_run = AgentRun(runId="other-run", roleId=other_role.id, sessionKey=other_session.sessionKey, status="running", modelSnapshot={"screenPerceptionSource": "desktop_owner"}, startedAt=datetime.now(timezone.utc))
+        sessions.create_run_with_messages(other_run, "observe")
+        other_context = ToolContext(other_role.id, other_session.sessionKey, other_run.runId, CancellationToken())
+        other_tool = ObserveScreenTool(service, other_configuration.id, role_id=other_role.id)
+        original_close = AsyncHTTP11Connection.aclose
+        closing = asyncio.Event()
+        release = asyncio.Event()
+        connections = []
+        interrupted = []
+
+        async def slow_close(connection):
+            connections.append(connection)
+            closing.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                interrupted.append(connection)
+                raise
+            await original_close(connection)
+
+        monkeypatch.setattr(AsyncHTTP11Connection, "aclose", slow_close)
+        started = asyncio.get_running_loop().time()
+        observation = asyncio.create_task(tool.execute({}, context))
+        revocations = []
+        disconnected = False
+        try:
+            async with asyncio.timeout(23):
+                while not requests:
+                    await asyncio.sleep(0.01)
+                if initial_cancel == "role":
+                    revocations.append(asyncio.create_task(service.invalidate(role_id=context.role_id)))
+                await closing.wait()
+                if initial_cancel == "deadline":
+                    # Keep real transport close pending past both the 12-second
+                    # vision budget and the 18-second overall deadline.
+                    await asyncio.sleep(max(0, 18.2 - (asyncio.get_running_loop().time() - started)))
+                identifier = roles.get(context.role_id).agentConfig.screenPerception.visionModelConfigurationId
+                revocations.append(asyncio.create_task(service.invalidate(configuration_id=identifier)))
+                await asyncio.sleep(0.025)
+                revocations.append(asyncio.create_task(service.invalidate(role_id=context.role_id)))
+                await asyncio.sleep(0.025)
+                context.signal.cancel()
+                observation.cancel()
+                await asyncio.sleep(0.025)
+                observation.cancel()
+                await asyncio.sleep(0.025)
+                assert not observation.done(), "observation returned before real HTTP close"
+                assert all(not task.done() for task in revocations), "revocation returned before real HTTP close"
+                assert not interrupted, "repeated cancellation interrupted the transport's cleanup"
+                assert not requests.disconnected.is_set()
+                # Other allowed runs still see the one occupied observation slot.
+                assert json.loads((await other_tool.execute({}, other_context)).content)["error"] == "busy"
+        finally:
+            release.set()
+            await asyncio.gather(observation, *revocations, return_exceptions=True)
+            disconnected = await asyncio.to_thread(requests.disconnected.wait, 2)
+            if not disconnected:
+                # Failure-only fixture cleanup must not make the production
+                # disconnect assertion pass by closing escaped sockets itself.
+                for connection in connections:
+                    await original_close(connection)
+        assert disconnected, "production observation did not close the real peer"
+        assert processes[0].returncode == 0
+        assert not interrupted
+        next_result = await other_tool.execute({}, other_context)
+        assert next_result.is_error is False, next_result.content
+        assert len(processes) == 2 and processes[1].returncode == 0
+
+    with vision_server(hang=True) as (url, requests):
+        asyncio.run(run(url, requests))
+
+
 def test_discarded_thinking_counts_toward_vision_text_budget(tmp_path):
     with vision_server(thinking="private reasoning " * 1100) as (url, _):
         _, tool, context, *_ = observation_host(tmp_path, url)
         result = asyncio.run(tool.execute({}, context))
     assert result.is_error and json.loads(result.content)["error"] == "invalid_observation"
     assert "private reasoning" not in result.content
+
+
+def test_hanging_vision_deadline_returns_timeout_after_real_disconnect(tmp_path):
+    with vision_server(hang=True) as (url, requests):
+        async def run():
+            _, tool, context, _, _, _, processes = observation_host(tmp_path, url)
+            async with asyncio.timeout(16):
+                result = await tool.execute({}, context)
+            assert result.is_error and json.loads(result.content)["error"] == "timeout"
+            assert processes[0].returncode == 0
+        asyncio.run(run())
+        assert requests.disconnected.wait(2)
 
 
 def test_configuration_content_change_discards_otherwise_valid_late_vision_result(tmp_path):

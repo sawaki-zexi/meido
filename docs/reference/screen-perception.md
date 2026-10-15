@@ -22,6 +22,8 @@ Windows 10/11 交互桌面采用独立 Python `-I -B` 进程：受控最小环�
 
 停止或取消会 kill/wait capture，或关闭视觉 async iterator/HTTP 上下文；重复取消仍等待真实资源收尾，才释放全局名额。角色设置、模型内容/密钥变更和删除都 invalidate 旧 generation，并在 HTTP 成功前等待。禁用后重开不能复活旧候选。shutdown 拒绝新观察并收尾。
 
+同一次观察的撤权、signal、外层 Task 和三个 deadline 共享一次取消通知；后续通知只等待，不能在 provider 的 response/client finally 中再次注入取消。即使慢 HTTP 关闭超过后续 deadline，名额仍保留，直到真实连接关闭。
+
 保留既有删除规则：运行中 DELETE 返回 409；主人先 stop 等待收尾，再删除。成功删除在既有 gate 内 invalidate；回滚也不恢复旧候选。取消无法撤回已上传字节，也不承诺安全擦除内部副本或远端遗忘。
 
 ## 结果与限制
