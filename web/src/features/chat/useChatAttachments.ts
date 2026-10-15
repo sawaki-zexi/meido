@@ -28,6 +28,9 @@ export function useChatAttachments(roleId: string | undefined, disabled: boolean
   }, []);
 
   const clear = useCallback(() => setAttachments([]), []);
+  const restore = useCallback((items: ChatAttachment[]) => setAttachments((current) => [
+    ...items.filter((item) => !current.some((existing) => existing.id === item.id)), ...current,
+  ]), []);
 
-  return { attachments, uploading, dragging, setDragging, error, setError, upload, remove, clear };
+  return { attachments, uploading, dragging, setDragging, error, setError, upload, remove, clear, restore };
 }
