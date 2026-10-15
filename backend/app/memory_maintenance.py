@@ -33,12 +33,14 @@ class MemoryMaintenance:
         on_consolidation_committed: Callable[[ConsolidationCommitted], None] | None = None,
         consolidation_provider: Callable[[str, list[Message]], object] | None = None,
         role_exists: Callable[[str], bool] | None = None,
+        messages_provider: Callable[[str, str], list[Message]] | None = None,
     ) -> None:
         self.roles_root = Path(roles_root).resolve()
         self.sessions = sessions
         self.on_consolidation_committed = on_consolidation_committed
         self.consolidation_provider = consolidation_provider
         self.role_exists = role_exists or (lambda role_id: True)
+        self.messages_provider = messages_provider
         self.errors: list[str] = []
         self._draft_overrides: dict[str, dict[str, str]] = {}
 
@@ -75,13 +77,14 @@ class MemoryMaintenance:
         memory_dir.mkdir(parents=True, exist_ok=True)
         (memory_dir / "journal").mkdir(parents=True, exist_ok=True)
 
-        messages = self._committed_messages(self.sessions.context_messages(session_key))
+        messages = self._messages(role_id, session_key)
         cursor_path = memory_dir / ".maintenance.json"
         cursor = self._read_cursor(cursor_path)
         cursor = self._retry_pending_event(cursor_path, cursor, role_id, session_key)
         if "pendingEvent" in cursor and self.on_consolidation_committed is None:
             return
         cursor_snapshot = dict(cursor)
+        cursor = self._context_cursor(cursor, messages, session_key)
         last_sequence = cursor["lastSequence"]
         recent = self._recent_context(messages)
         writes: dict[Path, str] = {memory_dir / "RECENT_CONTEXT.md": recent}
@@ -107,7 +110,7 @@ class MemoryMaintenance:
                     # Keep RECENT_CONTEXT, but leave the consolidation cursor
                     # unchanged so the same input can be retried later.
                     self._before_commit()
-                    latest = self._committed_messages(self.sessions.context_messages(session_key))
+                    latest = self._messages(role_id, session_key)
                     if self._message_signature(latest) != self._message_signature(messages):
                         return
                     if self._read_cursor(cursor_path) != cursor_snapshot:
@@ -126,6 +129,8 @@ class MemoryMaintenance:
                 if source_key not in journal:
                     journal += MemoryDocuments.render_journal_entry(source_key, window[0].sequence, window[-1].sequence)
                 cursor = {"lastSequence": window[-1].sequence, "lastSourceKey": source_key}
+                if window[-1].metadata.get("contextSequenceSource"):
+                    cursor["sequenceSource"] = window[-1].metadata["contextSequenceSource"]
                 event = ConsolidationCommitted(
                     role_id=role_id,
                     session_key=session_key,
@@ -147,14 +152,14 @@ class MemoryMaintenance:
                     journal_path: self._file_signature(journal_path),
                 })
         self._before_commit()
-        latest = self._committed_messages(self.sessions.context_messages(session_key))
+        latest = self._messages(role_id, session_key)
         if self._message_signature(latest) != self._message_signature(messages):
             return
         if self._read_cursor(cursor_path) != cursor_snapshot:
             return
         if any(self._file_signature(path) != signature for path, signature in document_snapshot.items()):
             return
-        if not new_messages and cursor_path.exists() and (memory_dir / "RECENT_CONTEXT.md").exists():
+        if not new_messages and cursor_path.exists() and self._read_text(memory_dir / "RECENT_CONTEXT.md") == recent and cursor == cursor_snapshot:
             return
         self._commit(writes, cursor_path, cursor)
         if event is not None and self.on_consolidation_committed is not None:
@@ -177,14 +182,55 @@ class MemoryMaintenance:
             max_messages = self.RECENT_MESSAGE_LIMIT
         if max_messages < self.RECENT_MESSAGE_LIMIT:
             raise ValueError("max_messages must include the recent context window")
-        messages = self._committed_messages(self.sessions.context_messages(session_key))
+        messages = self._messages(role_id, session_key)
         cursor_path = (self.roles_root / role_id / "memory" / ".maintenance.json").resolve()
-        cursor = self._read_cursor(cursor_path)
+        cursor = self._context_cursor(self._read_cursor(cursor_path), messages, session_key)
         eligible = [message for message in messages if message.sequence > int(cursor["lastSequence"])]
         if len(eligible) <= max_messages:
             return False
         self.maintain(role_id, session_key, force=True)
         return True
+
+    def _messages(self, role_id: str, session_key: str) -> list[Message]:
+        messages = self.messages_provider(role_id, session_key) if self.messages_provider else self.sessions.context_messages(session_key)
+        return self._committed_messages(messages)
+
+    def refresh_recent_context(self, role_id: str, session_key: str) -> bool:
+        """Refresh the current authorised raw-message view without a model call.
+
+        This does not advance a consolidation cursor or change long-term
+        facts. Readers use it after binding changes to avoid stale raw history.
+        """
+
+        if session_key != f"role:{role_id}" or not self.role_exists(role_id):
+            return False
+        memory_dir = MemoryDocuments(self.roles_root).memory_dir(role_id)
+        path = memory_dir / "RECENT_CONTEXT.md"
+        messages = self._messages(role_id, session_key)
+        if not messages and not path.exists():
+            return True
+        recent = self._recent_context(messages)
+        if self._read_text(path) == recent:
+            return True
+        cursor_path = memory_dir / ".maintenance.json"
+        cursor = self._read_cursor(cursor_path)
+        document_signature = self._file_signature(path)
+        self._before_commit()
+        if not self.role_exists(role_id) or self._message_signature(self._messages(role_id, session_key)) != self._message_signature(messages):
+            return False
+        if self._read_cursor(cursor_path) != cursor or self._file_signature(path) != document_signature:
+            return False
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        self._commit({path: recent}, cursor_path, cursor)
+        return True
+
+    @staticmethod
+    def _context_cursor(cursor: dict[str, object], messages: list[Message], session_key: str) -> dict[str, object]:
+        if not messages or messages[-1].metadata.get("contextSequenceSource") != "global-rowid" or cursor.get("sequenceSource") == "global-rowid":
+            return cursor
+        previous = int(cursor.get("lastSequence", 0))
+        mapped = max((message.sequence for message in messages if message.sessionKey == session_key and int(message.metadata.get("sourceSequence", 0)) <= previous), default=0)
+        return {**cursor, "lastSequence": mapped, "sequenceSource": "global-rowid"}
 
     def sync_structured_memory(self, role_id: str, memories: list[object]) -> None:
         MemoryDocuments(self.roles_root).sync_structured_memory(role_id, memories)  # type: ignore[arg-type]
@@ -234,12 +280,30 @@ class MemoryMaintenance:
     @staticmethod
     def _committed_messages(messages: list[Message]) -> list[Message]:
         committed: list[Message] = []
-        for index, message in enumerate(messages[:-1]):
-            following = messages[index + 1]
-            if message.role == "user" and following.role == "assistant" and following.status == "completed":
-                if not is_explicit_todo_request(message.content):
+        sessions: dict[str, list[Message]] = {}
+        for message in messages:
+            sessions.setdefault(message.sessionKey, []).append(message)
+        for transcript in sessions.values():
+            replies = {
+                message.runId: (index, message)
+                for index, message in enumerate(transcript)
+                if message.runId and message.role == "assistant" and message.status == "completed"
+            }
+            for index, message in enumerate(transcript):
+                if message.role != "user" or is_explicit_todo_request(message.content):
+                    continue
+                if message.runId:
+                    matched = replies.get(message.runId)
+                    following = matched[1] if matched is not None and matched[0] > index else None
+                else:
+                    # Legacy transcripts have no run association; their turns
+                    # remain replayable only at the original adjacent boundary.
+                    following = transcript[index + 1] if index + 1 < len(transcript) else None
+                    if following is not None and following.runId is not None:
+                        following = None
+                if following is not None and following.role == "assistant" and following.status == "completed":
                     committed.extend((message, following))
-        return committed
+        return sorted(committed, key=lambda message: message.sequence)
 
     @staticmethod
     def _message_signature(messages: list[Message]) -> tuple[tuple[object, ...], ...]:

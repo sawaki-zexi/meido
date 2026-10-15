@@ -18,6 +18,37 @@ const chatHeading = (name: string) => screen.findByRole("heading", { level: 1, n
 const dialog = (name: string) => screen.findByRole("dialog", { name });
 
 describe("首页", () => {
+  it("导航轨道可打开手机会话，保留角色侧栏并仅突出当前页面", async () => {
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": emptySession,
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [] } }),
+      "GET /api/roles/r1/channels/threads": () => ({ body: { threads: [] } }),
+    });
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    await chatHeading("爱丽丝");
+    const navigation = screen.getByRole("navigation", { name: "页面" });
+    const chatPage = within(navigation).getByRole("button", { name: "对话" });
+    const phonePage = within(navigation).getByRole("button", { name: "手机会话" });
+    expect(navigation).toHaveClass("app-rail");
+    expect(chatPage).toHaveAttribute("aria-current", "page");
+    await user.click(within(navigation).getByRole("button", { name: "搜索角色" }));
+    expect(container.querySelector(".shell")).toHaveClass("show-list");
+    await user.click(phonePage);
+    expect(await chatHeading("爱丽丝 · 渠道会话")).toBeInTheDocument();
+    expect(container.querySelector(".shell")).not.toHaveClass("show-list");
+    expect(phonePage).toHaveAttribute("aria-current", "page");
+    expect(chatPage).not.toHaveAttribute("aria-current");
+    expect(within(navigation).getAllByRole("button", { current: "page" })).toHaveLength(1);
+    expect(within(await roleList()).getByRole("button", { name: /爱丽丝/ })).toBeInTheDocument();
+    await user.click(chatPage);
+    expect(await chatHeading("爱丽丝")).toBeInTheDocument();
+    expect(chatPage).toHaveAttribute("aria-current", "page");
+    expect(phonePage).not.toHaveAttribute("aria-current");
+    expect(within(navigation).getByRole("button", { name: "设置" })).toBeInTheDocument();
+  });
+
   it("从左侧搜索筛选角色，保留列表切换对话并可清除搜索", async () => {
     const { calls } = fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice, bella] } }),
@@ -800,5 +831,29 @@ describe("角色记忆", () => {
     const source = screen.getByText("我喜欢红茶").closest("li")!;
     expect(source).toHaveClass("source-highlight");
     expect(within(source).getByText("记忆来源")).toBeTruthy();
+  });
+
+  it("渠道记忆来源打开当前角色的手机会话并定位消息", async () => {
+    const channelOrigin = { kind: "turn", sessionKey: "thread:phone", messageIds: ["phone-source"], messageRange: [7, 8], stableSourceKey: "turn:phone" };
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": emptySession,
+      "GET /api/roles/r1/memories": () => ({ body: { memories: [{ ...memory, sourceRef: { ...channelOrigin, sourceKeys: [], sources: [channelOrigin] } }] } }),
+      "GET /api/roles/r1/memory-documents": () => ({ body: { documents: [], journals: [] } }),
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [] } }),
+      "GET /api/roles/r1/channels/threads": () => ({ body: { threads: [{ threadId: "phone", sessionKey: "thread:phone", channel: "telegram", chatId: "42", chatType: "private", title: "主人手机", lastActivity: "2026-10-14T00:00:00Z" }] } }),
+      "GET .*threads/phone/messages.*": () => ({ body: { messages: [{ id: "phone-source", sequence: 7, role: "user", content: "手机里我说喜欢红茶", createdAt: "2026-10-14T00:00:00Z", metadata: { threadId: "phone" } }], hasMore: false, nextBefore: null } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    await user.click(screen.getByRole("button", { name: "角色记忆" }));
+    await user.click(within(await screen.findByRole("list", { name: "记忆列表" })).getByRole("button", { name: "定位到消息" }));
+    expect(await screen.findByRole("heading", { name: "爱丽丝 · 渠道会话" })).toBeInTheDocument();
+    const navigation = screen.getByRole("navigation", { name: "页面" });
+    expect(within(navigation).getByRole("button", { name: "手机会话" })).toHaveAttribute("aria-current", "page");
+    expect(within(navigation).getByRole("button", { name: "对话" })).not.toHaveAttribute("aria-current");
+    expect((await screen.findByText("手机里我说喜欢红茶")).closest("li")).toHaveClass("source-highlight");
+    expect(screen.queryByText("来源会话与当前角色不匹配")).not.toBeInTheDocument();
   });
 });
