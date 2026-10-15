@@ -25,6 +25,17 @@ from backend.app.multichannel import MultichannelStore
 from backend.app.models import AgentRun
 
 
+class MemoryCredentials:
+    def __init__(self):
+        self.values = {}
+
+    def get(self, key):
+        return self.values.get(key, "")
+
+    def set(self, key, value):
+        self.values[key] = value
+
+
 @pytest.fixture
 def api(tmp_path, monkeypatch):
     initialize_databases(tmp_path / "data")
@@ -177,7 +188,7 @@ def test_channel_owner_revocation_stops_process_and_seals_original_task_log(api,
     from test_background_shell import command, process_alive
 
     client, roles, sessions, _tasks = api
-    channels = MultichannelStore(sessions.database_path, sessions)
+    channels = MultichannelStore(sessions.database_path, sessions, MemoryCredentials())
     monkeypatch.setattr(main, "multichannel_store", channels)
     role_id = client.post("/api/roles", json={"name": "渠道任务", "profile": {"profile": "设定"}, "agentConfig": {
         "shell": {"enabled": True, "allowedCommands": [sys.executable], "timeoutSeconds": 10}
@@ -247,7 +258,7 @@ def test_channel_task_keeps_original_authority_across_turns_and_cannot_transfer_
     from test_background_shell import command, process_alive
 
     client, roles, sessions, _tasks = api
-    channels = MultichannelStore(sessions.database_path, sessions)
+    channels = MultichannelStore(sessions.database_path, sessions, MemoryCredentials())
     monkeypatch.setattr(main, "multichannel_store", channels)
     role_id = client.post("/api/roles", json={"name": "原来源任务", "profile": {"profile": "设定"}, "agentConfig": {
         "shell": {"enabled": True, "allowedCommands": [sys.executable], "timeoutSeconds": 10}
@@ -321,7 +332,7 @@ def test_group_guest_cannot_claim_owner_shell_from_message_body(api, monkeypatch
     from test_background_shell import command
 
     client, roles, sessions, _tasks = api
-    channels = MultichannelStore(sessions.database_path, sessions)
+    channels = MultichannelStore(sessions.database_path, sessions, MemoryCredentials())
     monkeypatch.setattr(main, "multichannel_store", channels)
     role_id = client.post("/api/roles", json={"name": "群访客", "profile": {"profile": "设定"}, "agentConfig": {
         "shell": {"enabled": True, "allowedCommands": [sys.executable]}

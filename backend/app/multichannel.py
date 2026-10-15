@@ -31,6 +31,7 @@ from .session_manager import public_message
 from .storage import initialize_databases
 
 if TYPE_CHECKING:
+    from .channels.models import InboundEvent
     from .channels.role_snapshot import ChannelRoleSnapshot
 
 
@@ -352,6 +353,14 @@ class MultichannelStore:
                     metadata_json TEXT NOT NULL DEFAULT '{}', first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
                     UNIQUE(account_id, target_id)
                 );
+                CREATE TABLE IF NOT EXISTS channel_member_names (
+                    role_id TEXT NOT NULL, channel TEXT NOT NULL, account_id TEXT NOT NULL,
+                    chat_id TEXT NOT NULL, chat_type TEXT NOT NULL, sender_id TEXT NOT NULL,
+                    name TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+                    PRIMARY KEY(role_id,channel,account_id,chat_id,chat_type,sender_id,name)
+                );
+                CREATE TABLE IF NOT EXISTS channel_member_name_schema (version INTEGER PRIMARY KEY);
+                CREATE INDEX IF NOT EXISTS channel_member_names_role_seen ON channel_member_names(role_id,last_seen DESC);
                 CREATE TABLE IF NOT EXISTS channel_group_settings (
                     role_id TEXT NOT NULL, account_id TEXT NOT NULL, chat_id TEXT NOT NULL,
                     listening INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
@@ -369,6 +378,7 @@ class MultichannelStore:
                 """
             )
             self._migrate_thread_chat_type(db)
+            self._migrate_member_names(db)
             delivery_columns = {row[1] for row in db.execute("PRAGMA table_info(channel_delivery_attempts)")}
             for column in ("source_session_key", "source_run_id", "source_tool_call_id", "source_kind", "account_generation"):
                 if column not in delivery_columns:
@@ -398,6 +408,30 @@ class MultichannelStore:
                     "INSERT OR IGNORE INTO channel_threads(thread_id,session_key,role_id,channel,account_id,chat_id,chat_type,title,last_activity,metadata_json) VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (f"desktop:{role_id}", str(row["session_key"]), role_id, "desktop", "", "desktop", "desktop", "桌面会话", str(row["updated_at"]), "{}"),
                 )
+
+    def _migrate_member_names(self, db: sqlite3.Connection) -> None:
+        """Backfill once from host directories/events; profile names are model text."""
+        if db.execute("SELECT 1 FROM channel_member_name_schema WHERE version=1").fetchone():
+            return
+        for row in db.execute("SELECT * FROM channel_targets WHERE kind='group_member'"):
+            metadata = _loads(row["metadata_json"])
+            self._remember_member_name(db, str(row["role_id"]), str(row["channel"]), str(row["account_id"]),
+                str(metadata.get("group_id") or metadata.get("groupId") or ""), "group", str(row["chat_id"]),
+                str(row["display_name"]), str(row["last_seen"]))
+        for table, condition in (("channel_events", "WHERE e.direction='inbound'"),
+                                 ("channel_listening_records", "")):
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                continue
+            for row in db.execute(
+                "SELECT t.role_id,t.channel,t.account_id,t.chat_id,t.chat_type,e.metadata_json,e.created_at "
+                f"FROM {table} e JOIN channel_threads t ON t.thread_id=e.thread_id {condition}"
+            ):
+                metadata = _loads(row["metadata_json"])
+                sender, name = metadata.get("senderId"), metadata.get("senderName")
+                if isinstance(sender, str) and isinstance(name, str):
+                    self._remember_member_name(db, str(row["role_id"]), str(row["channel"]), str(row["account_id"]),
+                        str(row["chat_id"]), str(row["chat_type"]), sender, name, str(row["created_at"]))
+        db.execute("INSERT INTO channel_member_name_schema VALUES(1)")
 
     @staticmethod
     def _migrate_thread_chat_type(db: sqlite3.Connection) -> None:
@@ -464,6 +498,7 @@ class MultichannelStore:
         self.listening.delete_role(role_id)
         with self._connect() as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            db.execute("DELETE FROM channel_member_names WHERE role_id=?", (role_id,))
             if "channel_member_profiles" in tables:
                 db.execute("DELETE FROM channel_member_profiles WHERE role_id=?", (role_id,))
             if "channel_memory_cursors" in tables:
@@ -673,6 +708,15 @@ class MultichannelStore:
             rows = db.execute("SELECT * FROM channel_accounts ORDER BY role_id, channel, account_id").fetchall()
         return [self._account(row) for row in rows]
 
+    def remember_inbound_member(self, role_id: str, event: InboundEvent) -> None:
+        """Preserve an admitted event's name before directory refresh replaces it."""
+        account = self.get_account(event.account_id)
+        if account is None or (account.role_id, account.channel) != (role_id, event.channel):
+            raise PermissionError("member observation does not belong to this role account")
+        with self._connect() as db:
+            self._remember_member_name(db, role_id, event.channel, event.account_id,
+                event.chat_id, event.chat_type.value, event.sender_id, event.sender_name, _now())
+
     def remember_targets(self, role_id: str, targets: list[Any]) -> None:
         """Persist an adapter's observed/reachable target directory."""
 
@@ -686,7 +730,7 @@ class MultichannelStore:
                 kind = getattr(getattr(target, "kind", None), "value", getattr(target, "kind", ""))
                 capabilities = [getattr(item, "value", str(item)) for item in (getattr(target, "capabilities", ()) or ())]
                 metadata = getattr(target, "metadata", {}) or {}
-                row = db.execute("SELECT first_seen FROM channel_targets WHERE target_id=?", (target_id,)).fetchone()
+                row = db.execute("SELECT first_seen,display_name FROM channel_targets WHERE target_id=?", (target_id,)).fetchone()
                 first_seen = str(row[0]) if row else now
                 account = db.execute("SELECT channel FROM channel_accounts WHERE account_id=? AND role_id=?", (account_id, role_id)).fetchone()
                 if account is None:
@@ -701,6 +745,37 @@ class MultichannelStore:
                      str(getattr(target, "display_name", "")), str(getattr(target, "chat_id", "")),
                      _json(capabilities), _json(metadata), first_seen, now),
                 )
+                if kind == "group_member":
+                    name = str(getattr(target, "display_name", ""))
+                    observed_at = now if row is None or str(row["display_name"]) != name else None
+                    raw_time = metadata.get("name_observed_at")
+                    if isinstance(raw_time, str):
+                        try:
+                            stamp = datetime.fromisoformat(raw_time)
+                            if stamp.tzinfo is not None:
+                                observed_at = min(now, stamp.astimezone(timezone.utc).isoformat())
+                        except ValueError:
+                            pass
+                    # Cached directory entries retain their observation time;
+                    # refreshing another member is not a new name observation.
+                    if observed_at is not None:
+                        self._remember_member_name(db, role_id, str(account["channel"]), account_id,
+                            str(metadata.get("group_id") or metadata.get("groupId") or ""), "group",
+                            str(getattr(target, "chat_id", "")), name, observed_at)
+
+    @staticmethod
+    def _remember_member_name(db: sqlite3.Connection, role_id: str, channel: str, account_id: str,
+                              chat_id: str, chat_type: str, sender_id: str, name: str, now: str) -> None:
+        """Record a host observation, never a model-generated profile name."""
+        if not chat_id or not sender_id or not name.strip():
+            return
+        now = datetime.fromisoformat(now).astimezone(timezone.utc).isoformat()
+        db.execute(
+            "INSERT INTO channel_member_names VALUES(?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(role_id,channel,account_id,chat_id,chat_type,sender_id,name) DO UPDATE SET "
+            "first_seen=min(channel_member_names.first_seen,excluded.first_seen),last_seen=max(channel_member_names.last_seen,excluded.last_seen)",
+            (role_id, channel, account_id, chat_id, chat_type, sender_id, name, now, now),
+        )
 
     def list_targets(self, role_id: str, account_id: str) -> list[Any]:
         """Read one role-owned account's durable target directory."""
@@ -1084,6 +1159,11 @@ class MultichannelStore:
                 "INSERT INTO messages(message_id,session_key,sequence,role,content,status,created_at,message_type,metadata_json) VALUES(?,?,?,?,?,?,?,'text',?)",
                 (message_id, thread.session_key, sequence, role, content, status, now, _json(message_metadata)),
             )
+            if direction == "inbound" and role == "user":
+                sender, name = message_metadata.get("senderId"), message_metadata.get("senderName")
+                if isinstance(sender, str) and isinstance(name, str):
+                    self._remember_member_name(db, thread.role_id, thread.channel, thread.account_id,
+                        thread.chat_id, thread.chat_type, sender, name, now)
             db.execute("UPDATE channel_threads SET last_activity=? WHERE thread_id=?", (now, thread.thread_id))
         message = Message(
             id=message_id,

@@ -7,6 +7,7 @@ import base64
 from dataclasses import replace
 from urllib.parse import unquote
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -178,6 +179,7 @@ class NapCatAdapter(ChannelAdapter):
                 kind=TargetKind.GROUP_MEMBER,
                 display_name=event.sender_name,
                 group_id=event.chat_id,
+                name_observed_at=datetime.now(timezone.utc).isoformat(),
             )
             self._targets[member.id] = member
         return event
@@ -368,6 +370,7 @@ class NapCatAdapter(ChannelAdapter):
                         kind=TargetKind.GROUP_MEMBER,
                         display_name=str(item.get("card") or item.get("nickname", "")),
                         group_id=group_id,
+                        name_observed_at=datetime.now(timezone.utc).isoformat(),
                     )
                     self._targets[member.id] = member
         return list(self._targets.values())
