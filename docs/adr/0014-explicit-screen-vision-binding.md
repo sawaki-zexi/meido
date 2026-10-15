@@ -26,4 +26,4 @@
 - [完整复刻规格](../specs/shiori-tool-parity-spec.md)，P04/T16/D04。
 - [固定 Shiori 源码核验](../research/screen-perception-source-audit.md)。
 
-当前仅记录已批准设计；实现与实际主屏/视觉验收仍待完成。
+按本决定的实现、公开协议/故障进程测试与 Windows 单屏主屏验收见[运行契约](../reference/screen-perception.md)及[验收记录](../research/screen-perception-acceptance-2026-10-16.md)；双屏/混合 DPI/真实锁屏断开仍未验收。总集成两轴审查与最终合并批准另行完成。

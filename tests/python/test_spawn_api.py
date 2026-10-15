@@ -1,6 +1,7 @@
 import pytest
 from backend.app.agent_runtime.types import ToolResultMessage
 from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from test_background_shell_api import MemoryCredentials
 from test_background_shell_api import api as shell_api  # noqa: F401
 
 
@@ -12,7 +13,7 @@ def api(shell_api, tmp_path, monkeypatch):  # noqa: F811
     from backend.app.multichannel import MultichannelStore
     settings = MemorySettingsStore(tmp_path / 'memory-settings.json')
     settings.update(enabled=False)
-    channels = MultichannelStore(shell_api[2].database_path, shell_api[2])
+    channels = MultichannelStore(shell_api[2].database_path, shell_api[2], MemoryCredentials())
     monkeypatch.setattr(main, 'memory_settings_store', settings)
     monkeypatch.setattr(main, 'multichannel_store', channels)
     monkeypatch.setattr(main, 'channel_host', ChannelHost(channels))
@@ -135,7 +136,7 @@ def test_channel_management_and_watchdog_preserve_frozen_actual_source(api, monk
     from backend.app.task_runtime import TaskOrigin
 
     client, roles, sessions, tasks = api
-    channels = MultichannelStore(sessions.database_path, sessions)
+    channels = MultichannelStore(sessions.database_path, sessions, MemoryCredentials())
     monkeypatch.setattr(main, 'multichannel_store', channels)
     role = client.post('/api/roles', json={'name': '渠道委托', 'profile': {'profile': '测试'},
         'agentConfig': {'spawn': {'enabled': True}, 'enabledTools': ['read_file']}}).json()['role']

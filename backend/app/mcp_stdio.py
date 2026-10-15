@@ -37,7 +37,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.validators import validator_for
 from referencing import Registry
 try:
-    schema, value = json.load(sys.stdin)
+    schema, value = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     validator_for(schema, default=Draft202012Validator)(schema, registry=Registry()).validate(value)
 except Exception:
     sys.exit(1)
@@ -101,7 +101,7 @@ async def validate_instance(schema: dict[str, Any], value: object) -> bool:
         await process.wait()
 
     try:
-        payload = json.dumps([schema, value], ensure_ascii=False, allow_nan=False).encode()
+        payload = json.dumps([schema, value], ensure_ascii=False, allow_nan=False).encode("utf-8")
         try:
             await asyncio.wait_for(process.communicate(payload), SCHEMA_VALIDATION_SECONDS)
         except asyncio.TimeoutError:

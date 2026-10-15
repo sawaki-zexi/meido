@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import aclosing
 
 from .anthropic_adapter import AnthropicMessagesAdapter
 from .azure_openai_responses_adapter import AzureOpenAIResponsesAdapter
 from .bedrock_adapter import BedrockConverseAdapter
 from .google_adapter import GoogleGenerativeAdapter
 from .google_vertex_adapter import GoogleVertexAdapter
-from .mistral_adapter import MistralConversationsAdapter
+from .mistral_adapter import MistralConversationsAdapter, _capabilities as mistral_capabilities
 from .model_protocol import (
     ANTHROPIC_MESSAGES_API, BEDROCK_CONVERSE_API, GOOGLE_GENERATIVE_API,
     MISTRAL_CONVERSATIONS_API, OPENAI_COMPLETIONS_API, OPENAI_RESPONSES_API,
@@ -49,6 +50,15 @@ class ModelAdapterRegistry:
             return self._adapters[api]
         except KeyError as error:
             raise ValueError(f"不支持的模型协议: {api}") from error
+
+    def supports_images(self, configuration: ModelConfiguration) -> bool:
+        adapter = self.get(configuration)
+        if configuration.api == MISTRAL_CONVERSATIONS_API:
+            return mistral_capabilities(configuration.model).supports_images
+        capabilities = getattr(adapter, "capabilities", None)
+        options = getattr(adapter, "options", None)
+        capabilities = capabilities or getattr(options, "capabilities", None)
+        return capabilities.supports_images if capabilities is not None else True
 
 
 class RoutedModelAdapter:
@@ -200,10 +210,11 @@ def _legacy_content_blocks(content: object) -> tuple[ModelContentBlock, ...]:
 async def _stream_legacy_structured(adapter, messages, configuration, tools, *, max_tokens):
     from .model_adapter import ModelStreamError, ModelTextDelta, ModelToolCall
     from .model_types import ModelStreamError as RichError, ModelTextDelta as RichTextDelta, ModelToolCallEnd
-    async for event in adapter.stream_rich_messages(_convert_legacy_messages(messages), configuration, tools, max_tokens=max_tokens):
-        if isinstance(event, RichTextDelta):
-            yield ModelTextDelta(event.text)
-        elif isinstance(event, ModelToolCallEnd):
-            yield ModelToolCall(event.call.id, event.call.name, event.call.arguments)
-        elif isinstance(event, RichError):
-            yield ModelStreamError(event.error)
+    async with aclosing(adapter.stream_rich_messages(_convert_legacy_messages(messages), configuration, tools, max_tokens=max_tokens)) as stream:
+        async for event in stream:
+            if isinstance(event, RichTextDelta):
+                yield ModelTextDelta(event.text)
+            elif isinstance(event, ModelToolCallEnd):
+                yield ModelToolCall(event.call.id, event.call.name, event.call.arguments)
+            elif isinstance(event, RichError):
+                yield ModelStreamError(event.error)

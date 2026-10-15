@@ -14,14 +14,34 @@ from backend.app.models import RoleInput, RoleProfile
 from backend.app.multichannel import MultichannelStore
 from backend.app.role_store import RoleStore
 from backend.app.session_store import SessionStore
+from backend.app.task_runtime import TaskRuntime
+
+
+class MemoryCredentials:
+    def __init__(self):
+        self.values = {}
+
+    def get(self, key):
+        return self.values.get(key, "")
+
+    def set(self, key, value):
+        self.values[key] = value
+
+
+@pytest.fixture
+def owned_tasks(tmp_path, monkeypatch):
+    tasks = TaskRuntime(tmp_path / 'tasks')
+    monkeypatch.setattr(main, 'task_runtime', tasks)
+    yield tasks
+    tasks.close()
 
 
 @pytest.mark.parametrize("delivery_status", [DeliveryStatus.SENT, DeliveryStatus.FAILED, DeliveryStatus.UNCERTAIN])
-def test_real_channel_runtime_commits_reply_only_after_confirmed_delivery(tmp_path, monkeypatch, delivery_status):
+def test_real_channel_runtime_commits_reply_only_after_confirmed_delivery(tmp_path, monkeypatch, owned_tasks, delivery_status):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="role", profile=RoleProfile(profile="profile")))
     sessions = SessionStore(tmp_path / "sessions.db")
-    channels = MultichannelStore(tmp_path / "sessions.db", sessions)
+    channels = MultichannelStore(tmp_path / "sessions.db", sessions, MemoryCredentials())
     account = channels.register_channel_account(role.id, "qq", account_id="qq", enabled=True)
     thread = channels.ensure_channel_thread(role.id, "qq", account.account_id, "99", "private")
     code = channels.create_pairing_code(role.id)
@@ -41,6 +61,9 @@ def test_real_channel_runtime_commits_reply_only_after_confirmed_delivery(tmp_pa
             return DeliveryResult(delivery_status, message.target, "receipt" if delivery_status is DeliveryStatus.SENT else None)
 
     class Provider:
+        def __init__(self, adapter, role, configuration, *_args):
+            self.adapter, self.role, self.configuration = adapter, role, configuration
+
         async def stream_response(self, **kwargs):
             yield AssistantDoneEvent(AssistantMessage("actual runtime reply"))
 
@@ -64,7 +87,7 @@ def test_real_channel_runtime_commits_reply_only_after_confirmed_delivery(tmp_pa
     monkeypatch.setattr(main, "group_repository", MultichannelGroupRepository(channels))
     monkeypatch.setattr(main, "channel_host", host)
     monkeypatch.setattr(main, "channel_adapters", {account.account_id: adapter})
-    monkeypatch.setattr(main, "MeidoProvider", lambda *args: Provider())
+    monkeypatch.setattr(main, "MeidoProvider", Provider)
     monkeypatch.setattr(main, "_runtime_tool_candidates", lambda *args, **kwargs: ())
     monkeypatch.setattr(main, "_runtime_capabilities", resolve)
     monkeypatch.setattr(main, "_role_memory_context", lambda *_args: "")

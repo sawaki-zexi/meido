@@ -26,13 +26,24 @@ from backend.app.role_store import RoleStore
 from backend.app.models import RoleInput
 
 
+class MemoryCredentials:
+    def __init__(self):
+        self.values = {}
+
+    def get(self, key):
+        return self.values.get(key, "")
+
+    def set(self, key, value):
+        self.values[key] = value
+
+
 def _context(role: str = "role", session: str = "role:role") -> ToolContext:
     return ToolContext(role, session, "run", CancellationToken())
 
 
 def _store(tmp_path: Path) -> tuple[MultichannelStore, str]:
     sessions = SessionStore(tmp_path / "sessions.db")
-    store = MultichannelStore(tmp_path / "sessions.db", sessions)
+    store = MultichannelStore(tmp_path / "sessions.db", sessions, MemoryCredentials())
     account = store.register_channel_account("role", "qq", account_id="qq-1", enabled=True, allow_group=True)
     group = store.ensure_channel_thread("role", "qq", account.account_id, "g-1", "group", title="Test Group")
     store.remember_targets("role", [
@@ -272,7 +283,7 @@ def test_waiting_group_write_rechecks_cancellation_and_role_before_commit(tmp_pa
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="测试", profile={"profile": "测试角色"}))
     sessions = SessionStore(tmp_path / "sessions.db")
-    store = MultichannelStore(tmp_path / "sessions.db", sessions)
+    store = MultichannelStore(tmp_path / "sessions.db", sessions, MemoryCredentials())
     store.register_channel_account(role.id, "qq", account_id="a", enabled=True, allow_group=True)
     group = store.ensure_channel_thread(role.id, "qq", "a", "100", "group")
     repository = MultichannelGroupRepository(store)

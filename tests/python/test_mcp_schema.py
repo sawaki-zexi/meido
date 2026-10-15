@@ -9,7 +9,30 @@ import pytest
 
 from backend.app.browser_use.process import spawn_process_tree
 from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.mcp_stdio import schema_validator, validate_instance
 from test_mcp_http import main, save_server, setup_host
+
+
+@pytest.mark.parametrize('result', [
+    'plain ASCII',
+    '{"source":"本机RSS唯一源168","title":"中文RSS-168-唯一甲"}',
+    '混合文字、emoji 🐈 与换行\nsecond line',
+])
+def test_schema_worker_validates_utf8_structured_results(result):
+    # This is the feed_query output shape returned by the real RSS server.
+    # Validation must not depend on the subprocess locale or code page.
+    schema = {'type': 'object', 'properties': {'result': {'type': 'string', 'title': 'Result'}},
+              'required': ['result'], 'additionalProperties': False, 'title': 'feed_queryOutput'}
+    value = {'result': result}
+    schema_validator(schema).validate(value)
+
+    async def check():
+        assert await validate_instance(schema, value)
+        assert not await validate_instance(schema, {'result': 168})
+        assert not await validate_instance(schema, {'other': result})
+        assert not await validate_instance(schema, {'result': result, 'extra': True})
+
+    asyncio.run(check())
 
 
 @pytest.mark.parametrize("mode", ["regex_input", "regex_output", "fanout_input"])

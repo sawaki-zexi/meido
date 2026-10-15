@@ -47,11 +47,24 @@ class SpawnToolConfig(BaseModel):
     maxModelOutputChars: int = Field(default=60000, ge=100, le=200000)
 
 
+class ScreenPerceptionConfig(BaseModel):
+    enabled: bool = False
+    visionModelConfigurationId: str | None = None
+
+    @field_validator("visionModelConfigurationId")
+    @classmethod
+    def validate_binding(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("视觉模型连接 ID 不能为空")
+        return value.strip() if value is not None else None
+
+
 class AgentToolConfig(BaseModel):
     shell: ShellToolConfig = Field(default_factory=ShellToolConfig)
     memoryRecall: MemoryRecallToolConfig = Field(default_factory=MemoryRecallToolConfig)
     browserUse: BrowserUseToolConfig = Field(default_factory=BrowserUseToolConfig)
     spawn: SpawnToolConfig = Field(default_factory=SpawnToolConfig)
+    screenPerception: ScreenPerceptionConfig = Field(default_factory=ScreenPerceptionConfig)
     enabledTools: list[str] = Field(default_factory=list)
     enabledPlugins: list[str] = Field(default_factory=list)
     grantedCapabilities: list[str] = Field(default_factory=list)
