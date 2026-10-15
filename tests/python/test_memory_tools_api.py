@@ -25,8 +25,7 @@ from backend.app.storage import initialize_databases
 
 def test_owner_memory_write_recall_forget_roundtrip_uses_real_engine_and_updates_documents(tmp_path, monkeypatch):
     roles = RoleStore(tmp_path / "roles")
-    role = roles.create(RoleInput(name="记忆角色", profile=RoleProfile(profile="设定"), agentConfig=AgentToolConfig(
-        enabledTools=["memorize", "recall_memory", "forget_memory"], memoryRecall=MemoryRecallToolConfig(enabled=True))))
+    role = roles.create(RoleInput(name="记忆角色", profile=RoleProfile(profile="设定")))
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     memories = MemoryStore(tmp_path / "data" / "memory.db")
@@ -41,6 +40,7 @@ def test_owner_memory_write_recall_forget_roundtrip_uses_real_engine_and_updates
             self.requests.append((messages, tools))
             turn = len(self.requests)
             if turn == 1:
+                assert {"memorize", "recall_memory", "forget_memory"} <= {item["function"]["name"] for item in tools}
                 yield ModelToolCall("save", "memorize", {"summary": "主人喜欢海边", "memory_kind": "preference"})
             elif turn == 2:
                 self.item_id = json.loads(next(item["content"] for item in reversed(messages) if item.get("role") == "tool"))["item_id"]
@@ -67,6 +67,12 @@ def test_owner_memory_write_recall_forget_roundtrip_uses_real_engine_and_updates
             "memory_engine": engine, "memory_worker": MemoryWorker(service), "memory_settings_store": settings}.items():
         monkeypatch.setattr(main, name, value)
     client = TestClient(main.app)
+    before = {item["name"]: item for item in client.get(f"/api/roles/{role.id}/tools").json()["tools"]}
+    assert not before["memorize"]["enabled"] and not before["forget_memory"]["enabled"]
+    saved = client.put(f"/api/roles/{role.id}", json={"name": role.name, "profile": role.profile.model_dump(),
+        "agentConfig": {"enabledTools": ["memorize", "forget_memory"], "memoryRecall": {"enabled": True}}})
+    assert saved.status_code == 200
+    assert client.get(f"/api/roles/{role.id}").json()["role"]["agentConfig"]["enabledTools"] == ["memorize", "forget_memory"]
     response = client.post(f"/api/roles/{role.id}/messages", json={"content": "我喜欢海边；用工具保存、核验再撤销该记录。"})
     assert "event: assistant_completed" in response.text
     results = [item for item in sessions.runtime_messages(f"role:{role.id}") if isinstance(item, ToolResultMessage)]
@@ -106,7 +112,13 @@ def test_global_memory_switch_hides_all_tools_and_rejects_manual_enabled_tools(t
             "roles_root": tmp_path / "roles", "role_locks": {}, "memory_store": memories, "memory_service": service,
             "memory_engine": engine, "memory_worker": MemoryWorker(service), "memory_settings_store": settings}.items():
         monkeypatch.setattr(main, name, value)
-    response = TestClient(main.app).post(f"/api/roles/{role.id}/messages", json={"content": "尝试调用"})
+    client = TestClient(main.app)
+    catalog = {item["name"]: item for item in client.get(f"/api/roles/{role.id}/tools").json()["tools"]}
+    for name in ("memorize", "forget_memory"):
+        assert catalog[name]["enabled"] and not catalog[name]["authorized"]
+        assert catalog[name]["reason"] == "全局记忆已关闭"
+        assert catalog[name]["dependency"]["status"] == "unavailable"
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "尝试调用"})
     assert "event: assistant_completed" in response.text
     results = [item for item in sessions.runtime_messages(f"role:{role.id}") if isinstance(item, ToolResultMessage)]
     assert len(results) == 3 and all(item.is_error for item in results)

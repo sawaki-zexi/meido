@@ -176,11 +176,18 @@ def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions
             "name": "发现工具",
             "profile": {"profile": "设定"},
             "agentConfig": {
-                "enabledTools": ["tool_search"],
                 "browserUse": {"enabled": True},
             },
         },
     ).json()["role"]
+    before = client.get(f"/api/roles/{role['id']}/tools").json()
+    assert not next(item for item in before["tools"] if item["name"] == "tool_search")["enabled"]
+    saved = client.put(f"/api/roles/{role['id']}", json={
+        "name": role["name"], "profile": role["profile"],
+        "agentConfig": {"enabledTools": ["tool_search"], "browserUse": {"enabled": True}},
+    })
+    assert saved.status_code == 200
+    assert client.get(f"/api/roles/{role['id']}").json()["role"]["agentConfig"]["enabledTools"] == ["tool_search"]
     catalog = client.get(f"/api/roles/{role['id']}/tools").json()
     title = next(
         item for item in catalog["tools"] if item["name"] == "agent_browser_get_title"

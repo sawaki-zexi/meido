@@ -7,6 +7,8 @@ import { Notice } from "../../ui/Status";
 import { AvatarCropper } from "./AvatarCropper";
 import { ShellSettings } from "./ShellSettings";
 import { ToolCatalog } from "./ToolCatalog";
+import { BasicToolSettings } from "./BasicToolSettings";
+import { draftFromRole, payloadFromDraft } from "./draft";
 
 type TextFieldKey = keyof RoleProfile | "name" | "description";
 type Field = { key: TextFieldKey; label: string; placeholder?: string; hint?: string; multiline?: boolean; required?: boolean };
@@ -31,6 +33,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
   const writable = creating || editing;
   const cropping = Boolean(state.avatarSource || state.cardImageSource);
   const locked = !writable || busy;
+  const toolsChanged = selected !== null && JSON.stringify(payloadFromDraft(draft).agentConfig) !== JSON.stringify(payloadFromDraft(draftFromRole(selected)).agentConfig);
   const [showAdvanced, setShowAdvanced] = useState(!creating);
   const avatarInput = useRef<HTMLInputElement>(null);
   const cardInput = useRef<HTMLInputElement>(null);
@@ -126,8 +129,9 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
         <small className="field-hint">只允许读取与当前问题相关的事项。</small>
       </label>
     </fieldset>
+    <BasicToolSettings draft={draft} onChange={setDraft} disabled={locked} />
     <ShellSettings draft={draft} onChange={setDraft} disabled={locked} />
-    {selected && !creating && <ToolCatalog key={`${selected.id}:${selected.updatedAt}`} roleId={selected.id} />}
+    {selected && !creating && <ToolCatalog key={`${selected.id}:${selected.updatedAt}`} roleId={selected.id} hasUnsavedChanges={toolsChanged} />}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {state.importPreview && <section className="role-import-preview" aria-label="角色卡导入预览">
       <div className="role-import-preview-header"><strong>导入预览</strong><button type="button" className="ghost" onClick={state.cancelImport}>取消</button></div>
