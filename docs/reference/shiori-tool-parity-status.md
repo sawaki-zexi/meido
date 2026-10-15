@@ -43,11 +43,11 @@
 | S03 feed-manage | #168 已完成两轴独立复核并进入集成分支；内置 Skill、动态服务目录/授权和真实公开 HTTP 七动作通过；独立复跑 8 HTTP + 2 原生用例，集成含 2 原生交叉 94 passed，含 RSS/Atom、下一模型请求、fresh list、重启、503 旧缓存与撤权；详见[验收](../research/feed-skill-native-acceptance-2026-10-16.md) | 总 PR 最终验收；主动来源/ACK/通知和 Drift 仍不属于此项完成范围 |
 | S04 meme-manage | #152 已进入集成分支；指令、资源与角色目录边界已有行为测试 | 最终媒体引用与整体验收 |
 | S05 skill-creater | #152 已进入集成分支；HTTP 写入新 Skill 后下一轮发现/显式激活，资源 hash、依赖名、真实 Windows junction 反例通过 | 总 PR 最终回归 |
-| S06 create-drift-skill | 待实现 | Drift 目录创建、发现和真实执行 |
+| S06 create-drift-skill | 待实现；[固定源码依赖核验](../research/proactive-drift-runtime-portability-2026-10-16.md)已明确长期技能创建、后续发现与真实 Drift 消费缺一不可 | Drift 目录创建、发现和真实执行 |
 | S07 codex-delegate | 待实现，依赖 TaskRuntime 和子任务 | 真实 CLI、后台执行、session/结果回读和原上下文回灌 |
-| S08 create-proactive-source | 待实现，依赖 MCP 和主动运行 | 来源创建、信任授权、事件消费、正文与持久 ACK |
-| A01 主动决策 | 待实现；普通工具同名不算主动专用协议 | 来源抓取、候选/兴趣/去重、单次草稿、finish 提交/跳过和 ACK |
-| A02 Drift | 待实现 | 空闲触发、独立目录/预算、受限工具、挂载 MCP、单次推送尝试和真实发送状态收尾 |
+| S08 create-proactive-source | 待实现；固定源码已核实来源产物/信任/ACK 契约，旧 Skill 的 severity 快通道/HyDE 文案不作为当前实现保证 | 来源创建、信任授权、事件消费、正文与持久 ACK |
+| A01 主动决策 | 待实现；[主动运行调研](../research/proactive-drift-runtime-portability-2026-10-16.md)已核验草稿/finish、投递和来源 ACK 的不同事实及恢复缺口；具体规格准备中 | 自主来源许可、候选/兴趣/去重、单次草稿、持久提交/投递/ACK 与独立验收 |
+| A02 Drift | 待实现；固定上游实际为主动 tick 的空输入分支，非 OS 空闲计时器；发送后执行门禁和整体预算须在迁移中补齐 | 具体方案批准、独立目录/预算、受限工具、挂载 MCP、单次推送尝试和真实发送状态收尾 |
 
 剩余渠道差距已拆成可验收后续切片：#166 完整群资料分页、字段保留/清空与真实来源，#167 纯桌面文本/媒体推送均已完成两轴复核并集成。C06 的账号与真实平台验收仍未完成。
 
