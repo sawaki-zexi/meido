@@ -161,6 +161,7 @@ class MeidoProvider:
         configuration: ModelConfiguration | None,
         memory_context: str = "",
         capability_prompt: str = "",
+        *, structured_without_tools: bool = False, max_response_tokens: int | None = None,
     ) -> None:
         self.adapter = adapter
         self.role = role
@@ -168,6 +169,8 @@ class MeidoProvider:
         self.memory_context = memory_context
         self.capability_prompt = capability_prompt
         self._tool_prompt = ""
+        self.structured_without_tools = structured_without_tools
+        self.max_response_tokens = max_response_tokens
 
     def stream_response(
         self,
@@ -175,7 +178,7 @@ class MeidoProvider:
         model: str,
         system: str,
         messages: Sequence[object],
-        tools: Sequence[dict[str, object]],
+        tools: Sequence[Mapping[str, object]],
         signal: CancellationToken,
         session_id: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
@@ -194,7 +197,7 @@ class MeidoProvider:
         rich = getattr(self.adapter, "stream_rich_messages", None)
         if rich is not None:
             return self._stream_rich_structured(system, messages, tools, signal, rich)
-        if tools:
+        if tools or self.structured_without_tools:
             structured = getattr(self.adapter, "stream_structured_messages", None)
             if structured is None:
                 async def unsupported() -> AsyncIterator[ProviderEvent]:
@@ -215,16 +218,10 @@ class MeidoProvider:
                     accepts_cancel_check = "cancel_check" in inspect.signature(rich).parameters
                 except (TypeError, ValueError):
                     accepts_cancel_check = False
-                source = (
-                    rich(
-                        runtime_messages,
-                        self.configuration,
-                        [dict(tool) for tool in tools],
-                        cancel_check=signal.raise_if_cancelled,
-                    )
-                    if accepts_cancel_check
-                    else rich(runtime_messages, self.configuration, [dict(tool) for tool in tools])
-                )
+                options: dict[str, object] = {"cancel_check": signal.raise_if_cancelled} if accepts_cancel_check else {}
+                if self.max_response_tokens is not None and "max_tokens" in inspect.signature(rich).parameters:
+                    options["max_tokens"] = self.max_response_tokens
+                source = rich(runtime_messages, self.configuration, [dict(tool) for tool in tools], **options)
                 async for event in source:
                     signal.raise_if_cancelled()
                     if isinstance(event, RichTextDelta):
@@ -461,10 +458,10 @@ class MeidoProvider:
 
     def _structured_system_prompt(self, system: str) -> str:
         if not system:
-            return self._role_system_prompt()
+            return self.role_system_prompt()
         return "\n\n".join(part for part in (system, self.capability_prompt, self._tool_prompt) if part)
 
-    def _role_system_prompt(self) -> str:
+    def role_system_prompt(self) -> str:
         profile = self.role.profile
         return "\n\n".join(part for part in [
             f"你正在扮演 {self.role.name}。",
@@ -522,7 +519,7 @@ class MeidoProvider:
         yield AssistantDoneEvent(AssistantMessage(content=content))
 
     async def _stream_multimodal(self, messages: Sequence[object], signal: CancellationToken) -> AsyncIterator[ProviderEvent]:
-        prompt = self._role_system_prompt()
+        prompt = self.role_system_prompt()
         wire_messages: list[dict[str, object]] = [{"role": "system", "content": prompt}]
         for message in messages:
             if isinstance(message, UserMessage):

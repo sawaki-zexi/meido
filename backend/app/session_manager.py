@@ -17,7 +17,7 @@ class SessionManager:
             session=session,
             messages=[
                 public_message(message) for message in self.sessions.list_messages(session.sessionKey)
-                if message.messageType in {"text", "proactive_reminder"}
+                if message.messageType in {"text", "proactive_reminder", "internal_completion"}
             ],
         )
 

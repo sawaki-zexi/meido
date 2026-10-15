@@ -133,6 +133,7 @@ def test_saved_shell_and_capability_settings_survive_role_store_restart(role_api
     config = {
         "shell": {"enabled": True, "allowedCommands": [sys.executable], "timeoutSeconds": 47, "maxOutputChars": 32100},
         "memoryRecall": {"enabled": True}, "browserUse": {"enabled": False},
+        "spawn": {"enabled": True, "timeoutSeconds": 45.0, "maxTurns": 5, "maxOutputChars": 12345, "maxModelOutputChars": 54321},
         "enabledTools": ["custom.query"], "enabledPlugins": ["custom"], "grantedCapabilities": ["memory.read"],
     }
     created = role_api.post("/api/roles", json={"name": "原名", "profile": {"profile": "设定"}, "agentConfig": config}).json()["role"]

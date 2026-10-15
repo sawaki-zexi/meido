@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳。批准时间：2026-10-15。#149 实现首个 Shell 垂直切片；spawn、调度和 Coding 执行器仍待对应 Ticket。
+已采纳。批准时间：2026-10-15。#149 实现首个 Shell 垂直切片，#157 在本地实现独立 spawn 与持久完成交付；调度和 Coding 执行器仍待对应 Ticket。
 
 ## 背景
 
@@ -28,3 +28,5 @@
 - [ADR-0003](0003-tau-inspired-agent-runtime-boundary.md)、[ADR-0004](0004-role-scoped-shell-tool-boundary.md)。
 
 当前实现与验收边界见 [后台 Shell Reference](../reference/owned-background-shell.md)；本决定不表示全部后续执行器已经完成。
+
+独立 spawn 的执行、有限工具子集和无工具完成整理见[子任务契约](../reference/owned-subagents.md)，同步不获取普通角色锁，后台完成阶段才协调原角色；本地实现仍待总 PR #162 集成与独立审查。

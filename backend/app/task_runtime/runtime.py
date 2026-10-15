@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -118,6 +119,12 @@ class TaskExecution:
     def progress(self, text: str) -> None:
         self._runtime._update(self.task_id, progress=text[:1000])
 
+    def directory(self) -> Path:
+        """Allocate a host-chosen working directory for this execution."""
+        directory = self._runtime.root / "workspaces" / self.task_id
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
 
 class TaskRuntime:
     """Own persistence, execution, budgets and cancellation beyond a parent run.
@@ -155,14 +162,25 @@ class TaskRuntime:
             log_error TEXT NOT NULL DEFAULT '')""")
         if "log_error" not in {row[1] for row in self._db.execute("PRAGMA table_info(tasks)")}:
             self._db.execute("ALTER TABLE tasks ADD COLUMN log_error TEXT NOT NULL DEFAULT ''")
+        if "completion" not in {row[1] for row in self._db.execute("PRAGMA table_info(tasks)")}:
+            self._db.execute("ALTER TABLE tasks ADD COLUMN completion INTEGER NOT NULL DEFAULT 0")
+        self._db.execute("""CREATE TABLE IF NOT EXISTS task_completions (
+            task_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending',
+            content TEXT NOT NULL DEFAULT '', message_id TEXT, delivery_id TEXT)""")
+        if "error_type" not in {row[1] for row in self._db.execute("PRAGMA table_info(task_completions)")}:
+            self._db.execute("ALTER TABLE task_completions ADD COLUMN error_type TEXT NOT NULL DEFAULT ''")
+        # An interrupted external send may already have reached the platform.
+        self._db.execute("UPDATE task_completions SET status='uncertain' WHERE status='sending'")
         self._db.execute(
             "UPDATE tasks SET status='interrupted', ended_at=? WHERE status IN ('queued','running')", (time.time(),)
         )
         self._db.commit()
+        self._db.execute("INSERT OR IGNORE INTO task_completions(task_id) SELECT task_id FROM tasks WHERE completion=1 AND ended_at IS NOT NULL")
+        self._db.commit()
         self._prune()
 
     def submit(self, origin: TaskOrigin, executor: TaskExecutor, *, budget: TaskBudget, kind: str, description: str = "",
-               authorized: Callable[[], bool] | None = None) -> str:
+               authorized: Callable[[], bool] | None = None, completion: bool = False) -> str:
         if not origin.role_id or not origin.session_key:
             raise ValueError("task owner and original context are required")
         if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", kind):
@@ -189,9 +207,9 @@ class TaskRuntime:
             log_path = log_dir / f"{task_id}.log"
             log_path.touch()
             self._db.execute(
-                "INSERT INTO tasks (task_id,origin,role_id,kind,description,status,budget,started_at,log_path) VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO tasks (task_id,origin,role_id,kind,description,status,budget,started_at,log_path,completion) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (task_id, json.dumps(asdict(origin)), origin.role_id, kind, description[:500], "queued",
-                 json.dumps(asdict(budget)), time.time(), str(log_path)),
+                 json.dumps(asdict(budget)), time.time(), str(log_path), int(completion)),
             )
             self._db.commit()
             active = _Active(executor, authorized)
@@ -199,6 +217,49 @@ class TaskRuntime:
             active.thread = threading.Thread(target=self._run, args=(task_id, active, budget), daemon=True)
             active.thread.start()
             return task_id
+
+    def list(self, origin: TaskOrigin, *, kind: str) -> tuple[TaskSnapshot, ...]:
+        """Observe only executions in the caller's original source scope."""
+        with self._lock:
+            self._prune()
+            items = []
+            for row in self._db.execute("SELECT task_id FROM tasks WHERE role_id=? AND kind=? ORDER BY started_at DESC LIMIT 100",
+                                        (origin.role_id, kind)).fetchall():
+                try:
+                    self._authorize(row[0], origin)
+                except KeyError:
+                    continue
+                items.append(self._snapshot(row[0]))
+            return tuple(items)
+
+    def pending_completions(self) -> tuple[TaskSnapshot, ...]:
+        """Application worker boundary, never exposed directly to agent tools."""
+        with self._lock:
+            return tuple(self._snapshot(row[0]) for row in self._db.execute(
+                "SELECT c.task_id FROM task_completions c JOIN tasks t ON t.task_id=c.task_id WHERE c.status='pending' ORDER BY t.started_at LIMIT 100"
+            ).fetchall())
+
+    def uncertain_completions(self) -> tuple[TaskSnapshot, ...]:
+        """Recover local message status after a crash inside external delivery."""
+        with self._lock:
+            return tuple(self._snapshot(row[0]) for row in self._db.execute(
+                "SELECT c.task_id FROM task_completions c JOIN tasks t ON t.task_id=c.task_id WHERE c.status='uncertain' ORDER BY t.started_at LIMIT 100"
+            ).fetchall())
+
+    def completion(self, task_id: str, origin: TaskOrigin) -> dict[str, object] | None:
+        with self._lock:
+            self._authorize(task_id, origin)
+            row = self._db.execute("SELECT * FROM task_completions WHERE task_id=?", (task_id,)).fetchone()
+            return dict(row) if row else None
+
+    def update_completion(self, task_id: str, *, status: str, content: str = "", message_id: str | None = None,
+                          delivery_id: str | None = None, error_type: str = "") -> None:
+        if status not in {"pending", "sending", "sent", "failed", "uncertain"}:
+            raise ValueError("invalid completion status")
+        with self._lock:
+            self._db.execute("UPDATE task_completions SET status=?,content=?,message_id=COALESCE(?,message_id),delivery_id=COALESCE(?,delivery_id),error_type=? WHERE task_id=?",
+                             (status, content[:100000], message_id, delivery_id, error_type[:100], task_id))
+            self._db.commit()
 
     def query(self, task_id: str, origin: TaskOrigin, *, wait_seconds: float = 0) -> TaskSnapshot:
         with self._lock:
@@ -242,9 +303,11 @@ class TaskRuntime:
     def delete_role(self, role_id: str) -> None:
         self.set_role_enabled(role_id, False)
         with self._lock:
-            for row in self._db.execute("SELECT log_path FROM tasks WHERE role_id=?", (role_id,)).fetchall():
-                self._remove_log(Path(row[0]))
+            for row in self._db.execute("SELECT task_id,log_path FROM tasks WHERE role_id=?", (role_id,)).fetchall():
+                self._remove_log(Path(row[1]))
+                self._remove_directory(row[0])
             self._db.execute("DELETE FROM tasks WHERE role_id=?", (role_id,))
+            self._db.execute("DELETE FROM task_completions WHERE task_id NOT IN (SELECT task_id FROM tasks)")
             self._db.commit()
 
     def reconcile_roles(self, available_roles: set[str]) -> None:
@@ -293,6 +356,8 @@ class TaskRuntime:
             output = outcome.output_tail if outcome.output_tail is not None else self._snapshot(task_id).output
             self._update(task_id, status=active.cancel_reason or outcome.status, exit_code=outcome.exit_code,
                          ended_at=time.time(), output=output[-budget.output_chars:])
+            self._db.execute("INSERT OR IGNORE INTO task_completions(task_id) SELECT task_id FROM tasks WHERE task_id=? AND completion=1", (task_id,))
+            self._db.commit()
             self._active.pop(task_id, None)
             active.done.set()
             self._prune()
@@ -362,7 +427,9 @@ class TaskRuntime:
                     or sizes[role] > self.max_role_log_bytes
                 ):
                     self._remove_log(Path(row["log_path"]))
+                    self._remove_directory(row["task_id"])
                     self._db.execute("DELETE FROM tasks WHERE task_id=?", (row["task_id"],))
+                    self._db.execute("DELETE FROM task_completions WHERE task_id=?", (row["task_id"],))
             self._db.commit()
 
     def _remove_log(self, path: Path) -> None:
@@ -376,3 +443,19 @@ class TaskRuntime:
             # A failed log may have been replaced by an empty directory. Never
             # walk or recursively delete content supplied at this path.
             path.rmdir()
+
+    def _remove_directory(self, task_id: str) -> None:
+        root = self.root / "workspaces"
+        directory = root / task_id
+        if directory.parent != root or not root.resolve().is_relative_to(self.root):
+            raise ValueError("task directory is outside its storage root")
+        if directory.is_symlink():
+            directory.unlink()
+        elif directory.is_junction():
+            directory.rmdir()
+        elif directory.exists():
+            # Check the final absolute target before recursive removal. rmtree
+            # does not traverse child symlinks or Windows directory junctions.
+            if directory.resolve().parent != root.resolve():
+                raise ValueError("task directory is outside its storage root")
+            shutil.rmtree(directory)

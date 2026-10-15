@@ -6,6 +6,7 @@ import { IconButton } from "../../ui/Icon";
 import { Notice } from "../../ui/Status";
 import { AvatarCropper } from "./AvatarCropper";
 import { ShellSettings } from "./ShellSettings";
+import { SpawnSettings } from "./SpawnSettings";
 import { ToolCatalog } from "./ToolCatalog";
 import { BasicToolSettings } from "./BasicToolSettings";
 import { draftFromRole, payloadFromDraft } from "./draft";
@@ -131,6 +132,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
     </fieldset>
     <BasicToolSettings draft={draft} onChange={setDraft} disabled={locked} />
     <ShellSettings draft={draft} onChange={setDraft} disabled={locked} />
+    <SpawnSettings draft={draft} onChange={setDraft} disabled={locked} />
     {selected && !creating && <ToolCatalog key={`${selected.id}:${selected.updatedAt}`} roleId={selected.id} hasUnsavedChanges={toolsChanged} />}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {state.importPreview && <section className="role-import-preview" aria-label="角色卡导入预览">

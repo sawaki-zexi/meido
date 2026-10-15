@@ -164,6 +164,35 @@ class SessionStore:
             connection.execute("UPDATE sessions SET updated_at = ? WHERE session_key = ?", (now, session_key))
         return Message(id=message_id, sessionKey=session_key, sequence=sequence, role=role, content=content, status=status, createdAt=datetime.fromisoformat(now), messageType=message_type, toolCallId=tool_call_id, toolName=tool_name, toolArguments=tool_arguments, toolResult=tool_result, isError=is_error, runId=run_id, metadata=metadata or {})
 
+    def append_task_completion(self, role_id: str, session_key: str, task_id: str, content: str, *, task_status: str) -> Message:
+        """Append one clearly internal completion to an existing original session.
+
+        This application boundary never creates a session or a user turn and
+        cannot drive owner memory maintenance. The deterministic ID closes the
+        crash window between this database and the task outbox acknowledgement.
+        """
+        message_id = f"{session_key}:task-completion:{task_id}"
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            session = connection.execute("SELECT role_id FROM sessions WHERE session_key=?", (session_key,)).fetchone()
+            if session is None and session_key.startswith("thread:"):
+                session = connection.execute("SELECT role_id FROM channel_threads WHERE session_key=?", (session_key,)).fetchone()
+            if session is None or session[0] != role_id:
+                raise PermissionError("original task session no longer exists")
+            existing = connection.execute("SELECT message_id,session_key,sequence,role,content,status,created_at,message_type,tool_call_id,tool_name,tool_arguments_json,tool_result_json,is_error,run_id,metadata_json FROM messages WHERE message_id=?", (message_id,)).fetchone()
+            if existing is not None:
+                return self._message(existing)
+            sequence = connection.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE session_key=?", (session_key,)).fetchone()[0]
+            now = _now()
+            metadata = {"internalEvent": "spawn_completion", "taskId": task_id, "taskStatus": task_status}
+            connection.execute("INSERT INTO messages(message_id,session_key,sequence,role,content,status,created_at,message_type,metadata_json) VALUES(?,?,?,'assistant',?,'completed',?,'internal_completion',?)",
+                               (message_id, session_key, sequence, content, now, _dump(metadata)))
+            connection.execute("UPDATE sessions SET updated_at=? WHERE session_key=?", (now, session_key))
+            if session_key.startswith("thread:"):
+                connection.execute("UPDATE channel_threads SET last_activity=? WHERE session_key=?", (now, session_key))
+        return Message(id=message_id, sessionKey=session_key, sequence=sequence, role="assistant", content=content,
+                       status="completed", createdAt=datetime.fromisoformat(now), messageType="internal_completion", metadata=metadata)
+
     def append_proactive_message_once(
         self,
         session_key: str,
@@ -463,7 +492,7 @@ class SessionStore:
                 # A result without a replayable assistant call is an orphan.
                 index += 1
                 continue
-            elif stored.messageType == "text" and stored.status == "completed":
+            elif stored.messageType in {"text", "internal_completion"} and stored.status == "completed":
                 if stored.role == "user":
                     messages.append(UserMessage(
                         _channel_user_content(stored),
