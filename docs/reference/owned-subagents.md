@@ -42,9 +42,9 @@
 
 内部完成消息明确标注任务 ID 和真实终态，以确定性消息 ID 追加到已存在的原桌面会话或渠道线程。它是 `assistant / internal_completion`，不是主人发言，不创建新会话。SQLite 追加事务保证 outbox 在会话追加后崩溃、重启时也不重复追加。
 
-桌面追加成功后完成状态为 `sent`。渠道通过已有 ChannelHost 目录和 delivery 账本投向原账号、原目标，保留 `pending`、`sent`、`failed`、`uncertain`，不改投其他目标；未确认消息不会作为已送达 transcript 回放。外发前先持久化 `sending`，发送超时、取消或进程中断转为 `uncertain`，不盲目重发。重启同步尚未确认的本地消息状态。来源失效则封存为失败，不向新绑定发送。
+桌面追加成功后完成状态为 `sent`。渠道通过已有 ChannelHost 目录和 delivery 账本投向原账号、原目标，保留 `pending`、`sent`、`failed`、`uncertain`，不改投其他目标；消息初次追加事务即保存实际渠道与 `pending`，未确认消息不会作为已送达 transcript 回放。外发前先持久化 `sending` 和已提交标记；合法 `pending` 回执保留原 attempt，不能再次进入待发送队列。发送超时、取消或进程中断转为 `uncertain`，不盲目重发。重启按权威 outbox 同步全部已记录消息状态，包括收据已提交而本地消息未更新的窗口；本地消息更新失败也不能把已确认收据改成失败。来源失效则封存为失败，不向新绑定发送。
 
-执行状态保留 `succeeded`、`failed`、`cancelled`、`timed_out`、`interrupted`。关闭释放真实模型/进程资源；重启将缺句柄的 queued/running 标记 interrupted，不自动重跑。连续取消不能跳过资源释放：同步 spawn 和子 Shell 等待实际清理完成，之后才允许宿主记录终态。
+执行状态保留 `succeeded`、`failed`、`cancelled`、`timed_out`、`interrupted`。关闭释放真实模型/进程资源；重启将缺句柄的 queued/running 标记 interrupted，不自动重跑。连续取消不能跳过资源释放：子执行器只发起一次取消，后续取消等待已有清理；同步 spawn 和子 Shell 等待实际清理完成，之后才允许宿主记录终态。
 
 未交付的 `pending/sending` 完成事件连同任务、日志和目录保留，避免父锁被占用或应用关闭期间被普通保留期/配额清理静默丢弃；它们仍占用每角色记录数和日志总预算。容量被占满时拒绝新任务，直到已有完成交付或失效，而不无限扩大存储。已确认、确定失败或 uncertain 的记录沿用正常保留期；角色删除会清理全部归属数据。
 

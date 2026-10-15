@@ -335,3 +335,72 @@ def test_repeated_foreground_cancel_waits_for_owned_cleanup_after_real_process(t
             await asyncio.gather(foreground, return_exceptions=True)
             tasks.close()
     asyncio.run(run())
+
+
+def test_concurrent_manage_cancel_waits_for_provider_tcp_cleanup(tmp_path):
+    import socket
+    import threading
+    listener = socket.socket()
+    listener.bind(('127.0.0.1', 0))
+    listener.listen()
+    connected, peer_closed, stop = threading.Event(), threading.Event(), threading.Event()
+    entered, release = threading.Event(), threading.Event()
+    def serve():
+        connection, _ = listener.accept()
+        connected.set()
+        connection.settimeout(.05)
+        with connection:
+            while not stop.is_set():
+                try:
+                    if connection.recv(1) == b'':
+                        peer_closed.set()
+                        return
+                except socket.timeout:
+                    pass
+    server = threading.Thread(target=serve, daemon=True)
+    server.start()
+    class Provider:
+        async def stream_response(self, **kwargs):
+            _reader, writer = await asyncio.open_connection('127.0.0.1', listener.getsockname()[1])
+            try:
+                await asyncio.sleep(30)
+                yield AssistantDoneEvent(AssistantMessage('late'))
+            finally:
+                entered.set()
+                while not release.is_set():
+                    await asyncio.sleep(.01)
+                writer.close()
+                await writer.wait_closed()
+    async def wait_until(event):
+        async with asyncio.timeout(3):
+            while not event.is_set():
+                await asyncio.sleep(.01)
+    async def run():
+        tasks, context, _tool, manager, result = await delegate(tmp_path, Provider())
+        task_id = result.details['taskId']
+        calls = []
+        try:
+            await wait_until(connected)
+            calls.append(asyncio.create_task(manager.execute({'action': 'cancel', 'job_id': task_id}, context)))
+            await wait_until(entered)
+            for _ in range(3):
+                calls.append(asyncio.create_task(manager.execute({'action': 'cancel', 'job_id': task_id}, context)))
+                await asyncio.sleep(.03)
+                assert all(not call.done() for call in calls), 'cancel returned before provider released its owned TCP connection'
+                assert tasks.query(task_id, TaskOrigin(context.role_id, context.session_key)).ended_at is None
+                assert not peer_closed.is_set()
+            release.set()
+            results = await asyncio.wait_for(asyncio.gather(*calls), 3)
+            assert all(item.details['status'] == 'cancelled' for item in results)
+            await wait_until(peer_closed)
+        finally:
+            release.set()
+            await asyncio.gather(*calls, return_exceptions=True)
+            tasks.close()
+    try:
+        asyncio.run(run())
+    finally:
+        release.set()
+        stop.set()
+        listener.close()
+        server.join(1)

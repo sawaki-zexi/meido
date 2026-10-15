@@ -28,13 +28,14 @@ class TaskCompletionWorker:
             self._task = None
 
     async def _run(self) -> None:
-        for snapshot in self.tasks.uncertain_completions():
+        for snapshot in self.tasks.recorded_completions():
             retained = self.tasks.completion(snapshot.task_id, snapshot.origin)
             message_id = retained.get("message_id") if retained else None
             message = next((item for item in self.sessions.list_messages(snapshot.origin.session_key) if item.id == message_id), None)
-            if message is not None and message.metadata.get("deliveryStatus") == "pending":
+            if message is not None and snapshot.origin.source_account_id and retained is not None:
                 self.sessions.update_message(message.id, message.content, "completed", metadata={**message.metadata,
-                    "deliveryStatus": "uncertain"})
+                    "channel": str(json.loads(snapshot.origin.source_authority_json).get("channel", "")),
+                    "deliveryStatus": retained["status"], "deliveryAttemptId": retained["delivery_id"]})
         while True:
             for snapshot in self.tasks.pending_completions():
                 lock = self.lock_for(snapshot.origin.role_id)
@@ -95,8 +96,16 @@ class TaskCompletionWorker:
             raise
         except Exception as error:
             retained = self.tasks.completion(task_id, origin)
-            status = "uncertain" if retained and retained["status"] == "sending" else "failed"
+            # A local message acknowledgement failure cannot contradict a
+            # receipt already committed in the authoritative outbox.
+            status = "failed"
+            if retained is not None:
+                if retained["status"] == "sending":
+                    status = "uncertain"
+                elif retained["dispatched"]:
+                    status = str(retained["status"])
             self.tasks.update_completion(task_id, status=status, content=content, error_type=type(error).__name__)
             if message is not None and origin.source_account_id:
                 self.sessions.update_message(message.id, content, "completed", metadata={**message.metadata,
-                    "channel": str(json.loads(origin.source_authority_json).get("channel", "")), "deliveryStatus": status})
+                    "channel": str(json.loads(origin.source_authority_json).get("channel", "")), "deliveryStatus": status,
+                    "deliveryAttemptId": retained["delivery_id"] if retained else None})

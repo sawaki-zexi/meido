@@ -185,6 +185,13 @@ class SessionStore:
             sequence = connection.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE session_key=?", (session_key,)).fetchone()[0]
             now = _now()
             metadata = {"internalEvent": "spawn_completion", "taskId": task_id, "taskStatus": task_status}
+            channel = connection.execute("SELECT channel FROM channel_threads WHERE session_key=? AND role_id=?", (session_key, role_id)).fetchone() if session_key.startswith("thread:") else None
+            if session_key.startswith("thread:") and channel is None:
+                raise PermissionError("original task channel no longer exists")
+            if channel is not None:
+                # The very first durable row must already be excluded from
+                # delivered history, including a crash before the outbox ack.
+                metadata.update({"channel": channel[0], "deliveryStatus": "pending"})
             connection.execute("INSERT INTO messages(message_id,session_key,sequence,role,content,status,created_at,message_type,metadata_json) VALUES(?,?,?,'assistant',?,'completed',?,'internal_completion',?)",
                                (message_id, session_key, sequence, content, now, _dump(metadata)))
             connection.execute("UPDATE sessions SET updated_at=? WHERE session_key=?", (now, session_key))

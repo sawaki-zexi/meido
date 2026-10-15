@@ -163,6 +163,7 @@ class SpawnExecutor:
         self.process: ProcessExecutor | None = None
         self.shell_arguments: Mapping[str, object] | None = None
         self.guard = threading.Lock()
+        self._cancel_requested = False
 
     def is_authorized(self) -> bool:
         if not self.authorized():
@@ -175,10 +176,12 @@ class SpawnExecutor:
             if (definition := self.frozen.definition(declaration.name)) is not None)
 
     def cancel(self) -> None:
-        self.signal.cancel()
-        if self.process is not None:
-            self.process.cancel()
         with self.guard:
+            if self._cancel_requested:
+                return
+            self._cancel_requested = True
+            self.signal.cancel()
+            process = self.process
             if self.loop is not None and self.running is not None and not self.loop.is_closed():
                 try:
                     self.loop.call_soon_threadsafe(self.running.cancel)
@@ -186,6 +189,8 @@ class SpawnExecutor:
                     # asyncio.run may close its loop between the check and
                     # this cross-thread handoff after execution has finished.
                     pass
+        if process is not None:
+            process.cancel()
 
     def run(self, execution: TaskExecution) -> TaskOutcome:
         try:

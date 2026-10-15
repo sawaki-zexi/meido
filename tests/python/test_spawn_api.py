@@ -298,7 +298,7 @@ def test_real_http_model_parent_and_child_use_independent_transcripts_and_frozen
         worker.join(2)
 
 
-@pytest.mark.parametrize('delivery', ['sent', 'failed', 'uncertain', 'revoked', 'recover'])
+@pytest.mark.parametrize('delivery', ['sent', 'pending', 'failed', 'uncertain', 'revoked', 'recover'])
 def test_background_channel_completion_uses_original_delivery_ledger_without_replay(api, monkeypatch, delivery):
     import asyncio
     from datetime import datetime, timezone
@@ -343,6 +343,8 @@ def test_background_channel_completion_uses_original_delivery_ledger_without_rep
                 raise TimeoutError('controlled fixture timeout')
             if delivery == 'failed':
                 raise PlatformRejectedError('controlled fixture rejection')
+            if delivery == 'pending':
+                return DeliveryResult(DeliveryStatus.PENDING, message.target, 'platform-completion')
             return DeliveryResult(DeliveryStatus.SENT, message.target, 'platform-completion')
     adapter = Adapter()
     main.channel_host.register(adapter)
@@ -384,9 +386,11 @@ def test_background_channel_completion_uses_original_delivery_ledger_without_rep
         sessions.update_run(parent.runId, status='completed', ended_at=datetime.now(timezone.utc))
         lock.release()
         deadline = asyncio.get_running_loop().time() + 3
-        while tasks.completion(task_id, origin)['status'] in {'pending', 'sending'}:
+        while tasks.completion(task_id, origin)['status'] in {'pending', 'sending'} and not (delivery == 'pending' and adapter.calls):
             assert asyncio.get_running_loop().time() < deadline
             await asyncio.sleep(.02)
+        if delivery == 'pending':
+            await asyncio.sleep(.2)
         assert tasks.completion(task_id, origin)['status'] == expected, str(tasks.completion(task_id, origin))
         messages = [item for item in sessions.list_messages(thread.session_key) if item.messageType == 'internal_completion']
         if delivery == 'revoked':

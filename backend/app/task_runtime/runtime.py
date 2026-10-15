@@ -169,6 +169,11 @@ class TaskRuntime:
             content TEXT NOT NULL DEFAULT '', message_id TEXT, delivery_id TEXT)""")
         if "error_type" not in {row[1] for row in self._db.execute("PRAGMA table_info(task_completions)")}:
             self._db.execute("ALTER TABLE task_completions ADD COLUMN error_type TEXT NOT NULL DEFAULT ''")
+        if "dispatched" not in {row[1] for row in self._db.execute("PRAGMA table_info(task_completions)")}:
+            self._db.execute("ALTER TABLE task_completions ADD COLUMN dispatched INTEGER NOT NULL DEFAULT 0")
+            # Older versions stored a message ID only when entering a send.
+            # A pending receipt is not permission to issue another attempt.
+            self._db.execute("UPDATE task_completions SET dispatched=1 WHERE message_id IS NOT NULL")
         # An interrupted external send may already have reached the platform.
         self._db.execute("UPDATE task_completions SET status='uncertain' WHERE status='sending'")
         self._db.execute(
@@ -240,14 +245,14 @@ class TaskRuntime:
         """Application worker boundary, never exposed directly to agent tools."""
         with self._lock:
             return tuple(self._snapshot(row[0]) for row in self._db.execute(
-                "SELECT c.task_id FROM task_completions c JOIN tasks t ON t.task_id=c.task_id WHERE c.status='pending' ORDER BY t.started_at LIMIT 100"
+                "SELECT c.task_id FROM task_completions c JOIN tasks t ON t.task_id=c.task_id WHERE c.status='pending' AND c.dispatched=0 ORDER BY t.started_at LIMIT 100"
             ).fetchall())
 
-    def uncertain_completions(self) -> tuple[TaskSnapshot, ...]:
-        """Recover local message status after a crash inside external delivery."""
+    def recorded_completions(self) -> tuple[TaskSnapshot, ...]:
+        """Reconcile local messages with every durably recorded delivery state."""
         with self._lock:
             return tuple(self._snapshot(row[0]) for row in self._db.execute(
-                "SELECT c.task_id FROM task_completions c JOIN tasks t ON t.task_id=c.task_id WHERE c.status='uncertain' ORDER BY t.started_at LIMIT 100"
+                "SELECT c.task_id FROM task_completions c JOIN tasks t ON t.task_id=c.task_id WHERE c.message_id IS NOT NULL ORDER BY t.started_at"
             ).fetchall())
 
     def completion(self, task_id: str, origin: TaskOrigin) -> dict[str, object] | None:
@@ -261,8 +266,8 @@ class TaskRuntime:
         if status not in {"pending", "sending", "sent", "failed", "uncertain"}:
             raise ValueError("invalid completion status")
         with self._lock:
-            self._db.execute("UPDATE task_completions SET status=?,content=?,message_id=COALESCE(?,message_id),delivery_id=COALESCE(?,delivery_id),error_type=? WHERE task_id=?",
-                             (status, content[:100000], message_id, delivery_id, error_type[:100], task_id))
+            self._db.execute("UPDATE task_completions SET status=?,content=?,message_id=COALESCE(?,message_id),delivery_id=COALESCE(?,delivery_id),error_type=?,dispatched=MAX(dispatched,?) WHERE task_id=?",
+                             (status, content[:100000], message_id, delivery_id, error_type[:100], int(status == "sending"), task_id))
             self._db.commit()
 
     def query(self, task_id: str, origin: TaskOrigin, *, wait_seconds: float = 0) -> TaskSnapshot:

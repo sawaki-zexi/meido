@@ -18,6 +18,8 @@
 - 应用关闭将正在执行的子任务标为 interrupted，重开只回传中断事实，子模型调用计数不增加，不盲重跑。
 - 连续取消回归使用真实 Shell 输出和外部模型 cleanup 屏障：旧单次 shield 会提前结束前台工具；修复后连续三次取消仍等资源释放，释放前 ended_at 为空，之后才记录 cancelled。
 - 保留额度回归先证实旧清理会用新任务挤掉 pending 事件。修复后 pending/sending 持续占用有限额度，容量满拒绝新任务，普通过期查询也不丢未投结果。
+- 两路独立审查发现跨库完成状态窗口、子 provider 连续取消和合法 pending 回执重发。新增真实 SQLite/TaskRuntime/ChannelHost/TCP 回归首先得到 13 failed / 5 passed；修复后同组 18 passed。初次消息事务即写渠道/pending，outbox 另持久化已提交标记，重启按所有已记录收据恢复消息，pending 不重发。旧版本 schema 迁移也保留已提交意愿。
+- 另以本地消息确认写入一次 OSError 先复现已发送被改成 failed；修复后持久 sent/attempt 保留，消息可恢复且发送计数始终为一。连续四个管理取消在真实 localhost TCP 的 provider finally 屏障前保持未终态，释放连接后才共同返回 cancelled。
 - 网页独立启用、有限预算保存、重新打开和关闭保留配置，以及原有 11 项基础工具、Shell 和未知配置保留均通过公开 React 操作验证。后端专用关闭不能被 enabledTools 中同名项绕过。
 
 ## 检查记录
@@ -27,6 +29,8 @@
 | 检查 | 结果 |
 | --- | --- |
 | 最终独立子任务行为与公开 API 全组 | 35 passed |
+| 审查修复后 spawn / API / 完成恢复 / 后台 Shell / 工具发现 | 90 passed |
+| 完成恢复 / 角色能力 / 能力层交叉组（与上组重叠） | 32 passed |
 | spawn、spawn API、后台 Shell、Shell API、来源授权、ChannelHost、角色能力、工具发现 API、成员 HTTP 交叉组 | 107 passed；其后新增的 recovery 参数场景所在完整渠道完成组另为 5 passed |
 | 全部角色管理 React 用例 | 5 files / 16 tests passed |
 | npm run build | tsc --noEmit 与 Vite 生产构建通过 |
@@ -34,5 +38,7 @@
 | mypy：spawn_tool、task_runtime/completion、task_runtime/runtime、models；follow-imports=silent | 4 files，无错误 |
 | compileall：backend、tests；git diff --check | 通过 |
 | 五份新增/修改契约、手册和 ADR 的相对链接 | 全部存在 |
+
+新增持久恢复证据见[完成恢复行为测试](../../tests/python/test_spawn_completion_recovery.py)。以上 35 / 107 项为首次提交阶段记录；90 / 32 项为独立审查修复阶段记录，不相加为唯一总数。修复仍待独立两轴复核。
 
 扩大到现有 MeidoProvider / main / SessionStore 的全模块 mypy 检查仍有类型错误，未宣称全仓 mypy 通过；仓库 CI 的 Python gate 为 compileall 与 pytest。本票没有调用真实付费模型、真实平台账号或真实凭据；渠道回执是本地受控平台边界，不能解释为真实平台收件证据。完整 76 工具、调度、Coding Agent、桌面/屏幕和其余 Skills 仍由其他范围推进。
