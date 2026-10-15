@@ -78,7 +78,7 @@ def main() -> int:
                     continue
                 copy_tree(item, target / item.name, top=False)
             elif item.is_file():
-                if item.name.lower().endswith(("-wal", "-shm")):
+                if item.name.lower().endswith(("-wal", "-shm", "-journal")):
                     continue
                 copy_file(item, target / item.name)
 

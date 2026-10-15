@@ -122,6 +122,29 @@ def test_backup_excludes_top_level_test_directories_and_sqlite_sidecars(local_se
     assert not list(snapshot.rglob("*-shm"))
 
 
+def test_backup_excludes_active_rollback_journal_and_preserves_committed_data(local_settings, tmp_path):
+    settings, config = local_settings
+    database = Path(settings["dataDir"]) / "sessions.db"
+    journal = database.with_name("sessions.db-journal")
+    with closing(sqlite3.connect(database)) as writer:
+        writer.execute("PRAGMA journal_mode=DELETE")
+        writer.execute("CREATE TABLE messages (content TEXT)")
+        writer.execute("INSERT INTO messages VALUES ('committed message')")
+        writer.commit()
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("UPDATE messages SET content = 'uncommitted change'")
+        assert journal.is_file()
+        original_journal = journal.read_bytes()
+        result = run_backup(config, tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert journal.read_bytes() == original_journal
+        assert writer.execute("SELECT content FROM messages").fetchall() == [("uncommitted change",)]
+        snapshot = next(Path(settings["backupRoot"]).iterdir())
+        assert not list(snapshot.rglob("*-journal"))
+        with closing(sqlite3.connect(snapshot / "data/sessions.db")) as copied:
+            assert copied.execute("SELECT content FROM messages").fetchall() == [("committed message",)]
+
+
 @pytest.mark.parametrize("field", ["dataDir", "rolesDir", "ownerKnowledgeDir", "browserUseDataDir"])
 def test_missing_source_keeps_an_incomplete_snapshot(local_settings, tmp_path, field):
     settings, config = local_settings
