@@ -343,10 +343,15 @@ class ScheduleApplication:
             try:
                 await self._advance(plan, occurrence)
             except PermissionError:
-                if occurrence['dispatched']:
-                    self._update(occurrence['id'], error='original session was removed', synced=1)
-                else:
-                    self._update(occurrence['id'], delivery='revoked', error='original session was removed', synced=1)
+                try:
+                    if occurrence['dispatched']:
+                        self._update(occurrence['id'], error='original session was removed', synced=1)
+                    else:
+                        self._update(occurrence['id'], delivery='revoked', error='original session was removed', synced=1)
+                except (sqlite3.OperationalError, OSError):
+                    # Leave the durable occurrence and cleanup obligation
+                    # available for the next tick.
+                    continue
             except (sqlite3.OperationalError, OSError):
                 continue
 

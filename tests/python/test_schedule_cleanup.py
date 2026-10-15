@@ -240,3 +240,74 @@ def test_temporary_role_disable_keeps_unknown_task_cleanup_until_delete_rolls_ba
     assert app.tasks.list(origin, kind='schedule') == ()
     assert sessions.list_messages(origin.session_key) == []
     assert reopened.list(origin)[0]['latestOccurrence']['deliveryStatus'] == 'revoked'
+
+
+def test_worker_retries_permission_error_persistence_busy_then_acknowledges_and_delivers_other_plan(system, monkeypatch, tmp_path):
+    from threading import Event
+    from backend.app.task_runtime import TaskOrigin
+    factory, sessions, now, allowed, origin = system
+    app = factory()
+    app.tasks.retention_seconds = -1
+    executions = []
+    class Executor(ProcessExecutor):
+        def is_authorized(self):
+            return True
+    async def execute(plan):
+        executions.append(plan['id'])
+        return Executor([sys.executable, '-c', 'print("secondary-handler-recovery")'], tmp_path, {})
+    monkeypatch.setattr(app, 'execute', execute)
+    app.create(origin, {'tier': 'soft', 'trigger': 'after', 'when': '1s', 'prompt': 'bounded fixture'},
+        received_at=now[0], received_source='hostReceivedAt', frozen={})
+    sessions.open_role_session('other')
+    other = TaskOrigin('other', 'role:other', 'other-parent', 'other-call')
+    app.create(other, {'tier': 'instant', 'trigger': 'after', 'when': '2s', 'message': 'other-plan-proof'},
+        received_at=now[0], received_source='hostReceivedAt', frozen={})
+    submit = app.tasks.submit
+    def lost_receipt(*args, **kwargs):
+        task_id = submit(*args, **kwargs)
+        assert app.tasks.query(task_id, origin, wait_seconds=3).ended_at is not None
+        raise OSError('task handover receipt lost')
+    monkeypatch.setattr(app.tasks, 'submit', lost_receipt)
+    now[0] += 1
+    asyncio.run(app.tick())
+    assert len(app.tasks.list(origin, kind='schedule')) == 1
+    app.authorized = lambda plan: plan['role_id'] != origin.role_id or allowed[0]
+    allowed[0] = False
+    app.tasks.set_role_enabled(origin.role_id, False)
+    entered, blockers = Event(), []
+    original_list = app.tasks.list
+    def concurrent_writer(*args, **kwargs):
+        if not entered.is_set():
+            blocker = sqlite3.connect(sessions.database_path, check_same_thread=False)
+            blocker.execute('BEGIN IMMEDIATE')
+            blockers.append(blocker)
+            entered.set()
+        return original_list(*args, **kwargs)
+    monkeypatch.setattr(app.tasks, 'list', concurrent_writer)
+    async def run():
+        app.start()
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            # Keep the real writer lock beyond the schedule connection's busy
+            # timeout, including the PermissionError handler's second write.
+            await asyncio.sleep(.15)
+            for blocker in blockers:
+                blocker.rollback()
+                blocker.close()
+            blockers.clear()
+            app.tasks.set_role_enabled(origin.role_id, True)
+            allowed[0] = True
+            now[0] += 1
+            deadline = asyncio.get_running_loop().time() + 2
+            while not sessions.list_messages(other.session_key) or original_list(origin, kind='schedule'):
+                assert asyncio.get_running_loop().time() < deadline, 'shared worker must resume both delivery and retained-result cleanup'
+                await asyncio.sleep(.02)
+            assert [message.content for message in sessions.list_messages(other.session_key)] == ['other-plan-proof']
+            assert sessions.list_messages(origin.session_key) == []
+            assert len(executions) == 1
+        finally:
+            for blocker in blockers:
+                blocker.rollback()
+                blocker.close()
+            await app.close()
+    asyncio.run(run())

@@ -47,6 +47,14 @@ soft现在从claim起保存清理责任，taskId与dirty同事务关联；所有
 
 本轮完整专项在上轮命令加入`tests/python/test_schedule_cleanup.py`：**191 passed**（新增14项）；必要共享消费者原命令：**84 passed**。5源mypy、Ruff、compileall、改动文档相对链接和diff检查通过。共享mypy与固定cb6347e仍为83条错误逐条一致（另14条note也一致），新增0、移除0；本轮无前端或其他共享生产文件改动。
 
+## ef3af2b复核后的错误处理保护
+
+ef3af2b两轴复核中，Spec发现PermissionError处理分支自身写入遭SQLite busy会逸出共享worker，释放锁和恢复角色后也不再推进。外部原探针先复现worker以OperationalError终止；窄修复只在该分支持久化写入处保护既有OperationalError/OSError可重试边界，保留原occurrence和清理责任。相同原探针修复后worker持续运行。
+
+新增真实行为回归先红后绿：实际ProcessExecutor完成而taskId回执丢失、角色临时disabled时独立SQLite writer持锁，释放锁并恢复角色后，同一worker完成原任务ACK，另一角色计划实际桌面送达一次，原执行不重跑。此前固定ef3af2b的191项专项和84项共享回归证据继续保留，本次仅按错误分支选择受影响测试和静态检查，不重复全前端或全后端。
+
+`python -m pytest tests/python/test_schedules.py tests/python/test_schedule_cleanup.py tests/python/test_schedule_cancellation.py tests/python/test_schedules_authority.py tests/python/test_task_runtime_handover.py -q`：**74 passed**。相关5源mypy、变更源码/测试Ruff、compileall、文档相对链接和diff检查通过。
+
 ## 限制与尚待完成
 
 模型/渠道/凭据/文件/数据库均为临时本地fixture，没有真实平台收件、付费模型或原生桌面操作。pending/uncertain只能反映平台实际收据，不虚构确认API。仍需仓库规范/需求规格两轴复核和总集成交叉检查；未推送、未合并、未关闭Issue。
