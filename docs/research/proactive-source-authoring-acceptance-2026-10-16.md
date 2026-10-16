@@ -1,6 +1,6 @@
 # 主动来源作者流程本地验收
 
-状态：当前 / #178 最终源0eb8ea4完成完整两轴及修正复核；准确总集成与CI进行中。
+状态：当前 / #178 生产源0eb8ea4与后续ACK测试修正fb85d45均完成两轴复核；准确总分支的新CI另行核验。
 
 基点：已验证aggregate `f7be50795a78f901b54a3efefa61db0317b00280`，独立`feat/178-proactive-source`；Shiori固定`4f266aeaf42fcd611362e2456417b91f659341cf`。最后核验：2026-10-16。事实来源：[HTTP/作者产物](../../tests/python/test_proactive_authoring_api.py)、[实际stdio快照](../../tests/python/test_proactive_snapshot.py)、[React](../../web/src/features/role-management/SourceArtifactPreview.test.tsx)、[操作手册](../handbook/proactive-source-authoring.md)。
 
@@ -45,3 +45,11 @@ owner只读HTTP预览计算真实文件及清单SHA，修正manifest仍由原聊
 最终源0eb8ea4的Standards/Spec完整审查及各次增量复核均无遗留。主线同步c83bbc2另获双轴和完整前端204项/构建通过；源三提交增量进入总分支，仅总状态一处内容冲突按最新S07/A01与S08分别保留，旧builtin fixture逐字相同无重复更改。main相对c83仅新增自主路由workspace_getter，生成、Coding与owner关闭不重写。准确集成的行为组合、前端和两套完整CI另行记录，不以源验收或13c绿色替代。
 
 审查外部夹具的公共祖先WinError1337、误指定不存在配置、查询不存在TaskRuntime方法、Settings可访问region查询错误和conftest收集重复等启动/断言装配失败均保留原日志；它们与上述真实P3/P2产品RED分开记录，未改生产或期望规避失败。真实账号/ACK/模型费用/平台收件仍未验收，总PR未获合并或剩余Issue关闭授权。
+
+## ACK 测试时序修正
+
+Windows组合实际运行ffd4108，其后04afa68只改文档；该组为523 passed/1 skipped/1 failed（806.66s），唯一失败在10秒内未取得业务ACK，保留的真实状态为sources_unavailable、没有业务call或消息。隔离原用例及只读跨度观测各通过一次，但没有首次失败的实时跨度，冷启动越过夹具3秒预算仍是推断。04afa68的[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38885939851)后端2261 passed/35 skipped/2 warnings；[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38885931884)为2260 passed/35 skipped/1 failed/2 warnings，业务ACK和原业务断言已经通过，失败在固定三次recover后Runtime结果尚未ACK。两次失败发生在不同阶段，不能合称同一历史根因。
+
+受控慢连接实验先完成真实MCP connect，再仅延迟首次返回3.05秒：原3秒夹具与持久回归各实际失败，单独将本ACK夹具设为10秒后，同一探针通过且完整业务断言保留。另一实验暂持真实AutonomyExecutor.run已经完成执行和资源收尾的原outcome，证明业务ACK已可见时，同一原生任务仍running/未写终态/retain=1；原三次recover和永久回归均实际在最后Runtime断言失败。独立释放后，原任务和提交key经原恢复链路复制结果、清dirty、ACK并释放retention/存储预留，没有重做RPC或消息。
+
+fb85d45只修改[ACK测试](../../tests/python/test_proactive_ack.py)：成功等待在原10秒总预算内同时观察业务与Runtime ACK，原9条业务assert的AST逐条相同；新增两项真实启动/晚终态回归。生产超时、恢复、任务与清理实现均无改动，失败finally的有界drain不能将失败变为通过。源Windows三例3 passed/1 warning（20.71s）、ACK/来源契约/验证三模块40 passed/1 warning（120.91s）、WSL同三例3 passed/2 warnings（18.03s）；总分支f785f82同三例另为3 passed/1 warning（21.36s）。这些组重叠，不相加，也不替代新HEAD完整CI。三新数据根与内外guard保持至全部owner退出，原失败和warning均保留；两路独立delta审查无遗留。
