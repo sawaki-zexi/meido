@@ -1,6 +1,6 @@
 # 创建并激活主动来源
 
-状态：当前 / #178 本地实施，独立复核及总分支验收另行记录。
+状态：当前 / #178 最终源0eb8ea4的完整两轴与修正复核均通过；准确总集成及CI仍在验收。
 
 事实来源：[作者Skill](../../backend/app/builtin_skills/create-proactive-source/SKILL.md)、[预览](../../backend/app/proactive_runtime/source_authoring.py)、[受管验证](../../backend/app/proactive_runtime/source_verification.py)、[HTTP行为测试](../../tests/python/test_proactive_authoring_api.py)。最后核验：2026-10-16。
 
@@ -12,7 +12,7 @@
 
 ## 核对实际hash
 
-在自主设置“来源产物预览”填写相对路径 `mcp/example/manifest.json`，服务ID可先留空。预览只读当前角色已存在文件，不创建目录、执行或注册。越界、链接/hardlink、超量、缺文件和读取中变化均拒绝。
+在自主设置“来源产物预览”填写相对路径 `mcp/example/manifest.json`，服务ID可先留空。预览只读当前角色已存在文件，不创建目录、执行或注册。越界、链接/hardlink、超量、缺文件和读取中变化均拒绝。失败通过可关闭错误提示展示，关闭不清空原路径、不导入许可。
 
 初稿PREVIEW_REQUIRED不是hash。复制“修正后的清单”，请本角色通过已许可write_file原样保存到原路径，或由主人自行保存；再次预览到hash一致。不要让模型猜摘要或增加Python/Shell许可。“填入验证清单”只填写实际路径与当前清单SHA，不代表信任代码。文件改变后重新核对和验证。
 

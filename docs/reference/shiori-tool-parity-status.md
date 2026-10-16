@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-16（Asia/Shanghai）。源码基线已同步 `main@5acbf0c21b7e25a2ae24cf59d570c2bf7c6e5e05`（图标与落地页背景音乐）；最新已验证集成为 `13c2aea51594d0f83dd0356c98f4e4d4d7c172be`，含 #172/#175 及集成两轴复核。该准确头的 [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38878913414) 与 [push CI](https://github.com/sawaki-zexi/meido/actions/runs/38878895532) 均全通过：各后端 2235 passed /35 skipped /2 warnings（368.04秒、334.91秒），各前端 202 passed /35文件及 TypeScript/Vite。当前主线同步的前端与文档增量另行复验，不套用旧头绿色；旧失败历史和原生限制保留。#173/#176 已解除满足的依赖并从13c独立开始；#178源实现已冻结，独立审查中，尚未合入。跳过项不计原生验收。
+最后核验：2026-10-16（Asia/Shanghai）。源码基线已同步 `main@5acbf0c21b7e25a2ae24cf59d570c2bf7c6e5e05`（图标与落地页背景音乐）；最新已验证集成为 `13c2aea51594d0f83dd0356c98f4e4d4d7c172be`，含 #172/#175 及集成两轴复核。该准确头的 [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38878913414) 与 [push CI](https://github.com/sawaki-zexi/meido/actions/runs/38878895532) 均全通过：各后端 2235 passed /35 skipped /2 warnings（368.04秒、334.91秒），各前端 202 passed /35文件及 TypeScript/Vite。主线同步增量已完成前端204项/构建和两轴窄复核；#178最终源`0eb8ea4`完成完整两轴及两项修正复核后合入，准确总集成与两套CI正在验收，不能套用13c绿色。旧失败历史和原生限制保留。#173/#176 已解除满足的依赖并从13c独立实施，尚未交付。跳过项不计原生验收。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
