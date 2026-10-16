@@ -3,6 +3,9 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { LandingPage } from "./LandingPage";
 
 beforeEach(() => {
+  window.localStorage.clear();
+  vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
   vi.stubGlobal("matchMedia", vi.fn(() => ({
     matches: false,
     addEventListener: vi.fn(),
@@ -36,5 +39,57 @@ describe("落地页背景", () => {
     await waitFor(() => expect(container.querySelector(".dialogue-box")).toBeTruthy());
     expect(container.querySelector(".landing-background")).toBe(background);
     expect(background?.getAttribute("src")).toBe("/landing/coastal-road.webp");
+  });
+});
+
+describe("落地页背景音乐", () => {
+  it("右上角开关独立控制音乐，关闭后开始游戏仍保持关闭，并记住开关状态", async () => {
+    const play = vi.mocked(HTMLMediaElement.prototype.play);
+    const pause = vi.mocked(HTMLMediaElement.prototype.pause);
+    const { getByRole, queryByRole, unmount } = render(<LandingPage />);
+    const toggle = getByRole("button", { name: "关闭背景音乐" });
+    fireEvent.keyDown(toggle, { key: "Enter" });
+    expect(getByRole("button", { name: "按任意键开始游戏" })).toBeTruthy();
+    fireEvent.click(toggle);
+    expect(pause).toHaveBeenCalledOnce();
+    expect(play).not.toHaveBeenCalled();
+    expect(getByRole("button", { name: "开启背景音乐" })).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(getByRole("button", { name: "按任意键开始游戏" }));
+    await waitFor(() => expect(queryByRole("button", { name: "打开设置" })).toBeTruthy());
+    expect(play).not.toHaveBeenCalled();
+    fireEvent.click(getByRole("button", { name: "开启背景音乐" }));
+    expect(play).toHaveBeenCalledOnce();
+    fireEvent.click(getByRole("button", { name: "关闭背景音乐" }));
+    expect(pause).toHaveBeenCalledTimes(2);
+    unmount();
+    const nextVisit = render(<LandingPage />);
+    expect(nextVisit.getByRole("button", { name: "开启背景音乐" })).toHaveAttribute("aria-pressed", "false");
+    expect(play).toHaveBeenCalledOnce();
+  });
+
+  it("访客开始后播放循环音乐，设置音量立即生效并保留偏好", async () => {
+    const play = vi.mocked(HTMLMediaElement.prototype.play);
+    const { container, getByRole, unmount } = render(<LandingPage />);
+    const music = container.querySelector<HTMLAudioElement>("audio");
+    expect(music?.getAttribute("src")).toBe("/landing/neko-ni-michibikarete.mp3");
+    expect(music?.loop).toBe(true);
+    expect(play).not.toHaveBeenCalled();
+
+    fireEvent.click(getByRole("button", { name: "按任意键开始游戏" }));
+    expect(play).toHaveBeenCalledOnce();
+    expect(music?.volume).toBe(0.35);
+
+    await waitFor(() => expect(getByRole("button", { name: "打开设置" })).toBeTruthy());
+    fireEvent.click(getByRole("button", { name: "打开设置" }));
+    fireEvent.change(getByRole("slider", { name: "背景音乐音量" }), { target: { value: "0" } });
+    expect(music?.volume).toBe(0);
+    fireEvent.change(getByRole("slider", { name: "背景音乐音量" }), { target: { value: "65" } });
+    expect(music?.volume).toBe(0.65);
+    expect(window.localStorage.getItem("meido:landing-music-volume")).toBe("65");
+
+    unmount();
+    const nextVisit = render(<LandingPage />);
+    expect(nextVisit.container.querySelector<HTMLAudioElement>("audio")?.volume).toBe(0.65);
+    expect(play).toHaveBeenCalledOnce();
   });
 });

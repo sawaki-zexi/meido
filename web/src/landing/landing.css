@@ -22,6 +22,9 @@
 .landing * { box-sizing: border-box; }
 .landing button, .landing a { font-family: inherit; }
 .landing button { color: inherit; }
+.bgm-toggle { position: absolute; z-index: 6; top: 18px; right: 18px; display: grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 50%; padding: 10px; background: rgb(255 245 250 / 60%); color: var(--ink); cursor: pointer; backdrop-filter: blur(10px); }
+.bgm-toggle svg { display: block; width: 20px; height: 20px; }
+.bgm-toggle[aria-pressed="false"] { color: var(--muted); }
 .landing button:focus-visible, .landing a:focus-visible, .landing input:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
 .landing-background, .landing-vignette, .landing-grain { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .landing-background { z-index: -3; object-fit: cover; object-position: center 53%; }
@@ -87,6 +90,12 @@
 .backlog-entry p { margin: 5px 0 0; color: #4d3743; font-size: 15px; line-height: 1.7; }
 .backlog-choice { color: #a04f78; font: 12px/1.5 system-ui, sans-serif; }
 .settings-form { display: grid; gap: 18px; padding-top: 18px; }
+.music-volume-setting { display: grid; gap: 10px; }
+.music-volume-setting span { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.music-volume-setting strong { color: var(--ink); font-size: 14px; font-weight: 500; }
+.music-volume-setting small { color: var(--muted); font: 12px/1.5 system-ui, sans-serif; }
+.music-volume-setting input { width: 100%; height: 24px; margin: 0; border: 0; padding: 0; background: transparent; accent-color: var(--gold); color-scheme: light; cursor: pointer; }
+.music-volume-setting input:focus { box-shadow: none; }
 .settings-form fieldset { margin: 0; border: 0; padding: 0; }
 .settings-form legend { margin-bottom: 11px; color: var(--ink); font-size: 14px; }
 .setting-options { display: flex; gap: 7px; }
@@ -103,6 +112,7 @@
 .system-motion-note { margin: 0; }
 
 @media (max-width: 760px) {
+  .bgm-toggle { top: 12px; right: 12px; }
   .settings-panel { width: min(420px, 100%); padding: 22px 20px 24px; }
 }
 

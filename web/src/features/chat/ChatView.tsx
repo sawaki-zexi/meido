@@ -107,7 +107,7 @@ function Composer({ roleId, placeholder, disabled, sending, stopping, onSend, on
     {unsentText && <div className="composer-unsent" role="note"><p>未发送的消息：{unsentText}</p><IconButton icon="close" label="忽略未发送消息" onClick={() => setUnsentText("")} /></div>}
     <div className="composer-row">
       <input ref={fileRef} type="file" aria-label="附件文件" multiple accept="image/png,image/jpeg,image/webp,.txt,.md,.csv,.json,.pdf,.docx" hidden onChange={(event) => { const input = event.currentTarget; const files = [...input.files ?? []]; void upload(files).finally(() => { input.value = ""; }); }} />
-      <button type="button" className="composer-attach" aria-label="添加附件" title="添加附件" disabled={disabled || sending || uploading} onClick={() => fileRef.current?.click()}><Icon name="plus" size={18} /></button>
+      <button type="button" className="composer-attach" aria-label="添加附件" title="添加附件" disabled={disabled || sending || uploading} onClick={() => fileRef.current?.click()}><Icon name="attachment" size={18} /></button>
       <textarea ref={inputRef} aria-label="消息内容" placeholder={placeholder} rows={1} value={draft} disabled={disabled} onChange={(event) => { draftRevision.current += 1; setDraft(event.target.value); }} onKeyDown={onKeyDown} />
       {roleId && <RoleModelSelector roleId={roleId} disabled={disabled || sending || uploading} />}
       {sending
