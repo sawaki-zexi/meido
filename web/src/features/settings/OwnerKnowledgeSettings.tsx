@@ -156,7 +156,7 @@ export function OwnerKnowledgeSettings() {
   return <section className="owner-knowledge-settings page-narrow" aria-labelledby="owner-knowledge-title">
     <header className="owner-settings-header">
       <div className="owner-settings-title">
-        <span className="owner-settings-icon"><Icon name="memory" size={20} /></span>
+        <span className="owner-settings-icon"><Icon name="knowledge" size={20} /></span>
         <div><h2 id="owner-knowledge-title">主人资料</h2><p className="muted">飞书知识库</p></div>
       </div>
       <div className="owner-plugin-control">
