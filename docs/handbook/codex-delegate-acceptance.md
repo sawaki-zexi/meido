@@ -51,4 +51,16 @@ git diff --check
 
 之后完整Coding组96项通过（271.08秒）；再补有界正常中断请求和可行动的协议错误码，相关29项通过（46.28秒），公开HTTP/恢复/配置18项通过（34.64秒）。CLI已实际完成但业务needs_input的两状态区分曾RED，修正后协议/实际exec专项24项通过（35.51秒）。Windows无console子进程可能拒绝CTRL_BREAK请求，宿主直接升级Job，并以真实进程及writer/readers退出作为收尾证据；不伪称优雅停止。19源默认mypy、compileall及diff检查通过，完整前端最终32文件183项通过（32.34秒），TS/Vite通过。最终冻结后的完整Coding结果以交付记录为准，不把前述较早96项写成涵盖后补分支。
 
-生产冻结后完整Coding复跑 **98 passed（248.40秒）**，`coding175-immutable-coding-native.xml`；七项原Herdr原生夹具均实际执行，没有skip，Codex exec公开HTTP、87字符正常深度根的先前独立验收、实际stdin/JSONL/Git、原生终态/needs_input、恢复/ACK、原渠道、off/on、受管中断与收尾均有相应真实本地夹具。whole-command guard零非本地尝试，三独立MEIDO根在收集前建立并保留至全部owned退出。未复跑完整后端：其余旧HTTP记忆夹具由#172和协调者独立收紧，不能把本票98项或88项共享回归写成全后端通过。最终固定提交仍须独立两轴和总集成CI。
+原固定提交 `a67a07018bdcb2fcab0627242102fd9fb982bbd6` 的完整Coding复跑 **98 passed（248.40秒）**，`coding175-immutable-coding-native.xml`；七项原Herdr原生夹具均实际执行，没有skip，Codex exec公开HTTP、87字符正常深度根的先前独立验收、实际stdin/JSONL/Git、原生终态/needs_input、恢复/ACK、原渠道、off/on、受管中断与收尾均有相应真实本地夹具。whole-command guard零非本地尝试，三独立MEIDO根在收集前建立并保留至全部owned退出。未复跑完整后端：其余旧HTTP记忆夹具由#172和协调者独立收紧，不能把本票98项或88项共享回归写成全后端通过，也不能将该98项当成后续审查修正提交的准确HEAD验收。
+
+## 两轴审查修正的定向证据
+
+独立Standards与Spec交叉确认：角色保存两份仓库后撤销首份，旧availability只核首ID，导致第二份仍可用时误隐藏Skill。另有Linux venv新配置夹具将symlink入口当作固定程序，生产正确拒绝。修正仅令availability扫描当前许可候选、每项仍调用同executor的完整resolve，并在Linux夹具使用`resolve(strict=True)`；没有改实际start、原生路径规则或跨executor许可。
+
+- [候选回归](../../tests/python/test_coding_availability.py) 先 **6 failed /2 passed（15.03秒）**，覆盖首项撤权、旧ID、路径失效和被替换；修正后Windows配置/候选 **12 passed（19.55秒）**。全部不可用仍拒绝，错误default/未核验profile不借另一executor通过。
+- WSL Python3.12配置原 **1 failed /3 passed（2.37秒）**；仅修真实可执行路径后，配置/候选 **12 passed（7.49秒）**，保留原非Windows native准入与资格探针拒绝断言。
+- 扩展公开HTTP与两份原外部复现 **3 passed（43.78秒）**。完整用例先完成两回合本地合成资格；公开API撤销首仓库后，Skill正文进入下一真实localhost SSE请求。指定已撤仓库的spawn拒绝且不创建任务，再向第二仓库完成真实Python CLI/Git/验证、精确继续、取消、copy/ACK。现在共七个主人回合、14个provider请求，无聊天child或完成摘要模型。
+- Windows Skill/普通spawn/Coding路由及角色/工具组 **60 passed（16.65秒）**；WSL公开HTTP及Skill组 **33 passed（27.05秒）**，后者只有现有FastAPI/httpx测试客户端弃用警告。各组没有skip或非本地阻断；重叠用例不相加为独立总量。
+- 本轮19源默认mypy与compileall通过；默认mypy仍不检查全部未注解函数体。没有因这两项窄修正重跑旧98项、完整后端或完整前端测试；真实Codex账号、首次/resume模型及原生权限资格仍未验收。修正固定头另交独立两轴增量复核与总集成CI。
+
+以上均通过收集前的三独立MEIDO临时根与whole-group/outer local guard运行，持续到owned Runtime、进程/Job、管道、HTTP及worker收尾。外部JUnit统一为`D:/meido-artifacts/coding175-fix-*.xml`，原RED保留；此处不将作者定向GREEN写成独立复核完成。

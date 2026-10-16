@@ -50,6 +50,8 @@ GET `/roles/{role}/tasks` 是主人桌面管理入口，可查看本角色各来
 
 内建 `codex-delegate` 是显式 Skill，声明 codex、spawn 和 spawn_manage 依赖。宿主按当前角色真正可解析的 codex_exec profile 给依赖诊断，固定绝对 CLI 不必加入全局 PATH；PATH 中发现 codex 也不会替代 profile、探针或许可。Skill 本身不授予工具或文件权限。
 
+依赖可用要求角色所选且当前仍获准的仓库中至少一份通过该 executor 的完整解析。首项撤权、旧 ID、路径失效或身份变化不会遮蔽后续有效仓库；全部不可用时保留有界诊断。Herdr 与 Codex exec 的默认 profile 和资格不互相替代。实际 spawn 仍逐次核验其明确指定的仓库，依赖诊断通过不恢复已撤销的许可。
+
 `spawn(profile="coding", task, repository, run_in_background=true, retry_count=0)` 要求全部字段明确，其他 profile 拒绝 repository。它在创建聊天 provider 之前进入共享 CodingApplication；原有三个 profile、Shell schema 和普通 TaskCompletionWorker 不变。返回稳定 job_id=CodingTask id，以及当前 attemptId、runtimeTaskId、executor=codex_exec。Runtime kind 为 coding_codex，预算、准入、copy/dirty/ACK 和完成消息沿用上文；不调用子代理或摘要模型。
 
 `spawn_manage` 的 list 合并原来源普通 spawn 与登记的 codex_exec 任务；get/cancel 按持久 executor 登记路由。新增 continue 必须带 task，只用于 codex_exec；不管理 Herdr、其他 Runtime kind 或普通 spawn 的 continue。继续复用相同 worktree、branch、base、profile、认证与精确 UUID，新建一个有界 attempt。缺原会话或收尾未确认即拒绝。

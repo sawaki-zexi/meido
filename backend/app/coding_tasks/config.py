@@ -286,18 +286,25 @@ class CodingConfigStore:
                     and (setting['nativeBuild'] if record['executor'] == 'herdr' else codex_artifact(profile)) == record.get('nativeBuild'))
 
     def availability(self, role_id: str, role: CodingRoleConfig, *, executor='herdr') -> dict:
-        if not self.public()['enabled'] or not role.enabled:
+        setting = self.public()
+        if not setting['enabled'] or not role.enabled:
             return {'status': 'disabled', 'reason': '编程委托尚未启用'}
         if not self.native_supported():
             return {'status': 'unavailable', 'reason': '编程委托首版仅支持 Windows 普通权限桌面宿主'}
         if not role.repoGrantIds:
             return {'status': 'unavailable', 'reason': '尚未配置可信仓库'}
-        try:
-            self.resolve(role_id, role, role.repoGrantIds[0], executor=executor)
-            return {'status': 'available', 'reason': '固定 Codex exec、仓库及原生权限核验已通过' if executor == 'codex_exec'
-                    else '固定原生宿主、仓库及专用 CLI profile 已核验'}
-        except (ValueError, KeyError, PermissionError, OSError) as error:
-            return {'status': 'unavailable', 'reason': str(error)[:300]}
+        granted = {item['id'] for item in setting['repositories'] if role_id in item['allowedRoleIds']}
+        reason = 'repository is not granted to this role'
+        for repository_id in role.repoGrantIds:
+            if repository_id not in granted:
+                continue
+            try:
+                self.resolve(role_id, role, repository_id, executor=executor)
+                return {'status': 'available', 'reason': '固定 Codex exec、仓库及原生权限核验已通过' if executor == 'codex_exec'
+                        else '固定原生宿主、仓库及专用 CLI profile 已核验'}
+            except (ValueError, KeyError, PermissionError, OSError) as error:
+                reason = str(error)[:300]
+        return {'status': 'unavailable', 'reason': reason}
 
     def close(self) -> None:
         self._db.close()

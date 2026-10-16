@@ -82,7 +82,7 @@ def test_codex_exec_qualified_profile_resolves_without_herdr_and_never_accepts_c
     auth = tmp_path / 'explicit-auth'
     auth.mkdir()
     (auth / 'auth.json').write_text('{"fixture":"only"}')
-    exe = Path(sys.executable)
+    exe = Path(sys.executable).resolve(strict=True)
     configuration = CodingConfigStore(tmp_path / 'configuration.db', native_supported=lambda: True)
     settings = {'name': 'Codex exec', 'executor': 'codex_exec', 'kind': 'codex', 'executable': str(exe),
                 'sha256': hashlib.sha256(exe.read_bytes()).hexdigest(), 'version': '0.159.3',

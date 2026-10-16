@@ -66,7 +66,8 @@ def test_public_skill_qualification_background_resume_cancel_and_ack_use_no_chat
                 assert action[0] in names
                 call = ('owner-action', action[0], arguments[0])
             else:
-                receipts.append(json.loads(results[-1]['content']))
+                content = results[-1]['content']
+                receipts.append(json.loads(content) if content.startswith(('{', '[')) else content)
                 call = None
             delta = {'tool_calls': [{'index': 0, 'id': call[0], 'type': 'function', 'function': {
                 'name': call[1], 'arguments': json.dumps(call[2], ensure_ascii=False)}}]} if call else {'content': '父回合已完成'}
@@ -101,13 +102,22 @@ def test_public_skill_qualification_background_resume_cancel_and_ack_use_no_chat
             time.sleep(.02)
         assert probe['status'] == 'verified' and probe['cleanupState'] == 'complete', probe
         assert application.config.native_build() is None
+        first_repo = tmp_path / 'revoked-first-repo'
+        first_repo.mkdir()
+        git(first_repo, 'init', '-b', 'main')
+        git(first_repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-m', 'base')
+        revoked = client.post('/api/coding/repositories', json={'root': str(first_repo), 'allowedRoleIds': [rid]}).json()
         grant = client.post('/api/coding/repositories', json={'root': str(repo), 'allowedRoleIds': [rid],
             'validation': [{'id': 'real-check', 'argv': [sys.executable, '-I', '-c',
                 'from pathlib import Path;assert Path("fixture.txt").read_text(encoding="utf-8")'], 'cwd': '.'}]}).json()
         assert client.put('/api/coding/configuration', json={'enabled': True}).status_code == 200
         response = client.put('/api/roles/' + rid, json={'name': role['name'], 'profile': role['profile'], 'agentConfig': {
-            'spawn': {'enabled': True}, 'enabledTools': [], 'coding': {'enabled': True, 'repoGrantIds': [grant['id']],
+            'spawn': {'enabled': True}, 'enabledTools': [], 'coding': {'enabled': True, 'repoGrantIds': [revoked['id'], grant['id']],
                 'profileIds': [profile['id']], 'defaultCodexProfileId': profile['id']}}})
+        assert response.status_code == 200, response.text
+        response = client.post('/api/coding/repositories', json={
+            key: ([] if key == 'allowedRoleIds' else revoked[key])
+            for key in ('id', 'root', 'baseRef', 'remote', 'validation', 'allowedRoleIds')})
         assert response.status_code == 200, response.text
         model = main.model_configuration_store.create(ModelConfigurationInput(providerId='custom', provider='fixture',
             baseUrl='http://127.0.0.1:' + str(server.server_address[1]) + '/v1', model='local-only', apiKey='fixture'))
@@ -118,6 +128,11 @@ def test_public_skill_qualification_background_resume_cancel_and_ack_use_no_chat
             response = client.post('/api/roles/' + rid + '/messages', json={'content': name, 'skillIds': ['codex-delegate']})
             assert 'assistant_completed' in response.text, response.text
             return receipts[-1]
+        denied = turn('spawn', {'task': '已撤销仓库不可执行', 'profile': 'coding', 'repository': revoked['id'],
+                                'run_in_background': True, 'retry_count': 0})
+        assert denied == 'Task unavailable in this role and original source, or delegation is disabled.'
+        assert client.get('/api/coding/roles/' + rid + '/tasks').json()['tasks'] == []
+        assert not (first_repo / 'fixture.txt').exists()
         first = turn('spawn', {'task': '公开完整需求🙂', 'profile': 'coding', 'repository': grant['id'],
                                'run_in_background': True, 'retry_count': 0})
         assert first['status'] == 'accepted' and first['executor'] == 'codex_exec', first
@@ -144,7 +159,7 @@ def test_public_skill_qualification_background_resume_cancel_and_ack_use_no_chat
         cancelled = turn('spawn_manage', {'action': 'cancel', 'job_id': first['job_id']})
         assert cancelled['cleanupState'] == 'complete' and cancelled['status'] == 'cancelled', cancelled
         assert completed()['runtimeAckDirty'] is False
-        assert len(requests) == 12, 'six owner turns only; no child or completion model request'
+        assert len(requests) == 14, 'seven owner turns only; no child or completion model request'
         assert not (repo / 'fixture.txt').exists()
         messages = sessions.list_messages('role:' + rid)
         assert len([item for item in messages if item.metadata.get('internalEvent') == 'coding_completion']) == 3
