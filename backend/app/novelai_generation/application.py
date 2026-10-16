@@ -55,6 +55,7 @@ class NovelaiApplication:
         self._maintenance: asyncio.Task[None] | None = None
         self._recovery_lock = threading.Lock()
         self._cancelled_requests: set[tuple[str, str, str]] = set()
+        self._pending_channel_receipts: dict[tuple[str, str], dict[str, str | None]] = {}
 
     def _validate_policy(self, policy):
         if policy.sceneCgEnabled or policy.autoWritebackRoleAssets:
@@ -711,12 +712,26 @@ class NovelaiApplication:
         receipt = {'status': status,
             'deliveryAttemptId': delivery_id[:128] if isinstance(delivery_id, str) else None,
             'platformMessageId': platform_message_id[:256] if isinstance(platform_message_id, str) else None}
+        try:
+            self._persist_channel_receipt(reply.role_id, reply.attempt_id, receipt)
+        except OSError:
+            pass  # A local journal failure cannot change the actual send result.
+
+    def _persist_channel_receipt(self, role_id, attempt_id, receipt):
         with self._lock:
-            path = self.root / reply.role_id / (reply.attempt_id + '.receipt.json')
+            key = (role_id, attempt_id)
+            previous = self._pending_channel_receipts.get(key)
+            if previous is not None and (previous['status'] == 'sent'
+                    or previous['status'] == 'uncertain' and receipt['status'] != 'sent'):
+                receipt = previous
+            # Registered only after the sender returns. Recovery must never
+            # infer completion merely from a live sending claim without this.
+            self._pending_channel_receipts[key] = receipt
+            path = self.root / role_id / (attempt_id + '.receipt.json')
             path.parent.mkdir(parents=True, exist_ok=True)
             if path.exists():
                 previous = json.loads(path.read_text(encoding='utf-8'))
-                if previous['status'] == 'sent' or previous['status'] == 'uncertain' and status != 'sent':
+                if previous['status'] == 'sent' or previous['status'] == 'uncertain' and receipt['status'] != 'sent':
                     receipt = previous
             staging = path.with_suffix('.partial')
             try:
@@ -727,8 +742,9 @@ class NovelaiApplication:
                 os.replace(staging, path)
             finally:
                 staging.unlink(missing_ok=True)
+            self._pending_channel_receipts.pop(key, None)
             try:
-                self._apply_receipt(reply.attempt_id, receipt)
+                self._apply_receipt(attempt_id, receipt)
             except sqlite3.Error:
                 pass  # The owned journal repairs SQLite only, never the send.
 
@@ -747,6 +763,10 @@ class NovelaiApplication:
     def _recover_receipt(self, row, source):
         if not source.channel_source:
             return
+        with self._lock:
+            receipt = self._pending_channel_receipts.get((row['role_id'], row['attempt_id']))
+            if receipt is not None:
+                self._persist_channel_receipt(row['role_id'], row['attempt_id'], receipt)
         path = self.root / row['role_id'] / (row['attempt_id'] + '.receipt.json')
         if path.is_file() and path.stat().st_size <= 4096:
             receipt = json.loads(path.read_text(encoding='utf-8'))
@@ -809,6 +829,7 @@ class NovelaiApplication:
                 for table in ('novelai_human_claims', 'novelai_attempts', 'novelai_generations', 'novelai_role_epochs', 'novelai_cancelled_requests', 'novelai_daily'):
                     connection.execute('DELETE FROM ' + table + ' WHERE role_id=?', (role_id,))
             self._cancelled_requests = {item for item in self._cancelled_requests if item[0] != role_id}
+            self._pending_channel_receipts = {key: receipt for key, receipt in self._pending_channel_receipts.items() if key[0] != role_id}
 
     async def recover(self):
         """Repair local media/messages and ACK only; never launch or POST again."""

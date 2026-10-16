@@ -44,6 +44,8 @@
 
 渠道只在原 owner 来源和 adapter 支持图片时准入；含生成能力的回合等待最终回复，再以原账号/目标一次发送文本与附件。发送前持久 sending/consumed；真实 receipt 先写原角色受管小 journal，再复制业务表，后续 SQLite/消息写失败仅本地恢复。sent 不降级为 failed；真实丢回执为 uncertain，重启 sending 亦转 uncertain，不补发、不改投桌面或私聊。
 
+发送器已返回而本地 journal 暂时不可写时，宿主持有原 receipt 的本地结算义务；文件系统恢复后，维护循环仅补写 journal、SQLite 和原消息，不再次发送。该暂存不把实际 sent 改为 uncertain；发送器尚未返回的 sending 记录不因此提前结算。若进程在 journal 成功前退出，仍按已持久化的 sending 事实在重启后结算 uncertain，不能重发。
+
 本地恢复器是应用拥有并 join 的维护任务，只处理已登记的媒体、原消息、receipt和 ACK，不是第二个通用任务宿主，不重新出网生成或重发渠道消息。每批最多100条，按创建时间和ID稳定排序，以持久游标轮转；暂时无法查询 Runtime 的旧义务保留但不会反复占满同一批，游标到末尾后回到起点。无待同步消息的 suppressed 墓碑不再作为消息同步义务；并发恢复调用仅由一轮执行。
 
 ## 应用接口与历史

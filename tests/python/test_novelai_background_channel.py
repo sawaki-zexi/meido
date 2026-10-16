@@ -2,13 +2,14 @@
 import asyncio
 import base64
 import json
+from pathlib import Path
 
 import pytest
 
 from novelai_fixtures import novelai_environment, novelai_main, novelai_service  # noqa: F401
 
 
-@pytest.mark.parametrize('receipt_case', ['sent', 'lost', 'receipt_sqlite', 'message_sqlite', 'sending_restart', 'unsupported_media', 'source_rebound'])
+@pytest.mark.parametrize('receipt_case', ['sent', 'lost', 'receipt_sqlite', 'message_sqlite', 'sending_restart', 'unsupported_media', 'source_rebound', 'journal_failure', 'fallback_journal_failure'])
 def test_background_owner_channel_returns_text_then_one_original_media_receipt(novelai_main, monkeypatch, receipt_case):
     from backend.app import main
     from backend.app.channels.host import ChannelHost
@@ -19,6 +20,17 @@ def test_background_owner_channel_returns_text_then_one_original_media_receipt(n
     from websockets.asyncio.server import serve
     _, service = novelai_main
     lose_media_receipt = receipt_case == 'lost'
+    journal_failure = receipt_case in {'journal_failure', 'fallback_journal_failure'}
+    foreground_fallback = receipt_case == 'fallback_journal_failure'
+    journal_failures, actual_media_receipts = [], []
+    if journal_failure:
+        original_open = Path.open
+        def fail_receipt_journal(path, mode='r', *args, **kwargs):
+            if path.name.endswith('.receipt.partial') and 'w' in mode and len(journal_failures) < 2:
+                journal_failures.append(path)
+                raise OSError('controlled temporary receipt journal failure')
+            return original_open(path, mode, *args, **kwargs)
+        monkeypatch.setattr(Path, 'open', fail_receipt_journal)
     fault = None
     if receipt_case == 'receipt_sqlite':
         fault = 'fail_background_receipt'
@@ -28,7 +40,7 @@ def test_background_owner_channel_returns_text_then_one_original_media_receipt(n
         fault = 'fail_background_message'
         with service.application.ledger.connect() as connection:
             connection.execute("CREATE TRIGGER fail_background_message BEFORE UPDATE OF metadata_json ON messages WHEN NEW.metadata_json LIKE '%deliveryStatus%sent%' BEGIN SELECT RAISE(ABORT,'controlled background message failure'); END")
-    service.peer.block = True
+    service.peer.block = not foreground_fallback
     channels = main.multichannel_store
     account = channels.register_channel_account(service.role.id, 'qq', account_id='background-172', enabled=True, allow_group=True)
     code = channels.create_pairing_code(service.role.id, 'qq')
@@ -45,8 +57,10 @@ def test_background_owner_channel_returns_text_then_one_original_media_receipt(n
     class Model:
         async def stream_structured_messages(self, messages, configuration, tools):
             if not any(item['role'] == 'tool' for item in messages):
-                yield ModelToolCall('channel-background', 'generate_image', {**service.request, 'background': True})
+                yield ModelToolCall('channel-background', 'generate_image', {**service.request, 'background': not foreground_fallback})
             else:
+                if foreground_fallback:
+                    raise RuntimeError('controlled final model failure after received image')
                 result = json.loads(messages[-1]['content']) if messages[-1]['content'].startswith('{') else None
                 if receipt_case == 'unsupported_media':
                     assert result is None or result['status'] == 'rejected'
@@ -59,6 +73,19 @@ def test_background_owner_channel_returns_text_then_one_original_media_receipt(n
 
     async def scenario():
         parent_done, media_done = asyncio.Event(), asyncio.Event()
+        allow_media_send, receipt_received, allow_receipt_return = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        if journal_failure:
+            original_send = host.account_send
+            async def paused_actual_send(*args, **kwargs):
+                if kwargs.get('attachment_ids'):
+                    await allow_media_send.wait()
+                result = await original_send(*args, **kwargs)
+                if kwargs.get('attachment_ids'):
+                    actual_media_receipts.append(result)
+                    receipt_received.set()
+                    await allow_receipt_return.wait()
+                return result
+            service.application.send_channel = paused_actual_send
         async def inbound(payload):
             await main._dispatch_channel_payload(account.account_id, payload, source_adapter=adapter)
             parent_done.set()
@@ -93,10 +120,13 @@ def test_background_owner_channel_returns_text_then_one_original_media_receipt(n
                 await transport.start(inbound)
                 await transport.wait_connected()
                 await asyncio.wait_for(parent_done.wait(), 5)
-                assert len(sends) == 1 and not any(part.get('type') == 'image' for part in sends[0]['message'])
+                assert len(sends) == (0 if foreground_fallback else 1)
+                if not foreground_fallback:
+                    assert not any(part.get('type') == 'image' for part in sends[0]['message'])
                 thread = channels.list_threads(service.role.id)[0]
                 before = service.sessions.list_messages(thread.session_key)
-                assert before[-1].messageType == 'text' and not before[-1].metadata.get('attachments')
+                if not foreground_fallback:
+                    assert before[-1].messageType == 'text' and not before[-1].metadata.get('attachments')
                 if receipt_case == 'unsupported_media':
                     assert not service.peer.requests
                     assert not service.application.history(service.role.id)['generations']
@@ -121,6 +151,7 @@ def test_background_owner_channel_returns_text_then_one_original_media_receipt(n
                     assert not service.sessions.list_messages(f'role:{service.role.id}')
                     return
                 service.peer.release.set()
+                allow_media_send.set()
                 if receipt_case == 'sending_restart':
                     from backend.app.novelai_generation.context import GenerationContext
                     for _ in range(400):
@@ -134,6 +165,16 @@ def test_background_owner_channel_returns_text_then_one_original_media_receipt(n
                     assert reply is not None and len(sends) == 1
                 else:
                     await asyncio.wait_for(media_done.wait(), 5)
+                if journal_failure:
+                    await asyncio.wait_for(receipt_received.wait(), 2)
+                    for _ in range(3):
+                        await service.application.recover()
+                        await asyncio.sleep(.3)
+                    in_flight = service.application.history(service.role.id)['generations'][0]
+                    assert in_flight['deliveryStatus'] == 'sending'
+                    assert not journal_failures
+                    assert len(actual_media_receipts) == 1 and actual_media_receipts[0].status.value == 'sent'
+                    allow_receipt_return.set()
                 if fault or receipt_case == 'sending_restart':
                     from backend.app.novelai_generation.application import NovelaiApplication
                     old = service.application
@@ -170,19 +211,27 @@ def test_background_owner_channel_returns_text_then_one_original_media_receipt(n
                         break
                     await asyncio.sleep(.01)
                 assert history[0]['status'] == 'succeeded' and history[0]['deliveryStatus'] == expected
-                assert len(service.peer.requests) == 1 and len(sends) == 2
-                image = next(part for part in sends[1]['message'] if part.get('type') == 'image')
-                assert sends[1]['group_id'] == 456
+                send_count = 1 if foreground_fallback else 2
+                assert len(service.peer.requests) == 1 and len(sends) == send_count
+                media_send = sends[-1]
+                image = next(part for part in media_send['message'] if part.get('type') == 'image')
+                assert media_send['group_id'] == 456
                 assert base64.b64decode(image['data']['file'].removeprefix('base64://')).startswith(b'\x89PNG\r\n\x1a\n')
-                assert any(part.get('type') == 'reply' and str(part['data']['id']) == '171' for part in sends[1]['message'])
-                assert any(part.get('type') == 'at' and str(part['data']['qq']) == '123' for part in sends[1]['message'])
+                assert any(part.get('type') == 'reply' and str(part['data']['id']) == '171' for part in media_send['message'])
+                assert any(part.get('type') == 'at' and str(part['data']['qq']) == '123' for part in media_send['message'])
                 rows = service.sessions.list_messages(thread.session_key)
                 assert rows[-1].messageType == 'internal_completion' and rows[-1].runId is None
                 assert rows[-1].metadata['deliveryStatus'] == expected
                 assert rows[-1].metadata['generationAttemptIds'] == [history[0]['attemptId']]
                 assert not service.sessions.list_messages(f'role:{service.role.id}')
                 await service.application.recover()
-                assert len(sends) == 2 and len(service.peer.requests) == 1
+                assert len(sends) == send_count and len(service.peer.requests) == 1
+                if journal_failure:
+                    assert len(journal_failures) == 2
+                    assert rows[-1].metadata['deliveryAttemptId'] == actual_media_receipts[0].attempt_id
+                    assert rows[-1].metadata['platformMessageId'] == actual_media_receipts[0].platform_message_id
+                if foreground_fallback:
+                    assert history[0]['deliveryMode'] == 'source_completion'
                 if receipt_case == 'sent':
                     import httpx
                     original = history[0]
@@ -215,6 +264,8 @@ def test_background_owner_channel_returns_text_then_one_original_media_receipt(n
                     assert service.application.owner_generation(service.role.id, original['generationId'],
                         attempt_id=original['attemptId'])['deliveryStatus'] == 'sent'
             finally:
+                allow_media_send.set()
+                allow_receipt_return.set()
                 service.peer.release.set()
                 await service.application.close()
                 await transport.stop()

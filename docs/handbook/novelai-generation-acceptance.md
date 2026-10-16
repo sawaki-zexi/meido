@@ -65,6 +65,10 @@ React 新增选槽、再次消费、稳定请求重试、后台观察/精确停�
 
 新模块 11 源 mypy `--follow-imports=silent --check-untyped-defs`、compileall、相对链接与 diff check 通过。独立两轴和准确总集成 CI 以固定提交后的记录为准；本段不预报 CI、真实 NovelAI 或 #173 已通过。生成/模型调用全部是 localhost 夹具，真实费用为零。
 
+固定初版 `fad2245` 的独立 Standards 审查发现1项P2：实际媒体已 sent，而前两次 receipt journal 写入都失败，文件系统恢复后仍永久 sending。作者按原真实 OneBot/HTTP/SQLite/维护探针重现 **1 failed /12.29s**；新增明确后台和前台最终模型失败后原群 fallback 两条固化回归均先失败 **2 failed /22.47s**。共用 receipt 入口现保留发送器已返回的原回执，维护仅补 journal、账本与原消息；发送器未返回时仍为 sending，不再次生成或发送。角色删除清理本角色暂存；若进程在 journal 成功前退出，重启仍按原 sending 结算 uncertain，不能宣称恢复未持久的 sent。
+
+两条回归 **2 passed /10.28s**，核对原 attempt/platform receipt、唯一原消息和单次生成/媒体发送。修正扩大组 **581 passed /361.95s**（51文件、完整三根和整组 guard）；该轮结束后仅窄修 mypy 已发现的一处提取函数旧局部变量名，最终精确源码全部 NovelAI **125 passed /144.69s**、11源mypy全绿，原审查探针原样再跑 **1 passed /9.11s**。全部owned资源自然退出，前端未改动。581项不能改写为最终精确源码结果；这些结果不替代独立复核，不改写初版1项未解决的审查记录。
+
 ### #171 历史记录
 
 首次专用整组70 passed（48.54s）；随后增加 receipt/消息故障后，专用72项与共享角色/Runtime/渠道回归89项联合161 passed（77.00s）。最终扩大到 NovelAI 专用77项、角色/Runtime/渠道及全部 schedule/spawn/desktop_push 调用者，合计 **489 passed（212.21s）**，完整三数据根与整组网络 guard，JUnit保存在协调者外部证据目录。共享回归最初88绿1失败为旧的精确 agentConfig 默认值断言未包含新增 novelai；按真实默认扩展期望后通过，未放宽生产校验。
