@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from io import BytesIO
 import json
 import math
@@ -13,6 +13,7 @@ from uuid import uuid4
 from PIL import Image
 
 from ..agent_runtime.tools import AgentToolResult
+from ..agent_runtime.provider import CancellationToken
 from ..agent_runtime.types import ImageContent
 
 
@@ -37,14 +38,10 @@ class _Run:
     started: float = 0
     touched: float = 0
     revoked: bool = False
-    discovered: dict = None
+    discovered: dict = field(default_factory=dict)
     observation: dict | None = None
     context: object = None
     acquiring: asyncio.Task | None = None
-
-    def __post_init__(self):
-        self.discovered = {}
-
 
 def _identity(value):
     return asdict(value) if is_dataclass(value) else vars(value).copy()
@@ -63,8 +60,9 @@ class ComputerUseHost:
         self._registry, self._resources, self._root = model_registry, resources, data_root
         self._unavailable, self._desktop_port = role_unavailable, desktop
         self._driver_factory, self._lease_factory, self._clock = driver_factory, lease_factory, clock
-        self._runs, self._generations = {}, {}
-        self._run_signals = {}
+        self._runs: dict[tuple[str, str], _Run] = {}
+        self._generations: dict[str, int] = {}
+        self._run_signals: dict[tuple[str, str], CancellationToken] = {}
         self._owner = None
         self._closed = False
 

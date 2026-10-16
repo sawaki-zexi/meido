@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；已验证集成：`30002a9a8de551a12a44b2c2f5724d5640aca50d`。该固定版本两条 CI 全通过：各后端1813 passed、16 skipped、2条依赖弃用warning，前端174 passed/26文件及 TypeScript/Vite 构建；见[总 PR 检查](https://github.com/sawaki-zexi/meido/pull/162/checks)。随后批准的四项功能正在独立任务分支实施，尚未纳入该验证；跳过项不计原生验收。
+最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；已验证集成：`30002a9a8de551a12a44b2c2f5724d5640aca50d`。该固定版本两条 CI 全通过：各后端1813 passed、16 skipped、2条依赖弃用warning，前端174 passed/26文件及 TypeScript/Vite 构建；见[总 PR 检查](https://github.com/sawaki-zexi/meido/pull/162/checks)。批准记录 f6c4599 的两条 CI 也分别为1813 passed/16 skipped/2依赖warning，前端26文件及构建通过。桌面控制现已整合，当前提交的集成CI仍待核验；另外三项在独立分支实施，跳过项不计原生验收。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -32,7 +32,7 @@
 | C09 群/成员 4 工具 | #165、#166 已进入集成分支；可信历史昵称、成员来源、完整群分页、笔记字段省略/清空及离线资料；两轴最终复核通过，事务直接读取父取消并等待写线程退出 | 总 PR 跨模块回归和最终验收；不得扩大来源范围 |
 | C10 MCP 3 工具 | #159 已进入集成分支；真实 stdio、版本化发现、配置 UI、持久连接意愿及严格凭据清理已两轴复核；Linux 回收、Windows asyncio 环境、中文 schema 编码及 peer_error 清理竞态均实证修复并两轴复核；`c03a9fb` 两条 CI 通过 | 总 PR 最终跨模块验收 |
 | P01 浏览器 28 工具 | main，PR #150；全部 28 schema 映射核验，21 项真实原生浏览器测试通过，无 skip | 后续 MCP/配置集成回归 |
-| P02 桌面控制 8 工具 | #169 具体规格及固定 CUA 最小补丁、单普通权限驱动、单观察、独占 lease 方案已获明确批准；独立分支实施中 | 完整实现、两轴复核及专用受控窗口原生验收；尚无完成结论 |
+| P02 桌面控制 8 工具 | #169 固定源 `7aa8108` 已两轴复核并整合；8工具/图像下一模型请求、单观察/lease/Job收尾有真实专用窗口和HTTP/provider证据。规范审查两项P2修正后独立复核无遗留；集成交叉60 passed/1原生deselected，前端专项及TS/Vite通过，9源文件mypy通过 | 当前集成CI、总PR最终跨模块验收；多DPI/多屏/锁屏等未验收环境见[原生手册](../handbook/computer-use-native-acceptance.md)，不扩大真实应用操作许可 |
 | P03 Coding Agent 5 工具 | [具体规格](../specs/coding-agent-spec.md)第3节已获明确批准；#174 Herdr 独立分支实施中，#175 codex-delegate、#176 确切成果批准发布保留真实前置依赖 | 完整 owned 构建/CLI任务、来源交付、两轴复核；真实认证/消费/发布另批，不能以 help 代替 |
 | P04 屏幕感知 1 工具 | #160 已进入集成分支；提前拒绝/重复取消连接回收最终两轴复核均无剩余 finding；相关后端 196 passed/1 native 条件 skip，前端 69 passed；真实受控 Windows 主屏/125% DPI/本地视觉及取消通过，无原图落盘 | 总 PR 最终集成；尚无双屏、混合 DPI、实际锁屏/远程断开或 frozen 分发实证，也未调用真实远端视觉服务 |
 | P05 桌宠 1 工具 | 待实现；Electron/PySide6 宿主选择待回答 | 真实透明置顶窗口、动作包、move/play 与完整生命周期 |
@@ -98,3 +98,7 @@ MCP 故障已在 Windows 原命令和 Linux 真实慢退出 fixture 复现：RPC
 #181 修复SDK同步握手、虚假停止成功、清理失败替代及取消遗失归属，并保留旧保存配置/密钥的回滚。固定 `f079ef6` 的整组guard交叉 **428 passed/173.27秒**，专集33项包含其中；独立规范18+15项、规格33+16项均通过。规范另发现新增类型诊断，`09259c9` 只补实际HTTPX异步生成器的可关闭静态契约；同一silent/no-incremental参数已由两位原审查者独立通过，SDK/HTTP专集15项复跑通过，未冒称重跑全部428。两轴最终均无遗留。汇入 `83e853e` 时全树与审查源一致；文档随后只更新证据和状态。原无效夹具、撤guard后未知区间及静态检查flags修正均保留，详见[验收记录](../research/feishu-owned-stop-acceptance-2026-10-16.md)。
 
 这些数量仅说明对应固定范围，不能替代尚未实现的工具、真实平台收件或未取得的 YouTube 字幕证据。集成分支继续推进时，更新本表和最终验收记录。
+
+#169 的独立源提交 `7aa810870ece832419a73d773d4ae7ed7baa6cb0` 经规范和规格两轴复核后进入总分支。真实专用窗口完整八工具/HTTP下一provider图像链路7 passed；作者本机全后端为1844 passed/14 skipped/1 MCP schema worker deadline失败，相关参数范围重跑9 passed，不能把两次结果合写为全量无失败。规范审查另发现lease构造超时晚获mutex的线程遗留和手册第三数据根缺失；真实随机mutex RED后修正，相关30 passed、原生收尾2 passed，独立修正复核通过。早期作者验收没有完整记录owner-knowledge根覆盖，已撤销“三数据根均隔离”的推断；新修正和根集成检查显式设置全部三根。
+
+总分支对非文档内容核对与源提交完全一致，集成60 passed/1原生deselected及前端专项1 passed、TypeScript/Vite通过。随后9源文件mypy发现四项新类型声明问题；补齐容器类型和dataclass字典工厂后，mypy全过、相关26 passed/1原生deselected。此段保留首次类型检查失败，不改变实际工具权限或原生资源锁。集成CI以新HEAD检查为准。
