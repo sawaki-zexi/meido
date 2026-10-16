@@ -12,6 +12,7 @@ from ..task_runtime import TaskOutcome
 from .codex_protocol import CodexProtocol
 from .config import CODEX_EXEC_TEMPLATE, CODEX_EXEC_VERSION, executable_identity
 from .errors import CodingFailure
+from .evidence import attest_snapshot, begin_attempt_budget, task_paths
 from .executor import (HerdrExecutor, NativeResult, check_task_files, reject_project_cli_extensions,
                        snapshot_worktree, strict_json)
 from .git_repository import git, git_environment, repository_identity
@@ -73,18 +74,25 @@ class CodexExecutor(HerdrExecutor):
             self._auth_copy = None
 
     def run(self, execution):
-        self._deadline = execution.deadline
-        record, ledger = self.record, self.ledger
+        deadline = execution.deadline
+        self._deadline = deadline
+        record, ledger = dict(self.record), self.ledger
         attempt, profile, repository = record['attemptId'], record['profile'], record['repository']
-        task_root = (self._task_directory if self._task_directory is not None else
-                     self.root / 't' / hashlib.sha256(record['origin']['role_id'].encode()).hexdigest()[:16] / record['id'][7:])
-        worktree, handoff_root = task_root / 'w', task_root / 'a' / attempt[8:]
+        task_root, worktree, handoff_root = task_paths(self.root, record)
+        if self._task_directory is not None:
+            task_root = self._task_directory
+            worktree, handoff_root = task_root / 'w', task_root / 'a' / attempt[8:]
         result_path, schema_path = handoff_root / 'result.json', handoff_root / 'schema.json'
         native, dispatched, business, cleanup = record.get('nativeSession'), False, 'failed', 'not_started'
         summary, blockers, validation, evidence, secrets = '', [], [], None, []
         auth_copy, protocol, native_terminal = None, None, False
         try:
-            self._check(execution.deadline)
+            budget = begin_attempt_budget(record, deadline)
+            deadline = budget['originalMonotonicDeadline']
+            self._deadline = deadline
+            record.update(budget)
+            ledger.update_attempt(attempt, **budget)
+            self._check(deadline)
             if profile['kind'] != 'codex' or profile['executor'] != 'codex_exec' or profile['version'] != CODEX_VERSION:
                 raise CodingFailure('unsupported_codex_exec_profile')
             if profile.get('sha256'):
@@ -97,16 +105,19 @@ class CodexExecutor(HerdrExecutor):
             if native:
                 if not worktree.is_dir() or not record.get('baseHead'):
                     raise CodingFailure('original_worktree_unavailable')
-                base = record['baseHead']
+                base = record.get('expectedHead', record['baseHead'])
             else:
                 if worktree.exists():
                     raise CodingFailure('new_worktree_collision')
                 base = git(Path(repository['root']), 'rev-parse', '--verify', repository['baseRef'] + '^{commit}')
                 git(Path(repository['root']), 'worktree', 'add', '-b', record['branch'], str(worktree), base)
-                ledger.update_task(record['id'], baseHead=base)
+                record['baseHead'] = base
+                ledger.update_task(record['id'], baseHead=base, expectedHead=base)
                 ledger.update_attempt(attempt, baseHead=base)
+            record['startHead'] = base
+            ledger.update_attempt(attempt, startHead=base)
             reject_project_cli_extensions(worktree)
-            before = snapshot_worktree(worktree, repository['commonDir'], record['branch'], execution.deadline)
+            before = snapshot_worktree(worktree, repository['commonDir'], record['branch'], deadline)
             if before['head'] != base:
                 raise CodingFailure('worktree_base_changed')
             env = codex_environment(Path(profile['executable']), task_root / 'native')
@@ -143,11 +154,11 @@ class CodexExecutor(HerdrExecutor):
                 protocol.feed(chunk)
                 if protocol.session and protocol.session != previous:
                     ledger.update_attempt(attempt, nativeSession=protocol.session)
-            self._check(execution.deadline)
+            self._check(deadline)
             ledger.update_attempt(attempt, status='running', cleanupState='running', dispatch=True, nativeTurnStatus='submitted')
             dispatched, cleanup = True, 'running'
             with self._lock:
-                self._check(execution.deadline)
+                self._check(deadline)
                 process = self.process_factory([profile['executable'], *codex_arguments(profile, schema_path, result_path, native)],
                     worktree, env, output_bytes=1024 * 1024, on_stdout=receive,
                     job_name='Local\\Meido.Coding.' + attempt + '.exec',
@@ -156,11 +167,11 @@ class CodexExecutor(HerdrExecutor):
             next_file_check = 0.0
             def check():
                 nonlocal next_file_check
-                self._check(execution.deadline)
+                self._check(deadline)
                 if time.monotonic() >= next_file_check:
-                    check_task_files(task_root, execution.deadline - 60)
+                    check_task_files(task_root, deadline - 60)
                     next_file_check = time.monotonic() + 1
-            response = process.communicate(timeout=execution.deadline - 60 - time.monotonic(), input=prompt, check=check,
+            response = process.communicate(timeout=deadline - 60 - time.monotonic(), input=prompt, check=check,
                                            graceful_stop=True)
             native = protocol.finish(returncode=response.returncode)
             native_terminal = True
@@ -178,14 +189,14 @@ class CodexExecutor(HerdrExecutor):
             if result.status != 'completed' or blockers:
                 business = 'needs_input' if result.status in {'needs_input', 'blocked'} else 'failed'
             else:
-                evidence = snapshot_worktree(worktree, repository['commonDir'], record['branch'], execution.deadline)
+                evidence = snapshot_worktree(worktree, repository['commonDir'], record['branch'], deadline)
                 if evidence['head'] != before['head']:
                     raise CodingFailure('unapproved_native_commit')
                 approved = repository.get('validation', [])
                 if not approved or not set(result.validation).issubset({item['id'] for item in approved}):
                     raise CodingFailure('approved_validation_missing_or_mismatched')
                 for command in approved:
-                    self._check(execution.deadline)
+                    self._check(deadline)
                     cwd = (worktree / command.get('cwd', '.')).resolve(strict=True)
                     if not command['argv'] or not Path(command['argv'][0]).is_absolute() or not cwd.is_relative_to(worktree.resolve()):
                         raise CodingFailure('approved_validation_path_changed')
@@ -193,11 +204,11 @@ class CodexExecutor(HerdrExecutor):
                         self._validation = OwnedProcess(command['argv'], cwd, git_environment(), output_bytes=65536,
                             job_name='Local\\Meido.Coding.' + attempt + '.validation',
                             journal=lambda name, active: ledger.resource_job(attempt, name, active))
-                    checked = self._validation.communicate(timeout=min(60, execution.deadline - 60 - time.monotonic()))
+                    checked = self._validation.communicate(timeout=min(60, deadline - 60 - time.monotonic()))
                     validation.append({'id': command['id'], 'status': 'passed' if checked.returncode == 0 else 'failed', 'exitCode': checked.returncode})
                     if checked.returncode:
                         raise CodingFailure('host_validation_failed')
-                if snapshot_worktree(worktree, repository['commonDir'], record['branch'], execution.deadline) != evidence:
+                if snapshot_worktree(worktree, repository['commonDir'], record['branch'], deadline) != evidence:
                     raise CodingFailure('files_changed_during_validation')
                 if not evidence['status']:
                     raise CodingFailure('reviewable_diff_missing')
@@ -219,11 +230,13 @@ class CodexExecutor(HerdrExecutor):
                 try:
                     if self._cancelled.is_set() or not self.authorized():
                         raise CodingFailure('attempt_permission_ended')
-                    check_task_files(task_root, execution.deadline)
-                    final = snapshot_worktree(worktree, repository['commonDir'], record['branch'], execution.deadline)
+                    check_task_files(task_root, deadline)
+                    attestation = attest_snapshot(worktree,
+                        record | {'nativeSession': native, 'cleanupState': 'complete'}, deadline, validation)
+                    final = attestation['snapshot']
                     if final != evidence:
                         raise CodingFailure('files_changed_after_validation')
-                    ledger.update_attempt(attempt, validatedHead=final['head'])
+                    ledger.update_attempt(attempt, validatedHead=final['head'], validationEvidence=attestation)
                 except BaseException as error:
                     business, blockers = 'unknown', [getattr(error, 'code', type(error).__name__)]
             for secret in secrets:

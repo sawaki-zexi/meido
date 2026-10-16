@@ -4464,16 +4464,22 @@ async def _deliver_coding_completion(record, content, authorized):
     source = FrozenChannelSource.from_dict(json.loads(origin.source_authority_json))
     target = target_from_chat(account_id=source.account_id, chat_id=source.chat_id,
         kind=TargetKind.GROUP if source.chat_type == 'group' else TargetKind.PRIVATE)
+    kind = record.get('completionKind', 'coding_completion')
+    if kind not in {'coding_completion', 'coding_commit', 'coding_publication'}:
+        raise ValueError('invalid owned Coding completion kind')
     result = await channel_host.account_send(origin.role_id, source.account_id, target.id, content, actor='reply',
         source_thread_id=source.thread_id, source_session_key=origin.session_key,
-        source_run_id=origin.parent_run_id, source_tool_call_id=record['attemptId'],
-        source_kind='coding_completion', record_message=False, authorize_source=authorized)
+        source_run_id=origin.parent_run_id, source_tool_call_id=record.get('completionId', record['attemptId']),
+        source_kind=kind, record_message=False, authorize_source=authorized)
     return {'status': result.status.value, 'attemptId': result.attempt_id}
 
 
 def _coding_receipt(record):
+    kind = record.get('completionKind', 'coding_completion')
+    if kind not in {'coding_completion', 'coding_commit', 'coding_publication'}:
+        raise ValueError('invalid owned Coding receipt kind')
     receipt = multichannel_store.delivery_for_source(record['origin']['role_id'],
-        source_kind='coding_completion', source_tool_call_id=record['attemptId'])
+        source_kind=kind, source_tool_call_id=record.get('completionId', record['attemptId']))
     return {'status': receipt[0], 'attemptId': receipt[1]} if receipt is not None else None
 
 
@@ -4484,7 +4490,8 @@ def _coding_application():
             role_config=lambda role_id: role.agentConfig.coding if (role := store.get(role_id)) is not None else None,
             authorized=_coding_origin_authorized, deliver=_deliver_coding_completion, receipt=_coding_receipt,
             lock_for=_runtime_role_lock,
-            delegation_authorized=lambda origin: _coding_origin_authorized(origin) and _spawn_origin_authorized(origin))
+            delegation_authorized=lambda origin: _coding_origin_authorized(origin) and _spawn_origin_authorized(origin),
+            publication_credentials=SystemCredentialStore('meido.coding-publication', strict_cleanup=True))
     return _coding
 
 

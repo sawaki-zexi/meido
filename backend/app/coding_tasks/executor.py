@@ -17,6 +17,7 @@ from .git_repository import git, git_environment, repository_identity
 from .herdr import HerdrClient
 from .owned_process import CleanupFailed, OwnedProcess
 from .errors import CodingFailure, CodingDeadline
+from .evidence import attest_snapshot, begin_attempt_budget, snapshot_worktree, task_paths
 
 
 class NativeResult(BaseModel):
@@ -65,40 +66,6 @@ def agent_arguments(profile, worktree, output_directory, native_session=None):
     return arguments
 
 
-def snapshot_worktree(worktree, common_dir, branch, deadline):
-    root = Path(worktree).resolve(strict=True)
-    actual_common = Path(git(root, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve(strict=True)
-    if actual_common != Path(common_dir).resolve(strict=True) or git(root, 'branch', '--show-current') != branch:
-        raise CodingFailure('worktree_identity_changed')
-    # Cached files include staged-only edits; worktree-only --modified would
-    # miss a validator changing an already staged file.
-    files = git(root, 'ls-files', '--cached', '--others', '--exclude-standard', '-z').split('\0')
-    if len(files) > 10000:
-        raise CodingFailure('worktree_file_count_budget')
-    hashes, total = {}, 0
-    for name in files:
-        if not name:
-            continue
-        path = root / name
-        resolved = path.resolve()
-        if not resolved.is_relative_to(root) or path.is_symlink():
-            raise CodingFailure('worktree_file_redirected')
-        if not path.exists():
-            hashes[name] = 'deleted'
-            continue
-        total += path.stat().st_size
-        if total > 2 * 1024 * 1024 * 1024:
-            raise CodingFailure('task_file_budget_exceeded')
-        digest = hashlib.sha256()
-        with path.open('rb') as stream:
-            while chunk := stream.read(1024 * 1024):
-                if time.monotonic() >= deadline:
-                    raise CodingDeadline()
-                digest.update(chunk)
-        hashes[name] = digest.hexdigest()
-    return {'head': git(root, 'rev-parse', 'HEAD'), 'status': git(root, 'status', '--porcelain'), 'files': hashes}
-
-
 def check_task_files(root, deadline):
     total, count = 0, 0
     for path in root.rglob('*'):
@@ -144,20 +111,24 @@ class HerdrExecutor:
             raise CodingDeadline()
 
     def run(self, execution):
-        record = self.record
+        deadline = execution.deadline
+        record = dict(self.record)
         attempt = record['attemptId']
         business, summary, blockers = 'failed', '', []
         dispatched, native, cleanup = False, record.get('nativeSession'), 'not_started'
         validation, evidence = [], None
         secrets, auth_copy = [], None
-        task_root = self.root / 't' / hashlib.sha256(record['origin']['role_id'].encode()).hexdigest()[:16] / record['id'][7:]
-        worktree, handoff_root = task_root / 'w', task_root / 'a' / attempt[8:]
+        task_root, worktree, handoff_root = task_paths(self.root, record)
         result_path = handoff_root / 'result.json'
         profile, repository = record['profile'], record['repository']
         try:
+            budget = begin_attempt_budget(record, deadline)
+            deadline = budget['originalMonotonicDeadline']
+            record.update(budget)
+            self.ledger.update_attempt(attempt, **budget)
             task_root.mkdir(parents=True, exist_ok=True)
             handoff_root.mkdir(parents=True, exist_ok=False)
-            self._check(execution.deadline)
+            self._check(deadline)
             identity = repository_identity(repository['root'])
             if identity['commonDir'] != repository['commonDir']:
                 raise CodingFailure('registered_repository_changed')
@@ -167,7 +138,7 @@ class HerdrExecutor:
             arguments = agent_arguments(profile, worktree, handoff_root, native)
             client = self.client_factory(Path(record['nativeBuild']['executable']), task_root / 'native',
                 generation=attempt, session='meido-' + record['id'][7:39], agent_kind=profile['kind'],
-                agent_executable=Path(profile['executable']), agent_arguments=arguments, deadline=execution.deadline - 60,
+                agent_executable=Path(profile['executable']), agent_arguments=arguments, deadline=deadline - 60,
                 resource_journal=lambda name, active: self.ledger.resource_job(attempt, name, active))
             with self._lock:
                 if self._cancelled.is_set():
@@ -201,22 +172,25 @@ class HerdrExecutor:
             client.install_integration(profile['kind'])
             status = client.start()
             self.ledger.update_attempt(attempt, serverGeneration=status['generation'], serverPid=status['pid'])
-            self._check(execution.deadline)
+            self._check(deadline)
             if native:
                 if not worktree.is_dir() or not record.get('baseHead'):
                     raise CodingFailure('original_worktree_unavailable')
                 workspace = client.call(['worktree', 'open', '--cwd', repository['root'], '--path', str(worktree), '--label', record['id'], '--no-focus'])
-                base = record['baseHead']
+                base = record.get('expectedHead', record['baseHead'])
             else:
                 if worktree.exists():
                     raise CodingFailure('new_worktree_collision')
                 base = git(Path(repository['root']), 'rev-parse', '--verify', repository['baseRef'] + '^{commit}')
                 workspace = client.call(['worktree', 'create', '--cwd', repository['root'], '--branch', record['branch'],
                     '--base', base, '--path', str(worktree), '--label', record['id'], '--no-focus'])
-                self.ledger.update_task(record['id'], baseHead=base)
+                record['baseHead'] = base
+                self.ledger.update_task(record['id'], baseHead=base, expectedHead=base)
                 self.ledger.update_attempt(attempt, baseHead=base)
+            record['startHead'] = base
+            self.ledger.update_attempt(attempt, startHead=base)
             reject_project_cli_extensions(worktree)
-            before = snapshot_worktree(worktree, repository['commonDir'], record['branch'], execution.deadline)
+            before = snapshot_worktree(worktree, repository['commonDir'], record['branch'], deadline)
             if before['head'] != base:
                 raise CodingFailure('worktree_base_changed')
             pane = workspace['root_pane']['pane_id']
@@ -235,15 +209,15 @@ class HerdrExecutor:
                 handoff['qualificationChallenges'] = record['qualificationChallenges']
             path = handoff_root / 'handoff.json'
             path.write_text(json.dumps(handoff, ensure_ascii=False), encoding='utf-8')
-            self._check(execution.deadline)
+            self._check(deadline)
             self.ledger.update_attempt(attempt, dispatch=True, nativeTurnStatus='submitted')
             dispatched = True
             client.prompt(agent_name, 'Read and follow the complete UTF-8 task handoff file, including its requirement, boundaries and resultSchema; write the fresh resultFile it specifies. MEIDO_HANDOFF ' + str(path))
-            next_file_check = 0
+            next_file_check = 0.0
             while not result_path.exists():
-                self._check(execution.deadline)
+                self._check(deadline)
                 if time.monotonic() >= next_file_check:
-                    check_task_files(task_root, execution.deadline - 60)
+                    check_task_files(task_root, deadline - 60)
                     next_file_check = time.monotonic() + 1
                 observed = client.observe_agent(agent_name)
                 if any(observed.get(key) != value for key, value in binding.items()) or observed.get('agent_session', {}).get('value') != native:
@@ -260,21 +234,21 @@ class HerdrExecutor:
                     or observed.get('agent_session', {}).get('value') != native):
                 raise CodingFailure('native_result_binding_changed')
             result = NativeResult.model_validate(strict_json(result_bytes))
-            check_task_files(task_root, execution.deadline - 60)
+            check_task_files(task_root, deadline - 60)
             if result.task_id != record['id'] or result.run_id != attempt:
                 raise CodingFailure('result_task_attempt_mismatch')
             summary, blockers = result.summary, result.blockers
             if result.status != 'completed' or blockers:
                 business = 'needs_input' if result.status in {'needs_input', 'blocked'} else 'failed'
             else:
-                evidence = snapshot_worktree(worktree, repository['commonDir'], record['branch'], execution.deadline)
+                evidence = snapshot_worktree(worktree, repository['commonDir'], record['branch'], deadline)
                 if evidence['head'] != before['head']:
                     raise CodingFailure('unapproved_native_commit')
                 approved = repository.get('validation', [])
                 if not approved or not set(result.validation).issubset({item['id'] for item in approved}):
                     raise CodingFailure('approved_validation_missing_or_mismatched')
                 for command in approved:
-                    self._check(execution.deadline)
+                    self._check(deadline)
                     argv = command['argv']
                     cwd = (worktree / command.get('cwd', '.')).resolve(strict=True)
                     if not argv or not Path(argv[0]).is_absolute() or not cwd.is_relative_to(worktree.resolve()):
@@ -284,11 +258,11 @@ class HerdrExecutor:
                             job_name='Local\\Meido.Coding.' + attempt + '.validation',
                             journal=lambda name, active: self.ledger.resource_job(attempt, name, active))
                         process = self._validation
-                    checked = process.communicate(timeout=min(60, execution.deadline - 60 - time.monotonic()))
+                    checked = process.communicate(timeout=min(60, deadline - 60 - time.monotonic()))
                     validation.append({'id': command['id'], 'status': 'passed' if checked.returncode == 0 else 'failed', 'exitCode': checked.returncode})
                     if checked.returncode:
                         raise CodingFailure('host_validation_failed')
-                after = snapshot_worktree(worktree, repository['commonDir'], record['branch'], execution.deadline)
+                after = snapshot_worktree(worktree, repository['commonDir'], record['branch'], deadline)
                 if after != evidence:
                     raise CodingFailure('files_changed_during_validation')
                 if not after['status']:
@@ -313,11 +287,13 @@ class HerdrExecutor:
                     # The agent may still write after its result file or the
                     # last validator returns. Only a snapshot after every
                     # owned process has exited can preserve that evidence.
-                    check_task_files(task_root, execution.deadline)
-                    final = snapshot_worktree(worktree, repository['commonDir'], record['branch'], execution.deadline)
+                    check_task_files(task_root, deadline)
+                    attestation = attest_snapshot(worktree,
+                        record | {'nativeSession': native, 'cleanupState': 'complete'}, deadline, validation)
+                    final = attestation['snapshot']
                     if final != evidence:
                         raise CodingFailure('files_changed_after_validation')
-                    self.ledger.update_attempt(attempt, validatedHead=final['head'])
+                    self.ledger.update_attempt(attempt, validatedHead=final['head'], validationEvidence=attestation)
                 except BaseException as error:
                     business = 'cancelled' if self._cancelled.is_set() else 'timed_out' if isinstance(error, TimeoutError) else 'unknown'
                     blockers = [getattr(error, 'code', type(error).__name__)]

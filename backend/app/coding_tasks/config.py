@@ -10,9 +10,9 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
-from .git_repository import repository_identity
+from .git_repository import publication_remote, repository_identity
 from .owned_process import OwnedProcess
 from .native_build import verify_bundle
 
@@ -44,10 +44,10 @@ class RepositoryInput(BaseModel):
     baseRef: str = 'main'
     remote: str = 'origin'
     validation: list[dict] = Field(default_factory=list)
-    localCommit: bool = False
-    fetch: bool = False
-    push: bool = False
-    draftPr: bool = False
+    localCommit: StrictBool = False
+    fetch: StrictBool = False
+    push: StrictBool = False
+    draftPr: StrictBool = False
 
 
 class ProfileInput(BaseModel):
@@ -156,8 +156,10 @@ class CodingConfigStore:
             raise ValueError('invalid Git base ref')
         value = setting.model_dump(exclude={'id'}) | {'id': setting.id or 'repo_' + uuid.uuid4().hex,
                                                      'root': identity['root'], 'commonDir': identity['commonDir']}
-        if any(value.get(key) for key in ('localCommit', 'fetch', 'push', 'draftPr')):
-            raise ValueError('commit and publication are not available in this local-task ticket')
+        if value['fetch']:
+            raise ValueError('fetch is unavailable; select an existing local base')
+        value['publicationRemote'] = (publication_remote(Path(identity['root']), setting.remote)
+                                      if value['push'] or value['draftPr'] else None)
         for command in value['validation']:
             if (set(command) - {'id', 'argv', 'cwd'} or not isinstance(command.get('id'), str)
                     or not command['id'] or len(command['id']) > 100

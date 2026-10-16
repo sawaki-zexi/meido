@@ -52,6 +52,10 @@ def test_real_sent_receipt_repairs_an_already_synced_uncertain_projection_withou
         assert len(messages) == 1 and messages[0].metadata['deliveryStatus'] == 'sent'
         assert messages[0].metadata['channel'] == 'qq' and messages[0].runId is None
         assert observed['runtimeAckDirty'] is False
+        application.ledger.update_attempt(accepted['attemptId'], messageSynced=False)
+        application.authorized = lambda _: False
+        asyncio.run(application.tick())
+        assert application.ledger.attempt(accepted['attemptId'])['deliveryStatus'] == 'sent'
     finally:
         asyncio.run(application.close())
         tasks.close()

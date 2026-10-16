@@ -19,14 +19,15 @@ from .owned_process import CleanupFailed
 def public_task(record: dict) -> dict:
     fields = {'id', 'attemptId', 'executor', 'status', 'runtimeStatus', 'nativeTurnStatus', 'cleanupState',
               'runtimeTaskId', 'nativeSession', 'summary', 'validation', 'blockers', 'deliveryStatus',
-              'runtimeAckDirty', 'createdAt', 'endedAt', 'branch', 'baseHead', 'validatedHead', 'observedAt'}
+              'runtimeAckDirty', 'createdAt', 'endedAt', 'branch', 'baseHead', 'validatedHead', 'expectedHead', 'startHead', 'observedAt'}
     return {key: record[key] for key in fields if key in record}
 
 
 class CodingApplication:
     """Own CodingTask policy, attempts, native resources and result delivery."""
     def __init__(self, root: Path, tasks: TaskRuntime, sessions: SessionStore, *, role_config,
-                 authorized, config=None, executor_factory=None, deliver=None, receipt=None, lock_for=None, delegation_authorized=None):
+                 authorized, config=None, executor_factory=None, deliver=None, receipt=None, lock_for=None, delegation_authorized=None,
+                 publication_credentials=None, publication_platform_factory=None, publication_transport_factory=None):
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.tasks, self.sessions = tasks, sessions
@@ -44,6 +45,9 @@ class CodingApplication:
         self._worker = None
         self._closed = False
         self._resources_closed = False
+        from .publication import PublicationOperations
+        self.publication = PublicationOperations(self, credentials=publication_credentials,
+            platform_factory=publication_platform_factory, transport_factory=publication_transport_factory)
         self.probes = NativeProfileProbes(self.root, tasks, self.config,
             role_exists=lambda role_id: not self._closed and self.role_config(role_id) is not None)
 
@@ -110,6 +114,7 @@ class CodingApplication:
         with self._owner_lock:
             if self._closed:
                 raise PermissionError('coding application has closed admission')
+            self.publication.ensure_native_admission(origin.role_id, grant['id'], task_id)
             record, created = self.ledger.admit(origin, requirement=requirement, repository=grant, profile=profile,
                 max_daily=role.maxAttemptsPerDay, task_id=task_id, request_id=request_id,
                 admitted=lambda: not self._closed and admitted() and self.authorized(origin)
@@ -227,6 +232,7 @@ class CodingApplication:
                     # Temporary storage, role disable or lost local projection
                     # leaves the durable copy/dirty/receipt for the next tick.
                     continue
+            await self.publication.tick()
         finally:
             self._tick_lock.release()
 
@@ -277,13 +283,8 @@ class CodingApplication:
                 snapshot = await asyncio.to_thread(self.tasks.query, identifier, origin)
                 if snapshot.status not in TERMINAL:
                     return
-            if snapshot is not None and record['runtimeStatus'] != snapshot.status:
-                business = record['status']
-                if business in {'accepted', 'running'}:
-                    business = snapshot.status if snapshot.status != 'succeeded' else 'unknown'
-                self.ledger.update_attempt(record['attemptId'], status=business, runtimeStatus=snapshot.status,
-                    runtimeResult={'status': snapshot.status, 'exitCode': snapshot.exit_code, 'output': snapshot.output[:8000]},
-                    runtimeAckDirty=True, endedAt=snapshot.ended_at)
+            if snapshot is not None and (record['runtimeStatus'] != snapshot.status or not record.get('runtimeResult')):
+                self.ledger.copy_runtime_result(record['attemptId'], snapshot)
             record = self.ledger.attempt(record['attemptId'])
             if record['runtimeAckDirty']:
                 await asyncio.to_thread(self.tasks.acknowledge_result, identifier, origin)
@@ -294,8 +295,11 @@ class CodingApplication:
                     self._owners.pop(record['attemptId'], None)
         if record['status'] in {'accepted', 'running'}:
             return
+        if self._closed:
+            return
         if not self._allowed(record):
-            self.ledger.update_attempt(record['attemptId'], deliveryStatus='suppressed', messageSynced=True)
+            self.ledger.update_attempt(record['attemptId'],
+                deliveryStatus='sent' if record['deliveryStatus'] == 'sent' else 'suppressed', messageSynced=True)
             return
         if origin.session_key.startswith('thread:') and self.receipt is not None:
             receipt = self.receipt(record)
@@ -314,8 +318,11 @@ class CodingApplication:
                 await self._complete(record, origin, content)
 
     async def _complete(self, record, origin, content):
+        if self._closed:
+            return
         if not self._allowed(record):
-            self.ledger.update_attempt(record['attemptId'], deliveryStatus='suppressed', messageSynced=True)
+            self.ledger.update_attempt(record['attemptId'],
+                deliveryStatus='sent' if record['deliveryStatus'] == 'sent' else 'suppressed', messageSynced=True)
             return
         if origin.session_key.startswith('thread:'):
             if self.deliver is None:
@@ -372,9 +379,13 @@ class CodingApplication:
         # Business validation can precede the runtime's finally block. Stop by
         # owned runtime kind instead of treating a business status as proof of
         # process exit. Keep all databases/owners alive if cleanup raises.
+        errors = []
         for role_id in self.ledger.role_ids():
-            await asyncio.to_thread(self.tasks.cancel_role_tasks, role_id, kind='coding_herdr')
-            await asyncio.to_thread(self.tasks.cancel_role_tasks, role_id, kind='coding_codex')
+            for kind in ('coding_herdr', 'coding_codex'):
+                try:
+                    await asyncio.to_thread(self.tasks.cancel_role_tasks, role_id, kind=kind)
+                except Exception as error:
+                    errors.append(error)
         if self._worker is not None:
             try:
                 await asyncio.shield(self._worker)
@@ -388,17 +399,30 @@ class CodingApplication:
                 # Consume an earlier recoverable worker failure, then confirm
                 # every resource below before any database can be closed.
                 pass
-        await self.tick()
+        try:
+            await self.tick()
+        except Exception as error:
+            errors.append(error)
         with self._owner_lock:
             remaining_owners = list(self._owners.items())
         for attempt_id, owner in remaining_owners:
-            await asyncio.to_thread(owner.cancel)
-            self.ledger.update_attempt(attempt_id, cleanupState='complete')
-            with self._owner_lock:
-                self._owners.pop(attempt_id, None)
+            try:
+                await asyncio.to_thread(owner.cancel)
+                self.ledger.update_attempt(attempt_id, cleanupState='complete')
+                with self._owner_lock:
+                    self._owners.pop(attempt_id, None)
+            except Exception as error:
+                errors.append(error)
         if any(record['cleanupState'] not in {'complete', 'not_started'}
                for role_id in self.ledger.role_ids() for record in self.ledger.role_records(role_id)):
-            raise CleanupFailed('owned Coding resources have not been confirmed stopped')
+            errors.append(CleanupFailed('owned Coding resources have not been confirmed stopped'))
+        for closer in (self.publication.close, lambda: asyncio.to_thread(self.probes.drain)):
+            try:
+                await closer()
+            except Exception as error:
+                errors.append(error)
+        if errors:
+            raise errors[0] if len(errors) == 1 else ExceptionGroup('Coding cleanup failed', errors)
         await asyncio.to_thread(self.probes.close)
         self.ledger.close()
         self.config.close()
@@ -411,6 +435,7 @@ class CodingApplication:
         await asyncio.to_thread(self.tasks.cancel_role_tasks, role_id, kind='coding_qualification')
         await asyncio.to_thread(self.tasks.cancel_role_tasks, role_id, kind='coding_herdr')
         await asyncio.to_thread(self.tasks.cancel_role_tasks, role_id, kind='coding_codex')
+        await self.publication.invalidate_role(role_id)
         # The caller closes admission before awaiting this method. Recovery
         # still copies/ACKs terminal results even when delivery is suppressed.
         await self.tick()
@@ -430,6 +455,7 @@ class CodingApplication:
         if seal:
             self.seal_delegation(role_id)
         await asyncio.to_thread(self.tasks.cancel_role_tasks, role_id, kind='coding_codex')
+        await self.publication.invalidate_delegation(role_id)
         await self.tick()
 
     def delegation_generation(self, role_id):
@@ -449,3 +475,5 @@ class CodingApplication:
             raise RuntimeError('Coding resources have not been confirmed stopped')
         if self.probes.role_resources_pending(role_id):
             raise RuntimeError('native CLI qualification resources have not been confirmed stopped')
+        if self.publication.role_resources_pending(role_id):
+            raise RuntimeError('Coding owner-operation resources have not been confirmed stopped')

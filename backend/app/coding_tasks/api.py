@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
+from typing import Annotated, Literal, Union
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from .errors import CodingFailure
+from .tools import _owned_thread
 
 from .application import public_task
 from .config import ProfileInput, RepositoryInput
@@ -31,6 +35,40 @@ class ProbeInput(BaseModel):
     requestId: str
 
 
+class CommitReviewInput(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    action: Literal['commit']
+    message: str = Field(min_length=1, max_length=8000)
+    authorName: str = Field(min_length=1, max_length=100)
+    authorEmail: str = Field(min_length=3, max_length=254)
+
+
+class PublicationReviewInput(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    action: Literal['publish']
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(max_length=32768)
+    previousOperationId: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class OwnerApprovalInput(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    approved: Literal[True]
+    requestId: str = Field(min_length=1, max_length=100)
+
+    @field_validator('approved', mode='before')
+    @classmethod
+    def explicit_boolean(cls, value):
+        if value is not True:
+            raise ValueError('literal owner approval is required')
+        return value
+
+
+class PublicationCredentialInput(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    token: str = Field(max_length=4096)
+
+
 async def bounded_body(request: Request) -> dict:
     body = bytearray()
     async for chunk in request.stream():
@@ -48,6 +86,77 @@ async def bounded_body(request: Request) -> dict:
 
 def coding_router(application, roles) -> APIRouter:
     router = APIRouter(prefix='/api/coding')
+
+    def existing_role(role_id):
+        if roles().get(role_id) is None:
+            raise HTTPException(404, '角色不存在')
+
+    async def owner_call(function, *args, **kwargs):
+        try:
+            return await _owned_thread(function, *args, **kwargs)
+        except KeyError:
+            raise HTTPException(404, '编程任务、审阅或操作不存在') from None
+        except PermissionError:
+            raise HTTPException(403, '原来源、操作许可或明确的凭据修订不可用') from None
+        except CodingFailure:
+            raise HTTPException(409, '宿主成果证据不完整或已失效；未提交或自动重新运行 CLI') from None
+        except ValueError:
+            raise HTTPException(409, '成果、预算或授权已变化，请重新审阅；未自动重试') from None
+        except TimeoutError:
+            raise HTTPException(409, '原任务的提交预算已结束；成果保留，需要主人明确发起新的继续请求，可能再次消耗 CLI 配额') from None
+        except (sqlite3.Error, RuntimeError, OSError):
+            raise HTTPException(503, '操作或资源收尾暂不可确认，请查询原操作') from None
+
+    @router.get('/publication')
+    async def publication_settings():
+        return application().publication.settings()
+
+    @router.put('/publication/credential')
+    async def publication_credential(request: Request):
+        try:
+            value = PublicationCredentialInput.model_validate(await bounded_body(request))
+        except ValueError:
+            raise HTTPException(422, '发布凭据请求无效') from None
+        return await owner_call(application().publication.set_token, value.token)
+
+    @router.get('/roles/{role_id}/operations')
+    async def owner_operations(role_id: str):
+        existing_role(role_id)
+        current = application()
+        await current.tick()
+        return {'operations': current.publication.list(role_id)}
+
+    @router.post('/roles/{role_id}/tasks/{task_id}/reviews')
+    async def prepare_review(role_id: str, task_id: str, request: Request):
+        existing_role(role_id)
+        try:
+            value: CommitReviewInput | PublicationReviewInput = TypeAdapter(Annotated[Union[CommitReviewInput, PublicationReviewInput],
+                Field(discriminator='action')]).validate_python(await bounded_body(request))
+        except ValueError:
+            raise HTTPException(422, '请提交明确的本地提交或 Draft PR 审阅内容') from None
+        arguments = ({'message': value.message, 'author_name': value.authorName, 'author_email': value.authorEmail}
+            if isinstance(value, CommitReviewInput) else {'title': value.title, 'body': value.body,
+                'previous_operation_id': value.previousOperationId})
+        return await owner_call(application().publication.prepare, role_id, task_id, action=value.action, **arguments)
+
+    @router.post('/roles/{role_id}/reviews/{review_id}/approve', status_code=202)
+    async def approve_review(role_id: str, review_id: str, request: Request):
+        existing_role(role_id)
+        try:
+            value = OwnerApprovalInput.model_validate(await bounded_body(request))
+        except ValueError:
+            raise HTTPException(422, '须明确批准本次已审阅的确切成果') from None
+        return await owner_call(application().publication.approve, role_id, review_id, request_id=value.requestId)
+
+    @router.post('/roles/{role_id}/operations/{operation_id}/cancel', status_code=202)
+    async def cancel_operation(role_id: str, operation_id: str):
+        existing_role(role_id)
+        return await owner_call(application().publication.cancel, role_id, operation_id)
+
+    @router.post('/roles/{role_id}/operations/{operation_id}/observe')
+    async def observe_operation(role_id: str, operation_id: str):
+        existing_role(role_id)
+        return await owner_call(application().publication.observe, role_id, operation_id)
 
     @router.get('/configuration')
     async def configuration():
@@ -111,7 +220,7 @@ def coding_router(application, roles) -> APIRouter:
         records = current.ledger.role_records(role_id)
         # This is the trusted local owner UI. Model tools keep the narrower
         # original-session scope and cannot use this API to inherit sources.
-        return {'tasks': [public_task(record) for record in reversed(records)],
+        return {'tasks': [public_task(record) | {'ownerActions': current.publication.task_summary(record)} for record in reversed(records)],
                 'availability': current.config.availability(role_id, role.agentConfig.coding)}
 
     @router.get('/probes')

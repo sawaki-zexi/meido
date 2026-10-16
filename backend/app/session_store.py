@@ -544,6 +544,43 @@ class SessionStore:
             message.metadata.update(metadata)
         return message
 
+    def append_coding_operation_once(self, role_id, session_key, task_id, attempt_id, operation_id, kind, content, *,
+                                     connection, authorized, operation_status, delivery_status, delivery_attempt_id=None):
+        """A reviewed host operation has its own original-source completion."""
+        if kind not in {'coding_commit', 'coding_publication'} or delivery_status not in {'pending', 'sent', 'failed', 'uncertain'}:
+            raise ValueError('invalid Coding operation completion')
+        if not all(isinstance(value, str) and 1 <= len(value) <= 100 for value in (task_id, attempt_id, operation_id)):
+            raise ValueError('invalid Coding operation identity')
+        database = connection.execute('PRAGMA database_list').fetchone()
+        if not connection.in_transaction or database is None or Path(database[2]).resolve() != Path(self.database_path).resolve():
+            raise ValueError('Coding operation requires its canonical transaction')
+        channel = 'desktop'
+        if session_key.startswith('thread:'):
+            row = connection.execute('SELECT channel FROM channel_threads WHERE session_key=? AND role_id=?',
+                (session_key, role_id)).fetchone()
+            if row is None:
+                raise PermissionError('original Coding operation thread no longer exists')
+            channel = row[0]
+        elif session_key != f'role:{role_id}':
+            raise PermissionError('original Coding operation session does not match role')
+        metadata = {'internalEvent': kind, 'codingTaskId': task_id, 'attemptId': attempt_id,
+            'operationId': operation_id, 'operationStatus': operation_status, 'channel': channel,
+            'deliveryStatus': delivery_status, 'deliveryAttemptId': delivery_attempt_id}
+        message_id = f'{session_key}:coding-operation:{operation_id}'
+        message = self._append_owned_message_once(connection, role_id, session_key, message_id, content,
+            message_type='internal_completion', metadata=metadata, authorized=authorized)
+        if message.content != content:
+            raise ValueError('Coding operation completion content conflicts with durable identity')
+        if message.metadata.get('deliveryStatus') == 'sent':
+            metadata['deliveryStatus'] = 'sent'
+            metadata['deliveryAttemptId'] = message.metadata.get('deliveryAttemptId')
+        if message.metadata != metadata:
+            if not authorized():
+                raise PermissionError('Coding operation projection was revoked')
+            connection.execute('UPDATE messages SET metadata_json=? WHERE message_id=?', (_dump(metadata), message_id))
+            message.metadata.update(metadata)
+        return message
+
     def append_proactive_message_once(
         self,
         session_key: str,

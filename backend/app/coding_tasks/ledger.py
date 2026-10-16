@@ -84,6 +84,10 @@ class CodingLedger:
                     raise PermissionError('coding grant or profile changed')
                 if db.execute('SELECT COUNT(*) FROM coding_attempts WHERE task_id=?', (task_id,)).fetchone()[0] >= 10:
                     raise ValueError('coding task attempt budget reached')
+                # Attempts own budgets, validation and operation receipts.
+                # Only the durable task identity/session/host-attested HEAD
+                # may be inherited by a new explicit native turn.
+                task = json.loads(db.execute('SELECT body FROM coding_tasks WHERE id=?', (task_id,)).fetchone()['body'])
             else:
                 if db.execute('SELECT COUNT(*) FROM coding_tasks WHERE role_id=?', (origin.role_id,)).fetchone()[0] >= 10:
                     raise ValueError('coding retained task budget reached')
@@ -162,6 +166,23 @@ class CodingLedger:
                 raise KeyError('coding attempt not found')
             task = self._db.execute('SELECT body FROM coding_tasks WHERE id=?', (row['task_id'],)).fetchone()
             return json.loads(task['body']) | json.loads(row['body'])
+
+    def copy_runtime_result(self, attempt_id, snapshot):
+        """Copy a terminal result without replacing a newer business fact."""
+        with self.transaction() as db:
+            row = db.execute('SELECT body FROM coding_attempts WHERE id=?', (attempt_id,)).fetchone()
+            value = json.loads(row['body'])
+            if value.get('runtimeResult'):
+                return value
+            business = value['status']
+            if business in {'accepted', 'running'}:
+                business = snapshot.status if snapshot.status != 'succeeded' else 'unknown'
+            value.update(status=business, runtimeStatus=snapshot.status,
+                runtimeResult={'status': snapshot.status, 'exitCode': snapshot.exit_code, 'output': snapshot.output[:8000]},
+                runtimeAckDirty=True, endedAt=snapshot.ended_at)
+            db.execute('UPDATE coding_attempts SET status=?,ack_dirty=1,body=? WHERE id=?',
+                (business, _json(value), attempt_id))
+            return value
 
     def unsettled(self) -> builtins.list[dict]:
         with self._lock:

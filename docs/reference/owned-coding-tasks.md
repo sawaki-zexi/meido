@@ -1,12 +1,12 @@
 # Owned 编程任务：Herdr 与 Codex exec
 
-状态：当前 #174/#175 本地实现，生产 CLI 认证与真实模型未验收；#176 发布能力未交付。最后核验：2026-10-16。事实来源：[应用](../../backend/app/coding_tasks/application.py)、[配置](../../backend/app/coding_tasks/config.py)、[Herdr 执行器](../../backend/app/coding_tasks/executor.py)、[Codex exec](../../backend/app/coding_tasks/codex_exec.py)、[API](../../backend/app/coding_tasks/api.py)、[公开 Codex 闭环](../../tests/python/test_codex_spawn_api.py)。完整目标见[具体规格](../specs/coding-agent-spec.md)，本页描述当前代码。
+状态：当前本地实现；#176 已加入宿主审阅、提交和一次性发布，独立审查与总集成以交付记录为准。生产 CLI 认证、真实模型和实际 GitHub 发布未验收。最后核验：2026-10-16。事实来源：[应用](../../backend/app/coding_tasks/application.py)、[配置](../../backend/app/coding_tasks/config.py)、[Herdr 执行器](../../backend/app/coding_tasks/executor.py)、[Codex exec](../../backend/app/coding_tasks/codex_exec.py)、[API](../../backend/app/coding_tasks/api.py)、[公开 Codex 闭环](../../tests/python/test_codex_spawn_api.py)、[公开审阅闭环](../../tests/python/test_coding_publication_main.py)。完整目标见[具体规格](../specs/coding-agent-spec.md)，本页描述当前代码。
 
 ## 许可与配置
 
 全局 `enabled` 和角色 `agentConfig.coding.enabled` 默认关闭。角色字段为 `repoGrantIds`、`profileIds`、`defaultHerdrProfileId`、`defaultCodexProfileId`、`maxAttemptsPerDay`（默认5，1–100）。Herdr 和 codex_exec 使用分别登记的 profile 与原生资格核验；后者还要求 spawn.enabled。旧客户端省略 coding 或只更新部分子字段时保留现有配置。
 
-仓库登记精确、存在的 Git top-level 绝对路径、commonDir 与文件系统身份；不接受子目录或可移动别名。授予显式角色 ID、baseRef、remote，以及固定 validation 数组：每项 `id`、绝对程序 `argv`、worktree 内相对 `cwd`。代码会执行主人信任的仓库及验证命令；这不构成同账号 OS 安全沙箱。localCommit/fetch/push/draftPr 的 true 当前拒绝，不能借设置提前启用 #176。
+仓库登记精确、存在的 Git top-level 绝对路径、commonDir 与文件系统身份；不接受子目录或可移动别名。授予显式角色 ID、baseRef、remote，以及固定 validation 数组：每项 `id`、绝对程序 `argv`、worktree 内相对 `cwd`。代码会执行主人信任的仓库及验证命令；这不构成同账号 OS 安全沙箱。localCommit、push、draftPr 独立且默认关闭；允许范围不代替具体成果批准。fetch 仍拒绝，不会隐式更新 base。发布只接受一个无认证信息、无跳转的 `https://github.com/<owner>/<repo>.git` push URL。Git clean/smudge/process filter 当前拒绝，包括配置了 filter 的 LFS 仓库，防止普通状态查询启动未受管程序。
 
 CLI profile 指定 kind（codex/claude）、executor、程序路径及 SHA-256、固定 version/model、专用 authDirectory 和 allowedRoleIds。保存只读取该明确目录的有界认证文件以冻结摘要，不搜索桌面认证，不登录或调用模型。首次只有 unverified；只有宿主两次真实 CLI 核验流程可记录 verified，API 不接受自报状态。认证、profile、仓库、宿主或授权代际变化会使旧运行失效；关闭再开启不能复活旧工具。
 
@@ -61,3 +61,32 @@ GET `/roles/{role}/tasks` 是主人桌面管理入口，可查看本角色各来
 完整 UTF-8 handoff 经受管 stdin writer 传输并关闭；stdout 增量解码 JSONL，仅 thread.started 的合法 UUID 能绑定 nativeSession。必须同一个 thread、一个 started/completed turn、退出码0及本 attempt 新鲜结构结果同时成立。错误/截断/未知事件、超64KiB帧/1MiB总输出、错会话或错 task/run 均不能成为 validated_diff。stdin 不读、取消、超时及协议错误都终止自有 Job，并 join writer/readers；失败保留资源所有权供重试。
 
 spawn 配置变化会先同步增加独立持久 delegation generation，并封住已有 codex_exec attempt 的执行和交付，再等待其他资源收尾。旧回合不能在 off/on 或普通 spawn 清理等待间借新配置复活。该代际不撤销无关 Herdr 任务；角色 Coding、仓库和 profile 的既有撤权仍作用于两条执行路径。
+
+## 确切成果与主人批准
+
+完整宿主证据绑定 task/attempt、原生 session、原角色与来源、不可变 baseHead、实际 startHead、worktree/common-dir/branch 身份、原始文件/模式/index/diff/tree 与固定验证结果。`validatedHead` 仍是未提交的起点 HEAD；不是可发布的 SHA。只有宿主核实真正 commit 的 parent/tree/干净状态后才推进 `expectedHead`；两种 executor 的明确 continue 都从该 HEAD 恢复原 session，保留最初 baseHead。
+
+本地 commit 包含在原 attempt 的 600 秒总期限内，540 秒后不开始新业务；刷新或新建 owner operation 不续期。期限同时受原进程 monotonic 与墙钟上限约束；过期、重启或旧数据无法证明剩余预算时拒绝提交。成果保留，主人须在原来源明确提出新 continue，它新计一次 native attempt，真实 CLI 可能再次消费配额；没有自动续模型或隐藏重试。
+
+主人先审阅实际 diff、原 session/HEAD、验证时间与固定命令、commit 身份和说明，再一次性批准确切 tree 与预计算 commit SHA。宿主执行固定 Git 命令，不调用 CLI/模型。之后可单独审阅确切 commit、远端仓库、baseRef/baseHead、自有发布分支、Draft title/body；批准同事务绑定唯一 operation 与稳定 requestId。相同请求返回原操作，其他请求不能二次消费同一 review。
+
+发布复用 TaskRuntime 的 `coding_publish`；本地提交为 `coding_commit`，均使用原 origin、operationId submission key、retain/复制/ACK，独立拥有 cleanup 与内部完成消息。发布另有 600/540 秒窗口。agent 已退出后才取独立 `meido.coding-publication` vault 凭据，不进入 native HOME、handoff、工具结果或模型请求；公开只给 configured/revision/cleanupPending。换凭据先撤销旧修订并停止旧 broker，收尾不明时保持 pending。
+
+REST 固定 `X-GitHub-Api-Version: 2026-03-10`，对应当前[官方版本契约](https://docs.github.com/en/rest/about-the-rest-api/api-versions)。真实平台兼容性仍须在另行批准的发布中核验。
+
+无凭据导出获批对象到宿主私有 bare staging，再仅用私有、固定 Git 配置将获批 SHA 推到提前审阅的唯一 `codex/meido-pub-*` 分支，不 force、不改其他 refs。push 和 PR 各在出手前持久 dispatch；固定 GitHub HTTPS、禁重定向/环境代理/自动重试。201 或 URL 不等于成功，必须 GET 核对仓库 ID、head/base 仓库与分支/SHA、open、draft、标题、正文和规范 URL。
+
+`unknown` 只允许明确的只读核对，查询包含 closed PR；不重 push/POST、不换分支。仅观察到相同 SHA 不能证明本次创建了分支。若自己的 push 已证实且 PR 尚未 dispatch，核实后为 `push_confirmed`，主人可重新审阅仅创建 PR 的剩余动作；新批准不会再次推送。旧写操作 `superseded` 保留原事实。取消不回滚远端；已经派发却无法证明的 PR 继续 unknown，不能借新批准绕过。
+
+review 最多每角色 100 份，实际 diff 256KiB；broker 所有保留文件与当前任务合计最多 2GiB/10000 文件（全局 publication 上限比逐任务池更严格），拒绝重解析与硬链接。限额不足明确失败，保留现有成果供主人处理。失败收尾分别尝试全部 native、broker、HTTP、probe owner；任何资源未确认都保留 DB 和责任，后续只恢复原 key/本地投影。
+
+| 主人路径（前缀 `/api/coding`） | 行为 |
+| --- | --- |
+| GET `/publication`；PUT `/publication/credential` | 有界、明确输入独立 token 或空串移除；GET 不返回秘密 |
+| GET `/roles/{role}/operations` | 本角色独立业务、Runtime/ACK、cleanup、交付与已核验 SHA/URL |
+| POST `/roles/{role}/tasks/{task}/reviews` | `action=commit` + message/authorName/authorEmail，或 `action=publish` + title/body；剩余动作需 previousOperationId |
+| POST `/roles/{role}/reviews/{review}/approve` | 仅字面布尔 `approved=true` 与稳定 requestId，不接受客户端替换 HEAD/remote/正文 |
+| POST `/roles/{role}/operations/{id}/observe` | 明确、最多30秒的原身份只读核实，无 CLI/写事务重放 |
+| POST `/roles/{role}/operations/{id}/cancel` | 关闭新动作并等待自有资源，不宣称撤回已发生事务 |
+
+404 表示不属于当前角色/不存在；403 为来源、许可或凭据修订失效；409 为证据、期限或审阅冲突；503 为存储或资源未确认。原生完成、commit 与 publication 分别使用 `coding_completion`、`coding_commit`、`coding_publication` 内部事件及独立确定 ID，只回原来源，不伪造主人 run 或额外模型。真实 sent receipt 和本地同步可分开恢复，不二次发送或改投桌面。验收与复现见[手册](../handbook/coding-publication-acceptance.md)。

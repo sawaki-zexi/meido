@@ -165,21 +165,33 @@ class NativeProfileProbes:
             except (CleanupFailed, KeyError, PermissionError, OSError, ValueError, sqlite3.Error):
                 continue
 
-    def close(self):
+    def drain(self):
+        errors = []
         with self._lock:
             roles = [row[0] for row in self._db.execute("SELECT DISTINCT json_extract(body,'$.roleId') FROM probes")]
         for role_id in roles:
-            self.tasks.cancel_role_tasks(role_id, kind='coding_qualification')
+            try:
+                self.tasks.cancel_role_tasks(role_id, kind='coding_qualification')
+            except Exception as error:
+                errors.append(error)
         with self._lock:
             owners = list(self._owners.items())
         for identifier, owner in owners:
-            owner.cancel()
-            self.update(identifier, cleanupState='complete')
-            with self._lock:
-                self._owners.pop(identifier, None)
+            try:
+                owner.cancel()
+                self.update(identifier, cleanupState='complete')
+                with self._lock:
+                    self._owners.pop(identifier, None)
+            except Exception as error:
+                errors.append(error)
         self.tick()
         if any(self.role_resources_pending(role_id) for role_id in roles):
-            raise CleanupFailed('native qualification resource cleanup is pending')
+            errors.append(CleanupFailed('native qualification resource cleanup is pending'))
+        if errors:
+            raise errors[0] if len(errors) == 1 else ExceptionGroup('native qualification cleanup failed', errors)
+
+    def close(self):
+        self.drain()
         self._db.close()
 
 

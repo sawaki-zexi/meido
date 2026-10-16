@@ -17,7 +17,8 @@ pytestmark = pytest.mark.usefixtures('local_platform_only')
 
 @pytest.mark.parametrize('revoke', [False, True])
 @pytest.mark.parametrize('executor', ['herdr', 'codex_exec'])
-def test_real_onebot_source_receives_one_background_completion_or_suppresses_after_unpair(api, tmp_path, monkeypatch, revoke, executor):
+@pytest.mark.parametrize('owner_operations', [False, True])
+def test_real_onebot_source_receives_one_background_completion_or_suppresses_after_unpair(api, tmp_path, monkeypatch, revoke, executor, owner_operations):
     from backend.app import main
     from backend.app.channels.host import ChannelHost
     from backend.app.channels.napcat import NapCatAdapter, NapCatConfig
@@ -102,6 +103,20 @@ def test_real_onebot_source_receives_one_background_completion_or_suppresses_aft
                 origin = TaskOrigin(**record['origin'])
                 assert origin.source_authority_json and origin.source_account_id == account.account_id
                 assert sessions.get_run(origin.parent_run_id).status == 'completed'
+                if owner_operations:
+                    # These are durable terminal outbox recovery fixtures;
+                    # actual commit/PR creation is proven in publication tests.
+                    from backend.app.coding_tasks.ledger import _json
+                    for action in ('commit', 'publish'):
+                        operation_id = 'codingop_original_' + action
+                        operation = {'id': operation_id, 'roleId': role['id'], 'taskId': record['id'],
+                            'attemptId': record['attemptId'], 'action': action, 'candidate': {'record': record},
+                            'origin': record['origin'], 'status': 'unknown', 'runtimeStatus': 'interrupted',
+                            'runtimeTaskId': None, 'runtimeAckDirty': False, 'cleanupState': 'complete',
+                            'deliveryStatus': 'pending', 'messageSynced': False, 'resourceJobs': [], 'sealed': False}
+                        with application.ledger.transaction() as db:
+                            db.execute('INSERT INTO coding_owner_operations VALUES(?,?,?,?,?,?)',
+                                (operation_id, role['id'], record['id'], operation_id, operation_id, _json(operation)))
                 if revoke:
                     channels.unbind_identity(channels.list_identities()[0]['identityId'])
                 release.set()
@@ -114,17 +129,25 @@ def test_real_onebot_source_receives_one_background_completion_or_suppresses_aft
                 assert current['cleanupState'] == 'complete'
                 messages = sessions.list_messages(origin.session_key)
                 completed = [item for item in messages if item.metadata.get('internalEvent') == 'coding_completion']
+                operation_messages = [item for item in messages if item.metadata.get('internalEvent') in {'coding_commit', 'coding_publication'}]
                 if revoke:
                     assert current['deliveryStatus'] == 'suppressed' and not completed
+                    assert not operation_messages
                     assert len(sends) == 1
                 else:
                     assert current['deliveryStatus'] == 'sent' and len(completed) == 1
                     assert completed[0].runId is None and completed[0].metadata['deliveryStatus'] == 'sent'
-                    assert len(sends) == 2
+                    assert len(sends) == (4 if owner_operations else 2)
                     assert all(item['user_id'] == 123 for item in sends)
                     assert channels.delivery_for_source(role['id'], source_kind='coding_completion', source_tool_call_id=record['attemptId'])[0] == 'sent'
+                    if owner_operations:
+                        assert len(operation_messages) == 2
+                        assert all(item.runId is None and item.metadata['channel'] == 'qq' for item in operation_messages)
+                        for action, kind in (('commit', 'coding_commit'), ('publish', 'coding_publication')):
+                            assert channels.delivery_for_source(role['id'], source_kind=kind,
+                                source_tool_call_id='codingop_original_' + action)[0] == 'sent'
                 await application.tick()
-                assert len(sends) == (1 if revoke else 2)
+                assert len(sends) == (1 if revoke else 4 if owner_operations else 2)
                 assert not sessions.list_messages('role:' + role['id'])
             finally:
                 await transport.stop()

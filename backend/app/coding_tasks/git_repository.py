@@ -3,7 +3,10 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import re
 from pathlib import Path
+from urllib.parse import urlsplit
+from .errors import CodingFailure
 
 
 def git_environment() -> dict[str, str]:
@@ -38,6 +41,7 @@ def repository_identity(value: str) -> dict[str, str]:
     if not original.is_absolute() or not original.is_dir():
         raise ValueError('Git repository must be an absolute existing root')
     root = original.resolve(strict=True)
+    reject_git_filters(root)
     # Owner approval is tied to this actual path, never a movable alias.
     if os.path.normcase(os.path.abspath(original)) != os.path.normcase(str(root)):
         raise ValueError('Git repository aliases and reparse paths require their real root')
@@ -47,3 +51,30 @@ def repository_identity(value: str) -> dict[str, str]:
     common = Path(git(root, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve(strict=True)
     head = git(root, 'rev-parse', '--verify', 'HEAD^{commit}')
     return {'root': str(root), 'commonDir': str(common), 'head': head}
+
+
+def reject_git_filters(root: Path, *, timeout: float = 10) -> None:
+    # status/worktree checkout can launch clean/smudge/process filters even
+    # with hooks, textconv and external diffs disabled. Those repositories
+    # need a separately owned filter implementation before Coding can use them.
+    keys = git(root, 'config', '--name-only', '--list', timeout=timeout).splitlines()
+    if any(key.lower().startswith('filter.') for key in keys):
+        raise CodingFailure('repository_git_filters_unavailable')
+
+
+def publication_remote(root: Path, remote: str) -> dict[str, str]:
+    """Freeze one explicit HTTPS destination; this never contacts the platform."""
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}', remote):
+        raise ValueError('publication requires one fixed remote name')
+    urls = git(root, 'remote', 'get-url', '--push', '--all', remote).splitlines()
+    if len(urls) != 1:
+        raise ValueError('publication requires exactly one push URL')
+    parsed = urlsplit(urls[0])
+    if (parsed.scheme != 'https' or parsed.netloc != 'github.com' or parsed.username or parsed.password
+            or parsed.query or parsed.fragment):
+        raise ValueError('publication requires a credential-free GitHub HTTPS URL')
+    match = re.fullmatch(r'/([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9][A-Za-z0-9_.-]*?)(?:\.git)?', parsed.path)
+    if match is None:
+        raise ValueError('publication requires an exact GitHub repository')
+    owner, repository = match.groups()
+    return {'url': f'https://github.com/{owner}/{repository}.git', 'owner': owner, 'repository': repository}
