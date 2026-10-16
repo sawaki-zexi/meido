@@ -725,7 +725,7 @@ describe("角色管理", () => {
     await user.click(within(panel).getByRole("button", { name: "取消" }));
     expect(await chatHeading("爱丽丝")).toBeInTheDocument();
     expect(screen.getByText("原有聊天")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "角色", exact: true }));
+    await user.click(screen.getByRole("button", { name: "角色" }));
     await user.click(screen.getByRole("button", { name: "编辑贝拉" }));
     expect(within(await dialog("角色资料")).getByLabelText(/名称/)).toHaveValue("贝拉");
   });
