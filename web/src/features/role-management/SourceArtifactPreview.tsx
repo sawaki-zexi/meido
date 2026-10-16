@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../api/client";
+import { Notice } from "../../ui/Status";
 
 type Preview = {
   manifestPath: string; manifestSha256: string; manifestReady: boolean; preparedManifest: string;
@@ -61,11 +62,11 @@ function useSourceArtifactPreview({ roleId, importManifest, importSources }: Pro
     }
   }
 
-  return { relativePath, serverId, preview, busy, error, message, change, inspect, copyManifest, applyManifest, applySources };
+  return { relativePath, serverId, preview, busy, error, message, dismissError: () => setError(""), change, inspect, copyManifest, applyManifest, applySources };
 }
 
 export function SourceArtifactPreview(props: Props) {
-  const { relativePath, serverId, preview, busy, error, message, change, inspect, copyManifest, applyManifest, applySources } = useSourceArtifactPreview(props);
+  const { relativePath, serverId, preview, busy, error, message, dismissError, change, inspect, copyManifest, applyManifest, applySources } = useSourceArtifactPreview(props);
 
   return <fieldset aria-label="来源产物预览">
     <legend>来源产物预览</legend>
@@ -75,7 +76,7 @@ export function SourceArtifactPreview(props: Props) {
     <label className="field"><span>已保存的 MCP 服务 ID</span><input aria-label="已保存的 MCP 服务 ID" value={serverId}
       onChange={(event) => change(relativePath, event.target.value)} /><small>可留空先检查文件；填入主人已保存并授权当前角色的服务，才能准备来源许可草稿。</small></label>
     <button type="button" disabled={busy || !relativePath.trim()} onClick={() => void inspect()}>预览来源产物</button>
-    {error && <p role="status">{error}</p>}{message && <p role="status">{message}</p>}
+    {error && <Notice onDismiss={dismissError}>{error}</Notice>}{message && <p role="status">{message}</p>}
     {preview && <>
       <p>{preview.manifestReady ? "清单与实际文件 hash 一致；尚未信任或验证代码。" : "清单 hash 尚未匹配；保存下面的修正清单后重新预览。"}</p>
       <div aria-label="产物文件及 SHA256">{preview.files.map((file) => <p key={file.path}>{file.path} · {file.size} bytes · {file.sha256}</p>)}</div>
