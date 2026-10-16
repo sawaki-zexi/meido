@@ -199,13 +199,15 @@ export function App() {
       <CreateRolePage state={roles} number={roles.roles.length + 1} onSubmit={() => void saveRole()} onCancel={cancelEdit} />
     </Dialog>}
     {panel === "profile" && <Dialog title="角色资料" variant="page" onClose={closePanel}>
-      <div className="role-detail-tabs" role="tablist" aria-label="角色详情">
-        <button type="button" role="tab" aria-selected={profileTab === "profile"} onClick={() => setProfileTab("profile")}>资料</button>
-        <button type="button" role="tab" aria-selected={profileTab === "accounts"} onClick={() => setProfileTab("accounts")}>账号</button>
-      </div>
-      <div role="tabpanel" aria-label={profileTab === "profile" ? "资料" : "账号"}>
-        {profileTab === "profile" ? <CreateRolePage state={roles} number={roles.roles.findIndex((role) => role.id === roles.selected?.id) + 1} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} />
-          : roles.selected && <RoleAccountsPanel key={roles.selected.id} roleId={roles.selected.id} onOpenSettings={() => { roles.cancel(); setSettingsSection("channels"); setPanel("settings"); }} />}
+      <div className="role-detail">
+        <div className="role-detail-tabs" role="tablist" aria-label="角色详情">
+          <button type="button" role="tab" aria-selected={profileTab === "profile"} onClick={() => setProfileTab("profile")}>资料</button>
+          <button type="button" role="tab" aria-selected={profileTab === "accounts"} onClick={() => setProfileTab("accounts")}>账号</button>
+        </div>
+        <div className="role-detail-panel" role="tabpanel" aria-label={profileTab === "profile" ? "资料" : "账号"}>
+          {profileTab === "profile" ? <CreateRolePage state={roles} number={roles.roles.findIndex((role) => role.id === roles.selected?.id) + 1} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} />
+            : roles.selected && <RoleAccountsPanel key={roles.selected.id} roleId={roles.selected.id} onOpenSettings={() => { roles.cancel(); setSettingsSection("channels"); setPanel("settings"); }} />}
+        </div>
       </div>
     </Dialog>}
     {panel === "settings" && <SettingsDialog initialSection={settingsSection} onClose={() => setPanel(null)} />}
