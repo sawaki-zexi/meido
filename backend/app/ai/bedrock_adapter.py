@@ -11,6 +11,8 @@ from urllib.parse import quote
 
 import httpx
 
+from .request_budget import image_budget_client_kwargs, budgeted_model_stream, budgeted_model_completion
+
 from .message_transform import transform_messages
 from .model_adapter import _payload_error_detail, _raise_for_status_with_details
 from .model_protocol import compatible_tool_names, effective_tools, model_cost, normalize_tools, remap_message_tool_names, safe_tool_id
@@ -175,7 +177,7 @@ class BedrockConverseAdapter:
         if cancel_check:
             cancel_check()
         url, headers, payload, name_aliases = self._prepare(messages, configuration, tools, max_tokens)
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs("bedrock-converse")) as client:
             response = await client.post(url, headers=headers, json=payload)
             await _raise_for_status_with_details(response, configuration.apiKey)
         data = response.json()
@@ -247,6 +249,7 @@ class BedrockConverseAdapter:
         if buffer:
             raise RuntimeError("Bedrock Event Stream 未完整结束")
 
+    @budgeted_model_stream
     async def stream_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check: Callable[[], None] | None = None) -> AsyncGenerator[ModelStreamEvent, None]:
         if not configuration.apiKey:
             yield ModelStreamStart()
@@ -291,7 +294,7 @@ class BedrockConverseAdapter:
         thinking_started = False
         yield ModelStreamStart()
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs("bedrock-converse")) as client:
                 async with client.stream("POST", url, headers=headers, json=payload) as response:
                     await _raise_for_status_with_details(response, configuration.apiKey)
                     async for event in self._event_payloads(response):
@@ -395,6 +398,7 @@ class BedrockConverseAdapter:
             return
         yield ModelStreamDone(message)
 
+    @budgeted_model_completion
     async def complete_messages(self, messages, configuration, tools=(), *, max_tokens=None) -> ModelAssistantMessage:
         return await self._complete(messages, configuration, tools, max_tokens=max_tokens, cancel_check=None)
 

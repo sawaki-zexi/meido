@@ -10,6 +10,8 @@ import time
 
 import httpx
 
+from .request_budget import image_budget_client_kwargs, budgeted_model_stream, budgeted_model_completion
+
 from .model_adapter import _raise_for_status_with_details, _response_error_detail
 from .message_transform import transform_messages
 from .model_protocol import copy_json, effective_tools, model_cost, normalize_tools, safe_tool_id
@@ -138,6 +140,7 @@ class PiMessagesAdapter:
             "content-type": "application/json",
         }, {"model": configuration.model, "context": context, "options": options}
 
+    @budgeted_model_stream
     async def stream_messages(self, messages: Sequence[ModelMessage], configuration: ModelConfiguration, tools: Sequence[Mapping[str, object]] = (), *, max_tokens: int | None = None, cancel_check: Callable[[], None] | None = None) -> AsyncGenerator[ModelStreamEvent, None]:
         url, headers, payload = self._prepare(messages, configuration, tools, stream=True, max_tokens=max_tokens)
         blocks: list[ModelContentBlock] = []
@@ -150,7 +153,7 @@ class PiMessagesAdapter:
         terminal = False
         yield ModelStreamStart()
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs("pi-messages")) as client:
                 async with client.stream("POST", url, headers=headers, json=payload) as response:
                     await _raise_for_status_with_details(response, configuration.apiKey)
                     event_name = ""
@@ -264,6 +267,7 @@ class PiMessagesAdapter:
             return ModelToolCallEnd(call)
         return ()
 
+    @budgeted_model_completion
     async def complete_messages(self, messages, configuration, tools=(), *, max_tokens=None) -> ModelAssistantMessage:
         events = [event async for event in self.stream_messages(messages, configuration, tools, max_tokens=max_tokens)]
         done = next((event for event in reversed(events) if isinstance(event, ModelStreamDone)), None)

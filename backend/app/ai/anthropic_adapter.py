@@ -11,6 +11,8 @@ import time
 
 import httpx
 
+from .request_budget import image_budget_client_kwargs, budgeted_model_stream, budgeted_model_completion
+
 from .message_transform import transform_messages
 from .model_adapter import _payload_error_detail, _raise_for_status_with_details, _response_error_detail
 from .model_protocol import compatible_tool_names, effective_tools, json_object, model_cost, normalize_tools, remap_message_tool_names, safe_tool_id
@@ -435,6 +437,7 @@ class AnthropicMessagesAdapter:
         }
         return payload, headers, reverse
 
+    @budgeted_model_stream
     async def stream_messages(
         self,
         messages: Sequence[ModelMessage],
@@ -452,7 +455,7 @@ class AnthropicMessagesAdapter:
         )
         yield ModelStreamStart()
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs("anthropic-messages")) as client:
                 async with client.stream(
                     "POST",
                     f"{configuration.baseUrl.rstrip('/')}/messages",
@@ -505,6 +508,7 @@ class AnthropicMessagesAdapter:
             yield event
         yield ModelStreamDone(message)
 
+    @budgeted_model_completion
     async def complete_messages(
         self,
         messages: Sequence[ModelMessage],
@@ -514,7 +518,7 @@ class AnthropicMessagesAdapter:
         max_tokens: int | None = None,
     ) -> ModelAssistantMessage:
         payload, headers, name_aliases = self._prepare(messages, configuration, tools, max_tokens=max_tokens, stream=False)
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs("anthropic-messages")) as client:
             response = await client.post(
                 f"{configuration.baseUrl.rstrip('/')}/messages",
                 headers=headers,

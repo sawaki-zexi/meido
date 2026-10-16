@@ -14,6 +14,8 @@ import time
 
 import httpx
 
+from .request_budget import image_budget_client_kwargs, budgeted_model_stream, budgeted_model_completion
+
 from .message_transform import transform_messages
 from .model_adapter import _payload_error_detail, _raise_for_status_with_details, _response_error_detail
 from .model_protocol import compatible_tool_names, effective_tools, model_cost, normalize_tools, remap_message_tool_names, safe_tool_id, tool_result_text
@@ -223,6 +225,7 @@ class GoogleGenerativeAdapter:
         headers = self._headers(configuration, stream=stream)
         return url, headers, payload, reverse
 
+    @budgeted_model_stream
     async def stream_messages(self, messages: Sequence[ModelMessage], configuration: ModelConfiguration, tools: Sequence[Mapping[str, object]] = (), *, max_tokens: int | None = None, cancel_check: Callable[[], None] | None = None) -> AsyncGenerator[ModelStreamEvent, None]:
         url, headers, payload, name_aliases = self._prepare(messages, configuration, tools, stream=True, max_tokens=max_tokens)
         text = ""
@@ -237,7 +240,7 @@ class GoogleGenerativeAdapter:
         yield ModelStreamStart()
         try:
             redaction_key = await self._authorize(configuration, headers)
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs(self.api)) as client:
                 async with client.stream("POST", url, headers=headers, json=payload) as response:
                     await _raise_for_status_with_details(response, redaction_key)
                     async for line in response.aiter_lines():
@@ -351,10 +354,11 @@ class GoogleGenerativeAdapter:
             message = str(error).replace(redaction_key, "***") if redaction_key else str(error)
             yield ModelStreamError(message)
 
+    @budgeted_model_completion
     async def complete_messages(self, messages: Sequence[ModelMessage], configuration: ModelConfiguration, tools: Sequence[Mapping[str, object]] = (), *, max_tokens: int | None = None) -> ModelAssistantMessage:
         url, headers, payload, name_aliases = self._prepare(messages, configuration, tools, stream=False, max_tokens=max_tokens)
         redaction_key = await self._authorize(configuration, headers)
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs(self.api)) as client:
             response = await client.post(url, headers=headers, json=payload)
             await _raise_for_status_with_details(response, redaction_key)
         data = response.json()

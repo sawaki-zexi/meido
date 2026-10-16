@@ -9,6 +9,8 @@ from typing import Protocol, Literal
 
 import httpx
 
+from .request_budget import image_budget_client_kwargs, budgeted_model_stream, budgeted_model_completion
+
 from ..models import Message, ModelConfiguration, Role
 from .model_types import ModelMessage, ModelStreamEvent as RichModelStreamEvent
 from .model_protocol import copy_json
@@ -401,6 +403,7 @@ class OpenAICompatibleAdapter:
             apiKey=api_key,
         )
 
+    @budgeted_model_stream
     async def stream_messages(
         self,
         messages: Sequence[Mapping[str, object]],
@@ -414,7 +417,7 @@ class OpenAICompatibleAdapter:
         if max_tokens is not None:
             request_data["max_tokens"] = max_tokens
         completed = False
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs("openai-completions")) as client:
             async with client.stream(
                 "POST",
                 f"{base_url}/chat/completions",
@@ -445,6 +448,7 @@ class OpenAICompatibleAdapter:
         if not completed:
             raise RuntimeError("模型流式响应未正常结束")
 
+    @budgeted_model_stream
     async def stream_structured_messages(
         self,
         messages: Sequence[Mapping[str, object]],
@@ -496,7 +500,7 @@ class OpenAICompatibleAdapter:
             request_data["max_tokens"] = max_tokens
         calls: dict[int, dict[str, str]] = {}
         completed = False
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs("openai-completions")) as client:
             async with client.stream(
                 "POST",
                 f"{base_url}/chat/completions",
@@ -590,6 +594,7 @@ class OpenAICompatibleAdapter:
                 arguments=arguments,
             )
 
+    @budgeted_model_completion
     async def complete_messages(
         self,
         messages: Sequence[Mapping[str, object]],

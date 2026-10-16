@@ -12,6 +12,8 @@ import time
 
 import httpx
 
+from .request_budget import image_budget_client_kwargs, budgeted_model_stream, budgeted_model_completion
+
 from .message_transform import transform_messages
 from .model_adapter import _raise_for_status_with_details, _response_error_detail
 from .model_protocol import compatible_tool_names, effective_tools, json_object, model_cost, normalize_tools, remap_message_tool_names, tool_result_text
@@ -555,12 +557,13 @@ class OpenAIResponsesAdapter:
         headers = self._headers(configuration)
         return payload, headers, reverse
 
+    @budgeted_model_stream
     async def stream_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check=None) -> AsyncGenerator[ModelStreamEvent, None]:
         payload, headers, name_aliases = self._prepare(messages, configuration, tools, max_tokens=max_tokens, stream=True)
         accumulator = self._accumulator(name_aliases, configuration)
         yield ModelStreamStart()
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs(self.api)) as client:
                 async with client.stream("POST", self._url(configuration), headers=headers, json=payload) as response:
                     await _raise_for_status_with_details(response, configuration.apiKey)
                     async for event_type, raw in _sse_events(response.aiter_lines()):
@@ -600,9 +603,10 @@ class OpenAIResponsesAdapter:
             yield event
         yield ModelStreamDone(message)
 
+    @budgeted_model_completion
     async def complete_messages(self, messages, configuration, tools=(), *, max_tokens=None):
         payload, headers, name_aliases = self._prepare(messages, configuration, tools, max_tokens=max_tokens, stream=False)
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs(self.api)) as client:
             response = await client.post(self._url(configuration), headers=headers, json=payload)
             await _raise_for_status_with_details(response, configuration.apiKey)
         data = response.json()

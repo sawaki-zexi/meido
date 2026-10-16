@@ -10,6 +10,8 @@ import json
 import time
 
 import httpx
+
+from .request_budget import image_budget_client_kwargs, budgeted_model_stream, budgeted_model_completion
 from partial_json_parser import MalformedJSON, loads as parse_partial_json
 
 from .message_transform import transform_messages
@@ -540,6 +542,7 @@ class OpenAICompletionsRichAdapter:
         headers = {"Authorization": f"Bearer {configuration.apiKey}"} if configuration.apiKey else {}
         return request_data, headers, {alias: name for name, alias in aliases.items()}
 
+    @budgeted_model_stream
     async def stream_messages(
         self,
         messages: Sequence[ModelMessage],
@@ -564,7 +567,7 @@ class OpenAICompletionsRichAdapter:
         completed = False
         yield ModelStreamStart()
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs("openai-completions")) as client:
                 async with client.stream(
                     "POST",
                     f"{configuration.baseUrl.rstrip('/')}/chat/completions",
@@ -628,6 +631,7 @@ class OpenAICompletionsRichAdapter:
             yield event
         yield ModelStreamDone(message)
 
+    @budgeted_model_completion
     async def complete_messages(
         self,
         messages: Sequence[ModelMessage],
@@ -646,7 +650,7 @@ class OpenAICompletionsRichAdapter:
             stream=False,
         )
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs("openai-completions")) as client:
                 response = await client.post(
                     f"{configuration.baseUrl.rstrip('/')}/chat/completions",
                     headers=headers,
