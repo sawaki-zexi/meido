@@ -4,7 +4,7 @@
 最后核验：2026-10-16
 事实来源：[SkillRegistry](../../backend/app/agent_runtime/skills.py)、[宿主装配](../../backend/app/main.py)、[公开行为测试](../../tests/python/test_builtin_skills.py)、[HTTP 测试](../../tests/python/test_builtin_skills_api.py)。
 
-当前内置 `weather`、`summarize`、`feed-manage`、`meme-manage`、`skill-creater`、`create-proactive-source`，均显式激活。普通聊天输入 `$weather` 等名称即可选择；HTTP 的 `skillIds` 保持兼容。Skill 是指导与资源，不是执行工具或权限授予。
+当前内置 `weather`、`summarize`、`feed-manage`、`meme-manage`、`skill-creater`、`codex-delegate`、`create-proactive-source`，均显式激活。普通聊天输入 `$weather` 等名称即可选择；HTTP 的 `skillIds` 保持兼容。Skill 是指导与资源，不是执行工具或权限授予。
 
 ## 发现与覆盖
 
@@ -47,6 +47,7 @@
 | feed-manage | 主人已配置并授权的 MCP；按实际 serverId、工具名和 schema 管理订阅与查询文章；不自动推送 |
 | meme-manage | 当前角色 workspace 的文件工具；维护 manifest 与真实图片，复制二进制另需获准命令 |
 | skill-creater | 当前角色文件工具；创建合法 SKILL.md、参考/资源/脚本，下一次对话显式激活 |
+| codex-delegate | 独立 Codex 配置及当前仓库、CLI 与 spawn coding 许可；受管后台任务、精确 session 继续和原来源结果；不新增普通工具，见[操作手册](../handbook/codex-delegate-acceptance.md) |
 | create-proactive-source | 当前角色文件工具；创建真实stdio来源、配置和验证草稿，经owner预览/trust/具体grant/受管验证后由真实tick消费并持久ACK；见[操作手册](../handbook/proactive-source-authoring.md) |
 
 summarize 的 Windows `.cmd` 仅作为真实 npm 安装的 PATH 发现入口；执行使用 Node 和实际 `dist/cli.js`，不经 cmd.exe。CLI 的 `--extract` 支持 URL；本地纯文本使用常规文件模式加 `--json`。`llm:null` 表示可能直接返回短文本，不表示已完成模型调用。完整配置与验收见[操作手册](../handbook/shiori-builtin-skills.md)。
