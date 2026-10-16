@@ -266,7 +266,12 @@ export function LandingPage() {
     onClick={handleSceneClick}
   >
     <audio ref={musicRef} src="/landing/neko-ni-michibikarete.mp3" preload="none" loop aria-hidden="true" />
-    <button type="button" className="bgm-toggle" aria-label={musicEnabled ? "关闭背景音乐" : "开启背景音乐"} aria-pressed={musicEnabled} onClick={(event) => { event.stopPropagation(); toggleMusic(); }}><span aria-hidden="true">♫</span>BGM {musicEnabled ? "开" : "关"}</button>
+    <button type="button" className="bgm-toggle" title={musicEnabled ? "关闭背景音乐" : "开启背景音乐"} aria-label={musicEnabled ? "关闭背景音乐" : "开启背景音乐"} aria-pressed={musicEnabled} onClick={(event) => { event.stopPropagation(); toggleMusic(); }}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
+        {!musicEnabled && <path d="M3 3l18 18" />}
+      </svg>
+    </button>
     <img className="landing-background" src={background} alt="" aria-hidden="true" />
     <div className="landing-vignette" aria-hidden="true" />
     <div className="landing-grain" aria-hidden="true" />

@@ -43,7 +43,7 @@ describe("落地页背景", () => {
 });
 
 describe("落地页背景音乐", () => {
-  it("左上角开关独立控制音乐，关闭后开始游戏仍保持关闭，并记住开关状态", async () => {
+  it("右上角开关独立控制音乐，关闭后开始游戏仍保持关闭，并记住开关状态", async () => {
     const play = vi.mocked(HTMLMediaElement.prototype.play);
     const pause = vi.mocked(HTMLMediaElement.prototype.pause);
     const { getByRole, queryByRole, unmount } = render(<LandingPage />);
