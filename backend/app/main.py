@@ -5705,7 +5705,12 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
             return payload
 
         async def watch_disconnect() -> None:
+            watcher_task = asyncio.current_task()
             while not disconnect_watcher_stopped:
+                # Request's AnyIO probe can absorb the exception while the
+                # task still has an outstanding external cancellation request.
+                if watcher_task is not None and watcher_task.cancelling():
+                    return
                 await asyncio.sleep(0.1)
                 if await request.is_disconnected():
                     runtime_manager.cancel_run(run_id)

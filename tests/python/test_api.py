@@ -99,9 +99,10 @@ def configure_session_api(tmp_path, monkeypatch, adapter):
     return role, sessions, TestClient(main.app)
 
 
-def test_completed_http_reply_finishes_when_disconnect_poll_and_cleanup_cancel_overlap(tmp_path, monkeypatch):
+def test_completed_http_reply_finishes_when_disconnect_poll_and_cleanup_cancel_overlap(tmp_path, monkeypatch, local_platform_only):
     import anyio
     from backend.app.agent_runtime.runtime import RuntimeManager
+    from backend.app.memory_config import MemorySettingsStore
 
     poll_started = asyncio.Event()
     aligned = False
@@ -113,6 +114,9 @@ def test_completed_http_reply_finishes_when_disconnect_poll_and_cleanup_cancel_o
 
     role, sessions, _ = configure_session_api(tmp_path, monkeypatch, Adapter())
     monkeypatch.setattr(main, "runtime_manager", RuntimeManager(sessions))
+    memory_settings = MemorySettingsStore(tmp_path / "memory-settings.json")
+    memory_settings.update(enabled=False)
+    monkeypatch.setattr(main, "memory_settings_store", memory_settings)
 
     async def connected_client(scope, receive, send):
         async def controlled_receive():
