@@ -282,6 +282,9 @@ def quiet_startup(monkeypatch, sessions, tmp_path):
     monkeypatch.setattr(main.memory_optimizer_loop, "start", lambda: None)
     monkeypatch.setattr(main.owner_knowledge_plugin, "startup", no_work)
     monkeypatch.setattr(main.owner_knowledge_scheduler, "start", lambda: None)
+    # These short-lived loops exercise deletion recovery, not an autonomous
+    # clock owner that must otherwise be closed on its original event loop.
+    monkeypatch.setattr(main.ProactiveApplication, "start", lambda _self: None)
     monkeypatch.setattr(main, "memory_maintenance", MemoryMaintenance(tmp_path / "roles", sessions))
 
 

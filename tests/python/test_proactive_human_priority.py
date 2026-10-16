@@ -50,6 +50,10 @@ def test_human_input_seals_old_generation_immediately_while_owned_cleanup_is_hel
             async with asyncio.timeout(2):
                 while not model.cleaning.is_set():
                     await asyncio.sleep(.01)
+            # Runtime.stop and the authorization watcher may both request
+            # cancellation after adapter cleanup starts. Let their real loops
+            # advance while the owned adapter still refuses to release.
+            await asyncio.sleep(.1)
             assert app.query("role")["cleanupPending"] is True
             now[0] += 1800
             assert await app.on_clock() == 0
@@ -70,6 +74,47 @@ def test_human_input_seals_old_generation_immediately_while_owned_cleanup_is_hel
             assert sessions.list_messages("role:role") == []
         finally:
             model.release.set()
+    asyncio.run(exercise())
+
+
+def test_human_input_before_executor_enters_keeps_cancelled_work_from_starting(acknowledgements, monkeypatch):
+    from backend.app.proactive_runtime.execution import AutonomyExecutor
+
+    app, now, root, adapter, sessions, *_ = acknowledgements
+    waiting, release = threading.Event(), threading.Event()
+    original = AutonomyExecutor.run
+
+    def delayed_entry(executor, execution):
+        waiting.set()
+        assert release.wait(5), "test must release its owned executor entry"
+        return original(executor, execution)
+
+    monkeypatch.setattr(AutonomyExecutor, "run", delayed_entry)
+
+    async def exercise():
+        try:
+            now[0] += 1800
+            await app.on_clock()
+            async with asyncio.timeout(5):
+                while not waiting.is_set():
+                    await asyncio.sleep(.01)
+            app.accept_human_run("role", "real-human-run")
+            await asyncio.sleep(.05)
+            assert app.query("role")["cleanupPending"] is True
+            release.set()
+            async with asyncio.timeout(5):
+                while app.query("role")["cleanupPending"]:
+                    await app.recover()
+                    await asyncio.sleep(.01)
+            await app.recover()
+            assert adapter.requests == []
+            assert not (root / "calls.jsonl").exists()
+            assert sessions.list_messages("role:role") == []
+            runs = app.query("role")["runs"]
+            assert len(runs) == 1 and runs[0]["status"] == "aborted"
+            assert runs[0]["runtimeAcknowledged"] is True
+        finally:
+            release.set()
     asyncio.run(exercise())
 
 

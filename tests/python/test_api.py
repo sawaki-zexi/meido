@@ -1230,6 +1230,9 @@ def test_startup_finishes_interrupted_role_deletion_without_recreating_data(tmp_
     monkeypatch.setattr(main, "memory_worker", worker)
     monkeypatch.setattr(main, "memory_maintenance", MemoryMaintenance(tmp_path / "roles", sessions))
     monkeypatch.setattr(main, "memory_optimizer_loop", MemoryOptimizerLoop(optimizer, tmp_path / "roles", enabled=False))
+    # This temporary startup owns memory deletion recovery, not an autonomous
+    # clock that would outlive this test's event loop and repository fixtures.
+    monkeypatch.setattr(main.ProactiveApplication, "start", lambda _self: None)
     asyncio.run(main._start_memory_workers())
     assert all(not rows for rows in memories.snapshot_role(role.id).values())
     assert sessions.snapshot_role_session(role.id) == (None, [], [])

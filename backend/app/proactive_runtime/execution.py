@@ -16,8 +16,13 @@ class AutonomyExecutor:
         self._task = None
 
     def cancel(self):
-        self.cancelled.set()
         with self._gate:
+            if self.cancelled.is_set():
+                return
+            self.cancelled.set()
+            # Stop, the authorization watcher and role cleanup share this
+            # executor. A second Task.cancel can interrupt adapter finally
+            # blocks before the owned cleanup has actually released.
             if self._loop is not None and self._task is not None:
                 self._loop.call_soon_threadsafe(self._task.cancel)
 

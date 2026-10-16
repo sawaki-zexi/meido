@@ -73,3 +73,13 @@ poll的两个原stdio探针先 **2 failed（9.17秒）**，canonical首poll与15
 固定集成`261b468`的两轴独立审查均无遗留。规格独立68项后端、7项React和6项关闭/取消用例通过；规范独立95项及3项额外删除边界检查通过。后者的外部探针首轮因遗漏fixture导入产生2 passed/1 setup error，修正后3项通过，不计产品RED。各组有重叠，不相加为唯一测试数。两轴都在收集前三MEIDO根隔离，整组网络guard持续至全部owned退出；没有真实账号、模型费用或外部服务事务。总分支完整组合与准确HEAD CI另行记录，不以源分支结果替代。
 
 同一生产和测试输入的完整集成组合 **420 passed/1 skipped/1 deselected（611.98秒），runner exit0**，包括原177扩大组、全部Coding/NovelAI、桌面控制、角色配置与删除；Coding使用既有固定Herdr/合成CLI原生产物。skip是Windows符号链接权限，deselected是需专用原生窗口的CU变体，不计为原生通过。三新MEIDO根在收集前隔离，外层和每例local guard保持至main全部owner关闭，未发生非本地阻断。完整前端 **186 passed/33文件（56.66秒）**、TypeScript/Vite构建、20源mypy未注解函数体检查、compileall与相对链接通过。首次mypy因缺第三方jsonschema stubs报错，按源检查的`--ignore-missing-imports`重跑通过；未安装新依赖或放宽生产检查。此为本地组合证据，新准确HEAD完整CI仍待完成。
+
+## 完整 CI 暴露的启动隔离与取消竞态
+
+`6a1ef4f`的[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38868717983)和[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38868712342)后端分别**112 failed/2015 passed/35 skipped/2 warnings（375.64秒）**和**111 failed/2016 passed/35 skipped/2 warnings（393.14秒）**；前端均186项及构建通过。本地420项未覆盖完整startup顺序和POSIX启动观察入口，不能代替这两次失败；原始日志保留。
+
+旧删除恢复测试使用短命`asyncio.run`并隔离无关worker，却未隔离新增主动计时器。旧owner的worker留在已关闭loop，下一次替换SessionStore被正确拒绝，造成大批后续失败。仅在两处专门删除恢复夹具禁止启动无关主动计时器，生产`has_owned_work`门禁及记忆删除/召回断言保持。真实先后startup→记忆HTTP顺序分别**2 failed/1 passed→3 passed（7.78秒）**、**1 failed/1 passed**；修正两处后扩大删除/记忆/原loop/宿主组**17 passed（21.46秒），runner exit0**。
+
+来源契约fixture只观察Windows的`spawn_process_tree`，POSIX真实启动走`asyncio.create_subprocess_exec`，证明已成功但记录清单为空。WSL精确原组3 failed/1 passed，改为观察各平台真实入口后保留原启动数、隔离、取消及资源退出断言，不跳过POSIX验收。
+
+另有真实生产竞态：host清理与TaskRuntime停止会重复取消同一执行器，第二次`Task.cancel`打断模型正在等待的`finally`，过早归零cleanupPending。原回归加入100ms真实调度推进后，Windows与WSL均**1 failed/2 passed**。取消现在在原gate内原子封门且只注入一次，入场前取消仍阻止MCP/模型执行并完成原结果ACK。相同主人优先/来源契约/原loop/验证/恢复组：**Windows37 passed（47.44秒）**、**WSL37 passed/1 warning（32.77秒）**，均runner exit0，三新根和内外guard至全部owned退出；不相加成74项唯一验收。20源mypy、编译及diff通过。扩大组、修正两轴与新准确HEAD完整CI仍另行核验；没有真实账号、消费或权限扩大。

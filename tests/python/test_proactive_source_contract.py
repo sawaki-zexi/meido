@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import threading
@@ -61,13 +62,14 @@ def test_real_isolated_restart_proof_binds_identity_tools_artifact_and_interpret
         "pollTool": "poll", "pollDefinitionHash": declaration_hash(next(item for item in catalog if item["name"] == "poll"))})
     saved = value.app.configure("role", config.model_copy(update={"sourceGrants": [grant]}), expected_revision=config.revision)
     value.grant = AutonomyConfig.model_validate(saved["config"]).sourceGrants[0]
-    original_spawn = mcp_stdio.spawn_process_tree
+    original_spawn = mcp_stdio.spawn_process_tree if os.name == "nt" else asyncio.create_subprocess_exec
     original_call = mcp_stdio.McpStdioClient.call
 
     async def record(*args, **kwargs):
-        process, owner = await original_spawn(*args, **kwargs)
+        result = await original_spawn(*args, **kwargs)
+        process = result[0] if os.name == "nt" else result
         launched.append((args, kwargs, process))
-        return process, owner
+        return result
 
     async def record_call(client, name, arguments):
         response = await original_call(client, name, arguments)
@@ -81,7 +83,10 @@ def test_real_isolated_restart_proof_binds_identity_tools_artifact_and_interpret
     async def exercise():
         registry = SourceContractRegistry(value.sessions.database_path, value.store)
         with monkeypatch.context() as patch:
-            patch.setattr(mcp_stdio, "spawn_process_tree", record)
+            if os.name == "nt":
+                patch.setattr(mcp_stdio, "spawn_process_tree", record)
+            else:
+                patch.setattr(asyncio, "create_subprocess_exec", record)
             patch.setattr(mcp_stdio.McpStdioClient, "call", record_call)
             patch.setattr(value.store, "environment", no_vault)
             patch.setattr(value.store.credentials, "get", no_vault)
@@ -210,12 +215,13 @@ def test_cancel_or_revocation_during_real_rpc_joins_without_publishing_proof(con
     value, revoked, signal = contract, threading.Event(), threading.Event()
     original = mcp_stdio.McpStdioClient.call
     launched = []
-    original_spawn = mcp_stdio.spawn_process_tree
+    original_spawn = mcp_stdio.spawn_process_tree if os.name == "nt" else asyncio.create_subprocess_exec
 
     async def record(*args, **kwargs):
-        process, owner = await original_spawn(*args, **kwargs)
+        result = await original_spawn(*args, **kwargs)
+        process = result[0] if os.name == "nt" else result
         launched.append(process)
-        return process, owner
+        return result
 
     async def lose_authority(client, name, arguments):
         result = await original(client, name, arguments)
@@ -226,7 +232,10 @@ def test_cancel_or_revocation_during_real_rpc_joins_without_publishing_proof(con
     async def exercise():
         registry = SourceContractRegistry(value.sessions.database_path, value.store)
         with monkeypatch.context() as patch:
-            patch.setattr(mcp_stdio, "spawn_process_tree", record)
+            if os.name == "nt":
+                patch.setattr(mcp_stdio, "spawn_process_tree", record)
+            else:
+                patch.setattr(asyncio, "create_subprocess_exec", record)
             patch.setattr(mcp_stdio.McpStdioClient, "call", lose_authority)
             try:
                 with pytest.raises((PermissionError, asyncio.CancelledError)):
