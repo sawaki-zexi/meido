@@ -433,11 +433,10 @@ class SourceContractRegistry:
 
         async def events(peer):
             payload = await self._call(peer, source.getTool, {}, check)
-            if isinstance(payload, dict) and isinstance(payload.get("events"), list):
-                payload = payload["events"]
-            if not isinstance(payload, list) or any(not isinstance(item, dict) or not isinstance(item.get("id"), str) for item in payload):
-                raise ValueError("contract source did not return its seeded events")
-            return [item["id"] for item in payload]
+            items, incomplete = _normalize(source, payload, lambda *_: True)
+            if incomplete:
+                raise ValueError("contract source did not return its complete seeded events")
+            return [item["remoteId"] for item in items]
 
         if sorted(await events(client)) != sorted([event, permanent_event]):
             raise ValueError("contract source did not expose host-random synthetic events")

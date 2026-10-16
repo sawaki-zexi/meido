@@ -21,6 +21,7 @@ from backend.app.mcp_stdio import McpStdioClient
 from backend.app.ai.model_types import ModelAssistantMessage, ModelStreamDone, ModelToolCallBlock
 from backend.app.proactive_runtime.source_validation import retry_allowed
 from backend.app.proactive_runtime.config import SourceGrant
+from backend.app.proactive_runtime.sources import _decode, _normalize
 from test_background_shell_api import MemoryCredentials
 from test_background_shell_api import api as shell_api  # noqa: F401
 from test_spawn_api import api  # noqa: F401
@@ -276,6 +277,40 @@ def refresh_artifact(value, monkeypatch):
     value.preview = value.client.post(value.path + '/source-artifact-preview', json={
         'manifestPath': 'mcp/example/manifest.json', 'serverId': 'authored_source'}).json()
     assert value.preview['manifestReady']
+
+
+@pytest.mark.parametrize('channel', ['alert', 'content'])
+def test_event_id_alias_accepted_by_runtime_passes_the_same_owner_verification(authored, monkeypatch, channel):
+    value = authored
+    script = value.root / 'source.py'
+    original = 'return [event for event in events if event["kind"] == kind and event["id"] not in suppressed]'
+    replacement = 'return [{("event_id" if key == "id" else key): value for key, value in event.items()} for event in events if event["kind"] == kind and event["id"] not in suppressed]'
+    text = script.read_text(encoding='utf-8')
+    assert original in text
+    script.write_text(text.replace(original, replacement), encoding='utf-8', newline='\n')
+    refresh_artifact(value, monkeypatch)
+    grant = next(item for item in value.preview['sourceGrants'] if item['channel'] == channel)
+
+    async def collect():
+        server = value.host.store.get('authored_source')
+        peer = McpStdioClient(server, value.host.store.environment(server))
+        try:
+            await peer.connect()
+            payload = _decode(await peer.call(grant['getTool'], {}))
+            assert len(payload) == 1 and 'event_id' in payload[0] and 'id' not in payload[0]
+            items, incomplete = _normalize(SourceGrant.model_validate(grant), payload, lambda *_: True)
+            assert len(items) == 1 and not incomplete
+            assert items[0]['remoteId'] == channel + '-demo-1'
+        finally:
+            await peer.close()
+        assert peer.exit_confirmed
+
+    asyncio.run(collect())
+    final = verify_source(value, channel)
+    assert final['status'] == 'succeeded', final
+    assert final['proof']['collectionVerified'] and final['proof']['ackVerified']
+    assert final['runtimeAcknowledged'] and not final['cleanupPending']
+    assert value.host.public()[0]['activeProcesses'] == 0
 
 
 @pytest.mark.parametrize('context_format', ['nested', 'flat'])
