@@ -14,6 +14,9 @@ const spriteBySegment: Record<Segment, string> = {
 };
 const githubUrl = "https://github.com/sawaki-zexi/meido";
 const speakerName = "Hiyori";
+const musicVolumeStorageKey = "meido:landing-music-volume";
+const musicEnabledStorageKey = "meido:landing-music-enabled";
+const defaultMusicVolume = 35;
 const backgrounds = [
   "/landing/night-sky.png",
   "/landing/sunlit-room.webp",
@@ -27,6 +30,12 @@ function getTopic(id: TopicId) {
 
 export function LandingPage() {
   const [background] = useState(() => backgrounds[Math.floor(Math.random() * backgrounds.length)]);
+  const [musicEnabled, setMusicEnabled] = useState(() => window.localStorage.getItem(musicEnabledStorageKey) !== "false");
+  const [musicVolume, setMusicVolume] = useState(() => {
+    const stored = window.localStorage.getItem(musicVolumeStorageKey);
+    const value = stored === null ? defaultMusicVolume : Number(stored);
+    return Number.isFinite(value) && value >= 0 && value <= 100 ? value : defaultMusicVolume;
+  });
   const [phase, setPhase] = useState<Phase>("title");
   const [segment, setSegment] = useState<Segment>("opening");
   const [lines, setLines] = useState(openingLines);
@@ -42,6 +51,7 @@ export function LandingPage() {
   const [modal, setModal] = useState<"backlog" | "settings" | null>(null);
   const [focusedChoice, setFocusedChoice] = useState(0);
   const transitionTimer = useRef<number | undefined>(undefined);
+  const musicRef = useRef<HTMLAudioElement>(null);
   const choiceListRef = useRef<HTMLDivElement>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -61,13 +71,25 @@ export function LandingPage() {
 
   const begin = useCallback(() => {
     if (phase !== "title") return;
+    if (musicEnabled && musicRef.current) {
+      musicRef.current.volume = musicVolume / 100;
+      void musicRef.current.play().catch(() => undefined);
+    }
     if (reducedMotion) {
       enterDialogue("opening", openingLines);
       return;
     }
     setPhase("transition");
     transitionTimer.current = window.setTimeout(() => enterDialogue("opening", openingLines), 760);
-  }, [enterDialogue, phase, reducedMotion]);
+  }, [enterDialogue, musicEnabled, musicVolume, phase, reducedMotion]);
+
+  const toggleMusic = () => {
+    const enabled = !musicEnabled;
+    setMusicEnabled(enabled);
+    if (!musicRef.current) return;
+    if (enabled) void musicRef.current.play().catch(() => undefined);
+    else musicRef.current.pause();
+  };
 
   const advance = useCallback(() => {
     if (phase !== "dialogue") return;
@@ -154,6 +176,15 @@ export function LandingPage() {
   useEffect(() => () => window.clearTimeout(transitionTimer.current), []);
 
   useEffect(() => {
+    if (musicRef.current) musicRef.current.volume = musicVolume / 100;
+    window.localStorage.setItem(musicVolumeStorageKey, String(musicVolume));
+  }, [musicVolume]);
+
+  useEffect(() => {
+    window.localStorage.setItem(musicEnabledStorageKey, String(musicEnabled));
+  }, [musicEnabled]);
+
+  useEffect(() => {
     if (phase !== "dialogue" || visibleCharacters >= characters.length || reducedMotion) {
       if (phase === "dialogue" && reducedMotion) setVisibleCharacters(characters.length);
       return;
@@ -175,6 +206,7 @@ export function LandingPage() {
   useLayoutEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (phase === "title") {
+        if ((event.target as HTMLElement | null)?.closest(".bgm-toggle") && ["Enter", " "].includes(event.key)) return;
         if (event.ctrlKey || event.altKey || event.metaKey || ["Shift", "Control", "Alt", "Meta"].includes(event.key)) return;
         event.preventDefault();
         begin();
@@ -233,6 +265,13 @@ export function LandingPage() {
     className={`landing ${phase === "title" ? "landing-title" : "landing-scene"} ${reducedMotion ? "reduced-motion" : ""}`}
     onClick={handleSceneClick}
   >
+    <audio ref={musicRef} src="/landing/neko-ni-michibikarete.mp3" preload="none" loop aria-hidden="true" />
+    <button type="button" className="bgm-toggle" title={musicEnabled ? "关闭背景音乐" : "开启背景音乐"} aria-label={musicEnabled ? "关闭背景音乐" : "开启背景音乐"} aria-pressed={musicEnabled} onClick={(event) => { event.stopPropagation(); toggleMusic(); }}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
+        {!musicEnabled && <path d="M3 3l18 18" />}
+      </svg>
+    </button>
     <img className="landing-background" src={background} alt="" aria-hidden="true" />
     <div className="landing-vignette" aria-hidden="true" />
     <div className="landing-grain" aria-hidden="true" />
@@ -287,6 +326,7 @@ export function LandingPage() {
         {modal === "backlog" ? <div className="backlog-list">{log.map((entry, index) => <article className={`backlog-entry ${entry.kind}`} key={`${index}-${entry.text}`}>
           {entry.kind === "choice" ? <span className="backlog-choice">选择了　{entry.text}</span> : <><strong>{speakerName}</strong><p>{entry.text}</p></>}
         </article>)}<div ref={logEndRef} /></div> : <div className="settings-form">
+          <label className="music-volume-setting" htmlFor="landing-music-volume"><span><strong>背景音乐音量</strong><small>{musicVolume}%</small></span><input id="landing-music-volume" aria-label="背景音乐音量" type="range" min="0" max="100" value={musicVolume} onChange={(event) => setMusicVolume(Number(event.target.value))} /></label>
           <fieldset><legend>文字速度</legend><div className="setting-options">
             {(["slow", "normal", "fast"] as const).map((value) => <button type="button" key={value} className={speed === value ? "setting-selected" : ""} onClick={() => setSpeed(value)}>{value === "slow" ? "慢" : value === "normal" ? "标准" : "快"}</button>)}
           </div></fieldset>
