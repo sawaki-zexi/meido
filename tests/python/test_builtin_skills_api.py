@@ -1,5 +1,6 @@
 import json
 import io
+import pytest
 
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -11,17 +12,23 @@ from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
 from backend.app.session_store import SessionStore
 from backend.app.storage import initialize_databases
+from backend.app.memory_config import MemorySettingsStore
+
+pytestmark = pytest.mark.usefixtures('local_platform_only')
 
 
 def skill_client(tmp_path, monkeypatch, adapter, enabled_tools=()):
     roles = RoleStore(tmp_path / "roles")
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    memory_settings = MemorySettingsStore(tmp_path / 'data' / 'memory-settings.json')
+    memory_settings.update(enabled=False)
     for name, value in {
         "store": roles, "roles_root": tmp_path / "roles", "session_store": sessions,
         "session_manager": SessionManager(roles, sessions), "model_adapter": adapter,
         "model_configuration_store": ModelConfigurationStore(tmp_path / "data" / "models.json"),
         "role_locks": {},
+        "memory_settings_store": memory_settings,
     }.items():
         monkeypatch.setattr(main, name, value)
     client = TestClient(main.app)

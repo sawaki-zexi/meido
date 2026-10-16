@@ -146,7 +146,7 @@ class ProcessResult:
 
 
 class OwnedProcess:
-    def __init__(self, argv: list[str], cwd: Path, env: dict[str, str], *, output_bytes=1024 * 1024, job_name=None, journal=None):
+    def __init__(self, argv: list[str], cwd: Path, env: dict[str, str], *, output_bytes=1024 * 1024, job_name=None, journal=None, on_stdout=None):
         self._lock = threading.RLock()
         self.cleanup_state = 'running'
         self._job: _OwnedJob | None = None
@@ -154,6 +154,10 @@ class OwnedProcess:
         self._output = [bytearray(), bytearray()]
         self._overflow = threading.Event()
         self._read_errors: list[BaseException] = []
+        self._write_errors: list[BaseException] = []
+        self._writer: threading.Thread | None = None
+        self._stop_requested = False
+        self._on_stdout = on_stdout
         self.job_name, self._journal = job_name, journal
         if job_name is not None and journal is not None:
             journal(job_name, True)
@@ -191,29 +195,72 @@ class OwnedProcess:
                 if self._overflow.is_set():
                     # The supervisor polls the overflow flag and owns cleanup.
                     return
+                if index == 0 and self._on_stdout is not None:
+                    self._on_stdout(chunk)
         except BaseException as error:
             self._read_errors.append(error)
         finally:
             stream.close()
 
-    def communicate(self, *, timeout: float, input: bytes | None = None, output_bytes: int | None = None) -> ProcessResult:
+    def _write(self, value):
+        try:
+            assert self.process.stdin is not None
+            self.process.stdin.write(value)
+            self.process.stdin.flush()
+        except BaseException as error:
+            self._write_errors.append(error)
+        finally:
+            if self.process.stdin is not None:
+                self.process.stdin.close()
+
+    def request_stop(self, *, grace_seconds=5) -> bool:
+        """Try only this owned child; unsupported console interruption escalates."""
+        with self._lock:
+            if self._stop_requested or self.process.poll() is not None:
+                return False
+            self._stop_requested = True
+            try:
+                self.process.send_signal(signal.CTRL_BREAK_EVENT if os.name == 'nt' else signal.SIGINT)
+            except (OSError, ValueError):
+                return False
+        try:
+            self.process.wait(timeout=max(0, min(5, grace_seconds)))
+        except subprocess.TimeoutExpired:
+            pass
+        return True
+
+    def communicate(self, *, timeout: float, input: bytes | None = None, output_bytes: int | None = None, check=None,
+                    graceful_stop=False) -> ProcessResult:
         deadline = time.monotonic() + timeout
         try:
             assert self.process.stdin is not None
-            if input:
-                self.process.stdin.write(input)
-                self.process.stdin.flush()
-            self.process.stdin.close()
+            with self._lock:
+                if input and self.cleanup_state == 'running':
+                    self._writer = threading.Thread(target=self._write, args=(input,), daemon=False,
+                                                    name='meido-coding-stdin')
+                    self._writer.start()
+                elif not self.process.stdin.closed:
+                    self.process.stdin.close()
             while self.process.poll() is None:
+                if check is not None:
+                    check()
+                if self._read_errors:
+                    raise self._read_errors[0]
                 if self._overflow.is_set():
                     raise OutputBudgetExceeded('native output exceeded the attempt budget')
                 if time.monotonic() >= deadline:
                     raise TimeoutError('native command deadline exceeded')
                 time.sleep(.01)
+        except BaseException:
+            if graceful_stop:
+                self.request_stop(grace_seconds=deadline - time.monotonic())
+            raise
         finally:
             self.close()
         if self._read_errors:
-            raise RuntimeError('native output could not be consumed') from self._read_errors[0]
+            raise self._read_errors[0]
+        if self._write_errors:
+            raise RuntimeError('native stdin could not be delivered') from self._write_errors[0]
         limit = output_bytes or self._limit
         if self._overflow.is_set() or sum(map(len, self._output)) > limit:
             raise OutputBudgetExceeded('native output exceeded the command budget')
@@ -250,6 +297,12 @@ class OwnedProcess:
                 if reader.is_alive():
                     self.cleanup_state = 'cleanup_failed'
                     raise CleanupFailed('owned output reader did not exit')
+        writer = self._writer
+        if writer is not None and writer is not threading.current_thread():
+            writer.join(timeout=2)
+            if writer.is_alive():
+                self.cleanup_state = 'cleanup_failed'
+                raise CleanupFailed('owned stdin writer did not exit')
         if self.process.stdin is not None and not self.process.stdin.closed:
             self.process.stdin.close()
         if self.job_name is not None and self._journal is not None:

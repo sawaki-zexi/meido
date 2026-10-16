@@ -7,7 +7,7 @@ import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Iterable
+from typing import Callable, Iterable
 
 
 _SKILL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -251,6 +251,7 @@ class SkillRegistry:
         available_tools: set[str] | frozenset[str] | None = None,
         enabled_tools: set[str] | frozenset[str] | None = None,
         available_env: set[str] | frozenset[str] = frozenset(),
+        dependency_check: Callable[[SkillDescriptor, str], str | None] | None = None,
     ) -> SkillResolution:
         explicit_ids = set(explicit_ids) | set(re.findall(r"(?<![\w$])\$([a-z0-9][a-z0-9._-]*)", prompt))
         selected: list[SkillDescriptor] = []
@@ -279,7 +280,10 @@ class SkillRegistry:
                 continue
             if not _is_active(skill, prompt=prompt, explicit_ids=explicit_ids):
                 continue
-            missing_bins = [name for name in skill.required_bins if shutil.which(name) is None]
+            reasons = {name: dependency_check(skill, name) if dependency_check is not None
+                       else None if shutil.which(name) is not None else 'command is unavailable'
+                       for name in skill.required_bins}
+            missing_bins = [name for name, reason in reasons.items() if reason is not None]
             # Only names explicitly exposed by the host count. Shell's minimal
             # environment does not inherit arbitrary backend credentials.
             missing_env = [name for name in skill.required_env if name not in available_env]
@@ -292,6 +296,8 @@ class SkillRegistry:
                     "missingEnv": missing_env,
                 }
                 diagnostics.append(diagnostic)
+                if dependency_check is not None:
+                    diagnostic['dependencyReasons'] = {name: reasons[name] for name in missing_bins}
                 dependency_sections.append("Skill unavailable: " + json.dumps(diagnostic, ensure_ascii=False))
                 continue
             allowed_tools: list[str] = []

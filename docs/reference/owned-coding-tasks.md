@@ -1,10 +1,10 @@
-# Owned Herdr 编程任务
+# Owned 编程任务：Herdr 与 Codex exec
 
-状态：当前 #174 本地实现，生产 CLI 认证与真实模型未验收；#175/#176 尚未交付。最后核验：2026-10-16。事实来源：[应用](../../backend/app/coding_tasks/application.py)、[配置](../../backend/app/coding_tasks/config.py)、[执行器](../../backend/app/coding_tasks/executor.py)、[API](../../backend/app/coding_tasks/api.py)、[原生验收](../../tests/python/test_coding_api_native.py)。完整目标见[具体规格](../specs/coding-agent-spec.md)，本页描述当前代码。
+状态：当前 #174/#175 本地实现，生产 CLI 认证与真实模型未验收；#176 发布能力未交付。最后核验：2026-10-16。事实来源：[应用](../../backend/app/coding_tasks/application.py)、[配置](../../backend/app/coding_tasks/config.py)、[Herdr 执行器](../../backend/app/coding_tasks/executor.py)、[Codex exec](../../backend/app/coding_tasks/codex_exec.py)、[API](../../backend/app/coding_tasks/api.py)、[公开 Codex 闭环](../../tests/python/test_codex_spawn_api.py)。完整目标见[具体规格](../specs/coding-agent-spec.md)，本页描述当前代码。
 
 ## 许可与配置
 
-全局 `enabled` 和角色 `agentConfig.coding.enabled` 默认关闭。角色字段为 `repoGrantIds`、`profileIds`、`defaultHerdrProfileId`、`defaultCodexProfileId`、`maxAttemptsPerDay`（默认5，1–100）；首版只执行 Herdr，独立 codex_exec 路径由 #175 接入。旧客户端省略 coding 或只更新部分子字段时保留现有配置。
+全局 `enabled` 和角色 `agentConfig.coding.enabled` 默认关闭。角色字段为 `repoGrantIds`、`profileIds`、`defaultHerdrProfileId`、`defaultCodexProfileId`、`maxAttemptsPerDay`（默认5，1–100）。Herdr 和 codex_exec 使用分别登记的 profile 与原生资格核验；后者还要求 spawn.enabled。旧客户端省略 coding 或只更新部分子字段时保留现有配置。
 
 仓库登记精确、存在的 Git top-level 绝对路径、commonDir 与文件系统身份；不接受子目录或可移动别名。授予显式角色 ID、baseRef、remote，以及固定 validation 数组：每项 `id`、绝对程序 `argv`、worktree 内相对 `cwd`。代码会执行主人信任的仓库及验证命令；这不构成同账号 OS 安全沙箱。localCommit/fetch/push/draftPr 的 true 当前拒绝，不能借设置提前启用 #176。
 
@@ -42,6 +42,20 @@ canonical outbox 与原会话完成消息同 sessions.db 事务。完成使用 `
 
 ## 主人 API
 
-路径前缀 `/api/coding`。GET/PUT `/configuration`；POST `/repositories`、`/profiles` 通过稳定 id 编辑或撤销许可；PUT `/native-build`。GET `/probes`，POST `/profiles/{id}/probe` 需精确 revision、roleId、buildSha256、`approveNativeTurns=2` 和稳定 requestId。每次核验最多600秒，首次与精确继续共两个 native task turns，内部可能多次收费模型请求，不等于两次 API调用。具体原生拒绝记录或支持版本缺失会 blocked。
+路径前缀 `/api/coding`。GET/PUT `/configuration`；POST `/repositories`、`/profiles` 通过稳定 id 编辑或撤销许可；PUT `/native-build`。GET `/probes`，POST `/profiles/{id}/probe` 需精确 revision、roleId、buildSha256、`approveNativeTurns=2` 和稳定 requestId。Herdr 的 buildSha256 是固定 owned bundle 的程序哈希；Codex exec 是该 profile 的 CLI 程序哈希，独立于 Herdr。每次核验最多600秒，首次与精确继续共两个 native task turns，内部可能多次收费模型请求，不等于两次 API调用。具体原生拒绝记录或支持版本缺失会 blocked。
 
 GET `/roles/{role}/tasks` 是主人桌面管理入口，可查看本角色各来源；POST `/roles/{role}/tasks/{task}/cancel` 可在源许可撤销后停止本角色残留资源。模型工具仍采用更窄的原来源范围。所有配置请求128KiB上限，普通工具结果不含认证、原始终端、完整需求或本地路径。
+
+## codex-delegate / S07
+
+内建 `codex-delegate` 是显式 Skill，声明 codex、spawn 和 spawn_manage 依赖。宿主按当前角色真正可解析的 codex_exec profile 给依赖诊断，固定绝对 CLI 不必加入全局 PATH；PATH 中发现 codex 也不会替代 profile、探针或许可。Skill 本身不授予工具或文件权限。
+
+`spawn(profile="coding", task, repository, run_in_background=true, retry_count=0)` 要求全部字段明确，其他 profile 拒绝 repository。它在创建聊天 provider 之前进入共享 CodingApplication；原有三个 profile、Shell schema 和普通 TaskCompletionWorker 不变。返回稳定 job_id=CodingTask id，以及当前 attemptId、runtimeTaskId、executor=codex_exec。Runtime kind 为 coding_codex，预算、准入、copy/dirty/ACK 和完成消息沿用上文；不调用子代理或摘要模型。
+
+`spawn_manage` 的 list 合并原来源普通 spawn 与登记的 codex_exec 任务；get/cancel 按持久 executor 登记路由。新增 continue 必须带 task，只用于 codex_exec；不管理 Herdr、其他 Runtime kind 或普通 spawn 的 continue。继续复用相同 worktree、branch、base、profile、认证与精确 UUID，新建一个有界 attempt。缺原会话或收尾未确认即拒绝。
+
+首轮固定 `exec --sandbox workspace-write --model ... --json --output-schema ... --output-last-message ... -`。resume 是 `exec resume <exact UUID> ... -`，没有不受该子命令支持的 --sandbox/--cd；两者都显式传固定 sandbox_mode=workspace-write、approval_policy=never、network_access=false、file 认证和禁更新配置，忽略用户 config 与 rules。真实 CLI 是否执行这些策略须由相应原生核验确认，help 和合成 fixture 不证明账号权限或 OS 隔离。Codex exec 不启动 Herdr，不使用其 hooks/bundle 作为资格证据，也不对外分发 CLI 二进制。
+
+完整 UTF-8 handoff 经受管 stdin writer 传输并关闭；stdout 增量解码 JSONL，仅 thread.started 的合法 UUID 能绑定 nativeSession。必须同一个 thread、一个 started/completed turn、退出码0及本 attempt 新鲜结构结果同时成立。错误/截断/未知事件、超64KiB帧/1MiB总输出、错会话或错 task/run 均不能成为 validated_diff。stdin 不读、取消、超时及协议错误都终止自有 Job，并 join writer/readers；失败保留资源所有权供重试。
+
+spawn 配置变化会先同步增加独立持久 delegation generation，并封住已有 codex_exec attempt 的执行和交付，再等待其他资源收尾。旧回合不能在 off/on 或普通 spawn 清理等待间借新配置复活。该代际不撤销无关 Herdr 任务；角色 Coding、仓库和 profile 的既有撤权仍作用于两条执行路径。

@@ -56,7 +56,7 @@ class CodingLedger:
 
     def admit(self, origin: TaskOrigin, *, requirement: str, repository: dict, profile: dict,
               max_daily: int, task_id: str | None = None, request_id: str | None = None, admitted=lambda: True,
-              native_build: dict | None = None, authority_generation: int = 0) -> tuple[dict, bool]:
+              native_build: dict | None = None, authority_generation: int = 0, delegation_generation: int = 0) -> tuple[dict, bool]:
         if not isinstance(requirement, str) or not 1 <= len(requirement) <= 20000 or not requirement.strip():
             raise ValueError('requirement must contain 1 to 20000 characters')
         if not origin.role_id or not origin.session_key or not (origin.tool_call_id or request_id):
@@ -112,6 +112,8 @@ class CodingLedger:
                        'createdAt': self.clock(), 'summary': '', 'validation': [], 'blockers': []}
             if native_build is not None:
                 attempt.update(nativeBuild=json.loads(_json(native_build)), authorityGeneration=authority_generation)
+            if profile['executor'] == 'codex_exec':
+                attempt['delegationGeneration'] = delegation_generation
             db.execute('INSERT INTO coding_attempts(id,task_id,role_id,request_key,fingerprint,day,created,status,body) VALUES(?,?,?,?,?,?,?,?,?)',
                        (attempt_id, task_id, origin.role_id, key, fingerprint, day, self.clock(), 'accepted', _json(attempt)))
             if db.execute('SELECT 1 FROM coding_tasks WHERE id=?', (task_id,)).fetchone() is None:

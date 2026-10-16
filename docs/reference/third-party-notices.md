@@ -79,6 +79,13 @@ SOFTWARE.
 [third_party/herdr-owned](../../third_party/herdr-owned/manifest.json)；补丁不改变上游版权。
 运行接口与已验证边界见[Owned编程任务](owned-coding-tasks.md)。
 
+## codex-delegate Skill
+
+`backend/app/builtin_skills/codex-delegate/SKILL.md` 改编自 Shiori-Agent
+`4f266aeaf42fcd611362e2456417b91f659341cf` 的 `apps/backend/skills/codex-delegate/SKILL.md`，
+Copyright (c) 2026 YinFengWindy，适用本页保留的 MIT 许可全文。
+Meido 改写为受控 CodingTask、JSONL 身份与原来源结果交接；未复制或再分发 Codex CLI。
+
 构建依赖的 portable-pty 和 libghostty-vt 均保留其 MIT 上游许可；
 实际包内证据见 [portable-pty-LICENSE.md](../../third_party/herdr-owned/portable-pty-LICENSE.md)
 与 [libghostty-vt-LICENSE](../../third_party/herdr-owned/libghostty-vt-LICENSE)。

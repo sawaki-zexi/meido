@@ -257,18 +257,21 @@ class SpawnExecutor:
 
 
 class SpawnTool:
-    definition = ToolDefinition(name="spawn", description="Delegate a bounded independent task. Profiles: research (read file/list/web), scripting (read plus task-directory writes and allowlisted Shell), general (union). Child receives only tools currently authorized to this parent. Synchronous by default; explicit background completion returns to this source. retry_count records a deliberate retry, never automatic replay.",
+    definition = ToolDefinition(name="spawn", description="Delegate a bounded independent task. Profiles: research (read file/list/web), scripting (task-directory writes and allowlisted Shell), general (union), coding (owned Codex exec in a granted repository). Coding requires repository, explicit run_in_background=true and retry_count=0; no chat child provider or Shell. Other profiles are synchronous by default. Results return only to the original source; unknown submissions are never automatically replayed.",
         input_schema={"type": "object", "properties": {
             "task": {"type": "string", "minLength": 1, "maxLength": 20000},
             "label": {"type": "string", "maxLength": 100},
-            "profile": {"type": "string", "enum": ["research", "scripting", "general"]},
+            "profile": {"type": "string", "enum": ["research", "scripting", "general", "coding"]},
+            "repository": {"type": "string", "minLength": 1, "maxLength": 2000},
             "run_in_background": {"type": "boolean"},
             "retry_count": {"type": "integer", "minimum": 0, "maximum": 1}},
             "required": ["task"], "additionalProperties": False}, risk="external", source="role")
 
     def __init__(self, tasks: TaskRuntime, config: SpawnToolConfig, *, origin_resolver: Callable[[ToolContext], TaskOrigin],
-                 authorized: Callable[[ToolContext], bool]):
+                 authorized: Callable[[ToolContext], bool], coding_application=None, coding_access=None, coding_authorized=None):
         self.tasks, self.config, self.origin_resolver, self.authorized = tasks, deepcopy(config), origin_resolver, authorized
+        self.coding_application, self.coding_access = coding_application, coding_access
+        self.coding_authorized = coding_authorized or authorized
         self.frozen: CapabilityResolution | None = None
         self.provider_factory: Callable[[], ModelProvider] | None = None
         self.definition = replace(self.definition, timeout_seconds=config.timeoutSeconds + 5, output_limit=config.maxOutputChars)
@@ -289,6 +292,19 @@ class SpawnTool:
                 return _error()
             origin = self.origin_resolver(context)
             background = arguments.get("run_in_background", False) is True
+            if arguments.get('profile') == 'coding':
+                if (not background or arguments.get('retry_count') != 0 or not arguments.get('repository')
+                        or self.coding_application is None or self.coding_access is None or not self.coding_authorized(context)):
+                    return _error()
+                from ..coding_tasks.tools import _owned_thread
+                result = await _owned_thread(self.coding_application().start_task, origin,
+                    repository=arguments['repository'], requirement=arguments['task'], executor='codex_exec',
+                    admitted=lambda: not context.signal.is_cancelled() and self.authorized(context) and self.coding_authorized(context),
+                    frozen_access=self.coding_access or None)
+                details = {**result, 'job_id': result['id'], 'background': True}
+                return AgentToolResult(json.dumps(details, ensure_ascii=False), details)
+            if 'repository' in arguments:
+                return _error()
             executor = SpawnExecutor(task=arguments["task"], profile=arguments.get("profile", "research"), config=self.config,
                 provider=self.provider_factory(), frozen=frozen, context=context, authorized=lambda: self.authorized(context))
             task_id = self.tasks.submit(origin, executor, budget=TaskBudget(self.config.timeoutSeconds, self.config.maxOutputChars),
@@ -315,13 +331,16 @@ class SpawnTool:
 
 
 class SpawnManageTool:
-    definition = ToolDefinition(name="spawn_manage", description="List, get or cancel independent child tasks owned by this exact role and original source. Unknown sources never disclose task content or logs.",
-        input_schema={"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "get", "cancel"]},
+    definition = ToolDefinition(name="spawn_manage", description="List, get or cancel independent tasks owned by this exact role and original source. continue+task only appends an explicit new requirement to a registered Codex coding job in its exact native session; job_id stays stable. Ordinary child tasks cannot continue. Unknown sources never disclose task content or logs.",
+        input_schema={"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "get", "cancel", "continue"]},
+            "task": {"type": "string", "minLength": 1, "maxLength": 20000},
             "job_id": {"type": "string", "minLength": 1}}, "required": ["action"], "additionalProperties": False},
         risk="mutating", source="role", timeout_seconds=15)
 
-    def __init__(self, tasks: TaskRuntime, *, origin_resolver: Callable[[ToolContext], TaskOrigin], authorized: Callable[[ToolContext], bool]):
+    def __init__(self, tasks: TaskRuntime, *, origin_resolver: Callable[[ToolContext], TaskOrigin], authorized: Callable[[ToolContext], bool], coding_application=None, coding_access=None, coding_authorized=None):
         self.tasks, self.origin_resolver, self.authorized = tasks, origin_resolver, authorized
+        self.coding_application, self.coding_access = coding_application, coding_access
+        self.coding_authorized = coding_authorized or authorized
 
     async def execute(self, arguments, context, on_update=None):
         del on_update
@@ -330,10 +349,35 @@ class SpawnManageTool:
             if not self.authorized(context):
                 return _error()
             origin = self.origin_resolver(context)
+            action = arguments['action']
+            if context.signal.is_cancelled() or ('task' in arguments) != (action == 'continue'):
+                return _error()
             if arguments["action"] == "list":
                 items = [item.details() for item in self.tasks.list(origin, kind="spawn")]
+                if self.coding_application is not None and self.coding_access is not None and self.coding_authorized(context):
+                    from ..coding_tasks.tools import _owned_thread
+                    records = await _owned_thread(self.coding_application().list_tasks, origin, executor='codex_exec')
+                    items += [{**item, 'job_id': item['id']} for item in records]
                 return AgentToolResult(json.dumps(items, ensure_ascii=False), {"tasks": items})
             task_id = str(arguments.get("job_id", ""))
+            if self.coding_application is not None and self.coding_access is not None and self.coding_authorized(context):
+                from ..coding_tasks.tools import _owned_thread
+                application = self.coding_application()
+                try:
+                    result = await _owned_thread(application.inspect, task_id, origin, executor='codex_exec')
+                except KeyError:
+                    result = None
+                if result is not None:
+                    if action == 'continue':
+                        result = await _owned_thread(application.continue_task, task_id, origin,
+                            requirement=arguments['task'], executor='codex_exec', frozen_access=self.coding_access or None,
+                            admitted=lambda: not context.signal.is_cancelled() and self.authorized(context) and self.coding_authorized(context))
+                    elif action == 'cancel':
+                        result = await _owned_thread(application.cancel_task, task_id, origin, executor='codex_exec')
+                    details = {**result, 'job_id': result['id'], 'background': True}
+                    return AgentToolResult(json.dumps(details, ensure_ascii=False), details)
+            if action == 'continue':
+                return _error()
             snapshot = self.tasks.query(task_id, origin)
             if snapshot.kind != "spawn":
                 return _error()

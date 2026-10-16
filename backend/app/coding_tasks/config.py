@@ -16,6 +16,15 @@ from .git_repository import repository_identity
 from .owned_process import OwnedProcess
 from .native_build import verify_bundle
 
+CODEX_EXEC_VERSION = '0.159.3'
+CODEX_EXEC_TEMPLATE = 'codex-exec-0.159.3-workspace-write-never-network-off-v1'
+
+
+def codex_artifact(profile):
+    if profile['kind'] != 'codex' or profile['executor'] != 'codex_exec' or profile['version'] != CODEX_EXEC_VERSION:
+        raise ValueError('Codex exec requires the fixed supported Codex CLI version')
+    return {key: profile[key] for key in ('executor', 'executable', 'sha256', 'version')} | {'permissionTemplate': CODEX_EXEC_TEMPLATE}
+
 
 class CodingRoleConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -71,9 +80,10 @@ def executable_identity(value: str, expected: str) -> str:
 
 
 class CodingConfigStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, native_supported=None):
         path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self.native_supported = native_supported or (lambda: sys.platform == 'win32')
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.execute('CREATE TABLE IF NOT EXISTS coding_configuration (id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL DEFAULT 0)')
         self._db.execute('INSERT OR IGNORE INTO coding_configuration(id) VALUES(1)')
@@ -81,6 +91,7 @@ class CodingConfigStore:
         self._db.execute('CREATE TABLE IF NOT EXISTS coding_profiles (id TEXT PRIMARY KEY, body TEXT NOT NULL)')
         self._db.execute('CREATE TABLE IF NOT EXISTS coding_native_build (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL)')
         self._db.execute('CREATE TABLE IF NOT EXISTS coding_role_generations(role_id TEXT PRIMARY KEY,generation INTEGER NOT NULL)')
+        self._db.execute('CREATE TABLE IF NOT EXISTS coding_delegate_generations(role_id TEXT PRIMARY KEY,generation INTEGER NOT NULL)')
         self._db.commit()
 
     def role_generation(self, role_id: str) -> int:
@@ -91,6 +102,15 @@ class CodingConfigStore:
     def revoke_role(self, role_id: str):
         with self._lock, self._db:
             self._db.execute('INSERT INTO coding_role_generations VALUES(?,1) ON CONFLICT(role_id) DO UPDATE SET generation=generation+1', (role_id,))
+
+    def delegation_generation(self, role_id: str) -> int:
+        with self._lock:
+            row = self._db.execute('SELECT generation FROM coding_delegate_generations WHERE role_id=?', (role_id,)).fetchone()
+            return int(row[0]) if row else 0
+
+    def revoke_delegation(self, role_id: str):
+        with self._lock, self._db:
+            self._db.execute('INSERT INTO coding_delegate_generations VALUES(?,1) ON CONFLICT(role_id) DO UPDATE SET generation=generation+1', (role_id,))
 
     def public(self) -> dict:
         with self._lock:
@@ -160,6 +180,8 @@ class CodingConfigStore:
 
     def save_profile(self, data: dict) -> dict:
         setting = ProfileInput.model_validate(data)
+        if setting.executor == 'codex_exec':
+            codex_artifact(setting.model_dump())
         executable = executable_identity(setting.executable, setting.sha256)
         auth = Path(setting.authDirectory)
         if not auth.is_absolute() or not auth.is_dir() or auth.is_symlink():
@@ -210,6 +232,8 @@ class CodingConfigStore:
         setting = self.public()
         if not setting['enabled'] or not role.enabled:
             raise PermissionError('coding is disabled')
+        if executor == 'codex_exec' and not self.native_supported():
+            raise PermissionError('Codex exec native execution is only supported on Windows')
         grants = [item for item in setting['repositories'] if item['id'] in role.repoGrantIds
                   and role_id in item['allowedRoleIds'] and repository in {item['id'], item['root']}]
         if len(grants) != 1:
@@ -227,7 +251,7 @@ class CodingConfigStore:
         profile = profiles[0]
         if profile['verification']['status'] != 'verified' or profile['verification'].get('revision') != profile['revision']:
             raise PermissionError('CLI permissions, extensions and native session have not passed verification')
-        build = setting['nativeBuild']
+        build = setting['nativeBuild'] if executor == 'herdr' else codex_artifact(profile)
         if build is None:
             raise PermissionError('owned Herdr native build is not configured')
         executable_identity(profile['executable'], profile['sha256'])
@@ -235,9 +259,10 @@ class CodingConfigStore:
         if (not credential.is_file() or credential.is_symlink() or credential.stat().st_size > 256*1024
                 or hashlib.sha256(credential.read_bytes()).hexdigest() != profile.get('authenticationRevision')):
             raise PermissionError('dedicated CLI authentication changed; save and qualify the profile again')
-        executable_identity(build['executable'], build['sha256'])
-        if verify_bundle(Path(build['executable'])) != {key: build[key] for key in ('manifestSha256', 'patchSha256')}:
-            raise PermissionError('owned build manifest changed')
+        if executor == 'herdr':
+            executable_identity(build['executable'], build['sha256'])
+            if verify_bundle(Path(build['executable'])) != {key: build[key] for key in ('manifestSha256', 'patchSha256')}:
+                raise PermissionError('owned build manifest changed')
         identity = repository_identity(grants[0]['root'])
         if identity['commonDir'] != grants[0]['commonDir']:
             raise PermissionError('registered repository identity changed')
@@ -257,18 +282,20 @@ class CodingConfigStore:
                               and role_id in item['allowedRoleIds'] and item['verification']['status'] == 'verified'
                               for item in setting['profiles'])
         return bool(granted_repo and granted_profile and repository['id'] in role.repoGrantIds
-                    and profile['id'] in role.profileIds and setting['nativeBuild'] == record.get('nativeBuild'))
+                    and profile['id'] in role.profileIds
+                    and (setting['nativeBuild'] if record['executor'] == 'herdr' else codex_artifact(profile)) == record.get('nativeBuild'))
 
-    def availability(self, role_id: str, role: CodingRoleConfig) -> dict:
+    def availability(self, role_id: str, role: CodingRoleConfig, *, executor='herdr') -> dict:
         if not self.public()['enabled'] or not role.enabled:
             return {'status': 'disabled', 'reason': '编程委托尚未启用'}
-        if sys.platform != 'win32':
-            return {'status': 'unavailable', 'reason': 'owned Herdr 首版仅支持 Windows 普通权限桌面宿主'}
+        if not self.native_supported():
+            return {'status': 'unavailable', 'reason': '编程委托首版仅支持 Windows 普通权限桌面宿主'}
         if not role.repoGrantIds:
             return {'status': 'unavailable', 'reason': '尚未配置可信仓库'}
         try:
-            self.resolve(role_id, role, role.repoGrantIds[0])
-            return {'status': 'available', 'reason': '固定原生宿主、仓库及专用 CLI profile 已核验'}
+            self.resolve(role_id, role, role.repoGrantIds[0], executor=executor)
+            return {'status': 'available', 'reason': '固定 Codex exec、仓库及原生权限核验已通过' if executor == 'codex_exec'
+                    else '固定原生宿主、仓库及专用 CLI profile 已核验'}
         except (ValueError, KeyError, PermissionError, OSError) as error:
             return {'status': 'unavailable', 'reason': str(error)[:300]}
 

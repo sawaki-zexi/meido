@@ -7,10 +7,36 @@ import { CodingSettings } from "./CodingSettings";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); localStorage.clear(); sessionStorage.clear(); });
 
+it("edits an independent Codex exec profile and qualifies its own hash without Herdr", async () => {
+  const profile = { id: "exec-one", name: "独立 exec", kind: "codex", executor: "codex_exec", executable: "D:/fixed/codex.exe", sha256: "a".repeat(64), version: "0.159.3", model: "fixed-model", authDirectory: "D:/dedicated/auth", allowedRoleIds: ["r1"], configurationManifest: [], revision: "exec-v1", verification: { status: "unverified", reason: "尚未核验" } };
+  const configuration = { enabled: true, repositories: [], profiles: [profile], nativeBuild: null };
+  const { calls } = fakeBackend({
+    "GET /api/roles": () => ({ body: { roles: [role({ id: "r1", name: "诗织" })] } }),
+    "GET /api/coding/configuration": () => ({ body: configuration }),
+    "POST /api/coding/profiles": init => ({ body: { ...profile, ...JSON.parse(String(init?.body)) } }),
+    "POST /api/coding/profiles/exec-one/probe": () => ({ body: { id: "probe-exec", status: "accepted" } }),
+  });
+  const user = userEvent.setup();
+  render(<CodingSettings />);
+  await user.click(await screen.findByRole("button", { name: "编辑 CLI 独立 exec" }));
+  expect(screen.getByRole("combobox", { name: "委托方式" })).toHaveValue("codex_exec");
+  expect(screen.getByRole("combobox", { name: "CLI" })).toHaveValue("codex");
+  await user.click(screen.getByRole("button", { name: "登记 CLI" }));
+  await screen.findByText("CLI 已登记，尚未核验。保存不会登录或调用模型。");
+  expect(calls.find(call => call.path === "/api/coding/profiles" && call.method === "POST")?.body).toMatchObject({ executor: "codex_exec", kind: "codex", id: "exec-one" });
+  await user.click(screen.getByRole("checkbox", { name: /我批准所选 CLI 执行首次和继续两个任务回合/ }));
+  await user.click(screen.getByRole("button", { name: "核验 独立 exec" }));
+  await waitFor(() => expect(calls.some(call => call.path.endsWith("/probe"))).toBe(true));
+  expect(calls.find(call => call.path.endsWith("/probe"))?.body).toMatchObject({ buildSha256: "a".repeat(64), approveNativeTurns: 2 });
+});
+
 it("preserves coding grants when another role field changes and enables discovery with the owner switch", async () => {
-  let saved = role({ id: "r1", name: "编程角色", agentConfig: { shell: { enabled: true, allowedCommands: ["git"], timeoutSeconds: 20, maxOutputChars: 3000 }, coding: { enabled: false, repoGrantIds: ["repo-one"], profileIds: ["cli-one"], defaultHerdrProfileId: "cli-one", defaultCodexProfileId: null, maxAttemptsPerDay: 4 } } });
+  let saved = role({ id: "r1", name: "编程角色", agentConfig: { shell: { enabled: true, allowedCommands: ["git"], timeoutSeconds: 20, maxOutputChars: 3000 }, coding: { enabled: false, repoGrantIds: ["repo-one"], profileIds: ["cli-one", "exec-one"], defaultHerdrProfileId: "cli-one", defaultCodexProfileId: null, maxAttemptsPerDay: 4 } } });
   fakeBackend({
     "GET /api/roles": () => ({ body: { roles: [saved] } }),
+    "GET /api/coding/configuration": () => ({ body: { enabled: true, repositories: [], nativeBuild: null, profiles: [
+      { id: "exec-one", name: "独立 exec", executor: "codex_exec", allowedRoleIds: ["r1"], verification: { status: "verified" } },
+    ] } }),
     "GET /api/roles/r1/session": () => ({ body: { session: { sessionKey: "role:r1", roleId: "r1" }, messages: [] } }),
     "PUT /api/roles/r1": init => { saved = { ...saved, ...JSON.parse(String(init?.body)) }; return { body: { role: saved } }; },
   });
@@ -21,16 +47,19 @@ it("preserves coding grants when another role field changes and enables discover
   const form = within(await screen.findByRole("dialog", { name: "角色资料" }));
   expect(form.getByRole("checkbox", { name: "允许编程委托" })).not.toBeChecked();
   await user.click(form.getByRole("checkbox", { name: "允许编程委托" }));
+  await user.selectOptions(form.getByRole("combobox", { name: "默认 Codex exec CLI" }), "exec-one");
   await user.click(form.getByRole("button", { name: "保存" }));
   await waitFor(() => expect(saved.agentConfig?.coding?.enabled).toBe(true));
   expect(saved.agentConfig?.coding?.repoGrantIds).toEqual(["repo-one"]);
-  expect(saved.agentConfig?.coding?.profileIds).toEqual(["cli-one"]);
+  expect(saved.agentConfig?.coding?.profileIds).toEqual(["cli-one", "exec-one"]);
+  expect(saved.agentConfig?.coding?.defaultCodexProfileId).toBe("exec-one");
   expect(saved.agentConfig?.coding?.maxAttemptsPerDay).toBe(4);
   expect(saved.agentConfig?.shell?.allowedCommands).toEqual(["git"]);
   expect(saved.agentConfig?.enabledTools).toContain("tool_search");
   await user.click(form.getByRole("button", { name: "关闭" }));
   await user.click(screen.getByRole("button", { name: "角色资料" }));
   expect(within(await screen.findByRole("dialog", { name: "角色资料" })).getByRole("checkbox", { name: "允许编程委托" })).toBeChecked();
+  expect(within(screen.getByRole("dialog", { name: "角色资料" })).getByRole("combobox", { name: "默认 Codex exec CLI" })).toHaveValue("exec-one");
 });
 
 it("requires explicit native-turn cost consent, displays blocked facts, and revokes exact persisted CLI grants", async () => {

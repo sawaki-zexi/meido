@@ -1690,6 +1690,11 @@ async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
         if _proactive is not None and current is not None:
             _proactive.stop(role_id)
         updated = _novelai_application().update_role(role_id, data)
+        delegation_changed = current is not None and current.agentConfig.spawn != updated.agentConfig.spawn
+        if delegation_changed:
+            # Do this before any independent cleanup yields. An off/on edit
+            # cannot revive a frozen coding call while ordinary spawn joins.
+            _coding_application().seal_delegation(role_id)
         if current is not None and current.agentConfig.novelai != updated.agentConfig.novelai:
             await _novelai_application().invalidate(role_id)
         if current is not None and current.agentConfig.screenPerception != updated.agentConfig.screenPerception:
@@ -1700,6 +1705,7 @@ async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
             await asyncio.to_thread(task_runtime.cancel_role_tasks, role_id, kind="shell")
         if current is not None and current.agentConfig.spawn != updated.agentConfig.spawn:
             await asyncio.to_thread(task_runtime.cancel_role_tasks, role_id, kind="spawn")
+            await _coding_application().invalidate_delegation(role_id, seal=False)
         if current is not None and current.agentConfig.coding != updated.agentConfig.coding:
             await _coding_application().invalidate_role(role_id)
         if current is not None and current.agentConfig.browserUse.enabled != updated.agentConfig.browserUse.enabled:
@@ -4053,8 +4059,12 @@ def _runtime_tool_candidates(
         *(ScheduleManageTool(name, _schedule_application, origin_resolver=task_origin, authorized=schedule_source_authorized)
           for name in ('list_schedules', 'cancel_schedule')),
         MessagePushTool(session_store, lambda: store.workspace_path(role.id), role_id=role.id, authorized=desktop_push_authorized),
-        SpawnTool(task_runtime, role.agentConfig.spawn, origin_resolver=task_origin, authorized=spawn_authorized),
-        SpawnManageTool(task_runtime, origin_resolver=task_origin, authorized=spawn_authorized),
+        SpawnTool(task_runtime, role.agentConfig.spawn, origin_resolver=task_origin, authorized=spawn_authorized,
+            coding_application=_coding_application, coding_authorized=coding_source_authorized,
+            coding_access=_coding_application().freeze_access(role.id, role.agentConfig.coding)),
+        SpawnManageTool(task_runtime, origin_resolver=task_origin, authorized=spawn_authorized,
+            coding_application=_coding_application, coding_authorized=coding_source_authorized,
+            coding_access=_coding_application().freeze_access(role.id, role.agentConfig.coding)),
         *build_coding_tools(_coding_application, role_id=role.id, origin_resolver=task_origin,
             authorized=coding_source_authorized,
             access=_coding_application().freeze_access(role.id, role.agentConfig.coding)),
@@ -4341,6 +4351,14 @@ async def _runtime_capabilities(
                 policy = replace(policy, enabled_tools=policy.enabled_tools - {'generate_image'})
     if mcp_run is not None:
         candidates = tuple(tool for tool in candidates if tool.definition.name not in MCP_MANAGEMENT_NAMES) + mcp_run.tools
+    def skill_dependency_check(skill, name):
+        if skill.skill_id == 'codex-delegate' and name == 'codex':
+            if not role.agentConfig.spawn.enabled:
+                return '角色的 spawn 开关已关闭'
+            status = _coding_application().config.availability(role.id, role.agentConfig.coding, executor='codex_exec')
+            return None if status['status'] == 'available' else status['reason']
+        import shutil
+        return None if shutil.which(name) is not None else 'command is unavailable'
     try:
         resolution = await CapabilityRegistry(
             candidates,
@@ -4360,6 +4378,7 @@ async def _runtime_capabilities(
             external_only=external_only,
             prompt_text=prompt_text,
             explicit_skill_ids=set(explicit_skill_ids or ()),
+            skill_dependency_check=skill_dependency_check,
             enabled_plugin_ids=policy.enabled_plugins,
             granted_capabilities=policy.granted_capabilities,
             host_services=host_services,
@@ -4433,7 +4452,8 @@ def _coding_application():
         _coding = CodingApplication(data_root / 'coding', task_runtime, session_store,
             role_config=lambda role_id: role.agentConfig.coding if (role := store.get(role_id)) is not None else None,
             authorized=_coding_origin_authorized, deliver=_deliver_coding_completion, receipt=_coding_receipt,
-            lock_for=_runtime_role_lock)
+            lock_for=_runtime_role_lock,
+            delegation_authorized=lambda origin: _coding_origin_authorized(origin) and _spawn_origin_authorized(origin))
     return _coding
 
 

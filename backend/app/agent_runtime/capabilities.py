@@ -367,6 +367,7 @@ class CapabilityRegistry:
         restored_activation: Mapping[str, object] | None = None,
         service_grants: tuple[ServiceGrant, ...] = (),
         resource_close: Callable[[], Awaitable[None]] | None = None,
+        skill_dependency_check=None,
     ) -> CapabilityResolution:
         registered_tools = list(self._tools.values())
         if plugin_resolution is not None:
@@ -454,6 +455,7 @@ class CapabilityRegistry:
             explicit_ids=explicit_skill_ids,
             available_tools={tool.definition.name for tool in registered_tools},
             enabled_tools=set(tool.definition.name for tool in selected),
+            dependency_check=skill_dependency_check,
         )
         snapshot = CapabilitySnapshot(
             snapshot_id=f"cap-{run_id}",
@@ -522,6 +524,7 @@ class CapabilityRegistry:
         restored_activation: Mapping[str, object] | None = None,
         service_grants: tuple[ServiceGrant, ...] = (),
         resource_close: Callable[[], Awaitable[None]] | None = None,
+        skill_dependency_check=None,
     ) -> CapabilityResolution:
         plugin_resolution = await self.plugins.load(
             enabled_ids=enabled_plugin_ids,
@@ -551,6 +554,7 @@ class CapabilityRegistry:
                 restored_activation=restored_activation,
                 service_grants=service_grants,
                 resource_close=resource_close,
+                skill_dependency_check=skill_dependency_check,
             )
         except BaseException:
             try:

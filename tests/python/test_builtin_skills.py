@@ -35,6 +35,19 @@ def test_missing_skill_dependencies_explain_unavailability_without_exposing_host
     assert "private-value-never-in-context" not in json.dumps(diagnostics) + "\n".join(result.prompt_sections)
 
 
+def test_fixed_codex_profile_dependency_can_qualify_without_path_and_denial_is_specific(monkeypatch):
+    from pathlib import Path
+    registry = SkillRegistry.discover(Path(__file__).resolve().parents[2] / 'backend/app/builtin_skills', source='builtin')
+    monkeypatch.setattr('shutil.which', lambda _: None)
+    assert not registry.resolve(prompt='write code').skills
+    denied = registry.resolve(prompt='$codex-delegate', dependency_check=lambda skill, name: '专用 profile 尚未核验')
+    assert not denied.skills
+    assert '专用 profile 尚未核验' in str(denied.diagnostics)
+    selected = registry.resolve(prompt='$codex-delegate', dependency_check=lambda skill, name: None)
+    assert selected.skills[0].skill_id == 'codex-delegate'
+    assert selected.skills[0].tools == ('spawn', 'spawn_manage')
+
+
 def test_skill_script_resource_is_verified_and_never_automatically_executed(tmp_path):
     directory = write_skill(tmp_path, "with-script")
     scripts = directory / "scripts"

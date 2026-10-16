@@ -177,4 +177,4 @@ S07 Skill指引：先查CLI/profile可用性，用户已提供repo时直接传re
 
 最终P03/S07验收须三票全行为、相关测试/类型检查/构建、独立规范与规格两轴审查，以及上表真实原生/获准发布证据；仅本地模式或一款CLI通过不计全部完成。§3批准覆盖所选owned补丁实现、必要依赖的工作区隔离构建、发行资源验证和无账号/费用fixture，可随实施推进，不为每个可逆本地步骤另设审批。架构批准不等于原生验收完成；读取/设置真实CLI认证、实际账号/模型或付费请求、真实外部发布仍需相应明确授权。提案阶段仅写规格；批准后已开始隔离原生构建及无费用 fixture，尚无完整验收结论。
 
-尚待补证：owned补丁的实际构建/发行与Windows进程证据；固定CLI精确resume权限、认证/扩展加载和session时序；所选账户/模型的真实可用性及经授权发布。它们是具体实施验收门槛，失败保持不可用，不用“minenv”“专用目录”或纯Skill文字补成OS沙箱结论。
+当前本地证据：#174 已完成固定 owned 补丁/发行资源构建和 Windows 进程夹具，见[Herdr验收](../handbook/coding-agent-acceptance.md)；#175 已接入独立 Codex exec、显式 Skill/spawn/manage、原来源 copy/ACK 和无费用协议闭环，见[codex-delegate验收](../handbook/codex-delegate-acceptance.md)。这些不等于固定真实CLI的权限、认证/扩展加载、精确resume和账号模型验收；实际账号/模型及经授权发布仍待相应许可和证据。失败保持不可用，不用“minenv”“专用目录”或纯Skill文字补成OS沙箱结论。

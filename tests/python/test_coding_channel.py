@@ -16,14 +16,19 @@ pytestmark = pytest.mark.usefixtures('local_platform_only')
 
 
 @pytest.mark.parametrize('revoke', [False, True])
-def test_real_onebot_source_receives_one_background_completion_or_suppresses_after_unpair(api, tmp_path, monkeypatch, revoke):
+@pytest.mark.parametrize('executor', ['herdr', 'codex_exec'])
+def test_real_onebot_source_receives_one_background_completion_or_suppresses_after_unpair(api, tmp_path, monkeypatch, revoke, executor):
     from backend.app import main
     from backend.app.channels.host import ChannelHost
     from backend.app.channels.napcat import NapCatAdapter, NapCatConfig
     from backend.app.channels.transports import NapCatWebSocketTransport
     from websockets.asyncio.server import serve
     client, roles, sessions, tasks = api
-    configuration = Configuration()
+    class ChannelConfiguration(Configuration):
+        def resolve(self, *args, **kwargs):
+            grant, profile, build = super().resolve(*args, **kwargs)
+            return grant, profile | {'executor': executor}, build
+    configuration = ChannelConfiguration()
     configuration.role_id = ''
     release = threading.Event()
     class Work(ControlledExecutor):
@@ -34,11 +39,13 @@ def test_real_onebot_source_receives_one_background_completion_or_suppresses_aft
     application = CodingApplication(tmp_path / 'coding', tasks, sessions,
         role_config=lambda role_id: roles.get(role_id).agentConfig.coding if roles.get(role_id) else None,
         authorized=main._coding_origin_authorized, config=configuration, executor_factory=Work,
+        delegation_authorized=lambda origin: main._coding_origin_authorized(origin) and main._spawn_origin_authorized(origin),
         deliver=main._deliver_coding_completion, receipt=main._coding_receipt, lock_for=main._runtime_role_lock)
     monkeypatch.setattr(main, '_coding', application)
     role = client.post('/api/roles', json={'name': '原渠道编程', 'profile': {'profile': 'local fixture'},
-        'agentConfig': {'enabledTools': ['tool_search'], 'coding': {'enabled': True,
-            'repoGrantIds': ['repo-a'], 'profileIds': ['profile-a'], 'defaultHerdrProfileId': 'profile-a'}}}).json()['role']
+        'agentConfig': {'enabledTools': ['tool_search'], 'spawn': {'enabled': executor == 'codex_exec'}, 'coding': {'enabled': True,
+            'repoGrantIds': ['repo-a'], 'profileIds': ['profile-a'], 'defaultHerdrProfileId': 'profile-a',
+            'defaultCodexProfileId': 'profile-a' if executor == 'codex_exec' else None}}}).json()['role']
     configuration.role_id = role['id']
     channels = main.multichannel_store
     account = channels.register_channel_account(role['id'], 'qq', account_id='coding-onebot', enabled=True)
@@ -53,9 +60,11 @@ def test_real_onebot_source_receives_one_background_completion_or_suppresses_aft
         async def stream_structured_messages(self, messages, configuration, tools):
             results = [item for item in messages if item['role'] == 'tool']
             if not results:
-                yield ModelToolCall('coding-discovery', 'tool_search', {'query': 'select:herdr_start_task'})
+                yield ModelToolCall('coding-discovery', 'tool_search', {'query': 'select:' + ('spawn' if executor == 'codex_exec' else 'herdr_start_task')})
             elif len(results) == 1:
-                yield ModelToolCall('coding-start', 'herdr_start_task', {'repository': 'repo-a', 'requirement': 'channel original work'})
+                yield ModelToolCall('coding-start', 'spawn' if executor == 'codex_exec' else 'herdr_start_task',
+                    {'repository': 'repo-a', 'task': 'channel original work', 'profile': 'coding', 'run_in_background': True, 'retry_count': 0}
+                    if executor == 'codex_exec' else {'repository': 'repo-a', 'requirement': 'channel original work'})
             else:
                 assert json.loads(results[-1]['content'])['status'] == 'accepted'
                 yield ModelTextDelta('已登记原渠道后台任务。')

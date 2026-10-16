@@ -13,7 +13,7 @@ from urllib.request import ProxyHandler, build_opener
 
 from ..task_runtime import TaskBudget, TaskOrigin, TaskOutcome
 from ..task_runtime.runtime import TERMINAL, TaskExecutor
-from .config import executable_identity
+from .config import codex_artifact, executable_identity
 from .executor import HerdrExecutor
 from .git_repository import git, repository_identity
 from .native_build import verify_bundle
@@ -26,9 +26,10 @@ VERSIONS = {'codex': '0.159.3', 'claude': '2.1.283'}
 
 
 class NativeProfileProbes:
-    def __init__(self, root, tasks, config, *, role_exists, client_factory=None):
+    def __init__(self, root, tasks, config, *, role_exists, client_factory=None, process_factory=None):
         self.root, self.tasks, self.config = Path(root), tasks, config
         self.role_exists, self.client_factory = role_exists, client_factory
+        self.process_factory = process_factory
         self._lock = threading.RLock()
         self._owners: dict[str, TaskExecutor] = {}
         self._cursor = 0
@@ -72,21 +73,26 @@ class NativeProfileProbes:
             profile = self.config.profile(record['profileId'])
             return (self.role_exists(record['roleId']) and profile['revision'] == record['profileRevision']
                     and record.get('authorityGeneration', 0) == self.config.role_generation(record['roleId'])
-                    and record['roleId'] in profile['allowedRoleIds'] and self.config.native_build() == record['nativeBuild'])
+                    and record['roleId'] in profile['allowedRoleIds']
+                    and (self.config.native_build() if profile['executor'] == 'herdr' else codex_artifact(profile)) == record['nativeBuild'])
         except (KeyError, ValueError):
             return False
 
     def start(self, profile_id, *, revision, role_id, build_sha256, approve_native_turns, request_id):
         if approve_native_turns != 2 or not isinstance(request_id, str) or not 1 <= len(request_id) <= 100:
             raise ValueError('explicit approval for exactly two native task turns is required')
-        profile, build = self.config.profile(profile_id), self.config.native_build()
-        if profile['revision'] != revision or profile['version'] != VERSIONS[profile['kind']] or profile['executor'] != 'herdr':
+        profile = self.config.profile(profile_id)
+        if profile['executor'] == 'codex_exec' and not self.config.native_supported():
+            raise PermissionError('Codex exec native qualification is only supported on Windows')
+        build = self.config.native_build() if profile['executor'] == 'herdr' else codex_artifact(profile)
+        if profile['revision'] != revision or profile['version'] != VERSIONS[profile['kind']]:
             raise ValueError('select the fixed supported CLI revision/version')
         if build is None or build['sha256'] != build_sha256:
             raise ValueError('owned build changed before approval')
         executable_identity(profile['executable'], profile['sha256'])
         executable_identity(build['executable'], build['sha256'])
-        verify_bundle(Path(build['executable']))
+        if profile['executor'] == 'herdr':
+            verify_bundle(Path(build['executable']))
         identifier = 'probe_' + hashlib.sha256(json.dumps([profile_id, revision, role_id, request_id]).encode()).hexdigest()[:32]
         with self._lock:
             previous = self._db.execute('SELECT body FROM probes WHERE id=?', (identifier,)).fetchone()
@@ -228,10 +234,16 @@ class QualificationExecutor:
             if self._cancelled.is_set() or not service.allowed(record):
                 raise PermissionError('probe permission ended before start')
             service.update(record['id'], status='running')
-            version_client = (service.client_factory or HerdrClient)(Path(record['nativeBuild']['executable']), root / 'version',
-                generation=record['id'], session='meido-' + record['id'][6:], agent_kind=profile['kind'],
-                agent_executable=Path(profile['executable']), agent_arguments=[], deadline=execution.deadline - 60)
-            self._version_process = OwnedProcess([profile['executable'], '--version'], version_client.root, version_client.env, output_bytes=65536,
+            if profile['executor'] == 'codex_exec':
+                from .codex_exec import codex_environment
+                version_root = root / 'version'
+                version_environment = codex_environment(Path(profile['executable']), version_root)
+            else:
+                version_client = (service.client_factory or HerdrClient)(Path(record['nativeBuild']['executable']), root / 'version',
+                    generation=record['id'], session='meido-' + record['id'][6:], agent_kind=profile['kind'],
+                    agent_executable=Path(profile['executable']), agent_arguments=[], deadline=execution.deadline - 60)
+                version_root, version_environment = version_client.root, version_client.env
+            self._version_process = (service.process_factory or OwnedProcess)([profile['executable'], '--version'], version_root, version_environment, output_bytes=65536,
                 job_name='Local\\Meido.Coding.' + record['id'] + '.version',
                 journal=lambda name, active: ledger.resource_job(record['id'], name, active))
             version_result = self._version_process.communicate(timeout=10)
@@ -299,7 +311,12 @@ class QualificationExecutor:
                     'repository': grant, 'nativeBuild': record['nativeBuild'], 'nativeSession': native, 'branch': branch,
                     'requirement': requirement, 'qualificationChallenges': challenges[:], **ledger.task}
                 kwargs = {'client_factory': service.client_factory} if service.client_factory else {}
-                executor = HerdrExecutor(root, subrecord, ledger, authorized=lambda: service.allowed(record) and not self._cancelled.is_set(), **kwargs)
+                if profile['executor'] == 'codex_exec':
+                    from .codex_exec import CodexExecutor
+                    executor = CodexExecutor(root, subrecord, ledger, authorized=lambda: service.allowed(record) and not self._cancelled.is_set(),
+                        process_factory=service.process_factory or OwnedProcess, task_directory=root / 'exec')
+                else:
+                    executor = HerdrExecutor(root, subrecord, ledger, authorized=lambda: service.allowed(record) and not self._cancelled.is_set(), **kwargs)
                 with self._lock: self._executor = executor
                 executor.run(execution)
                 if ledger.value.get('status') != 'validated_diff' or ledger.value.get('cleanupState') != 'complete':
@@ -313,7 +330,8 @@ class QualificationExecutor:
                     raise ValueError('native session resume did not preserve exact identity')
                 native = observed
                 evidence.append({'attemptId': attempt_id, 'nativeSession': native, 'cleanupState': 'complete'})
-            native_home = executor._client.root / 'home' / ('codex' if profile['kind'] == 'codex' else 'claude')
+            native_home = (executor.native_home if profile['executor'] == 'codex_exec'
+                           else executor._client.root / 'home' / ('codex' if profile['kind'] == 'codex' else 'claude'))
             permission_evidence = native_refusals(native_home, profile['kind'], native, challenges)
             permission_evidence['network'] = 'localhost canary and native command refusal' if profile['kind'] == 'codex' else 'fixed native tool surface excludes Bash, WebFetch and MCP'
             manifest_hash = hashlib.sha256(json.dumps({'profile': profile['revision'], 'build': record['nativeBuild'],

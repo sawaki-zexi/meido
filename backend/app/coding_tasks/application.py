@@ -26,7 +26,7 @@ def public_task(record: dict) -> dict:
 class CodingApplication:
     """Own CodingTask policy, attempts, native resources and result delivery."""
     def __init__(self, root: Path, tasks: TaskRuntime, sessions: SessionStore, *, role_config,
-                 authorized, config=None, executor_factory=None, deliver=None, receipt=None, lock_for=None):
+                 authorized, config=None, executor_factory=None, deliver=None, receipt=None, lock_for=None, delegation_authorized=None):
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.tasks, self.sessions = tasks, sessions
@@ -35,6 +35,7 @@ class CodingApplication:
         # in the same database as their idempotent original-session message.
         self.ledger = CodingLedger(Path(sessions.database_path))
         self.role_config, self.authorized = role_config, authorized
+        self.delegation_authorized = delegation_authorized or authorized
         self.executor_factory = executor_factory or self._native_executor
         self.deliver, self.receipt, self.lock_for = deliver, receipt, lock_for
         self._tick_lock = threading.Lock()
@@ -47,6 +48,9 @@ class CodingApplication:
             role_exists=lambda role_id: not self._closed and self.role_config(role_id) is not None)
 
     def _native_executor(self, record, ledger):
+        if record['executor'] == 'codex_exec':
+            from .codex_exec import CodexExecutor
+            return CodexExecutor(self.root, record, ledger, authorized=lambda: self._execution_allowed(record))
         from .executor import HerdrExecutor
         return HerdrExecutor(self.root, record, ledger, authorized=lambda: self._execution_allowed(record))
 
@@ -57,7 +61,12 @@ class CodingApplication:
         try:
             origin = TaskOrigin(**record['origin'])
             role = self.role_config(origin.role_id)
-            if self._closed or role is None or not role.enabled or not self.authorized(origin):
+            if (self._closed or role is None or not role.enabled or not self.authorized(origin)
+                    or self.ledger.attempt(record['attemptId']).get('delegationSealed')):
+                return False
+            if record['executor'] == 'codex_exec' and not self.delegation_authorized(origin):
+                return False
+            if record['executor'] == 'codex_exec' and record.get('delegationGeneration', 0) != self.delegation_generation(origin.role_id):
                 return False
             if record.get('authorityGeneration', 0) != self.generation(origin.role_id):
                 return False
@@ -73,6 +82,7 @@ class CodingApplication:
     def freeze_access(self, role_id: str, role: CodingRoleConfig) -> dict:
         setting = self.config.public()
         return {'roleId': role_id, 'enabled': bool(role.enabled and setting['enabled']), 'generation': self.generation(role_id),
+                'delegationGeneration': self.delegation_generation(role_id),
                 'repositories': {item['id']: item['revision'] for item in setting['repositories']
                                  if item['id'] in role.repoGrantIds and role_id in item['allowedRoleIds']},
                 'profiles': {item['id']: item['revision'] for item in setting['profiles']
@@ -81,17 +91,21 @@ class CodingApplication:
                              and item['verification'].get('revision') == item['revision']},
                 'nativeBuild': copy.deepcopy(setting['nativeBuild'])}
 
-    def _admit(self, origin, repository, requirement, kind=None, task_id=None, request_id=None, admitted=lambda: True, frozen_access=None):
+    def _admit(self, origin, repository, requirement, kind=None, task_id=None, request_id=None, admitted=lambda: True, frozen_access=None, executor='herdr'):
         authority_generation = self.generation(origin.role_id)
+        delegation_generation = self.delegation_generation(origin.role_id)
         role = self.role_config(origin.role_id)
         if self._closed or role is None or not role.enabled or not self.authorized(origin):
             raise PermissionError('original coding owner permission is unavailable')
-        grant, profile, build = self.config.resolve(origin.role_id, role, repository, kind=kind)
+        if executor == 'codex_exec' and not self.delegation_authorized(origin):
+            raise PermissionError('original spawn coding permission is unavailable')
+        grant, profile, build = self.config.resolve(origin.role_id, role, repository, kind=kind, executor=executor)
         if frozen_access is not None and (not frozen_access.get('enabled') or frozen_access.get('roleId') != origin.role_id
                 or frozen_access.get('generation') != authority_generation
+                or executor == 'codex_exec' and frozen_access.get('delegationGeneration', 0) != delegation_generation
                 or frozen_access['repositories'].get(grant['id']) != grant['revision']
                 or frozen_access['profiles'].get(profile['id']) != profile['revision']
-                or frozen_access['nativeBuild'] != build):
+                or executor == 'herdr' and frozen_access['nativeBuild'] != build):
             raise PermissionError('coding grant is outside the frozen run authority')
         with self._owner_lock:
             if self._closed:
@@ -99,22 +113,24 @@ class CodingApplication:
             record, created = self.ledger.admit(origin, requirement=requirement, repository=grant, profile=profile,
                 max_daily=role.maxAttemptsPerDay, task_id=task_id, request_id=request_id,
                 admitted=lambda: not self._closed and admitted() and self.authorized(origin)
-                and self.generation(origin.role_id) == authority_generation,
-                native_build=build, authority_generation=authority_generation)
+                and self.generation(origin.role_id) == authority_generation
+                and (executor != 'codex_exec' or self.delegation_authorized(origin)
+                     and self.delegation_generation(origin.role_id) == delegation_generation),
+                native_build=build, authority_generation=authority_generation, delegation_generation=delegation_generation)
             if created:
                 self._submit(record)
         return public_task(record)
 
     def start_task(self, origin: TaskOrigin, *, repository: str, requirement: str, agent: str | None = None,
-                   request_id: str | None = None, admitted=lambda: True, frozen_access=None) -> dict:
-        return self._admit(origin, repository, requirement, kind=agent, request_id=request_id, admitted=admitted, frozen_access=frozen_access)
+                   request_id: str | None = None, admitted=lambda: True, frozen_access=None, executor='herdr') -> dict:
+        return self._admit(origin, repository, requirement, kind=agent, request_id=request_id, admitted=admitted, frozen_access=frozen_access, executor=executor)
 
-    def continue_task(self, task_id: str, origin: TaskOrigin, *, requirement: str, request_id: str | None = None, admitted=lambda: True, frozen_access=None) -> dict:
+    def continue_task(self, task_id: str, origin: TaskOrigin, *, requirement: str, request_id: str | None = None, admitted=lambda: True, frozen_access=None, executor='herdr') -> dict:
         task = self.ledger.inspect(task_id, origin)
-        if task['executor'] != 'herdr':
-            raise KeyError('task is not a Herdr coding task')
+        if task['executor'] != executor:
+            raise KeyError('task executor differs from this interface')
         return self._admit(origin, task['repository']['id'], requirement, kind=task['profile']['kind'],
-                           task_id=task_id, request_id=request_id, admitted=admitted, frozen_access=frozen_access)
+                           task_id=task_id, request_id=request_id, admitted=admitted, frozen_access=frozen_access, executor=executor)
 
     def _submit(self, record):
         if not self.ledger.claim_launch(record['attemptId']):
@@ -124,7 +140,7 @@ class CodingApplication:
             executor = self.executor_factory(record, self.ledger)
             with self._owner_lock:
                 self._owners[record['attemptId']] = executor
-            identifier = self.tasks.submit(origin, executor, kind='coding_herdr',
+            identifier = self.tasks.submit(origin, executor, kind=self._runtime_kind(record),
                 budget=TaskBudget(timeout_seconds=600, log_bytes=1024 * 1024, output_chars=8000),
                 description=record['attemptId'], authorized=lambda: self._execution_allowed(record),
                 submission_key=record['attemptId'], retain_until_ack=True, completion=False)
@@ -142,27 +158,31 @@ class CodingApplication:
 
     def _find_runtime(self, record):
         origin = TaskOrigin(**record['origin'])
-        matches = [item for item in self.tasks.list(origin, kind='coding_herdr') if item.description == record['attemptId']]
+        matches = [item for item in self.tasks.list(origin, kind=self._runtime_kind(record)) if item.description == record['attemptId']]
         if len(matches) > 1:
             raise RuntimeError('ambiguous CodingTask runtime handover')
         return matches[0] if matches else None
 
-    def inspect(self, task_id: str, origin: TaskOrigin) -> dict:
+    @staticmethod
+    def _runtime_kind(record):
+        return {'herdr': 'coding_herdr', 'codex_exec': 'coding_codex'}[record['executor']]
+
+    def inspect(self, task_id: str, origin: TaskOrigin, *, executor='herdr') -> dict:
         if not self.authorized(origin):
             raise PermissionError('original coding source permission was revoked')
         record = self.ledger.inspect(task_id, origin)
-        if record['executor'] != 'herdr':
-            raise KeyError('task is not a Herdr coding task')
+        if record['executor'] != executor:
+            raise KeyError('task executor differs from this interface')
         return public_task(record)
 
-    def list_tasks(self, origin: TaskOrigin) -> list[dict]:
+    def list_tasks(self, origin: TaskOrigin, *, executor='herdr') -> list[dict]:
         if not self.authorized(origin):
             raise PermissionError('original coding source permission was revoked')
-        return [public_task(item) for item in self.ledger.list(origin)]
+        return [public_task(item) for item in self.ledger.list(origin, executor=executor)]
 
-    def cancel_task(self, task_id: str, origin: TaskOrigin) -> dict:
+    def cancel_task(self, task_id: str, origin: TaskOrigin, *, executor='herdr') -> dict:
         record = self.ledger.inspect(task_id, origin)
-        if record['executor'] != 'herdr' or not self.authorized(origin):
+        if record['executor'] != executor or not self.authorized(origin):
             raise PermissionError('original coding cancellation permission was revoked')
         return self._cancel_record(record)
 
@@ -354,6 +374,7 @@ class CodingApplication:
         # process exit. Keep all databases/owners alive if cleanup raises.
         for role_id in self.ledger.role_ids():
             await asyncio.to_thread(self.tasks.cancel_role_tasks, role_id, kind='coding_herdr')
+            await asyncio.to_thread(self.tasks.cancel_role_tasks, role_id, kind='coding_codex')
         if self._worker is not None:
             try:
                 await asyncio.shield(self._worker)
@@ -389,9 +410,31 @@ class CodingApplication:
             await asyncio.to_thread(revoke, role_id)
         await asyncio.to_thread(self.tasks.cancel_role_tasks, role_id, kind='coding_qualification')
         await asyncio.to_thread(self.tasks.cancel_role_tasks, role_id, kind='coding_herdr')
+        await asyncio.to_thread(self.tasks.cancel_role_tasks, role_id, kind='coding_codex')
         # The caller closes admission before awaiting this method. Recovery
         # still copies/ACKs terminal results even when delivery is suppressed.
         await self.tick()
+
+    def seal_delegation(self, role_id: str):
+        """Seal before any awaited cleanup can expose a subsequent re-enable."""
+        revoke = getattr(self.config, 'revoke_delegation', None)
+        if revoke:
+            revoke(role_id)
+        with self._owner_lock:
+            for record in self.ledger.role_records(role_id):
+                if record['executor'] == 'codex_exec':
+                    self.ledger.update_attempt(record['attemptId'], delegationSealed=True, executionSealed=True)
+
+    async def invalidate_delegation(self, role_id: str, *, seal=True):
+        """Closing spawn seals existing Codex delegates permanently, even on re-enable."""
+        if seal:
+            self.seal_delegation(role_id)
+        await asyncio.to_thread(self.tasks.cancel_role_tasks, role_id, kind='coding_codex')
+        await self.tick()
+
+    def delegation_generation(self, role_id):
+        getter = getattr(self.config, 'delegation_generation', None)
+        return getter(role_id) if getter else 0
 
     async def delete_role(self, role_id: str):
         await self.prepare_role_deletion(role_id)
