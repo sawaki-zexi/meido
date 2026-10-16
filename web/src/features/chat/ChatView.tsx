@@ -9,6 +9,7 @@ import { api } from "../../api/client";
 import type { TodoSettings } from "../../api/types";
 import { TodoDrawer } from "../todo/TodoDrawer";
 import { useChatAttachments } from "./useChatAttachments";
+import { useChatScroll } from "./useChatScroll";
 
 function MessageItem({ message, role, highlighted }: { message: Message; role: Role; highlighted: boolean }) {
   const mine = message.role === "user";
@@ -112,11 +113,10 @@ function Composer({ roleId, placeholder, disabled, sending, stopping, onSend, on
 type ChatProps = { role: Role; chat: ChatState; highlightedId?: string | null; onBack: () => void; onShowProfile: () => void; onShowMemories: () => void; onOpenTodoSource: (roleId: string, sessionKey: string, messageId: string) => void };
 
 export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfile, onShowMemories, onOpenTodoSource }: ChatProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const { scrollRef, listRef, onScroll } = useChatScroll({ roleId: role.id, messages: chat.messages, sending: chat.sending, highlightedId });
   const [todoSettings, setTodoSettings] = useState<TodoSettings | null>(null);
   const [todoUnread, setTodoUnread] = useState(0);
   const [todoOpen, setTodoOpen] = useState(false);
-  useEffect(() => { if (!highlightedId) bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" }); }, [chat.messages, highlightedId]);
   useEffect(() => {
     if (!chat.session || chat.sending) return;
     const timer = window.setInterval(() => void chat.refresh(), 10000);
@@ -165,11 +165,10 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
       <IconButton icon="memory" label="角色记忆" onClick={onShowMemories} />
       <IconButton icon="profile" label="角色资料" onClick={onShowProfile} />
     </header>
-    <div className="chat-scroll">
+    <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
       {chat.messages.length
-        ? <ol className="message-list" aria-live="polite">{chat.messages.map((message) => <MessageItem key={message.id} message={message} role={role} highlighted={message.id === highlightedId} />)}</ol>
+        ? <ol ref={listRef} className="message-list" aria-live="polite">{chat.messages.map((message) => <MessageItem key={message.id} message={message} role={role} highlighted={message.id === highlightedId} />)}</ol>
         : <Placeholder>发送第一条消息开始对话。</Placeholder>}
-      <div ref={bottomRef} />
     </div>
     <div className="composer-dock">
       {chat.error && <Notice onDismiss={() => chat.setError("")}>{chat.error}</Notice>}
