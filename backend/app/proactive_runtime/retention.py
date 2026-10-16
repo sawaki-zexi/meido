@@ -245,6 +245,17 @@ def store_snapshot(db,tick_id,snapshot,now,*,limits=DEFAULT_LIMITS):
         return True
 
 
+def retain_disposition_inputs(db, tick_id, encoded):
+    """Charge the bounded recovery input before the dispatch claim commits."""
+    size = len(encoded.encode('utf-8'))
+    if size > 32*KIB:
+        raise StorageLimitError('disposition recovery input exceeds 32 KiB')
+    with _atomic(db):
+        reservation, _ = _writable(db, tick_id)
+        _consume(db, tick_id, size + ROW_BYTES)
+        _check(db, reservation['role_id'], DEFAULT_LIMITS)
+
+
 def record_transcript(db,tick_id,message,now,*,limits=DEFAULT_LIMITS):
     encoded=_text(message)
     if len(encoded.encode("utf-8"))>TRANSCRIPT_MESSAGE_BYTES:
@@ -264,11 +275,14 @@ def record_transcript(db,tick_id,message,now,*,limits=DEFAULT_LIMITS):
 
 def _finished(run):
     return bool(run and run["runtime_acknowledged"] and not run["result_ack_pending"] and not run["launch_pending"]
-                and run["status"] not in {"preparing","running","pending","inflight","dispatching","uncertain"})
+                and run["status"] not in {"preparing","running","pending","inflight","dispatching"})
 
 
 def _resolved(db,tick_id):
     tables=_tables(db)
+    if 'autonomy_delivery_recovery' in tables and db.execute(
+            'SELECT 1 FROM autonomy_delivery_recovery WHERE tick_id=? AND projection_pending=1', (tick_id,)).fetchone():
+        return False
     if 'autonomy_drift_write_journal' in tables and db.execute(
             "SELECT 1 FROM autonomy_drift_write_journal WHERE operation_id=? AND status='pending'", (tick_id,)).fetchone():
         return False
@@ -285,6 +299,20 @@ def _resolved(db,tick_id):
                 definitive_drift_failure = actual_outcome(claim) == 'failed'
             except (ValueError, TypeError, KeyError):
                 return False
+        if not definitive_drift_failure and db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='channel_delivery_attempts'").fetchone():
+            # An external A01 may finish with a definite platform rejection.
+            # Only its original, matching durable attempt resolves that claim;
+            # a manual report or an unknown transport result cannot do so.
+            definitive_drift_failure = db.execute('''SELECT 1 FROM autonomy_deliveries d
+                JOIN channel_delivery_attempts a ON a.attempt_id=CASE WHEN json_valid(d.receipt)
+                    THEN json_extract(d.receipt,'$.attemptId') END
+                WHERE d.tick_id=? AND d.status='failed' AND d.dispatched=1 AND a.status='failed'
+                AND json_extract(d.receipt,'$.status')='failed' AND json_extract(d.receipt,'$.intentId')=d.intent_id
+                AND a.role_id=d.role_id AND a.source_kind='autonomy' AND a.source_run_id=d.tick_id
+                AND a.source_tool_call_id=d.intent_id AND a.account_id=json_extract(d.target,'$.accountId')
+                AND a.target_chat_id=json_extract(d.target,'$.chatId') AND a.content=json_extract(d.draft,'$.message')''',
+                (tick_id,)).fetchone() is not None
     if not definitive_drift_failure and "autonomy_deliveries" in tables and db.execute("""SELECT 1 FROM autonomy_deliveries WHERE tick_id=? AND NOT (
         (status='sent' AND message_id IS NOT NULL AND CASE WHEN json_valid(receipt)
             THEN COALESCE(json_extract(receipt,'$.status')='sent' AND json_extract(receipt,'$.messageId')=message_id,0) ELSE 0 END)
@@ -363,6 +391,8 @@ def prune(db,now):
                     # Existing semantic guard reads draft.message; retain its
                     # shape while expiring the message text and other details.
                     db.execute("UPDATE autonomy_deliveries SET draft='{\"message\":\"\"}',error='' WHERE tick_id=?",(identifier,))
+                if 'autonomy_delivery_recovery' in tables:
+                    db.execute('UPDATE autonomy_delivery_recovery SET disposition_inputs=NULL WHERE tick_id=?', (identifier,))
                 if "autonomy_ack_outbox" in tables:
                     db.execute("UPDATE autonomy_ack_outbox SET source_grant='{}',error='' WHERE tick_id=?",(identifier,))
                 db.execute("UPDATE autonomy_storage_reservations SET compacted=1 WHERE operation_id=?",(identifier,))

@@ -870,6 +870,7 @@ async def _close_memory_workers() -> None:
 async def _start_memory_workers() -> None:
     global _channel_runtime_loop
     _channel_runtime_loop = asyncio.get_running_loop()
+    channel_host.bind_runtime_loop()
     task_runtime.start()
     _novelai_application().start()
     _coding_application().start()
@@ -4799,7 +4800,7 @@ def _proactive_application():
             adapter_factory=lambda configuration: model_adapter,
             recall_memory=_proactive_memory, web_tools=_proactive_web, fetch_body=_proactive_body,
             context_reader=_proactive_context,
-            workspace_getter=lambda role_id: store.root / role_id / 'workspace')
+            workspace_getter=lambda role_id: store.root / role_id / 'workspace', channel_host=channel_host)
     return _proactive
 
 

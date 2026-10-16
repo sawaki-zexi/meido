@@ -20,6 +20,7 @@ it('enables Drift independently with an explicit model and finite consent while 
   let saved: unknown;
   const { calls } = fakeBackend({
     'GET /api/roles/r1/autonomy': () => ({ body: state }),
+    'GET /api/roles/r[12]/autonomy/target-accounts': () => ({ body: { accounts: [] } }),
     'GET /api/model/configurations': () => ({ body: { configurations: models, activeId: 'drift-model' } }),
     'PUT /api/roles/r1/autonomy': (request) => { saved = JSON.parse(String(request?.body)); return { body: { ...state, config: { ...config, ...(saved as { config: object }).config, revision: 5 } } }; },
   });
@@ -45,6 +46,7 @@ it('separates author declaration bounds from execution grants and saves only exp
   let saved: unknown;
   const { calls } = fakeBackend({
     'GET /api/roles/r1/autonomy': () => ({ body: state }),
+    'GET /api/roles/r[12]/autonomy/target-accounts': () => ({ body: { accounts: [] } }),
     'GET /api/model/configurations': () => ({ body: { configurations: models } }),
     'GET /api/roles/r1/autonomy/drift-grant-options': () => ({ body: {
       tools: [{ name: 'read_file', available: true }, { name: 'web_fetch', available: false, reason: '角色尚未授权此工具' }],
@@ -88,6 +90,7 @@ it('shows real Drift finish, message receipt, Runtime ACK and cleanup as separat
         delivery: { status: 'uncertain', messageId: null } },
       { id: 'unfinished-run', kind: 'autonomy_tick', mode: 'drift', status: 'aborted', runtimeAcknowledged: true, delivery: null },
     ] } }),
+    'GET /api/roles/r[12]/autonomy/target-accounts': () => ({ body: { accounts: [] } }),
     'GET /api/model/configurations': () => ({ body: { configurations: [] } }),
   });
   render(<AutonomySettings roleId="r1" disabled={false} />);
@@ -105,6 +108,7 @@ it('requires a fresh complete configuration after a version conflict instead of 
   let revision = 4; let writes = 0;
   const { calls } = fakeBackend({
     'GET /api/roles/r1/autonomy': () => ({ body: { ...state, config: { ...config, revision } } }),
+    'GET /api/roles/r[12]/autonomy/target-accounts': () => ({ body: { accounts: [] } }),
     'GET /api/model/configurations': () => ({ body: { configurations: [] } }),
     'PUT /api/roles/r1/autonomy': (request) => ++writes === 1 ? (revision = 5, { status: 409, body: { detail: '配置版本已变化' } })
       : { body: { ...state, config: JSON.parse(String(request?.body)).config } },
@@ -130,6 +134,7 @@ it('exposes the working Drift configuration in the actual role editor and reopen
     'GET /api/roles/r1/model-configuration': () => ({ body: { configurationId: null, effectiveConfigurationId: null } }),
     'GET /api/roles/r1/tools': () => ({ body: { tools: [], plugins: [] } }),
     'GET /api/roles/r1/autonomy': () => ({ body: saved }),
+    'GET /api/roles/r[12]/autonomy/target-accounts': () => ({ body: { accounts: [] } }),
     'GET /api/model/configurations': () => ({ body: { configurations: models, activeId: 'drift-model' } }),
     'PUT /api/roles/r1/autonomy': (request) => { saved = { ...state, config: { ...JSON.parse(String(request?.body)).config, revision: 5 } }; return { body: saved }; },
   });

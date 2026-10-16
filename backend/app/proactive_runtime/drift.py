@@ -37,11 +37,13 @@ SPECIAL = (
     *(_definition(item['function']['name'], item['function']['description'],
         item['function']['parameters']['properties'], item['function']['parameters']['required'])
         for item in SCHEMAS if item['function']['name'] in {'recall_memory', 'web_fetch', 'web_search'}),
-    _definition('message_push', 'Use this tick\'s only real desktop send opportunity.', {
+    _definition('message_push', 'Use this tick\'s only send opportunity within its original observed target grants.', {
         'message': {'type': 'string', 'minLength': 1, 'maxLength': 4000},
         'mood': {'type': 'string', 'maxLength': 100}, 'thought': {'type': 'string', 'maxLength': 1000},
         'attachment_ids': {'type': 'array', 'maxItems': 4, 'uniqueItems': True,
-            'items': {'type': 'string', 'minLength': 1, 'maxLength': 128}}}, ['message', 'mood', 'thought']),
+            'items': {'type': 'string', 'minLength': 1, 'maxLength': 128}},
+        'account_id': {'type': 'string', 'minLength': 1, 'maxLength': 256},
+        'target_id': {'type': 'string', 'minLength': 1, 'maxLength': 256}}, ['message', 'mood', 'thought']),
     _definition('activate_skill', 'Explicitly activate a trusted skill from this run catalog.',
         {'skill_id': {'type': 'string', 'minLength': 1, 'maxLength': 64}}, ['skill_id']),
     _definition('mount_server', 'Mount only an existing server frozen in this autonomous run.',

@@ -18,7 +18,7 @@ class Attachment:
     digest: str
 
 
-def bind(app, role_id, identifier):
+def _load(app, role_id, identifier):
     if not isinstance(identifier, str) or re.fullmatch(r'[a-f0-9]{32}', identifier) is None:
         raise PermissionError('invalid Drift attachment identifier')
     root = app.drift_skills.workspace(role_id) / 'attachments'
@@ -38,7 +38,11 @@ def bind(app, role_id, identifier):
         raise ValueError('Drift attachment metadata does not match its actual file')
     if (_directory_identity(root), _identity(metadata_path), _identity(path)) != (root_identity, metadata_identity, identity):
         raise PermissionError('Drift attachment identity changed while freezing')
-    return Attachment(public, (root_identity, metadata_identity, identity), hashlib.sha256(raw).hexdigest())
+    return Attachment(public, (root_identity, metadata_identity, identity), hashlib.sha256(raw).hexdigest()), raw
+
+
+def bind(app, role_id, identifier):
+    return _load(app, role_id, identifier)[0]
 
 
 def selected(turn, identifiers):
@@ -49,3 +53,17 @@ def selected(turn, identifiers):
             raise PermissionError('Drift attachment was not frozen or changed after admission')
         result.append(expected.public)
     return tuple(result)
+
+
+def frozen_bytes(turn, identifiers):
+    """Carry only the exact original run's verified bytes across adapter awaits."""
+    if len(identifiers) > 4 or len(set(identifiers)) != len(identifiers):
+        raise PermissionError('invalid original Drift attachment collection')
+    result = {}
+    for identifier in identifiers:
+        expected = turn.attachments.get(identifier)
+        actual, raw = _load(turn.app, turn.origin.role_id, identifier)
+        if expected is None or actual != expected:
+            raise PermissionError('Drift attachment bytes no longer match the original run')
+        result[identifier] = raw
+    return result

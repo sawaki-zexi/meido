@@ -25,6 +25,7 @@ it('requires an explicit current opaque preview adoption and explains pending de
   let dependencyReady = false;
   const { calls } = fakeBackend({
     'GET /api/roles/r1/autonomy': () => ({ body: state }),
+    'GET /api/roles/r[12]/autonomy/target-accounts': () => ({ body: { accounts: [] } }),
     'GET /api/model/configurations': () => ({ body: { configurations: [] } }),
     'GET /api/roles/r1/autonomy/drift-skills': () => ({ body: { skills: dependencyReady ? [{ ...pending, status: 'available', missingMcp: [],
       progress: { runCount: 2, lastRun: 1790000000, oneLine: '已整理第二章', nextAction: '继续第三章', messageResult: 'sent', projectionPending: true } }]
@@ -65,6 +66,7 @@ it('retains the same adoption identity after 503 and requires a new preview and 
   let previews = 0; let adoptions = 0;
   const { calls } = fakeBackend({
     'GET /api/roles/r1/autonomy': () => ({ body: state }),
+    'GET /api/roles/r[12]/autonomy/target-accounts': () => ({ body: { accounts: [] } }),
     'GET /api/model/configurations': () => ({ body: { configurations: [] } }),
     'GET /api/roles/r1/autonomy/drift-skills': () => ({ body: { skills: [] } }),
     'POST /api/roles/r1/autonomy/drift-artifact-preview': () => ({ body: { ...preview, previewId: (++previews === 1 ? 'b' : 'd').repeat(32) } }),
@@ -101,6 +103,7 @@ it('rejects late preview responses after role A-B-A and after an unsaved author-
   let finishPreview: ((value: { body: unknown }) => void) | undefined;
   const { calls } = fakeBackend({
     'GET /api/roles/r[12]/autonomy': () => ({ body: state }),
+    'GET /api/roles/r[12]/autonomy/target-accounts': () => ({ body: { accounts: [] } }),
     'GET /api/model/configurations': () => ({ body: { configurations: [] } }),
     'GET /api/roles/r[12]/autonomy/drift-skills': () => ({ body: { skills: [] } }),
     'POST /api/roles/r1/autonomy/drift-artifact-preview': () => new Promise((resolve) => { finishPreview = resolve; }),

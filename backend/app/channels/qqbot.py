@@ -152,16 +152,18 @@ class QQBotAdapter(ChannelAdapter):
         if attachment.url.startswith(("http://", "https://")):
             raise ChannelAdapterError("QQBot 图片必须来自已授权的本地附件")
         path = Path(attachment.url)
-        if not path.is_absolute() or not path.is_file():
+        data = attachment.frozen_data
+        if not path.is_absolute() or (data is None and not path.is_file()):
             raise ChannelAdapterError("QQBot 图片必须来自已解析的本地附件")
         limit = max(1, self.config.max_attachment_bytes)
-        try:
-            if path.stat().st_size <= 0 or path.stat().st_size > limit:
-                raise ChannelAdapterError("QQBot 图片为空或超过大小限制")
-            data = await asyncio.to_thread(path.read_bytes)
-        except OSError as error:
-            raise ChannelAdapterError("QQBot 图片附件无法读取") from error
-        if len(data) > limit:
+        if data is None:
+            try:
+                if path.stat().st_size <= 0 or path.stat().st_size > limit:
+                    raise ChannelAdapterError("QQBot 图片为空或超过大小限制")
+                data = await asyncio.to_thread(path.read_bytes)
+            except OSError as error:
+                raise ChannelAdapterError("QQBot 图片附件无法读取") from error
+        if not isinstance(data, bytes) or not data or len(data) > limit:
             raise ChannelAdapterError("QQBot 图片超过大小限制")
         mime_type = _image_mime_from_signature(data)
         if mime_type is None:

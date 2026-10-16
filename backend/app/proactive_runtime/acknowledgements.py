@@ -41,9 +41,11 @@ async def schedule_acks(app):
             source = current_source(app, db, row)
             if source is None:
                 db.execute("UPDATE autonomy_ack_outbox SET status='revoked' WHERE ack_id=?", (row["ack_id"],))
+                retention.settle(db, row['tick_id'], now=now)
                 continue
             if now >= row["decision_at"] + 600 or row["expires_at"] is not None and now >= row["expires_at"]:
                 db.execute("UPDATE autonomy_ack_outbox SET status='expired' WHERE ack_id=?", (row["ack_id"],))
+                retention.settle(db, row['tick_id'], now=now)
                 continue
             state = db.execute("SELECT * FROM autonomy_roles WHERE role_id=?", (row["role_id"],)).fetchone()
             if state["human_busy"] or state["cleanup_pending"] or app.mcp_host.autonomy_cleanup_pending(row["role_id"]):
@@ -58,6 +60,7 @@ async def schedule_acks(app):
                 continue
             if not row["permanent"] and math.floor((row["expires_at"] - now) / 3600) < 1 and source.ackContract == "legacy-ttl":
                 db.execute("UPDATE autonomy_ack_outbox SET status='expired' WHERE ack_id=?", (row["ack_id"],))
+                retention.settle(db, row['tick_id'], now=now)
                 continue
             day = int(now // 86400)
             db.execute("INSERT OR IGNORE INTO autonomy_budgets(role_id,day) VALUES(?,?)", (row["role_id"], day))
@@ -145,6 +148,10 @@ async def execute_ack(app, origin, execution):
                 # permission while the response was being committed.
                 db.execute("UPDATE autonomy_ack_outbox SET status='acknowledged',retry_at=NULL,error='' WHERE ack_id=?", (row["ack_id"],))
                 db.execute("UPDATE autonomy_runs SET status='acknowledged' WHERE tick_id=?", (origin.tick_id,))
+                # A late channel receipt may have released the original
+                # Runtime long before its source ACK. Settle that now-resolved
+                # business duty as well; no ACK identity or expiry is changed.
+                retention.settle(db, row['tick_id'], now=app._now(db))
         return TaskOutcome("succeeded", output_tail="source acknowledgement receipt committed")
     finally:
         await bundle.close()

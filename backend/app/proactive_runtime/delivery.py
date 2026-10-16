@@ -47,49 +47,18 @@ def _url_key(value):
 
 
 def _keys(turn, draft):
-    values = [[turn.origin.role_id, "desktop", _normalized(draft["message"])]]
-    urls = sorted({_url_key(turn.items[identifier]["url"]) for identifier in draft["evidence"] if turn.items[identifier]["url"]})
+    values = [[turn.origin.role_id, namespace, _normalized(draft['message'])] for namespace in ('desktop', 'autonomy')]
+    items = getattr(turn, 'items', {})
+    urls = sorted({_url_key(items[identifier]['url']) for identifier in draft.get('evidence', []) if items[identifier]['url']})
     if urls:
-        values.append([turn.origin.role_id, "desktop", urls])
+        values.extend([[turn.origin.role_id, namespace, urls] for namespace in ('desktop', 'autonomy')])
     return [hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest() for value in values]
 
 
 def plan_dispositions(turn, db, outcome, draft=None):
     """Freeze expiry once; source ACK delivery is a different managed operation."""
-    state = db.execute("SELECT interesting,discarded FROM autonomy_turns WHERE tick_id=?", (turn.origin.tick_id,)).fetchone()
-    discarded, interesting = set(json.loads(state[1])), set(json.loads(state[0]))
-    evidence = set(draft["evidence"]) if draft else set()
-    choices = {identifier: (720, "discarded") for identifier in discarded}
-    if outcome in {"sent", "duplicate"}:
-        choices.update({identifier: (24, "interesting") for identifier in interesting - evidence - discarded})
-        choices.update({identifier: (168 if outcome == "sent" else 24, "referenced") for identifier in evidence})
-        if outcome == "duplicate":
-            choices.update({item["id"]: (0, "alert_handled") for item in turn.snapshot["alerts"]})
-    now = turn.app._now(db)
-    grants = {source.sourceId: source for source in turn.config.sourceGrants}
-    for identifier, (hours, reason) in choices.items():
-        item = turn.items[identifier]
-        if item["kind"] == "context":
-            continue
-        grant = grants[item["sourceId"]]
-        permanent = item["kind"] == "alert"
-        expires = None if permanent else now + hours * 3600
-        event_key = turn.app._event_key(grant, item["remoteId"])
-        ack_id = hashlib.sha256(json.dumps([turn.origin.role_id, turn.origin.tick_id, event_key, reason]).encode()).hexdigest()
-        if db.execute("SELECT 1 FROM autonomy_ack_outbox WHERE ack_id=?", (ack_id,)).fetchone():
-            # Recovery never recalculates or extends the first decision expiry.
-            continue
-        db.execute("""INSERT INTO autonomy_event_claims VALUES(?,?,?,?,?)
-            ON CONFLICT(role_id,event_key) DO UPDATE SET tick_id=excluded.tick_id,
-            expires_at=excluded.expires_at,status=excluded.status
-            WHERE autonomy_event_claims.tick_id=excluded.tick_id OR autonomy_event_claims.expires_at<=?""",
-            (turn.origin.role_id, event_key, turn.origin.tick_id, expires, reason, now))
-        db.execute("""INSERT OR IGNORE INTO autonomy_ack_outbox
-            (ack_id,role_id,tick_id,source_id,source_revision,event_id,decision_at,expires_at,
-             permanent,reason,source_grant,status,retry_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (ack_id, turn.origin.role_id, turn.origin.tick_id, grant.sourceId, grant.revision,
-             item["remoteId"], now, expires, int(permanent), reason,
-             json.dumps(grant.model_dump(mode="json")), "pending" if grant.ackTool else "unsupported", now))
+    from .dispositions import freeze_inputs, plan_from_inputs
+    return plan_from_inputs(turn.app, db, freeze_inputs(turn, db, '', draft), outcome)
 
 
 def _sources_current(turn):
@@ -99,25 +68,27 @@ def _sources_current(turn):
 async def dispatch_reply(app, turn, adapter, configuration, messages, cancelled):
     from .turn import _request
     origin = turn.origin
+    from .channel_delivery import unresolved, retain_inputs
+    target = app.targets.selected(turn, json.loads(turn.state()['final_draft']))
     with turn.transaction() as db:
         existing = db.execute("SELECT * FROM autonomy_deliveries WHERE tick_id=?", (origin.tick_id,)).fetchone()
         state = db.execute("SELECT final_draft FROM autonomy_turns WHERE tick_id=?", (origin.tick_id,)).fetchone()
         draft = json.loads(state[0])
         if not _sources_current(turn):
             raise PermissionError("autonomous source grant changed before delivery")
-        if turn.config.defaultTargetRef != "desktop" or "desktop" not in turn.config.allowedTargetRefs:
-            raise PermissionError("desktop decision has no frozen desktop target")
         if existing is not None:
             if existing["status"] == "sent":
                 return TaskOutcome("succeeded", output_tail="original desktop receipt retained")
             if existing["dispatched"]:
                 return TaskOutcome("failed", output_tail="original delivery requires reconciliation")
-        if db.execute("SELECT 1 FROM autonomy_deliveries WHERE role_id=? AND status IN ('dispatching','pending','uncertain')", (origin.role_id,)).fetchone():
+        if unresolved(db, origin.role_id):
             db.execute("UPDATE autonomy_runs SET status='blocked_uncertain' WHERE tick_id=?", (origin.tick_id,))
             return TaskOutcome("failed", output_tail="unresolved autonomous delivery blocks sending")
         now = app._now(db)
         keys = _keys(turn, draft)
-        duplicate = any(db.execute("SELECT 1 FROM autonomy_delivery_keys WHERE role_id=? AND key=? AND expires_at>?",
+        duplicate = any(db.execute("""SELECT 1 FROM autonomy_delivery_keys k WHERE role_id=? AND key=? AND
+            (expires_at>? OR EXISTS(SELECT 1 FROM autonomy_deliveries d WHERE d.intent_id=k.intent_id
+            AND d.status IN ('dispatching','pending','uncertain')))""",
                                   (origin.role_id, key, now)).fetchone() for key in keys)
         recent = [json.loads(row[0])["message"] for row in db.execute(
             "SELECT draft FROM autonomy_deliveries WHERE role_id=? AND status='sent' ORDER BY created_at DESC LIMIT 5", (origin.role_id,))]
@@ -161,16 +132,30 @@ async def dispatch_reply(app, turn, adapter, configuration, messages, cancelled)
             (intent_id,tick_id,role_id,target,draft,status,created_at) VALUES(?,?,?,?,?,'prepared',?)""",
             (intent_id, origin.tick_id, origin.role_id, json.dumps({"ref": "desktop", "channel": "desktop"}),
              json.dumps(draft, ensure_ascii=False), now))
+        if target['channel'] != 'desktop':
+            db.execute('UPDATE autonomy_deliveries SET target=? WHERE intent_id=?', (json.dumps(target, ensure_ascii=False), intent_id))
+            retain_inputs(turn, db, intent_id, draft)
+            for identifier in draft['evidence']:
+                item = turn.items[identifier]
+                source = next(source for source in turn.config.sourceGrants if source.sourceId == item['sourceId'])
+                db.execute('INSERT INTO autonomy_event_claims VALUES(?,?,?,NULL,?) ON CONFLICT(role_id,event_key) DO UPDATE SET tick_id=excluded.tick_id,expires_at=NULL,status=excluded.status',
+                    (origin.role_id, app._event_key(source, item['remoteId']), origin.tick_id, 'dispatching'))
         for key in keys:
             db.execute("INSERT INTO autonomy_delivery_keys VALUES(?,?,?,?) ON CONFLICT(role_id,key) DO UPDATE SET intent_id=excluded.intent_id,expires_at=excluded.expires_at",
                        (origin.role_id, key, intent_id, now + 86400))
         db.execute("UPDATE autonomy_deliveries SET status='dispatching',dispatched=1 WHERE intent_id=?", (intent_id,))
-        message = app.sessions.append_autonomy_message_once(origin.role_id, origin.tick_id, intent_id,
-            draft["message"], connection=db,
-            authorized=lambda: app._authorized_in(db, origin) and _sources_current(turn),
-            mood=draft["mood"], thought=draft["thought"])
-        receipt = {"messageId": message.id, "status": "sent", "targetRef": "desktop"}
-        db.execute("UPDATE autonomy_deliveries SET status='sent',message_id=?,receipt=? WHERE intent_id=?", (message.id, json.dumps(receipt), intent_id))
-        plan_dispositions(turn, db, "sent", draft)
-        db.execute("UPDATE autonomy_runs SET status='sent' WHERE tick_id=?", (origin.tick_id,))
-    return TaskOutcome("succeeded", output_tail="autonomous desktop message committed")
+        if target['channel'] == 'desktop':
+            message = app.sessions.append_autonomy_message_once(origin.role_id, origin.tick_id, intent_id,
+                draft['message'], connection=db,
+                authorized=lambda: app._authorized_in(db, origin) and _sources_current(turn),
+                mood=draft['mood'], thought=draft['thought'])
+            receipt = {'messageId': message.id, 'status': 'sent', 'targetRef': 'desktop'}
+            db.execute("UPDATE autonomy_deliveries SET status='sent',message_id=?,receipt=? WHERE intent_id=?", (message.id, json.dumps(receipt), intent_id))
+            plan_dispositions(turn, db, 'sent', draft)
+            db.execute("UPDATE autonomy_runs SET status='sent' WHERE tick_id=?", (origin.tick_id,))
+    if target['channel'] == 'desktop':
+        return TaskOutcome('succeeded', output_tail='autonomous desktop message committed')
+    receipt = await app.channel_delivery.deliver(turn, intent_id, draft)
+    with app._transaction() as db:
+        db.execute('UPDATE autonomy_runs SET status=? WHERE tick_id=?', (receipt['status'], origin.tick_id))
+    return TaskOutcome('succeeded' if receipt['status'] == 'sent' else 'failed', output_tail='original autonomous channel receipt: ' + receipt['status'])

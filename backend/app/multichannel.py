@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol, TYPE_CHECKING
 from pathlib import Path
+from contextlib import nullcontext
 
 import httpx
 from fastapi import HTTPException
@@ -1362,6 +1363,82 @@ class MultichannelStore:
             row = db.execute('SELECT status,attempt_id FROM channel_delivery_attempts WHERE role_id=? AND source_kind=? AND source_tool_call_id=? ORDER BY created_at LIMIT 1',
                              (role_id, source_kind, source_tool_call_id)).fetchone()
         return (str(row[0]), str(row[1])) if row else None
+
+    def delivery_receipt_for_source(self, role_id: str, *, source_kind: str, source_tool_call_id: str,
+                                    connection: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+        """Look up the original complete attempt, never a bounded recent list."""
+        with nullcontext(connection) if connection is not None else self._connect() as db:
+            rows = db.execute('''SELECT * FROM channel_delivery_attempts
+                WHERE role_id=? AND source_kind=? AND source_tool_call_id=? ORDER BY created_at,attempt_id LIMIT 2''',
+                (role_id, source_kind, source_tool_call_id)).fetchall()
+            if len(rows) > 1:
+                raise ValueError('original autonomous source marker has conflicting attempts')
+            return dict(rows[0]) if rows else None
+
+    def project_autonomy_delivery_once(self, role_id: str, tick_id: str, intent_id: str, mode: str,
+                                      target: dict[str, Any], draft: dict[str, Any], *,
+                                      connection: sqlite3.Connection) -> tuple[dict[str, Any], dict[str, object]]:
+        """Project an already-sent original attempt in its outbox transaction.
+
+        This does not authorize or dispatch a new send. Account revocation does
+        not erase a genuine receipt from the retained original channel thread.
+        """
+        db = connection
+        database = db.execute('PRAGMA database_list').fetchone()
+        if (not db.in_transaction or database is None
+                or Path(database[2]).resolve() != Path(self.database_path).resolve()
+                or Path(database[2]).resolve() != Path(self.sessions.database_path).resolve()):
+            raise ValueError('autonomous projection requires the original shared caller transaction')
+        if mode not in {'active_decision', 'drift'}:
+            raise ValueError('invalid autonomous delivery mode')
+        attempt = self.delivery_receipt_for_source(role_id, source_kind='autonomy', source_tool_call_id=intent_id, connection=db)
+        if (attempt is None or attempt['status'] != 'sent' or attempt['source_run_id'] != tick_id
+                or attempt['account_id'] != target['accountId'] or attempt['target_chat_id'] != target['chatId']
+                or attempt['content'] != draft['message']):
+            raise ValueError('autonomous projection has no matching original sent receipt')
+        thread_row = db.execute('SELECT * FROM channel_threads WHERE thread_id=? AND role_id=?', (attempt['thread_id'], role_id)).fetchone()
+        if thread_row is None:
+            raise PermissionError('original autonomous channel thread is unavailable')
+        thread = self._thread(thread_row)
+        if (thread.account_id, thread.channel, thread.chat_id, thread.chat_type) != (
+                target['accountId'], target['channel'], target['chatId'], 'private'):
+            raise ValueError('autonomous projection conflicts with its original thread')
+        message_id = f'{thread.session_key}:autonomy:{intent_id}'
+        event_id = f'autonomy:{intent_id}'
+        metadata = {'internalEvent': mode, 'autonomyTickId': tick_id, 'autonomyIntentId': intent_id,
+            'channel': thread.channel, 'accountId': thread.account_id, 'threadId': thread.thread_id,
+            'direction': 'outbound', 'chatId': thread.chat_id, 'groupName': '',
+            'targetId': target['targetId'], 'targetKind': 'private', 'deliveryStatus': 'sent',
+            'deliveryAttemptId': attempt['attempt_id'], 'platformMessageId': attempt['platform_message_id'],
+            'mood': draft['mood'], 'thought': draft['thought'], 'attachments': draft.get('attachments', []),
+            'viaAccount': target.get('viaAccount', {'platform': target['channel'], 'accountId': target['accountId'],
+                'platformAccountId': target['accountId'], 'displayName': target.get('accountDisplayName', '')})}
+        stored = db.execute('SELECT sequence,content,status,message_type,metadata_json,created_at FROM messages WHERE message_id=? AND session_key=?',
+            (message_id, thread.session_key)).fetchone()
+        if stored is not None:
+            if (stored['content'], stored['status'], stored['message_type'], _loads(stored['metadata_json'])) != (
+                    draft['message'], 'completed', 'internal_completion', metadata):
+                raise ValueError('original autonomous message identity conflicts')
+            sequence, now = stored['sequence'], stored['created_at']
+        else:
+            now = _now()
+            sequence = int(db.execute('SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE session_key=?', (thread.session_key,)).fetchone()[0])
+            # Both the event identity and platform ID keep their original
+            # uniqueness. A conflicting existing row is not a success receipt.
+            db.execute('INSERT INTO channel_events VALUES(?,?,?,?,?,?)',
+                (event_id, thread.thread_id, 'outbound', attempt['platform_message_id'], now, _json(metadata)))
+            db.execute('''INSERT INTO messages(message_id,session_key,sequence,role,content,status,created_at,message_type,metadata_json)
+                VALUES(?,?,?,'assistant',?,'completed',?,'internal_completion',?)''',
+                (message_id, thread.session_key, sequence, draft['message'], now, _json(metadata)))
+            db.execute('UPDATE channel_threads SET last_activity=? WHERE thread_id=?', (now, thread.thread_id))
+        message = Message(id=message_id, sessionKey=thread.session_key, sequence=sequence, role='assistant',
+            content=draft['message'], status='completed', createdAt=datetime.fromisoformat(now),
+            messageType='internal_completion', metadata=metadata)
+        receipt = {'status': 'sent', 'intentId': intent_id, 'targetRef': target['ref'], 'messageId': message_id,
+            'attemptId': attempt['attempt_id'], 'platformMessageId': attempt['platform_message_id']}
+        event: dict[str, object] = {'type': 'message', 'roleId': role_id, 'thread': thread.public_dict(),
+            'message': public_message(message).model_dump(mode='json')}
+        return receipt, event
 
     async def subscribe(self, role_id: str):
         queue: asyncio.Queue[dict[str, object]] = asyncio.Queue(maxsize=128)

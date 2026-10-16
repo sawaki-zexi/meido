@@ -32,7 +32,7 @@ class ProactiveApplication:
     def __init__(self, sessions: SessionStore, tasks: TaskRuntime, *,
                  role_getter: Callable, model_getter: Callable, clock: Callable = time.time,
                  mcp_host=None, adapter_factory=None, fetch_body=None, recall_memory=None, web_tools=None,
-                 context_reader=None, workspace_getter=None):
+                 context_reader=None, workspace_getter=None, channel_host=None):
         self.sessions, self.tasks = sessions, tasks
         self.role_getter, self.model_getter, self.clock = role_getter, model_getter, clock
         self.mcp_host, self.adapter_factory, self.fetch_body = mcp_host, adapter_factory, fetch_body
@@ -88,6 +88,8 @@ class ProactiveApplication:
                 role_id TEXT NOT NULL,event_key TEXT NOT NULL,tick_id TEXT NOT NULL,
                 expires_at REAL,status TEXT NOT NULL,PRIMARY KEY(role_id,event_key))""")
             ensure_delivery_schema(db)
+            from .channel_delivery import ensure_schema as ensure_channel_schema
+            ensure_channel_schema(db)
             db.execute("""CREATE TABLE IF NOT EXISTS autonomy_budgets (
                 role_id TEXT NOT NULL,day INTEGER NOT NULL,decisions INTEGER NOT NULL DEFAULT 0,
                 drifts INTEGER NOT NULL DEFAULT 0,polls INTEGER NOT NULL DEFAULT 0,
@@ -114,6 +116,10 @@ class ProactiveApplication:
         self.drift_files = DriftFiles(self, self.drift_skills.workspace)
         from .drift_delivery import DesktopDriftDelivery
         self.drift_delivery = DesktopDriftDelivery(self)
+        from .targets import TargetGrants
+        self.targets = TargetGrants(self, channel_host)
+        from .channel_delivery import ChannelAutonomyDelivery
+        self.channel_delivery = ChannelAutonomyDelivery(self)
 
     @contextmanager
     def _transaction(self):
@@ -132,7 +138,7 @@ class ProactiveApplication:
         if self.role_getter(role_id) is None:
             raise KeyError("role is unavailable")
 
-    def configure(self, role_id: str, config: AutonomyConfig, *, expected_revision: int):
+    def configure(self, role_id: str, config: AutonomyConfig, *, expected_revision: int, target_selections=None):
         self._require_role(role_id)
         if self._closed:
             raise RuntimeError("autonomy application is closed")
@@ -156,6 +162,7 @@ class ProactiveApplication:
             revision = old["revision"] if old else 0
             if expected_revision != revision:
                 raise ValueError("autonomy configuration revision changed")
+            self.targets.save(db, role_id, config, expected_revision, target_selections)
             now = self._now(db)
             sources = []
             for source in config.sourceGrants:
@@ -195,7 +202,10 @@ class ProactiveApplication:
         source_verifications = self.source_verifications.list(role_id)
         with self._transaction() as db:
             row = db.execute("SELECT * FROM autonomy_roles WHERE role_id=?", (role_id,)).fetchone()
-            return {"config": json.loads(row["config"]) if row else AutonomyConfig().model_dump(mode="json"),
+            config = AutonomyConfig.model_validate_json(row['config']) if row else AutonomyConfig()
+            return {"config": config.model_dump(mode='json'),
+                    'targetGrants': self.targets.public(db, role_id, config),
+                    'deliveries': self._public_deliveries(db, role_id),
                     "nextDecisionAt": row["next_at"] if row else None,
                     "cleanupPending": bool(row["cleanup_pending"]) if row else False,
                     "humanBusy": bool(row["human_busy"]) if row else False,
@@ -210,16 +220,22 @@ class ProactiveApplication:
                         "SELECT * FROM autonomy_runs WHERE role_id=? ORDER BY started_at DESC,tick_id DESC LIMIT 100", (role_id,))]}
 
     @staticmethod
+    def _public_deliveries(db, role_id):
+        from .channel_delivery import public_deliveries
+        return public_deliveries(db, role_id)
+
+    @staticmethod
     def _public_run(row, db):
         snapshot = json.loads(row["snapshot"]) if row["snapshot"] else {}
         poll = json.loads(row["payload"] or "{}") if row["kind"] == "autonomy_poll" else {}
-        delivery = db.execute("SELECT status,message_id,intent_id FROM autonomy_deliveries WHERE tick_id=?", (row["tick_id"],)).fetchone()
+        from .channel_delivery import public_deliveries
+        deliveries = public_deliveries(db, row['role_id'], tick_id=row['tick_id'])
         return {"id": row["tick_id"], "kind": row["kind"], "mode": row["mode"],
                 "status": row["status"], "startedAt": row["started_at"],
                 "timeoutSeconds": OPERATION_TIMEOUTS[row["kind"]], "origin": AutonomyOrigin.restore(row["origin"]).public(),
                 "taskId": row["task_id"], "error": row["error"],
                 "runtimeAcknowledged": bool(row["runtime_acknowledged"]), "sources": snapshot.get("sources", poll.get("sources", [])),
-                "delivery": {"status": delivery[0], "messageId": delivery[1], "intentId": delivery[2]} if delivery else None}
+                "delivery": deliveries[0] if deliveries else None}
 
     def _authorized(self, origin):
         try:
@@ -239,6 +255,7 @@ class ProactiveApplication:
             and self.source_permissions_current(origin.role_id, AutonomyConfig.model_validate_json(run["frozen_config"]).sourceGrants)
             and ('drift' not in origin.allowed_modes or self.drift_permissions_current(origin.role_id,
                 AutonomyConfig.model_validate_json(run['frozen_config']).driftMcpGrants))
+            and (run['kind'] != 'autonomy_tick' or self.targets.current(db, origin))
             and (run["kind"] != "autonomy_tick" or bindings.current(self, origin.role_id, json.loads(run["bindings"]))))
 
     def source_permissions_current(self, role_id, sources):
@@ -471,6 +488,11 @@ class ProactiveApplication:
                 origin = AutonomyOrigin(row["role_id"], uuid.uuid4().hex, row["revision"], row["generation"], modes)
                 try:
                     retention.reserve(db, origin.role_id, origin.tick_id, "autonomy_tick", now)
+                    self.targets.freeze(db, origin, config)
+                except PermissionError:
+                    db.execute('DELETE FROM autonomy_storage_reservations WHERE operation_id=?', (origin.tick_id,))
+                    db.execute("UPDATE autonomy_roles SET admission_error='原自主目标许可已变化，请重新选择' WHERE role_id=?", (origin.role_id,))
+                    continue
                 except retention.StorageLimitError:
                     db.execute("UPDATE autonomy_roles SET admission_error='自主存储额度已满；待处理记录仍保留' WHERE role_id=?", (origin.role_id,))
                     continue
@@ -746,6 +768,7 @@ class ProactiveApplication:
         await self.source_verifications.recover()
         from .drift_delivery import reconcile_receipts
         await reconcile_receipts(self)
+        await self.channel_delivery.recover()
         for role_id, run_id in tuple(self._human_finish_pending):
             self.finish_human_run(role_id, run_id)
         with self._transaction() as db:

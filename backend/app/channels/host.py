@@ -9,16 +9,19 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import uuid
+import hashlib
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from functools import wraps
+from typing import TYPE_CHECKING, Any, Awaitable, Concatenate, Coroutine, ParamSpec, TypeVar
 
-from .base import ChannelAdapter, ChannelAdapterError, UnsupportedTargetError, is_delivery_uncertain
+from .base import ChannelAdapter, ChannelAdapterError, UnsupportedTargetError, is_delivery_uncertain, is_blocked_identity
 from .models import Attachment, ChatType, DeliveryResult, DeliveryStatus, InboundEvent, OutboundMessage, Target, TargetKind, target_from_chat
 from .intake import ChannelIntake
 from . import directory
 from .directory import DirectoryError, DirectoryPages, DirectoryQuery, MAX_RECORDS, bound_records, observed_now, supported_kinds
+from .runtime_owner import ChannelRuntimeOwner
 
 
 CHANNEL_INTAKE_RETRY_NOTICE = "渠道配置正在切换，这条消息尚未处理，请稍后重新发送。"
@@ -30,6 +33,24 @@ if TYPE_CHECKING:
 _active_event_accounts: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
     "channel_active_event_accounts", default=frozenset()
 )
+
+_SendArgs = ParamSpec('_SendArgs')
+_SendResult = TypeVar('_SendResult')
+
+
+def _runtime_send(method: Callable[Concatenate[ChannelHost, _SendArgs], Awaitable[_SendResult]]) -> Callable[Concatenate[ChannelHost, _SendArgs], Coroutine[Any, Any, _SendResult]]:
+    @wraps(method)
+    async def owned(host: ChannelHost, *args: _SendArgs.args, **kwargs: _SendArgs.kwargs) -> _SendResult:
+        # Freeze the only mutable byte mapping before crossing an await/loop.
+        # The original body still validates its actor, IDs, bytes and metadata
+        # on the actual channel loop, including authorization after its lease.
+        frozen = kwargs.get('frozen_attachment_bytes')
+        if frozen is not None:
+            if not isinstance(frozen, Mapping) or not 1 <= len(frozen) <= 4:
+                raise UnsupportedTargetError('冻结附件必须引用原始附件 ID')
+            kwargs['frozen_attachment_bytes'] = dict(frozen)
+        return await host._runtime_owner.run(lambda: method(host, *args, **kwargs))
+    return owned
 
 
 def target_payload(target: Target) -> dict[str, object]:
@@ -61,9 +82,21 @@ class ChannelHost:
         self._inflight_sends: dict[str, int] = {}
         self._inflight_events: dict[str, int] = {}
         self._account_idle: dict[str, asyncio.Event] = {}
+        self._runtime_owner = ChannelRuntimeOwner()
         self.intake = ChannelIntake()
         self._directory_pages = DirectoryPages()
         self._directory_requests: set[tuple[str, str]] = set()
+
+    def bind_runtime_loop(self) -> None:
+        """Bind before background admission; never transfer live resources."""
+        previous, current = self._runtime_owner.loop, asyncio.get_running_loop()
+        if previous is not current and (self._inflight_sends or self._inflight_events
+                or previous is not None and self._adapters):
+            raise RuntimeError('the original channel host still owns resources')
+        changed = self._runtime_owner.bind()
+        if changed and previous is not None:
+            self._send_state_lock = asyncio.Lock()
+            self._account_idle.clear()
 
     def register(self, adapter: ChannelAdapter) -> None:
         account = self.store.get_account(adapter.account_id)
@@ -202,6 +235,35 @@ class ChannelHost:
         if adapter is not None:
             return adapter.connection_snapshot()
         return {"connection": "unknown", "online": None, "observedAt": observed_now(), "reason": "no_connection_evidence"}
+
+    def freeze_owner_target(self, role_id: str, account_id: str, target_id: str) -> dict[str, Any]:
+        """Capture an observed owner destination without connecting or reading secrets.
+
+        Adapter generations stay private to this host. Callers persist this opaque
+        generation and ask this interface again; they never inspect its registry.
+        """
+        account = self.store.get_account(account_id)
+        adapter = self._adapters.get(account_id)
+        if (account is None or account.role_id != role_id or not self.store.account_effectively_enabled(account)
+                or not account.allow_private or account_id in self._paused_accounts or adapter is None
+                or not adapter.capabilities.private or TargetKind.PRIVATE not in adapter.capabilities.targets):
+            raise PermissionError('owner target account is unavailable')
+        target = next((item for item in self.store.owner_targets(role_id, account_id) if item.id == target_id), None)
+        if (target is None or target.kind is not TargetKind.PRIVATE
+                or is_blocked_identity(account.blocked_senders, sender_ids=(target.chat_id,), aliases=(target.display_name,))):
+            raise PermissionError('target is not a currently paired owner private chat')
+        binding = self.store.owner_target_binding(role_id, account_id, target.chat_id)
+        if binding is None:
+            raise PermissionError('owner target binding is unavailable')
+        revision = self.store.directory_revision(account_id, account.channel)
+        configuration = repr((self.store.channel_config(account_id), adapter.configuration_key()))
+        return {'roleId': role_id, 'accountId': account_id, 'accountCreatedAt': account.created_at,
+            'channel': account.channel, 'targetId': target.id, 'chatId': target.chat_id, 'kind': 'private',
+            'directoryRevision': {'account': revision[0], 'platform': revision[1]}, 'ownerBinding': binding,
+            'configurationHash': hashlib.sha256(configuration.encode()).hexdigest(),
+            'adapterGeneration': self._adapter_generations[id(adapter)],
+            'media': adapter.capabilities.media, 'displayName': target.display_name,
+            'accountDisplayName': account.display_name, 'viaAccount': account.source_snapshot()}
 
     async def query_directory(self, role_id: str, account_id: str, query: DirectoryQuery, *,
                               scope: str, authorized: Callable[[], bool] | None = None) -> dict:
@@ -354,6 +416,7 @@ class ChannelHost:
                 adapter.remember_target(target)
         return [target_payload(target) for target in targets]
 
+    @_runtime_send
     async def account_send(
         self,
         role_id: str,
@@ -364,6 +427,7 @@ class ChannelHost:
         reply_to_message_id: str | None = None,
         attachments: tuple[Attachment, ...] = (),
         attachment_ids: tuple[str, ...] = (),
+        frozen_attachment_bytes: Mapping[str, bytes] | None = None,
         stream_updates: AsyncIterator[str] | None = None,
         mention_ids: tuple[str, ...] = (),
         message_thread_id: int | None = None,
@@ -380,7 +444,23 @@ class ChannelHost:
 
         ``actor='external'`` can only contact the paired owner through the
         originating account. Guest turns cannot choose third-party targets.
+        Frozen bytes require the original role-owned IDs and a continuing push
+        authorization; they never replace attachment ownership or metadata.
         """
+
+        frozen_payloads: dict[str, bytes] | None = None
+        if frozen_attachment_bytes is not None:
+            if not isinstance(frozen_attachment_bytes, Mapping) or not 1 <= len(frozen_attachment_bytes) <= 4:
+                raise UnsupportedTargetError("冻结附件必须引用原始附件 ID")
+            frozen_payloads = dict(frozen_attachment_bytes)
+            if (actor != "push" or authorize_source is None or attachments
+                    or not 1 <= len(attachment_ids) <= 4
+                    or len(set(attachment_ids)) != len(attachment_ids)
+                    or set(frozen_payloads) != set(attachment_ids)
+                    or any(not isinstance(data, bytes) or not data or len(data) > 10 * 1024 * 1024
+                           for data in frozen_payloads.values())
+                    or sum(len(data) for data in frozen_payloads.values()) > 40 * 1024 * 1024):
+                raise UnsupportedTargetError("冻结附件必须匹配原始许可，且每份不超过 10 MB")
 
         account = self.store.get_account(account_id)
         if account is None or account.role_id != role_id:
@@ -465,6 +545,9 @@ class ChannelHost:
                 item = self.attachment_resolver(role_id, attachment_id)
                 if item is None or not isinstance(item.get("path"), str):
                     raise UnsupportedTargetError("附件不存在或不属于当前角色")
+                frozen_data = frozen_payloads[attachment_id] if frozen_payloads is not None else None
+                if frozen_data is not None and (type(item.get("size")) is not int or item["size"] != len(frozen_data)):
+                    raise UnsupportedTargetError("冻结附件与原始附件元数据不匹配")
                 attachment_metadata.append(item)
                 resolved.append(Attachment(
                     kind=str(item.get("kind") or "file"),
@@ -472,6 +555,7 @@ class ChannelHost:
                     file_name=str(item.get("name") or "attachment"),
                     mime_type=str(item.get("mediaType") or "application/octet-stream"),
                     size=int(item["size"]) if isinstance(item.get("size"), int) else None,
+                    frozen_data=frozen_data,
                 ))
             attachments = (*attachments, *resolved)
 

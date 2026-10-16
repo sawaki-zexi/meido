@@ -42,6 +42,8 @@ class Attachment:
     file_name: str | None = None
     mime_type: str | None = None
     size: int | None = None
+    # Owned outgoing bytes stay in memory; message metadata retains the ID.
+    frozen_data: bytes | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

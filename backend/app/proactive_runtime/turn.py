@@ -129,13 +129,12 @@ class DecisionTurn:
             raise ValueError("draft message must be nonempty")
         evidence = arguments.get("evidence", [])
         self._known(evidence)
-        if any(arguments.get(key) for key in ("account_id", "target_id", "account_channel", "target_kind")):
-            raise PermissionError("retarget is outside the frozen desktop target")
+        target = self.app.targets.selected(self, arguments)
         with self.transaction() as db:
             row = db.execute("SELECT draft_used,finish FROM autonomy_turns WHERE tick_id=?", (self.origin.tick_id,)).fetchone()
             if row[0] or row[1] is not None:
                 raise ValueError("this tick already used its draft or finish")
-            payload = {**arguments, "message": content, "evidence": evidence}
+            payload = {**arguments, "message": content, "evidence": evidence, 'targetRef': target['ref']}
             db.execute("UPDATE autonomy_turns SET draft_used=1,draft=? WHERE tick_id=?", (_text(payload), self.origin.tick_id))
         return {"status": "drafted"}
 

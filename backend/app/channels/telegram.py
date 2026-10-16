@@ -81,10 +81,14 @@ class TelegramAccountAdapter(ChannelAdapter):
             media = []
             for attachment in message.attachments:
                 path = Path(attachment.url or "")
-                if not path.is_file() or path.stat().st_size > 10 * 1024 * 1024:
-                    raise ChannelAdapterError("Telegram 出站附件不存在或超过大小限制")
-                data = path.read_bytes()
-                if len(data) > 10 * 1024 * 1024:
+                data = attachment.frozen_data
+                if data is None:
+                    if not path.is_file() or path.stat().st_size > 10 * 1024 * 1024:
+                        raise ChannelAdapterError("Telegram 出站附件不存在或超过大小限制")
+                    data = path.read_bytes()
+                elif not path.is_absolute():
+                    raise ChannelAdapterError("Telegram 冻结附件必须保留原本地附件路径")
+                if not isinstance(data, bytes) or len(data) > 10 * 1024 * 1024:
                     raise ChannelAdapterError("Telegram 出站附件超过大小限制")
                 sender = getattr(self._transport, "send_photo", None) if attachment.kind == "image" else None
                 if not callable(sender):

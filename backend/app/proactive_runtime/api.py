@@ -4,16 +4,21 @@ import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import AutonomyConfig
 from .source_authoring import preview_artifact
+from .targets import TargetDirectoryRequest, TargetSelection, TargetConflict
+from ..channels.directory import DirectoryError
+from .channel_delivery import ResolutionRequest, reconcile_owner
 
 
 class ConfigurationUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     expectedRevision: int = Field(ge=0)
     config: AutonomyConfig
+    targetSelections: list[TargetSelection] | None = Field(default=None, max_length=4)
 
 
 class SourceVerificationRequest(BaseModel):
@@ -54,6 +59,54 @@ class DriftAdoptionRequest(DriftPreviewRequest):
 
 def autonomy_router(application, *, workspace_getter=None):
     router = APIRouter(prefix="/api/roles/{role_id}/autonomy")
+
+    @router.get('/target-accounts')
+    async def target_accounts(role_id: str):
+        try:
+            return application().targets.accounts(role_id)
+        except KeyError:
+            raise HTTPException(404, '角色不存在') from None
+
+    @router.post('/target-directory')
+    async def target_directory(role_id: str, request: Request):
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 4096:
+                return JSONResponse(status_code=413, content={'detail': '目标目录请求过大', 'complete': False, 'error': 'request_too_large'})
+        try:
+            data = TargetDirectoryRequest.model_validate(json.loads(body))
+            return await application().targets.directory(role_id, data)
+        except KeyError:
+            return JSONResponse(status_code=404, content={'detail': '角色或账号不存在', 'complete': False, 'error': 'not_found'})
+        except (PermissionError, TargetConflict):
+            return JSONResponse(status_code=409, content={'detail': '原角色、账号或目标许可已变化，请重新读取', 'complete': False, 'error': 'permission_changed'})
+        except DirectoryError as error:
+            return JSONResponse(status_code=422, content={'detail': '目标目录查询未完成：' + error.code, 'complete': False, 'error': error.code})
+        except (ValueError, TypeError):
+            return JSONResponse(status_code=422, content={'detail': '目标目录参数无效', 'complete': False, 'error': 'invalid_query'})
+        except (sqlite3.Error, RuntimeError, TimeoutError, OSError):
+            return JSONResponse(status_code=503, content={'detail': '目标目录暂不可读，请核对后重试', 'complete': False, 'error': 'directory_unavailable'})
+
+    @router.post('/deliveries/{intent_id}/reconciliation')
+    async def reconciliation(role_id: str, intent_id: str, request: Request):
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 4096:
+                raise HTTPException(413, '处置记录请求过大')
+        try:
+            data = ResolutionRequest.model_validate(json.loads(body))
+        except (ValueError, TypeError):
+            raise HTTPException(422, '处置记录须有原请求身份、版本、明确决定和非空说明') from None
+        try:
+            return reconcile_owner(application(), role_id, intent_id, data)
+        except KeyError:
+            raise HTTPException(404, '原角色或投递不存在') from None
+        except TargetConflict:
+            raise HTTPException(409, '原投递或处置版本已变化，请刷新核对') from None
+        except (sqlite3.Error, RuntimeError):
+            raise HTTPException(503, '处置结果暂不可确认，请保留原请求身份后核对') from None
 
     async def drift_request(request, model):
         body = bytearray()
@@ -222,9 +275,13 @@ def autonomy_router(application, *, workspace_getter=None):
         except ValueError:
             raise HTTPException(422, "自主配置无效，请检查模型、来源、目标和有限操作许可") from None
         try:
-            return application().configure(role_id, data.config, expected_revision=data.expectedRevision)
+            return application().configure(role_id, data.config, expected_revision=data.expectedRevision, target_selections=data.targetSelections)
         except KeyError:
             raise HTTPException(404, "角色不存在") from None
+        except TargetConflict:
+            raise HTTPException(409, '原目标观察、账号或主人绑定已变化，请重新读取并选择') from None
+        except PermissionError:
+            raise HTTPException(422, '自主渠道存储或目标许可不可用') from None
         except ValueError as error:
             if str(error) == "autonomy configuration revision changed":
                 raise HTTPException(409, "配置已变化，请刷新后重试") from None

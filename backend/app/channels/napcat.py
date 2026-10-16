@@ -319,13 +319,15 @@ class NapCatAdapter(ChannelAdapter):
         if attachment.kind != "image" or not attachment.url:
             raise ChannelAdapterError("NapCat 主动附件仅支持图片")
         path = Path(attachment.url)
-        if not path.is_absolute() or not path.is_file() or path.stat().st_size > 10 * 1024 * 1024:
+        data = attachment.frozen_data
+        if not path.is_absolute() or (data is None and (not path.is_file() or path.stat().st_size > 10 * 1024 * 1024)):
             raise ChannelAdapterError("NapCat 图片附件必须是已授权的本地图片，且不超过 10 MB")
-        try:
-            data = await asyncio.to_thread(path.read_bytes)
-        except OSError as error:
-            raise ChannelAdapterError("NapCat 图片附件无法读取") from error
-        if not data or len(data) > 10 * 1024 * 1024:
+        if data is None:
+            try:
+                data = await asyncio.to_thread(path.read_bytes)
+            except OSError as error:
+                raise ChannelAdapterError("NapCat 图片附件无法读取") from error
+        if not isinstance(data, bytes) or not data or len(data) > 10 * 1024 * 1024:
             raise ChannelAdapterError("NapCat 图片附件为空或超过大小限制")
         if not (data.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a", b"BM")) or (data.startswith(b"RIFF") and data[8:12] == b"WEBP")):
             raise ChannelAdapterError("NapCat 图片只支持 PNG、JPEG、GIF、WebP 和 BMP")

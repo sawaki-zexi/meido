@@ -13,6 +13,8 @@ class DesktopDriftDelivery:
         self.app = app
 
     async def deliver(self, turn, intent_id, draft):
+        if draft.get('targetRef', 'desktop') != 'desktop':
+            return await self.app.channel_delivery.deliver(turn, intent_id, draft)
         try:
             return self._commit(turn, intent_id, draft)
         except sqlite3.IntegrityError:
@@ -62,23 +64,35 @@ class DesktopDriftDelivery:
 async def send_once(turn, arguments):
     if turn.skill is None or 'message_push' not in turn.skill.tools or not turn.app.tool_permitted(turn.origin, 'message_push'):
         raise PermissionError('Drift send was not granted to the active skill')
-    if turn.config.defaultTargetRef != 'desktop' or 'desktop' not in turn.config.allowedTargetRefs:
-        raise PermissionError('Drift target is outside the original desktop grant')
+    target = turn.app.targets.selected(turn, arguments)
     text = arguments['message'].strip()
     if not text:
         raise ValueError('Drift message must be nonempty')
     from .drift_attachments import selected
     attachments = selected(turn, arguments.get('attachment_ids', ()))
-    draft = {**arguments, 'message': text, 'attachments': attachments}
+    if attachments and target['channel'] != 'desktop' and not target['media']:
+        raise PermissionError('the selected channel does not support the original attachments')
+    draft = {**arguments, 'message': text, 'attachments': attachments, 'targetRef': target['ref']}
     intent_id = hashlib.sha256(('drift:' + turn.origin.role_id + ':' + turn.origin.tick_id).encode()).hexdigest()
     with turn.transaction() as db:
-        unresolved = db.execute("SELECT 1 FROM autonomy_deliveries WHERE role_id=? AND tick_id<>? AND status IN ('dispatching','uncertain','pending')",
-            (turn.origin.role_id, turn.origin.tick_id)).fetchone()
-        if unresolved or db.execute('SELECT 1 FROM autonomy_deliveries WHERE tick_id=?', (turn.origin.tick_id,)).fetchone():
+        from .channel_delivery import unresolved, retain_inputs
+        if unresolved(db, turn.origin.role_id, exclude_tick=turn.origin.tick_id) or db.execute('SELECT 1 FROM autonomy_deliveries WHERE tick_id=?', (turn.origin.tick_id,)).fetchone():
             raise PermissionError('Drift send opportunity was already used or awaits a real receipt')
+        from .delivery import _keys
+        keys = _keys(turn, draft)
+        now = turn.app._now(db)
+        if any(db.execute('''SELECT 1 FROM autonomy_delivery_keys k WHERE role_id=? AND key=? AND
+                (expires_at>? OR EXISTS(SELECT 1 FROM autonomy_deliveries d WHERE d.intent_id=k.intent_id
+                AND d.status IN ('dispatching','pending','uncertain')))''', (turn.origin.role_id, key, now)).fetchone() for key in keys):
+            raise PermissionError('original autonomous content is already occupied')
         db.execute('''INSERT INTO autonomy_deliveries(intent_id,tick_id,role_id,target,draft,status,dispatched,created_at)
             VALUES(?,?,?,?,?,'dispatching',1,?)''', (intent_id, turn.origin.tick_id, turn.origin.role_id,
-            json.dumps({'ref': 'desktop', 'channel': 'desktop'}), json.dumps(draft, ensure_ascii=False), turn.app._now(db)))
+            json.dumps(target, ensure_ascii=False), json.dumps(draft, ensure_ascii=False), now))
+        for key in keys:
+            db.execute('''INSERT INTO autonomy_delivery_keys VALUES(?,?,?,?) ON CONFLICT(role_id,key)
+                DO UPDATE SET intent_id=excluded.intent_id,expires_at=excluded.expires_at''', (turn.origin.role_id, key, intent_id, now + 86400))
+        if target['channel'] != 'desktop':
+            retain_inputs(turn, db, intent_id, draft)
     # Cancellation or an unknown failure cannot restore the committed opportunity.
     try:
         return await turn.app.drift_delivery.deliver(turn, intent_id, draft)
@@ -90,7 +104,7 @@ async def send_once(turn, arguments):
             raise
         if current is not None and current['status'] == 'sent' and current['receipt']:
             return json.loads(current['receipt'])
-        return {'status': 'uncertain', 'intentId': intent_id, 'targetRef': 'desktop'}
+        return {'status': 'uncertain', 'intentId': intent_id, 'targetRef': target['ref']}
 
 
 def actual_outcome(row):
@@ -120,6 +134,7 @@ async def reconcile_receipts(app):
         cursor = db.execute('SELECT last_delivery_rowid FROM autonomy_drift_receipt_scan WHERE singleton=1').fetchone()[0]
         query = """SELECT d.rowid AS delivery_rowid,d.*,r.origin FROM autonomy_deliveries d
             JOIN autonomy_runs r ON r.tick_id=d.tick_id WHERE r.mode='drift' AND r.runtime_acknowledged=1
+            AND COALESCE(CASE WHEN json_valid(d.target) THEN json_extract(d.target,'$.channel') END,'desktop')='desktop'
             AND r.runtime_result IS NOT NULL AND d.status IN ('dispatching','pending','uncertain')"""
         claims = [dict(row) for row in db.execute(query + ' AND d.rowid>? ORDER BY d.rowid LIMIT 32', (cursor,))]
         if not claims:
