@@ -1,6 +1,6 @@
 # Coding Agent 委托：Herdr 与 codex-delegate
 
-状态：草案，待 D05 具体架构批准。本文规定拟采用的实现，不表示 P03/S07 已实现或获准运行付费CLI、访问账号、推送或创建PR。
+状态：当前规格，第 3 节 D05 具体架构已于 2026-10-16 获主人明确批准，实施进行中；覆盖实现、隔离本地构建和无费用 fixture，不表示 P03/S07 已实现或获准运行付费 CLI、访问账号、推送或创建 PR。决定见 [ADR-0017](../adr/0017-owned-coding-agent-runtime.md)。
 
 关联：[Parent #137](https://github.com/sawaki-zexi/meido/issues/137)、[总规格 P03/S07、D05、T15/T20](shiori-tool-parity-spec.md)、[CLI与固定Shiori调研](../research/coding-agent-cli-portability-2026-10-16.md)、[Herdr源码隔离核验](../research/herdr-runtime-isolation-2026-10-16.md)。最后核验：2026-10-16，接口基线 Meido `504d5b0b307736c14da7d1da87a1bad36e010c76`，Shiori `4f266aeaf42fcd611362e2456417b91f659341cf`，Herdr `7e26bad94044eba205033111a0ce8033ede7e24f`。
 
@@ -22,7 +22,7 @@
 
 依循[ADR-0004](../adr/0004-role-scoped-shell-tool-boundary.md)、[ADR-0009](../adr/0009-multichannel-conversation-threads.md)、[ADR-0011](../adr/0011-versioned-tool-activation.md)、[ADR-0012](../adr/0012-owned-task-runtime.md)。独立Coding实现不扩大通用Shell的cwd/env/stdin/白名单。
 
-## 3. 待批准的一揽子具体选择
+## 3. 已批准的一揽子具体选择
 
 | 决策 | 采用方案 |
 | --- | --- |
@@ -155,7 +155,7 @@ S07 Skill指引：先查CLI/profile可用性，用户已提供repo时直接传re
 
 ## 11. 验收、垂直 Tickets 与仍需补证
 
-#158 的实施依赖已在总集成 `4b1b3b8` 满足并通过两套CI；对应Ticket已移除当前阻塞边并保留完成证据。第3节架构批准仍待回答，不能由依赖满足推导Coding生产实现或账号许可。
+#158 的实施依赖已在总集成 `4b1b3b8` 满足并通过两套CI；第3节随后获主人明确批准。#174 实施计划见 [批准后计划](https://github.com/sawaki-zexi/meido/issues/174#issuecomment-6207491034)。架构批准不能代替生产实现、原生验收或账号许可。
 
 | 层次 | 必须观察到的通过条件 |
 | --- | --- |
@@ -167,14 +167,14 @@ S07 Skill指引：先查CLI/profile可用性，用户已提供repo时直接传re
 
 所有fixture用独立数据/角色/认证目录、假凭据及localhost，不登录或读取真实vault/auth配置；缺依赖显式未验收，不能把skip/fake CLI/help计入真实任务成功。已有本地OSS provider可能提供不访问付费API的Codex候选，但不保证本机模型存在、质量、Claude免费资格或零资源成本；无可用免费路径须另获明确账户/费用许可。
 
-已建立三张垂直票，Parent #137，当前 needs-info 等待本规格§3批准：
+已建立三张垂直票，Parent #137，§3 已批准，按真实前置依赖依次实施：
 
-1. [#174：主人通过Herdr在可信repo完成本地任务并安全查询/取消](https://github.com/sawaki-zexi/meido/issues/174)，包含owned补丁与Codex/Claude真实入口、任务/来源、独立worktree和验证；Blocked by：本规格§3批准。#158 的Runtime幂等、保留/ACK seam及故障回归已在两轴复核与 `4b1b3b8` 两套CI中满足，不再构成当前阻塞。
+1. [#174：主人通过Herdr在可信repo完成本地任务并安全查询/取消](https://github.com/sawaki-zexi/meido/issues/174)，包含owned补丁与Codex/Claude真实入口、任务/来源、独立worktree和验证；第3节已批准，可开始实施。#158 的Runtime幂等、保留/ACK seam及故障回归已在两轴复核与 `4b1b3b8` 两套CI中满足，不再构成当前阻塞。
 2. [#175：主人通过codex-delegate后台完成并精确继续同一原生任务](https://github.com/sawaki-zexi/meido/issues/175)，包含coding profile、Skill/管理路由、session和持久完成，依赖 #174 共享模块。
 3. [#176：主人审阅确切成果后发布可信Draft PR](https://github.com/sawaki-zexi/meido/issues/176)，包含本地commit、一次性发布批准与未知恢复，依赖 #174/#175。
 
 沿用主人已批准的总PR聚合分支例外，不重复等待main、不建立堆叠功能PR；依赖尚未复核集成时不实施消费该seam的生产改动。
 
-最终P03/S07验收须三票全行为、相关测试/类型检查/构建、独立规范与规格两轴审查，以及上表真实原生/获准发布证据；仅本地模式或一款CLI通过不计全部完成。§3批准覆盖所选owned补丁实现、必要依赖的工作区隔离构建、发行资源验证和无账号/费用fixture，可随实施推进，不为每个可逆本地步骤另设审批。架构批准不等于原生验收完成；读取/设置真实CLI认证、实际账号/模型或付费请求、真实外部发布仍需相应明确授权。本轮仅写规格，不执行原生构建。
+最终P03/S07验收须三票全行为、相关测试/类型检查/构建、独立规范与规格两轴审查，以及上表真实原生/获准发布证据；仅本地模式或一款CLI通过不计全部完成。§3批准覆盖所选owned补丁实现、必要依赖的工作区隔离构建、发行资源验证和无账号/费用fixture，可随实施推进，不为每个可逆本地步骤另设审批。架构批准不等于原生验收完成；读取/设置真实CLI认证、实际账号/模型或付费请求、真实外部发布仍需相应明确授权。提案阶段仅写规格；批准后已开始隔离原生构建及无费用 fixture，尚无完整验收结论。
 
 尚待补证：owned补丁的实际构建/发行与Windows进程证据；固定CLI精确resume权限、认证/扩展加载和session时序；所选账户/模型的真实可用性及经授权发布。它们是具体实施验收门槛，失败保持不可用，不用“minenv”“专用目录”或纯Skill文字补成OS沙箱结论。

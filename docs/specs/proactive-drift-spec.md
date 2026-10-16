@@ -1,6 +1,6 @@
 # 主动决策、Drift 与来源作者技能
 
-状态：草案，待 §3 一揽子架构批准；本文中的“采用/必须”是目标契约，不表示已经实现或验收。
+状态：当前规格，§3 一揽子架构已于 2026-10-16 获主人明确批准，实施进行中；仅覆盖实现与本地合成验收，真实账号、服务事务和费用另批。本文中的“采用/必须”是目标契约，不表示已经实现或验收。决定见 [ADR-0018](../adr/0018-explicit-autonomy-and-drift-grants.md)。
 关联：[Parent #137](https://github.com/sawaki-zexi/meido/issues/137)、[总 Spec A01/A02/S06/S08、T21/T22](shiori-tool-parity-spec.md)、[固定源码与 Meido 差距研究](../research/proactive-drift-runtime-portability-2026-10-16.md)。
 最后核验：2026-10-16；Meido 聚合基线 `7936eaf878deb81817acb85fe18ff8a0b78192b0`，Shiori `4f266aeaf42fcd611362e2456417b91f659341cf`。
 
@@ -20,9 +20,9 @@
 [ModelProvider/loop](../../backend/app/agent_runtime/loop.py#L39)、[MCP](../../backend/app/mcp_runtime.py#L165)、[文件](../../backend/app/agent_runtime/file_tools.py#L91)、[SkillRegistry](../../backend/app/agent_runtime/skills.py#L246)、[ChannelHost](../../backend/app/channels/host.py#L253)和[SessionStore](../../backend/app/session_store.py#L237)可复用；普通聊天推送的 user-row 授权不能直接用于自主 run。
 遵守 [ADR-0011](../adr/0011-versioned-tool-activation.md)、[ADR-0012](../adr/0012-owned-task-runtime.md)、[ADR-0013](../adr/0013-independent-generic-schedules.md)；新增自主许可及业务恢复由本规格明确，不泛化 spawn 完成 worker。
 
-## 3. 待批准的一揽子具体方案
+## 3. 已批准的一揽子具体方案
 
-| 决策 | 本草案选定的方案 |
+| 决策 | 已批准方案 |
 | --- | --- |
 | 模块与身份 | 一个 `proactive_runtime` 深模块拥有配置、来源快照、A01/Drift 状态、投递和 ACK；入口仅宿主触发/停用/查询与专用工具 Adapter。新增真实 AutonomyOrigin，绑定role、allowedModes、grant revision、generation、tick/task；不造user消息，不以owner=true冒充主人来源。 |
 | 有限自主许可 | 角色 autonomy.activeDecisionEnabled 与 autonomy.driftEnabled 各自默认 false；独立列出 source get/poll/ACK、Drift MCP 工具、Shell 规则和可发送目标。开启时确认有限次数、可能模型费用、ACK/外部副作用；现有工具启用、MCP 握手、Skill 文本不授予该许可。 |
@@ -37,7 +37,7 @@
 | 作者技能 | S06 生成合法 Meido Drift Skill，后续合格 run 消费；S08 先生成源码/配置草稿和合成验证，经过现有 MCP trust 与具体自主 grant 激活真实来源。许可配置是可完成的产品流程，不永久禁用。 |
 | 验收与授权 | 本次批准包含实施、必要本地 fixture、隔离合成 MCP 的构建/运行及零真实发送的协议验收；真实账号查询/事务、外部服务写入及费用另有具体主人授权，不从架构批准推导。 |
 
-以上是一次可批准的架构 bundle。常数为可逆的首版界限，不逐项追加审批；增大自主外部操作种类、目标范围或任意 Shell/命令权限须另审。
+以上架构 bundle 已获主人明确批准。常数为可逆的首版界限，不逐项追加审批；增大自主外部操作种类、目标范围或任意 Shell/命令权限须另审。
 明确保留差异：独立 Drift 开关、固定聊天忙闲和显式目标，替代上游共用 enabled、presence/relationship fallback；保留 A01/Drift 的独立模式工具 dispatch。
 实现前核验下述依赖；批准不等同验收，未实现的 AutonomyOrigin、source grant、CAS、业务 outbox、预算及 cleanup 均须真实代码和 fixture 证明。
 
@@ -155,7 +155,7 @@ S08使用现有文件/Shell白名单准备可启动server、配置草稿与fixtu
 
 ## 10. 验收与垂直 Ticket 建议
 
-#158 的实施依赖已在总集成 `4b1b3b8` 满足并通过两套CI；对应Ticket已移除当前阻塞边并保留完成证据。第3节架构批准仍待回答，自主读取、ACK或发送许可不因Runtime就绪而产生。
+#158 的实施依赖已在总集成 `4b1b3b8` 满足并通过两套CI；第3节随后获主人明确批准。#177 实施计划见 [批准后计划](https://github.com/sawaki-zexi/meido/issues/177#issuecomment-6207491543)。真实服务的自主读取、ACK 或发送许可仍由具体配置和另行授权产生。
 
 - 真实HTTP/AgentTool/SQLite+合成MCP完成alert/content/context→正文→兴趣→草稿/finish→一次投递→持久ACK；覆盖跨来源ID、空候选伪ID、failed不等于empty、缓存重复读无网络、可信最近聊天。
 - 注入草稿/finish并发、post-guard超时、accepted human seal与dispatch竞态、submit返回丢失、结果副本与dirty事务切点、所有终态漏扫、ACK成功但清标记前崩溃/已prune、角色临时disabled后恢复、真实SQLite busy及retention满；证明保留额度最终释放、不重做执行，主聊天不等清理但下一自主准入必须join。
@@ -164,9 +164,9 @@ S08使用现有文件/Shell白名单准备可启动server、配置草稿与fixtu
 - 真实前后端展示默认关闭、许可/默认目标/依赖原因、run与ACK状态；零外部发送的本地平台fixture验证目录/receipt，不能据此称真实账号在线或真人收到。
 - 获准实机验收另记录实际MCP版本/哈希、角色目标和许可、真实事件/ACK/收件证据；没有该授权保留未验收gate，不伪造成功、不删除整个功能。
 
-已建立四张用户纵切票，均Parent #137，当前needs-info等待§3批准；采用Matt Pocock的What to build/Acceptance criteria/Blocked by结构：
+已建立四张用户纵切票，均 Parent #137，§3 已批准，按真实前置依赖实施；采用 Matt Pocock 的 What to build/Acceptance criteria/Blocked by 结构：
 
-1. [**#177：主人启用一个真实获准来源，角色提交或跳过主动消息。**](https://github.com/sawaki-zexi/meido/issues/177) 覆盖配置、可信autonomy origin、tick、A01完整管线与桌面receipt；Blocked by：§3批准。#158 的真实seam已完成两轴复核并进入经两套CI验证的总集成 `4b1b3b8`，实施依赖已满足。
+1. [**#177：主人启用一个真实获准来源，角色提交或跳过主动消息。**](https://github.com/sawaki-zexi/meido/issues/177) 覆盖配置、可信autonomy origin、tick、A01完整管线与桌面receipt；第3节已批准，可开始实施。#158 的真实seam已完成两轴复核并进入经两套CI验证的总集成 `4b1b3b8`，实施依赖已满足。
 2. [**#178：主人安全创建新来源并看到持久ACK和重启恢复。**](https://github.com/sawaki-zexi/meido/issues/178) 覆盖S08作者产物、合成验证、trust/grant激活、ACK契约/expiry/故障恢复；Blocked by：#177共享source/提交模块。
 3. [**#179：角色空闲时执行长期Drift技能并如实收尾。**](https://github.com/sawaki-zexi/meido/issues/179) 覆盖S06、私有工作根、版本挂载、有限Shell、单次发送、finish与取消join；Blocked by：#177/#178共享主动/来源管线。
 4. [**#180：主人配置真实外部默认目标并验收完整主动/Drift投递。**](https://github.com/sawaki-zexi/meido/issues/180) 覆盖已绑定主人私聊选择、目录真实性/能力、撤权和receipt；Blocked by：#177/#179、[#170](https://github.com/sawaki-zexi/meido/issues/170)真实目录集成，以及具体真实账号验收许可。

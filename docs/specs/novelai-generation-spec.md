@@ -1,6 +1,6 @@
 # NovelAI 生图、历史与人类回合场景 CG
 
-状态：草案，待 D05/P06/T19 一揽子架构批准；本文没有授予实施或真实消费许可。所有“采用/必须”均描述待批准目标，不表示已实现。
+状态：当前规格，第 3 节 D05/P06/T19 一揽子架构已于 2026-10-16 获主人明确批准，实施进行中；仅覆盖实现、隔离本地构建与无费用 fixture，真实生成和费用另批。所有“采用/必须”仍是验收目标，不表示已实现。决定见 [ADR-0016](../adr/0016-bounded-novelai-generation.md)。
 
 关联：[Parent #137](https://github.com/sawaki-zexi/meido/issues/137)、[总规格 P06/D05/T19](shiori-tool-parity-spec.md)、[源码与官方契约调研](../research/novelai-generation-portability-2026-10-16.md)。最后核验：2026-10-16，Meido `504d5b0b307736c14da7d1da87a1bad36e010c76`，Shiori `4f266aeaf42fcd611362e2456417b91f659341cf`。
 
@@ -24,7 +24,7 @@
 
 依循 [ADR-0009](../adr/0009-multichannel-conversation-threads.md)、[ADR-0011](../adr/0011-versioned-tool-activation.md)、[ADR-0012](../adr/0012-owned-task-runtime.md)。适配保留上游 MIT 署名；服务和模型适用独立条款，不能从源码许可证推导账号或图片权利。
 
-## 3. 待批准的一揽子具体方案
+## 3. 已批准的一揽子具体方案
 
 | 决策 | 本草案采用的方案 |
 | --- | --- |
@@ -157,11 +157,11 @@ CAS失败只保留新图历史并提示“已生成，原消息已改变”；�
 
 ## 10. 垂直 Ticket 与最终门槛
 
-#158 的实施依赖已在总集成 `4b1b3b8` 满足并通过两套CI；对应Ticket已移除当前阻塞边并保留完成证据。第3节架构批准仍待回答，不能据此开始未经批准的生图生产实现。
+#158 的实施依赖已在总集成 `4b1b3b8` 满足并通过两套CI；第3节随后获主人明确批准。#171 实施计划见 [批准后计划](https://github.com/sawaki-zexi/meido/issues/171#issuecomment-6207490472)。架构批准不能代替实现验收或真实消费许可。
 
-已按完整用户结果拆三票，Parent均为#137，当前标记needs-info等待本规格第3节批准；按依赖串行而不分数据库/API/UI层：
+已按完整用户结果拆三票，Parent 均为 #137，§3 已批准；按真实前置依赖串行，不分数据库/API/UI层：
 
-1. [**#171：主人按请求生图并在原会话看到唯一图片与历史。**](https://github.com/sawaki-zexi/meido/issues/171) 配置/许可/有限预算、txt2img+img2img、TaskRuntime、attempt unknown、媒体outbox和本地HTTP全闭环；Blocked by：本规格§3批准。#158 已完成两轴复核并进入经两套CI验证的总集成 `4b1b3b8`，实施依赖已满足。沿用主人已批准的本地总PR分支流程，不重复等待main或建立堆叠功能PR。
+1. [**#171：主人按请求生图并在原会话看到唯一图片与历史。**](https://github.com/sawaki-zexi/meido/issues/171) 配置/许可/有限预算、txt2img+img2img、TaskRuntime、attempt unknown、媒体outbox和本地HTTP全闭环；第3节已批准，可开始实施。#158 已完成两轴复核并进入经两套CI验证的总集成 `4b1b3b8`，实施依赖已满足。沿用主人已批准的本地总PR分支流程，不重复等待main或建立堆叠功能PR。
 2. [**#172：主人明确重生成指定图片并可靠接收后台结果。**](https://github.com/sawaki-zexi/meido/issues/172) 新付费动作、CAS、真实receipt/不确定投递、重启恢复、多附件不丢失；Blocked by：前票。
 3. [**#173：主人输入场景后角色自动生成获准CG。**](https://github.com/sawaki-zexi/meido/issues/173) 辅助连接、宿主场景事件、冷却/去重/取消/手动互斥、标签与显式资产写回；Blocked by：前两票；不依赖P04、桌宠或无人值守主动扩展。
 

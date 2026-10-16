@@ -1,10 +1,10 @@
 # Computer Use：Windows 原生窗口控制规格
 
-状态：草案，等待第 3 节人工架构批准，尚未实施。最后核验：2026-10-16。本文保存具体目标与取舍，不表示补丁、构建或原生验收已经完成。
+状态：当前规格，第 3 节已于 2026-10-16 获主人明确批准，实施进行中。本文保存目标与取舍，不表示补丁、构建或原生验收已经完成。决定见 [ADR-0015](../adr/0015-owned-windows-computer-use.md)。
 
 最后核验：2026-10-16（Asia/Shanghai）。范围：完整复刻规格 P02 / T17，[实施票 #169](https://github.com/sawaki-zexi/meido/issues/169)，Parent [#137](https://github.com/sawaki-zexi/meido/issues/137)。
 
-事实来源：固定 Shiori `4f266aeaf42fcd611362e2456417b91f659341cf`；CUA 固定 MIT 源码 `fc188250b4ca8549b8e61f937fdb1fb560770e86`；先前只读 Meido 规划树 `7176fc483dd443b1324d10efa0ace483ba2cbca5` 及屏幕 §3 / ADR-0014；Microsoft 官方 Win32/UIA 文档。2026-10-16 根协调者另提供总集成 `3765ac2` 已纳入 #159 stdio 和 #160，并报告两轴审查及相关验证通过；这是协调者提供的集成事实，本轮未重跑。用户已在 [#137 comment6198017236](https://github.com/sawaki-zexi/meido/issues/137#issuecomment-6198017236) 批准从已验证 aggregate 建本地任务分支并统一整合到 [PR #162](https://github.com/sawaki-zexi/meido/pull/162)，不要求等待 main 合并。调研阶段只做源码和官方文档读取，未下载/安装/执行驱动，未截屏、移动鼠标或注入按键；当前仅保存设计文档。
+事实来源：固定 Shiori `4f266aeaf42fcd611362e2456417b91f659341cf`；CUA 固定 MIT 源码 `fc188250b4ca8549b8e61f937fdb1fb560770e86`；先前只读 Meido 规划树 `7176fc483dd443b1324d10efa0ace483ba2cbca5` 及屏幕 §3 / ADR-0014；Microsoft 官方 Win32/UIA 文档。2026-10-16 根协调者另提供总集成 `3765ac2` 已纳入 #159 stdio 和 #160，并报告两轴审查及相关验证通过；这是协调者提供的集成事实，本轮未重跑。用户已在 [#137 comment6198017236](https://github.com/sawaki-zexi/meido/issues/137#issuecomment-6198017236) 批准从已验证 aggregate 建本地任务分支并统一整合到 [PR #162](https://github.com/sawaki-zexi/meido/pull/162)，不要求等待 main 合并。调研阶段只做源码和官方文档读取，未下载/安装/执行驱动，未截屏、移动鼠标或注入按键；此处是提案阶段的证据边界；批准后的实施状态另记 #169 及验收文档。
 
 标记：**已提取**表示源码直接证明；**计划**是拟议契约；**推断**是基于证据的判断。上游 README 的实机描述不是 Meido 已通过的证据。
 
@@ -48,7 +48,7 @@ P02 的八个工具都属于本票。P04 `observe_screen` 仍独立：它把主�
 3. 同文件 NoActivateGuard 给外部窗口设置 WS_EX_NOACTIVATE，并依赖 Drop 还原；[uia/fg_bypass.rs](https://github.com/trycua/cua/blob/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust/crates/platform-windows/src/uia/fg_bypass.rs) 用 EnableWindow(false) 暂时禁用目标，也依赖 Drop。Job 强杀或驱动崩溃不保证运行 Drop，可能留下目标禁用或样式变化。计划最小源码补丁禁止对外部 HWND 改 EnableWindow/exstyle，依赖这类 guard 的后台路由在任何输入前返回 background_unavailable；不加 host watchdog 或事后强行修用户窗口。
 4. [capture.rs](https://github.com/trycua/cua/blob/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust/crates/platform-windows/src/capture.rs) 在 PrintWindow/WGC 失败时允许桌面区域或窗口 DC BitBlt；state 的 screenshot_window_bytes 调用没有把来源/遮挡/映射证明完整交给宿主。桌面区域可能是覆盖者的画面，不能因 HWND 正确就称为目标图像。计划补丁限制 state 仅用 PrintWindow/WGC，并返回来源和坐标证明；无法证明 WGC 屏幕映射时只允许 UIA token 动作，拒绝像素动作。
 
-## 3. 建议供人工一次批准的具体选择
+## 3. 已批准的具体选择
 
 本节整体拟议为 T17 的明确架构选择；D01–D03 和屏幕 §3 / ADR-0014 未覆盖这些决定。批准仅允许按本节实现及在专门测试窗口中原生验收，不代表可操作用户任意真实应用、发送外部事务或合并 PR。
 
@@ -75,7 +75,7 @@ P02 的八个工具都属于本票。P04 `observe_screen` 仍独立：它把主�
 
 **计划：**固定 [CUA commit fc188250…](https://github.com/trycua/cua/tree/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver) 的源码及 Cargo.lock，以提交在仓库的最小 patch set 表达以下改动：私有 Meido Windows profile 禁外部窗口 EnableWindow/exstyle 变更，并对依赖该 guard 的路由提前拒绝；窗口 state capture 禁 desktop-region/窗口 DC BitBlt 回退，透传 provenance/geometry；为唯一分发的 direct 主驱动嵌入普通权限 manifest，不新增 helper 启动/转发。其余平台、工具、后台可证明不依赖 guard 的路由和显式 foreground 辅助激活不改写。profile 由受控构建启用，模型和环境变量不能关闭这些约束。宿主全 run 单观察规则解决 resize_registry 覆盖，不在本票重写通用 registry。
 
-构建阶段使用固定源码自带 [Rust toolchain 1.97.1](https://github.com/trycua/cua/blob/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust/rust-toolchain.toml)、Windows x64 MSVC/SDK 构建环境，使用锁定依赖（cargo --locked）只产出 direct 主驱动；具体 MSVC/SDK 版本与可重复命令在首次构建清单记录并固定，不在本稿虚构已验证版本。记录 upstreamCommit、补丁文件哈希/Meido提交、toolchain、target、构建命令及**构建后实际计算的主驱动 exe SHA256**。本轮没有安装/编译/执行，补丁和新二进制均不存在，新 hash 明确待构建，不伪填。
+构建阶段使用固定源码自带 [Rust toolchain 1.97.1](https://github.com/trycua/cua/blob/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust/rust-toolchain.toml)、Windows x64 MSVC/SDK 构建环境，使用锁定依赖（cargo --locked）只产出 direct 主驱动；具体 MSVC/SDK 版本与可重复命令在首次构建清单记录并固定，不在本稿虚构已验证版本。记录 upstreamCommit、补丁文件哈希/Meido提交、toolchain、target、构建命令及**构建后实际计算的主驱动 exe SHA256**。提案阶段没有安装/编译/执行；实施阶段须另记录实际补丁、构建和新二进制 hash，不沿用上游二进制 hash。
 
 应用 prepare/package 只接收上述固定 manifest 匹配的 Meido 构建产物，复制到应用 `native/computer-use` 并验证 hash；运行时只查固定资源目录并验证 profile/version/hash，不找 PATH、全局 driver 或现成 daemon。缺失、原版替代、profile不符或 hash不符均不可用。准备可由开发环境或受控构建产物供应，最终用户无需安装 Rust；运行不自动下载、安装或升级。上游 helper 的 [manifest](https://github.com/trycua/cua/blob/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust/crates/cua-driver-uia/cua-driver-uia.manifest#L27) 与 [build.rs](https://github.com/trycua/cua/blob/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust/crates/cua-driver-uia/build.rs#L4) 会嵌入 uiAccess=true；本票不构建或分发该 helper。固定源码 [serve.rs](https://github.com/trycua/cua/blob/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust/crates/cua-driver/src/serve.rs#L369) 只证明 helper 转发并非现有路径；direct 的进程内 Windows 工具注册见 [main.rs](https://github.com/trycua/cua/blob/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust/crates/cua-driver/src/main.rs#L342) 和 [SDK runtime](https://github.com/trycua/cua/blob/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust/crates/cua-driver-sdk/src/runtime.rs#L564)。不为凑两个进程新增它。主驱动必须显式嵌入普通权限 manifest 并核验实际令牌，符合 [Microsoft UIAccess 边界](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-securityoverview#uiaccess-requirements-for-assistive-technology-applications)。
 
@@ -215,16 +215,16 @@ Parent: [#137](https://github.com/sawaki-zexi/meido/issues/137)
 
 ### Blocked by
 
-- 本稿 §3 的人工架构批准（批准是设计门槛，不虚构成GitHub阻塞Issue）。
+- 本稿 §3 已获人工架构批准，允许实现与专用测试窗口原生验收；其他真实应用或外部事务不在本次授权内。
 - **#159 为实际代码依赖：**本稿选择复用其 McpStdioClient/有界stdio与拥有进程树的能力；根协调者提供的获准 aggregate `3765ac2` 已集成，可直接作为本票实现基点，不把“main尚未合并”伪称阻塞。初始化协议与补丁driver的兼容仍要实际验证。
 - T01角色配置/能力目录、T06版本化能力seam以同一已验证aggregate复用；本票不重建它们。**#160/T16不是行为依赖**；它已串行集成，与本票只共享RoleEditor/models/main装配配置区域，应协调局部修改而非等待其独立能力或再建视觉管线。桌宠、spawn不构成本票依赖。
 - 用户在 [#137 comment6198017236](https://github.com/sawaki-zexi/meido/issues/137#issuecomment-6198017236) 明确批准剩余任务从已验证总集成建本地任务分支、统一 [PR #162](https://github.com/sawaki-zexi/meido/pull/162)。因此按该会话授权执行，不要求先等main合并、不另开堆叠PR；开始实现仍核对开放工作和aggregate最新状态，登记本票真实依赖及边界。
 
-实现前计划：在用户批准§3后，以根协调者确认的最新已验证aggregate为基点建立独立本地任务分支，交付新Computer Use宿主、固定MIT源码最小补丁、Rust构建/资源prepare与manifest、角色开关局部装配、受控fixture及证据；协调者整合回单一PR #162。与#160共享配置区采用已串行状态及明确局部改动，不重建采集/视觉模型管线。当前只登记规格；架构批准前不编码、构建或执行原生操作。
+实施计划已于批准后提交到 [#169](https://github.com/sawaki-zexi/meido/issues/169#issuecomment-6207489899)：从已验证 aggregate `30002a9` 建独立任务分支，交付新 Computer Use 宿主、固定 MIT 源码最小补丁、隔离构建与 manifest、角色开关、受控 fixture 及证据；协调者顺序装配共享入口并整合回单一 PR #162。批准不代表实现或验收已完成。
 
 ## 8. 仍须诚实保留的不确定性
 
-- 固定Shiori快照给出八工具参数和wrapper行为；固定CUA源码额外揭示§2.1四项缺口。本稿的Meido最小补丁尚未编码或构建，不能沿用原版exe/hash或声称已通过。Rust/MSVC/SDK固定、新产物hash、2025-06-18 legacy握手、允许的截图来源/几何、保留后台路由、中文输入均需受控实机确认；源码可读不等于可执行已验收。
+- 固定Shiori快照给出八工具参数和wrapper行为；固定CUA源码额外揭示§2.1四项缺口。本稿规定的 Meido 最小补丁须另留实际编码、构建及运行证据，不能沿用原版 exe/hash 或声称已通过。Rust/MSVC/SDK固定、新产物hash、2025-06-18 legacy握手、允许的截图来源/几何、保留后台路由、中文输入均需受控实机确认；源码可读不等于可执行已验收。
 - OS接口不是事务：句柄复用、在检查与实际输入间的用户竞争，以及已进入应用队列的事件都不能通过stop撤回。文档和产品错误不得承诺桌面沙箱或无副作用回滚。
 - `OpenInputDesktop(Default)`和API session前缀单独都不能证明当前主人许可。本提案同时要求宿主SQLite来源/当前run和OS会话/SID；不新增遥控登录系统，也不把单一主人部署假设说成强认证。
 - 截图发送至聊天连接是本票最需要明确批准的可见区别。若维护者选择仅摘要，必须承认那不符合此P02固定上游图像契约，并另改目标和验收；不能在实现时静默改成P04。

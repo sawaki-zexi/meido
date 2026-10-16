@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；本地集成核验：`83e853ee7a33d6d037f651c26bfa08ef8812bb5f`。前一固定版本 `58c3fa16c5a3bb7df88ebfd4f188e33a20f68a7b` 的两条 CI 全通过：各后端1780 passed、16 skipped、1条Starlette弃用warning，前端174 passed/26文件及构建；该结果不代替新增#181代码的最终CI，后续固定提交见[总 PR 检查](https://github.com/sawaki-zexi/meido/pull/162/checks)，跳过项不计原生验收。
+最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；已验证集成：`30002a9a8de551a12a44b2c2f5724d5640aca50d`。该固定版本两条 CI 全通过：各后端1813 passed、16 skipped、2条依赖弃用warning，前端174 passed/26文件及 TypeScript/Vite 构建；见[总 PR 检查](https://github.com/sawaki-zexi/meido/pull/162/checks)。随后批准的四项功能正在独立任务分支实施，尚未纳入该验证；跳过项不计原生验收。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -11,7 +11,7 @@
 - 总目标是 31 个核心工具、45 个插件工具、8 个 Skill、主动决策和 Drift。工具名字或 schema 存在不等于行为验收完成。
 - 已获批准并合并 PR #145、#143、#146、#147、#150、#151，对应 #138–#144 中的六张实施票已关闭。
 - 用户随后明确要求剩余多个 PR 汇总为一个大 PR；剩余改动汇入 [草稿 PR #162](https://github.com/sawaki-zexi/meido/pull/162)。原 Skills 草稿 PR #161 已关闭为被替代，未单独合并，#152 保持开放。
-- D01–D03 已批准，见 ADR [0011](../adr/0011-versioned-tool-activation.md)、[0012](../adr/0012-owned-task-runtime.md)、[0013](../adr/0013-independent-generic-schedules.md)。屏幕感知具体方案随后已获明确批准并记录到 [0014](../adr/0014-explicit-screen-vision-binding.md)；[Windows 桌面控制](../specs/computer-use-spec.md)、[NovelAI](../specs/novelai-generation-spec.md)、[Coding Agent](../specs/coding-agent-spec.md)、[主动决策/Drift](../specs/proactive-drift-spec.md)具体方案及桌宠宿主选择分别仍待人工批准，不相互替代。
+- D01–D03 及屏幕感知已批准，见 ADR [0011](../adr/0011-versioned-tool-activation.md)、[0012](../adr/0012-owned-task-runtime.md)、[0013](../adr/0013-independent-generic-schedules.md)、[0014](../adr/0014-explicit-screen-vision-binding.md)。2026-10-16 主人另明确批准 [Windows 桌面控制](../adr/0015-owned-windows-computer-use.md)、[NovelAI](../adr/0016-bounded-novelai-generation.md)、[Coding Agent](../adr/0017-owned-coding-agent-runtime.md)、[主动决策/Drift](../adr/0018-explicit-autonomy-and-drift-grants.md)四项具体规格第3节，正在实施；真实账号、消费及外部事务仍按各自范围另批。桌宠宿主选择仍待回答。
 - 汇总 PR 不具有合并批准；实现、审查、CI 和必要验收完成后仍需人工批准。剩余 Issue 不因进入集成分支而关闭。
 
 ## 范围追踪
@@ -32,11 +32,11 @@
 | C09 群/成员 4 工具 | #165、#166 已进入集成分支；可信历史昵称、成员来源、完整群分页、笔记字段省略/清空及离线资料；两轴最终复核通过，事务直接读取父取消并等待写线程退出 | 总 PR 跨模块回归和最终验收；不得扩大来源范围 |
 | C10 MCP 3 工具 | #159 已进入集成分支；真实 stdio、版本化发现、配置 UI、持久连接意愿及严格凭据清理已两轴复核；Linux 回收、Windows asyncio 环境、中文 schema 编码及 peer_error 清理竞态均实证修复并两轴复核；`c03a9fb` 两条 CI 通过 | 总 PR 最终跨模块验收 |
 | P01 浏览器 28 工具 | main，PR #150；全部 28 schema 映射核验，21 项真实原生浏览器测试通过，无 skip | 后续 MCP/配置集成回归 |
-| P02 桌面控制 8 工具 | #169 具体规格已进入集成分支；固定 CUA 源码最小补丁、单普通权限驱动、单观察、独占 lease 与资源释放方案经独立提案复核，等待人工批准 | 批准后完整实现和专用受控窗口实机验收；当前无生产实现或原生构建 |
-| P03 Coding Agent 5 工具 | [CLI 调研](../research/coding-agent-cli-portability-2026-10-16.md)、[Herdr 固定源码核验](../research/herdr-runtime-isolation-2026-10-16.md)及[具体规格](../specs/coding-agent-spec.md)已提交；独立提案复核通过，#174 Herdr、#175 codex-delegate、#176 确切成果批准发布已建立父子和阻塞关系 | 第3节架构批准后实施；尚无 owned 构建或真实 CLI 任务/认证/费用/发布验收，不能以 help 代替 |
+| P02 桌面控制 8 工具 | #169 具体规格及固定 CUA 最小补丁、单普通权限驱动、单观察、独占 lease 方案已获明确批准；独立分支实施中 | 完整实现、两轴复核及专用受控窗口原生验收；尚无完成结论 |
+| P03 Coding Agent 5 工具 | [具体规格](../specs/coding-agent-spec.md)第3节已获明确批准；#174 Herdr 独立分支实施中，#175 codex-delegate、#176 确切成果批准发布保留真实前置依赖 | 完整 owned 构建/CLI任务、来源交付、两轴复核；真实认证/消费/发布另批，不能以 help 代替 |
 | P04 屏幕感知 1 工具 | #160 已进入集成分支；提前拒绝/重复取消连接回收最终两轴复核均无剩余 finding；相关后端 196 passed/1 native 条件 skip，前端 69 passed；真实受控 Windows 主屏/125% DPI/本地视觉及取消通过，无原图落盘 | 总 PR 最终集成；尚无双屏、混合 DPI、实际锁屏/远程断开或 frozen 分发实证，也未调用真实远端视觉服务 |
 | P05 桌宠 1 工具 | 待实现；Electron/PySide6 宿主选择待回答 | 真实透明置顶窗口、动作包、move/play 与完整生命周期 |
-| P06 生图 1 工具 | [NovelAI 调研](../research/novelai-generation-portability-2026-10-16.md)与[具体规格](../specs/novelai-generation-spec.md)已提交；一揽子方案经独立提案复核，#171 生图历史、#172 重生成/后台媒体、#173 人类回合 CG 已建立原生父子和依赖关系 | 第 3 节人工架构批准；随后按依赖实施与复核，真实生成和费用另批；尚无生产实现或真实账号调用 |
+| P06 生图 1 工具 | [具体规格](../specs/novelai-generation-spec.md)第3节已获明确批准；#171 生图历史独立分支实施中，#172 重生成/后台媒体、#173 人类回合 CG 保留真实前置依赖 | 完整实现、本地fixture、来源媒体与两轴复核；真实生成和费用另批，尚无完成结论 |
 | P07 QQ 附件 1 工具 | #164 已进入集成分支；多字节长行自动字符分页、当前/引用真实入站与存储/Runtime 往返、旧附件/跨群拒绝均经过两轴独立审查 | 平台实机验收另列；传输夹具不是 QQ 真人收件证据 |
 | S01 weather | #152 已进入集成分支；真实 curl、wttr.in、Open-Meteo 和公开 HTTP 工具往返 | 最终配置集成；Shell 仍须主人显式授权 |
 | S02 summarize | #152 已进入集成分支；真实 summarize 0.25.2、Node 24、URL 提取及本地模型夹具摘要回传 | 两个公开视频仅得到 `transcriptSource: unavailable` 和网页模板，未取得真实字幕；不能以 exit 0 宣称视频摘要成功 |
@@ -44,10 +44,10 @@
 | S04 meme-manage | #152 已进入集成分支；指令、资源与角色目录边界已有行为测试 | 最终媒体引用与整体验收 |
 | S05 skill-creater | #152 已进入集成分支；HTTP 写入新 Skill 后下一轮发现/显式激活，资源 hash、依赖名、真实 Windows junction 反例通过 | 总 PR 最终回归 |
 | S06 create-drift-skill | 待实现；[固定源码依赖核验](../research/proactive-drift-runtime-portability-2026-10-16.md)已明确长期技能创建、后续发现与真实 Drift 消费缺一不可 | Drift 目录创建、发现和真实执行 |
-| S07 codex-delegate | 待实现，见 Coding 具体规格及 #175；复用 spawn coding 入口而不新增普通工具，依赖 #174 共享模块 | 第3节架构批准后，真实 CLI、后台执行、精确 session/结果回读和原上下文回灌 |
+| S07 codex-delegate | 具体架构已批准，见 Coding 规格及 #175；复用 spawn coding 入口而不新增普通工具，待 #174 共享模块复核集成后实施 | 真实 CLI、后台执行、精确 session/结果回读和原上下文回灌 |
 | S08 create-proactive-source | 待实现；固定源码已核实来源产物/信任/ACK 契约，旧 Skill 的 severity 快通道/HyDE 文案不作为当前实现保证 | 来源创建、信任授权、事件消费、正文与持久 ACK |
-| A01 主动决策 | [调研](../research/proactive-drift-runtime-portability-2026-10-16.md)及[具体规格](../specs/proactive-drift-spec.md)已独立提案复核；#177 桌面主动、#178 S08来源、#180 外部目标已建原生父子/依赖，明确草稿/finish、投递、来源 ACK 与 Runtime 结果 ACK 的不同状态，尚无生产实现 | 第3节架构批准；自主来源许可、候选/兴趣/去重、单次草稿、持久提交/投递/ACK 与独立验收 |
-| A02 Drift | #179 及 #180 已建票，具体规格已提案复核，尚未实施；采用主动 tick 的空输入分支、独立开关与显式目标，发送后 schema 和执行门同时收窄，补完整运行预算 | 第3节架构批准、独立目录/预算、受限工具、挂载 MCP、单次推送尝试和真实发送状态收尾 |
+| A01 主动决策 | [具体规格](../specs/proactive-drift-spec.md)第3节已获明确批准；#177 桌面主动独立分支实施中，#178 来源、#180 外部目标保留真实前置依赖 | 完整自主身份/许可、静态来源、草稿/finish、唯一投递/ACK/Runtime恢复及两轴复核 |
+| A02 Drift | #179/#180 具体架构已批准，待 #177/#178 共享模块复核集成后实施；采用同一 tick 空输入分支、独立开关与显式目标 | 独立目录/预算、受限工具、版本化 MCP 挂载、单次推送、真实finish与两轴复核 |
 
 渠道补充切片 #166 完整群资料、#167 桌面文本/媒体与 #170 分类目录/连接事实均已完成两轴复核并进入集成分支。C06 的真实平台收件验收仍未完成。
 
