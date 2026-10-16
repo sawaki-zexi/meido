@@ -9,6 +9,7 @@ import { api } from "../../api/client";
 import type { TodoSettings } from "../../api/types";
 import { TodoDrawer } from "../todo/TodoDrawer";
 import { useChatAttachments } from "./useChatAttachments";
+import { GenerationDrawer } from "../novelai/GenerationDrawer";
 
 function MessageItem({ message, role, highlighted }: { message: Message; role: Role; highlighted: boolean }) {
   const mine = message.role === "user";
@@ -116,6 +117,8 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
   const [todoSettings, setTodoSettings] = useState<TodoSettings | null>(null);
   const [todoUnread, setTodoUnread] = useState(0);
   const [todoOpen, setTodoOpen] = useState(false);
+  const [generationRoleId, setGenerationRoleId] = useState<string | null>(null);
+  useEffect(() => { setGenerationRoleId(null); }, [role.id]);
   useEffect(() => { if (!highlightedId) bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" }); }, [chat.messages, highlightedId]);
   useEffect(() => {
     if (!chat.session || chat.sending) return;
@@ -163,6 +166,7 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
       </div>
       {todoSettings?.enabled && <button type="button" className="icon-button todo-entry" aria-label={todoUnread ? `待办提醒 ${todoUnread}` : "待办"} title="待办" onClick={() => setTodoOpen(true)}><Icon name="todo" />{todoUnread > 0 && <span>{todoUnread > 99 ? "99+" : todoUnread}</span>}</button>}
       <IconButton icon="memory" label="角色记忆" onClick={onShowMemories} />
+      <button type="button" className="ghost" onClick={() => setGenerationRoleId(role.id)}>生图与历史</button>
       <IconButton icon="profile" label="角色资料" onClick={onShowProfile} />
     </header>
     <div className="chat-scroll">
@@ -176,6 +180,9 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
       <Composer key={role.id} roleId={role.id} placeholder={`对${role.name}说点什么…`} sending={chat.sending} stopping={chat.stopping} disabled={chat.opening} onSend={chat.send} onStop={chat.stop} />
     </div>
     {todoOpen && <TodoDrawer onClose={() => setTodoOpen(false)} onOpenSource={(roleId, sessionKey, messageId) => { setTodoOpen(false); onOpenTodoSource(roleId, sessionKey, messageId); }} />}
+    {generationRoleId === role.id && <GenerationDrawer key={role.id} role={role} onClose={() => setGenerationRoleId(null)} onGenerated={chat.refresh}
+      attachments={chat.messages.flatMap((message) => Array.isArray(message.metadata?.attachments)
+        ? message.metadata.attachments.filter((item): item is ChatAttachment => Boolean(item && typeof item === 'object' && 'id' in item && 'name' in item)) : [])} />}
   </section>;
 }
 

@@ -11,6 +11,7 @@ import { SpawnSettings } from "./SpawnSettings";
 import { ToolCatalog } from "./ToolCatalog";
 import { BasicToolSettings } from "./BasicToolSettings";
 import { ScreenPerceptionSettings } from "./ScreenPerceptionSettings";
+import { NovelaiRoleSettings } from "../novelai/NovelaiRoleSettings";
 import { draftFromRole, payloadFromDraft } from "./draft";
 
 type TextFieldKey = keyof RoleProfile | "name" | "description";
@@ -100,6 +101,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
       <legend>能力</legend>
       <ScreenPerceptionSettings draft={draft} onChange={setDraft} disabled={locked} />
       <ComputerUseSettings draft={draft} onChange={setDraft} disabled={locked} />
+      <NovelaiRoleSettings draft={draft} onChange={setDraft} disabled={locked} />
       <label className="field checkbox-field">
         <input
           type="checkbox"

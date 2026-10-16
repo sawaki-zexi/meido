@@ -3,6 +3,7 @@ from typing import Any, Literal
 import uuid
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from .novelai_generation.config import NovelaiRoleConfig
 
 
 class RoleProfile(BaseModel):
@@ -64,6 +65,7 @@ class ScreenPerceptionConfig(BaseModel):
 
 
 class AgentToolConfig(BaseModel):
+    novelai: NovelaiRoleConfig = Field(default_factory=NovelaiRoleConfig)
     shell: ShellToolConfig = Field(default_factory=ShellToolConfig)
     memoryRecall: MemoryRecallToolConfig = Field(default_factory=MemoryRecallToolConfig)
     browserUse: BrowserUseToolConfig = Field(default_factory=BrowserUseToolConfig)

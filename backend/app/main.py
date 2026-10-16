@@ -30,6 +30,8 @@ from .ai.model_adapter import ModelAdapter
 from .ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
 from .screen_perception import ObserveScreenTool, ScreenPerception
 from .computer_use import ComputerUseHost, COMPUTER_USE_TOOL_NAMES, load_computer_tools, register_computer_use_plugin, guard_provider
+from .novelai_generation.application import NovelaiApplication
+from .novelai_generation.api import novelai_router
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
 from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryQueryFilters, MemoryScope
@@ -254,6 +256,20 @@ browser_use_sessions = BrowserSessions(
     resources=Path(os.getenv("MEIDO_BROWSER_USE_RESOURCES", str(Path(__file__).resolve().parent))).resolve(),
 )
 task_runtime = TaskRuntime(data_root / "tasks")
+_novelai: NovelaiApplication | None = None
+
+
+def _novelai_application() -> NovelaiApplication:
+    global _novelai
+    if (_novelai is None or _novelai.sessions is not session_store or _novelai.tasks is not task_runtime
+            or _novelai.roles is not store or _novelai.channels is not multichannel_store):
+        _novelai = NovelaiApplication(root=data_root / 'novelai', tasks=task_runtime,
+            sessions=session_store, roles=store, channels=multichannel_store,
+            credentials=SystemCredentialStore('meido.novelai', strict_cleanup=True),
+            is_role_deleting=lambda role_id: role_id in _channel_roles_deleting,
+            channel_media_supported=lambda account_id: bool(channel_adapters.get(account_id)
+                and channel_adapters[account_id].capabilities.media))
+    return _novelai
 todo_store = TodoStore(data_root / "todos.db")
 todo_application = TodoApplicationService(todo_store, session_store)
 todo_plugin = TodoPlugin(
@@ -796,6 +812,8 @@ async def _close_memory_workers() -> None:
         await _spawn_completion_worker.close()
     await screen_perception.close()
     await computer_use.close()
+    if _novelai is not None:
+        await _novelai.close()
     await asyncio.to_thread(task_runtime.close)
     await mail_service.close()
     await owner_knowledge_scheduler.close()
@@ -812,6 +830,7 @@ async def _start_memory_workers() -> None:
     global _channel_runtime_loop
     _channel_runtime_loop = asyncio.get_running_loop()
     task_runtime.start()
+    _novelai_application().start()
     _schedule_application().start()
     _ensure_spawn_completion_worker()
     mail_service.start()
@@ -835,6 +854,7 @@ async def _start_memory_workers() -> None:
             memory_store.delete_role(role_id)
             owner_knowledge_store.delete_role(role_id)
             multichannel_store.delete_role(role_id)
+            _novelai_application().purge_role(role_id)
             _channel_push_service().clear_role(role_id)
             todo_store.mark_source_unavailable(role_id)
             for marker in store.root.glob(f".deleting-{role_id}-*.json"):
@@ -880,6 +900,7 @@ def _owner_knowledge_return_url(origin: str = "") -> str:
 app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown=[_close_memory_workers])
 app.include_router(mail_router)
 app.include_router(mcp_router(lambda: mcp_host, lambda: store))
+app.include_router(novelai_router(_novelai_application))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=owner_knowledge_frontend_origins,
@@ -1528,7 +1549,9 @@ def list_roles() -> RoleList:
 def create_role(data: RoleInput) -> RoleResponse:
     _validate_screen_configuration(data.agentConfig.screenPerception)
     try:
-        return RoleResponse(role=store.create(data))
+        return RoleResponse(role=_novelai_application().create_role(data))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
     except OSError as error:
         raise HTTPException(status_code=500, detail=f"角色保存失败：{error}") from error
 
@@ -1590,6 +1613,11 @@ def get_role_tools(role_id: str) -> dict[str, object]:
         "status": "unavailable" if screen_reason else "unchecked",
         "reason": screen_reason or "采集桌面及远端模型视觉能力将在调用时验证",
     }
+    generation_reason = _novelai_application().unavailable_reason(role)
+    if generation_reason:
+        reasons['generate_image'] = generation_reason
+    dependencies['generate_image'] = {'status': 'unavailable' if generation_reason else 'unchecked',
+        'reason': generation_reason or '仅检查本地许可和额度；真实 NovelAI 服务尚未调用或验证'}
     for names, available, reason in (
         (("web_search", "web_fetch"), network_tools_config.enabled, "宿主联网已关闭"),
         (("memorize", "forget_memory"), memory_settings_store.get().enabled, "全局记忆已关闭"),
@@ -1628,7 +1656,9 @@ async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
         if current is not None and data.agentConfig is not None and "screenPerception" in data.agentConfig.model_fields_set:
             screen = current.agentConfig.screenPerception.model_copy(update=data.agentConfig.screenPerception.model_dump(exclude_unset=True))
             _validate_screen_configuration(screen)
-        updated = store.update(role_id, data)
+        updated = _novelai_application().update_role(role_id, data)
+        if current is not None and current.agentConfig.novelai != updated.agentConfig.novelai:
+            await _novelai_application().invalidate(role_id)
         if current is not None and current.agentConfig.screenPerception != updated.agentConfig.screenPerception:
             await screen_perception.invalidate(role_id=role_id)
         if current is not None and current.agentConfig.computerUse != updated.agentConfig.computerUse:
@@ -1645,6 +1675,8 @@ async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
         return RoleResponse(role=updated)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
     except OSError as error:
         raise HTTPException(status_code=500, detail=f"角色保存失败：{error}") from error
 
@@ -1909,6 +1941,7 @@ async def delete_role(role_id: str) -> None:
             await managed_napcat.stop(ref, role_id=role_id)
         await screen_perception.invalidate(role_id=role_id)
         await computer_use.invalidate(role_id=role_id)
+        await _novelai_application().invalidate(role_id)
         await browser_use_sessions.set_role_enabled(role_id, False)
         # Mark the gate before the first await so cancellation cannot leave a
         # role permanently blocked from future memory work.
@@ -1949,6 +1982,10 @@ async def delete_role(role_id: str) -> None:
         _channel_push_service().clear_role(role_id)
         store.purge_staged_role_files(staged_path)
         deletion_succeeded = True
+        try:
+            _novelai_application().purge_role(role_id)
+        except (OSError, sqlite3.Error, ValueError) as error:
+            memory_worker.errors.append(f"{role_id}: generation cleanup deferred: {type(error).__name__}")
         await mcp_host.delete_role(role_id)
         try:
             todo_store.mark_source_unavailable(role_id)
@@ -3955,6 +3992,8 @@ def _runtime_tool_candidates(
         source_thread_id=source_thread_id, is_owner=is_channel_owner,
         authorized=lambda context: store.get(role.id) is not None and role.id not in _channel_roles_deleting)
     tools: list[object] = [
+        _novelai_application().tool_for(role.id, is_owner=is_channel_owner,
+            source_thread_id=source_thread_id, source_account_id=source_account_id, frozen_role=role),
         ScheduleTool(_schedule_application, session_store, origin_resolver=task_origin,
             authorized=schedule_source_authorized),
         *(ScheduleManageTool(name, _schedule_application, origin_resolver=task_origin, authorized=schedule_source_authorized)
@@ -4050,6 +4089,8 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
     enabled: set[str] = set()
     if computer_use.dependency_status(role)["status"] != "unavailable":
         enabled.update(COMPUTER_USE_TOOL_NAMES)
+    if not _novelai_application().unavailable_reason(role):
+        enabled.add('generate_image')
     if not _screen_unavailable_reason(role):
         enabled.add("observe_screen")
     if include_channel or group_repository.has_member_data(role.id):
@@ -4110,7 +4151,7 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     host_enabled = set(enabled_tools)
     enabled_tools.update(agent_config.enabledTools)
-    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen"}) - host_enabled)
+    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image"}) - host_enabled)
     if not include_channel:
         enabled_tools.difference_update({
             "account_list", "account_targets", "account_send", "set_group_listening", "read_attachment",
@@ -4233,6 +4274,12 @@ async def _runtime_capabilities(
     if "browser.session" in policy.provided_capabilities:
         host_services["browser.session"] = browser_use_sessions
     candidates = _runtime_tool_candidates(role, include_channel=include_channel) if available_tools is None else available_tools
+    for tool in candidates:
+        if tool.definition.name == 'generate_image' and 'generate_image' in policy.enabled_tools:
+            try:
+                tool.bind_run(run_id, session_key)
+            except (PermissionError, ValueError):
+                policy = replace(policy, enabled_tools=policy.enabled_tools - {'generate_image'})
     if mcp_run is not None:
         candidates = tuple(tool for tool in candidates if tool.definition.name not in MCP_MANAGEMENT_NAMES) + mcp_run.tools
     try:
@@ -5170,13 +5217,15 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
             provider_timeout=120.0,
             tool_timeout=max(32.0, role.agentConfig.shell.timeoutSeconds + 2,
                              network_tools_config.timeout_seconds + 1
-                             if {"web_fetch", "web_search"} & set(role.agentConfig.enabledTools) else 0.0),
+                             if {"web_fetch", "web_search"} & set(role.agentConfig.enabledTools) else 0.0,
+                             330.0 if any(tool.name == 'generate_image' for tool in capabilities.snapshot.tools) else 0.0),
             on_message_end=persist_runtime_message,
         ):
             if isinstance(event, MessageUpdateEvent) and isinstance(event.message, AssistantMessage) and event.message.content.strip():
                 streamed_content = event.message.content
                 adapter = channel_adapters.get(thread.account_id)
-                if adapter is not None and adapter.capabilities.streaming and (
+                if (not any(tool.name == 'generate_image' for tool in capabilities.snapshot.tools)
+                        and adapter is not None and adapter.capabilities.streaming) and (
                     thread.channel != "telegram" or thread.chat_type == "private"
                 ):
                     if stream_queue is None:
@@ -5201,6 +5250,8 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
             if isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage) and not event.message.tool_calls:
                 final_content = event.message.content
         delivery_metadata: dict[str, object] | None = None
+        generation_reply = await _novelai_application().claim_channel_reply(thread.role_id,
+            thread.session_key, run_id, final_message_id) if final_message_id is not None else None
         if stream_queue is not None and stream_task is not None:
             terminal_content = final_content if final_content.strip() else streamed_content
             if terminal_content.strip():
@@ -5217,13 +5268,15 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
             except Exception as error:
                 logger.warning("渠道回复投递失败 role=%s thread=%s error=%s", thread.role_id, thread.thread_id, type(error).__name__)
                 delivery_metadata = {"deliveryStatus": "failed", "deliveryError": type(error).__name__}
-        elif final_content.strip():
+        elif final_content.strip() or generation_reply is not None:
             try:
                 result = await channel_host.account_send(
                     thread.role_id,
                     thread.account_id,
                     target.id,
                     final_content,
+                    attachment_ids=generation_reply.attachment_ids if generation_reply is not None else (),
+                    authorize_source=generation_reply.authorized if generation_reply is not None else None,
                     reply_to_message_id=str(metadata.get("platformMessageId")) if metadata.get("platformMessageId") else None,
                     actor="reply",
                     source_thread_id=thread.thread_id,
@@ -5240,9 +5293,14 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
                     "platformMessageId": result.platform_message_id,
                     "deliveryError": result.error,
                 }
+                if generation_reply is not None:
+                    await _novelai_application().record_channel_receipt(generation_reply, status=result.status.value,
+                        delivery_id=result.attempt_id, platform_message_id=result.platform_message_id)
             except Exception as error:
                 logger.warning("渠道回复投递失败 role=%s thread=%s error=%s", thread.role_id, thread.thread_id, type(error).__name__)
-                delivery_metadata = {"deliveryStatus": "failed", "deliveryError": type(error).__name__}
+                delivery_metadata = {"deliveryStatus": "uncertain" if generation_reply is not None else "failed", "deliveryError": type(error).__name__}
+                if generation_reply is not None:
+                    await _novelai_application().record_channel_receipt(generation_reply, status='uncertain')
         if final_message_id is not None and delivery_metadata is not None:
             message = next((item for item in session_store.list_messages(thread.session_key) if item.id == final_message_id), None)
             if message is not None:
@@ -5252,6 +5310,8 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
                     message.status if delivery_metadata.get("deliveryStatus") == "sent" else "failed",
                     metadata={**message.metadata, **delivery_metadata},
                 )
+                if generation_reply is not None:
+                    await _novelai_application().mark_reply_synced(generation_reply)
                 multichannel_store.publish(thread.role_id, {
                     "type": "message",
                     "roleId": thread.role_id,
@@ -5584,6 +5644,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         browser_use_sessions.timeout_seconds if role.agentConfig.browserUse.enabled else 0.0,
                         network_tools_config.timeout_seconds + 1 if {"web_fetch", "web_search"} & set(role.agentConfig.enabledTools) else 0.0,
                         36.0 if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools) else 0.0,
+                        330.0 if any(tool.name == 'generate_image' for tool in capabilities.snapshot.tools) else 0.0,
                     ),
                     on_message_end=persist_runtime_message,
                 ):
@@ -5658,6 +5719,10 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     if item.runId == run_id and item.role == "assistant" and item.messageType == "text"
                 )
                 message = final_message
+                attached = await _novelai_application().attach_foreground_reply(role_id,
+                    session.session.sessionKey, run_id, final_message.id)
+                if attached is not None:
+                    message = attached
                 try:
                     memory_worker.publish(TurnCommitted(
                         role_id,
