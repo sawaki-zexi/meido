@@ -1,6 +1,6 @@
 # 飞书受管握手与停止验收
 
-状态：实施验证记录，待两轴独立复核及总集成；未合入 main。
+状态：实施验证记录，已完成两轴独立复核并本地集成；未合入 main。最终CI以[总PR检查](https://github.com/sawaki-zexi/meido/pull/162/checks)为准。
 
 最后核验：2026-10-16。Issue [#181](https://github.com/sawaki-zexi/meido/issues/181)，授权基线 `58c3fa16c5a3bb7df88ebfd4f188e33a20f68a7b`；源码及四份测试见[连接契约](../reference/feishu-owned-connection.md)。基线两套 CI 各1780 passed/16 skipped、前端174 passed/26 files及构建，不代替本票最终 CI。
 
@@ -35,10 +35,17 @@
 | 范围 | 实际结果 |
 | --- | --- |
 | 最终四文件专集 | 33 passed/6条SDK依赖弃用warning，51.11秒；含4条Runner失败/取消，14条公开生命周期及真实SDK协议/预算；无资源warning、未取task异常或teardown error |
-| 更大渠道交叉 | 427 passed/6条SDK弃用warning，164.67秒；channels、API设置/目录/来源/身份和multichannel，完整三环境变量和整组guard。随后补disconnect自行CancelledError反例及窄修，再由上述最终专集验证 |
-| 新模块静态 | mypy通过，Ruff、编译及diff通过 |
+| 早期更大渠道交叉 | 427 passed/6条SDK弃用warning，164.67秒；随后补disconnect自行CancelledError反例及窄修，不作为后者的固定版本验证 |
+| 固定f079ef6交叉 | 428 passed/6条SDK弃用warning，173.27秒；channels、API设置/目录/来源/身份和multichannel，完整三环境变量和整组guard，无资源warning、未取task异常或teardown error |
+| 独立规范审查 | f079ef6的生命周期/清理18 passed、SDK/HTTP15 passed；发现1项新增类型诊断，09259c9修正后原人独立mypy通过，最终0项遗留 |
+| 独立规格审查 | f079ef6的专集33 passed、旧传输/目录16 passed；09259c9唯一类型改动经原人窄复核及独立mypy通过，最终0项遗留 |
+| 新模块静态 | 09259c9以silent/ignore-missing-imports/no-incremental通过mypy；作者及两位原审查者分别核验。Ruff、编译及diff通过；早期skip参数的范围不足见下文 |
 | 旧模块类型 | main/transports同旗标与准确58c按文件、限定函数、完整AST语句、错误码及全文比较：25→22，22匹配、新增0、移除3；旧模块仍退出1，不声称全仓mypy干净 |
 | 前端 | 无输入变化，继承准确58c两套174项及TypeScript/Vite构建，不声称重跑 |
+
+独立规范审查发现初期 `--follow-imports=skip` 将HTTPX导入类型跳过，原“mypy通过”不足以证明可关闭流契约；`silent`与禁incremental均复现1项type-var。`09259c9e2228a63a8e2a8ef9e077c2f2ac786d47` 仅补typing/import，以有据的AsyncGenerator转换保留aclosing；相同更严格参数及SDK/HTTP15项复跑通过（38.21秒）。原33/428明确仍对应f079ef6，没有将其冒记为修正后的整组重跑。两轴原审查者已各自窄复核并独立通过mypy。
+
+本地集成 `83e853ee7a33d6d037f651c26bfa08ef8812bb5f` 与09259c9审查源全树逐文件一致；后续仅文档状态/证据更新，生产与测试保持一致。旧模块的25→22诊断对照不等同新模块silent检查，也未声称全仓类型干净。
 
 各组重叠，不相加为唯一覆盖数。原始命令/日志及夹具边界说明保存于仓库外D:/meido-artifacts/feishu181-*。公开复现：在仓库根设置三项完整临时变量后运行 `python -m pytest tests/python/channels tests/python/test_feishu_lifecycle_api.py tests/python/test_channel_api.py tests/python/test_channel_settings_api.py tests/python/test_channel_directory_api.py tests/python/test_channel_source_authority.py tests/python/test_channel_identity_parity.py tests/python/test_multichannel.py -q -ra -o usefixtures=local_platform_only`。
 

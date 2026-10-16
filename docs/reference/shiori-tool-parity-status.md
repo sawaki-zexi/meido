@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；本地集成核验：`3feeb215773813030ce3fd76d9a086c985f6cfdc`。前一固定版本 `4b1b3b8858896b907a147b65612de0bb02896305` 的两条 CI 全通过：后端1712 passed、16 skipped，前端174 passed及构建；后续固定提交的最终 CI 见[总 PR 检查](https://github.com/sawaki-zexi/meido/pull/162/checks)，跳过项不计原生验收。
+最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；本地集成核验：`83e853ee7a33d6d037f651c26bfa08ef8812bb5f`。前一固定版本 `58c3fa16c5a3bb7df88ebfd4f188e33a20f68a7b` 的两条 CI 全通过：各后端1780 passed、16 skipped、1条Starlette弃用warning，前端174 passed/26文件及构建；该结果不代替新增#181代码的最终CI，后续固定提交见[总 PR 检查](https://github.com/sawaki-zexi/meido/pull/162/checks)，跳过项不计原生验收。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -26,7 +26,7 @@
 | C03 Shell/任务 3 工具 | #149 已进入集成分支；独立 TaskRuntime、SQLite、日志、实际进程树生命周期及来源授权经过两轴审查 | 后续 spawn/调度/Coding 集成回归；不得扩大 Shell 许可 |
 | C04 网络 2 工具 | main，PR #146；受控 HTTP、公开网页与真实搜索服务验收 | 后续集成回归 |
 | C05 记忆/消息 5 工具 | main，PR #147、#151；真实 MemoryEngine/SQLite/HTTP，取消后写入回滚与范围验证 | 后续任务和来源集成回归 |
-| C06 投递/账号 4 工具 | main 复用 PR #128、#136 的渠道宿主与账本；#167 桌面文本/媒体已两轴复核并集成；#170 分类有界目录与当前连接事实已集成，轮询误停 P1 修复后的两轴复核均无遗留；真实来源、分页与本地协议纵切见[契约](channel-directory.md)及[验收](../research/channel-directory-acceptance-2026-10-16.md) | [#181](https://github.com/sawaki-zexi/meido/issues/181) 飞书SDK既有停止资源缺陷；总 PR 最终跨模块验收及明确授权后的真实平台收件证据 |
+| C06 投递/账号 4 工具 | main 复用 PR #128、#136 的渠道宿主与账本；#167 桌面文本/媒体已两轴复核并集成；#170 分类有界目录与当前连接事实已集成，轮询误停 P1 修复后的两轴复核均无遗留；真实来源、分页与本地协议纵切见[契约](channel-directory.md)及[验收](../research/channel-directory-acceptance-2026-10-16.md)；#181飞书握手与停止资源修复也已两轴复核并集成，见[连接契约](feishu-owned-connection.md)及[验收](../research/feishu-owned-stop-acceptance-2026-10-16.md) | 总 PR 最终跨模块验收及明确授权后的真实平台收件证据 |
 | C07 子任务 2 工具 | #157 已进入集成分支；真实 TaskRuntime 子 loop、冻结 profile/模型、预算、原来源管理和完成交付已两轴审查；连续取消、pending 去重、跨库恢复与锁冲突修复的最终复核均无剩余 finding | 总 PR 跨模块集成与最终验收；未使用真实平台账号或付费模型 |
 | C08 调度 3 工具 | #158 固定 `e992e0f` 两轴最终复核均无剩余 finding并进入集成；交叉 400 passed、前端174及构建、5源类型检查通过；`4b1b3b8` 两套CI全绿，后端1712 passed/16 skipped；持久找回/ACK、取消及worker存活见[契约](owned-schedules.md)及[验收](../research/owned-schedules-acceptance-2026-10-16.md) | 总 PR 最终验收；未使用真实平台账号或付费模型，现有待办不计作此项实现 |
 | C09 群/成员 4 工具 | #165、#166 已进入集成分支；可信历史昵称、成员来源、完整群分页、笔记字段省略/清空及离线资料；两轴最终复核通过，事务直接读取父取消并等待写线程退出 | 总 PR 跨模块回归和最终验收；不得扩大来源范围 |
@@ -94,5 +94,7 @@ MCP 故障已在 Windows 原命令和 Linux 真实慢退出 fixture 复现：RPC
 #168 规范审查无 finding；规格审查独立 Windows **10 passed / 44.11s**，确认 18 次脚本化模型请求、19 次真实远端调用、17 次 localhost 请求及撤权失败结果。最终源码 `256c2cc` 汇入 `8bb2a2e` 后，Feed、内置 Skills/显式激活、MCP schema、桌面推送 HTTP 与 Runtime 历史交叉 **94 passed / 107.13s**，包含两条实际 Feed 原生用例，无 skip。服务源码与隔离 venv 仅保存在外部证据目录，未新增项目依赖或访问真实账号。
 
 #170 原固定 `73f0803` 的两轴审查均独立复现 Telegram 轮询误停。`d0894c3` 按实际连接/权限单调代际区分诊断写入，两份原探针修复后均通过，两轴复核无遗留。后续纠正验收脚本短环境变量并隔离旧头像/SDK夹具；最终 `8d2ff2a` 在完整三项临时环境变量与整组网络guard下 **210 passed /73.85秒**，两原探针同环境通过。生产规范独立 **20 passed**、规格独立 **68 passed**，最终夹具两轴各独立 **23 passed**；重叠不相加。旧模块47项类型诊断逐条无新增，前端输入未变，继承174项及构建验证。汇入 `3feeb21` 后生产/测试/前端与审查源逐文件一致，无冲突。旧脚本与两轮guard失败未被改写成成功；另已复现基线就存在的飞书SDK停止后线程存活问题，单列#181，不以夹具修正代替生产修复。详见[验收记录](../research/channel-directory-acceptance-2026-10-16.md)。
+
+#181 修复SDK同步握手、虚假停止成功、清理失败替代及取消遗失归属，并保留旧保存配置/密钥的回滚。固定 `f079ef6` 的整组guard交叉 **428 passed/173.27秒**，专集33项包含其中；独立规范18+15项、规格33+16项均通过。规范另发现新增类型诊断，`09259c9` 只补实际HTTPX异步生成器的可关闭静态契约；同一silent/no-incremental参数已由两位原审查者独立通过，SDK/HTTP专集15项复跑通过，未冒称重跑全部428。两轴最终均无遗留。汇入 `83e853e` 时全树与审查源一致；文档随后只更新证据和状态。原无效夹具、撤guard后未知区间及静态检查flags修正均保留，详见[验收记录](../research/feishu-owned-stop-acceptance-2026-10-16.md)。
 
 这些数量仅说明对应固定范围，不能替代尚未实现的工具、真实平台收件或未取得的 YouTube 字幕证据。集成分支继续推进时，更新本表和最终验收记录。

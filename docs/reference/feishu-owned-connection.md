@@ -1,6 +1,6 @@
 # 飞书连接与停止资源
 
-状态：已实施，待独立复核与总集成；未合入 main。
+状态：已实施并完成两轴复核，已本地集成；未合入 main。最终CI以[总PR检查](https://github.com/sawaki-zexi/meido/pull/162/checks)为准。
 
 最后核验：2026-10-16；对应 [#181](https://github.com/sawaki-zexi/meido/issues/181)。事实来源：[受管 SDK/Runner](../../backend/app/channels/feishu_connection.py)、[Transport](../../backend/app/channels/transports.py)、[账号生命周期](../../backend/app/main.py)、[真实 SDK 协议](../../tests/python/channels/test_feishu_owned_connection.py)、[HTTP 预算](../../tests/python/channels/test_feishu_handshake_budget.py)、[清理所有权](../../tests/python/channels/test_feishu_runner_cleanup.py)、[公开 HTTP 行为](../../tests/python/test_feishu_lifecycle_api.py)。
 
@@ -14,7 +14,7 @@
 
 | 范围 | 当前界限 |
 | --- | --- |
-| discovery HTTP | 整个请求及流读取总计20秒，另有阶段超时；原始响应64 KiB |
+| discovery HTTP | 整个请求及流读取总计20秒，另有阶段超时；原始响应正文64 KiB |
 | 编码 | 请求 identity；解码前拒绝其他压缩编码；严格 UTF-8 |
 | JSON | 深度8、节点256，未知扩展内容也计预算 |
 | WebSocket URL | UTF-8 8 KiB；校验协议、host、端口、device_id/service_id，复用原 SDK 连接 |
