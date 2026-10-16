@@ -33,7 +33,7 @@
 | C10 MCP 3 工具 | #159 已进入集成分支；真实 stdio、版本化发现、配置 UI、持久连接意愿及严格凭据清理已两轴复核；Linux 回收、Windows asyncio 环境、中文 schema 编码及 peer_error 清理竞态均实证修复并两轴复核；`c03a9fb` 两条 CI 通过 | 总 PR 最终跨模块验收 |
 | P01 浏览器 28 工具 | main，PR #150；全部 28 schema 映射核验，21 项真实原生浏览器测试通过，无 skip | 后续 MCP/配置集成回归 |
 | P02 桌面控制 8 工具 | #169 固定源 `7aa8108` 已两轴复核并整合；8工具/图像下一模型请求、单观察/lease/Job收尾有真实专用窗口和HTTP/provider证据。规范审查两项P2修正后独立复核无遗留；集成交叉60 passed/1原生deselected，前端专项及TS/Vite、9源mypy和c052848两条完整CI通过 | 总PR最终跨模块验收；多DPI/多屏/锁屏等未验收环境见[原生手册](../handbook/computer-use-native-acceptance.md)，不扩大真实应用操作许可 |
-| P03 Coding Agent 5 工具 | #174 固定源 `5a5a2c4` 两轴修正复核无遗留后汇入；真实owned Herdr/两合成CLI、精确继续、原来源和持久恢复见[验收手册](../handbook/coding-agent-acceptance.md)。集成交叉167 passed，包含7项原生；关闭故障修正及新CI仍待最终复核。#175 codex-delegate、#176 确切成果批准发布保留真实前置依赖 | 当前集成复核/CI与后续两票；真实认证/消费/发布另批，不能以合成CLI代替真实服务 |
+| P03 Coding Agent 5 工具 | #174 固定源 `5a5a2c4` 两轴修正复核无遗留后汇入；真实owned Herdr/两合成CLI、精确继续、原来源和持久恢复见[验收手册](../handbook/coding-agent-acceptance.md)。集成交叉167 passed，包含7项原生；关闭故障修正 `a825e11` 已两轴复核无遗留，新CI待完成。#175 codex-delegate、#176 确切成果批准发布保留真实前置依赖 | 当前准确HEAD完整CI与后续两票；真实认证/消费/发布另批，不能以合成CLI代替真实服务 |
 | P04 屏幕感知 1 工具 | #160 已进入集成分支；提前拒绝/重复取消连接回收最终两轴复核均无剩余 finding；相关后端 196 passed/1 native 条件 skip，前端 69 passed；真实受控 Windows 主屏/125% DPI/本地视觉及取消通过，无原图落盘 | 总 PR 最终集成；尚无双屏、混合 DPI、实际锁屏/远程断开或 frozen 分发实证，也未调用真实远端视觉服务 |
 | P05 桌宠 1 工具 | 待实现；Electron/PySide6 宿主选择待回答 | 真实透明置顶窗口、动作包、move/play 与完整生命周期 |
 | P06 生图 1 工具 | #171 固定源b786a867及集成修正均已两轴复核无遗留，公开HTTP对话txt2img/img2img、原回复和历史归属、单POST/取消/恢复有本地协议证据；`0dee4e4` 两条完整CI通过。公平恢复批次P2的两种100条阻塞回归已独立验证；见[手册](../handbook/novelai-generation-acceptance.md)。#172重生成/后台媒体正在独立分支实施，#173人类回合CG等待#172 | #172/#173实现及复核；真实NovelAI账号生成和费用另批，不能以本地fixture宣称真实服务可用 |
@@ -115,4 +115,4 @@ MCP 故障已在 Windows 原命令和 Linux 真实慢退出 fixture 复现：RPC
 
 #174 源 `5a5a2c4` 修正资源槽、初次原子交接、最终发布授权与worker故障恢复后，两轴复核均无遗留，汇入 `aab1078`/`3634586`。私有Coding模块、专用测试、固定补丁与vendor和源提交一致；共享配置/UI保留CU与Novel。准确集成交叉 **167 passed/1个CU原生deselected（268.70秒）**，包含全部48项Coding专用及7项真实Herdr/合成CLI原生用例；前端完整32文件182项、14源默认mypy、compileall与TS/Vite通过。该mypy未声明检查全部未注解函数体。原生短路径成功不消除已记录的长路径限制。
 
-独立集成规格16项通过；规范53项通过但发现Coding清理未确认会跳过其余独立owner的退出。真实Runtime回归先2项失败，改为逐一尝试各owner、最后保留单异常或组合异常。首轮相关33项pytest通过后，外部runner关闭先前已取消的worker仍失败，整条命令不报绿；另补终态worker、关闭调用方取消及两者同时取消的真实RED，区分旧worker终态与新的取消请求。修正后同范围 **36 passed（32.21秒），进程exit0**，完整三根与guard持有至所有owned退出；未确认Coding仍保留账本与可重试职责。修正delta独立复核及新准确HEAD完整CI尚待完成，没有合并或关票。
+独立集成规格16项通过；规范53项通过但发现Coding清理未确认会跳过其余独立owner的退出。真实Runtime回归先2项失败，改为逐一尝试各owner、最后保留单异常或组合异常。首轮相关33项pytest通过后，外部runner关闭先前已取消的worker仍失败，整条命令不报绿；另补终态worker、关闭调用方取消及两者同时取消的真实RED，区分旧worker终态与新的取消请求。修正后同范围 **36 passed（32.21秒），进程exit0**，完整三根与guard持有至所有owned退出；未确认Coding仍保留账本与可重试职责。固定 `a825e11` 的规范增量独立24项、规格增量独立22项均通过，两轴均无遗留；新准确HEAD完整CI尚待完成，没有合并或关票。
