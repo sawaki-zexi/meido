@@ -23,8 +23,8 @@ prune uses caller UTC time: source snapshots expire after 24h, transcripts after
 7d, resolved details after 90d; active/unknown operation, delivery and ACK identity
 and business keys survive. Expiring source text does not resolve those duties.
 Existing runs are backfilled with identity-only reservations, never replayed.
-This is logical SQLite storage; future #179 filesystem writes need their own
-managed allocation integration and are not claimed as implemented here.
+Filesystem integration records actual managed allocation and pending journals;
+it does not estimate the physical sessions.db file or replay interrupted writes.
 """
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -151,13 +151,19 @@ def _usage(db):
             total+=size
             counts[role]=counts.get(role,0)+count
             metadata[role]=metadata.get(role,0)+meta
+    if 'autonomy_drift_allocations' in tables:
+        total += db.execute('SELECT COALESCE(SUM(committed_bytes+reserved_bytes),0) FROM autonomy_drift_allocations').fetchone()[0]
+    if 'autonomy_drift_logs' in tables:
+        total += db.execute('SELECT COALESCE(SUM(bytes),0) FROM autonomy_drift_logs').fetchone()[0]
     return total,counts,metadata
 
 
 def usage(db,role_id):
     """Logical current allocation, including unfinished reservations."""
     total,counts,metadata=_usage(db)
-    return {"globalBytes":total,"roleRecords":counts.get(role_id,0),"roleBytes":metadata.get(role_id,0)}
+    files = db.execute('SELECT committed_bytes+reserved_bytes FROM autonomy_drift_allocations WHERE role_id=?', (role_id,)).fetchone() if 'autonomy_drift_allocations' in _tables(db) else None
+    return {"globalBytes":total,"roleRecords":counts.get(role_id,0),"roleBytes":metadata.get(role_id,0),
+        'filesystemBytes': files[0] if files else 0}
 
 
 def _check(db,role_id,limits):
@@ -170,6 +176,12 @@ def _check(db,role_id,limits):
 def check_capacity(db, role_id):
     """Validate business/config writes before their caller-owned commit."""
     _check(db, role_id, DEFAULT_LIMITS)
+
+
+def retain_runtime_log(db, tick_id, actual_bytes):
+    """Ended Runtime + owned join proves the original 64 KiB log cannot grow."""
+    if 'autonomy_drift_logs' in _tables(db):
+        db.execute('UPDATE autonomy_drift_logs SET bytes=? WHERE tick_id=?', (actual_bytes, tick_id))
 
 
 def _time(now):
@@ -257,7 +269,23 @@ def _finished(run):
 
 def _resolved(db,tick_id):
     tables=_tables(db)
-    if "autonomy_deliveries" in tables and db.execute("""SELECT 1 FROM autonomy_deliveries WHERE tick_id=? AND NOT (
+    if 'autonomy_drift_write_journal' in tables and db.execute(
+            "SELECT 1 FROM autonomy_drift_write_journal WHERE operation_id=? AND status='pending'", (tick_id,)).fetchone():
+        return False
+    if 'autonomy_drift_progress' in tables and db.execute(
+            'SELECT 1 FROM autonomy_drift_progress WHERE last_tick_id=? AND projection_pending=1', (tick_id,)).fetchone():
+        return False
+    definitive_drift_failure = False
+    if 'autonomy_deliveries' in tables:
+        run = _one(db, 'SELECT mode FROM autonomy_runs WHERE tick_id=?', (tick_id,))
+        if run and run['mode'] == 'drift':
+            from .drift_delivery import actual_outcome
+            claim = _one(db, 'SELECT * FROM autonomy_deliveries WHERE tick_id=?', (tick_id,))
+            try:
+                definitive_drift_failure = actual_outcome(claim) == 'failed'
+            except (ValueError, TypeError, KeyError):
+                return False
+    if not definitive_drift_failure and "autonomy_deliveries" in tables and db.execute("""SELECT 1 FROM autonomy_deliveries WHERE tick_id=? AND NOT (
         (status='sent' AND message_id IS NOT NULL AND CASE WHEN json_valid(receipt)
             THEN COALESCE(json_extract(receipt,'$.status')='sent' AND json_extract(receipt,'$.messageId')=message_id,0) ELSE 0 END)
         OR (status IN ('failed','cancelled') AND dispatched=0))""",(tick_id,)).fetchone():

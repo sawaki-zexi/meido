@@ -4082,6 +4082,10 @@ def _runtime_tool_candidates(
     group_access = GroupToolAccess(multichannel_store, role_id=role.id,
         source_thread_id=source_thread_id, is_owner=is_channel_owner,
         authorized=lambda context: store.get(role.id) is not None and role.id not in _channel_roles_deleting)
+    file_tools = build_file_tools(role.id, store.root / role.id / 'workspace', is_owner=is_channel_owner)
+    if not preview:
+        file_tools = _proactive_application().drift_skills.author_tools(file_tools, role.id,
+            authorized=schedule_source_authorized)
     tools: list[object] = [
         _novelai_application().tool_for(role.id, is_owner=is_channel_owner,
             source_thread_id=source_thread_id, source_account_id=source_account_id, frozen_role=role),
@@ -4120,7 +4124,7 @@ def _runtime_tool_candidates(
             source_thread_id=source_thread_id, access=group_access),
         LookupGroupContextTool(group_repository, role_id=role.id, access=group_access),
         UpdateGroupContextTool(group_repository, role_id=role.id, access=group_access),
-        *build_file_tools(role.id, store.root / role.id / "workspace", is_owner=is_channel_owner),
+        *file_tools,
     ]
     tools.extend(build_message_history_tools(
         session_store, multichannel_store, role_id=role.id,
@@ -4794,7 +4798,8 @@ def _proactive_application():
             model_getter=model_configuration_store.get, mcp_host=mcp_host,
             adapter_factory=lambda configuration: model_adapter,
             recall_memory=_proactive_memory, web_tools=_proactive_web, fetch_body=_proactive_body,
-            context_reader=_proactive_context)
+            context_reader=_proactive_context,
+            workspace_getter=lambda role_id: store.root / role_id / 'workspace')
     return _proactive
 
 

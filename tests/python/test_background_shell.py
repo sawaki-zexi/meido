@@ -56,19 +56,27 @@ def test_background_command_survives_parent_and_returns_complete_result(tmp_path
         tasks.close()
 
 
-def test_auto_promotion_retains_hard_deadline_and_polling_never_restarts(tmp_path):
+def test_auto_promotion_retains_hard_deadline_and_polling_never_restarts(tmp_path, monkeypatch):
     from backend.app.task_runtime import TaskRuntime
+    from backend.app.task_runtime import process
     from backend.app.agent_runtime.shell_tool import TaskOutputTool
 
+    original_popen, created = process.subprocess.Popen, []
+    def record_created(*args, **kwargs):
+        child = original_popen(*args, **kwargs)
+        created.append((child.pid, tuple(args[0])))
+        return child
+    monkeypatch.setattr(process.subprocess, 'Popen', record_created)
     tasks = TaskRuntime(tmp_path / "tasks")
     shell = ShellTool(tmp_path, allowed_commands=[sys.executable], tasks=tasks,
                       timeout_seconds=.4, promote_after_seconds=.03)
     output = TaskOutputTool(tasks)
 
     async def run():
-        result = await shell.execute({"command": command(
+        requested = command(
             "from pathlib import Path; import time; Path('starts').open('a').write('1'); print('ready'); time.sleep(2)"
-        )}, context())
+        )
+        result = await shell.execute({"command": requested}, context())
         assert result.details["background"] is True
         task_id = result.details["taskId"]
         observed = await output.execute({"task_id": task_id, "block": True, "timeout_ms": 10}, context())
@@ -76,10 +84,15 @@ def test_auto_promotion_retains_hard_deadline_and_polling_never_restarts(tmp_pat
         final = await output.execute({"task_id": task_id, "block": True, "timeout_ms": 2000}, context())
         assert final.details["status"] == "timed_out"
         assert final.details["durationSeconds"] < 1.5
-        assert (tmp_path / "starts").read_text() == "1"
+        # The hard deadline includes interpreter startup. Observe the real
+        # child admission rather than requiring the script body to beat it.
+        assert len(created) == 1 and created[0][0] > 0
+        assert created[0][1] == tuple(shlex.split(requested, posix=True))
+        assert not process_alive(created[0][0])
         repeated = await output.execute({"task_id": task_id}, context())
         assert repeated.details["status"] == "timed_out"
         assert repeated.details["taskId"] == task_id
+        assert len(created) == 1
 
     try:
         asyncio.run(run())

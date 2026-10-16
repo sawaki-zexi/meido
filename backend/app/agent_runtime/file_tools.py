@@ -14,9 +14,11 @@ import stat
 import threading
 import uuid
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+import copy
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -88,14 +90,37 @@ def _binary(data: bytes) -> bool:
 
 
 class _FileTool:
-    def __init__(self, role_id: str, workspace: str | Path, *, is_owner: bool = True):
+    definition: ToolDefinition
+    def __init__(self, role_id: str, workspace: str | Path, *, is_owner: bool = True,
+                 authorized=None, max_file_bytes: int | None = None, write_policy=None):
         self.role_id = role_id
         self.workspace = Path(os.path.abspath(workspace))
         self.is_owner = is_owner
+        self.authorized, self._max_file_bytes = authorized, max_file_bytes
+        self.write_policy = write_policy
+        if max_file_bytes is not None and self.definition.name in {'write_file', 'edit_file'}:
+            schema = copy.deepcopy(self.definition.input_schema)
+            properties = cast(dict[str, dict[str, object]], schema['properties'])
+            for name in ('content', 'old_text', 'new_text'):
+                if name in properties:
+                    properties[name]['maxLength'] = max_file_bytes
+            self.definition = replace(self.definition, input_schema=schema,
+                description=self.definition.description.replace('Maximum 4 MiB.', f'Maximum {max_file_bytes} UTF-8 bytes.'))
+
+    @property
+    def max_file_bytes(self):
+        return MAX_FILE_BYTES if self._max_file_bytes is None else self._max_file_bytes
+
+    def with_write_policy(self, policy):
+        tool = copy.copy(self)
+        tool.write_policy = policy
+        return tool
 
     def _check(self, context: ToolContext) -> None:
-        if not self.is_owner:
+        if self.authorized is None and not self.is_owner:
             raise _FileFailure("File access denied: only an owner turn may access role files.", "denied")
+        if self.authorized is not None and not self.authorized(context):
+            raise _FileFailure('File access denied: the host scope was revoked.', 'denied')
         if context.role_id != self.role_id:
             raise _FileFailure("File access denied: role identity does not match.", "denied")
         if context.signal.is_cancelled():
@@ -169,7 +194,8 @@ class _FileTool:
         except (OSError, ValueError, TypeError, RuntimeError) as error:
             return self._result(f"File operation failed: {error}", status="failed")
 
-    def _read_bytes(self, path: Path, context: ToolContext, *, max_bytes: int = MAX_FILE_BYTES) -> bytes:
+    def _read_bytes(self, path: Path, context: ToolContext, *, max_bytes: int | None = None) -> bytes:
+        max_bytes = self.max_file_bytes if max_bytes is None else max_bytes
         if not path.is_file():
             raise _FileFailure("Path is not a regular file.")
         with path.open("rb") as stream:
@@ -188,26 +214,39 @@ class _FileTool:
                 raise _FileFailure(f"File exceeds {max_bytes} byte input limit.", "denied", truncated=True, truncatedBy="file_limit")
         return b"".join(chunks)
 
-    def _write_bytes(self, path: Path, data: bytes, context: ToolContext) -> None:
-        if len(data) > MAX_FILE_BYTES:
-            raise _FileFailure("Content exceeds 4 MiB write limit.", "denied", truncated=True, truncatedBy="file_limit")
+    def _write_bytes(self, path: Path, data: bytes, context: ToolContext):
+        if len(data) > self.max_file_bytes:
+            raise _FileFailure(f"Content exceeds {self.max_file_bytes} byte write limit.", "denied", truncated=True, truncatedBy="file_limit")
         self._check(context)
         self._path(str(path))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._path(str(path))
-        temporary = path.parent / f".meido-{uuid.uuid4().hex}.tmp"
-        try:
-            with temporary.open("xb") as stream:
-                for start in range(0, len(data), 65536):
-                    self._check(context)
-                    stream.write(data[start:start + 65536])
-                stream.flush()
-                os.fsync(stream.fileno())
-            self._check(context)
+        with self.write_policy(path, data, context) if self.write_policy is not None else nullcontext() as allocation:
+            path.parent.mkdir(parents=True, exist_ok=True)
             self._path(str(path))
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+            if allocation is not None:
+                allocation.check()
+            temporary = allocation.temporary if allocation is not None else path.parent / f".meido-{uuid.uuid4().hex}.tmp"
+            try:
+                with temporary.open("xb") as stream:
+                    if allocation is not None:
+                        allocation.opened(stream)
+                    for start in range(0, len(data), 65536):
+                        self._check(context)
+                        stream.write(data[start:start + 65536])
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                self._check(context)
+                self._path(str(path))
+                if allocation is not None:
+                    allocation.check()
+                os.replace(temporary, path)
+                if allocation is not None:
+                    allocation.committed()
+            finally:
+                if allocation is not None:
+                    allocation.cleanup()
+                else:
+                    temporary.unlink(missing_ok=True)
+            return allocation.receipt() if allocation is not None else None
 
 
 class ReadFileTool(_FileTool):
@@ -221,8 +260,9 @@ class ReadFileTool(_FileTool):
         source="role", output_limit=OUTPUT_LIMIT, timeout_seconds=15,
     )
 
-    def __init__(self, role_id: str, workspace: str | Path, *, multimodal: bool = True, is_owner: bool = True):
-        super().__init__(role_id, workspace, is_owner=is_owner)
+    def __init__(self, role_id: str, workspace: str | Path, *, multimodal: bool = True, is_owner: bool = True,
+                 authorized=None, max_file_bytes: int | None = None, write_policy=None):
+        super().__init__(role_id, workspace, is_owner=is_owner, authorized=authorized, max_file_bytes=max_file_bytes, write_policy=write_policy)
         self.multimodal = multimodal
 
     def _image(self, path: Path, context: ToolContext, source: str) -> AgentToolResult:
@@ -273,6 +313,8 @@ class ReadFileTool(_FileTool):
             info = os.fstat(stream.fileno())
             if not stat.S_ISREG(info.st_mode):
                 raise _FileFailure("Path is not a regular file.")
+            if self._max_file_bytes is not None and info.st_size > self.max_file_bytes:
+                raise _FileFailure('File exceeds the host file-byte limit.', 'denied', path=source)
             head = stream.read(16)
             if head.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a")) or head.startswith(b"RIFF") and head[8:12] == b"WEBP":
                 return self._image(path, context, source)
@@ -363,9 +405,10 @@ class WriteFileTool(_FileTool):
 
     def _execute(self, path: Path, arguments: Mapping[str, object], context: ToolContext) -> AgentToolResult:
         data = arguments["content"].encode("utf-8")
-        self._write_bytes(path, data, context)
+        publication = self._write_bytes(path, data, context)
         source = path.relative_to(self.workspace).as_posix()
-        return self._result(f"Wrote {len(data)} UTF-8 bytes to {source}.", path=source, bytesWritten=len(data))
+        return self._result(f"Wrote {len(data)} UTF-8 bytes to {source}.", path=source, bytesWritten=len(data),
+            **({'publication': publication} if publication is not None else {}))
 
 
 class EditFileTool(_FileTool):
@@ -401,12 +444,12 @@ class EditFileTool(_FileTool):
         # operands reflect CRLF compatibility above; count is non-overlapping,
         # matching str.replace. Reject expansion before allocating its result.
         updated_bytes = len(raw) + replaced_count * (len(new.encode("utf-8")) - len(old.encode("utf-8")))
-        if updated_bytes > MAX_FILE_BYTES:
-            raise _FileFailure("Edited file exceeds 4 MiB write limit.", "denied", truncated=True, truncatedBy="file_limit")
+        if updated_bytes > self.max_file_bytes:
+            raise _FileFailure(f"Edited file exceeds {self.max_file_bytes} byte write limit.", "denied", truncated=True, truncatedBy="file_limit")
         updated = content.replace(old, new, replaced_count)
         encoded = (b"\xef\xbb\xbf" if bom else b"") + updated.encode("utf-8")
-        if len(encoded) > MAX_FILE_BYTES:
-            raise _FileFailure("Edited file exceeds 4 MiB write limit.", "denied", truncated=True, truncatedBy="file_limit")
+        if len(encoded) > self.max_file_bytes:
+            raise _FileFailure(f"Edited file exceeds {self.max_file_bytes} byte write limit.", "denied", truncated=True, truncatedBy="file_limit")
         source = path.relative_to(self.workspace).as_posix()
         diff_budget = min(READ_MAX_BYTES, OUTPUT_LIMIT - len(source) - 1000)
         diff_parts, diff_size, truncated = [], 0, False
@@ -417,10 +460,11 @@ class EditFileTool(_FileTool):
                 break
             diff_parts.append(line)
             diff_size += len(line) + 1
-        self._write_bytes(path, encoded, context)
+        publication = self._write_bytes(path, encoded, context)
         diff = "\n".join(diff_parts)
         note = "\n[Diff truncated at output limit.]" if truncated else ""
-        return self._result(f"Edited {source}; replaced {replaced_count} match(es).\n```diff\n{diff}\n```{note}", path=source, replacedCount=replaced_count, bytesWritten=len(encoded), truncated=truncated, truncatedBy="diff_limit" if truncated else None)
+        return self._result(f"Edited {source}; replaced {replaced_count} match(es).\n```diff\n{diff}\n```{note}", path=source, replacedCount=replaced_count, bytesWritten=len(encoded), truncated=truncated, truncatedBy="diff_limit" if truncated else None,
+            **({'publication': publication} if publication is not None else {}))
 
 
 class ListDirTool(_FileTool):
@@ -465,8 +509,11 @@ class ListDirTool(_FileTool):
 FILE_TOOL_NAMES = frozenset({"read_file", "list_dir", "write_file", "edit_file"})
 
 
-def build_file_tools(role_id: str, workspace: str | Path, *, multimodal: bool = True, is_owner: bool = True):
+def build_file_tools(role_id: str, workspace: str | Path, *, multimodal: bool = True, is_owner: bool = True,
+                     authorized=None, max_file_bytes: int | None = None, write_policy=None):
     return (
-        ReadFileTool(role_id, workspace, multimodal=multimodal, is_owner=is_owner), ListDirTool(role_id, workspace, is_owner=is_owner),
-        WriteFileTool(role_id, workspace, is_owner=is_owner), EditFileTool(role_id, workspace, is_owner=is_owner),
+        ReadFileTool(role_id, workspace, multimodal=multimodal, is_owner=is_owner, authorized=authorized, max_file_bytes=max_file_bytes, write_policy=write_policy),
+        ListDirTool(role_id, workspace, is_owner=is_owner, authorized=authorized, max_file_bytes=max_file_bytes, write_policy=write_policy),
+        WriteFileTool(role_id, workspace, is_owner=is_owner, authorized=authorized, max_file_bytes=max_file_bytes, write_policy=write_policy),
+        EditFileTool(role_id, workspace, is_owner=is_owner, authorized=authorized, max_file_bytes=max_file_bytes, write_policy=write_policy),
     )

@@ -147,7 +147,8 @@ Runtime结果副本与result_ack_pending必须在同一业务事务持久提交�
 未ACK结果消耗原Runtime保留配额；pruned/unavailable不作为“没执行”的证据。保持TaskCompletionWorker的spawn授权/协议，不新增通用宿主或按业务泛化worker。
 本地消息/进度投影、receipt查询及已获幂等许可的ACK重试是恢复；它们不允许重放模型业务动作。new tick不会清旧事件/发送占用。
 
-S06转换为合法id/version/description/tools/activation指令，写当前角色drift/skills长期技能与working files；新/改hash重新校验并绑定获准作者来源与原工具上限，下一合格Drift必须可发现并真实执行，不以新文件授予新工具权限。
+S06转换为合法id/version/description/tools/activation指令，写当前角色drift/skills长期技能与working files；新/改hash重新校验并绑定获准作者来源和主人单独授予的声明上界。作者当下的FileTools权限不永久限制未来执行许可：缺依赖可先保留同一产物，后续明确grant后重验同一hash；声明上界变化须明确重新采用该产物，不能自动扩大旧作者证据。下一合格Drift必须可发现并真实执行，不以新文件授予新工具权限。
+本票的依赖声明置于现有SkillRegistry支持文件范围内的`references/drift.json`，不扩普通聊天frontmatter parser；只在获准Drift根使用。内置meme-manage实际发现和校验，但当前Drift缺其可见图片核验/表情库复制能力，整项标记pending_dependency并引导主人聊天，不以现有有限Shell许可冒充可执行。完整配置和同产物流程见[Drift手册](../handbook/drift-skills.md)。
 S08使用现有文件/Shell白名单准备可启动server、配置草稿与fixture，保留MIT来源署名；不把生成文件当已信任执行，不写明文凭据。
 来源本地验证在无真实凭据的独立目录运行，证明三通道格式、稳定事件域、empty/error区别、正文关联、ACK幂等/固定expiry和重启持久化；旧ttl模式明确标记单次能力。
 主人通过现有MCP配置流程信任固定command/cwd/秘密引用，再选择该role/source具体get/poll/ACK并启用；之后真实tick消费并展示ACK状态，不强制每次poll/ACK另问审批。

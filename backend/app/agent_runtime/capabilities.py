@@ -107,10 +107,10 @@ class CapabilityResolution:
     _resource_close: Callable[[], Awaitable[None]] | None = field(default=None, repr=False, compare=False)
 
     def stage_service_tools(self, context: ToolContext, *, grant_id: str, parent_snapshot_id: str,
-                            tools: tuple[AgentTool, ...]) -> tuple[str, ...]:
+                            tools: tuple[AgentTool, ...], activate: bool = False) -> tuple[str, ...]:
         if self._discovery is None:
             raise PermissionError("service revisions require a frozen discovery directory")
-        return self._discovery.stage_service_tools(context, grant_id=grant_id, parent_snapshot_id=parent_snapshot_id, tools=tools)
+        return self._discovery.stage_service_tools(context, grant_id=grant_id, parent_snapshot_id=parent_snapshot_id, tools=tools, activate=activate)
 
     def stage_service_removal(self, context: ToolContext, *, grant_id: str, parent_snapshot_id: str) -> None:
         if self._discovery is None:

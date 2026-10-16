@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { fakeBackend } from "../../test/fakeBackend";
 import { AutonomySettings } from "./AutonomySettings";
@@ -23,6 +23,8 @@ it("首次读取失败后能在当前角色直接重试且不提交配置", asyn
   const user = userEvent.setup();
   render(<AutonomySettings roleId="r1" disabled={false} />);
   await screen.findByText("暂不可读");
+  await user.click(within(screen.getByRole("alert")).getByRole("button", { name: "关闭提示" }));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "重新读取自主设置" }));
   expect(await screen.findByRole("checkbox", { name: "开启主动决策" })).not.toBeChecked();
   expect(calls.every((call) => call.method === "GET")).toBe(true);

@@ -28,13 +28,15 @@ class DecisionTurn:
         self.items = {item["id"]: item for item in (*snapshot["alerts"], *snapshot["contents"])}
         self.contents = {item["id"] for item in snapshot["contents"]}
         with app._transaction() as db:
+            if (not app._authorized_in(db, origin) or 'active_decision' not in origin.allowed_modes
+                    or db.execute("UPDATE autonomy_runs SET mode='active_decision',status='running' WHERE tick_id=? AND mode='pending'", (origin.tick_id,)).rowcount != 1):
+                raise PermissionError('autonomous mode was sealed or already selected')
             db.execute("""CREATE TABLE IF NOT EXISTS autonomy_turns (
                 tick_id TEXT PRIMARY KEY,draft_used INTEGER NOT NULL DEFAULT 0,
                 draft TEXT,final_draft TEXT,finish TEXT,receipt TEXT,interesting TEXT NOT NULL DEFAULT '[]',
                 discarded TEXT NOT NULL DEFAULT '[]',steps INTEGER NOT NULL DEFAULT 0,
                 tokens INTEGER NOT NULL DEFAULT 0,input_bytes INTEGER NOT NULL DEFAULT 0)""")
             db.execute("INSERT INTO autonomy_turns(tick_id) VALUES(?)", (origin.tick_id,))
-            db.execute("UPDATE autonomy_runs SET mode='active_decision',status='running' WHERE tick_id=?", (origin.tick_id,))
             rows = db.execute("""SELECT role,SUBSTR(content,1,600) FROM messages
                 WHERE session_key=? AND role IN ('user','assistant') AND message_type='text'
                 AND status='completed' AND json_valid(COALESCE(metadata_json,'{}'))

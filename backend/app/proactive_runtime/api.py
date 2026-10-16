@@ -39,8 +39,102 @@ class ArtifactPreviewRequest(BaseModel):
     serverId: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,23}$")
 
 
+class DriftPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    skillId: str = Field(pattern=r'^[a-z0-9][a-z0-9._-]{0,63}$')
+
+
+class DriftAdoptionRequest(DriftPreviewRequest):
+    previewId: str = Field(pattern=r'^[a-f0-9]{32}$')
+    bundleSha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    authoringScopeId: str = Field(min_length=1, max_length=64)
+    expectedScopeRevision: int = Field(ge=1)
+    expectedRevision: int = Field(ge=1)
+
+
 def autonomy_router(application, *, workspace_getter=None):
     router = APIRouter(prefix="/api/roles/{role_id}/autonomy")
+
+    async def drift_request(request, model):
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 4096:
+                raise HTTPException(413, '长期技能请求超出大小限制')
+        try:
+            return model.model_validate(json.loads(body))
+        except (ValueError, TypeError):
+            raise HTTPException(422, '长期技能标识、精确产物或预览版本无效') from None
+
+    @router.post('/drift-artifact-preview')
+    async def drift_preview(role_id: str, request: Request):
+        data = await drift_request(request, DriftPreviewRequest)
+        try:
+            owner = application()
+            return await owner._owned(owner.drift_skills.preview, role_id, data.skillId)
+        except KeyError:
+            raise HTTPException(404, '角色不存在') from None
+        except (ValueError, OSError):
+            raise HTTPException(422, '长期技能文件、链接或声明无效') from None
+        except sqlite3.Error:
+            raise HTTPException(503, '长期技能预览暂不可保存') from None
+
+    @router.post('/drift-skill-adoptions')
+    async def drift_adopt(role_id: str, request: Request):
+        data = await drift_request(request, DriftAdoptionRequest)
+        try:
+            owner = application()
+            return await owner._owned(owner.drift_skills.adopt, role_id, data)
+        except KeyError:
+            raise HTTPException(404, '角色不存在') from None
+        except (ValueError, OSError):
+            raise HTTPException(409, '产物、目录身份或作者范围已变化，请重新预览并明确采用') from None
+        except sqlite3.Error:
+            raise HTTPException(503, '长期技能采用暂不可保存') from None
+
+    @router.get('/drift-skills')
+    async def drift_skills(role_id: str):
+        try:
+            owner = application()
+            return {'skills': await owner._owned(owner.drift_skills.list, role_id)}
+        except KeyError:
+            raise HTTPException(404, '角色不存在') from None
+        except sqlite3.Error:
+            raise HTTPException(503, '长期技能状态暂不可读，请重试') from None
+
+    @router.get('/drift-grant-options')
+    async def drift_grant_options(role_id: str):
+        from ..mcp_autonomy import declaration_hash
+        from .bindings import shape
+        try:
+            owner = application()
+            owner._require_role(role_id)
+            role = shape(owner.role_getter(role_id), role=True)
+            enabled = set(role.get('agentConfig', {}).get('enabledTools', []))
+            if role.get('agentConfig', {}).get('memoryRecall', {}).get('enabled'):
+                enabled.add('recall_memory')
+            servers = []
+            for server in owner.mcp_host.store.all() if owner.mcp_host is not None else ():
+                if role_id not in server.role_ids:
+                    continue
+                status, catalog = owner.mcp_host.observed_catalog(role_id, server.server_id)
+                servers.append({'serverId': server.server_id, 'name': server.name, 'configRevision': server.revision,
+                    'grantRevision': server.grant_id, 'risk': server.risk, 'status': status,
+                    'operations': [{'name': item['name'], 'definitionHash': declaration_hash(item),
+                        'description': item.get('description', item['name'])} for item in catalog]})
+            names = ('read_file', 'write_file', 'edit_file', 'list_dir', 'recall_memory', 'web_fetch', 'web_search',
+                'search_messages', 'fetch_messages', 'shell', 'message_push')
+            from .drift_shell import presets, available
+            from .drift_resources import RESOURCES
+            return {'tools': [{'name': name, 'available': name in enabled} for name in names],
+                'resources': [{'id': identifier, 'name': name, 'available': True} for identifier, name in RESOURCES.items()],
+                'shellRules': [{'id': preset.identifier, 'description': preset.description, 'available': available(preset, role),
+                    **({} if available(preset, role) else {'reason': '需要当前角色Shell开关及精确可执行程序许可'})}
+                    for preset in presets().values()], 'mcpServers': servers}
+        except KeyError:
+            raise HTTPException(404, '角色不存在') from None
+        except sqlite3.Error:
+            raise HTTPException(503, 'Drift许可目录暂不可读，请重试') from None
 
     @router.post('/source-artifact-preview')
     async def preview(role_id: str, request: Request):

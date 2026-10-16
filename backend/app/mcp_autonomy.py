@@ -25,7 +25,7 @@ class AutonomyMcpGrant:
 
 
 class AutonomyMcpRun:
-    def __init__(self, host, origin, grants, authorized, role_gate, server_gates):
+    def __init__(self, host, origin, grants, authorized, role_gate, server_gates, *, mount_grants=()):
         self.host, self.origin, self.authorized = host, origin, authorized
         self.role_id = origin.role_id
         self.loop = asyncio.get_running_loop()
@@ -34,22 +34,28 @@ class AutonomyMcpRun:
         self.configs = {}
         self.errors = {}
         self._permissions: dict[str, dict[str, str]] = {}
+        self._mount_permissions: dict[str, dict[str, str]] = {}
+        self._mounted_servers = set()
         self._catalogs = {}
         self._client_locks: dict[str, asyncio.Lock] = {}
         self._role_gate, self._server_gates = role_gate, server_gates
         self._closing: asyncio.Task[None] | None = None
         self._operations = set()
         self._secrets = {}
-        for grant in grants:
+        for grant, is_mount in (*((item, False) for item in grants), *((item, True) for item in mount_grants)):
             config = host.store.get(grant.server_id)
             self.configs[grant.server_id] = config
             if (config is None or not config.enabled or self.role_id not in config.role_ids
                     or (config.revision, config.grant_id) != (grant.config_revision, grant.grant_revision)):
                 self.errors[grant.server_id] = "autonomous MCP configuration grant is unavailable"
-            permissions = self._permissions.setdefault(grant.server_id, {})
+            self._permissions.setdefault(grant.server_id, {})
+            permissions = (self._mount_permissions if is_mount else self._permissions).setdefault(grant.server_id, {})
             for name, digest in grant.operations:
                 if name in permissions and permissions[name] != digest:
                     raise ValueError("conflicting autonomous MCP definition grants")
+                other = (self._permissions if is_mount else self._mount_permissions).get(grant.server_id, {})
+                if name in other and other[name] != digest:
+                    raise ValueError('conflicting source and Drift MCP definition grants')
                 permissions[name] = digest
             self._client_locks.setdefault(grant.server_id, asyncio.Lock())
         self._watcher = asyncio.create_task(self._watch())
@@ -67,7 +73,8 @@ class AutonomyMcpRun:
             raise PermissionError("autonomous MCP host origin was revoked")
         if server_id in self.errors:
             raise PermissionError("autonomous MCP service grant was revoked or changed")
-        if name is not None and name not in self._permissions.get(server_id, {}):
+        if (name is not None and name not in self._permissions.get(server_id, {})
+                and not (server_id in self._mounted_servers and name in self._mount_permissions.get(server_id, {}))):
             raise PermissionError("MCP operation was not frozen in this autonomous grant")
         return config
 
@@ -116,7 +123,10 @@ class AutonomyMcpRun:
 
     async def call(self, server_id, name, arguments):
         self._require(server_id, name)
-        operation = asyncio.create_task(self._call(server_id, name, arguments))
+        return await self._own(self._call(server_id, name, arguments))
+
+    async def _own(self, pending):
+        operation = asyncio.create_task(pending)
         self._operations.add(operation)
         try:
             return await asyncio.shield(operation)
@@ -132,6 +142,46 @@ class AutonomyMcpRun:
         finally:
             self._operations.discard(operation)
 
+    async def prepare_mount(self, server_id):
+        self._require(server_id)
+        if server_id not in self._mount_permissions:
+            raise PermissionError('MCP server was not frozen for Drift mounting')
+        return await self._own(self._prepare_mount(server_id))
+
+    async def _prepare_mount(self, server_id):
+        config = self._require(server_id)
+        acquired_role = acquired_server = False
+        gate = self._server_gates[server_id]
+        try:
+            async with asyncio.timeout(min(30, config.timeout_seconds)):
+                while not (acquired_role := self._role_gate.acquire(blocking=False)):
+                    self._require(server_id)
+                    await asyncio.sleep(.01)
+                while not (acquired_server := gate.acquire(blocking=False)):
+                    self._require(server_id)
+                    await asyncio.sleep(.01)
+                await self._client(server_id)
+                catalog = self._catalogs[server_id]
+                for name, digest in self._mount_permissions[server_id].items():
+                    if name not in catalog or declaration_hash(catalog[name]) != digest:
+                        raise PermissionError('Drift MCP tool definition changed')
+                self._require(server_id)
+                return tuple(catalog[name] for name in self._mount_permissions[server_id])
+        finally:
+            if acquired_server:
+                gate.release()
+            if acquired_role:
+                self._role_gate.release()
+
+    def is_mounted(self, server_id):
+        return server_id in self._mounted_servers
+
+    def activate_mount(self, server_id):
+        self._require(server_id)
+        if server_id not in self._mount_permissions or server_id not in self._catalogs:
+            raise PermissionError('Drift MCP directory has not been prepared')
+        self._mounted_servers.add(server_id)
+
     async def _call(self, server_id, name, arguments):
         config = self._require(server_id, name)
         acquired_role = acquired_server = False
@@ -146,6 +196,9 @@ class AutonomyMcpRun:
                     await asyncio.sleep(.01)
                 client = await self._client(server_id)
                 declaration = self._catalogs[server_id][name]
+                expected = self._permissions.get(server_id, {}).get(name) or self._mount_permissions.get(server_id, {}).get(name)
+                if declaration_hash(declaration) != expected:
+                    raise PermissionError('autonomous MCP tool definition changed')
                 if not await validate_instance(declaration["inputSchema"], arguments):
                     raise ValueError("autonomous MCP arguments do not match the frozen schema")
                 self._require(server_id, name)

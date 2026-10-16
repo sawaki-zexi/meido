@@ -294,7 +294,8 @@ class SessionStore:
 
     def append_autonomy_message_once(self, role_id: str, tick_id: str, intent_id: str, content: str, *,
                                      connection: sqlite3.Connection, authorized: Callable[[], bool],
-                                     mood: str, thought: str) -> Message:
+                                     mood: str, thought: str, mode: str = 'active_decision',
+                                     attachments: tuple[dict[str, object], ...] = ()) -> Message:
         """The autonomy outbox owns this transaction and canonical receipt."""
         if not connection.in_transaction:
             raise ValueError("autonomous delivery requires an owned transaction")
@@ -303,9 +304,13 @@ class SessionStore:
             raise ValueError("autonomous delivery uses a different database")
         session_key = f"role:{role_id}"
         message_id = f"{session_key}:autonomy:{intent_id}"
-        metadata = {"internalEvent": "active_decision", "autonomyTickId": tick_id,
+        if mode not in {'active_decision', 'drift'}:
+            raise ValueError('invalid autonomous delivery mode')
+        metadata: dict[str, Any] = {"internalEvent": mode, "autonomyTickId": tick_id,
                     "autonomyIntentId": intent_id, "channel": "desktop", "deliveryStatus": "sent",
                     "mood": mood, "thought": thought}
+        if attachments:
+            metadata['attachments'] = list(attachments)
         result = self._append_owned_message_once(connection, role_id, session_key, message_id, content,
             message_type="internal_completion", metadata=metadata, authorized=authorized, create_session=True)
         if result.content != content or result.metadata != metadata or result.messageType != "internal_completion":

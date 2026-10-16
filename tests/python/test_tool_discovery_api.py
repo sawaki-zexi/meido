@@ -123,7 +123,7 @@ def test_http_same_run_shell_uses_frozen_and_current_allowlist_intersection(
 
 
 def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, local_platform_only
 ):
     class BrowserDriver:
         async def call(self, name, arguments, **kwargs):
@@ -161,6 +161,9 @@ def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions
     roles = RoleStore(tmp_path / "roles")
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data/sessions.db")
+    memory_settings = MemorySettingsStore(tmp_path / 'data/memory-settings.json')
+    memory_settings.update(enabled=False)
+    monkeypatch.setattr(main, 'memory_settings_store', memory_settings)
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))

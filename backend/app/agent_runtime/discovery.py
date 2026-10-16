@@ -118,6 +118,7 @@ class DiscoveryState:
         grant_id: str,
         parent_snapshot_id: str,
         tools: Sequence[AgentTool],
+        activate: bool = False,
     ) -> tuple[str, ...]:
         from .capabilities import _freeze_json
 
@@ -165,6 +166,8 @@ class DiscoveryState:
         self.extensions[context.tool_call_id] = _ServiceExtension(
             parent_snapshot_id, tuple(tools), tuple(definitions)
         )
+        if activate:
+            self.pending[context.tool_call_id] = tuple(item.name for item in definitions)
         return tuple(item.name for item in definitions)
 
     def stage_service_removal(self, context: ToolContext, *, grant_id: str, parent_snapshot_id: str) -> None:
@@ -229,7 +232,7 @@ class DiscoveryState:
         }
         if extension is not None:
             decisions.update(
-                {item.name: "denied:deferred" for item in extension.definitions}
+                {item.name: "denied:deferred" for item in extension.definitions if item.name not in added}
             )
         snapshot = replace(
             current.snapshot,
@@ -263,7 +266,7 @@ class DiscoveryState:
             denied.update(
                 {
                     item.name: f"tool is deferred; use tool_search(query='select:{item.name}')"
-                    for item in extension.definitions
+                    for item in extension.definitions if item.name not in added
                 }
             )
         return replace(

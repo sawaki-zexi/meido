@@ -1,5 +1,6 @@
 import base64
 import io
+import pytest
 
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -12,12 +13,18 @@ from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
 from backend.app.session_store import SessionStore
 from backend.app.storage import initialize_databases
+from backend.app.memory_config import MemorySettingsStore
+
+pytestmark = pytest.mark.usefixtures('local_platform_only')
 
 
 def file_client(tmp_path, monkeypatch, adapter):
     roles = RoleStore(tmp_path / "roles")
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    memory_settings = MemorySettingsStore(tmp_path / 'data' / 'memory-settings.json')
+    memory_settings.update(enabled=False)
+    monkeypatch.setattr(main, 'memory_settings_store', memory_settings)
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))

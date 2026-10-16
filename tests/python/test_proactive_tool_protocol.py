@@ -316,7 +316,7 @@ def test_changed_web_role_grant_cannot_revoke_then_dispatch_or_widen_current_tic
     assert rig.callbacks == [] and rig.sessions.list_messages("role:role") == []
 
 
-def test_finish_cas_and_empty_snapshot_ids_use_real_host_admitted_origin(protocol):
+def test_finish_cas_and_empty_snapshot_ids_use_real_host_admitted_origin(protocol, monkeypatch):
     rig = protocol
     (rig.root / "events.json").write_text("[]", encoding="utf-8")
     state = tick(rig)
@@ -324,29 +324,57 @@ def test_finish_cas_and_empty_snapshot_ids_use_real_host_admitted_origin(protoco
     assert run["status"] == "no_events" and rig.adapter.requests == []
     actual = run["origin"]
     origin = AutonomyOrigin(actual["roleId"], actual["tickId"], actual["grantRevision"], actual["generation"], tuple(actual["allowedModes"]))
-    turn = DecisionTurn(rig.app, origin, AutonomyConfig.model_validate(state["config"]),
-        {"alerts": [], "contents": [], "contexts": [], "bodies": {}, "bodyErrors": {}})
-    with pytest.raises(ValueError, match="outside"):
-        asyncio.run(turn.dispatch("get_content", {"item_ids": ["forged-empty-id"]}))
-    with pytest.raises(ValueError, match="requires a draft"):
-        turn.finish({"decision": "reply"})
-    with pytest.raises(ValueError, match="schema"):
-        asyncio.run(turn.dispatch("finish_turn", {"decision": "skip", "reason": "invented-reason"}))
-    turn.draft({"message": "first CAS draft", "evidence": [], "mood": "neutral", "thought": "fixture"})
-    with pytest.raises(ValueError, match="already used"):
-        turn.draft({"message": "replacement", "evidence": []})
-    with pytest.raises(ValueError, match="skip requires no draft"):
-        turn.finish({"decision": "skip", "reason": "other"})
-    barrier = threading.Barrier(2)
-    def finish_concurrently():
-        barrier.wait(timeout=3)
-        return turn.finish({"decision": "reply"})
-    with ThreadPoolExecutor(max_workers=2) as workers:
-        first, same = list(workers.map(lambda _: finish_concurrently(), range(2)))
-    assert first == same
-    assert turn.finish({"decision": "reply"}) == first
-    with pytest.raises(ValueError, match="conflicting"):
-        turn.finish({"decision": "skip", "reason": "other"})
-    with pytest.raises(ValueError, match="already used"):
-        turn.draft({"message": "after finish", "evidence": []})
+    snapshot = {"alerts": [], "contents": [], "contexts": [], "bodies": {}, "bodyErrors": {}}
+    with pytest.raises(PermissionError, match="sealed or already selected"):
+        DecisionTurn(rig.app, origin, AutonomyConfig.model_validate(state["config"]), snapshot)
+
+    def inspect_turn(turn):
+        with pytest.raises(ValueError, match="outside"):
+            asyncio.run(turn.dispatch("get_content", {"item_ids": ["forged-empty-id"]}))
+        with pytest.raises(ValueError, match="requires a draft"):
+            turn.finish({"decision": "reply"})
+        with pytest.raises(ValueError, match="schema"):
+            asyncio.run(turn.dispatch("finish_turn", {"decision": "skip", "reason": "invented-reason"}))
+        turn.draft({"message": "first CAS draft", "evidence": [], "mood": "neutral", "thought": "fixture"})
+        with pytest.raises(ValueError, match="already used"):
+            turn.draft({"message": "replacement", "evidence": []})
+        with pytest.raises(ValueError, match="skip requires no draft"):
+            turn.finish({"decision": "skip", "reason": "other"})
+        barrier = threading.Barrier(2)
+        def finish_concurrently():
+            barrier.wait(timeout=3)
+            return turn.finish({"decision": "reply"})
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            first, same = list(workers.map(lambda _: finish_concurrently(), range(2)))
+        assert first == same
+        assert turn.finish({"decision": "reply"}) == first
+        with pytest.raises(ValueError, match="conflicting"):
+            turn.finish({"decision": "skip", "reason": "other"})
+        with pytest.raises(ValueError, match="already used"):
+            turn.draft({"message": "after finish", "evidence": []})
+        assert rig.sessions.list_messages("role:role") == []
+
+    inspected, errors = [], []
+    async def inspect_live_tick(live_origin, execution, cancelled):
+        # This is a protocol-only test hook in the original AutonomyExecutor,
+        # not the normal empty-source routing (which was verified above).
+        try:
+            live = DecisionTurn(rig.app, live_origin, AutonomyConfig.model_validate(state["config"]), snapshot)
+            await rig.app._owned(inspect_turn, live)
+            inspected.append(live_origin.tick_id)
+        except BaseException as error:
+            errors.append(error)
+            raise
+        raise RuntimeError("controlled protocol probe stops before any delivery")
+    monkeypatch.setattr(rig.app, "_execute_operation", inspect_live_tick)
+    next_state = tick(rig)
+    if errors:
+        raise errors[0]
+    later = next(item for item in next_state["runs"] if item["id"] != run["id"])
+    assert inspected == [later["id"]] and later["status"] == "aborted"
+    assert later["runtimeAcknowledged"] and not next_state["cleanupPending"]
+    with rig.app._transaction() as db:
+        copied = db.execute("SELECT task_id,runtime_result,result_ack_pending FROM autonomy_runs WHERE tick_id=?", (later["id"],)).fetchone()
+        assert copied["task_id"] and copied["runtime_result"] and not copied["result_ack_pending"]
+    assert rig.app._executors == {} and rig.app._drift_owners == {}
     assert rig.sessions.list_messages("role:role") == []

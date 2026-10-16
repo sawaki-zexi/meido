@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from backend.app import main
 from backend.app.model_adapter import ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
+from backend.app.memory_config import MemorySettingsStore
 from backend.app.multichannel import MultichannelStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
@@ -22,7 +23,7 @@ class TestCredentials:
         pass
 
 
-def test_http_history_tools_are_opt_in_and_results_reach_next_model_request(tmp_path, monkeypatch):
+def test_http_history_tools_are_opt_in_and_results_reach_next_model_request(tmp_path, monkeypatch, local_platform_only):
     class Adapter:
         phase = "off"
         source_ref = None
@@ -60,6 +61,9 @@ def test_http_history_tools_are_opt_in_and_results_reach_next_model_request(tmp_
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data/sessions.db")
     channels = MultichannelStore(tmp_path / "data/sessions.db", sessions, TestCredentials())
+    memory_settings = MemorySettingsStore(tmp_path / 'data/memory-settings.json')
+    memory_settings.update(enabled=False)
+    monkeypatch.setattr(main, 'memory_settings_store', memory_settings)
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "multichannel_store", channels)

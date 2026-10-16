@@ -6,7 +6,10 @@ import sqlite3
 import threading
 import time
 import uuid
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .drift import DriftTurn
 
 from ..session_store import SessionStore
 from ..task_runtime import TaskRuntime, TaskBudget, TaskOutcome
@@ -29,7 +32,7 @@ class ProactiveApplication:
     def __init__(self, sessions: SessionStore, tasks: TaskRuntime, *,
                  role_getter: Callable, model_getter: Callable, clock: Callable = time.time,
                  mcp_host=None, adapter_factory=None, fetch_body=None, recall_memory=None, web_tools=None,
-                 context_reader=None):
+                 context_reader=None, workspace_getter=None):
         self.sessions, self.tasks = sessions, tasks
         self.role_getter, self.model_getter, self.clock = role_getter, model_getter, clock
         self.mcp_host, self.adapter_factory, self.fetch_body = mcp_host, adapter_factory, fetch_body
@@ -38,6 +41,7 @@ class ProactiveApplication:
         self._gate = threading.RLock()
         self._closed = False
         self._executors: dict[str, AutonomyExecutor] = {}
+        self._drift_owners: dict[str, 'DriftTurn'] = {}
         self._handovers: set[str] = set()
         self._cleanup_tasks: dict[str, asyncio.Task] = {}
         self._worker = None
@@ -75,6 +79,8 @@ class ProactiveApplication:
                                      ("poll_health", "TEXT NOT NULL DEFAULT '{}'")):
                 if name not in role_columns:
                     db.execute(f"ALTER TABLE autonomy_roles ADD COLUMN {name} {definition}")
+            if 'last_drift_at' not in role_columns:
+                db.execute('ALTER TABLE autonomy_roles ADD COLUMN last_drift_at REAL')
             db.execute("""CREATE TABLE IF NOT EXISTS autonomy_human_runs (
                 role_id TEXT NOT NULL,run_id TEXT NOT NULL,ended INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(role_id,run_id))""")
@@ -102,6 +108,12 @@ class ProactiveApplication:
                        (now + 1800, now, now))
             db.execute("UPDATE autonomy_human_runs SET ended=1")
         self.source_verifications = SourceVerificationApplication(self)
+        from .drift_skills import DriftSkillCatalog
+        self.drift_skills = DriftSkillCatalog(self, workspace_getter)
+        from .drift_workspace import DriftFiles
+        self.drift_files = DriftFiles(self, self.drift_skills.workspace)
+        from .drift_delivery import DesktopDriftDelivery
+        self.drift_delivery = DesktopDriftDelivery(self)
 
     @contextmanager
     def _transaction(self):
@@ -134,6 +146,11 @@ class ProactiveApplication:
                 if (server is None or not server.enabled or role_id not in server.role_ids
                         or (server.revision, server.grant_id) != (source.configRevision, source.grantRevision)):
                     raise ValueError("enabled source requires its exact saved MCP grant")
+        for grant in config.driftMcpGrants:
+            server = self.mcp_host.store.get(grant.serverId) if self.mcp_host else None
+            if (server is None or not server.enabled or role_id not in server.role_ids
+                    or (server.revision, server.grant_id, server.risk) != (grant.configRevision, grant.grantRevision, grant.risk)):
+                raise ValueError('Drift MCP requires the exact saved role/server/risk grant')
         with self._transaction() as db:
             old = db.execute("SELECT * FROM autonomy_roles WHERE role_id=?", (role_id,)).fetchone()
             revision = old["revision"] if old else 0
@@ -153,7 +170,10 @@ class ProactiveApplication:
             for prior in db.execute("SELECT source_id FROM autonomy_sources WHERE role_id=? AND active=1", (role_id,)).fetchall():
                 if prior[0] not in known:
                     db.execute("UPDATE autonomy_sources SET active=0,revision=revision+1 WHERE role_id=? AND source_id=?", (role_id, prior[0]))
-            saved = config.model_copy(update={"revision": revision + 1, "sourceGrants": sources})
+            from .drift_skills import authoring_revision
+            previous = AutonomyConfig.model_validate_json(old['config']).driftAuthoring if old else AutonomyConfig().driftAuthoring
+            authoring = authoring_revision(config.driftAuthoring, previous)
+            saved = config.model_copy(update={"revision": revision + 1, "sourceGrants": sources, 'driftAuthoring': authoring})
             db.execute("""INSERT INTO autonomy_roles
                 (role_id,revision,generation,config,next_at,next_poll_at,last_human_end)
                 VALUES(?,?,?,?,?,?,?) ON CONFLICT(role_id) DO UPDATE SET
@@ -217,6 +237,8 @@ class ProactiveApplication:
             and (config["revision"], config["generation"]) == (origin.grant_revision, origin.generation)
             and run["origin"] == origin.serialized()
             and self.source_permissions_current(origin.role_id, AutonomyConfig.model_validate_json(run["frozen_config"]).sourceGrants)
+            and ('drift' not in origin.allowed_modes or self.drift_permissions_current(origin.role_id,
+                AutonomyConfig.model_validate_json(run['frozen_config']).driftMcpGrants))
             and (run["kind"] != "autonomy_tick" or bindings.current(self, origin.role_id, json.loads(run["bindings"]))))
 
     def source_permissions_current(self, role_id, sources):
@@ -233,6 +255,14 @@ class ProactiveApplication:
         with self._transaction() as db:
             row = db.execute("SELECT bindings FROM autonomy_runs WHERE tick_id=?", (origin.tick_id,)).fetchone()
             return json.loads(row[0]) if row else {}
+
+    def drift_permissions_current(self, role_id, grants):
+        for grant in grants:
+            server = self.mcp_host.store.get(grant.serverId) if self.mcp_host else None
+            if (server is None or not server.enabled or role_id not in server.role_ids
+                    or (server.revision, server.grant_id, server.risk) != (grant.configRevision, grant.grantRevision, grant.risk)):
+                return False
+        return True
 
     def tool_permitted(self, origin, name):
         if not self._authorized(origin):
@@ -293,7 +323,7 @@ class ProactiveApplication:
 
     @property
     def has_owned_work(self):
-        return bool(self._handovers or self._executors or self._worker is not None
+        return bool(self._handovers or self._executors or self._drift_owners or self._worker is not None
                     or any(not task.done() for task in self._cleanup_tasks.values())
                     or self.source_verifications.has_owned_work)
 
@@ -385,7 +415,7 @@ class ProactiveApplication:
             # A new acceptance may have sealed another generation while we
             # joined. Its own cleanup task must complete before reopening.
             current = db.execute("SELECT generation FROM autonomy_roles WHERE role_id=?", (role_id,)).fetchone()
-            if current and state and current[0] == state[0]:
+            if current and state and current[0] == state[0] and not self.drift_files.pending(role_id, db):
                 db.execute("UPDATE autonomy_roles SET cleanup_pending=0 WHERE role_id=?", (role_id,))
 
     async def _launch(self, origin):
@@ -423,6 +453,9 @@ class ProactiveApplication:
                         or now - row["last_human_end"] < 600 or row["cleanup_pending"]
                         or self.role_getter(row["role_id"]) is None
                         or self.mcp_host is not None and self.mcp_host.autonomy_cleanup_pending(row["role_id"])):
+                    continue
+                if db.execute("SELECT 1 FROM autonomy_drift_write_journal WHERE role_id=? AND status='pending'", (row['role_id'],)).fetchone():
+                    db.execute("UPDATE autonomy_roles SET cleanup_pending=1,admission_error='长期文件预留仍待核对' WHERE role_id=?", (row['role_id'],))
                     continue
                 if db.execute("SELECT 1 FROM autonomy_runs WHERE role_id=? AND kind='autonomy_tick' AND runtime_acknowledged=0",
                               (row["role_id"],)).fetchone():
@@ -535,13 +568,23 @@ class ProactiveApplication:
         return await self._execute_tick(origin, execution, cancelled)
 
     async def _finish_operation(self, origin):
-        if self.mcp_host is None:
-            return
         while True:
+            failed = False
+            owner = self._drift_owners.get(origin.tick_id)
+            if owner is not None:
+                try:
+                    await owner.close()
+                    self._drift_owners.pop(origin.tick_id, None)
+                except Exception:
+                    failed = True
             try:
-                await self.mcp_host.close_autonomy_run(origin.tick_id)
-                return
+                if self.mcp_host is not None:
+                    await self.mcp_host.close_autonomy_run(origin.tick_id)
             except Exception:
+                failed = True
+            if not failed:
+                return
+            else:
                 try:
                     with self._transaction() as db:
                         db.execute("UPDATE autonomy_roles SET cleanup_pending=1 WHERE role_id=?", (origin.role_id,))
@@ -623,12 +666,15 @@ class ProactiveApplication:
         bundle = None
         try:
             async with asyncio.timeout(remaining):
-                if sources:
+                mounts = tuple(AutonomyMcpGrant(grant.serverId, grant.configRevision, grant.grantRevision,
+                    tuple((operation.name, operation.definitionHash) for operation in grant.operations))
+                    for grant in config.driftMcpGrants) if 'drift' in origin.allowed_modes else ()
+                if sources or mounts:
                     if self.mcp_host is None:
                         raise PermissionError("autonomous MCP host is unavailable")
                     grants = tuple(AutonomyMcpGrant(source.serverId, source.configRevision, source.grantRevision,
                         ((source.getTool, source.getDefinitionHash),)) for source in sources)
-                    bundle = self.mcp_host.freeze_autonomy(origin, grants, authorized=lambda: self._authorized(origin))
+                    bundle = self.mcp_host.freeze_autonomy(origin, grants, authorized=lambda: self._authorized(origin), mount_grants=mounts)
                 snapshot = await collect_snapshot(bundle, sources, observed_at=observed_at,
                     eligible=lambda grant, identifier: self._event_eligible(origin.role_id, grant, identifier),
                     rotation=rotation, fetch_body=(lambda url: self.fetch_body(origin, url)) if self.fetch_body else None)
@@ -656,8 +702,8 @@ class ProactiveApplication:
             elif not snapshot["trustedEmpty"]:
                 status = "sources_unavailable"
             elif "drift" in origin.allowed_modes:
-                # #179 adds the actual Drift consumer after #177/#178 validate.
-                status = "drift_dependency_pending"
+                from .drift import run_drift
+                return await run_drift(self, origin, execution, cancelled, config, snapshot, bundle=bundle)
             else:
                 status = "no_events"
             with self._transaction() as db:
@@ -686,7 +732,20 @@ class ProactiveApplication:
                        ("aborted", status, origin.tick_id))
 
     async def recover(self):
+        try:
+            await self._recover()
+        except sqlite3.OperationalError as error:
+            # Every phase, including ACK scheduling and local projections, uses
+            # the same short connection timeout. A busy read is no evidence of
+            # an absent operation. Executors keep their independent finally
+            # cleanup duty; this path never discards an owner or creates a key.
+            if (getattr(error, 'sqlite_errorcode', 0) & 0xFF) not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                raise
+
+    async def _recover(self):
         await self.source_verifications.recover()
+        from .drift_delivery import reconcile_receipts
+        await reconcile_receipts(self)
         for role_id, run_id in tuple(self._human_finish_pending):
             self.finish_human_run(role_id, run_id)
         with self._transaction() as db:
@@ -720,6 +779,7 @@ class ProactiveApplication:
                     with self._transaction() as db:
                         db.execute("UPDATE autonomy_runs SET runtime_result=?,result_ack_pending=1 WHERE tick_id=?",
                                    (json.dumps({"status": snapshot.status, "output": snapshot.output[-4000:]}), origin.tick_id))
+                        retention.retain_runtime_log(db, origin.tick_id, snapshot.log_bytes)
                         db.execute("UPDATE autonomy_runs SET status='aborted',error='runtime interrupted' WHERE tick_id=? AND status IN ('preparing','running')", (origin.tick_id,))
                         if row["kind"] == "autonomy_ack":
                             from .acknowledgements import settle_attempt
@@ -749,6 +809,25 @@ class ProactiveApplication:
         if not self._closed:
             from .acknowledgements import schedule_acks
             await schedule_acks(self)
+        with self._transaction() as db:
+            projections = [row[0] for row in db.execute('SELECT DISTINCT role_id FROM autonomy_drift_progress WHERE projection_pending=1')]
+            journals = [row[0] for row in db.execute("SELECT DISTINCT role_id FROM autonomy_drift_write_journal WHERE status='pending'")]
+        for role_id in journals:
+            if self.role_getter(role_id) is None or any(executor.origin.role_id == role_id for executor in self._executors.values()):
+                continue
+            try:
+                await self._owned(self.drift_files.reconcile, role_id)
+            except (ValueError, OSError):
+                pass
+        for role_id in projections:
+            if self.role_getter(role_id) is None or any(executor.origin.role_id == role_id for executor in self._executors.values()):
+                continue
+            try:
+                from .drift import project_progress
+                await self._owned(self.drift_files.reconcile, role_id)
+                await self._owned(project_progress, self, role_id)
+            except (ValueError, OSError, sqlite3.Error):
+                pass  # Keep the exact committed version and its durable obligation.
 
     async def close(self):
         self._closed = True

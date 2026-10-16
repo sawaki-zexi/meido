@@ -167,14 +167,42 @@ class McpHost:
         self.store = store
         self._runs: dict[str, McpRun] = {}
         self._autonomy_runs: dict[str, Any] = {}
+        self._observed_catalogs: dict[str, tuple[str, str, Any]] = {}
         self._autonomy_role_gates: dict[str, threading.BoundedSemaphore] = {}
         self._autonomy_server_gates: dict[tuple[str, str], threading.Lock] = {}
         self._lock = threading.RLock()
 
-    def freeze_autonomy(self, origin, grants, *, authorized):
+    def observe_catalog(self, config, declarations):
+        """Cache bounded local metadata after an actual authorized handshake."""
+        from copy import deepcopy
+        if len(declarations) > 128 or len(json.dumps(declarations).encode('utf-8')) > 256 * 1024:
+            return
+        with self._lock:
+            if self.store.get(config.server_id) != config:
+                return
+            if config.server_id not in self._observed_catalogs and len(self._observed_catalogs) >= 32:
+                self._observed_catalogs.pop(next(iter(self._observed_catalogs)))
+            self._observed_catalogs[config.server_id] = (config.revision, config.grant_id, deepcopy(declarations))
+
+    def observed_catalog(self, role_id, server_id):
+        from copy import deepcopy
+        with self._lock:
+            config = self.store.get(server_id)
+            previous = self._observed_catalogs.get(server_id)
+            if config is None or not config.enabled or role_id not in config.role_ids:
+                return 'unobserved', ()
+            if previous is None:
+                return 'unobserved', ()
+            if previous[:2] != (config.revision, config.grant_id):
+                return 'stale', ()
+            return 'observed', tuple(deepcopy(previous[2]))
+
+    def freeze_autonomy(self, origin, grants, *, authorized, mount_grants=()):
         """The proactive host supplies its persisted origin and exact operations."""
         from .mcp_autonomy import AutonomyMcpRun
-        if not authorized() or not grants or len(grants) > 8:
+        all_grants = (*grants, *mount_grants)
+        if (not authorized() or not all_grants or len(grants) > 8 or len(mount_grants) > 8
+                or len({grant.server_id for grant in all_grants}) > 8):
             raise PermissionError("a live autonomous host grant is required")
         with self._lock:
             if origin.tick_id in self._autonomy_runs:
@@ -184,8 +212,8 @@ class McpHost:
                 raise RuntimeError("prior autonomous MCP cleanup is pending")
             role_gate = self._autonomy_role_gates.setdefault(origin.role_id, threading.BoundedSemaphore(2))
             server_gates = {grant.server_id: self._autonomy_server_gates.setdefault(
-                (origin.role_id, grant.server_id), threading.Lock()) for grant in grants}
-            run = AutonomyMcpRun(self, origin, grants, authorized, role_gate, server_gates)
+                (origin.role_id, grant.server_id), threading.Lock()) for grant in all_grants}
+            run = AutonomyMcpRun(self, origin, grants, authorized, role_gate, server_gates, mount_grants=mount_grants)
             self._autonomy_runs[origin.tick_id] = run
             return run
 
@@ -387,6 +415,7 @@ class McpRun:
             if self._source_authorization_denial() is not None or self.host.store.get(config.server_id) != config:
                 raise PermissionError("MCP grant or original source was revoked")
             self.remote_tools[config.server_id] = tools
+            self.host.observe_catalog(config, declarations)
             self.disconnected.discard(config.server_id)
             self.errors.pop(config.server_id, None)
             return tools
