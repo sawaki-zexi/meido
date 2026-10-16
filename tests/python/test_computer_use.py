@@ -1005,3 +1005,51 @@ def test_disabled_target_remains_observable_but_never_dispatches_any_input(tmp_p
             await host.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("case", ["duplicate_key", "malformed_json"])
+def test_malformed_escaped_native_receipt_object_cannot_hide_before_valid_carrier(tmp_path, case):
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    receipt = {"status": "available", "foreground": [], "business_effect": "unknown",
+               "business": [], "restore": []}
+    marker = "meido_input_receipt_v1"
+    escaped_marker = r"meido_input_receipt_\u0076\u0031"
+    if case == "duplicate_key":
+        malformed = ('{"' + escaped_marker + '":null,"' + escaped_marker + '":'
+                     + json.dumps(receipt) + '}')
+    else:
+        malformed = '{"' + escaped_marker + '":' + json.dumps(receipt) + ',}'
+    assert marker not in malformed
+    valid = json.dumps({marker: receipt})
+    original = driver.call
+
+    async def call(name, arguments):
+        if name != "click":
+            return await original(name, arguments)
+        driver.calls.append((name, arguments))
+        return {"isError": True, "structuredContent": {"code": "tool_invocation_failed"},
+                "content": [{"type": "text", "text": "foreground_unavailable: private-error-sentinel"},
+                            {"type": "text", "text": malformed},
+                            {"type": "text", "text": valid}]}
+
+    driver.call = call
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            data = json.loads((await tools["computer_get_window_state"].execute({"pid": 42, "window_id": 81}, context)).content)
+            action = {key: data[key] for key in ("pid", "window_id", "snapshot_id", "observation_id")}
+            action.update(element_token="s00000001:2", delivery_mode="foreground")
+            result = await tools["computer_click"].execute(action, context)
+            assert result.is_error and result.details["effect"] == "unknown"
+            assert result.details["input_receipt"] == {"status": "unavailable", "reason": "invalid"}
+            payload = json.loads(result.content)
+            assert payload["code"] == "tool_invocation_failed"
+            assert payload["cause_code"] == "foreground_unavailable"
+            assert payload["input_receipt"] == result.details["input_receipt"]
+            assert "private-error-sentinel" not in result.content and marker not in result.content
+            assert len([name for name, _ in driver.calls if name == "click"]) == 1
+        finally:
+            await host.close()
+
+    asyncio.run(run())

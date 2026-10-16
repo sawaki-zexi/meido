@@ -144,7 +144,7 @@ def _received_input_receipt(result, structured):
         try:
             carrier = json.loads(text, object_pairs_hook=unique_object)
         except (ValueError, TypeError, RecursionError):
-            if marker in text:
+            if marker in text or text.lstrip().startswith("{"):
                 return invalid
             continue
         if isinstance(carrier, dict) and marker in carrier:
