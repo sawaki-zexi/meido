@@ -15,6 +15,7 @@ from backend.app.agent_runtime.shell_tool import TaskOutputTool
 from backend.app.agent_runtime.types import ToolResultMessage
 from backend.app.model_adapter import ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
+from backend.app.memory_config import MemorySettingsStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
 from backend.app.session_store import SessionStore
@@ -37,10 +38,15 @@ class MemoryCredentials:
 
 
 @pytest.fixture
-def api(tmp_path, monkeypatch):
+def api(tmp_path, monkeypatch, local_platform_only):
     initialize_databases(tmp_path / "data")
     roles, sessions = RoleStore(tmp_path / "roles"), SessionStore(tmp_path / "data" / "sessions.db")
     tasks = TaskRuntime(tmp_path / "tasks")
+    # These fixtures exercise process ownership, not automatic memory. Close
+    # its real admission before any HTTP turn can enqueue unrelated embedding.
+    memory = MemorySettingsStore(tmp_path / "data" / "memory-settings.json")
+    memory.update(enabled=False)
+    monkeypatch.setattr(main, "memory_settings_store", memory)
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))
