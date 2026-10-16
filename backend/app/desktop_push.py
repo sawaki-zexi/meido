@@ -22,7 +22,7 @@ class MessagePushTool:
             'file': {'type': 'string', 'pattern': '^[0-9a-f]{32}$'},
             'attachments': {'type': 'array', 'maxItems': 4, 'items': {'type': 'string', 'pattern': '^[0-9a-f]{32}$'}},
         }, 'required': ['channel', 'chat_id'], 'additionalProperties': False,
-    }, risk='mutating', external_allowed=True)
+    }, risk='mutating', external_allowed=False)
 
     def __init__(self, sessions: SessionStore, workspace: Callable[[], Path], *, role_id: str, authorized: Callable[[ToolContext], bool]):
         # Construction and directory preview never open a database or channel.

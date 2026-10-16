@@ -122,8 +122,9 @@ def test_http_same_run_shell_uses_frozen_and_current_allowlist_intersection(
     )
 
 
+@pytest.mark.parametrize("query", ["select:agent_browser_get_title", "填表 title"])
 def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions(
-    tmp_path, monkeypatch, local_platform_only
+    tmp_path, monkeypatch, local_platform_only, query
 ):
     class BrowserDriver:
         async def call(self, name, arguments, **kwargs):
@@ -143,7 +144,7 @@ def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions
                 yield ModelToolCall(
                     "search-browser",
                     "tool_search",
-                    {"query": "select:agent_browser_get_title"},
+                    {"query": query, "top_k": 1},
                 )
                 yield ModelToolCall("premature-browser", "agent_browser_get_title", {})
             elif self.count == 2:

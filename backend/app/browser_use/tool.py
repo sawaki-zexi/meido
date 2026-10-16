@@ -36,7 +36,7 @@ class BrowserTool:
             source="plugin:browser_use",
             version="0.38.2",
             timeout_seconds=sessions.timeout_seconds,
-            output_limit=12000,
+            output_limit=12000, search_hint='浏览器 网页 导航 点击 填表 标签页 截图 browser',
         )
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:

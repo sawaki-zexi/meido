@@ -16,7 +16,7 @@ class ReadChannelAttachmentTool:
             "limit": {"type": "integer", "minimum": 1, "maximum": 400},
             "character_offset": {"type": "integer", "minimum": 0},
         }, "required": ["attachment_id"], "additionalProperties": False},
-        external_allowed=True,
+        external_allowed=True, search_hint='QQ 附件 txt md 文件正文 引用文件 read_attachment',
     )
 
     def __init__(self, role_id: str, session_key: str, attachments: list[dict[str, object]]) -> None:

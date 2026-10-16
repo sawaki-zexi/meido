@@ -17,7 +17,7 @@ class GenerateImageTool:
     definition = ToolDefinition(name='generate_image',
         description='Generate one approved NovelAI image from English tags or an image attachment in this owner input. Uses finite paid-attempt allowance; unknown results are never retried. Explicit background=true returns accepted with its task and later delivers once to this original conversation.',
         input_schema=_SCHEMA, risk='external', source='builtin:novelai', exposure='direct',
-        external_allowed=False, timeout_seconds=330, output_limit=4000)
+        external_allowed=False, timeout_seconds=330, output_limit=4000, search_hint='生图 生成图片 NovelAI 立绘 场景图')
 
     def __init__(self, application, role_id, *, is_owner, source_thread_id=None, source_account_id=None, frozen_role=None):
         self.application, self.role_id, self.is_owner = application, role_id, is_owner

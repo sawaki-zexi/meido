@@ -321,6 +321,7 @@ def _definition_payload(definition: ToolDefinition) -> dict[str, object]:
         "version": definition.version, "risk": definition.risk, "exposure": definition.exposure,
         "approval": definition.approval, "timeoutSeconds": definition.timeout_seconds,
         "outputLimit": definition.output_limit, "externalAllowed": definition.external_allowed,
+        **({"searchHint": definition.search_hint} if definition.search_hint else {}),
     }
 
 

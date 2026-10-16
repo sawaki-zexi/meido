@@ -360,6 +360,7 @@ class ToolSearchTool:
             if (not allowed or definition.risk in allowed)
             and view.authorization_denial(definition, context) is None
         }
+        explanations: dict[str, list[str]] = {}
         if query.lower().startswith("select:"):
             names = list(
                 dict.fromkeys(
@@ -371,19 +372,22 @@ class ToolSearchTool:
             found = [name for name in names if name in eligible and name not in visible]
             loaded = [name for name in names if name in eligible and name in visible]
         else:
-            terms = list(dict.fromkeys(re.findall(r"[\w]+", query.casefold())))
+            terms = _search_terms(query)
             ranked = []
             for name, definition in eligible.items():
                 context.signal.raise_if_cancelled()
                 if name in visible:
                     continue
-                description = definition.description.casefold()
-                score = sum(
-                    4 * (term in name.casefold()) + (term in description)
-                    for term in terms
-                )
+                if query in eligible and query not in visible:
+                    if name == query:
+                        ranked = [(1, name)]
+                        explanations[name] = ["名称:精确匹配"]
+                        break
+                    continue
+                score = _keyword_score(definition, terms)
                 if score:
                     ranked.append((score, name))
+                    explanations[name] = _match_reasons(definition, terms)
             ranked.sort(key=lambda item: (-item[0], item[1]))
             found = [name for _, name in ranked[: cast(int, arguments.get("top_k", 5))]]
             loaded = []
@@ -391,12 +395,20 @@ class ToolSearchTool:
             {
                 "name": name,
                 "description": eligible[name].description[:160],
+                "summary": eligible[name].description[:120],
+                "why_matched": explanations.get(name, ["名称:精确匹配"]),
+                "always_on": eligible[name].exposure != "deferred",
                 "risk": next(
                     key for key, value in risks.items() if value == eligible[name].risk
                 ),
             }
             for name in found
         ]
+        for item in matched:
+            reasons = cast(list[str], item["why_matched"])
+            if len(reasons) > 8 or any(len(reason) > 160 for reason in reasons):
+                item["why_matched"] = [reason if len(reason) <= 160 else reason[:159] + "…" for reason in reasons[:8]]
+                item["explanation_truncated"] = True
         payload: dict[str, object] = {
             "matched": matched,
             "unlocked": found,
@@ -416,6 +428,7 @@ class ToolSearchTool:
             payload["truncated"] = True
             for item in matched:
                 item["description"] = cast(str, item["description"])[:description_limit]
+                item["summary"] = cast(str, item["summary"])[:description_limit]
             content = json.dumps(payload, ensure_ascii=False)
         while len(content) > output_limit and (found or loaded):
             payload["truncated"] = True
@@ -427,3 +440,62 @@ class ToolSearchTool:
             content = json.dumps(payload, ensure_ascii=False)
         self.discovery.pending[context.tool_call_id] = tuple(found)
         return AgentToolResult(content, details=payload)
+
+
+def _search_terms(query: str) -> set[str]:
+    """Shiori's keyword normalization, including mixed text and CJK bigrams.
+
+    Adapted from Shiori-Agent 4f266ae search_backend.py under MIT;
+    see third_party/shiori-agent/LICENSE.
+    """
+    lowered = query.lower().strip()
+    terms = {lowered, *lowered.split()}
+    terms.update(segment.strip() for segment in re.split(r"([\u4e00-\u9fff]+)", lowered))
+    cjk = [character for character in lowered if "\u4e00" <= character <= "\u9fff"]
+    terms.update(cjk)
+    terms.update(left + right for left, right in zip(cjk, cjk[1:]))
+    terms.discard("")
+    return terms
+
+
+def _keyword_score(definition: ToolDefinition, terms: set[str]) -> int:
+    """Fixed Shiori name-part, MCP, hint and description weights (MIT)."""
+    name = definition.name.lower()
+    parts = [part for part in name.split("_") if part]
+    hint = definition.search_hint.lower()
+    description = definition.description.lower()
+    mcp = definition.source.startswith("mcp:")
+    score = 0
+    for term in terms:
+        if term in parts:
+            score += 12 if mcp else 10
+        elif any(term in part or part in term for part in parts):
+            score += 6 if mcp else 5
+        elif term in name:
+            score += 3
+        if hint and term in hint:
+            score += 4
+        if term in description:
+            score += 2
+    return score
+
+
+def _match_reasons(definition: ToolDefinition, terms: set[str]) -> list[str]:
+    """Explain matching fields independently of numeric ranking."""
+    name = definition.name.lower()
+    parts = [part for part in name.split("_") if part]
+    hint = definition.search_hint.lower()
+    description = definition.description.lower()
+    reasons = []
+    for term in sorted(terms):
+        if term in parts:
+            reasons.append(f"名称精确:{term}")
+        elif any(term in part or part in term for part in parts):
+            reasons.append(f"名称部分:{term}")
+        elif term in name:
+            reasons.append(f"名称:{term}")
+        if hint and term in hint:
+            reasons.append(f"提示:{term}")
+        if term in description:
+            reasons.append(f"描述:{term}")
+    return reasons

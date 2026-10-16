@@ -144,7 +144,7 @@ class ForgetMemoryTool:
             input_schema={"type": "object", "properties": {
                 "ids": {"type": "array", "maxItems": 200, "items": {"type": "string", "maxLength": 200}},
             }, "required": ["ids"], "additionalProperties": False}, risk="mutating", source="builtin:memory",
-            approval="auto" if memory.enabled() else "deny", timeout_seconds=15, output_limit=16000)
+            approval="auto" if memory.enabled() else "deny", timeout_seconds=15, output_limit=16000, search_hint='记错了 删除记忆 撤销错误记忆 失效记忆')
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None):
         ToolRegistry.validate_definition(self.definition, dict(arguments))

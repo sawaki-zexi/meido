@@ -24,7 +24,7 @@ class ScheduleTool:
             'count': {'type': 'integer', 'minimum': 1, 'maximum': 1000},
             'channel': {'type': 'string', 'maxLength': 50},
             'chat_id': {'type': 'string', 'maxLength': 200}},
-            'required': ['tier', 'trigger', 'when'], 'additionalProperties': False}, risk='mutating', source='role')
+            'required': ['tier', 'trigger', 'when'], 'additionalProperties': False}, risk='mutating', source='role', search_hint='cron timer 延时执行')
 
     def __init__(self, application, sessions, *, origin_resolver, authorized):
         self.application, self.sessions = application, sessions
@@ -76,7 +76,7 @@ class ScheduleManageTool:
         self.definition = ToolDefinition(name=name, description='List time tasks in this exact role and original source.' if name == 'list_schedules' else 'Cancel owned time tasks by unique id prefix (at least 8 characters) or exact name; repeated cancellation is safe.',
             input_schema={'type': 'object', 'properties': {} if name == 'list_schedules' else {
                 'id': {'type': 'string', 'minLength': 8, 'maxLength': 32}, 'name': {'type': 'string', 'minLength': 1, 'maxLength': 100}},
-                'additionalProperties': False}, source='role', risk='read_only' if name == 'list_schedules' else 'mutating')
+                'additionalProperties': False}, source='role', risk='read_only' if name == 'list_schedules' else 'mutating', search_hint='提醒列表 已有计划' if name == 'list_schedules' else '删除提醒 取消任务')
 
     async def execute(self, arguments, context, on_update=None):
         del on_update

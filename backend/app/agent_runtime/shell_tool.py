@@ -59,7 +59,7 @@ class ShellTool:
                 "auto_promote": {"type": "boolean"},
             },
             "required": ["command"], "additionalProperties": False,
-        }, risk="external",
+        }, risk="external", search_hint='终端 脚本 shell sh bash pwsh PowerShell 命令',
     )
 
     def __init__(
@@ -178,7 +178,7 @@ class TaskOutputTool:
             "task_id": {"type": "string"}, "block": {"type": "boolean"},
             "timeout_ms": {"type": "integer", "minimum": 0, "maximum": 30_000},
         }, "required": ["task_id"], "additionalProperties": False},
-        source="role", timeout_seconds=32,
+        source="role", timeout_seconds=32, search_hint='后台任务输出 task_output 进程日志',
     )
 
     def __init__(self, tasks: TaskRuntime, *, origin_resolver: Callable[[ToolContext], TaskOrigin] = _origin,
@@ -211,7 +211,7 @@ class TaskStopTool(TaskOutputTool):
         name="task_stop", description="Stop the complete owned task process tree; repeated stops preserve its terminal result.",
         input_schema={"type": "object", "properties": {"task_id": {"type": "string"}},
                       "required": ["task_id"], "additionalProperties": False},
-        risk="mutating", source="role", timeout_seconds=15,
+        risk="mutating", source="role", timeout_seconds=15, search_hint='停止后台任务 task_stop 杀进程',
     )
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:

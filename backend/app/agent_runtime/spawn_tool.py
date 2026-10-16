@@ -265,7 +265,7 @@ class SpawnTool:
             "repository": {"type": "string", "minLength": 1, "maxLength": 2000},
             "run_in_background": {"type": "boolean"},
             "retry_count": {"type": "integer", "minimum": 0, "maximum": 1}},
-            "required": ["task"], "additionalProperties": False}, risk="external", source="role")
+            "required": ["task"], "additionalProperties": False}, risk="external", source="role", search_hint='后台执行 子任务 多步调研 独立任务')
 
     def __init__(self, tasks: TaskRuntime, config: SpawnToolConfig, *, origin_resolver: Callable[[ToolContext], TaskOrigin],
                  authorized: Callable[[ToolContext], bool], coding_application=None, coding_access=None, coding_authorized=None):
@@ -335,7 +335,7 @@ class SpawnManageTool:
         input_schema={"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "get", "cancel", "continue"]},
             "task": {"type": "string", "minLength": 1, "maxLength": 20000},
             "job_id": {"type": "string", "minLength": 1}}, "required": ["action"], "additionalProperties": False},
-        risk="mutating", source="role", timeout_seconds=15)
+        risk="mutating", source="role", timeout_seconds=15, search_hint='查看 取消 后台任务 subagent job_id spawn_manage')
 
     def __init__(self, tasks: TaskRuntime, *, origin_resolver: Callable[[ToolContext], TaskOrigin], authorized: Callable[[ToolContext], bool], coding_application=None, coding_access=None, coding_authorized=None):
         self.tasks, self.origin_resolver, self.authorized = tasks, origin_resolver, authorized

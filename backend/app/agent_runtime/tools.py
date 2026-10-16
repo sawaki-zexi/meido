@@ -28,12 +28,15 @@ class ToolDefinition:
     timeout_seconds: float | None = None
     output_limit: int | None = None
     external_allowed: bool = False
+    search_hint: str = ""
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("tool name is required")
         if not self.description.strip():
             raise ValueError(f"tool description is required: {self.name}")
+        if not isinstance(self.search_hint, str):
+            raise ValueError(f"tool search hint must be a string: {self.name}")
         if self.risk not in _RISKS:
             raise ValueError(f"unsupported tool risk: {self.risk}")
         if self.exposure not in _EXPOSURES:

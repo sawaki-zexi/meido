@@ -242,7 +242,7 @@ class LookupGroupContextTool:
     definition = ToolDefinition(
         "lookup_group_context", "按 name（不区分大小写的群名片段）找候选，再按 group_thread_id 读取当前角色保存的群笔记、摘要及更新时间。省略名字和 ID 时分页列全部群，page 从1开始、每页20项；可查较早或离线记录，不返回聊天或旁听原文。",
         {"type": "object", "properties": {"name": {"type": "string"}, "group_thread_id": {"type": "string"}, "page": {"type": "integer", "minimum": 1}}, "additionalProperties": False},
-        external_allowed=False,
+        external_allowed=False, search_hint='群笔记 群摘要 群记忆 群动态 别的群 其他群 查群 找群',
     )
 
     def __init__(self, repository: MultichannelGroupRepository, *, role_id: str,
@@ -285,7 +285,7 @@ class UpdateGroupContextTool:
     definition = ToolDefinition(
         "update_group_context", "更新当前角色的群笔记或摘要：至少提供 group_note/summary 之一，整篇替换；省略保留、空串清空；不修改聊天或旁听原文。",
         {"type": "object", "properties": {"group_thread_id": {"type": "string"}, "group_note": {"type": "string"}, "summary": {"type": "string"}}, "required": ["group_thread_id"], "additionalProperties": False},
-        risk="mutating", external_allowed=False,
+        risk="mutating", external_allowed=False, search_hint='改群笔记 改群摘要 更新群记忆 修正群动态 清空群笔记',
     )
 
     def __init__(self, repository: MultichannelGroupRepository, *, role_id: str,
@@ -318,7 +318,7 @@ class SetGroupListeningTool:
     definition = ToolDefinition(
         "set_group_listening", "打开或关闭 NapCat QQ 指定群的旁听。群友回合不能调用此工具；主人群回合只能设置当前群。",
         {"type": "object", "properties": {"channel": {"type": "string"}, "chat_id": {"type": "string"}, "enabled": {"type": "boolean"}}, "required": ["enabled"], "additionalProperties": False},
-        risk="mutating", external_allowed=False,
+        risk="mutating", external_allowed=False, search_hint='旁听 看群 群消息',
     )
 
     def __init__(self, repository: MultichannelGroupRepository, *, role_id: str,
@@ -357,6 +357,7 @@ class LookupGroupMemberTool:
         "lookup_group_member", "按 name（含旧昵称）找成员，或按 member_id 与 member_channel 读档案；二选一。主人桌面/有效私聊可跨渠道，群聊和访客只限当前线程。档案来源每页5条，用 source_page 继续。对应 Shiori lookup_member。",
         {"type": "object", "properties": {"name": {"type": "string"}, "member_id": {"type": "string"}, "member_channel": {"type": "string"},
             "source_page": {"type": "integer", "minimum": 1}}, "additionalProperties": False},
+        search_hint="群友 昵称 是谁",
         external_allowed=True,
     )
 

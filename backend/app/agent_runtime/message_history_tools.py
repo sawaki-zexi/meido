@@ -81,7 +81,7 @@ class MessageHistoryTool:
                          else "按source_ref读取获准消息原文，可带前后文；用于核验记忆和历史事实。"),
             input_schema={"type": "object", "properties": properties,
                           "required": ["query"] if search else [], "additionalProperties": False},
-            source="builtin:message_history", external_allowed=True, timeout_seconds=15,
+            source="builtin:message_history", external_allowed=True, timeout_seconds=15, search_hint='你之前说 聊过什么 历史对话' if search else '消息回溯 按ID查对话原文 source_ref',
         )
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:

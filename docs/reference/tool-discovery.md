@@ -2,9 +2,9 @@
 
 状态：当前
 
-最后核验：2026-10-16
+最后核验：2026-10-17
 
-事实来源：[发现协议](../../backend/app/agent_runtime/discovery.py)、[能力解析](../../backend/app/agent_runtime/capabilities.py)、[运行循环](../../backend/app/agent_runtime/loop.py)、[持久化宿主](../../backend/app/agent_runtime/runtime.py)、[公开工具/版本测试](../../tests/python/test_tool_discovery.py)、[HTTP 行为测试](../../tests/python/test_tool_discovery_api.py)。对应 [Issue #148](https://github.com/sawaki-zexi/meido/issues/148)、[ADR-0011](../adr/0011-versioned-tool-activation.md)。
+事实来源：[发现协议](../../backend/app/agent_runtime/discovery.py)、[能力解析](../../backend/app/agent_runtime/capabilities.py)、[运行循环](../../backend/app/agent_runtime/loop.py)、[持久化宿主](../../backend/app/agent_runtime/runtime.py)、[公开工具/版本测试](../../tests/python/test_tool_discovery.py)、[搜索行为测试](../../tests/python/test_tool_search_relevance.py)、[HTTP 行为测试](../../tests/python/test_tool_discovery_api.py)。对应 [Issue #148](https://github.com/sawaki-zexi/meido/issues/148)、[ADR-0011](../adr/0011-versioned-tool-activation.md)。
 
 ## 角色配置与兼容
 
@@ -24,24 +24,26 @@
 ## tool_search
 
 ```json
-{"query":"标题","top_k":5,"allowed_risk":["read-only"]}
+{"query":"查群笔记","top_k":5,"allowed_risk":["read-only"]}
 ```
 
 ```json
 {"query":"select:account_list,agent_browser_get_title"}
 ```
 
-`query` 最长 2000 字符；空查询或无匹配返回空列表及提示。关键词按空白/标点拆词，不区分大小写，匹配名称和说明，名称匹配优先；中文说明可以直接检索。`top_k` 为 1–10，默认 5，仅用于关键词检索。`select:` 不区分前缀大小写，逗号分隔精确名称，去重后最多 50 项。
+`query` 最长 2000 字符；空查询或无匹配返回空列表及提示。关键词保留小写整体查询，并按空白、中英文边界、中文单字和相邻双字召回；不依赖外部分词库或远端模型。名称按下划线拆分，精确名称片段、部分片段、全名包含的权重依次为 10、5、3，MCP 工具为 12、6、3；搜索提示额外加 4，说明额外加 2。先按分数降序，再按名称升序稳定排序。普通查询与一个未加载候选的完整名称精确相同时只返回该工具。`top_k` 为 1–10，默认 5，仅用于关键词检索。`select:` 不区分前缀大小写，逗号分隔精确名称，去重后最多 50 项。
 
 `allowed_risk` 可选，取值沿用 Shiori：`read-only`、`write`、`external-side-effect`，分别对应 Meido 的 `read_only`、`mutating`、`external`。空数组不额外收紧风险。风险过滤不能扩大宿主授权。
 
-结果包含 `matched`（名称、简短说明、风险）、`unlocked`、`already_loaded` 和 `tip`。完整 JSON 最多 16000 字符；必要时先缩短说明、再减少结果，并返回 `truncated: true`，只暂存实际返回的激活名称。关键词只返回尚未加载的匹配工具；精确选择可以报告已经加载。未授权、隐藏、审批拒绝、外部受限或已撤权工具不会进入匹配结果。模型不能传入角色、session、可见集合、授权标志或版本。
+结果包含 `matched`、`unlocked`、`already_loaded` 和 `tip`。每个匹配保留 `name`、`description`、`risk`，并提供上游兼容的 `summary`（最多 120 字符）、`why_matched`（命中字段及查询词）、`always_on`（当前声明是否直接暴露）。解释最多 8 项，每项最多 160 字符，省略时返回 `explanation_truncated: true`；排名使用完整查询。完整 JSON 最多 16000 字符；必要时先缩短说明、再减少结果，并返回 `truncated: true`，只暂存实际返回的激活名称。关键词只返回尚未加载的匹配工具；精确选择可以报告已经加载。未授权、隐藏、审批拒绝、外部受限或已撤权工具在排名前被排除，不会进入匹配结果。模型不能传入角色、session、可见集合、授权标志或版本。
+
+`ToolDefinition.search_hint` 是宿主搜索元信息，不进入 provider 的函数参数 schema。生产定义沿用固定上游的群资料、浏览器、电脑控制、Coding Agent、后台任务、文件目录、网络、消息、记忆、调度、生图、附件和屏幕提示；没有上游提示的工具保持空值。已加载的核心工具仍可直接调用，不因新增提示重新进入关键词结果。桌面 `message_push` 仅向真实主人上下文暴露；访客回合不会收到其 schema，也不能通过搜索解锁。
 
 `unlocked` 是待持久化的激活结果。同一 provider 回复中的其他调用继续使用该回复原有的版本；即使排在搜索后面，也不能抢先调用新工具。搜索结果持久化并提交新版本后，下一次 provider 请求携带完整 schema，模型可直接调用。
 
 ## 快照、调用与恢复
 
-运行开始冻结候选定义、来源、风险、审批、角色、session 和宿主准入结果。每次可见性变化产生新的快照，旧快照及其嵌套 schema 不被原地改写。`capabilities.snapshot` 始终表示初始版本，`capabilities.current()` 返回当前版本。
+运行开始冻结候选定义、来源、风险、审批、角色、session 和宿主准入结果。非空搜索提示以 `searchHint` 随定义持久化，并参与候选目录身份与恢复定义比较；空提示省略字段，保持旧快照兼容。每次可见性变化产生新的快照，旧快照及其嵌套 schema 不被原地改写。`capabilities.snapshot` 始终表示初始版本，`capabilities.current()` 返回当前版本。
 
 `AgentRun.modelSnapshot.capabilityRevisions` 是有序的持久版本列表，每项包含 `snapshotId`、`visibilityVersion`、`parentSnapshotId`、`candidateCatalogId`、`generation`、`tools`、`candidates`、策略及插件元信息。初始版本为 0；激活追加版本并保持候选目录不变。`capabilityCalls` 把 tool call ID 绑定到发起该调用的 provider 版本，审计 `snapshotId` 使用同一版本。
 
@@ -72,4 +74,4 @@ Runtime 为重复调用 ID 分配唯一宿主身份，供 `ToolContext`、持久
 
 该接口不接收模型 command/env。T12 的 MCP 宿主通过独立管理工具使用该接口，真实连接、调用、按来源恢复及整树清理见 [MCP 服务契约](mcp-services.md)。服务移除通过 `stage_service_removal(context, grant_id, parent_snapshot_id)` 暂存带父版本的注销修订；结果持久化后移除可见定义及候选，旧版本保持不变。相同服务 grant 的重新添加可以恢复自己此前移除的名称，不能占用其他来源名称。
 
-上游行为依据：[Shiori-Agent 固定版本 tool_search.py](https://github.com/YinFengWindy/Shiori-Agent/blob/4f266aeaf42fcd611362e2456417b91f659341cf/apps/backend/agent/tools/tool_search.py)。协议经 Meido 的宿主身份、不可变快照和持久化边界重新实现；来源许可见 [MIT License](../../third_party/shiori-agent/LICENSE)。
+上游行为依据：[Shiori-Agent 固定版本 tool_search.py](https://github.com/YinFengWindy/Shiori-Agent/blob/4f266aeaf42fcd611362e2456417b91f659341cf/apps/backend/agent/tools/tool_search.py)、[search_backend.py](https://github.com/YinFengWindy/Shiori-Agent/blob/4f266aeaf42fcd611362e2456417b91f659341cf/apps/backend/agent/tools/search_backend.py)。归一化和评分规则改编自该 MIT 源码，协议接入 Meido 的宿主身份、不可变快照和持久化边界；来源许可见 [MIT License](../../third_party/shiori-agent/LICENSE)。

@@ -473,7 +473,7 @@ class ListDirTool(_FileTool):
         {"type": "object", "properties": {
             "path": {"type": "string", "minLength": 1, "maxLength": 4096},
         }, "required": ["path"], "additionalProperties": False},
-        source="role", output_limit=OUTPUT_LIMIT, timeout_seconds=15,
+        source="role", output_limit=OUTPUT_LIMIT, timeout_seconds=15, search_hint='ls 查看目录',
     )
 
     def _execute(self, path: Path, arguments: Mapping[str, object], context: ToolContext) -> AgentToolResult:

@@ -50,7 +50,7 @@ class CodingTool:
         self.definition = ToolDefinition(name=name, description=description,
             input_schema={'type': 'object', 'properties': properties, 'required': required, 'additionalProperties': False},
             source='builtin:coding', exposure='deferred', risk='external' if name in {'herdr_start_task', 'herdr_continue_task'} else 'mutating' if name == 'herdr_cancel_task' else 'read_only',
-            external_allowed=False, timeout_seconds=30, output_limit=12000)
+            external_allowed=False, timeout_seconds=30, output_limit=12000, search_hint='写代码 开发 修bug coding agent codex claude herdr PR' if name == 'herdr_start_task' else 'Herdr 任务 状态 进度 继续 取消 coding agent')
 
     async def execute(self, arguments, context, on_update=None):
         del on_update
