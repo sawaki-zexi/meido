@@ -105,14 +105,12 @@ def autonomy_router(application, *, workspace_getter=None):
     @router.get('/drift-grant-options')
     async def drift_grant_options(role_id: str):
         from ..mcp_autonomy import declaration_hash
-        from .bindings import shape
+        from .bindings import shape, local_tool_names
         try:
             owner = application()
             owner._require_role(role_id)
             role = shape(owner.role_getter(role_id), role=True)
-            enabled = set(role.get('agentConfig', {}).get('enabledTools', []))
-            if role.get('agentConfig', {}).get('memoryRecall', {}).get('enabled'):
-                enabled.add('recall_memory')
+            enabled = local_tool_names(role)
             servers = []
             for server in owner.mcp_host.store.all() if owner.mcp_host is not None else ():
                 if role_id not in server.role_ids:

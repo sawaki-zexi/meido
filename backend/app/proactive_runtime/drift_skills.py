@@ -325,13 +325,8 @@ class DriftSkillCatalog:
                 forbidden = self._forbidden(skill, manifest, scope)
                 missing = sorted(set(skill.tools) - self.execution_tools(config) - _INTERNAL)
                 role = self.app.role_getter(role_id)
-                from .bindings import shape
-                policy = shape(role, role=True).get('agentConfig', {})
-                local = set(policy.get('enabledTools', []))
-                if policy.get('memoryRecall', {}).get('enabled'):
-                    local.add('recall_memory')
-                if not policy.get('shell', {}).get('enabled'):
-                    local.discard('shell')
+                from .bindings import shape, local_tool_names
+                local = local_tool_names(shape(role, role=True))
                 missing = sorted(set(missing) | {name for name in skill.tools if name not in _INTERNAL and not name.startswith('mcp_') and name not in local})
                 grants = {grant.serverId: grant for grant in config.driftMcpGrants}
                 missing_mcp = []

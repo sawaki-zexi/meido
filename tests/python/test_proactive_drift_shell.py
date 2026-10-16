@@ -66,8 +66,15 @@ def test_fixed_readonly_shell_executes_real_version_in_original_task_and_rejects
                         event.arguments['content'] = event.arguments['content'].replace('finish_drift]', 'shell, finish_drift]')
                 yield event
     role, path, now = prepare(client, monkeypatch, extra_tools=('shell',), author=Author(),
-        authoring_extra={'allowShell': True}, agent_extra={'shell': {'enabled': True, 'allowedCommands': [str(Path(sys.executable).resolve())]}},
+        authoring_extra={'allowShell': True}, agent_extra={'enabledTools': ['read_file', 'write_file', 'edit_file', 'list_dir'],
+            'shell': {'enabled': True, 'allowedCommands': [str(Path(sys.executable).resolve())]}},
         config_extra={'shellRuleIds': ['python-version']})
+    # This is the normal role settings shape: Shell has a dedicated switch;
+    # the frontend does not inject it into the general enabledTools list.
+    saved = next(item for item in client.get('/api/roles').json()['roles'] if item['id'] == role)
+    response = client.put('/api/roles/' + role, json={'name': saved['name'], 'profile': saved['profile'], 'agentConfig': saved['agentConfig']})
+    assert response.status_code == 200, response.text
+    assert 'shell' not in response.json()['role']['agentConfig']['enabledTools']
 
     class Shell:
         requests = 0
@@ -92,11 +99,48 @@ def test_fixed_readonly_shell_executes_real_version_in_original_task_and_rejects
     try:
         options = client.get(path + '/drift-grant-options').json()
         assert next(item for item in options['shellRules'] if item['id'] == 'python-version')['available']
+        assert next(item for item in options['tools'] if item['name'] == 'shell')['available']
+        assert next(item for item in client.get(path + '/drift-skills').json()['skills'] if item['id'] == 'reading-notes')['status'] == 'available'
         now[0] += 1800
         state = asyncio.run(settled(main._proactive, role))
         assert adapter.requests == 4, state
         assert len(state['runs']) == 1 and state['runs'][0]['status'] == 'finished_silent'
         assert state['runs'][0]['timeoutSeconds'] == 600
+        assert main._proactive._drift_owners == {}
+    finally:
+        asyncio.run(main._proactive.close())
+
+
+@pytest.mark.parametrize('missing', ['switch', 'executable', 'drift-grant', 'skill-preset'])
+def test_dedicated_shell_switch_never_bypasses_other_required_grants(api, monkeypatch, missing):
+    client, _, _, _ = api
+    class Author(NotesAuthor):
+        async def stream_structured_messages(self, messages, configuration, tools):
+            async for event in super().stream_structured_messages(messages, configuration, tools):
+                if getattr(event, 'name', None) == 'write_file':
+                    if event.arguments['path'].endswith('drift.json') and missing != 'skill-preset':
+                        value = json.loads(event.arguments['content'])
+                        value['shellRuleIds'] = ['python-version']
+                        event.arguments['content'] = json.dumps(value)
+                    elif event.arguments['path'].endswith('SKILL.md'):
+                        event.arguments['content'] = event.arguments['content'].replace('finish_drift]', 'shell, finish_drift]')
+                yield event
+    files = ['read_file', 'write_file', 'edit_file', 'list_dir']
+    role, path, now = prepare(client, monkeypatch, extra_tools=('shell',), author=Author(),
+        authoring_extra={'allowShell': True}, agent_extra={'enabledTools': [*files, 'shell'] if missing == 'switch' else files,
+            'shell': {'enabled': missing != 'switch', 'allowedCommands': [] if missing == 'executable' else [str(Path(sys.executable).resolve())]}},
+        config_extra={'shellRuleIds': ['python-version'], 'driftToolGrants': files if missing == 'drift-grant' else [*files, 'shell']})
+    class Forbidden:
+        async def stream_rich_messages(self, *args, **kwargs):
+            raise AssertionError('A skill with a missing required Shell grant must not execute')
+            yield
+    monkeypatch.setattr(main, 'model_adapter', Forbidden())
+    try:
+        item = next(item for item in client.get(path + '/drift-skills').json()['skills'] if item['id'] == 'reading-notes')
+        assert item['status'] == 'pending_dependency', item
+        now[0] += 1800
+        state = asyncio.run(settled(main._proactive, role))
+        assert state['runs'][0]['status'] == 'drift_dependency_pending'
         assert main._proactive._drift_owners == {}
     finally:
         asyncio.run(main._proactive.close())

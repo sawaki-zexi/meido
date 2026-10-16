@@ -12,6 +12,19 @@ def shape(value, *, role=False):
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
 
+def local_tool_names(role):
+    """Interpret dedicated role switches consistently for Drift discovery/use."""
+    policy = (role or {}).get('agentConfig', {})
+    names = set(policy.get('enabledTools', []))
+    if policy.get('memoryRecall', {}).get('enabled'):
+        names.add('recall_memory')
+    if policy.get('shell', {}).get('enabled'):
+        names.add('shell')
+    else:
+        names.discard('shell')
+    return names
+
+
 def model_digest(value):
     payload = json.dumps(shape(value), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(payload.encode()).hexdigest()

@@ -61,6 +61,25 @@ Drift 经原 main wrapper 调用真实 MemoryEngine，在当前角色只读 cont
 
 最终窄类型检查覆盖 proactive_runtime 与 Capability/discovery/MCP 必要接缝，28 个源文件通过；compileall 覆盖 backend/app 与 tests/python 通过。宽类型检查使用相同已安装依赖与 `--check-untyped-defs --ignore-missing-imports --follow-imports=silent`。准确 fa122c3 基点为 88 个诊断；最后代码为 87 个、3 个文件，归一化路径及嵌入行号后新增 0、减少 1。原 main/SessionStore/FileTools 既有宽检查仍不通过，不能写成全仓库类型通过。
 
+## 独立审查后的四项修正
+
+冻结源 `ecde3b4ebd01d4886ad051eef88fb8991eda01c0` 的完整规范与规格两轴审查各发现两个 P2；按 [公开修正计划](https://github.com/sawaki-zexi/meido/issues/179#issuecomment-6216517351)在同一功能树修正。原独立审查、真实故障数据库和未完成的原生崩溃轮均保留；崩溃轮不计独立第三项 finding，不宣称其 owner 正常 join。
+
+永久行为回归的初始纵切分别记录，不能相加成一轮完整验收：
+
+- 真实 S06→桌面 canonical sent→原 Runtime 副本/ACK 后仅注入本地 receipt 字段丢失，永久回归得到 `NOT NULL constraint failed: autonomy_deliveries.error`，1f/1warn/12.59秒；只将成功恢复的 error 从 None 改为空字符串后，同测试1p/1warn/10.24秒。原 intent、run/finish/进度整行、canonical消息唯一及模型三次请求均保留。
+- 三十二条合成历史 unknown 后，第33条真实原 run/消息/ACK 在应用重建后仍未恢复，正式永久RED为1f/1warn/11.26秒。最初夹具仅重排claim而没重排run，目标先被查询的1f/12.04秒属于装配错误，单独保留；没有把该轮计入生产RED。修复持久单行INTEGER扫描位置、按delivery rowid有序查询并逐条在lookup前推进；同两项回执测试2p/1warn/15.43秒，批次仍≤32、unknown不删除、无模型或发送重放。
+- 正常角色PUT仅启用Shell专用开关与精确解释器白名单，旧通用enabledTools误判导致公开选项不可选，永久RED1f/1warn/9.17秒。统一公开选项、技能目录和冻结执行授权的角色开关解释后，同原完整固定Python版本进程及非法command拒绝链1p/1warn/10.48秒。普通Shell/ProcessExecutor/TaskRuntime不改。
+- 真实静默finish及Runtime ACK后，八日完整工具结果仍含激活指令，永久RED1f/1warn/10.84秒；接入七日结果清理和九十日已解决finish压缩后，同测试1p/1warn/9.65秒。调用身份/hash墓碑、当前技能进度保留，未ACK/unknown/投影职责另有保护回归。
+
+各轮新数据根、唯一basetemp、原日志/XML及输入前后哈希位于 `proactive179-fix-<阶段>-manifest.json` 等外部工件；上述正式RED/GREEN均内外local-only guard0、全部main owner自然join、运行前后输入零变。后续必要保护组、完整Drift/A01协议/retention及跨平台结果另按最终固定输入交接，不将旧70/349/222项或未变UI216项当成新修正已重跑。
+
+保护组17p/1warn/74.99秒：首条reader异常后跨应用继续、Shell专用开关/白名单/Drift grant/技能preset四种缺项、真实Runtime已终态但尚未ACK、原投影pending、真实unknown投递claim与finish保护均通过。旧版本已经compacted但遗留finish详情的升级对照另有1f/1warn/10.55秒→同测试1p/1warn/9.60秒；它属于同一保留策略缺陷，修正让已过期且已解决的旧标记行同样清理，不延长或缩短原期限。
+
+最终Windows必要集合覆盖全部12个Drift模块、完整A01协议/retention、普通Shell/API与能力/角色配置，130p/1skip/1warn/327.40秒。明确kali-linux既有Python3.12.7的核心修正闭环8p/2warn/107.37秒，两轮全部owner自然关闭、内外guard0、输入前后零变。Windows既有`test_shell_tool.py::test_absolute_allowlist_preserves_case_sensitive_path`按平台跳过，reason为requires a case-sensitive executable path；不将skip计通过。WSL的两条pytest警告为既有conftest重写与Starlette/httpx弃用提示，启动时本机代理警告原日志保留。
+
+本轮选择器递归包含backend/tests/web/src，排除__pycache__/pyc/pyo，共554输入；Windows/WSL相同SHA256 `ac811dcb708adbcd103e020e7d5771f3ed6bebb9acb800671e99e496b45e0813`。这与原558选择器不同：原独有ci.yml、package.json、package-lock.json、requirements.txt、tsconfig.json、vite.config.ts、vitest.config.ts；新独有backend/__init__.py及两个新增永久回执/retention测试。原558路径全存在，完整差集/原始SHA留在交接，不以数量差推断删除文件，也不把新hash当原558同集合hash。120个原前端输入零变，保留原216项与构建证据，没有重跑UI。最终窄mypy同原flags的28源通过；宽类型旧88→87仅是先前证据，本轮不冒称重新全仓通过。
+
 ## 明确限制
 
 本票桌面投递，外部主人目标目录、平台回执查询和真实账号验收由 [#180](https://github.com/sawaki-zexi/meido/issues/180) 沿现有 ChannelHost push seam 承接。不伪造普通聊天主人 user row，不改通用 MessagePushTool 来绕权。

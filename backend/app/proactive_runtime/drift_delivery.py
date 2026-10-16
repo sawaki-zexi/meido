@@ -117,10 +117,19 @@ async def reconcile_receipts(app):
     """Only ended, copied and acknowledged Runtime runs may recover send facts."""
     from .identity import AutonomyOrigin
     with app._transaction() as db:
-        claims = [dict(row) for row in db.execute("""SELECT d.*,r.origin FROM autonomy_deliveries d
+        cursor = db.execute('SELECT last_delivery_rowid FROM autonomy_drift_receipt_scan WHERE singleton=1').fetchone()[0]
+        query = """SELECT d.rowid AS delivery_rowid,d.*,r.origin FROM autonomy_deliveries d
             JOIN autonomy_runs r ON r.tick_id=d.tick_id WHERE r.mode='drift' AND r.runtime_acknowledged=1
-            AND r.runtime_result IS NOT NULL AND d.status IN ('dispatching','pending','uncertain') LIMIT 32""")]
+            AND r.runtime_result IS NOT NULL AND d.status IN ('dispatching','pending','uncertain')"""
+        claims = [dict(row) for row in db.execute(query + ' AND d.rowid>? ORDER BY d.rowid LIMIT 32', (cursor,))]
+        if not claims:
+            claims = [dict(row) for row in db.execute(query + ' AND d.rowid<=? ORDER BY d.rowid LIMIT 32', (cursor,))]
     for claim in claims:
+        # This is only a durable observation position, never a successful
+        # receipt or released claim. Advance before lookup so a failing reader
+        # cannot permanently block the next original obligation after restart.
+        with app._transaction() as db:
+            db.execute('UPDATE autonomy_drift_receipt_scan SET last_delivery_rowid=? WHERE singleton=1', (claim['delivery_rowid'],))
         origin = AutonomyOrigin.restore(claim['origin'])
         # Validate the exact old claim before any receipt lookup. Revocation
         # does not erase an already-owned delivery's historical receipt duty.
@@ -135,4 +144,4 @@ async def reconcile_receipts(app):
             db.execute("""UPDATE autonomy_deliveries SET status=?,receipt=?,message_id=?,error=?
                 WHERE intent_id=? AND tick_id=? AND status IN ('dispatching','pending','uncertain')""",
                 (status, json.dumps(receipt) if receipt else None, candidate['message_id'],
-                 None if receipt else 'original send has no definitive receipt', claim['intent_id'], origin.tick_id))
+                 '' if receipt else 'original send has no definitive receipt', claim['intent_id'], origin.tick_id))

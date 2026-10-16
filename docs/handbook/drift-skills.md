@@ -30,7 +30,7 @@ MCP 依赖按 `serverId` 和远端操作名声明，可附精确定义 hash。�
 
 没有新增作者范围或改动产物时，补依赖后刷新原 hash 即可。若作者范围扩大、停用重开或文件来源未验证，在技能卡片预览当前真实文件并明确采用：宿主持久保存不透明 previewId、文件 hash 与目录/文件身份，采用时再次比较原作者范围和配置版本。503 保留同一次采用 ID 供重查；409 要重新预览并确认，不自动把旧授权换成新目录。即使相同字节换目录，旧预览也失效。
 
-Shell 只接受宿主 `python-version` / `git-version` 规则 ID，要求角色 Shell 开启且现有命令白名单允许该绝对可执行程序；技能 sidecar 和当前 Drift 许可也须声明同一 ID。宿主固定 argv、Drift cwd、最小环境和执行文件 hash，不接受命令、脚本、stdin、凭据或任意输出路径。该机制不构成操作系统沙箱。
+Shell 只接受宿主 `python-version` / `git-version` 规则 ID，要求角色 Shell 专用开关开启且现有命令白名单允许该绝对可执行程序；技能 sidecar 和当前 Drift 许可也须声明同一 ID。正常角色设置即可启用，不需要向普通工具列表手工加入 `shell`。宿主固定 argv、Drift cwd、最小环境和执行文件 hash，不接受命令、脚本、stdin、凭据或任意输出路径。该机制不构成操作系统沙箱。
 
 ## 等待合格运行并检查进度
 
@@ -49,6 +49,10 @@ Drift 最少间隔三小时，UTC 每日最多四次，并计入原角色每日 
 发送前先持久占用机会；失败、超时、取消都不恢复机会。真实桌面 canonical message 和 sent receipt 在同一事务提交。发送成功后的模型 schema 与实际 dispatch 都只允许 write_file、edit_file、finish_drift。finish 的 message_result 必须匹配：未 dispatch 为 silent、真实 sent receipt 为 sent、确定失败回执为 failed、回执不明为 uncertain。取消、预算耗尽或没有合法 finish 都保持 aborted，不生成假进度。
 
 已结束任务只有在原 Runtime 结果副本与 ACK 完成后才做 receipt-only 对账；只读原 intent 的真实记录，不重发、不补 finish。不确定发送会阻止该角色后续自主发送，仍可继续静默任务。不要靠删除错误、改目标或重启解除占用。
+
+回执对账每批最多查询三十二条原记录，逐条持久保存观察位置；应用重建后继续扫描，暂时查不到回执的历史记录仍保留，不会永久挡住后来的回执。观察位置不代表已发送、已失败或已解除发送占用。
+
+已经真实结束且完成 Runtime 结果 ACK 的工具完整输出沿内部 transcript 的七日保留期清理，仅保留有限调用身份和 hash。已解决运行的 finish 详情沿九十日规则压缩；当前技能进度与工作文件保留。未 ACK 结果、未知发送和未完成投影仍保留各自必要恢复事实，过期内容清理不会重新获得发送机会。
 
 真实主人消息会立即 seal 旧自主身份，随后取消并回收该 run 的 MCP、Shell 子进程及读写线程；必须完成 owned join 才能开始新自主工作。Runtime 终态、业务 finish、文件投影和结果 ACK 是不同状态；界面进度可见不表示所有清理已经结束。
 

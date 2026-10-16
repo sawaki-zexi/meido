@@ -339,13 +339,23 @@ def prune(db,now):
                 db.execute("UPDATE autonomy_storage_reservations SET snapshot_expired=1 WHERE operation_id=?",(identifier,))
                 result["expiredSnapshots"]+=1
             result["deletedTranscripts"]+=db.execute("DELETE FROM autonomy_transcripts WHERE tick_id=? AND created_at<=?",(identifier,now-7*86400)).rowcount
+            if "autonomy_drift_tool_calls" in tables and _finished(run) and now-row["created_at"]>=7*86400:
+                # Complete tool output is another internal transcript copy.
+                # Keep call/hash tombstones and separate unresolved obligations;
+                # an unacknowledged Runtime may still need its original result.
+                db.execute("UPDATE autonomy_drift_tool_calls SET result=NULL WHERE tick_id=?",(identifier,))
             if not _finished(run) or not _resolved(db,identifier):
                 result["protectedRuns"]+=1
                 if _finished(run): settle(db,identifier,now=now)
                 continue
             settle(db,identifier,now=now)
             row=_one(db,"SELECT * FROM autonomy_storage_reservations WHERE operation_id=?",(identifier,))
-            if not row["compacted"] and now-max(row["created_at"],row["settled_at"])>=90*86400:
+            details_expired=now-max(row["created_at"],row["settled_at"])>=90*86400
+            if details_expired and "autonomy_drift_turns" in tables:
+                # Also clean already-compacted ledgers from the old version,
+                # which did not include these Drift detail columns.
+                db.execute("UPDATE autonomy_drift_turns SET finish=NULL,receipt=NULL WHERE tick_id=?",(identifier,))
+            if not row["compacted"] and details_expired:
                 db.execute("UPDATE autonomy_runs SET frozen_config='{}',bindings='{}',runtime_result=NULL,payload=NULL,error='',task_id=NULL WHERE tick_id=?",(identifier,))
                 if "autonomy_turns" in tables:
                     db.execute("UPDATE autonomy_turns SET draft=NULL,final_draft=NULL,finish=NULL,receipt=NULL,interesting='[]',discarded='[]' WHERE tick_id=?",(identifier,))

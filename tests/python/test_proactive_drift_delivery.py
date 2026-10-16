@@ -176,6 +176,14 @@ def test_real_local_delivery_failure_keeps_single_claim_and_exact_non_success_fi
             reservation = db.execute('SELECT * FROM autonomy_storage_reservations WHERE operation_id=?', (state['runs'][0]['id'],)).fetchone()
             assert reservation['settled'] == 1
             assert (reservation['remaining_bytes'] == 0) == (outcome == 'failed')
+            if outcome == 'uncertain':
+                from backend.app.proactive_runtime import retention
+                original_claim = dict(rows[0])
+                original_finish = tuple(db.execute('SELECT finish,receipt FROM autonomy_drift_turns WHERE tick_id=?', (state['runs'][0]['id'],)).fetchone())
+                assert retention.prune(db, now[0] + 91 * 86400)['protectedRuns'] == 1
+                assert dict(db.execute('SELECT * FROM autonomy_deliveries WHERE role_id=?', (role,)).fetchone()) == original_claim
+                assert tuple(db.execute('SELECT finish,receipt FROM autonomy_drift_turns WHERE tick_id=?', (state['runs'][0]['id'],)).fetchone()) == original_finish
+                assert db.execute('SELECT compacted FROM autonomy_storage_reservations WHERE operation_id=?', (state['runs'][0]['id'],)).fetchone()[0] == 0
         asyncio.run(app.close())
         monkeypatch.setattr(main, '_proactive', None)
         restored = main._proactive_application()

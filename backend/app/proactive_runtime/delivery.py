@@ -15,6 +15,9 @@ def ensure_schema(db):
         target TEXT NOT NULL,draft TEXT NOT NULL,status TEXT NOT NULL,
         dispatched INTEGER NOT NULL DEFAULT 0,message_id TEXT,receipt TEXT,
         created_at REAL NOT NULL,error TEXT NOT NULL DEFAULT '')""")
+    db.execute("""CREATE TABLE IF NOT EXISTS autonomy_drift_receipt_scan (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),last_delivery_rowid INTEGER NOT NULL)""")
+    db.execute('INSERT OR IGNORE INTO autonomy_drift_receipt_scan VALUES(1,0)')
     db.execute("""CREATE TABLE IF NOT EXISTS autonomy_delivery_keys (
         role_id TEXT NOT NULL,key TEXT NOT NULL,intent_id TEXT NOT NULL,expires_at REAL NOT NULL,
         PRIMARY KEY(role_id,key))""")

@@ -271,7 +271,7 @@ class ProactiveApplication:
         policy = role.get("agentConfig", {})
         if name == "recall_memory":
             return bool(policy.get("memoryRecall", {}).get("enabled"))
-        return name in policy.get("enabledTools", [])
+        return name in bindings.local_tool_names(role)
 
     async def _owned(self, function, *args, **kwargs):
         pending = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
