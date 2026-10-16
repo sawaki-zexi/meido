@@ -126,3 +126,9 @@ MCP 故障已在 Windows 原命令和 Linux 真实慢退出 fixture 复现：RPC
 `6a1ef4f`两条CI随后失败：PR112 failed/2015 passed、push111 failed/2016 passed，均35 skipped/2 warnings，前端均186项及构建通过。多数失败由两处旧startup夹具在短命loop遗留主动worker、后续合法拒绝替换owner引发；另三项POSIX契约spy错误，以及一项真实重复取消打断模型finally的竞态。两处无关startup隔离和按平台实际入口观察不改变原断言/生产门禁；执行器改为原gate内单次取消，保留入场前取消。真实RED后Windows/WSL相同相关37项均通过，startup/真实记忆HTTP等17项通过。固定`c105ae8`扩大**267 passed/1权限skip（322.38秒），进程exit0**，两轴修正复核均无遗留；前端0diff，沿用6a两条CI的186项及构建。新准确HEAD完整CI仍待完成；#178前置依赖继续保留，不以旧绿色放行，详见手册。
 
 准确`237db7a`的PR CI后端2128 passed/35 skipped/2 warnings，push CI后端2 failed/2126 passed/35 skipped/2 warnings；前端两次186项及构建通过。失败定位为来源核验首次恢复快照的SQLite短时写锁；真实持锁RED后，仅原生BUSY/LOCKED延后本轮，其他数据库错误重抛、原nonce/key和copy/ACK责任不变。相同相关组Windows52项、WSL52项及变更单源mypy/编译通过，三新根和内外guard至owned退出。固定`35048fb`两轴增量复核均无遗留：规范独立Windows18项/WSL6项，规格独立Windows7项通过；外部探针初装setup error如实保留，未计产品RED。新准确HEAD两套完整CI仍待完成，#178依赖继续保留，详见[验收手册](../handbook/proactive-decision-acceptance.md)。
+
+随后准确f7be两套完整CI均通过，计数与链接见本文开头；#178已解除满足的依赖并从f7be独立实施。#172源60860fb、#175源0e2da975均完整两轴/修正复核无遗留后合入；固定`43fc03a`的私有模块与各准确源一致，主动/MCP/TaskRuntime与f7be一致。共享main、SessionStore和ChatView保留两侧目标；最终INSERT前授权、角色同步stop、任何await前delegation seal、记忆删除门禁和逐owner关闭均保留。
+
+此准确生产/测试输入的总组合 **610 passed/1 skipped（696.01秒），runner exit0**：全部Coding/Codex、NovelAI、所选主动/Runtime/MCP/Skills/spawn/Shell及角色删除/记忆HTTP。原七项Herdr/两合成CLI原生均实际通过；唯一skip为主动上下文Windows创建符号链接缺权限，不计原生通过。三新MEIDO根在collection/import前建立，内外local guard持到所有owned退出，零非本地阻断。完整前端 **202 passed/35文件（26.23秒）**、TypeScript/Vite、Coding19源默认mypy（两个未注解函数提示保留）、Novel11源check-untyped-defs/ignore缺失第三方stubs、compileall和diff通过；不称全仓strict检查。
+
+固定43fc集成两轴均无遗留。规范独立后端32项、真实组合角色PUT1项、React5项及App共存DOM1项通过；规格独立组12 passed/1外置probe装配失败，补齐既有必填字段后该case1项通过，另App共存DOM1项通过。生产Novel工厂真实OneBot后台/原群替图、公开Coding/Skill管道、角色off/on跨模块撤权、消息CAS/最终授权及独立owner收尾有直接证据。外置probe装配/依赖解析错误保留，仅修审查夹具后转绿，不算产品RED或被整组通过掩盖。各组重叠不相加；新准确HEAD两套完整CI仍待，#173/#176继续保留依赖，真实账号/模型费用/平台真人收件及发布未验收。

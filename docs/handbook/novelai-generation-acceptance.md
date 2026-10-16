@@ -1,6 +1,6 @@
 # 验收 NovelAI 生成、重生成与后台原来源交付
 
-当前总集成补充：#172最终源`60860fb`的完整两轴及修正复核均无遗留。规范独立17项后端/13项React通过，关闭原journal P2；规格独立10项后端、原DOM反例1项和history_only确认1项通过，关闭跨来源私图P1与渠道新媒体提示P2。原反例和失败历史保留，各组重叠不相加。源经`d9a71f4`、`0522a00`、`043a775`、`d551de3`合入已验证f7be；只解决SessionStore与ChatView的两处内容冲突，保留主动提交/最终授权、Coding任务入口以及NovelAI图片CAS。私有生成模块与最终源完全一致；当前总分支后端组合、集成两轴及准确CI尚待完成，不以源验收代替。
+当前总集成补充：#172最终源`60860fb`的完整两轴及修正复核均无遗留。规范独立17项后端/13项React通过，关闭原journal P2；规格独立10项后端、原DOM反例1项和history_only确认1项通过，关闭跨来源私图P1与渠道新媒体提示P2。原反例和失败历史保留，各组重叠不相加。源经`d9a71f4`、`0522a00`、`043a775`、`d551de3`合入已验证f7be；只解决SessionStore与ChatView的两处内容冲突，保留主动提交/最终授权、Coding任务入口以及NovelAI图片CAS。私有生成模块与最终源完全一致。固定`43fc03a`总组合610 passed/1 Windows符号链接权限skip、前端202项及构建通过，集成两轴无遗留；准确新HEAD两套完整CI仍待，详见[总状态](../reference/shiori-tool-parity-status.md)。
 
 状态：当前本地受控验证，真实 NovelAI 未验收。最后核验：2026-10-16。事实来源：[Reference](../reference/novelai-generation.md)、[公开消息用例](../../tests/python/test_novelai_main.py)、[真实渠道用例](../../tests/python/test_novelai_channel.py)、[真实断连](../../tests/python/test_novelai_cancellation.py)、[恢复](../../tests/python/test_novelai_recovery.py)。Parent #137，当前本地实现覆盖 #171/#172；#173 CG 尚未交付。下方 #171 历史记录保留当时范围和失败事实，#172 增量单独记录。
 
