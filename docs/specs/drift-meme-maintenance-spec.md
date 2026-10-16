@@ -1,12 +1,12 @@
 # Drift 内置表情库维护规格
 
-状态：草案 / 具体架构已完成独立规范与需求设计复核，无剩余设计发现；第3节待主人明确批准，尚未写生产代码。最后核验：2026-10-17。
+状态：当前规格 / 主人已在本次对话明确批准第3节完整方案，范围为实现与无费用本地验收；#191 正在独立本地分支实施，尚未进入总 PR 的实现提交，不代表整项验收完成。最后核验：2026-10-17。
 
 Parent：[总目标 #137](https://github.com/sawaki-zexi/meido/issues/137)；实施票：[Drift表情库维护 #191](https://github.com/sawaki-zexi/meido/issues/191)。统一交付[总草稿PR #162](https://github.com/sawaki-zexi/meido/pull/162)，不另建功能PR。
 
 事实来源：[总规格](shiori-tool-parity-spec.md)、[Drift规格](proactive-drift-spec.md)、[S04正文](../../backend/app/builtin_skills/meme-manage/SKILL.md)、[普通媒体链验收](../research/meme-skill-media-acceptance-2026-10-16.md)、[协作规则](../../AGENTS.md)。源码基点为准确双CI通过的`6751bcc425ad1c0fc4823691fbdda155a89c7bdf`。设计依据为外部固定v3 SHA256 `c8f78feffc61e7d5dd030c8edc8746a94d4053cdfe3bceaa6e905b7d5cac595d`及最终两轴报告；新增取锁说明只澄清等待预算，不增加OS耗时保证。
 
-本次拟批准范围仅为实现、隔离构建与无费用本地合成验收；真实视觉服务、账号/来源/平台事务、凭据、模型消费及发布仍须具体另批。本文不是批准记录或现状实现证明。
+本次已批准范围仅为实现、隔离构建与无费用本地合成验收；真实视觉服务、账号/来源/平台事务、凭据、模型消费及发布仍须具体另批。批准依据为主人在本次对话对第3节方案的明确答复“批准该方案，继续实施（推荐）”，决定与取舍见 [ADR-0019](../adr/0019-managed-drift-meme-library.md)。本文描述目标合同，不是整项实现或验收证明。
 
 ## 1. 问题与证据
 
@@ -24,7 +24,7 @@ Meido普通S04已有主人上传→真实表情库复制→read_file图片进下
 
 普通聊天S04仍用原文件/图片/复制命令权限及原Skill工具声明；其他Drift Skill不获得共享库能力，其他七份普通Skill不因本开关自动进入Drift。现有S06与#180发送/恢复合同保持。本profile不新增message_push声明，S04以silent完成；独立可选投递仅在已有具体模式声明及原run附件/目标grant均允许时复用原public ID，不是本纵切验收前置。
 
-## 3. 待批准的具体架构
+## 3. 已批准的具体架构
 
 ### 3.1 用途许可、身份与显式视觉绑定
 
@@ -46,7 +46,7 @@ Meido普通S04已有主人上传→真实表情库复制→read_file图片进下
 
 read/list在真实内容之外返回宿主不透明库版本，绑定root/文件身份、hash和revision；宿主也按原role/run/path保存实际观察。针对受管memes的主人普通FileTools与Drift写都参加同一短期path锁/版本协议：读后更新沿原观察CAS；已有目标缺有效观察先返回needs_read，创建用实际不存在证明，不把当前最新文件悄悄充作旧预期。普通工具权限和非库文件语义不改；这项窄并发合同须在UI/工具错误里解释，不能只为Drift新服务加锁而忽略旧写入口。
 
-**受管状态的进入/退出。** 从未开启本用途的角色保持unmanaged：普通聊天S04、原FileTools权限/写入合同及原数据预算完全不变，不因新模块存在增加needs_read/CAS/64MiB限制。只有主人显式启用或采用此角色固定库，才分配managedEpoch并让该库的主人FileTools与Drift共同进入上段CAS/合计预算策略；这是本次待批的真实兼容取舍，不把“已有64MiB”说成原来已约束所有memes。
+**受管状态的进入/退出。** 从未开启本用途的角色保持unmanaged：普通聊天S04、原FileTools权限/写入合同及原数据预算完全不变，不因新模块存在增加needs_read/CAS/64MiB限制。只有主人显式启用或采用此角色固定库，才分配managedEpoch并让该库的主人FileTools与Drift共同进入上段CAS/合计预算策略；这是本次已批准的真实兼容取舍，不把“已有64MiB”说成原来已约束所有memes。
 
 关闭用途先在原角色同步门seal旧代际并撤销新受管准入，状态可为disabled_draining；立即禁止旧模型/工具/文件worker获得新的发布资格，并异步cancel/join原资源。主人不等待未知模型/业务清理：禁用后的普通编辑恢复原S04/FileTools合同；若恰逢原短发布临界段，仅允许有界path-busy反馈并重试（建议获取等待≤250ms），不能把整个旧run或unknown journal变成主人库锁。原worker自然join后其后续普通编辑当然也不再受新needs_read/CAS/合计quota限制；重新启用须等待旧owned资源退出，并创建新epoch，旧run不复活。
 
@@ -102,4 +102,4 @@ read/list在真实内容之外返回宿主不透明库版本，绑定root/文件
 
 6. **受管启停与owner继续编辑。** 默认从未启用角色的普通S04完全按原合同；显式enable/adopt才出现新CAS/合计quota。持有真实慢provider或staging-fileworker后disable，owner普通FileTools立即能继续（仅真实短path临界段可有界busy重试），不等旧run/未知清理；旧worker释放后不得覆盖新owner字节。保留未决journal/预留并重建应用，owner仍可按原合同编辑，恢复只读核实/安全私有cleanup且新版本conflict；re-enable生成新epoch且等真实owned退出，不复活旧run。
 
-本规格正文依据v3及两轴最终复核的取锁措辞形成，明确新增第3节获主人批准后才写生产；实施TDD及必要准确HEAD回归/构建/CI，统一总PR162，不建堆叠PR、不自行合并或关闭Issue。原Spec/Standards报告中的3个独立设计缺口（模式声明、逐payload计量、共享CAS/恢复）不能仅凭作者本稿宣称复核关闭。
+本规格正文依据v3及两轴最终复核的取锁措辞形成；主人已批准第3节，实现仍须TDD及必要准确HEAD回归/构建/CI，统一总PR162，不建堆叠PR、不自行合并或关闭Issue。原Spec/Standards报告中的3个独立设计缺口（模式声明、逐payload计量、共享CAS/恢复）不能仅凭作者本稿宣称实现复核关闭。
