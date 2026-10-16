@@ -121,7 +121,7 @@ class OwnedHTTP:
             if self._active is not None:
                 raise CleanupFailed('previous Coding HTTP request is still owned')
             self._active = request
-            request.thread = threading.Thread(target=execute, name='Meido.Coding.HTTP.' + uuid.uuid4().hex)
+            request.thread = threading.Thread(target=execute, name='Meido.Coding.HTTP.' + uuid.uuid4().hex, daemon=False)
             try:
                 request.thread.start()
             except RuntimeError:

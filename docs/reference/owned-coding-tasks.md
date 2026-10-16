@@ -86,6 +86,8 @@ Git HTTPS 使用私有 broker 环境中的 `Authorization: Basic base64(x-access
 
 review 最多每角色 100 份，实际 diff 256KiB；broker 所有保留文件与当前任务合计最多 2GiB/10000 文件（全局 publication 上限比逐任务池更严格），拒绝重解析与硬链接。限额不足明确失败，保留现有成果供主人处理。失败收尾分别尝试全部 native、broker、HTTP、probe owner；任何资源未确认都保留 DB 和责任，后续只恢复原 key/本地投影。
 
+清理状态的 SQL 写入失败时，内存中保留的 owner 仍阻止再次核对、复用原 push 和凭据换代；不能因 SQL 仍是 complete 就创建另一个平台或覆盖原引用。凭据替换/移除先使新修订保持 configured=false、cleanupPending=true，旧资源确认退出后才写入秘密并启用。现有有界轮询同时扫描这些内存 owner，即使其历史 outbox 已 sent/synced，也须实际关闭后才释放准入。HTTP 线程显式设置 daemon=False，不继承 TaskRuntime worker 的 daemon 属性。
+
 | 主人路径（前缀 `/api/coding`） | 行为 |
 | --- | --- |
 | GET `/publication`；PUT `/publication/credential` | 有界、明确输入独立 token 或空串移除；GET 不返回秘密 |

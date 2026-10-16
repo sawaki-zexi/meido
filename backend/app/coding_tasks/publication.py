@@ -106,7 +106,7 @@ class PublicationOperations:
             errors = []
             for operation in self._records():
                 if operation['action'] == 'publish' and (operation['status'] in {'accepted', 'running'}
-                        or operation['cleanupState'] not in {'complete', 'not_started'}):
+                        or self._cleanup_pending(operation)):
                     try:
                         self.cancel(operation['roleId'], operation['id'])
                     except Exception as error:
@@ -339,7 +339,8 @@ class PublicationOperations:
     def _ensure_available(self, task_id, resolving=None):
         for record in self._records():
             if (record['id'] == resolving and record['status'] == 'push_confirmed'
-                    and record['cleanupState'] == 'complete' and not record.get('resolvedBy')):
+                    and record['cleanupState'] == 'complete' and not self._cleanup_pending(record)
+                    and not record.get('resolvedBy')):
                 continue
             if record['taskId'] == task_id and (record['status'] in {'accepted', 'running'}
                     or self._cleanup_pending(record)
@@ -468,12 +469,18 @@ class PublicationOperations:
         # Unknown tombstones keep their facts but cannot starve newer work.
         with self.ledger._lock:
             condition = "(json_extract(body,'$.status') IN ('accepted','running') OR json_extract(body,'$.cleanupState') NOT IN ('complete','not_started') OR json_extract(body,'$.runtimeAckDirty')=1 OR json_extract(body,'$.messageSynced')=0 OR (json_extract(body,'$.deliveryDispatched')=1 AND json_extract(body,'$.deliveryStatus')!='sent'))"
+            # A failed cleanup SQL write can leave only the in-memory owner
+            # pending. Include it in the same bounded scan/cursor, even when
+            # its historical result/outbox has no remaining SQL work.
+            owned = tuple(self._owners)
+            if owned:
+                condition = '(' + condition + ' OR id IN (' + ','.join('?' for _ in owned) + '))'
             rows = self.ledger._db.execute('SELECT id,body FROM coding_owner_operations WHERE ' + condition
-                + ' AND id>? ORDER BY id LIMIT 100', (self._scan_cursor,)).fetchall()
+                + ' AND id>? ORDER BY id LIMIT 100', (*owned, self._scan_cursor)).fetchall()
             if not rows and self._scan_cursor:
                 self._scan_cursor = ''
                 rows = self.ledger._db.execute('SELECT id,body FROM coding_owner_operations WHERE ' + condition
-                    + ' ORDER BY id LIMIT 100').fetchall()
+                    + ' ORDER BY id LIMIT 100', owned).fetchall()
             if rows:
                 self._scan_cursor = rows[-1]['id']
         for row in rows:
@@ -648,7 +655,8 @@ class PublicationOperations:
                             or current.get('hostCommit', {}).get('sha') != target['commitSha']
                             or current['hostCommit'].get('tree') != target['tree']
                             or self._closed or not self.application._allowed(frozen)
-                            or value['cleanupState'] != 'complete' or value.get('pushConfirmed') is not True
+                            or value['cleanupState'] != 'complete' or self._cleanup_pending(value)
+                            or value.get('pushConfirmed') is not True
                             or type(value.get('platformRepositoryId')) is not int
                             or value['platformRepositoryId'] != operation['platformRepositoryId']):
                         break
@@ -693,7 +701,7 @@ class PublicationOperations:
                     raise TimeoutError('bounded Coding readback deadline ended')
                 return value
             remaining()
-            if operation['cleanupState'] != 'complete':
+            if operation['cleanupState'] != 'complete' or self._cleanup_pending(operation):
                 raise ValueError('owned resources must be confirmed stopped before readback')
             candidate = operation['candidate']
             _, worktree, _ = task_paths(self.application.root, current)
@@ -786,7 +794,7 @@ class PublicationOperations:
                 self._owners.pop(identifier, None)
             except Exception as error:
                 errors.append(error)
-        if any(record['cleanupState'] not in {'complete', 'not_started'} for record in self._records()):
+        if any(self._cleanup_pending(record) for record in self._records()):
             errors.append(CleanupFailed('Coding owner-operation resources remain unconfirmed'))
         if errors:
             raise errors[0] if len(errors) == 1 else ExceptionGroup('Coding owner-operation cleanup failed', errors)
@@ -811,6 +819,7 @@ class PublicationOperations:
             raise ValueError('host-committed evidence changed')
         commit_operation = self._record(record['hostCommit']['operationId'])
         if (commit_operation['status'] != 'validated_commit' or commit_operation['cleanupState'] != 'complete'
+                or self._cleanup_pending(commit_operation)
                 or commit_operation['runtimeStatus'] not in TERMINAL):
             raise ValueError('host commit resources or outcome are not confirmed')
         owner = self._git('review_' + uuid.uuid4().hex, time.monotonic() + 30)

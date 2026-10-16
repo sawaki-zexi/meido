@@ -39,5 +39,6 @@ git diff --check
 - Git 认证按官方 checkout 的 Basic 协议修正；真实本地 smart HTTP 核验 GET/POST 实际认证头、精确 SHA/唯一分支、原 main 不变与 token 不落仓库配置。旧本地夹具原先不开放 HTTP 协议，其 RED 不证明线上 GitHub 拒绝旧 Bearer。原始外部探针首例未捕获合法 TimeoutError，装配局限单独记录；末期停读例保持原字节复验通过，不修改原探针或伪称原样双例全绿。
 - Spec 独立真实夹具捕获“仅剩 PR”操作已经 POST、丢回执却无法只读核对的 RED。现在沿原 push 与新主人消费审批的确切替代链核对，不要求新操作伪造自己的 push dispatch。[永久回归](../../tests/python/test_coding_publication_remaining.py) 使用实际 Runtime ACK/prune、应用重建、真实远端 Draft 持久记录及原 QQ 线程 receipt/消息；错误链、不同批准身份、撤权/ABA 在 GET 前拒绝，POST 已派发时不再取得剩余写机会。
 - root 另行线程准入故障诊断与独立 Spec finding 分开记录：Thread.start 的 RuntimeError 若确定新线程从未启动，保留原异常、无自动重试，close 不再对未启动线程 join。实际启动后才报错仍保留 owner 并真实关闭；[HTTP 回归](../../tests/python/test_coding_publication_http.py)及[真实 SQLite 宿主关闭](../../tests/python/test_coding_publication_recovery.py)确认无虚假容量/DB义务。
+- 后续 Standards 的真实 Runtime GET 发现 HTTP 线程会继承 daemon=True，现显式设置False；TaskRuntime 策略不改。真实 SQLite trigger 阻止 cleanup_failed 写入时，第二次核对、剩余动作准入和凭据替换/移除仍尊重内存 owner；不得先创建新平台、覆盖旧引用或启用新凭据。[永久 owned 回归](../../tests/python/test_coding_publication_owners.py)先6 RED后通过，并证实 sent/synced 的历史记录也能由现有轮询实际关闭 owner、释放容量。
 
 作者本地 XML 位于 D:/meido-artifacts/coding176-*.xml，各轮不能相加或视作最终 HEAD CI。完整前端208项、TS/Vite已过，包括晚到凭据 GET 不覆盖新保存修订的 RED→GREEN；最终相关组与两轴结论以固定交付记录为准。所有真实账号、费用、实际首次/resume CLI 权限与 GitHub 发布仍需要对应许可和证据。
