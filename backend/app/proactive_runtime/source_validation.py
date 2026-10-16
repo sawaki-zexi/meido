@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import sqlite3
+import stat
 import tempfile
 import threading
 import time
@@ -27,10 +28,12 @@ from ..mcp_autonomy import declaration_hash
 from ..mcp_config import McpConfigStore
 from ..mcp_stdio import McpStdioClient, finish_cleanup
 from .config import AutonomyConfig, SourceGrant
-from .sources import _decode
+from .sources import _decode, _normalize
 from . import retention
+from .context import _check_chain, _opened_path, _path_key, _version
 
 VERIFIER_VERSION = "meido-source-contract-v1"
+AUTHOR_PROFILE = "meido-source-author-v2"
 MAX_FILES = 32
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_MANIFEST_BYTES = 64 * 1024
@@ -78,11 +81,32 @@ def _regular(path):
 
 
 def _read(path, limit):
-    with _regular(path).open("rb") as handle:
-        value = handle.read(limit + 1)
-    if len(value) > limit:
-        raise ValueError("contract artifact exceeds its byte budget")
-    return value
+    original = path.absolute()
+    if _path_key(_regular(original)) != _path_key(original):
+        raise ValueError("contract artifact resolved outside its selected path")
+    path = original
+    before = _check_chain(path)
+    if before.st_nlink != 1 or before.st_size > limit:
+        raise ValueError("contract artifact exceeds its byte or link budget")
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0))
+    try:
+        opened, actual = os.fstat(descriptor), _opened_path(descriptor)
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or _version(before) != _version(opened)
+                or (actual is not None and _path_key(actual) != _path_key(path))):
+            raise ValueError("contract artifact changed while opening")
+        chunks, size = [], 0
+        while size <= limit:
+            chunk = os.read(descriptor, min(65536, limit + 1 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        if (size > limit or _version(os.fstat(descriptor)) != _version(opened)
+                or _version(_check_chain(path)) != _version(opened)):
+            raise ValueError("contract artifact changed or exceeded its byte budget")
+        return b''.join(chunks)
+    finally:
+        os.close(descriptor)
 
 
 def _digest(path):
@@ -101,8 +125,9 @@ def _artifact(manifest_path, expected_hash, command=None):
     except (ValueError, RecursionError):
         raise ValueError("invalid contract manifest") from None
     if (not isinstance(manifest, dict) or set(manifest) != {"profile", "version", "entrypoint", "files"}
-            or manifest["profile"] != VERIFIER_VERSION or type(manifest["version"]) is not int
-            or manifest["version"] != 1 or not isinstance(manifest["entrypoint"], str)
+            or type(manifest["version"]) is not int
+            or (manifest["profile"], manifest["version"]) not in {(VERIFIER_VERSION, 1), (AUTHOR_PROFILE, 2)}
+            or not isinstance(manifest["entrypoint"], str)
             or not isinstance(manifest["files"], dict) or not 1 <= len(manifest["files"]) <= MAX_FILES):
         raise ValueError("unsupported contract manifest profile")
     root = manifest_path.resolve().parent
@@ -159,7 +184,7 @@ Missing schema/proof, changed identity, artifact or verifier fail closed.
         return False
     try:
         row = db.execute("SELECT role_id,source_id,source_binding,artifact,artifact_digest,verifier_version FROM autonomy_source_contracts WHERE proof_id=?", (source.ackProofId,)).fetchone()
-        if row is None or tuple(row[:3]) != (role_id, source.sourceId, _binding(source)) or row[5] != VERIFIER_VERSION:
+        if row is None or tuple(row[:3]) != (role_id, source.sourceId, _binding(source)) or row[5] not in {VERIFIER_VERSION, AUTHOR_PROFILE}:
             return False
         return _current_artifact(json.loads(row[3])) == row[4]
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
@@ -219,8 +244,9 @@ class SourceContractRegistry:
                              signal: threading.Event | None = None, deadline: float | None = None) -> dict[str, object]:
         if self._operation is not None or self._sealed:
             raise RuntimeError("source contract registry owns exactly one attempt")
-        if source.ackContract != "absolute-idempotent" or not source.ackTool:
-            raise ValueError("persistent ACK validation requires an absolute ACK operation")
+        if (source.channel != 'context' and (source.ackContract != "absolute-idempotent" or not source.ackTool)
+                or source.channel == 'context' and (source.ackContract != 'none' or source.ackTool is not None)):
+            raise ValueError("event verification requires absolute ACK; context has no ACK")
         server = self.mcp_store.get(source.serverId)
         if server is None:
             raise PermissionError("source MCP grant is unavailable")
@@ -257,6 +283,9 @@ class SourceContractRegistry:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("source contract validation deadline expired")
                 artifact, files = _artifact(manifest_path, expected_hash, server.command)
+                profile = artifact['manifest']['profile']
+                if source.channel == 'context' and profile != AUTHOR_PROFILE:
+                    raise ValueError('context collection verification requires the author profile')
                 self._check(role_id, source, server, authorized, signal)
                 self._directory = Path(tempfile.mkdtemp(prefix="meido-source-contract-")).resolve()
                 self._directory_parent = self._directory.parent
@@ -279,7 +308,10 @@ class SourceContractRegistry:
                     if time.monotonic() >= deadline:
                         raise TimeoutError("source contract validation deadline expired")
                     self._check(role_id, source, server, authorized, signal)
-                await self._verify(config, environment, source, check)
+                if profile == AUTHOR_PROFILE:
+                    await self._verify_author(config, environment, source, check)
+                else:
+                    await self._verify(config, environment, source, check)
         finally:
             await finish_cleanup(asyncio.create_task(self._dispose()))
         # Both independent processes and their stdio are joined before a proof
@@ -300,7 +332,7 @@ class SourceContractRegistry:
             if _current_artifact(artifact) != digest:
                 raise PermissionError("source artifact changed before proof publication")
             db.execute("INSERT INTO autonomy_source_contracts VALUES(?,?,?,?,?,?,?,?)", (identifier, role_id,
-                source.sourceId, _binding(source), _json(artifact), digest, VERIFIER_VERSION, time.time()))
+                source.sourceId, _binding(source), _json(artifact), digest, profile, time.time()))
             self._check(role_id, source, server, authorized, signal)
             if time.monotonic() >= deadline:
                 raise TimeoutError("source contract validation deadline expired")
@@ -311,8 +343,9 @@ class SourceContractRegistry:
             self._check(role_id, source, server, authorized, signal)
             if time.monotonic() >= deadline:
                 raise TimeoutError("source contract validation deadline expired")
-        return {"proofId": identifier, "verifierVersion": VERIFIER_VERSION, "artifactDigest": digest,
-                "sourceId": source.sourceId, "sourceRevision": source.revision}
+        return {"proofId": identifier, "verifierVersion": profile, "artifactDigest": digest,
+                "sourceId": source.sourceId, "sourceRevision": source.revision,
+                "collectionVerified": profile == AUTHOR_PROFILE, "ackVerified": source.channel != 'context'}
 
     async def _open(self, config, environment, source, check):
         check()
@@ -336,14 +369,63 @@ class SourceContractRegistry:
         check()
         return result
 
-    async def _verify(self, config, environment, source, check):
+    async def _verify_author(self, config, environment, source, check):
+        """Probe only this grant's kind; a context source needs no event tools."""
+        now, identifier, marker = 1700000000, uuid.uuid4().hex, uuid.uuid4().hex
+        event = {'id': identifier, 'kind': source.channel, 'title': 'host collection nonce',
+                 'body': marker, 'data': {'contract_nonce': marker}}
+        seed = {'event_domain': source.eventDomain, 'now': now, 'events': [event], 'mode': 'ok'}
+        client = await self._open(config, environment, source, check)
+        context_identity: list[str] = []
+
+        async def collection(peer):
+            payload = await self._call(peer, source.getTool, {}, check)
+            items, incomplete = _normalize(source, payload, lambda *_: True)
+            if incomplete:
+                raise ValueError('contract collection was incomplete')
+            return items
+
+        async def positive(peer):
+            items = await collection(peer)
+            if len(items) != 1 or source.channel != 'context' and items[0]['remoteId'] != identifier:
+                raise ValueError('source event identity is not stable')
+            if source.channel == 'content' and items[0]['body'] != marker:
+                raise ValueError('source body is not associated with the seeded event')
+            if source.channel == 'context':
+                if items[0]['data'].get('contract_nonce') != marker:
+                    raise ValueError('source context did not preserve the seeded data')
+                if not context_identity:
+                    context_identity.append(items[0]['id'])
+                elif context_identity[0] != items[0]['id']:
+                    raise ValueError('source context changed its fixed synthetic seed')
+
+        await self._call(client, 'meido_test_seed', seed, check)
+        await positive(client)
+        await positive(client)  # An unACKed event must not disappear on read.
+        await client.close()
+        self._peers.remove(client)
+        client = await self._open(config, environment, source, check)
+        await positive(client)  # Rebuilding the server must preserve pending data.
+        await self._call(client, 'meido_test_seed', {**seed, 'events': []}, check)
+        if await collection(client):
+            raise ValueError('source did not distinguish the empty collection')
+        await self._call(client, 'meido_test_seed', {**seed, 'events': [], 'mode': 'error'}, check)
+        check()
+        failed = await client.call(source.getTool, {})
+        check()
+        if failed.get('isError') is not True:
+            raise ValueError('source read failure was hidden as an empty collection')
+        if source.channel != 'context':
+            await self._verify(config, environment, source, check, client=client)
+
+    async def _verify(self, config, environment, source, check, *, client=None):
         now, event = 1700000000, uuid.uuid4().hex
         finite = {"event_ids": [event], "ack_id": uuid.uuid4().hex,
                   "expires_at": now + 7200, "ttl_hours": 2}
         permanent_event = uuid.uuid4().hex
         permanent = {"event_ids": [permanent_event], "ack_id": uuid.uuid4().hex,
                      "expires_at": None, "ttl_hours": 0}
-        client = await self._open(config, environment, source, check)
+        client = client or await self._open(config, environment, source, check)
         await self._call(client, "meido_test_seed", {"event_domain": source.eventDomain, "now": now,
             "lose_first_ack_receipt": True,
             "events": [{"id": item, "kind": source.channel, "title": "host contract nonce"}

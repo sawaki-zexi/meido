@@ -45,7 +45,7 @@
 | S05 skill-creater | #152 已进入集成分支；HTTP 写入新 Skill 后下一轮发现/显式激活，资源 hash、依赖名、真实 Windows junction 反例通过 | 总 PR 最终回归 |
 | S06 create-drift-skill | 待实现；[固定源码依赖核验](../research/proactive-drift-runtime-portability-2026-10-16.md)已明确长期技能创建、后续发现与真实 Drift 消费缺一不可 | Drift 目录创建、发现和真实执行 |
 | S07 codex-delegate | #175固定源`0e2da975`已两轴复核并合入；显式Skill、准确依赖、多仓库、真实受管UTF-8/JSONL/SQLite/Git、后台/exact继续取消与原来源ACK有本地合成证据，不新增普通工具；见[手册](../handbook/codex-delegate-acceptance.md) | 准确13c总集成两轴与两套CI已通过；真实CLI账号、首次/resume模型与原生权限另验 |
-| S08 create-proactive-source | #178已从两套CI通过的准确f7be实施并冻结源`9484156`，独立两轴审查中，尚未合入；固定源码来源/信任/ACK契约已核实，旧severity快通道/HyDE文案不作保证 | 源实现有本地Windows/WSL闭环证据；独立两轴、准确总集成与两套CI尚待 |
+| S08 create-proactive-source | #178固定最终源`0eb8ea4`完成完整两轴及P3提示/P2事件身份兼容修正复核；真实对话与FileTools创建六份产物，owner只读hash预览、原MCP trust/具体grant和v2受管验证后，同产物由真实clock/A01消费，桌面receipt与持久ACK在App/stdio重建后保持；context-only合法，v1不追认collection证明；见[手册](../handbook/proactive-source-authoring.md) | 当前总集成与准确HEAD两套完整CI尚待；真实账号与服务事务另批 |
 | A01 主动决策 | #177固定源`3b21afe`及后续源/集成修正均两轴无遗留；含真实自主身份/许可、来源、草稿/finish、canonical桌面投递/ACK/Runtime恢复。准确f7be两套CI各2134项后端/186项前端及构建通过；详见[手册](../handbook/proactive-decision-acceptance.md)。#178已启动，#180仍依赖后续共享实现 | 总PR最终跨模块验收；未验收真实账号或模型消费 |
 | A02 Drift | #179/#180 具体架构已批准，待 #177/#178 共享模块复核集成后实施；采用同一 tick 空输入分支、独立开关与显式目标 | 独立目录/预算、受限工具、版本化 MCP 挂载、单次推送、真实finish与两轴复核 |
 

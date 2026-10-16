@@ -933,7 +933,7 @@ app.include_router(mail_router)
 app.include_router(mcp_router(lambda: mcp_host, lambda: store))
 app.include_router(novelai_router(_novelai_application))
 app.include_router(coding_router(lambda: _coding_application(), lambda: store))
-app.include_router(autonomy_router(lambda: _proactive_application()))
+app.include_router(autonomy_router(lambda: _proactive_application(), workspace_getter=lambda role_id: store.root / role_id / "workspace"))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=owner_knowledge_frontend_origins,

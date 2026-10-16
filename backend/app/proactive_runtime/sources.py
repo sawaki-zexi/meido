@@ -54,7 +54,11 @@ def _normalize(grant, payload, eligible):
             continue
         identity = [grant.sourceId, grant.revision, grant.channel, remote_id]
         identifier = hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
-        data = event.get("data", {})
+        # Context may be an ordinary business dictionary without an event
+        # envelope. Preserve those fields in the host-owned context projection.
+        data = event.get("data", {key: value for key, value in event.items()
+            if key not in {"kind", "id", "event_id", "title", "summary", "url", "body", "text"}}
+            if grant.channel == "context" else {})
         if not isinstance(data, dict) or _json_size(data) > 16000:
             raise ValueError("source event data exceeds budget")
         values = {}

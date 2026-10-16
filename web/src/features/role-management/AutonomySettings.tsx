@@ -116,6 +116,19 @@ export function AutonomySettings({ roleId, disabled }: { roleId: string; disable
         <button type="button" className="ghost" onClick={() => void refresh()}>刷新自主状态</button></div>
       <SourceVerificationPanel key={roleId} roleId={roleId} revision={state.config.revision}
         sources={state.config.sourceGrants} attempts={state.sourceVerifications ?? []} refresh={refresh}
+        importSources={(incoming) => {
+          try {
+            const existing: Record<string, unknown>[] = JSON.parse(sources);
+            if (!Array.isArray(existing) || existing.some((item) => !item || typeof item !== "object" || Array.isArray(item))) {
+              throw new Error("来源草稿无效，请先修正后再导入");
+            }
+            const identifiers = new Set(incoming.map((item) => item.sourceId));
+            if (existing.some((item) => identifiers.has(item.sourceId))) throw new Error("来源 ID 已存在，请核对原许可并手动更新，避免覆盖");
+            if (existing.length + incoming.length > 8) throw new Error("每角色最多8项来源");
+            setSources(JSON.stringify([...existing, ...incoming], null, 2));
+            return true;
+          } catch (cause) { setError(errorMessage(cause, "来源草稿无法导入")); return false; }
+        }}
         importProof={(proof) => {
           try {
             const parsed: Record<string, unknown>[] = JSON.parse(sources);

@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import AutonomyConfig
+from .source_authoring import preview_artifact
 
 
 class ConfigurationUpdate(BaseModel):
@@ -32,8 +33,36 @@ class SourceVerificationRequest(BaseModel):
         return value
 
 
-def autonomy_router(application):
+class ArtifactPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    manifestPath: str = Field(min_length=3, max_length=240)
+    serverId: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,23}$")
+
+
+def autonomy_router(application, *, workspace_getter=None):
     router = APIRouter(prefix="/api/roles/{role_id}/autonomy")
+
+    @router.post('/source-artifact-preview')
+    async def preview(role_id: str, request: Request):
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 4096:
+                raise HTTPException(413, '来源预览请求超出大小限制')
+        try:
+            data = ArtifactPreviewRequest.model_validate(json.loads(body))
+            app = application()
+            app._require_role(role_id)
+            if workspace_getter is None:
+                raise ValueError('host workspace is unavailable')
+            return preview_artifact(workspace_getter(role_id), data.manifestPath, role_id=role_id,
+                mcp_store=app.mcp_host.store if app.mcp_host is not None else None, server_id=data.serverId)
+        except KeyError:
+            raise HTTPException(404, '角色或产物声明不存在') from None
+        except PermissionError:
+            raise HTTPException(403, '产物不在当前角色目录或所选服务许可内') from None
+        except (ValueError, OSError, TypeError, RecursionError):
+            raise HTTPException(422, '产物草稿无效；检查相对清单路径、声明文件、链接、大小与已保存服务') from None
 
     @router.get("")
     async def query(role_id: str):

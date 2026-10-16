@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../api/client";
+import { SourceArtifactPreview } from "./SourceArtifactPreview";
 
 export type SourceVerification = {
   id: string; sourceId: string; sourceRevision: number; status: string;
-  proof: { proofId: string; sourceId: string; sourceRevision: number } | null;
+  proof: { proofId: string; sourceId: string; sourceRevision: number; verifierVersion?: string; collectionVerified?: boolean; ackVerified?: boolean } | null;
   runtimeAcknowledged: boolean; cleanupPending: boolean; error: string;
 };
 
-export function SourceVerificationPanel({ roleId, revision, sources, attempts, refresh, importProof }: {
+export function SourceVerificationPanel({ roleId, revision, sources, attempts, refresh, importProof, importSources }: {
   roleId: string; revision: number; sources: Record<string, unknown>[]; attempts: SourceVerification[];
   refresh: () => Promise<void>; importProof: (proof: NonNullable<SourceVerification["proof"]>) => boolean;
+  importSources: (sources: Record<string, unknown>[]) => boolean;
 }) {
   const [sourceId, setSourceId] = useState("");
   const [manifestPath, setManifestPath] = useState("");
@@ -57,11 +59,16 @@ export function SourceVerificationPanel({ roleId, revision, sources, attempts, r
     } finally { if (mounted.current) setBusy(false); }
   }
 
-  const available = sources.filter((source) => source.enabled && source.ackContract === "absolute-idempotent");
+  const available = sources.filter((source) => source.enabled && (source.ackContract === "absolute-idempotent"
+    || source.channel === "context" && source.ackContract === "none"));
+  const contextOnly = available.some((source) => source.sourceId === sourceId && source.channel === "context");
   const ready = trusted && available.some((source) => source.sourceId === sourceId)
     && manifestPath.trim().length > 0 && /^[a-f0-9]{64}$/.test(manifestSha256);
   return <fieldset aria-label="来源 ACK 契约验证" disabled={busy}>
     <legend>来源 ACK 契约验证</legend>
+    <SourceArtifactPreview key={roleId} roleId={roleId} importSources={importSources} importManifest={(path, sha) => {
+      setManifestPath(path); setManifestSha256(sha); setTrusted(false); setMessage("");
+    }} />
     <p className="field-hint">先保存来源许可，再验证其持久去重与原期限。验证会运行你信任的本地源码，在独立临时数据中测试，不使用服务账号凭据。未通过验证的来源只尝试一次 ACK，回执不明时不重试。</p>
     <label className="field"><span>待验证来源</span><select aria-label="待验证来源" value={sourceId}
       onChange={(event) => { setSourceId(event.target.value); setTrusted(false); }}>
@@ -74,12 +81,14 @@ export function SourceVerificationPanel({ roleId, revision, sources, attempts, r
       onChange={(event) => { setManifestSha256(event.target.value.trim().toLowerCase()); setTrusted(false); }} /></label>
     <label className="field checkbox-field"><input type="checkbox" checked={trusted}
       onChange={(event) => setTrusted(event.target.checked)} /><span>信任并运行该本地来源产物</span></label>
-    <button type="button" disabled={!ready} onClick={() => void verify()}>验证来源 ACK 契约</button>
+    <button type="button" disabled={!ready} onClick={() => void verify()}>{contextOnly ? "验证来源读取契约" : "验证来源 ACK 契约"}</button>
     {error && <p role="status">{error}</p>}{message && <p role="status">{message}</p>}
     <div aria-label="来源验证结果">{attempts.map((attempt) => <div key={attempt.id}>
       <p>{attempt.sourceId}：{attempt.cleanupPending ? "正在结算验证资源" : attempt.status === "succeeded" && attempt.proof ? "契约验证通过" : attempt.status === "cancelled" ? "已取消" : attempt.status === "failed" || attempt.status === "rejected" ? "验证未通过" : "验证处理中"}</p>
       {attempt.error && <p>{attempt.error}</p>}
-      {attempt.proof && attempt.runtimeAcknowledged && !attempt.cleanupPending && <button type="button"
+      {attempt.proof?.collectionVerified && <p>已验证该通道的稳定数据、正文关联、空值与读取失败区别。</p>}
+      {attempt.proof?.ackVerified === false && <p>仅验证读取契约；context 不需要 ACK，也不会取得 ACK 重试资格。</p>}
+      {attempt.proof && attempt.proof.ackVerified !== false && attempt.runtimeAcknowledged && !attempt.cleanupPending && <button type="button"
         aria-label={`使用 ${attempt.sourceId} 的验证结果`} onClick={() => {
           if (importProof(attempt.proof!)) setMessage("验证引用已填入草稿，请保存自主设置后启用。");
         }}>使用验证结果</button>}

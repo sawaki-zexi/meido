@@ -1,12 +1,12 @@
 # 主动决策与来源验证契约
 
-状态：当前 / #177 实施中，未完成总分支集成验收。
+状态：当前 / #177 已进入已验证aggregate；#178作者流程本地实施，独立复核及总分支验收另行记录。
 
 事实来源：`backend/app/proactive_runtime/`、`backend/app/mcp_autonomy.py`、`tests/python/test_proactive_*.py`；架构见 [ADR-0018](../adr/0018-explicit-autonomy-and-drift-grants.md) 与[规格](../specs/proactive-drift-spec.md)。最后核验：2026-10-16。
 
 ## 配置与实际身份
 
-`GET/PUT /api/roles/{roleId}/autonomy` 管理当前角色的独立配置，PUT 必须给 `expectedRevision`。默认主动决策和 Drift 均关闭，没有继承全局模型、历史主人身份或普通聊天工具许可。开启主动决策必须指定已保存的 `decisionModelConfigurationId` 与 `consentRevision>=1`。当前 #177 仅实现桌面主动决策；Drift、外部目标和作者 Skill 依赖后续票。
+`GET/PUT /api/roles/{roleId}/autonomy` 管理当前角色的独立配置，PUT 必须给 `expectedRevision`。默认主动决策和 Drift 均关闭，没有继承全局模型、历史主人身份或普通聊天工具许可。开启主动决策必须指定已保存的 `decisionModelConfigurationId` 与 `consentRevision>=1`。当前仅实现桌面主动决策；#178补充来源作者流程，Drift和外部目标依赖后续票。
 
 `sourceGrants` 最多8项，冻结 sourceId、revision、channel、serverId、MCP配置及grant修订、get/poll/ACK工具名和完整定义hash、eventDomain、ACK契约、可选proof引用。来源变更、删除重建生成新版本；只填写新的 `ackProofId` 不改变来源版本，但改变角色许可代际。保存配置只写本地，不能连接来源或测试发送。
 
@@ -44,7 +44,11 @@ message_push只能创建一份不可改写草稿。finish_turn(reply)需要草�
 
 `POST /api/roles/{roleId}/autonomy/source-verifications` 只接受真实桌面主人操作：requestNonce（UUID）、sourceId、expectedRevision、manifestPath（绝对路径）、manifestSha256（精确SHA256）、trustLocalCode=true。它不作为模型工具或渠道能力提供，不创建聊天消息。同角色同nonce参数不变只查询原attempt，冲突拒绝。
 
-manifest固定profile `meido-source-contract-v1`/version1，声明entrypoint和相对支持文件的SHA256。最多32文件、合计8MiB、清单64KiB；拒绝链接、junction、逃逸、重复字段或未声明入口。入口必须精确对应既有已信任MCP命令的Python/Node脚本，仅保留有限安全解释器前缀。验证丢弃生产后缀参数、环境和vault，复制固定文件到独立临时artifact/state/home，以 `--meido-contract-test <stateRoot>` 启动。
+`POST .../source-artifact-preview`只接受当前角色workspace内相对manifestPath和可选已保存serverId，请求最多4KiB。只读返回实际文件size/SHA、当前清单SHA、manifestReady及可复制修正清单；不创建目录、写文件、执行、读取vault、注册或授权。选择服务后提供当前config/grant和声明catalog绑定的disabled来源草稿，实际握手仍必须匹配。修正清单由既有文件工具或主人保存后再次预览。作者流程见[手册](../handbook/proactive-source-authoring.md)。
+
+新增`meido-source-author-v2`/version2使用同一owned verifier，按实际channel验证稳定ID、未ACK重读与重启、合法empty和明确读取失败；content检查正文关联，context检查背景数据。proof分别返回collectionVerified与ackVerified；纯context可验证且不需无关ACK，也不能取得ACK重试资格。旧v1继续仅表示原ACK契约，不追认完整collection验证。v2事件来源仍经过以下全部原ACK及资源/权限证明。
+
+旧ACK manifest使用profile `meido-source-contract-v1`/version1，新作者清单使用`meido-source-author-v2`/version2；均声明entrypoint和相对支持文件的SHA256。最多32文件、合计8MiB、清单64KiB；拒绝链接、junction、hardlink、逃逸、重复字段或未声明入口。入口必须精确对应既有已信任MCP命令的Python/Node脚本，仅保留有限安全解释器前缀。验证丢弃生产后缀参数、环境和vault，复制固定文件到独立临时artifact/state/home，以 `--meido-contract-test <stateRoot>` 启动。
 
 宿主随机种子事件与ACK ID、控制测试时钟；真实接受ACK后模拟丢回执，再重启来源验证抑制和原回执持久、重复不延长、有限期到期与永久记录保留。两个进程及stdio完整退出、临时根清理成功后，才在最终事务复验许可/产物/期限并发布proof。自报“verified”不算证明。
 

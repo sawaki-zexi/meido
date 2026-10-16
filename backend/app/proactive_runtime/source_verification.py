@@ -205,8 +205,10 @@ class SourceVerificationApplication:
                 raise PermissionError("current owner source configuration is unavailable or busy")
             config = AutonomyConfig.model_validate_json(state["config"])
             source = next((item for item in config.sourceGrants if item.sourceId == source_id), None)
-            if source is None or not source.enabled or source.ackContract != "absolute-idempotent" or p.mcp_host is None:
-                raise PermissionError("an exact existing enabled ACK source is required")
+            if (source is None or not source.enabled or p.mcp_host is None
+                    or source.channel != 'context' and source.ackContract != "absolute-idempotent"
+                    or source.channel == 'context' and (source.ackContract != 'none' or source.ackTool is not None)):
+                raise PermissionError("an exact enabled event ACK or context source is required")
             if db.execute("SELECT 1 FROM autonomy_source_verifications WHERE role_id=? AND runtime_acknowledged=0", (role_id,)).fetchone():
                 raise ValueError("role source verification already owns an unresolved attempt")
             identifier, now = uuid.uuid4().hex, p._now(db)

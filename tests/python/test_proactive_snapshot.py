@@ -92,3 +92,27 @@ def test_explicit_empty_is_distinct_from_failure_and_source_identity_override(so
     rejected = snapshot(source)
     assert rejected["trustedEmpty"] is False
     assert rejected["sources"][0]["status"] == "failed"
+
+
+@pytest.mark.parametrize('as_list', [False, True])
+def test_flat_context_business_fields_survive_real_stdio_without_becoming_event_identity(source, as_list):
+    root, store, _, frozen, origin = source
+    context = {'available': True, 'temperature_c': 23.5, 'state': 'synthetic'}
+    (root / 'events.json').write_text(json.dumps([context] if as_list else context), encoding='utf-8')
+    host = McpHost(store)
+    grant = grant_for(source).model_copy(update={'channel': 'context'})
+
+    async def exercise():
+        bundle = host.freeze_autonomy(origin, (frozen,), authorized=lambda: True)
+        try:
+            value = await collect_snapshot(bundle, [grant], observed_at=1234, eligible=lambda *_: True, rotation=0)
+            assert value['sources'][0]['status'] == 'ok'
+            assert value['contexts'][0]['data'] == context
+            assert value['contexts'][0]['kind'] == 'context'
+            assert value['contexts'][0]['sourceId'] == 'feed'
+            assert value['alerts'] == value['contents'] == []
+            assert value['trustedEmpty'] is True
+        finally:
+            await bundle.close()
+            await host.close()
+    asyncio.run(exercise())
