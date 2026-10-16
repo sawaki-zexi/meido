@@ -13,7 +13,7 @@ const spriteBySegment: Record<Segment, string> = {
   ending: "smile",
 };
 const githubUrl = "https://github.com/sawaki-zexi/meido";
-const speakerName = "女仆";
+const speakerName = "Hiyori";
 const musicVolumeStorageKey = "meido:landing-music-volume";
 const musicEnabledStorageKey = "meido:landing-music-enabled";
 const defaultMusicVolume = 35;
@@ -117,7 +117,7 @@ export function LandingPage() {
     setCurrentTopic(topicId);
     setVisited((current) => current.includes(topicId) ? current : [...current, topicId]);
     setLog((entries) => [...entries, { kind: "choice", text: topic.label }]);
-    enterDialogue("topic", [...topic.lines, "主人还想了解哪一部分呢？"]);
+    enterDialogue("topic", [...topic.lines, "客人还想了解些什么呢？"]);
   }, [enterDialogue]);
 
   const choose = useCallback((index: number) => {
@@ -307,12 +307,12 @@ export function LandingPage() {
           <span className="choice-index">{String(index + 1).padStart(2, "0")}</span><span>{topic.label}</span>
         </button>)}
         <button type="button" className="choice-button choice-exit" onFocus={() => setFocusedChoice(topics.length)} onClick={() => choose(topics.length)}>
-          <span className="choice-index">06</span><span>没什么想问的了</span><span className="choice-arrow">→</span>
+          <span className="choice-index">{String(topics.length + 1).padStart(2, "0")}</span><span>没什么想问的了</span><span className="choice-arrow">→</span>
         </button>
       </div>}
 
       {phase === "finished" && <div className="ending-actions" aria-label="结束操作">
-        <a className="ending-link ending-primary" href={githubUrl} target="_blank" rel="noreferrer">查看 Meido 项目 <span>↗</span></a>
+        <a className="ending-link ending-primary" href={`${githubUrl}/archive/refs/heads/main.zip`}>下载项目源码 <span>↓</span></a>
         <button type="button" className="ending-link" onClick={restart}>重新开始</button>
         <button type="button" className="ending-link" onClick={returnToTitle}>返回标题</button>
       </div>}

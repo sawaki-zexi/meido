@@ -42,6 +42,28 @@ describe("落地页背景", () => {
   });
 });
 
+it("访客能浏览六个模块并返回选项，结束后下载项目源码", () => {
+  vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
+  const { container, getByRole } = render(<LandingPage />);
+  fireEvent.click(getByRole("button", { name: "按任意键开始游戏" }));
+  expect(container.querySelector(".speaker-name")?.textContent).toContain("Hiyori");
+  fireEvent.click(getByRole("button", { name: "跳过当前段落" }));
+  const modules = ["角色", "记忆", "工具", "待办", "邮件", "主人资料"];
+  expect(Array.from(container.querySelectorAll(".choice-button"), (button) => button.children[1].textContent)).toEqual([...modules, "没什么想问的了"]);
+  for (const name of modules) {
+    fireEvent.click(getByRole("button", { name: new RegExp(`${name}$`) }));
+    for (let i = 0; i < 3 && !container.querySelector(".dialogue-text")?.textContent?.includes("客人还想了解些什么呢？"); i++) {
+      fireEvent.click(container.querySelector(".dialogue-box")!);
+    }
+    expect(container.querySelector(".dialogue-text")?.textContent).toContain("客人还想了解些什么呢？");
+    fireEvent.click(container.querySelector(".dialogue-box")!);
+    expect(getByRole("button", { name: /没什么想问的了/ })).toBeTruthy();
+  }
+  fireEvent.click(getByRole("button", { name: /没什么想问的了/ }));
+  fireEvent.click(getByRole("button", { name: "跳过当前段落" }));
+  expect(getByRole("link", { name: /下载项目源码/ })).toHaveAttribute("href", "https://github.com/sawaki-zexi/meido/archive/refs/heads/main.zip");
+});
+
 describe("落地页背景音乐", () => {
   it("右上角开关独立控制音乐，关闭后开始游戏仍保持关闭，并记住开关状态", async () => {
     const play = vi.mocked(HTMLMediaElement.prototype.play);
