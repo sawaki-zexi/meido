@@ -21,6 +21,8 @@
 
 Telegram 轮询和观测绑定账号创建身份及实际配置/权限代际。连接测试刷新显示资料、消息失败写入诊断、清除错误不会停止轮询或抹去当前连接证据；凭据、收件权限、账号/平台开关和连接配置的变化会使在途旧结果失效，即使随后恢复旧值也不会复活旧观测。
 
+飞书停止只有在自有连接线程退出后才成功；清理未收敛时保留 transport 并明确失败，不以 join 超时冒充完成。配置回滚与冻结 candidate 的资源归属分别处理，详见[飞书受管连接](feishu-owned-connection.md)。
+
 ## 模型查询
 
 `account_targets` 保留必填 `account_id`；可选 `kind/group_id/member_id/limit/cursor`。省略 `kind` 使用 `known`，`limit` 默认 25、范围 1–50。`members/member` 必须指定 `group_id`，只有 `member` 指定 `member_id`。账号参数不改为平台名称。

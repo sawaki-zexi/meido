@@ -12,7 +12,6 @@ import hashlib
 import hmac
 import json
 import logging
-import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -24,182 +23,11 @@ from websockets.exceptions import ConnectionClosed, PayloadTooBig
 
 from .base import ChannelAdapterError, EventHandler, PlatformRejectedError
 from .directory import DirectoryError, MAX_RESPONSE_BYTES, observed_now
+from .feishu_connection import FeishuLongConnectionRunner, feishu_sdk_connection_factory, wait_owned
 
 logger = logging.getLogger(__name__)
 
 WebSocketConnector = Callable[..., Any]
-
-
-class FeishuLongConnectionRunner:
-    """Run one long connection on a dedicated event loop and thread."""
-
-    def __init__(self, factory: Callable[[Callable[[Mapping[str, Any]], None]], Any], on_event: Callable[[Mapping[str, Any]], None], *, reconnect_min: float = 1.0, reconnect_max: float = 30.0) -> None:
-        self._factory = factory
-        self._on_event = on_event
-        self._reconnect_min = reconnect_min
-        self._reconnect_max = reconnect_max
-        self.connected = False
-        self._online: bool | None = None
-        self._observed_at: str | None = None
-        self._connection_reason = "not_started"
-        self._thread: threading.Thread | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._stop = threading.Event()
-        self._wake: asyncio.Event | None = None
-
-    @property
-    def alive(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
-
-    def connection_snapshot(self) -> dict[str, Any]:
-        connection = "connected" if self.connected else "connecting" if self.alive else "disconnected"
-        return {"connection": connection, "online": self._online,
-                "observedAt": self._observed_at, "reason": self._connection_reason}
-
-    def start(self) -> None:
-        if self.alive:
-            return
-        self._stop.clear()
-        self._online = None
-        self._observed_at = observed_now()
-        self._connection_reason = "connecting"
-        self._thread = threading.Thread(target=self._run, name="feishu-long-connection", daemon=True)
-        self._thread.start()
-
-    async def stop(self) -> None:
-        self._stop.set()
-        if self._loop is not None and self._wake is not None:
-            self._loop.call_soon_threadsafe(self._wake.set)
-        thread = self._thread
-        if thread is not None:
-            await asyncio.to_thread(thread.join, 10)
-        self.connected = False
-        self._online = False
-        self._observed_at = observed_now()
-        self._connection_reason = "stopped"
-
-    def _run(self) -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        self._loop = loop
-        self._wake = asyncio.Event()
-        try:
-            loop.run_until_complete(self._supervise())
-        finally:
-            pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
-            for task in pending:
-                task.cancel()
-            if pending:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            loop.close()
-            self._loop = None
-            self._wake = None
-
-    async def _supervise(self) -> None:
-        delay = self._reconnect_min
-        while not self._stop.is_set():
-            connection = None
-            try:
-                connection = self._factory(self._dispatch)
-                await connection.connect()
-                self.connected = True
-                self._online = True
-                self._observed_at = observed_now()
-                self._connection_reason = "long_connection_connected"
-                delay = self._reconnect_min
-                keepalive = asyncio.create_task(connection.keepalive())
-                try:
-                    while not self._stop.is_set() and connection.is_connected():
-                        await self._sleep(0.1)
-                finally:
-                    keepalive.cancel()
-                    await asyncio.gather(keepalive, return_exceptions=True)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                self.connected = False
-            finally:
-                self.connected = False
-                self._online = False
-                self._observed_at = observed_now()
-                self._connection_reason = "stopped" if self._stop.is_set() else "connection_lost"
-                if connection is not None:
-                    try:
-                        await asyncio.wait_for(connection.disconnect(), 5)
-                    except Exception:
-                        pass
-            if not self._stop.is_set():
-                await self._sleep(delay)
-                delay = min(delay * 2, self._reconnect_max)
-
-    async def _sleep(self, seconds: float) -> None:
-        if self._wake is None:
-            return
-        self._wake.clear()
-        try:
-            await asyncio.wait_for(self._wake.wait(), seconds)
-        except TimeoutError:
-            pass
-
-    def _dispatch(self, payload: Mapping[str, Any]) -> None:
-        if not self._stop.is_set():
-            self._on_event(payload)
-
-
-def feishu_sdk_connection_factory(app_id: str, app_secret: str, endpoint: str) -> Callable[[Callable[[Mapping[str, Any]], None]], Any]:
-    """Create a lazy lark-oapi SDK factory, keeping the optional SDK import local."""
-
-    def factory(on_event: Callable[[Mapping[str, Any]], None]) -> Any:
-        import importlib
-
-        from lark_oapi import EventDispatcherHandler, LogLevel
-        client_module = importlib.import_module("lark_oapi.ws.client")
-
-        class LoopProxy:
-            def create_task(self, coroutine: Any) -> asyncio.Task[Any]:
-                return asyncio.get_running_loop().create_task(coroutine)
-            def run_until_complete(self, awaitable: Any) -> Any:
-                return asyncio.get_event_loop().run_until_complete(awaitable)
-
-        client_module.loop = LoopProxy()
-        Client = client_module.Client
-
-        builder = EventDispatcherHandler.builder("", "")
-        builder.register_p2_customized_event("im.message.receive_v1", lambda event: on_event(_feishu_event_payload(event)))
-        client = Client(app_id, app_secret, log_level=LogLevel.WARNING, event_handler=builder.build(), domain=endpoint, auto_reconnect=False)
-
-        class Connection:
-            async def connect(self) -> None:
-                await client._connect()
-            def is_connected(self) -> bool:
-                return client._conn is not None
-            async def keepalive(self) -> None:
-                await client._ping_loop()
-            async def disconnect(self) -> None:
-                await client._disconnect()
-
-        return Connection()
-
-    return factory
-
-
-def _feishu_event_payload(event: Any) -> dict[str, Any]:
-    header = getattr(event, "header", None)
-    body = getattr(event, "event", None)
-    return {"header": {"event_id": str(getattr(header, "event_id", "") or ""), "event_type": str(getattr(header, "event_type", "") or "")}, "event": _protobuf_mapping(body)}
-
-
-def _protobuf_mapping(value: Any) -> dict[str, Any]:
-    if isinstance(value, Mapping):
-        return dict(value)
-    if value is None:
-        return {}
-    try:
-        from google.protobuf.json_format import MessageToDict
-        result = MessageToDict(value, preserving_proto_field_name=True)
-        return result if isinstance(result, dict) else {}
-    except Exception:
-        return {}
 
 
 class ChannelTransportError(ChannelAdapterError):
@@ -759,6 +587,9 @@ class FeishuWebhookTransport:
         self._long_connection_reconnect_min = max(0.0, long_connection_reconnect_min)
         self._long_connection_reconnect_max = max(self._long_connection_reconnect_min, long_connection_reconnect_max)
         self._long_connection: FeishuLongConnectionRunner | None = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._stop_task: asyncio.Task[None] | None = None
+        self._stopping = False
         self._last_connection_snapshot: dict[str, Any] = {
             "connection": "disconnected", "online": None, "observedAt": None, "reason": "not_started",
         }
@@ -767,6 +598,14 @@ class FeishuWebhookTransport:
         self._token_lock = asyncio.Lock()
 
     async def start(self, on_event: EventHandler) -> None:
+        async with self._lifecycle_lock:
+            if self._long_connection is not None and self._stopping:
+                raise ChannelTransportError("feishu_stopping")
+            self._stop_task = None
+            self._stopping = False
+            self._start(on_event)
+
+    def _start(self, on_event: EventHandler) -> None:
         self._handler = on_event
         self._host_loop = asyncio.get_running_loop()
         self._last_connection_snapshot = {
@@ -786,18 +625,34 @@ class FeishuWebhookTransport:
             self._long_connection.start()
 
     async def stop(self) -> None:
-        runner, self._long_connection = self._long_connection, None
-        if runner is not None:
-            await runner.stop()
-            self._last_connection_snapshot = runner.connection_snapshot()
-        else:
-            self._last_connection_snapshot = {
-                "connection": "disconnected", "online": None, "observedAt": observed_now(), "reason": "stopped",
-            }
+        self.retire()
+        if self._stop_task is None or (self._stop_task.done() and self._stop_task.exception() is not None):
+            self._stop_task = asyncio.create_task(self._stop_owned())
+        await wait_owned(self._stop_task)
+
+    def retire(self) -> None:
+        """Close new ingress while retaining ownership until cleanup succeeds."""
+        self._stopping = True
         self._handler = None
-        self._host_loop = None
-        if self._owns_http:
-            await self._http.aclose()
+
+    @property
+    def retiring(self) -> bool:
+        return self._stopping
+
+    async def _stop_owned(self) -> None:
+        async with self._lifecycle_lock:
+            runner = self._long_connection
+            if runner is not None:
+                await runner.stop()
+                self._last_connection_snapshot = runner.connection_snapshot()
+                self._long_connection = None
+            else:
+                self._last_connection_snapshot = {
+                    "connection": "disconnected", "online": None, "observedAt": observed_now(), "reason": "stopped",
+                }
+            self._host_loop = None
+            if self._owns_http:
+                await self._http.aclose()
 
     @property
     def connected(self) -> bool:
@@ -822,6 +677,8 @@ class FeishuWebhookTransport:
         the untouched request body so Feishu's request signature can be checked.
         """
 
+        if self._stopping:
+            raise ChannelTransportError("feishu_stopping")
         body_text = raw_body.decode("utf-8")
         payload = json.loads(body_text)
         if not isinstance(payload, dict):
