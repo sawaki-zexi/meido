@@ -4,17 +4,25 @@ export type DriftAuthoring = { enabled: boolean; scopeId: string; revision: numb
   allowMcp: boolean; allowShell: boolean; allowAutonomousAuthoring: boolean; allowedResourceIds: string[] };
 export type DriftMcpGrant = { serverId: string; configRevision: string; grantRevision: string;
   risk: 'read_only' | 'mutating' | 'external'; operations: { name: string; definitionHash: string }[] };
+export type DriftMemeGrant = { enabled: boolean; readonly managedEpoch: string; readonly revision: number;
+  visionModelConfigurationId: string | null; readEnabled: boolean; editEnabled: boolean; copyEnabled: boolean;
+  allowedCategories: string[]; sourceAttachmentIds: string[] };
+export const defaultDriftMeme: DriftMemeGrant = { enabled: false, managedEpoch: '', revision: 0,
+  visionModelConfigurationId: null, readEnabled: false, editEnabled: false, copyEnabled: false,
+  allowedCategories: [], sourceAttachmentIds: [] };
 export type AutonomyConfiguration = {
   revision: number; activeDecisionEnabled: boolean; driftEnabled: boolean;
   decisionModelConfigurationId: string | null; driftModelConfigurationId: string | null;
   defaultTargetRef: string; allowedTargetRefs: string[]; sourceGrants: Record<string, unknown>[];
   driftToolGrants: string[]; shellRuleIds: string[]; consentRevision: number;
   driftAuthoring: DriftAuthoring; driftMcpGrants: DriftMcpGrant[]; driftReadResourceIds: string[]; driftAttachmentIds: string[];
+  driftMeme?: DriftMemeGrant;
 };
 export const defaultDriftAuthoring: DriftAuthoring = { enabled: false, scopeId: '', revision: 0,
   allowedTools: [], allowMcp: false, allowShell: false, allowAutonomousAuthoring: false, allowedResourceIds: [] };
 export function normalizeAutonomyConfiguration(config: AutonomyConfiguration): AutonomyConfiguration {
   return { ...config, driftAuthoring: { ...defaultDriftAuthoring, ...config.driftAuthoring },
+    driftMeme: { ...defaultDriftMeme, ...config.driftMeme },
     driftMcpGrants: config.driftMcpGrants ?? [], driftReadResourceIds: config.driftReadResourceIds ?? [],
     driftAttachmentIds: config.driftAttachmentIds ?? [] };
 }

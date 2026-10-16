@@ -5,6 +5,7 @@ import { normalizeAutonomyConfiguration, normalizeAutonomyState, type AutonomyCo
   type AutonomyState, type AutonomyTargetChoice } from "../../api/autonomy";
 import { SourceVerificationPanel, type SourceVerification } from "./SourceVerificationPanel";
 import { DriftSettings } from "./DriftSettings";
+import { DriftMemeSettings, driftMemeConfigurationError } from "./DriftMemeSettings";
 import { DriftSkillsPanel } from "./DriftSkillsPanel";
 import { AutonomyTargets } from "./AutonomyTargets";
 import { AutonomyReconciliation } from "./AutonomyReconciliation";
@@ -118,7 +119,8 @@ export function AutonomySettings({ roleId, disabled }: { roleId: string; disable
     && draft.allowedTargetRefs.includes(draft.defaultTargetRef)
     && draft.allowedTargetRefs.every((ref) => ref === "desktop" || targetChoices.some((choice) => choice.ref === ref)
       || state?.targetGrants?.some((grant) => grant.ref === ref && grant.current)));
-  const ready = !configurationChanged && targetsReady && (!enabled || Boolean(draft?.consentRevision
+  const memeError = draft ? driftMemeConfigurationError(draft, models) : "";
+  const ready = !configurationChanged && !memeError && targetsReady && (!enabled || Boolean(draft?.consentRevision
     && (!draft.activeDecisionEnabled || models.some((model) => model.id === draft.decisionModelConfigurationId))
     && (!draft.driftEnabled || models.some((model) => model.id === draft.driftModelConfigurationId))));
   return <fieldset disabled={disabled || busy} aria-label="自主行为设置">
@@ -139,6 +141,7 @@ export function AutonomySettings({ roleId, disabled }: { roleId: string; disable
         {models.map((model) => <option value={model.id} key={model.id}>{model.provider} · {model.model}（{model.id}）</option>)}
       </select></label>
       <DriftSettings key={`drift-${roleId}`} roleId={roleId} config={draft} models={models} onChange={(changes) => setDraft({ ...draft, ...changes })} />
+      <DriftMemeSettings key={`memes-${roleId}-${draft.revision}`} config={draft} models={models} onChange={(changes) => setDraft({ ...draft, ...changes })} />
       <DriftSkillsPanel key={`skills-${roleId}`} roleId={roleId} config={normalizeAutonomyConfiguration(state.config)} hasUnsavedChanges={hasUnsavedChanges} />
       <AutonomyTargets key={`targets-${roleId}-${state.config.revision}`} roleId={roleId} revision={state.config.revision}
         config={draft} grants={state.targetGrants ?? []} choices={targetChoices}
