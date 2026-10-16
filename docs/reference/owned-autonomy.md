@@ -16,7 +16,9 @@
 
 ## 快照与决策
 
-poll使用单独受管任务，每角色间隔至少150秒、每天最多576次、每任务120秒；同一server/poll组合一次任务只调一次。tick只get一次形成静态快照，候选/正文重读不再访问来源。来源失败或不完整保留实际错误，不视为可信空集合；正文失败保留候选，不能隐式判为不感兴趣。
+poll使用单独受管任务，每角色间隔至少150秒、每天最多576次、每任务120秒；同一server/poll组合一次任务只调一次。硬间隔按持久准入时刻计算，同源保存、来源变版、停启和重启均不提前，旧库从实际poll历史补齐边界。启用或重启后的首判断须等当前代初始poll实际执行、形成终态并完成owned收尾与Runtime ACK；仅submit或被拒绝不算完成，失败终态允许继续读取其它来源，无poll来源不增加此门禁。
+
+tick只get一次形成静态快照，候选/正文重读不再访问来源。poll保留每来源有界健康状态，独立来源不因另一来源失败而跳过；当前代及来源版本匹配的失败/未完成状态随tick冻结，后续真实成功poll才清除。失败或不完整不视为可信空集合，不能据此进入Drift；仍保留已经取得的候选供A01判断。正文失败同样保留候选，不能隐式判为不感兴趣。
 
 主动决策固定12项专用工具：get_alert_events、get_content_events、get_context_data、recall_memory、get_content、web_fetch、web_search、get_recent_chat、message_push、mark_interesting、mark_not_interesting、finish_turn。这些不是向普通聊天额外开放的通用工具。一次provider回复多个tool calls时没有任何一个被执行，纠错仍消费预算。
 

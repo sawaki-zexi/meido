@@ -5220,10 +5220,12 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
         runtime_manager.role_locks = role_locks
         _, user_message, assistant_message = await runtime_manager.reserve_existing_user_message(
             run, message_id, can_start=lambda: _channel_turn_can_start(thread),
-            on_accepting=(lambda: _proactive_application().accept_human_run(thread.role_id, run_id))
+            on_accepting=lambda: (
+                _proactive_application().accept_human_run(thread.role_id, run_id)
                 if owner and multichannel_store.identity_is_owner(role_id=thread.role_id, channel=thread.channel,
                     scope=_channel_identity_scope(thread.channel), platform_user_id=str(metadata.get("senderId") or ""),
-                    account_id=thread.account_id) else None,
+                    account_id=thread.account_id) else None
+            ),
         )
     except ActiveRunError:
         await _notify_channel_turn_not_started(thread, metadata)

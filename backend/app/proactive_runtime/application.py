@@ -67,6 +67,14 @@ class ProactiveApplication:
                 role_id TEXT NOT NULL,source_id TEXT NOT NULL,revision INTEGER NOT NULL,
                 definition TEXT NOT NULL,active INTEGER NOT NULL,
                 PRIMARY KEY(role_id,source_id))""")
+            role_columns = {row[1] for row in db.execute("PRAGMA table_info(autonomy_roles)")}
+            for name, definition in (("initial_poll_id", "TEXT"),
+                                     ("poll_ready_generation", "INTEGER NOT NULL DEFAULT 0"),
+                                     ("last_poll_at", "REAL"),
+                                     ("poll_not_before", "REAL NOT NULL DEFAULT 0"),
+                                     ("poll_health", "TEXT NOT NULL DEFAULT '{}'")):
+                if name not in role_columns:
+                    db.execute(f"ALTER TABLE autonomy_roles ADD COLUMN {name} {definition}")
             db.execute("""CREATE TABLE IF NOT EXISTS autonomy_human_runs (
                 role_id TEXT NOT NULL,run_id TEXT NOT NULL,ended INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(role_id,run_id))""")
@@ -82,10 +90,16 @@ class ProactiveApplication:
             ensure_source_validation_schema(db)
             ensure_verification_schema(db)
             now = self._now(db)
+            # Preserve the hard interval when upgrading an existing ledger.
+            # An admitted attempt consumes it even if its handover failed.
+            db.execute("""UPDATE autonomy_roles SET last_poll_at=COALESCE(last_poll_at,
+                (SELECT MAX(started_at) FROM autonomy_runs WHERE kind='autonomy_poll'
+                 AND role_id=autonomy_roles.role_id))""")
+            db.execute("UPDATE autonomy_roles SET poll_not_before=MAX(poll_not_before,COALESCE(last_poll_at+150,0))")
             # Process downtime never creates catch-up decisions. Original claims
             # will be recovered separately; no old model action is replayed.
-            db.execute("UPDATE autonomy_roles SET next_at=?,human_busy=0,last_human_end=?",
-                       (now + 1800, now))
+            db.execute("UPDATE autonomy_roles SET next_at=?,next_poll_at=MAX(?,poll_not_before),human_busy=0,last_human_end=?,initial_poll_id=NULL,poll_ready_generation=0",
+                       (now + 1800, now, now))
             db.execute("UPDATE autonomy_human_runs SET ended=1")
         self.source_verifications = SourceVerificationApplication(self)
 
@@ -144,9 +158,11 @@ class ProactiveApplication:
                 (role_id,revision,generation,config,next_at,next_poll_at,last_human_end)
                 VALUES(?,?,?,?,?,?,?) ON CONFLICT(role_id) DO UPDATE SET
                 revision=excluded.revision,generation=excluded.generation,
-                config=excluded.config,next_at=excluded.next_at,next_poll_at=excluded.next_poll_at""",
+                config=excluded.config,next_at=excluded.next_at,next_poll_at=excluded.next_poll_at,
+                initial_poll_id=NULL,poll_ready_generation=0""",
                 (role_id, revision + 1, (old["generation"] if old else 0) + 1,
-                 json.dumps(saved.model_dump(mode="json")), now + 1800, now, now))
+                 json.dumps(saved.model_dump(mode="json")), now + 1800,
+                 max(now, old["poll_not_before"]) if old else now, now))
             if old:
                 db.execute("UPDATE autonomy_roles SET cleanup_pending=EXISTS(SELECT 1 FROM autonomy_runs WHERE role_id=? AND runtime_acknowledged=0) WHERE role_id=?", (role_id, role_id))
             retention.check_capacity(db, role_id)
@@ -176,12 +192,13 @@ class ProactiveApplication:
     @staticmethod
     def _public_run(row, db):
         snapshot = json.loads(row["snapshot"]) if row["snapshot"] else {}
+        poll = json.loads(row["payload"] or "{}") if row["kind"] == "autonomy_poll" else {}
         delivery = db.execute("SELECT status,message_id,intent_id FROM autonomy_deliveries WHERE tick_id=?", (row["tick_id"],)).fetchone()
         return {"id": row["tick_id"], "kind": row["kind"], "mode": row["mode"],
                 "status": row["status"], "startedAt": row["started_at"],
                 "timeoutSeconds": OPERATION_TIMEOUTS[row["kind"]], "origin": AutonomyOrigin.restore(row["origin"]).public(),
                 "taskId": row["task_id"], "error": row["error"],
-                "runtimeAcknowledged": bool(row["runtime_acknowledged"]), "sources": snapshot.get("sources", []),
+                "runtimeAcknowledged": bool(row["runtime_acknowledged"]), "sources": snapshot.get("sources", poll.get("sources", [])),
                 "delivery": {"status": delivery[0], "messageId": delivery[1], "intentId": delivery[2]} if delivery else None}
 
     def _authorized(self, origin):
@@ -313,7 +330,7 @@ class ProactiveApplication:
             self._closed = False
             with self._transaction() as db:
                 now = self._now(db)
-                db.execute("UPDATE autonomy_roles SET next_at=?,next_poll_at=?", (now + 1800, now))
+                db.execute("UPDATE autonomy_roles SET next_at=?,next_poll_at=MAX(?,poll_not_before),initial_poll_id=NULL,poll_ready_generation=0", (now + 1800, now))
             self._worker = asyncio.create_task(self._clock_loop())
 
     async def _clock_loop(self):
@@ -382,6 +399,7 @@ class ProactiveApplication:
         if self._closed:
             return 0
         await self.recover()
+        await self._schedule_polls()
         admitted = []
         with self._transaction() as db:
             now = self._now(db)
@@ -389,6 +407,12 @@ class ProactiveApplication:
             rows = db.execute("SELECT * FROM autonomy_roles WHERE next_at<=?", (now,)).fetchall()
             for row in rows:
                 config = AutonomyConfig.model_validate_json(row["config"])
+                if (any(source.enabled and source.pollTool for source in config.sourceGrants)
+                        and row["poll_ready_generation"] != row["generation"]):
+                    # The first poll must actually finish, not just win a
+                    # submit race with the snapshot. Keep the original due
+                    # time while this prerequisite is still in flight.
+                    continue
                 db.execute("UPDATE autonomy_roles SET next_at=? WHERE role_id=?", (now + 1800, row["role_id"]))
                 if (not (config.activeDecisionEnabled or config.driftEnabled) or row["human_busy"]
                         or now - row["last_human_end"] < 600 or row["cleanup_pending"]
@@ -420,14 +444,13 @@ class ProactiveApplication:
                 admitted.append(origin)
         for origin in admitted:
             await self._launch(origin)
-        await self._schedule_polls()
         return len(admitted)
 
     async def _schedule_polls(self):
         admitted = []
         with self._transaction() as db:
             now = self._now(db)
-            for row in db.execute("SELECT * FROM autonomy_roles WHERE next_poll_at<=?", (now,)).fetchall():
+            for row in db.execute("SELECT * FROM autonomy_roles WHERE next_poll_at<=? AND poll_not_before<=?", (now, now)).fetchall():
                 db.execute("UPDATE autonomy_roles SET next_poll_at=? WHERE role_id=?", (now + 150, row["role_id"]))
                 config = AutonomyConfig.model_validate_json(row["config"])
                 if (not (config.activeDecisionEnabled or config.driftEnabled) or row["human_busy"]
@@ -450,6 +473,10 @@ class ProactiveApplication:
                 db.execute("INSERT INTO autonomy_runs(tick_id,role_id,origin,kind,mode,started_at,frozen_config) VALUES(?,?,?,'autonomy_poll','source_poll',?,?)",
                            (origin.tick_id, origin.role_id, origin.serialized(), now, row["config"]))
                 db.execute("UPDATE autonomy_budgets SET polls=polls+1 WHERE role_id=? AND day=?", (origin.role_id, day))
+                db.execute("UPDATE autonomy_roles SET last_poll_at=?,poll_not_before=? WHERE role_id=?",
+                           (now, now + 150, origin.role_id))
+                if row["poll_ready_generation"] != row["generation"]:
+                    db.execute("UPDATE autonomy_roles SET initial_poll_id=? WHERE role_id=?", (origin.tick_id, origin.role_id))
                 admitted.append(origin)
         for origin in admitted:
             await self._launch(origin)
@@ -517,9 +544,15 @@ class ProactiveApplication:
         with self._transaction() as db:
             row = db.execute("SELECT frozen_config,started_at FROM autonomy_runs WHERE tick_id=?", (origin.tick_id,)).fetchone()
             config = AutonomyConfig.model_validate_json(row[0])
-            remaining = min(execution.deadline - time.monotonic(), row[1] + 120 - self._now(db))
-            db.execute("UPDATE autonomy_runs SET status='running' WHERE tick_id=?", (origin.tick_id,))
-        sources = [source for source in config.sourceGrants if source.enabled and source.pollTool]
+            observed_at = self._now(db)
+            remaining = min(execution.deadline - time.monotonic(), row[1] + 120 - observed_at)
+            sources = [source for source in config.sourceGrants if source.enabled and source.pollTool]
+            states = [{"sourceId": source.sourceId, "revision": source.revision,
+                       "channel": source.channel, "observedAt": observed_at, "truncated": False,
+                       "status": "failed", "error": "source poll did not finish"} for source in sources]
+            payload = {"pollAttempted": True, "sources": states}
+            db.execute("UPDATE autonomy_runs SET status='running',payload=? WHERE tick_id=?",
+                       (json.dumps(payload), origin.tick_id))
         grants = []
         for source in sources:
             name, digest = source.pollTool, source.pollDefinitionHash
@@ -537,9 +570,26 @@ class ProactiveApplication:
                     if key in seen:
                         continue
                     seen.add(key)
-                    response = await bundle.call(source.serverId, source.pollTool, {})
-                    if response.get("isError"):
-                        raise ValueError("source poll rejected")
+                    try:
+                        response = await bundle.call(source.serverId, source.pollTool, {})
+                        succeeded = not response.get("isError")
+                    except (ValueError, PermissionError, RuntimeError, TimeoutError, OSError):
+                        succeeded = False
+                    if not self._authorized(origin):
+                        raise PermissionError("source poll grant was revoked")
+                    # Independent sources still get their one approved call;
+                    # shared server/tool channels reuse this same outcome.
+                    for candidate, state in zip(sources, states):
+                        if (candidate.serverId, candidate.pollTool) == key:
+                            state.update(status="ok" if succeeded else "failed")
+                            if succeeded:
+                                state.pop("error", None)
+                            else:
+                                state["error"] = "source poll failed"
+                    with self._transaction() as db:
+                        db.execute("UPDATE autonomy_runs SET payload=? WHERE tick_id=?", (json.dumps(payload), origin.tick_id))
+            if any(state["status"] != "ok" for state in states):
+                raise ValueError("one or more source polls failed")
             with self._transaction() as db:
                 db.execute("UPDATE autonomy_runs SET status='polled' WHERE tick_id=?", (origin.tick_id,))
             return TaskOutcome("succeeded", output_tail="authorized sources polled")
@@ -552,7 +602,8 @@ class ProactiveApplication:
         with self._transaction() as db:
             run = db.execute("SELECT * FROM autonomy_runs WHERE tick_id=?", (origin.tick_id,)).fetchone()
             config = AutonomyConfig.model_validate_json(run["frozen_config"])
-            rotation = db.execute("SELECT content_rotation FROM autonomy_roles WHERE role_id=?", (origin.role_id,)).fetchone()[0]
+            role_state = db.execute("SELECT content_rotation,poll_health FROM autonomy_roles WHERE role_id=?", (origin.role_id,)).fetchone()
+            rotation, poll_health = role_state[0], json.loads(role_state[1])
             remaining = min(execution.deadline - time.monotonic(), run["started_at"] + 120 - self._now(db))
             observed_at = self._now(db)
         if remaining <= 0:
@@ -570,6 +621,17 @@ class ProactiveApplication:
                 snapshot = await collect_snapshot(bundle, sources, observed_at=observed_at,
                     eligible=lambda grant, identifier: self._event_eligible(origin.role_id, grant, identifier),
                     rotation=rotation, fetch_body=(lambda url: self.fetch_body(origin, url)) if self.fetch_body else None)
+            health = {(state["sourceId"], state["revision"]): state
+                      for state in poll_health.get("sources", [])} if poll_health.get("generation") == origin.generation else {}
+            polled = {(source.sourceId, source.revision) for source in sources if source.pollTool}
+            for state in snapshot["sources"]:
+                key = (state["sourceId"], state["revision"])
+                if key in polled and health.get(key, {}).get("status") != "ok":
+                    # A successful empty get cannot turn a failed refresh into
+                    # trusted emptiness. Existing candidates remain usable by
+                    # A01; only the empty-source/Drift inference is withheld.
+                    state.update(status="failed", error="source poll failed or incomplete")
+                    snapshot["trustedEmpty"] = False
             with self._transaction() as db:
                 retention.store_snapshot(db, origin.tick_id, snapshot, self._now(db))
                 db.execute("UPDATE autonomy_roles SET content_rotation=content_rotation+? WHERE role_id=?",
@@ -654,6 +716,19 @@ class ProactiveApplication:
                 await self._owned(self.tasks.acknowledge_result, task_id, origin.task_origin())
                 with self._transaction() as db:
                     db.execute("UPDATE autonomy_runs SET result_ack_pending=0,runtime_acknowledged=1 WHERE tick_id=?", (origin.tick_id,))
+                    if row["kind"] == "autonomy_poll":
+                        completed = db.execute("SELECT payload FROM autonomy_runs WHERE tick_id=?", (origin.tick_id,)).fetchone()
+                        poll_result = json.loads(completed[0] or "{}") if completed else {}
+                        if poll_result.get("pollAttempted"):
+                            poll_health = {"generation": origin.generation,
+                                           "sources": poll_result.get("sources", [])}
+                            db.execute("UPDATE autonomy_roles SET poll_health=? WHERE role_id=? AND generation=?",
+                                       (json.dumps(poll_health), origin.role_id, origin.generation))
+                            # A rejected Runtime handover never opens this
+                            # gate. Old generations and pre-restart polls
+                            # cannot satisfy the new initial-poll identity.
+                            db.execute("UPDATE autonomy_roles SET poll_ready_generation=? WHERE role_id=? AND generation=? AND initial_poll_id=?",
+                                       (origin.generation, origin.role_id, origin.generation, origin.tick_id))
                     retention.settle(db, origin.tick_id, now=self._now(db))
                 self._executors.pop(origin.tick_id, None)
             except (PermissionError, KeyError, ValueError, sqlite3.Error):

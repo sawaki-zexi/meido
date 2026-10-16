@@ -50,6 +50,14 @@ MCP资源采用 #169 已双轴复核且两条完整CI通过的 `c052848` 两个�
 
 ## 固定提交前的共享检查
 
-扩大到全部主动模块、Runtime交接、旧agent runtime、MCP来源/stdio/schema及删除回归时，首轮 **227 passed /1 skipped /1 teardown error（237.33秒）**。唯一error是旧HTTP/SSE兼容测试隐式触发无关dashscope向量连接，被整组guard阻断；原SSE/run/消息断言均通过，但该轮不报全绿。该用例现显式持有guard，使用临时关闭的自动记忆设置；保留原断言。它与poll、原loop/MCP及旧删除/取消相关 **14 passed /17.08秒**，完整原范围仍需重跑。
+扩大到全部主动模块、Runtime交接、旧agent runtime、MCP来源/stdio/schema及删除回归时，首轮 **227 passed /1 skipped /1 teardown error（237.33秒）**。唯一error是旧HTTP/SSE兼容测试隐式触发无关dashscope向量连接，被整组guard阻断；原SSE/run/消息断言均通过，但该轮不报全绿。该用例现显式持有guard，使用临时关闭的自动记忆设置；保留原断言。它与poll、原loop/MCP及旧删除/取消相关 **14 passed /17.08秒**；固定 `1fecd40` 的完整同范围随后重跑为 **227 passed /1 skipped（244.66秒）**，整组guard持有至所有owned工作退出。
 
 首次带check-untyped-defs的20源mypy发现7项新诊断。补齐存储和权限容器类型、快照允许布尔字段、返回实际owned关闭Task，并明确验证poll的非空定义后，20源全通过；compileall、5份Markdown19个相对链接及diff检查通过。上述14项也覆盖这次关闭/poll收窄，未放宽授权或预算。
+
+该固定版本的独立规范审查发现排队渠道输入在解绑后仍会触发主人优先；规格审查发现最终消息INSERT缺少紧邻授权复核、首次clock延迟时判断早于首poll、同源配置保存绕过150秒间隔，共四项P2。真实排队配对与SQLite撤权回归先 **2 failed /1 passed（6.85秒）**；将配对检查移入获锁后实际接受回调，并保留与先行生图一致的最终INSERT授权检查后，相关主人优先/投递组 **6 passed（10.71秒）**。原RED记录不改写为通过。
+
+poll的两个原stdio探针先 **2 failed（9.17秒）**，canonical首poll与150秒回归分别先RED。持久初始poll身份仅在真实执行、终态副本、owned清理和Runtime ACK之后打开当前代门禁；普通保存、来源变版、停启和重启都保留原150秒边界。首次clock迟到时先等该门禁，下一个真实clock准入决策，不额外延后30分钟。原外部首poll探针只recover不推进clock，保留原RED，作者副本增加真实on_clock后两探针 **2 passed（7.35秒）**。
+
+检查同时发现失败poll+空get曾错误进入Driftpending，实际RED保留。现在按来源版本与generation持久并冻结poll健康状态；独立来源不短路，失败不删除已取得候选，其他成功来源仍可A01，后续真实成功poll才恢复可信空。实际两来源、共享poll一次、慢stdio、Runtime拒绝、旧schema迁移、真实SQLite回滚及交接等交叉 **41 passed（65.27秒）**。混合来源测试曾把既有四步模型循环误写为三请求而失败，修正测试计数后通过，没有放宽生产协议。
+
+全部修正后的扩大原范围加新的宿主授权回归 **244 passed /1 skipped（275.15秒），进程exit0**。三MEIDO根在导入前隔离，整组guard保持至所有owned退出；skip仍只为Windows创建symlink权限。20源 `--check-untyped-defs` mypy、compileall与diff通过。前端未变，沿用此前178项及TS/Vite证据，没有声称本轮重复。当前仍需固定修正提交的独立双轴增量复核与总分支集成CI。
