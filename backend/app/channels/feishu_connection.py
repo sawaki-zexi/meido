@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import aclosing
 import importlib
 from importlib.metadata import version
@@ -11,7 +11,7 @@ import logging
 import math
 import threading
 from types import FunctionType
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -282,7 +282,10 @@ async def _endpoint(client: Any) -> str:
                     if length is not None and (not length.isdecimal() or int(length) > MAX_HANDSHAKE_BYTES):
                         raise FeishuConnectionError("feishu_handshake_size")
                     raw = bytearray()
-                    async with aclosing(response.aiter_raw(chunk_size=4096)) as stream:
+                    # HTTPX declares AsyncIterator, but aiter_raw is an async
+                    # generator and therefore owns the aclose used here.
+                    raw_stream = cast(AsyncGenerator[bytes, None], response.aiter_raw(chunk_size=4096))
+                    async with aclosing(raw_stream) as stream:
                         async for chunk in stream:
                             if len(raw) + len(chunk) > MAX_HANDSHAKE_BYTES:
                                 raise FeishuConnectionError("feishu_handshake_size")
