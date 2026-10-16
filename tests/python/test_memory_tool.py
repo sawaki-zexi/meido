@@ -68,10 +68,10 @@ def test_memory_recall_tool_rejects_invalid_arguments_before_engine_call():
 
     with pytest.raises(ValueError, match="too long"):
         asyncio.run(tool.execute({"query": "x" * 501}, _context()))
-    with pytest.raises(ValueError, match="between 1 and 8"):
-        asyncio.run(tool.execute({"query": "事实", "limit": 9}, _context()))
+    with pytest.raises(ValueError, match="between 1 and 200"):
+        asyncio.run(tool.execute({"query": "事实", "limit": 201}, _context()))
     with pytest.raises(ValueError, match="unsupported"):
-        asyncio.run(tool.execute({"query": "事实", "intent": "timeline"}, _context()))
+        asyncio.run(tool.execute({"query": "事实", "intent": "invalid"}, _context()))
     assert engine.requests == []
 
 
