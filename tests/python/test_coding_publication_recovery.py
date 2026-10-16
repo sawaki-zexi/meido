@@ -8,6 +8,7 @@ import threading
 import time
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -55,6 +56,82 @@ def recovery_fixture(tmp_path, *, channel=False):
         db.execute('INSERT INTO coding_owner_operations VALUES(?,?,?,?,?,?)',
             (operation['id'], 'role-a', record['id'], 'unique-recovery-request', 'fingerprint', _json(operation)))
     return app, tasks, sessions, channels, thread, origin, record, operation
+
+
+def test_observe_cold_client_preparation_cannot_start_a_fresh_readback_budget(tmp_path, monkeypatch):
+    from backend.app.coding_tasks.github_publication import GithubPlatform
+    app, tasks, sessions, _, _, _, _, operation = recovery_fixture(tmp_path)
+    values, clients, offset = {}, [], [0]
+    app.publication.credentials = SimpleNamespace(get=lambda key: values.get(key, ''),
+        set=lambda key, value: values.update({key: value}))
+    app.publication.set_token('synthetic-only')
+    candidate = operation['candidate'] | {'credentialRevision': app.publication.settings()['revision'],
+        'remote': {'owner': 'fixture', 'repository': 'repo'}}
+    app.publication._update(operation['id'], action='publish', candidate=candidate,
+        pushDispatched=True, platformRepositoryId=7)
+    real_clock = publication.time
+    monkeypatch.setattr(publication, 'time', SimpleNamespace(monotonic=lambda: real_clock.monotonic() + offset[0],
+        time=real_clock.time))
+    class ColdPlatform(GithubPlatform):
+        def _request(self, *_args, **_kwargs):
+            raise AssertionError('expired cold preparation must not dispatch HTTP')
+    def construct(token, remote):
+        client = ColdPlatform(token, remote, base_url='http://127.0.0.1:1')
+        clients.append(client)
+        # Simulate expensive cold preparation while keeping the real 30-second
+        # business limit unchanged. No network or timeout is shortened here.
+        offset[0] += 31
+        return client
+    app.publication.platform_factory = construct
+    try:
+        with pytest.raises(TimeoutError, match='readback deadline ended'):
+            app.publication.observe('role-a', operation['id'])
+        assert len(clients) == 1 and clients[0].client.is_closed
+    finally:
+        monkeypatch.setattr(publication, 'time', real_clock)
+        asyncio.run(app.close())
+        tasks.close()
+
+
+def test_failed_readback_close_retains_owner_capacity_and_database_until_retry(tmp_path):
+    from backend.app.coding_tasks.github_publication import GithubPlatform
+    app, tasks, sessions, _, _, _, _, operation = recovery_fixture(tmp_path)
+    values, clients, release = {}, [], threading.Event()
+    app.publication.credentials = SimpleNamespace(get=lambda key: values.get(key, ''),
+        set=lambda key, value: values.update({key: value}))
+    app.publication.set_token('synthetic-only')
+    candidate = operation['candidate'] | {'credentialRevision': app.publication.settings()['revision'],
+        'remote': {'owner': 'fixture', 'repository': 'repo'}}
+    app.publication._update(operation['id'], action='publish', candidate=candidate,
+        pushDispatched=True, platformRepositoryId=7)
+    class UnconfirmedPlatform(GithubPlatform):
+        def repository(self): raise ValueError('synthetic readback failed before confirmation')
+        def close(self):
+            if not release.is_set(): raise owned_process.CleanupFailed('synthetic HTTP cleanup unconfirmed')
+            super().close()
+    def construct(token, remote):
+        client = UnconfirmedPlatform(token, remote, base_url='http://127.0.0.1:1')
+        clients.append(client)
+        return client
+    app.publication.platform_factory = construct
+    try:
+        with pytest.raises(owned_process.CleanupFailed):
+            app.publication.observe('role-a', operation['id'])
+        assert app.publication.role_resources_pending('role-a')
+        assert app.publication._owners[operation['id']].platform is clients[0]
+        with pytest.raises(ValueError, match='budget is occupied'):
+            app.publication.ensure_native_admission('role-a', 'repo-a')
+        with pytest.raises((owned_process.CleanupFailed, ExceptionGroup)):
+            asyncio.run(app.close())
+        assert not clients[0].client.is_closed
+        assert app.ledger._db.execute('SELECT 1').fetchone()[0] == 1
+        release.set()
+        asyncio.run(app.close())
+        assert clients[0].client.is_closed and not app.publication._owners
+    finally:
+        release.set()
+        asyncio.run(app.close())
+        tasks.close()
 
 
 def test_late_durable_operation_receipt_repairs_same_source_projection_without_resending(tmp_path):

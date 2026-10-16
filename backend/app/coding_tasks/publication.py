@@ -342,7 +342,7 @@ class PublicationOperations:
                     and record['cleanupState'] == 'complete' and not record.get('resolvedBy')):
                 continue
             if record['taskId'] == task_id and (record['status'] in {'accepted', 'running'}
-                    or record['cleanupState'] not in {'complete', 'not_started'}
+                    or self._cleanup_pending(record)
                     or record['status'] in {'unknown', 'push_confirmed'}):
                 raise ValueError('previous Coding operation is active or has unresolved effects')
 
@@ -353,7 +353,7 @@ class PublicationOperations:
                 JOIN coding_attempts a ON a.task_id=t.id
                 WHERE a.status IN ('accepted','running') OR a.cleanup NOT IN ('complete','not_started')""").fetchall()
         active = [item for item in self._records() if item['status'] in {'accepted', 'running'}
-            or item['cleanupState'] not in {'complete', 'not_started'}]
+            or self._cleanup_pending(item)]
         if len(native) + len(active) >= 2 or any(item['role_id'] == record['origin']['role_id']
                 or item['repo_id'] == record['repository']['id'] for item in native) or any(
                 item['roleId'] == record['origin']['role_id']
@@ -362,7 +362,7 @@ class PublicationOperations:
 
     def ensure_native_admission(self, role_id, repo_id, task_id=None):
         active = [record for record in self._records() if record['status'] in {'accepted', 'running'}
-            or record['cleanupState'] not in {'complete', 'not_started'}]
+            or self._cleanup_pending(record)]
         if len(active) >= 2 or any(record['roleId'] == role_id
                 or record['candidate']['record']['repository']['id'] == repo_id for record in active):
             raise ValueError('Coding owner-operation concurrency budget is occupied')
@@ -512,6 +512,11 @@ class PublicationOperations:
                 if not any(active):
                     record = self._update(identifier, cleanupState='complete', resourceJobs=[])
         if record['cleanupState'] == 'complete':
+            # A readback whose cleanup write failed can still own a live HTTP
+            # execution. Never drop an in-memory owner on a stale SQL state.
+            owner = self._owners.get(identifier)
+            if owner is not None:
+                await asyncio.to_thread(owner.cancel)
             self._owners.pop(identifier, None)
         if record['status'] in {'accepted', 'running'}:
             return
@@ -585,23 +590,40 @@ class PublicationOperations:
         await self.tick()
 
     def role_resources_pending(self, role_id):
-        return any(record['cleanupState'] not in {'complete', 'not_started'} for record in self._records(role_id))
+        return any(self._cleanup_pending(record) for record in self._records(role_id))
+
+    def _cleanup_pending(self, record):
+        return record['cleanupState'] not in {'complete', 'not_started'} or record['id'] in self._owners
 
     def observe(self, role_id, identifier):
         """Explicit owner readback. This method never launches Git writes or POST."""
         from .evidence import snapshot_worktree, task_paths
         from .github_publication import GithubPlatform
-        with self.application._owner_lock:
+        # The explicit readback gets one budget including admission, identity
+        # checks and cold client preparation, rather than a fresh network clock.
+        deadline = time.monotonic() + 30
+        if not self.application._owner_lock.acquire(timeout=max(0, deadline - time.monotonic())):
+            raise TimeoutError('bounded Coding readback admission ended')
+        try:
             operation = self._record(identifier, role_id)
             current = self._native_record(role_id, operation['taskId'])
             if current['attemptId'] != operation['attemptId'] or not self.application._allowed(current):
                 raise PermissionError('original Coding readback authority was revoked')
+            def remaining():
+                if not self.application._allowed(current):
+                    raise PermissionError('bounded Coding readback authority ended')
+                value = deadline - time.monotonic()
+                if value <= 0:
+                    raise TimeoutError('bounded Coding readback deadline ended')
+                return value
+            remaining()
             if operation['cleanupState'] != 'complete':
                 raise ValueError('owned resources must be confirmed stopped before readback')
             candidate = operation['candidate']
             _, worktree, _ = task_paths(self.application.root, current)
             if operation['action'] == 'commit':
-                after = snapshot_worktree(worktree, current['repository']['commonDir'], current['branch'], time.monotonic() + 30)
+                after = snapshot_worktree(worktree, current['repository']['commonDir'], current['branch'], deadline)
+                remaining()
                 if (not operation.get('commitDispatched') or after['head'] != candidate['commitSha']
                         or after['headTree'] != candidate['tree'] or after['tree'] != candidate['tree'] or after['status']):
                     return self.inspect(role_id, identifier)
@@ -615,14 +637,11 @@ class PublicationOperations:
             token = self.credentials.get('token') if self.credentials else ''
             if not token:
                 raise PermissionError('original broker credential is unavailable')
+            remaining()
             platform = (self.platform_factory or GithubPlatform)(token, candidate['remote'])
-            deadline = time.monotonic() + 30
-            def remaining():
-                if not self.application._allowed(current) or time.monotonic() >= deadline:
-                    raise PermissionError('bounded Coding readback authority ended')
-                return deadline - time.monotonic()
             platform.check = remaining
             try:
+                remaining()
                 repository = platform.repository()
                 if repository['id'] != operation['platformRepositoryId']:
                     raise ValueError('original platform repository was replaced')
@@ -643,7 +662,18 @@ class PublicationOperations:
                     observedAt=time.time(), messageSynced=False)
                 return self.inspect(role_id, identifier)
             finally:
-                platform.close()
+                try:
+                    platform.close()
+                except BaseException:
+                    # Reuse the existing operation cleanup owner and its
+                    # cancel/tick/close paths; no new Runtime or HTTP retry.
+                    owner = PublicationExecutor(self, operation)
+                    owner.platform = platform
+                    self._owners[identifier] = owner
+                    self._update(identifier, cleanupState='cleanup_failed')
+                    raise
+        finally:
+            self.application._owner_lock.release()
 
     def _attest_commit(self, current, operation, after):
         candidate = operation['candidate']

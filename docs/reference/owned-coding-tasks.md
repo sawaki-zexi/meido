@@ -74,6 +74,10 @@ spawn 配置变化会先同步增加独立持久 delegation generation，并封�
 
 REST 固定 `X-GitHub-Api-Version: 2026-03-10`，对应当前[官方版本契约](https://docs.github.com/en/rest/about-the-rest-api/api-versions)。真实平台兼容性仍须在另行批准的发布中核验。
 
+Git HTTPS 使用私有 broker 环境中的 `Authorization: Basic base64(x-access-token:<token>)`，与[官方 checkout 实现](https://github.com/actions/checkout/blob/main/src/git-auth-helper.ts)一致；REST 继续使用 Bearer。凭据不写入仓库配置、命令参数或源 agent 环境。本地真实 Git smart HTTP 验证该认证头与确切 SHA/分支，不能代替获准的线上兼容验收。
+
+每次 REST 请求最多20秒，并始终受原操作期限与撤权检查约束；连接、等待响应、逐块读取与有界 JSON 解析共享同一期限。宿主持有可取消的非 daemon HTTP 线程，期限结束、撤权或关闭会打断尚无下一块数据的读取，关闭 transport 后 join；收尾未确认保留 owner 并冻结后续准入，不报告已关闭。明确 observe 的30秒业务窗口从入口计算，包含锁等待与冷客户端准备，不在首次 GET 前重新起算；到期后只进行有界资源收尾，不继续业务。
+
 无凭据导出获批对象到宿主私有 bare staging，再仅用私有、固定 Git 配置将获批 SHA 推到提前审阅的唯一 `codex/meido-pub-*` 分支，不 force、不改其他 refs。push 和 PR 各在出手前持久 dispatch；固定 GitHub HTTPS、禁重定向/环境代理/自动重试。201 或 URL 不等于成功，必须 GET 核对仓库 ID、head/base 仓库与分支/SHA、open、draft、标题、正文和规范 URL。
 
 `unknown` 只允许明确的只读核对，查询包含 closed PR；不重 push/POST、不换分支。仅观察到相同 SHA 不能证明本次创建了分支。若自己的 push 已证实且 PR 尚未 dispatch，核实后为 `push_confirmed`，主人可重新审阅仅创建 PR 的剩余动作；新批准不会再次推送。旧写操作 `superseded` 保留原事实。取消不回滚远端；已经派发却无法证明的 PR 继续 unknown，不能借新批准绕过。
@@ -86,7 +90,7 @@ review 最多每角色 100 份，实际 diff 256KiB；broker 所有保留文件�
 | GET `/roles/{role}/operations` | 本角色独立业务、Runtime/ACK、cleanup、交付与已核验 SHA/URL |
 | POST `/roles/{role}/tasks/{task}/reviews` | `action=commit` + message/authorName/authorEmail，或 `action=publish` + title/body；剩余动作需 previousOperationId |
 | POST `/roles/{role}/reviews/{review}/approve` | 仅字面布尔 `approved=true` 与稳定 requestId，不接受客户端替换 HEAD/remote/正文 |
-| POST `/roles/{role}/operations/{id}/observe` | 明确、最多30秒的原身份只读核实，无 CLI/写事务重放 |
+| POST `/roles/{role}/operations/{id}/observe` | 明确、30秒业务窗口的原身份只读核实，随后确认收尾，无 CLI/写事务重放 |
 | POST `/roles/{role}/operations/{id}/cancel` | 关闭新动作并等待自有资源，不宣称撤回已发生事务 |
 
 404 表示不属于当前角色/不存在；403 为来源、许可或凭据修订失效；409 为证据、期限或审阅冲突；503 为存储或资源未确认。原生完成、commit 与 publication 分别使用 `coding_completion`、`coding_commit`、`coding_publication` 内部事件及独立确定 ID，只回原来源，不伪造主人 run 或额外模型。真实 sent receipt 和本地同步可分开恢复，不二次发送或改投桌面。验收与复现见[手册](../handbook/coding-publication-acceptance.md)。

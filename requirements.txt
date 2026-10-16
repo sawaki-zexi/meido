@@ -1,6 +1,7 @@
 fastapi>=0.115,<1
 uvicorn[standard]>=0.30,<1
 httpx>=0.27,<1
+anyio>=4,<5
 tzdata>=2025.2,<2027
 html2text>=2025.4.0,<2027
 lxml>=6.0.0,<7

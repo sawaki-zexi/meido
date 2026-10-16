@@ -1,39 +1,25 @@
 """Fixed GitHub HTTPS protocol and an isolated, host-owned Git transport."""
 from __future__ import annotations
 
-import json
+import base64
 from pathlib import Path
 import re
-from urllib.parse import quote
-
-import httpx
+from urllib.parse import quote, urlsplit
 
 from .git_repository import git_environment
+from .owned_http import OwnedHTTP
 
 
 class GithubPlatform:
     def __init__(self, token, remote, *, base_url='https://api.github.com'):
         self.remote = remote
         self.check = lambda: 30
-        self.client = httpx.Client(base_url=base_url, trust_env=False, follow_redirects=False,
-            timeout=httpx.Timeout(20, connect=5), headers={'Authorization': 'Bearer ' + token,
+        self.client = OwnedHTTP(base_url, headers={'Authorization': 'Bearer ' + token,
                 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2026-03-10'})
         self.path = '/repos/' + quote(remote['owner'], safe='') + '/' + quote(remote['repository'], safe='')
 
     def _request(self, method, path, *, data=None, absent=False):
-        remaining = self.check()
-        with self.client.stream(method, path, json=data, timeout=min(20, remaining)) as response:
-            if absent and response.status_code == 404:
-                return None
-            if response.status_code != (201 if method == 'POST' else 200):
-                raise ValueError('GitHub operation was not confirmed')
-            body = bytearray()
-            for chunk in response.iter_bytes():
-                body.extend(chunk)
-                if len(body) > 256 * 1024:
-                    raise ValueError('GitHub response exceeds the operation budget')
-            value = json.loads(body)
-        return value
+        return self.client.request(method, path, data=data, absent=absent, check=lambda: self.check())
 
     def repository(self):
         value = self._request('GET', self.path)
@@ -110,6 +96,16 @@ class GitTransport:
     def __init__(self, directory, owner, candidate, token, *, destination=None):
         self.directory, self.owner, self.candidate = Path(directory), owner, candidate
         self.token, self.destination = token, destination
+        # Only trusted in-process fixtures can replace the fixed GitHub URL.
+        # A local smart-HTTP peer exercises the actual Git wire protocol.
+        self.fixture_http = None
+        if destination is not None:
+            parsed = urlsplit(str(destination))
+            if parsed.scheme in {'http', 'https'}:
+                if (parsed.scheme != 'http' or parsed.hostname not in {'127.0.0.1', 'localhost', '::1'}
+                        or parsed.username or parsed.password or parsed.query or parsed.fragment):
+                    raise ValueError('Git protocol fixture must be a credential-free loopback HTTP peer')
+                self.fixture_http = parsed.scheme + '://' + parsed.netloc + '/'
 
     def push(self, worktree):
         candidate, owner = self.candidate, self.owner
@@ -128,12 +124,16 @@ class GitTransport:
         if owner.run(bare, 'rev-parse', candidate['commitSha'] + '^{tree}') != candidate['tree']:
             raise ValueError('private object stage differs from approved tree')
         env = git_environment()
-        settings = {'http.https://github.com/.extraheader': 'Authorization: Bearer ' + self.token,
+        authorization = 'Authorization: Basic ' + base64.b64encode(('x-access-token:' + self.token).encode('ascii')).decode('ascii')
+        settings = {'http.https://github.com/.extraheader': authorization,
             'http.followRedirects': 'false', 'protocol.allow': 'never',
             'protocol.https.allow': 'always', 'push.followTags': 'false',
             'push.recurseSubmodules': 'no', 'transfer.fsckObjects': 'true'}
         if self.destination is not None:
             settings['protocol.file.allow'] = 'always'
+        if self.fixture_http is not None:
+            settings['protocol.http.allow'] = 'always'
+            settings['http.' + self.fixture_http + '.extraheader'] = authorization
         start = int(env['GIT_CONFIG_COUNT'])
         for offset, (key, value) in enumerate(settings.items(), start):
             env['GIT_CONFIG_KEY_' + str(offset)] = key

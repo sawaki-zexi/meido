@@ -12,6 +12,7 @@ export function useCodingTasks(roleId: string) {
   const [consent, setConsent] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState({ message: "", authorName: "", authorEmail: "", title: "", body: "" });
   const current = useCallback((generation: number) => alive.current && identity.current.roleId === roleId && identity.current.generation === generation, [roleId]);
   const refresh = useCallback(async () => {
     const generation = identity.current.generation;
@@ -33,6 +34,7 @@ export function useCodingTasks(roleId: string) {
   useEffect(() => {
     alive.current = true;
     setSelection(null); setPrepared(null); setConsent(false); setError("");
+    setDraft({ message: "", authorName: "", authorEmail: "", title: "", body: "" });
     void refresh();
     const interval = setInterval(() => { void refresh(); }, 1500);
     return () => { alive.current = false; clearInterval(interval); };
@@ -61,7 +63,9 @@ export function useCodingTasks(roleId: string) {
   return { tasks: data?.roleId === roleId ? data.tasks : [], operations: data?.roleId === roleId ? data.operations : [],
     loading: data?.roleId !== roleId, selection: selection?.roleId === roleId ? selection : null,
     review: prepared?.roleId === roleId ? prepared.value : null, consent, setConsent, busy, error, dismiss: () => setError(""),
-    select, prepare, approve, refresh, clearReview: () => { setPrepared(null); setConsent(false); },
+    select, approve, refresh, draft,
+    setDraftField: (key: keyof typeof draft, value: string) => { setDraft(previous => ({ ...previous, [key]: value })); setPrepared(null); setConsent(false); },
+    prepareDraft: () => prepare(selection?.action === "commit" ? { action: "commit", message: draft.message, authorName: draft.authorName, authorEmail: draft.authorEmail } : { action: "publish", title: draft.title, body: draft.body }),
     selectRemaining: (operation: CodingOperation) => { const task = data?.tasks.find(value => value.id === operation.taskId && value.attemptId === operation.attemptId); if (task) select(task, "publish", operation.id); },
     cancelTask: (task: CodingTask) => perform(() => cancelCodingTask(roleId, task.id)),
     cancelOperation: (operation: CodingOperation) => perform(() => cancelCodingOperation(roleId, operation.id)),

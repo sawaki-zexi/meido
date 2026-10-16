@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import type { FormEvent } from "react";
 import { Notice, Placeholder } from "../../ui/Status";
 import { useCodingTasks } from "./useCodingTasks";
 
@@ -8,14 +8,9 @@ export function CodingTasks({ roleId }: { roleId: string }) {
 
 function CodingTaskPanel({ roleId }: { roleId: string }) {
   const state = useCodingTasks(roleId);
-  const [message, setMessage] = useState("");
-  const [authorName, setAuthorName] = useState("");
-  const [authorEmail, setAuthorEmail] = useState("");
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
   const prepare = (event: FormEvent) => {
     event.preventDefault();
-    void state.prepare(state.selection?.action === "commit" ? { action: "commit", message, authorName, authorEmail } : { action: "publish", title, body });
+    void state.prepareDraft();
   };
   const review = state.review;
   return <section aria-label="编程任务"><h3>编程任务</h3>
@@ -33,14 +28,14 @@ function CodingTaskPanel({ roleId }: { roleId: string }) {
       {task.status === "validated_commit" && <button type="button" aria-label={`审阅 Draft PR ${task.id}`} disabled={state.busy || !task.ownerActions?.publicationAllowed} onClick={() => state.select(task, "publish")}>审阅 Draft PR</button>}
       {task.status === "validated_diff" && <p>本地提交受原任务预算约束。预算结束时成果保留；请回到原来源明确提出新的继续要求，CLI 可能再次消耗配额，系统不会自动启动。</p>}
     </article>)}
-    {state.selection && <form onSubmit={prepare} onChange={state.clearReview}><fieldset disabled={state.busy}><legend>{state.selection.action === "commit" ? "准备本地提交" : "准备 Draft PR"}</legend>
+    {state.selection && <form onSubmit={prepare}><fieldset disabled={state.busy}><legend>{state.selection.action === "commit" ? "准备本地提交" : "准备 Draft PR"}</legend>
       {state.selection.action === "commit" ? <>
-        <label className="field">提交说明<textarea aria-label="提交说明" required maxLength={8000} value={message} onChange={event => setMessage(event.target.value)} /></label>
-        <label className="field">提交作者<input aria-label="提交作者" required maxLength={100} value={authorName} onChange={event => setAuthorName(event.target.value)} /></label>
-        <label className="field">提交邮箱<input aria-label="提交邮箱" type="email" required maxLength={254} value={authorEmail} onChange={event => setAuthorEmail(event.target.value)} /></label>
+        <label className="field">提交说明<textarea aria-label="提交说明" required maxLength={8000} value={state.draft.message} onChange={event => state.setDraftField("message", event.target.value)} /></label>
+        <label className="field">提交作者<input aria-label="提交作者" required maxLength={100} value={state.draft.authorName} onChange={event => state.setDraftField("authorName", event.target.value)} /></label>
+        <label className="field">提交邮箱<input aria-label="提交邮箱" type="email" required maxLength={254} value={state.draft.authorEmail} onChange={event => state.setDraftField("authorEmail", event.target.value)} /></label>
       </> : <>
-        <label className="field">PR 标题<input aria-label="PR 标题" required maxLength={200} value={title} onChange={event => setTitle(event.target.value)} /></label>
-        <label className="field">PR 正文<textarea aria-label="PR 正文" maxLength={32768} value={body} onChange={event => setBody(event.target.value)} /></label>
+        <label className="field">PR 标题<input aria-label="PR 标题" required maxLength={200} value={state.draft.title} onChange={event => state.setDraftField("title", event.target.value)} /></label>
+        <label className="field">PR 正文<textarea aria-label="PR 正文" maxLength={32768} value={state.draft.body} onChange={event => state.setDraftField("body", event.target.value)} /></label>
       </>}<button type="submit">准备审阅</button>
     </fieldset></form>}
     {review && <section aria-label="确切成果审阅" className="coding-review"><h4>批准前核对</h4>

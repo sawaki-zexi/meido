@@ -1,6 +1,6 @@
 # 验收确切编程成果与发布 #176
 
-状态：本地实现和无费用夹具；独立两轴、集成与 CI 待最终记录。真实 CLI 登录/模型与 GitHub 发布均未执行。最后核验：2026-10-16。事实来源：[公开链](../../tests/python/test_coding_publication_main.py)、[真实 Git/HTTP/SQL 故障](../../tests/python/test_coding_publication.py)、[原生证据](../../tests/python/test_coding_attestation.py)、[资源与原来源恢复](../../tests/python/test_coding_publication_recovery.py)、[React](../../web/src/features/coding/CodingPublication.test.tsx)。接口见[reference](../reference/owned-coding-tasks.md)。
+状态：本地实现和无费用夹具；独立两轴、集成与 CI 待最终记录。真实 CLI 登录/模型与 GitHub 发布均未执行。最后核验：2026-10-16。事实来源：[公开链](../../tests/python/test_coding_publication_main.py)、[真实 Git/HTTP/SQL 故障](../../tests/python/test_coding_publication.py)、[HTTP 期限与退出](../../tests/python/test_coding_publication_http.py)、[Git smart HTTP](../../tests/python/test_coding_publication_git_http.py)、[原生证据](../../tests/python/test_coding_attestation.py)、[资源与原来源恢复](../../tests/python/test_coding_publication_recovery.py)、[React](../../web/src/features/coding/CodingPublication.test.tsx)。接口见[reference](../reference/owned-coding-tasks.md)。
 
 ## 主人使用
 
@@ -19,7 +19,7 @@
 $env:MEIDO_TEST_HERDR = 'D:/meido-artifacts/coding174-herdr-bundle/herdr.exe'
 $env:MEIDO_TEST_CODING_CLI = 'D:/meido-artifacts/coding174-toolchain/interactive-fixture.exe'
 python -m pytest tests/python/test_coding_publication.py tests/python/test_coding_publication_main.py tests/python/test_coding_publication_recovery.py tests/python/test_coding_attestation.py -q --basetemp=D:/fresh-176-owned
-python -m mypy backend/app/coding_tasks/publication.py backend/app/coding_tasks/github_publication.py backend/app/coding_tasks/evidence.py backend/app/coding_tasks/artifact_budget.py backend/app/coding_tasks/api.py --ignore-missing-imports --follow-imports=silent --check-untyped-defs
+python -m mypy backend/app/coding_tasks/publication.py backend/app/coding_tasks/owned_http.py backend/app/coding_tasks/github_publication.py backend/app/coding_tasks/evidence.py backend/app/coding_tasks/artifact_budget.py backend/app/coding_tasks/api.py --ignore-missing-imports --follow-imports=silent --check-untyped-defs
 npm run test:web
 npm run build
 git diff --check
@@ -35,5 +35,7 @@ git diff --check
 - push 之后远端 base 分支推进的真实 bare/HTTP 夹具曾证明 PR 仍被 POST。现 dispatch 前再核 base SHA，变化时保留已发生 push，禁止创建 PR；平台在派发后发生变化仍只能记 unknown，不能承诺 GitHub 分支原子冻结。
 - Git filter 夹具在旧快照检查中确实写出 marker；目前在任何 status/worktree checkout 前拒绝 filter 配置。私有硬链接和超2GiB保留文件在写事务前拒绝。固定验证不通过、文件/index/模式/HEAD变化不能借旧 validatedHead 发布。
 - 原生适配器完整 snapshot/expected HEAD 两路测试与 owner 服务的宿主 commit→精确 session continue 分开记录；Herdr boundary 夹具使用真实受管编辑进程/Git，不等于实际 Herdr/真实账号任务。原7项固定 Herdr+合成 CLI 是独立原生兼容验收。
+- Standards 的真实慢滴流/末期停读探针捕获旧 HTTP 只在请求前检查期限。永久回归保留4类 RED，改用受管、可取消 transport 后验证同一期限/撤权、真实连接与线程退出；首次实现把 TLS/异步库冷准备放进请求线程造成另一轮4 RED，已恢复到 Client 构造边界，未放宽预算。observe 入口固定30秒，锁等待仅取剩余时间；冷准备过期不开始 HTTP。
+- Git 认证按官方 checkout 的 Basic 协议修正；真实本地 smart HTTP 核验 GET/POST 实际认证头、精确 SHA/唯一分支、原 main 不变与 token 不落仓库配置。旧本地夹具原先不开放 HTTP 协议，其 RED 不证明线上 GitHub 拒绝旧 Bearer。原始外部探针首例未捕获合法 TimeoutError，装配局限单独记录；末期停读例保持原字节复验通过，不修改原探针或伪称原样双例全绿。
 
 作者本地 XML 位于 D:/meido-artifacts/coding176-*.xml，各轮不能相加或视作最终 HEAD CI。完整前端208项、TS/Vite已过，包括晚到凭据 GET 不覆盖新保存修订的 RED→GREEN；最终相关组与两轴结论以固定交付记录为准。所有真实账号、费用、实际首次/resume CLI 权限与 GitHub 发布仍需要对应许可和证据。
