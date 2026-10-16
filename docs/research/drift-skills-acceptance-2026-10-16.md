@@ -1,6 +1,6 @@
 # Drift 技能作者与执行验收记录
 
-状态：当前 / #179 功能分支的本地合成验收记录；Windows 冻结组合、后续窄修及 WSL 核心复核已结束，待独立两轴审查，未合并。
+状态：当前 / #179 的本地合成验收记录；固定源3d56102已完成完整两轴及四项修正复核，并本地整合为总分支3eed571，本地组合与集成两轴复核通过，新HEAD完整CI待核验，未合并。
 
 事实来源：[具体规格](../specs/proactive-drift-spec.md)、[ADR-0018](../adr/0018-explicit-autonomy-and-drift-grants.md)、[操作手册](../handbook/drift-skills.md)、[作者闭环](../../tests/python/test_proactive_drift_authoring_api.py)、[MCP](../../tests/python/test_proactive_drift_mcp.py)、[投递](../../tests/python/test_proactive_drift_delivery.py)、[恢复](../../tests/python/test_proactive_drift_recovery.py)。最后核验：2026-10-16；准确基点 `fa122c3d5986515028144c1a6285e36425e7b9cf`，开工时该基点两套完整 CI 均通过。
 
@@ -79,6 +79,16 @@ Drift 经原 main wrapper 调用真实 MemoryEngine，在当前角色只读 cont
 最终Windows必要集合覆盖全部12个Drift模块、完整A01协议/retention、普通Shell/API与能力/角色配置，130p/1skip/1warn/327.40秒。明确kali-linux既有Python3.12.7的核心修正闭环8p/2warn/107.37秒，两轮全部owner自然关闭、内外guard0、输入前后零变。Windows既有`test_shell_tool.py::test_absolute_allowlist_preserves_case_sensitive_path`按平台跳过，reason为requires a case-sensitive executable path；不将skip计通过。WSL的两条pytest警告为既有conftest重写与Starlette/httpx弃用提示，启动时本机代理警告原日志保留。
 
 本轮选择器递归包含backend/tests/web/src，排除__pycache__/pyc/pyo，共554输入；Windows/WSL相同SHA256 `ac811dcb708adbcd103e020e7d5771f3ed6bebb9acb800671e99e496b45e0813`。这与原558选择器不同：原独有ci.yml、package.json、package-lock.json、requirements.txt、tsconfig.json、vite.config.ts、vitest.config.ts；新独有backend/__init__.py及两个新增永久回执/retention测试。原558路径全存在，完整差集/原始SHA留在交接，不以数量差推断删除文件，也不把新hash当原558同集合hash。120个原前端输入零变，保留原216项与构建证据，没有重跑UI。最终窄mypy同原flags的28源通过；宽类型旧88→87仅是先前证据，本轮不冒称重新全仓通过。
+
+## 总分支组合核对
+
+最终源3d56102完成完整规范/规格审查及四项修正复核，均无遗留；独立修正窄组分别13 passed/1 warning/58.85秒、2 passed/1 warning/16.96秒。后一复核原样probe曾使用旧JSON输出路径，新GREEN另存后，原9项runner/probe/RED XML/JSON逐SHA严格恢复并与原审计一致；该过程及新旧hash保留在独立审计，不覆盖原失败结论。
+
+以准确cd73682两套2380后端/221前端CI通过为基点，ecde与3d两提交无冲突整合为3eed571。52份源文件中50个git blob完全相同；main仅两个Drift作者装配/workspace函数逐AST等于源，将这两函数还原后整模块等于cd。SessionStore仅原自主消息方法增加默认兼容mode/attachments，其余整模块保持cd，包括Coding独立operation消息。fa后另77份总分支改动的blob全部保留，CG、Coding和来源验证journal修正未丢失。
+
+准确3eed后端组合58 passed/1 warning/287.04秒、完整前端229 passed/41文件/36.80秒、TypeScript/Vite105模块1.22秒、同flags28源窄类型及编译通过。583份后端/测试/前端输入在运行前后逐SHA一致，三新数据根和唯一basetemp保留，内外localhost guard通过，所有main owner自然退出。组合覆盖公开文件/Skills/发现/MCP、S06与S08作者、Drift投递/回执、Coding原来源宿主、来源验证journal和CG资产责任。
+
+集成规范轴静态复核无遗留；规格轴独立2 passed/1 warning/7.17秒，真实主人HTTP构造共用工厂，真实canonical SQLite验证默认A01模式、Drift附件metadata/幂等和Coding三类消息身份；同intent改模式及撤权写入拒绝。这是宿主/存储seam，不替代附件上传归属、真实渠道或模型验收。新HEAD完整CI仍须核验；源旧216项不重复计为此轮前端。没有真实账号/服务/模型消费。
 
 ## 明确限制
 
