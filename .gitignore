@@ -4,6 +4,7 @@ web/dist/
 roles/
 .data/
 owner-knowledge-data/
+scripts/local-runtime/local-settings.json
 __pycache__/
 .pytest_cache/
 backend/app/native/computer-use/

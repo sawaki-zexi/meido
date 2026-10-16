@@ -14,6 +14,7 @@ import { CodingTasks } from "../coding/CodingTasks";
 import { Dialog } from "../../ui/Dialog";
 import { GeneratedImageAction } from "../novelai/GeneratedImageAction";
 import type { GenerationSelection } from "../../api/novelai";
+import { useChatScroll } from "./useChatScroll";
 
 function MessageItem({ message, role, highlighted, onRegenerate }: { message: Message; role: Role; highlighted: boolean; onRegenerate: (selection: GenerationSelection) => void }) {
   const mine = message.role === "user";
@@ -120,7 +121,7 @@ function Composer({ roleId, placeholder, disabled, sending, stopping, onSend, on
 type ChatProps = { role: Role; chat: ChatState; highlightedId?: string | null; onBack: () => void; onShowProfile: () => void; onShowMemories: () => void; onOpenTodoSource: (roleId: string, sessionKey: string, messageId: string) => void };
 
 export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfile, onShowMemories, onOpenTodoSource }: ChatProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const { scrollRef, listRef, onScroll } = useChatScroll({ roleId: role.id, messages: chat.messages, sending: chat.sending, highlightedId });
   const [todoSettings, setTodoSettings] = useState<TodoSettings | null>(null);
   const [todoUnread, setTodoUnread] = useState(0);
   const [todoOpen, setTodoOpen] = useState(false);
@@ -128,7 +129,6 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
   const [selectedGenerationImage, setSelectedGenerationImage] = useState<GenerationSelection | undefined>();
   useEffect(() => { setGenerationRoleId(null); setSelectedGenerationImage(undefined); }, [role.id]);
   const [codingOpen, setCodingOpen] = useState(false);
-  useEffect(() => { if (!highlightedId) bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" }); }, [chat.messages, highlightedId]);
   useEffect(() => {
     if (!chat.session || chat.sending) return;
     const timer = window.setInterval(() => void chat.refresh(), 10000);
@@ -179,12 +179,11 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
       <IconButton icon="profile" label="角色资料" onClick={onShowProfile} />
       {role.agentConfig?.coding?.enabled && <button type="button" onClick={() => setCodingOpen(true)}>编程任务</button>}
     </header>
-    <div className="chat-scroll">
+    <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
       {chat.messages.length
-        ? <ol className="message-list" aria-live="polite">{chat.messages.map((message) => <MessageItem key={message.id} message={message} role={role} highlighted={message.id === highlightedId}
+        ? <ol ref={listRef} className="message-list" aria-live="polite">{chat.messages.map((message) => <MessageItem key={message.id} message={message} role={role} highlighted={message.id === highlightedId}
           onRegenerate={(selection) => { setSelectedGenerationImage(selection); setGenerationRoleId(role.id); }} />)}</ol>
         : <Placeholder>发送第一条消息开始对话。</Placeholder>}
-      <div ref={bottomRef} />
     </div>
     <div className="composer-dock">
       {chat.error && <Notice onDismiss={() => chat.setError("")}>{chat.error}</Notice>}

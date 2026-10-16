@@ -1,0 +1,15 @@
+{
+  "codeRoot": "D:/meido",
+  "projectRoot": "D:/meido",
+  "dataDir": "D:/MeidoData/data",
+  "rolesDir": "D:/MeidoData/roles",
+  "ownerKnowledgeDir": "D:/MeidoData/owner-knowledge-data",
+  "browserUseDataDir": "D:/MeidoData/data/browser-use",
+  "python": "D:/meido/.venv/Scripts/python.exe",
+  "node": "C:/Program Files/nodejs/node.exe",
+  "apiHost": "127.0.0.1",
+  "apiPort": 4288,
+  "webPort": 5288,
+  "backupRoot": "D:/MeidoBackups",
+  "legacyModelConfigs": []
+}
