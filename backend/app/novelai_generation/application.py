@@ -442,11 +442,15 @@ class NovelaiApplication:
         original = GenerationContext.from_dict(json.loads(self.ledger.attempt(view['attemptId'])['origin']))
         origin = original.origin
         identifier = parameters.get('base_attachment_id')
+        # A desktop owner may choose a current owned image, but managing channel
+        # history cannot expand the original host-captured channel input grant.
+        attachment_ids = (original.attachment_ids if original.channel_source is not None
+            else frozenset([identifier]) if isinstance(identifier, str) else frozenset())
         return GenerationContext(type(origin)(role_id, origin.session_key,
             source_thread_id=origin.source_thread_id, source_account_id=origin.source_account_id,
             source_scope_id=origin.source_scope_id, source_authority_json=origin.source_authority_json),
             'ui:' + request_id, 'ui:' + request_id,
-            frozenset([identifier]) if isinstance(identifier, str) else frozenset(),
+            attachment_ids,
             original.channel_source, original.channel_revision, ui_action=True,
             reply_to_message_id=original.reply_to_message_id,
             message_thread_id=original.message_thread_id, mention_ids=original.mention_ids)

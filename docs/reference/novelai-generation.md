@@ -20,7 +20,7 @@
 
 所有参数对象额外字段拒绝；角色、来源、token、endpoint、path 等不能由模型传入。参数包括英文 ASCII prompt/negative_prompt（各最多4000字符）、必填 mode、img2img 当前附件ID、尺寸、1–28整数 steps、uint32 seed、allowlist model/sampler，以及仅 img2img 的有限 strength/noise。bool/字符串不代替数字，NaN/Infinity 拒绝。省略 seed 时宿主先生成并持久再发送。
 
-尺寸为 square=1024×1024、landscape=1216×832、portrait=832×1216，或每边64–1024且64倍数的 custom；面积受当前服务上限约束。固定 n_samples=1，v4.5 完整请求常数保留在 parameters.py。当前消息/宿主核验引用图片ID才可成为工具底图；显式 UI 可选择本角色当前可解析的 owned 附件。输入最多10MiB并完整解码，拒绝 raw path/URL、跨角色或普通工具调用选择任意历史附件。
+尺寸为 square=1024×1024、landscape=1216×832、portrait=832×1216，或每边64–1024且64倍数的 custom；面积受当前服务上限约束。固定 n_samples=1，v4.5 完整请求常数保留在 parameters.py。当前消息/宿主核验引用图片ID才可成为工具底图；桌面来源的显式 UI 可选择本角色当前可解析的 owned 附件。渠道重生成仅继承宿主冻结的原来源图片 allowlist，并重新校验当前来源许可与角色附件文件；桌面管理历史不能将未获原渠道授权的私有图片加入该 allowlist。输入最多10MiB并完整解码，拒绝 raw path/URL、跨角色或普通工具调用选择任意历史附件。
 
 一次实际 human run 只有一个持久消费意图 claim，换 call/intent 也不能再消费。同调用/同 UI requestId 参数一致返回原记录，冲突拒绝；当前授权仍须成立。重查先找保存的 snapshot，不重新随机 seed，不因原底图随后删除而重新消费。新的明确 UI 操作才创建新的请求键。
 
@@ -54,7 +54,7 @@
 
 交付模式为 foreground_reply、source_completion、replacement 或主人明确选择的 history_only，outbox 主键始终只有 attemptId。后台完成只在原角色锁可用后发布，忙角色以有界试锁跳过并保留恢复义务。桌面和渠道都在现有原 session 写唯一 internal_completion，无 user/run；渠道先持久 sending/consumed，再由真正 ChannelHost.account_send(actor=reply) 向冻结的原 account/thread/chat 发送 owned 附件。原入站的回复/群提及/话题信息来自宿主快照，模型和 UI 没有改投字段。媒体能力不支持时，在生成 POST 前拒绝自动交付；仅历史必须由主人另行明确选择。
 
-重生成是新的明确主人动作：当前配置和 grant 重新核验，新 attempt 关联同一 generation 与 parentAttemptId，省略 seed 时宿主生成与原图不同的 seed，显式沿用旧 seed 拒绝。同 requestId 的参数/目标/模式指纹一致才重查原 attempt，不增加 POST。SessionStore.replace_attachment_once 在调用者的同库事务中只替换 expectedAttachmentId，保留其他图、文件、metadata 和顺序；canonical receipt 对键顺序无关，同 attempt 重放不改写。新动作若已能确认原槽不存在，在消费前409拒绝并提示选择仅历史；同 requestId 重查仍返回原事实。生成期间旧槽或消息改变则新图保留历史，deliveryStatus=history_only、errorCode=replacement_conflict，不再次消费。意外多图仍保留 unexpected_multiple_images，不覆盖为槽位冲突。
+重生成是新的明确主人动作：当前配置和 grant 重新核验，新 attempt 关联同一 generation 与 parentAttemptId，省略 seed 时宿主生成与原图不同的 seed，显式沿用旧 seed 拒绝。渠道图片的确认界面在再次消费前说明会向原渠道再次发送一条新的媒体消息；明确选择仅保存历史时，不向原渠道或会话发送媒体。同 requestId 的参数/目标/模式指纹一致才重查原 attempt，不增加 POST。SessionStore.replace_attachment_once 在调用者的同库事务中只替换 expectedAttachmentId，保留其他图、文件、metadata 和顺序；canonical receipt 对键顺序无关，同 attempt 重放不改写。新动作若已能确认原槽不存在，在消费前409拒绝并提示选择仅历史；同 requestId 重查仍返回原事实。生成期间旧槽或消息改变则新图保留历史，deliveryStatus=history_only、errorCode=replacement_conflict，不再次消费。意外多图仍保留 unexpected_multiple_images，不覆盖为槽位冲突。
 
 普通前台已收图而原最终回复失败/不可用时，原角色锁释放后仅能在未消费的同一 outbox 内 CAS 到原来源完成模式；新模式不能绕过 seal 或当前授权。已 sending/sent/uncertain/consumed 的记录不切换模式或重发。渠道实际 sent receipt 的 journal 可在重启后修复 SQLite/消息，已知 sent 不降级；没有 receipt 的 sending 重启为 uncertain，原消息也投影为 uncertain，绝不补发。消息投影与 message_synced 标志同事务，渠道更新事件只公开安全消息投影。
 

@@ -21,6 +21,25 @@ const page = (generations: unknown[] = [old]) => ({ generations, nextCursor: nul
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('explains new original-channel media delivery before consent and explicitly keeps history-only results unsent', async () => {
+  const channel = { ...old, deliveryMessageId: 'thread:actual-original-group:message' };
+  const { calls } = fakeBackend({
+    'GET /api/services/novelai': () => ({ body: configuration }),
+    'GET /api/roles/r1/generations': () => ({ body: page([channel]) }),
+  });
+  const user = userEvent.setup();
+  render(<GenerationDrawer role={owner} onClose={() => {}} onGenerated={() => {}} />);
+  await user.click(await screen.findByRole('button', { name: '重新生成 selected.png' }));
+  expect(screen.getByRole('button', { name: '确认并重新生成' })).toBeDisabled();
+  expect(screen.getByText('本次重生成会向原渠道再次发送一条新的媒体消息。')).toBeInTheDocument();
+  expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
+  await user.selectOptions(screen.getByLabelText('重生成交付方式'), 'history_only');
+  expect(screen.queryByText('本次重生成会向原渠道再次发送一条新的媒体消息。')).not.toBeInTheDocument();
+  expect(screen.getByText('仅保存历史不会向原渠道或会话发送媒体。')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '确认并重新生成' })).toBeDisabled();
+  expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
+});
+
 it('can stop a generated background result that is still waiting to publish', async () => {
   const waiting = { ...old, attemptId: 'attempt-waiting', deliveryMode: 'source_completion', deliveryStatus: 'pending' };
   const { calls } = fakeBackend({

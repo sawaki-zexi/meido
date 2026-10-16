@@ -195,6 +195,8 @@ export function GenerationDrawer({ role, onClose, onGenerated, attachments = [],
       <form aria-label="生成图片" onSubmit={(event) => void submit(event)}>
         <fieldset disabled={busy || uploading || !allowed || Boolean(attempt.current)}>
           {source && <><p>{deliveryMode === 'replacement' ? `替换 ${source.image.name}；其他图片和附件保持不变。` : `基于 ${source.image.name} 再次生成，仅保存在历史，不替换原消息。`}</p>
+            {deliveryMode === 'history_only' ? <p>仅保存历史不会向原渠道或会话发送媒体。</p>
+              : source.generation.deliveryMessageId?.startsWith('thread:') && <p>本次重生成会向原渠道再次发送一条新的媒体消息。</p>}
             <label><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} />我确认本次重生成将再次消费一次尝试额度，可能产生费用</label></>}
           <label className="field"><span>交付方式</span><select aria-label={source ? '重生成交付方式' : '生成交付方式'} value={deliveryMode} onChange={(event) => setDeliveryMode(event.target.value as typeof deliveryMode)}>
             <option value="replacement">{source ? '替换选中图片' : '交付原会话'}</option><option value="history_only">仅保存历史</option>
