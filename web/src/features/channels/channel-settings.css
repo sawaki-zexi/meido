@@ -25,6 +25,8 @@
   .channel-setting-actions { flex-direction: column; align-items: flex-end; gap: 7px; }
   .channel-setting-card { padding: 16px; }
 }
+.role-detail { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.role-detail-panel { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .role-detail-tabs { display: flex; gap: 6px; margin-bottom: 20px; padding: 0 18px; border-bottom: 1px solid var(--line); }
 .role-detail-tabs + [role="tabpanel"] > .role-accounts { padding: 0 22px 22px; }
 .role-detail-tabs button { padding: 10px 18px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--ink-soft); cursor: pointer; }
