@@ -1,6 +1,6 @@
 # 断连监听取消修复的本地验收（#192）
 
-状态：当前，本地窄验收完成；固定提交双轴审查和完整 CI 尚未完成。
+状态：当前，本地窄验收和固定提交双轴审查完成；总集成完整 CI 待核验。
 
 事实来源：[Issue #192](https://github.com/sawaki-zexi/meido/issues/192)、[监听实现](../../backend/app/main.py)、[HTTP 记忆回归](../../tests/python/test_memory_tools_api.py)、[完成回复回归](../../tests/python/test_api.py)、[停止对话回归](../../tests/python/test_chat_stop.py)。最后核验：2026-10-17。
 
@@ -70,4 +70,5 @@ Git 提交保存规范化 LF；下面是相同三个文件的 Git blob 指纹。
 - Linux 是既有 Kali / Python 3.12.7 / pytest 8.4.2 / Starlette 1.8.0 / AnyIO 4.15.1；已装 lark-oapi 1.7.5 与仓库固定 1.7.4 不同。Windows 是 Python 3.13.9 / pytest 9.1.1 / Starlette 1.1.0 / AnyIO 4.13.0；pytest 9.1.1 超出仓库 CI `<9`。不能称本地环境与 CI 等价。
 - 旧原诊断 exec32765 的 deadline 曾通过，cancel_request 没有完整 verdict。按另行公开的专属收尾计划核 argv、starttime、fd、无子进程后，只向原 PID 的 pidfd 发送一次 SIGTERM；原工具退出码实际为 1，记录为有意中断，不是自然 app cleanup、guard 恢复或测试成功。没有最终 after.json / JUnit。所有旧原件保留，未重启旧诊断。
 - 旧 CI 栈没有监听 task 身份；本次同类症状的 RED/GREEN 不能证明所有旧 CI 挂起完全同因。旧原诊断拦截的 Popen caller 仍未知。
-- 未修改总聚合树、未推送、未运行或操作新的 CI。完整 CI、固定提交双轴审查和后续集成仍待完成；不据本记录合并或关闭 Issue。
+- 上述执行记录固定独立源 `e6b9dd82cb3dabaedfd947af20042727557b4134`。其规范、需求规格两轴独立审查均为 0 findings，随后无冲突汇入总分支 `c36e7f396634061b463e5de87fcbc526780aacee`；三个 Python 文件及原验收文档的 Git blob 与受审源逐项相同。后续仅补本文集成状态，不重复本地验收。
+- 集成核验索引 `D:/meido-artifacts/disconnect192-integration-root-verification-v1.json` 的 SHA256 为 `e403438f0426393d0d7c9c57f900b7eca38ffc7d1f13150e1f600d853ced3830`；规范报告 `e701eed971e196ceff44ae0123b304bc7966cddc9af8a5790334998aae45f14c`，规格报告 `ac059cbb0df22db1e84ea2cc5f0407d80dbc5a318ead0a8afa5c45cbb0544dd7`。准确集成提交的完整 CI 尚待核验，不据本记录合并或关闭 Issue。

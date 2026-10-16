@@ -6,7 +6,7 @@
 
 #169 的完整与修正两轴审查均无遗留；准确源本地61项相关检查、编译与同7源相对6751基线的9→9类型诊断对照通过（0新增，不称全类型绿）。受控原生六项、禁用准入一项与失败辅助候选各有自己的固定快照，范围见[原生手册](../handbook/computer-use-native-acceptance.md)。前期 #180 本地115项交叉、252项前端及136/144输入补验证据保留在[目标验收](../research/autonomy-channel-targets-acceptance-2026-10-16.md)，不冒称本次重复执行。
 
-完整目标仍未完成。固定f4ac全范围审计定位到的 #148 中文/提示词召回及访客模型声明主人专用推送差距，已由独立源 `6d04af6` 修正并汇入本分支：规范/规格两轴均无遗留，相关134项通过，见[搜索修正验收](../research/tool-discovery-relevance-acceptance-2026-10-17.md)。准确7b008cb的PR CI后端2609 passed/39 skipped、前端252项和构建通过，另一push后端仍未终态；上文双CI绿色仅对应f4ac。#191具体架构已获主人批准，正在独立分支实施，尚未集成；桌宠宿主选择仍待既有答复。旧a0 PR CI已取消，其原90秒堆栈定位到记忆超时HTTP测试的asyncio.run退出清理；#192已在独立分支复现并修正同类监听取消缺口，仍需修复头的跨平台检查、两轴审查及准确CI，不由此推定旧CI完全同因。
+完整目标仍未完成。固定f4ac全范围审计定位到的 #148 中文/提示词召回及访客模型声明主人专用推送差距，已由独立源 `6d04af6` 修正并汇入本分支：规范/规格两轴均无遗留，相关134项通过，见[搜索修正验收](../research/tool-discovery-relevance-acceptance-2026-10-17.md)。准确7b008cb的PR CI后端2609 passed/39 skipped、前端252项和构建通过，另一push后端尚无成功终态；上文双CI绿色仅对应f4ac。#192监听取消修复已由独立源 `e6b9dd8` 完成Windows/Linux本地窄验收及两轴0 findings，精确汇入 `c36e7f3`，见[取消验收](../research/disconnect-cleanup-192-validation.md)；当前新提交完整CI待核验。#191具体架构已获主人批准，正在独立分支实施，尚未集成；桌宠宿主选择仍待既有答复。旧a0 PR CI原90秒堆栈定位到记忆超时HTTP测试的asyncio.run退出清理，但缺task身份；本地同类缺口修正不证明所有旧CI完全同因。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
