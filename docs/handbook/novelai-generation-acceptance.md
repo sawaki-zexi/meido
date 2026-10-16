@@ -2,7 +2,7 @@
 
 当前总集成补充：#172最终源`60860fb`的完整两轴及修正复核均无遗留。规范独立17项后端/13项React通过，关闭原journal P2；规格独立10项后端、原DOM反例1项和history_only确认1项通过，关闭跨来源私图P1与渠道新媒体提示P2。原反例和失败历史保留，各组重叠不相加。源经`d9a71f4`、`0522a00`、`043a775`、`d551de3`从f7be合入总分支；只解决SessionStore与ChatView的两处内容冲突，保留主动提交/最终授权、Coding任务入口以及NovelAI图片CAS。当时私有生成模块与#172最终源完全一致。固定`43fc03a`总组合610 passed/1 Windows符号链接权限skip、前端202项及构建通过，集成两轴无遗留；准确13c两套完整CI已通过：各后端2235 passed/35 skipped/2 warnings、前端202 passed/35文件及TS/Vite，详见[总状态](../reference/shiori-tool-parity-status.md)。
 
-状态：当前本地受控验证，真实 NovelAI 未验收。最后核验：2026-10-16。事实来源：[Reference](../reference/novelai-generation.md)、[公开消息用例](../../tests/python/test_novelai_main.py)、[真实渠道用例](../../tests/python/test_novelai_channel.py)、[真实断连](../../tests/python/test_novelai_cancellation.py)、[恢复](../../tests/python/test_novelai_recovery.py)。Parent #137，当前本地实现覆盖 #171/#172，#173 为本地作者实现，固定提交仍须独立两轴审查。下方历史记录保留当时范围和失败事实，各组不相加。
+状态：当前本地受控验证，真实 NovelAI 未验收。最后核验：2026-10-16。事实来源：[Reference](../reference/novelai-generation.md)、[公开消息用例](../../tests/python/test_novelai_main.py)、[真实渠道用例](../../tests/python/test_novelai_channel.py)、[真实断连](../../tests/python/test_novelai_cancellation.py)、[恢复](../../tests/python/test_novelai_recovery.py)。Parent #137，当前本地实现覆盖 #171/#172；#173 源已完成独立两轴及修正复核，准确总集成正在验证。下方历史记录保留当时范围和失败事实，各组不相加。
 
 用户已明确批准完整具体规格第3节的实现及本地无费用夹具；真实 token、账号、模型/生成费用和外部发布另批。其中 #171 从获准的已验证 aggregate `30002a9a8de551a12a44b2c2f5724d5640aca50d` 开始，分支 feat/171-novelai-generation，统一整合总 PR162，不新建堆叠 PR，不合并或关闭 Issue。
 
@@ -70,6 +70,12 @@ React 覆盖真实 App 设置/角色/历史入口、有限消费显式确认、�
 修正后的完整资产组 **14 passed/61.50s**：真实首次record INSERT及副本预留INSERT故障、Runtime实际prune、业务宿主重建、主人后来换卡片、写回许可off/on、原未许可/无图/辅助失败，以及原配额、manifest、receipt故障。最终同attempt实际card-image或明确failed，条件责任及额外预留归零，没有新增aux/生成/完成消息。原外置探针字节不变，原样 **1 passed/1 conftest重写warning/12.55s**；这是最低可见性补证，实际结算与责任证明来自仓库用例。旧源已经丢失且没有独立记录的历史不推断许可或扫描补写；已持久writing/uncertain仍由原本地恢复器处理。该修正没有前端改动，不重跑或改写原162/44/209记录，仍交固定新提交的独立两轴delta核对。
 
 该资产修正最终必要组合 **64 passed/205.50s**（零skip/warning/error/failure），覆盖资产/CG辅助与原渠道、旧172重生成/恢复/RuntimeACK/100项公平性、账本和主人共享入口。14源mypy、compileall、39个文档相对链接、未变UI10文件SHA及diff check通过；完整三根与内外guard保持到所有owned资源自然退出。未重跑未变前端或整个后端，固定提交与双轴delta结论另记。
+
+最终源`0d1b918`的两轴独立修正复核均零finding。规范独立4 passed/24.82s，核验重建、Runtime prune、预留INSERT事务回滚、许可ABA和禁止回填；规格独立3 passed/1 conftest warning/23.16s，真实query清理旧Runtime结果后同时重建Runtime与NovelAI宿主仍完成卡片，预留INSERT失败整事务回滚，新真实主人回合使旧写回明确failed。原不可变探针SHA保持，修后原探针只作为状态可见性下限，终态证明来自实际卡片字节、队列不再选择及责任/预留清零；没有重辅助、重生成或重投。
+
+源`10aed6c`与`0d1b918`顺序汇入准确已验证fa，形成`b8b78f7`/`8c4771a`。唯一内容冲突是本手册的#172历史表述，保留准确“从f7be合入”及原集成结果；共享main自动组合后核验6个既有函数和新增`_accept_owner_run`，其余237个函数及非函数语句不变，S08 workspace_getter和全owner关闭保持。除main与本手册外33个源Git blob精确相同，其中20个工作副本仅LF/CRLF差异。准确集成交叉、独立集成复核与新CI结果后续记录，不能套用fa的旧绿色。
+
+准确8c首轮完整所选交叉为 **320 passed/1 failed/3 errors/3 warnings/561.24s，runner exit1**。失败是旧完整agentConfig默认断言少了两个标签字段；三项停止回复的行为断言通过，但旧夹具的自动记忆尝试dashscope被local guard阻断，不能称该轮零尝试。只读准确fa工作树在同样完整隔离下重现停止夹具错误，2 passed/1 error/3 warnings/15.69s，先于CG；原配置断言在fa通过。修正仅更新精确默认断言，并在停止夹具关闭无关自动记忆、显式持有guard至server和all-owner退出，原停止断言和期限不变。原四项修正后 **4 passed/3 warnings/13.27s，runner exit0、零非本地尝试**；warning为已导入conftest与两项既有websockets弃用。原范围重跑和独立集成复核仍待，不把四项代替整组。
 
 ### #172 本地增量
 

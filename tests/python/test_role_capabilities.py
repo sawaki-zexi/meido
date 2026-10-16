@@ -150,7 +150,8 @@ def test_saved_shell_and_capability_settings_survive_role_store_restart(role_api
         "computerUse": {"enabled": False},
         "novelai": {"manualEnabled": False, "manualDailyAttempts": 10, "sceneCgEnabled": False,
             "sceneCgDailyAttempts": 3, "scenePromptModelConfigurationId": None,
-            "autoWritebackRoleAssets": False, "consentRevision": 0},
+            "autoWritebackRoleAssets": False, "promptTagsEnabled": False,
+            "allowedPromptTagRatings": ["general"], "consentRevision": 0},
         "coding": {"enabled": False, "repoGrantIds": [], "profileIds": [], "defaultHerdrProfileId": None,
                    "defaultCodexProfileId": None, "maxAttemptsPerDay": 5}}
 

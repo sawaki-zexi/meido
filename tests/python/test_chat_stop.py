@@ -1,3 +1,4 @@
+import asyncio
 import json
 import socket
 import threading
@@ -11,6 +12,7 @@ from backend.app import main
 from backend.app.agent_runtime.runtime import RuntimeManager
 from backend.app.agent_runtime.capabilities import CapabilityResolution
 from backend.app.model_config import ModelConfigurationStore
+from backend.app.memory_config import MemorySettingsStore
 from backend.app.models import RoleInput, RoleProfile
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
@@ -19,7 +21,7 @@ from backend.app.storage import initialize_databases
 
 
 @pytest.fixture
-def chat_server(tmp_path, monkeypatch):
+def chat_server(tmp_path, monkeypatch, local_platform_only):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="女仆", profile=RoleProfile(profile="设定")))
     other = roles.create(RoleInput(name="另一位", profile=RoleProfile(profile="设定")))
@@ -31,6 +33,9 @@ def chat_server(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "runtime_manager", RuntimeManager(sessions))
     monkeypatch.setattr(main, "role_locks", {})
     monkeypatch.setattr(main, "model_configuration_store", ModelConfigurationStore(tmp_path / "models.json"))
+    memory = MemorySettingsStore(tmp_path / "memory-settings.json")
+    memory.update(enabled=False)
+    monkeypatch.setattr(main, "memory_settings_store", memory)
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     server = uvicorn.Server(uvicorn.Config(main.app, log_level="critical", lifespan="off"))
@@ -47,7 +52,11 @@ def chat_server(tmp_path, monkeypatch):
     finally:
         server.should_exit = True
         thread.join(timeout=5)
-        sock.close()
+        try:
+            assert not thread.is_alive()
+        finally:
+            sock.close()
+            asyncio.run(main._close_memory_workers())
 
 
 @pytest.mark.parametrize("partial", [False, True])
