@@ -82,4 +82,6 @@ poll的两个原stdio探针先 **2 failed（9.17秒）**，canonical首poll与15
 
 来源契约fixture只观察Windows的`spawn_process_tree`，POSIX真实启动走`asyncio.create_subprocess_exec`，证明已成功但记录清单为空。WSL精确原组3 failed/1 passed，改为观察各平台真实入口后保留原启动数、隔离、取消及资源退出断言，不跳过POSIX验收。
 
-另有真实生产竞态：host清理与TaskRuntime停止会重复取消同一执行器，第二次`Task.cancel`打断模型正在等待的`finally`，过早归零cleanupPending。原回归加入100ms真实调度推进后，Windows与WSL均**1 failed/2 passed**。取消现在在原gate内原子封门且只注入一次，入场前取消仍阻止MCP/模型执行并完成原结果ACK。相同主人优先/来源契约/原loop/验证/恢复组：**Windows37 passed（47.44秒）**、**WSL37 passed/1 warning（32.77秒）**，均runner exit0，三新根和内外guard至全部owned退出；不相加成74项唯一验收。20源mypy、编译及diff通过。扩大组、修正两轴与新准确HEAD完整CI仍另行核验；没有真实账号、消费或权限扩大。
+另有真实生产竞态：host清理与TaskRuntime停止会重复取消同一执行器，第二次`Task.cancel`打断模型正在等待的`finally`，过早归零cleanupPending。原回归加入100ms真实调度推进后，Windows与WSL均**1 failed/2 passed**。取消现在在原gate内原子封门且只注入一次，入场前取消仍阻止MCP/模型执行并完成原结果ACK。相同主人优先/来源契约/原loop/验证/恢复组：**Windows37 passed（47.44秒）**、**WSL37 passed/1 warning（32.77秒）**，均runner exit0，三新根和内外guard至全部owned退出；不相加成74项唯一验收。20源mypy、编译及diff通过；没有真实账号、消费或权限扩大。
+
+固定修正`c105ae8`重跑原177全部扩大范围，加入完整角色删除恢复、startup→真实记忆HTTP与Coding关闭组：**267 passed/1 Windows symlink权限skipped（322.38秒），runner exit0**，三新根与整组guard至所有owned退出。两轴独立复核均无遗留：规格Windows21项、WSL6项；规范Windows43项、WSL7项。规范组另见未改loop.py的未await协程RuntimeWarning，WSL有依赖warning，均如实保留，不声称零warning或在本轮修复。前端相对`6a1ef4f`无差异，沿用其两条CI各186项及构建证据；不称修正头重复全前端。新准确HEAD完整CI仍待完成。
