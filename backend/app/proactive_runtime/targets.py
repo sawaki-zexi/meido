@@ -221,6 +221,27 @@ class TargetGrants:
             return False
         return True
 
+    def model_view(self, turn):
+        """Project original run addresses; observation never grants new scope."""
+        with turn.transaction() as db:
+            row = db.execute('''SELECT t.targets,r.frozen_config FROM autonomy_target_runs t
+                JOIN autonomy_runs r ON r.tick_id=t.tick_id AND r.role_id=t.role_id
+                WHERE t.tick_id=? AND t.role_id=?''', (turn.origin.tick_id, turn.origin.role_id)).fetchone()
+            if row is None:
+                raise PermissionError('autonomous run has no frozen target set')
+            targets, config = json.loads(row[0]), json.loads(row[1])
+        refs, default = config['allowedTargetRefs'], config['defaultTargetRef']
+        if not 1 <= len(refs) <= 4 or set(refs) != set(targets) or default not in targets:
+            raise PermissionError('autonomous frozen target set is inconsistent')
+        descriptors = []
+        for ref in refs:
+            item = targets[ref]
+            descriptor = {'ref': ref, 'channel': item['channel']}
+            if item['channel'] != 'desktop':
+                descriptor.update(account_id=item['accountId'], target_id=item['targetId'])
+            descriptors.append(descriptor)
+        return {'defaultTargetRef': default, 'allowedTargets': descriptors}
+
     def selected(self, turn, arguments):
         if any(key in arguments for key in ('account_channel', 'target_kind')):
             raise ValueError('target kind and channel cannot replace an observed target pair')

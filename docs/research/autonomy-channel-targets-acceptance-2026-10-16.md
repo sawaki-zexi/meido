@@ -1,8 +1,8 @@
 # 自主渠道目标与原回执恢复验收
 
-状态：#180 本地实现与定向合成验证完成，固定源双路审查和总集成 CI 待完成。各批次的准确范围与原失败列在下文；没有把跨快照结果合称一次全量通过。真实账号、服务操作与模型费用验收未获本次授权。
+状态：#180 本地实现与定向合成验证完成。首次双路审查发现的一项 P2 已修复，一项 P3 去重建议已收敛；固定修复差异复核和总集成 CI 待完成。各批次的准确范围与原失败列在下文；没有把跨快照结果合称一次全量通过。真实账号、服务操作与模型费用验收未获本次授权。
 
-事实来源：[已批准规格](../specs/proactive-drift-spec.md)、[目标授权](../../backend/app/proactive_runtime/targets.py)、[原渠道投递恢复](../../backend/app/proactive_runtime/channel_delivery.py)、[最小处置输入](../../backend/app/proactive_runtime/dispositions.py)、[有界保留](../../backend/app/proactive_runtime/retention.py)、[配置与验收手册](../handbook/autonomy-channel-targets.md)。最后核验：2026-10-16；实施基点 `312b7f1f5e1ede4ca6433bbcfcd0411dc8c660a4`，最终实现以本文所在提交的源码及固定源审查记录为准。
+事实来源：[已批准规格](../specs/proactive-drift-spec.md)、[目标授权](../../backend/app/proactive_runtime/targets.py)、[原渠道投递恢复](../../backend/app/proactive_runtime/channel_delivery.py)、[最小处置输入](../../backend/app/proactive_runtime/dispositions.py)、[有界保留](../../backend/app/proactive_runtime/retention.py)、[配置与验收手册](../handbook/autonomy-channel-targets.md)。最后核验：2026-10-17；实施基点 `312b7f1f5e1ede4ca6433bbcfcd0411dc8c660a4`，最终实现以本文所在提交的源码及固定源审查记录为准。
 
 ## 已实现的边界
 
@@ -46,6 +46,18 @@ ChannelHost 在真实宿主启动、后台任务准入前绑定原服务事件�
 原业务组合覆盖全部当时纳入的 proactive、Drift、渠道目录/主人/source authority/receipt/history、TaskRuntime 交接与 MCP origin：控制台 460 passed，但 XML 的 461 个唯一节点中仅 458 项完整通过、2 项 teardown error、1 项条件跳过，整批 exit 1。两项清理错误来自新增恢复查询对旧保留夹具中非法 JSON 的直接提取；两个查询已增加 json_valid CASE 守卫，原 18 项保留回归随后完整通过，未改弱旧夹具。条件跳过是 Windows 创建符号链接的 WinError 1314，不计作原生通过。新异库与旧键用例当时未导入，独立在前述 24 项内通过。未因无新问题重复整批 460，最终完整源码仍须总集成 CI。
 
 所有批次分别保留 before/after 输入、日志、XML、SQLite 与退出码；local_platform_only 内外守卫持续到全部应用 owner、线程、进程、请求和 lease 自然 join。原协议测试夹具的模型接口、HTTP portal、启动预算和 cleanup 失败记录均保留，装配修正不当作产品 RED。最终 57、82、15 项是受事件循环桥影响的必要交叉，数量互有重叠，不相加宣称一次全量测试。
+
+## 2026-10-17 独立审查修复
+
+固定首稿 `ea7f5d80003359e04f725103aac31d8d8222bff6` 的 Standards 轴无硬规范违例，建议集中共用去重政策；Spec 轴发现 A01/Drift 模型请求没有原许可的外部地址，模型无法选择非默认目标。独立审查的两项观测通过只证明缺失，不算功能通过或正向 RED。
+
+新[永久用户闭环](../../tests/python/test_proactive_target_model_view.py)配置 desktop 默认和一个已观察外部许可。provider 不接收夹具账号或目标，只从实际收到的模型消息投影取 account_id/target_id，再让两种模式各完成一次原渠道发送与原线程回执。准确首稿上两项均以 missing_view 失败，修复后相同测试字节两项通过；原三次角色/状态码/同平台唯一账号夹具错误分别保留，不计功能 RED。
+
+投影仅查询原 `autonomy_target_runs` 及 `autonomy_runs.frozen_config` 的默认与许可引用，按白名单输出至多四个 descriptor，不查询最新配置或目录，不扩大授权。原消息中的来源/技能块保持，新增目标 text block 与其他请求一同序列化并计入原字节、token 和步数预算。未选目录项、另一角色账号和 selection token 不出现，主人绑定、adapter identity、凭据也不投影；完整二元组验证与省略走默认保持。
+
+A01/Drift 原 caller-owned 事务中共用同一 TTL-or-unknown 查询和 24 小时双 key 写入 helper，查询、写入和提交位置、role/intent/expiry 不变，没有增加宿主或新机会。最终 `fix-target-view-dedup-regression` **21 passed / 1 conftest warning / 111.49 秒**，482 输入 before/after 一致、无排除、全部 owner join 和外层守卫完成；包含上述两项、旧格式抑制、外部与桌面投递、未知对账、完整二元组拒绝、Drift 单次发送、原预算与事务回滚。与首个两项 GREEN 有重叠，不相加。首次 GREEN 后将目标合入原 user 消息的第二 text block，只有最后 21 项证明当前布局。
+
+修复后十四份业务源类型仍为准确 312 的 90→90，新增 0；六份渠道及 Host/runtime_owner 的源字节未变，继承原 49→49 与两源通过。前端全部 134 项输入未变，继承 243 项和构建，不重跑未改的界面。原首稿交接、审查报告、请求观测、失败日志和数据库均保留；不以此次修复代替原 gate。
 
 ## 真实验收 gate
 

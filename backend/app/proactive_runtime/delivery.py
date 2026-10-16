@@ -55,6 +55,19 @@ def _keys(turn, draft):
     return [hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest() for value in values]
 
 
+def _keys_occupied(db, role_id, keys, now):
+    return any(db.execute("""SELECT 1 FROM autonomy_delivery_keys k WHERE role_id=? AND key=? AND
+        (expires_at>? OR EXISTS(SELECT 1 FROM autonomy_deliveries d WHERE d.intent_id=k.intent_id
+        AND d.status IN ('dispatching','pending','uncertain')))""",
+        (role_id, key, now)).fetchone() for key in keys)
+
+
+def _claim_keys(db, role_id, keys, intent_id, now):
+    for key in keys:
+        db.execute("INSERT INTO autonomy_delivery_keys VALUES(?,?,?,?) ON CONFLICT(role_id,key) DO UPDATE SET intent_id=excluded.intent_id,expires_at=excluded.expires_at",
+            (role_id, key, intent_id, now + 86400))
+
+
 def plan_dispositions(turn, db, outcome, draft=None):
     """Freeze expiry once; source ACK delivery is a different managed operation."""
     from .dispositions import freeze_inputs, plan_from_inputs
@@ -86,10 +99,7 @@ async def dispatch_reply(app, turn, adapter, configuration, messages, cancelled)
             return TaskOutcome("failed", output_tail="unresolved autonomous delivery blocks sending")
         now = app._now(db)
         keys = _keys(turn, draft)
-        duplicate = any(db.execute("""SELECT 1 FROM autonomy_delivery_keys k WHERE role_id=? AND key=? AND
-            (expires_at>? OR EXISTS(SELECT 1 FROM autonomy_deliveries d WHERE d.intent_id=k.intent_id
-            AND d.status IN ('dispatching','pending','uncertain')))""",
-                                  (origin.role_id, key, now)).fetchone() for key in keys)
+        duplicate = _keys_occupied(db, origin.role_id, keys, now)
         recent = [json.loads(row[0])["message"] for row in db.execute(
             "SELECT draft FROM autonomy_deliveries WHERE role_id=? AND status='sent' ORDER BY created_at DESC LIMIT 5", (origin.role_id,))]
     if not duplicate and recent and existing is None:
@@ -140,9 +150,7 @@ async def dispatch_reply(app, turn, adapter, configuration, messages, cancelled)
                 source = next(source for source in turn.config.sourceGrants if source.sourceId == item['sourceId'])
                 db.execute('INSERT INTO autonomy_event_claims VALUES(?,?,?,NULL,?) ON CONFLICT(role_id,event_key) DO UPDATE SET tick_id=excluded.tick_id,expires_at=NULL,status=excluded.status',
                     (origin.role_id, app._event_key(source, item['remoteId']), origin.tick_id, 'dispatching'))
-        for key in keys:
-            db.execute("INSERT INTO autonomy_delivery_keys VALUES(?,?,?,?) ON CONFLICT(role_id,key) DO UPDATE SET intent_id=excluded.intent_id,expires_at=excluded.expires_at",
-                       (origin.role_id, key, intent_id, now + 86400))
+        _claim_keys(db, origin.role_id, keys, intent_id, now)
         db.execute("UPDATE autonomy_deliveries SET status='dispatching',dispatched=1 WHERE intent_id=?", (intent_id,))
         if target['channel'] == 'desktop':
             message = app.sessions.append_autonomy_message_once(origin.role_id, origin.tick_id, intent_id,

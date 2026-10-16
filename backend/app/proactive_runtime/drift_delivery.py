@@ -78,19 +78,15 @@ async def send_once(turn, arguments):
         from .channel_delivery import unresolved, retain_inputs
         if unresolved(db, turn.origin.role_id, exclude_tick=turn.origin.tick_id) or db.execute('SELECT 1 FROM autonomy_deliveries WHERE tick_id=?', (turn.origin.tick_id,)).fetchone():
             raise PermissionError('Drift send opportunity was already used or awaits a real receipt')
-        from .delivery import _keys
+        from .delivery import _keys, _keys_occupied, _claim_keys
         keys = _keys(turn, draft)
         now = turn.app._now(db)
-        if any(db.execute('''SELECT 1 FROM autonomy_delivery_keys k WHERE role_id=? AND key=? AND
-                (expires_at>? OR EXISTS(SELECT 1 FROM autonomy_deliveries d WHERE d.intent_id=k.intent_id
-                AND d.status IN ('dispatching','pending','uncertain')))''', (turn.origin.role_id, key, now)).fetchone() for key in keys):
+        if _keys_occupied(db, turn.origin.role_id, keys, now):
             raise PermissionError('original autonomous content is already occupied')
         db.execute('''INSERT INTO autonomy_deliveries(intent_id,tick_id,role_id,target,draft,status,dispatched,created_at)
             VALUES(?,?,?,?,?,'dispatching',1,?)''', (intent_id, turn.origin.tick_id, turn.origin.role_id,
             json.dumps(target, ensure_ascii=False), json.dumps(draft, ensure_ascii=False), now))
-        for key in keys:
-            db.execute('''INSERT INTO autonomy_delivery_keys VALUES(?,?,?,?) ON CONFLICT(role_id,key)
-                DO UPDATE SET intent_id=excluded.intent_id,expires_at=excluded.expires_at''', (turn.origin.role_id, key, intent_id, now + 86400))
+        _claim_keys(db, turn.origin.role_id, keys, intent_id, now)
         if target['channel'] != 'desktop':
             retain_inputs(turn, db, intent_id, draft)
     # Cancellation or an unknown failure cannot restore the committed opportunity.
