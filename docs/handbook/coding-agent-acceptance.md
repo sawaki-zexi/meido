@@ -86,6 +86,8 @@ CleanupFailed按记录隔离后继续worker轮询；close消费已失败worker�
 
 ## 未验收与后续票
 
+`9bed061` 的两条完整CI均在Linux的同一配置夹具失败：后端各1965 passed/34 skipped/1 failed/2 warnings（268.72秒、309.60秒），前端各182项/32文件及构建通过。CI的 `sys.executable` 是符号链接，生产校验按契约先拒绝链接，原测试却期待SHA错误。夹具改为先解析当前解释器的实际文件，保留原坏SHA拒绝和有效SHA保存断言。WSL真实复现 **2 passed/1 failed（2.43秒）** 后修正为 **3 passed（2.48秒）**，Windows同组 **3 passed（2.04秒）**，两端均在收集前三数据根隔离并持有整组local guard至owned退出。首次WSL选择的旧环境缺pytest，收集前失败，不算该产品RED；换到已安装依赖的隔离环境才得到上述结果。此修正没有改动生产源码；新准确HEAD完整CI仍待通过。
+
 未使用真实CLI认证，未验证实际Codex/Claude模型首次/精确resume、原生权限拒绝、扩展配置/全局keychain不继承、费用或代码质量。生产profile在取得相应真实证据前保持不可用；当前产品已提供明确配置→主人核验→具体缺项/可用的流程，不用fixture标志绕过。后续真实核验需明确批准精确profile/版本/模型/宿主hash、两个native task turns及其中可能多次模型请求和可接受费用。
 
 #175再接spawn coding/codex-delegate，#176再接确切成果批准的commit/发布；本票没有伪造这两项。没有执行真实认证、费用、push或PR发布，也没有取得总PR合并/关闭Issue授权。

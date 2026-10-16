@@ -54,14 +54,15 @@ def test_owner_can_grant_only_a_real_git_root_and_permission_survives_restart(tm
 def test_profile_never_discovers_desktop_auth_and_executable_change_is_rejected(tmp_path):
     auth = tmp_path / 'explicit-auth'
     auth.mkdir()
+    executable = Path(sys.executable).resolve(strict=True)
     config = CodingConfigStore(tmp_path / 'coding.db')
     try:
         with pytest.raises(ValueError, match='SHA'):
-            config.save_profile({'name': 'Fixture', 'kind': 'codex', 'executable': sys.executable,
+            config.save_profile({'name': 'Fixture', 'kind': 'codex', 'executable': str(executable),
                                  'sha256': '0' * 64, 'version': 'fixture-1', 'model': 'local-fixture',
                                  'authDirectory': str(auth)})
-        profile = config.save_profile({'name': 'Fixture', 'kind': 'codex', 'executable': sys.executable,
-                                       'sha256': hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
+        profile = config.save_profile({'name': 'Fixture', 'kind': 'codex', 'executable': str(executable),
+                                       'sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
                                        'version': 'fixture-1', 'model': 'local-fixture', 'authDirectory': str(auth)})
         assert profile['authDirectory'] == str(auth.resolve())
         assert profile['verification']['status'] == 'unverified'

@@ -116,3 +116,5 @@ MCP 故障已在 Windows 原命令和 Linux 真实慢退出 fixture 复现：RPC
 #174 源 `5a5a2c4` 修正资源槽、初次原子交接、最终发布授权与worker故障恢复后，两轴复核均无遗留，汇入 `aab1078`/`3634586`。私有Coding模块、专用测试、固定补丁与vendor和源提交一致；共享配置/UI保留CU与Novel。准确集成交叉 **167 passed/1个CU原生deselected（268.70秒）**，包含全部48项Coding专用及7项真实Herdr/合成CLI原生用例；前端完整32文件182项、14源默认mypy、compileall与TS/Vite通过。该mypy未声明检查全部未注解函数体。原生短路径成功不消除已记录的长路径限制。
 
 独立集成规格16项通过；规范53项通过但发现Coding清理未确认会跳过其余独立owner的退出。真实Runtime回归先2项失败，改为逐一尝试各owner、最后保留单异常或组合异常。首轮相关33项pytest通过后，外部runner关闭先前已取消的worker仍失败，整条命令不报绿；另补终态worker、关闭调用方取消及两者同时取消的真实RED，区分旧worker终态与新的取消请求。修正后同范围 **36 passed（32.21秒），进程exit0**，完整三根与guard持有至所有owned退出；未确认Coding仍保留账本与可重试职责。固定 `a825e11` 的规范增量独立24项、规格增量独立22项均通过，两轴均无遗留；新准确HEAD完整CI尚待完成，没有合并或关票。
+
+`9bed061` 的两条新CI前端均182项/32文件及构建通过，Linux后端各1965 passed/34 skipped/1 failed/2 warnings。失败是配置测试把符号链接的Python路径作为应通过路径门禁的SHA夹具。WSL同一测试先真实复现2 passed/1 failed，夹具使用解析后的实际文件后Linux3项、Windows3项均通过，原坏SHA与有效保存断言保留，生产链接/哈希门禁未改。完整日志已保留；这两条失败不计通过，后续新准确HEAD仍须完整CI。
