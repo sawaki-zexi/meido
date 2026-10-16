@@ -91,7 +91,8 @@
 .music-volume-setting span { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .music-volume-setting strong { color: var(--ink); font-size: 14px; font-weight: 500; }
 .music-volume-setting small { color: var(--muted); font: 12px/1.5 system-ui, sans-serif; }
-.music-volume-setting input { width: 100%; margin: 0; accent-color: var(--gold); cursor: pointer; }
+.music-volume-setting input { width: 100%; height: 24px; margin: 0; border: 0; padding: 0; background: transparent; accent-color: var(--gold); color-scheme: light; cursor: pointer; }
+.music-volume-setting input:focus { box-shadow: none; }
 .settings-form fieldset { margin: 0; border: 0; padding: 0; }
 .settings-form legend { margin-bottom: 11px; color: var(--ink); font-size: 14px; }
 .setting-options { display: flex; gap: 7px; }
