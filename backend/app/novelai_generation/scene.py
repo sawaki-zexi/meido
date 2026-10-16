@@ -293,7 +293,7 @@ class SceneCoordinator:
                 WHERE role_id=? AND session_key=?''', (scene_key, observation.visual_key,
                 observation.visual_description, source.source_scope, row['role_id'], source.origin.session_key))
             if reason:
-                db.execute("UPDATE novelai_attempts SET status='completed_without_image',phase='completed',aux_status='succeeded',reserved_bytes=0,error_code=? WHERE attempt_id=?", (reason, row['attempt_id']))
+                db.execute("UPDATE novelai_attempts SET status='completed_without_image',phase='completed',aux_status='succeeded',reserved_bytes=0,asset_writeback_pending=0,error_code=? WHERE attempt_id=?", (reason, row['attempt_id']))
                 db.execute("UPDATE novelai_media_outbox SET state='history_only',consumed=1,message_synced=1 WHERE attempt_id=?", (row['attempt_id'],))
                 return False
             _, settings = self.app._configuration()

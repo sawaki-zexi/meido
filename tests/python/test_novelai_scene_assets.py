@@ -5,8 +5,133 @@ from test_novelai_scene import owner_turn
 import io
 import time
 import hashlib
+import json
 import pytest
 from PIL import Image
+
+
+@pytest.mark.parametrize('after_fault', ['recover', 'restart', 'owner_card', 'permission_aba', 'reservation'])
+def test_asset_admission_failure_retains_its_own_duty_after_media_and_runtime_ack(scene_main, monkeypatch, after_fault):
+    from backend.app import main
+    from backend.app.novelai_generation.application import NovelaiApplication
+    from backend.app.novelai_generation.context import GenerationContext
+    client, service, model, _ = scene_main
+    response = client.put(f'/api/roles/{service.role.id}', json={'name': service.role.name,
+        'profile': service.role.profile.model_dump(), 'agentConfig': {'novelai': {'autoWritebackRoleAssets': True}}})
+    assert response.status_code == 200, response.text
+    app = service.application
+    with app.ledger.connect() as db:
+        table = 'novelai_asset_usage' if after_fault == 'reservation' else 'novelai_asset_writes'
+        db.execute(f"CREATE TRIGGER fail_asset_admission BEFORE INSERT ON {table} BEGIN SELECT RAISE(ABORT,'controlled asset admission failure'); END")
+    generation, _ = owner_turn(client, service, 'Keep the original permitted card duty through a local admission fault.')
+    attempt_id = generation['attemptId']
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        client.portal.call(app.recover)
+        row = app.ledger.attempt(attempt_id)
+        with app.ledger.connect() as db:
+            outbox = dict(db.execute('SELECT * FROM novelai_media_outbox WHERE attempt_id=?', (attempt_id,)).fetchone())
+        if outbox['state'] == 'sent' and outbox['message_synced'] and not row['runtime_ack_pending']:
+            break
+        time.sleep(.02)
+    assert outbox['state'] == 'sent' and outbox['message_synced'] and row['runtime_ack_pending'] == 0
+    assert attempt_id in {item['attempt_id'] for item in app.ledger.recovery_batch()}, 'asset responsibility disappeared after media/Runtime ACK'
+    assert row['asset_writeback_pending'] == 1
+    with app.ledger.connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM novelai_asset_writes WHERE attempt_id=?', (attempt_id,)).fetchone()[0] == 0
+    assert app.ledger.usage(service.role.id)['reservedMediaBytes'] == 0
+    origin = GenerationContext.from_dict(json.loads(row['origin'])).origin
+    service.tasks.retention_seconds = 0
+    with pytest.raises(KeyError):
+        service.tasks.query(generation['taskId'], origin)
+    chosen = None
+    if after_fault == 'restart':
+        client.portal.call(app.close)
+        app = NovelaiApplication(root=app.root, tasks=service.tasks, sessions=service.sessions,
+            roles=service.roles, channels=app.channels, credentials=app.settings.credentials,
+            http=app.http, lock_for=app.lock_for, model_configuration=app.model_configuration, model_adapter=app.model_adapter)
+        service.application = app
+        monkeypatch.setattr(main, '_novelai', app)
+        assert attempt_id in {item['attempt_id'] for item in app.ledger.recovery_batch()}
+        client.portal.call(app.start)
+    elif after_fault == 'owner_card':
+        selected = io.BytesIO()
+        Image.new('RGB', (64, 64), '#ddee33').save(selected, format='PNG')
+        chosen = selected.getvalue()
+        response = client.post(f'/api/roles/{service.role.id}/card-image', content=chosen, headers={'Content-Type': 'image/png'})
+        assert response.status_code == 200, response.text
+    elif after_fault == 'permission_aba':
+        for enabled in (False, True):
+            response = client.put(f'/api/roles/{service.role.id}', json={'name': service.role.name,
+                'profile': service.role.profile.model_dump(), 'agentConfig': {'novelai': {'autoWritebackRoleAssets': enabled}}})
+            assert response.status_code == 200, response.text
+    with app.ledger.connect() as db:
+        db.execute('DROP TRIGGER fail_asset_admission')
+    expected = 'failed' if after_fault in {'owner_card', 'permission_aba'} else 'applied'
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        client.portal.call(app.recover)
+        page = client.get(f'/api/roles/{service.role.id}/generations').json()
+        actual = next(item for item in page['generations'] if item['attemptId'] == attempt_id)
+        if actual['writebackStatus'] == expected:
+            break
+        time.sleep(.02)
+    assert actual['writebackStatus'] == expected, page
+    assert actual['status'] == 'succeeded' and actual['deliveryStatus'] == 'sent'
+    assert app.ledger.attempt(attempt_id)['asset_writeback_pending'] == 0
+    assert attempt_id not in {item['attempt_id'] for item in app.ledger.recovery_batch()}
+    assert page['usage']['reservedMediaBytes'] == 0
+    if expected == 'applied':
+        image = client.get(f'/api/roles/{service.role.id}/card-image')
+        generated = client.get(f'/api/roles/{service.role.id}/attachments/{generation["attachments"][0]["id"]}')
+        assert image.status_code == 200 and image.content == generated.content
+        assert page['usage']['roleAssetBytes'] == len(image.content)
+    else:
+        assert page['usage']['roleAssetBytes'] == 0
+        if chosen is None:
+            assert service.roles.get(service.role.id).cardImageUrl is None
+        else:
+            assert client.get(f'/api/roles/{service.role.id}/card-image').content == chosen
+    assert len(service.peer.requests) == 1
+    assert len([request for request in model.requests if request['model'] == 'fixture-scene']) == 1
+    assert len([message for message in service.sessions.list_messages(origin.session_key) if message.messageType == 'internal_completion']) == 1
+
+
+@pytest.mark.parametrize('result', ['not_permitted', 'no_image', 'aux_failed'])
+def test_cg_without_a_permitted_card_result_has_no_pending_writeback_duty(scene_main, result):
+    client, service, model, _ = scene_main
+    app = service.application
+    if result != 'not_permitted':
+        response = client.put(f'/api/roles/{service.role.id}', json={'name': service.role.name,
+            'profile': service.role.profile.model_dump(), 'agentConfig': {'novelai': {'autoWritebackRoleAssets': True}}})
+        assert response.status_code == 200, response.text
+        model.observation.update(transition='none', scene_key='', visual_key='', visual_description='', prompt='', negative_prompt='')
+        if result == 'aux_failed':
+            model.observation['forbidden_field'] = 'not a valid observation'
+    generation, _ = owner_turn(client, service, 'Only the originally permitted successful card result may be written.')
+    attempt_id = generation['attemptId']
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        client.portal.call(app.recover)
+        row = app.ledger.attempt(attempt_id)
+        if not row['runtime_ack_pending']:
+            break
+        time.sleep(.02)
+    assert row['runtime_ack_pending'] == 0 and row['asset_writeback_pending'] == 0
+    assert attempt_id not in {item['attempt_id'] for item in app.ledger.recovery_batch()}
+    with app.ledger.connect() as db:
+        assert not db.execute('SELECT 1 FROM novelai_asset_writes WHERE attempt_id=?', (attempt_id,)).fetchone()
+    assert client.get(f'/api/roles/{service.role.id}/generations').json()['generations'][0]['writebackStatus'] == 'not_requested'
+    if result == 'not_permitted':
+        response = client.put(f'/api/roles/{service.role.id}', json={'name': service.role.name,
+            'profile': service.role.profile.model_dump(), 'agentConfig': {'novelai': {'autoWritebackRoleAssets': True}}})
+        assert response.status_code == 200, response.text
+        client.portal.call(app.recover)
+        assert client.get(f'/api/roles/{service.role.id}/generations').json()['generations'][0]['writebackStatus'] == 'not_requested'
+    assert app.ledger.usage(service.role.id)['reservedMediaBytes'] == 0
+    assert service.roles.get(service.role.id).cardImageUrl is None
+    assert len(service.peer.requests) == (1 if result == 'not_permitted' else 0)
+    assert len([request for request in model.requests if request['model'] == 'fixture-scene']) == 1
 
 
 def test_explicit_asset_consent_sets_only_current_card_and_accounts_for_its_extra_copy(scene_main):

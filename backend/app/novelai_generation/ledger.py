@@ -57,7 +57,8 @@ class GenerationLedger:
             for table, additions in (
                     ('novelai_attempts', {'parent_attempt_id': 'TEXT', 'purpose': "TEXT NOT NULL DEFAULT 'manual'",
                         'phase': "TEXT NOT NULL DEFAULT 'generation'", 'aux_dispatched': 'INTEGER NOT NULL DEFAULT 0',
-                        'aux_status': "TEXT NOT NULL DEFAULT 'not_dispatched'", 'scene_input': 'TEXT'}),
+                        'aux_status': "TEXT NOT NULL DEFAULT 'not_dispatched'", 'scene_input': 'TEXT',
+                        'asset_writeback_pending': 'INTEGER NOT NULL DEFAULT 0'}),
                     ('novelai_media_outbox', {'delivery_mode': "TEXT NOT NULL DEFAULT 'foreground_reply'",
                         'expected_attachment_id': 'TEXT', 'publication_ready': 'INTEGER NOT NULL DEFAULT 1',
                         'background_accepted': 'INTEGER NOT NULL DEFAULT 0',
@@ -72,6 +73,7 @@ class GenerationLedger:
                                     WHERE json_extract(origin,'$.uiAction')=1)""")
             connection.execute('DROP VIEW IF EXISTS novelai_generation_views')
             connection.execute('CREATE INDEX IF NOT EXISTS novelai_media_message ON novelai_media_outbox(message_id)')
+            connection.execute('CREATE INDEX IF NOT EXISTS novelai_asset_pending ON novelai_attempts(created_at,attempt_id) WHERE asset_writeback_pending=1')
             connection.execute('''CREATE VIEW novelai_generation_views AS SELECT a.*,o.state AS delivery_status,
                 o.delivery_mode,o.message_id AS delivery_message_id,o.expected_attachment_id,o.background_accepted,
                 w.status AS writeback_status
@@ -95,7 +97,8 @@ class GenerationLedger:
     def prepare(self, *, role_id, source_scope, human_key, request_key, parameters, origin,
                 service_revision, role_revision, account_limit, role_limit, fingerprint=None,
                 generation_id=None, parent_attempt_id=None, delivery_mode='foreground_reply',
-                message_id=None, expected_attachment_id=None, publication_ready=True, scene_input=None):
+                message_id=None, expected_attachment_id=None, publication_ready=True, scene_input=None,
+                asset_writeback_requested=False):
         if delivery_mode not in {'foreground_reply', 'source_completion', 'replacement', 'history_only'}:
             raise ValueError('invalid generation delivery mode')
         fingerprint = fingerprint or hashlib.sha256(canonical(parameters).encode()).hexdigest()
@@ -134,8 +137,8 @@ class GenerationLedger:
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'prepared',?,?,?)''', (attempt_id, generation_id, role_id, source_scope, human_key, request_key, fingerprint, canonical(parameters), canonical(origin), service_revision, role_revision, day, RESERVATION_BYTES, now, now))
             connection.execute('UPDATE novelai_attempts SET parent_attempt_id=? WHERE attempt_id=?', (parent_attempt_id, attempt_id))
             if scene_input is not None:
-                connection.execute("UPDATE novelai_attempts SET purpose='scene_cg',phase='auxiliary',scene_input=? WHERE attempt_id=?",
-                    (canonical(scene_input), attempt_id))
+                connection.execute("UPDATE novelai_attempts SET purpose='scene_cg',phase='auxiliary',scene_input=?,asset_writeback_pending=? WHERE attempt_id=?",
+                    (canonical(scene_input), int(asset_writeback_requested), attempt_id))
             connection.execute('INSERT INTO novelai_human_claims VALUES(?,?,?,?)', (role_id, source_scope, human_key, attempt_id))
             for owner in ('*',) if scene_input is not None else ('*', role_id):
                 connection.execute('INSERT INTO novelai_daily VALUES(?,?,1) ON CONFLICT(day,role_id) DO UPDATE SET attempts=attempts+1', (day, owner))
@@ -208,7 +211,8 @@ class GenerationLedger:
         reserved = row['reserved_bytes'] if status in {'local_pending', 'unknown'} or row['spool_size'] else 0
         connection.execute('''UPDATE novelai_attempts SET status=?,budget_released=MAX(budget_released,?),reserved_bytes=?,error_code=?,
             aux_status=CASE WHEN purpose='scene_cg' AND phase='auxiliary' THEN 'failed' ELSE aux_status END,
-            updated_at=? WHERE attempt_id=?''', (status, int(release), reserved, error_code, time.time(), attempt_id))
+            asset_writeback_pending=CASE WHEN ?='local_pending' THEN asset_writeback_pending ELSE 0 END,
+            updated_at=? WHERE attempt_id=?''', (status, int(release), reserved, error_code, status, time.time(), attempt_id))
 
     def get(self, role_id, source_scope, generation_id, *, attempt_id=None):
         with self.connect() as connection:
@@ -240,6 +244,7 @@ class GenerationLedger:
             query = '''SELECT a.*,o.state AS outbox_state,o.message_synced,o.delivery_mode,o.publication_ready FROM novelai_attempts a
                 JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id
                 WHERE (a.status IN ('prepared','dispatching','received','local_pending') OR a.runtime_ack_pending=1
+                   OR a.asset_writeback_pending=1
                    OR (a.status='unknown' AND a.reserved_bytes>0)
                    OR (o.consumed=1 AND o.message_synced=0 AND o.message_id IS NOT NULL
                        AND o.state IN ('pending','sending','sent','failed','uncertain'))
@@ -297,7 +302,8 @@ class GenerationLedger:
                 'status': row['status'], 'parameters': parameters if 'width' in parameters else None,
                 'purpose': row['purpose'], 'phase': row['phase'], 'auxiliaryConsumption': 'possible' if row['aux_dispatched'] else 'not_dispatched',
                 'auxiliaryStatus': row['aux_status'],
-                'writebackStatus': row['writeback_status'] if 'writeback_status' in row.keys() and row['writeback_status'] else 'not_requested',
+                'writebackStatus': row['writeback_status'] if 'writeback_status' in row.keys() and row['writeback_status'] else
+                    ('writing' if row['asset_writeback_pending'] and row['status'] == 'succeeded' else 'not_requested'),
                 'attachments': json.loads(row['attachments']), 'taskId': row['task_id'],
                 'createdAt': datetime.fromtimestamp(row['created_at'], timezone.utc).isoformat(),
                 'errorCode': row['error_code'], 'consumption': 'possible' if row['dispatched'] else 'not_dispatched',

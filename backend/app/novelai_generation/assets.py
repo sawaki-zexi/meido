@@ -18,30 +18,39 @@ class AssetWriteback:
             db.execute("UPDATE novelai_asset_writes SET status='uncertain' WHERE status='writing'")
 
     def apply(self, row, source):
-        if row['purpose'] != 'scene_cg':
+        if row['purpose'] != 'scene_cg' or not row['asset_writeback_pending']:
             return
         with self.app._lock:
-            role = self.app.roles.get(row['role_id'])
-            if role is None or not role.agentConfig.novelai.autoWritebackRoleAssets or not self.app._authorized(source, row['service_revision'], row['role_revision']):
-                return
-            attachments = json.loads(row['attachments'])
-            if len(attachments) != 1:
-                return
             with self.app.ledger.connect() as db:
                 if db.execute('SELECT 1 FROM novelai_asset_writes WHERE attempt_id=?', (row['attempt_id'],)).fetchone():
                     return
+            role = self.app.roles.get(row['role_id'])
+            if role is None or not role.agentConfig.novelai.autoWritebackRoleAssets or not self.app._authorized(source, row['service_revision'], row['role_revision']):
+                self._reject(row)
+                return
+            attachments = json.loads(row['attachments'])
+            if len(attachments) != 1:
+                self._reject(row)
+                return
             image = resolve_attachment(self.app.roles.workspace_path(role.id), attachments[0]['id'])
             if image is None:
+                self._reject(row)
                 return
             input_path = image.get('path')
             if not isinstance(input_path, str):
+                self._reject(row)
                 return
             with Path(input_path).open('rb') as handle:
                 content = handle.read(attachments[0]['size'] + 1)
             if len(content) != attachments[0]['size']:
-                raise ValueError('generated card bytes changed')
+                self._reject(row)
+                return
             parameters = json.loads(row['parameters'])
-            validate_image(content, max_pixels=parameters['width'] * parameters['height'])
+            try:
+                validate_image(content, max_pixels=parameters['width'] * parameters['height'])
+            except ValueError:
+                self._reject(row)
+                return
             expected = json.loads(row['scene_input'])['cardImageUrl']
             digest = hashlib.sha256(content).hexdigest()
             with self.app.ledger.connect() as db:
@@ -53,6 +62,9 @@ class AssetWriteback:
                 own = sum(item['bytes'] for item in used if item['role_id'] == role.id) + sum(item['bytes'] + item['reserved_bytes'] for item in assets if item['role_id'] == role.id)
                 status = 'failed' if busy or total + len(content) > GLOBAL_MEDIA_BYTES or own + len(content) > ROLE_MEDIA_BYTES else 'writing'
                 db.execute('INSERT INTO novelai_asset_writes VALUES(?,?,?,?,?,?)', (row['attempt_id'], role.id, status, len(content), digest, expected))
+                # Transfer the original attempt's duty only with its durable
+                # asset record and (when writing) actual-copy reservation.
+                db.execute('UPDATE novelai_attempts SET asset_writeback_pending=0 WHERE attempt_id=?', (row['attempt_id'],))
                 if status == 'failed':
                     return
                 db.execute('''INSERT INTO novelai_asset_usage(role_id,reserved_bytes,attempt_id) VALUES(?,?,?)
@@ -71,6 +83,13 @@ class AssetWriteback:
                     db.execute("UPDATE novelai_asset_writes SET status='uncertain' WHERE attempt_id=?", (row['attempt_id'],))
                 return
             self._settle(row['attempt_id'], role.id, 'applied', len(content))
+
+    def _reject(self, row):
+        with self.app.ledger.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('INSERT INTO novelai_asset_writes VALUES(?,?,?,?,?,?)', (row['attempt_id'], row['role_id'],
+                'failed', 0, '', json.loads(row['scene_input'])['cardImageUrl']))
+            db.execute('UPDATE novelai_attempts SET asset_writeback_pending=0 WHERE attempt_id=?', (row['attempt_id'],))
 
     def _settle(self, attempt_id, role_id, status, size):
         with self.app.ledger.connect() as db:

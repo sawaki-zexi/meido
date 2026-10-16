@@ -65,6 +65,12 @@ React 覆盖真实 App 设置/角色/历史入口、有限消费显式确认、�
 
 上述窄修后，全部CG/标签、既有NovelAI真实主消息及主动human-priority/host-boundaries共享入口 **44 passed/171.57s**（零skip/warning/error/failure）。原外置写锁反例字节未改，原样 **1 passed/1 conftest重写warning/10.25s**；该warning为已导入测试插件，不是业务或隔离失败。14源mypy、compileall、38个文档相对链接、冻结UI文件SHA及diff check再次通过；前端生产和测试没有变化，未重跑前端或全部后端。此版本由固定提交后的两轴独立审查承接。
 
+固定`10aed6c`完整独立审查结果保留：Standards零finding；Spec唯一P2是首次资产INSERT失败会丢失写回责任。原真实SQLite trigger探针先后1 failed/1 warning/11.34s及1 failed/1 warning/10.75s；CG/原媒体已成功、Runtime已ACK，但原生恢复队列为空、资产表为空，不能把五次poll说成恢复证明。仓库将同路径固化为四分支，先 **4 failed/21.87s**，都在实际ACK清除后的原生队列为空处失败。原CG prepare事务新增条件资产责任、现有有限队列持续选择、资产record/副本预留成功才同事务转交后，四分支 **4 passed/21.51s**。
+
+修正后的完整资产组 **14 passed/61.50s**：真实首次record INSERT及副本预留INSERT故障、Runtime实际prune、业务宿主重建、主人后来换卡片、写回许可off/on、原未许可/无图/辅助失败，以及原配额、manifest、receipt故障。最终同attempt实际card-image或明确failed，条件责任及额外预留归零，没有新增aux/生成/完成消息。原外置探针字节不变，原样 **1 passed/1 conftest重写warning/12.55s**；这是最低可见性补证，实际结算与责任证明来自仓库用例。旧源已经丢失且没有独立记录的历史不推断许可或扫描补写；已持久writing/uncertain仍由原本地恢复器处理。该修正没有前端改动，不重跑或改写原162/44/209记录，仍交固定新提交的独立两轴delta核对。
+
+该资产修正最终必要组合 **64 passed/205.50s**（零skip/warning/error/failure），覆盖资产/CG辅助与原渠道、旧172重生成/恢复/RuntimeACK/100项公平性、账本和主人共享入口。14源mypy、compileall、39个文档相对链接、未变UI10文件SHA及diff check通过；完整三根与内外guard保持到所有owned资源自然退出。未重跑未变前端或整个后端，固定提交与双轴delta结论另记。
+
 ### #172 本地增量
 
 #172 从准确已验证 `0dee4e43a36bfdc39160cbf2c20c7a2e203198cf` 建立独立 `feat/172-novelai-regeneration-background`，仍统一总 PR162，不另建堆叠 PR。前置 #171 两次准确 CI 均为 1922 passed/25 skipped；本段不把此前 CI 当作 #172 验收。

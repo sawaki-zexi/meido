@@ -273,6 +273,7 @@ class NovelaiApplication:
                         'source_completion' if source.ui_action or parameters['background'] else 'foreground_reply'),
                     publication_ready=publication_ready,
                     scene_input=scene_input,
+                    asset_writeback_requested=scene_input is not None and role.agentConfig.novelai.autoWritebackRoleAssets,
                     **(regeneration or {}))
                 row = self.ledger.attempt(view['attemptId'])
             task = self._find_task(row, source)
@@ -961,7 +962,10 @@ class NovelaiApplication:
                     # authorized enumeration, proves admission never happened.
                     with self.ledger.connect() as connection:
                         connection.execute('UPDATE novelai_attempts SET runtime_ack_pending=0 WHERE attempt_id=?', (row['attempt_id'],))
-                if row['status'] != 'succeeded' or not self._authorized(source, row['service_revision'], row['role_revision']):
+                if row['status'] != 'succeeded':
+                    continue
+                if not self._authorized(source, row['service_revision'], row['role_revision']):
+                    self.assets.apply(row, source)  # Settle the original duty as failed; never revive a grant.
                     continue
                 if row['delivery_mode'] == 'replacement':
                     await self.attach_replacement(source, row['attempt_id'])

@@ -74,6 +74,8 @@ none/closed、冷却和重复视觉仍是已发生辅助调用的 CG 尝试，�
 
 writebackStatus为not_requested/writing/uncertain/applied/failed。manifest或SQLite故障保留本地义务，维护只核对 owned 临时/备份、manifest及摘要后结算或回滚；崩溃在文件替换后但manifest提交前时恢复旧卡片，不再生成、复制或覆盖后来的主人编辑。恢复每批最多100条并有持久轮转游标。无法确认旧文件事实时保留预占及 uncertain。
 
+仅在原CG准入当时已明确允许写回时，prepare同一事务先登记条件资产责任；它不依赖媒体消息未同步或Runtime未ACK。首次资产记录或实际副本预留落库失败时，该责任仍由原100项恢复队列及持久游标选择，成功生图的历史保持writing。资产记录与额外实际字节预留同事务持久后才转交责任；最终applied/failed释放预留，未获准、原卡片已换或许可ABA只能明确失败。无图/失败生成清条件责任，没有原写回许可的CG保持not_requested；不因后来开关许可扫描或回填旧历史。[真实故障回归](../../tests/python/test_novelai_scene_assets.py)还验证原Runtime结果已实际回收后，该本地责任仍可完成，且不增加辅助、生成或原消息。
+
 `background=true` 先写入有限 attempt、原来源和唯一 outbox，再以同一 submission_key 交接现有 TaskRuntime。只有 taskId 及 `background_accepted` 持久成功后才返回 accepted（工具）或 HTTP202（UI），公开 `backgroundAccepted=true`。父回合完成、父 token 取消或受理后的 HTTP 断开不会撤回这次明确后台；显式停止、许可/来源失效、角色删除和应用退出仍 seal、stop 并 join。交接回写失败不假报受理，不留下隐式付费后台。
 
 交付模式为 foreground_reply、source_completion、replacement 或主人明确选择的 history_only，outbox 主键始终只有 attemptId。后台完成只在原角色锁可用后发布，忙角色以有界试锁跳过并保留恢复义务。桌面和渠道都在现有原 session 写唯一 internal_completion，无 user/run；渠道先持久 sending/consumed，再由真正 ChannelHost.account_send(actor=reply) 向冻结的原 account/thread/chat 发送 owned 附件。原入站的回复/群提及/话题信息来自宿主快照，模型和 UI 没有改投字段。媒体能力不支持时，在生成 POST 前拒绝自动交付；仅历史必须由主人另行明确选择。
