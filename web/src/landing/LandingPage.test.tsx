@@ -46,7 +46,7 @@ describe("落地页背景音乐", () => {
     const play = vi.mocked(HTMLMediaElement.prototype.play);
     const { container, getByRole, unmount } = render(<LandingPage />);
     const music = container.querySelector<HTMLAudioElement>("audio");
-    expect(music?.getAttribute("src")).toBe("/landing/summer-adventure.mp3");
+    expect(music?.getAttribute("src")).toBe("/landing/neko-ni-michibikarete.mp3");
     expect(music?.loop).toBe(true);
     expect(play).not.toHaveBeenCalled();
 

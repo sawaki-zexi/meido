@@ -250,7 +250,7 @@ export function LandingPage() {
     className={`landing ${phase === "title" ? "landing-title" : "landing-scene"} ${reducedMotion ? "reduced-motion" : ""}`}
     onClick={handleSceneClick}
   >
-    <audio ref={musicRef} src="/landing/summer-adventure.mp3" preload="none" loop aria-hidden="true" />
+    <audio ref={musicRef} src="/landing/neko-ni-michibikarete.mp3" preload="none" loop aria-hidden="true" />
     <img className="landing-background" src={background} alt="" aria-hidden="true" />
     <div className="landing-vignette" aria-hidden="true" />
     <div className="landing-grain" aria-hidden="true" />
