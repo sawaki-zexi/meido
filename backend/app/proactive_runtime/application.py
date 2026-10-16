@@ -407,6 +407,11 @@ class ProactiveApplication:
             rows = db.execute("SELECT * FROM autonomy_roles WHERE next_at<=?", (now,)).fetchall()
             for row in rows:
                 config = AutonomyConfig.model_validate_json(row["config"])
+                if db.execute("SELECT 1 FROM autonomy_runs WHERE role_id=? AND kind='autonomy_poll' AND runtime_acknowledged=0",
+                              (row["role_id"],)).fetchone():
+                    # A newly due refresh belongs to this source observation,
+                    # including its resource cleanup and durable Runtime ACK.
+                    continue
                 if (any(source.enabled and source.pollTool for source in config.sourceGrants)
                         and row["poll_ready_generation"] != row["generation"]):
                     # The first poll must actually finish, not just win a
@@ -470,11 +475,17 @@ class ProactiveApplication:
                 except retention.StorageLimitError:
                     db.execute("UPDATE autonomy_roles SET admission_error='自主存储额度已满；轮询暂缓' WHERE role_id=?", (origin.role_id,))
                     continue
-                db.execute("INSERT INTO autonomy_runs(tick_id,role_id,origin,kind,mode,started_at,frozen_config) VALUES(?,?,?,'autonomy_poll','source_poll',?,?)",
-                           (origin.tick_id, origin.role_id, origin.serialized(), now, row["config"]))
+                states = [{"sourceId": source.sourceId, "revision": source.revision,
+                           "channel": source.channel, "observedAt": now, "truncated": False,
+                           "status": "incomplete", "error": "source poll has not finished"}
+                          for source in config.sourceGrants if source.enabled and source.pollTool]
+                payload = {"pollAttempted": False, "sources": states}
+                health = {"generation": origin.generation, "tickId": origin.tick_id, "sources": states}
+                db.execute("INSERT INTO autonomy_runs(tick_id,role_id,origin,kind,mode,started_at,frozen_config,payload) VALUES(?,?,?,'autonomy_poll','source_poll',?,?,?)",
+                           (origin.tick_id, origin.role_id, origin.serialized(), now, row["config"], json.dumps(payload)))
                 db.execute("UPDATE autonomy_budgets SET polls=polls+1 WHERE role_id=? AND day=?", (origin.role_id, day))
-                db.execute("UPDATE autonomy_roles SET last_poll_at=?,poll_not_before=? WHERE role_id=?",
-                           (now, now + 150, origin.role_id))
+                db.execute("UPDATE autonomy_roles SET last_poll_at=?,poll_not_before=?,poll_health=? WHERE role_id=?",
+                           (now, now + 150, json.dumps(health), origin.role_id))
                 if row["poll_ready_generation"] != row["generation"]:
                     db.execute("UPDATE autonomy_roles SET initial_poll_id=? WHERE role_id=?", (origin.tick_id, origin.role_id))
                 admitted.append(origin)
@@ -549,7 +560,7 @@ class ProactiveApplication:
             sources = [source for source in config.sourceGrants if source.enabled and source.pollTool]
             states = [{"sourceId": source.sourceId, "revision": source.revision,
                        "channel": source.channel, "observedAt": observed_at, "truncated": False,
-                       "status": "failed", "error": "source poll did not finish"} for source in sources]
+                       "status": "incomplete", "error": "source poll did not finish"} for source in sources]
             payload = {"pollAttempted": True, "sources": states}
             db.execute("UPDATE autonomy_runs SET status='running',payload=? WHERE tick_id=?",
                        (json.dumps(payload), origin.tick_id))
@@ -720,7 +731,7 @@ class ProactiveApplication:
                         completed = db.execute("SELECT payload FROM autonomy_runs WHERE tick_id=?", (origin.tick_id,)).fetchone()
                         poll_result = json.loads(completed[0] or "{}") if completed else {}
                         if poll_result.get("pollAttempted"):
-                            poll_health = {"generation": origin.generation,
+                            poll_health = {"generation": origin.generation, "tickId": origin.tick_id,
                                            "sources": poll_result.get("sources", [])}
                             db.execute("UPDATE autonomy_roles SET poll_health=? WHERE role_id=? AND generation=?",
                                        (json.dumps(poll_health), origin.role_id, origin.generation))

@@ -220,6 +220,8 @@ def test_failed_initial_poll_finishes_prerequisite_without_requiring_success(pol
         await app.on_clock()
         await settle_all(app)
         now[0] += 1650
+        assert await app.on_clock() == 0
+        await settle_all(app)
         assert await app.on_clock() == 1
         await settle_all(app)
         ticks = [row for row in app.query("role")["runs"] if row["kind"] == "autonomy_tick"]
@@ -318,6 +320,103 @@ def test_runtime_rejection_does_not_complete_initial_poll_prerequisite(polling):
         finally:
             released.set()
             tasks.stop(held, owner)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("fails", [True, False], ids=["latest-refresh-failed", "latest-refresh-succeeded"])
+def test_periodic_refresh_is_settled_before_decision_uses_source_health(polling, source, tmp_path, fails):
+    app, now, root, *_ = polling
+    (root / "events.json").write_text("[]", encoding="utf-8")
+    install_poll_profile(polling, source, tmp_path, wait=True, fail=True)
+    current = AutonomyConfig.model_validate(app.query("role")["config"])
+    app.configure("role", current.model_copy(update={"driftEnabled": True,
+        "driftModelConfigurationId": "explicit-model"}), expected_revision=current.revision)
+    (root / "poll-fails").unlink()
+    (root / "release-poll").write_text("initial successful refresh")
+
+    async def exercise():
+        try:
+            await app.on_clock()
+            await settle_all(app)
+            assert app.query("role")["runs"][0]["status"] == "polled"
+            (root / "poll-entered").unlink()
+            (root / "release-poll").unlink()
+            if fails:
+                (root / "poll-fails").write_text("fail this real refresh")
+            now[0] += 1800
+            assert await app.on_clock() == 0
+            async with asyncio.timeout(5):
+                while not (root / "poll-entered").exists():
+                    await asyncio.sleep(.01)
+            for _ in range(2):
+                assert await app.on_clock() == 0
+            assert all(row["kind"] == "autonomy_poll" for row in app.query("role")["runs"])
+            assert [json.loads(line)["name"] for line in (root / "calls.jsonl").read_text().splitlines()] == ["poll", "poll"]
+            (root / "release-poll").write_text("release latest refresh")
+            await settle_all(app)
+            assert await app.on_clock() == 1
+            await settle_all(app)
+            tick = next(row for row in app.query("role")["runs"] if row["kind"] == "autonomy_tick")
+            assert tick["status"] == ("sources_unavailable" if fails else "drift_dependency_pending")
+            assert [json.loads(line)["name"] for line in (root / "calls.jsonl").read_text().splitlines()] == ["poll", "poll", "get_events"]
+        finally:
+            (root / "release-poll").write_text("finally release owned RPC")
+            await settle_all(app)
+
+    asyncio.run(exercise())
+
+
+def test_periodic_poll_runtime_ack_failure_retains_due_decision_until_recovery(polling, monkeypatch):
+    from backend.app.proactive_runtime.identity import AutonomyOrigin
+
+    app, now, root, _, _, tasks, host = polling
+    (root / "events.json").write_text("[]", encoding="utf-8")
+    current = AutonomyConfig.model_validate(app.query("role")["config"])
+    app.configure("role", current.model_copy(update={"driftEnabled": True,
+        "driftModelConfigurationId": "explicit-model"}), expected_revision=current.revision)
+    acknowledge = tasks.acknowledge_result
+    blocked = [False]
+
+    def controlled_ack(identifier, origin):
+        if blocked[0]:
+            raise sqlite3.OperationalError("controlled retained-result ACK unavailable")
+        return acknowledge(identifier, origin)
+
+    monkeypatch.setattr(tasks, "acknowledge_result", controlled_ack)
+
+    async def exercise():
+        try:
+            await app.on_clock()
+            await settle_all(app)
+            blocked[0] = True
+            now[0] += 1800
+            assert await app.on_clock() == 0
+            async with asyncio.timeout(8):
+                while True:
+                    await app.recover()
+                    with app._transaction() as db:
+                        row = db.execute("SELECT * FROM autonomy_runs WHERE kind='autonomy_poll' ORDER BY started_at DESC").fetchone()
+                    origin = AutonomyOrigin.restore(row["origin"])
+                    if row["task_id"] and tasks.query(row["task_id"], origin.task_origin()).ended_at is not None:
+                        break
+                    await asyncio.sleep(.01)
+            assert host.autonomy_cleanup_pending("role") is False
+            assert await app.on_clock() == 0
+            assert len(app.query("role")["runs"]) == 2
+            assert not app.query("role")["runs"][0]["runtimeAcknowledged"]
+            with app._transaction() as db:
+                dirty = db.execute("SELECT runtime_result,result_ack_pending FROM autonomy_runs WHERE tick_id=?", (origin.tick_id,)).fetchone()
+            assert dirty["runtime_result"] and dirty["result_ack_pending"] == 1
+            blocked[0] = False
+            assert await app.on_clock() == 1
+            await settle_all(app)
+            tick = next(row for row in app.query("role")["runs"] if row["kind"] == "autonomy_tick")
+            assert tick["status"] == "drift_dependency_pending"
+            assert [json.loads(line)["name"] for line in (root / "calls.jsonl").read_text().splitlines()] == ["poll", "poll", "get_events"]
+        finally:
+            blocked[0] = False
+            await settle_all(app)
 
     asyncio.run(exercise())
 

@@ -60,4 +60,8 @@ poll的两个原stdio探针先 **2 failed（9.17秒）**，canonical首poll与15
 
 检查同时发现失败poll+空get曾错误进入Driftpending，实际RED保留。现在按来源版本与generation持久并冻结poll健康状态；独立来源不短路，失败不删除已取得候选，其他成功来源仍可A01，后续真实成功poll才恢复可信空。实际两来源、共享poll一次、慢stdio、Runtime拒绝、旧schema迁移、真实SQLite回滚及交接等交叉 **41 passed（65.27秒）**。混合来源测试曾把既有四步模型循环误写为三请求而失败，修正测试计数后通过，没有放宽生产协议。
 
-全部修正后的扩大原范围加新的宿主授权回归 **244 passed /1 skipped（275.15秒），进程exit0**。三MEIDO根在导入前隔离，整组guard保持至所有owned退出；skip仍只为Windows创建symlink权限。20源 `--check-untyped-defs` mypy、compileall与diff通过。前端未变，沿用此前178项及TS/Vite证据，没有声称本轮重复。当前仍需固定修正提交的独立双轴增量复核与总分支集成CI。
+固定 `798b4f7` 的第一轮修正扩大原范围加新的宿主授权回归 **244 passed /1 skipped（275.15秒），进程exit0**。三MEIDO根在导入前隔离，整组guard保持至所有owned退出；skip仍只为Windows创建symlink权限。20源 `--check-untyped-defs` mypy、compileall与diff通过。前端未变，沿用此前178项及TS/Vite证据，没有声称本轮重复。
+
+该轮两轴增量审查关闭原四项P2，却各自独立复现同一后续刷新竞态：首次poll已成功，本次周期poll与判断同clock准入，本次真实poll失败而判断仍冻结上次ok并进入Driftpending。规范独立正常组30项、规格正常组34项及首次ACK故障1项均通过，新竞态分别真实RED（8.14秒、9.709秒），不以正常组掩盖失败。
+
+周期修正回归先 **2 failed（11.54秒）**：真实后续RPC被持有时，成功和失败两分支都过早准入判断。新poll现在原准入事务即锁存其tickId和incomplete健康；判断也等待当前poll的真实终态、owned收尾与Runtime ACK，保留原due，下一clock继续。失败后空来源为sources_unavailable；成功后Driftpending仍可达，没有通过一直拒绝Drift回避问题。poll专集 **18 passed（63.01秒）**，另真实周期Runtime ACK写入故障 **1 passed（9.88秒）**，验证终态/资源已退出仍须保留dirty，恢复后不补第二poll而准入原到期判断。随后原扩大同范围 **247 passed/1 skipped（296.43秒），进程exit0**，全三根与整组guard至owned退出。20源严格mypy、compileall、5份文档19个相对链接及diff通过；新的固定提交双轴增量复核与总分支CI仍待完成。
