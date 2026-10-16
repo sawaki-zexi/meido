@@ -230,7 +230,12 @@ class SourceContractRegistry:
                     if entry.is_dir(follow_symlinks=False):
                         pending.append(path)
                     elif entry.is_file(follow_symlinks=False):
-                        size = entry.stat(follow_symlinks=False).st_size
+                        try:
+                            size = entry.stat(follow_symlinks=False).st_size
+                        except FileNotFoundError:
+                            # A live source may commit and remove its SQLite
+                            # journal after scandir observed the entry.
+                            continue
                         if path.is_relative_to(self._directory / "artifact"):
                             artifact_total += size
                         else:

@@ -53,3 +53,19 @@ Windows组合实际运行ffd4108，其后04afa68只改文档；该组为523 pass
 受控慢连接实验先完成真实MCP connect，再仅延迟首次返回3.05秒：原3秒夹具与持久回归各实际失败，单独将本ACK夹具设为10秒后，同一探针通过且完整业务断言保留。另一实验暂持真实AutonomyExecutor.run已经完成执行和资源收尾的原outcome，证明业务ACK已可见时，同一原生任务仍running/未写终态/retain=1；原三次recover和永久回归均实际在最后Runtime断言失败。独立释放后，原任务和提交key经原恢复链路复制结果、清dirty、ACK并释放retention/存储预留，没有重做RPC或消息。
 
 fb85d45只修改[ACK测试](../../tests/python/test_proactive_ack.py)：成功等待在原10秒总预算内同时观察业务与Runtime ACK，原9条业务assert的AST逐条相同；新增两项真实启动/晚终态回归。生产超时、恢复、任务与清理实现均无改动，失败finally的有界drain不能将失败变为通过。源Windows三例3 passed/1 warning（20.71s）、ACK/来源契约/验证三模块40 passed/1 warning（120.91s）、WSL同三例3 passed/2 warnings（18.03s）；总分支f785f82同三例另为3 passed/1 warning（21.36s）。这些组重叠，不相加，也不替代新HEAD完整CI。三新数据根与内外guard保持至全部owner退出，原失败和warning均保留；两路独立delta审查无遗留。
+
+## 实时 staging 临时文件竞态
+
+准确总分支929974f的PR CI38897079650后端2307 passed/35 skipped/2 warnings；push CI38897072137为2306 passed/35 skipped/1 failed/2 warnings（433.36秒）。唯一失败是坏集合契约的hides_read_failure用例：预期failed/no-proof，实际cancelled/sealed，Runtime已ACK、cleanupPending=false。两边前端215项及构建通过，不能以另一套绿色称本问题已解决。
+
+原用例的Windows只读观测为1 passed/1 warning（11.04秒），正常收到“读取错误被隐藏”的ValueError并显示failed，仅是正常路径基线。隔离Linux另以真实SQLite子进程持有DELETE journal，在原扫描确认is_file后允许实际commit删除该文件；随后原stat产生真实FileNotFoundError，watcher将它转为原operation取消。保留原用例与断言后实际1 failed/2 warnings（19.30秒），与CI同为cancelled而非failed。此运行授权从未返回false、没有Runtime或executor主动cancel，原deadline剩约120秒；全部进程及管道自然退出，最终Runtime ACK与清理成立。
+
+此实验确认一种可重放的生产竞态；原CI没有首次触发的实时轨迹，历史首因未唯一证明。按[局部修计划](https://github.com/sawaki-zexi/meido/issues/178#issuecomment-6215329386)，修正只在原entry.stat周围捕获FileNotFoundError，忽略已经消失的条目。条目仍先计数，链接、字节预算、PermissionError及其他OSError、实时授权、原超时与资源收尾均保留。
+
+新增[永久回归](../../tests/python/test_proactive_staging_lifecycle.py)经原FileTools/主人HTTP/真实MCP及SQLite线程完成同一journal删除。初版真实RED为1 failed/2 warnings（16.35秒），修后最终测试1 passed/2 warnings（13.81秒）。两次测试文件SHA不同：RED后仅新增closing导入、显式SQLite关闭及scandir原生fd参数兼容，未变业务断言、触发或预算，不称永久测试全字节相同。原外部探针SHA256 CEA1ED7469A8BB229567D9D700898B9B893BFCF8270D5761BF00171696DED143则严格不变，修后1 passed/2 warnings（14.19秒），仍观察到真实journal删除，后续正常返回坏集合契约failed/no-proof，无误取消。
+
+另在独立原929974f基线放入最终完全相同SHA的永久测试，再次真实RED为1 failed/2 warnings（22.37秒），同为原failed/no-proof断言收到cancelled/sealed。该最终测试SHA为5BE87644D22BE8EDEC68E84E76B5D2AF5E8F3A027670022811378E7C417BECD3；于是最终测试同字节的旧生产RED与修正生产GREEN均已取得，未改当前总树来重做RED。首次测试字节也按原54BF摘要精确留存，三处fixture差异及14条assert逐条AST一致证据保留。
+
+最终两源码/测试文件固定SHA的来源作者、契约、验证、验证API及永久回归五模块：Windows65 passed/1 warning（159.39秒），Linux65 passed/2 warnings（114.20秒）。包含真实state/artifact超量、工具定义变更、owner取消/撤权、hand-over、清理与结果dirty/ACK/prune。另Linux真实源进程创建staging符号链接，1 passed/2 warnings（17.54秒），仍由原PermissionError拒绝且无proof。单源check-untyped-defs/ignore-missing-imports/follow-imports=silent、compileall及diff检查通过；未重复无改动前端或321项组合，各组重叠不相加。内外guard保留至全部进程、线程、管道和main owner自然退出，独占失败目录和原证据保留，零非本地尝试。独立复核与准确修后提交CI另记；真实账号、服务读取/ACK、模型费用均未执行。
+
+此最小修正的独立规范与规格复核均无遗留finding。规范轴另跑Linux永久例1 passed/2 warnings（11.96秒）；规格轴另跑journal、真实链接拒绝、owner取消与人类抢占4 passed/2 warnings（22.73秒）。两轴均核对相同最终源码/测试SHA、真实最终测试基线RED及完整收尾；没有把这些重叠案例相加或宣称新的完整CI已经通过。

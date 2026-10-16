@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-16（Asia/Shanghai）。源码基线已同步 `main@5acbf0c21b7e25a2ae24cf59d570c2bf7c6e5e05`（图标与落地页背景音乐）；最新已验证集成为 `fa122c3d5986515028144c1a6285e36425e7b9cf`，含 #172/#175/#178、集成两轴和 ACK 夹具时序修正复核。该准确头的 [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38888726454) 与 [push CI](https://github.com/sawaki-zexi/meido/actions/runs/38888721871) 均全通过：各后端 2263 passed /35 skipped /2 warnings（397.80秒、383.39秒），各前端 208 passed /36文件及 TypeScript/Vite。#173 源 `0d1b918` 已完成独立两轴及修正复核并汇入 `8c4771a`，准确集成正在验收，不套用 fa 的绿色。#176 独立源仍在审查修正，#179 正在独立实现。旧失败历史和原生限制保留，跳过项不计原生验收。
+最后核验：2026-10-16（Asia/Shanghai）。源码基线已同步 `main@5acbf0c21b7e25a2ae24cf59d570c2bf7c6e5e05`（图标与落地页背景音乐）；最新两套完整CI均通过的集成为 `fa122c3d5986515028144c1a6285e36425e7b9cf`，含 #172/#175/#178、集成两轴和 ACK 夹具时序修正复核。该准确头的 [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38888726454) 与 [push CI](https://github.com/sawaki-zexi/meido/actions/runs/38888721871) 各后端 2263 passed /35 skipped /2 warnings（397.80秒、383.39秒），各前端 208 passed /36文件及 TypeScript/Vite。#173 源 `0d1b918` 已汇入后续 `929974f`，源与集成两轴无遗留、本地交叉321项及前端215项通过；但该准确头 [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38897079650) 后端2307项通过，[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38897072137) 后端2306项通过、来源验证1项失败，两边前端及构建通过。取消异常正在按真实SQLite临时文件竞态修正，不能算两套均通过。#176 独立源 `eddfdb9` 修正后两轴无遗留，等待总分支恢复验证再整合；#179 正在独立实现。旧失败历史和原生限制保留，跳过项不计原生验收。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -33,10 +33,10 @@
 | C10 MCP 3 工具 | #159 已进入集成分支；真实 stdio、版本化发现、配置 UI、持久连接意愿及严格凭据清理已两轴复核；Linux 回收、Windows asyncio 环境、中文 schema 编码及 peer_error 清理竞态均实证修复并两轴复核；`c03a9fb` 两条 CI 通过 | 总 PR 最终跨模块验收 |
 | P01 浏览器 28 工具 | main，PR #150；全部 28 schema 映射核验，21 项真实原生浏览器测试通过，无 skip | 后续 MCP/配置集成回归 |
 | P02 桌面控制 8 工具 | #169 固定源 `7aa8108` 已两轴复核并整合；8工具/图像下一模型请求、单观察/lease/Job收尾有真实专用窗口和HTTP/provider证据。规范审查两项P2修正后独立复核无遗留；集成交叉60 passed/1原生deselected，前端专项及TS/Vite、9源mypy和c052848两条完整CI通过 | 总PR最终跨模块验收；多DPI/多屏/锁屏等未验收环境见[原生手册](../handbook/computer-use-native-acceptance.md)，不扩大真实应用操作许可 |
-| P03 Coding Agent 5 工具 | #174固定源`5a5a2c4`及关闭/配置夹具修正均已两轴复核并通过`fff08b1`两条CI；7项Herdr/两合成CLI原生通过，见[验收](../handbook/coding-agent-acceptance.md)。#175固定源`0e2da975`完成完整两轴及修正复核后合入，独立Codex exec复用spawn coding，见[S07验收](../handbook/codex-delegate-acceptance.md)；准确13c集成两轴与两套完整CI通过 | #176已从13c开始独立实现，尚未交付；真实认证/消费/发布另批，不能以合成CLI代替真实服务 |
+| P03 Coding Agent 5 工具 | #174固定源`5a5a2c4`及关闭/配置夹具修正均已两轴复核并通过`fff08b1`两条CI；7项Herdr/两合成CLI原生通过，见[验收](../handbook/coding-agent-acceptance.md)。#175固定源`0e2da975`完成完整两轴及修正复核后合入，独立Codex exec复用spawn coding，见[S07验收](../handbook/codex-delegate-acceptance.md)；准确13c集成两轴与两套完整CI通过。#176独立源`eddfdb9`完成精确提交/发布及两轴修正复核，尚未整合 | #176准确总集成；旧首push unknown原因未解释，隔离通过不当作根因修复。真实认证/消费/发布另批，不能以合成CLI代替真实服务 |
 | P04 屏幕感知 1 工具 | #160 已进入集成分支；提前拒绝/重复取消连接回收最终两轴复核均无剩余 finding；相关后端 196 passed/1 native 条件 skip，前端 69 passed；真实受控 Windows 主屏/125% DPI/本地视觉及取消通过，无原图落盘 | 总 PR 最终集成；尚无双屏、混合 DPI、实际锁屏/远程断开或 frozen 分发实证，也未调用真实远端视觉服务 |
 | P05 桌宠 1 工具 | 待实现；Electron/PySide6 宿主选择待回答 | 真实透明置顶窗口、动作包、move/play 与完整生命周期 |
-| P06 生图 1 工具 | #171/#172已两轴复核并通过准确13c两套完整CI，含当前主人txt2img/img2img、唯一原来源、历史、指定图片CAS重生成和受管后台。#173源`0d1b918`完成人类回合CG、受限标签与卡片写回；首次资产落库丢责任P2真实RED后修正，两轴delta各0，独立恢复验证分别4项/3项；已汇入`8c4771a`，见[手册](../handbook/novelai-generation-acceptance.md) | 准确#173集成交叉、两轴与两套CI正在验收；真实NovelAI账号生成和费用另批 |
+| P06 生图 1 工具 | #171/#172已两轴复核并通过准确13c两套完整CI，含当前主人txt2img/img2img、唯一原来源、历史、指定图片CAS重生成和受管后台。#173源`0d1b918`完成人类回合CG、受限标签与卡片写回；首次资产落库丢责任P2真实RED后修正，源和集成两轴均无遗留；`929974f`本地交叉321项、前端215项及构建通过，见[手册](../handbook/novelai-generation-acceptance.md) | 准确总分支push CI仍有来源验证单失败；真实NovelAI账号生成和费用另批 |
 | P07 QQ 附件 1 工具 | #164 已进入集成分支；多字节长行自动字符分页、当前/引用真实入站与存储/Runtime 往返、旧附件/跨群拒绝均经过两轴独立审查 | 平台实机验收另列；传输夹具不是 QQ 真人收件证据 |
 | S01 weather | #152 已进入集成分支；真实 curl、wttr.in、Open-Meteo 和公开 HTTP 工具往返 | 最终配置集成；Shell 仍须主人显式授权 |
 | S02 summarize | #152 已进入集成分支；真实 summarize 0.25.2、Node 24、URL 提取及本地模型夹具摘要回传 | 两个公开视频仅得到 `transcriptSource: unavailable` 和网页模板，未取得真实字幕；不能以 exit 0 宣称视频摘要成功 |
