@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sqlite3
 import sys
+import threading
 
 import pytest
 
@@ -58,7 +59,10 @@ def acknowledgements(source, tmp_path):
     (artifact / "source.py").write_bytes(FIXTURE.read_bytes())
     (artifact / "catalog.json").write_bytes((root / "catalog.json").read_bytes())
     write_manifest(artifact)
-    server = store.save(server_input.model_copy(update={"command": [sys.executable, "-I", str(artifact / "source.py"), str(root)]}))
+    # ACK scenarios include native launch and schema validation; keep a finite
+    # setup budget within the production 30-second autonomous RPC cap.
+    server = store.save(server_input.model_copy(update={"command": [sys.executable, "-I", str(artifact / "source.py"), str(root)],
+        "timeoutSeconds": 10}))
     grant = grant_for(source).model_copy(update={"ackTool": "ack", "ackDefinitionHash": declaration_hash(declaration),
         "ackContract": "absolute-idempotent", "configRevision": server.revision, "grantRevision": server.grant_id})
     data = tmp_path / "acknowledgements"
@@ -107,27 +111,113 @@ async def settle_ack(app, status):
             await asyncio.sleep(.01)
 
 
-def test_reply_then_absolute_ack_uses_fixed_receipt_and_releases_both_runtime_results(acknowledgements):
+async def reply_and_ack_scenario(acknowledgements):
     app, now, root, adapter, sessions, *_ = acknowledgements
+    now[0] += 1800
+    await app.on_clock()
+    async with asyncio.timeout(10):
+        ack = await settle_ack(app, "acknowledged")
+        # The business receipt precedes the independent Runtime terminal result.
+        while True:
+            await app.recover()
+            if all(run["runtimeAcknowledged"] for run in app.query("role")["runs"]):
+                break
+            await asyncio.sleep(.01)
+    assert ack["attempts"] == 1
+    assert ack["expiresAt"] == ack["decisionAt"] + 168 * 3600
+    calls = [json.loads(line) for line in (root / "calls.jsonl").read_text().splitlines()]
+    assert [call["name"] for call in calls] == ["get_events", "ack"]
+    assert calls[1]["arguments"]["ack_id"] == ack["id"]
+    assert calls[1]["arguments"]["expires_at"] == ack["expiresAt"]
+    assert len(sessions.list_messages("role:role")) == 1
+    assert len(adapter.requests) == 4
+    runs = app.query("role")["runs"]
+    assert all(run["runtimeAcknowledged"] for run in runs)
+    assert next(run for run in runs if run["kind"] == "autonomy_ack")["timeoutSeconds"] == 30
+
+
+def test_reply_then_absolute_ack_uses_fixed_receipt_and_releases_both_runtime_results(acknowledgements):
+    asyncio.run(reply_and_ack_scenario(acknowledgements))
+
+
+def test_reply_ack_preserves_business_guarantees_with_a_bounded_slow_first_connect(acknowledgements, monkeypatch):
+    from backend.app.mcp_stdio import McpStdioClient
+
+    original = McpStdioClient.connect
+    connected, delayed = [], []
+
+    async def slow_first(client):
+        result = await original(client)
+        connected.append(client)
+        if len(connected) == 1:
+            await asyncio.sleep(3.05)
+            delayed.append(client)
+        return result
+
+    monkeypatch.setattr(McpStdioClient, 'connect', slow_first)
+    asyncio.run(reply_and_ack_scenario(acknowledgements))
+    assert len(connected) == 2 and len(delayed) == 1
+    assert all(client.exit_confirmed for client in connected)
+
+
+def test_reply_waits_for_the_original_runtime_result_after_the_business_ack_is_visible(acknowledgements, monkeypatch):
+    from backend.app.proactive_runtime.execution import AutonomyExecutor
+
+    app, _, _, _, sessions, tasks, _ = acknowledgements
+    entered, release = threading.Event(), threading.Event()
+    original = AutonomyExecutor.run
+    observed = {}
+
+    def hold_after_real_execution(executor, execution):
+        outcome = original(executor, execution)
+        if executor.origin.allowed_modes == ('source_ack',):
+            observed.update(task_id=execution.task_id, key=executor.origin.tick_id)
+            entered.set()
+            assert release.wait(5), 'owned terminal release did not complete'
+        return outcome
+
+    monkeypatch.setattr(AutonomyExecutor, 'run', hold_after_real_execution)
+
+    async def release_after_observing_pending_runtime():
+        try:
+            async with asyncio.timeout(8):
+                while not entered.is_set():
+                    await asyncio.sleep(.01)
+            state = app.query('role')
+            assert state['acknowledgements'][0]['status'] == 'acknowledged'
+            pending = next(item for item in state['runs'] if item['kind'] == 'autonomy_ack')
+            assert pending['runtimeAcknowledged'] is False
+            with sqlite3.connect(tasks.root / 'tasks.db') as db:
+                before = db.execute('SELECT status,ended_at,retain_until_ack FROM tasks WHERE task_id=?', (observed['task_id'],)).fetchone()
+            assert before == ('running', None, 1)
+            observed['receipt'] = state['acknowledgements'][0]
+            # An independently owned task releases while the scenario waits.
+            await asyncio.sleep(.15)
+        finally:
+            release.set()
 
     async def exercise():
-        now[0] += 1800
-        await app.on_clock()
-        ack = await settle_ack(app, "acknowledged")
-        for _ in range(3):
-            await app.recover()
-        assert ack["attempts"] == 1
-        assert ack["expiresAt"] == ack["decisionAt"] + 168 * 3600
-        calls = [json.loads(line) for line in (root / "calls.jsonl").read_text().splitlines()]
-        assert [call["name"] for call in calls] == ["get_events", "ack"]
-        assert calls[1]["arguments"]["ack_id"] == ack["id"]
-        assert calls[1]["arguments"]["expires_at"] == ack["expiresAt"]
-        assert len(sessions.list_messages("role:role")) == 1
-        assert len(adapter.requests) == 4
-        runs = app.query("role")["runs"]
-        assert all(run["runtimeAcknowledged"] for run in runs)
-        assert next(run for run in runs if run["kind"] == "autonomy_ack")["timeoutSeconds"] == 30
+        releaser = asyncio.create_task(release_after_observing_pending_runtime())
+        try:
+            await reply_and_ack_scenario(acknowledgements)
+        finally:
+            release.set()
+            await releaser
+            async with asyncio.timeout(10):
+                while True:
+                    await app.recover()
+                    if all(item['runtimeAcknowledged'] for item in app.query('role')['runs']):
+                        break
+                    await asyncio.sleep(.01)
+        assert app.query('role')['acknowledgements'][0] == observed['receipt']
     asyncio.run(exercise())
+    with sqlite3.connect(tasks.root / 'tasks.db') as db:
+        assert db.execute('SELECT status,retain_until_ack FROM tasks WHERE task_id=?', (observed['task_id'],)).fetchone() == ('succeeded', 0)
+        assert db.execute('SELECT submission_key,task_id FROM task_submissions WHERE task_id=?', (observed['task_id'],)).fetchall() == [(observed['key'], observed['task_id'])]
+    with sqlite3.connect(sessions.database_path) as db:
+        copied, dirty, acknowledged = db.execute('SELECT runtime_result,result_ack_pending,runtime_acknowledged FROM autonomy_runs WHERE tick_id=?', (observed['key'],)).fetchone()
+        assert copied is not None and (dirty, acknowledged) == (0, 1)
+        assert db.execute('SELECT remaining_bytes FROM autonomy_storage_reservations WHERE operation_id=?', (observed['key'],)).fetchone() == (0,)
 
 
 def test_ack_receipt_loss_retries_only_new_ordinal_with_original_expiry(acknowledgements):
