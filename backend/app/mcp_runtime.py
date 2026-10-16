@@ -166,7 +166,46 @@ class McpHost:
     def __init__(self, store: McpConfigStore) -> None:
         self.store = store
         self._runs: dict[str, McpRun] = {}
+        self._autonomy_runs: dict[str, Any] = {}
+        self._autonomy_role_gates: dict[str, threading.BoundedSemaphore] = {}
+        self._autonomy_server_gates: dict[tuple[str, str], threading.Lock] = {}
         self._lock = threading.RLock()
+
+    def freeze_autonomy(self, origin, grants, *, authorized):
+        """The proactive host supplies its persisted origin and exact operations."""
+        from .mcp_autonomy import AutonomyMcpRun
+        if not authorized() or not grants or len(grants) > 8:
+            raise PermissionError("a live autonomous host grant is required")
+        with self._lock:
+            if origin.tick_id in self._autonomy_runs:
+                raise RuntimeError("autonomous MCP run already owns a bundle")
+            if any(run.role_id == origin.role_id and not run.exit_confirmed
+                   and (run.closed or run.cleanup_failed) for run in self._autonomy_runs.values()):
+                raise RuntimeError("prior autonomous MCP cleanup is pending")
+            role_gate = self._autonomy_role_gates.setdefault(origin.role_id, threading.BoundedSemaphore(2))
+            server_gates = {grant.server_id: self._autonomy_server_gates.setdefault(
+                (origin.role_id, grant.server_id), threading.Lock()) for grant in grants}
+            run = AutonomyMcpRun(self, origin, grants, authorized, role_gate, server_gates)
+            self._autonomy_runs[origin.tick_id] = run
+            return run
+
+    def autonomy_cleanup_pending(self, role_id: str) -> bool:
+        with self._lock:
+            return any(run.role_id == role_id and not run.exit_confirmed
+                       and (run.closed or run.cleanup_failed) for run in self._autonomy_runs.values())
+
+    async def close_autonomy_role(self, role_id: str) -> None:
+        """Retry only this role's autonomous owners; ordinary intent is intact."""
+        with self._lock:
+            runs = tuple(run for run in self._autonomy_runs.values() if run.role_id == role_id)
+        await self._join_cleanup([run.close_from_any_loop() for run in runs])
+
+    async def close_autonomy_run(self, tick_id: str) -> None:
+        """Keep one executor loop alive until its precise peer is reaped."""
+        with self._lock:
+            run = self._autonomy_runs.get(tick_id)
+        if run is not None:
+            await run.close_from_any_loop()
 
     def freeze(self, *, role_id: str, session_key: str, run_id: str, source: dict[str, object] | None,
                source_denial: Callable[[], str | None], tool_enabled: Callable[[str], bool], owner: bool) -> McpRun:
@@ -186,7 +225,7 @@ class McpHost:
 
     def public(self) -> list[dict[str, object]]:
         with self._lock:
-            runs = tuple(self._runs.values())
+            runs = (*self._runs.values(), *self._autonomy_runs.values())
         with self.store._connection() as db:
             counts = dict(db.execute("SELECT server_id, COUNT(*) FROM mcp_intents GROUP BY server_id"))
         result = []
@@ -206,25 +245,35 @@ class McpHost:
 
     async def revoke(self, server_id: str) -> None:
         with self._lock:
-            runs = tuple(self._runs.values())
-        for run in runs:
-            if server_id in run.configs:
-                await run.close_server_from_any_loop(server_id)
+            runs = (*self._runs.values(), *self._autonomy_runs.values())
+        await self._join_cleanup([run.close_server_from_any_loop(server_id)
+                                  for run in runs if server_id in run.configs])
 
     async def delete_role(self, role_id: str) -> None:
         self.store.delete_role_intents(role_id)
         with self._lock:
-            runs = tuple(run for run in self._runs.values() if run.role_id == role_id)
-        for run in runs:
-            for server_id in run.configs:
-                await run.close_server_from_any_loop(server_id)
+            runs = tuple(run for run in (*self._runs.values(), *self._autonomy_runs.values()) if run.role_id == role_id)
+        await self._join_cleanup([run.close_server_from_any_loop(server_id)
+                                  for run in runs for server_id in run.configs])
 
     async def close(self) -> None:
         with self._lock:
             runs = tuple(self._runs.values())
-        for run in runs:
-            for server_id in run.configs:
-                await run.close_server_from_any_loop(server_id)
+            autonomous = tuple(self._autonomy_runs.values())
+        await self._join_cleanup([
+            *(run.close_server_from_any_loop(server_id) for run in runs for server_id in run.configs),
+            *(run.close_from_any_loop() for run in autonomous),
+        ])
+
+    @staticmethod
+    async def _join_cleanup(actions):
+        async def join():
+            results = await asyncio.gather(*actions, return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+        # A failed peer must not prevent other owned peers from being reaped.
+        await finish_cleanup(asyncio.create_task(join()))
 
 
 class McpRun:

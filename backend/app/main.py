@@ -153,6 +153,8 @@ from .mcp_api import mcp_router
 from .coding_tasks.application import CodingApplication
 from .coding_tasks.api import coding_router
 from .coding_tasks.tools import build_coding_tools, CODING_TOOL_NAMES
+from .proactive_runtime import ProactiveApplication
+from .proactive_runtime.api import autonomy_router
 from .chat_attachments import public_attachment, read_request_bytes, resolve_attachment, save_attachment
 
 logging.getLogger("uvicorn.access").addFilter(OAuthCallbackAccessLogFilter())
@@ -810,6 +812,8 @@ async def _memory_engine_delete(mutation: MemoryMutation) -> None:
 
 async def _close_memory_workers() -> None:
     closers = []
+    if _proactive is not None:
+        closers.append(_proactive.close)
     if _coding is not None:
         closers.append(_coding.close)
     if _schedules is not None:
@@ -846,6 +850,7 @@ async def _start_memory_workers() -> None:
     _novelai_application().start()
     _coding_application().start()
     _schedule_application().start()
+    _proactive_application().start()
     _ensure_spawn_completion_worker()
     mail_service.start()
     todo_plugin.sessions = session_store
@@ -917,6 +922,7 @@ app.include_router(mail_router)
 app.include_router(mcp_router(lambda: mcp_host, lambda: store))
 app.include_router(novelai_router(_novelai_application))
 app.include_router(coding_router(lambda: _coding_application(), lambda: store))
+app.include_router(autonomy_router(lambda: _proactive_application()))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=owner_knowledge_frontend_origins,
@@ -1486,6 +1492,8 @@ async def update_model_configuration(configuration_id: str, data: ModelConfigura
         current = model_configuration_store.get(configuration_id)
         if current and not data.apiKey:
             data = data.model_copy(update={"apiKey": current.apiKey})
+        if _proactive is not None:
+            _proactive.invalidate_model(configuration_id)
         configuration = model_configuration_store.update(configuration_id, data)
         await screen_perception.invalidate(configuration_id=configuration_id)
         await computer_use.invalidate(configuration_id=configuration_id)
@@ -1523,6 +1531,8 @@ async def activate_model_configuration(configuration_id: str) -> dict[str, objec
 @app.delete("/api/model/configurations/{configuration_id}")
 async def delete_model_configuration(configuration_id: str) -> dict[str, object]:
     try:
+        if _proactive is not None:
+            _proactive.invalidate_model(configuration_id)
         active_id = model_configuration_store.delete(configuration_id)
         await screen_perception.invalidate(configuration_id=configuration_id)
         await computer_use.invalidate(configuration_id=configuration_id)
@@ -1677,6 +1687,8 @@ async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
         if current is not None and data.agentConfig is not None and "screenPerception" in data.agentConfig.model_fields_set:
             screen = current.agentConfig.screenPerception.model_copy(update=data.agentConfig.screenPerception.model_dump(exclude_unset=True))
             _validate_screen_configuration(screen)
+        if _proactive is not None and current is not None:
+            _proactive.stop(role_id)
         updated = _novelai_application().update_role(role_id, data)
         if current is not None and current.agentConfig.novelai != updated.agentConfig.novelai:
             await _novelai_application().invalidate(role_id)
@@ -1966,6 +1978,8 @@ async def delete_role(role_id: str) -> None:
         await memory_worker.begin_role_deletion(role_id)
         for ref in pending_qq_refs:
             await managed_napcat.stop(ref, role_id=role_id)
+        if _proactive is not None and _proactive.sessions is session_store:
+            await _proactive.begin_role_deletion(role_id)
         await screen_perception.invalidate(role_id=role_id)
         await computer_use.invalidate(role_id=role_id)
         await _novelai_application().invalidate(role_id)
@@ -2102,11 +2116,15 @@ async def delete_role(role_id: str) -> None:
         lock.release()
         _channel_roles_deleting.discard(role_id)
     if deletion_succeeded:
+        if _proactive_context_reader is not None:
+            _proactive_context_reader.forget(role_id)
         try:
             await _coding_application().delete_role(role_id)
             await asyncio.to_thread(task_runtime.delete_role, role_id)
             if _schedules is not None and _schedules.sessions is session_store:
                 await asyncio.to_thread(_schedules.delete_role, role_id)
+            if _proactive is not None and _proactive.sessions is session_store:
+                await asyncio.to_thread(_proactive.delete_role, role_id)
         except (OSError, sqlite3.Error, RuntimeError) as error:
             memory_worker.errors.append(f"{role_id}: task cleanup deferred: {type(error).__name__}")
         for account in channel_accounts_snapshot:
@@ -4660,6 +4678,68 @@ def _schedule_application():
     return _schedules
 
 
+_proactive: ProactiveApplication | None = None
+_proactive_clock = time.time
+_proactive_context_reader = None
+
+
+def _proactive_context(role_id):
+    """Host-selected fixed file; no synthetic owner or generic file permission."""
+    global _proactive_context_reader
+    from .proactive_runtime.context import ProactiveContextReader
+
+    if _proactive_context_reader is None:
+        _proactive_context_reader = ProactiveContextReader()
+    role = store.get(role_id) if role_id not in _channel_roles_deleting else None
+    if role is None:
+        _proactive_context_reader.forget(role_id)
+        raise PermissionError("autonomous role workspace is unavailable")
+    return _proactive_context_reader.read(role_id, store.workspace_path(role_id), incarnation=role.createdAt.isoformat())
+
+
+async def _proactive_memory(origin, query, *, limit):
+    application = _proactive_application()
+    if not memory_settings_store.get().enabled or not application.tool_permitted(origin, "recall_memory"):
+        raise PermissionError("scoped autonomous memory is disabled")
+    response = await _current_memory_engine().query(MemoryQuery(text=query, intent="context", effect="read_only",
+        scope=MemoryScope(origin.role_id, f"role:{origin.role_id}"), limit=min(2, limit)))
+    return [asdict(record) for record in response.records[:2]]
+
+
+async def _proactive_web(origin, name, arguments):
+    from .agent_runtime.tools import ToolContext
+    application = _proactive_application()
+    if not application.tool_permitted(origin, name):
+        raise PermissionError("autonomous webpage permission is unavailable")
+    config = replace(network_tools_config, max_chars=min(14000, network_tools_config.max_chars), timeout_seconds=min(30, network_tools_config.timeout_seconds))
+    tool = WebFetchTool(config) if name == "web_fetch" else WebSearchTool(config)
+    result = await tool.execute(arguments, ToolContext(origin.role_id, origin.task_origin().session_key, origin.tick_id, CancellationToken()))
+    if result.is_error:
+        raise ValueError("autonomous webpage request failed")
+    return result.content
+
+
+async def _proactive_body(origin, url):
+    value = json.loads(await _proactive_web(origin, "web_fetch", {"url": url}))
+    if not isinstance(value, dict) or not isinstance(value.get("text"), str):
+        raise ValueError("source body fetch did not return text")
+    return value["text"][:8000]
+
+
+def _proactive_application():
+    global _proactive
+    if _proactive is None or _proactive.sessions is not session_store or _proactive.tasks is not task_runtime:
+        if _proactive is not None and _proactive.has_owned_work:
+            raise RuntimeError("previous autonomous owner still requires cleanup")
+        _proactive = ProactiveApplication(session_store, task_runtime, clock=lambda: _proactive_clock(),
+            role_getter=lambda key: store.get(key) if key not in _channel_roles_deleting else None,
+            model_getter=model_configuration_store.get, mcp_host=mcp_host,
+            adapter_factory=lambda configuration: model_adapter,
+            recall_memory=_proactive_memory, web_tools=_proactive_web, fetch_body=_proactive_body,
+            context_reader=_proactive_context)
+    return _proactive
+
+
 def _runtime_message_snapshot(message: object) -> dict[str, object]:
     value = asdict(message)
     if not value.get("attachments"):
@@ -5140,6 +5220,10 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
         runtime_manager.role_locks = role_locks
         _, user_message, assistant_message = await runtime_manager.reserve_existing_user_message(
             run, message_id, can_start=lambda: _channel_turn_can_start(thread),
+            on_accepting=(lambda: _proactive_application().accept_human_run(thread.role_id, run_id))
+                if owner and multichannel_store.identity_is_owner(role_id=thread.role_id, channel=thread.channel,
+                    scope=_channel_identity_scope(thread.channel), platform_user_id=str(metadata.get("senderId") or ""),
+                    account_id=thread.account_id) else None,
         )
     except ActiveRunError:
         await _notify_channel_turn_not_started(thread, metadata)
@@ -5519,7 +5603,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         )
         runtime_manager.sessions = session_store
         runtime_manager.role_locks = role_locks
-        _, user_message, assistant_message = await runtime_manager.reserve_run(run, data.content, attachments=attachments, received_at=received_at)
+        _, user_message, assistant_message = await runtime_manager.reserve_run(run, data.content, attachments=attachments, received_at=received_at,
+            on_accepting=lambda: _proactive_application().accept_human_run(role_id, run_id))
     except sqlite3.IntegrityError as error:
         raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试") from error
     except ActiveRunError as error:

@@ -33,44 +33,59 @@ class RuntimeManager:
         self._tasks: dict[str, asyncio.Task[object]] = {}
         self._reserved_roles: dict[str, str] = {}
         self._assistant_message_ids: dict[str, str | None] = {}
+        self._reservation_end: dict[str, Callable[[], None]] = {}
 
     def lock_for(self, role_id: str) -> asyncio.Lock:
         return self.role_locks.setdefault(role_id, asyncio.Lock())
 
-    async def reserve_run(self, run: AgentRun, user_content: str, *, attachments: list[dict[str, object]] | None = None, received_at: float | None = None) -> tuple[AgentRun, Message, Message]:
+    async def reserve_run(self, run: AgentRun, user_content: str, *, attachments: list[dict[str, object]] | None = None, received_at: float | None = None,
+                          on_accepting: Callable[[], Callable[[], None] | None] | None = None) -> tuple[AgentRun, Message, Message]:
         """Reserve a role and atomically create its run and initial messages."""
 
         lock = self.lock_for(run.roleId)
         if lock.locked():
             raise ActiveRunError(f"role already has an active run: {run.roleId}")
         await lock.acquire()
+        on_end = None
         try:
+            on_end = on_accepting() if on_accepting is not None else None
             result = self.sessions.create_run_with_messages(run, user_content, attachments=attachments, received_at=received_at)
         except BaseException:
             lock.release()
+            if on_end is not None:
+                on_end()
             raise
         self._reserved_roles[run.runId] = run.roleId
         self._assistant_message_ids[run.runId] = result[2].id
         self._tokens[run.runId] = CancellationToken()
+        if on_end is not None:
+            self._reservation_end[run.runId] = on_end
         return result
 
-    async def reserve_existing_user_message(self, run: AgentRun, message_id: str, *, can_start: Callable[[], bool] | None = None) -> tuple[AgentRun, Message, Message]:
+    async def reserve_existing_user_message(self, run: AgentRun, message_id: str, *, can_start: Callable[[], bool] | None = None,
+                                            on_accepting: Callable[[], Callable[[], None] | None] | None = None) -> tuple[AgentRun, Message, Message]:
         """Reserve a run around a channel message already written to SQLite."""
 
         lock = self.lock_for(run.roleId)
         # Network intake has already durably accepted this message. Queue it
         # behind the current role turn instead of dropping it as ActiveRunError.
         await lock.acquire()
+        on_end = None
         try:
             if can_start is not None and not can_start():
                 raise ActiveRunError("message is no longer admitted")
+            on_end = on_accepting() if on_accepting is not None else None
             result = self.sessions.create_run_with_existing_user_message(run, message_id)
         except BaseException:
             lock.release()
+            if on_end is not None:
+                on_end()
             raise
         self._reserved_roles[run.runId] = run.roleId
         self._assistant_message_ids[run.runId] = result[2].id
         self._tokens[run.runId] = CancellationToken()
+        if on_end is not None:
+            self._reservation_end[run.runId] = on_end
         return result
 
     def attach_current_task(self, run_id: str) -> bool:
@@ -353,3 +368,6 @@ class RuntimeManager:
             lock = self.lock_for(role_id)
             if lock.locked():
                 lock.release()
+        on_end = self._reservation_end.pop(run_id, None)
+        if on_end is not None:
+            on_end()

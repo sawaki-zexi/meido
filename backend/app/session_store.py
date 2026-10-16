@@ -288,6 +288,26 @@ class SessionStore:
         connection.execute("UPDATE messages SET metadata_json=? WHERE message_id=?", (_dump(metadata), message_id))
         return message.model_copy(update={"metadata": metadata})
 
+    def append_autonomy_message_once(self, role_id: str, tick_id: str, intent_id: str, content: str, *,
+                                     connection: sqlite3.Connection, authorized: Callable[[], bool],
+                                     mood: str, thought: str) -> Message:
+        """The autonomy outbox owns this transaction and canonical receipt."""
+        if not connection.in_transaction:
+            raise ValueError("autonomous delivery requires an owned transaction")
+        database = connection.execute("PRAGMA database_list").fetchone()
+        if database is None or Path(database[2]).resolve() != Path(self.database_path).resolve():
+            raise ValueError("autonomous delivery uses a different database")
+        session_key = f"role:{role_id}"
+        message_id = f"{session_key}:autonomy:{intent_id}"
+        metadata = {"internalEvent": "active_decision", "autonomyTickId": tick_id,
+                    "autonomyIntentId": intent_id, "channel": "desktop", "deliveryStatus": "sent",
+                    "mood": mood, "thought": thought}
+        result = self._append_owned_message_once(connection, role_id, session_key, message_id, content,
+            message_type="internal_completion", metadata=metadata, authorized=authorized, create_session=True)
+        if result.content != content or result.metadata != metadata or result.messageType != "internal_completion":
+            raise ValueError("autonomous desktop receipt conflicts with its original intent")
+        return result
+
     def append_desktop_push_once(self, role_id: str, source_run_id: str, call_id: str, content: str, *,
                                  attachments: list[dict[str, object]], authorized: Callable[[], bool]) -> Message:
         """Persist a role's own message independently of the parent run outcome."""

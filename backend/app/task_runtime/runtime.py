@@ -255,6 +255,21 @@ class TaskRuntime:
             active.thread.start()
             return task_id
 
+    def find_submission(self, origin: TaskOrigin, *, kind: str, submission_key: str) -> str | None:
+        """Observe one original host handover without submitting or replaying it.
+
+        The durable key survives result pruning. A temporarily hidden owner is
+        an error rather than evidence that its execution was never accepted.
+        """
+        with self._lock:
+            if origin.role_id in self._disabled_roles:
+                raise PermissionError("task management is disabled")
+            row = self._db.execute(
+                "SELECT task_id FROM task_submissions WHERE scope=? AND kind=? AND submission_key=? AND role_id=?",
+                (json.dumps(origin.scope()), kind, submission_key, origin.role_id),
+            ).fetchone()
+            return str(row[0]) if row is not None else None
+
     def list(self, origin: TaskOrigin, *, kind: str) -> tuple[TaskSnapshot, ...]:
         """Observe only executions in the caller's original source scope."""
         with self._lock:

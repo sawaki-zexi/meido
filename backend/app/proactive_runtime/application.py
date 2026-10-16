@@ -1,0 +1,706 @@
+"""Own autonomy configuration, host admission and durable business recovery."""
+from contextlib import contextmanager
+import asyncio
+import json
+import sqlite3
+import threading
+import time
+import uuid
+from typing import Callable
+
+from ..session_store import SessionStore
+from ..task_runtime import TaskRuntime, TaskBudget, TaskOutcome
+from ..mcp_stdio import finish_cleanup
+from .config import AutonomyConfig
+from .identity import AutonomyOrigin
+from .execution import AutonomyExecutor
+from .sources import collect_snapshot
+from ..mcp_autonomy import AutonomyMcpGrant
+from .delivery import ensure_schema as ensure_delivery_schema
+from . import bindings
+from . import retention
+from .source_validation import ensure_schema as ensure_source_validation_schema
+from .source_verification import SourceVerificationApplication, ensure_schema as ensure_verification_schema
+
+OPERATION_TIMEOUTS = {"autonomy_tick": 600, "autonomy_poll": 120, "autonomy_ack": 30}
+
+
+class ProactiveApplication:
+    def __init__(self, sessions: SessionStore, tasks: TaskRuntime, *,
+                 role_getter: Callable, model_getter: Callable, clock: Callable = time.time,
+                 mcp_host=None, adapter_factory=None, fetch_body=None, recall_memory=None, web_tools=None,
+                 context_reader=None):
+        self.sessions, self.tasks = sessions, tasks
+        self.role_getter, self.model_getter, self.clock = role_getter, model_getter, clock
+        self.mcp_host, self.adapter_factory, self.fetch_body = mcp_host, adapter_factory, fetch_body
+        self.recall_memory, self.web_tools = recall_memory, web_tools
+        self.context_reader = context_reader
+        self._gate = threading.RLock()
+        self._closed = False
+        self._executors: dict[str, AutonomyExecutor] = {}
+        self._handovers: set[str] = set()
+        self._cleanup_tasks: dict[str, asyncio.Task] = {}
+        self._worker = None
+        self._closing = None
+        self._human_finish_pending: set[tuple[str, str]] = set()
+        self.errors: list[str] = []
+        with self._transaction() as db:
+            db.execute("""CREATE TABLE IF NOT EXISTS autonomy_meta (
+                key TEXT PRIMARY KEY, value REAL NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS autonomy_roles (
+                role_id TEXT PRIMARY KEY, revision INTEGER NOT NULL,
+                generation INTEGER NOT NULL, config TEXT NOT NULL,
+                next_at REAL NOT NULL, next_poll_at REAL NOT NULL,
+                last_human_end REAL NOT NULL, human_busy INTEGER NOT NULL DEFAULT 0,
+                cleanup_pending INTEGER NOT NULL DEFAULT 0,content_rotation INTEGER NOT NULL DEFAULT 0,
+                admission_error TEXT NOT NULL DEFAULT '')""")
+            db.execute("""CREATE TABLE IF NOT EXISTS autonomy_runs (
+                tick_id TEXT PRIMARY KEY,role_id TEXT NOT NULL,origin TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'autonomy_tick',mode TEXT NOT NULL DEFAULT 'pending',
+                status TEXT NOT NULL DEFAULT 'preparing',started_at REAL NOT NULL,
+                task_id TEXT,runtime_result TEXT,result_ack_pending INTEGER NOT NULL DEFAULT 0,
+                runtime_acknowledged INTEGER NOT NULL DEFAULT 0,
+                launch_pending INTEGER NOT NULL DEFAULT 1,error TEXT NOT NULL DEFAULT '',
+                frozen_config TEXT NOT NULL DEFAULT '{}',snapshot TEXT,payload TEXT,
+                bindings TEXT NOT NULL DEFAULT '{}')""")
+            db.execute("""CREATE TABLE IF NOT EXISTS autonomy_sources (
+                role_id TEXT NOT NULL,source_id TEXT NOT NULL,revision INTEGER NOT NULL,
+                definition TEXT NOT NULL,active INTEGER NOT NULL,
+                PRIMARY KEY(role_id,source_id))""")
+            db.execute("""CREATE TABLE IF NOT EXISTS autonomy_human_runs (
+                role_id TEXT NOT NULL,run_id TEXT NOT NULL,ended INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(role_id,run_id))""")
+            db.execute("""CREATE TABLE IF NOT EXISTS autonomy_event_claims (
+                role_id TEXT NOT NULL,event_key TEXT NOT NULL,tick_id TEXT NOT NULL,
+                expires_at REAL,status TEXT NOT NULL,PRIMARY KEY(role_id,event_key))""")
+            ensure_delivery_schema(db)
+            db.execute("""CREATE TABLE IF NOT EXISTS autonomy_budgets (
+                role_id TEXT NOT NULL,day INTEGER NOT NULL,decisions INTEGER NOT NULL DEFAULT 0,
+                drifts INTEGER NOT NULL DEFAULT 0,polls INTEGER NOT NULL DEFAULT 0,
+                acks INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(role_id,day))""")
+            retention.ensure_schema(db)
+            ensure_source_validation_schema(db)
+            ensure_verification_schema(db)
+            now = self._now(db)
+            # Process downtime never creates catch-up decisions. Original claims
+            # will be recovered separately; no old model action is replayed.
+            db.execute("UPDATE autonomy_roles SET next_at=?,human_busy=0,last_human_end=?",
+                       (now + 1800, now))
+            db.execute("UPDATE autonomy_human_runs SET ended=1")
+        self.source_verifications = SourceVerificationApplication(self)
+
+    @contextmanager
+    def _transaction(self):
+        with self._gate, sqlite3.connect(self.sessions.database_path, timeout=.05) as db:
+            db.row_factory = sqlite3.Row
+            db.execute("BEGIN IMMEDIATE")
+            yield db
+
+    def _now(self, db):
+        row = db.execute("SELECT value FROM autonomy_meta WHERE key='clock'").fetchone()
+        now = max(float(self.clock()), float(row[0]) if row else 0)
+        db.execute("INSERT OR REPLACE INTO autonomy_meta VALUES('clock',?)", (now,))
+        return now
+
+    def _require_role(self, role_id):
+        if self.role_getter(role_id) is None:
+            raise KeyError("role is unavailable")
+
+    def configure(self, role_id: str, config: AutonomyConfig, *, expected_revision: int):
+        self._require_role(role_id)
+        if self._closed:
+            raise RuntimeError("autonomy application is closed")
+        for enabled, identifier in ((config.activeDecisionEnabled, config.decisionModelConfigurationId),
+                                    (config.driftEnabled, config.driftModelConfigurationId)):
+            if enabled and (identifier is None or self.model_getter(identifier) is None):
+                raise ValueError("explicit saved model is unavailable")
+        for source in config.sourceGrants:
+            if source.enabled:
+                server = self.mcp_host.store.get(source.serverId) if self.mcp_host else None
+                if (server is None or not server.enabled or role_id not in server.role_ids
+                        or (server.revision, server.grant_id) != (source.configRevision, source.grantRevision)):
+                    raise ValueError("enabled source requires its exact saved MCP grant")
+        with self._transaction() as db:
+            old = db.execute("SELECT * FROM autonomy_roles WHERE role_id=?", (role_id,)).fetchone()
+            revision = old["revision"] if old else 0
+            if expected_revision != revision:
+                raise ValueError("autonomy configuration revision changed")
+            now = self._now(db)
+            sources = []
+            for source in config.sourceGrants:
+                definition = json.dumps(source.model_dump(exclude={"revision", "ackProofId"}), sort_keys=True, separators=(",", ":"))
+                prior = db.execute("SELECT * FROM autonomy_sources WHERE role_id=? AND source_id=?",
+                                   (role_id, source.sourceId)).fetchone()
+                source_revision = prior["revision"] if prior and prior["active"] and prior["definition"] == definition else (prior["revision"] + 1 if prior else 1)
+                sources.append(source.model_copy(update={"revision": source_revision}))
+                db.execute("INSERT OR REPLACE INTO autonomy_sources VALUES(?,?,?,?,1)",
+                           (role_id, source.sourceId, source_revision, definition))
+            known = {source.sourceId for source in sources}
+            for prior in db.execute("SELECT source_id FROM autonomy_sources WHERE role_id=? AND active=1", (role_id,)).fetchall():
+                if prior[0] not in known:
+                    db.execute("UPDATE autonomy_sources SET active=0,revision=revision+1 WHERE role_id=? AND source_id=?", (role_id, prior[0]))
+            saved = config.model_copy(update={"revision": revision + 1, "sourceGrants": sources})
+            db.execute("""INSERT INTO autonomy_roles
+                (role_id,revision,generation,config,next_at,next_poll_at,last_human_end)
+                VALUES(?,?,?,?,?,?,?) ON CONFLICT(role_id) DO UPDATE SET
+                revision=excluded.revision,generation=excluded.generation,
+                config=excluded.config,next_at=excluded.next_at,next_poll_at=excluded.next_poll_at""",
+                (role_id, revision + 1, (old["generation"] if old else 0) + 1,
+                 json.dumps(saved.model_dump(mode="json")), now + 1800, now, now))
+            if old:
+                db.execute("UPDATE autonomy_roles SET cleanup_pending=EXISTS(SELECT 1 FROM autonomy_runs WHERE role_id=? AND runtime_acknowledged=0) WHERE role_id=?", (role_id, role_id))
+            retention.check_capacity(db, role_id)
+        if old:
+            self._kick_cleanup(role_id)
+        return self.query(role_id)
+
+    def query(self, role_id: str):
+        self._require_role(role_id)
+        source_verifications = self.source_verifications.list(role_id)
+        with self._transaction() as db:
+            row = db.execute("SELECT * FROM autonomy_roles WHERE role_id=?", (role_id,)).fetchone()
+            return {"config": json.loads(row["config"]) if row else AutonomyConfig().model_dump(mode="json"),
+                    "nextDecisionAt": row["next_at"] if row else None,
+                    "cleanupPending": bool(row["cleanup_pending"]) if row else False,
+                    "humanBusy": bool(row["human_busy"]) if row else False,
+                    "admissionError": row["admission_error"] if row else "",
+                    "sourceVerifications": source_verifications,
+                    "acknowledgements": [{"id": item["ack_id"], "sourceId": item["source_id"],
+                        "status": item["status"], "attempts": item["attempts"],
+                        "decisionAt": item["decision_at"], "expiresAt": item["expires_at"],
+                        "permanent": bool(item["permanent"]), "reason": item["reason"]}
+                        for item in db.execute("SELECT * FROM autonomy_ack_outbox WHERE role_id=? ORDER BY decision_at DESC,ack_id LIMIT 100", (role_id,))],
+                    "runs": [self._public_run(item, db) for item in db.execute(
+                        "SELECT * FROM autonomy_runs WHERE role_id=? ORDER BY started_at DESC,tick_id DESC LIMIT 100", (role_id,))]}
+
+    @staticmethod
+    def _public_run(row, db):
+        snapshot = json.loads(row["snapshot"]) if row["snapshot"] else {}
+        delivery = db.execute("SELECT status,message_id,intent_id FROM autonomy_deliveries WHERE tick_id=?", (row["tick_id"],)).fetchone()
+        return {"id": row["tick_id"], "kind": row["kind"], "mode": row["mode"],
+                "status": row["status"], "startedAt": row["started_at"],
+                "timeoutSeconds": OPERATION_TIMEOUTS[row["kind"]], "origin": AutonomyOrigin.restore(row["origin"]).public(),
+                "taskId": row["task_id"], "error": row["error"],
+                "runtimeAcknowledged": bool(row["runtime_acknowledged"]), "sources": snapshot.get("sources", []),
+                "delivery": {"status": delivery[0], "messageId": delivery[1], "intentId": delivery[2]} if delivery else None}
+
+    def _authorized(self, origin):
+        try:
+            with self._transaction() as db:
+                return self._authorized_in(db, origin)
+        except (sqlite3.Error, OSError, ValueError):
+            return False
+
+    def _authorized_in(self, db, origin):
+        if self._closed or self.role_getter(origin.role_id) is None:
+            return False
+        config = db.execute("SELECT revision,generation,human_busy FROM autonomy_roles WHERE role_id=?", (origin.role_id,)).fetchone()
+        run = db.execute("SELECT origin,kind,bindings,frozen_config FROM autonomy_runs WHERE tick_id=?", (origin.tick_id,)).fetchone()
+        return bool(config and run and not config["human_busy"]
+            and (config["revision"], config["generation"]) == (origin.grant_revision, origin.generation)
+            and run["origin"] == origin.serialized()
+            and self.source_permissions_current(origin.role_id, AutonomyConfig.model_validate_json(run["frozen_config"]).sourceGrants)
+            and (run["kind"] != "autonomy_tick" or bindings.current(self, origin.role_id, json.loads(run["bindings"]))))
+
+    def source_permissions_current(self, role_id, sources):
+        for source in sources:
+            if not source.enabled:
+                continue
+            server = self.mcp_host.store.get(source.serverId) if self.mcp_host else None
+            if (server is None or not server.enabled or role_id not in server.role_ids
+                    or (server.revision, server.grant_id) != (source.configRevision, source.grantRevision)):
+                return False
+        return True
+
+    def frozen_bindings(self, origin):
+        with self._transaction() as db:
+            row = db.execute("SELECT bindings FROM autonomy_runs WHERE tick_id=?", (origin.tick_id,)).fetchone()
+            return json.loads(row[0]) if row else {}
+
+    def tool_permitted(self, origin, name):
+        if not self._authorized(origin):
+            return False
+        role = self.frozen_bindings(origin).get("role") or {}
+        policy = role.get("agentConfig", {})
+        if name == "recall_memory":
+            return bool(policy.get("memoryRecall", {}).get("enabled"))
+        return name in policy.get("enabledTools", [])
+
+    async def _owned(self, function, *args, **kwargs):
+        pending = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        await finish_cleanup(pending)
+        return pending.result()
+
+    def accept_human_run(self, role_id: str, run_id: str):
+        """Seal publication synchronously; network cleanup never blocks intake."""
+        self._require_role(role_id)
+        if not run_id or len(run_id) > 256:
+            raise ValueError("a genuine host run identity is required")
+        with self._transaction() as db:
+            exists = db.execute("SELECT 1 FROM autonomy_roles WHERE role_id=?", (role_id,)).fetchone()
+            if exists is None:
+                return lambda: None
+            inserted = db.execute("INSERT OR IGNORE INTO autonomy_human_runs(role_id,run_id) VALUES(?,?)", (role_id, run_id)).rowcount
+            if inserted:
+                db.execute("UPDATE autonomy_roles SET generation=generation+1,human_busy=human_busy+1,cleanup_pending=1 WHERE role_id=?", (role_id,))
+        self._kick_cleanup(role_id)
+        return lambda: self.finish_human_run(role_id, run_id)
+
+    def finish_human_run(self, role_id: str, run_id: str):
+        try:
+            with self._transaction() as db:
+                changed = db.execute("UPDATE autonomy_human_runs SET ended=1 WHERE role_id=? AND run_id=? AND ended=0", (role_id, run_id)).rowcount
+                if changed:
+                    db.execute("UPDATE autonomy_roles SET human_busy=MAX(0,human_busy-1),last_human_end=? WHERE role_id=?", (self._now(db), role_id))
+            self._human_finish_pending.discard((role_id, run_id))
+        except sqlite3.Error:
+            self._human_finish_pending.add((role_id, run_id))
+
+    def stop(self, role_id):
+        self._require_role(role_id)
+        with self._transaction() as db:
+            db.execute("UPDATE autonomy_roles SET generation=generation+1,cleanup_pending=1 WHERE role_id=?", (role_id,))
+        self._kick_cleanup(role_id)
+        return self.query(role_id)
+
+    def invalidate_model(self, configuration_id):
+        with self._transaction() as db:
+            affected = []
+            for row in db.execute("SELECT role_id,config FROM autonomy_roles"):
+                config = AutonomyConfig.model_validate_json(row["config"])
+                if configuration_id in {config.decisionModelConfigurationId, config.driftModelConfigurationId}:
+                    db.execute("UPDATE autonomy_roles SET generation=generation+1,cleanup_pending=1 WHERE role_id=?", (row["role_id"],))
+                    affected.append(row["role_id"])
+        for role_id in affected:
+            self._kick_cleanup(role_id)
+
+    @property
+    def has_owned_work(self):
+        return bool(self._handovers or self._executors or self._worker is not None
+                    or any(not task.done() for task in self._cleanup_tasks.values())
+                    or self.source_verifications.has_owned_work)
+
+    async def begin_role_deletion(self, role_id):
+        # The host has already closed ordinary role access. Deletion still
+        # owns the original resources and must be able to seal and join them.
+        with self._transaction() as db:
+            db.execute("UPDATE autonomy_roles SET generation=generation+1,cleanup_pending=1 WHERE role_id=?", (role_id,))
+        await self._drain_role(role_id)
+        await self.recover()
+        with self._transaction() as db:
+            if db.execute("SELECT 1 FROM autonomy_runs WHERE role_id=? AND runtime_acknowledged=0", (role_id,)).fetchone():
+                raise RuntimeError("role autonomous tasks still require recovery")
+            row = db.execute("SELECT cleanup_pending FROM autonomy_roles WHERE role_id=?", (role_id,)).fetchone()
+            if row and row[0]:
+                raise RuntimeError("role autonomous process cleanup remains pending")
+
+    def delete_role(self, role_id):
+        self.source_verifications.delete_role(role_id)
+        with self._transaction() as db:
+            row = db.execute("SELECT revision FROM autonomy_roles WHERE role_id=?", (role_id,)).fetchone()
+            if row:
+                config = AutonomyConfig(revision=row[0] + 1)
+                db.execute("UPDATE autonomy_roles SET revision=revision+1,generation=generation+1,config=?,human_busy=0 WHERE role_id=?",
+                           (config.model_dump_json(), role_id))
+                db.execute("UPDATE autonomy_runs SET snapshot=NULL,bindings='{}',frozen_config='{}',runtime_result=NULL WHERE role_id=?", (role_id,))
+                db.execute("UPDATE autonomy_ack_outbox SET status='revoked',source_grant='{}' WHERE role_id=? AND status NOT IN ('acknowledged','unsupported','revoked','expired')", (role_id,))
+                db.execute("UPDATE autonomy_sources SET active=0,revision=revision+1 WHERE role_id=?", (role_id,))
+                db.execute("DELETE FROM autonomy_human_runs WHERE role_id=?", (role_id,))
+        self._cleanup_tasks.pop(role_id, None)
+
+    def start(self):
+        if self._worker is None or self._worker.done():
+            self._closed = False
+            with self._transaction() as db:
+                now = self._now(db)
+                db.execute("UPDATE autonomy_roles SET next_at=?,next_poll_at=?", (now + 1800, now))
+            self._worker = asyncio.create_task(self._clock_loop())
+
+    async def _clock_loop(self):
+        while not self._closed:
+            try:
+                await self.on_clock()
+            except (sqlite3.Error, OSError, RuntimeError, PermissionError):
+                self.errors[:] = [*self.errors[-49:], "autonomous clock/recovery deferred; owned duties retained"]
+            await asyncio.sleep(1)
+
+    def _kick_cleanup(self, role_id):
+        existing = self._cleanup_tasks.get(role_id)
+        if existing is not None and not existing.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # The durable pending flag is sufficient when called outside the
+            # host loop; the next recover owns cancellation and join.
+            return
+        task = loop.create_task(self._drain_role(role_id))
+        self._cleanup_tasks[role_id] = task
+        def observe(done):
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(observe)
+
+    async def _drain_role(self, role_id):
+        await self.source_verifications.invalidate(role_id)
+        with self._transaction() as db:
+            state = db.execute("SELECT generation FROM autonomy_roles WHERE role_id=?", (role_id,)).fetchone()
+            rows = db.execute("SELECT * FROM autonomy_runs WHERE role_id=? AND runtime_acknowledged=0", (role_id,)).fetchall()
+        for row in rows:
+            origin = AutonomyOrigin.restore(row["origin"])
+            if state and origin.generation == state[0] and not self._closed:
+                continue
+            executor = self._executors.get(origin.tick_id)
+            if executor is not None:
+                executor.cancel()
+            # A handover can be in flight on another owned thread. Keep the
+            # duty instead of interpreting a missing taskId as non-execution.
+            if origin.tick_id in self._handovers:
+                return
+            identifier = row["task_id"] or await self._owned(self._find_task, origin)
+            if identifier:
+                await self._owned(self.tasks.stop, identifier, origin.task_origin())
+                if executor is not None and not await self._owned(executor.finished.wait, 10):
+                    raise RuntimeError("autonomous owner cleanup remains pending")
+        if self.mcp_host is not None and self.mcp_host.autonomy_cleanup_pending(role_id):
+            return
+        with self._transaction() as db:
+            # A new acceptance may have sealed another generation while we
+            # joined. Its own cleanup task must complete before reopening.
+            current = db.execute("SELECT generation FROM autonomy_roles WHERE role_id=?", (role_id,)).fetchone()
+            if current and state and current[0] == state[0]:
+                db.execute("UPDATE autonomy_roles SET cleanup_pending=0 WHERE role_id=?", (role_id,))
+
+    async def _launch(self, origin):
+        self._handovers.add(origin.tick_id)
+        try:
+            await self._owned(self._submit, origin)
+        finally:
+            self._handovers.discard(origin.tick_id)
+
+    async def on_clock(self):
+        if self._closed:
+            return 0
+        await self.recover()
+        admitted = []
+        with self._transaction() as db:
+            now = self._now(db)
+            retention.prune(db, now)
+            rows = db.execute("SELECT * FROM autonomy_roles WHERE next_at<=?", (now,)).fetchall()
+            for row in rows:
+                config = AutonomyConfig.model_validate_json(row["config"])
+                db.execute("UPDATE autonomy_roles SET next_at=? WHERE role_id=?", (now + 1800, row["role_id"]))
+                if (not (config.activeDecisionEnabled or config.driftEnabled) or row["human_busy"]
+                        or now - row["last_human_end"] < 600 or row["cleanup_pending"]
+                        or self.role_getter(row["role_id"]) is None
+                        or self.mcp_host is not None and self.mcp_host.autonomy_cleanup_pending(row["role_id"])):
+                    continue
+                if db.execute("SELECT 1 FROM autonomy_runs WHERE role_id=? AND kind='autonomy_tick' AND runtime_acknowledged=0",
+                              (row["role_id"],)).fetchone():
+                    continue
+                day = int(now // 86400)
+                db.execute("INSERT OR IGNORE INTO autonomy_budgets(role_id,day) VALUES(?,?)", (row["role_id"], day))
+                quota = db.execute("SELECT decisions FROM autonomy_budgets WHERE role_id=? AND day=?", (row["role_id"], day)).fetchone()[0]
+                total = db.execute("SELECT COALESCE(SUM(decisions),0) FROM autonomy_budgets WHERE day=?", (day,)).fetchone()[0]
+                if quota >= 24 or total >= 120:
+                    db.execute("UPDATE autonomy_roles SET admission_error='今日自主决策次数已用完' WHERE role_id=?", (row["role_id"],))
+                    continue
+                modes = tuple(mode for mode, enabled in (("active_decision", config.activeDecisionEnabled), ("drift", config.driftEnabled)) if enabled)
+                origin = AutonomyOrigin(row["role_id"], uuid.uuid4().hex, row["revision"], row["generation"], modes)
+                try:
+                    retention.reserve(db, origin.role_id, origin.tick_id, "autonomy_tick", now)
+                except retention.StorageLimitError:
+                    db.execute("UPDATE autonomy_roles SET admission_error='自主存储额度已满；待处理记录仍保留' WHERE role_id=?", (origin.role_id,))
+                    continue
+                frozen = bindings.freeze(self, origin.role_id, config)
+                db.execute("INSERT INTO autonomy_runs(tick_id,role_id,origin,started_at,frozen_config,bindings) VALUES(?,?,?,?,?,?)",
+                           (origin.tick_id, origin.role_id, origin.serialized(), now, row["config"], json.dumps(frozen, ensure_ascii=False)))
+                db.execute("UPDATE autonomy_budgets SET decisions=decisions+1 WHERE role_id=? AND day=?", (origin.role_id, day))
+                db.execute("UPDATE autonomy_roles SET admission_error='' WHERE role_id=?", (origin.role_id,))
+                admitted.append(origin)
+        for origin in admitted:
+            await self._launch(origin)
+        await self._schedule_polls()
+        return len(admitted)
+
+    async def _schedule_polls(self):
+        admitted = []
+        with self._transaction() as db:
+            now = self._now(db)
+            for row in db.execute("SELECT * FROM autonomy_roles WHERE next_poll_at<=?", (now,)).fetchall():
+                db.execute("UPDATE autonomy_roles SET next_poll_at=? WHERE role_id=?", (now + 150, row["role_id"]))
+                config = AutonomyConfig.model_validate_json(row["config"])
+                if (not (config.activeDecisionEnabled or config.driftEnabled) or row["human_busy"]
+                        or row["cleanup_pending"] or self.role_getter(row["role_id"]) is None
+                        or not any(source.enabled and source.pollTool for source in config.sourceGrants)
+                        or self.mcp_host is None or self.mcp_host.autonomy_cleanup_pending(row["role_id"])):
+                    continue
+                if db.execute("SELECT 1 FROM autonomy_runs WHERE role_id=? AND kind='autonomy_poll' AND runtime_acknowledged=0", (row["role_id"],)).fetchone():
+                    continue
+                day = int(now // 86400)
+                db.execute("INSERT OR IGNORE INTO autonomy_budgets(role_id,day) VALUES(?,?)", (row["role_id"], day))
+                if db.execute("SELECT polls FROM autonomy_budgets WHERE role_id=? AND day=?", (row["role_id"], day)).fetchone()[0] >= 576:
+                    continue
+                origin = AutonomyOrigin(row["role_id"], uuid.uuid4().hex, row["revision"], row["generation"], ("source_poll",))
+                try:
+                    retention.reserve(db, origin.role_id, origin.tick_id, "autonomy_poll", now)
+                except retention.StorageLimitError:
+                    db.execute("UPDATE autonomy_roles SET admission_error='自主存储额度已满；轮询暂缓' WHERE role_id=?", (origin.role_id,))
+                    continue
+                db.execute("INSERT INTO autonomy_runs(tick_id,role_id,origin,kind,mode,started_at,frozen_config) VALUES(?,?,?,'autonomy_poll','source_poll',?,?)",
+                           (origin.tick_id, origin.role_id, origin.serialized(), now, row["config"]))
+                db.execute("UPDATE autonomy_budgets SET polls=polls+1 WHERE role_id=? AND day=?", (origin.role_id, day))
+                admitted.append(origin)
+        for origin in admitted:
+            await self._launch(origin)
+
+    def _submit(self, origin):
+        executor = AutonomyExecutor(self, origin)
+        self._executors[origin.tick_id] = executor
+        with self._transaction() as db:
+            kind = db.execute("SELECT kind FROM autonomy_runs WHERE tick_id=?", (origin.tick_id,)).fetchone()[0]
+        try:
+            task_id = self.tasks.submit(origin.task_origin(), executor, kind=kind,
+                budget=TaskBudget(timeout_seconds=OPERATION_TIMEOUTS[kind], log_bytes=65536, output_chars=16000),
+                submission_key=origin.tick_id, retain_until_ack=True, completion=False,
+                authorized=lambda: self._authorized(origin), description="role autonomous tick")
+        except Exception:
+            # Unknown acceptance retains the original key and cleanup duty.
+            # Recovery only queries this identity; it never resubmits a model.
+            try:
+                self._find_task(origin)
+            except (PermissionError, KeyError, sqlite3.Error):
+                pass
+            return
+        with self._transaction() as db:
+            db.execute("UPDATE autonomy_runs SET task_id=?,launch_pending=0 WHERE tick_id=?", (task_id, origin.tick_id))
+
+    def _find_task(self, origin):
+        with self._transaction() as db:
+            kind = db.execute("SELECT kind FROM autonomy_runs WHERE tick_id=?", (origin.tick_id,)).fetchone()[0]
+        identifier = self.tasks.find_submission(origin.task_origin(), kind=kind, submission_key=origin.tick_id)
+        if identifier is not None:
+            with self._transaction() as db:
+                db.execute("UPDATE autonomy_runs SET task_id=?,launch_pending=0 WHERE tick_id=?",
+                           (identifier, origin.tick_id))
+            return identifier
+        return None
+
+    async def _execute_operation(self, origin, execution, cancelled):
+        with self._transaction() as db:
+            kind = db.execute("SELECT kind FROM autonomy_runs WHERE tick_id=?", (origin.tick_id,)).fetchone()[0]
+        if kind == "autonomy_poll":
+            return await self._execute_poll(origin, execution)
+        if kind == "autonomy_ack":
+            from .acknowledgements import execute_ack
+            return await execute_ack(self, origin, execution)
+        return await self._execute_tick(origin, execution, cancelled)
+
+    async def _finish_operation(self, origin):
+        if self.mcp_host is None:
+            return
+        while True:
+            try:
+                await self.mcp_host.close_autonomy_run(origin.tick_id)
+                return
+            except Exception:
+                try:
+                    with self._transaction() as db:
+                        db.execute("UPDATE autonomy_roles SET cleanup_pending=1 WHERE role_id=?", (origin.role_id,))
+                except sqlite3.Error:
+                    pass  # The host registry independently keeps this duty.
+                await asyncio.sleep(.25)
+
+    async def _execute_poll(self, origin, execution):
+        if not self._authorized(origin):
+            raise PermissionError("source poll grant was revoked")
+        with self._transaction() as db:
+            row = db.execute("SELECT frozen_config,started_at FROM autonomy_runs WHERE tick_id=?", (origin.tick_id,)).fetchone()
+            config = AutonomyConfig.model_validate_json(row[0])
+            remaining = min(execution.deadline - time.monotonic(), row[1] + 120 - self._now(db))
+            db.execute("UPDATE autonomy_runs SET status='running' WHERE tick_id=?", (origin.tick_id,))
+        sources = [source for source in config.sourceGrants if source.enabled and source.pollTool]
+        grants = []
+        for source in sources:
+            name, digest = source.pollTool, source.pollDefinitionHash
+            if name is None or digest is None:
+                raise PermissionError("source poll definition is unavailable")
+            grants.append(AutonomyMcpGrant(source.serverId, source.configRevision, source.grantRevision, ((name, digest),)))
+        bundle = self.mcp_host.freeze_autonomy(origin, tuple(grants), authorized=lambda: self._authorized(origin))
+        try:
+            async with asyncio.timeout(max(0, remaining)):
+                # A shared poll operation is invoked once even when a server
+                # exposes several event channels through that operation.
+                seen = set()
+                for source in sources:
+                    key = (source.serverId, source.pollTool)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    response = await bundle.call(source.serverId, source.pollTool, {})
+                    if response.get("isError"):
+                        raise ValueError("source poll rejected")
+            with self._transaction() as db:
+                db.execute("UPDATE autonomy_runs SET status='polled' WHERE tick_id=?", (origin.tick_id,))
+            return TaskOutcome("succeeded", output_tail="authorized sources polled")
+        finally:
+            await bundle.close()
+
+    async def _execute_tick(self, origin, execution, cancelled):
+        if not self._authorized(origin):
+            raise PermissionError("autonomy grant was revoked")
+        with self._transaction() as db:
+            run = db.execute("SELECT * FROM autonomy_runs WHERE tick_id=?", (origin.tick_id,)).fetchone()
+            config = AutonomyConfig.model_validate_json(run["frozen_config"])
+            rotation = db.execute("SELECT content_rotation FROM autonomy_roles WHERE role_id=?", (origin.role_id,)).fetchone()[0]
+            remaining = min(execution.deadline - time.monotonic(), run["started_at"] + 120 - self._now(db))
+            observed_at = self._now(db)
+        if remaining <= 0:
+            raise TimeoutError("snapshot admission deadline expired")
+        sources = [source for source in config.sourceGrants if source.enabled]
+        bundle = None
+        try:
+            async with asyncio.timeout(remaining):
+                if sources:
+                    if self.mcp_host is None:
+                        raise PermissionError("autonomous MCP host is unavailable")
+                    grants = tuple(AutonomyMcpGrant(source.serverId, source.configRevision, source.grantRevision,
+                        ((source.getTool, source.getDefinitionHash),)) for source in sources)
+                    bundle = self.mcp_host.freeze_autonomy(origin, grants, authorized=lambda: self._authorized(origin))
+                snapshot = await collect_snapshot(bundle, sources, observed_at=observed_at,
+                    eligible=lambda grant, identifier: self._event_eligible(origin.role_id, grant, identifier),
+                    rotation=rotation, fetch_body=(lambda url: self.fetch_body(origin, url)) if self.fetch_body else None)
+            with self._transaction() as db:
+                retention.store_snapshot(db, origin.tick_id, snapshot, self._now(db))
+                db.execute("UPDATE autonomy_roles SET content_rotation=content_rotation+? WHERE role_id=?",
+                           (len(snapshot["contents"]), origin.role_id))
+            if snapshot["alerts"] or snapshot["contents"]:
+                if "active_decision" not in origin.allowed_modes:
+                    status = "decision_disabled"
+                else:
+                    from .turn import run_decision
+                    return await run_decision(self, origin, execution, cancelled, config, snapshot)
+            elif not snapshot["trustedEmpty"]:
+                status = "sources_unavailable"
+            elif "drift" in origin.allowed_modes:
+                # #179 adds the actual Drift consumer after #177/#178 validate.
+                status = "drift_dependency_pending"
+            else:
+                status = "no_events"
+            with self._transaction() as db:
+                db.execute("UPDATE autonomy_runs SET mode='none',status=? WHERE tick_id=?", (status, origin.tick_id))
+            return TaskOutcome("succeeded" if status in {"no_events", "decision_disabled"} else "failed", output_tail=status)
+        finally:
+            if bundle is not None:
+                await bundle.close()
+
+    @staticmethod
+    def _event_key(grant, identifier):
+        import hashlib
+        fields = [grant.serverId, grant.configRevision, grant.eventDomain, grant.channel, identifier]
+        return hashlib.sha256(json.dumps(fields, separators=(",", ":")).encode()).hexdigest()
+
+    def _event_eligible(self, role_id, grant, identifier):
+        with self._transaction() as db:
+            now = self._now(db)
+            occupied = db.execute("SELECT 1 FROM autonomy_event_claims WHERE role_id=? AND event_key=? AND (expires_at IS NULL OR expires_at>?)",
+                                  (role_id, self._event_key(grant, identifier), now)).fetchone()
+            return occupied is None
+
+    def _abort_tick(self, origin, status):
+        with self._transaction() as db:
+            db.execute("UPDATE autonomy_runs SET status=?,error=? WHERE tick_id=? AND status IN ('preparing','running')",
+                       ("aborted", status, origin.tick_id))
+
+    async def recover(self):
+        await self.source_verifications.recover()
+        for role_id, run_id in tuple(self._human_finish_pending):
+            self.finish_human_run(role_id, run_id)
+        with self._transaction() as db:
+            rows = db.execute("SELECT * FROM autonomy_runs WHERE runtime_acknowledged=0").fetchall()
+            pending_roles = [row[0] for row in db.execute("SELECT role_id FROM autonomy_roles WHERE cleanup_pending=1")]
+        if not self._closed:
+            for role_id in pending_roles:
+                self._kick_cleanup(role_id)
+        for row in rows:
+            origin = AutonomyOrigin.restore(row["origin"])
+            try:
+                if self.mcp_host is not None and self.mcp_host.autonomy_cleanup_pending(origin.role_id):
+                    continue
+                task_id = row["task_id"] or await self._owned(self._find_task, origin)
+                if not task_id:
+                    if origin.tick_id not in self._handovers:
+                        with self._transaction() as db:
+                            db.execute("UPDATE autonomy_runs SET status='rejected',launch_pending=0,runtime_acknowledged=1,error='runtime did not accept this original handover' WHERE tick_id=?", (origin.tick_id,))
+                            if row["kind"] == "autonomy_ack":
+                                from .acknowledgements import settle_attempt
+                                settle_attempt(self, db, row)
+                            retention.settle(db, origin.tick_id, now=self._now(db))
+                        executor = self._executors.pop(origin.tick_id, None)
+                        if executor is not None:
+                            executor.finished.set()
+                    continue
+                if row["runtime_result"] is None:
+                    snapshot = await self._owned(self.tasks.query, task_id, origin.task_origin())
+                    if snapshot.ended_at is None:
+                        continue
+                    with self._transaction() as db:
+                        db.execute("UPDATE autonomy_runs SET runtime_result=?,result_ack_pending=1 WHERE tick_id=?",
+                                   (json.dumps({"status": snapshot.status, "output": snapshot.output[-4000:]}), origin.tick_id))
+                        db.execute("UPDATE autonomy_runs SET status='aborted',error='runtime interrupted' WHERE tick_id=? AND status IN ('preparing','running')", (origin.tick_id,))
+                        if row["kind"] == "autonomy_ack":
+                            from .acknowledgements import settle_attempt
+                            settle_attempt(self, db, row)
+                await self._owned(self.tasks.acknowledge_result, task_id, origin.task_origin())
+                with self._transaction() as db:
+                    db.execute("UPDATE autonomy_runs SET result_ack_pending=0,runtime_acknowledged=1 WHERE tick_id=?", (origin.tick_id,))
+                    retention.settle(db, origin.tick_id, now=self._now(db))
+                self._executors.pop(origin.tick_id, None)
+            except (PermissionError, KeyError, ValueError, sqlite3.Error):
+                # Disabled/filtered origins and database contention prove
+                # nothing about whether an old submit/ACK reached its owner.
+                continue
+        if not self._closed:
+            from .acknowledgements import schedule_acks
+            await schedule_acks(self)
+
+    async def close(self):
+        self._closed = True
+        if self._closing is None or self._closing.done() and (self._closing.cancelled() or self._closing.exception() is not None):
+            self._closing = asyncio.create_task(self._close())
+        await finish_cleanup(self._closing)
+
+    async def _close(self):
+        self._closed = True
+        await self.source_verifications.close()
+        if self._worker is not None:
+            self._worker.cancel()
+            await asyncio.gather(self._worker, return_exceptions=True)
+            self._worker = None
+        # Retry each durable owner below even if an earlier background join
+        # failed. Its completed exception is not proof that cleanup finished.
+        for task in tuple(self._cleanup_tasks.values()):
+            if task.cancelled():
+                continue
+            try:
+                await finish_cleanup(task)
+            except (RuntimeError, OSError, KeyError, PermissionError, sqlite3.Error):
+                pass
+        with self._transaction() as db:
+            rows = db.execute("SELECT * FROM autonomy_runs WHERE runtime_acknowledged=0").fetchall()
+        for row in rows:
+            origin = AutonomyOrigin.restore(row["origin"])
+            task_id = row["task_id"] or await self._owned(self._find_task, origin)
+            if task_id:
+                await self._owned(self.tasks.stop, task_id, origin.task_origin())
+            executor = self._executors.get(origin.tick_id)
+            if executor is not None and not executor.finished.is_set():
+                executor.cancel()
+                if not await self._owned(executor.finished.wait, 10):
+                    raise RuntimeError("autonomy cleanup is still pending")
+        await self.recover()
+        if self.mcp_host is not None:
+            with self._transaction() as db:
+                roles = [row[0] for row in db.execute("SELECT role_id FROM autonomy_roles")]
+            if any(self.mcp_host.autonomy_cleanup_pending(role_id) for role_id in roles):
+                raise RuntimeError("autonomous MCP cleanup remains owned and pending")
