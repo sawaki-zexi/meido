@@ -45,9 +45,6 @@ def normalize_request(arguments: dict[str, object], settings: NovelaiSettings) -
     request = GenerationRequest.model_validate(arguments)
     if not request.prompt or request.intent != 'user_requested' or request.scene_key is not None:
         raise ValueError('scene generation requires a host-committed observation')
-    if request.background:
-        # #172 admits background only after its original-source delivery is implemented.
-        raise ValueError('background generation is not enabled')
     if request.mode == 'img2img':
         if request.base_attachment_id is None:
             raise ValueError('img2img requires an owned current-source attachment')

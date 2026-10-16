@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import secrets
 import sqlite3
 import threading
 import time
@@ -14,7 +15,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..channels.consolidation import finish_io
+from ..channels.models import TargetKind, target_from_chat
 from ..chat_attachments import resolve_attachment
+from ..session_store import AttachmentConflict
 from ..task_runtime import TaskOrigin
 from ..task_runtime.runtime import TaskBudget, TaskOutcome
 from .config import NovelaiRoleConfig, NovelaiSettings, NovelaiSettingsStore
@@ -37,7 +40,7 @@ class GenerationReply:
 class NovelaiApplication:
     def __init__(self, *, root: Path, tasks, sessions, roles, channels, credentials,
                  is_role_deleting=lambda role_id: False, http=None, send_channel=None,
-                 channel_media_supported=None):
+                 channel_media_supported=None, lock_for=None, publish_message=None):
         self.root, self.tasks, self.sessions, self.roles, self.channels = root, tasks, sessions, roles, channels
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -46,8 +49,10 @@ class NovelaiApplication:
         self.http = http or NovelaiHttp()
         self.is_role_deleting, self.send_channel = is_role_deleting, send_channel
         self.channel_media_supported = channel_media_supported
+        self.lock_for = lock_for
+        self.publish_message = publish_message
         self._closed = False
-        self._maintenance = None
+        self._maintenance: asyncio.Task[None] | None = None
         self._recovery_lock = threading.Lock()
         self._cancelled_requests: set[tuple[str, str, str]] = set()
 
@@ -175,8 +180,11 @@ class NovelaiApplication:
         if not isinstance(input_path, str):
             raise PermissionError('img2img input has no owned file')
         path = Path(input_path)
-        with path.open('rb') as handle:
-            content = handle.read(10 * 1024 * 1024 + 1)
+        try:
+            with path.open('rb') as handle:
+                content = handle.read(10 * 1024 * 1024 + 1)
+        except (FileNotFoundError, NotADirectoryError):
+            raise PermissionError('img2img input is no longer available in this role') from None
         if not content or len(content) > 10 * 1024 * 1024:
             raise ValueError('img2img input exceeds 10 MiB')
         validate_image(content, max_pixels=16 * 1024 * 1024)
@@ -191,7 +199,9 @@ class NovelaiApplication:
         marker = 'NovelAI attempt:' + row['attempt_id']
         return next((item for item in self.tasks.list(source.origin, kind='novelai_image') if item.description == marker), None)
 
-    async def submit(self, source: GenerationContext, arguments: dict[str, object], *, signal=None, expected_revision=None, expected_role_revision=None):
+    async def submit(self, source: GenerationContext, arguments: dict[str, object], *, signal=None, expected_revision=None,
+                     expected_role_revision=None, fingerprint=None, regeneration=None, publication_ready=True,
+                     delivery_mode=None):
         handover_error = None
         with self._lock:
             role = self.roles.get(source.origin.role_id)
@@ -202,13 +212,19 @@ class NovelaiApplication:
                 raise PermissionError('frozen generation role permission changed')
             if source.denial(self.channels):
                 raise PermissionError('original generation source was revoked')
-            if source.channel_source is not None and (self.channel_media_supported is None
+            if source.channel_source is not None and delivery_mode != 'history_only' and (self.channel_media_supported is None
                     or not self.channel_media_supported(source.origin.source_account_id)):
                 raise PermissionError('original channel cannot automatically deliver image media')
+            if (source.channel_source is not None and delivery_mode != 'history_only'
+                    and (arguments.get('background') is True or regeneration is not None) and self.send_channel is None):
+                raise PermissionError('original channel managed media sender is unavailable')
             public, settings = self._configuration()
             if expected_revision is not None and public['revision'] != expected_revision:
                 raise ValueError('generation service revision changed')
-            fingerprint = hashlib.sha256(canonical(arguments).encode()).hexdigest()
+            # Preserve #171's saved UI/tool identity when no new mode was
+            # requested. Explicit delivery choices remain part of the new key.
+            fingerprint = fingerprint or hashlib.sha256(canonical(arguments if delivery_mode is None else
+                {'parameters': arguments, 'deliveryMode': delivery_mode}).encode()).hexdigest()
             row = self.ledger.request(role.id, source.source_scope, source.request_key)
             existing = row is not None
             owned_input = None
@@ -226,7 +242,10 @@ class NovelaiApplication:
                     human_key=source.human_key, request_key=source.request_key, parameters=parameters,
                     origin=source.to_dict(), service_revision=public['revision'], role_revision=self._role_revision(role),
                     account_limit=settings.dailyAttemptLimit, role_limit=role.agentConfig.novelai.manualDailyAttempts,
-                    fingerprint=fingerprint)
+                    fingerprint=fingerprint, delivery_mode=delivery_mode or ('replacement' if regeneration is not None else
+                        'source_completion' if source.ui_action or parameters['background'] else 'foreground_reply'),
+                    publication_ready=publication_ready,
+                    **(regeneration or {}))
                 row = self.ledger.attempt(view['attemptId'])
             task = self._find_task(row, source)
             if existing and task is None and row['status'] == 'prepared':
@@ -262,6 +281,26 @@ class NovelaiApplication:
             await finish_io(asyncio.to_thread(self.tasks.stop, task.task_id, source.origin))
             self._reconcile_terminal(row['attempt_id'])
             raise handover_error
+        if json.loads(row['parameters'])['background'] and task is not None:
+            # Acceptance transfers publication responsibility to this business
+            # outbox, only after the original Runtime handover is durably copied.
+            try:
+                if signal is not None:
+                    signal.raise_if_cancelled()
+                with self._lock, self.ledger.connect() as connection:
+                    connection.execute('BEGIN IMMEDIATE')
+                    if not self._authorized(source, row['service_revision'], row['role_revision']):
+                        raise PermissionError('background source was revoked before acceptance')
+                    connection.execute('''UPDATE novelai_media_outbox SET background_accepted=1,publication_ready=1
+                        WHERE attempt_id=? AND consumed=0''', (row['attempt_id'],))
+            except (asyncio.CancelledError, PermissionError, OSError, sqlite3.Error):
+                try:
+                    self.seal_request(source)
+                finally:
+                    await finish_io(asyncio.to_thread(self.tasks.stop, task.task_id, source.origin))
+                    self._reconcile_terminal(row['attempt_id'])
+                raise
+            return self.ledger.get(role.id, source.source_scope, row['generation_id'], attempt_id=row['attempt_id'])
         if task is not None:
             try:
                 while task.ended_at is None:
@@ -283,7 +322,7 @@ class NovelaiApplication:
                 pass  # Durable ack_pending is repaired locally, never by re-launching.
         if not self._authorized(source, row['service_revision'], row['role_revision'], allow_sealed=existing):
             raise PermissionError('generation permission changed; result remains in owned history')
-        return self.ledger.get(role.id, source.source_scope, row['generation_id'])
+        return self.ledger.get(role.id, source.source_scope, row['generation_id'], attempt_id=row['attempt_id'])
 
     async def _execute(self, row, source, owned_input, execution):
         spool = self.root / row['role_id'] / (row['attempt_id'] + '.response')
@@ -329,9 +368,10 @@ class NovelaiApplication:
                     raise OSError('received response and committed image references unavailable')
                 for attachment in attachments:
                     item = resolve_attachment(workspace, attachment['id'])
-                    if item is None or item['size'] != attachment['size'] or Path(item['path']).stat().st_size != attachment['size']:
+                    path_value = item.get('path') if item is not None else None
+                    if item is None or not isinstance(path_value, str) or item['size'] != attachment['size'] or Path(path_value).stat().st_size != attachment['size']:
                         raise OSError('previously imported image is unavailable')
-                    validate_image(Path(item['path']).read_bytes(), max_pixels=max_pixels)
+                    validate_image(Path(path_value).read_bytes(), max_pixels=max_pixels)
             self.ledger.imported(row['attempt_id'], attachments)
         except ValueError:
             self.ledger.finish(row['attempt_id'], 'unknown', error_code='response_not_verifiable')
@@ -363,35 +403,238 @@ class NovelaiApplication:
             raise KeyError('role unavailable')
         return {**self.ledger.list(role_id, limit=limit, cursor=cursor), 'usage': self.ledger.usage(role_id)}
 
-    def owner_generation(self, role_id, generation_id):
+    def owner_generation(self, role_id, generation_id, *, attempt_id=None):
         if self.roles.get(role_id) is None or self.is_role_deleting(role_id):
             raise KeyError('role unavailable')
         with self.ledger.connect() as connection:
             row = connection.execute('SELECT source_scope FROM novelai_generations WHERE generation_id=? AND role_id=?', (generation_id, role_id)).fetchone()
         if row is None:
             raise KeyError('generation unavailable')
-        return self.ledger.get(role_id, row[0], generation_id)
+        return self.ledger.get(role_id, row[0], generation_id, attempt_id=attempt_id)
 
-    async def cancel(self, role_id, generation_id):
-        view = self.owner_generation(role_id, generation_id)
-        row = self.ledger.attempt(view['attemptId'])
-        source = GenerationContext.from_dict(json.loads(row['origin']))
-        self.seal_request(source)
-        task = self._find_task(row, source)
-        if task is not None and task.ended_at is None:
-            await finish_io(asyncio.to_thread(self.tasks.stop, task.task_id, source.origin))
-        self._reconcile_terminal(row['attempt_id'])
-        return self.owner_generation(role_id, generation_id)
+    def attachment_generation(self, role_id, attachment_id, message_id):
+        """Resolve a real currently displayed image through the canonical outbox."""
+        if self.roles.get(role_id) is None or self.is_role_deleting(role_id):
+            raise KeyError('role unavailable')
+        with self.ledger.connect() as connection:
+            has_threads = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='channel_threads'").fetchone()
+            thread_scope = ('EXISTS(SELECT 1 FROM channel_threads t WHERE t.session_key=m.session_key AND t.role_id=a.role_id)'
+                if has_threads else '0')
+            row = connection.execute('''SELECT a.generation_id,a.attempt_id,a.source_scope FROM
+                novelai_media_outbox o JOIN novelai_attempts a ON a.attempt_id=o.attempt_id
+                JOIN messages m ON m.message_id=o.message_id
+                WHERE a.role_id=? AND o.message_id=? AND m.role='assistant' AND m.status='completed'
+                AND m.session_key=json_extract(a.origin,'$.origin.sessionKey')
+                AND EXISTS(SELECT 1 FROM json_each(a.attachments) WHERE json_extract(value,'$.id')=?)
+                AND EXISTS(SELECT 1 FROM json_each(m.metadata_json,'$.attachments')
+                    WHERE json_extract(value,'$.id')=? AND json_extract(value,'$.kind')='image')
+                AND EXISTS(SELECT 1 FROM json_each(m.metadata_json,'$.generationAttemptIds') WHERE value=a.attempt_id)
+                AND (EXISTS(SELECT 1 FROM sessions s WHERE s.session_key=m.session_key AND s.role_id=a.role_id)
+                    OR ''' + thread_scope + ''') ORDER BY a.created_at DESC,a.attempt_id DESC LIMIT 1''',
+                (role_id, message_id, attachment_id, attachment_id)).fetchone()
+        if row is None:
+            raise KeyError('displayed owned generation image unavailable')
+        return self.ledger.get(role_id, row['source_scope'], row['generation_id'], attempt_id=row['attempt_id'])
 
-    async def attach_ui_completion(self, source: GenerationContext, attempt_id):
-        if not source.ui_action or source.origin.source_account_id or source.origin.parent_run_id:
-            raise PermissionError('generation completion requires an explicit owner UI action')
+    def regeneration_source(self, role_id, generation_id, *, source_attempt_id, request_id, parameters):
+        view = self.owner_generation(role_id, generation_id, attempt_id=source_attempt_id)
+        original = GenerationContext.from_dict(json.loads(self.ledger.attempt(view['attemptId'])['origin']))
+        origin = original.origin
+        identifier = parameters.get('base_attachment_id')
+        return GenerationContext(type(origin)(role_id, origin.session_key,
+            source_thread_id=origin.source_thread_id, source_account_id=origin.source_account_id,
+            source_scope_id=origin.source_scope_id, source_authority_json=origin.source_authority_json),
+            'ui:' + request_id, 'ui:' + request_id,
+            frozenset([identifier]) if isinstance(identifier, str) else frozenset(),
+            original.channel_source, original.channel_revision, ui_action=True,
+            reply_to_message_id=original.reply_to_message_id,
+            message_thread_id=original.message_thread_id, mention_ids=original.mention_ids)
+
+    async def regenerate(self, source, generation_id, *, source_attempt_id, expected_attachment_id,
+                         arguments, expected_revision, publication_ready=True, delivery_mode=None):
+        parent = self.owner_generation(source.origin.role_id, generation_id, attempt_id=source_attempt_id)
+        if expected_attachment_id not in {item['id'] for item in parent['attachments']}:
+            raise PermissionError('selected image does not belong to the original generation')
+        operation = {'generation_id': generation_id, 'parent_attempt_id': source_attempt_id,
+            'message_id': parent['deliveryMessageId'], 'expected_attachment_id': expected_attachment_id}
+        fingerprint = hashlib.sha256(canonical({'parameters': arguments, 'regeneration': operation,
+            'deliveryMode': delivery_mode}).encode()).hexdigest()
+        previous = self.ledger.request(source.origin.role_id, source.source_scope, source.request_key)
+        parameters = dict(arguments)
+        if previous is None:
+            if delivery_mode != 'history_only':
+                try:
+                    displayed = self.attachment_generation(source.origin.role_id,
+                        expected_attachment_id, parent['deliveryMessageId'])
+                except KeyError:
+                    raise AttachmentConflict('original image slot is no longer available') from None
+                if displayed['attemptId'] != source_attempt_id:
+                    raise AttachmentConflict('original image provenance no longer matches')
+            if arguments.get('seed') is None:
+                seed = secrets.randbelow(2**32)
+                while seed == parent['parameters']['seed']:
+                    seed = secrets.randbelow(2**32)
+                parameters['seed'] = seed
+            elif arguments['seed'] == parent['parameters']['seed']:
+                raise ValueError('regeneration requires a new seed')
+        result = await self.submit(source, parameters, expected_revision=expected_revision,
+            fingerprint=fingerprint, regeneration=operation, publication_ready=publication_ready, delivery_mode=delivery_mode)
+        if result['status'] == 'succeeded' and publication_ready and not result['parameters']['background']:
+            await self.attach_replacement(source, result['attemptId'])
+        return self.owner_generation(source.origin.role_id, generation_id, attempt_id=result['attemptId'])
+
+    def keep_history_only(self, attempt_id):
+        with self.ledger.connect() as connection:
+            connection.execute("""UPDATE novelai_media_outbox SET state='history_only',consumed=1,message_synced=1
+                WHERE attempt_id=? AND delivery_mode='history_only' AND state='pending' AND publication_ready=1""", (attempt_id,))
+
+    def allow_ui_publication(self, source, attempt_id):
+        """The live foreground HTTP action alone releases its durable publish gate."""
+        if not source.ui_action:
+            raise PermissionError('only the actual owner UI action may release publication')
         with self._lock, self.ledger.connect() as connection:
             connection.execute('BEGIN IMMEDIATE')
-            row = connection.execute('SELECT a.*,o.state AS outbox_state,o.consumed FROM novelai_attempts a JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id WHERE a.attempt_id=?', (attempt_id,)).fetchone()
+            row = connection.execute('SELECT * FROM novelai_attempts WHERE attempt_id=?', (attempt_id,)).fetchone()
+            if (row is None or row['origin'] != canonical(source.to_dict())
+                    or not self._authorized(source, row['service_revision'], row['role_revision'])):
+                raise PermissionError('original owner publication action was revoked')
+            connection.execute('UPDATE novelai_media_outbox SET publication_ready=1 WHERE attempt_id=? AND consumed=0', (attempt_id,))
+
+    async def attach_replacement(self, source, attempt_id):
+        return await self._publish_owned(source, attempt_id, replacement=True)
+
+    def _attach_replacement(self, source, attempt_id):
+        with self._lock, self.ledger.connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute('''SELECT a.*,o.state AS outbox_state,o.consumed,o.message_id,
+                o.expected_attachment_id,o.delivery_mode,o.publication_ready FROM novelai_attempts a
+                JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id WHERE a.attempt_id=?''', (attempt_id,)).fetchone()
+            if row is None or row['status'] != 'succeeded' or row['origin'] != canonical(source.to_dict()):
+                raise PermissionError('replacement does not match its original generation action')
+            if (row['delivery_mode'] != 'replacement' or not row['publication_ready']
+                    or row['outbox_state'] not in {'pending', 'sent'}):
+                return None
+            authorize = lambda: self._authorized(source, row['service_revision'], row['role_revision'])
+            if not authorize():
+                raise PermissionError('replacement source was revoked')
+            attachments = json.loads(row['attachments'])
+            if row['consumed']:
+                return None
+            try:
+                if row['error_code']:
+                    connection.execute("UPDATE novelai_media_outbox SET state='history_only',consumed=1,message_synced=1 WHERE attempt_id=?", (attempt_id,))
+                    return None
+                if len(attachments) != 1 or not row['message_id']:
+                    raise AttachmentConflict('generated image has no available original slot')
+                message = self.sessions.replace_attachment_once(row['role_id'], source.origin.session_key,
+                    row['message_id'], row['expected_attachment_id'], attachments[0], attempt_id,
+                    connection=connection, authorized=authorize)
+            except AttachmentConflict:
+                connection.execute("UPDATE novelai_media_outbox SET state='history_only',consumed=1,message_synced=1 WHERE attempt_id=?", (attempt_id,))
+                connection.execute("UPDATE novelai_attempts SET error_code='replacement_conflict' WHERE attempt_id=?", (attempt_id,))
+                return None
+            if source.channel_source is not None:
+                connection.execute("UPDATE novelai_media_outbox SET state='sending',consumed=1,message_synced=0 WHERE attempt_id=?", (attempt_id,))
+                return GenerationReply(attempt_id, row['role_id'], tuple(item['id'] for item in attachments), authorize)
+            connection.execute("UPDATE novelai_media_outbox SET state='sent',consumed=1,message_synced=1 WHERE attempt_id=?", (attempt_id,))
+            return message
+
+    async def cancel(self, role_id, generation_id, *, attempt_id=None):
+        view = self.owner_generation(role_id, generation_id, attempt_id=attempt_id)
+        row = self.ledger.attempt(view['attemptId'])
+        source = GenerationContext.from_dict(json.loads(row['origin']))
+        try:
+            self.seal_request(source)
+        finally:
+            task = self._find_task(row, source)
+            if task is not None and task.ended_at is None:
+                await finish_io(asyncio.to_thread(self.tasks.stop, task.task_id, source.origin))
+            self._reconcile_terminal(row['attempt_id'])
+        return self.owner_generation(role_id, generation_id, attempt_id=row['attempt_id'])
+
+    async def attach_ui_completion(self, source: GenerationContext, attempt_id):
+        return await self._publish_owned(source, attempt_id)
+
+    async def _publish_owned(self, source, attempt_id, *, replacement=False):
+        lock = self.lock_for(source.origin.role_id) if self.lock_for else None
+        if lock is not None:
+            try:
+                await asyncio.wait_for(lock.acquire(), .01)
+            except TimeoutError:
+                return None
+        try:
+            if replacement:
+                result = self._attach_replacement(source, attempt_id)
+            elif source.channel_source is not None:
+                result = self._claim_channel_completion(source, attempt_id)
+            else:
+                result = self._attach_source_completion(source, attempt_id)
+            if isinstance(result, GenerationReply):
+                await finish_io(self._send_source_media(source, result))
+            return result
+        finally:
+            if lock is not None:
+                lock.release()
+
+    def _claim_channel_completion(self, source, attempt_id):
+        with self._lock, self.ledger.connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute('''SELECT a.*,o.state AS outbox_state,o.consumed,o.publication_ready,
+                o.background_accepted,o.completion_fallback FROM novelai_attempts a JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id
+                WHERE a.attempt_id=? AND o.delivery_mode='source_completion' ''', (attempt_id,)).fetchone()
+            if row is None or row['status'] != 'succeeded' or row['origin'] != canonical(source.to_dict()):
+                raise PermissionError('channel completion does not match original source')
+            if not row['publication_ready'] or row['consumed'] or row['outbox_state'] != 'pending':
+                return None
+            if not row['background_accepted'] and not row['completion_fallback']:
+                raise PermissionError('channel completion requires accepted managed work')
+            if row['error_code']:
+                connection.execute("UPDATE novelai_media_outbox SET state='history_only',consumed=1,message_synced=1 WHERE attempt_id=?", (attempt_id,))
+                return None
+            authorize = lambda: self._authorized(source, row['service_revision'], row['role_revision'])
+            if not authorize():
+                raise PermissionError('channel completion source was revoked')
+            attachments = json.loads(row['attachments'])
+            message = self.sessions.append_generation_completion_once(row['role_id'], source.origin.session_key,
+                attempt_id, attachments, connection=connection, authorized=authorize,
+                channel=source.channel_source.channel, delivery_status='pending')
+            connection.execute("UPDATE novelai_media_outbox SET state='sending',message_id=?,consumed=1,message_synced=0 WHERE attempt_id=?", (message.id, attempt_id))
+            return GenerationReply(attempt_id, row['role_id'], tuple(item['id'] for item in attachments), authorize)
+
+    async def _send_source_media(self, source, reply):
+        channel = source.channel_source
+        target = target_from_chat(account_id=channel.account_id, chat_id=channel.chat_id,
+            kind=TargetKind.GROUP if channel.chat_type == 'group' else TargetKind.PRIVATE)
+        try:
+            if self.send_channel is None:
+                raise PermissionError('original media sender unavailable')
+            result = await self.send_channel(source.origin.role_id, channel.account_id, target.id, '图片已生成',
+                actor='reply', record_message=False, attachment_ids=reply.attachment_ids,
+                source_thread_id=channel.thread_id, source_session_key=source.origin.session_key,
+                source_run_id=source.origin.parent_run_id or None, source_tool_call_id=source.origin.tool_call_id,
+                source_kind='novelai_generation', authorize_source=reply.authorized,
+                reply_to_message_id=source.reply_to_message_id, message_thread_id=source.message_thread_id,
+                mention_ids=source.mention_ids)
+            await self.record_channel_receipt(reply, status=result.status.value,
+                delivery_id=result.attempt_id, platform_message_id=result.platform_message_id)
+        except asyncio.CancelledError:
+            await self.record_channel_receipt(reply, status='uncertain')
+            raise
+        except (OSError, ValueError, PermissionError, KeyError, RuntimeError):
+            await self.record_channel_receipt(reply, status='uncertain')
+        self._recover_receipt(self.ledger.attempt(reply.attempt_id), source)
+
+    def _attach_source_completion(self, source, attempt_id):
+        with self._lock, self.ledger.connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute("SELECT a.*,o.state AS outbox_state,o.consumed,o.publication_ready,o.background_accepted,o.completion_fallback FROM novelai_attempts a JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id WHERE a.attempt_id=? AND o.delivery_mode='source_completion'", (attempt_id,)).fetchone()
             if row is None or row['status'] != 'succeeded' or row['origin'] != canonical(source.to_dict()):
                 raise PermissionError('generation completion does not match original UI action')
+            if not source.ui_action and not row['background_accepted'] and not row['completion_fallback']:
+                raise PermissionError('source completion requires an accepted managed submission')
             if row['outbox_state'] not in {'pending', 'sent'}:
+                return None
+            if not row['publication_ready']:
                 return None
             if row['error_code']:
                 connection.execute("UPDATE novelai_media_outbox SET state='history_only',consumed=1 WHERE attempt_id=? AND state='pending'", (attempt_id,))
@@ -411,7 +654,7 @@ class NovelaiApplication:
             rows = connection.execute('''SELECT a.*,o.state AS outbox_state,o.message_id AS outbox_message,o.consumed
                 FROM novelai_human_claims c JOIN novelai_attempts a ON a.attempt_id=c.attempt_id
                 JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id
-                WHERE c.role_id=? AND c.source_scope='desktop' AND c.human_key=?''', (role_id, run_id)).fetchall()
+                WHERE c.role_id=? AND c.source_scope='desktop' AND c.human_key=? AND o.delivery_mode='foreground_reply' ''', (role_id, run_id)).fetchall()
             updated = None
             for row in rows:
                 if row['status'] != 'succeeded' or row['outbox_state'] not in {'pending', 'sent'}:
@@ -442,7 +685,7 @@ class NovelaiApplication:
             connection.execute('BEGIN IMMEDIATE')
             rows = connection.execute('''SELECT a.*,o.state AS outbox_state,o.consumed FROM novelai_human_claims c
                 JOIN novelai_attempts a ON a.attempt_id=c.attempt_id JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id
-                WHERE c.role_id=? AND c.human_key=?''', (role_id, run_id)).fetchall()
+                WHERE c.role_id=? AND c.human_key=? AND o.delivery_mode='foreground_reply' ''', (role_id, run_id)).fetchall()
             for row in rows:
                 if row['status'] != 'succeeded' or row['outbox_state'] != 'pending' or row['consumed']:
                     continue
@@ -513,22 +756,24 @@ class NovelaiApplication:
                         for key, value in receipt.items() if key != 'status')):
                 self._apply_receipt(row['attempt_id'], receipt)
         with self.ledger.connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
             outbox = connection.execute('SELECT * FROM novelai_media_outbox WHERE attempt_id=?', (row['attempt_id'],)).fetchone()
-        if outbox is None or outbox['message_synced'] or not outbox['message_id'] or not outbox['receipt']:
-            return
-        receipt = json.loads(outbox['receipt'])
-        message = next((item for item in self.sessions.list_messages(source.origin.session_key)
-            if item.id == outbox['message_id'] and item.runId == source.origin.parent_run_id
-            and item.role == 'assistant' and item.messageType == 'text'), None)
-        if message is None:
-            return
-        metadata = {**message.metadata, 'deliveryStatus': receipt['status'],
-            'deliveryAttemptId': receipt['deliveryAttemptId'], 'platformMessageId': receipt['platformMessageId']}
-        if receipt['status'] == 'sent':
-            metadata.pop('deliveryError', None)
-        self.sessions.update_message(message.id, message.content, 'completed' if receipt['status'] == 'sent' else 'failed', metadata=metadata)
-        with self.ledger.connect() as connection:
-            connection.execute('UPDATE novelai_media_outbox SET message_synced=1 WHERE attempt_id=? AND receipt=?', (row['attempt_id'], outbox['receipt']))
+            if outbox is not None and outbox['state'] == 'uncertain' and not outbox['receipt']:
+                # Restart knows a sending claim existed, not whether the peer
+                # accepted it. Project that uncertainty without issuing a send.
+                connection.execute('UPDATE novelai_media_outbox SET receipt=? WHERE attempt_id=?',
+                    (canonical({'status': 'uncertain', 'deliveryAttemptId': None, 'platformMessageId': None}), row['attempt_id']))
+                outbox = connection.execute('SELECT * FROM novelai_media_outbox WHERE attempt_id=?', (row['attempt_id'],)).fetchone()
+            if outbox is None or outbox['message_synced'] or not outbox['message_id'] or not outbox['receipt']:
+                return
+            receipt = json.loads(outbox['receipt'])
+            message = self.sessions.reconcile_generation_receipt(row['role_id'], source.origin.session_key,
+                outbox['message_id'], row['attempt_id'], receipt, connection=connection,
+                authorized=lambda: self._authorized(source, row['service_revision'], row['role_revision']))
+            if message is not None:
+                connection.execute('UPDATE novelai_media_outbox SET message_synced=1 WHERE attempt_id=? AND receipt=?', (row['attempt_id'], outbox['receipt']))
+        if message is not None and self.publish_message is not None:
+            self.publish_message(row['role_id'], message)
 
     async def invalidate(self, role_id=None):
         roles = [role_id] if role_id is not None else [role.id for role in self.roles.list()]
@@ -574,6 +819,43 @@ class NovelaiApplication:
         finally:
             self._recovery_lock.release()
 
+    async def _repair_foreground(self, row, source):
+        """Wait for the real role turn to release ownership before choosing fallback."""
+        lock = self.lock_for(row['role_id']) if self.lock_for else None
+        if lock is not None:
+            try:
+                await asyncio.wait_for(lock.acquire(), .01)
+            except TimeoutError:
+                return
+        try:
+            run = self.sessions.get_run(source.origin.parent_run_id)
+            if run is not None and run.status in {'created', 'running'}:
+                return
+            final = next((item for item in reversed(self.sessions.list_messages(source.origin.session_key))
+                if item.runId == source.origin.parent_run_id and item.role == 'assistant'
+                and item.messageType == 'text' and item.status == 'completed'), None)
+            if not source.channel_source and final is not None and run is not None and run.status == 'completed':
+                await self.attach_foreground_reply(row['role_id'], source.origin.session_key, source.origin.parent_run_id, final.id)
+                return
+            with self._lock, self.ledger.connect() as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                if not self._authorized(source, row['service_revision'], row['role_revision']):
+                    return
+                changed = connection.execute("""UPDATE novelai_media_outbox SET delivery_mode='source_completion',
+                    completion_fallback=1 WHERE attempt_id=? AND delivery_mode='foreground_reply'
+                    AND state='pending' AND consumed=0""", (row['attempt_id'],)).rowcount
+            if not changed:
+                return
+            if source.channel_source:
+                reply = self._claim_channel_completion(source, row['attempt_id'])
+                if reply is not None:
+                    await finish_io(self._send_source_media(source, reply))
+            else:
+                self._attach_source_completion(source, row['attempt_id'])
+        finally:
+            if lock is not None:
+                lock.release()
+
     async def _recover_batch(self):
         rows = self.ledger.recovery_batch()
         for saved in rows:
@@ -616,14 +898,14 @@ class NovelaiApplication:
                         connection.execute('UPDATE novelai_attempts SET runtime_ack_pending=0 WHERE attempt_id=?', (row['attempt_id'],))
                 if row['status'] != 'succeeded' or not self._authorized(source, row['service_revision'], row['role_revision']):
                     continue
-                if source.ui_action:
+                if row['delivery_mode'] == 'replacement':
+                    await self.attach_replacement(source, row['attempt_id'])
+                elif row['delivery_mode'] == 'history_only':
+                    self.keep_history_only(row['attempt_id'])
+                elif row['delivery_mode'] == 'source_completion':
                     await self.attach_ui_completion(source, row['attempt_id'])
-                elif not source.channel_source:
-                    final = next((item for item in reversed(self.sessions.list_messages(source.origin.session_key))
-                        if item.runId == source.origin.parent_run_id and item.role == 'assistant' and item.messageType == 'text' and item.status == 'completed'), None)
-                    run = self.sessions.get_run(source.origin.parent_run_id)
-                    if final is not None and run is not None and run.status == 'completed':
-                        await self.attach_foreground_reply(row['role_id'], source.origin.session_key, source.origin.parent_run_id, final.id)
+                elif row['delivery_mode'] == 'foreground_reply':
+                    await self._repair_foreground(row, source)
             except (OSError, sqlite3.Error, KeyError, ValueError, PermissionError):
                 continue
 
@@ -631,9 +913,10 @@ class NovelaiApplication:
         with self._lock:
             self._closed = True
         if self._maintenance is not None:
-            self._maintenance.cancel()
+            maintenance = self._maintenance
+            maintenance.cancel()
             async def join_maintenance():
-                await asyncio.gather(self._maintenance, return_exceptions=True)
+                await asyncio.gather(maintenance, return_exceptions=True)
             await finish_io(join_maintenance())
             self._maintenance = None
         await self.invalidate()

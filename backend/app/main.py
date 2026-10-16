@@ -264,6 +264,14 @@ task_runtime = TaskRuntime(data_root / "tasks")
 _novelai: NovelaiApplication | None = None
 
 
+def _publish_generation_message(role_id: str, message: Message) -> None:
+    if message.sessionKey.startswith('thread:'):
+        thread = multichannel_store.get_thread(role_id, message.sessionKey.removeprefix('thread:'))
+        if thread is not None:
+            multichannel_store.publish(role_id, {'type': 'message', 'roleId': role_id,
+                'thread': thread.public_dict(), 'message': public_message(message).model_dump(mode='json')})
+
+
 def _novelai_application() -> NovelaiApplication:
     global _novelai
     if (_novelai is None or _novelai.sessions is not session_store or _novelai.tasks is not task_runtime
@@ -272,6 +280,9 @@ def _novelai_application() -> NovelaiApplication:
             sessions=session_store, roles=store, channels=multichannel_store,
             credentials=SystemCredentialStore('meido.novelai', strict_cleanup=True),
             is_role_deleting=lambda role_id: role_id in _channel_roles_deleting,
+            lock_for=_runtime_role_lock,
+            send_channel=lambda *args, **kwargs: channel_host.account_send(*args, **kwargs),
+            publish_message=_publish_generation_message,
             channel_media_supported=lambda account_id: bool(channel_adapters.get(account_id)
                 and channel_adapters[account_id].capabilities.media))
     return _novelai

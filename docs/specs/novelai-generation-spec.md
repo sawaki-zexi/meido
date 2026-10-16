@@ -140,7 +140,7 @@ media_outbox每attempt只有一个规范消费记录，唯一键不包含deliver
 
 重生成必须由新的明确主人操作发起并确认再次消费；重新校验当前grant/model/底图仍可访问，不把旧snapshot当授权。新seed和新的attempt持久后才发POST。SessionStore新增窄接口 `replace_attachment_once(role, session, message, expected_id, new_attachment, attempt_id)`，事务校验消息归属及旧槽，只替换该ID并保留其他metadata/附件；同attempt重放返回原结果，旧图已变报conflict。
 
-CAS失败只保留新图历史并提示“已生成，原消息已改变”；不二次付费。后台完成写入另用 `append_generation_completion_once(origin, attempt_id, attachments, status)`，验证原会话仍存在，不能创建第二个主人会话或伪造user消息。这两项为计划新增业务seam，当前代码未提供。取消接口返回本地停止与消费状态，绝不承诺供应商取消或退款。
+CAS失败只保留新图历史并提示“已生成，原消息已改变”；不二次付费。后台完成写入另用 `append_generation_completion_once(origin, attempt_id, attachments, status)`，验证原会话仍存在，不能创建第二个主人会话或伪造user消息。这两项窄业务 seam 已由 #171/#172 本地实现提供；当前源码和受控验收见 [Reference](../reference/novelai-generation.md) 与 [手册](../handbook/novelai-generation-acceptance.md)，不表示真实账号验收或 #173 已完成。取消接口返回本地停止与消费状态，绝不承诺供应商取消或退款。
 
 ## 9. 故障测试与可观察验收
 

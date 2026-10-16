@@ -1,8 +1,8 @@
-# NovelAI 前台生成与归属历史契约
+# NovelAI 生成、指定图片重生成与原来源交付契约
 
-状态：当前实现，#171 本地受控验收；真实账号与生成费用未验收。最后核验：2026-10-16。事实来源：[应用](../../backend/app/novelai_generation/application.py)、[参数与请求](../../backend/app/novelai_generation/parameters.py)、[API](../../backend/app/novelai_generation/api.py)、[账本](../../backend/app/novelai_generation/ledger.py)、[SessionStore](../../backend/app/session_store.py)、[真实消息与渠道测试](../../tests/python/test_novelai_main.py)。完整目标见[NovelAI 规格](../specs/novelai-generation-spec.md)，验收命令与范围见[手册](../handbook/novelai-generation-acceptance.md)。
+状态：当前本地实现，#171/#172 受控验收；真实账号与生成费用未验收。最后核验：2026-10-16。事实来源：[应用](../../backend/app/novelai_generation/application.py)、[参数与请求](../../backend/app/novelai_generation/parameters.py)、[API](../../backend/app/novelai_generation/api.py)、[账本](../../backend/app/novelai_generation/ledger.py)、[SessionStore](../../backend/app/session_store.py)、[真实消息与渠道测试](../../tests/python/test_novelai_main.py)。完整目标见[NovelAI 规格](../specs/novelai-generation-spec.md)，验收命令与范围见[手册](../handbook/novelai-generation-acceptance.md)。
 
-此实现覆盖独立服务、当前主人前台 txt2img/img2img、角色附件、唯一原会话展示及持久历史。后台与指定槽重生成由依赖票 #172 实施，场景 CG、标签和资产自动写回由 #173 实施；当前 `background=true`、模型自报 `scene_cg` 和提前开启 CG/资产写回会明确拒绝。
+此实现覆盖独立服务、当前主人 txt2img/img2img、指定槽重生成、受管后台、角色附件、唯一原来源交付及持久历史。场景 CG、标签和资产自动写回仍由 #173 实施；模型自报 `scene_cg` 和提前开启 CG/资产写回会明确拒绝。
 
 ## 配置与权限
 
@@ -28,7 +28,7 @@
 
 账本与 SessionStore 使用同一 SQLite 数据库的独立业务表。prepared 及有限额度、96MiB存储预占、账户唯一在途 slot 在同一事务；UTC 日取当前日与已用最大日，时钟回退不重置额度。每角色生成媒体1GiB、全局5GiB，出网前必须有足够预留。unknown 保留尝试占用；明确出网前拒绝/取消才释放计数。
 
-执行由现有 TaskRuntime 拥有，kind=novelai_image、300秒、日志64KiB、尾部4000字符、completion=false、submission_key=attempt_id、retain_until_ack=true，受既有全局8/角色3并发约束。已准入但 taskId 回写失败时前台必须 stop/join；恢复按同一 Runtime handover 找回结果，复制业务事实后本地 ACK。ACK/标记失败不会重新提交或 POST。Runtime cancelled/timed_out 与业务 unknown/已收图可以不同。
+执行由现有 TaskRuntime 拥有，kind=novelai_image、300秒、日志64KiB、尾部4000字符、completion=false、submission_key=attempt_id、retain_until_ack=true，受既有全局8/角色3并发约束。已准入但 taskId 回写失败时，前台和后台都必须 stop/join，后台不得假报 accepted；恢复按同一 Runtime handover 找回结果，复制业务事实后本地 ACK。ACK/标记失败不会重新提交或 POST。Runtime cancelled/timed_out 与业务 unknown/已收图可以不同。
 
 每 attempt 最多一次生成 POST。HTTP200/201 接收固定 ZIP/对象JSON/原始受支持图片，显式禁重试、重定向、环境代理/证书隐式配置；HTTP期限沿同一原始 deadline。已知400/401/402/403/422可为 failed_response；408/429/5xx、断线、超时、取消及坏包为 unknown，均不承诺未扣费或退款。
 
@@ -40,7 +40,7 @@
 
 每 attempt 只有一条 canonical media outbox。桌面真实 `/messages` 在 run/final assistant text 都完成后，通过 `append_generation_attachments_once` 在同一 SQLite 事务追加附件和消费 outbox，保留旧 metadata/其他附件。显式 UI 生成使用 `append_generation_completion_once` 向已存在的原角色桌面 session 插入唯一 internal_completion；不伪造 user/run，也不新建第二会话。
 
-UI HTTP 断连/取消先 fsync 原请求的私有取消墓碑并封存发布资格，再停止并等待 Runtime；即使导入稍后成功，恢复也不得迟到插入消息。图片和真实消费事实仍可在原角色历史查看。关闭、撤权、角色删除都等待已拥有任务收尾；删除只清本角色历史/墓碑/媒体，保留全局 token 和账户当日已消费计数。
+普通前台 UI HTTP 断连/取消先 fsync 原请求的私有取消墓碑并封存发布资格，再停止并等待 Runtime；即使导入稍后成功，恢复也不得迟到插入消息。图片和真实消费事实仍可在原角色历史查看。关闭、撤权、角色删除都等待已拥有任务收尾；删除只清本角色历史/墓碑/媒体，保留全局 token 和账户当日已消费计数。
 
 渠道只在原 owner 来源和 adapter 支持图片时准入；含生成能力的回合等待最终回复，再以原账号/目标一次发送文本与附件。发送前持久 sending/consumed；真实 receipt 先写原角色受管小 journal，再复制业务表，后续 SQLite/消息写失败仅本地恢复。sent 不降级为 failed；真实丢回执为 uncertain，重启 sending 亦转 uncertain，不补发、不改投桌面或私聊。
 
@@ -48,10 +48,20 @@ UI HTTP 断连/取消先 fsync 原请求的私有取消墓碑并封存发布资�
 
 ## 应用接口与历史
 
-- POST `/api/roles/{roleId}/generations`：可信 UI 操作，仅 requestId、expectedRevision、parameters；前台等待本次操作，不接受模型制造的 UI 身份。
+`background=true` 先写入有限 attempt、原来源和唯一 outbox，再以同一 submission_key 交接现有 TaskRuntime。只有 taskId 及 `background_accepted` 持久成功后才返回 accepted（工具）或 HTTP202（UI），公开 `backgroundAccepted=true`。父回合完成、父 token 取消或受理后的 HTTP 断开不会撤回这次明确后台；显式停止、许可/来源失效、角色删除和应用退出仍 seal、stop 并 join。交接回写失败不假报受理，不留下隐式付费后台。
+
+交付模式为 foreground_reply、source_completion、replacement 或主人明确选择的 history_only，outbox 主键始终只有 attemptId。后台完成只在原角色锁可用后发布，忙角色以有界试锁跳过并保留恢复义务。桌面和渠道都在现有原 session 写唯一 internal_completion，无 user/run；渠道先持久 sending/consumed，再由真正 ChannelHost.account_send(actor=reply) 向冻结的原 account/thread/chat 发送 owned 附件。原入站的回复/群提及/话题信息来自宿主快照，模型和 UI 没有改投字段。媒体能力不支持时，在生成 POST 前拒绝自动交付；仅历史必须由主人另行明确选择。
+
+重生成是新的明确主人动作：当前配置和 grant 重新核验，新 attempt 关联同一 generation 与 parentAttemptId，省略 seed 时宿主生成与原图不同的 seed，显式沿用旧 seed 拒绝。同 requestId 的参数/目标/模式指纹一致才重查原 attempt，不增加 POST。SessionStore.replace_attachment_once 在调用者的同库事务中只替换 expectedAttachmentId，保留其他图、文件、metadata 和顺序；canonical receipt 对键顺序无关，同 attempt 重放不改写。新动作若已能确认原槽不存在，在消费前409拒绝并提示选择仅历史；同 requestId 重查仍返回原事实。生成期间旧槽或消息改变则新图保留历史，deliveryStatus=history_only、errorCode=replacement_conflict，不再次消费。意外多图仍保留 unexpected_multiple_images，不覆盖为槽位冲突。
+
+普通前台已收图而原最终回复失败/不可用时，原角色锁释放后仅能在未消费的同一 outbox 内 CAS 到原来源完成模式；新模式不能绕过 seal 或当前授权。已 sending/sent/uncertain/consumed 的记录不切换模式或重发。渠道实际 sent receipt 的 journal 可在重启后修复 SQLite/消息，已知 sent 不降级；没有 receipt 的 sending 重启为 uncertain，原消息也投影为 uncertain，绝不补发。消息投影与 message_synced 标志同事务，渠道更新事件只公开安全消息投影。
+
+- POST `/api/roles/{roleId}/generations`：可信 UI 操作，requestId、expectedRevision、parameters，另可明确 deliveryMode=history_only。参数 background 默认 false；前台等待结果，后台完成交接后 HTTP202 返回同一 generation 投影。
 - GET 同路径：默认20/最多50、nextCursor 分页及持久尝试/存储使用量；桌面主人可明确管理该角色所有来源。
-- GET `.../{generationId}`：该角色 owned 记录。
-- POST `.../{generationId}/cancel`：停止本地并封存展示，不承诺远端退款。
+- GET `.../{generationId}?attemptId=...`：该角色、该谱系的精确 attempt；省略 attemptId 兼容返回最新记录。
+- POST `.../{generationId}/cancel`：body={attemptId} 停止精确本地尝试并封存展示，不承诺远端退款；省略 body 兼容旧客户端停止最新记录。
+- POST `.../{generationId}/regenerate`：requestId、expectedRevision、sourceAttemptId、expectedAttachmentId、parameters，另可 deliveryMode=replacement（默认）或明确 history_only。
+- GET `.../attachment/{attachmentId}?messageId=...`：核对当前消息、角色/session、canonical outbox、实际输出及 generationAttemptIds 后返回精确生成记录；不匹配404，不扫描所有历史。
 
 工具查询严格留在实际来源；桌面管理接口的跨来源历史权不能被渠道模型借用。状态包括 prepared、dispatching、received、succeeded、local_pending、unknown、failed_response、cancelled_before_dispatch、rejected；generation 与 delivery 状态分开。图片归属文件和历史不随 TaskRuntime日志 prune 消失。
 

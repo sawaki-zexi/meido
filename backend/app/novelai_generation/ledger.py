@@ -47,6 +47,25 @@ class GenerationLedger:
                 CREATE TABLE IF NOT EXISTS novelai_media_outbox(attempt_id TEXT PRIMARY KEY,state TEXT NOT NULL DEFAULT 'pending',message_id TEXT,consumed INTEGER NOT NULL DEFAULT 0,receipt TEXT,message_synced INTEGER NOT NULL DEFAULT 0);
                 CREATE VIEW IF NOT EXISTS novelai_generation_views AS SELECT a.*,o.state AS delivery_status FROM novelai_attempts a LEFT JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id;
             ''')
+            for table, additions in (
+                    ('novelai_attempts', {'parent_attempt_id': 'TEXT'}),
+                    ('novelai_media_outbox', {'delivery_mode': "TEXT NOT NULL DEFAULT 'foreground_reply'",
+                        'expected_attachment_id': 'TEXT', 'publication_ready': 'INTEGER NOT NULL DEFAULT 1',
+                        'background_accepted': 'INTEGER NOT NULL DEFAULT 0',
+                        'completion_fallback': 'INTEGER NOT NULL DEFAULT 0'})):
+                existing = {row['name'] for row in connection.execute(f'PRAGMA table_info({table})')}
+                for name, definition in additions.items():
+                    if name not in existing:
+                        connection.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
+                        if name == 'delivery_mode':
+                            connection.execute("""UPDATE novelai_media_outbox SET delivery_mode='source_completion'
+                                WHERE attempt_id IN (SELECT attempt_id FROM novelai_attempts
+                                    WHERE json_extract(origin,'$.uiAction')=1)""")
+            connection.execute('DROP VIEW IF EXISTS novelai_generation_views')
+            connection.execute('CREATE INDEX IF NOT EXISTS novelai_media_message ON novelai_media_outbox(message_id)')
+            connection.execute('''CREATE VIEW novelai_generation_views AS SELECT a.*,o.state AS delivery_status,
+                o.delivery_mode,o.message_id AS delivery_message_id,o.expected_attachment_id,o.background_accepted
+                FROM novelai_attempts a LEFT JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id''')
             # Recovery never launches a previous paid attempt, including prepared ones.
             for row in connection.execute("SELECT attempt_id,dispatched FROM novelai_attempts WHERE status IN ('prepared','dispatching')").fetchall():
                 self._finish(connection, row['attempt_id'], 'unknown' if row['dispatched'] else 'cancelled_before_dispatch')
@@ -63,7 +82,11 @@ class GenerationLedger:
         return max(today, previous or today)
 
     def prepare(self, *, role_id, source_scope, human_key, request_key, parameters, origin,
-                service_revision, role_revision, account_limit, role_limit, fingerprint=None):
+                service_revision, role_revision, account_limit, role_limit, fingerprint=None,
+                generation_id=None, parent_attempt_id=None, delivery_mode='foreground_reply',
+                message_id=None, expected_attachment_id=None, publication_ready=True):
+        if delivery_mode not in {'foreground_reply', 'source_completion', 'replacement', 'history_only'}:
+            raise ValueError('invalid generation delivery mode')
         fingerprint = fingerprint or hashlib.sha256(canonical(parameters).encode()).hexdigest()
         with self.connect() as connection:
             connection.execute('BEGIN IMMEDIATE')
@@ -83,14 +106,23 @@ class GenerationLedger:
             rows = connection.execute('SELECT role_id,SUM(reserved_bytes+media_bytes) AS bytes FROM novelai_attempts GROUP BY role_id').fetchall()
             if sum(row['bytes'] for row in rows) + RESERVATION_BYTES > GLOBAL_MEDIA_BYTES or sum(row['bytes'] for row in rows if row['role_id'] == role_id) + RESERVATION_BYTES > ROLE_MEDIA_BYTES:
                 raise ValueError('generation media storage budget exhausted')
-            generation_id, attempt_id, now = uuid.uuid4().hex, uuid.uuid4().hex, time.time()
-            connection.execute('INSERT INTO novelai_generations VALUES(?,?,?,?)', (generation_id, role_id, source_scope, now))
+            attempt_id, now = uuid.uuid4().hex, time.time()
+            if generation_id is None:
+                if parent_attempt_id is not None:
+                    raise ValueError('a regeneration needs its owned generation')
+                generation_id = uuid.uuid4().hex
+                connection.execute('INSERT INTO novelai_generations VALUES(?,?,?,?)', (generation_id, role_id, source_scope, now))
+            elif connection.execute('''SELECT 1 FROM novelai_attempts WHERE generation_id=? AND attempt_id=?
+                    AND role_id=? AND source_scope=?''', (generation_id, parent_attempt_id, role_id, source_scope)).fetchone() is None:
+                raise PermissionError('regeneration does not belong to the original role and source')
             connection.execute('''INSERT INTO novelai_attempts(attempt_id,generation_id,role_id,source_scope,human_key,request_key,fingerprint,parameters,origin,service_revision,role_revision,day,status,reserved_bytes,created_at,updated_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'prepared',?,?,?)''', (attempt_id, generation_id, role_id, source_scope, human_key, request_key, fingerprint, canonical(parameters), canonical(origin), service_revision, role_revision, day, RESERVATION_BYTES, now, now))
+            connection.execute('UPDATE novelai_attempts SET parent_attempt_id=? WHERE attempt_id=?', (parent_attempt_id, attempt_id))
             connection.execute('INSERT INTO novelai_human_claims VALUES(?,?,?,?)', (role_id, source_scope, human_key, attempt_id))
             for owner in ('*', role_id):
                 connection.execute('INSERT INTO novelai_daily VALUES(?,?,1) ON CONFLICT(day,role_id) DO UPDATE SET attempts=attempts+1', (day, owner))
-            connection.execute('INSERT INTO novelai_media_outbox(attempt_id) VALUES(?)', (attempt_id,))
+            connection.execute('''INSERT INTO novelai_media_outbox(attempt_id,delivery_mode,message_id,expected_attachment_id,publication_ready)
+                VALUES(?,?,?,?,?)''', (attempt_id, delivery_mode, message_id, expected_attachment_id, int(publication_ready)))
             # This obligation precedes Runtime admission; losing task_id cannot
             # erase the responsibility to find/copy/ACK the owned handover.
             connection.execute('UPDATE novelai_attempts SET runtime_ack_pending=1 WHERE attempt_id=?', (attempt_id,))
@@ -152,16 +184,19 @@ class GenerationLedger:
         reserved = row['reserved_bytes'] if status in {'local_pending', 'unknown'} or row['spool_size'] else 0
         connection.execute('UPDATE novelai_attempts SET status=?,budget_released=MAX(budget_released,?),reserved_bytes=?,error_code=?,updated_at=? WHERE attempt_id=?', (status, int(release), reserved, error_code, time.time(), attempt_id))
 
-    def get(self, role_id, source_scope, generation_id):
+    def get(self, role_id, source_scope, generation_id, *, attempt_id=None):
         with self.connect() as connection:
-            row = connection.execute('SELECT * FROM novelai_generation_views WHERE role_id=? AND source_scope=? AND generation_id=? ORDER BY created_at DESC LIMIT 1', (role_id, source_scope, generation_id)).fetchone()
+            selected = ' AND attempt_id=?' if attempt_id is not None else ''
+            arguments = [role_id, source_scope, generation_id, *([attempt_id] if attempt_id is not None else [])]
+            row = connection.execute('SELECT * FROM novelai_generation_views WHERE role_id=? AND source_scope=? AND generation_id=?'
+                + selected + ' ORDER BY created_at DESC,attempt_id DESC LIMIT 1', arguments).fetchone()
         if row is None:
             raise KeyError('generation not found in current source')
         return self._view(row)
 
     def attempt(self, attempt_id):
         with self.connect() as connection:
-            row = connection.execute('SELECT * FROM novelai_attempts WHERE attempt_id=?', (attempt_id,)).fetchone()
+            row = connection.execute('SELECT * FROM novelai_generation_views WHERE attempt_id=?', (attempt_id,)).fetchone()
         if row is None:
             raise KeyError('generation attempt missing')
         return dict(row)
@@ -176,7 +211,7 @@ class GenerationLedger:
         with self.connect() as connection:
             connection.execute('BEGIN IMMEDIATE')
             cursor = connection.execute('SELECT after_created,after_attempt FROM novelai_recovery_cursor WHERE singleton=1').fetchone()
-            query = '''SELECT a.*,o.state AS outbox_state,o.message_synced FROM novelai_attempts a
+            query = '''SELECT a.*,o.state AS outbox_state,o.message_synced,o.delivery_mode,o.publication_ready FROM novelai_attempts a
                 JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id
                 WHERE (a.status IN ('prepared','dispatching','received','local_pending') OR a.runtime_ack_pending=1
                    OR (a.status='unknown' AND a.reserved_bytes>0)
@@ -233,4 +268,9 @@ class GenerationLedger:
                 'attachments': json.loads(row['attachments']), 'taskId': row['task_id'],
                 'createdAt': datetime.fromtimestamp(row['created_at'], timezone.utc).isoformat(),
                 'errorCode': row['error_code'], 'consumption': 'possible' if row['dispatched'] else 'not_dispatched',
-                'deliveryStatus': row['delivery_status'] if 'delivery_status' in row.keys() else 'pending'}
+                'deliveryStatus': row['delivery_status'] if 'delivery_status' in row.keys() else 'pending',
+                'parentAttemptId': row['parent_attempt_id'] if 'parent_attempt_id' in row.keys() else None,
+                'deliveryMode': row['delivery_mode'] if 'delivery_mode' in row.keys() else 'foreground_reply',
+                'deliveryMessageId': row['delivery_message_id'] if 'delivery_message_id' in row.keys() else None,
+                'backgroundAccepted': bool(row['background_accepted']) if 'background_accepted' in row.keys() else False,
+                'expectedAttachmentId': row['expected_attachment_id'] if 'expected_attachment_id' in row.keys() else None}

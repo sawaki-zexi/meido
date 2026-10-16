@@ -15,7 +15,7 @@ _SCHEMA.pop('title', None)
 
 class GenerateImageTool:
     definition = ToolDefinition(name='generate_image',
-        description='Generate one approved NovelAI image from English tags, or an image attachment from this actual owner input. Uses finite paid-attempt allowance; unknown results are never retried automatically. Foreground only until background delivery is enabled.',
+        description='Generate one approved NovelAI image from English tags or an image attachment in this owner input. Uses finite paid-attempt allowance; unknown results are never retried. Explicit background=true returns accepted with its task and later delivers once to this original conversation.',
         input_schema=_SCHEMA, risk='external', source='builtin:novelai', exposure='direct',
         external_allowed=False, timeout_seconds=330, output_limit=4000)
 
@@ -50,8 +50,11 @@ class GenerateImageTool:
                 expected_revision=self.service_revision, expected_role_revision=self.role_revision)
             details = {key: result[key] for key in ('generationId', 'attemptId', 'status', 'attachments', 'taskId', 'errorCode', 'consumption')}
             details['parameters'] = {key: result['parameters'][key] for key in ('model', 'sampler', 'seed', 'width', 'height', 'steps')}
+            accepted = result['backgroundAccepted']
+            if accepted:
+                details['status'] = 'accepted'
             return AgentToolResult(json.dumps(details, ensure_ascii=False), details=details,
-                is_error=result['status'] != 'succeeded' or bool(result['errorCode']))
+                is_error=not accepted and (result['status'] != 'succeeded' or bool(result['errorCode'])))
         except (ValueError, PermissionError, KeyError, OSError, RuntimeError, sqlite3.Error):
             return AgentToolResult('生图请求未完成；检查当前来源、配置、有限许可、参数与归属历史。已出网的请求可能计费，不会自动重试。',
                 details={'status': 'rejected', 'errorCode': 'generation_not_available'}, is_error=True)

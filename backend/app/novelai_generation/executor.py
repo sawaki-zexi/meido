@@ -20,7 +20,7 @@ class GenerationExecutor:
         async def owned():
             with self._lock:
                 self._loop, self._task = asyncio.get_running_loop(), asyncio.current_task()
-                if self._cancelled.is_set():
+                if self._cancelled.is_set() and self._task is not None:
                     self._task.cancel()
             return await self._execute(execution)
         try:

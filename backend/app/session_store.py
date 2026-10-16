@@ -85,6 +85,10 @@ def _runtime_assistant_message(stored: Message) -> AssistantMessage:
                             timestamp=_timestamp(stored.metadata))
 
 
+class AttachmentConflict(ValueError):
+    """The explicitly selected message/image no longer has its original slot."""
+
+
 class SessionStore:
     def __init__(self, database_path: str | Path) -> None:
         self.database_path = str(database_path)
@@ -308,6 +312,73 @@ class SessionStore:
             raise ValueError("autonomous desktop receipt conflicts with its original intent")
         return result
 
+    def replace_attachment_once(self, role_id: str, session_key: str, message_id: str,
+                                expected_attachment_id: str, new_attachment: dict[str, object], attempt_id: str, *,
+                                connection: sqlite3.Connection, authorized: Callable[[], bool]) -> Message:
+        """Replace one image while its canonical generation outbox owns the transaction."""
+        if not connection.in_transaction:
+            raise ValueError('generation replacement requires an owned transaction')
+        database = connection.execute('PRAGMA database_list').fetchone()
+        if database is None or Path(database[2]).resolve() != Path(self.database_path).resolve():
+            raise ValueError('generation replacement uses a different database')
+        size = new_attachment.get('size')
+        if (not attempt_id or len(attempt_id) > 128 or not expected_attachment_id
+                or not isinstance(new_attachment.get('id'), str) or not new_attachment['id']
+                or set(new_attachment) - {'id', 'name', 'mediaType', 'size', 'kind'}
+                or new_attachment.get('mediaType') not in {'image/png', 'image/jpeg', 'image/webp'}
+                or not isinstance(new_attachment.get('name'), str)
+                or new_attachment.get('kind', 'image') != 'image'
+                or not isinstance(size, int) or isinstance(size, bool) or size < 1):
+            raise ValueError('generation replacement requires public image references')
+        if not authorized():
+            raise PermissionError('generation replacement permission was revoked')
+        owner = connection.execute('SELECT role_id FROM sessions WHERE session_key=?', (session_key,)).fetchone()
+        if owner is None and session_key.startswith('thread:'):
+            owner = connection.execute('SELECT role_id FROM channel_threads WHERE session_key=?', (session_key,)).fetchone()
+        columns = 'message_id,session_key,sequence,role,content,status,created_at,message_type,tool_call_id,tool_name,tool_arguments_json,tool_result_json,is_error,run_id,metadata_json'
+        row = connection.execute(f'SELECT {columns} FROM messages WHERE message_id=?', (message_id,)).fetchone()
+        if owner is None or owner[0] != role_id:
+            raise PermissionError('original generation message is unavailable')
+        if row is None:
+            raise AttachmentConflict('original generation message was removed')
+        message = self._message(row)
+        if ((message.sessionKey, message.role, message.status) != (session_key, 'assistant', 'completed')
+                or message.messageType not in {'text', 'internal_completion'}):
+            raise PermissionError('generation replacement requires a final assistant message')
+        if message.messageType == 'text':
+            run = connection.execute('SELECT role_id,session_key,status FROM agent_runs WHERE run_id=?', (message.runId,)).fetchone()
+            if (run is None or tuple(run) != (role_id, session_key, 'completed')
+                    or not connection.execute("SELECT 1 FROM messages WHERE run_id=? AND role='user' AND message_type='text'", (message.runId,)).fetchone()):
+                raise PermissionError('generation replacement requires the completed source run')
+        elif message.metadata.get('internalEvent') != 'novelai_generation':
+            raise PermissionError('generation replacement requires a generated completion')
+        metadata = dict(message.metadata)
+        prior, consumed = metadata.get('attachments', []), metadata.get('generationAttemptIds', [])
+        receipts = metadata.get('generationReplacementReceipts', {})
+        if (not isinstance(prior, list) or any(not isinstance(item, dict) for item in prior)
+                or not isinstance(consumed, list) or any(not isinstance(value, str) for value in consumed)
+                or not isinstance(receipts, dict)):
+            raise ValueError('generation message has invalid attachment metadata')
+        fingerprint = hashlib.sha256(json.dumps([expected_attachment_id, new_attachment],
+            ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        if attempt_id in receipts:
+            if receipts[attempt_id] != fingerprint:
+                raise ValueError('generation replacement conflicts with its original receipt')
+            if not authorized():
+                raise PermissionError('generation replacement permission was revoked')
+            return message
+        slots = [index for index, item in enumerate(prior) if item.get('id') == expected_attachment_id]
+        if (len(slots) != 1 or not str(prior[slots[0]].get('mediaType', '')).startswith('image/')
+                or any(item.get('id') == new_attachment['id'] for item in prior)):
+            raise AttachmentConflict('selected generation attachment has changed')
+        metadata['attachments'] = [new_attachment if index == slots[0] else item for index, item in enumerate(prior)]
+        metadata['generationAttemptIds'] = [*consumed, *([] if attempt_id in consumed else [attempt_id])]
+        metadata['generationReplacementReceipts'] = {**receipts, attempt_id: fingerprint}
+        if not authorized():
+            raise PermissionError('generation replacement permission was revoked')
+        connection.execute('UPDATE messages SET metadata_json=? WHERE message_id=?', (_dump(metadata), message_id))
+        return message.model_copy(update={'metadata': metadata})
+
     def append_desktop_push_once(self, role_id: str, source_run_id: str, call_id: str, content: str, *,
                                  attachments: list[dict[str, object]], authorized: Callable[[], bool]) -> Message:
         """Persist a role's own message independently of the parent run outcome."""
@@ -324,31 +395,43 @@ class SessionStore:
     def append_generation_completion_once(self, role_id: str, session_key: str, attempt_id: str,
                                           attachments: list[dict[str, object]], *,
                                           connection: sqlite3.Connection, authorized: Callable[[], bool],
-                                          status: str = 'succeeded') -> Message:
-        """An explicit owner UI action can publish without inventing a human run."""
+                                          status: str = 'succeeded', channel: str = 'desktop',
+                                          delivery_status: str = 'sent') -> Message:
+        """Publish owned media in its existing original session without a human run."""
         if not connection.in_transaction:
             raise ValueError('generation completion requires an owned transaction')
         database = connection.execute('PRAGMA database_list').fetchone()
         if database is None or Path(database[2]).resolve() != Path(self.database_path).resolve():
             raise ValueError('generation transaction uses a different database')
-        if (session_key != f'role:{role_id}' or not attempt_id or len(attempt_id) > 128
-                or status != 'succeeded' or not 1 <= len(attachments) <= 16):
+        if (not attempt_id or len(attempt_id) > 128 or status != 'succeeded'
+                or delivery_status not in {'pending', 'sent', 'failed', 'uncertain'}
+                or not 1 <= len(attachments) <= 16):
             raise ValueError('invalid generation completion source or media')
+        if session_key == f'role:{role_id}':
+            if channel != 'desktop' or delivery_status != 'sent':
+                raise ValueError('invalid desktop generation completion')
+        elif session_key.startswith('thread:'):
+            thread = connection.execute('SELECT role_id,channel FROM channel_threads WHERE session_key=?', (session_key,)).fetchone()
+            if thread is None or (thread[0], thread[1]) != (role_id, channel):
+                raise PermissionError('original generation channel is unavailable')
+        else:
+            raise ValueError('invalid original generation session')
         ids = set()
         for item in attachments:
             identifier = item.get('id')
+            size = item.get('size')
             if (not isinstance(identifier, str) or not identifier or identifier in ids
                     or set(item) - {'id', 'name', 'mediaType', 'size', 'kind'}
                     or item.get('mediaType') not in {'image/png', 'image/jpeg', 'image/webp'}
-                    or type(item.get('size')) is not int or item['size'] < 1):
+                    or not isinstance(size, int) or isinstance(size, bool) or size < 1):
                 raise ValueError('generation completion requires public image references')
             ids.add(identifier)
         # The owner of this exact business transaction also holds its admission
         # lock; the callback rechecks immediately before the shared insert seam.
         if not authorized():
             raise PermissionError('generation completion permission was revoked')
-        metadata = {'internalEvent': 'novelai_generation', 'channel': 'desktop',
-                    'deliveryStatus': 'sent', 'generationAttemptIds': [attempt_id], 'attachments': attachments}
+        metadata = {'internalEvent': 'novelai_generation', 'channel': channel,
+                    'deliveryStatus': delivery_status, 'generationAttemptIds': [attempt_id], 'attachments': attachments}
         return self._append_owned_message_once(connection, role_id, session_key,
             f'{session_key}:generation:{attempt_id}', '图片已生成', message_type='internal_completion',
             metadata=metadata, authorized=authorized, create_session=False)
@@ -381,6 +464,36 @@ class SessionStore:
             connection.execute('UPDATE channel_threads SET last_activity=? WHERE session_key=?', (now, session_key))
         stored = connection.execute(f'SELECT {columns} FROM messages WHERE message_id=?', (message_id,)).fetchone()
         return self._message(stored)
+
+    def reconcile_generation_receipt(self, role_id, session_key, message_id, attempt_id, receipt, *,
+                                     connection, authorized):
+        """Project a durable media receipt in its outbox owner's transaction."""
+        if not connection.in_transaction:
+            raise ValueError('generation receipt requires an owned transaction')
+        database = connection.execute('PRAGMA database_list').fetchone()
+        if database is None or Path(database[2]).resolve() != Path(self.database_path).resolve():
+            raise ValueError('generation receipt uses a different database')
+        if set(receipt) != {'status', 'deliveryAttemptId', 'platformMessageId'} or receipt['status'] not in {'pending', 'sent', 'failed', 'uncertain'}:
+            raise ValueError('invalid generation receipt')
+        columns = 'message_id,session_key,sequence,role,content,status,created_at,message_type,tool_call_id,tool_name,tool_arguments_json,tool_result_json,is_error,run_id,metadata_json'
+        row = connection.execute(f'SELECT {columns} FROM messages WHERE message_id=? AND session_key=?', (message_id, session_key)).fetchone()
+        if row is None:
+            return None
+        message = self._message(row)
+        owner = connection.execute('SELECT role_id FROM channel_threads WHERE session_key=?', (session_key,)).fetchone()
+        if (owner is None or owner[0] != role_id or message.role != 'assistant'
+                or message.messageType not in {'text', 'internal_completion'}
+                or attempt_id not in message.metadata.get('generationAttemptIds', [])):
+            raise PermissionError('generation receipt does not belong to its original media message')
+        metadata = {**message.metadata, 'deliveryStatus': receipt['status'],
+            'deliveryAttemptId': receipt['deliveryAttemptId'], 'platformMessageId': receipt['platformMessageId']}
+        if receipt['status'] == 'sent':
+            metadata.pop('deliveryError', None)
+        if not authorized():
+            raise PermissionError('generation receipt projection was revoked')
+        connection.execute('UPDATE messages SET metadata_json=?,status=? WHERE message_id=?',
+            (_dump(metadata), 'completed' if receipt['status'] == 'sent' else 'failed', message_id))
+        return self._message(connection.execute(f'SELECT {columns} FROM messages WHERE message_id=?', (message_id,)).fetchone())
 
     def append_schedule_message_once(self, role_id, session_key, schedule_id, occurrence_id, content, *,
                                       authorized, connection, channel='desktop', delivery_status='sent', attempt_id=None):
