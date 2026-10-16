@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；已验证集成：`fff08b186809726a219f280dc8352134e62523c0`。该固定版本两条 CI 全通过：各后端1966 passed、34 skipped、2条依赖弃用warning，前端182 passed/32文件及 TypeScript/Vite 构建；见[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38865160983)与[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38865157151)。桌面控制、NovelAI首批和Coding首批均已整合并通过CI；主动决策`6a1ef4f`两条完整CI后端失败，修正后`237db7a`一条后端2128项通过、另一条2失败/2126通过，正在复核来源核验SQLite短时写锁恢复的窄修。尚未取得新的两条完整CI通过。跳过项不计原生验收。
+最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；最新已验证集成：`f7be50795a78f901b54a3efefa61db0317b00280`。该准确头的[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38874921042)与[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38874916089)均全通过：各后端2134 passed/35 skipped/2 warnings（351.18秒、318.59秒），各前端186 passed/33文件及TypeScript/Vite。此前`6a1ef4f`两次后端失败、`237db7a`一绿一失败与后续真实修正证据保留。当前另合入源分支已两轴复核的#172/#175，集成验收仍在进行；不能把f7be绿色套用于这些新提交。跳过项不计原生验收。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -33,10 +33,10 @@
 | C10 MCP 3 工具 | #159 已进入集成分支；真实 stdio、版本化发现、配置 UI、持久连接意愿及严格凭据清理已两轴复核；Linux 回收、Windows asyncio 环境、中文 schema 编码及 peer_error 清理竞态均实证修复并两轴复核；`c03a9fb` 两条 CI 通过 | 总 PR 最终跨模块验收 |
 | P01 浏览器 28 工具 | main，PR #150；全部 28 schema 映射核验，21 项真实原生浏览器测试通过，无 skip | 后续 MCP/配置集成回归 |
 | P02 桌面控制 8 工具 | #169 固定源 `7aa8108` 已两轴复核并整合；8工具/图像下一模型请求、单观察/lease/Job收尾有真实专用窗口和HTTP/provider证据。规范审查两项P2修正后独立复核无遗留；集成交叉60 passed/1原生deselected，前端专项及TS/Vite、9源mypy和c052848两条完整CI通过 | 总PR最终跨模块验收；多DPI/多屏/锁屏等未验收环境见[原生手册](../handbook/computer-use-native-acceptance.md)，不扩大真实应用操作许可 |
-| P03 Coding Agent 5 工具 | #174 固定源 `5a5a2c4` 两轴修正复核无遗留后汇入；真实owned Herdr/两合成CLI、精确继续、原来源和持久恢复见[验收手册](../handbook/coding-agent-acceptance.md)。集成交叉167 passed，包含7项原生；关闭故障修正 `a825e11` 与Linux配置夹具修正均已两轴复核无遗留，`fff08b1`两条完整CI通过。#175已在独立分支实施，#176等待其依赖 | #175/#176实现与复核；真实认证/消费/发布另批，不能以合成CLI代替真实服务 |
+| P03 Coding Agent 5 工具 | #174固定源`5a5a2c4`及关闭/配置夹具修正均已两轴复核并通过`fff08b1`两条CI；7项Herdr/两合成CLI原生通过，见[验收](../handbook/coding-agent-acceptance.md)。#175固定源`0e2da975`完成完整两轴及修正复核后合入，独立Codex exec复用spawn coding，见[S07验收](../handbook/codex-delegate-acceptance.md)；总集成待验 | #175准确集成两轴/CI后方可开始#176；真实认证/消费/发布另批，不能以合成CLI代替真实服务 |
 | P04 屏幕感知 1 工具 | #160 已进入集成分支；提前拒绝/重复取消连接回收最终两轴复核均无剩余 finding；相关后端 196 passed/1 native 条件 skip，前端 69 passed；真实受控 Windows 主屏/125% DPI/本地视觉及取消通过，无原图落盘 | 总 PR 最终集成；尚无双屏、混合 DPI、实际锁屏/远程断开或 frozen 分发实证，也未调用真实远端视觉服务 |
 | P05 桌宠 1 工具 | 待实现；Electron/PySide6 宿主选择待回答 | 真实透明置顶窗口、动作包、move/play 与完整生命周期 |
-| P06 生图 1 工具 | #171 固定源b786a867及集成修正均已两轴复核无遗留，公开HTTP对话txt2img/img2img、原回复和历史归属、单POST/取消/恢复有本地协议证据；`0dee4e4` 两条完整CI通过。公平恢复批次P2的两种100条阻塞回归已独立验证；见[手册](../handbook/novelai-generation-acceptance.md)。#172重生成/后台媒体正在独立分支实施，#173人类回合CG等待#172 | #172/#173实现及复核；真实NovelAI账号生成和费用另批，不能以本地fixture宣称真实服务可用 |
+| P06 生图 1 工具 | #171固定源b786a867及集成两轴/`0dee4e4`两条CI通过，txt2img/img2img、原来源与历史、单POST/取消/公平恢复有本地协议证据。#172固定源`60860fb`完成完整两轴与journal/来源授权/消费提示修正复核后合入，含指定图片CAS重生成、明确后台与原来源单次媒体；见[手册](../handbook/novelai-generation-acceptance.md)，总集成待验 | #172准确集成两轴/CI后方可开始#173人类回合CG；真实NovelAI账号生成和费用另批 |
 | P07 QQ 附件 1 工具 | #164 已进入集成分支；多字节长行自动字符分页、当前/引用真实入站与存储/Runtime 往返、旧附件/跨群拒绝均经过两轴独立审查 | 平台实机验收另列；传输夹具不是 QQ 真人收件证据 |
 | S01 weather | #152 已进入集成分支；真实 curl、wttr.in、Open-Meteo 和公开 HTTP 工具往返 | 最终配置集成；Shell 仍须主人显式授权 |
 | S02 summarize | #152 已进入集成分支；真实 summarize 0.25.2、Node 24、URL 提取及本地模型夹具摘要回传 | 两个公开视频仅得到 `transcriptSource: unavailable` 和网页模板，未取得真实字幕；不能以 exit 0 宣称视频摘要成功 |
@@ -44,9 +44,9 @@
 | S04 meme-manage | #152 已进入集成分支；指令、资源与角色目录边界已有行为测试 | 最终媒体引用与整体验收 |
 | S05 skill-creater | #152 已进入集成分支；HTTP 写入新 Skill 后下一轮发现/显式激活，资源 hash、依赖名、真实 Windows junction 反例通过 | 总 PR 最终回归 |
 | S06 create-drift-skill | 待实现；[固定源码依赖核验](../research/proactive-drift-runtime-portability-2026-10-16.md)已明确长期技能创建、后续发现与真实 Drift 消费缺一不可 | Drift 目录创建、发现和真实执行 |
-| S07 codex-delegate | 具体架构已批准，见 Coding 规格及 #175；#174共享模块已验证，正在独立分支实施，复用 spawn coding 入口而不新增普通工具 | CLI协议、后台执行、精确 session/结果回读和原上下文回灌的完整验收与两轴复核；真实服务另批 |
-| S08 create-proactive-source | 待实现；固定源码已核实来源产物/信任/ACK 契约，旧 Skill 的 severity 快通道/HyDE 文案不作为当前实现保证 | 来源创建、信任授权、事件消费、正文与持久 ACK |
-| A01 主动决策 | [具体规格](../specs/proactive-drift-spec.md)第3节已获明确批准；#177固定源`3b21afe`含自主身份/许可、静态来源、草稿/finish、唯一桌面投递/ACK/Runtime恢复，源和集成两轴复核无遗留；总分支组合420 passed/1权限skip/1 CU原生deselected、前端186项及构建通过；#178 来源、#180 外部目标保留真实前置依赖 | 准确HEAD完整CI；未验收真实账号或模型消费 |
+| S07 codex-delegate | #175固定源`0e2da975`已两轴复核并合入；显式Skill、准确依赖、多仓库、真实受管UTF-8/JSONL/SQLite/Git、后台/exact继续取消与原来源ACK有本地合成证据，不新增普通工具；见[手册](../handbook/codex-delegate-acceptance.md) | 准确总集成两轴/CI；真实CLI账号、首次/resume模型与原生权限另验 |
+| S08 create-proactive-source | #178已从两套CI通过的准确f7be解除依赖并在独立树实施，尚未合入；固定源码来源/信任/ACK契约已核实，旧severity快通道/HyDE文案不作保证 | 来源创建、信任授权、事件消费、正文与持久ACK的完整闭环/两轴/CI |
+| A01 主动决策 | #177固定源`3b21afe`及后续源/集成修正均两轴无遗留；含真实自主身份/许可、来源、草稿/finish、canonical桌面投递/ACK/Runtime恢复。准确f7be两套CI各2134项后端/186项前端及构建通过；详见[手册](../handbook/proactive-decision-acceptance.md)。#178已启动，#180仍依赖后续共享实现 | 总PR最终跨模块验收；未验收真实账号或模型消费 |
 | A02 Drift | #179/#180 具体架构已批准，待 #177/#178 共享模块复核集成后实施；采用同一 tick 空输入分支、独立开关与显式目标 | 独立目录/预算、受限工具、版本化 MCP 挂载、单次推送、真实finish与两轴复核 |
 
 渠道补充切片 #166 完整群资料、#167 桌面文本/媒体与 #170 分类目录/连接事实均已完成两轴复核并进入集成分支。C06 的真实平台收件验收仍未完成。

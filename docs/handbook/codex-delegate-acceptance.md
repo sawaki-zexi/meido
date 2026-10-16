@@ -1,5 +1,7 @@
 # 验收 codex-delegate #175
 
+当前总集成补充：固定源`0e2da975`已完成完整两轴及修正复核，无遗留。多仓库诊断与Linux真实文件夹具两P2保留原RED，规范独立Windows14/WSL13、规格独立Windows14/WSL12项通过；实际start/admit未放宽。源经`a7176ce`、`3eac7d5`合入最新已验证f7be，私有Coding/Skill/spawn模块与源完全一致；main同时保留主动stop/主人优先、NovelAI事务、CU/所有owner关闭，并在任何await前seal delegation。当前总分支组合、集成两轴及准确CI尚待完成，原a67的98项不倒写为新准确集成全量。
+
 状态：本地实现与无费用合成验收；独立两轴及总集成 CI 以最终交付记录为准。真实 Codex 认证、模型、首次/resume 任务和实际原生权限未验收。最后核验：2026-10-16。事实来源：[公开 HTTP](../../tests/python/test_codex_spawn_api.py)、[实际 exec 协议夹具](../../tests/python/test_codex_executor.py)、[严格 JSONL](../../tests/python/test_codex_protocol.py)、[恢复](../../tests/python/test_codex_recovery.py)、[off/on 并发](../../tests/python/test_codex_revoke_api.py)、[原渠道](../../tests/python/test_coding_channel.py)、[React](../../web/src/features/coding/CodingSettings.test.tsx)。配置与接口见[reference](../reference/owned-coding-tasks.md)。
 
 本票从已验证总集成 `fff08b186809726a219f280dc8352134e62523c0` 建独立分支，按主人已批准的例外统一进入 PR162；没有创建独立堆叠 PR。#174 的固定原生 bundle、补丁、ConPTY、许可证和全局资源 collector 不变；#176 commit/publish 未开放。

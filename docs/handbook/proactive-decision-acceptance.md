@@ -93,3 +93,5 @@ poll的两个原stdio探针先 **2 failed（9.17秒）**，canonical首poll与15
 真实第二连接持有`BEGIN IMMEDIATE`时，正常交接和accepted返回丢失两例先 **2 failed（9.26秒）**，窄修后 **2 passed（9.23秒）**。仅首次快照按SQLite原生BUSY/LOCKED错误码延后本轮恢复，其他OperationalError继续抛出；不加大超时、不换nonce/key、不重做MCP、不清除copy/ACK或owned责任。新增taskId未回写与真实锁交叉、结果copy后的ACK前/后持锁、ACK后prune仍按同ID重ACK及真实非busy表错误对照。最终相同6文件组 **Windows52 passed（61.91秒）**、**WSL52 passed/1 warning（41.99秒）**，均runner exit0、无skip；三新数据根与内外local guard保持至所有owned退出。变更单源mypy检查未注解函数体（忽略第三方缺失stubs）、编译与diff通过。
 
 固定`35048fb`两轴增量复核均无遗留。规范独立Windows18项、WSL6项（1条既有依赖warning）通过；规格独立Windows7项通过，包含额外的原nonce/origin/kind/key/Runtime任务重复持锁探针。规格首轮外部探针缺fixture导入产生6 passed/1 setup error，修正装配后7项通过，旧错误保留且不计产品RED。两轴均三新根、内外guard至所有owned退出，各组不相加；两份文档35个相对链接有效。新准确HEAD两套完整CI仍待完成，#178继续保留依赖。
+
+后续准确`f7be507`的[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38874921042)与[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38874916089)均成功：各后端 **2134 passed/35 skipped/2 warnings（351.18秒、318.59秒）**，各前端 **186 passed/33文件**及TS/Vite。原失败与上段当时待完成状态保留。#178由此解除已满足依赖并从此准确基点实施；#177仍开放，不表示合main或获得关闭许可。随后#172/#175集成不得以f7be的CI代替其自身检查。
