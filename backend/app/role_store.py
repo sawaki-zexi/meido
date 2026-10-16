@@ -81,7 +81,7 @@ class RoleStore:
             values = current.model_dump(exclude={"id", "createdAt", "updatedAt"})
             values.update(data.model_dump(exclude_unset=True, exclude_none=True))
             if data.agentConfig is not None:
-                for field in ("screenPerception", "computerUse", "novelai"):
+                for field in ("screenPerception", "computerUse", "novelai", "coding"):
                     settings = getattr(current.agentConfig, field).model_dump()
                     if field in data.agentConfig.model_fields_set:
                         settings.update(getattr(data.agentConfig, field).model_dump(exclude_unset=True))

@@ -1,2 +1,4 @@
 # The release lock hashes the patch bytes; keep them stable on Windows too.
 native/computer-use/patches/*.patch text eol=lf whitespace=-blank-at-eol
+# These fixed byte hashes include patches and upstream license texts.
+third_party/herdr-owned/** -text -whitespace

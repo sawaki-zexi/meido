@@ -43,6 +43,8 @@ export function fakeBackend(routes: Record<string, Handler>) {
       return new Response(status === 204 ? null : JSON.stringify(reply.body ?? {}), { status, headers: { "content-type": "application/json" } });
     }
     if (method === "GET" && path === "/api/todos/settings") return new Response(JSON.stringify({ enabled: false, remindersEnabled: true, timezone: "Asia/Shanghai" }), { status: 200, headers: { "content-type": "application/json" } });
+    if (method === "GET" && path === "/api/coding/configuration") return new Response(JSON.stringify({ enabled: false, repositories: [], profiles: [], nativeBuild: null }), { status: 200, headers: { "content-type": "application/json" } });
+    if (method === "GET" && path === "/api/coding/probes") return new Response(JSON.stringify({ probes: [] }), { status: 200, headers: { "content-type": "application/json" } });
     if (method === "GET" && path === "/api/todos/reminders") return new Response(JSON.stringify({ reminders: [], unreadCount: 0 }), { status: 200, headers: { "content-type": "application/json" } });
     if (method === "GET" && path === "/api/services/novelai") return new Response(JSON.stringify({ enabled: false, tokenConfigured: false, credentialCleanupPending: false, revision: 1, allowedModels: ['nai-diffusion-4-5-curated'], defaultModel: 'nai-diffusion-4-5-curated', allowedSamplers: ['k_euler_ancestral', 'k_euler'], defaultSampler: 'k_euler_ancestral', maxPixels: 1048576, maxSteps: 28, dailyAttemptLimit: 20 }), { status: 200, headers: { 'content-type': 'application/json' } });
     throw new Error(`Unexpected request: ${method} ${path}`);

@@ -150,6 +150,9 @@ from .credentials import SystemCredentialStore
 from .mcp_config import McpConfigStore, MCP_MANAGEMENT_NAMES
 from .mcp_runtime import McpHost, McpManagementTool, management_definitions
 from .mcp_api import mcp_router
+from .coding_tasks.application import CodingApplication
+from .coding_tasks.api import coding_router
+from .coding_tasks.tools import build_coding_tools, CODING_TOOL_NAMES
 from .chat_attachments import public_attachment, read_request_bytes, resolve_attachment, save_attachment
 
 logging.getLogger("uvicorn.access").addFilter(OAuthCallbackAccessLogFilter())
@@ -806,6 +809,8 @@ async def _memory_engine_delete(mutation: MemoryMutation) -> None:
 
 
 async def _close_memory_workers() -> None:
+    if _coding is not None:
+        await _coding.close()
     if _schedules is not None:
         await _schedules.close()
     if _spawn_completion_worker is not None:
@@ -831,6 +836,7 @@ async def _start_memory_workers() -> None:
     _channel_runtime_loop = asyncio.get_running_loop()
     task_runtime.start()
     _novelai_application().start()
+    _coding_application().start()
     _schedule_application().start()
     _ensure_spawn_completion_worker()
     mail_service.start()
@@ -849,6 +855,7 @@ async def _start_memory_workers() -> None:
             await memory_worker.begin_role_deletion(role_id)
             await channel_memory_maintenance.begin_role_deletion(role_id)
             await owner_knowledge_plugin.begin_role_deletion(role_id)
+            await _coding_application().delete_role(role_id)
             await asyncio.to_thread(task_runtime.delete_role, role_id)
             session_store.delete_role_session(role_id)
             memory_store.delete_role(role_id)
@@ -901,6 +908,7 @@ app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown
 app.include_router(mail_router)
 app.include_router(mcp_router(lambda: mcp_host, lambda: store))
 app.include_router(novelai_router(_novelai_application))
+app.include_router(coding_router(lambda: _coding_application(), lambda: store))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=owner_knowledge_frontend_origins,
@@ -1618,6 +1626,11 @@ def get_role_tools(role_id: str) -> dict[str, object]:
         reasons['generate_image'] = generation_reason
     dependencies['generate_image'] = {'status': 'unavailable' if generation_reason else 'unchecked',
         'reason': generation_reason or '仅检查本地许可和额度；真实 NovelAI 服务尚未调用或验证'}
+    coding_status = _coding_application().config.availability(role.id, role.agentConfig.coding)
+    for name in CODING_TOOL_NAMES:
+        dependencies[name] = {"status": "ready" if coding_status['status'] == 'available' else "unavailable", "reason": coding_status['reason']}
+        if coding_status['status'] != 'available':
+            reasons[name] = coding_status['reason']
     for names, available, reason in (
         (("web_search", "web_fetch"), network_tools_config.enabled, "宿主联网已关闭"),
         (("memorize", "forget_memory"), memory_settings_store.get().enabled, "全局记忆已关闭"),
@@ -1667,6 +1680,8 @@ async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
             await asyncio.to_thread(task_runtime.cancel_role_tasks, role_id, kind="shell")
         if current is not None and current.agentConfig.spawn != updated.agentConfig.spawn:
             await asyncio.to_thread(task_runtime.cancel_role_tasks, role_id, kind="spawn")
+        if current is not None and current.agentConfig.coding != updated.agentConfig.coding:
+            await _coding_application().invalidate_role(role_id)
         if current is not None and current.agentConfig.browserUse.enabled != updated.agentConfig.browserUse.enabled:
             # The role policy is the plugin's explicit authorization boundary.
             # Disabling closes the current generation and blocks an old run's
@@ -1947,6 +1962,7 @@ async def delete_role(role_id: str) -> None:
         await computer_use.invalidate(role_id=role_id)
         await _novelai_application().invalidate(role_id)
         await browser_use_sessions.set_role_enabled(role_id, False)
+        await _coding_application().prepare_role_deletion(role_id)
         await asyncio.to_thread(task_runtime.set_role_enabled, role_id, False)
         await channel_memory_maintenance.begin_role_deletion(role_id)
         await owner_knowledge_plugin.begin_role_deletion(role_id)
@@ -2079,6 +2095,7 @@ async def delete_role(role_id: str) -> None:
         _channel_roles_deleting.discard(role_id)
     if deletion_succeeded:
         try:
+            await _coding_application().delete_role(role_id)
             await asyncio.to_thread(task_runtime.delete_role, role_id)
             if _schedules is not None and _schedules.sessions is session_store:
                 await asyncio.to_thread(_schedules.delete_role, role_id)
@@ -3987,6 +4004,17 @@ def _runtime_tool_candidates(
                 return False
         return context.session_key == f'role:{role.id}' and user.metadata.get('channel', 'desktop') == 'desktop'
 
+    def coding_source_authorized(context):
+        current = store.get(role.id)
+        if (current is None or not current.agentConfig.coding.enabled or not schedule_source_authorized(context)):
+            return False
+        run = session_store.get_run(context.run_id)
+        user = session_store.user_message_for_run(context.run_id)
+        if user is None or user.status != 'completed' or user.messageType != 'text' or user.metadata.get('internalEvent'):
+            return False
+        return (context.session_key.startswith('thread:') or
+                run is not None and run.modelSnapshot.get('humanInputSource') == 'desktop_owner')
+
     memory_access = _memory_runtime_access(role, is_channel_owner=is_channel_owner, source_thread_id=source_thread_id)
     group_access = GroupToolAccess(multichannel_store, role_id=role.id,
         source_thread_id=source_thread_id, is_owner=is_channel_owner,
@@ -4001,6 +4029,9 @@ def _runtime_tool_candidates(
         MessagePushTool(session_store, lambda: store.workspace_path(role.id), role_id=role.id, authorized=desktop_push_authorized),
         SpawnTool(task_runtime, role.agentConfig.spawn, origin_resolver=task_origin, authorized=spawn_authorized),
         SpawnManageTool(task_runtime, origin_resolver=task_origin, authorized=spawn_authorized),
+        *build_coding_tools(_coding_application, role_id=role.id, origin_resolver=task_origin,
+            authorized=coding_source_authorized,
+            access=_coding_application().freeze_access(role.id, role.agentConfig.coding)),
         ObserveScreenTool(screen_perception, role.agentConfig.screenPerception.visionModelConfigurationId, role_id=role.id),
         *load_computer_tools(computer_use, role_id=role.id),
         ShellTool(
@@ -4109,6 +4140,8 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
         enabled.update(SHELL_TOOL_NAMES)
     if role.agentConfig.spawn.enabled:
         enabled.update(SPAWN_TOOL_NAMES)
+    if role.agentConfig.coding.enabled and _coding_application().config.public()['enabled']:
+        enabled.update(CODING_TOOL_NAMES)
     if memory_settings_store.get().enabled and role.agentConfig.memoryRecall.enabled:
         enabled.add("recall_memory")
     if owner_knowledge_plugin.status().enabled:
@@ -4143,7 +4176,7 @@ def _deferred_discovery_tools() -> frozenset[str]:
     # Fixed Shiori always_on metadata: these existing tools are deferred.
     # Meido-specific todo/mail retain their own declarations.
     return frozenset({*BROWSER_USE_TOOL_NAMES, "account_list", "account_targets", "account_send",
-        "lookup_group_context", "update_group_context", "set_group_listening", "lookup_group_member", "read_attachment", *MCP_MANAGEMENT_NAMES})
+        "lookup_group_context", "update_group_context", "set_group_listening", "lookup_group_member", "read_attachment", *MCP_MANAGEMENT_NAMES, *CODING_TOOL_NAMES})
 
 
 def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabilityPolicy:
@@ -4151,7 +4184,7 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     host_enabled = set(enabled_tools)
     enabled_tools.update(agent_config.enabledTools)
-    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image"}) - host_enabled)
+    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | CODING_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image"}) - host_enabled)
     if not include_channel:
         enabled_tools.difference_update({
             "account_list", "account_targets", "account_send", "set_group_listening", "read_attachment",
@@ -4322,6 +4355,60 @@ async def _runtime_capabilities(
 
 
 _spawn_completion_worker: TaskCompletionWorker | None = None
+_coding: CodingApplication | None = None
+
+
+def _coding_origin_authorized(origin: TaskOrigin) -> bool:
+    role = store.get(origin.role_id)
+    run = session_store.get_run(origin.parent_run_id)
+    user = session_store.user_message_for_run(origin.parent_run_id)
+    if (role is None or not role.agentConfig.coding.enabled or role.id in _channel_roles_deleting
+            or run is None or run.roleId != role.id or run.sessionKey != origin.session_key
+            or user is None or user.sessionKey != origin.session_key or user.status != 'completed'
+            or user.messageType != 'text' or user.metadata.get('internalEvent')):
+        return False
+    if origin.source_authority_json:
+        try:
+            source = FrozenChannelSource.from_dict(json.loads(origin.source_authority_json))
+            return ((source.role_id, source.session_key, source.thread_id, source.account_id)
+                    == (origin.role_id, origin.session_key, origin.source_thread_id, origin.source_account_id)
+                    and source.owner_context and source.authorization_denial(multichannel_store) is None)
+        except (ValueError, TypeError, KeyError):
+            return False
+    return (origin.session_key == f'role:{origin.role_id}' and not origin.source_account_id
+            and origin.source_thread_id == f'desktop:{origin.role_id}'
+            and run.modelSnapshot.get('humanInputSource') == 'desktop_owner'
+            and user.metadata.get('channel', 'desktop') == 'desktop')
+
+
+async def _deliver_coding_completion(record, content, authorized):
+    origin = TaskOrigin(**record['origin'])
+    if not authorized():
+        raise PermissionError('coding original source was revoked')
+    source = FrozenChannelSource.from_dict(json.loads(origin.source_authority_json))
+    target = target_from_chat(account_id=source.account_id, chat_id=source.chat_id,
+        kind=TargetKind.GROUP if source.chat_type == 'group' else TargetKind.PRIVATE)
+    result = await channel_host.account_send(origin.role_id, source.account_id, target.id, content, actor='reply',
+        source_thread_id=source.thread_id, source_session_key=origin.session_key,
+        source_run_id=origin.parent_run_id, source_tool_call_id=record['attemptId'],
+        source_kind='coding_completion', record_message=False, authorize_source=authorized)
+    return {'status': result.status.value, 'attemptId': result.attempt_id}
+
+
+def _coding_receipt(record):
+    receipt = multichannel_store.delivery_for_source(record['origin']['role_id'],
+        source_kind='coding_completion', source_tool_call_id=record['attemptId'])
+    return {'status': receipt[0], 'attemptId': receipt[1]} if receipt is not None else None
+
+
+def _coding_application():
+    global _coding
+    if _coding is None or _coding.tasks is not task_runtime or _coding.sessions is not session_store or _coding._resources_closed:
+        _coding = CodingApplication(data_root / 'coding', task_runtime, session_store,
+            role_config=lambda role_id: role.agentConfig.coding if (role := store.get(role_id)) is not None else None,
+            authorized=_coding_origin_authorized, deliver=_deliver_coding_completion, receipt=_coding_receipt,
+            lock_for=_runtime_role_lock)
+    return _coding
 
 
 def _spawn_origin_authorized(origin: TaskOrigin) -> bool:

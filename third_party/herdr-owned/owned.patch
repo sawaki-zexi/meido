@@ -1,0 +1,384 @@
+diff --git a/src/api/server.rs b/src/api/server.rs
+index 0a4cfa66..a45efd22 100644
+--- a/src/api/server.rs
++++ b/src/api/server.rs
+@@ -347,6 +347,10 @@ fn handle_connection_with_stop(
+         return Ok(());
+     }
+ 
++    if let Some(response) = crate::meido_owned::server_status_line(line) {
++        write_json_line_allow_disconnect(&mut stream, &response)?;
++        return Ok(());
++    }
+     let request = match serde_json::from_str::<Request>(line) {
+         Ok(request) => request,
+         Err(request_error) => {
+diff --git a/src/app/agents.rs b/src/app/agents.rs
+index 89625f00..d115affe 100644
+--- a/src/app/agents.rs
++++ b/src/app/agents.rs
+@@ -194,7 +194,13 @@ impl App {
+         let shell_name = available_shell_name(runtime)
+             .ok_or_else(|| AgentStartError::TargetBusy(params.pane_id.clone()))?;
+ 
+-        let mut argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
++        let executable = if crate::meido_owned::enabled() {
++            crate::meido_owned::agent_executable(&params.kind, &params.args)
++                .ok_or(AgentStartError::InvalidArgument)?
++        } else {
++            crate::detect::interactive_agent_executable(kind).to_string()
++        };
++        let mut argv = vec![executable];
+         argv.extend(params.args);
+         let command = crate::platform::interactive_shell_command(&argv, &shell_name)
+             .ok_or(AgentStartError::InvalidArgument)?;
+diff --git a/src/integration/assets/claude/herdr-agent-state.ps1 b/src/integration/assets/claude/herdr-agent-state.ps1
+index d62c5b9f..6cfb21fd 100644
+--- a/src/integration/assets/claude/herdr-agent-state.ps1
++++ b/src/integration/assets/claude/herdr-agent-state.ps1
+@@ -10,7 +10,10 @@ if ($Action -ne "session") { exit 0 }
+ if ($env:HERDR_ENV -ne "1") { exit 0 }
+ if ([string]::IsNullOrWhiteSpace($env:HERDR_PANE_ID)) { exit 0 }
+ 
+-$inputText = [Console]::In.ReadToEnd()
++$buffer = New-Object char[] 65537
++$length = [Console]::In.ReadBlock($buffer, 0, 65537)
++if ($length -gt 65536) { exit 0 }
++$inputText = New-Object string($buffer, 0, $length)
+ try {
+     $payload = if ([string]::IsNullOrWhiteSpace($inputText)) { $null } else { $inputText | ConvertFrom-Json }
+ } catch {
+@@ -29,6 +32,8 @@ $seq = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+ $herdr = if ([string]::IsNullOrWhiteSpace($env:HERDR_BIN_PATH)) { "herdr" } else { $env:HERDR_BIN_PATH }
+ try {
+     $args = @(
++        "--session",
++        $env:MEIDO_HERDR_SESSION,
+         "pane",
+         "report-agent-session",
+         $env:HERDR_PANE_ID,
+diff --git a/src/integration/assets/codex/herdr-agent-state.ps1 b/src/integration/assets/codex/herdr-agent-state.ps1
+index 1a701102..51577de1 100644
+--- a/src/integration/assets/codex/herdr-agent-state.ps1
++++ b/src/integration/assets/codex/herdr-agent-state.ps1
+@@ -10,7 +10,10 @@ if ($Action -notin @("session", "working", "idle")) { exit 0 }
+ if ($env:HERDR_ENV -ne "1") { exit 0 }
+ if ([string]::IsNullOrWhiteSpace($env:HERDR_PANE_ID)) { exit 0 }
+ 
+-$inputText = [Console]::In.ReadToEnd()
++$buffer = New-Object char[] 65537
++$length = [Console]::In.ReadBlock($buffer, 0, 65537)
++if ($length -gt 65536) { exit 0 }
++$inputText = New-Object string($buffer, 0, $length)
+ try {
+     $payload = if ([string]::IsNullOrWhiteSpace($inputText)) { $null } else { $inputText | ConvertFrom-Json }
+ } catch {
+@@ -29,6 +32,8 @@ $seq = [DateTimeOffset]::UtcNow.Ticks
+ $herdr = if ([string]::IsNullOrWhiteSpace($env:HERDR_BIN_PATH)) { "herdr" } else { $env:HERDR_BIN_PATH }
+ try {
+     $args = @(
++        "--session",
++        $env:MEIDO_HERDR_SESSION,
+         "pane",
+         $(if ($Action -eq "session") { "report-agent-session" } else { "report-agent" }),
+         $env:HERDR_PANE_ID,
+diff --git a/src/main.rs b/src/main.rs
+index f97e7e2b..05c9160a 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -35,6 +35,7 @@ mod metadata_tokens;
+ mod noninteractive_process;
+ mod pane;
+ use ghostty_vt::pane_graphics_files;
++mod meido_owned;
+ mod persist;
+ mod platform;
+ mod plugin_command;
+@@ -517,6 +518,9 @@ fn main() -> io::Result<()> {
+             std::process::exit(2);
+         }
+     };
++    if meido_owned::entry(&raw_args)? {
++        return Ok(());
++    }
+     #[cfg(windows)]
+     if let Some(result) = platform::maybe_activate_desktop_notification(&raw_args) {
+         return result;
+@@ -557,6 +561,10 @@ fn main() -> io::Result<()> {
+ 
+     finish_cli(cli::maybe_run(&args))?;
+ 
++    if args.get(1).map(String::as_str) == Some("owned-status") {
++        return meido_owned::print_server_status();
++    }
++
+     if args.get(1).map(String::as_str) == Some("remote-api-bridge") {
+         return remote::run_remote_api_bridge(&args[2..]);
+     }
+diff --git a/src/meido_owned.rs b/src/meido_owned.rs
+new file mode 100644
+index 00000000..7b8a8b97
+--- /dev/null
++++ b/src/meido_owned.rs
+@@ -0,0 +1,133 @@
++//! Meido owned-mode additions to Herdr 0.9.4 (Apache-2.0).
++//! Local IPC and process ownership are not a same-account security sandbox.
++use std::io::{self, BufRead, Read, Write};
++use std::path::Path;
++
++pub(crate) const PROTOCOL: u32 = 1;
++
++pub(crate) fn enabled() -> bool {
++    std::env::var("MEIDO_HERDR_OWNED").as_deref() == Ok("1")
++}
++
++pub(crate) fn capabilities() -> serde_json::Value {
++    serde_json::json!({
++        "protocol": PROTOCOL,
++        "version": "0.9.4-meido.1",
++        "upstreamCommit": "7e26bad94044eba205033111a0ce8033ede7e24f",
++        "features": ["explicit-session", "foreground-only", "no-registry-env", "no-shell-profile", "fixed-agent-template", "no-restore-update-plugin", "bounded-session-hook", "host-owned-job"],
++        "generation": std::env::var("MEIDO_HERDR_GENERATION").unwrap_or_default(),
++        "pid": std::process::id()
++    })
++}
++
++pub(crate) fn entry(args: &[String]) -> io::Result<bool> {
++    if args.get(1).map(String::as_str) == Some("--meido-owned-capabilities") {
++        println!("{}", capabilities());
++        return Ok(true);
++    }
++    if !enabled() {
++        return Err(io::Error::other(
++            "Meido build requires explicit owned-mode environment",
++        ));
++    }
++    let session = std::env::var("MEIDO_HERDR_SESSION").unwrap_or_default();
++    if !session.starts_with("meido-")
++        || session.len() > 64
++        || !session
++            .bytes()
++            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
++    {
++        return Err(io::Error::other("invalid owned session"));
++    }
++    let root = std::env::var("MEIDO_HERDR_ROOT").unwrap_or_default();
++    if !Path::new(&root).is_absolute() || !Path::new(&root).is_dir() {
++        return Err(io::Error::other("owned data root is required"));
++    }
++    for key in [
++        "XDG_CONFIG_HOME",
++        "XDG_STATE_HOME",
++        "HOME",
++        "USERPROFILE",
++        "APPDATA",
++        "LOCALAPPDATA",
++        "HERDR_CONFIG_PATH",
++    ] {
++        let path = std::env::var(key).unwrap_or_default();
++        if !Path::new(&path).is_absolute() || !Path::new(&path).starts_with(&root) {
++            return Err(io::Error::other("owned configuration roots are required"));
++        }
++    }
++    let explicit = args
++        .windows(2)
++        .any(|w| w[0] == "--session" && w[1] == session);
++    if !explicit {
++        return Err(io::Error::other("explicit owned session is required"));
++    }
++    let command = args.iter().skip(1).enumerate().find_map(|(i, a)| {
++        if a == "--session" || args.get(i).map(String::as_str) == Some("--session") {
++            None
++        } else {
++            Some(a.as_str())
++        }
++    });
++    if !matches!(
++        command,
++        Some("server" | "status" | "worktree" | "agent" | "pane" | "integration" | "owned-status")
++    ) {
++        return Err(io::Error::other(
++            "owned build disallows TUI, daemon, remote, update and plugin commands",
++        ));
++    }
++    if args
++        .iter()
++        .any(|a| matches!(a.as_str(), "--handoff-import" | "--remote" | "--handoff"))
++    {
++        return Err(io::Error::other(
++            "owned build disallows detached and remote handoff",
++        ));
++    }
++    Ok(false)
++}
++
++pub(crate) fn agent_executable(kind: &str, args: &[String]) -> Option<String> {
++    let expected_kind = std::env::var("MEIDO_HERDR_AGENT_KIND").ok()?;
++    let expected: Vec<String> =
++        serde_json::from_str(&std::env::var("MEIDO_HERDR_AGENT_ARGS").ok()?).ok()?;
++    let exe = std::env::var("MEIDO_HERDR_AGENT_EXE").ok()?;
++    (kind == expected_kind
++        && args == expected
++        && Path::new(&exe).is_absolute()
++        && Path::new(&exe).is_file())
++    .then_some(exe)
++}
++
++pub(crate) fn server_status_line(line: &str) -> Option<serde_json::Value> {
++    let request: serde_json::Value = serde_json::from_str(line).ok()?;
++    if !enabled() || request.get("method")?.as_str()? != "meido.owned.status" {
++        return None;
++    }
++    let id = request.get("id")?.as_str()?;
++    if request.get("params")? != &serde_json::json!({})
++        || request.as_object()?.len() != 3
++        || id.len() > 100
++    {
++        return None;
++    }
++    Some(serde_json::json!({"id": id, "result": capabilities()}))
++}
++
++pub(crate) fn print_server_status() -> io::Result<()> {
++    let mut stream = crate::ipc::connect_local_stream(&crate::api::socket_path())?;
++    stream.write_all(
++        b"{\"id\":\"meido:owned-status\",\"method\":\"meido.owned.status\",\"params\":{}}\n",
++    )?;
++    let mut line = String::new();
++    let mut reader = io::BufReader::new(stream).take(65537);
++    reader.read_line(&mut line)?;
++    if line.len() > 65536 {
++        return Err(io::Error::other("owned status exceeds budget"));
++    }
++    let _: serde_json::Value = serde_json::from_str(&line).map_err(io::Error::other)?;
++    print!("{line}");
++    Ok(())
++}
+diff --git a/src/pane.rs b/src/pane.rs
+index f80baeb8..574fb2c7 100644
+--- a/src/pane.rs
++++ b/src/pane.rs
+@@ -2124,6 +2124,23 @@ fn pane_shell_command_builder_for_target(
+     shell_config: PaneShellConfig<'_>,
+     target: ShellLaunchTarget,
+ ) -> io::Result<CommandBuilder> {
++    if crate::meido_owned::enabled() {
++        let shell = std::env::var("MEIDO_HERDR_SHELL").map_err(io::Error::other)?;
++        if !std::path::Path::new(&shell).is_absolute() || !is_powershell_shell(&shell) {
++            return Err(io::Error::other(
++                "owned shell must be fixed absolute PowerShell",
++            ));
++        }
++        let mut cmd = CommandBuilder::new(&shell);
++        cmd.args([
++            "-NoLogo",
++            "-NoProfile",
++            "-NoExit",
++            "-Command",
++            WINDOWS_POWERSHELL_SHELL_INTEGRATION_COMMAND,
++        ]);
++        return Ok(cmd);
++    }
+     let shell = pane_shell(shell_config.default_shell);
+     // Unix login shells go through portable-pty's default-program builder so
+     // they receive the login argv0 convention. Windows has no such convention
+diff --git a/src/platform/windows.rs b/src/platform/windows.rs
+index 16b2f991..cf9c4ade 100644
+--- a/src/platform/windows.rs
++++ b/src/platform/windows.rs
+@@ -1362,6 +1362,11 @@ pub(crate) fn configure_background_command_platform(command: &mut std::process::
+ }
+ 
+ pub fn launch_server_daemon_command(command: &mut std::process::Command) -> std::io::Result<u32> {
++    if crate::meido_owned::enabled() {
++        return Err(std::io::Error::other(
++            "owned mode forbids daemon and WMI launch",
++        ));
++    }
+     if current_job_kills_processes_on_close()? {
+         launch_server_daemon_with_wmi(command)
+     } else {
+@@ -2646,11 +2651,17 @@ pub fn signal_processes(pids: &[u32], signal: Signal) {
+     }
+ 
+     for &pid in pids {
+-        let Some(process) = ProcessHandle::open(pid, PROCESS_QUERY_LIMITED_INFORMATION) else {
++        let Some(process) =
++            ProcessHandle::open(pid, PROCESS_QUERY_LIMITED_INFORMATION | 0x0001 | 0x00100000)
++        else {
+             continue;
+         };
+         unsafe {
+-            TerminateProcess(process.0, 1);
++            if TerminateProcess(process.0, 1) == 0 {
++                tracing::warn!(pid, "owned process termination failed");
++            } else {
++                windows_sys::Win32::System::Threading::WaitForSingleObject(process.0, 1000);
++            }
+         }
+     }
+ }
+diff --git a/src/server/headless/bootstrap.rs b/src/server/headless/bootstrap.rs
+index 9522f158..30437ae1 100644
+--- a/src/server/headless/bootstrap.rs
++++ b/src/server/headless/bootstrap.rs
+@@ -27,7 +27,12 @@ pub fn run_server() -> io::Result<()> {
+         return run_handoff_import_server(&socket_path, token);
+     }
+ 
+-    let loaded_config = config::Config::load();
++    let mut loaded_config = config::Config::load();
++    if crate::meido_owned::enabled() {
++        loaded_config.config.session.resume_agents_on_restore = false;
++        loaded_config.config.update.version_check = false;
++        loaded_config.config.update.manifest_check = false;
++    }
+     #[cfg(windows)]
+     if loaded_config.config.server.allow_unelevated_clients {
+         crate::platform::allow_unelevated_clients();
+@@ -60,7 +65,16 @@ pub fn run_server() -> io::Result<()> {
+         // Create the App (with AppState, event channels, etc.).
+         let mut app = app::App::try_new(
+             &loaded_config.config,
+-            app::AppPolicy::PRODUCTION,
++            if crate::meido_owned::enabled() {
++                app::AppPolicy {
++                    restore_session: false,
++                    persist_session: false,
++                    persist_plugin_registry: false,
++                    background_updates: false,
++                }
++            } else {
++                app::AppPolicy::PRODUCTION
++            },
+             config::config_diagnostic_summary(&loaded_config.diagnostics),
+             api_rx,
+             event_hub,
+@@ -90,7 +104,9 @@ pub fn run_server() -> io::Result<()> {
+             "herdr server started"
+         );
+         print_ready_message(&api::socket_path(), &client_socket_path());
+-        server.app.run_plugin_startup_hooks();
++        if !crate::meido_owned::enabled() {
++            server.app.run_plugin_startup_hooks();
++        }
+ 
+         server.run().await
+     });
+diff --git a/vendor/portable-pty/src/cmdbuilder.rs b/vendor/portable-pty/src/cmdbuilder.rs
+index e4a9edc7..7ab4f7ff 100644
+--- a/vendor/portable-pty/src/cmdbuilder.rs
++++ b/vendor/portable-pty/src/cmdbuilder.rs
+@@ -149,6 +149,12 @@ fn get_base_env() -> BTreeMap<OsString, EnvEntry> {
+         })
+         .collect();
+ 
++    // Meido owns the parent environment. Never enumerate registry values in
++    // this mode; even trace logging must not materialize those values.
++    if std::env::var("MEIDO_HERDR_OWNED").as_deref() == Ok("1") {
++        return env;
++    }
++
+     #[cfg(unix)]
+     {
+         let key = EnvEntry::map_key("SHELL".into());

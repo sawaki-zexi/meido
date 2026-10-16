@@ -71,6 +71,29 @@ SOFTWARE.
 协议匹配的 `kachofugetsu09/feed-mcp@210a79512c5cec008dd24c70f7c9c4e2616f5034`
 只作为外部独立验收服务，未复制进本仓库；没有声称它就是 Shiori 实际部署服务。
 
+## Owned Herdr
+
+编程原生宿主固定 [herdrdev/herdr](https://github.com/herdrdev/herdr/tree/7e26bad94044eba205033111a0ce8033ede7e24f)
+`7e26bad94044eba205033111a0ce8033ede7e24f`（0.9.4），适用 Apache-2.0。
+完整上游许可、Meido owned-mode 补丁和固定构建/发行资源哈希保存在
+[third_party/herdr-owned](../../third_party/herdr-owned/manifest.json)；补丁不改变上游版权。
+运行接口与已验证边界见[Owned编程任务](owned-coding-tasks.md)。
+
+构建依赖的 portable-pty 和 libghostty-vt 均保留其 MIT 上游许可；
+实际包内证据见 [portable-pty-LICENSE.md](../../third_party/herdr-owned/portable-pty-LICENSE.md)
+与 [libghostty-vt-LICENSE](../../third_party/herdr-owned/libghostty-vt-LICENSE)。
+锁定 Cargo metadata 的224个包保留完整包内许可集合
+[CARGO-NOTICES.txt](../../third_party/herdr-owned/CARGO-NOTICES.txt) 和
+[许可清单](../../third_party/herdr-owned/cargo-license-inventory.json)，该清单包含构建/开发依赖，不能当作二进制SBOM。
+部分拆分crate无独立许可文件，另保留其固定源码根的
+[Ratatui MIT许可](../../third_party/herdr-owned/ratatui-LICENSE.txt)
+及 [WezTerm MIT许可](../../third_party/herdr-owned/wezterm-LICENSE.md)。
+
+Windows发行同时保留官方 Microsoft.Windows.Console.ConPTY `1.24.260710001` 包内
+[LICENSE](../../third_party/herdr-owned/Microsoft.Windows.Console.ConPTY-LICENSE.txt) 与
+[NOTICE](../../third_party/herdr-owned/Microsoft.Windows.Console.ConPTY-NOTICE.md)，包及三个原生文件的精确哈希见
+[ConPTY锁](../../third_party/herdr-owned/conpty.lock.json)。不得仅复制herdr.exe而丢失这些资源和许可。
+
 ## 通用调度
 
 通用调度的公开 tier/trigger、duration 和五/六字段 cron 语法参考固定 Shiori `4f266aeaf42fcd611362e2456417b91f659341cf` 的 `apps/backend/agent/tools/schedule.py`、`scheduler.py`、`scheduler_cron.py`。Meido 的 SQLite occurrence/outbox、批量日历计数、DST和宿主接收时间规则独立实现；没有复制上游 JSON store 或 schedule→message_push 路径。引用适用上文保留的 Shiori MIT 声明，当前契约见[角色通用时间任务](owned-schedules.md)。

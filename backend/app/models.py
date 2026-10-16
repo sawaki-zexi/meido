@@ -5,6 +5,8 @@ import uuid
 from pydantic import BaseModel, Field, field_validator, model_validator
 from .novelai_generation.config import NovelaiRoleConfig
 
+from .coding_tasks.config import CodingRoleConfig
+
 
 class RoleProfile(BaseModel):
     profile: str = ""
@@ -72,6 +74,7 @@ class AgentToolConfig(BaseModel):
     computerUse: ComputerUseToolConfig = Field(default_factory=ComputerUseToolConfig)
     spawn: SpawnToolConfig = Field(default_factory=SpawnToolConfig)
     screenPerception: ScreenPerceptionConfig = Field(default_factory=ScreenPerceptionConfig)
+    coding: CodingRoleConfig = Field(default_factory=CodingRoleConfig)
     enabledTools: list[str] = Field(default_factory=list)
     enabledPlugins: list[str] = Field(default_factory=list)
     grantedCapabilities: list[str] = Field(default_factory=list)

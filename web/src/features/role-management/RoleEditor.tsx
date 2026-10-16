@@ -12,6 +12,7 @@ import { ToolCatalog } from "./ToolCatalog";
 import { BasicToolSettings } from "./BasicToolSettings";
 import { ScreenPerceptionSettings } from "./ScreenPerceptionSettings";
 import { NovelaiRoleSettings } from "../novelai/NovelaiRoleSettings";
+import { CodingRoleSettings } from "../coding/CodingRoleSettings";
 import { draftFromRole, payloadFromDraft } from "./draft";
 
 type TextFieldKey = keyof RoleProfile | "name" | "description";
@@ -139,6 +140,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
     <BasicToolSettings draft={draft} onChange={setDraft} disabled={locked} />
     <ShellSettings draft={draft} onChange={setDraft} disabled={locked} />
     <SpawnSettings draft={draft} onChange={setDraft} disabled={locked} />
+    <CodingRoleSettings roleId={selected?.id} draft={draft} onChange={setDraft} disabled={locked} />
     {selected && !creating && <ToolCatalog key={`${selected.id}:${selected.updatedAt}`} roleId={selected.id} hasUnsavedChanges={toolsChanged} />}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {state.importPreview && <section className="role-import-preview" aria-label="角色卡导入预览">

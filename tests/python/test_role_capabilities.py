@@ -150,7 +150,9 @@ def test_saved_shell_and_capability_settings_survive_role_store_restart(role_api
         "computerUse": {"enabled": False},
         "novelai": {"manualEnabled": False, "manualDailyAttempts": 10, "sceneCgEnabled": False,
             "sceneCgDailyAttempts": 3, "scenePromptModelConfigurationId": None,
-            "autoWritebackRoleAssets": False, "consentRevision": 0}}
+            "autoWritebackRoleAssets": False, "consentRevision": 0},
+        "coding": {"enabled": False, "repoGrantIds": [], "profileIds": [], "defaultHerdrProfileId": None,
+                   "defaultCodexProfileId": None, "maxAttemptsPerDay": 5}}
 
 
 def test_native_model_without_tools_receives_an_explicit_empty_capability_list(role_api, monkeypatch):

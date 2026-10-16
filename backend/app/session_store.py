@@ -374,6 +374,43 @@ class SessionStore:
             connection.execute('UPDATE messages SET metadata_json=? WHERE message_id=?', (_dump(metadata), message_id))
         return message
 
+    def append_coding_completion_once(self, role_id, session_key, task_id, attempt_id, content, *,
+                                      authorized, connection, delivery_status='pending', delivery_attempt_id=None,
+                                      task_status='unknown'):
+        """Coding outbox and its existing-session message share one transaction."""
+        if delivery_status not in {'pending', 'sent', 'failed', 'uncertain'}:
+            raise ValueError('invalid coding delivery status')
+        if not task_id or not attempt_id or len(task_id) > 100 or len(attempt_id) > 100:
+            raise ValueError('invalid coding completion identity')
+        database = connection.execute('PRAGMA database_list').fetchone()
+        if database is None or Path(database[2]).resolve() != Path(self.database_path).resolve():
+            raise ValueError('coding completion requires its canonical session database')
+        channel = 'desktop'
+        if session_key.startswith('thread:'):
+            row = connection.execute('SELECT channel FROM channel_threads WHERE session_key=? AND role_id=?',
+                                     (session_key, role_id)).fetchone()
+            if row is None:
+                raise PermissionError('original coding thread no longer exists')
+            channel = row[0]
+        elif session_key != f'role:{role_id}':
+            raise PermissionError('original coding desktop session does not match role')
+        message_id = f'{session_key}:coding-completion:{attempt_id}'
+        metadata = {'internalEvent': 'coding_completion', 'codingTaskId': task_id, 'attemptId': attempt_id,
+                    'taskStatus': task_status, 'channel': channel, 'deliveryStatus': delivery_status,
+                    'deliveryAttemptId': delivery_attempt_id}
+        message = self._append_owned_message_once(connection, role_id, session_key, message_id, content,
+            message_type='internal_completion', metadata=metadata, authorized=authorized)
+        if message.content != content:
+            raise ValueError('coding completion content conflicts with its durable identity')
+        # A later failed local projection must never downgrade a real receipt.
+        if message.metadata.get('deliveryStatus') == 'sent':
+            metadata['deliveryStatus'] = 'sent'
+            metadata['deliveryAttemptId'] = message.metadata.get('deliveryAttemptId')
+        if message.metadata != metadata:
+            connection.execute('UPDATE messages SET metadata_json=? WHERE message_id=?', (_dump(metadata), message_id))
+            message.metadata.update(metadata)
+        return message
+
     def append_proactive_message_once(
         self,
         session_key: str,

@@ -10,6 +10,8 @@ import type { TodoSettings } from "../../api/types";
 import { TodoDrawer } from "../todo/TodoDrawer";
 import { useChatAttachments } from "./useChatAttachments";
 import { GenerationDrawer } from "../novelai/GenerationDrawer";
+import { CodingTasks } from "../coding/CodingTasks";
+import { Dialog } from "../../ui/Dialog";
 
 function MessageItem({ message, role, highlighted }: { message: Message; role: Role; highlighted: boolean }) {
   const mine = message.role === "user";
@@ -119,6 +121,7 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
   const [todoOpen, setTodoOpen] = useState(false);
   const [generationRoleId, setGenerationRoleId] = useState<string | null>(null);
   useEffect(() => { setGenerationRoleId(null); }, [role.id]);
+  const [codingOpen, setCodingOpen] = useState(false);
   useEffect(() => { if (!highlightedId) bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" }); }, [chat.messages, highlightedId]);
   useEffect(() => {
     if (!chat.session || chat.sending) return;
@@ -168,6 +171,7 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
       <IconButton icon="memory" label="角色记忆" onClick={onShowMemories} />
       <button type="button" className="ghost" onClick={() => setGenerationRoleId(role.id)}>生图与历史</button>
       <IconButton icon="profile" label="角色资料" onClick={onShowProfile} />
+      {role.agentConfig?.coding?.enabled && <button type="button" onClick={() => setCodingOpen(true)}>编程任务</button>}
     </header>
     <div className="chat-scroll">
       {chat.messages.length
@@ -183,6 +187,7 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
     {generationRoleId === role.id && <GenerationDrawer key={role.id} role={role} onClose={() => setGenerationRoleId(null)} onGenerated={chat.refresh}
       attachments={chat.messages.flatMap((message) => Array.isArray(message.metadata?.attachments)
         ? message.metadata.attachments.filter((item): item is ChatAttachment => Boolean(item && typeof item === 'object' && 'id' in item && 'name' in item)) : [])} />}
+    {codingOpen && <Dialog title="编程任务" onClose={() => setCodingOpen(false)}><CodingTasks roleId={role.id} /></Dialog>}
   </section>;
 }
 
