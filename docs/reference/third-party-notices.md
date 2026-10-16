@@ -75,6 +75,10 @@ SOFTWARE.
 
 通用调度的公开 tier/trigger、duration 和五/六字段 cron 语法参考固定 Shiori `4f266aeaf42fcd611362e2456417b91f659341cf` 的 `apps/backend/agent/tools/schedule.py`、`scheduler.py`、`scheduler_cron.py`。Meido 的 SQLite occurrence/outbox、批量日历计数、DST和宿主接收时间规则独立实现；没有复制上游 JSON store 或 schedule→message_push 路径。引用适用上文保留的 Shiori MIT 声明，当前契约见[角色通用时间任务](owned-schedules.md)。
 
+## Windows Computer Use
+
+八工具 Schema 与窗口引用行为改编自固定 Shiori `4f266aeaf42fcd611362e2456417b91f659341cf` 的 `plugins/computer_use/backend`，适用本页保留的 Shiori MIT 声明。原生驱动由 [trycua/cua](https://github.com/trycua/cua/tree/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust) 固定 commit 的 MIT 源码加仓库最小补丁构建；保留 [Cua AI, Inc. 2025 完整许可](../../native/computer-use/LICENSE-CUA.txt)，打包脚本将该许可随主驱动分发。没有复制或分发 UIAccess helper，当前构建与 hash 见[验收手册](../handbook/computer-use-native-acceptance.md)。
+
 ## QQ 托管 NapCat
 
 托管 QQ 的安装、官方 QQ 运行时校验、私有目录、WebUI 与二维码流程改编自

@@ -1,3 +1,4 @@
+import { ComputerUseSettings } from "./ComputerUseSettings";
 import type { FormEvent } from "react";
 import type { RolesState } from "./useRoles";
 import type { RoleProfile } from "../../api/types";
@@ -98,6 +99,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
     <fieldset>
       <legend>能力</legend>
       <ScreenPerceptionSettings draft={draft} onChange={setDraft} disabled={locked} />
+      <ComputerUseSettings draft={draft} onChange={setDraft} disabled={locked} />
       <label className="field checkbox-field">
         <input
           type="checkbox"

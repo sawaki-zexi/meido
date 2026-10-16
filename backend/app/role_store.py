@@ -85,6 +85,10 @@ class RoleStore:
                 if "screenPerception" in data.agentConfig.model_fields_set:
                     screen.update(data.agentConfig.screenPerception.model_dump(exclude_unset=True))
                 values["agentConfig"]["screenPerception"] = screen
+                computer = current.agentConfig.computerUse.model_dump()
+                if "computerUse" in data.agentConfig.model_fields_set:
+                    computer.update(data.agentConfig.computerUse.model_dump(exclude_unset=True))
+                values["agentConfig"]["computerUse"] = computer
             updated = Role(**values, id=current.id, createdAt=current.createdAt, updatedAt=utc_now())
             candidate = [*self._roles]
             candidate[index] = updated

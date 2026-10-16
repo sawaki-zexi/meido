@@ -125,9 +125,11 @@ async def finish_cleanup(task: asyncio.Task) -> None:
 
 
 class McpStdioClient:
-    def __init__(self, config: McpServer, environment: Mapping[str, str]) -> None:
+    def __init__(self, config: McpServer, environment: Mapping[str, str], *, job_name: str | None = None) -> None:
         self.config = config
         self._environment = dict(environment)
+        self._job_name = job_name
+        self._cleanup_complete = False
         self._process: asyncio.subprocess.Process | None = None
         self._owner: WindowsJob | None = None
         self._reader: asyncio.Task | None = None
@@ -139,8 +141,18 @@ class McpStdioClient:
         self.closed = False
 
     @property
+    def process_id(self) -> int | None:
+        """Identity of this client's owned child, never a peer-supplied PID."""
+        return self._process.pid if self._process is not None else None
+
+    @property
     def failure(self) -> str | None:
         return str(self._failure) if self._failure is not None else None
+
+    @property
+    def exit_confirmed(self) -> bool:
+        """Closed dispatch alone is not evidence that owned resources exited."""
+        return self._cleanup_complete
 
     async def connect(self) -> tuple[dict[str, Any], ...]:
         try:
@@ -148,7 +160,8 @@ class McpStdioClient:
                 raise McpProtocolError("MCP connection cannot be reused")
             if os.name == "nt":
                 self._process, self._owner = await spawn_process_tree(*self.config.command, cwd=self.config.cwd,
-                    env=self._environment, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                    env=self._environment, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    job_name=self._job_name)
             else:
                 self._process = await asyncio.create_subprocess_exec(*self.config.command, cwd=self.config.cwd,
                     env=self._environment, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
@@ -335,7 +348,7 @@ class McpStdioClient:
             await asyncio.sleep(.005)
 
     async def close(self) -> None:
-        if self._closing is None:
+        if self._closing is None or self._closing.done() and not self._cleanup_complete:
             self._closing = asyncio.create_task(self._close())
         await finish_cleanup(self._closing)
 
@@ -375,3 +388,4 @@ class McpStdioClient:
             for future in self._pending.values():
                 if not future.done():
                     future.set_exception(McpProtocolError("MCP connection was closed"))
+        self._cleanup_complete = True

@@ -1,0 +1,430 @@
+diff --git a/libs/cua-driver/rust/crates/platform-windows/src/capture.rs b/libs/cua-driver/rust/crates/platform-windows/src/capture.rs
+index eb2e52c..40b6684 100644
+--- a/libs/cua-driver/rust/crates/platform-windows/src/capture.rs
++++ b/libs/cua-driver/rust/crates/platform-windows/src/capture.rs
+@@ -234,80 +234,7 @@ unsafe fn target_is_obscured(target: HWND) -> bool {
+ /// surfaces that PrintWindow can't reach, as long as the window is on-screen
+ /// (the daemon's typical case — see module docs).
+ unsafe fn screenshot_via_screen_region(hwnd: HWND) -> Result<(Vec<u8>, i32, i32, FrameGeometry)> {
+-    use windows::Win32::Foundation::RECT;
+-    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+-
+-    let mut rect = RECT::default();
+-    GetWindowRect(hwnd, &mut rect)?;
+-
+-    // Under Per-Monitor V2 DPI awareness, GetWindowRect already returns
+-    // PHYSICAL pixels (coordinate virtualization only applies to
+-    // DPI-unaware/system-aware processes), and BitBlt operates in physical
+-    // pixels too — use the rect as-is. Scaling by DPI/96 here would shift
+-    // and oversize the captured screen region (issue #1879).
+-    let physical_left = rect.left;
+-    let physical_top = rect.top;
+-
+-    let geometry = FrameGeometry::from_bounds((rect.left, rect.top, rect.right, rect.bottom))
+-        .ok_or_else(|| anyhow::anyhow!("screen-region fallback: invalid window bounds"))?;
+-    let w = geometry.width;
+-    let h = geometry.height;
+-
+-    let screen_dc = GetDC(HWND(std::ptr::null_mut())); // NULL HWND → desktop DC
+-    let mem_dc = CreateCompatibleDC(screen_dc);
+-    let bitmap = CreateCompatibleBitmap(screen_dc, w, h);
+-    let old_bitmap = SelectObject(mem_dc, bitmap);
+-
+-    // Copy from physical screen coords into our memory DC at (0, 0).
+-    let blt_ok = BitBlt(
+-        mem_dc,
+-        0,
+-        0,
+-        w,
+-        h,
+-        screen_dc,
+-        physical_left,
+-        physical_top,
+-        SRCCOPY,
+-    );
+-
+-    let mut bmi = BITMAPINFO {
+-        bmiHeader: BITMAPINFOHEADER {
+-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+-            biWidth: w,
+-            biHeight: -h, // top-down
+-            biPlanes: 1,
+-            biBitCount: 32,
+-            biCompression: BI_RGB.0,
+-            biSizeImage: (w * h * 4) as u32,
+-            ..Default::default()
+-        },
+-        bmiColors: [RGBQUAD::default(); 1],
+-    };
+-    let pixel_count = (w * h) as usize;
+-    let mut pixels = vec![0u8; pixel_count * 4];
+-    let ok = GetDIBits(
+-        mem_dc,
+-        bitmap,
+-        0,
+-        h as u32,
+-        Some(pixels.as_mut_ptr() as *mut _),
+-        &mut bmi,
+-        DIB_RGB_COLORS,
+-    );
+-
+-    SelectObject(mem_dc, old_bitmap);
+-    let _ = DeleteObject(bitmap);
+-    let _ = DeleteDC(mem_dc);
+-    ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+-
+-    if blt_ok.is_err() {
+-        bail!("screen-region fallback: BitBlt failed: {:?}", blt_ok);
+-    }
+-    if ok == 0 {
+-        bail!("screen-region fallback: GetDIBits returned 0");
+-    }
+-    Ok((pixels, w, h, geometry))
++    bail!("Meido profile forbids desktop-region BitBlt capture")
+ }
+ 
+ /// Capture a window by HWND, returning raw PNG bytes.
+@@ -386,6 +313,23 @@ fn screenshot_window_mapped(hwnd: u64) -> Result<(Vec<u8>, bool, Option<FrameGeo
+     }
+ }
+ 
++
++/// Source-bound capture evidence. WGC lacks a proven screen origin here.
++pub fn screenshot_window_evidence(hwnd: u64) -> Result<(Vec<u8>, serde_json::Value)> {
++    let (png, occluded, geometry) = screenshot_window_mapped(hwnd)?;
++    if occluded { bail!("Meido refuses occluding-window pixels"); }
++    let (w, h) = png_dimensions_pub(&png)?;
++    let evidence = serde_json::json!({
++        "provenance": if geometry.is_some() { "print_window" } else { "wgc" },
++        "source_window_id": hwnd,
++        "source_dimensions": [w, h], "image_dimensions": [w, h],
++        "physical_origin": geometry.map(|g| [g.left, g.top]),
++        "resize_ratio": geometry.map(|_| 1.0),
++        "pixel_coordinates_available": geometry.is_some()
++    });
++    Ok((png, evidence))
++}
++
+ /// Capture a window by HWND, returning (base64_png, width, height).
+ pub fn screenshot_window(hwnd: u64) -> Result<(String, u32, u32)> {
+     let png_bytes = screenshot_window_bytes(hwnd)?;
+@@ -513,7 +457,11 @@ unsafe fn screenshot_window_bytes_with_occlusion_unsafe(
+ 
+     let pw_ok = PrintWindow(hwnd, mem_dc, PW_RENDERFULLCONTENT);
+     if !pw_ok.as_bool() {
+-        BitBlt(mem_dc, 0, 0, w, h, screen_dc, 0, 0, SRCCOPY)?;
++        SelectObject(mem_dc, old_bitmap);
++        let _ = DeleteObject(bitmap);
++        let _ = DeleteDC(mem_dc);
++        ReleaseDC(hwnd, screen_dc);
++        bail!("Meido forbids window-DC BitBlt fallback");
+     }
+ 
+     // Compute the DWM-extended-frame bounds. On Win10+ the OS draws an
+@@ -661,6 +609,8 @@ unsafe fn screenshot_window_bytes_with_occlusion_unsafe(
+         }
+     }
+ 
++    if mostly_black { bail!("Meido PrintWindow and WGC unavailable"); }
++
+     // BGRA → PNG via the shared `image_utils::encode_bgra_to_png`
+     // helper (extracted from this file 2026-05; was a hand-rolled
+     // uncompressed-PNG path that produced ~5x larger output. The
+diff --git a/libs/cua-driver/rust/crates/platform-windows/src/input/inject.rs b/libs/cua-driver/rust/crates/platform-windows/src/input/inject.rs
+index 649f198..6456221 100644
+--- a/libs/cua-driver/rust/crates/platform-windows/src/input/inject.rs
++++ b/libs/cua-driver/rust/crates/platform-windows/src/input/inject.rs
+@@ -166,61 +166,11 @@ pub(crate) unsafe fn force_foreground_assisted(target: HWND) -> (bool, bool) {
+ /// while the window still RECEIVES the click/key. It is per-window (no session
+ /// side effects) and reversed on drop. Covers the self-activation that the
+ /// EnableWindow/UWP bypass cannot (WPF `UIElement.Focus()`→SetForegroundWindow).
+-pub struct NoActivateGuard {
+-    // Store the handle as an integer so the guard is `Send` and can be held
+-    // across `.await` in the async tools.
+-    root_addr: isize,
+-    applied: bool,
+-}
+-
+-impl NoActivateGuard {
+-    /// Arm on the top-level (GA_ROOT) ancestor of `hwnd`.
+-    pub fn arm(hwnd: HWND) -> Self {
+-        unsafe {
+-            let root = {
+-                let r = GetAncestor(hwnd, GA_ROOT);
+-                if r.0.is_null() {
+-                    hwnd
+-                } else {
+-                    r
+-                }
+-            };
+-            let prev = GetWindowLongPtrW(root, GWL_EXSTYLE);
+-            let want = WS_EX_NOACTIVATE.0 as isize;
+-            // Apply WS_EX_NOACTIVATE if not already set (prev can be 0, so don't
+-            // gate on it — we just need to check the bit and set it if absent).
+-            let applied = (prev & want) == 0 && {
+-                SetWindowLongPtrW(root, GWL_EXSTYLE, prev | want);
+-                // Confirm it took (cross-process SetWindowLongPtr can be denied
+-                // by UIPI on higher-integrity targets).
+-                (GetWindowLongPtrW(root, GWL_EXSTYLE) & want) != 0
+-            };
+-            Self {
+-                root_addr: root.0 as isize,
+-                applied,
+-            }
+-        }
+-    }
+-}
+-
+-impl Drop for NoActivateGuard {
+-    fn drop(&mut self) {
+-        if self.applied {
+-            unsafe {
+-                let root = HWND(self.root_addr as *mut _);
+-                let current = GetWindowLongPtrW(root, GWL_EXSTYLE);
+-                let noactivate = WS_EX_NOACTIVATE.0 as isize;
+-                // Clear only the bit this guard added. Restoring the full
+-                // captured value can clobber unrelated style changes the app
+-                // made while the background action was in flight.
+-                SetWindowLongPtrW(root, GWL_EXSTYLE, current & !noactivate);
+-            }
+-        }
+-    }
+-}
++// Meido: invoke admission rejects background routes requiring changes
++// to an external HWND. An already-foreground exact target needs no guard.
++pub struct NoActivateGuard;
++impl NoActivateGuard { pub fn arm(_hwnd: HWND) -> Self { Self } }
+ 
+-/// PEN_FLAG_BARREL (winuser.h) — pen barrel button held == secondary (right)
+-/// button. `penFlags` is a raw u32 in the bindings, so use the literal.
+ const PEN_FLAG_BARREL: u32 = 0x00000001;
+ 
+ // (Removed ZorderGuard.) The macOS-aligned contract forbids a `background`
+diff --git a/libs/cua-driver/rust/crates/platform-windows/src/tools/impl_.rs b/libs/cua-driver/rust/crates/platform-windows/src/tools/impl_.rs
+index 9d0d4cf..33460ff 100644
+--- a/libs/cua-driver/rust/crates/platform-windows/src/tools/impl_.rs
++++ b/libs/cua-driver/rust/crates/platform-windows/src/tools/impl_.rs
+@@ -1409,14 +1409,20 @@ impl Tool for GetWindowStateTool {
+             // to call `bring_to_front` instead of retrying).
+             // The previous `Err(_) => None` silently dropped the error and
+             // upstream agents saw an empty response with no signal.
++            let mut capture_evidence = Value::Null;
+             let (screenshot, screenshot_err) = if do_shot {
+-                match crate::capture::screenshot_window_bytes(hwnd) {
+-                    Ok(raw) => {
++                match crate::capture::screenshot_window_evidence(hwnd) {
++                    Ok((raw, evidence)) => {
++                        capture_evidence = evidence;
+                         let orig_w = crate::capture::png_dimensions_pub(&raw)
+                             .map(|(w, _)| w)
+                             .unwrap_or(0);
+                         let png = crate::capture::resize_png_if_needed(&raw, max_dim)?;
+                         let (w, h) = crate::capture::png_dimensions_pub(&png)?;
++                        capture_evidence["image_dimensions"] = json!([w, h]);
++                        if capture_evidence["pixel_coordinates_available"] == json!(true) {
++                            capture_evidence["resize_ratio"] = json!(orig_w as f64 / w as f64);
++                        }
+                         let original_w = if w < orig_w { Some(orig_w) } else { None };
+                         // `screenshot_out_file` set (any mode) → write to disk and
+                         // surface the path, never embed bytes. Otherwise (vision,
+@@ -1434,7 +1440,7 @@ impl Tool for GetWindowStateTool {
+             } else {
+                 (None, None)
+             };
+-            Ok((tree_result, screenshot, screenshot_err))
++            Ok((tree_result, screenshot, screenshot_err, capture_evidence))
+         });
+         // Timeout: Chrome's UIA provider can block indefinitely on property reads.
+         let result: Result<anyhow::Result<_>, _> =
+@@ -1463,9 +1469,9 @@ impl Tool for GetWindowStateTool {
+         let result = result.and_then(|r| r);
+ 
+         match result {
+-            Ok((tree_opt, screenshot_opt, screenshot_err)) => {
++            Ok((tree_opt, screenshot_opt, screenshot_err, capture_evidence)) => {
+                 let mut content = Vec::new();
+-                let mut structured = json!({ "window_id": hwnd, "pid": pid });
++                let mut structured = json!({ "window_id": hwnd, "pid": pid, "capture": capture_evidence, "meido_profile": "meido-windows-169-v1" });
+ 
+                 if let Some((tr, payload)) = tree_opt {
+                     let is_msaa = tr.nodes.iter().any(|node| node.msaa_role.is_some());
+@@ -3119,6 +3125,18 @@ impl Tool for ClickTool {
+     }
+ 
+     async fn invoke(&self, args: Value) -> ToolResult {
++        // Meido: refuse routes needing external no-activate/disable guards
++        // before dispatch. Background is supported for an already-foreground
++        // exact target; never silently activate or mutate an external HWND.
++        if args.get("delivery_mode").and_then(Value::as_str) != Some("foreground") {
++            let target = args.get("window_id").and_then(Value::as_u64).unwrap_or(0);
++            let foreground = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }.0 as u64;
++            if target == 0 || foreground != target {
++                return ToolResult::error("background_unavailable: exact target is not already foreground")
++                    .with_structured(json!({"code":"background_unavailable","effect":"not_started"}));
++            }
++        }
++
+         use crate::input::delivery::{DeliveryMode, EventKind};
+         use crate::uia::cache::SnapshotKind;
+         use cua_driver_core::tool_args::ArgsExt;
+@@ -4420,6 +4438,18 @@ impl Tool for TypeTextTool {
+     }
+ 
+     async fn invoke(&self, args: Value) -> ToolResult {
++        // Meido: refuse routes needing external no-activate/disable guards
++        // before dispatch. Background is supported for an already-foreground
++        // exact target; never silently activate or mutate an external HWND.
++        if args.get("delivery_mode").and_then(Value::as_str) != Some("foreground") {
++            let target = args.get("window_id").and_then(Value::as_u64).unwrap_or(0);
++            let foreground = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }.0 as u64;
++            if target == 0 || foreground != target {
++                return ToolResult::error("background_unavailable: exact target is not already foreground")
++                    .with_structured(json!({"code":"background_unavailable","effect":"not_started"}));
++            }
++        }
++
+         use crate::input::delivery::{DeliveryMode, EventKind};
+         use cua_driver_core::tool_args::ArgsExt;
+         let cursor_key = resolve_cursor_key(&args);
+@@ -5177,6 +5207,18 @@ impl Tool for PressKeyTool {
+     }
+ 
+     async fn invoke(&self, args: Value) -> ToolResult {
++        // Meido: refuse routes needing external no-activate/disable guards
++        // before dispatch. Background is supported for an already-foreground
++        // exact target; never silently activate or mutate an external HWND.
++        if args.get("delivery_mode").and_then(Value::as_str) != Some("foreground") {
++            let target = args.get("window_id").and_then(Value::as_u64).unwrap_or(0);
++            let foreground = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }.0 as u64;
++            if target == 0 || foreground != target {
++                return ToolResult::error("background_unavailable: exact target is not already foreground")
++                    .with_structured(json!({"code":"background_unavailable","effect":"not_started"}));
++            }
++        }
++
+         use crate::input::delivery::{DeliveryMode, EventKind};
+         use cua_driver_core::tool_args::ArgsExt;
+         if args.get("scope").and_then(Value::as_str) == Some("desktop")
+@@ -5539,6 +5581,18 @@ impl Tool for HotkeyTool {
+     }
+ 
+     async fn invoke(&self, args: Value) -> ToolResult {
++        // Meido: refuse routes needing external no-activate/disable guards
++        // before dispatch. Background is supported for an already-foreground
++        // exact target; never silently activate or mutate an external HWND.
++        if args.get("delivery_mode").and_then(Value::as_str) != Some("foreground") {
++            let target = args.get("window_id").and_then(Value::as_u64).unwrap_or(0);
++            let foreground = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }.0 as u64;
++            if target == 0 || foreground != target {
++                return ToolResult::error("background_unavailable: exact target is not already foreground")
++                    .with_structured(json!({"code":"background_unavailable","effect":"not_started"}));
++            }
++        }
++
+         use crate::input::delivery::{DeliveryMode, EventKind};
+         use cua_driver_core::tool_args::ArgsExt;
+         if args.get("scope").and_then(Value::as_str) == Some("desktop")
+@@ -6088,6 +6142,18 @@ impl Tool for ScrollTool {
+     }
+ 
+     async fn invoke(&self, args: Value) -> ToolResult {
++        // Meido: refuse routes needing external no-activate/disable guards
++        // before dispatch. Background is supported for an already-foreground
++        // exact target; never silently activate or mutate an external HWND.
++        if args.get("delivery_mode").and_then(Value::as_str) != Some("foreground") {
++            let target = args.get("window_id").and_then(Value::as_u64).unwrap_or(0);
++            let foreground = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }.0 as u64;
++            if target == 0 || foreground != target {
++                return ToolResult::error("background_unavailable: exact target is not already foreground")
++                    .with_structured(json!({"code":"background_unavailable","effect":"not_started"}));
++            }
++        }
++
+         use crate::input::delivery::{DeliveryMode, EventKind};
+         use cua_driver_core::tool_args::ArgsExt;
+         // ── Window-less screen-absolute branch (desktop target) ───────────────
+diff --git a/libs/cua-driver/rust/crates/platform-windows/src/uia/fg_bypass.rs b/libs/cua-driver/rust/crates/platform-windows/src/uia/fg_bypass.rs
+index 34e83bd..1dfa607 100644
+--- a/libs/cua-driver/rust/crates/platform-windows/src/uia/fg_bypass.rs
++++ b/libs/cua-driver/rust/crates/platform-windows/src/uia/fg_bypass.rs
+@@ -36,43 +36,9 @@ use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GA_ROOT};
+ /// RAII guard that disables a window on construction and restores its
+ /// previous enabled-state on Drop. Always re-arms on Drop even if the
+ /// wrapped action panics.
+-pub struct DisabledHwndGuard {
+-    hwnd: HWND,
+-    was_enabled: bool,
+-    armed: bool,
+-}
+-
+-impl DisabledHwndGuard {
+-    /// Disable `hwnd` for the lifetime of the guard. No-op for null HWND.
+-    pub fn disable(hwnd: HWND) -> Self {
+-        if hwnd.0.is_null() {
+-            return Self {
+-                hwnd,
+-                was_enabled: false,
+-                armed: false,
+-            };
+-        }
+-        // `EnableWindow` returns nonzero iff the window was *previously
+-        // disabled* — invert to get the "was enabled" state we want to
+-        // restore at Drop time.
+-        let was_disabled = unsafe { EnableWindow(hwnd, false).as_bool() };
+-        Self {
+-            hwnd,
+-            was_enabled: !was_disabled,
+-            armed: true,
+-        }
+-    }
+-}
+-
+-impl Drop for DisabledHwndGuard {
+-    fn drop(&mut self) {
+-        if self.armed {
+-            unsafe {
+-                let _ = EnableWindow(self.hwnd, self.was_enabled);
+-            }
+-        }
+-    }
+-}
++// Meido never disables an external HWND, even temporarily.
++pub struct DisabledHwndGuard;
++impl DisabledHwndGuard { pub fn disable(_hwnd: HWND) -> Self { Self } }
+ 
+ /// Wrap an activation closure (Invoke / Expand / Toggle / SelectionItem.Select)
+ /// in a UWP foreground-steal bypass.
+@@ -98,32 +64,4 @@ pub fn run_with_uwp_bypass<T>(host_hwnd: isize, action: impl FnOnce() -> T) -> T
+     action()
+ }
+ 
+-fn make_guard(host_hwnd: isize) -> Option<DisabledHwndGuard> {
+-    if host_hwnd == 0 {
+-        return None;
+-    }
+-    // XAML/UWP/WinUI hosts self-foreground during UIA pattern handling (the
+-    // original case). Chromium/Electron hosts (`Chrome_WidgetWin_*`) exhibit the
+-    // SAME bug: their UIA `InvokePattern.Invoke` handler reaches the browser's
+-    // focus path and calls `SetForegroundWindow(self)`, stealing focus from the
+-    // user's window on a *background* click (measured 7/8 ax-bg actions stole on
+-    // Windows — Chromium-specific; macOS WKWebView / Linux Electron hold).
+-    // `WS_EX_NOACTIVATE` (the injection path's `NoActivateGuard`) does NOT stop
+-    // an explicit self-`SetForegroundWindow`, but the `EnableWindow` shield does:
+-    // a *disabled* top-level cannot be made the foreground window, while the UIA
+-    // Invoke still lands (it's delivered over the kernel accessibility channel,
+-    // not the input queue `EnableWindow` gates). Same mechanism, same 0-z-drop
+-    // result as UWP — so gate the shield on Chromium too.
+-    let shielded = crate::input::is_xaml_host_hwnd(host_hwnd as u64)
+-        || crate::input::is_chromium_target_window(host_hwnd as u64);
+-    if !shielded {
+-        return None;
+-    }
+-    let h = HWND(host_hwnd as *mut _);
+-    // Defensive: walk up to the root in case the caller handed us a child
+-    // HWND inside the XAML host's HWND tree. UWP elements always disable
+-    // cleanly via the AppFrame root.
+-    let root = unsafe { GetAncestor(h, GA_ROOT) };
+-    let target = if root.0.is_null() { h } else { root };
+-    Some(DisabledHwndGuard::disable(target))
+-}
++fn make_guard(_host_hwnd: isize) -> Option<DisabledHwndGuard> { None }

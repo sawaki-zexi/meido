@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/trycua/cua.git",
+  "tag": "cua-driver-rs-v0.28.2",
+  "commit": "fc188250b4ca8549b8e61f937fdb1fb560770e86",
+  "subdirectory": "libs/cua-driver/rust",
+  "license": "MIT",
+  "rustup": {
+    "version": "1.29.1",
+    "url": "https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-pc-windows-msvc/rustup-init.exe",
+    "sha256": "6f4bef66261261fcb43131be8720bab817d403a09edec7455c371974b90bdb7e"
+  },
+  "spectreLibraries": {
+    "url": "https://download.visualstudio.microsoft.com/download/pr/27d644ce-f00b-40cc-b93c-7be5ae10995a/811b5d34e7b4c0f5920fa1fb8f36b25c68f82fd73523f6dce2d385ae2d012c7c/Microsoft.VC.14.42.17.12.CRT.x64.Desktop.spectre.base.vsix",
+    "sha256": "811b5d34e7b4c0f5920fa1fb8f36b25c68f82fd73523f6dce2d385ae2d012c7c"
+  }
+}

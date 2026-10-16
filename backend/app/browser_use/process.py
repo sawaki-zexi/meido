@@ -4,6 +4,7 @@ import asyncio
 import ctypes
 import os
 import sys
+import threading
 import time
 from collections.abc import Mapping
 from ctypes import wintypes
@@ -38,7 +39,7 @@ class _ExtendedJobLimits(ctypes.Structure):
 class WindowsJob:
     """Owns a suspended Windows process tree and kills it when the host exits."""
 
-    def __init__(self, pid: int, *, resume: bool = False) -> None:
+    def __init__(self, pid: int, *, resume: bool = False, name: str | None = None) -> None:
         if sys.platform != "win32":
             raise RuntimeError("Browser Use process ownership requires Windows")
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -52,9 +53,17 @@ class WindowsJob:
         kernel.OpenProcess.restype = wintypes.HANDLE
         kernel.CloseHandle.argtypes = [wintypes.HANDLE]
         self._kernel = kernel
-        self._handle = kernel.CreateJobObjectW(None, None)
+        self._lock = threading.RLock()
+        self._exit_confirmed = False
+        if name is not None and (not name or len(name) > 256 or "\x00" in name):
+            raise ValueError("invalid owned Job name")
+        ctypes.set_last_error(0)
+        self._handle = kernel.CreateJobObjectW(None, name)
         if not self._handle:
             raise ctypes.WinError(ctypes.get_last_error())
+        if name is not None and ctypes.get_last_error() == 183:
+            self._close_handle()
+            raise RuntimeError("owned Job name is already in use")
         process_handle = None
         try:
             limits = _ExtendedJobLimits()
@@ -77,16 +86,49 @@ class WindowsJob:
             if process_handle:
                 kernel.CloseHandle(process_handle)
 
-    def close(self) -> None:
-        """Terminates the owned tree and waits until no profile users remain."""
-        if not self._handle:
-            return
-        kernel = self._kernel
-        kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    @property
+    def exit_confirmed(self) -> bool:
+        return self._exit_confirmed
+
+    @staticmethod
+    def named_job_active(name: str) -> bool:
+        """Query a prior owner's Job without adopting or terminating its tree."""
+        if sys.platform != "win32":
+            raise RuntimeError("named Job queries require Windows")
+        if not name or len(name) > 256 or "\x00" in name:
+            raise ValueError("invalid owned Job name")
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel.OpenJobObjectW.restype = wintypes.HANDLE
         kernel.QueryInformationJobObject.argtypes = [
             wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p,
         ]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel.OpenJobObjectW(0x0004, False, name)  # JOB_OBJECT_QUERY
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == 2:  # ERROR_FILE_NOT_FOUND
+                return False
+            raise ctypes.WinError(error)
         try:
+            counters = (wintypes.DWORD * 12)()
+            if not kernel.QueryInformationJobObject(handle, 1, ctypes.byref(counters), ctypes.sizeof(counters), None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return counters[10] != 0
+        finally:
+            if not kernel.CloseHandle(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+    def close(self) -> None:
+        """Confirm tree exit before releasing ownership; failed cleanup is retryable."""
+        with self._lock:
+            if not self._handle:
+                return
+            kernel = self._kernel
+            kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            kernel.QueryInformationJobObject.argtypes = [
+                wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p,
+            ]
             if not kernel.TerminateJobObject(self._handle, 1):
                 raise ctypes.WinError(ctypes.get_last_error())
             counters = (wintypes.DWORD * 12)()
@@ -97,16 +139,17 @@ class WindowsJob:
                 ):
                     raise ctypes.WinError(ctypes.get_last_error())
                 if counters[10] == 0:
+                    self._close_handle()
+                    self._exit_confirmed = True
                     return
                 if time.monotonic() >= deadline:
                     raise TimeoutError("Browser Use process tree did not exit")
                 time.sleep(0.01)
-        finally:
-            self._close_handle()
 
     def _close_handle(self) -> None:
         if self._handle:
-            self._kernel.CloseHandle(self._handle)
+            if not self._kernel.CloseHandle(self._handle):
+                raise ctypes.WinError(ctypes.get_last_error())
             self._handle = None
 
     def _resume_initial_thread(self, pid: int) -> None:
@@ -161,6 +204,7 @@ async def spawn_process_tree(
     stdin: int | None = asyncio.subprocess.DEVNULL,
     stdout: int | BinaryIO = asyncio.subprocess.DEVNULL,
     stderr: int | BinaryIO = asyncio.subprocess.DEVNULL,
+    job_name: str | None = None,
 ) -> tuple[asyncio.subprocess.Process, WindowsJob | None]:
     owned = sys.platform == "win32"
     process = await asyncio.create_subprocess_exec(
@@ -178,7 +222,7 @@ async def spawn_process_tree(
     if not owned:
         return process, None
     try:
-        return process, WindowsJob(process.pid, resume=True)
+        return process, WindowsJob(process.pid, resume=True, name=job_name)
     except BaseException:
         process.kill()
         await process.wait()

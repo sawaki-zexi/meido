@@ -29,6 +29,7 @@ import httpx
 from .ai.model_adapter import ModelAdapter
 from .ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
 from .screen_perception import ObserveScreenTool, ScreenPerception
+from .computer_use import ComputerUseHost, COMPUTER_USE_TOOL_NAMES, load_computer_tools, register_computer_use_plugin, guard_provider
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
 from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryQueryFilters, MemoryScope
@@ -205,6 +206,14 @@ screen_perception = ScreenPerception(
     adapter=RoutedModelAdapter(ModelAdapterRegistry(timeout=12)),
     role_unavailable=lambda role_id: role_id in _channel_roles_deleting,
 )
+computer_use = ComputerUseHost(
+    role_getter=lambda role_id: store.get(role_id),
+    configuration_getter=lambda configuration_id: model_configuration_store.get(configuration_id),
+    sessions=lambda: session_store, model_registry=model_adapter_registry,
+    resources=Path(os.getenv("MEIDO_COMPUTER_USE_RESOURCES", str(Path(__file__).resolve().parent))),
+    data_root=data_root / "computer-use",
+    role_unavailable=lambda role_id: role_id in _channel_roles_deleting,
+)
 embedding_configuration_store = EmbeddingConfigurationStore(data_root / "embedding-config.json")
 memory_settings_store = MemorySettingsStore(data_root / "memory-settings.json")
 embedding_provider = SharedEmbeddingProvider(
@@ -238,6 +247,7 @@ application_plugin_manager = ApplicationPluginManager()
 application_plugin_manager.register("owner-knowledge", owner_knowledge_plugin)
 register_todo_agent_plugin(plugin_registry)
 register_browser_use_plugin(plugin_registry)
+register_computer_use_plugin(plugin_registry)
 browser_use_sessions = BrowserSessions(
     Path(os.getenv("MEIDO_BROWSER_USE_DATA_DIR", str(data_root / "browser-use"))).resolve(),
     BrowserUseConfig(),
@@ -785,6 +795,7 @@ async def _close_memory_workers() -> None:
     if _spawn_completion_worker is not None:
         await _spawn_completion_worker.close()
     await screen_perception.close()
+    await computer_use.close()
     await asyncio.to_thread(task_runtime.close)
     await mail_service.close()
     await owner_knowledge_scheduler.close()
@@ -1412,6 +1423,7 @@ async def save_model_configuration(data: ModelConfigurationInput) -> dict[str, o
         candidate = _configuration_with_saved_key(data)
         configuration = model_configuration_store.save(candidate)
         await screen_perception.invalidate(configuration_id=configuration.id)
+        await computer_use.invalidate(configuration_id=configuration.id)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except OSError as error:
@@ -1439,6 +1451,7 @@ async def update_model_configuration(configuration_id: str, data: ModelConfigura
             data = data.model_copy(update={"apiKey": current.apiKey})
         configuration = model_configuration_store.update(configuration_id, data)
         await screen_perception.invalidate(configuration_id=configuration_id)
+        await computer_use.invalidate(configuration_id=configuration_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="模型配置不存在") from error
     except ValueError as error:
@@ -1458,9 +1471,13 @@ def reveal_model_api_key(configuration_id: str, response: Response) -> dict[str,
 
 
 @app.post("/api/model/configurations/{configuration_id}/activate")
-def activate_model_configuration(configuration_id: str) -> dict[str, object]:
+async def activate_model_configuration(configuration_id: str) -> dict[str, object]:
     try:
+        previous_id = model_configuration_store.active_id()
         configuration = model_configuration_store.activate(configuration_id)
+        if previous_id != configuration.id:
+            await asyncio.gather(*(computer_use.invalidate(role_id=role.id)
+                                   for role in store.list() if role.modelConfigurationId is None))
     except KeyError as error:
         raise HTTPException(status_code=404, detail="模型配置不存在") from error
     return {"configuration": public_configuration(configuration)}
@@ -1471,6 +1488,7 @@ async def delete_model_configuration(configuration_id: str) -> dict[str, object]
     try:
         active_id = model_configuration_store.delete(configuration_id)
         await screen_perception.invalidate(configuration_id=configuration_id)
+        await computer_use.invalidate(configuration_id=configuration_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="模型配置不存在") from error
     return {"activeId": active_id}
@@ -1560,6 +1578,11 @@ def get_role_tools(role_id: str) -> dict[str, object]:
         reasons["mail.manage"] = "邮件服务尚未就绪"
     dependencies = {name: browser_use_sessions.dependency_status() for name in BROWSER_USE_TOOL_NAMES}
     dependencies['message_push'] = {'status': 'ready', 'reason': '只写入当前角色的桌面对话，无需外部渠道账号'}
+    computer_dependency = computer_use.dependency_status(role)
+    for name in COMPUTER_USE_TOOL_NAMES:
+        dependencies[name] = computer_dependency
+        if computer_dependency["status"] == "unavailable":
+            reasons[name] = computer_dependency["reason"]
     screen_reason = _screen_unavailable_reason(role)
     if screen_reason:
         reasons["observe_screen"] = screen_reason
@@ -1608,6 +1631,8 @@ async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
         updated = store.update(role_id, data)
         if current is not None and current.agentConfig.screenPerception != updated.agentConfig.screenPerception:
             await screen_perception.invalidate(role_id=role_id)
+        if current is not None and current.agentConfig.computerUse != updated.agentConfig.computerUse:
+            await computer_use.invalidate(role_id=role_id)
         if current is not None and current.agentConfig.shell != updated.agentConfig.shell:
             await asyncio.to_thread(task_runtime.cancel_role_tasks, role_id, kind="shell")
         if current is not None and current.agentConfig.spawn != updated.agentConfig.spawn:
@@ -1821,7 +1846,7 @@ def get_role_model_configuration(role_id: str) -> dict[str, str | None]:
 
 
 @app.put("/api/roles/{role_id}/model-configuration")
-def set_role_model_configuration(
+async def set_role_model_configuration(
     role_id: str,
     data: RoleModelConfigurationInput,
 ) -> dict[str, str | None]:
@@ -1830,6 +1855,7 @@ def set_role_model_configuration(
     if data.configurationId and model_configuration_store.get(data.configurationId) is None:
         raise HTTPException(status_code=404, detail="模型连接不存在")
     try:
+        await computer_use.invalidate(role_id=role_id)
         role = store.set_model_configuration(role_id, data.configurationId)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
@@ -1882,6 +1908,7 @@ async def delete_role(role_id: str) -> None:
         for ref in pending_qq_refs:
             await managed_napcat.stop(ref, role_id=role_id)
         await screen_perception.invalidate(role_id=role_id)
+        await computer_use.invalidate(role_id=role_id)
         await browser_use_sessions.set_role_enabled(role_id, False)
         # Mark the gate before the first await so cancellation cannot leave a
         # role permanently blocked from future memory work.
@@ -3936,6 +3963,7 @@ def _runtime_tool_candidates(
         SpawnTool(task_runtime, role.agentConfig.spawn, origin_resolver=task_origin, authorized=spawn_authorized),
         SpawnManageTool(task_runtime, origin_resolver=task_origin, authorized=spawn_authorized),
         ObserveScreenTool(screen_perception, role.agentConfig.screenPerception.visionModelConfigurationId, role_id=role.id),
+        *load_computer_tools(computer_use, role_id=role.id),
         ShellTool(
             store.root / role.id / "workspace" if preview else store.workspace_path(role.id),
             allowed_commands=shell.allowedCommands,
@@ -4020,6 +4048,8 @@ def _screen_unavailable_reason(role) -> str:
 def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[str]:
     shell = role.agentConfig.shell
     enabled: set[str] = set()
+    if computer_use.dependency_status(role)["status"] != "unavailable":
+        enabled.update(COMPUTER_USE_TOOL_NAMES)
     if not _screen_unavailable_reason(role):
         enabled.add("observe_screen")
     if include_channel or group_repository.has_member_data(role.id):
@@ -4080,7 +4110,7 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     host_enabled = set(enabled_tools)
     enabled_tools.update(agent_config.enabledTools)
-    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen"}) - host_enabled)
+    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen"}) - host_enabled)
     if not include_channel:
         enabled_tools.difference_update({
             "account_list", "account_targets", "account_send", "set_group_listening", "read_attachment",
@@ -4100,6 +4130,13 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
         provided_capabilities.add("todo.write")
     else:
         enabled_plugins.discard("todo")
+    if agent_config.computerUse.enabled and computer_use.dependency_status(role)["status"] != "unavailable":
+        enabled_plugins.add("computer_use")
+        granted_capabilities.add("desktop.control")
+        provided_capabilities.add("desktop.control")
+    else:
+        enabled_plugins.discard("computer_use")
+        enabled_tools.difference_update(COMPUTER_USE_TOOL_NAMES)
     if agent_config.browserUse.enabled:
         enabled_plugins.add("browser_use")
         enabled_tools.update(BROWSER_USE_TOOL_NAMES)
@@ -4131,6 +4168,10 @@ async def _runtime_capabilities(
     if (session_key != f"role:{role.id}" or source_run is None
             or source_run.modelSnapshot.get("screenPerceptionSource") != "desktop_owner"):
         policy = replace(policy, enabled_tools=policy.enabled_tools - {"observe_screen"})
+    if (session_key != f"role:{role.id}" or source_run is None
+            or source_run.modelSnapshot.get("computerUseSource") != "desktop_owner"):
+        policy = replace(policy, enabled_tools=policy.enabled_tools - COMPUTER_USE_TOOL_NAMES,
+                         enabled_plugins=policy.enabled_plugins - {"computer_use"})
     frozen_manifests = {item.plugin_id: item for item in plugin_registry.manifests()}
     source_authority = capture_channel_source(
         multichannel_store, session_store, role_id=role.id, session_key=session_key,
@@ -4187,6 +4228,8 @@ async def _runtime_capabilities(
     host_services: dict[str, object] = {}
     if "todo.write" in policy.provided_capabilities:
         host_services["todo.write"] = _todo_application()
+    if "desktop.control" in policy.provided_capabilities:
+        host_services["desktop.control"] = computer_use
     if "browser.session" in policy.provided_capabilities:
         host_services["browser.session"] = browser_use_sessions
     candidates = _runtime_tool_candidates(role, include_channel=include_channel) if available_tools is None else available_tools
@@ -5265,6 +5308,7 @@ async def stop_role_reply(role_id: str, run_id: str) -> SessionResponse:
     runtime_manager.role_locks = role_locks
     if not await runtime_manager.stop_run(run_id):
         raise HTTPException(status_code=409, detail="当前回复暂时无法停止，请刷新后重试")
+    await computer_use.close_run(role_id, run_id)
     return session_manager.open_role_session(role_id)
 
 
@@ -5306,6 +5350,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
             "modelConfiguration": configuration_snapshot,
             "role": role_snapshot,
             "screenPerceptionSource": "desktop_owner",
+            "computerUseSource": "desktop_owner",
+            "humanInputSource": "desktop_owner",
         }
         run = AgentRun(
             runId=run_id,
@@ -5505,6 +5551,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     capabilities.prompt_context(),
                 )
                 _bind_spawn_runtime(capabilities, provider)
+                if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools):
+                    provider = guard_provider(provider, computer_use, role_id=role_id, run_id=run_id)
                 capabilities_owned_by_runtime = True
                 async for runtime_event in runtime_manager.run(
                     AgentRun(
@@ -5522,7 +5570,10 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     messages=runtime_messages,
                     tools=runtime_tools,
                     capabilities=capabilities,
-                    max_turns=8,
+                    # Observation/action pairs need room for the complete
+                    # eight-tool workflow; the desktop lease still expires
+                    # at its independent five-minute deadline.
+                    max_turns=32 if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools) else 8,
                     provider_timeout=120.0,
                     # The outer timeout must not shorten Browser Use's own
                     # per-action policy when a role also enables a shorter
@@ -5532,6 +5583,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         max(32.0, shell_config.timeoutSeconds + 2) if runtime_tools else 30.0,
                         browser_use_sessions.timeout_seconds if role.agentConfig.browserUse.enabled else 0.0,
                         network_tools_config.timeout_seconds + 1 if {"web_fetch", "web_search"} & set(role.agentConfig.enabledTools) else 0.0,
+                        36.0 if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools) else 0.0,
                     ),
                     on_message_end=persist_runtime_message,
                 ):
@@ -5655,12 +5707,15 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     await capabilities.close()
                 except Exception:
                     pass
-            try:
-                # Browser sessions are scoped to this run; the profile remains
-                # on disk while the owned MCP/Chrome generation is reaped.
-                await browser_use_sessions.close_run(role_id, run_id)
-            except Exception as error:
-                memory_worker.errors.append(f"{role_id}: browser run cleanup failed: {type(error).__name__}")
+            # Each owner must complete its cleanup even when another owner's
+            # cleanup fails; keep failures isolated and await both joins.
+            cleanup_results = await asyncio.gather(
+                computer_use.finish_run(role_id, run_id),
+                browser_use_sessions.close_run(role_id, run_id), return_exceptions=True,
+            )
+            for owner_name, result in zip(("computer", "browser"), cleanup_results):
+                if isinstance(result, BaseException):
+                    memory_worker.errors.append(f"{role_id}: {owner_name} run cleanup failed: {type(result).__name__}")
             if disconnect_watcher is not None:
                 # Request's nonblocking AnyIO probe can absorb a concurrent
                 # Task.cancel(); the stop flag must also end its polling loop.

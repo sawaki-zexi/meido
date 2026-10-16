@@ -1,6 +1,6 @@
 import type { AgentToolConfig, Role } from "../../api/types";
 
-export const emptyDraft = { name: "", description: "", profile: "", personality: "", behaviorRules: "", responseConstraints: "", nickname: "", memoryRecallEnabled: false, todoSearchEnabled: false, browserUseEnabled: false, screenPerceptionEnabled: false, screenVisionModelConfigurationId: "", spawnEnabled: false, spawnTimeoutSeconds: 120, spawnMaxTurns: 12, spawnMaxOutputChars: 20000, spawnMaxModelOutputChars: 60000, shellEnabled: false, shellAllowedCommands: "", shellTimeoutSeconds: 30, shellMaxOutputChars: 20000, preservedAgentConfig: {} as AgentToolConfig, otherEnabledTools: [] as string[], otherEnabledPlugins: [] as string[], otherGrantedCapabilities: [] as string[] };
+export const emptyDraft = { name: "", description: "", profile: "", personality: "", behaviorRules: "", responseConstraints: "", nickname: "", memoryRecallEnabled: false, todoSearchEnabled: false, browserUseEnabled: false, computerUseEnabled: false, screenPerceptionEnabled: false, screenVisionModelConfigurationId: "", spawnEnabled: false, spawnTimeoutSeconds: 120, spawnMaxTurns: 12, spawnMaxOutputChars: 20000, spawnMaxModelOutputChars: 60000, shellEnabled: false, shellAllowedCommands: "", shellTimeoutSeconds: 30, shellMaxOutputChars: 20000, preservedAgentConfig: {} as AgentToolConfig, otherEnabledTools: [] as string[], otherEnabledPlugins: [] as string[], otherGrantedCapabilities: [] as string[] };
 export type RoleDraft = typeof emptyDraft;
 
 const storageKey = "meido:create-role-draft";
@@ -12,6 +12,7 @@ export const draftFromRole = (role: Role): RoleDraft => ({
   memoryRecallEnabled: role.agentConfig?.memoryRecall?.enabled ?? false,
   todoSearchEnabled: role.agentConfig?.enabledPlugins?.includes("todo") === true && role.agentConfig?.grantedCapabilities?.includes("todo.read") === true && role.agentConfig?.enabledTools?.includes("todo.search") === true,
   browserUseEnabled: role.agentConfig?.browserUse?.enabled === true,
+  computerUseEnabled: role.agentConfig?.computerUse?.enabled === true,
   spawnEnabled: role.agentConfig?.spawn?.enabled === true,
   spawnTimeoutSeconds: role.agentConfig?.spawn?.timeoutSeconds ?? 120,
   spawnMaxTurns: role.agentConfig?.spawn?.maxTurns ?? 12,
@@ -41,6 +42,7 @@ export const payloadFromDraft = (draft: RoleDraft) => ({
       maxOutputChars: draft.spawnMaxOutputChars, maxModelOutputChars: draft.spawnMaxModelOutputChars,
     } } : {}),
     memoryRecall: { ...draft.preservedAgentConfig.memoryRecall, enabled: draft.memoryRecallEnabled },
+    ...(draft.computerUseEnabled || draft.preservedAgentConfig.computerUse ? { computerUse: { ...draft.preservedAgentConfig.computerUse, enabled: draft.computerUseEnabled } } : {}),
     ...(draft.browserUseEnabled || draft.preservedAgentConfig.browserUse ? { browserUse: { ...draft.preservedAgentConfig.browserUse, enabled: draft.browserUseEnabled } } : {}),
     ...(draft.screenPerceptionEnabled || draft.screenVisionModelConfigurationId || draft.preservedAgentConfig.screenPerception ? { screenPerception: {
       ...draft.preservedAgentConfig.screenPerception, enabled: draft.screenPerceptionEnabled,
@@ -92,6 +94,7 @@ export function readCreateDraft(): RoleDraft | null {
     if (parsed.preservedAgentConfig && typeof parsed.preservedAgentConfig === "object" && !Array.isArray(parsed.preservedAgentConfig)) draft.preservedAgentConfig = parsed.preservedAgentConfig as AgentToolConfig;
     draft.screenPerceptionEnabled = typeof parsed.screenPerceptionEnabled === "boolean" ? parsed.screenPerceptionEnabled : draft.preservedAgentConfig.screenPerception?.enabled === true;
     draft.screenVisionModelConfigurationId = typeof parsed.screenVisionModelConfigurationId === "string" ? parsed.screenVisionModelConfigurationId : typeof draft.preservedAgentConfig.screenPerception?.visionModelConfigurationId === "string" ? draft.preservedAgentConfig.screenPerception.visionModelConfigurationId : "";
+    draft.computerUseEnabled = typeof parsed.computerUseEnabled === "boolean" ? parsed.computerUseEnabled : draft.preservedAgentConfig.computerUse?.enabled === true;
     draft.otherEnabledTools = Array.isArray(parsed.otherEnabledTools) ? parsed.otherEnabledTools.filter((item): item is string => typeof item === "string" && item !== "todo.search") : [];
     draft.otherEnabledPlugins = Array.isArray(parsed.otherEnabledPlugins) ? parsed.otherEnabledPlugins.filter((item): item is string => typeof item === "string" && item !== "todo") : [];
     draft.otherGrantedCapabilities = Array.isArray(parsed.otherGrantedCapabilities) ? parsed.otherGrantedCapabilities.filter((item): item is string => typeof item === "string" && item !== "todo.read") : [];

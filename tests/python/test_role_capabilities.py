@@ -142,7 +142,8 @@ def test_saved_shell_and_capability_settings_survive_role_store_restart(role_api
     monkeypatch.setattr(main, "store", RoleStore(tmp_path / "roles"))
     reopened = role_api.get(f"/api/roles/{created['id']}").json()["role"]
     assert reopened["name"] == "新名"
-    assert reopened["agentConfig"] == {**config, "screenPerception": {"enabled": False, "visionModelConfigurationId": None}}
+    assert reopened["agentConfig"] == {**config, "screenPerception": {"enabled": False, "visionModelConfigurationId": None},
+                                        "computerUse": {"enabled": False}}
 
 
 def test_native_model_without_tools_receives_an_explicit_empty_capability_list(role_api, monkeypatch):

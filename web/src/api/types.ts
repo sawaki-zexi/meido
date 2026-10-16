@@ -8,7 +8,7 @@ export type RoleCardImportPreview = {
 };
 export type MemoryRecallToolConfig = { enabled: boolean };
 export type SpawnToolConfig = { enabled: boolean; timeoutSeconds: number; maxTurns: number; maxOutputChars: number; maxModelOutputChars: number };
-export type AgentToolConfig = { memoryRecall?: MemoryRecallToolConfig; browserUse?: { enabled: boolean }; spawn?: SpawnToolConfig; screenPerception?: { enabled: boolean; visionModelConfigurationId: string | null }; enabledTools?: string[]; enabledPlugins?: string[]; grantedCapabilities?: string[]; shell?: { enabled: boolean; allowedCommands: string[]; timeoutSeconds: number; maxOutputChars: number } };
+export type AgentToolConfig = { memoryRecall?: MemoryRecallToolConfig; browserUse?: { enabled: boolean }; computerUse?: { enabled: boolean }; spawn?: SpawnToolConfig; screenPerception?: { enabled: boolean; visionModelConfigurationId: string | null }; enabledTools?: string[]; enabledPlugins?: string[]; grantedCapabilities?: string[]; shell?: { enabled: boolean; allowedCommands: string[]; timeoutSeconds: number; maxOutputChars: number } };
 export type RoleToolCatalog = {
   roleId: string; sessionKey: string; preview: boolean;
   tools: { name: string; description: string; source: string; version: string | null; risk: string | null; exposure: string | null; registered: boolean; enabled: boolean; authorized: boolean; modelVisible: boolean | null; dependency: { status: "ready" | "unavailable" | "unchecked"; reason: string }; reason: string }[];

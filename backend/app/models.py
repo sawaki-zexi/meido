@@ -39,6 +39,10 @@ class BrowserUseToolConfig(BaseModel):
     enabled: bool = False
 
 
+class ComputerUseToolConfig(BaseModel):
+    enabled: bool = False
+
+
 class SpawnToolConfig(BaseModel):
     enabled: bool = False
     timeoutSeconds: float = Field(default=120, gt=0, le=600)
@@ -63,6 +67,7 @@ class AgentToolConfig(BaseModel):
     shell: ShellToolConfig = Field(default_factory=ShellToolConfig)
     memoryRecall: MemoryRecallToolConfig = Field(default_factory=MemoryRecallToolConfig)
     browserUse: BrowserUseToolConfig = Field(default_factory=BrowserUseToolConfig)
+    computerUse: ComputerUseToolConfig = Field(default_factory=ComputerUseToolConfig)
     spawn: SpawnToolConfig = Field(default_factory=SpawnToolConfig)
     screenPerception: ScreenPerceptionConfig = Field(default_factory=ScreenPerceptionConfig)
     enabledTools: list[str] = Field(default_factory=list)
