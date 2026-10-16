@@ -6,7 +6,7 @@
 
 #169 的完整与修正两轴审查均无遗留；准确源本地61项相关检查、编译与同7源相对6751基线的9→9类型诊断对照通过（0新增，不称全类型绿）。受控原生六项、禁用准入一项与失败辅助候选各有自己的固定快照，范围见[原生手册](../handbook/computer-use-native-acceptance.md)。前期 #180 本地115项交叉、252项前端及136/144输入补验证据保留在[目标验收](../research/autonomy-channel-targets-acceptance-2026-10-16.md)，不冒称本次重复执行。
 
-完整目标仍未完成。固定f4ac全范围审计定位到的 #148 中文/提示词召回及访客模型声明主人专用推送差距，已由独立源 `6d04af6` 修正并汇入本分支：规范/规格两轴均无遗留，相关134项通过，见[搜索修正验收](../research/tool-discovery-relevance-acceptance-2026-10-17.md)。本次新提交的完整CI仍待核验，上述绿色仅对应f4ac；#191和桌宠仍待既有方案答复。旧a0 PR CI已取消，其原90秒堆栈定位到记忆超时HTTP测试的asyncio.run退出清理，尚不足以确定根因；本次两路成功不表示旧挂起已修复。
+完整目标仍未完成。固定f4ac全范围审计定位到的 #148 中文/提示词召回及访客模型声明主人专用推送差距，已由独立源 `6d04af6` 修正并汇入本分支：规范/规格两轴均无遗留，相关134项通过，见[搜索修正验收](../research/tool-discovery-relevance-acceptance-2026-10-17.md)。准确7b008cb的PR CI后端2609 passed/39 skipped、前端252项和构建通过，另一push后端仍未终态；上文双CI绿色仅对应f4ac。#191具体架构已获主人批准，正在独立分支实施，尚未集成；桌宠宿主选择仍待既有答复。旧a0 PR CI已取消，其原90秒堆栈定位到记忆超时HTTP测试的asyncio.run退出清理；#192已在独立分支复现并修正同类监听取消缺口，仍需修复头的跨平台检查、两轴审查及准确CI，不由此推定旧CI完全同因。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -17,6 +17,7 @@
 - 用户随后明确要求剩余多个 PR 汇总为一个大 PR；剩余改动汇入 [草稿 PR #162](https://github.com/sawaki-zexi/meido/pull/162)。原 Skills 草稿 PR #161 已关闭为被替代，未单独合并，#152 保持开放。
 - D01–D03 及屏幕感知已批准，见 ADR [0011](../adr/0011-versioned-tool-activation.md)、[0012](../adr/0012-owned-task-runtime.md)、[0013](../adr/0013-independent-generic-schedules.md)、[0014](../adr/0014-explicit-screen-vision-binding.md)。2026-10-16 主人另明确批准 [Windows 桌面控制](../adr/0015-owned-windows-computer-use.md)、[NovelAI](../adr/0016-bounded-novelai-generation.md)、[Coding Agent](../adr/0017-owned-coding-agent-runtime.md)、[主动决策/Drift](../adr/0018-explicit-autonomy-and-drift-grants.md)四项具体规格第3节，正在实施；真实账号、消费及外部事务仍按各自范围另批。桌宠宿主选择仍待回答。
 - 汇总 PR 不具有合并批准；实现、审查、CI 和必要验收完成后仍需人工批准。剩余 Issue 不因进入集成分支而关闭。
+- 主人已明确批准 #191 [Drift 表情维护规格第3节](../specs/drift-meme-maintenance-spec.md)的一揽子方案，范围为实现及无费用本地验收；真实模型消费、账号与平台事务另批。该批准不改变桌宠宿主选择的待答状态。
 
 ## 范围追踪
 
@@ -43,7 +44,7 @@
 | P06 生图 1 工具 | #171/#172已两轴复核并通过准确13c两套完整CI，含当前主人txt2img/img2img、唯一原来源、历史、指定图片CAS重生成和受管后台。#173源`0d1b918`完成人类回合CG、受限标签与卡片写回；首次资产落库丢责任P2真实RED后修正，源和集成两轴均无遗留；`929974f`本地交叉321项、前端215项及构建通过，后续`e71145a`两套完整CI均通过，见[手册](../handbook/novelai-generation-acceptance.md) | 后续功能集成回归；真实NovelAI账号生成和费用另批 |
 | P07 QQ 附件 1 工具 | #164 已进入集成分支；多字节长行自动字符分页、当前/引用真实入站与存储/Runtime 往返、旧附件/跨群拒绝均经过两轴独立审查 | 平台实机验收另列；传输夹具不是 QQ 真人收件证据 |
 | S01 weather | #152 已进入集成分支；真实 curl、wttr.in、Open-Meteo 和公开 HTTP 工具往返 | 最终配置集成；Shell 仍须主人显式授权 |
-| S02 summarize | #152 已进入集成分支；真实 summarize 0.25.2、Node 24、URL 提取及本地模型夹具摘要回传 | 两个公开视频仅得 `transcriptSource: unavailable`/网页模板；后续隔离CLI补验启动被自动审批以 `blocked by policy` 拒绝、未给具体原因，实际执行0次，停止且未绕过。未取得真实字幕，不能以exit0称视频摘要成功；PDF/podcast也尚无独立格式成功实证 |
+| S02 summarize | #152 已进入集成分支；真实 summarize 0.25.2、Node 24、URL 提取及合成Provider摘要回传；准确7b另完成真实uvx/MarkItDown普通文本PDF→下一Provider→SSE/历史闭环，原Task/Job/线程正常收尾，见[PDF验收](../research/summarize-pdf-acceptance-2026-10-17.md) | 音频/Podcast尚无独立成功实证；两个公开视频仅得 `transcriptSource: unavailable`/网页模板。后续字幕CLI补验被自动审批以 `blocked by policy` 拒绝、未给具体原因，实际执行0次，停止且未绕过；PDF不抵扣字幕缺口，合成Provider不计真实模型服务验收 |
 | S03 feed-manage | #168 已完成两轴独立复核并进入集成分支；内置 Skill、动态服务目录/授权和真实公开 HTTP 七动作通过；独立复跑 8 HTTP + 2 原生用例，集成含 2 原生交叉 94 passed，含 RSS/Atom、下一模型请求、fresh list、重启、503 旧缓存与撤权；详见[验收](../research/feed-skill-native-acceptance-2026-10-16.md) | 总 PR 最终验收；主动来源/ACK/通知和 Drift 仍不属于此项完成范围 |
 | S04 meme-manage | #152 已进入集成分支；指令、资源与角色目录边界已有行为测试。准确e71145a另完成本地主人上传→真实表情目录复制/视觉请求→桌面媒体→存储重建后从历史找ID再发送，1 passed/9.52秒，见[媒体链验收](../research/meme-skill-media-acceptance-2026-10-16.md) | 总PR后续集成回归；任意新路径不自动登记媒体ID，Drift文本循环不继承此视觉/复制能力 |
 | S05 skill-creater | #152 已进入集成分支；HTTP 写入新 Skill 后下一轮发现/显式激活，资源 hash、依赖名、真实 Windows junction 反例通过 | 总 PR 最终回归 |
