@@ -57,7 +57,9 @@ React 覆盖真实 App 设置/角色/历史入口、有限消费显式确认、�
 
 首次新增测试因 monkeypatch 保留到 fixture.close，使 close 调用签名不兼容，出现额外 teardown error；已将补丁限定在 scenario 生命周期，确认原 pytest 进程身份后终止其遗留 HTTP 线程所在进程，未操作其他服务。随后干净 RED 独立重现门禁问题，修正后 fixture 与进程均正常收尾。该首次失败和清理不计为通过。
 
-集成的 NovelAI、桌面控制、角色能力交叉 **108 passed / 10 deselected / 96.19s**（`-k 'not native'`，不计原生验收），完整三 MEIDO 根和各测试网络 guard 持续至 owned 资源退出；前端 NovelAI/ComputerUse/角色能力 **9 passed / 6 files**，TypeScript/Vite、11源 mypy、compileall 通过。总第三方声明补入固定请求常数来源。完整集成 CI 仍以提交后的准确 HEAD 为准，未使用真实 NovelAI 服务。
+首次集成的 NovelAI、桌面控制、角色能力交叉 **108 passed / 10 deselected / 96.19s**（`-k 'not native'`，不计原生验收），收集前设置完整三 MEIDO 根，但该轮旧角色能力模块没有整组网络 guard，相关区间外网边界未知，不能计为零外联验收。独立审查给全组加 guard 后，四个旧聊天能力测试尝试连接无关 dashscope 向量服务，被 guard 阻断；该轮保留为验收隔离P2，不以缩小测试范围解决。角色能力夹具现显式持有 guard，并使用本地关闭的自动记忆设置，既有目录、schema、配置和回复断言未改。
+
+修正后原交叉组加两个既有删除回归，在整组 `local_platform_only` guard 下 **110 passed / 10 deselected / 91.93s**，完整三 MEIDO 根且 guard 持续至全部 owned 资源退出；角色能力单独7 passed。前端 NovelAI/ComputerUse/角色能力 **9 passed / 6 files**，TypeScript/Vite、11源 mypy、compileall 通过。总第三方声明补入固定请求常数来源。完整集成 CI 仍以提交后的准确 HEAD 为准，未使用真实 NovelAI 服务。
 
 未声明本地全量 Python或总 PR 两套 CI已通过；修正固定点仍由原独立两轴审查者作增量复核，本文不提前声称通过。
 

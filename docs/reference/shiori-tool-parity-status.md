@@ -108,3 +108,5 @@ MCP 故障已在 Windows 原命令和 Linux 真实慢退出 fixture 复现：RPC
 诊断增量 `c052848` 经两轴窄范围复核无遗留后，新的 [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38856303468) 与 [push CI](https://github.com/sawaki-zexi/meido/actions/runs/38856299362) 均完整通过：后端分别1841 passed/25 skipped/2 warnings（235.57秒、260.90秒），前端各175 passed/27文件及构建。邻近记忆六模块本地135 passed，同进程保留重复用例的八轮96 passed，均未复现旧挂起。新CI没有90秒堆栈触发，旧取消原因仍未解释，不以本轮绿色结果冒称根因修复。
 
 #171 源 `b786a867` 的公平恢复批次P2经两轴独立复核后汇入。NovelAI、桌面控制与角色能力集成交叉108 passed/10原生deselected（96.19秒），前端专项9 passed/6文件及TS/Vite、11源mypy与compileall通过。实际删除门禁回归RED后，将记忆准入关闭移至所有owned资源等待之前，新增和两个既有删除/取消测试3 passed；不改变生图POST/发送次数或凭据许可。集成冲突与该时序修正仍需固定提交的增量双轴复核及新CI，不以源分支的80项替代总分支检查。
+
+该首轮108项中的旧角色能力模块没有整组网络guard，其外联边界未知，已撤回整组零外联推断。独立审查的guard阻断了四个旧聊天能力用例的无关向量服务连接，作为验收隔离P2修正。夹具现独立关闭无关自动记忆并持有guard，原断言不变；原交叉范围另加两个删除回归，完整三根+整组guard重跑 **110 passed/10原生deselected（91.93秒）**。早期未知区间不因新证据补写为成功；真实NovelAI服务仍未调用。

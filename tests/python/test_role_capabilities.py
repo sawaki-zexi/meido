@@ -7,6 +7,7 @@ from backend.app import main
 from backend.app.agent_runtime.types import ToolResultMessage
 from backend.app.model_adapter import ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
+from backend.app.memory_config import MemorySettingsStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
 from backend.app.session_store import SessionStore
@@ -18,7 +19,7 @@ from backend.app.ai.model_types import ModelAssistantMessage, ModelStreamDone, M
 
 
 @pytest.fixture
-def role_api(tmp_path, monkeypatch):
+def role_api(tmp_path, monkeypatch, local_platform_only):
     initialize_databases(tmp_path / "data")
     roles = RoleStore(tmp_path / "roles")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
@@ -27,6 +28,9 @@ def role_api(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))
     monkeypatch.setattr(main, "model_configuration_store", ModelConfigurationStore(tmp_path / "data" / "models.json"))
     monkeypatch.setattr(main, "role_locks", {})
+    memory = MemorySettingsStore(tmp_path / "data" / "memory-settings.json")
+    memory.update(enabled=False)
+    monkeypatch.setattr(main, "memory_settings_store", memory)
     todos = TodoStore(tmp_path / "data" / "todos.db")
     todos.update_settings(enabled=True)
     monkeypatch.setattr(main, "todo_store", todos)
