@@ -136,7 +136,7 @@ export function MailSettings() {
 
   return <section className="mail-settings" aria-labelledby="mail-settings-title">
     <header className="mail-header">
-      <div className="owner-settings-title"><span className="owner-settings-icon"><Icon name="todo" size={20} /></span><div><h2 id="mail-settings-title">QQ 邮件</h2><p className="muted">自动整理回复草稿 · 发送由你在 QQ 邮箱完成</p></div></div>
+      <div className="owner-settings-title"><span className="owner-settings-icon"><Icon name="mail" size={20} /></span><div><h2 id="mail-settings-title">QQ 邮件</h2><p className="muted">自动整理回复草稿 · 发送由你在 QQ 邮箱完成</p></div></div>
       <div className="owner-plugin-control"><span className={`owner-plugin-state${status?.enabled ? " is-enabled" : ""}`}><span aria-hidden="true" />{status?.enabled ? "运行中" : status?.verified ? "已暂停" : "未验证"}</span><label className="plugin-switch" title="启用或暂停邮件自动处理"><input type="checkbox" checked={Boolean(status?.enabled)} disabled={busy || !status?.autoDraftReady} aria-label="启用邮件服务" onChange={(event) => void run(() => api(`/api/mail/${event.target.checked ? "enable" : "pause"}`, { method: "POST" }), () => event.target.checked ? "邮件服务已启用" : "邮件服务已暂停")} /><span className="plugin-switch-track" aria-hidden="true"><span /></span></label></div>
     </header>
     {error && <Notice>{error}</Notice>}{message && <Notice tone="success">{message}</Notice>}{status?.lastError && <Notice>{status.lastError}</Notice>}

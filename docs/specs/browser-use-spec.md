@@ -2,7 +2,7 @@
 
 状态：当前
 
-最后核验：2026-10-11
+最后核验：2026-10-15
 
 事实来源：
 
@@ -10,6 +10,7 @@
 - 已提取：Shiori-Agent `plugins/browser_use/README.md`、`manifest.yaml`、`backend/tools.json`
 - 已提取：`docs/specs/agent-capability-extension-spec.md`、`docs/specs/agent-runtime-tau-integration-spec.md`
 - 已提取：`backend/app/browser_use/native-runtime.json` 中固定版本、官方来源和 SHA-256
+- 已提取：[2026-10-15 真实原生浏览器验收](../research/browser-use-native-acceptance-2026-10-15.md)
 
 ## 问题与目标
 
@@ -56,6 +57,7 @@
 - 已提取：角色范围 profile、串行锁、取消后不执行排队动作、资源缺失和角色数据删除有专项测试。
 - 已提取：MCP 和 Chrome 使用独立于模型运行时的原生进程；Windows Job 所有权保证进程树随宿主清理。
 - 已提取：Windows x64 原生资源验收覆盖导航、snapshot/ref 交互、标签页、截图、profile 状态复用、角色隔离、取消后恢复及进程清理。
+- 已提取：2026-10-15 使用哈希一致的固定资源，真实调用全部 28 个 AgentTool，并从公开 HTTP 完成实际 Chrome 截图往返与活动角色删除；宿主重建后 Cookie/localStorage 保留，进程、IPC 和 profile 锁清理通过。模型选择使用测试适配器，不声称已验收真实模型服务或外部网站账号。
 
 已提取：当前自动化边界分三组：角色设置启停、一次对话内的完整工具往返、会话隔离与取消清理。真实原生验收仅在 Windows x64 并配置固定资源时运行；其他平台跳过该项，不伪造原生通过。
 

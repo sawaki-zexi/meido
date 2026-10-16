@@ -38,7 +38,7 @@ export function TavernView({ roles, query = "", loading, error, onDismissError, 
             {cards.map(({ role, number }) => <li key={role.id}>
               <RoleCard role={role} number={number} onPreviewAvatar={onPreviewAvatar}>
                 <button type="button" className="card-hit" aria-label={`与${role.name}对话`} onClick={() => onChat(role)} disabled={chatDisabled} />
-                <IconButton icon="more" label={`编辑${role.name}`} className="card-edit" onClick={() => onShow(role)} />
+                <IconButton icon="edit" label={`编辑${role.name}`} className="card-edit" onClick={() => onShow(role)} />
               </RoleCard>
             </li>)}
           </ul>
