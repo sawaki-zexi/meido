@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；已验证集成：`30002a9a8de551a12a44b2c2f5724d5640aca50d`。该固定版本两条 CI 全通过：各后端1813 passed、16 skipped、2条依赖弃用warning，前端174 passed/26文件及 TypeScript/Vite 构建；见[总 PR 检查](https://github.com/sawaki-zexi/meido/pull/162/checks)。批准记录 f6c4599 的两条 CI 也分别为1813 passed/16 skipped/2依赖warning，前端26文件及构建通过。桌面控制现已整合，当前提交的集成CI仍待核验；另外三项在独立分支实施，跳过项不计原生验收。
+最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；已验证集成：`c052848753cd43ecde75aa80c1952f3940d41c9a`。该固定版本两条 CI 全通过：各后端1841 passed、25 skipped、2条依赖弃用warning，前端175 passed/27文件及 TypeScript/Vite 构建；见[总 PR 检查](https://github.com/sawaki-zexi/meido/pull/162/checks)。桌面控制已整合且CI通过，NovelAI首批实现已整合、正在做集成检查；Coding与主动决策仍在独立分支实施。跳过项不计原生验收。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -32,11 +32,11 @@
 | C09 群/成员 4 工具 | #165、#166 已进入集成分支；可信历史昵称、成员来源、完整群分页、笔记字段省略/清空及离线资料；两轴最终复核通过，事务直接读取父取消并等待写线程退出 | 总 PR 跨模块回归和最终验收；不得扩大来源范围 |
 | C10 MCP 3 工具 | #159 已进入集成分支；真实 stdio、版本化发现、配置 UI、持久连接意愿及严格凭据清理已两轴复核；Linux 回收、Windows asyncio 环境、中文 schema 编码及 peer_error 清理竞态均实证修复并两轴复核；`c03a9fb` 两条 CI 通过 | 总 PR 最终跨模块验收 |
 | P01 浏览器 28 工具 | main，PR #150；全部 28 schema 映射核验，21 项真实原生浏览器测试通过，无 skip | 后续 MCP/配置集成回归 |
-| P02 桌面控制 8 工具 | #169 固定源 `7aa8108` 已两轴复核并整合；8工具/图像下一模型请求、单观察/lease/Job收尾有真实专用窗口和HTTP/provider证据。规范审查两项P2修正后独立复核无遗留；集成交叉60 passed/1原生deselected，前端专项及TS/Vite通过，9源文件mypy通过 | 当前集成CI、总PR最终跨模块验收；多DPI/多屏/锁屏等未验收环境见[原生手册](../handbook/computer-use-native-acceptance.md)，不扩大真实应用操作许可 |
+| P02 桌面控制 8 工具 | #169 固定源 `7aa8108` 已两轴复核并整合；8工具/图像下一模型请求、单观察/lease/Job收尾有真实专用窗口和HTTP/provider证据。规范审查两项P2修正后独立复核无遗留；集成交叉60 passed/1原生deselected，前端专项及TS/Vite、9源mypy和c052848两条完整CI通过 | 总PR最终跨模块验收；多DPI/多屏/锁屏等未验收环境见[原生手册](../handbook/computer-use-native-acceptance.md)，不扩大真实应用操作许可 |
 | P03 Coding Agent 5 工具 | [具体规格](../specs/coding-agent-spec.md)第3节已获明确批准；#174 Herdr 独立分支实施中，#175 codex-delegate、#176 确切成果批准发布保留真实前置依赖 | 完整 owned 构建/CLI任务、来源交付、两轴复核；真实认证/消费/发布另批，不能以 help 代替 |
 | P04 屏幕感知 1 工具 | #160 已进入集成分支；提前拒绝/重复取消连接回收最终两轴复核均无剩余 finding；相关后端 196 passed/1 native 条件 skip，前端 69 passed；真实受控 Windows 主屏/125% DPI/本地视觉及取消通过，无原图落盘 | 总 PR 最终集成；尚无双屏、混合 DPI、实际锁屏/远程断开或 frozen 分发实证，也未调用真实远端视觉服务 |
 | P05 桌宠 1 工具 | 待实现；Electron/PySide6 宿主选择待回答 | 真实透明置顶窗口、动作包、move/play 与完整生命周期 |
-| P06 生图 1 工具 | [具体规格](../specs/novelai-generation-spec.md)第3节已获明确批准；#171 生图历史独立分支实施中，#172 重生成/后台媒体、#173 人类回合 CG 保留真实前置依赖 | 完整实现、本地fixture、来源媒体与两轴复核；真实生成和费用另批，尚无完成结论 |
+| P06 生图 1 工具 | #171 固定源b786a867两轴复核无遗留，公开HTTP对话txt2img/img2img、原回复和历史归属、单POST/取消/恢复有本地协议证据；已汇入总分支、正在集成检查。公平恢复批次P2的两种100条阻塞回归已独立验证；见[手册](../handbook/novelai-generation-acceptance.md)。#172重生成/后台媒体、#173人类回合CG保留前置依赖 | 当前集成验收、#172/#173实现及复核；真实NovelAI账号生成和费用另批，不能以本地fixture宣称真实服务可用 |
 | P07 QQ 附件 1 工具 | #164 已进入集成分支；多字节长行自动字符分页、当前/引用真实入站与存储/Runtime 往返、旧附件/跨群拒绝均经过两轴独立审查 | 平台实机验收另列；传输夹具不是 QQ 真人收件证据 |
 | S01 weather | #152 已进入集成分支；真实 curl、wttr.in、Open-Meteo 和公开 HTTP 工具往返 | 最终配置集成；Shell 仍须主人显式授权 |
 | S02 summarize | #152 已进入集成分支；真实 summarize 0.25.2、Node 24、URL 提取及本地模型夹具摘要回传 | 两个公开视频仅得到 `transcriptSource: unavailable` 和网页模板，未取得真实字幕；不能以 exit 0 宣称视频摘要成功 |
@@ -104,3 +104,7 @@ MCP 故障已在 Windows 原命令和 Linux 真实慢退出 fixture 复现：RPC
 总分支对非文档内容核对与源提交完全一致，集成60 passed/1原生deselected及前端专项1 passed、TypeScript/Vite通过。随后9源文件mypy发现四项新类型声明问题；补齐容器类型和dataclass字典工厂后，mypy全过、相关26 passed/1原生deselected。此段保留首次类型检查失败，不改变实际工具权限或原生资源锁。
 
 集成 `966a539f730d350f7654522ce36cf84c484b99f4` 的 [push CI](https://github.com/sawaki-zexi/meido/actions/runs/38853231583) 完整通过：后端1841 passed/25 skipped/2依赖warning（284.07秒），前端175 passed/27文件及构建。[同HEAD的PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38853238075) 前端通过，后端在 `test_memory_tool.py` 文件摘要后约21分钟未继续输出（04:59:41至05:21:06 UTC），由维护任务保留原始日志后取消以诊断，不能计为通过；尚无堆栈确定其停在该文件收尾还是下一测试。相邻两文件本地定向12 passed/8.66秒，未复现，不据此归因为基础设施。后续CI打开pytest的90秒 faulthandler 堆栈输出以定位潜在再次挂起；此选项不改变用例超时、断言或准入行为。
+
+诊断增量 `c052848` 经两轴窄范围复核无遗留后，新的 [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38856303468) 与 [push CI](https://github.com/sawaki-zexi/meido/actions/runs/38856299362) 均完整通过：后端分别1841 passed/25 skipped/2 warnings（235.57秒、260.90秒），前端各175 passed/27文件及构建。邻近记忆六模块本地135 passed，同进程保留重复用例的八轮96 passed，均未复现旧挂起。新CI没有90秒堆栈触发，旧取消原因仍未解释，不以本轮绿色结果冒称根因修复。
+
+#171 源 `b786a867` 的公平恢复批次P2经两轴独立复核后汇入。NovelAI、桌面控制与角色能力集成交叉108 passed/10原生deselected（96.19秒），前端专项9 passed/6文件及TS/Vite、11源mypy与compileall通过。实际删除门禁回归RED后，将记忆准入关闭移至所有owned资源等待之前，新增和两个既有删除/取消测试3 passed；不改变生图POST/发送次数或凭据许可。集成冲突与该时序修正仍需固定提交的增量双轴复核及新CI，不以源分支的80项替代总分支检查。

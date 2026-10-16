@@ -51,6 +51,14 @@ React 覆盖真实 App 设置/角色/历史入口、有限消费显式确认、�
 
 修正后完整专用 **80 passed（82.53s）**，三数据根和整组 guard 持续至所有资源 join；11源 mypy、compileall、两文档相对链接及 diff check 再通过。本次没有改动前端或既有共享消息/授权模块，未重复全前端或489项扩大回归。
 
+## 总分支集成回归
+
+源 `b786a867` 汇入已验证桌面控制集成 `c052848`，共享配置同时保留 computerUse 与 novelai，角色更新合并三个能力子配置，关闭、删除、工具门禁、真实主人来源与各工具期限均保留双方约束。新增删除时序测试确认：进入任何可能挂起的生成清理前，记忆写入准入门必须已关闭；取消仍由原 finally 恢复门禁。原顺序得到 `[False]` 的真实 RED，门禁移到清理前后，新增回归与两个既有删除/取消测试 **3 passed / 8.64s**。
+
+首次新增测试因 monkeypatch 保留到 fixture.close，使 close 调用签名不兼容，出现额外 teardown error；已将补丁限定在 scenario 生命周期，确认原 pytest 进程身份后终止其遗留 HTTP 线程所在进程，未操作其他服务。随后干净 RED 独立重现门禁问题，修正后 fixture 与进程均正常收尾。该首次失败和清理不计为通过。
+
+集成的 NovelAI、桌面控制、角色能力交叉 **108 passed / 10 deselected / 96.19s**（`-k 'not native'`，不计原生验收），完整三 MEIDO 根和各测试网络 guard 持续至 owned 资源退出；前端 NovelAI/ComputerUse/角色能力 **9 passed / 6 files**，TypeScript/Vite、11源 mypy、compileall 通过。总第三方声明补入固定请求常数来源。完整集成 CI 仍以提交后的准确 HEAD 为准，未使用真实 NovelAI 服务。
+
 未声明本地全量 Python或总 PR 两套 CI已通过；修正固定点仍由原独立两轴审查者作增量复核，本文不提前声称通过。
 
 未验收：真实 NovelAI 账号/模型/图片尺寸兼容、真实 Anlas费用、取消后实际扣费，以及非本轮OneBot peer覆盖的实际平台媒体行为。受控成功不能称真实NovelAI已可用；本票没有取得真实费用许可，不索取或读取用户token。后台/重生成和CG仍按 #172→#173 的完整依赖推进，不拿前台成功替代这两票。

@@ -118,3 +118,10 @@ Copyright © 2024 Mlikiowa
 5. Disclaimer:
    - This code is provided "as is," without any express or implied warranties, including but not limited to the implied warranties of merchantability and fitness for a particular purpose. In no event shall the author be liable for any damages or other liability arising from, out of, or in connection with the use or distribution of this code.
 ```
+
+## NovelAI V4.5 请求适配
+
+`backend/app/novelai_generation/parameters.py` 的固定 V4.5 请求常数改编自 Shiori-Agent
+`4f266aeaf42fcd611362e2456417b91f659341cf`。Copyright (c) 2026 YinFengWindy，
+适用本页 Shiori MIT 许可；完整声明也随模块 `SHIORI-LICENSE.txt` 分发。
+NovelAI 为独立服务，其账号、消费与图片条款不由源码 MIT 许可授予。

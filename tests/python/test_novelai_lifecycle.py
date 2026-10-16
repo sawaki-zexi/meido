@@ -79,6 +79,37 @@ def test_role_deletion_purges_only_owned_generation_data_and_keeps_account_consu
     asyncio.run(scenario())
 
 
+def test_delete_blocks_new_memory_writes_before_awaiting_generation_cleanup(novelai_main, tmp_path, monkeypatch):
+    from backend.app import main
+    from backend.app.memory_service import MemoryService, MemoryWorker
+    from backend.app.memory_store import MemoryStore
+
+    _, service = novelai_main
+    worker = MemoryWorker(MemoryService(MemoryStore(tmp_path / "deletion-memory.db")))
+    monkeypatch.setattr(main, "memory_worker", worker)
+    monkeypatch.setattr(main, "roles_root", service.roles.root)
+    entered, held = asyncio.Event(), asyncio.Event()
+    observed = []
+
+    async def hold_cleanup(role_id):
+        observed.append(worker.role_deletion_blocked(role_id))
+        entered.set()
+        await held.wait()
+
+    async def scenario():
+        deleting = asyncio.create_task(main.delete_role(service.role.id))
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            assert observed == [True]
+        finally:
+            deleting.cancel()
+            await asyncio.gather(deleting, return_exceptions=True)
+        assert not worker.role_deletion_blocked(service.role.id)
+    with monkeypatch.context() as patch:
+        patch.setattr(service.application, "invalidate", hold_cleanup)
+        asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('scope,count', [('global', 8), ('role', 3)])
 def test_generation_consumes_existing_runtime_global_and_role_concurrency(novelai_service, scope, count):
     import threading

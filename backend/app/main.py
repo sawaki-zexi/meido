@@ -1937,16 +1937,16 @@ async def delete_role(role_id: str) -> None:
     channel_snapshot = None
     pending_qq_refs = tuple(ref for ref, owner in _managed_qq_pending.items() if owner == role_id)
     try:
+        # Close memory admission before any resource cleanup can yield. The
+        # finally block owns reopening this barrier if deletion is cancelled.
+        deletion_started = True
+        await memory_worker.begin_role_deletion(role_id)
         for ref in pending_qq_refs:
             await managed_napcat.stop(ref, role_id=role_id)
         await screen_perception.invalidate(role_id=role_id)
         await computer_use.invalidate(role_id=role_id)
         await _novelai_application().invalidate(role_id)
         await browser_use_sessions.set_role_enabled(role_id, False)
-        # Mark the gate before the first await so cancellation cannot leave a
-        # role permanently blocked from future memory work.
-        deletion_started = True
-        await memory_worker.begin_role_deletion(role_id)
         await asyncio.to_thread(task_runtime.set_role_enabled, role_id, False)
         await channel_memory_maintenance.begin_role_deletion(role_id)
         await owner_knowledge_plugin.begin_role_deletion(role_id)
