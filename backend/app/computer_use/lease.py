@@ -21,9 +21,16 @@ class DesktopLease:
         self._ready, self._release, self._done = queue.Queue(), threading.Event(), threading.Event()
         self._thread = threading.Thread(target=self._own, name="meido-computer-lease", daemon=True)
         self._thread.start()
-        result = self._ready.get(timeout=5)
-        if isinstance(result, BaseException):
-            raise result
+        try:
+            result = self._ready.get(timeout=5)
+            if isinstance(result, BaseException):
+                raise result
+        except BaseException:
+            # The OS check can complete after readiness times out. Do not
+            # forget an owner that may then acquire the mutex and wait forever.
+            self._release.set()
+            self._thread.join()
+            raise
 
     def _own(self):
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)

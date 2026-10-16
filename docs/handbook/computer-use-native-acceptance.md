@@ -17,11 +17,12 @@ prepare 固定源码 commit/tag，拒绝覆盖其他 commit；所有下载先校
 
 开发时设置 `MEIDO_COMPUTER_USE_RESOURCES` 指向资源根；应用默认查 `backend/app/native/computer-use`。不从 PATH、现成 daemon 或网络回退。普通用户使用已准备资源即可，无需 Rust。运行 cwd/TEMP/配置根位于宿主持有的每次驱动私有目录，telemetry/update 环境关闭，进程 CREATE_NO_WINDOW，并由命名 Job 独占。运行不下载/升级。
 
-自动验收必须指定 3 项独立应用根，并只使用新建 fixture：
+自动验收必须指定 data、roles、owner knowledge 三项独立数据根；PROJECT_ROOT 是代码/资源根，不能代替第三数据根。只使用新建 fixture：
 
 ```powershell
 $env:MEIDO_DATA_DIR='C:/test-data/meido169/data'
 $env:MEIDO_ROLES_DIR='C:/test-data/meido169/roles'
+$env:MEIDO_OWNER_KNOWLEDGE_DATA_DIR='C:/test-data/meido169/owner-knowledge'
 $env:MEIDO_PROJECT_ROOT=(Get-Location).Path
 $env:MEIDO_COMPUTER_USE_NATIVE_RESOURCES='C:/build-resources/meido'
 python -m pytest tests/python/test_computer_use.py tests/python/test_computer_use_resources.py tests/python/test_computer_use_native.py tests/python/test_computer_use_api.py -q
@@ -31,8 +32,10 @@ fixture 使用已安装 .NET Framework csc 生成自有 WinForms、随机标题�
 
 已实测 Windows 11 家庭版 10.0.26200：固定 direct driver 通过 MCP 2025-06-18 握手，无通用协议放宽。原生独立套件包含可信来源截图/UIA、主屏最大化、8 工具全部动作、缩小到 200 像素的真实映射命中、同 run release 拒绝、owner 子进程强杀后 Job 清空和 mutex 接管，以及阻塞 UIA Invoke 时取消，验证目标 enabled/exstyle 与基线一致、只点击一次、目标仍存活。background click/type_text/press_key 在已经前台的 fixture 上通过；非前台 B 窗口 background click 和上游不支持的 WinForms background scroll 明确拒绝。四方向滚动使用重新 state 后的显式 foreground，没有生产自动重试。HTTP 原生模式经真实 `/messages`、SQLite、SSE、本地 OpenAI 兼容 provider 完成 20 次请求；UIA 点击、中文 `你好 HTTP`、End、Ctrl+A、上/下/左/右滚动由窗口事件核实；下一模型请求含图像，再下请求不含；SSE/SQLite/audit 无 base64。最终同轮原生/API联合检查为 7 passed / 48.45s。
 
-广泛交叉检查曾为 89 passed / 2 skipped / 1 failed；失败发生在 fixture 自有 state.json 写入时 Windows 共享占用，已修复读取重试与构造失败清理，精确路径确认后的自有遗留 fixture 已退出，7项原生/API复核通过。全量 Python 为 1844 passed / 14 skipped / 1 failed；唯一失败是原有 MCP output_mismatch 用例的隔离 schema worker 超时，预期输出 schema 错误；未放宽安全 deadline，定向重跑同一完整结果参数范围为 9 passed / 17 deselected（22.34s）。最新公开边界与资源锁 26 passed（1.61s）。全量前端为 27 files / 175 tests，通过 TS/Vite build 和 Python compileall。跳过包括需真实平台/可选环境的既有验收和默认未启用的原生 fixture；开启本票资源变量后的原生套件没有跳过。独立 Standards/Spec 审查由协调者针对固定交付 SHA 安排，此文不先声称通过。
+广泛交叉检查曾为 89 passed / 2 skipped / 1 failed；失败发生在 fixture 自有 state.json 写入时 Windows 共享占用，已修复读取重试与构造失败清理，精确路径确认后的自有遗留 fixture 已退出，7项原生/API复核通过。全量 Python 为 1844 passed / 14 skipped / 1 failed；唯一失败是原有 MCP output_mismatch 用例的隔离 schema worker 超时，预期输出 schema 错误；未放宽安全 deadline，定向重跑同一完整结果参数范围为 9 passed / 17 deselected（22.34s）。最新公开边界与资源锁 26 passed（1.61s）。全量前端为 27 files / 175 tests，通过 TS/Vite build 和 Python compileall。**这些原始作者命令只显式设置 DATA_DIR、ROLES_DIR 和 PROJECT_ROOT，未显式设置 OWNER_KNOWLEDGE_DATA_DIR；不能声称三数据根隔离。**缺省解析可打开该工作树的 `owner-knowledge-data/owner-knowledge.db`；当时完整继承环境未记录，不倒推为全隔离。独立审查后所有修正复核命令显式设置上列三数据根，外部 ledger 保留原始事实。跳过包括需真实平台/可选环境的既有验收和默认未启用的原生 fixture；开启本票资源变量后的原生套件没有跳过。独立 Standards/Spec 审查由协调者针对固定交付 SHA 安排，此文不先声称通过。
 
 公开工具测试证明 A state→B state 以及 B 失败/未发现尝试均撤销 A、WGC 未映射只允许 token、停止 join、TTL/移动/前台活动/错误 token/跨角色/像素越界拒绝；无效来源、origin、ratio、尺寸在图像授权前拒绝。资源测试证明同时换 exe+manifest 也不能绕过仓库 release lock。React 真实 App 流程证明默认关闭、保存/重开和其他能力配置保留。
+
+Standards 审查修正：readiness 5秒超时后，构造器会先设置 release 并 join 专用 lease 线程，再传播准入失败；不会遗忘稍后才取得 mutex 的 owner。自有子进程/随机真实 Windows mutex 的 RED 为 `Empty / remaining_threads=1 / next=busy`，修复后无遗留线程且下一准入成功。修正范围 30 passed（11.31s），专用窗口 stop 和 owner 强杀的原生资源回归 2 passed（6.47s）。这些复核明确隔离 data/roles/owner knowledge 三数据根，保持旧全量和新定向检查的事实分开。若 OS 查询尚未返回，构造器继续拥有并等待该线程，不能先宣称清理完成。
 
 实测当前系统 125% DPI（窗口 dpi=120），主屏最大化 PrintWindow 为 2558×1378，压缩帧 1568×845，physical_origin=[1,1]、resize_ratio=1.6313775510204085；只读 DWM 检查通过。未完成的环境验收必须保留：真实 100%/150% 两种系统 DPI、混合 DPI/多屏、真实锁屏/断连/Session0/不同用户/提权目标、强制 PrintWindow 与 WGC 双失败并同时遮挡场景、所有应用类型的 background 路由、foreground 辅助 VK_NONAME 实际触发。当前测试窗口 DPI/采集尺寸作为原生 JUnit 属性记录；不能拿注入端口用例替代这些环境实测。首版只支持完全位于主屏的普通窗口；background 只容许目标已经是精确 foreground 的保守子集。UAC、UIAccess/helper、提权、非主屏/跨屏、远程 console 均不支持。未观察目标应用实际效果的输入始终保留 unknown；不能回滚。
