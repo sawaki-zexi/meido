@@ -671,6 +671,65 @@ describe("角色管理", () => {
     expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);
   });
 
+  it("保存角色后仍可继续编辑和删除，重新打开保留已保存内容", async () => {
+    let saved = alice;
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [saved] } }),
+      "GET /api/roles/r1/session": emptySession,
+      "PUT /api/roles/r1": (init) => {
+        saved = { ...saved, ...JSON.parse(String(init!.body)) };
+        return { body: { role: saved } };
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    await user.click(screen.getByRole("button", { name: "角色资料" }));
+    const panel = await dialog("角色资料");
+    await user.clear(within(panel).getByLabelText(/名称/));
+    await user.type(within(panel).getByLabelText(/名称/), "新名字");
+    await user.click(within(panel).getByRole("button", { name: "保存" }));
+    await chatHeading("新名字");
+
+    expect(within(panel).getByLabelText(/名称/)).toBeEnabled();
+    expect(within(panel).getByRole("button", { name: "删除角色" })).toBeEnabled();
+    await user.clear(within(panel).getByLabelText(/名称/));
+    await user.type(within(panel).getByLabelText(/名称/), "未保存名字");
+    await user.click(within(panel).getByRole("button", { name: "取消" }));
+    await user.click(screen.getByRole("button", { name: "角色资料" }));
+    expect(within(await dialog("角色资料")).getByLabelText(/名称/)).toHaveValue("新名字");
+    expect(await chatHeading("新名字")).toBeInTheDocument();
+  });
+
+  it("资料保存或删除失败时保留草稿、角色和原聊天，取消后不污染其他角色", async () => {
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice, bella] } }),
+      "GET /api/roles/r1/session": () => ({ body: { session, messages: [message({ id: "old", role: "assistant", content: "原有聊天" })] } }),
+      "PUT /api/roles/r1": () => ({ status: 409, body: { detail: "保存被拒绝" } }),
+      "DELETE /api/roles/r1": () => ({ status: 409, body: { detail: "删除被拒绝" } }),
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    await user.click(screen.getByRole("button", { name: "角色资料" }));
+    const panel = await dialog("角色资料");
+    await user.clear(within(panel).getByLabelText(/名称/));
+    await user.type(within(panel).getByLabelText(/名称/), "未保存名字");
+    await user.click(within(panel).getByRole("button", { name: "保存" }));
+    expect(await within(panel).findByRole("alert")).toHaveTextContent("保存被拒绝");
+    expect(within(panel).getByLabelText(/名称/)).toHaveValue("未保存名字");
+    await user.click(within(panel).getByRole("button", { name: "删除角色" }));
+    expect(await within(panel).findByRole("alert")).toHaveTextContent("删除被拒绝");
+    expect(within(panel).getByLabelText(/名称/)).toBeEnabled();
+    await user.click(within(panel).getByRole("button", { name: "取消" }));
+    expect(await chatHeading("爱丽丝")).toBeInTheDocument();
+    expect(screen.getByText("原有聊天")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "角色" }));
+    await user.click(screen.getByRole("button", { name: "编辑贝拉" }));
+    expect(within(await dialog("角色资料")).getByLabelText(/名称/)).toHaveValue("贝拉");
+  });
+
   it("确认后删除角色；取消确认则不删除", async () => {
     const { calls } = fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),

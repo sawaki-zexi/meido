@@ -261,7 +261,8 @@ export function useRoles() {
         savedRole = { ...savedRole, cardImageUrl: null, cardImageMediaType: null };
       }
 
-      retainRole(savedRole, false);
+      // Existing profiles stay open after saving and must keep their form actions.
+      retainRole(savedRole, !creatingSnapshot);
       setAvatarFile(null);
       setAvatarOriginalFile(null);
       setAvatarSource(null);
