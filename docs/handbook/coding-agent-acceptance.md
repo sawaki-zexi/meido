@@ -78,6 +78,12 @@ CleanupFailed按记录隔离后继续worker轮询；close消费已失败worker�
 
 全部后补行为后的最终原生专用 **48 passed（176.63秒）**，coding174-recovery-native-exact.xml，完整三MEIDO根与整组guard直至全部资源join；最终恢复专项12 passed（6.07秒），coding174-recovery-author-final-r2.xml。没有在此后修改生产代码；新增真实named Job恢复用例按与现有crash用例相同方式仅Windows执行，非Windows明确跳过该原生能力。旧fixed补丁SHA256仍为2a2df5e1626a1b37a89663ccb64bc11d3f8513bf6e44513041d9c29f8b98806f，bundle仍为445b03a54b314fffc6720b1229b3f6dda43bc42c28ddb4ec91c0f5144d25ce67，未借修复替换或跳过宿主验真。前端未改变，未重跑全Python/前端，不把先前全量/CI冒称修正头结果。
 
+## 总分支集成关闭检查
+
+源 `5a5a2c4` 两轴修正复核通过后，`aab1078`/`3634586` 将Coding与已有CU/NovelAI合并；全部私有Coding/原生固定产物未改变。跨三项能力、角色配置与删除的隔离组 **167 passed/1个CU原生deselected（268.70秒）**，其中Coding七项原生均实际运行。完整前端32文件182项、14源默认mypy、compileall与TS/Vite通过；没有将默认mypy写成全部未注解函数体检查。
+
+集成规范审查用真实另一角色Runtime执行器复现：首项Coding关闭抛CleanupFailed会跳过其余owner。修正为依次尝试全部独立owner，最后重新抛出原单异常或保留多异常；Coding未确认时账本和责任仍在。仓库两项故障用例先RED；扩大组33项pytest通过后，runner关闭已取消worker仍失败，整条命令exit1，未算全绿。随后补终态worker、关闭调用方取消以及同时取消的RED，屏蔽传播到仍活worker的取消，并仅消费旧worker自己的终态取消；新调用方取消仍传播。最后相关 **36 passed（32.21秒），进程exit0**，三MEIDO根和guard保持至所有owned退出。该修正还需固定提交的两轴增量复核与新CI；未再次运行全部167项或真实CLI服务。
+
 ## 未验收与后续票
 
 未使用真实CLI认证，未验证实际Codex/Claude模型首次/精确resume、原生权限拒绝、扩展配置/全局keychain不继承、费用或代码质量。生产profile在取得相应真实证据前保持不可用；当前产品已提供明确配置→主人核验→具体缺项/可用的流程，不用fixture标志绕过。后续真实核验需明确批准精确profile/版本/模型/宿主hash、两个native task turns及其中可能多次模型请求和可接受费用。

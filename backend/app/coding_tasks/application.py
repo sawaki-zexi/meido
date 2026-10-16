@@ -356,7 +356,13 @@ class CodingApplication:
             await asyncio.to_thread(self.tasks.cancel_role_tasks, role_id, kind='coding_herdr')
         if self._worker is not None:
             try:
-                await self._worker
+                await asyncio.shield(self._worker)
+            except asyncio.CancelledError:
+                # A terminal cancelled worker is already joined. Cancelling
+                # this close caller must retain the live worker for retry.
+                caller = asyncio.current_task()
+                if not self._worker.cancelled() or caller is not None and caller.cancelling():
+                    raise
             except (CleanupFailed, sqlite3.Error, OSError):
                 # Consume an earlier recoverable worker failure, then confirm
                 # every resource below before any database can be closed.

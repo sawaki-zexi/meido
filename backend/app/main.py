@@ -809,26 +809,34 @@ async def _memory_engine_delete(mutation: MemoryMutation) -> None:
 
 
 async def _close_memory_workers() -> None:
+    closers = []
     if _coding is not None:
-        await _coding.close()
+        closers.append(_coding.close)
     if _schedules is not None:
-        await _schedules.close()
+        closers.append(_schedules.close)
     if _spawn_completion_worker is not None:
-        await _spawn_completion_worker.close()
-    await screen_perception.close()
-    await computer_use.close()
+        closers.append(_spawn_completion_worker.close)
+    closers.extend([screen_perception.close, computer_use.close])
     if _novelai is not None:
-        await _novelai.close()
-    await asyncio.to_thread(task_runtime.close)
-    await mail_service.close()
-    await owner_knowledge_scheduler.close()
-    await owner_knowledge_plugin.close()
-    await todo_plugin.close()
-    await memory_optimizer_loop.close()
-    await memory_worker.close()
-    await memory_optimizer_worker.drain()
-    await browser_use_sessions.close()
-    await mcp_host.close()
+        closers.append(_novelai.close)
+    closers.extend([
+        lambda: asyncio.to_thread(task_runtime.close), mail_service.close,
+        owner_knowledge_scheduler.close, owner_knowledge_plugin.close,
+        todo_plugin.close, memory_optimizer_loop.close, memory_worker.close,
+        memory_optimizer_worker.drain, browser_use_sessions.close, mcp_host.close,
+    ])
+    errors = []
+    for close in closers:
+        try:
+            await close()
+        except Exception as error:
+            # An unconfirmed owner keeps its original recovery obligation;
+            # independent owners still need their own shutdown opportunity.
+            errors.append(error)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise ExceptionGroup("application resource cleanup failed", errors)
 
 
 async def _start_memory_workers() -> None:
