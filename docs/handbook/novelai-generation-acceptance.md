@@ -29,7 +29,7 @@ git diff --check
 
 独立服务设置、默认关闭角色许可和旧客户端部分更新保留；普通配置保存不读 token。严格参数、冻结 seed 与完整 v4.5 请求、主人的当前附件 img2img、无源/内部run拒绝；同请求重查和 humanRun intent claim；持久账户/角色尝试及 Runtime 既有并发实际生效。
 
-真实 main `/messages` → localhost OpenAI SSE provider → 宿主冻结 generate_image → 真实 TaskRuntime → 独立 localhost NovelAI HTTP201 ZIP → 工具安全引用 → 下一次 provider → 唯一完成回复附件/下载 → owned 历史闭环。provider 路径和生成路径为两个真实 HTTP 服务；不使用真实模型。
+真实 main `/messages` → localhost OpenAI SSE provider → 宿主冻结 generate_image → 真实 TaskRuntime → 独立 localhost NovelAI HTTP201 ZIP → 工具安全引用 → 下一次 provider → 唯一完成回复附件/下载 → owned 历史闭环。txt2img 与 img2img 参数化覆盖；后者先通过公开附件上传和消息 attachments 字段提交不同颜色的底图，逐字节核对生成 POST 的原图，后续模型只保留当前用户输入图，不收到生成图 base64。provider 路径和生成路径为两个真实 HTTP 服务；不使用真实模型。
 
 真实 OneBot WebSocket 主人入站、NapCatAdapter/ChannelHost、原QQ目标单次文本+PNG、真实 socket 回执；真实断线丢回执 uncertain 不重发。SQLite触发器分别使 receipt 和消息metadata写失败，恢复只同步已有 receipt/原消息，不降级已知 sent、不再次 send/POST、不改投桌面。
 
@@ -47,6 +47,10 @@ React 覆盖真实 App 设置/角色/历史入口、有限消费显式确认、�
 
 最终全前端 **30文件179项通过（23.97s）**，TS noEmit/Vite、Python compileall、相对链接及diff check通过。mypy 以 `--follow-imports=silent --ignore-missing-imports --no-incremental` 检查11个新增模块源文件，首轮6项诊断；修正 ZIP/JSON 字节变量静态类型、容器声明并显式检查 owned path字符串后全绿，没有忽略诊断。489项覆盖该静态修正前的模块，修正后专用 **77 passed（56.42s）**，不能把两轮结果相加；最后纯UI提示文案修正后专项5项及TS/Vite再通过。
 
-未声明本地全量 Python或总 PR 两套 CI已通过；独立两轴审查针对固定实现提交由协调者安排，本文不提前声称通过。
+固定初版 `7cf50b7` 的独立两轴审查发现同一项恢复公平性 P2：100条取消墓碑占满固定批次，后续 local_pending 永久被挡。原审查者的真实SQLite/localhost复现先 RED，修正后 GREEN（1 passed，8.57s）。新增 suppressed 和 Runtime 暂时停用两种100条阻塞回归均先 RED（第101条仍为 local_pending），再以恢复资格收敛和持久游标轮转转为 GREEN；不把暂时失权误判为 Runtime 记录不存在，恢复不增加 POST或消息。公开两模式补证2项通过（8.61s）；早期补证夹具误用 attachmentIds 被API忽略，按真实 attachments 字段纠正，未放宽当前人类附件授权。
+
+修正后完整专用 **80 passed（82.53s）**，三数据根和整组 guard 持续至所有资源 join；11源 mypy、compileall、两文档相对链接及 diff check 再通过。本次没有改动前端或既有共享消息/授权模块，未重复全前端或489项扩大回归。
+
+未声明本地全量 Python或总 PR 两套 CI已通过；修正固定点仍由原独立两轴审查者作增量复核，本文不提前声称通过。
 
 未验收：真实 NovelAI 账号/模型/图片尺寸兼容、真实 Anlas费用、取消后实际扣费，以及非本轮OneBot peer覆盖的实际平台媒体行为。受控成功不能称真实NovelAI已可用；本票没有取得真实费用许可，不索取或读取用户token。后台/重生成和CG仍按 #172→#173 的完整依赖推进，不拿前台成功替代这两票。

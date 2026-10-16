@@ -48,6 +48,7 @@ class NovelaiApplication:
         self.channel_media_supported = channel_media_supported
         self._closed = False
         self._maintenance = None
+        self._recovery_lock = threading.Lock()
         self._cancelled_requests: set[tuple[str, str, str]] = set()
 
     def _validate_policy(self, policy):
@@ -566,13 +567,15 @@ class NovelaiApplication:
 
     async def recover(self):
         """Repair local media/messages and ACK only; never launch or POST again."""
-        with self.ledger.connect() as connection:
-            rows = connection.execute('''SELECT a.*,o.state AS outbox_state,o.message_synced FROM novelai_attempts a
-                JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id
-                WHERE a.status IN ('prepared','dispatching','received','local_pending') OR a.runtime_ack_pending=1
-                   OR (a.status='unknown' AND a.reserved_bytes>0)
-                   OR (o.consumed=1 AND o.message_synced=0)
-                   OR (a.status='succeeded' AND o.state='pending') LIMIT 100''').fetchall()
+        if not self._recovery_lock.acquire(blocking=False):
+            return
+        try:
+            await self._recover_batch()
+        finally:
+            self._recovery_lock.release()
+
+    async def _recover_batch(self):
+        rows = self.ledger.recovery_batch()
         for saved in rows:
             row = dict(saved)
             source = GenerationContext.from_dict(json.loads(row['origin']))

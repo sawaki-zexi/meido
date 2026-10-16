@@ -1,6 +1,7 @@
 import asyncio
 import sqlite3
 from pathlib import Path
+import pytest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -102,3 +103,57 @@ def test_failed_runtime_handover_write_joins_foreground_and_releases_retained_re
                 pass
         next_id = service.tasks.submit(origin, LocalWork(), budget=TaskBudget(1, 100, 1024), kind='fixture', retain_until_ack=True)
         assert service.tasks.query(next_id, origin, wait_seconds=1).ended_at is not None
+
+
+@pytest.mark.parametrize('blocker_kind', ['suppressed', 'runtime_disabled'])
+def test_bounded_recovery_advances_past_one_hundred_terminal_or_temporarily_blocked_records(novelai_service, blocker_kind):
+    from backend.app.novelai_generation.context import GenerationContext
+    from backend.app.task_runtime import TaskOrigin
+    from backend.app.models import RoleInput
+    service = novelai_service
+    app = service.application
+    revision = app.settings.public()['revision']
+    blocker = service.roles.create(RoleInput(name='暂时停用的角色', profile={'profile': 'owned fixture'},
+        agentConfig={'novelai': {'manualEnabled': True, 'consentRevision': revision}}))
+    blocker_session = service.sessions.open_role_session(blocker.id)
+    origin = TaskOrigin(blocker.id, blocker_session.sessionKey, source_thread_id=f'desktop:{blocker.id}')
+    for index in range(100):
+        source = GenerationContext(origin, f'ui:blocker:{index}', f'ui:blocker:{index}', frozenset(), ui_action=True)
+        view = app.ledger.prepare(role_id=blocker.id, source_scope='desktop', human_key=source.human_key,
+            request_key=source.request_key, parameters={'width': 64, 'height': 64}, origin=source.to_dict(),
+            service_revision=revision, role_revision=app._role_revision(blocker), account_limit=1000, role_limit=100)
+        app.ledger.finish(view['attemptId'], 'cancelled_before_dispatch')
+        if blocker_kind == 'suppressed':
+            app.seal_request(source)
+    if blocker_kind == 'runtime_disabled':
+        service.tasks.set_role_enabled(blocker.id, False)
+    async def scenario():
+        original = TaskOrigin(service.role.id, f'role:{service.role.id}', source_thread_id=f'desktop:{service.role.id}')
+        source = GenerationContext(original, 'ui:later-repair', 'ui:later-repair', frozenset(), ui_action=True)
+        with app.ledger.connect() as connection:
+            connection.execute("CREATE TRIGGER later_local_failure BEFORE UPDATE OF status ON novelai_attempts WHEN NEW.status='succeeded' BEGIN SELECT RAISE(ABORT,'controlled late import failure'); END")
+        view = await app.submit(source, service.request)
+        assert view['status'] == 'local_pending'
+        with app.ledger.connect() as connection:
+            connection.execute('DROP TRIGGER later_local_failure')
+        for _ in range(3):
+            await app.recover()
+        repaired = app.owner_generation(service.role.id, view['generationId'])
+        assert repaired['status'] == 'succeeded'
+        assert repaired['deliveryStatus'] == 'sent'
+        assert app.history(service.role.id)['usage']['reservedMediaBytes'] == 0
+        assert len(service.peer.requests) == 1
+        assert len(service.sessions.list_messages(source.origin.session_key)) == 1
+        if blocker_kind == 'runtime_disabled':
+            # A disabled lookup must remain an outstanding obligation rather
+            # than being reclassified as absence to make the queue advance.
+            with pytest.raises(PermissionError):
+                service.tasks.list(origin, kind='novelai_image')
+            service.tasks.set_role_enabled(blocker.id, True)
+            for _ in range(3):
+                await app.recover()
+            assert app.history(blocker.id)['usage']['accountAttempts'] == 1
+    try:
+        asyncio.run(scenario())
+    finally:
+        service.tasks.set_role_enabled(blocker.id, True)

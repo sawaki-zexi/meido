@@ -42,6 +42,8 @@ class GenerationLedger:
                 CREATE TABLE IF NOT EXISTS novelai_daily(day TEXT NOT NULL,role_id TEXT NOT NULL,attempts INTEGER NOT NULL,PRIMARY KEY(day,role_id));
                 CREATE TABLE IF NOT EXISTS novelai_role_epochs(role_id TEXT PRIMARY KEY,revision INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS novelai_cancelled_requests(role_id TEXT NOT NULL,source_scope TEXT NOT NULL,request_key TEXT NOT NULL,PRIMARY KEY(role_id,source_scope,request_key));
+                CREATE TABLE IF NOT EXISTS novelai_recovery_cursor(singleton INTEGER PRIMARY KEY CHECK(singleton=1),after_created REAL,after_attempt TEXT NOT NULL);
+                INSERT OR IGNORE INTO novelai_recovery_cursor VALUES(1,NULL,'');
                 CREATE TABLE IF NOT EXISTS novelai_media_outbox(attempt_id TEXT PRIMARY KEY,state TEXT NOT NULL DEFAULT 'pending',message_id TEXT,consumed INTEGER NOT NULL DEFAULT 0,receipt TEXT,message_synced INTEGER NOT NULL DEFAULT 0);
                 CREATE VIEW IF NOT EXISTS novelai_generation_views AS SELECT a.*,o.state AS delivery_status FROM novelai_attempts a LEFT JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id;
             ''')
@@ -108,7 +110,7 @@ class GenerationLedger:
         with self.connect() as connection:
             connection.execute('BEGIN IMMEDIATE')
             connection.execute('INSERT OR IGNORE INTO novelai_cancelled_requests VALUES(?,?,?)', (role_id, source_scope, request_key))
-            connection.execute("UPDATE novelai_media_outbox SET state='suppressed',consumed=1 WHERE state='pending' AND attempt_id IN (SELECT attempt_id FROM novelai_attempts WHERE role_id=? AND source_scope=? AND request_key=?)", (role_id, source_scope, request_key))
+            connection.execute("UPDATE novelai_media_outbox SET state='suppressed',consumed=1,message_synced=1 WHERE state='pending' AND consumed=0 AND attempt_id IN (SELECT attempt_id FROM novelai_attempts WHERE role_id=? AND source_scope=? AND request_key=?)", (role_id, source_scope, request_key))
 
     def sealed(self, role_id, source_scope, request_key):
         with self.connect() as connection:
@@ -168,6 +170,32 @@ class GenerationLedger:
         with self.connect() as connection:
             row = connection.execute('SELECT * FROM novelai_attempts WHERE role_id=? AND source_scope=? AND request_key=?', (role_id, source_scope, request_key)).fetchone()
         return dict(row) if row is not None else None
+
+    def recovery_batch(self):
+        """Claim one bounded page, rotating past duties that cannot finish yet."""
+        with self.connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            cursor = connection.execute('SELECT after_created,after_attempt FROM novelai_recovery_cursor WHERE singleton=1').fetchone()
+            query = '''SELECT a.*,o.state AS outbox_state,o.message_synced FROM novelai_attempts a
+                JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id
+                WHERE (a.status IN ('prepared','dispatching','received','local_pending') OR a.runtime_ack_pending=1
+                   OR (a.status='unknown' AND a.reserved_bytes>0)
+                   OR (o.consumed=1 AND o.message_synced=0 AND o.message_id IS NOT NULL
+                       AND o.state IN ('pending','sending','sent','failed','uncertain'))
+                   OR (a.status='succeeded' AND o.state='pending' AND o.consumed=0))'''
+            order = ' ORDER BY a.created_at,a.attempt_id LIMIT 100'
+            rows = []
+            if cursor['after_created'] is not None:
+                rows = connection.execute(query + ' AND (a.created_at>? OR (a.created_at=? AND a.attempt_id>?))' + order,
+                    (cursor['after_created'], cursor['after_created'], cursor['after_attempt'])).fetchall()
+            if not rows:
+                rows = connection.execute(query + order).fetchall()
+            if rows:
+                # Commit advancement before repairing. A blocked/failed row
+                # keeps its obligation and gets another turn after wraparound.
+                connection.execute('UPDATE novelai_recovery_cursor SET after_created=?,after_attempt=? WHERE singleton=1',
+                    (rows[-1]['created_at'], rows[-1]['attempt_id']))
+            return rows
 
     def list(self, role_id, source_scope=None, *, limit=20, cursor=None):
         if type(limit) is not int or not 1 <= limit <= 50:

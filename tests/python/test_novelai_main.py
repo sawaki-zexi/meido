@@ -1,15 +1,31 @@
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import pytest
 
 from novelai_fixtures import novelai_environment, novelai_main, novelai_service  # noqa: F401
 
 
-def test_real_messages_tool_loop_delivers_one_image_and_next_model_gets_only_safe_reference(novelai_main, monkeypatch):
+@pytest.mark.parametrize('mode', ['txt2img', 'img2img'])
+def test_real_messages_tool_loop_delivers_one_image_and_next_model_gets_only_safe_reference(novelai_main, monkeypatch, mode):
     from backend.app import main
     from backend.app.ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
     from backend.app.models import ModelConfigurationInput
     client, service = novelai_main
+    arguments = dict(service.request)
+    attachment_ids = []
+    base_image = None
+    if mode == 'img2img':
+        import io
+        from PIL import Image
+        image = io.BytesIO()
+        Image.new('RGB', (64, 64), '#17aa11').save(image, format='PNG')
+        base_image = image.getvalue()
+        uploaded = client.post(f'/api/roles/{service.role.id}/attachments', content=base_image,
+            headers={'Content-Type': 'image/png', 'x-attachment-filename': 'current-input.png'})
+        assert uploaded.status_code == 200, uploaded.text
+        attachment_ids = [uploaded.json()['id']]
+        arguments.update(mode='img2img', base_attachment_id=attachment_ids[0], strength=.7, noise=.2)
     provider_requests = []
     class Provider(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -22,7 +38,7 @@ def test_real_messages_tool_loop_delivers_one_image_and_next_model_gets_only_saf
             if not results:
                 assert 'generate_image' in {item['function']['name'] for item in tools}
                 delta = {'tool_calls': [{'index': 0, 'id': 'novelai-main-call', 'type': 'function',
-                    'function': {'name': 'generate_image', 'arguments': json.dumps(service.request)}}]}
+                    'function': {'name': 'generate_image', 'arguments': json.dumps(arguments)}}]}
             else:
                 result = json.loads(results[-1]['content'])
                 assert result['status'] == 'succeeded' and result['attachments']
@@ -47,13 +63,25 @@ def test_real_messages_tool_loop_delivers_one_image_and_next_model_gets_only_saf
     catalog = client.get(f'/api/roles/{service.role.id}/tools').json()['tools']
     assert next(item for item in catalog if item['name'] == 'generate_image')['modelVisible']
     try:
-        response = client.post(f'/api/roles/{service.role.id}/messages', json={'content': '请画 blue sky'})
+        response = client.post(f'/api/roles/{service.role.id}/messages', json={'content': '请画 blue sky', 'attachments': attachment_ids})
     finally:
         server.shutdown()
         server.server_close()
         thread.join()
     assert 'assistant_completed' in response.text, response.text
     assert len(service.peer.requests) == 1 and len(provider_requests) == 2
+    dispatched = service.peer.requests[0]['body']
+    assert service.peer.requests[0]['authorization'] == 'Bearer fixture-secret-171'
+    if mode == 'img2img':
+        import base64
+        assert dispatched['action'] == 'img2img'
+        assert base64.b64decode(dispatched['parameters']['image']) == base_image
+        for messages, _ in provider_requests:
+            images = [block['image_url']['url'] for message in messages if isinstance(message.get('content'), list)
+                for block in message['content'] if block.get('type') == 'image_url']
+            assert images == ['data:image/png;base64,' + base64.b64encode(base_image).decode()]
+    else:
+        assert dispatched['action'] == 'generate' and 'image' not in dispatched['parameters']
     messages = client.get(f'/api/roles/{service.role.id}/session').json()['messages']
     final = messages[-1]
     assert final['content'] == '图片已生成并保存在本次回复。'
