@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-16（Asia/Shanghai）。源码基线已同步 `main@5acbf0c21b7e25a2ae24cf59d570c2bf7c6e5e05`（图标与落地页背景音乐）；最新两套完整CI均通过的集成为 `fa122c3d5986515028144c1a6285e36425e7b9cf`，含 #172/#175/#178、集成两轴和 ACK 夹具时序修正复核。该准确头的 [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38888726454) 与 [push CI](https://github.com/sawaki-zexi/meido/actions/runs/38888721871) 各后端 2263 passed /35 skipped /2 warnings（397.80秒、383.39秒），各前端 208 passed /36文件及 TypeScript/Vite。#173 源 `0d1b918` 已汇入后续 `929974f`，源与集成两轴无遗留、本地交叉321项及前端215项通过；但该准确头 [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38897079650) 后端2307项通过，[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38897072137) 后端2306项通过、来源验证1项失败，两边前端及构建通过。取消异常正在按真实SQLite临时文件竞态修正，不能算两套均通过。#176 独立源 `eddfdb9` 修正后两轴无遗留，等待总分支恢复验证再整合；#179 正在独立实现。旧失败历史和原生限制保留，跳过项不计原生验收。
+最后核验：2026-10-16（Asia/Shanghai）。源码基线已同步 `main@5acbf0c21b7e25a2ae24cf59d570c2bf7c6e5e05`（图标与落地页背景音乐）；最新两套完整CI均通过的集成为 `e71145aade2644d6b56225fddf3673cbf236cabd`，含 #173 与来源验证journal竞态修正。该准确头的 [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38901230442) 与 [push CI](https://github.com/sawaki-zexi/meido/actions/runs/38901224739) 各后端2308 passed/35 skipped/2 warnings（409.99秒、447.33秒），各前端215项/38文件及TypeScript/Vite通过。此前929974f的来源验证单失败及可重放竞态、同字节最终测试RED→GREEN均保留在[来源作者验收](../research/proactive-source-authoring-acceptance-2026-10-16.md)，不将受控复现称作历史CI唯一首因。#176独立源eddfdb9两轴无遗留，四提交已整合为3c5e4c3；准确后端交叉308项及前端221项、构建通过，新HEAD完整CI待核验。#179冻结ecde3b4正接受完整两轴审查，已发现回执恢复写NULL及固定32条扫描饥饿问题，尚未集成。旧失败历史和原生限制保留，跳过项不计原生验收。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -33,21 +33,21 @@
 | C10 MCP 3 工具 | #159 已进入集成分支；真实 stdio、版本化发现、配置 UI、持久连接意愿及严格凭据清理已两轴复核；Linux 回收、Windows asyncio 环境、中文 schema 编码及 peer_error 清理竞态均实证修复并两轴复核；`c03a9fb` 两条 CI 通过 | 总 PR 最终跨模块验收 |
 | P01 浏览器 28 工具 | main，PR #150；全部 28 schema 映射核验，21 项真实原生浏览器测试通过，无 skip | 后续 MCP/配置集成回归 |
 | P02 桌面控制 8 工具 | #169 固定源 `7aa8108` 已两轴复核并整合；8工具/图像下一模型请求、单观察/lease/Job收尾有真实专用窗口和HTTP/provider证据。规范审查两项P2修正后独立复核无遗留；集成交叉60 passed/1原生deselected，前端专项及TS/Vite、9源mypy和c052848两条完整CI通过 | 总PR最终跨模块验收；多DPI/多屏/锁屏等未验收环境见[原生手册](../handbook/computer-use-native-acceptance.md)，不扩大真实应用操作许可 |
-| P03 Coding Agent 5 工具 | #174固定源`5a5a2c4`及关闭/配置夹具修正均已两轴复核并通过`fff08b1`两条CI；7项Herdr/两合成CLI原生通过，见[验收](../handbook/coding-agent-acceptance.md)。#175固定源`0e2da975`完成完整两轴及修正复核后合入，独立Codex exec复用spawn coding，见[S07验收](../handbook/codex-delegate-acceptance.md)；准确13c集成两轴与两套完整CI通过。#176独立源`eddfdb9`完成精确提交/发布及两轴修正复核，尚未整合 | #176准确总集成；旧首push unknown原因未解释，隔离通过不当作根因修复。真实认证/消费/发布另批，不能以合成CLI代替真实服务 |
+| P03 Coding Agent 5 工具 | #174固定源`5a5a2c4`及关闭/配置夹具修正均已两轴复核并通过`fff08b1`两条CI；7项Herdr/两合成CLI原生通过，见[验收](../handbook/coding-agent-acceptance.md)。#175固定源`0e2da975`完成完整两轴及修正复核后合入，独立Codex exec复用spawn coding，见[S07验收](../handbook/codex-delegate-acceptance.md)；准确13c集成两轴与两套完整CI通过。#176独立源`eddfdb9`完成精确提交/发布及两轴修正复核，已整合`3c5e4c3`且集成两轴无遗留；准确交叉308 passed/3 warnings、前端221项、构建、13源默认类型及6源check-untyped-defs通过 | #176新HEAD完整CI；旧首push unknown原因未解释，隔离通过不当作根因修复。真实认证/消费/发布另批，不能以合成CLI代替真实服务 |
 | P04 屏幕感知 1 工具 | #160 已进入集成分支；提前拒绝/重复取消连接回收最终两轴复核均无剩余 finding；相关后端 196 passed/1 native 条件 skip，前端 69 passed；真实受控 Windows 主屏/125% DPI/本地视觉及取消通过，无原图落盘 | 总 PR 最终集成；尚无双屏、混合 DPI、实际锁屏/远程断开或 frozen 分发实证，也未调用真实远端视觉服务 |
 | P05 桌宠 1 工具 | 待实现；Electron/PySide6 宿主选择待回答 | 真实透明置顶窗口、动作包、move/play 与完整生命周期 |
-| P06 生图 1 工具 | #171/#172已两轴复核并通过准确13c两套完整CI，含当前主人txt2img/img2img、唯一原来源、历史、指定图片CAS重生成和受管后台。#173源`0d1b918`完成人类回合CG、受限标签与卡片写回；首次资产落库丢责任P2真实RED后修正，源和集成两轴均无遗留；`929974f`本地交叉321项、前端215项及构建通过，见[手册](../handbook/novelai-generation-acceptance.md) | 准确总分支push CI仍有来源验证单失败；真实NovelAI账号生成和费用另批 |
+| P06 生图 1 工具 | #171/#172已两轴复核并通过准确13c两套完整CI，含当前主人txt2img/img2img、唯一原来源、历史、指定图片CAS重生成和受管后台。#173源`0d1b918`完成人类回合CG、受限标签与卡片写回；首次资产落库丢责任P2真实RED后修正，源和集成两轴均无遗留；`929974f`本地交叉321项、前端215项及构建通过，后续`e71145a`两套完整CI均通过，见[手册](../handbook/novelai-generation-acceptance.md) | 后续功能集成回归；真实NovelAI账号生成和费用另批 |
 | P07 QQ 附件 1 工具 | #164 已进入集成分支；多字节长行自动字符分页、当前/引用真实入站与存储/Runtime 往返、旧附件/跨群拒绝均经过两轴独立审查 | 平台实机验收另列；传输夹具不是 QQ 真人收件证据 |
 | S01 weather | #152 已进入集成分支；真实 curl、wttr.in、Open-Meteo 和公开 HTTP 工具往返 | 最终配置集成；Shell 仍须主人显式授权 |
 | S02 summarize | #152 已进入集成分支；真实 summarize 0.25.2、Node 24、URL 提取及本地模型夹具摘要回传 | 两个公开视频仅得到 `transcriptSource: unavailable` 和网页模板，未取得真实字幕；不能以 exit 0 宣称视频摘要成功 |
 | S03 feed-manage | #168 已完成两轴独立复核并进入集成分支；内置 Skill、动态服务目录/授权和真实公开 HTTP 七动作通过；独立复跑 8 HTTP + 2 原生用例，集成含 2 原生交叉 94 passed，含 RSS/Atom、下一模型请求、fresh list、重启、503 旧缓存与撤权；详见[验收](../research/feed-skill-native-acceptance-2026-10-16.md) | 总 PR 最终验收；主动来源/ACK/通知和 Drift 仍不属于此项完成范围 |
-| S04 meme-manage | #152 已进入集成分支；指令、资源与角色目录边界已有行为测试 | 最终媒体引用与整体验收 |
+| S04 meme-manage | #152 已进入集成分支；指令、资源与角色目录边界已有行为测试。准确e71145a另完成本地主人上传→真实表情目录复制/视觉请求→桌面媒体→存储重建后从历史找ID再发送，1 passed/9.52秒，见[媒体链验收](../research/meme-skill-media-acceptance-2026-10-16.md) | 总PR后续集成回归；任意新路径不自动登记媒体ID，Drift文本循环不继承此视觉/复制能力 |
 | S05 skill-creater | #152 已进入集成分支；HTTP 写入新 Skill 后下一轮发现/显式激活，资源 hash、依赖名、真实 Windows junction 反例通过 | 总 PR 最终回归 |
-| S06 create-drift-skill | #179正从准确已验证fa独立实现；已在本地作者夹具证明普通聊天生成产物、同hash后续Drift消费和跨重建进度；尚未独立审查、冻结或集成，不能按局部结果交付 | 完整配额/工具/发送/恢复、前端、两轴复核和准确总集成验收 |
+| S06 create-drift-skill | #179从准确已验证fa独立实现并冻结ecde3b4；普通聊天作者、同hash后续Drift消费、配额/工具/发送/恢复及前端已有本地合成证据，完整两轴审查进行中；尚未集成 | 修复回执恢复写NULL及扫描饥饿等审查问题，完成两轴复核和准确总集成验收 |
 | S07 codex-delegate | #175固定源`0e2da975`已两轴复核并合入；显式Skill、准确依赖、多仓库、真实受管UTF-8/JSONL/SQLite/Git、后台/exact继续取消与原来源ACK有本地合成证据，不新增普通工具；见[手册](../handbook/codex-delegate-acceptance.md) | 准确13c总集成两轴与两套CI已通过；真实CLI账号、首次/resume模型与原生权限另验 |
 | S08 create-proactive-source | #178固定最终源`0eb8ea4`完成完整两轴及P3提示/P2事件身份兼容修正复核；真实对话与FileTools创建六份产物，owner只读hash预览、原MCP trust/具体grant和v2受管验证后，同产物由真实clock/A01消费，桌面receipt与持久ACK在App/stdio重建后保持；context-only合法，v1不追认collection证明。ACK夹具时序修正已两轴复核，准确fa两套完整CI通过；见[手册](../handbook/proactive-source-authoring.md) | 总PR最终跨模块验收；真实账号与服务事务另批 |
 | A01 主动决策 | #177固定源`3b21afe`及后续源/集成修正均两轴无遗留；含真实自主身份/许可、来源、草稿/finish、canonical桌面投递/ACK/Runtime恢复。准确f7be两套CI各2134项后端/186项前端及构建通过；详见[手册](../handbook/proactive-decision-acceptance.md)。#178已启动，#180仍依赖后续共享实现 | 总PR最终跨模块验收；未验收真实账号或模型消费 |
-| A02 Drift | #179/#180具体架构已批准；#177/#178前置已通过准确fa两套CI，#179独立实施中，采用同一tick空输入分支、独立开关与显式目标；#180原生依赖当前仅#179，尚未开始共享生产改动 | 完整目录/预算、受限工具、版本化MCP挂载、单次推送、真实finish与两轴复核；随后完成#180原外部来源闭环 |
+| A02 Drift | #179/#180具体架构已批准；#177/#178前置已通过准确fa两套CI，#179冻结ecde3b4接受完整两轴审查，采用同一tick空输入分支、独立开关与显式目标；#180原生依赖当前仅#179，尚未开始共享生产改动 | #179审查修正、两轴复核和准确总集成；随后完成#180原外部来源闭环 |
 
 渠道补充切片 #166 完整群资料、#167 桌面文本/媒体与 #170 分类目录/连接事实均已完成两轴复核并进入集成分支。C06 的真实平台收件验收仍未完成。
 

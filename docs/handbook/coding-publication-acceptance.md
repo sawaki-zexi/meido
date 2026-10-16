@@ -1,6 +1,6 @@
 # 验收确切编程成果与发布 #176
 
-状态：本地实现和无费用夹具；独立两轴、集成与 CI 待最终记录。真实 CLI 登录/模型与 GitHub 发布均未执行。最后核验：2026-10-16。事实来源：[公开链](../../tests/python/test_coding_publication_main.py)、[真实 Git/HTTP/SQL 故障](../../tests/python/test_coding_publication.py)、[HTTP 期限与退出](../../tests/python/test_coding_publication_http.py)、[Git smart HTTP](../../tests/python/test_coding_publication_git_http.py)、[原生证据](../../tests/python/test_coding_attestation.py)、[资源与原来源恢复](../../tests/python/test_coding_publication_recovery.py)、[React](../../web/src/features/coding/CodingPublication.test.tsx)。接口见[reference](../reference/owned-coding-tasks.md)。
+状态：本地实现和无费用夹具；固定源eddfdb9完成完整两轴及修正复核，并整合到总分支3c5e4c3。集成两轴无遗留finding，准确广组308项通过，新HEAD完整CI另行记录。真实 CLI 登录/模型与 GitHub 发布均未执行。最后核验：2026-10-16。事实来源：[公开链](../../tests/python/test_coding_publication_main.py)、[真实 Git/HTTP/SQL 故障](../../tests/python/test_coding_publication.py)、[HTTP 期限与退出](../../tests/python/test_coding_publication_http.py)、[Git smart HTTP](../../tests/python/test_coding_publication_git_http.py)、[原生证据](../../tests/python/test_coding_attestation.py)、[资源与原来源恢复](../../tests/python/test_coding_publication_recovery.py)、[React](../../web/src/features/coding/CodingPublication.test.tsx)。接口见[reference](../reference/owned-coding-tasks.md)。
 
 ## 主人使用
 
@@ -17,7 +17,7 @@
 ```powershell
 # 启动器先完成上述隔离与 guard，再运行；原生7项需已构建的固定bundle/合成launcher。
 $env:MEIDO_TEST_HERDR = 'D:/meido-artifacts/coding174-herdr-bundle/herdr.exe'
-$env:MEIDO_TEST_CODING_CLI = 'D:/meido-artifacts/coding174-toolchain/interactive-fixture.exe'
+$env:MEIDO_TEST_CODING_CLI = 'D:/meido-artifacts/coding174-toolchain/codex.exe'
 python -m pytest tests/python/test_coding_publication.py tests/python/test_coding_publication_main.py tests/python/test_coding_publication_recovery.py tests/python/test_coding_attestation.py -q --basetemp=D:/fresh-176-owned
 python -m mypy backend/app/coding_tasks/publication.py backend/app/coding_tasks/owned_http.py backend/app/coding_tasks/github_publication.py backend/app/coding_tasks/evidence.py backend/app/coding_tasks/artifact_budget.py backend/app/coding_tasks/api.py --ignore-missing-imports --follow-imports=silent --check-untyped-defs
 npm run test:web
@@ -42,3 +42,13 @@ git diff --check
 - 后续 Standards 的真实 Runtime GET 发现 HTTP 线程会继承 daemon=True，现显式设置False；TaskRuntime 策略不改。真实 SQLite trigger 阻止 cleanup_failed 写入时，第二次核对、剩余动作准入和凭据替换/移除仍尊重内存 owner；不得先创建新平台、覆盖旧引用或启用新凭据。[永久 owned 回归](../../tests/python/test_coding_publication_owners.py)先6 RED后通过，并证实 sent/synced 的历史记录也能由现有轮询实际关闭 owner、释放容量。
 
 作者本地 XML 位于 D:/meido-artifacts/coding176-*.xml，各轮不能相加或视作最终 HEAD CI。完整前端208项、TS/Vite已过，包括晚到凭据 GET 不覆盖新保存修订的 RED→GREEN；最终相关组与两轴结论以固定交付记录为准。所有真实账号、费用、实际首次/resume CLI 权限与 GitHub 发布仍需要对应许可和证据。
+
+后续“仅剩PR”修正组曾在第一次push就出现unknown、没有pushConfirmed；旧测试随后取taskId失败，尚未进入新的只读链校验。隔离观测与原用例后来通过，首次业务目录却已被全局pytest retention清理，无法回溯当时SQL/平台证据，原因仍未解释。原日志/XML保留，后续固定helper会在相同失败时直接展示完整原记录；不将这次独立通过或owned gate修正称作历史首因已修复。
+
+## 总分支整合核对
+
+最新已验证基点e71145a的两套完整CI各2308项后端、215项前端及构建通过后，四个已审源提交顺序进入3c5e4c3，未发生冲突。38份源文件中36个git blob完全一致，差异仅main装配及S07历史验收段；main只变更三个Coding工厂/发送/receipt函数，与已审源逐AST相同，另241函数及非函数节点保持。SessionStore只增加operation独立完成消息；CG、来源作者、原来源授权及all-owner收尾保留。
+
+集成规范轴静态复核无遗留；规格轴另2 passed/1 warning（7.40秒），真实HTTP构造独立假vault，真实canonical SQLite配合合成transport证明native/commit/publication即使marker相同仍按Kind和ID各取原receipt，撤权及非法Kind零新派发、无桌面回退。该短组不代表真实配对或平台收件。完整前端221 passed/39文件（37.48秒），TypeScript/Vite100模块构建、13个改动Coding源默认类型及6源check-untyped-defs通过；没有重复计作源208项或原257项的新覆盖。
+
+准确3c5e4c3后端交叉组308 passed/3 warnings（1406.45秒），涵盖全部Coding/Codex、TaskRuntime、发现/角色许可、聊天停止、来源作者/验证、角色删除及CG优先级/渠道/资产责任。固定Herdr与无网络合成CLI均实际运行；不等于真实模型任务。556份后端/测试/前端输入在运行前后逐SHA不变，内外localhost guard通过，所有main owner自然退出，原测试目录与XML保留。90秒faulthandler输出是诊断堆栈，不是失败或超时判定。新HEAD完整CI仍须独立核验。
