@@ -15,6 +15,7 @@ const spriteBySegment: Record<Segment, string> = {
 const githubUrl = "https://github.com/sawaki-zexi/meido";
 const speakerName = "女仆";
 const musicVolumeStorageKey = "meido:landing-music-volume";
+const musicEnabledStorageKey = "meido:landing-music-enabled";
 const defaultMusicVolume = 35;
 const backgrounds = [
   "/landing/night-sky.png",
@@ -29,6 +30,7 @@ function getTopic(id: TopicId) {
 
 export function LandingPage() {
   const [background] = useState(() => backgrounds[Math.floor(Math.random() * backgrounds.length)]);
+  const [musicEnabled, setMusicEnabled] = useState(() => window.localStorage.getItem(musicEnabledStorageKey) !== "false");
   const [musicVolume, setMusicVolume] = useState(() => {
     const stored = window.localStorage.getItem(musicVolumeStorageKey);
     const value = stored === null ? defaultMusicVolume : Number(stored);
@@ -69,7 +71,7 @@ export function LandingPage() {
 
   const begin = useCallback(() => {
     if (phase !== "title") return;
-    if (musicRef.current) {
+    if (musicEnabled && musicRef.current) {
       musicRef.current.volume = musicVolume / 100;
       void musicRef.current.play().catch(() => undefined);
     }
@@ -79,7 +81,15 @@ export function LandingPage() {
     }
     setPhase("transition");
     transitionTimer.current = window.setTimeout(() => enterDialogue("opening", openingLines), 760);
-  }, [enterDialogue, musicVolume, phase, reducedMotion]);
+  }, [enterDialogue, musicEnabled, musicVolume, phase, reducedMotion]);
+
+  const toggleMusic = () => {
+    const enabled = !musicEnabled;
+    setMusicEnabled(enabled);
+    if (!musicRef.current) return;
+    if (enabled) void musicRef.current.play().catch(() => undefined);
+    else musicRef.current.pause();
+  };
 
   const advance = useCallback(() => {
     if (phase !== "dialogue") return;
@@ -171,6 +181,10 @@ export function LandingPage() {
   }, [musicVolume]);
 
   useEffect(() => {
+    window.localStorage.setItem(musicEnabledStorageKey, String(musicEnabled));
+  }, [musicEnabled]);
+
+  useEffect(() => {
     if (phase !== "dialogue" || visibleCharacters >= characters.length || reducedMotion) {
       if (phase === "dialogue" && reducedMotion) setVisibleCharacters(characters.length);
       return;
@@ -192,6 +206,7 @@ export function LandingPage() {
   useLayoutEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (phase === "title") {
+        if ((event.target as HTMLElement | null)?.closest(".bgm-toggle") && ["Enter", " "].includes(event.key)) return;
         if (event.ctrlKey || event.altKey || event.metaKey || ["Shift", "Control", "Alt", "Meta"].includes(event.key)) return;
         event.preventDefault();
         begin();
@@ -251,6 +266,7 @@ export function LandingPage() {
     onClick={handleSceneClick}
   >
     <audio ref={musicRef} src="/landing/neko-ni-michibikarete.mp3" preload="none" loop aria-hidden="true" />
+    <button type="button" className="bgm-toggle" aria-label={musicEnabled ? "关闭背景音乐" : "开启背景音乐"} aria-pressed={musicEnabled} onClick={(event) => { event.stopPropagation(); toggleMusic(); }}><span aria-hidden="true">♫</span>BGM {musicEnabled ? "开" : "关"}</button>
     <img className="landing-background" src={background} alt="" aria-hidden="true" />
     <div className="landing-vignette" aria-hidden="true" />
     <div className="landing-grain" aria-hidden="true" />
