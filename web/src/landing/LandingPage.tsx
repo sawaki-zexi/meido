@@ -14,6 +14,8 @@ const spriteBySegment: Record<Segment, string> = {
 };
 const githubUrl = "https://github.com/sawaki-zexi/meido";
 const speakerName = "女仆";
+const musicVolumeStorageKey = "meido:landing-music-volume";
+const defaultMusicVolume = 35;
 const backgrounds = [
   "/landing/night-sky.png",
   "/landing/sunlit-room.webp",
@@ -27,6 +29,11 @@ function getTopic(id: TopicId) {
 
 export function LandingPage() {
   const [background] = useState(() => backgrounds[Math.floor(Math.random() * backgrounds.length)]);
+  const [musicVolume, setMusicVolume] = useState(() => {
+    const stored = window.localStorage.getItem(musicVolumeStorageKey);
+    const value = stored === null ? defaultMusicVolume : Number(stored);
+    return Number.isFinite(value) && value >= 0 && value <= 100 ? value : defaultMusicVolume;
+  });
   const [phase, setPhase] = useState<Phase>("title");
   const [segment, setSegment] = useState<Segment>("opening");
   const [lines, setLines] = useState(openingLines);
@@ -42,6 +49,7 @@ export function LandingPage() {
   const [modal, setModal] = useState<"backlog" | "settings" | null>(null);
   const [focusedChoice, setFocusedChoice] = useState(0);
   const transitionTimer = useRef<number | undefined>(undefined);
+  const musicRef = useRef<HTMLAudioElement>(null);
   const choiceListRef = useRef<HTMLDivElement>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -61,13 +69,17 @@ export function LandingPage() {
 
   const begin = useCallback(() => {
     if (phase !== "title") return;
+    if (musicRef.current) {
+      musicRef.current.volume = musicVolume / 100;
+      void musicRef.current.play().catch(() => undefined);
+    }
     if (reducedMotion) {
       enterDialogue("opening", openingLines);
       return;
     }
     setPhase("transition");
     transitionTimer.current = window.setTimeout(() => enterDialogue("opening", openingLines), 760);
-  }, [enterDialogue, phase, reducedMotion]);
+  }, [enterDialogue, musicVolume, phase, reducedMotion]);
 
   const advance = useCallback(() => {
     if (phase !== "dialogue") return;
@@ -154,6 +166,11 @@ export function LandingPage() {
   useEffect(() => () => window.clearTimeout(transitionTimer.current), []);
 
   useEffect(() => {
+    if (musicRef.current) musicRef.current.volume = musicVolume / 100;
+    window.localStorage.setItem(musicVolumeStorageKey, String(musicVolume));
+  }, [musicVolume]);
+
+  useEffect(() => {
     if (phase !== "dialogue" || visibleCharacters >= characters.length || reducedMotion) {
       if (phase === "dialogue" && reducedMotion) setVisibleCharacters(characters.length);
       return;
@@ -233,6 +250,7 @@ export function LandingPage() {
     className={`landing ${phase === "title" ? "landing-title" : "landing-scene"} ${reducedMotion ? "reduced-motion" : ""}`}
     onClick={handleSceneClick}
   >
+    <audio ref={musicRef} src="/landing/summer-adventure.mp3" preload="none" loop aria-hidden="true" />
     <img className="landing-background" src={background} alt="" aria-hidden="true" />
     <div className="landing-vignette" aria-hidden="true" />
     <div className="landing-grain" aria-hidden="true" />
@@ -287,6 +305,7 @@ export function LandingPage() {
         {modal === "backlog" ? <div className="backlog-list">{log.map((entry, index) => <article className={`backlog-entry ${entry.kind}`} key={`${index}-${entry.text}`}>
           {entry.kind === "choice" ? <span className="backlog-choice">选择了　{entry.text}</span> : <><strong>{speakerName}</strong><p>{entry.text}</p></>}
         </article>)}<div ref={logEndRef} /></div> : <div className="settings-form">
+          <label className="music-volume-setting" htmlFor="landing-music-volume"><span><strong>背景音乐音量</strong><small>{musicVolume}%</small></span><input id="landing-music-volume" aria-label="背景音乐音量" type="range" min="0" max="100" value={musicVolume} onChange={(event) => setMusicVolume(Number(event.target.value))} /></label>
           <fieldset><legend>文字速度</legend><div className="setting-options">
             {(["slow", "normal", "fast"] as const).map((value) => <button type="button" key={value} className={speed === value ? "setting-selected" : ""} onClick={() => setSpeed(value)}>{value === "slow" ? "慢" : value === "normal" ? "标准" : "快"}</button>)}
           </div></fieldset>

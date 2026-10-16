@@ -87,6 +87,11 @@
 .backlog-entry p { margin: 5px 0 0; color: #4d3743; font-size: 15px; line-height: 1.7; }
 .backlog-choice { color: #a04f78; font: 12px/1.5 system-ui, sans-serif; }
 .settings-form { display: grid; gap: 18px; padding-top: 18px; }
+.music-volume-setting { display: grid; gap: 10px; }
+.music-volume-setting span { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.music-volume-setting strong { color: var(--ink); font-size: 14px; font-weight: 500; }
+.music-volume-setting small { color: var(--muted); font: 12px/1.5 system-ui, sans-serif; }
+.music-volume-setting input { width: 100%; margin: 0; accent-color: var(--gold); cursor: pointer; }
 .settings-form fieldset { margin: 0; border: 0; padding: 0; }
 .settings-form legend { margin-bottom: 11px; color: var(--ink); font-size: 14px; }
 .setting-options { display: flex; gap: 7px; }

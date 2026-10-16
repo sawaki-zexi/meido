@@ -3,6 +3,8 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { LandingPage } from "./LandingPage";
 
 beforeEach(() => {
+  window.localStorage.clear();
+  vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
   vi.stubGlobal("matchMedia", vi.fn(() => ({
     matches: false,
     addEventListener: vi.fn(),
@@ -36,5 +38,33 @@ describe("落地页背景", () => {
     await waitFor(() => expect(container.querySelector(".dialogue-box")).toBeTruthy());
     expect(container.querySelector(".landing-background")).toBe(background);
     expect(background?.getAttribute("src")).toBe("/landing/coastal-road.webp");
+  });
+});
+
+describe("落地页背景音乐", () => {
+  it("访客开始后播放循环音乐，设置音量立即生效并保留偏好", async () => {
+    const play = vi.mocked(HTMLMediaElement.prototype.play);
+    const { container, getByRole, unmount } = render(<LandingPage />);
+    const music = container.querySelector<HTMLAudioElement>("audio");
+    expect(music?.getAttribute("src")).toBe("/landing/summer-adventure.mp3");
+    expect(music?.loop).toBe(true);
+    expect(play).not.toHaveBeenCalled();
+
+    fireEvent.click(getByRole("button", { name: "按任意键开始游戏" }));
+    expect(play).toHaveBeenCalledOnce();
+    expect(music?.volume).toBe(0.35);
+
+    await waitFor(() => expect(getByRole("button", { name: "打开设置" })).toBeTruthy());
+    fireEvent.click(getByRole("button", { name: "打开设置" }));
+    fireEvent.change(getByRole("slider", { name: "背景音乐音量" }), { target: { value: "0" } });
+    expect(music?.volume).toBe(0);
+    fireEvent.change(getByRole("slider", { name: "背景音乐音量" }), { target: { value: "65" } });
+    expect(music?.volume).toBe(0.65);
+    expect(window.localStorage.getItem("meido:landing-music-volume")).toBe("65");
+
+    unmount();
+    const nextVisit = render(<LandingPage />);
+    expect(nextVisit.container.querySelector<HTMLAudioElement>("audio")?.volume).toBe(0.65);
+    expect(play).toHaveBeenCalledOnce();
   });
 });
