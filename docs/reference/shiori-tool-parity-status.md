@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；已验证集成：`0dee4e43a36bfdc39160cbf2c20c7a2e203198cf`。该固定版本两条 CI 全通过：各后端1922 passed、25 skipped、2条依赖弃用warning，前端180 passed/31文件及 TypeScript/Vite 构建；见[总 PR 检查](https://github.com/sawaki-zexi/meido/pull/162/checks)。桌面控制与NovelAI首批已整合且CI通过；Coding已汇入、正在做关闭故障复核及新CI准备，主动决策仍在独立分支修正审查问题。跳过项不计原生验收。
+最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；已验证集成：`fff08b186809726a219f280dc8352134e62523c0`。该固定版本两条 CI 全通过：各后端1966 passed、34 skipped、2条依赖弃用warning，前端182 passed/32文件及 TypeScript/Vite 构建；见[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38865160983)与[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38865157151)。桌面控制、NovelAI首批和Coding首批均已整合并通过CI；主动决策固定源已两轴复核无遗留，正在总分支验证组合行为。跳过项不计原生验收。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -33,7 +33,7 @@
 | C10 MCP 3 工具 | #159 已进入集成分支；真实 stdio、版本化发现、配置 UI、持久连接意愿及严格凭据清理已两轴复核；Linux 回收、Windows asyncio 环境、中文 schema 编码及 peer_error 清理竞态均实证修复并两轴复核；`c03a9fb` 两条 CI 通过 | 总 PR 最终跨模块验收 |
 | P01 浏览器 28 工具 | main，PR #150；全部 28 schema 映射核验，21 项真实原生浏览器测试通过，无 skip | 后续 MCP/配置集成回归 |
 | P02 桌面控制 8 工具 | #169 固定源 `7aa8108` 已两轴复核并整合；8工具/图像下一模型请求、单观察/lease/Job收尾有真实专用窗口和HTTP/provider证据。规范审查两项P2修正后独立复核无遗留；集成交叉60 passed/1原生deselected，前端专项及TS/Vite、9源mypy和c052848两条完整CI通过 | 总PR最终跨模块验收；多DPI/多屏/锁屏等未验收环境见[原生手册](../handbook/computer-use-native-acceptance.md)，不扩大真实应用操作许可 |
-| P03 Coding Agent 5 工具 | #174 固定源 `5a5a2c4` 两轴修正复核无遗留后汇入；真实owned Herdr/两合成CLI、精确继续、原来源和持久恢复见[验收手册](../handbook/coding-agent-acceptance.md)。集成交叉167 passed，包含7项原生；关闭故障修正 `a825e11` 已两轴复核无遗留，新CI待完成。#175 codex-delegate、#176 确切成果批准发布保留真实前置依赖 | 当前准确HEAD完整CI与后续两票；真实认证/消费/发布另批，不能以合成CLI代替真实服务 |
+| P03 Coding Agent 5 工具 | #174 固定源 `5a5a2c4` 两轴修正复核无遗留后汇入；真实owned Herdr/两合成CLI、精确继续、原来源和持久恢复见[验收手册](../handbook/coding-agent-acceptance.md)。集成交叉167 passed，包含7项原生；关闭故障修正 `a825e11` 与Linux配置夹具修正均已两轴复核无遗留，`fff08b1`两条完整CI通过。#175已在独立分支实施，#176等待其依赖 | #175/#176实现与复核；真实认证/消费/发布另批，不能以合成CLI代替真实服务 |
 | P04 屏幕感知 1 工具 | #160 已进入集成分支；提前拒绝/重复取消连接回收最终两轴复核均无剩余 finding；相关后端 196 passed/1 native 条件 skip，前端 69 passed；真实受控 Windows 主屏/125% DPI/本地视觉及取消通过，无原图落盘 | 总 PR 最终集成；尚无双屏、混合 DPI、实际锁屏/远程断开或 frozen 分发实证，也未调用真实远端视觉服务 |
 | P05 桌宠 1 工具 | 待实现；Electron/PySide6 宿主选择待回答 | 真实透明置顶窗口、动作包、move/play 与完整生命周期 |
 | P06 生图 1 工具 | #171 固定源b786a867及集成修正均已两轴复核无遗留，公开HTTP对话txt2img/img2img、原回复和历史归属、单POST/取消/恢复有本地协议证据；`0dee4e4` 两条完整CI通过。公平恢复批次P2的两种100条阻塞回归已独立验证；见[手册](../handbook/novelai-generation-acceptance.md)。#172重生成/后台媒体正在独立分支实施，#173人类回合CG等待#172 | #172/#173实现及复核；真实NovelAI账号生成和费用另批，不能以本地fixture宣称真实服务可用 |
@@ -44,9 +44,9 @@
 | S04 meme-manage | #152 已进入集成分支；指令、资源与角色目录边界已有行为测试 | 最终媒体引用与整体验收 |
 | S05 skill-creater | #152 已进入集成分支；HTTP 写入新 Skill 后下一轮发现/显式激活，资源 hash、依赖名、真实 Windows junction 反例通过 | 总 PR 最终回归 |
 | S06 create-drift-skill | 待实现；[固定源码依赖核验](../research/proactive-drift-runtime-portability-2026-10-16.md)已明确长期技能创建、后续发现与真实 Drift 消费缺一不可 | Drift 目录创建、发现和真实执行 |
-| S07 codex-delegate | 具体架构已批准，见 Coding 规格及 #175；复用 spawn coding 入口而不新增普通工具，待 #174 共享模块复核集成后实施 | 真实 CLI、后台执行、精确 session/结果回读和原上下文回灌 |
+| S07 codex-delegate | 具体架构已批准，见 Coding 规格及 #175；#174共享模块已验证，正在独立分支实施，复用 spawn coding 入口而不新增普通工具 | CLI协议、后台执行、精确 session/结果回读和原上下文回灌的完整验收与两轴复核；真实服务另批 |
 | S08 create-proactive-source | 待实现；固定源码已核实来源产物/信任/ACK 契约，旧 Skill 的 severity 快通道/HyDE 文案不作为当前实现保证 | 来源创建、信任授权、事件消费、正文与持久 ACK |
-| A01 主动决策 | [具体规格](../specs/proactive-drift-spec.md)第3节已获明确批准；#177 桌面主动独立分支实施中，#178 来源、#180 外部目标保留真实前置依赖 | 完整自主身份/许可、静态来源、草稿/finish、唯一投递/ACK/Runtime恢复及两轴复核 |
+| A01 主动决策 | [具体规格](../specs/proactive-drift-spec.md)第3节已获明确批准；#177固定源`3b21afe`含自主身份/许可、静态来源、草稿/finish、唯一桌面投递/ACK/Runtime恢复，247 passed/1权限skip及两轴修正复核无遗留，正在总分支验证；#178 来源、#180 外部目标保留真实前置依赖 | 总分支组合行为、集成两轴复核和准确HEAD完整CI；未验收真实账号或模型消费 |
 | A02 Drift | #179/#180 具体架构已批准，待 #177/#178 共享模块复核集成后实施；采用同一 tick 空输入分支、独立开关与显式目标 | 独立目录/预算、受限工具、版本化 MCP 挂载、单次推送、真实finish与两轴复核 |
 
 渠道补充切片 #166 完整群资料、#167 桌面文本/媒体与 #170 分类目录/连接事实均已完成两轴复核并进入集成分支。C06 的真实平台收件验收仍未完成。

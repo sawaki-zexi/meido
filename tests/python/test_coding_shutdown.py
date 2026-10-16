@@ -17,7 +17,8 @@ from test_coding_application import GrantedConfiguration
 pytestmark = pytest.mark.usefixtures("local_platform_only")
 
 
-@pytest.mark.parametrize("secondary_failure", [False, True], ids=["coding-only", "two-independent-failures"])
+@pytest.mark.parametrize("secondary_failure", [None, "screen_perception", "_proactive"],
+    ids=["coding-only", "coding-and-screen", "coding-and-proactive"])
 def test_unconfirmed_coding_cleanup_still_drains_other_owners_and_can_retry(tmp_path, monkeypatch, secondary_failure):
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data/sessions.db")
@@ -56,8 +57,8 @@ def test_unconfirmed_coding_cleanup_still_drains_other_owners_and_can_retry(tmp_
         budget=TaskBudget(15, 100, 1024))
     assert running.wait(2)
     closed = []
-    secondary_pending = [secondary_failure]
-    secondary_error = OSError("controlled independent screen cleanup failure")
+    secondary_pending = [bool(secondary_failure)]
+    secondary_error = OSError("controlled independent owner cleanup failure")
 
     class IndependentOwner:
         def __init__(self, name):
@@ -65,13 +66,13 @@ def test_unconfirmed_coding_cleanup_still_drains_other_owners_and_can_retry(tmp_
 
         async def close(self):
             closed.append(self.name)
-            if self.name == "screen_perception" and secondary_pending[0]:
+            if self.name == secondary_failure and secondary_pending[0]:
                 raise secondary_error
 
         async def drain(self):
             closed.append(self.name)
 
-    names = ("_schedules", "_spawn_completion_worker", "screen_perception", "computer_use",
+    names = ("_proactive", "_schedules", "_spawn_completion_worker", "screen_perception", "computer_use",
         "_novelai", "mail_service", "owner_knowledge_scheduler", "owner_knowledge_plugin",
         "todo_plugin", "memory_optimizer_loop", "memory_worker", "memory_optimizer_worker",
         "browser_use_sessions", "mcp_host")
@@ -86,8 +87,9 @@ def test_unconfirmed_coding_cleanup_still_drains_other_owners_and_can_retry(tmp_
         if secondary_failure:
             errors = raised.value.exceptions
             assert len(errors) == 2
-            assert isinstance(errors[0], owned_process.CleanupFailed)
-            assert errors[1] is secondary_error
+            coding_index = 1 if secondary_failure == "_proactive" else 0
+            assert isinstance(errors[coding_index], owned_process.CleanupFailed)
+            assert errors[1 - coding_index] is secondary_error
         assert cancelled.is_set()
         assert closed == list(names)
         assert coding.ledger.attempt(record["attemptId"])["cleanupState"] == "running"

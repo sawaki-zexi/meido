@@ -84,9 +84,13 @@ CleanupFailed按记录隔离后继续worker轮询；close消费已失败worker�
 
 集成规范审查用真实另一角色Runtime执行器复现：首项Coding关闭抛CleanupFailed会跳过其余owner。修正为依次尝试全部独立owner，最后重新抛出原单异常或保留多异常；Coding未确认时账本和责任仍在。仓库两项故障用例先RED；扩大组33项pytest通过后，runner关闭已取消worker仍失败，整条命令exit1，未算全绿。随后补终态worker、关闭调用方取消以及同时取消的RED，屏蔽传播到仍活worker的取消，并仅消费旧worker自己的终态取消；新调用方取消仍传播。最后相关 **36 passed（32.21秒），进程exit0**，三MEIDO根和guard保持至所有owned退出。固定 `a825e11` 的两轴增量复核均无遗留：规范独立24项、规格独立22项通过，各自runner正常退出，未冒称独立重跑全部167项或Herdr专属原生。新准确HEAD完整CI待完成，真实CLI服务仍未验收。
 
-## 未验收与后续票
+## Linux 配置夹具与完整 CI
 
-`9bed061` 的两条完整CI均在Linux的同一配置夹具失败：后端各1965 passed/34 skipped/1 failed/2 warnings（268.72秒、309.60秒），前端各182项/32文件及构建通过。CI的 `sys.executable` 是符号链接，生产校验按契约先拒绝链接，原测试却期待SHA错误。夹具改为先解析当前解释器的实际文件，保留原坏SHA拒绝和有效SHA保存断言。WSL真实复现 **2 passed/1 failed（2.43秒）** 后修正为 **3 passed（2.48秒）**，Windows同组 **3 passed（2.04秒）**，两端均在收集前三数据根隔离并持有整组local guard至owned退出。首次WSL选择的旧环境缺pytest，收集前失败，不算该产品RED；换到已安装依赖的隔离环境才得到上述结果。此修正没有改动生产源码；新准确HEAD完整CI仍待通过。
+`9bed061` 的两条完整CI均在Linux的同一配置夹具失败：后端各1965 passed/34 skipped/1 failed/2 warnings（268.72秒、309.60秒），前端各182项/32文件及构建通过。CI的 `sys.executable` 是符号链接，生产校验按契约先拒绝链接，原测试却期待SHA错误。夹具改为先解析当前解释器的实际文件，保留原坏SHA拒绝和有效SHA保存断言。WSL真实复现 **2 passed/1 failed（2.43秒）** 后修正为 **3 passed（2.48秒）**，Windows同组 **3 passed（2.04秒）**，两端均在收集前三数据根隔离并持有整组local guard至owned退出。首次WSL选择的旧环境缺pytest，收集前失败，不算该产品RED；换到已安装依赖的隔离环境才得到上述结果。此修正没有改动生产源码。
+
+固定`fff08b186809726a219f280dc8352134e62523c0`的[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38865160983)与[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38865157151)均完整通过：各后端**1966 passed/34 skipped/2依赖warning**，分别296.12秒和267.70秒；各前端**182 passed/32文件**，TypeScript/Vite构建通过。配置夹具修正的两轴独立复核均无遗留；后续能力仍须验证自己的准确提交。
+
+## 未验收与后续票
 
 未使用真实CLI认证，未验证实际Codex/Claude模型首次/精确resume、原生权限拒绝、扩展配置/全局keychain不继承、费用或代码质量。生产profile在取得相应真实证据前保持不可用；当前产品已提供明确配置→主人核验→具体缺项/可用的流程，不用fixture标志绕过。后续真实核验需明确批准精确profile/版本/模型/宿主hash、两个native task turns及其中可能多次模型请求和可接受费用。
 
