@@ -613,7 +613,7 @@ def test_owner_can_review_only_remaining_pr_after_confirmed_push_without_repeati
             app.publication.transport_factory = lambda *args: CountingTransport(*args, destination=str(bare))
             candidate = app.publication.prepare('role-a', task['id'], action='publish', title='Original', body='Original body')
             operation = settle(app, app.publication.approve('role-a', candidate['id'], request_id='first-publish'))
-            assert operation['status'] == 'unknown' and operation['pushConfirmed'] and not operation.get('prDispatched')
+            assert operation['status'] == 'unknown' and operation.get('pushConfirmed') and not operation.get('prDispatched'), operation
             assert state['posts'] == 0 and len(pushes) == 1
             state['block_pulls'] = False
             observed = app.publication.observe('role-a', operation['id'])

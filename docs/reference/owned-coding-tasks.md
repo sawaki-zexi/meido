@@ -82,6 +82,8 @@ Git HTTPS 使用私有 broker 环境中的 `Authorization: Basic base64(x-access
 
 `unknown` 只允许明确的只读核对，查询包含 closed PR；不重 push/POST、不换分支。仅观察到相同 SHA 不能证明本次创建了分支。若自己的 push 已证实且 PR 尚未 dispatch，核实后为 `push_confirmed`，主人可重新审阅仅创建 PR 的剩余动作；新批准不会再次推送。旧写操作 `superseded` 保留原事实。取消不回滚远端；已经派发却无法证明的 PR 继续 unknown，不能借新批准绕过。
 
+仅剩 PR 的新操作没有自己的 `pushDispatched`。丢回执后，宿主沿已消费审批和 `priorPushId`/`resolvedBy` 链核对原 push，要求角色、原来源、attempt/session、授权代际、确切 HEAD/tree/branch/base/remote、平台仓库及凭据修订一致；错误、缺失、循环或失效的链在发 GET 前拒绝。Runtime 结果已 ACK/prune 或应用重建不删除这些批准与业务事实。核对只恢复同一操作及原来源消息元数据，不再次 push/POST/发送，也不把已经 dispatch 的 PR 变成新的剩余发送机会。
+
 review 最多每角色 100 份，实际 diff 256KiB；broker 所有保留文件与当前任务合计最多 2GiB/10000 文件（全局 publication 上限比逐任务池更严格），拒绝重解析与硬链接。限额不足明确失败，保留现有成果供主人处理。失败收尾分别尝试全部 native、broker、HTTP、probe owner；任何资源未确认都保留 DB 和责任，后续只恢复原 key/本地投影。
 
 | 主人路径（前缀 `/api/coding`） | 行为 |

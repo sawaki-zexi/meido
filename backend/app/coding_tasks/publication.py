@@ -595,6 +595,82 @@ class PublicationOperations:
     def _cleanup_pending(self, record):
         return record['cleanupState'] not in {'complete', 'not_started'} or record['id'] in self._owners
 
+    def _approved_publication(self, operation):
+        """Read the immutable, consumed owner approval, independent of Runtime."""
+        candidate = operation['candidate']
+        with self.ledger._lock:
+            row = self.ledger._db.execute('''SELECT r.body,r.fingerprint,r.consumed_by,r.role_id,r.task_id,
+                o.role_id AS operation_role,o.task_id AS operation_task,o.fingerprint AS operation_fingerprint
+                FROM coding_reviews r JOIN coding_owner_operations o ON o.id=? WHERE r.id=?''',
+                (operation['id'], operation['reviewId'])).fetchone()
+        payload = dict(candidate)
+        digest = payload.pop('fingerprint', None)
+        if (row is None or candidate['id'] != operation['reviewId'] or candidate['action'] != 'publish'
+                or row['role_id'] != operation['roleId'] or row['operation_role'] != operation['roleId']
+                or row['task_id'] != operation['taskId'] or row['operation_task'] != operation['taskId']
+                or row['consumed_by'] != operation['id'] or row['fingerprint'] != digest
+                or row['operation_fingerprint'] != digest or fingerprint(payload) != digest
+                or json.loads(row['body']) != candidate):
+            raise PermissionError('original publication approval is unavailable for readback')
+        return candidate
+
+    def _readback_push(self, operation, current, check):
+        """A remaining-only approval inherits one verified push, never a POST."""
+        target = operation['candidate']
+        if target.get('pushRequired', True) is not False:
+            if not operation.get('pushDispatched'):
+                raise PermissionError('original push dispatch is unavailable for readback')
+            return
+        publication_keys = ('roleId', 'taskId', 'attemptId', 'nativeSession', 'branch', 'baseHead', 'startHead',
+            'source', 'head', 'tree', 'commitSha', 'remote', 'baseRef', 'publishBranch', 'credentialRevision')
+        record_keys = ('id', 'attemptId', 'executor', 'nativeSession', 'branch', 'baseHead', 'startHead',
+            'expectedHead', 'origin', 'repository', 'profile', 'nativeBuild', 'authorityGeneration', 'delegationGeneration')
+        seen: set[str] = set()
+        value = operation
+        try:
+            with self.ledger._lock:
+                # The role retains at most 100 reviews; reject cycles or an
+                # unavailable chain rather than following unbounded history.
+                while len(seen) < 100:
+                    check()
+                    if value['id'] in seen:
+                        break
+                    seen.add(value['id'])
+                    candidate = self._approved_publication(value)
+                    frozen = candidate['record']
+                    if (value['action'] != 'publish' or value['roleId'] != target['roleId']
+                            or value['taskId'] != target['taskId'] or value['attemptId'] != target['attemptId']
+                            or value['origin'] != target['source'] or candidate['source'] != current['origin']
+                            or frozen['origin'] != current['origin']
+                            or any(candidate.get(key) != target.get(key) for key in publication_keys)
+                            or any(frozen.get(key) != current.get(key) for key in record_keys)
+                            or current.get('expectedHead') != target['commitSha']
+                            or current.get('hostCommit', {}).get('sha') != target['commitSha']
+                            or current['hostCommit'].get('tree') != target['tree']
+                            or self._closed or not self.application._allowed(frozen)
+                            or value['cleanupState'] != 'complete' or value.get('pushConfirmed') is not True
+                            or type(value.get('platformRepositoryId')) is not int
+                            or value['platformRepositoryId'] != operation['platformRepositoryId']):
+                        break
+                    if candidate.get('pushRequired') is True:
+                        if (value.get('pushDispatched') is True and value.get('pushAcknowledged') is True
+                                and not value.get('prDispatched') and not value.get('priorPushId')):
+                            return
+                        break
+                    prior_id = value.get('priorPushId')
+                    if (candidate.get('pushRequired') is not False or value.get('pushDispatched')
+                            or not prior_id or candidate.get('previousOperationId') != prior_id
+                            or candidate.get('platformRepositoryId') != operation['platformRepositoryId']):
+                        break
+                    prior = self._record(prior_id, operation['roleId'])
+                    if (prior['status'] != 'superseded' or prior.get('resolvedBy') != value['id']
+                            or prior.get('prDispatched')):
+                        break
+                    value = prior
+        except (KeyError, TypeError, ValueError):
+            raise PermissionError('original confirmed push chain is unavailable for readback') from None
+        raise PermissionError('original confirmed push chain is unavailable for readback')
+
     def observe(self, role_id, identifier):
         """Explicit owner readback. This method never launches Git writes or POST."""
         from .evidence import snapshot_worktree, task_paths
@@ -632,8 +708,9 @@ class PublicationOperations:
                 return self.inspect(role_id, identifier)
             setting = self.settings()
             if (not setting['configured'] or setting['cleanupPending'] or setting['revision'] != candidate['credentialRevision']
-                    or not operation.get('pushDispatched') or operation.get('platformRepositoryId') is None):
+                    or operation.get('platformRepositoryId') is None):
                 raise PermissionError('original broker identity is unavailable for readback')
+            self._readback_push(operation, current, remaining)
             token = self.credentials.get('token') if self.credentials else ''
             if not token:
                 raise PermissionError('original broker credential is unavailable')

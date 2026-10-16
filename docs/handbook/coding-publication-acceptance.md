@@ -37,5 +37,7 @@ git diff --check
 - 原生适配器完整 snapshot/expected HEAD 两路测试与 owner 服务的宿主 commit→精确 session continue 分开记录；Herdr boundary 夹具使用真实受管编辑进程/Git，不等于实际 Herdr/真实账号任务。原7项固定 Herdr+合成 CLI 是独立原生兼容验收。
 - Standards 的真实慢滴流/末期停读探针捕获旧 HTTP 只在请求前检查期限。永久回归保留4类 RED，改用受管、可取消 transport 后验证同一期限/撤权、真实连接与线程退出；首次实现把 TLS/异步库冷准备放进请求线程造成另一轮4 RED，已恢复到 Client 构造边界，未放宽预算。observe 入口固定30秒，锁等待仅取剩余时间；冷准备过期不开始 HTTP。
 - Git 认证按官方 checkout 的 Basic 协议修正；真实本地 smart HTTP 核验 GET/POST 实际认证头、精确 SHA/唯一分支、原 main 不变与 token 不落仓库配置。旧本地夹具原先不开放 HTTP 协议，其 RED 不证明线上 GitHub 拒绝旧 Bearer。原始外部探针首例未捕获合法 TimeoutError，装配局限单独记录；末期停读例保持原字节复验通过，不修改原探针或伪称原样双例全绿。
+- Spec 独立真实夹具捕获“仅剩 PR”操作已经 POST、丢回执却无法只读核对的 RED。现在沿原 push 与新主人消费审批的确切替代链核对，不要求新操作伪造自己的 push dispatch。[永久回归](../../tests/python/test_coding_publication_remaining.py) 使用实际 Runtime ACK/prune、应用重建、真实远端 Draft 持久记录及原 QQ 线程 receipt/消息；错误链、不同批准身份、撤权/ABA 在 GET 前拒绝，POST 已派发时不再取得剩余写机会。
+- root 另行线程准入故障诊断与独立 Spec finding 分开记录：Thread.start 的 RuntimeError 若确定新线程从未启动，保留原异常、无自动重试，close 不再对未启动线程 join。实际启动后才报错仍保留 owner 并真实关闭；[HTTP 回归](../../tests/python/test_coding_publication_http.py)及[真实 SQLite 宿主关闭](../../tests/python/test_coding_publication_recovery.py)确认无虚假容量/DB义务。
 
 作者本地 XML 位于 D:/meido-artifacts/coding176-*.xml，各轮不能相加或视作最终 HEAD CI。完整前端208项、TS/Vite已过，包括晚到凭据 GET 不覆盖新保存修订的 RED→GREEN；最终相关组与两轴结论以固定交付记录为准。所有真实账号、费用、实际首次/resume CLI 权限与 GitHub 发布仍需要对应许可和证据。

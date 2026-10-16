@@ -134,6 +134,38 @@ def test_failed_readback_close_retains_owner_capacity_and_database_until_retry(t
         tasks.close()
 
 
+def test_http_thread_admission_failure_leaves_no_host_owner_or_database_obligation(tmp_path, monkeypatch):
+    from backend.app.coding_tasks.github_publication import GithubPlatform
+    app, tasks, sessions, _, _, _, _, operation = recovery_fixture(tmp_path)
+    values = {}
+    app.publication.credentials = SimpleNamespace(get=lambda key: values.get(key, ''),
+        set=lambda key, value: values.update({key: value}))
+    app.publication.set_token('synthetic-only')
+    candidate = operation['candidate'] | {'credentialRevision': app.publication.settings()['revision'],
+        'remote': {'owner': 'fixture', 'repository': 'repo'}}
+    app.publication._update(operation['id'], action='publish', candidate=candidate,
+        pushDispatched=True, platformRepositoryId=7)
+    app.publication.platform_factory = lambda token, remote: GithubPlatform(token, remote, base_url='http://127.0.0.1:1')
+    original_start, starts = threading.Thread.start, []
+    def reject_http(thread):
+        if thread.name.startswith('Meido.Coding.HTTP.'):
+            starts.append(thread.name)
+            raise RuntimeError('fixture HTTP thread admission unavailable')
+        return original_start(thread)
+    monkeypatch.setattr(threading.Thread, 'start', reject_http)
+    try:
+        with pytest.raises(RuntimeError, match='fixture HTTP thread admission unavailable'):
+            app.publication.observe('role-a', operation['id'])
+        assert len(starts) == 1 and not app.publication._owners
+        assert not app.publication.role_resources_pending('role-a')
+        app.publication.ensure_native_admission('role-a', 'repo-a')
+        asyncio.run(app.close())
+        with pytest.raises(sqlite3.ProgrammingError): app.ledger._db.execute('SELECT 1')
+    finally:
+        asyncio.run(app.close())
+        tasks.close()
+
+
 def test_late_durable_operation_receipt_repairs_same_source_projection_without_resending(tmp_path):
     app, tasks, sessions, channels, thread, origin, native, operation = recovery_fixture(tmp_path, channel=True)
     sends = []

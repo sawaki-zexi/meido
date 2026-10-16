@@ -122,7 +122,16 @@ class OwnedHTTP:
                 raise CleanupFailed('previous Coding HTTP request is still owned')
             self._active = request
             request.thread = threading.Thread(target=execute, name='Meido.Coding.HTTP.' + uuid.uuid4().hex)
-            request.thread.start()
+            try:
+                request.thread.start()
+            except RuntimeError:
+                # A new Thread rejected before admission owns no OS resource.
+                # If start actually launched it before raising, ident remains
+                # available even after exit: retain that owner for real join.
+                # Other uncertain creation exceptions retain responsibility.
+                if request.thread.ident is None and not request.thread.is_alive():
+                    self._active = None
+                raise
         try:
             while not request.done.wait(.01):
                 guard()

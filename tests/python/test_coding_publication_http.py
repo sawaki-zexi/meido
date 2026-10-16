@@ -183,3 +183,43 @@ def test_observe_admission_waits_only_the_original_remaining_budget(monkeypatch)
         release.set()
         holder.join(timeout=2)
         assert not holder.is_alive()
+
+
+def test_failed_http_thread_admission_preserves_error_without_uncloseable_owner(monkeypatch):
+    platform = GithubPlatform('synthetic-only', {'owner': 'fixture', 'repository': 'repo'}, base_url='http://127.0.0.1:1')
+    starts = []
+    def reject(thread):
+        starts.append(thread.name)
+        raise RuntimeError('fixture thread admission unavailable')
+    monkeypatch.setattr(threading.Thread, 'start', reject)
+    try:
+        with pytest.raises(RuntimeError, match='fixture thread admission unavailable'):
+            platform._request('GET', '/not-dispatched')
+        assert len(starts) == 1
+        platform.close()
+        platform.close()
+        assert platform.client.is_closed
+        assert not [thread for thread in threading.enumerate() if thread.name.startswith('Meido.Coding.HTTP.')]
+    finally:
+        platform.close()
+
+
+def test_start_error_after_actual_http_thread_launch_keeps_owner_until_join(monkeypatch):
+    ready = threading.Event()
+    with response_peer('late-stall', ready) as (endpoint, disconnected):
+        platform = GithubPlatform('synthetic-only', {'owner': 'fixture', 'repository': 'repo'}, base_url=endpoint)
+        original_start = threading.Thread.start
+        def start_then_error(thread):
+            original_start(thread)
+            if thread.name.startswith('Meido.Coding.HTTP.'):
+                raise RuntimeError('fixture error after actual launch')
+        monkeypatch.setattr(threading.Thread, 'start', start_then_error)
+        try:
+            with pytest.raises(RuntimeError, match='fixture error after actual launch'):
+                platform._request('GET', '/synthetic')
+            assert ready.wait(2) and platform.client._active is not None
+            platform.close()
+            assert platform.client.is_closed and disconnected.wait(.1)
+            assert not [thread for thread in threading.enumerate() if thread.name.startswith('Meido.Coding.HTTP.')]
+        finally:
+            platform.close()
