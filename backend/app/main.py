@@ -283,9 +283,22 @@ def _novelai_application() -> NovelaiApplication:
             lock_for=_runtime_role_lock,
             send_channel=lambda *args, **kwargs: channel_host.account_send(*args, **kwargs),
             publish_message=_publish_generation_message,
+            model_configuration=lambda identifier: model_configuration_store.get(identifier) if identifier else None,
+            model_adapter=lambda: model_adapter,
             channel_media_supported=lambda account_id: bool(channel_adapters.get(account_id)
                 and channel_adapters[account_id].capabilities.media))
     return _novelai
+
+
+def _accept_owner_run(role_id: str, session_key: str, run_id: str):
+    """Keep each owner's synchronous admission and reservation-end callback."""
+    finish_proactive = _proactive_application().accept_human_run(role_id, run_id)
+    try:
+        _novelai_application().scenes.accept(role_id, session_key, run_id)
+    except BaseException:
+        finish_proactive()
+        raise
+    return finish_proactive
 todo_store = TodoStore(data_root / "todos.db")
 todo_application = TodoApplicationService(todo_store, session_store)
 todo_plugin = TodoPlugin(
@@ -1475,6 +1488,9 @@ def _safe_model_error(error: Exception, api_key: str = "") -> str:
 async def save_model_configuration(data: ModelConfigurationInput) -> dict[str, object]:
     try:
         candidate = _configuration_with_saved_key(data)
+        current_id = model_configuration_store.active_id()
+        if current_id and _novelai is not None:
+            _novelai.scenes.invalidate_model(current_id)
         configuration = model_configuration_store.save(candidate)
         await screen_perception.invalidate(configuration_id=configuration.id)
         await computer_use.invalidate(configuration_id=configuration.id)
@@ -1505,6 +1521,8 @@ async def update_model_configuration(configuration_id: str, data: ModelConfigura
             data = data.model_copy(update={"apiKey": current.apiKey})
         if _proactive is not None:
             _proactive.invalidate_model(configuration_id)
+        if _novelai is not None:
+            _novelai.scenes.invalidate_model(configuration_id)
         configuration = model_configuration_store.update(configuration_id, data)
         await screen_perception.invalidate(configuration_id=configuration_id)
         await computer_use.invalidate(configuration_id=configuration_id)
@@ -1544,6 +1562,8 @@ async def delete_model_configuration(configuration_id: str) -> dict[str, object]
     try:
         if _proactive is not None:
             _proactive.invalidate_model(configuration_id)
+        if _novelai is not None:
+            _novelai.scenes.invalidate_model(configuration_id)
         active_id = model_configuration_store.delete(configuration_id)
         await screen_perception.invalidate(configuration_id=configuration_id)
         await computer_use.invalidate(configuration_id=configuration_id)
@@ -5252,7 +5272,7 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
         _, user_message, assistant_message = await runtime_manager.reserve_existing_user_message(
             run, message_id, can_start=lambda: _channel_turn_can_start(thread),
             on_accepting=lambda: (
-                _proactive_application().accept_human_run(thread.role_id, run_id)
+                _accept_owner_run(thread.role_id, thread.session_key, run_id)
                 if owner and multichannel_store.identity_is_owner(role_id=thread.role_id, channel=thread.channel,
                     scope=_channel_identity_scope(thread.channel), platform_user_id=str(metadata.get("senderId") or ""),
                     account_id=thread.account_id) else None
@@ -5524,6 +5544,8 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
                 )
                 if generation_reply is not None:
                     await _novelai_application().mark_reply_synced(generation_reply)
+                if owner and updated.status == 'completed' and delivery_metadata.get('deliveryStatus') == 'sent':
+                    _novelai_application().scenes.complete(thread.role_id, thread.session_key, run_id)
                 multichannel_store.publish(thread.role_id, {
                     "type": "message",
                     "roleId": thread.role_id,
@@ -5637,7 +5659,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         runtime_manager.sessions = session_store
         runtime_manager.role_locks = role_locks
         _, user_message, assistant_message = await runtime_manager.reserve_run(run, data.content, attachments=attachments, received_at=received_at,
-            on_accepting=lambda: _proactive_application().accept_human_run(role_id, run_id))
+            on_accepting=lambda: _accept_owner_run(role_id, session.session.sessionKey, run_id))
     except sqlite3.IntegrityError as error:
         raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试") from error
     except ActiveRunError as error:
@@ -5936,6 +5958,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     session.session.sessionKey, run_id, final_message.id)
                 if attached is not None:
                     message = attached
+                _novelai_application().scenes.complete(role_id, session.session.sessionKey, run_id)
                 try:
                     memory_worker.publish(TurnCommitted(
                         role_id,

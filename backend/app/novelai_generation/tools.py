@@ -46,6 +46,7 @@ class GenerateImageTool:
             if self.bound_source is not None and (source.channel_revision != self.bound_source.channel_revision
                     or source.channel_source != self.bound_source.channel_source):
                 raise PermissionError('frozen generation source changed')
+            self.application.scenes.note_manual(source)
             result = await self.application.submit(source, dict(arguments), signal=context.signal,
                 expected_revision=self.service_revision, expected_role_revision=self.role_revision)
             details = {key: result[key] for key in ('generationId', 'attemptId', 'status', 'attachments', 'taskId', 'errorCode', 'consumption')}

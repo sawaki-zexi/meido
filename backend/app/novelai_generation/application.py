@@ -27,6 +27,9 @@ from .http import GenerationHttpError, NovelaiHttp
 from .ledger import GenerationLedger, canonical
 from .media import import_response, owned_outputs, validate_image
 from .parameters import generation_payload, normalize_request
+from .scene import SceneCoordinator
+from .prompt_tags import PromptTags
+from .assets import AssetWriteback
 
 
 @dataclass(frozen=True)
@@ -40,7 +43,8 @@ class GenerationReply:
 class NovelaiApplication:
     def __init__(self, *, root: Path, tasks, sessions, roles, channels, credentials,
                  is_role_deleting=lambda role_id: False, http=None, send_channel=None,
-                 channel_media_supported=None, lock_for=None, publish_message=None):
+                 channel_media_supported=None, lock_for=None, publish_message=None,
+                 model_configuration=None, model_adapter=None):
         self.root, self.tasks, self.sessions, self.roles, self.channels = root, tasks, sessions, roles, channels
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -51,16 +55,24 @@ class NovelaiApplication:
         self.channel_media_supported = channel_media_supported
         self.lock_for = lock_for
         self.publish_message = publish_message
+        self.model_configuration = model_configuration or (lambda identifier: None)
+        self.model_adapter = model_adapter
         self._closed = False
         self._maintenance: asyncio.Task[None] | None = None
         self._recovery_lock = threading.Lock()
         self._cancelled_requests: set[tuple[str, str, str]] = set()
         self._pending_channel_receipts: dict[tuple[str, str], dict[str, str | None]] = {}
+        self.tags = PromptTags(self)
+        self.scenes = SceneCoordinator(self)
+        self.assets = AssetWriteback(self)
 
     def _validate_policy(self, policy):
-        if policy.sceneCgEnabled or policy.autoWritebackRoleAssets:
-            raise ValueError('场景 CG 与资产写回尚未开放，请保持关闭')
-        if policy.manualEnabled:
+        if policy.autoWritebackRoleAssets and not policy.sceneCgEnabled:
+            raise ValueError('自动写回角色卡片图需要独立开启场景 CG')
+        if policy.sceneCgEnabled and (not policy.scenePromptModelConfigurationId
+                or self.model_configuration(policy.scenePromptModelConfigurationId) is None):
+            raise ValueError('场景 CG 需要明确且仍存在的辅助模型连接')
+        if policy.manualEnabled or policy.sceneCgEnabled:
             public = self.settings.public()
             if not public['enabled'] or not public['tokenConfigured'] or public['credentialCleanupPending'] or policy.consentRevision != public['revision']:
                 raise ValueError('请先配置服务并确认当前版本的有限生图消费许可')
@@ -104,9 +116,15 @@ class NovelaiApplication:
     def _role_revision(self, role):
         with self.ledger.connect() as connection:
             row = connection.execute('SELECT revision FROM novelai_role_epochs WHERE role_id=?', (role.id,)).fetchone()
-        return hashlib.sha256(canonical([role.createdAt.isoformat(), row[0] if row else 0, role.agentConfig.novelai.model_dump()]).encode()).hexdigest()
+        policy = role.agentConfig.novelai.model_dump()
+        # New default-off tag fields do not revoke #171/#172 saved requests or
+        # local receipt obligations. Explicit permission changes still epoch.
+        if not policy['promptTagsEnabled'] and policy['allowedPromptTagRatings'] == ['general']:
+            policy.pop('promptTagsEnabled')
+            policy.pop('allowedPromptTagRatings')
+        return hashlib.sha256(canonical([role.createdAt.isoformat(), row[0] if row else 0, policy]).encode()).hexdigest()
 
-    def unavailable_reason(self, role, *, include_usage=True):
+    def unavailable_reason(self, role, *, include_usage=True, scene=False):
         config, _ = self._configuration()
         if self._closed or role is None or self.is_role_deleting(role.id):
             return '角色生图服务当前不可用'
@@ -115,23 +133,28 @@ class NovelaiApplication:
         if not config['tokenConfigured'] or config['credentialCleanupPending']:
             return '尚未配置独立 NovelAI 凭据，或凭据清理尚未完成'
         policy = role.agentConfig.novelai
-        if not policy.manualEnabled:
+        if not (policy.sceneCgEnabled if scene else policy.manualEnabled):
             return '角色的手动生图许可已关闭'
+        if scene and (not policy.scenePromptModelConfigurationId or self.model_configuration(policy.scenePromptModelConfigurationId) is None):
+            return '场景辅助模型连接已不可用'
         if policy.consentRevision != config['revision']:
             return '请主人确认当前服务设置的有限生图消费许可'
         usage = self.ledger.usage(role.id)
-        if include_usage and (usage['accountAttempts'] >= config['dailyAttemptLimit'] or usage['manualAttempts'] >= policy.manualDailyAttempts):
+        if include_usage and (usage['accountAttempts'] >= config['dailyAttemptLimit'] or
+                (usage['cgAttempts'] >= policy.sceneCgDailyAttempts if scene else usage['manualAttempts'] >= policy.manualDailyAttempts)):
             return '今日生图尝试额度已用完；次数不是 Anlas 估价'
         return ''
 
-    def _authorized(self, source: GenerationContext, service_revision, role_revision, *, allow_sealed=False):
+    def _authorized(self, source: GenerationContext, service_revision, role_revision, *, allow_sealed=False, receipt=False):
         role = self.roles.get(source.origin.role_id)
         public = self.settings.public()
         return bool(not self._closed and (allow_sealed or not self._sealed(source)) and role is not None and not self.is_role_deleting(role.id)
             and public['enabled'] and public['tokenConfigured'] and not public['credentialCleanupPending']
-            and public['revision'] == service_revision and role.agentConfig.novelai.manualEnabled
+            and public['revision'] == service_revision
+            and (role.agentConfig.novelai.sceneCgEnabled if source.scene_revision is not None else role.agentConfig.novelai.manualEnabled)
             and role.agentConfig.novelai.consentRevision == public['revision']
-            and self._role_revision(role) == role_revision and source.denial(self.channels) is None)
+            and self._role_revision(role) == role_revision and source.denial(self.channels) is None
+            and (receipt or self.scenes.current(source)))
 
     def _seal_path(self, source):
         identifier = hashlib.sha256(canonical([source.origin.role_id, source.source_scope, source.request_key]).encode()).hexdigest()
@@ -202,11 +225,11 @@ class NovelaiApplication:
 
     async def submit(self, source: GenerationContext, arguments: dict[str, object], *, signal=None, expected_revision=None,
                      expected_role_revision=None, fingerprint=None, regeneration=None, publication_ready=True,
-                     delivery_mode=None):
+                     delivery_mode=None, scene_input=None):
         handover_error = None
         with self._lock:
             role = self.roles.get(source.origin.role_id)
-            reason = self.unavailable_reason(role, include_usage=False)
+            reason = self.unavailable_reason(role, include_usage=False, scene=source.scene_revision is not None)
             if reason:
                 raise PermissionError(reason)
             if expected_role_revision is not None and self._role_revision(role) != expected_role_revision:
@@ -235,17 +258,21 @@ class NovelaiApplication:
             else:
                 if self._sealed(source):
                     raise PermissionError('generation request was cancelled')
-                parameters = normalize_request(arguments, settings)
-                owned_input = self._input(source, parameters)
+                if scene_input is not None and (source.scene_revision is None or not self.scenes.current(source)):
+                    raise PermissionError('scene generation requires a current host candidate')
+                parameters: dict[str, object] = {'background': True} if scene_input is not None else normalize_request(arguments, settings)
+                owned_input = None if scene_input is not None else self._input(source, parameters)
                 if owned_input is not None:
                     parameters['inputSha256'] = hashlib.sha256(owned_input).hexdigest()
                 view = self.ledger.prepare(role_id=role.id, source_scope=source.source_scope,
                     human_key=source.human_key, request_key=source.request_key, parameters=parameters,
                     origin=source.to_dict(), service_revision=public['revision'], role_revision=self._role_revision(role),
-                    account_limit=settings.dailyAttemptLimit, role_limit=role.agentConfig.novelai.manualDailyAttempts,
+                    account_limit=settings.dailyAttemptLimit, role_limit=(role.agentConfig.novelai.sceneCgDailyAttempts
+                        if scene_input is not None else role.agentConfig.novelai.manualDailyAttempts),
                     fingerprint=fingerprint, delivery_mode=delivery_mode or ('replacement' if regeneration is not None else
                         'source_completion' if source.ui_action or parameters['background'] else 'foreground_reply'),
                     publication_ready=publication_ready,
+                    scene_input=scene_input,
                     **(regeneration or {}))
                 row = self.ledger.attempt(view['attemptId'])
             task = self._find_task(row, source)
@@ -328,13 +355,18 @@ class NovelaiApplication:
     async def _execute(self, row, source, owned_input, execution):
         spool = self.root / row['role_id'] / (row['attempt_id'] + '.response')
         try:
+            if source.scene_revision is not None:
+                if not await self.scenes.observe(row, source, execution):
+                    return TaskOutcome('succeeded')
+                row = self.ledger.attempt(row['attempt_id'])
             with self._lock:
                 if not self._authorized(source, row['service_revision'], row['role_revision']):
                     self.ledger.finish(row['attempt_id'], 'cancelled_before_dispatch')
                     return TaskOutcome('cancelled')
                 token = self.settings.dispatch_token()
                 payload = generation_payload(json.loads(row['parameters']), base_image=owned_input)
-                self.ledger.mark_dispatching(row['attempt_id'])
+                self.ledger.mark_dispatching(row['attempt_id'], before_dispatch=(
+                    lambda connection: self.scenes.dispatch(connection, row, source)) if source.scene_revision is not None else None)
             execution.progress('generation dispatched')
             received = await self.http.generate(payload, token, spool, deadline=execution.deadline)
             del payload, token, owned_input
@@ -384,6 +416,9 @@ class NovelaiApplication:
 
     def _settle_failure(self, row):
         parameters = json.loads(row['parameters'])
+        if 'width' not in parameters:
+            self.ledger.settled_failure(row['attempt_id'], [], 0)
+            return
         attachments, size = owned_outputs(self.roles.workspace_path(row['role_id']), row['attempt_id'],
             max_pixels=parameters['width'] * parameters['height'])
         spool = self.root / row['role_id'] / (row['attempt_id'] + '.response')
@@ -793,7 +828,7 @@ class NovelaiApplication:
             receipt = json.loads(outbox['receipt'])
             message = self.sessions.reconcile_generation_receipt(row['role_id'], source.origin.session_key,
                 outbox['message_id'], row['attempt_id'], receipt, connection=connection,
-                authorized=lambda: self._authorized(source, row['service_revision'], row['role_revision']))
+                authorized=lambda: self._authorized(source, row['service_revision'], row['role_revision'], receipt=True))
             if message is not None:
                 connection.execute('UPDATE novelai_media_outbox SET message_synced=1 WHERE attempt_id=? AND receipt=?', (row['attempt_id'], outbox['receipt']))
         if message is not None and self.publish_message is not None:
@@ -831,6 +866,10 @@ class NovelaiApplication:
                 connection.execute('BEGIN IMMEDIATE')
                 connection.execute('DELETE FROM novelai_media_outbox WHERE attempt_id IN (SELECT attempt_id FROM novelai_attempts WHERE role_id=?)', (role_id,))
                 for table in ('novelai_human_claims', 'novelai_attempts', 'novelai_generations', 'novelai_role_epochs', 'novelai_cancelled_requests', 'novelai_daily'):
+                    connection.execute('DELETE FROM ' + table + ' WHERE role_id=?', (role_id,))
+                for table in ('novelai_cg_daily', 'novelai_asset_usage', 'novelai_asset_writes', 'novelai_prompt_tags',
+                        'novelai_tag_revisions', 'novelai_scene_state', 'novelai_scene_humans', 'novelai_scene_candidates',
+                        'novelai_scene_manual', 'novelai_scene_visuals'):
                     connection.execute('DELETE FROM ' + table + ' WHERE role_id=?', (role_id,))
             self._cancelled_requests = {item for item in self._cancelled_requests if item[0] != role_id}
             self._pending_channel_receipts = {key: receipt for key, receipt in self._pending_channel_receipts.items() if key[0] != role_id}
@@ -882,6 +921,7 @@ class NovelaiApplication:
                 lock.release()
 
     async def _recover_batch(self):
+        self.assets.recover()
         rows = self.ledger.recovery_batch()
         for saved in rows:
             row = dict(saved)
@@ -931,12 +971,14 @@ class NovelaiApplication:
                     await self.attach_ui_completion(source, row['attempt_id'])
                 elif row['delivery_mode'] == 'foreground_reply':
                     await self._repair_foreground(row, source)
+                self.assets.apply(row, source)
             except (OSError, sqlite3.Error, KeyError, ValueError, PermissionError):
                 continue
 
     async def close(self):
         with self._lock:
             self._closed = True
+        await self.scenes.close()
         if self._maintenance is not None:
             maintenance = self._maintenance
             maintenance.cancel()
@@ -945,6 +987,8 @@ class NovelaiApplication:
             await finish_io(join_maintenance())
             self._maintenance = None
         await self.invalidate()
+        if self.scenes.failures:
+            raise ExceptionGroup('scene coordination failed', self.scenes.failures)
 
     def tool_for(self, role_id, *, is_owner=True, source_thread_id=None, source_account_id=None, frozen_role=None):
         from .tools import GenerateImageTool

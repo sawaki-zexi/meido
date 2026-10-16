@@ -1,8 +1,8 @@
 # 验收 NovelAI 生成、重生成与后台原来源交付
 
-当前总集成补充：#172最终源`60860fb`的完整两轴及修正复核均无遗留。规范独立17项后端/13项React通过，关闭原journal P2；规格独立10项后端、原DOM反例1项和history_only确认1项通过，关闭跨来源私图P1与渠道新媒体提示P2。原反例和失败历史保留，各组重叠不相加。源经`d9a71f4`、`0522a00`、`043a775`、`d551de3`从f7be合入总分支；只解决SessionStore与ChatView的两处内容冲突，保留主动提交/最终授权、Coding任务入口以及NovelAI图片CAS。私有生成模块与最终源完全一致。固定`43fc03a`总组合610 passed/1 Windows符号链接权限skip、前端202项及构建通过，集成两轴无遗留；准确13c两套完整CI已通过：各后端2235 passed/35 skipped/2 warnings、前端202 passed/35文件及TS/Vite，详见[总状态](../reference/shiori-tool-parity-status.md)。
+当前总集成补充：#172最终源`60860fb`的完整两轴及修正复核均无遗留。规范独立17项后端/13项React通过，关闭原journal P2；规格独立10项后端、原DOM反例1项和history_only确认1项通过，关闭跨来源私图P1与渠道新媒体提示P2。原反例和失败历史保留，各组重叠不相加。源经`d9a71f4`、`0522a00`、`043a775`、`d551de3`从f7be合入总分支；只解决SessionStore与ChatView的两处内容冲突，保留主动提交/最终授权、Coding任务入口以及NovelAI图片CAS。当时私有生成模块与#172最终源完全一致。固定`43fc03a`总组合610 passed/1 Windows符号链接权限skip、前端202项及构建通过，集成两轴无遗留；准确13c两套完整CI已通过：各后端2235 passed/35 skipped/2 warnings、前端202 passed/35文件及TS/Vite，详见[总状态](../reference/shiori-tool-parity-status.md)。
 
-状态：当前本地受控验证，真实 NovelAI 未验收。最后核验：2026-10-16。事实来源：[Reference](../reference/novelai-generation.md)、[公开消息用例](../../tests/python/test_novelai_main.py)、[真实渠道用例](../../tests/python/test_novelai_channel.py)、[真实断连](../../tests/python/test_novelai_cancellation.py)、[恢复](../../tests/python/test_novelai_recovery.py)。Parent #137，当前本地实现覆盖 #171/#172；#173 CG 尚未交付。下方 #171 历史记录保留当时范围和失败事实，#172 增量单独记录。
+状态：当前本地受控验证，真实 NovelAI 未验收。最后核验：2026-10-16。事实来源：[Reference](../reference/novelai-generation.md)、[公开消息用例](../../tests/python/test_novelai_main.py)、[真实渠道用例](../../tests/python/test_novelai_channel.py)、[真实断连](../../tests/python/test_novelai_cancellation.py)、[恢复](../../tests/python/test_novelai_recovery.py)。Parent #137，当前本地实现覆盖 #171/#172，#173 为本地作者实现，固定提交仍须独立两轴审查。下方历史记录保留当时范围和失败事实，各组不相加。
 
 用户已明确批准完整具体规格第3节的实现及本地无费用夹具；真实 token、账号、模型/生成费用和外部发布另批。其中 #171 从获准的已验证 aggregate `30002a9a8de551a12a44b2c2f5724d5640aca50d` 开始，分支 feat/171-novelai-generation，统一整合总 PR162，不新建堆叠 PR，不合并或关闭 Issue。
 
@@ -44,6 +44,26 @@ HTTP200/201、401/402、408/429/500、坏 ZIP、严格 JSON base64、实际像�
 React 覆盖真实 App 设置/角色/历史入口、有限消费显式确认、只打开不POST、网络失败保持原requestId重查、切角色 abort/忽略迟到图。正常界面不会展示凭据、base64或本地路径。
 
 ## 本轮记录与限制
+
+### #173 本地增量
+
+#173 从用户明确批准的准确已验证总集成 `13c2aea51594d0f83dd0356c98f4e4d4d7c172be` 建立独立 `feat/173-owner-scene-cg`，统一总 PR162。该基点两套完整 CI 均为2235 passed/35 skipped/2 warnings、前端202项；本票不把基点结果冒充新增验收，也未自行吸收其他未合分支。
+
+公开真实 `/messages` → localhost rich SSE 辅助模型 → 同一 TaskRuntime/账本 → localhost NovelAI HTTP → 原来源唯一完成消息，覆盖独立 CG 许可、明确辅助 ID、600 token/tools空、无图/失败观察仍计账户与CG额度、5真实主人回合冷却、started/changed与visual墓碑。真实工具手动 unknown 阻止同回合CG。最初公开消息用例因没有辅助请求而 RED；启用现有宿主完成路径后 GREEN。后续 legacy 模型保存使旧辅助仍生成的 RED 也已修正。
+
+新主人被接受后，旧辅助 finally 和已收图片导入分别被受控挂起：主聊天完成而下一CG尚不进入；释放旧 owned 收尾后才进行新观察。真实CG关闭再开、模型配置变版、原群解绑再绑定不能复活旧结果。OneBot WebSocket 覆盖原群单次媒体、丢回执uncertain、媒体能力关闭出网前拒绝，以及已sent但SQLite回执未同步时下一主人输入到达；最后一项先RED，再修正仅本地receipt投影，不增加send/POST。
+
+标签用公开HTTP证明owner CRUD、角色隔离、分页、字面NFKC匹配、rating和enabled过滤、边界拒绝；实际CG参数与当前消息预览一致。无效输入不调用模型。卡片写回只改当前角色cardImage，核对额外字节副本计入配额；主人随后手选卡片优先，额外副本超额保留正常历史。manifest故障、真实RoleStore文件替换后/manifest前的崩溃切点、SQLite回执失败及整个业务宿主重建均仅本地恢复，不再次生成。崩溃切点测试最初因没有恢复接口RED，修正后保留原卡片字节。
+
+辅助错误组使用真实本地HTTP 503、工具调用、重复JSON字段、超大响应、非ASCII提示词与超时。超时夹具将辅助上限缩为2秒以可重复验证取消；生产仍为30秒辅助/300秒attempt，未调大期限。资产与辅助故障合组11 passed/44.60s；原4项渠道组4 passed/20.37s、后补receipt-revision单项1 passed/12.33s。它们是阶段证据，不当作最终全组统计。
+
+原有500ms HTTP deadline用例在专项首次完整组得到136 passed/1 failed/254.53s，独立重跑仍失败。外置只读计时记录真实AsyncHTTPTransport构造耗时0.7118035秒，POST尚未发出就用完原deadline；未修改的#172源同case亦失败。经协调者明确接受，仅将真实owned transport准备移到计时前，并在finally aclose；保持500ms deadline、2秒内返回、已accept唯一POST和partial清理断言，生产HTTP实现零改动。修正fixture后单项1 passed/5.55s；初始失败和旧源复现保留，不算#173生产回归或伪装为通过。
+
+前端新增独立CG同意/模型选择、标签预览管理、无图参数null与辅助消费说明、卡片写回状态。最终全前端209 passed/37 files/41.12s，TypeScript/Vite通过；共享RoleStore、AgentRuntime、主动优先级/宿主边界/owned-loop和Coding all-owner shutdown组合55 passed/33.14s；14个NovelAI源文件mypy含`--check-untyped-defs`通过。最终专用组和固定提交的实际结果由下方补充及独立审查记录承接。所有后端轮次使用收集前3个全新数据根、逐例和外层local guard，保持至HTTP/WebSocket/Runtime/维护与线程自然退出；不读取真实凭据、不启动真实模型或账号事务。
+
+冻结前完整NovelAI **162 passed/341.88s**，无skip/error/failure。随后协调者只读探针用真实第二SQLite连接在CG完成候选登记前持BEGIN IMMEDIATE：run和回复都已completed，SSE却为assistant_failed（1 failed/1 fixture-rewrite warning/11.49s）。仓库增加同一真实写锁的桌面与OneBot订阅发布反例，先2 failed/15.12s；可选complete入口仅隔离本地I/O/SQLite错误后2 passed/13.71s，原聊天成功和原群正常sent发布保留，aux/生图均0。同步accept授权/seal、owned取消责任与预算未改，也不自动重放CG。162项保留为此窄修前结果；窄修后的相关CG/共享入口、原探针及静态检查另记录，不冒称重新全量或独立审查完成。
+
+上述窄修后，全部CG/标签、既有NovelAI真实主消息及主动human-priority/host-boundaries共享入口 **44 passed/171.57s**（零skip/warning/error/failure）。原外置写锁反例字节未改，原样 **1 passed/1 conftest重写warning/10.25s**；该warning为已导入测试插件，不是业务或隔离失败。14源mypy、compileall、38个文档相对链接、冻结UI文件SHA及diff check再次通过；前端生产和测试没有变化，未重跑前端或全部后端。此版本由固定提交后的两轴独立审查承接。
 
 ### #172 本地增量
 
@@ -97,4 +117,4 @@ React 新增选槽、再次消费、稳定请求重试、后台观察/精确停�
 
 未声明本地全量 Python或总 PR 两套 CI已通过；修正固定点仍由原独立两轴审查者作增量复核，本文不提前声称通过。
 
-未验收：真实 NovelAI 账号/模型/图片尺寸兼容、真实 Anlas费用、取消后实际扣费，以及非本轮OneBot peer覆盖的实际平台媒体行为。受控成功不能称真实NovelAI已可用；本票没有取得真实费用许可，不索取或读取用户token。后台/重生成的 #172 本地验证见下方增量，CG 仍由 #173 依赖前票准确集成 CI 后推进；不拿受控成功替代真实费用验收。
+未验收：真实 NovelAI 账号/模型/图片尺寸兼容、真实 Anlas费用、取消后实际扣费，以及非本轮OneBot peer覆盖的实际平台媒体行为。受控成功不能称真实NovelAI已可用；本票没有取得真实费用许可，不索取或读取用户token。后台/重生成与CG的本地验证分别见 #172/#173 增量；不拿受控成功替代真实费用验收。

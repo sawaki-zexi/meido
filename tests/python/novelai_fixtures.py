@@ -109,6 +109,8 @@ def novelai_main(novelai_service, tmp_path, monkeypatch):
     monkeypatch.setattr(main, 'channel_adapters', {})
     monkeypatch.setattr(main, '_novelai', service.application, raising=False)
     service.application.channels = channels
+    service.application.model_configuration = lambda identifier: main.model_configuration_store.get(identifier) if identifier else None
+    service.application.model_adapter = lambda: main.model_adapter
     service.application.channel_media_supported = lambda account_id: bool(main.channel_adapters.get(account_id)
         and main.channel_adapters[account_id].capabilities.media)
     yield TestClient(main.app), service

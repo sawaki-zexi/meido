@@ -1,8 +1,8 @@
 # NovelAI 生成、指定图片重生成与原来源交付契约
 
-状态：当前本地实现，#171/#172 受控验收；真实账号与生成费用未验收。最后核验：2026-10-16。事实来源：[应用](../../backend/app/novelai_generation/application.py)、[参数与请求](../../backend/app/novelai_generation/parameters.py)、[API](../../backend/app/novelai_generation/api.py)、[账本](../../backend/app/novelai_generation/ledger.py)、[SessionStore](../../backend/app/session_store.py)、[真实消息与渠道测试](../../tests/python/test_novelai_main.py)。完整目标见[NovelAI 规格](../specs/novelai-generation-spec.md)，验收命令与范围见[手册](../handbook/novelai-generation-acceptance.md)。
+状态：当前本地实现，#171/#172 受控验收，#173 作者验证；独立审查与准确集成以固定提交记录为准，真实账号与生成费用未验收。最后核验：2026-10-16。事实来源：[应用](../../backend/app/novelai_generation/application.py)、[参数与请求](../../backend/app/novelai_generation/parameters.py)、[API](../../backend/app/novelai_generation/api.py)、[账本](../../backend/app/novelai_generation/ledger.py)、[SessionStore](../../backend/app/session_store.py)、[真实消息与渠道测试](../../tests/python/test_novelai_main.py)。完整目标见[NovelAI 规格](../specs/novelai-generation-spec.md)，验收命令与范围见[手册](../handbook/novelai-generation-acceptance.md)。
 
-此实现覆盖独立服务、当前主人 txt2img/img2img、指定槽重生成、受管后台、角色附件、唯一原来源交付及持久历史。场景 CG、标签和资产自动写回仍由 #173 实施；模型自报 `scene_cg` 和提前开启 CG/资产写回会明确拒绝。
+此实现覆盖独立服务、当前主人 txt2img/img2img、指定槽重生成、受管后台、角色附件、唯一原来源交付及持久历史。#173 增加完成主人回合后的场景 CG、受限标签库与独立许可的卡片图写回；模型工具自报 `scene_cg` 仍拒绝，只有宿主观察路径有该资格。
 
 ## 配置与权限
 
@@ -12,7 +12,7 @@
 
 独立 token 操作是 `PUT /api/services/novelai/token`（严格仅 token 字段）及 DELETE 同路径。不存在 token 查看接口。请求和错误不回显秘密、原始响应正文或输入图片。
 
-角色 `agentConfig.novelai` 默认 manualEnabled=false、manualDailyAttempts=10、sceneCgEnabled=false、sceneCgDailyAttempts=3、scenePromptModelConfigurationId=null、autoWritebackRoleAssets=false、consentRevision=0。启用 manual 必须服务已配好且明确同意当前 revision；降低额度不清除计数。旧客户端省略整个字段或只提交部分字段时保留既有许可。实际许可变化在角色文件写入前推进私有持久 epoch，关闭再开启也不能复活旧冻结工具。手工写 enabledTools 不能绕过许可。
+角色 `agentConfig.novelai` 默认 manualEnabled=false、manualDailyAttempts=10、sceneCgEnabled=false、sceneCgDailyAttempts=3、scenePromptModelConfigurationId=null、autoWritebackRoleAssets=false、promptTagsEnabled=false、allowedPromptTagRatings=[general]、consentRevision=0。手动和 CG 许可独立；启用任一消费能力须服务已配好且明确同意当前 revision。CG 还须明确选中存在的模型配置 ID，null/已删除 ID 不回退全局模型；写回须同时启用 CG。降低额度不清除计数。旧客户端省略整个字段或只提交部分字段时保留既有许可；新增标签默认值不改变旧 #172 请求的权限指纹。实际许可变化在角色文件写入前推进私有持久 epoch，关闭再开启也不能复活旧冻结工具。手工写 enabledTools 不能绕过许可。
 
 工具 `generate_image` 为 direct / risk external / source builtin:novelai / external_allowed=false，外层330秒、输出4000字符。只接受宿主真实主人当前输入：桌面 SQLite run 必须由真实 `/messages` 写入 humanInputSource=desktop_owner；渠道须真实当前主人 owner context、账号/配对/目录代际及原线程。访客、定时、内部完成、主动或伪造 source 不能获得消费权。执行前、外部投递前和本地发布前均重新检查；冻结版本只能收权。
 
@@ -49,6 +49,30 @@
 本地恢复器是应用拥有并 join 的维护任务，只处理已登记的媒体、原消息、receipt和 ACK，不是第二个通用任务宿主，不重新出网生成或重发渠道消息。每批最多100条，按创建时间和ID稳定排序，以持久游标轮转；暂时无法查询 Runtime 的旧义务保留但不会反复占满同一批，游标到末尾后回到起点。无待同步消息的 suppressed 墓碑不再作为消息同步义务；并发恢复调用仅由一轮执行。
 
 ## 应用接口与历史
+
+### 主人回合场景 CG
+
+[场景协调器](../../backend/app/novelai_generation/scene.py)由原宿主持有。真实主人输入被接受时，同步推进本来源 human/scene revision 并封存旧 CG，再登记 owned 取消收尾；主聊天无需等待旧网络退出，下一 CG 则等待该收尾。原主动回合优先级和完成回调继续组合执行。当前主人回复真正完成后最多一次候选；访客、旁听、内部完成、主动回合及失败回复没有资格。该回合已有手动意图（包括 unknown）时不观察，持久 human-run claim 和账户唯一 slot 阻止并发消费。
+
+完成后的可选候选登记遇到本地I/O或SQLite写锁时，保留已完成聊天及原渠道正常发布，不触发辅助/生成或自动重放。该错误边界不吞接受主人时的同步seal或已拥有任务的取消收尾责任。
+
+辅助调用与生图属于同一 attempt、同一个 300 秒 TaskRuntime deadline。明确 ID 的 rich adapter 只请求一次，tools=()、max_tokens=600，辅助阶段至多30秒；没有单独模型守护进程、重试或第二次生成 POST。输入仅当前 user、完成 assistant、角色描述及本来源最小前态，不含其他会话。输出严格 JSON、总16KiB，拒绝重复/额外字段、工具调用、无效枚举或越界文本。返回时以 humanRun、scene revision、模型 epoch、角色/来源许可和标签版本再次校验；配置修改/删除、关闭再开及迟到结果不能获得新资格。
+
+none/closed、冷却和重复视觉仍是已发生辅助调用的 CG 尝试，账户与 CG 日额度不退；只有辅助和生成均未出网才释放次数。same 必须匹配当前场景，需距上次生成 dispatch 至少5个真实主人回合；started/changed可越过冷却，但不能越过已 dispatch 的 visual_key 墓碑、预算或许可。visual 墓碑最多每角色10,000条，满时拒绝新的生成；不删除旧墓碑以放行重复。重启不继续未确认候选，也不发布旧迟到 CG；已有 sent receipt 仍仅修复原消息事实。
+
+历史新增 purpose=manual/scene_cg、phase=auxiliary/generation/completed、auxiliaryConsumption 与 auxiliaryStatus；辅助阶段没有冻结生图参数时 parameters=null。completed_without_image 表示本次观察完成但未生图，其原因包括 scene_none、scene_closed、scene_cooldown、scene_visual_duplicate；失败辅助为 scene_observation_failed。生成和辅助消费可能性分开显示，不把“没图”说成免费或退款。
+
+### 标签和卡片图
+
+[标签库](../../backend/app/novelai_generation/prompt_tags.py)仅由主人管理当前角色，最多250项；name最多80字符、keywords为1–16个各最多80字符的非空字面词、正负提示词各最多4000个 ASCII 字符，rating限定general/mature/explicit。匹配对当前消息做 NFKC/casefold 字面包含，不执行正则或表达式；同时过滤角色 promptTagsEnabled、allowedPromptTagRatings 和条目 enabled。预览与实际 CG 使用同一扩写，最终提示词仍受4000字符上限；库修改推进 revision，旧观察不能使用新标签结果继续生成。
+
+- GET/POST `/api/roles/{roleId}/novelai/prompt-tags`：最多50项分页及 owner 新增，返回 tags/revision/nextCursor 或 tag/revision。
+- PUT/DELETE `.../{tagId}`：仅当前角色既有32位十六进制 ID，更新或删除并推进 revision，跨角色404。
+- POST `.../preview`：text最多12000字符，prompt/negative_prompt各最多4000 ASCII，返回扩写、matchedIds、revision；不调用模型或生图。
+
+[资产写回](../../backend/app/novelai_generation/assets.py)仅在 autoWritebackRoleAssets 明确开启、当前 CG 获准且单图时，设置本角色 cardImage；不改头像。以候选完成时捕获的 cardImageUrl 做 RoleStore 版本 CAS，主人后来手选卡片图优先。生成附件之外的卡片实际字节副本，在写入前另预留角色和全局空间，包含替换时旧副本与新副本的峰值。正常历史及原来源交付不因写回失败重生成。
+
+writebackStatus为not_requested/writing/uncertain/applied/failed。manifest或SQLite故障保留本地义务，维护只核对 owned 临时/备份、manifest及摘要后结算或回滚；崩溃在文件替换后但manifest提交前时恢复旧卡片，不再生成、复制或覆盖后来的主人编辑。恢复每批最多100条并有持久轮转游标。无法确认旧文件事实时保留预占及 uncertain。
 
 `background=true` 先写入有限 attempt、原来源和唯一 outbox，再以同一 submission_key 交接现有 TaskRuntime。只有 taskId 及 `background_accepted` 持久成功后才返回 accepted（工具）或 HTTP202（UI），公开 `backgroundAccepted=true`。父回合完成、父 token 取消或受理后的 HTTP 断开不会撤回这次明确后台；显式停止、许可/来源失效、角色删除和应用退出仍 seal、stop 并 join。交接回写失败不假报受理，不留下隐式付费后台。
 

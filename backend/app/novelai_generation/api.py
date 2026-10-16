@@ -105,6 +105,48 @@ def novelai_router(application):
     def current():
         return application() if callable(application) else application
 
+    @router.get('/api/roles/{role_id}/novelai/prompt-tags')
+    async def prompt_tags(role_id: str, limit: int = 50, cursor: str | None = None, application=Depends(current)):
+        try:
+            return application.tags.list(role_id, limit=limit, cursor=cursor)
+        except KeyError:
+            raise HTTPException(404, '角色不存在') from None
+        except ValueError:
+            raise HTTPException(422, '标签分页参数无效') from None
+
+    @router.post('/api/roles/{role_id}/novelai/prompt-tags/preview')
+    async def preview_tags(role_id: str, request: Request, application=Depends(current)):
+        body = await _body(request)
+        if set(body) - {'text', 'prompt', 'negative_prompt'} or 'text' not in body:
+            raise HTTPException(422, '请提供当前消息及有限提示词')
+        try:
+            return application.tags.expand(role_id, body['text'], body.get('prompt', ''), body.get('negative_prompt', ''))
+        except KeyError:
+            raise HTTPException(404, '角色不存在') from None
+        except ValueError:
+            raise HTTPException(422, '标签匹配输入或扩写超出限制') from None
+
+    @router.post('/api/roles/{role_id}/novelai/prompt-tags')
+    @router.put('/api/roles/{role_id}/novelai/prompt-tags/{identifier}')
+    async def save_tag(role_id: str, request: Request, identifier: str | None = None, application=Depends(current)):
+        if identifier is not None and not re.fullmatch(r'[0-9a-f]{32}', identifier):
+            raise HTTPException(422, '标签 ID 无效')
+        try:
+            return application.tags.save(role_id, await _body(request), identifier)
+        except KeyError:
+            raise HTTPException(404, '角色或标签不存在') from None
+        except ValueError:
+            raise HTTPException(422, '标签字段、内容或数量超出限制') from None
+
+    @router.delete('/api/roles/{role_id}/novelai/prompt-tags/{identifier}')
+    async def delete_tag(role_id: str, identifier: str, application=Depends(current)):
+        if not re.fullmatch(r'[0-9a-f]{32}', identifier):
+            raise HTTPException(422, '标签 ID 无效')
+        try:
+            return application.tags.delete(role_id, identifier)
+        except KeyError:
+            raise HTTPException(404, '角色或标签不存在') from None
+
     @router.get('/api/services/novelai')
     async def settings(application=Depends(current)):
         return application.settings.public()

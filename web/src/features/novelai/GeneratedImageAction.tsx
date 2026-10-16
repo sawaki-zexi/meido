@@ -13,7 +13,7 @@ export function GeneratedImageAction({ roleId, messageId, image, attemptIds, onS
     const controller = new AbortController();
     setSelection(null);
     void novelai.forAttachment(roleId, image.id, messageId, controller.signal).then(({ generation }) => {
-      if (controller.signal.aborted || generation.roleId !== roleId || generation.deliveryMessageId !== messageId
+      if (controller.signal.aborted || !generation.parameters || generation.roleId !== roleId || generation.deliveryMessageId !== messageId
         || !attemptIds.includes(generation.attemptId)) return;
       const owned = generation.attachments.find((attachment) => attachment.id === image.id && attachment.kind === 'image');
       if (owned) setSelection({ generation, image: owned });

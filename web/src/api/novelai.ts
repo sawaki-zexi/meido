@@ -4,10 +4,12 @@ import type { ChatAttachment } from './types';
 export type NovelaiRoleConfig = {
   manualEnabled: boolean; manualDailyAttempts: number; sceneCgEnabled: boolean; sceneCgDailyAttempts: number;
   scenePromptModelConfigurationId: string | null; autoWritebackRoleAssets: boolean; consentRevision: number;
+  promptTagsEnabled: boolean; allowedPromptTagRatings: PromptTagRating[];
 };
 export const defaultNovelaiRoleConfig: NovelaiRoleConfig = {
   manualEnabled: false, manualDailyAttempts: 10, sceneCgEnabled: false, sceneCgDailyAttempts: 3,
   scenePromptModelConfigurationId: null, autoWritebackRoleAssets: false, consentRevision: 0,
+  promptTagsEnabled: false, allowedPromptTagRatings: ['general'],
 };
 export type NovelaiConfiguration = {
   enabled: boolean; tokenConfigured: boolean; credentialCleanupPending: boolean; revision: number;
@@ -20,14 +22,29 @@ export type GenerationParameters = {
   model?: string; sampler?: string; steps?: number; seed?: number; strength?: number; noise?: number; background?: boolean;
 };
 export type GenerationView = {
-  generationId: string; attemptId: string; roleId: string; status: string; parameters: GenerationParameters & { width: number; height: number; seed: number };
+  generationId: string; attemptId: string; roleId: string; status: string; parameters: (GenerationParameters & { width: number; height: number; seed: number }) | null;
+  purpose?: 'manual' | 'scene_cg'; phase?: 'auxiliary' | 'generation' | 'completed';
+  auxiliaryConsumption?: 'possible' | 'not_dispatched'; auxiliaryStatus?: 'not_dispatched' | 'dispatching' | 'succeeded' | 'failed';
+  writebackStatus?: 'not_requested' | 'writing' | 'uncertain' | 'applied' | 'failed';
   attachments: ChatAttachment[]; taskId: string | null; createdAt: string; errorCode: string; consumption: string; deliveryStatus: string;
   parentAttemptId: string | null; deliveryMode: 'foreground_reply' | 'source_completion' | 'replacement' | 'history_only';
   deliveryMessageId: string | null; expectedAttachmentId: string | null;
 };
-export type GenerationPage = { generations: GenerationView[]; nextCursor: string | null; usage: { day: string; accountAttempts: number; manualAttempts: number } };
+export type GenerationPage = { generations: GenerationView[]; nextCursor: string | null; usage: { day: string; accountAttempts: number; manualAttempts: number; cgAttempts?: number; roleAssetBytes?: number } };
 export type GenerationSelection = { generation: GenerationView; image: ChatAttachment };
+export type PromptTagRating = 'general' | 'mature' | 'explicit';
+export type PromptTagInput = { name: string; keywords: string[]; prompt: string; negative_prompt: string; rating: PromptTagRating; enabled: boolean };
+export type PromptTag = PromptTagInput & { id: string };
+export type PromptTagPage = { tags: PromptTag[]; revision: number; nextCursor: string | null };
+export type PromptTagPreview = { prompt: string; negative_prompt: string; matchedIds: string[]; revision: number };
+const tagsPath = (roleId: string) => `/api/roles/${encodeURIComponent(roleId)}/novelai/prompt-tags`;
 export const novelai = {
+  promptTags: (roleId: string, cursor?: string) => api<PromptTagPage>(`${tagsPath(roleId)}?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
+  savePromptTag: (roleId: string, tag: PromptTagInput, id?: string) => api<{ tag: PromptTag; revision: number }>(`${tagsPath(roleId)}${id ? `/${encodeURIComponent(id)}` : ''}`,
+    { method: id ? 'PUT' : 'POST', body: JSON.stringify(tag) }),
+  deletePromptTag: (roleId: string, id: string) => api<{ revision: number }>(`${tagsPath(roleId)}/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  previewPromptTags: (roleId: string, text: string, prompt: string, negative_prompt: string) => api<PromptTagPreview>(`${tagsPath(roleId)}/preview`,
+    { method: 'POST', body: JSON.stringify({ text, prompt, negative_prompt }) }),
   configuration: () => api<NovelaiConfiguration>('/api/services/novelai'),
   saveConfiguration: (configuration: Omit<NovelaiConfiguration, 'revision' | 'tokenConfigured' | 'credentialCleanupPending'>, expectedRevision: number) =>
     api<NovelaiConfiguration>('/api/services/novelai', { method: 'PUT', body: JSON.stringify({ ...configuration, expectedRevision }) }),

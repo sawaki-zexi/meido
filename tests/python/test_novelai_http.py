@@ -4,6 +4,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
+import httpx
 
 from novelai_fixtures import novelai_environment, novelai_service  # noqa: F401
 
@@ -44,19 +45,27 @@ def test_paid_http_uses_one_post_and_keeps_only_complete_bounded_response(tmp_pa
         thread.join()
 
 
-def test_original_deadline_ends_accepted_http_and_removes_partial_without_retry(novelai_service):
+def test_original_deadline_ends_accepted_http_and_removes_partial_without_retry(novelai_service, monkeypatch):
     from backend.app.novelai_generation.http import GenerationHttpError
     service = novelai_service
     service.peer.block = True
     destination = service.application.root / service.role.id / 'controlled-deadline.response'
     async def scenario():
-        started = time.monotonic()
-        with pytest.raises(GenerationHttpError, match='transport_unknown'):
-            await service.application.http.generate({'input': 'fixture'}, 'fixture-secret-171', destination,
-                deadline=started + .5)
-        assert time.monotonic() - started < 2
-        assert service.peer.accepted.is_set() and len(service.peer.requests) == 1
-        assert not destination.exists() and not destination.with_suffix('.partial').exists()
+        # Trust-store preparation can itself exceed 500ms on Windows. This
+        # case exercises a request accepted by the peer, with the real network
+        # transport ready before the measured request deadline begins.
+        transport = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
+        try:
+            monkeypatch.setattr(httpx, 'AsyncHTTPTransport', lambda **kwargs: transport)
+            started = time.monotonic()
+            with pytest.raises(GenerationHttpError, match='transport_unknown'):
+                await service.application.http.generate({'input': 'fixture'}, 'fixture-secret-171', destination,
+                    deadline=started + .5)
+            assert time.monotonic() - started < 2
+            assert service.peer.accepted.is_set() and len(service.peer.requests) == 1
+            assert not destination.exists() and not destination.with_suffix('.partial').exists()
+        finally:
+            await transport.aclose()
     try:
         asyncio.run(scenario())
     finally:

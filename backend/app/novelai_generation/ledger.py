@@ -40,6 +40,13 @@ class GenerationLedger:
                 CREATE INDEX IF NOT EXISTS novelai_history ON novelai_attempts(role_id,source_scope,created_at DESC,attempt_id DESC);
                 CREATE TABLE IF NOT EXISTS novelai_human_claims(role_id TEXT NOT NULL,source_scope TEXT NOT NULL,human_key TEXT NOT NULL,attempt_id TEXT NOT NULL,PRIMARY KEY(role_id,source_scope,human_key));
                 CREATE TABLE IF NOT EXISTS novelai_daily(day TEXT NOT NULL,role_id TEXT NOT NULL,attempts INTEGER NOT NULL,PRIMARY KEY(day,role_id));
+                CREATE TABLE IF NOT EXISTS novelai_cg_daily(day TEXT NOT NULL,role_id TEXT NOT NULL,attempts INTEGER NOT NULL,PRIMARY KEY(day,role_id));
+                CREATE TABLE IF NOT EXISTS novelai_asset_usage(role_id TEXT PRIMARY KEY,bytes INTEGER NOT NULL DEFAULT 0,
+                    reserved_bytes INTEGER NOT NULL DEFAULT 0,attempt_id TEXT);
+                CREATE TABLE IF NOT EXISTS novelai_asset_writes(attempt_id TEXT PRIMARY KEY,role_id TEXT NOT NULL,
+                    status TEXT NOT NULL,size INTEGER NOT NULL,digest TEXT NOT NULL,expected_url TEXT);
+                CREATE TABLE IF NOT EXISTS novelai_asset_cursor(singleton INTEGER PRIMARY KEY CHECK(singleton=1),after_attempt TEXT NOT NULL);
+                INSERT OR IGNORE INTO novelai_asset_cursor VALUES(1,'');
                 CREATE TABLE IF NOT EXISTS novelai_role_epochs(role_id TEXT PRIMARY KEY,revision INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS novelai_cancelled_requests(role_id TEXT NOT NULL,source_scope TEXT NOT NULL,request_key TEXT NOT NULL,PRIMARY KEY(role_id,source_scope,request_key));
                 CREATE TABLE IF NOT EXISTS novelai_recovery_cursor(singleton INTEGER PRIMARY KEY CHECK(singleton=1),after_created REAL,after_attempt TEXT NOT NULL);
@@ -48,7 +55,9 @@ class GenerationLedger:
                 CREATE VIEW IF NOT EXISTS novelai_generation_views AS SELECT a.*,o.state AS delivery_status FROM novelai_attempts a LEFT JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id;
             ''')
             for table, additions in (
-                    ('novelai_attempts', {'parent_attempt_id': 'TEXT'}),
+                    ('novelai_attempts', {'parent_attempt_id': 'TEXT', 'purpose': "TEXT NOT NULL DEFAULT 'manual'",
+                        'phase': "TEXT NOT NULL DEFAULT 'generation'", 'aux_dispatched': 'INTEGER NOT NULL DEFAULT 0',
+                        'aux_status': "TEXT NOT NULL DEFAULT 'not_dispatched'", 'scene_input': 'TEXT'}),
                     ('novelai_media_outbox', {'delivery_mode': "TEXT NOT NULL DEFAULT 'foreground_reply'",
                         'expected_attachment_id': 'TEXT', 'publication_ready': 'INTEGER NOT NULL DEFAULT 1',
                         'background_accepted': 'INTEGER NOT NULL DEFAULT 0',
@@ -64,8 +73,10 @@ class GenerationLedger:
             connection.execute('DROP VIEW IF EXISTS novelai_generation_views')
             connection.execute('CREATE INDEX IF NOT EXISTS novelai_media_message ON novelai_media_outbox(message_id)')
             connection.execute('''CREATE VIEW novelai_generation_views AS SELECT a.*,o.state AS delivery_status,
-                o.delivery_mode,o.message_id AS delivery_message_id,o.expected_attachment_id,o.background_accepted
-                FROM novelai_attempts a LEFT JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id''')
+                o.delivery_mode,o.message_id AS delivery_message_id,o.expected_attachment_id,o.background_accepted,
+                w.status AS writeback_status
+                FROM novelai_attempts a LEFT JOIN novelai_media_outbox o ON o.attempt_id=a.attempt_id
+                LEFT JOIN novelai_asset_writes w ON w.attempt_id=a.attempt_id''')
             # Recovery never launches a previous paid attempt, including prepared ones.
             for row in connection.execute("SELECT attempt_id,dispatched FROM novelai_attempts WHERE status IN ('prepared','dispatching')").fetchall():
                 self._finish(connection, row['attempt_id'], 'unknown' if row['dispatched'] else 'cancelled_before_dispatch')
@@ -84,7 +95,7 @@ class GenerationLedger:
     def prepare(self, *, role_id, source_scope, human_key, request_key, parameters, origin,
                 service_revision, role_revision, account_limit, role_limit, fingerprint=None,
                 generation_id=None, parent_attempt_id=None, delivery_mode='foreground_reply',
-                message_id=None, expected_attachment_id=None, publication_ready=True):
+                message_id=None, expected_attachment_id=None, publication_ready=True, scene_input=None):
         if delivery_mode not in {'foreground_reply', 'source_completion', 'replacement', 'history_only'}:
             raise ValueError('invalid generation delivery mode')
         fingerprint = fingerprint or hashlib.sha256(canonical(parameters).encode()).hexdigest()
@@ -101,10 +112,14 @@ class GenerationLedger:
                 raise ValueError('NovelAI account is busy')
             day = self._day(connection)
             used = {row['role_id']: row['attempts'] for row in connection.execute('SELECT role_id,attempts FROM novelai_daily WHERE day=? AND role_id IN (?,?)', (day, '*', role_id))}
-            if used.get('*', 0) >= account_limit or used.get(role_id, 0) >= role_limit:
+            cg_used = connection.execute('SELECT attempts FROM novelai_cg_daily WHERE day=? AND role_id=?', (day, role_id)).fetchone()
+            role_used = (cg_used[0] if cg_used else 0) if scene_input is not None else used.get(role_id, 0)
+            if used.get('*', 0) >= account_limit or role_used >= role_limit:
                 raise ValueError('daily generation attempt budget exhausted')
             rows = connection.execute('SELECT role_id,SUM(reserved_bytes+media_bytes) AS bytes FROM novelai_attempts GROUP BY role_id').fetchall()
-            if sum(row['bytes'] for row in rows) + RESERVATION_BYTES > GLOBAL_MEDIA_BYTES or sum(row['bytes'] for row in rows if row['role_id'] == role_id) + RESERVATION_BYTES > ROLE_MEDIA_BYTES:
+            assets = connection.execute('SELECT role_id,bytes+reserved_bytes AS bytes FROM novelai_asset_usage').fetchall()
+            if (sum(row['bytes'] for row in [*rows, *assets]) + RESERVATION_BYTES > GLOBAL_MEDIA_BYTES or
+                    sum(row['bytes'] for row in [*rows, *assets] if row['role_id'] == role_id) + RESERVATION_BYTES > ROLE_MEDIA_BYTES):
                 raise ValueError('generation media storage budget exhausted')
             attempt_id, now = uuid.uuid4().hex, time.time()
             if generation_id is None:
@@ -118,9 +133,14 @@ class GenerationLedger:
             connection.execute('''INSERT INTO novelai_attempts(attempt_id,generation_id,role_id,source_scope,human_key,request_key,fingerprint,parameters,origin,service_revision,role_revision,day,status,reserved_bytes,created_at,updated_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'prepared',?,?,?)''', (attempt_id, generation_id, role_id, source_scope, human_key, request_key, fingerprint, canonical(parameters), canonical(origin), service_revision, role_revision, day, RESERVATION_BYTES, now, now))
             connection.execute('UPDATE novelai_attempts SET parent_attempt_id=? WHERE attempt_id=?', (parent_attempt_id, attempt_id))
+            if scene_input is not None:
+                connection.execute("UPDATE novelai_attempts SET purpose='scene_cg',phase='auxiliary',scene_input=? WHERE attempt_id=?",
+                    (canonical(scene_input), attempt_id))
             connection.execute('INSERT INTO novelai_human_claims VALUES(?,?,?,?)', (role_id, source_scope, human_key, attempt_id))
-            for owner in ('*', role_id):
+            for owner in ('*',) if scene_input is not None else ('*', role_id):
                 connection.execute('INSERT INTO novelai_daily VALUES(?,?,1) ON CONFLICT(day,role_id) DO UPDATE SET attempts=attempts+1', (day, owner))
+            if scene_input is not None:
+                connection.execute('INSERT INTO novelai_cg_daily VALUES(?,?,1) ON CONFLICT(day,role_id) DO UPDATE SET attempts=attempts+1', (day, role_id))
             connection.execute('''INSERT INTO novelai_media_outbox(attempt_id,delivery_mode,message_id,expected_attachment_id,publication_ready)
                 VALUES(?,?,?,?,?)''', (attempt_id, delivery_mode, message_id, expected_attachment_id, int(publication_ready)))
             # This obligation precedes Runtime admission; losing task_id cannot
@@ -128,9 +148,11 @@ class GenerationLedger:
             connection.execute('UPDATE novelai_attempts SET runtime_ack_pending=1 WHERE attempt_id=?', (attempt_id,))
             return self._view(connection.execute('SELECT * FROM novelai_attempts WHERE attempt_id=?', (attempt_id,)).fetchone())
 
-    def mark_dispatching(self, attempt_id):
+    def mark_dispatching(self, attempt_id, *, before_dispatch=None):
         with self.connect() as connection:
             connection.execute('BEGIN IMMEDIATE')
+            if before_dispatch is not None:
+                before_dispatch(connection)
             if connection.execute("UPDATE novelai_attempts SET status='dispatching',dispatched=1,updated_at=? WHERE attempt_id=? AND status='prepared' AND dispatched=0", (time.time(), attempt_id)).rowcount != 1:
                 raise ValueError('generation dispatch is no longer admissible')
 
@@ -166,7 +188,7 @@ class GenerationLedger:
             connection.execute("UPDATE novelai_attempts SET attachments=?,reserved_bytes=0,media_bytes=?,updated_at=? WHERE attempt_id=? AND status IN ('unknown','failed_response','cancelled_before_dispatch','rejected')", (canonical(attachments), size, time.time(), attempt_id))
 
     def finish(self, attempt_id, status, *, error_code=''):
-        if status not in {'cancelled_before_dispatch', 'failed_response', 'unknown', 'local_pending', 'rejected'}:
+        if status not in {'cancelled_before_dispatch', 'failed_response', 'unknown', 'local_pending', 'rejected', 'completed_without_image'}:
             raise ValueError('invalid generation terminal status')
         with self.connect() as connection:
             connection.execute('BEGIN IMMEDIATE')
@@ -176,13 +198,17 @@ class GenerationLedger:
         row = connection.execute('SELECT * FROM novelai_attempts WHERE attempt_id=?', (attempt_id,)).fetchone()
         if row is None or row['status'] == 'succeeded':
             return
-        release = status in {'cancelled_before_dispatch', 'rejected'} and not row['dispatched'] and not row['budget_released']
+        release = status in {'cancelled_before_dispatch', 'rejected'} and not row['dispatched'] and not row['aux_dispatched'] and not row['budget_released']
         if release:
-            for owner in ('*', row['role_id']):
+            for owner in ('*',) if row['purpose'] == 'scene_cg' else ('*', row['role_id']):
                 connection.execute('UPDATE novelai_daily SET attempts=MAX(0,attempts-1) WHERE day=? AND role_id=?', (row['day'], owner))
+            if row['purpose'] == 'scene_cg':
+                connection.execute('UPDATE novelai_cg_daily SET attempts=MAX(0,attempts-1) WHERE day=? AND role_id=?', (row['day'], row['role_id']))
         # received/local_pending keep their full reservation until local recovery finishes.
         reserved = row['reserved_bytes'] if status in {'local_pending', 'unknown'} or row['spool_size'] else 0
-        connection.execute('UPDATE novelai_attempts SET status=?,budget_released=MAX(budget_released,?),reserved_bytes=?,error_code=?,updated_at=? WHERE attempt_id=?', (status, int(release), reserved, error_code, time.time(), attempt_id))
+        connection.execute('''UPDATE novelai_attempts SET status=?,budget_released=MAX(budget_released,?),reserved_bytes=?,error_code=?,
+            aux_status=CASE WHEN purpose='scene_cg' AND phase='auxiliary' THEN 'failed' ELSE aux_status END,
+            updated_at=? WHERE attempt_id=?''', (status, int(release), reserved, error_code, time.time(), attempt_id))
 
     def get(self, role_id, source_scope, generation_id, *, attempt_id=None):
         with self.connect() as connection:
@@ -255,16 +281,23 @@ class GenerationLedger:
         with self.connect() as connection:
             day = self._day(connection)
             used = {row['role_id']: row['attempts'] for row in connection.execute('SELECT * FROM novelai_daily WHERE day=? AND role_id IN (?,?)', (day, '*', role_id))}
+            cg = connection.execute('SELECT attempts FROM novelai_cg_daily WHERE day=? AND role_id=?', (day, role_id)).fetchone()
             sizes = connection.execute('SELECT role_id,SUM(media_bytes+reserved_bytes) AS total,SUM(reserved_bytes) AS reserved FROM novelai_attempts GROUP BY role_id').fetchall()
-        return {'day': day, 'accountAttempts': used.get('*', 0), 'manualAttempts': used.get(role_id, 0),
-            'roleMediaBytes': sum(row['total'] for row in sizes if row['role_id'] == role_id),
-            'globalMediaBytes': sum(row['total'] for row in sizes),
-            'reservedMediaBytes': sum(row['reserved'] for row in sizes if row['role_id'] == role_id)}
+            assets = connection.execute('SELECT role_id,bytes+reserved_bytes AS total,reserved_bytes AS reserved,bytes FROM novelai_asset_usage').fetchall()
+        return {'day': day, 'accountAttempts': used.get('*', 0), 'manualAttempts': used.get(role_id, 0), 'cgAttempts': cg[0] if cg else 0,
+            'roleAssetBytes': sum(row['bytes'] for row in assets if row['role_id'] == role_id),
+            'roleMediaBytes': sum(row['total'] for row in [*sizes, *assets] if row['role_id'] == role_id),
+            'globalMediaBytes': sum(row['total'] for row in [*sizes, *assets]),
+            'reservedMediaBytes': sum(row['reserved'] for row in [*sizes, *assets] if row['role_id'] == role_id)}
 
     @staticmethod
     def _view(row):
+        parameters = json.loads(row['parameters'])
         return {'generationId': row['generation_id'], 'attemptId': row['attempt_id'], 'roleId': row['role_id'],
-                'status': row['status'], 'parameters': json.loads(row['parameters']),
+                'status': row['status'], 'parameters': parameters if 'width' in parameters else None,
+                'purpose': row['purpose'], 'phase': row['phase'], 'auxiliaryConsumption': 'possible' if row['aux_dispatched'] else 'not_dispatched',
+                'auxiliaryStatus': row['aux_status'],
+                'writebackStatus': row['writeback_status'] if 'writeback_status' in row.keys() and row['writeback_status'] else 'not_requested',
                 'attachments': json.loads(row['attachments']), 'taskId': row['task_id'],
                 'createdAt': datetime.fromtimestamp(row['created_at'], timezone.utc).isoformat(),
                 'errorCode': row['error_code'], 'consumption': 'possible' if row['dispatched'] else 'not_dispatched',

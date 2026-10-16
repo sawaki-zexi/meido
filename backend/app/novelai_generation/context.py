@@ -22,6 +22,10 @@ class GenerationContext:
     reply_to_message_id: str | None = None
     message_thread_id: int | None = None
     mention_ids: tuple[str, ...] = ()
+    scene_revision: int | None = None
+    scene_model_id: str | None = None
+    scene_model_epoch: int = 0
+    scene_tag_revision: int = 0
 
     @property
     def source_scope(self):
@@ -35,6 +39,9 @@ class GenerationContext:
         if self.reply_to_message_id is not None or self.message_thread_id is not None or self.mention_ids:
             value['deliveryContext'] = {'replyToMessageId': self.reply_to_message_id,
                 'messageThreadId': self.message_thread_id, 'mentionIds': list(self.mention_ids)}
+        if self.scene_revision is not None:
+            value['scene'] = {'revision': self.scene_revision, 'modelId': self.scene_model_id,
+                              'modelEpoch': self.scene_model_epoch, 'tagRevision': self.scene_tag_revision}
         return value
 
     @classmethod
@@ -49,7 +56,9 @@ class GenerationContext:
         return cls(origin, value['humanKey'], value['requestKey'], frozenset(value['attachmentIds']), source,
                    tuple(value['channelRevision']) if value.get('channelRevision') is not None else None,
                    value.get('uiAction', False), delivery.get('replyToMessageId'),
-                   delivery.get('messageThreadId'), tuple(delivery.get('mentionIds', ())))
+                   delivery.get('messageThreadId'), tuple(delivery.get('mentionIds', ())),
+                   value.get('scene', {}).get('revision'), value.get('scene', {}).get('modelId'),
+                   value.get('scene', {}).get('modelEpoch', 0), value.get('scene', {}).get('tagRevision', 0))
 
     def denial(self, channels):
         if self.channel_source is not None:
@@ -62,12 +71,12 @@ class GenerationContext:
 
 
 def capture_tool_context(sessions, channels, context: ToolContext, *, role_id: str, is_owner: bool,
-                         source_thread_id=None, source_account_id=None) -> GenerationContext:
+                         source_thread_id=None, source_account_id=None, _completed=False) -> GenerationContext:
     context.signal.raise_if_cancelled()
     run, user = sessions.get_run(context.run_id), sessions.user_message_for_run(context.run_id)
     if (not is_owner or context.role_id != role_id or not context.tool_call_id
             or run is None or run.roleId != role_id or run.sessionKey != context.session_key
-            or run.status not in {'created', 'running'} or user is None
+            or run.status not in ({'completed'} if _completed else {'created', 'running'}) or user is None
             or user.sessionKey != context.session_key or user.messageType != 'text' or user.status != 'completed'
             or user.metadata.get('internalEvent')):
         raise PermissionError('generation requires the actual current owner input')

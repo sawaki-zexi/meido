@@ -5,6 +5,7 @@ import re
 import sqlite3
 import threading
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
@@ -12,6 +13,10 @@ from ..credentials import CredentialStore
 
 MODELS = ('nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full')
 SAMPLERS = ('k_euler_ancestral', 'k_euler')
+
+
+def _default_tag_ratings() -> list[Literal['general', 'mature', 'explicit']]:
+    return ['general']
 
 
 class NovelaiRoleConfig(BaseModel):
@@ -22,6 +27,8 @@ class NovelaiRoleConfig(BaseModel):
     sceneCgDailyAttempts: StrictInt = Field(default=3, ge=1, le=100)
     scenePromptModelConfigurationId: str | None = None
     autoWritebackRoleAssets: StrictBool = False
+    promptTagsEnabled: StrictBool = False
+    allowedPromptTagRatings: list[Literal['general', 'mature', 'explicit']] = Field(default_factory=_default_tag_ratings, min_length=1, max_length=3)
     consentRevision: StrictInt = Field(default=0, ge=0)
 
 

@@ -118,7 +118,7 @@ token只用于固定官方origin的Bearer；禁用重定向，不使用整env或
 
 在同attempt预备阶段用显式scenePromptModelConfigurationId调用一次辅助模型，max_tokens=600、30秒内并受300秒总deadline；使用rich adapter、tools=()、取消穿透，严格解析有界JSON：transition、scene_key、visual_key、visual_description、prompt、negative_prompt、size_preset。字段分别限制枚举/80/80/1200/4000/4000字符和尺寸枚举，拒绝工具调用及额外字段。
 
-输入仅当前来源本次user消息、已完成assistant回复、当前角色描述，以及该来源最小前态scene/visual keys、视觉描述、主人回合计数与scene revision；不读其他线程/屏幕。这些是非可信场景数据，不能提供身份、endpoint或授权。辅助请求固定读取该revision，返回后以revision与最新humanRun做CAS；不匹配即过期，不提交或启动生成。宿主验证后提交带真实role/source/humanRun的不可变scene observation，再由CG策略消费；辅助模型输出不直接启动外部工具。该事件当前尚无实现，需要本票新增，不能写成已存在。
+输入仅当前来源本次user消息、已完成assistant回复、当前角色描述，以及该来源最小前态scene/visual keys、视觉描述、主人回合计数与scene revision；不读其他线程/屏幕。这些是非可信场景数据，不能提供身份、endpoint或授权。辅助请求固定读取该revision，返回后以revision与最新humanRun做CAS；不匹配即过期，不提交或启动生成。宿主验证后提交带真实role/source/humanRun的不可变scene observation，再由CG策略消费；辅助模型输出不直接启动外部工具。#173 当前本地作者实现已加入该宿主路径，实际边界见[Reference](../reference/novelai-generation.md)，受控结果及独立审查状态见[验收手册](../handbook/novelai-generation-acceptance.md)；不代表真实模型或费用验收。
 
 scene_state只存当前scene/visual key、主人回合计数、最近占用的visual/回合、pending attempt及最后已提交humanRun。宿主在短事务中比较旧state、验证transition并提交新state和事件ID；同humanRun最多提交一次，closed清当前场景，none不制造场景，same须对应当前scene，started/changed才建立新scene。所有JSON字段必填且additionalProperties=false；需要生图的观察必须有非空keys和prompt，role/source/human标志只在宿主事件封套中出现。这里选择一次调用同时观察场景和产英文tags，不再追加第二次“转tags”模型请求。
 
