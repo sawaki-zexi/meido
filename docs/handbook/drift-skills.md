@@ -1,6 +1,6 @@
 # 创建并执行角色长期 Drift 技能
 
-状态：当前 / #179 已审源3d56102本地整合为总分支3eed571的操作流程；本地组合及集成两轴复核通过，新HEAD完整CI待核验，尚未合并，不表示真实账号或付费模型验收完成。
+状态：当前 / #179 已审源3d56102本地整合为总分支3eed571的操作流程；本地组合及集成两轴复核通过，后续准确312b7f1两套完整CI已通过；#180与新main源码集成0acfb4f的本地115项交叉/完整前端252项及构建通过，新准确HEAD两套CI另行核验，尚未合并，不表示真实账号或付费模型验收完成。
 
 事实来源：[作者正文](../../backend/app/builtin_skills/create-drift-skill/SKILL.md)、[配置](../../backend/app/proactive_runtime/config.py)、[产物与信任](../../backend/app/proactive_runtime/drift_skills.py)、[执行](../../backend/app/proactive_runtime/drift.py)、[设置界面](../../web/src/features/role-management/DriftSettings.tsx)、[真实作者闭环测试](../../tests/python/test_proactive_drift_authoring_api.py)。最后核验：2026-10-16。
 

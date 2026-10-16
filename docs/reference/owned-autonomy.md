@@ -1,12 +1,12 @@
 # 主动决策与来源验证契约
 
-状态：当前 / #177 已进入已验证aggregate；#178作者流程本地实施，独立复核及总分支验收另行记录。
+状态：当前 / #177–#179已进入准确312并通过两套完整CI；#180外部目标整合为源码头0acfb4f，源/修复/总集成两轴无遗留，本地115项交叉、完整前端252项及构建通过。新准确HEAD两套CI另行核验，仍未合入main。
 
-事实来源：`backend/app/proactive_runtime/`、`backend/app/mcp_autonomy.py`、`tests/python/test_proactive_*.py`；架构见 [ADR-0018](../adr/0018-explicit-autonomy-and-drift-grants.md) 与[规格](../specs/proactive-drift-spec.md)。最后核验：2026-10-16。
+事实来源：`backend/app/proactive_runtime/`、`backend/app/mcp_autonomy.py`、`tests/python/test_proactive_*.py`；架构见 [ADR-0018](../adr/0018-explicit-autonomy-and-drift-grants.md) 与[规格](../specs/proactive-drift-spec.md)。最后核验：2026-10-17。
 
 ## 配置与实际身份
 
-`GET/PUT /api/roles/{roleId}/autonomy` 管理当前角色的独立配置，PUT 必须给 `expectedRevision`。默认主动决策和 Drift 均关闭，没有继承全局模型、历史主人身份或普通聊天工具许可。开启主动决策必须指定已保存的 `decisionModelConfigurationId` 与 `consentRevision>=1`。当前仅实现桌面主动决策；#178补充来源作者流程，Drift和外部目标依赖后续票。
+`GET/PUT /api/roles/{roleId}/autonomy` 管理当前角色的独立配置，PUT 必须给 `expectedRevision`。默认主动决策和 Drift 均关闭，没有继承全局模型、历史主人身份或普通聊天工具许可。开启主动决策必须指定已保存的 `decisionModelConfigurationId` 与 `consentRevision>=1`。A01和Drift均已实现，默认目标仍为角色桌面；#180支持从真实目录显式选择本角色已绑定主人私聊及至多四个许可目标。模型只见原run冻结的最小目标投影，完整二元组只能选原许可；配置、投递与真实验收边界见[目标手册](../handbook/autonomy-channel-targets.md)。
 
 `sourceGrants` 最多8项，冻结 sourceId、revision、channel、serverId、MCP配置及grant修订、get/poll/ACK工具名和完整定义hash、eventDomain、ACK契约、可选proof引用。来源变更、删除重建生成新版本；只填写新的 `ackProofId` 不改变来源版本，但改变角色许可代际。保存配置只写本地，不能连接来源或测试发送。
 

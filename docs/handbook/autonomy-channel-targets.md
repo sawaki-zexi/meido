@@ -1,8 +1,8 @@
 # 配置自主发送目标与核对投递
 
-状态：#180 本地实现与定向合成验证完成，首次双路审查发现的模型目标可见性问题已修复，修复差异复核和总集成 CI 待完成。目标选择、两种模式的原投递恢复、界面和任务收尾证据见[验收记录](../research/autonomy-channel-targets-acceptance-2026-10-16.md)。真实账号、来源服务操作与模型费用尚未获本次验收授权。
+状态：#180本地实现、定向合成验证及总集成交叉验证完成。源首稿、修复差异和源码集成`0acfb4f`的规范/规格两轴均无剩余发现；本地后端115项、完整前端252项及构建通过，新准确HEAD两套CI另行核验。证据见[验收记录](../research/autonomy-channel-targets-acceptance-2026-10-16.md)。真实账号、来源服务操作与模型费用尚未获本次验收授权。
 
-事实来源：[已批准规格](../specs/proactive-drift-spec.md)、[目标与回执实现](../../backend/app/proactive_runtime/targets.py)、[自主设置](../../web/src/features/role-management/AutonomySettings.tsx)、[目标选择界面](../../web/src/features/role-management/AutonomyTargets.tsx)、[投递对账界面](../../web/src/features/role-management/AutonomyReconciliation.tsx)、[身份变更行为测试](../../tests/python/test_proactive_target_identity_api.py)。最后核验：2026-10-17，实施基点 `312b7f1`；本文步骤须随 #180 最终源码和验收记录核对，不能据此声称真实平台收件通过。
+事实来源：[已批准规格](../specs/proactive-drift-spec.md)、[目标与回执实现](../../backend/app/proactive_runtime/targets.py)、[自主设置](../../web/src/features/role-management/AutonomySettings.tsx)、[目标选择界面](../../web/src/features/role-management/AutonomyTargets.tsx)、[投递对账界面](../../web/src/features/role-management/AutonomyReconciliation.tsx)、[身份变更行为测试](../../tests/python/test_proactive_target_identity_api.py)、[模型选择闭环](../../tests/python/test_proactive_target_model_view.py)。最后核验：2026-10-17；实施基点`312b7f1`，固定已审源`7ac5996`，已验证源码集成`0acfb4f`。本文不表示真实平台收件验收完成。
 
 ## 准备角色与渠道
 

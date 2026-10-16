@@ -1,6 +1,6 @@
 # Drift 技能作者与执行验收记录
 
-状态：当前 / #179 的本地合成验收记录；固定源3d56102已完成完整两轴及四项修正复核，并本地整合为总分支3eed571，本地组合与集成两轴复核通过，新HEAD完整CI待核验，未合并。
+状态：当前 / #179 的本地合成验收记录；固定源3d56102已完成完整两轴及四项修正复核，并本地整合为总分支3eed571，本地组合与集成两轴复核通过，后续准确312b7f1两套完整CI已通过；#180与新main源码集成0acfb4f的本地115项交叉/完整前端252项及构建通过，新准确HEAD两套CI另行核验，未合并。
 
 事实来源：[具体规格](../specs/proactive-drift-spec.md)、[ADR-0018](../adr/0018-explicit-autonomy-and-drift-grants.md)、[操作手册](../handbook/drift-skills.md)、[作者闭环](../../tests/python/test_proactive_drift_authoring_api.py)、[MCP](../../tests/python/test_proactive_drift_mcp.py)、[投递](../../tests/python/test_proactive_drift_delivery.py)、[恢复](../../tests/python/test_proactive_drift_recovery.py)。最后核验：2026-10-16；准确基点 `fa122c3d5986515028144c1a6285e36425e7b9cf`，开工时该基点两套完整 CI 均通过。
 

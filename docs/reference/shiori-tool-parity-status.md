@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-16（Asia/Shanghai）。源码基线已同步 `main@5acbf0c21b7e25a2ae24cf59d570c2bf7c6e5e05`（图标与落地页背景音乐）；最新两套完整CI均通过的集成为 `cd7368291b9a2de50f0c53347aee8f019762c2a7`，含 #173、来源验证journal修正和 #176。该准确头的 [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38907111439) 与 [push CI](https://github.com/sawaki-zexi/meido/actions/runs/38907104881) 各后端2380 passed/36 skipped/2 warnings（410.00秒、456.76秒），各前端221项/39文件及TypeScript/Vite通过。此前929974f的来源验证单失败及受控竞态、同字节最终测试RED→GREEN保留在[来源作者验收](../research/proactive-source-authoring-acceptance-2026-10-16.md)，历史CI唯一首因仍未证明。#179固定源3d56102完成完整两轴及四项P2修正复核，已本地整合为3eed571；集成两轴无遗留，准确后端组合58项、前端229项、构建和28源窄类型通过，新HEAD完整CI另行核验。旧失败历史和原生限制保留，跳过项不计原生验收。
+最后核验：2026-10-17（Asia/Shanghai）。本轮源码集成 `0acfb4f842e2df173fd635f8bd76d502a8948137` 已同步 `main@82739afe4e0dcfe2ee58ca472c69dee1721f68a3`（聊天滚动、落地页、角色编辑与本机启动备份），并整合 #180 已审源 `7ac5996`。源完整/修复、总集成规范与规格两轴均无剩余发现；准确本地交叉115 passed/1 conftest warning、完整前端252 passed/44文件及TypeScript/Vite108模块通过。632份后端交叉输入稳定；前端原136份输入与含8份public素材的144份构建补验分别稳定，见[目标验收](../research/autonomy-channel-targets-acceptance-2026-10-16.md)。本文更新时最新已核验双CI头仍为 `312b7f1f5e1ede4ca6433bbcfcd0411dc8c660a4`：[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38912977578)与[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38912972442)各后端2428 passed/36 skipped/2 warnings、前端229 passed/41文件及构建，含#179。本次新头CI以总PR后续检查为准，不沿用旧绿色。原受控竞态、历史CI未知首因和原生限制保留，skip不计原生成功。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -39,15 +39,15 @@
 | P06 生图 1 工具 | #171/#172已两轴复核并通过准确13c两套完整CI，含当前主人txt2img/img2img、唯一原来源、历史、指定图片CAS重生成和受管后台。#173源`0d1b918`完成人类回合CG、受限标签与卡片写回；首次资产落库丢责任P2真实RED后修正，源和集成两轴均无遗留；`929974f`本地交叉321项、前端215项及构建通过，后续`e71145a`两套完整CI均通过，见[手册](../handbook/novelai-generation-acceptance.md) | 后续功能集成回归；真实NovelAI账号生成和费用另批 |
 | P07 QQ 附件 1 工具 | #164 已进入集成分支；多字节长行自动字符分页、当前/引用真实入站与存储/Runtime 往返、旧附件/跨群拒绝均经过两轴独立审查 | 平台实机验收另列；传输夹具不是 QQ 真人收件证据 |
 | S01 weather | #152 已进入集成分支；真实 curl、wttr.in、Open-Meteo 和公开 HTTP 工具往返 | 最终配置集成；Shell 仍须主人显式授权 |
-| S02 summarize | #152 已进入集成分支；真实 summarize 0.25.2、Node 24、URL 提取及本地模型夹具摘要回传 | 两个公开视频仅得到 `transcriptSource: unavailable` 和网页模板，未取得真实字幕；不能以 exit 0 宣称视频摘要成功 |
+| S02 summarize | #152 已进入集成分支；真实 summarize 0.25.2、Node 24、URL 提取及本地模型夹具摘要回传 | 两个公开视频仅得 `transcriptSource: unavailable`/网页模板；后续隔离CLI补验启动被自动审批以 `blocked by policy` 拒绝、未给具体原因，实际执行0次，停止且未绕过。未取得真实字幕，不能以exit0称视频摘要成功 |
 | S03 feed-manage | #168 已完成两轴独立复核并进入集成分支；内置 Skill、动态服务目录/授权和真实公开 HTTP 七动作通过；独立复跑 8 HTTP + 2 原生用例，集成含 2 原生交叉 94 passed，含 RSS/Atom、下一模型请求、fresh list、重启、503 旧缓存与撤权；详见[验收](../research/feed-skill-native-acceptance-2026-10-16.md) | 总 PR 最终验收；主动来源/ACK/通知和 Drift 仍不属于此项完成范围 |
 | S04 meme-manage | #152 已进入集成分支；指令、资源与角色目录边界已有行为测试。准确e71145a另完成本地主人上传→真实表情目录复制/视觉请求→桌面媒体→存储重建后从历史找ID再发送，1 passed/9.52秒，见[媒体链验收](../research/meme-skill-media-acceptance-2026-10-16.md) | 总PR后续集成回归；任意新路径不自动登记媒体ID，Drift文本循环不继承此视觉/复制能力 |
 | S05 skill-creater | #152 已进入集成分支；HTTP 写入新 Skill 后下一轮发现/显式激活，资源 hash、依赖名、真实 Windows junction 反例通过 | 总 PR 最终回归 |
-| S06 create-drift-skill | #179固定源`3d56102`完成完整两轴及四项P2修正复核，并本地整合`3eed571`；真实普通聊天作者、同hash后续消费、MCP/受限Shell、配额/单次投递/finish/恢复有本地证据，见[手册](../handbook/drift-skills.md)及[验收](../research/drift-skills-acceptance-2026-10-16.md)。源Windows130项/1条件skip、Linux核心8项；独立修正复核13项及2项通过；集成两轴无遗留、准确交叉58项及前端229项通过 | 新HEAD完整CI及最终组合验收；真实账号/模型/平台事务另验 |
+| S06 create-drift-skill | #179固定源`3d56102`完整两轴及四项修正复核、准确312双CI均通过；真实聊天作者、同hash消费、MCP/受限Shell、单次投递/finish/恢复证据见[手册](../handbook/drift-skills.md)及[验收](../research/drift-skills-acceptance-2026-10-16.md)。#180在源码集成`0acfb4f`扩展外部目标，源/修正/集成两轴无遗留，本地115项交叉及完整前端252项通过 | 新准确HEAD两套CI及最终组合验收；真实账号/模型/平台事务另验 |
 | S07 codex-delegate | #175固定源`0e2da975`已两轴复核并合入；显式Skill、准确依赖、多仓库、真实受管UTF-8/JSONL/SQLite/Git、后台/exact继续取消与原来源ACK有本地合成证据，不新增普通工具；见[手册](../handbook/codex-delegate-acceptance.md) | 准确13c总集成两轴与两套CI已通过；真实CLI账号、首次/resume模型与原生权限另验 |
 | S08 create-proactive-source | #178固定最终源`0eb8ea4`完成完整两轴及P3提示/P2事件身份兼容修正复核；真实对话与FileTools创建六份产物，owner只读hash预览、原MCP trust/具体grant和v2受管验证后，同产物由真实clock/A01消费，桌面receipt与持久ACK在App/stdio重建后保持；context-only合法，v1不追认collection证明。ACK夹具时序修正已两轴复核，准确fa两套完整CI通过；见[手册](../handbook/proactive-source-authoring.md) | 总PR最终跨模块验收；真实账号与服务事务另批 |
-| A01 主动决策 | #177固定源`3b21afe`及后续源/集成修正均两轴无遗留；含真实自主身份/许可、来源、草稿/finish、canonical桌面投递/ACK/Runtime恢复。S08与来源验证journal修正已通过`cd73682`两套完整CI；详见[手册](../handbook/proactive-decision-acceptance.md)。#180外部目标闭环仍待实施 | 总PR最终跨模块验收；未验收真实账号或模型消费 |
-| A02 Drift | #179固定源`3d56102`完成完整两轴及四项修正复核并本地整合`3eed571`，集成两轴及准确交叉58项通过；复用原tick/600秒预算、独立关闭开关/模型/工具/目标许可、长期技能进度及回执恢复。`#180`仍是外部主人目标/来源ACK闭环，待本次新HEAD完整CI后开始 | #179新HEAD完整CI；随后完成#180原外部来源闭环 |
+| A01 主动决策 | #177/#178桌面链与#179已通过准确312双CI。#180已审源`7ac5996`整合为`0acfb4f`：已配对主人私聊选择、原冻结目标模型投影、一次原账号投递、原attempt/线程投影、迟到receipt及无正文inputs恢复原ACK；原模型目标不可见P2已修复，两轴无遗留。当前本地115项交叉及完整前端252项通过，见[目标验收](../research/autonomy-channel-targets-acceptance-2026-10-16.md) | 新准确HEAD两套CI及总PR最终验收；真实账号/来源事务/模型与真人收件另批 |
+| A02 Drift | #179已通过准确312双CI；#180已审源`7ac5996`在源码集成`0acfb4f`扩展原许可外部目标、媒体冻结字节、唯一发送与真实finish、未知对账/原回执恢复；模型从原run目标投影选择非默认pair。原600秒/预算、进度、ACK和owned清理边界保留；源/修正/集成两轴无遗留，当前本地交叉/完整前端与构建通过 | 新准确HEAD两套CI及最终验收；真实账号/来源ACK/模型/平台收件与费用另批 |
 
 渠道补充切片 #166 完整群资料、#167 桌面文本/媒体与 #170 分类目录/连接事实均已完成两轴复核并进入集成分支。C06 的真实平台收件验收仍未完成。
 

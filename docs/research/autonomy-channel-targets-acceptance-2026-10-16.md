@@ -1,6 +1,6 @@
 # 自主渠道目标与原回执恢复验收
 
-状态：#180 本地实现与定向合成验证完成。首次双路审查发现的一项 P2 已修复，一项 P3 去重建议已收敛；固定修复差异复核和总集成 CI 待完成。各批次的准确范围与原失败列在下文；没有把跨快照结果合称一次全量通过。真实账号、服务操作与模型费用验收未获本次授权。
+状态：#180本地实现及定向合成验证完成；首次P2模型目标不可见与P3去重建议已修正，固定源/修复和源码总集成两轴均无剩余发现。已审源`7ac5996`整合为`0acfb4f`，准确本地交叉115项、完整前端252项及构建通过；新准确HEAD两套CI另行核验。各批次准确范围和原失败保留，不合称一次全量。真实账号、服务操作与模型费用验收未获本次授权。
 
 事实来源：[已批准规格](../specs/proactive-drift-spec.md)、[目标授权](../../backend/app/proactive_runtime/targets.py)、[原渠道投递恢复](../../backend/app/proactive_runtime/channel_delivery.py)、[最小处置输入](../../backend/app/proactive_runtime/dispositions.py)、[有界保留](../../backend/app/proactive_runtime/retention.py)、[配置与验收手册](../handbook/autonomy-channel-targets.md)。最后核验：2026-10-17；实施基点 `312b7f1f5e1ede4ca6433bbcfcd0411dc8c660a4`，最终实现以本文所在提交的源码及固定源审查记录为准。
 
@@ -39,7 +39,7 @@ ChannelHost 在真实宿主启动、后台任务准入前绑定原服务事件�
 
 ## 前端、类型与组合
 
-当前前端完整验证为 **243 passed / 43 文件**，`tsc --noEmit` 与 Vite 构建通过（107 模块）。134 个输入包含原 133 项及实际构建入口 web/index.html，命令前后与当前输入一致。旧 242 项结果属于前一快照；后来修改的两份投递对账组件和测试已经包含在本轮 243 项内。projectionPending 的文案仅说明原意图尚有本地恢复责任，不宣称原 receipt 已存在。
+固定源分支前端完整验证为 **243 passed / 43 文件**，`tsc --noEmit` 与 Vite 构建通过（107 模块）。134 个输入包含原 133 项及实际构建入口 web/index.html，命令前后与当前输入一致。旧 242 项结果属于前一快照；后来修改的两份投递对账组件和测试已经包含在本轮 243 项内。projectionPending 的文案仅说明原意图尚有本地恢复责任，不宣称原 receipt 已存在。
 
 静态类型按相同 flags 与准确基点比较完整诊断、包围函数和重数：六份渠道源 49→49，十四份业务源（基点十一份旧源加三份新模块）90→90，新增诊断为 0；Host 与新 runtime_owner 两份源检查通过。旧 no-redef 诊断中嵌入的行号随启动绑定增加一行，按其精确原赋值 AST 对应，原始消息完整保留。旧错误位于既有 adapter、main 和 multichannel 代码；**不是全量类型检查通过**。最初两条新增注解错误及最终包装器返回 Awaitable 引起的一条 create_task 诊断均已修复，原日志保留。最后仅新增 typing.Coroutine import 并收窄包装器返回注解为 Coroutine，精确反向重建的原字节等于 15 项通过时的 Host SHA，运行体没有变化；不把旧测试输入称为当前相同字节。
 
@@ -57,7 +57,19 @@ ChannelHost 在真实宿主启动、后台任务准入前绑定原服务事件�
 
 A01/Drift 原 caller-owned 事务中共用同一 TTL-or-unknown 查询和 24 小时双 key 写入 helper，查询、写入和提交位置、role/intent/expiry 不变，没有增加宿主或新机会。最终 `fix-target-view-dedup-regression` **21 passed / 1 conftest warning / 111.49 秒**，482 输入 before/after 一致、无排除、全部 owner join 和外层守卫完成；包含上述两项、旧格式抑制、外部与桌面投递、未知对账、完整二元组拒绝、Drift 单次发送、原预算与事务回滚。与首个两项 GREEN 有重叠，不相加。首次 GREEN 后将目标合入原 user 消息的第二 text block，只有最后 21 项证明当前布局。
 
-修复后十四份业务源类型仍为准确 312 的 90→90，新增 0；六份渠道及 Host/runtime_owner 的源字节未变，继承原 49→49 与两源通过。前端全部 134 项输入未变，继承 243 项和构建，不重跑未改的界面。原首稿交接、审查报告、请求观测、失败日志和数据库均保留；不以此次修复代替原 gate。
+修复后十四份业务源类型仍为准确 312 的 90→90，新增 0；六份渠道及 Host/runtime_owner 的源字节未变，继承原 49→49 与两源通过。源修复前后前端全部 134 项输入未变，因此源分支继承 243 项和构建；这不代表随后同步新主线的总分支前端结果。原首稿交接、审查报告、请求观测、失败日志和数据库均保留；不以此次修复代替原 gate。
+
+## 2026-10-17 总 PR 集成
+
+先同步主线`82739afe`（#190/#186/#189/#155），再顺序整合已审源首稿和修复，形成准确源码头`0acfb4f842e2df173fd635f8bd76d502a8948137`。该头51个源blob与`7ac5996`一致，实际主线19路径与源51路径之外724个原路径保持。唯一ChatView冲突保留生图/替图/Coding并接入主线滚动；主线两条角色失败断言按准确错误文字定位可见alert，保留原业务断言。同步阶段初次82 passed/1 failed、独立反例及调试原件保留；修正后83项与构建通过，不与最终全前端相加。完整集成Standards和Spec独立静态复核均0发现，随后只作本文等状态文档更新。
+
+当前源码头的后端交叉 **115 passed / 1 conftest rewrite warning / 256.89秒**，XML115个唯一节点、0 failure/error/skip。覆盖文件/Skill/发现/MCP、真实作者消费、Drift投递和恢复、Coding发布接缝、CG资产与可选候选故障、目标模型正向闭环、原持久transport、>24h原ACK、异物理数据库、旧键占用、事件循环桥和主线临时启动/备份CLI36项。632份backend/tests/frontend/public/scripts及实际入口输入before/after/当前全等，内外localhost guard持续至独立memory/channel关闭、原任务和全部新增Python线程自然结束。原根`D:/m180i-zwhl9_yx`与绝对basetemp`D:/m180i-pytest-a71cc154bbac`保留，无真实账号或凭据操作。
+
+完整前端 **252 passed / 44文件 / 43.32秒**，TypeScript及Vite108模块通过。原136份src/配置/入口输入前后与当前相同。执行前的脚本审查另指出Vite实际复制的8份`web/public`素材未纳入该原快照；原runner/manifest/log保持，另对全部144份输入作构建补验，8素材逐blob匹配准确HEAD，原136份仍同字节，新构建通过且144份前后不变。没有将补验伪称原Vitest已快照144份，也未无故重跑完整Vitest。
+
+Python类型证据独立只读核对21份显式输入及全部218份backend Python：Git对象与已审源全等、字节差异仅CRLF，原90→90业务、49→49媒体完整诊断多重集及Host/helper零错误日志仍适用。未重跑mypy，不称全仓类型全绿；新主线备份脚本只作AST语法解析和前述临时行为测试。
+
+原工件位于实施环境`D:/meido-artifacts`：`proactive180-aggregate-cross-0acfb4f.{log,xml,manifest.json}`、`proactive180-aggregate-web-0acfb4f.*`、`proactive180-aggregate-asset-build-0acfb4f.*`、独立类型继承报告及两轴报告。root独立验证记录`proactive180-aggregate-validation-verification.json`的SHA256为`b065796a6453591cd5233339d155dc728bcf9086250d9962ec369d3e9e7d22ef`，保存原日志/清单SHA、115个XML节点、所有输入与owner收尾事实。源码证据属于准确0ac，后续仅文档提交不改被测632份输入。本文更新时最新已核验完整双CI仍属312（后端2428/36skip、前端229），新提交CI以总PR实际检查为准；不以本地115项或旧312结果代替新完整CI。
 
 ## 真实验收 gate
 
