@@ -34,7 +34,9 @@ Herdr 源码、owned 补丁、已验收二进制、ConPTY 及 notices 锁在[man
 
 结果目录位于本 attempt 私有 handoff 内；固定模板以 `--add-dir` 额外授予该精确目录，使受限CLI能写 result，而不批准整个task根。该参数语义分别见 [Codex官方参考](https://learn.chatgpt.com/docs/cli/reference) 和 [Claude官方参考](https://code.claude.com/docs/en/cli-reference)。Claude仍使用dontAsk；显式settings仅为worktree与当前handoff两处生成Edit绝对路径allow规则（Windows盘符按官方规范化并转义模式字符），同时拒绝Bash/PowerShell/WebFetch/MCP。`--tools`只声明工具表面，不能替代编辑许可；[官方权限规则](https://code.claude.com/docs/en/permissions)说明dontAsk及Edit对编辑工具的作用。以上是实现模板，真实CLI是否正确执行这些权限仍由获准原生核验决定。
 
-cleanup 失败仍持有强引用和可重试 owner，冻结后续准入；runtime 终态与本地资源完成分别处理。私有 named Job 日志允许重启后仅观察原资源是否消失，不猜 PID、不接管其他进程。结果副本和 ACK dirty 同事务持久，ACK丢失/prune只重试本地确认；不重跑执行。恢复扫描可轮转，不由旧 unknown 墓碑挡住后续记录。
+cleanup 失败仍持有强引用和可重试 owner，冻结后续准入；runtime 终态与本地资源完成分别处理。所有未确认资源的attempt继续占全局/角色/仓库槽，业务已终态但资源未退出也冻结该profile。私有 named Job 日志允许重启后仅观察原资源是否消失，不猜 PID、不接管其他进程。查询失败保留责任并继续后续轮询；关闭也须确认资源，否则保留数据库供重试。结果副本和 ACK dirty 同事务持久，ACK丢失/prune只重试本地确认；不重跑执行。恢复扫描可轮转，不由旧 unknown 墓碑挡住后续记录。
+
+nativeBuild和授权代际与首次admit同事务持久。准入/launch交接与同宿主取消/恢复串行；如果恢复确认没有Runtime交付、内存owner或资源日志，旧部分记录收尾为interrupted，主人或原来源取消可收尾为cancelled。该收尾封住迟到launch和实际执行，不重放未提交尝试；已交付Runtime只观察原submission身份。
 
 canonical outbox 与原会话完成消息同 sessions.db 事务。完成使用 `internalEvent=coding_completion` 和确定消息 ID，不伪造 user/run 或新会话。渠道固定原 FrozenChannelSource 目标，经 ChannelHost.account_send 发一次；发送前持久 dispatch，未知回执不重发，真实已 sent 回执仅恢复本地投影。角色删除先关闭准入并等待 owned 资源；未提交 worktree及其所有权档案保留在 coding_retained_artifacts，未擅自强制删除。
 

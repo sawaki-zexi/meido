@@ -55,7 +55,8 @@ class CodingLedger:
                 raise
 
     def admit(self, origin: TaskOrigin, *, requirement: str, repository: dict, profile: dict,
-              max_daily: int, task_id: str | None = None, request_id: str | None = None, admitted=lambda: True) -> tuple[dict, bool]:
+              max_daily: int, task_id: str | None = None, request_id: str | None = None, admitted=lambda: True,
+              native_build: dict | None = None, authority_generation: int = 0) -> tuple[dict, bool]:
         if not isinstance(requirement, str) or not 1 <= len(requirement) <= 20000 or not requirement.strip():
             raise ValueError('requirement must contain 1 to 20000 characters')
         if not origin.role_id or not origin.session_key or not (origin.tool_call_id or request_id):
@@ -93,10 +94,14 @@ class CodingLedger:
             day = datetime.fromtimestamp(self.clock(), timezone.utc).date().isoformat()
             if db.execute('SELECT COUNT(*) FROM coding_attempts WHERE role_id=? AND day=?', (origin.role_id, day)).fetchone()[0] >= max_daily:
                 raise ValueError('coding daily attempt budget reached')
-            active = db.execute("SELECT t.role_id,t.repo_id,t.profile_id,a.cleanup FROM coding_tasks t JOIN coding_attempts a ON a.id=t.current_attempt WHERE a.status IN ('accepted','running') OR a.cleanup='cleanup_failed'").fetchall()
+            active = db.execute("""SELECT t.role_id,t.repo_id,t.profile_id,a.cleanup,a.status
+                FROM coding_tasks t JOIN coding_attempts a ON a.task_id=t.id
+                WHERE a.status IN ('accepted','running') OR a.cleanup NOT IN ('complete','not_started')""").fetchall()
             if len(active) >= 2 or any(row['role_id'] == origin.role_id or row['repo_id'] == repository['id'] for row in active):
                 raise ValueError('coding concurrency budget reached')
-            if any(row['profile_id'] == profile['id'] and row['cleanup'] == 'cleanup_failed' for row in active):
+            if any(row['profile_id'] == profile['id'] and (row['cleanup'] == 'cleanup_failed'
+                    or row['status'] not in {'accepted', 'running'} and row['cleanup'] not in {'complete', 'not_started'})
+                    for row in active):
                 raise ValueError('coding profile is frozen until cleanup is confirmed')
             attempt_id = 'attempt_' + uuid.uuid4().hex
             attempt = {'attemptId': attempt_id, 'origin': asdict(origin), 'requirement': requirement,
@@ -105,6 +110,8 @@ class CodingLedger:
                        'nativeSession': task.get('nativeSession'), 'runtimeAckDirty': False,
                        'deliveryStatus': 'pending', 'deliveryDispatched': False, 'messageSynced': False,
                        'createdAt': self.clock(), 'summary': '', 'validation': [], 'blockers': []}
+            if native_build is not None:
+                attempt.update(nativeBuild=json.loads(_json(native_build)), authorityGeneration=authority_generation)
             db.execute('INSERT INTO coding_attempts(id,task_id,role_id,request_key,fingerprint,day,created,status,body) VALUES(?,?,?,?,?,?,?,?,?)',
                        (attempt_id, task_id, origin.role_id, key, fingerprint, day, self.clock(), 'accepted', _json(attempt)))
             if db.execute('SELECT 1 FROM coding_tasks WHERE id=?', (task_id,)).fetchone() is None:
@@ -156,7 +163,7 @@ class CodingLedger:
 
     def unsettled(self) -> builtins.list[dict]:
         with self._lock:
-            condition = "(status IN ('accepted','running') OR cleanup='cleanup_failed' OR ack_dirty=1 OR json_extract(body,'$.messageSynced')=0 OR (json_extract(body,'$.deliveryDispatched')=1 AND json_extract(body,'$.deliveryStatus')!='sent'))"
+            condition = "(status IN ('accepted','running') OR cleanup NOT IN ('complete','not_started') OR ack_dirty=1 OR json_extract(body,'$.messageSynced')=0 OR (json_extract(body,'$.deliveryDispatched')=1 AND json_extract(body,'$.deliveryStatus')!='sent'))"
             rows = self._db.execute('SELECT id FROM coding_attempts WHERE ' + condition + ' AND id>? ORDER BY id LIMIT 100', (self._scan_cursor,)).fetchall()
             if not rows and self._scan_cursor:
                 self._scan_cursor = ''
@@ -169,10 +176,26 @@ class CodingLedger:
         with self.transaction() as db:
             row = db.execute('SELECT body FROM coding_attempts WHERE id=?', (attempt_id,)).fetchone()
             value = json.loads(row['body'])
-            if value.get('launchClaimed'):
+            if value.get('launchClaimed') or value.get('executionSealed') or value['status'] != 'accepted':
                 return False
             value['launchClaimed'] = True
             db.execute('UPDATE coding_attempts SET body=? WHERE id=?', (_json(value), attempt_id))
+            return True
+
+    def finish_unsubmitted(self, attempt_id: str, *, status: str) -> bool:
+        if status not in {'cancelled', 'interrupted'}:
+            raise ValueError('invalid unsubmitted terminal status')
+        with self.transaction() as db:
+            row = db.execute('SELECT body FROM coding_attempts WHERE id=?', (attempt_id,)).fetchone()
+            value = json.loads(row['body'])
+            if (value['status'] not in {'accepted', 'running'} or value.get('runtimeTaskId')
+                    or value['cleanupState'] != 'not_started' or value.get('resourceJobs')):
+                return False
+            value.update(status=status, runtimeStatus=status, nativeTurnStatus='not_started',
+                         cleanupState='complete', executionSealed=True, endedAt=self.clock(),
+                         blockers=['cancelled_before_dispatch' if status == 'cancelled' else 'interrupted_before_runtime_handover'])
+            db.execute('UPDATE coding_attempts SET status=?,cleanup=?,body=? WHERE id=?',
+                       (status, 'complete', _json(value), attempt_id))
             return True
 
     def update_task(self, task_id: str, **changes) -> None:

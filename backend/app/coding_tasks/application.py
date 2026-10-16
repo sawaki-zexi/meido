@@ -13,6 +13,7 @@ from ..task_runtime.runtime import TERMINAL, TaskExecutor
 from .config import CodingConfigStore, CodingRoleConfig
 from .ledger import CodingLedger, _json
 from .probes import NativeProfileProbes
+from .owned_process import CleanupFailed
 
 
 def public_task(record: dict) -> dict:
@@ -47,7 +48,10 @@ class CodingApplication:
 
     def _native_executor(self, record, ledger):
         from .executor import HerdrExecutor
-        return HerdrExecutor(self.root, record, ledger, authorized=lambda: self._allowed(record))
+        return HerdrExecutor(self.root, record, ledger, authorized=lambda: self._execution_allowed(record))
+
+    def _execution_allowed(self, record):
+        return self._allowed(record) and not self.ledger.attempt(record['attemptId']).get('executionSealed')
 
     def _allowed(self, record: dict) -> bool:
         try:
@@ -89,15 +93,16 @@ class CodingApplication:
                 or frozen_access['profiles'].get(profile['id']) != profile['revision']
                 or frozen_access['nativeBuild'] != build):
             raise PermissionError('coding grant is outside the frozen run authority')
-        record, created = self.ledger.admit(origin, requirement=requirement, repository=grant, profile=profile,
-                                           max_daily=role.maxAttemptsPerDay, task_id=task_id, request_id=request_id,
-                                           admitted=lambda: admitted() and self.authorized(origin)
-                                           and self.generation(origin.role_id) == authority_generation)
-        if created:
-            self.ledger.update_attempt(record['attemptId'], nativeBuild=build, authorityGeneration=authority_generation)
-            record['nativeBuild'] = build
-            record['authorityGeneration'] = authority_generation
-            self._submit(record)
+        with self._owner_lock:
+            if self._closed:
+                raise PermissionError('coding application has closed admission')
+            record, created = self.ledger.admit(origin, requirement=requirement, repository=grant, profile=profile,
+                max_daily=role.maxAttemptsPerDay, task_id=task_id, request_id=request_id,
+                admitted=lambda: not self._closed and admitted() and self.authorized(origin)
+                and self.generation(origin.role_id) == authority_generation,
+                native_build=build, authority_generation=authority_generation)
+            if created:
+                self._submit(record)
         return public_task(record)
 
     def start_task(self, origin: TaskOrigin, *, repository: str, requirement: str, agent: str | None = None,
@@ -121,7 +126,7 @@ class CodingApplication:
                 self._owners[record['attemptId']] = executor
             identifier = self.tasks.submit(origin, executor, kind='coding_herdr',
                 budget=TaskBudget(timeout_seconds=600, log_bytes=1024 * 1024, output_chars=8000),
-                description=record['attemptId'], authorized=lambda: self._allowed(record),
+                description=record['attemptId'], authorized=lambda: self._execution_allowed(record),
                 submission_key=record['attemptId'], retain_until_ack=True, completion=False)
             self.ledger.update_attempt(record['attemptId'], runtimeTaskId=identifier)
         except Exception:
@@ -159,10 +164,7 @@ class CodingApplication:
         record = self.ledger.inspect(task_id, origin)
         if record['executor'] != 'herdr' or not self.authorized(origin):
             raise PermissionError('original coding cancellation permission was revoked')
-        runtime = record.get('runtimeTaskId')
-        if runtime:
-            self.tasks.stop(runtime, TaskOrigin(**record['origin']))
-        return public_task(self.ledger.inspect(task_id, origin))
+        return self._cancel_record(record)
 
     def cancel_owned_task(self, role_id: str, task_id: str) -> dict:
         """Trusted local owner UI may stop resources after source revocation."""
@@ -170,15 +172,28 @@ class CodingApplication:
         if not matches:
             raise KeyError('coding task does not belong to this role')
         record = matches[-1]
+        return self._cancel_record(record)
+
+    def _cancel_record(self, record):
         with self._owner_lock:
+            record = self.ledger.attempt(record['attemptId'])
             owner = self._owners.get(record['attemptId'])
-        if owner is not None:
-            owner.cancel()
-        if record.get('runtimeTaskId'):
-            self.tasks.stop(record['runtimeTaskId'], TaskOrigin(**record['origin']))
-        if owner is not None:
-            self.ledger.update_attempt(record['attemptId'], cleanupState='complete')
-        return public_task(self.ledger.attempt(record['attemptId']))
+            self.ledger.update_attempt(record['attemptId'], executionSealed=True)
+            runtime = record.get('runtimeTaskId')
+            if not runtime and record.get('launchClaimed'):
+                snapshot = self._find_runtime(record)
+                if snapshot is not None:
+                    runtime = snapshot.task_id
+                    self.ledger.update_attempt(record['attemptId'], runtimeTaskId=runtime)
+            if owner is not None:
+                owner.cancel()
+            if runtime:
+                self.tasks.stop(runtime, TaskOrigin(**record['origin']))
+            elif owner is None:
+                self.ledger.finish_unsubmitted(record['attemptId'], status='cancelled')
+            if owner is not None:
+                self.ledger.update_attempt(record['attemptId'], cleanupState='complete')
+            return public_task(self.ledger.attempt(record['attemptId']))
 
     async def tick(self):
         if not self._tick_lock.acquire(blocking=False):
@@ -188,7 +203,7 @@ class CodingApplication:
             for record in self.ledger.unsettled():
                 try:
                     await self._advance(record)
-                except (sqlite3.Error, PermissionError, KeyError, OSError, ValueError):
+                except (CleanupFailed, sqlite3.Error, PermissionError, KeyError, OSError, ValueError):
                     # Temporary storage, role disable or lost local projection
                     # leaves the durable copy/dirty/receipt for the next tick.
                     continue
@@ -198,7 +213,16 @@ class CodingApplication:
     async def _advance(self, record):
         origin = TaskOrigin(**record['origin'])
         with self._owner_lock:
+            record = self.ledger.attempt(record['attemptId'])
             owner = self._owners.get(record['attemptId'])
+            if not record.get('runtimeTaskId') and record.get('launchClaimed'):
+                snapshot = self._find_runtime(record)
+                if snapshot is not None:
+                    self.ledger.update_attempt(record['attemptId'], runtimeTaskId=snapshot.task_id)
+                    record['runtimeTaskId'] = snapshot.task_id
+            if owner is None and not record.get('runtimeTaskId'):
+                self.ledger.finish_unsubmitted(record['attemptId'], status='interrupted')
+                record = self.ledger.attempt(record['attemptId'])
         if owner is None and record['cleanupState'] in {'running', 'cleanup_failed'}:
             from .owned_process import named_job_active
             jobs = record.get('resourceJobs')
@@ -212,7 +236,6 @@ class CodingApplication:
             with self._owner_lock:
                 owner = self._owners.get(record['attemptId'])
             if owner is not None:
-                from .owned_process import CleanupFailed
                 try:
                     await asyncio.to_thread(owner.cancel)
                 except (CleanupFailed, OSError):
@@ -224,11 +247,6 @@ class CodingApplication:
                     self.ledger.update_attempt(record['attemptId'], cleanupState='complete')
                     record['cleanupState'] = 'complete'
         identifier = record.get('runtimeTaskId')
-        if not identifier and record.get('launchClaimed'):
-            snapshot = await asyncio.to_thread(self._find_runtime, record)
-            if snapshot is not None:
-                identifier = snapshot.task_id
-                self.ledger.update_attempt(record['attemptId'], runtimeTaskId=identifier)
         if identifier:
             # The copied result is authoritative for ACK recovery. Once ACK
             # succeeded the generic runtime may legitimately prune its result;
@@ -323,7 +341,7 @@ class CodingApplication:
         while not self._closed:
             try:
                 await self.tick()
-            except sqlite3.Error:
+            except (CleanupFailed, sqlite3.Error, OSError):
                 pass
             await asyncio.sleep(.1)
 
@@ -337,7 +355,12 @@ class CodingApplication:
         for role_id in self.ledger.role_ids():
             await asyncio.to_thread(self.tasks.cancel_role_tasks, role_id, kind='coding_herdr')
         if self._worker is not None:
-            await self._worker
+            try:
+                await self._worker
+            except (CleanupFailed, sqlite3.Error, OSError):
+                # Consume an earlier recoverable worker failure, then confirm
+                # every resource below before any database can be closed.
+                pass
         await self.tick()
         with self._owner_lock:
             remaining_owners = list(self._owners.items())
@@ -346,6 +369,9 @@ class CodingApplication:
             self.ledger.update_attempt(attempt_id, cleanupState='complete')
             with self._owner_lock:
                 self._owners.pop(attempt_id, None)
+        if any(record['cleanupState'] not in {'complete', 'not_started'}
+               for role_id in self.ledger.role_ids() for record in self.ledger.role_records(role_id)):
+            raise CleanupFailed('owned Coding resources have not been confirmed stopped')
         await asyncio.to_thread(self.probes.close)
         self.ledger.close()
         self.config.close()

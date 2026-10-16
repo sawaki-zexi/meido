@@ -1,6 +1,6 @@
 # 验收 Owned Herdr #174
 
-状态：当前本地受控验证；真实CLI账户、模型和权限边界未验收。最后核验：2026-10-16。事实来源：[公开HTTP原生闭环](../../tests/python/test_coding_api_native.py)、[原生宿主与两CLI夹具](../../tests/python/test_coding_herdr_native.py)、[真实OneBot来源](../../tests/python/test_coding_channel.py)、[资源所有权](../../tests/python/test_coding_owned_process.py)、[应用恢复](../../tests/python/test_coding_application.py)。Parent #137；#175/#176 尚未由本票交付。
+状态：当前本地受控验证；真实CLI账户、模型和权限边界未验收。最后核验：2026-10-16。事实来源：[公开HTTP原生闭环](../../tests/python/test_coding_api_native.py)、[原生宿主与两CLI夹具](../../tests/python/test_coding_herdr_native.py)、[真实OneBot来源](../../tests/python/test_coding_channel.py)、[资源所有权](../../tests/python/test_coding_owned_process.py)、[应用恢复](../../tests/python/test_coding_application.py)、[中断恢复和最终授权](../../tests/python/test_coding_recovery.py)。Parent #137；#175/#176 尚未由本票交付。
 
 主人明确批准具体规格§3的实现、隔离构建与无账号费用夹具。本票以准确aggregate `30002a9a8de551a12a44b2c2f5724d5640aca50d` 为基线，使用已批准的本地任务分支流程，统一进入总draft PR162；不另建堆叠PR，不合并、不关闭Issue，不读取真实认证、不调用实际模型或发布。
 
@@ -63,6 +63,20 @@ python -m pytest @files -q --basetemp=$nativeRoot -o faulthandler_timeout=60 --t
 前端完整 **27文件176项通过（24.68秒）**，TypeScript noEmit/Vite通过；14个新增模块以以上准确mypy命令通过，compileall通过。mypy默认不会检查未注解函数体，不能据此称严格全类型覆盖。原生补丁及许可按固定字节保留；所有新增文档相对链接和diff检查另行核验。
 
 独立规范/规格两轴审查由协调者针对固定实现提交安排，本手册不提前声称审查或总PR CI通过。全量、定向、原生各轮的覆盖不同，不能将失败轮与成功重跑相加成一次无失败全量。
+
+## 独立审查后的恢复修正
+
+固定首版87314b0的Spec审查发现三项P2：业务终态而真实named Job仍活时释放准入槽、预启动快照的第二事务失败留下永久accepted、最终消息INSERT前撤权仍写入。Standards另发现一次CleanupFailed查询错误会杀死全局worker并令close重抛。原始外部负向探针和两轴报告均保留；以下是作者修正证据，仍待独立增量复核。
+
+资源未确认的所有attempt继续占全局/角色/仓库槽；终态资源义务冻结profile，并持续恢复扫描至真实Job消失。nativeBuild/授权代际现在与初始admit同事务持久化；同宿主准入、launch交接、取消和恢复串行，旧未交付记录仅收尾为interrupted或cancelled，禁止恢复重放和迟到launch。取消封住实际执行权限，完成投影仍独立按原来源授权。共享SessionStore只补最终INSERT前重验，与先行171修正相同，集成须保留该检查。
+
+CleanupFailed按记录隔离后继续worker轮询；close消费已失败worker的可恢复异常，仍实际确认所有资源。持续无法确认Job时close保留数据库/清理责任并报错，恢复查询后可重试，不把错误视为已退出。
+
+每项均先独立RED再GREEN：资源槽1f→1p；快照事务及旧未交付恢复/两种取消4f→相关组12p；最终授权1f→1p；worker瞬态1f→8p；持续未知close1f→8p；已有failed worker1f→恢复组9p。对应作者JUnit使用coding174-resource-slot-author、prelaunch-author、finalauth-author、worker-author、close-author、failed-worker-author前缀。外部仍适用的liveJob/最终授权/瞬态worker三探针 **3 passed（3.35秒）**；原prelaunch探针专门在已删除的第二UPDATE上注入故障，修后不再适用，改用初始INSERT/旧UPDATE双触发器验证完整回滚，再验证旧部分记录不执行即收尾，未把旧RED改写为成功。
+
+修正首轮完整原生专用 **44 passed（169.48秒）**，coding174-recovery-native-final.xml；覆盖此前36项和新增8项，固定旧bundle、实际Herdr/两合成CLI/公开HTTP/原会话与渠道回执。该轮收集后又补close消费既有worker故障、closed-admission重验及claimed/unclaimed恢复参数，后续准确最终检查单独记录，不冒称该44项涵盖后补行为。14源mypy与compileall通过，类型检查仍沿用默认未注解函数体限制。独立审查本身首轮33p3f、中路径4p3f、极短路径三项3p已见两轴报告；长路径不是任意目录兼容的证明，仍保持前述原生路径限制，不据短目录GREEN消除这些失败。
+
+全部后补行为后的最终原生专用 **48 passed（176.63秒）**，coding174-recovery-native-exact.xml，完整三MEIDO根与整组guard直至全部资源join；最终恢复专项12 passed（6.07秒），coding174-recovery-author-final-r2.xml。没有在此后修改生产代码；新增真实named Job恢复用例按与现有crash用例相同方式仅Windows执行，非Windows明确跳过该原生能力。旧fixed补丁SHA256仍为2a2df5e1626a1b37a89663ccb64bc11d3f8513bf6e44513041d9c29f8b98806f，bundle仍为445b03a54b314fffc6720b1229b3f6dda43bc42c28ddb4ec91c0f5144d25ce67，未借修复替换或跳过宿主验真。前端未改变，未重跑全Python/前端，不把先前全量/CI冒称修正头结果。
 
 ## 未验收与后续票
 

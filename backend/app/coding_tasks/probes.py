@@ -156,7 +156,7 @@ class NativeProfileProbes:
                 if record.get('cleanupState') in {'complete', 'not_started'}:
                     with self._lock:
                         self._owners.pop(record['id'], None)
-            except (KeyError, PermissionError, OSError, ValueError, sqlite3.Error):
+            except (CleanupFailed, KeyError, PermissionError, OSError, ValueError, sqlite3.Error):
                 continue
 
     def close(self):
