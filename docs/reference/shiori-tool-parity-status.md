@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；已验证集成：`fff08b186809726a219f280dc8352134e62523c0`。该固定版本两条 CI 全通过：各后端1966 passed、34 skipped、2条依赖弃用warning，前端182 passed/32文件及 TypeScript/Vite 构建；见[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38865160983)与[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38865157151)。桌面控制、NovelAI首批和Coding首批均已整合并通过CI；主动决策固定源已两轴复核无遗留，正在总分支验证组合行为。跳过项不计原生验收。
+最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；已验证集成：`fff08b186809726a219f280dc8352134e62523c0`。该固定版本两条 CI 全通过：各后端1966 passed、34 skipped、2条依赖弃用warning，前端182 passed/32文件及 TypeScript/Vite 构建；见[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38865160983)与[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38865157151)。桌面控制、NovelAI首批和Coding首批均已整合并通过CI；主动决策已通过源和集成两轴复核、本地组合420项与前端186项，正在准备准确HEAD完整CI。跳过项不计原生验收。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -46,7 +46,7 @@
 | S06 create-drift-skill | 待实现；[固定源码依赖核验](../research/proactive-drift-runtime-portability-2026-10-16.md)已明确长期技能创建、后续发现与真实 Drift 消费缺一不可 | Drift 目录创建、发现和真实执行 |
 | S07 codex-delegate | 具体架构已批准，见 Coding 规格及 #175；#174共享模块已验证，正在独立分支实施，复用 spawn coding 入口而不新增普通工具 | CLI协议、后台执行、精确 session/结果回读和原上下文回灌的完整验收与两轴复核；真实服务另批 |
 | S08 create-proactive-source | 待实现；固定源码已核实来源产物/信任/ACK 契约，旧 Skill 的 severity 快通道/HyDE 文案不作为当前实现保证 | 来源创建、信任授权、事件消费、正文与持久 ACK |
-| A01 主动决策 | [具体规格](../specs/proactive-drift-spec.md)第3节已获明确批准；#177固定源`3b21afe`含自主身份/许可、静态来源、草稿/finish、唯一桌面投递/ACK/Runtime恢复，247 passed/1权限skip及两轴修正复核无遗留，正在总分支验证；#178 来源、#180 外部目标保留真实前置依赖 | 总分支组合行为、集成两轴复核和准确HEAD完整CI；未验收真实账号或模型消费 |
+| A01 主动决策 | [具体规格](../specs/proactive-drift-spec.md)第3节已获明确批准；#177固定源`3b21afe`含自主身份/许可、静态来源、草稿/finish、唯一桌面投递/ACK/Runtime恢复，源和集成两轴复核无遗留；总分支组合420 passed/1权限skip/1 CU原生deselected、前端186项及构建通过；#178 来源、#180 外部目标保留真实前置依赖 | 准确HEAD完整CI；未验收真实账号或模型消费 |
 | A02 Drift | #179/#180 具体架构已批准，待 #177/#178 共享模块复核集成后实施；采用同一 tick 空输入分支、独立开关与显式目标 | 独立目录/预算、受限工具、版本化 MCP 挂载、单次推送、真实finish与两轴复核 |
 
 渠道补充切片 #166 完整群资料、#167 桌面文本/媒体与 #170 分类目录/连接事实均已完成两轴复核并进入集成分支。C06 的真实平台收件验收仍未完成。
@@ -118,3 +118,7 @@ MCP 故障已在 Windows 原命令和 Linux 真实慢退出 fixture 复现：RPC
 独立集成规格16项通过；规范53项通过但发现Coding清理未确认会跳过其余独立owner的退出。真实Runtime回归先2项失败，改为逐一尝试各owner、最后保留单异常或组合异常。首轮相关33项pytest通过后，外部runner关闭先前已取消的worker仍失败，整条命令不报绿；另补终态worker、关闭调用方取消及两者同时取消的真实RED，区分旧worker终态与新的取消请求。修正后同范围 **36 passed（32.21秒），进程exit0**，完整三根与guard持有至所有owned退出；未确认Coding仍保留账本与可重试职责。固定 `a825e11` 的规范增量独立24项、规格增量独立22项均通过，两轴均无遗留；新准确HEAD完整CI尚待完成，没有合并或关票。
 
 `9bed061` 的两条新CI前端均182项/32文件及构建通过，Linux后端各1965 passed/34 skipped/1 failed/2 warnings。失败是配置测试把符号链接的Python路径作为应通过路径门禁的SHA夹具。WSL同一测试先真实复现2 passed/1 failed，夹具使用解析后的实际文件后Linux3项、Windows3项均通过，原坏SHA与有效保存断言保留，生产链接/哈希门禁未改。完整日志已保留；这两条失败不计通过，后续新准确HEAD仍须完整CI。
+
+后续固定`fff08b1`的两条完整CI均通过：后端各1966 passed/34 skipped/2依赖warning，前端各182 passed/32文件及TS/Vite，见本文开头的准确运行链接。配置夹具两轴窄复核均无遗留；这不代表之后177的提交已通过CI。
+
+#177固定源`3b21afe`修正最终发布授权、主人获锁身份重验、首poll/150秒持久间隔与后续刷新旧健康后，作者扩大247 passed/1 symlink权限skip，两轴最终复核均无遗留。合入后`261b468`的集成规格独立68项后端、7项React及6项关闭/取消通过，规范独立95项与3项删除边界通过，两轴均无遗留。共享冲突保留已有CU/Novel/Coding入口、事务与资源关闭；memory门禁先于任何owned等待。总分支全三根和完整网络guard组合 **420 passed/1权限skip/1 CU原生deselected（611.98秒），进程exit0**；前端完整33文件186项、TypeScript/Vite、20源mypy（检查未注解函数体，忽略第三方缺失stubs）及compileall通过。准确HEAD CI仍待完成；各组重叠不相加，skip不计原生通过，详见[验收手册](../handbook/proactive-decision-acceptance.md)。

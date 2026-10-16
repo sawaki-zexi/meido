@@ -64,4 +64,12 @@ poll的两个原stdio探针先 **2 failed（9.17秒）**，canonical首poll与15
 
 该轮两轴增量审查关闭原四项P2，却各自独立复现同一后续刷新竞态：首次poll已成功，本次周期poll与判断同clock准入，本次真实poll失败而判断仍冻结上次ok并进入Driftpending。规范独立正常组30项、规格正常组34项及首次ACK故障1项均通过，新竞态分别真实RED（8.14秒、9.709秒），不以正常组掩盖失败。
 
-周期修正回归先 **2 failed（11.54秒）**：真实后续RPC被持有时，成功和失败两分支都过早准入判断。新poll现在原准入事务即锁存其tickId和incomplete健康；判断也等待当前poll的真实终态、owned收尾与Runtime ACK，保留原due，下一clock继续。失败后空来源为sources_unavailable；成功后Driftpending仍可达，没有通过一直拒绝Drift回避问题。poll专集 **18 passed（63.01秒）**，另真实周期Runtime ACK写入故障 **1 passed（9.88秒）**，验证终态/资源已退出仍须保留dirty，恢复后不补第二poll而准入原到期判断。随后原扩大同范围 **247 passed/1 skipped（296.43秒），进程exit0**，全三根与整组guard至owned退出。20源严格mypy、compileall、5份文档19个相对链接及diff通过；新的固定提交双轴增量复核与总分支CI仍待完成。
+周期修正回归先 **2 failed（11.54秒）**：真实后续RPC被持有时，成功和失败两分支都过早准入判断。新poll现在原准入事务即锁存其tickId和incomplete健康；判断也等待当前poll的真实终态、owned收尾与Runtime ACK，保留原due，下一clock继续。失败后空来源为sources_unavailable；成功后Driftpending仍可达，没有通过一直拒绝Drift回避问题。poll专集 **18 passed（63.01秒）**，另真实周期Runtime ACK写入故障 **1 passed（9.88秒）**，验证终态/资源已退出仍须保留dirty，恢复后不补第二poll而准入原到期判断。随后原扩大同范围 **247 passed/1 skipped（296.43秒），进程exit0**，全三根与整组guard至owned退出。20源mypy检查未注解函数体（忽略缺失的第三方stubs）、compileall、5份文档19个相对链接及diff通过。固定源`3b21afe`的两轴增量复核均无遗留：规范独立11项、规格独立25项通过，原负向探针及失败历史保留。
+
+## 总分支集成
+
+`fd624dd`、`b99827b`和`7b1fcc6`将固定源合入已验证`fff08b1`。私有主动模块、自主MCP与Runtime接口和源`3b21afe`一致；共享main、SessionStore和RoleEditor保留NovelAI、Coding及CU的入口、配置与生命周期。角色更新仍走原NovelAI事务，删除先关闭memory准入再等待主动资源，最终消息INSERT前仍重验授权。主动close加入已有逐owner关闭与错误收集序列，不因一项资源未确认而跳过其他模块。
+
+固定集成`261b468`的两轴独立审查均无遗留。规格独立68项后端、7项React和6项关闭/取消用例通过；规范独立95项及3项额外删除边界检查通过。后者的外部探针首轮因遗漏fixture导入产生2 passed/1 setup error，修正后3项通过，不计产品RED。各组有重叠，不相加为唯一测试数。两轴都在收集前三MEIDO根隔离，整组网络guard持续至全部owned退出；没有真实账号、模型费用或外部服务事务。总分支完整组合与准确HEAD CI另行记录，不以源分支结果替代。
+
+同一生产和测试输入的完整集成组合 **420 passed/1 skipped/1 deselected（611.98秒），runner exit0**，包括原177扩大组、全部Coding/NovelAI、桌面控制、角色配置与删除；Coding使用既有固定Herdr/合成CLI原生产物。skip是Windows符号链接权限，deselected是需专用原生窗口的CU变体，不计为原生通过。三新MEIDO根在收集前隔离，外层和每例local guard保持至main全部owner关闭，未发生非本地阻断。完整前端 **186 passed/33文件（56.66秒）**、TypeScript/Vite构建、20源mypy未注解函数体检查、compileall与相对链接通过。首次mypy因缺第三方jsonschema stubs报错，按源检查的`--ignore-missing-imports`重跑通过；未安装新依赖或放宽生产检查。此为本地组合证据，新准确HEAD完整CI仍待完成。
