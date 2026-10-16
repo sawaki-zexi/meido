@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；已验证集成：`fff08b186809726a219f280dc8352134e62523c0`。该固定版本两条 CI 全通过：各后端1966 passed、34 skipped、2条依赖弃用warning，前端182 passed/32文件及 TypeScript/Vite 构建；见[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38865160983)与[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38865157151)。桌面控制、NovelAI首批和Coding首批均已整合并通过CI；主动决策首轮本地组合420项通过，但`6a1ef4f`两条完整CI后端失败，启动夹具、跨平台观察和重复取消修正正在重新核验，尚未取得新的完整CI通过。跳过项不计原生验收。
+最后核验：2026-10-16（Asia/Shanghai）。源码基线：`main@17c2b28af5d643f3f90667973d72e4ca7f9fa1d5`；已验证集成：`fff08b186809726a219f280dc8352134e62523c0`。该固定版本两条 CI 全通过：各后端1966 passed、34 skipped、2条依赖弃用warning，前端182 passed/32文件及 TypeScript/Vite 构建；见[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38865160983)与[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38865157151)。桌面控制、NovelAI首批和Coding首批均已整合并通过CI；主动决策`6a1ef4f`两条完整CI后端失败，修正后`237db7a`一条后端2128项通过、另一条2失败/2126通过，正在复核来源核验SQLite短时写锁恢复的窄修。尚未取得新的两条完整CI通过。跳过项不计原生验收。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -124,3 +124,5 @@ MCP 故障已在 Windows 原命令和 Linux 真实慢退出 fixture 复现：RPC
 #177固定源`3b21afe`修正最终发布授权、主人获锁身份重验、首poll/150秒持久间隔与后续刷新旧健康后，作者扩大247 passed/1 symlink权限skip，两轴最终复核均无遗留。合入后`261b468`的集成规格独立68项后端、7项React及6项关闭/取消通过，规范独立95项与3项删除边界通过，两轴均无遗留。共享冲突保留已有CU/Novel/Coding入口、事务与资源关闭；memory门禁先于任何owned等待。总分支全三根和完整网络guard组合 **420 passed/1权限skip/1 CU原生deselected（611.98秒），进程exit0**；前端完整33文件186项、TypeScript/Vite、20源mypy（检查未注解函数体，忽略第三方缺失stubs）及compileall通过。准确HEAD CI仍待完成；各组重叠不相加，skip不计原生通过，详见[验收手册](../handbook/proactive-decision-acceptance.md)。
 
 `6a1ef4f`两条CI随后失败：PR112 failed/2015 passed、push111 failed/2016 passed，均35 skipped/2 warnings，前端均186项及构建通过。多数失败由两处旧startup夹具在短命loop遗留主动worker、后续合法拒绝替换owner引发；另三项POSIX契约spy错误，以及一项真实重复取消打断模型finally的竞态。两处无关startup隔离和按平台实际入口观察不改变原断言/生产门禁；执行器改为原gate内单次取消，保留入场前取消。真实RED后Windows/WSL相同相关37项均通过，startup/真实记忆HTTP等17项通过。固定`c105ae8`扩大**267 passed/1权限skip（322.38秒），进程exit0**，两轴修正复核均无遗留；前端0diff，沿用6a两条CI的186项及构建。新准确HEAD完整CI仍待完成；#178前置依赖继续保留，不以旧绿色放行，详见手册。
+
+准确`237db7a`的PR CI后端2128 passed/35 skipped/2 warnings，push CI后端2 failed/2126 passed/35 skipped/2 warnings；前端两次186项及构建通过。失败定位为来源核验首次恢复快照的SQLite短时写锁；真实持锁RED后，仅原生BUSY/LOCKED延后本轮，其他数据库错误重抛、原nonce/key和copy/ACK责任不变。相同相关组Windows52项、WSL52项及变更单源mypy/编译通过，三新根和内外guard至owned退出；尚待固定修正两轴复核与新两套完整CI。#178依赖继续保留，详见[验收手册](../handbook/proactive-decision-acceptance.md)。

@@ -85,3 +85,9 @@ poll的两个原stdio探针先 **2 failed（9.17秒）**，canonical首poll与15
 另有真实生产竞态：host清理与TaskRuntime停止会重复取消同一执行器，第二次`Task.cancel`打断模型正在等待的`finally`，过早归零cleanupPending。原回归加入100ms真实调度推进后，Windows与WSL均**1 failed/2 passed**。取消现在在原gate内原子封门且只注入一次，入场前取消仍阻止MCP/模型执行并完成原结果ACK。相同主人优先/来源契约/原loop/验证/恢复组：**Windows37 passed（47.44秒）**、**WSL37 passed/1 warning（32.77秒）**，均runner exit0，三新根和内外guard至全部owned退出；不相加成74项唯一验收。20源mypy、编译及diff通过；没有真实账号、消费或权限扩大。
 
 固定修正`c105ae8`重跑原177全部扩大范围，加入完整角色删除恢复、startup→真实记忆HTTP与Coding关闭组：**267 passed/1 Windows symlink权限skipped（322.38秒），runner exit0**，三新根与整组guard至所有owned退出。两轴独立复核均无遗留：规格Windows21项、WSL6项；规范Windows43项、WSL7项。规范组另见未改loop.py的未await协程RuntimeWarning，WSL有依赖warning，均如实保留，不声称零warning或在本轮修复。前端相对`6a1ef4f`无差异，沿用其两条CI各186项及构建证据；不称修正头重复全前端。新准确HEAD完整CI仍待完成。
+
+## 来源核验恢复的短时写锁
+
+随后准确`237db7a`的[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38871491367)后端 **2128 passed/35 skipped/2 warnings（339.28秒）**，但[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38871483495)后端 **2 failed/2126 passed/35 skipped/2 warnings（470.43秒）**；前端两次均186项及构建通过，不能称该头完整验收通过。两例都在来源核验恢复的首次SQLite快照遇到同库合法写连接持锁，超过原50ms超时；该快照在逐记录异常边界之外，短时竞争直接中断恢复。
+
+真实第二连接持有`BEGIN IMMEDIATE`时，正常交接和accepted返回丢失两例先 **2 failed（9.26秒）**，窄修后 **2 passed（9.23秒）**。仅首次快照按SQLite原生BUSY/LOCKED错误码延后本轮恢复，其他OperationalError继续抛出；不加大超时、不换nonce/key、不重做MCP、不清除copy/ACK或owned责任。新增taskId未回写与真实锁交叉、结果copy后的ACK前/后持锁、ACK后prune仍按同ID重ACK及真实非busy表错误对照。最终相同6文件组 **Windows52 passed（61.91秒）**、**WSL52 passed/1 warning（41.99秒）**，均runner exit0、无skip；三新数据根与内外local guard保持至所有owned退出。变更单源mypy检查未注解函数体（忽略第三方缺失stubs）、编译与diff通过。固定修正两轴复核和新准确HEAD完整CI尚待完成；#178继续保留依赖。

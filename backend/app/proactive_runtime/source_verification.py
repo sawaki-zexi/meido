@@ -272,8 +272,16 @@ class SourceVerificationApplication:
                 if not launch.cancelled():
                     launch.exception()
                 self._launches.pop(identifier, None)
-        with p._transaction() as db:
-            rows = db.execute("SELECT * FROM autonomy_source_verifications WHERE runtime_acknowledged=0").fetchall()
+        try:
+            with p._transaction() as db:
+                rows = db.execute("SELECT * FROM autonomy_source_verifications WHERE runtime_acknowledged=0").fetchall()
+        except sqlite3.OperationalError as error:
+            if (getattr(error, "sqlite_errorcode", 0) & 0xFF) not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                raise
+            # The verifier publishes through another connection to this same
+            # database. Keep the original owners, nonce and pending copy/ACK
+            # duties for the next bounded recovery pass while it holds a lock.
+            return
         for row in rows:
             identifier, origin = row["attempt_id"], TaskOrigin(**json.loads(row["origin"]))
             try:

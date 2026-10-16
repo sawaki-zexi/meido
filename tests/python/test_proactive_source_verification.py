@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+import time
 import uuid
 
 import pytest
@@ -43,6 +44,160 @@ async def settled(verification, identifier):
             if view["runtimeAcknowledged"]:
                 return view
             await asyncio.sleep(.01)
+
+
+@pytest.mark.parametrize("handover", ["normal", "lost_return", "task_id_write"])
+def test_busy_recovery_snapshot_defers_original_inflight_owner_action(verification, monkeypatch, handover):
+    app, value = verification
+    arguments, submissions, calls = request(value), [], []
+    entered, release = threading.Event(), threading.Event()
+    submit, call = value.app.tasks.submit, mcp_stdio.McpStdioClient.call
+
+    def recorded_submit(origin, executor, **options):
+        identifier = submit(origin, executor, **options)
+        submissions.append((identifier, origin, options["submission_key"]))
+        if handover == "lost_return":
+            raise OSError("accepted owner handover response was lost")
+        return identifier
+
+    async def held_call(client, name, params):
+        response = await call(client, name, params)
+        calls.append(name)
+        if name == "meido_test_seed":
+            entered.set()
+            while not release.is_set():
+                await asyncio.sleep(.01)
+        return response
+
+    async def exercise():
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(value.app.tasks, "submit", recorded_submit)
+                patch.setattr(mcp_stdio.McpStdioClient, "call", held_call)
+                if handover == "task_id_write":
+                    with sqlite3.connect(value.sessions.database_path) as db:
+                        db.execute("CREATE TRIGGER busy_verification_task_id_failure BEFORE UPDATE OF task_id ON autonomy_source_verifications WHEN NEW.task_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'controlled taskId projection failure before busy recovery'); END")
+                first = await app.submit_owner("role", **arguments)
+                if handover == "task_id_write":
+                    assert first["taskId"] is None and first["cleanupPending"]
+                assert await asyncio.to_thread(entered.wait, 3)
+                with sqlite3.connect(value.sessions.database_path) as writer:
+                    writer.execute("BEGIN IMMEDIATE")
+                    before = writer.execute("SELECT * FROM autonomy_source_verifications WHERE attempt_id=?", (first["id"],)).fetchone()
+                    started = time.monotonic()
+                    await app.recover()
+                    assert .04 <= time.monotonic() - started < 1
+                    assert writer.execute("SELECT * FROM autonomy_source_verifications WHERE attempt_id=?", (first["id"],)).fetchone() == before
+                    assert app.has_owned_work and not first["runtimeAcknowledged"]
+                    writer.rollback()
+                if handover == "task_id_write":
+                    with sqlite3.connect(value.sessions.database_path) as db:
+                        db.execute("DROP TRIGGER busy_verification_task_id_failure")
+                release.set()
+                final = await settled(app, first["id"])
+                completed_calls = calls[:]
+                assert await app.submit_owner("role", **arguments) == final
+                assert calls == completed_calls
+            assert final["status"] == "succeeded" and not final["cleanupPending"]
+            assert final["requestNonce"] == arguments["request_nonce"]
+            assert len(submissions) == 1 and submissions[0][0] == final["taskId"]
+            assert submissions[0][2] == first["id"]
+            assert calls.count("meido_test_seed") == 1
+            assert not app.has_owned_work
+        finally:
+            release.set()
+            with sqlite3.connect(value.sessions.database_path) as db:
+                db.execute("DROP TRIGGER IF EXISTS busy_verification_task_id_failure")
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("lock_at", ["before_ack", "after_ack"])
+def test_busy_snapshot_preserves_copied_result_and_exact_ack_duty(verification, monkeypatch, lock_at):
+    app, value = verification
+    tasks = value.app.tasks
+    arguments, submissions, acknowledgements, writers = request(value), [], [], []
+    submit, acknowledge = tasks.submit, tasks.acknowledge_result
+
+    def recorded_submit(origin, executor, **options):
+        submissions.append((origin, options["submission_key"]))
+        return submit(origin, executor, **options)
+
+    def ack_with_locked_projection(identifier, origin):
+        acknowledgements.append((identifier, origin))
+        if not writers:
+            if lock_at == "after_ack":
+                acknowledge(identifier, origin)
+            writer = sqlite3.connect(value.sessions.database_path, check_same_thread=False)
+            writer.execute("BEGIN IMMEDIATE")
+            writers.append(writer)
+            if lock_at == "before_ack":
+                raise OSError("Runtime ACK is deferred while local projection is locked")
+            return
+        return acknowledge(identifier, origin)
+
+    def no_query(*args, **kwargs):
+        raise AssertionError("a copied verification result must not be queried or executed again")
+
+    async def exercise():
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(tasks, "submit", recorded_submit)
+                patch.setattr(tasks, "acknowledge_result", ack_with_locked_projection)
+                first = await app.submit_owner("role", **arguments)
+                async with asyncio.timeout(8):
+                    while not writers:
+                        await app.recover()
+                        await asyncio.sleep(.01)
+                writer = writers[0]
+                before = writer.execute("SELECT runtime_result,result_ack_pending,cleanup_confirmed,runtime_acknowledged,request_nonce,task_id FROM autonomy_source_verifications WHERE attempt_id=?", (first["id"],)).fetchone()
+                assert before[0] and before[1:4] == (1, 1, 0)
+                assert before[4:] == (arguments["request_nonce"], acknowledgements[0][0])
+                started = time.monotonic()
+                await app.recover()
+                assert .04 <= time.monotonic() - started < 1
+                assert writer.execute("SELECT runtime_result,result_ack_pending,cleanup_confirmed,runtime_acknowledged,request_nonce,task_id FROM autonomy_source_verifications WHERE attempt_id=?", (first["id"],)).fetchone() == before
+                assert app.has_owned_work
+                if lock_at == "after_ack":
+                    tasks.retention_seconds = -1
+                    assert tasks.list(submissions[0][0], kind="autonomy_verify") == ()
+                writer.rollback()
+                patch.setattr(tasks, "query", no_query)
+                final = await settled(app, first["id"])
+                assert await app.submit_owner("role", **arguments) == final
+            assert final["status"] == "succeeded" and not final["cleanupPending"]
+            assert len(submissions) == 1 and submissions[0][1] == final["id"]
+            assert len(acknowledgements) == 2
+            assert acknowledgements[0] == acknowledgements[1]
+            assert not app.has_owned_work
+            with sqlite3.connect(value.sessions.database_path) as db:
+                assert db.execute("SELECT COUNT(*) FROM autonomy_source_contracts").fetchone()[0] == 1
+                assert retention.usage(db, "role")["globalBytes"] < 128 * 1024
+        finally:
+            for writer in writers:
+                writer.rollback()
+                writer.close()
+
+    asyncio.run(exercise())
+
+
+def test_recovery_snapshot_does_not_hide_nonbusy_database_errors(verification):
+    app, value = verification
+
+    async def exercise():
+        with value.app._transaction() as db:
+            db.execute("ALTER TABLE autonomy_source_verifications RENAME TO temporarily_unavailable_verifications")
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="no such table") as error:
+                await app.recover()
+            assert error.value.sqlite_errorcode == sqlite3.SQLITE_ERROR
+        finally:
+            with value.app._transaction() as db:
+                db.execute("ALTER TABLE temporarily_unavailable_verifications RENAME TO autonomy_source_verifications")
+        await app.recover()
+        assert not app.has_owned_work
+
+    asyncio.run(exercise())
 
 
 def test_actual_owner_nonce_verifies_once_without_a_human_chat_or_autonomy_tick(verification, monkeypatch):
