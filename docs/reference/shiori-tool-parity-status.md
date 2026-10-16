@@ -2,7 +2,11 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-17（Asia/Shanghai）。已核验集成基点 `6751bcc425ad1c0fc4823691fbdda155a89c7bdf` 包含源码集成 `0acfb4f842e2df173fd635f8bd76d502a8948137`，已同步 `main@82739afe4e0dcfe2ee58ca472c69dee1721f68a3`（聊天滚动、落地页、角色编辑与本机启动备份），并整合 #180 已审源 `7ac5996`。该基点的源码完整/修复、总集成规范与规格两轴无剩余发现；准确本地交叉115 passed/1 conftest warning、完整前端252 passed/44文件及TypeScript/Vite108模块通过。632份后端交叉输入稳定；前端原136份输入与含8份public素材的144份构建补验分别稳定，见[目标验收](../research/autonomy-channel-targets-acceptance-2026-10-16.md)。准确6751基点的[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38936308448)与[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38936301605)均为后端2565 passed/39 skipped/2 warnings、前端252 passed/44文件及TS/Vite108模块构建通过。本次 #169 回执修正另有本地证据，仍待最终固定提交的两轴审查和准确CI，不沿用旧绿色。原受控竞态、历史CI未知首因和原生限制保留，skip不计原生成功。
+最后核验：2026-10-17（Asia/Shanghai）。最新已验证总头 `f4ac973a04cdcd8327f80f20bd58d5088fdf8b77` 已同步 `main@82739afe4e0dcfe2ee58ca472c69dee1721f68a3`，包含 #180 外部目标与 #169 实际输入回执/禁用准入修正。准确此头的[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38958463460)和[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38958470086)均完整通过：各后端2597 passed/39 skipped/2 warnings（619.73秒、481.16秒），各前端252 passed/44文件及TypeScript/Vite108模块。原始console计数与全部终态job已独立核对，工作流未发布JUnit XML；skip不计原生成功。
+
+#169 的完整与修正两轴审查均无遗留；准确源本地61项相关检查、编译与同7源相对6751基线的9→9类型诊断对照通过（0新增，不称全类型绿）。受控原生六项、禁用准入一项与失败辅助候选各有自己的固定快照，范围见[原生手册](../handbook/computer-use-native-acceptance.md)。前期 #180 本地115项交叉、252项前端及136/144输入补验证据保留在[目标验收](../research/autonomy-channel-targets-acceptance-2026-10-16.md)，不冒称本次重复执行。
+
+完整目标仍未完成。固定f4ac全范围审计又定位到 #148 中文/提示词召回及访客模型声明主人专用推送的具体差距，独立修正正在实施，尚未进入此已验证头；#191和桌宠仍待既有方案答复。旧a0 PR CI已取消，其原90秒堆栈定位到记忆超时HTTP测试的asyncio.run退出清理，尚不足以确定根因；本次两路成功不表示旧挂起已修复。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -21,7 +25,7 @@
 | 标识 | 当前实现位置与证据 | 尚待完成 |
 | --- | --- | --- |
 | G01 配置与目录 | #163、#167、#158 已进入集成分支；文件 4、网络 2、消息 2、记忆写入 2、发现 1、桌面推送 1、调度 3，共 15 项网页授权入口，两轴审查及公开 HTTP/React 用户操作通过 | 继续保留 Shell/浏览器等专用开关；后续能力配置另走明确流程 |
-| C01 工具发现 | #148 已进入集成分支；同 run 版本化激活、冻结候选、服务 grant 修订、真实来源和实时撤权；连续取消补充修复已两轴独立复核 | 总 PR 的最终跨模块验收 |
+| C01 工具发现 | #148 已进入集成分支；同 run 版本化激活、冻结候选、服务 grant 修订、真实来源和实时撤权；连续取消补充修复已两轴独立复核 | 固定f4ac审计发现自然中文组合/提示词召回不足、访客模型获声明必拒绝message_push；已按两份公开计划独立修正，尚未汇入当前头；随后总PR跨模块验收 |
 | C02 文件 4 工具 | main，PR #143；真实文件、图片 HTTP 往返、根目录和原子写行为测试 | 后续工具集成不得扩大文件授权 |
 | C03 Shell/任务 3 工具 | #149 已进入集成分支；独立 TaskRuntime、SQLite、日志、实际进程树生命周期及来源授权经过两轴审查 | 后续 spawn/调度/Coding 集成回归；不得扩大 Shell 许可 |
 | C04 网络 2 工具 | main，PR #146；受控 HTTP、公开网页与真实搜索服务验收 | 后续集成回归 |
@@ -32,14 +36,14 @@
 | C09 群/成员 4 工具 | #165、#166 已进入集成分支；可信历史昵称、成员来源、完整群分页、笔记字段省略/清空及离线资料；两轴最终复核通过，事务直接读取父取消并等待写线程退出 | 总 PR 跨模块回归和最终验收；不得扩大来源范围 |
 | C10 MCP 3 工具 | #159 已进入集成分支；真实 stdio、版本化发现、配置 UI、持久连接意愿及严格凭据清理已两轴复核；Linux 回收、Windows asyncio 环境、中文 schema 编码及 peer_error 清理竞态均实证修复并两轴复核；`c03a9fb` 两条 CI 通过 | 总 PR 最终跨模块验收 |
 | P01 浏览器 28 工具 | main，PR #150；全部 28 schema 映射核验，21 项真实原生浏览器测试通过，无 skip | 后续 MCP/配置集成回归 |
-| P02 桌面控制 8 工具 | #169 原固定源 `7aa8108` 已两轴复核并整合；8工具/图像下一模型请求、单观察/lease/Job收尾有真实专用窗口和HTTP/provider证据。实际调用回执修正完成17个协议TDD周期，含转义坏载体拒绝；f700驱动在freeze4有6项原生通过，freeze6独立真实Windows禁用目标零输入拒绝1项通过，最新freeze7宿主61项相关回归通过且未重跑原生；旧freeze5辅助候选1通过/1失败原件保留，不称辅助分支已证。Python编译通过，7源类型相对准确6751基线9→9、0新增，不称全类型绿。次数、辅助API、禁用准入与恢复事实见[契约](computer-use.md)及[原生手册](../handbook/computer-use-native-acceptance.md) | 本次修正待两轴独立审查和准确新HEAD CI；辅助VK实际触发/到件、多DPI/多屏/锁屏、双采集失败与遮挡等未验收环境继续保留，不扩大真实应用操作许可 |
+| P02 桌面控制 8 工具 | #169 原固定源 `7aa8108` 已两轴复核并整合；8工具/图像下一模型请求、单观察/lease/Job收尾有真实专用窗口和HTTP/provider证据。实际调用回执修正完成17个协议TDD周期，含转义坏载体拒绝；f700驱动在freeze4有6项原生通过，freeze6独立真实Windows禁用目标零输入拒绝1项通过，最新freeze7宿主61项相关回归通过且未重跑原生；旧freeze5辅助候选1通过/1失败原件保留，不称辅助分支已证。Python编译通过，7源类型相对准确6751基线9→9、0新增，不称全类型绿。次数、辅助API、禁用准入与恢复事实见[契约](computer-use.md)及[原生手册](../handbook/computer-use-native-acceptance.md) | 本次修正完整/增量两轴无遗留，准确f4ac两套完整CI通过；辅助VK实际触发/到件、多DPI/多屏/锁屏、双采集失败与遮挡等未验收环境继续保留，不扩大真实应用操作许可 |
 | P03 Coding Agent 5 工具 | #174固定源`5a5a2c4`及关闭/配置夹具修正均已两轴复核并通过`fff08b1`两条CI；7项Herdr/两合成CLI原生通过，见[验收](../handbook/coding-agent-acceptance.md)。#175固定源`0e2da975`完成完整两轴及修正复核后合入，独立Codex exec复用spawn coding，见[S07验收](../handbook/codex-delegate-acceptance.md)；准确13c集成两轴与两套完整CI通过。#176独立源`eddfdb9`完成精确提交/发布及两轴修正复核，已整合`3c5e4c3`且集成两轴无遗留；准确交叉308项、前端221项、构建及窄类型通过，随后`cd73682`两套完整CI均通过 | 总PR后续跨模块验收；旧首push unknown原因未解释，隔离通过不当作根因修复。真实认证/消费/发布另批，不能以合成CLI代替真实服务 |
 | P04 屏幕感知 1 工具 | #160 已进入集成分支；提前拒绝/重复取消连接回收最终两轴复核均无剩余 finding；相关后端 196 passed/1 native 条件 skip，前端 69 passed；真实受控 Windows 主屏/125% DPI/本地视觉及取消通过，无原图落盘 | 总 PR 最终集成；尚无双屏、混合 DPI、实际锁屏/远程断开或 frozen 分发实证，也未调用真实远端视觉服务 |
 | P05 桌宠 1 工具 | 待实现；Electron/PySide6 宿主选择待回答 | 真实透明置顶窗口、动作包、move/play 与完整生命周期 |
 | P06 生图 1 工具 | #171/#172已两轴复核并通过准确13c两套完整CI，含当前主人txt2img/img2img、唯一原来源、历史、指定图片CAS重生成和受管后台。#173源`0d1b918`完成人类回合CG、受限标签与卡片写回；首次资产落库丢责任P2真实RED后修正，源和集成两轴均无遗留；`929974f`本地交叉321项、前端215项及构建通过，后续`e71145a`两套完整CI均通过，见[手册](../handbook/novelai-generation-acceptance.md) | 后续功能集成回归；真实NovelAI账号生成和费用另批 |
 | P07 QQ 附件 1 工具 | #164 已进入集成分支；多字节长行自动字符分页、当前/引用真实入站与存储/Runtime 往返、旧附件/跨群拒绝均经过两轴独立审查 | 平台实机验收另列；传输夹具不是 QQ 真人收件证据 |
 | S01 weather | #152 已进入集成分支；真实 curl、wttr.in、Open-Meteo 和公开 HTTP 工具往返 | 最终配置集成；Shell 仍须主人显式授权 |
-| S02 summarize | #152 已进入集成分支；真实 summarize 0.25.2、Node 24、URL 提取及本地模型夹具摘要回传 | 两个公开视频仅得 `transcriptSource: unavailable`/网页模板；后续隔离CLI补验启动被自动审批以 `blocked by policy` 拒绝、未给具体原因，实际执行0次，停止且未绕过。未取得真实字幕，不能以exit0称视频摘要成功 |
+| S02 summarize | #152 已进入集成分支；真实 summarize 0.25.2、Node 24、URL 提取及本地模型夹具摘要回传 | 两个公开视频仅得 `transcriptSource: unavailable`/网页模板；后续隔离CLI补验启动被自动审批以 `blocked by policy` 拒绝、未给具体原因，实际执行0次，停止且未绕过。未取得真实字幕，不能以exit0称视频摘要成功；PDF/podcast也尚无独立格式成功实证 |
 | S03 feed-manage | #168 已完成两轴独立复核并进入集成分支；内置 Skill、动态服务目录/授权和真实公开 HTTP 七动作通过；独立复跑 8 HTTP + 2 原生用例，集成含 2 原生交叉 94 passed，含 RSS/Atom、下一模型请求、fresh list、重启、503 旧缓存与撤权；详见[验收](../research/feed-skill-native-acceptance-2026-10-16.md) | 总 PR 最终验收；主动来源/ACK/通知和 Drift 仍不属于此项完成范围 |
 | S04 meme-manage | #152 已进入集成分支；指令、资源与角色目录边界已有行为测试。准确e71145a另完成本地主人上传→真实表情目录复制/视觉请求→桌面媒体→存储重建后从历史找ID再发送，1 passed/9.52秒，见[媒体链验收](../research/meme-skill-media-acceptance-2026-10-16.md) | 总PR后续集成回归；任意新路径不自动登记媒体ID，Drift文本循环不继承此视觉/复制能力 |
 | S05 skill-creater | #152 已进入集成分支；HTTP 写入新 Skill 后下一轮发现/显式激活，资源 hash、依赖名、真实 Windows junction 反例通过 | 总 PR 最终回归 |

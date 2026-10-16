@@ -50,3 +50,12 @@ Standards 审查修正：readiness 5秒超时后，构造器会先设置 release
 禁用目标准入修正前的准确源 freeze5 另执行同字节首例与一次自有窗口候选，整组为 **1 passed / 1 failed / 8.25秒**，2条 record_property warning；首例通过，候选因 `assisted_attempts=0` 未进入辅助分支而失败。候选前提A disabled/B foreground均实证，单次实际回执 `checks=1`、`already_foreground_checks=0`、`set_foreground_calls=1`、`activated=true`，两个VK API标记false，实际0xFC消息0；业务API已调用、effect unknown，恢复pending/null。最终A0/B0次点击、flags不变、前台B，这些事实不证明其他窗口没有受影响，也不证明输入已撤回。本机结果否定“disabled目标必然阻止业务输入/保证辅助分支”的假设；根因不唯一，不再重试该候选或改系统/算法制造VK。辅助键API实际触发及到件仍未证。两个host/Job/fixture和原owner全部收尾，495输入与3资源前后稳定，无新线程/非本地连接，guard恢复。原始工件 `computer169-final-native-helper-v1-13ab42f23a06` 保留失败，不并入原六项的成功计数。
 
 据此在原宿主输入边界新增 IsWindowEnabled 前置检查；list/state不拒绝禁用目标。freeze6 的独立真实 Windows 验收为 **1 passed / 4.532秒 / 1条 record_property warning**：实际 WindowsDesktop 与 `f700` 只执行 list/state 两个只读 RPC，公开 click 返回 `target_disabled`、`effect=not_started`，没有 input_receipt。测试包装器对全部五种输入 RPC 均在转发前抛错，实际 input/unknown RPC 尝试均为空；A/B 点击和 flags不变、前台B，host/driver/Job/fixture全退出。此项证明禁用目标被宿主拒绝，不是另一轮辅助分支探测，也不证明0xFC触发或到件。原始工件 `computer169-disabled-admission-native-v1-c99b5faefb39` 与原六项、最终61组、类型检查各自保留准确快照，freeze7没有重跑原生；检查与OS输入之间仍可能发生窗口状态变化，不宣称原子输入事务。双采集失败并同时遮挡、其他DPI/多屏及真实应用环境仍保持前文未验收状态。
+
+
+## 最终两轴审查与准确总头 CI
+
+源提交ec22c43经过6751基点到完整13文件的独立规范/规格审查；规格发现转义坏载体P2，以第17周期两项真实RED→GREEN修正为4653d17。原两位审查者分别复核该固定delta，最终规范0、规格0。随后无冲突整合为5c9aef8、f4ac973；全部13个交付blob及505份运行/测试/前端/构建输入与已验证源相同，仅额外保留既有#191两份文档，没有把输入对象校验称为再次运行原生套件。
+
+准确总头`f4ac973a04cdcd8327f80f20bd58d5088fdf8b77`的[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38958463460)及[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38958470086)各为2597 passed/39 skipped/2 warnings（619.73秒、481.16秒），各前端252 passed/44文件及TypeScript/Vite108模块通过。原完整console日志及event/head/四个终态job已核对；工作流没有JUnit产物，不伪称取得了CI XML。此结果不能替代前述实际辅助键/双采集失败/其他显示环境的未完成证据。
+
+旧a0 PR CI后端在`test_memory_io_deadline_rolls_back_http_sqlite_and_documents_after_embedding_finishes`的asyncio.run退出清理出现90秒堆栈，后来实际cancelled；原日志没有最终pytest统计，不能写作通过。堆栈未给出pending任务身份，尚未确定根因，本轮新CI成功不等于该旧挂起已修复。总PR仍为草稿，未合并或关闭本票。
