@@ -101,4 +101,6 @@ MCP 故障已在 Windows 原命令和 Linux 真实慢退出 fixture 复现：RPC
 
 #169 的独立源提交 `7aa810870ece832419a73d773d4ae7ed7baa6cb0` 经规范和规格两轴复核后进入总分支。真实专用窗口完整八工具/HTTP下一provider图像链路7 passed；作者本机全后端为1844 passed/14 skipped/1 MCP schema worker deadline失败，相关参数范围重跑9 passed，不能把两次结果合写为全量无失败。规范审查另发现lease构造超时晚获mutex的线程遗留和手册第三数据根缺失；真实随机mutex RED后修正，相关30 passed、原生收尾2 passed，独立修正复核通过。早期作者验收没有完整记录owner-knowledge根覆盖，已撤销“三数据根均隔离”的推断；新修正和根集成检查显式设置全部三根。
 
-总分支对非文档内容核对与源提交完全一致，集成60 passed/1原生deselected及前端专项1 passed、TypeScript/Vite通过。随后9源文件mypy发现四项新类型声明问题；补齐容器类型和dataclass字典工厂后，mypy全过、相关26 passed/1原生deselected。此段保留首次类型检查失败，不改变实际工具权限或原生资源锁。集成CI以新HEAD检查为准。
+总分支对非文档内容核对与源提交完全一致，集成60 passed/1原生deselected及前端专项1 passed、TypeScript/Vite通过。随后9源文件mypy发现四项新类型声明问题；补齐容器类型和dataclass字典工厂后，mypy全过、相关26 passed/1原生deselected。此段保留首次类型检查失败，不改变实际工具权限或原生资源锁。
+
+集成 `966a539f730d350f7654522ce36cf84c484b99f4` 的 [push CI](https://github.com/sawaki-zexi/meido/actions/runs/38853231583) 完整通过：后端1841 passed/25 skipped/2依赖warning（284.07秒），前端175 passed/27文件及构建。[同HEAD的PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38853238075) 前端通过，后端在 `test_memory_tool.py` 文件摘要后约23分钟未继续输出，由维护任务保留原始日志后取消以诊断，不能计为通过；尚无堆栈确定其停在该文件收尾还是下一测试。相邻两文件本地定向12 passed/8.66秒，未复现，不据此归因为基础设施。后续CI打开pytest的90秒 faulthandler 堆栈输出以定位潜在再次挂起；此选项不改变用例超时、断言或准入行为。
