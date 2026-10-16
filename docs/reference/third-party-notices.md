@@ -2,7 +2,7 @@
 
 状态：当前
 
-最后核验：2026-10-15
+最后核验：2026-10-16
 
 多端会话模块参考并改编 [Shiori-Agent](https://github.com/YinFengWindy/Shiori-Agent)，固定基线为 `1c241a2627bbcc99124aef71abaee237ac057499`。引用范围包括渠道账号和身份、入站暂停缓冲、聊天上下文隔离、群旁听以及平台传输行为；具体来源见[源码研究](../research/shiori-multichannel-integration.md)。上游采用 MIT 许可证，保留其版权及许可声明如下。
 
@@ -10,6 +10,38 @@
 MIT License
 
 Copyright (c) 2026 YinFengWindy
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## 飞书 SDK 连接桥
+
+飞书受管连接固定使用 [larksuite/oapi-sdk-python](https://github.com/larksuite/oapi-sdk-python) `1.7.4`。
+`backend/app/channels/feishu_connection.py` 复用已安装 SDK 的原 `_connect` code object，
+在私有 globals 中注入连接日志 kwargs，并以局部子类改写端点预取、配置验证和安全日志；
+未复制完整 SDK 协议。维护边界见[连接契约](feishu-owned-connection.md)。
+分发 SDK 时保留其包内许可，Lark 版权独立于本页 Shiori MIT 声明。
+
+```text
+MIT License
+
+Copyright (c) 2023 Lark Technologies Pte. Ltd.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

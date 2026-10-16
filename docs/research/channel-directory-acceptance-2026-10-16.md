@@ -64,3 +64,5 @@
 额外只读审计在d0894c3和基线4b1b3b8均复现：Runner.stop约10秒成功返回时，受控连接线程仍存活。真实lark-oapi1.7.4同步端点POST未传timeout；让受控成功响应在stop返回后才到达，SDK仍继续调用WebSocket连接器。后者被替换为只记录并立即失败，没有实际socket请求；最终释放/join后线程0，非localhost尝试0。
 
 停止标志阻止新的外层重连和探针中的业务dispatch；直接Transport.stop不等待已派发handler，但Host另有pause_and_drain/event_scope，本审计未证明正常账号切换绕过Host排空。生产资源问题单列[#181](https://github.com/sawaki-zexi/meido/issues/181)，等待#170总CI验证后独立修复；本票的夹具修改没有解决它。
+
+后续 #181 在经验证58c3fa1后独立实施生产修复，保持上述历史证据不变；实际修复、失败夹具记录与验收限制见[飞书停止验收](feishu-owned-stop-acceptance-2026-10-16.md)。#170夹具修改本身仍不构成该生产修复。

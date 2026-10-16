@@ -2957,17 +2957,30 @@ async def _save_platform_channel_account_unlocked(role_id: str, channel: str, da
         channel_transports.pop(account_id, None)
 
     async def rollback() -> None:
+        cleanup_error: Exception | None = None
+        if channel == "feishu" and account_id in channel_transports:
+            candidate = channel_transports[account_id]
+            if isinstance(candidate, FeishuWebhookTransport):
+                candidate.retire()
+            try:
+                await _stop_channel_account(account_id)
+            except Exception as error:
+                cleanup_error = error
+            else:
+                channel_host.unregister(account_id)
+                channel_adapters.pop(account_id, None)
+                channel_transports.pop(account_id, None)
         try:
             current = multichannel_store.get_account(account_id)
             if existing is None:
-                if current is not None:
+                if current is not None and cleanup_error is None:
                     multichannel_store.delete_account(account_id)
             else:
                 multichannel_store.register_channel_account(
                     role_id,
                     channel,
                     account_id=existing.account_id,
-                    enabled=existing.enabled,
+                    enabled=False if cleanup_error else existing.enabled,
                     allow_private=existing.allow_private,
                     allow_group=existing.allow_group,
                     blocked_senders=list(existing.blocked_senders),
@@ -2975,14 +2988,21 @@ async def _save_platform_channel_account_unlocked(role_id: str, channel: str, da
                     platform_id=existing.platform_id,
                 )
                 multichannel_store.set_channel_config(account_id, old_config)
-                multichannel_store.set_account_state(account_id, enabled=existing.enabled, last_error=existing.last_error)
-        except Exception:
-            logger.warning("渠道账号配置回滚失败 account=%s", account_id, exc_info=True)
+                multichannel_store.set_account_state(account_id, enabled=False if cleanup_error else existing.enabled, last_error=type(cleanup_error).__name__ if cleanup_error else existing.last_error)
+        except Exception as error:
+            logger.warning("渠道账号配置回滚失败 account=%s error=%s", account_id, type(error).__name__)
         for name, value in old_credentials.items():
+            if existing is None and cleanup_error is not None:
+                break
             try:
                 multichannel_store.credentials.set(credential_key(channel, account_id, name), value)
-            except Exception:
-                logger.warning("渠道凭据回滚失败 account=%s name=%s", account_id, name, exc_info=True)
+            except Exception as error:
+                logger.warning("渠道凭据回滚失败 account=%s name=%s error=%s", account_id, name, type(error).__name__)
+        if cleanup_error is not None:
+            # Saved desired configuration is rolled back separately from the
+            # frozen candidate still owned by these adapter/transport maps.
+            multichannel_store.set_account_state(account_id, enabled=False, last_error=type(cleanup_error).__name__)
+            raise HTTPException(status_code=503, detail="新渠道连接清理失败，账号已停用，请重试") from None
         if existing is not None and was_enabled:
             try:
                 await _start_channel_account(account_id)
@@ -3133,13 +3153,7 @@ async def set_channel_account_state(role_id: str, account_id: str, data: dict[st
             try:
                 await _start_channel_account(account_id)
             except Exception as error:
-                try:
-                    await _stop_channel_account(account_id)
-                except Exception:
-                    logger.debug("启用失败后的渠道清理失败 account=%s", account_id, exc_info=True)
-                channel_host.unregister(account_id)
-                channel_adapters.pop(account_id, None)
-                channel_transports.pop(account_id, None)
+                await _retire_failed_channel_start(account_id)
                 updated = multichannel_store.set_account_state(account_id, enabled=False, last_error=type(error).__name__)
                 raise HTTPException(status_code=502, detail="渠道连接启动失败，账号已停用") from error
         else:
@@ -4603,6 +4617,17 @@ async def _start_channel_account_unlocked(account_id: str) -> None:
     if not _channel_credentials_configured(account):
         multichannel_store.set_account_state(account_id, enabled=False, last_error="credentials_missing")
         return
+    previous = channel_transports.get(account_id)
+    if account.channel == "feishu" and isinstance(previous, FeishuWebhookTransport) and previous.retiring:
+        # A failed save may have restored desired settings while its frozen
+        # candidate still owns resources. Retire it before rebuilding anything.
+        await _stop_channel_account_unlocked(account_id)
+        channel_host.unregister(account_id)
+        channel_adapters.pop(account_id, None)
+        channel_transports.pop(account_id, None)
+        account = multichannel_store.get_account(account_id)
+        if account is None or not multichannel_store.account_effectively_enabled(account) or not _channel_owner_is_available(account):
+            return
     config = multichannel_store.channel_config(account_id)
     managed_ref = str(config.get("managedRef") or "")
     if account.channel == "qq" and managed_ref:
@@ -4756,6 +4781,24 @@ async def _stop_channel_account(account_id: str) -> None:
         await _stop_channel_account_unlocked(account_id)
 
 
+async def _retire_failed_channel_start(account_id: str) -> None:
+    candidate = channel_transports.get(account_id)
+    if isinstance(candidate, FeishuWebhookTransport):
+        candidate.retire()
+    try:
+        await _stop_channel_account(account_id)
+    except Exception as error:
+        logger.debug("启动失败后的渠道清理失败 account=%s error=%s", account_id, type(error).__name__)
+        account = multichannel_store.get_account(account_id)
+        if account is not None and account.channel == "feishu":
+            # A failed Feishu cleanup must retain adapter, host and transport
+            # together, so explicit retry and application shutdown still own it.
+            return
+    channel_host.unregister(account_id)
+    channel_adapters.pop(account_id, None)
+    channel_transports.pop(account_id, None)
+
+
 async def _start_channel_workers() -> None:
     try:
         await managed_napcat.cleanup_deleted_roles({role.id for role in store.list()})
@@ -4774,18 +4817,19 @@ async def _start_channel_workers() -> None:
         try:
             await _start_channel_account(account.account_id)
         except Exception as error:
-            try:
-                await _stop_channel_account(account.account_id)
-            except Exception:
-                logger.debug("启动失败后的渠道清理失败 account=%s", account.account_id, exc_info=True)
-            channel_host.unregister(account.account_id)
-            channel_adapters.pop(account.account_id, None)
-            channel_transports.pop(account.account_id, None)
+            await _retire_failed_channel_start(account.account_id)
             multichannel_store.set_account_state(account.account_id, enabled=False, last_error=type(error).__name__)
             logger.warning("渠道账号启动失败 account=%s error=%s", account.account_id, type(error).__name__)
 
 
 async def _close_channel_workers() -> None:
+    # The application owns every channel until the entire shutdown completes;
+    # cancellation of its caller cannot strand later accounts in this batch.
+    from .channels.feishu_connection import wait_owned
+    await wait_owned(asyncio.create_task(_close_channel_workers_owned()))
+
+
+async def _close_channel_workers_owned() -> None:
     account_ids = set(channel_adapters) | set(telegram_tasks) | set(channel_tasks)
     for account_id in account_ids:
         try:
