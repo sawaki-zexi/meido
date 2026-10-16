@@ -1,6 +1,6 @@
 # 断连监听取消修复的本地验收（#192）
 
-状态：当前，本地窄验收和固定提交双轴审查完成；总集成完整 CI 待核验。
+状态：当前，本地窄验收和固定提交双轴审查完成；准确集成头df10901的两套完整CI均通过。
 
 事实来源：[Issue #192](https://github.com/sawaki-zexi/meido/issues/192)、[监听实现](../../backend/app/main.py)、[HTTP 记忆回归](../../tests/python/test_memory_tools_api.py)、[完成回复回归](../../tests/python/test_api.py)、[停止对话回归](../../tests/python/test_chat_stop.py)。最后核验：2026-10-17。
 
@@ -72,3 +72,10 @@ Git 提交保存规范化 LF；下面是相同三个文件的 Git blob 指纹。
 - 旧 CI 栈没有监听 task 身份；本次同类症状的 RED/GREEN 不能证明所有旧 CI 挂起完全同因。旧原诊断拦截的 Popen caller 仍未知。
 - 上述执行记录固定独立源 `e6b9dd82cb3dabaedfd947af20042727557b4134`。其规范、需求规格两轴独立审查均为 0 findings，随后无冲突汇入总分支 `c36e7f396634061b463e5de87fcbc526780aacee`；三个 Python 文件及原验收文档的 Git blob 与受审源逐项相同。后续仅补本文集成状态，不重复本地验收。
 - 集成核验索引 `D:/meido-artifacts/disconnect192-integration-root-verification-v1.json` 的 SHA256 为 `e403438f0426393d0d7c9c57f900b7eca38ffc7d1f13150e1f600d853ced3830`；规范报告 `e701eed971e196ceff44ae0123b304bc7966cddc9af8a5790334998aae45f14c`，规格报告 `ac059cbb0df22db1e84ea2cc5f0407d80dbc5a318ead0a8afa5c45cbb0544dd7`。准确集成提交的完整 CI 尚待核验，不据本记录合并或关闭 Issue。
+
+
+## 总集成 CI 终态
+
+最终源e6b9dd8精确整合为c36e7f3后，`df109015b3a78521c26c3b0f6129b276567d3ea5` 的[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38975957143)和[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38975952829)全部job成功。原完整日志各只下载一次，各后端2610 passed/39 skipped/2 warnings（515.00秒、614.71秒），前端各252 passed/44文件、TypeScript/Vite构建通过。准确df源码包含本修复；这些结果不追认旧7b已取消push为成功，也不证明所有旧挂起都只有这一根因。
+
+原日志 `D:/meido-artifacts/shiori-ci-df10901-38975957143-full-v1.log` SHA256 `d8b30b71aa86597d4d235d7ec5f1cb1d37da1a23190f799e4e0b47f45c768250`；push原日志 `shiori-ci-df10901-38975952829-full-v1.log` SHA256 `03a491628d77c54beddd2f9c7c8f2b76367a0fafa28d5672c425e798f533b462`。各原watch已自然终止，无重复运行。

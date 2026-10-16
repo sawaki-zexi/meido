@@ -1,7 +1,7 @@
 # 使用 Shiori 内置 Skill
 
 状态：当前
-最后核验：2026-10-16
+最后核验：2026-10-17
 事实来源：[内置正文](../../backend/app/builtin_skills)、[接口契约](../reference/shiori-builtin-skills.md)、[真实 CLI 验收](../research/shiori-skills-native-acceptance-2026-10-16.md)。
 
 ## 选择技能
@@ -35,6 +35,27 @@ node "D:/tools/meido-summarize/node_modules/@steipete/summarize/dist/cli.js" "ht
 先验证 `--version` 和 `--help`。URL 提取可不配置密钥；由角色根据真实正文总结。CLI 自行调用模型时，按其[配置说明](https://github.com/steipete/summarize/blob/main/docs/config.md) 单独配置 `~/.summarize/config.json` 的服务与凭据；不复制 Meido 模型密钥。实际 CLI 读取它自己的配置，Shell 不继承任意后端 API key。
 
 0.25.2 使用 `--extract`，旧 Shiori 的 `--extract-only` 不适用。本地 txt 不支持 `--extract`，应使用 `notes.txt --json`；短文本可能原样返回且 `llm:null`。视频先尝试已有字幕；缺字幕、PDF/音视频额外依赖或转录失败时具体处理，不能当作完成提取。
+
+## 本地音频与 Podcast
+
+已用实际 whisper.cpp v1.9.1 / tiny.en 验证短英文 WAV 和独立 RSS/enclosure；配置、实际输出和限制见[验收](../research/summarize-audio-podcast-acceptance-2026-10-17.md)。保留 Windows 引擎原 Release 的相邻 DLL，下载匹配的模型文件并校验来源与 hash。只放一个 exe 不足以保证启动。
+
+在运行 CLI 所用 HOME 的 `.summarize/config.json` 顶层 `env` 配置独立转写依赖，例如：
+
+```json
+{
+  "env": {
+    "SUMMARIZE_TRANSCRIBER": "whisper",
+    "SUMMARIZE_WHISPER_CPP_BINARY": "D:/tools/whisper/Release/whisper-cli.exe",
+    "SUMMARIZE_WHISPER_CPP_MODEL_PATH": "D:/tools/whisper/models/ggml-tiny.en.bin",
+    "SUMMARIZE_DISABLE_LOCAL_WHISPER_CPP": "0"
+  }
+}
+```
+
+这些是安装路径示例；确认真实文件存在。仅给后端设置任意 `SUMMARIZE_*` 不会穿过 Shell 的最小环境。Node 和 summarize `.bin` 仍须在启动 PATH，Node 仍须在角色 Shell 白名单；Skill 激活不会安装引擎或授予额外命令。
+
+角色 workspace 的 WAV 可用 `node <真实CLI.js> ./speech.wav --extract --format text --transcriber whisper`，RSS 可用 `node <真实CLI.js> <RSS-URL> --extract --json --format text --transcriber whisper`；所选 URL 的网络访问须在既有许可内。先检查实际非空转写，角色再依据结果总结。短 WAV 的成功不保证所有格式、语言或外部 Podcast 平台；格式需要转码时须另准备所需依赖。URL JSON 的 `prompt` 可以包含实际正文，`llm:null/summary:null` 仍表示未调用 CLI 摘要模型。
 
 ## 表情包与新技能
 

@@ -49,6 +49,6 @@ Node 外部守卫的八项网络 API 自检均在底层调用前拦截，正文�
 
 ## 尚未证明
 
-本次只覆盖自制普通文本 PDF，不覆盖扫描件/OCR、加密或复杂 PDF、音频、Podcast、真实模型服务、打包分发环境或真实平台收件。ASR 引擎及模型文件已另行取得，但本次没有进行音频转写。
+本次只覆盖自制普通文本 PDF，不覆盖扫描件/OCR、加密或复杂 PDF、音频、Podcast、真实模型服务、打包分发环境或真实平台收件。本次PDF运行没有进行音频转写；之后另在准确df源码完成了独立[WAV/Podcast实际ASR验收](summarize-audio-podcast-acceptance-2026-10-17.md)，不与本PDF证据混计。
 
 视频字幕补验此前被自动审批以 `blocked by policy` 拒绝，未给具体原因，实际执行零次且已停止；本次 PDF 不替代字幕验收，也不重试该动作。S02 及[总复刻目标](../reference/shiori-tool-parity-status.md)保持未完成。
