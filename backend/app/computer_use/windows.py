@@ -50,6 +50,7 @@ class WindowsDesktop:
             (self.user, "GetDpiForWindow", [W.HWND], W.UINT),
             (self.user, "IsIconic", [W.HWND], W.BOOL),
             (self.user, "IsWindowVisible", [W.HWND], W.BOOL),
+            (self.user, "IsWindowEnabled", [W.HWND], W.BOOL),
             (self.user, "GetClassNameW", [W.HWND, W.LPWSTR, ctypes.c_int], ctypes.c_int),
             (self.user, "SetThreadDpiAwarenessContext", [ctypes.c_void_p], ctypes.c_void_p),
             (self.wts, "WTSQuerySessionInformationW", [W.HANDLE, W.DWORD, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(W.DWORD)], W.BOOL),
@@ -183,6 +184,10 @@ class WindowsDesktop:
                                   self.user.GetDpiForWindow(window_id), thread, name.value, sid, session)
         finally:
             self.user.SetThreadDpiAwarenessContext(old)
+
+    def input_enabled(self, window_id: int) -> bool:
+        """Read input eligibility after the caller verifies window identity."""
+        return bool(self.user.IsWindowEnabled(window_id))
 
     def validate_process(self, pid):
         """Prove the newly spawned driver kept this user's ordinary token."""

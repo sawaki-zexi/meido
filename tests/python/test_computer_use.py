@@ -21,6 +21,9 @@ class Desktop:
     def validate(self):
         return "fixture-desktop"
 
+    def input_enabled(self, window_id):
+        return True
+
     def inspect(self, pid, hwnd):
         return SimpleNamespace(pid=pid, window_id=hwnd, created=123, bounds=(10, 10, 310, 210),
                                dpi=96, thread_id=3, class_name="fixture", sid="fixture", session_id=1)
@@ -56,7 +59,11 @@ class Driver:
                             "source_dimensions": [300, 200], "image_dimensions": [300, 200],
                             "physical_origin": [10, 10], "resize_ratio": 1.0, "pixel_coordinates_available": True}},
                 "content": [{"type": "image", "mimeType": "image/png", "data": base64.b64encode(pixels.getvalue()).decode()}]}
-        return {"structuredContent": {"effect": "unverifiable"}, "content": []}
+        return {"structuredContent": {
+            "effect": "unverifiable",
+            "input_receipt": {"status": "available", "foreground": [], "business_effect": "unknown",
+                              "business": [], "restore": []},
+        }, "content": []}
 
     async def close(self):
         self.exit_confirmed = True
@@ -214,6 +221,486 @@ def test_role_observes_clicks_and_must_refresh_then_releases_same_run(tmp_path):
     asyncio.run(run())
 
 
+def test_failed_foreground_action_preserves_assistance_receipt_and_unknown_effect(tmp_path):
+    """A controlled native response proves receipt transport, not real VK delivery."""
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    receipt = {
+        "status": "available",
+        "foreground": [{
+            "stage": "click",
+            "checks": 4,
+            "already_foreground_checks": 0,
+            "set_foreground_calls": 4,
+            "assisted_attempts": 3,
+            "vk_noname_down_api_called": True,
+            "vk_noname_up_api_called": True,
+            "activated": False,
+        }],
+        "business_effect": "not_started",
+        "business": [{"stage": "click", "input_api_called": False}],
+        "restore": [],
+    }
+    original = driver.call
+
+    async def activation_refused(name, arguments):
+        if name == "click":
+            return {
+                "isError": True,
+                "structuredContent": {
+                    "code": "foreground_unavailable",
+                    "input_receipt": receipt,
+                },
+                "content": [],
+            }
+        return await original(name, arguments)
+
+    driver.call = activation_refused
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            observed = json.loads((await tools["computer_get_window_state"].execute(
+                {"pid": 42, "window_id": 81}, context
+            )).content)
+            action = {key: observed[key] for key in (
+                "pid", "window_id", "snapshot_id", "observation_id"
+            )}
+            result = await tools["computer_click"].execute(
+                {**action, "x": 12, "y": 12, "delivery_mode": "foreground"}, context
+            )
+            assert result.is_error
+            assert result.details["effect"] == "unknown"
+            assert result.details.get("input_receipt") == receipt
+            assert json.loads(result.content)["input_receipt"] == receipt
+        finally:
+            await host.close()
+
+    asyncio.run(run())
+
+
+def test_malformed_receipt_preserves_original_failure_without_exposing_driver_payload(tmp_path):
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    private_payload = "data:image/png;base64,not-a-safe-receipt-field"
+    malformed = {
+        "status": "available",
+        "foreground": [{
+            "stage": "click", "checks": 1, "already_foreground_checks": 1,
+            "set_foreground_calls": 0, "assisted_attempts": 0,
+            "vk_noname_down_api_called": False, "vk_noname_up_api_called": False,
+            "activated": True,
+        }],
+        "business_effect": {"arbitrary_driver_content": private_payload},
+        "business": [{"stage": "click", "input_api_called": False}],
+        "restore": [],
+    }
+    original = driver.call
+
+    async def malformed_response(name, arguments):
+        if name == "click":
+            return {
+                "isError": True,
+                "structuredContent": {"code": "foreground_unavailable", "input_receipt": malformed},
+                "content": [],
+            }
+        return await original(name, arguments)
+
+    driver.call = malformed_response
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            observed = json.loads((await tools["computer_get_window_state"].execute(
+                {"pid": 42, "window_id": 81}, context
+            )).content)
+            action = {key: observed[key] for key in (
+                "pid", "window_id", "snapshot_id", "observation_id"
+            )}
+            result = await tools["computer_click"].execute(
+                {**action, "x": 12, "y": 12, "delivery_mode": "foreground"}, context
+            )
+            data = json.loads(result.content)
+            assert result.is_error and data["code"] == "foreground_unavailable"
+            assert result.details["effect"] == "unknown"
+            assert result.details["input_receipt"] == {"status": "unavailable", "reason": "invalid"}
+            assert data["input_receipt"] == result.details["input_receipt"]
+            assert private_payload not in result.content + json.dumps(result.details)
+        finally:
+            await host.close()
+
+    asyncio.run(run())
+
+
+def test_plain_native_failure_marks_receipt_missing_without_inventing_counts(tmp_path):
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    original = driver.call
+
+    async def native_failure(name, arguments):
+        if name == "click":
+            return {"isError": True, "content": [{
+                "type": "text", "text": "foreground_unavailable: exact target did not activate"
+            }]}
+        return await original(name, arguments)
+
+    driver.call = native_failure
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            observed = json.loads((await tools["computer_get_window_state"].execute(
+                {"pid": 42, "window_id": 81}, context
+            )).content)
+            action = {key: observed[key] for key in (
+                "pid", "window_id", "snapshot_id", "observation_id"
+            )}
+            result = await tools["computer_click"].execute(
+                {**action, "x": 12, "y": 12, "delivery_mode": "foreground"}, context
+            )
+            data = json.loads(result.content)
+            assert result.is_error and data.get("code") == "foreground_unavailable"
+            assert result.details["effect"] == "unknown"
+            missing = {"status": "unavailable", "reason": "missing"}
+            assert result.details["input_receipt"] == missing
+            assert data["input_receipt"] == missing
+            assert "set_foreground_calls" not in result.content
+        finally:
+            await host.close()
+
+    asyncio.run(run())
+
+
+def test_failed_keyboard_after_focus_click_preserves_each_stage_and_restore(tmp_path):
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    receipt = {
+        "status": "available",
+        "foreground": [{
+            "stage": "keyboard", "checks": 4, "already_foreground_checks": 0,
+            "set_foreground_calls": 4, "assisted_attempts": 3,
+            "vk_noname_down_api_called": True, "vk_noname_up_api_called": True,
+            "activated": True,
+        }, {
+            "stage": "focus_click", "checks": 1, "already_foreground_checks": 1,
+            "set_foreground_calls": 0, "assisted_attempts": 0,
+            "vk_noname_down_api_called": False, "vk_noname_up_api_called": False,
+            "activated": True,
+        }],
+        "business_effect": "unknown",
+        "business": [
+            {"stage": "keyboard", "input_api_called": False},
+            {"stage": "focus_click", "input_api_called": True},
+        ],
+        "restore": [{
+            "stage": "keyboard", "status": "available", "set_foreground_calls": 1,
+            "confirmed": True,
+        }],
+    }
+    original = driver.call
+
+    async def keyboard_focus_refused(name, arguments):
+        if name == "press_key":
+            return {
+                "isError": True,
+                "structuredContent": {"code": "foreground_unavailable", "input_receipt": receipt},
+                "content": [],
+            }
+        return await original(name, arguments)
+
+    driver.call = keyboard_focus_refused
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            observed = json.loads((await tools["computer_get_window_state"].execute(
+                {"pid": 42, "window_id": 81}, context
+            )).content)
+            action = {key: observed[key] for key in (
+                "pid", "window_id", "snapshot_id", "observation_id"
+            )}
+            result = await tools["computer_press_key"].execute({
+                **action, "key": "End", "element_token": "s00000001:2",
+                "delivery_mode": "foreground",
+            }, context)
+            assert result.is_error and result.details["effect"] == "unknown"
+            assert result.details["input_receipt"] == receipt
+            assert json.loads(result.content)["input_receipt"] == receipt
+        finally:
+            await host.close()
+
+    asyncio.run(run())
+
+
+def test_scroll_receipt_does_not_invent_foreground_activation(tmp_path):
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    receipt = {
+        "status": "available", "foreground": [], "business_effect": "unknown",
+        "business": [{"stage": "scroll", "input_api_called": True}], "restore": [],
+    }
+    original = driver.call
+
+    async def scroll_response(name, arguments):
+        if name == "scroll":
+            return {"structuredContent": {"input_receipt": receipt}, "content": []}
+        return await original(name, arguments)
+
+    driver.call = scroll_response
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            observed = json.loads((await tools["computer_get_window_state"].execute(
+                {"pid": 42, "window_id": 81}, context
+            )).content)
+            action = {key: observed[key] for key in (
+                "pid", "window_id", "snapshot_id", "observation_id"
+            )}
+            result = await tools["computer_scroll"].execute({
+                **action, "direction": "down", "amount": 1, "delivery_mode": "foreground",
+            }, context)
+            assert not result.is_error and result.details["effect"] == "unknown"
+            assert result.details["input_receipt"] == receipt
+            assert json.loads(result.content)["input_receipt"] == receipt
+        finally:
+            await host.close()
+
+    asyncio.run(run())
+
+
+def test_revocation_after_driver_reply_preserves_only_safe_input_facts(tmp_path):
+    host, tools, context, driver, role = fixture_host(tmp_path)
+    receipt = {
+        "status": "available",
+        "foreground": [{
+            "stage": "click", "checks": 1, "already_foreground_checks": 1,
+            "set_foreground_calls": 0, "assisted_attempts": 0,
+            "vk_noname_down_api_called": False, "vk_noname_up_api_called": False,
+            "activated": True,
+        }],
+        "business_effect": "unknown",
+        "business": [{"stage": "click", "input_api_called": True}],
+        "restore": [{
+            "stage": "click", "status": "pending", "set_foreground_calls": None,
+            "confirmed": None,
+        }],
+    }
+    private_payload = "data:image/png;base64,revoked-pixels-must-not-publish"
+    original = driver.call
+
+    async def completed_before_revocation(name, arguments):
+        if name == "click":
+            role.agentConfig.computerUse.enabled = False
+            return {
+                "structuredContent": {"input_receipt": receipt, "untrusted": private_payload},
+                "content": [{"type": "image", "data": private_payload}],
+            }
+        return await original(name, arguments)
+
+    driver.call = completed_before_revocation
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            observed = json.loads((await tools["computer_get_window_state"].execute(
+                {"pid": 42, "window_id": 81}, context
+            )).content)
+            action = {key: observed[key] for key in (
+                "pid", "window_id", "snapshot_id", "observation_id"
+            )}
+            result = await tools["computer_click"].execute(
+                {**action, "x": 12, "y": 12, "delivery_mode": "foreground"}, context
+            )
+            assert result.is_error and result.details["status"] == "permission_denied"
+            assert result.details["effect"] == "unknown"
+            assert result.details["input_receipt"] == receipt
+            assert json.loads(result.content)["input_receipt"] == receipt
+            assert result.images == ()
+            assert private_payload not in result.content + json.dumps(result.details)
+        finally:
+            await host.close()
+
+    asyncio.run(run())
+
+
+def test_lost_driver_response_reports_unavailable_receipt_and_joins_owner(tmp_path):
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    original = driver.call
+
+    async def disconnected(name, arguments):
+        if name == "click":
+            raise ConnectionError("fixture lost the response after dispatch")
+        return await original(name, arguments)
+
+    driver.call = disconnected
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            observed = json.loads((await tools["computer_get_window_state"].execute(
+                {"pid": 42, "window_id": 81}, context
+            )).content)
+            action = {key: observed[key] for key in (
+                "pid", "window_id", "snapshot_id", "observation_id"
+            )}
+            result = await tools["computer_click"].execute(
+                {**action, "x": 12, "y": 12, "delivery_mode": "foreground"}, context
+            )
+            unavailable = {"status": "unavailable", "reason": "response_missing"}
+            assert result.is_error and result.details["effect"] == "unknown"
+            assert result.details["input_receipt"] == unavailable
+            assert json.loads(result.content)["input_receipt"] == unavailable
+            assert "set_foreground_calls" not in result.content
+            assert driver.exit_confirmed
+            assert (await tools["computer_list_windows"].execute({}, context)).is_error
+        finally:
+            await host.close()
+
+    asyncio.run(run())
+
+
+def test_native_failure_text_keeps_reason_when_structured_result_contains_receipt(tmp_path):
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    receipt = {
+        "status": "available",
+        "foreground": [{
+            "stage": "click", "checks": 4, "already_foreground_checks": 0,
+            "set_foreground_calls": 4, "assisted_attempts": 3,
+            "vk_noname_down_api_called": True, "vk_noname_up_api_called": True,
+            "activated": False,
+        }],
+        "business_effect": "not_started",
+        "business": [{"stage": "click", "input_api_called": False}], "restore": [],
+    }
+    original = driver.call
+
+    async def native_error_with_receipt(name, arguments):
+        if name == "click":
+            return {
+                "isError": True, "structuredContent": {"input_receipt": receipt},
+                "content": [{"type": "text", "text": "foreground_unavailable: exact target did not activate"}],
+            }
+        return await original(name, arguments)
+
+    driver.call = native_error_with_receipt
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            observed = json.loads((await tools["computer_get_window_state"].execute(
+                {"pid": 42, "window_id": 81}, context
+            )).content)
+            action = {key: observed[key] for key in (
+                "pid", "window_id", "snapshot_id", "observation_id"
+            )}
+            result = await tools["computer_click"].execute(
+                {**action, "x": 12, "y": 12, "delivery_mode": "foreground"}, context
+            )
+            assert result.is_error and result.details["effect"] == "unknown"
+            assert json.loads(result.content).get("code") == "foreground_unavailable"
+            assert result.details["input_receipt"] == receipt
+        finally:
+            await host.close()
+
+    asyncio.run(run())
+
+
+def test_unattempted_restore_keeps_confirmation_unknown(tmp_path):
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    receipt = {
+        "status": "available",
+        "foreground": [{
+            "stage": "keyboard", "checks": 1, "already_foreground_checks": 1,
+            "set_foreground_calls": 0, "assisted_attempts": 0,
+            "vk_noname_down_api_called": False, "vk_noname_up_api_called": False,
+            "activated": True,
+        }],
+        "business_effect": "unknown",
+        "business": [{"stage": "keyboard", "input_api_called": True}],
+        "restore": [{
+            "stage": "keyboard", "status": "available", "set_foreground_calls": 0,
+            "confirmed": None,
+        }],
+    }
+    original = driver.call
+
+    async def no_restore_needed(name, arguments):
+        if name == "press_key":
+            return {"structuredContent": {"input_receipt": receipt}, "content": []}
+        return await original(name, arguments)
+
+    driver.call = no_restore_needed
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            observed = json.loads((await tools["computer_get_window_state"].execute(
+                {"pid": 42, "window_id": 81}, context
+            )).content)
+            action = {key: observed[key] for key in (
+                "pid", "window_id", "snapshot_id", "observation_id"
+            )}
+            result = await tools["computer_press_key"].execute(
+                {**action, "key": "End", "delivery_mode": "foreground"}, context
+            )
+            assert not result.is_error and result.details["effect"] == "unknown"
+            assert result.details["input_receipt"] == receipt
+            assert json.loads(result.content)["input_receipt"] == receipt
+        finally:
+            await host.close()
+
+    asyncio.run(run())
+
+
+def test_generic_mcp_error_keeps_native_code_and_limited_foreground_cause(tmp_path):
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    receipt = {
+        "status": "available",
+        "foreground": [{
+            "stage": "click", "checks": 4, "already_foreground_checks": 0,
+            "set_foreground_calls": 4, "assisted_attempts": 3,
+            "vk_noname_down_api_called": True, "vk_noname_up_api_called": True,
+            "activated": False,
+        }],
+        "business_effect": "not_started",
+        "business": [{"stage": "click", "input_api_called": False}],
+        "restore": [{
+            "stage": "click", "status": "pending", "set_foreground_calls": None,
+            "confirmed": None,
+        }],
+    }
+    original = driver.call
+
+    async def normalized_native_error(name, arguments):
+        if name == "click":
+            return {
+                "isError": True,
+                "structuredContent": {"code": "tool_invocation_failed", "input_receipt": receipt},
+                "content": [{"type": "text", "text": "foreground_unavailable: exact target did not activate"}],
+            }
+        return await original(name, arguments)
+
+    driver.call = normalized_native_error
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            observed = json.loads((await tools["computer_get_window_state"].execute(
+                {"pid": 42, "window_id": 81}, context
+            )).content)
+            action = {key: observed[key] for key in (
+                "pid", "window_id", "snapshot_id", "observation_id"
+            )}
+            result = await tools["computer_click"].execute(
+                {**action, "x": 12, "y": 12, "delivery_mode": "foreground"}, context
+            )
+            data = json.loads(result.content)
+            assert result.is_error and result.details["effect"] == "unknown"
+            assert data["code"] == "tool_invocation_failed"
+            assert data.get("cause_code") == "foreground_unavailable"
+            assert result.details["input_receipt"] == receipt
+        finally:
+            await host.close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("change", ["origin", "ratio", "dimensions", "provenance"])
 def test_invalid_capture_metadata_never_grants_actionable_image(tmp_path, change):
     host, tools, context, driver, _ = fixture_host(tmp_path)
@@ -261,4 +748,260 @@ def test_changed_observation_context_refuses_input(tmp_path, change):
         assert result.is_error
         assert not any(name=="click" for name,_ in driver.calls)
         await host.close()
+    asyncio.run(run())
+
+
+def test_closed_action_result_preserves_unique_native_receipt_text_carrier(tmp_path):
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    # Protocol declarations, not an observation of native foreground input.
+    receipt = {
+        "status": "available",
+        "foreground": [{"stage": "click", "checks": 1, "already_foreground_checks": 1,
+                        "set_foreground_calls": 0, "assisted_attempts": 0,
+                        "vk_noname_down_api_called": False, "vk_noname_up_api_called": False,
+                        "activated": True}],
+        "business_effect": "unknown", "business": [{"stage": "click", "input_api_called": True}],
+        "restore": [{"stage": "click", "status": "pending", "set_foreground_calls": None, "confirmed": None}],
+    }
+    original = driver.call
+
+    async def call(name, arguments):
+        if name != "click":
+            return await original(name, arguments)
+        driver.calls.append((name, arguments))
+        # Canonical CUA publishes only this closed ActionResult, retaining the
+        # outer content. The dedicated carrier has no prose or image payload.
+        return {"structuredContent": {"effect": "unverifiable", "route": "global_input",
+                                      "delivery": {"mode": "unknown"}},
+                "content": [{"type": "text", "text": "private-driver-prose-sentinel"},
+                            {"type": "text", "text": json.dumps({"meido_input_receipt_v1": receipt})}]}
+
+    driver.call = call
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            data = json.loads((await tools["computer_get_window_state"].execute({"pid": 42, "window_id": 81}, context)).content)
+            action = {key: data[key] for key in ("pid", "window_id", "snapshot_id", "observation_id")}
+            action.update(element_token="s00000001:2", delivery_mode="foreground")
+            result = await tools["computer_click"].execute(action, context)
+            assert not result.is_error
+            assert result.details["input_receipt"] == receipt
+            assert json.loads(result.content)["input_receipt"] == receipt
+            assert "meido_input_receipt_v1" not in result.content
+            assert "private-driver-prose-sentinel" not in result.content
+            assert not result.images
+        finally:
+            await host.close()
+
+    asyncio.run(run())
+
+
+def test_duplicate_native_receipt_carriers_preserve_failure_without_selecting_one(tmp_path):
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    receipt = {"status": "available", "foreground": [], "business_effect": "unknown",
+               "business": [], "restore": []}
+    original = driver.call
+
+    async def call(name, arguments):
+        if name != "click":
+            return await original(name, arguments)
+        driver.calls.append((name, arguments))
+        carrier = {"type": "text", "text": json.dumps({"meido_input_receipt_v1": receipt})}
+        return {"isError": True, "structuredContent": {"code": "tool_invocation_failed"},
+                "content": [{"type": "text", "text": "foreground_unavailable: private-error-sentinel"},
+                            carrier, carrier]}
+
+    driver.call = call
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            data = json.loads((await tools["computer_get_window_state"].execute({"pid": 42, "window_id": 81}, context)).content)
+            action = {key: data[key] for key in ("pid", "window_id", "snapshot_id", "observation_id")}
+            action.update(element_token="s00000001:2", delivery_mode="foreground")
+            result = await tools["computer_click"].execute(action, context)
+            assert result.is_error and result.details["effect"] == "unknown"
+            assert result.details["input_receipt"] == {"status": "unavailable", "reason": "invalid"}
+            payload = json.loads(result.content)
+            assert payload["code"] == "tool_invocation_failed"
+            assert payload["cause_code"] == "foreground_unavailable"
+            assert payload["input_receipt"] == result.details["input_receipt"]
+            assert "private-error-sentinel" not in result.content and "meido_input_receipt_v1" not in result.content
+            assert len([name for name, _ in driver.calls if name == "click"]) == 1
+        finally:
+            await host.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("case", ["extra_key", "invalid_json", "duplicate_json_key", "oversize",
+                                 "too_many_blocks", "structured_and_carrier", "invalid_structured_with_carrier"])
+def test_malformed_or_ambiguous_native_receipt_carrier_cannot_fall_back(tmp_path, case):
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    receipt = {"status": "available", "foreground": [], "business_effect": "unknown",
+               "business": [], "restore": []}
+    marker = "meido_input_receipt_v1"
+    valid = {"type": "text", "text": json.dumps({marker: receipt})}
+    structured = {"code": "tool_invocation_failed"}
+    if case == "extra_key":
+        candidates = [{"type": "text", "text": json.dumps({marker: receipt, "extra": "carrier-private-sentinel"})}, valid]
+    elif case == "invalid_json":
+        candidates = [{"type": "text", "text": '{"meido_input_receipt_v1":'}, valid]
+    elif case == "duplicate_json_key":
+        candidates = [{"type": "text", "text": '{"meido_input_receipt_v1":null,"meido_input_receipt_v1":'
+                                               + json.dumps(receipt) + '}'}]
+    elif case == "oversize":
+        candidates = [{"type": "text", "text": '{"meido_input_receipt_v1":' + ' ' * 8193
+                                               + json.dumps(receipt) + '}'}, valid]
+    elif case == "too_many_blocks":
+        candidates = [{"type": "text", "text": "ordinary private prose"}] * 8 + [valid]
+    else:
+        structured["input_receipt"] = receipt if case == "structured_and_carrier" else {"status": "forged"}
+        candidates = [valid]
+    original = driver.call
+
+    async def call(name, arguments):
+        if name != "click":
+            return await original(name, arguments)
+        driver.calls.append((name, arguments))
+        return {"isError": True, "structuredContent": structured,
+                "content": [{"type": "text", "text": "foreground_unavailable: original-private-sentinel"}, *candidates]}
+
+    driver.call = call
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            data = json.loads((await tools["computer_get_window_state"].execute({"pid": 42, "window_id": 81}, context)).content)
+            action = {key: data[key] for key in ("pid", "window_id", "snapshot_id", "observation_id")}
+            action.update(element_token="s00000001:2", delivery_mode="foreground")
+            result = await tools["computer_click"].execute(action, context)
+            assert result.is_error and result.details["effect"] == "unknown"
+            assert result.details["input_receipt"] == {"status": "unavailable", "reason": "invalid"}
+            payload = json.loads(result.content)
+            assert payload["code"] == "tool_invocation_failed" and payload["cause_code"] == "foreground_unavailable"
+            assert payload["input_receipt"] == result.details["input_receipt"]
+            assert "private-sentinel" not in result.content and marker not in result.content
+            assert len([name for name, _ in driver.calls if name == "click"]) == 1
+        finally:
+            await host.close()
+
+    asyncio.run(run())
+
+
+def test_deep_native_receipt_json_preserves_original_failure_and_does_not_replay(tmp_path):
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    text = '{"meido_input_receipt_v1":' + '[' * 4000 + '0' + ']' * 4000 + '}'
+    assert len(text) <= 8192
+    original = driver.call
+
+    async def call(name, arguments):
+        if name != "click":
+            return await original(name, arguments)
+        driver.calls.append((name, arguments))
+        return {"isError": True, "structuredContent": {"code": "tool_invocation_failed"},
+                "content": [{"type": "text", "text": "foreground_unavailable: private-deep-sentinel"},
+                            {"type": "text", "text": text}]}
+
+    driver.call = call
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            data = json.loads((await tools["computer_get_window_state"].execute({"pid": 42, "window_id": 81}, context)).content)
+            action = {key: data[key] for key in ("pid", "window_id", "snapshot_id", "observation_id")}
+            action.update(element_token="s00000001:2", delivery_mode="foreground")
+            result = await tools["computer_click"].execute(action, context)
+            payload = json.loads(result.content)
+            assert result.is_error and result.details["effect"] == "unknown"
+            assert payload["code"] == "tool_invocation_failed"
+            assert payload["cause_code"] == "foreground_unavailable"
+            assert result.details["input_receipt"] == {"status": "unavailable", "reason": "invalid"}
+            assert "private-deep-sentinel" not in result.content and "meido_input_receipt_v1" not in result.content
+            assert len([name for name, _ in driver.calls if name == "click"]) == 1
+        finally:
+            await host.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("case", ["valid", "escaped_marker", "malformed", "deep"])
+def test_text_only_native_receipt_never_becomes_generic_structured_payload(tmp_path, case):
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    receipt = {"status": "available", "foreground": [], "business_effect": "unknown",
+               "business": [], "restore": []}
+    value = receipt if case in {"valid", "escaped_marker"} else {"status": "carrier-private-sentinel"}
+    carrier = json.dumps({"meido_input_receipt_v1": value})
+    if case == "escaped_marker":
+        carrier = carrier.replace("meido_input_receipt_v1", r"meido_input_receipt_\u0076\u0031")
+    elif case == "deep":
+        carrier = '{"meido_input_receipt_v1":' + '[' * 4000 + '0' + ']' * 4000 + '}'
+    assert len(carrier) <= 8192
+    original = driver.call
+
+    async def call(name, arguments):
+        if name != "click":
+            return await original(name, arguments)
+        driver.calls.append((name, arguments))
+        return {"isError": True,
+                "content": [{"type": "text", "text": "foreground_unavailable: original-private-sentinel"},
+                            {"type": "text", "text": carrier}]}
+
+    driver.call = call
+
+    async def run():
+        try:
+            await tools["computer_list_windows"].execute({}, context)
+            data = json.loads((await tools["computer_get_window_state"].execute({"pid": 42, "window_id": 81}, context)).content)
+            action = {key: data[key] for key in ("pid", "window_id", "snapshot_id", "observation_id")}
+            action.update(element_token="s00000001:2", delivery_mode="foreground")
+            result = await tools["computer_click"].execute(action, context)
+            payload = json.loads(result.content)
+            assert result.is_error and result.details["effect"] == "unknown"
+            assert payload["code"] == "foreground_unavailable"
+            expected = receipt if case in {"valid", "escaped_marker"} else {"status": "unavailable", "reason": "invalid"}
+            assert result.details["input_receipt"] == payload["input_receipt"] == expected
+            assert set(payload) == {"code", "input_receipt"}
+            assert "private-sentinel" not in result.content and "meido_input_receipt_v1" not in result.content
+            assert len([name for name, _ in driver.calls if name == "click"]) == 1
+        finally:
+            await host.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("name", ["click", "type_text", "press_key", "hotkey", "scroll"])
+def test_disabled_target_remains_observable_but_never_dispatches_any_input(tmp_path, name):
+    host, tools, context, driver, _ = fixture_host(tmp_path)
+    host.desktop.input_enabled = lambda window_id: False
+
+    async def run():
+        try:
+            listed = await tools["computer_list_windows"].execute({}, context)
+            assert not listed.is_error
+            observed = await tools["computer_get_window_state"].execute({"pid": 42, "window_id": 81}, context)
+            assert not observed.is_error and observed.images
+            data = json.loads(observed.content)
+            action = {key: data[key] for key in ("pid", "window_id", "snapshot_id", "observation_id")}
+            action["delivery_mode"] = "foreground"
+            if name == "scroll":
+                action.update(direction="down", amount=1, x=80, y=160)
+            else:
+                action["element_token"] = "s00000001:2"
+                if name == "type_text":
+                    action["text"] = "must not be dispatched"
+                elif name == "press_key":
+                    action["key"] = "end"
+                elif name == "hotkey":
+                    action["keys"] = ["ctrl", "a"]
+            result = await tools["computer_" + name].execute(action, context)
+            assert result.is_error
+            assert result.details == {"status": "target_disabled", "effect": "not_started"}
+            assert json.loads(result.content) == result.details
+            assert not result.images and "input_receipt" not in result.content
+            assert [called for called, _ in driver.calls] == ["list_windows", "get_window_state"]
+        finally:
+            await host.close()
+
     asyncio.run(run())

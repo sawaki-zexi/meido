@@ -41,13 +41,16 @@ class FixtureWindow:
 
     def close(self):
         block = self.directory / "block-click"
-        block.unlink(missing_ok=True)
-        (self.directory / "stop").touch()
         try:
-            self.process.wait(5)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait(5)
+            block.unlink(missing_ok=True)
+            (self.directory / "stop").touch()
+        finally:
+            try:
+                self.process.wait(5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(5)
+            assert self.process.poll() is not None
 
     def maximize(self):
         (self.directory/"maximize-a").touch()
@@ -67,3 +70,16 @@ class FixtureWindow:
         user.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
         user.GetWindowLongPtrW.restype = ctypes.c_ssize_t
         return bool(user.IsWindowEnabled(hwnd)), user.GetWindowLongPtrW(hwnd, -20)
+
+    def prepare_assistance_candidate(self):
+        """One owned setup; success proves only disabled A and foreground B."""
+        user = ctypes.WinDLL("user32", use_last_error=True)
+        user.GetForegroundWindow.restype = wintypes.HWND
+        (self.directory / "assist-candidate").touch()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            state = self.state()
+            if not state["a"]["enabled"] and user.GetForegroundWindow() == state["b"]["hwnd"]:
+                return state
+            time.sleep(.03)
+        raise TimeoutError("owned assistance candidate prerequisites were not observed")

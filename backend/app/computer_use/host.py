@@ -47,9 +47,117 @@ def _identity(value):
     return asdict(value) if is_dataclass(value) else vars(value).copy()
 
 
-def _error(code, effect="not_started"):
-    details = {"status": code, "effect": effect}
+def _error(code, effect="not_started", input_receipt=None):
+    details: dict[str, object] = {"status": code, "effect": effect}
+    if input_receipt is not None:
+        details["input_receipt"] = input_receipt
     return AgentToolResult(json.dumps(details), details, is_error=True)
+
+
+def _input_receipt(value: object) -> dict[str, object] | None:
+    """Copy only the bounded, non-content input facts from the pinned driver."""
+    if (not isinstance(value, dict)
+            or set(value) != {"status", "foreground", "business_effect", "business", "restore"}
+            or value["status"] != "available"
+            or not isinstance(value["business_effect"], str)
+            or value["business_effect"] not in {"not_started", "unknown"}):
+        return None
+    stages = value["foreground"]
+    if not isinstance(stages, list) or len(stages) > 8:
+        return None
+    copied = []
+    names = {"click", "keyboard", "focus_click", "scroll"}
+    counts = {"checks", "already_foreground_checks", "set_foreground_calls", "assisted_attempts"}
+    flags = {"vk_noname_down_api_called", "vk_noname_up_api_called", "activated"}
+    for stage in stages:
+        if (not isinstance(stage, dict) or set(stage) != {"stage"} | counts | flags
+                or not isinstance(stage["stage"], str) or stage["stage"] not in names - {"scroll"}
+                or any(type(stage[key]) is not int for key in counts)
+                or any(type(stage[key]) is not bool for key in flags)):
+            return None
+        if (not 0 <= stage["assisted_attempts"] <= 3
+                or stage["checks"] != 1 + stage["assisted_attempts"]
+                or not 0 <= stage["already_foreground_checks"] <= stage["checks"]
+                or stage["set_foreground_calls"] != stage["checks"] - stage["already_foreground_checks"]):
+            return None
+        copied.append({"stage": stage["stage"], **{key: stage[key] for key in counts | flags}})
+    business, restores = value["business"], value["restore"]
+    if (not isinstance(business, list) or len(business) > 8
+            or not isinstance(restores, list) or len(restores) > 8):
+        return None
+    safe_business = []
+    for item in business:
+        if (not isinstance(item, dict) or set(item) != {"stage", "input_api_called"}
+                or not isinstance(item["stage"], str) or item["stage"] not in names
+                or type(item["input_api_called"]) is not bool):
+            return None
+        if item["input_api_called"] and value["business_effect"] != "unknown":
+            return None
+        safe_business.append({"stage": item["stage"], "input_api_called": item["input_api_called"]})
+    safe_restores = []
+    for item in restores:
+        if (not isinstance(item, dict)
+                or set(item) != {"stage", "status", "set_foreground_calls", "confirmed"}
+                or not isinstance(item["stage"], str) or item["stage"] not in names - {"scroll"}
+                or not isinstance(item["status"], str) or item["status"] not in {"available", "pending"}):
+            return None
+        if item["status"] == "pending":
+            if item["set_foreground_calls"] is not None or item["confirmed"] is not None:
+                return None
+        else:
+            if type(item["set_foreground_calls"]) is not int or not 0 <= item["set_foreground_calls"] <= 1:
+                return None
+            if type(item["confirmed"]) is not bool and not (
+                item["set_foreground_calls"] == 0 and item["confirmed"] is None
+            ):
+                return None
+        safe_restores.append({key: item[key] for key in ("stage", "status", "set_foreground_calls", "confirmed")})
+    return {"status": "available", "foreground": copied, "business_effect": value["business_effect"],
+            "business": safe_business, "restore": safe_restores}
+
+
+def _received_input_receipt(result, structured):
+    invalid = {"status": "unavailable", "reason": "invalid"}
+    present = "input_receipt" in structured
+    value = structured.get("input_receipt")
+    blocks = result.get("content", [])
+    if not isinstance(blocks, list) or len(blocks) > 8:
+        return invalid
+
+    def unique_object(pairs):
+        values = {}
+        for key, item in pairs:
+            if key in values:
+                raise ValueError("duplicate receipt carrier key")
+            values[key] = item
+        return values
+
+    marker, carriers = "meido_input_receipt_v1", []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        text = block.get("text")
+        if not isinstance(text, str):
+            continue
+        if len(text) > 8192:
+            return invalid
+        try:
+            carrier = json.loads(text, object_pairs_hook=unique_object)
+        except (ValueError, TypeError, RecursionError):
+            if marker in text:
+                return invalid
+            continue
+        if isinstance(carrier, dict) and marker in carrier:
+            if set(carrier) != {marker}:
+                return invalid
+            carriers.append(carrier[marker])
+    # An explicit structured field is never silently replaced, even by an
+    # equal carrier. Two representations or two carriers are ambiguous.
+    if len(carriers) > 1 or present and carriers:
+        return invalid
+    if carriers:
+        present, value = True, carriers[0]
+    return _input_receipt(value) or {"status": "unavailable", "reason": "invalid" if present else "missing"}
 
 
 class ComputerUseHost:
@@ -127,6 +235,7 @@ class ComputerUseHost:
     async def call(self, name, arguments, context, expected_generation):
         started = False
         owned = None
+        received_receipt: dict[str, object] | None = None
         try:
             configuration = self._validate(context, expected_generation)
             key = (context.role_id, context.run_id)
@@ -191,6 +300,9 @@ class ComputerUseHost:
                         owned.observation = None
                 started = True
                 result = await owned.driver.call(name, native)
+                if name not in {"list_windows", "get_window_state"}:
+                    received = self._structured(result)
+                    received_receipt = _received_input_receipt(result, received)
                 self._validate(context, expected_generation)
                 if name == "list_windows":
                     if result.get("isError"):
@@ -210,13 +322,28 @@ class ComputerUseHost:
                     return AgentToolResult(json.dumps({"windows": admitted}, ensure_ascii=False), {"status": "observed"})
                 if name == "get_window_state":
                     return self._observe(owned, target, result, context)
-                data = self._structured(result)
+                data = dict(self._structured(result))
                 failed = result.get("isError", False)
+                if failed and data.get("code") in (None, "native_error", "tool_invocation_failed"):
+                    code = "native_error"
+                    for block in result.get("content", [])[:8]:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text = block.get("text")
+                            if isinstance(text, str) and text.partition(":")[0] == "foreground_unavailable":
+                                code = "foreground_unavailable"
+                                break
+                    if "code" not in data:
+                        data["code"] = code
+                    elif code == "foreground_unavailable":
+                        data["cause_code"] = code
                 # Driver acceptance is not verification of application effects.
+                details: dict[str, object] = {"status": "rejected" if failed else "input_dispatched", "effect": "unknown"}
+                details["input_receipt"] = received_receipt
+                data["input_receipt"] = received_receipt
                 return AgentToolResult(json.dumps(data, ensure_ascii=False)[:65536],
-                    {"status": "rejected" if failed else "input_dispatched", "effect": "unknown"}, is_error=failed)
+                    details, is_error=failed)
         except ComputerUseError as error:
-            return _error(error.code, "unknown" if started else error.effect)
+            return _error(error.code, "unknown" if started else error.effect, received_receipt)
         except asyncio.CancelledError:
             if owned:
                 owned.task = None
@@ -229,7 +356,9 @@ class ComputerUseHost:
             if not isinstance(error, Exception):
                 raise
             code = "timeout" if isinstance(error, TimeoutError) else getattr(error, "code", "driver_unavailable")
-            return _error(code, "unknown" if started else "not_started")
+            if started and name not in {"list_windows", "get_window_state"} and received_receipt is None:
+                received_receipt = {"status": "unavailable", "reason": "response_missing"}
+            return _error(code, "unknown" if started else "not_started", received_receipt)
         finally:
             if owned:
                 owned.task = None
@@ -244,8 +373,10 @@ class ComputerUseHost:
                 try:
                     value = json.loads(block.get("text", ""))
                     if isinstance(value, dict):
+                        if "meido_input_receipt_v1" in value:
+                            continue
                         return value
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, RecursionError):
                     pass
         return {}
 
@@ -328,6 +459,8 @@ class ComputerUseHost:
             raise ComputerUseError("background_unavailable")
         if self.desktop.activity() != observed["activity"] or observed["activity"][2]:
             raise ComputerUseError("foreground_conflict")
+        if not self.desktop.input_enabled(target["window_id"]):
+            raise ComputerUseError("target_disabled")
 
     async def _watch(self, owned, context):
         try:

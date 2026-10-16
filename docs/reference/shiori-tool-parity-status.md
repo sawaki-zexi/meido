@@ -2,7 +2,7 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-17（Asia/Shanghai）。本轮源码集成 `0acfb4f842e2df173fd635f8bd76d502a8948137` 已同步 `main@82739afe4e0dcfe2ee58ca472c69dee1721f68a3`（聊天滚动、落地页、角色编辑与本机启动备份），并整合 #180 已审源 `7ac5996`。源完整/修复、总集成规范与规格两轴均无剩余发现；准确本地交叉115 passed/1 conftest warning、完整前端252 passed/44文件及TypeScript/Vite108模块通过。632份后端交叉输入稳定；前端原136份输入与含8份public素材的144份构建补验分别稳定，见[目标验收](../research/autonomy-channel-targets-acceptance-2026-10-16.md)。本文更新时最新已核验双CI头仍为 `312b7f1f5e1ede4ca6433bbcfcd0411dc8c660a4`：[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38912977578)与[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38912972442)各后端2428 passed/36 skipped/2 warnings、前端229 passed/41文件及构建，含#179。本次新头CI以总PR后续检查为准，不沿用旧绿色。原受控竞态、历史CI未知首因和原生限制保留，skip不计原生成功。
+最后核验：2026-10-17（Asia/Shanghai）。已核验集成基点 `6751bcc425ad1c0fc4823691fbdda155a89c7bdf` 包含源码集成 `0acfb4f842e2df173fd635f8bd76d502a8948137`，已同步 `main@82739afe4e0dcfe2ee58ca472c69dee1721f68a3`（聊天滚动、落地页、角色编辑与本机启动备份），并整合 #180 已审源 `7ac5996`。该基点的源码完整/修复、总集成规范与规格两轴无剩余发现；准确本地交叉115 passed/1 conftest warning、完整前端252 passed/44文件及TypeScript/Vite108模块通过。632份后端交叉输入稳定；前端原136份输入与含8份public素材的144份构建补验分别稳定，见[目标验收](../research/autonomy-channel-targets-acceptance-2026-10-16.md)。准确6751基点的[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38936308448)与[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38936301605)均为后端2565 passed/39 skipped/2 warnings、前端252 passed/44文件及TS/Vite108模块构建通过。本次 #169 回执修正另有本地证据，仍待最终固定提交的两轴审查和准确CI，不沿用旧绿色。原受控竞态、历史CI未知首因和原生限制保留，skip不计原生成功。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -32,7 +32,7 @@
 | C09 群/成员 4 工具 | #165、#166 已进入集成分支；可信历史昵称、成员来源、完整群分页、笔记字段省略/清空及离线资料；两轴最终复核通过，事务直接读取父取消并等待写线程退出 | 总 PR 跨模块回归和最终验收；不得扩大来源范围 |
 | C10 MCP 3 工具 | #159 已进入集成分支；真实 stdio、版本化发现、配置 UI、持久连接意愿及严格凭据清理已两轴复核；Linux 回收、Windows asyncio 环境、中文 schema 编码及 peer_error 清理竞态均实证修复并两轴复核；`c03a9fb` 两条 CI 通过 | 总 PR 最终跨模块验收 |
 | P01 浏览器 28 工具 | main，PR #150；全部 28 schema 映射核验，21 项真实原生浏览器测试通过，无 skip | 后续 MCP/配置集成回归 |
-| P02 桌面控制 8 工具 | #169 固定源 `7aa8108` 已两轴复核并整合；8工具/图像下一模型请求、单观察/lease/Job收尾有真实专用窗口和HTTP/provider证据。规范审查两项P2修正后独立复核无遗留；集成交叉60 passed/1原生deselected，前端专项及TS/Vite、9源mypy和c052848两条完整CI通过 | 总PR最终跨模块验收；多DPI/多屏/锁屏等未验收环境见[原生手册](../handbook/computer-use-native-acceptance.md)，不扩大真实应用操作许可 |
+| P02 桌面控制 8 工具 | #169 原固定源 `7aa8108` 已两轴复核并整合；8工具/图像下一模型请求、单观察/lease/Job收尾有真实专用窗口和HTTP/provider证据。实际调用回执修正完成16个协议TDD周期；f700驱动在freeze4有6项原生通过，freeze6最终宿主59项相关回归及独立真实Windows禁用目标零输入拒绝1项通过；旧freeze5辅助候选1通过/1失败原件保留，不称辅助分支已证。Python编译通过，7源类型相对准确6751基线9→9、0新增，不称全类型绿。次数、辅助API、禁用准入与恢复事实见[契约](computer-use.md)及[原生手册](../handbook/computer-use-native-acceptance.md) | 本次修正待两轴独立审查和准确新HEAD CI；辅助VK实际触发/到件、多DPI/多屏/锁屏、双采集失败与遮挡等未验收环境继续保留，不扩大真实应用操作许可 |
 | P03 Coding Agent 5 工具 | #174固定源`5a5a2c4`及关闭/配置夹具修正均已两轴复核并通过`fff08b1`两条CI；7项Herdr/两合成CLI原生通过，见[验收](../handbook/coding-agent-acceptance.md)。#175固定源`0e2da975`完成完整两轴及修正复核后合入，独立Codex exec复用spawn coding，见[S07验收](../handbook/codex-delegate-acceptance.md)；准确13c集成两轴与两套完整CI通过。#176独立源`eddfdb9`完成精确提交/发布及两轴修正复核，已整合`3c5e4c3`且集成两轴无遗留；准确交叉308项、前端221项、构建及窄类型通过，随后`cd73682`两套完整CI均通过 | 总PR后续跨模块验收；旧首push unknown原因未解释，隔离通过不当作根因修复。真实认证/消费/发布另批，不能以合成CLI代替真实服务 |
 | P04 屏幕感知 1 工具 | #160 已进入集成分支；提前拒绝/重复取消连接回收最终两轴复核均无剩余 finding；相关后端 196 passed/1 native 条件 skip，前端 69 passed；真实受控 Windows 主屏/125% DPI/本地视觉及取消通过，无原图落盘 | 总 PR 最终集成；尚无双屏、混合 DPI、实际锁屏/远程断开或 frozen 分发实证，也未调用真实远端视觉服务 |
 | P05 桌宠 1 工具 | 待实现；Electron/PySide6 宿主选择待回答 | 真实透明置顶窗口、动作包、move/play 与完整生命周期 |
