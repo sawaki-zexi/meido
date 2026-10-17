@@ -422,7 +422,7 @@ describe("角色管理", () => {
     expect(within(await roleList()).getByText("新角色")).toBeTruthy();
   });
 
-  it("创建角色时可以启用主动记忆检索", async () => {
+  it("创建角色时无需额外勾选记忆检索", async () => {
     const created = role({ id: "r4", name: "记忆角色" });
     const { calls } = fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [] } }),
@@ -434,11 +434,11 @@ describe("角色管理", () => {
     const form = await dialog("创建角色");
     await user.type(within(form).getByLabelText(/名称/), "记忆角色");
     await user.type(within(form).getByLabelText(/角色设定/), "设定");
-    await user.click(within(form).getByRole("checkbox", { name: "允许主动检索记忆" }));
+    expect(within(form).queryByRole("checkbox", { name: "允许主动检索记忆" })).not.toBeInTheDocument();
     await user.click(within(form).getByRole("button", { name: "保存" }));
 
     await waitFor(() => expect(calls.find((call) => call.method === "POST")?.body).toMatchObject({
-      agentConfig: { memoryRecall: { enabled: true } },
+      agentConfig: { memoryRecall: { enabled: false } },
     }));
   });
 

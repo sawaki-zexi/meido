@@ -210,7 +210,7 @@ export function App() {
         </div>
       </div>
     </Dialog>}
-    {panel === "settings" && <SettingsDialog initialSection={settingsSection} onClose={() => setPanel(null)} />}
+    {panel === "settings" && <SettingsDialog initialSection={settingsSection} onRoleSaved={roles.receiveRole} onClose={() => setPanel(null)} />}
     {previewRole && <Dialog title={`${previewRole.name}头像`} variant="modal" onClose={() => setPreviewRole(null)}>
       <div className="avatar-lightbox"><img src={previewRole.avatarOriginalUrl ?? previewRole.avatarUrl ?? ""} alt={`${previewRole.name}头像`} /></div>
     </Dialog>}

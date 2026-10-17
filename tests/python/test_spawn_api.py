@@ -21,6 +21,47 @@ def api(shell_api, tmp_path, monkeypatch):  # noqa: F811
     yield shell_api
 
 
+@pytest.mark.parametrize('change', ['disabled', 'before_spawn', 'inside_child'])
+def test_default_parent_shell_does_not_grant_or_restore_restricted_child_shell(api, monkeypatch, change):
+    import sys
+    from backend.app import main
+    from backend.app.models import RoleUpdateInput
+    client, roles, sessions, tasks = api
+    child_schemas = []
+
+    def revoke():
+        roles.update(role['id'], RoleUpdateInput(name=role['name'], profile=role['profile'],
+            agentConfig={'shell': {'enabled': False, 'allowedCommands': []}}))
+
+    class Adapter:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            child = 'independent delegated task' in str(messages[0])
+            results = [item for item in messages if item['role'] == 'tool']
+            if child:
+                child_schemas.append({item['function']['name'] for item in tools})
+                if not results:
+                    if change == 'inside_child':
+                        revoke()
+                    yield ModelToolCall('restricted-shell', 'shell', {'command': f'"{sys.executable}" -c "from pathlib import Path; Path(\'child-marker.txt\').write_text(\'should-not-execute\')"'})
+                else:
+                    yield ModelTextDelta('child-stopped')
+            elif not results:
+                if change == 'before_spawn':
+                    revoke()
+                yield ModelToolCall('restricted-spawn', 'spawn', {'task': 'controlled restricted task', 'profile': 'scripting'})
+            else:
+                yield ModelTextDelta('parent-finished')
+
+    monkeypatch.setattr(main, 'model_adapter', Adapter())
+    role = client.post('/api/roles', json={'name': '受限子任务', 'profile': {'profile': '设定'},
+        'agentConfig': {'shell': {'enabled': change != 'disabled', 'allowedCommands': [sys.executable]}}}).json()['role']
+    response = client.post(f"/api/roles/{role['id']}/messages", json={'content': '运行受限任务'})
+    assert 'assistant_completed' in response.text
+    assert not list(tasks.root.rglob('child-marker.txt'))
+    if change != 'inside_child':
+        assert all('shell' not in names for names in child_schemas)
+
+
 def test_http_sync_child_reads_real_file_while_parent_owns_role_lock(api, monkeypatch):
     from backend.app import main
 
@@ -33,7 +74,7 @@ def test_http_sync_child_reads_real_file_while_parent_owns_role_lock(api, monkey
             tool_results = [item for item in messages if item['role'] == 'tool']
             if child:
                 assert 'parent-private-marker' not in str(messages)
-                assert {item['function']['name'] for item in tools} == {'read_file'}
+                assert {item['function']['name'] for item in tools} == {'read_file', 'list_dir', 'web_search', 'web_fetch'}
                 if not tool_results:
                     yield ModelToolCall('child-read', 'read_file', {'path': 'evidence.txt'})
                 else:
@@ -245,7 +286,7 @@ def test_real_http_model_parent_and_child_use_independent_transcripts_and_frozen
                     assert 'parent-private-http-111' not in str(body)
                     assert body['model'] == 'frozen-local-model'
                     assert body['max_tokens'] <= 4096
-                    assert {item['function']['name'] for item in body['tools']} == {'read_file'}
+                    assert {item['function']['name'] for item in body['tools']} == {'read_file', 'list_dir', 'web_search', 'web_fetch'}
                     if not results:
                         # A model connection edit must not affect this child.
                         current = main.model_configuration_store.get(configuration.id)
@@ -432,14 +473,16 @@ def test_background_channel_completion_uses_original_delivery_ledger_without_rep
     asyncio.run(run())
 
 
-def test_explicit_spawn_switch_cannot_be_bypassed_and_invalid_budgets_are_rejected(api, monkeypatch):
+def test_legacy_spawn_switch_does_not_hide_default_delegation_and_invalid_budgets_are_rejected(api, monkeypatch):
     from backend.app import main
     client, _roles, sessions, _tasks = api
     class Adapter:
         schemas = []
         async def stream_structured_messages(self, messages, configuration, tools):
             self.schemas.append({item['function']['name'] for item in tools})
-            if not any(item['role'] == 'tool' for item in messages):
+            if 'independent delegated task' in str(messages[0]):
+                yield ModelTextDelta('default-child-result')
+            elif not any(item['role'] == 'tool' for item in messages):
                 yield ModelToolCall('forged-spawn', 'spawn', {'task': 'should be unavailable'})
             else:
                 yield ModelTextDelta('permission-result')
@@ -449,9 +492,9 @@ def test_explicit_spawn_switch_cannot_be_bypassed_and_invalid_budgets_are_reject
         'spawn': {'enabled': False}, 'enabledTools': ['read_file', 'spawn', 'spawn_manage']}}).json()['role']
     response = client.post(f"/api/roles/{role['id']}/messages", json={'content': 'attempt'})
     assert 'assistant_completed' in response.text
-    assert not {'spawn', 'spawn_manage'} & adapter.schemas[0]
+    assert {'spawn', 'spawn_manage'} <= adapter.schemas[0]
     result = next(item for item in sessions.runtime_messages(f"role:{role['id']}") if isinstance(item, ToolResultMessage))
-    assert result.is_error and 'disabled' in result.content
+    assert not result.is_error and 'default-child-result' in result.content
     for budget in [{'timeoutSeconds': 601}, {'maxTurns': 0}, {'maxOutputChars': 100001}, {'maxModelOutputChars': 0}]:
         invalid = client.put(f"/api/roles/{role['id']}", json={'name': role['name'], 'profile': role['profile'],
             'agentConfig': {'spawn': {'enabled': True, **budget}}})

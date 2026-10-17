@@ -7,7 +7,7 @@ import { fakeBackend, role } from "../../test/fakeBackend";
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it("网页独立启用委托并保存有限预算，重新打开和关闭时保留已有工具及配置", async () => {
+it("子任务默认提供，调整预算并重开时保留已有工具和配置", async () => {
   const spawn = { enabled: false, timeoutSeconds: 120, maxTurns: 12, maxOutputChars: 20000, maxModelOutputChars: 60000, extension: "keep" };
   let saved = role({ id: "r1", name: "子任务角色", agentConfig: {
     enabledTools: ["read_file", "web_search", "spawn"], enabledPlugins: ["custom"], grantedCapabilities: ["custom.read"],
@@ -23,21 +23,19 @@ it("网页独立启用委托并保存有限预算，重新打开和关闭时保�
   await screen.findByRole("heading", { name: "子任务角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "角色资料" }));
   const form = within(await screen.findByRole("dialog", { name: "角色资料" }));
-  expect(form.getByLabelText("允许委托独立子任务")).not.toBeChecked();
-  await user.click(form.getByLabelText("允许委托独立子任务"));
+  expect(form.queryByLabelText("允许委托独立子任务")).not.toBeInTheDocument();
   await user.clear(form.getByLabelText("子任务超时（秒）"));
   await user.type(form.getByLabelText("子任务超时（秒）"), "45");
   await user.click(form.getByRole("button", { name: "保存" }));
   await waitFor(() => expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1));
   expect(saved.agentConfig).toMatchObject({ enabledTools: ["read_file", "web_search", "spawn"],
     enabledPlugins: ["custom"], grantedCapabilities: ["custom.read"],
-    spawn: { enabled: true, timeoutSeconds: 45, maxTurns: 12, maxOutputChars: 20000, maxModelOutputChars: 60000, extension: "keep" } });
+    spawn: { enabled: false, timeoutSeconds: 45, maxTurns: 12, maxOutputChars: 20000, maxModelOutputChars: 60000, extension: "keep" } });
   await user.click(form.getByRole("button", { name: "关闭" }));
   await user.click(screen.getByRole("button", { name: "角色资料" }));
   const reopened = within(await screen.findByRole("dialog", { name: "角色资料" }));
-  expect(reopened.getByLabelText("允许委托独立子任务")).toBeChecked();
+  expect(reopened.queryByLabelText("允许委托独立子任务")).not.toBeInTheDocument();
   expect(reopened.getByLabelText("子任务超时（秒）")).toHaveValue(45);
-  await user.click(reopened.getByLabelText("允许委托独立子任务"));
   await user.click(reopened.getByRole("button", { name: "保存" }));
   await waitFor(() => expect(calls.filter((call) => call.method === "PUT")).toHaveLength(2));
   expect(saved.agentConfig?.spawn?.enabled).toBe(false);

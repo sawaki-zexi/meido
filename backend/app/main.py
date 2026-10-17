@@ -90,6 +90,7 @@ from .agent_runtime import (
     ToolResultMessage,
 )
 from .agent_runtime.capabilities import CapabilityResolution
+from .models import DEFAULT_BUILTIN_TOOLS
 from .agent_runtime.provider import CancellationToken
 from .agent_runtime.message_history_tools import MESSAGE_HISTORY_TOOL_NAMES, build_message_history_tools
 from .agent_runtime.file_tools import FILE_TOOL_NAMES, build_file_tools
@@ -1664,17 +1665,8 @@ def get_role_tools(role_id: str) -> dict[str, object]:
     if "tool_search" in policy.enabled_tools:
         definitions = {name: replace(definition, exposure="deferred") if name in _deferred_discovery_tools() else definition for name, definition in definitions.items()}
     reasons: dict[str, str] = {"read_attachment": "仅在当前 QQ 回合存在可读取附件时提供"}
-    if not role.agentConfig.shell.enabled:
-        reasons["shell"] = "角色的 Shell 开关已关闭"
-    elif not role.agentConfig.shell.allowedCommands:
-        reasons["shell"] = "Shell 命令白名单为空"
-    for name in ("task_output", "task_stop"):
-        if "shell" in reasons:
-            reasons[name] = reasons["shell"]
     if not memory_settings_store.get().enabled:
         reasons["recall_memory"] = "全局记忆已关闭"
-    elif not role.agentConfig.memoryRecall.enabled:
-        reasons["recall_memory"] = "角色主动记忆检索已关闭"
     if not owner_knowledge_plugin.status().enabled:
         reasons["search_owner_knowledge"] = "主人资料服务未启用"
     if not mail_service.store.connection().auto_draft_ready:
@@ -1717,10 +1709,10 @@ def get_role_tools(role_id: str) -> dict[str, object]:
                 reasons[name] = reason
                 dependencies[name] = {"status": "unavailable", "reason": reason}
     import shutil
-    missing_commands = [item for item in role.agentConfig.shell.allowedCommands if shutil.which(item) is None]
+    shell_executable = shutil.which('pwsh') if sys.platform == 'win32' else '/bin/sh'
     dependencies["shell"] = {
-        "status": "unavailable" if missing_commands else "ready" if role.agentConfig.shell.allowedCommands else "unchecked",
-        "reason": "白名单中有本机无法找到的程序" if missing_commands else "已检查程序路径；未执行命令" if role.agentConfig.shell.allowedCommands else "尚未配置命令白名单",
+        "status": "ready" if shell_executable else "unavailable",
+        "reason": "已检查平台 Shell；未执行命令" if shell_executable else "Windows Shell 需要安装 PowerShell 7（pwsh）并加入 PATH",
     }
     for name in ("account_list", "account_targets", "account_send", "set_group_listening"):
         dependencies[name] = {"status": "unchecked", "reason": "网络连接和目标能力将在调用时验证"}
@@ -4026,9 +4018,9 @@ def _runtime_tool_candidates(
 
     def shell_authorized(context):
         current = store.get(role.id)
-        if context.role_id != role.id or current is None or role.id in _channel_roles_deleting or not current.agentConfig.shell.enabled:
+        if context.role_id != role.id or current is None or role.id in _channel_roles_deleting:
             return False
-        if not current.agentConfig.shell.allowedCommands or not is_channel_owner:
+        if not is_channel_owner:
             return False
         if context.session_key.startswith("thread:"):
             try:
@@ -4040,13 +4032,18 @@ def _runtime_tool_candidates(
 
     def shell_command_authorized(context, command):
         current = store.get(role.id)
+        return bool(shell_authorized(context) and current is not None)
+
+    def restricted_shell_authorized(context, command):
+        current = store.get(role.id)
         return bool(shell_authorized(context) and current is not None
-                    and ShellTool.command_is_allowed(command, current.agentConfig.shell.allowedCommands))
+            and current.agentConfig.shell.enabled and current.agentConfig.shell.allowedCommands
+            and (command is None or ShellTool.command_is_allowed(command, current.agentConfig.shell.allowedCommands)))
 
     def spawn_authorized(context):
         current = store.get(role.id)
         if (context.role_id != role.id or current is None or role.id in _channel_roles_deleting
-                or not current.agentConfig.spawn.enabled or not is_channel_owner):
+                or not is_channel_owner):
             return False
         if context.session_key.startswith("thread:"):
             try:
@@ -4059,7 +4056,7 @@ def _runtime_tool_candidates(
     def desktop_push_authorized(context):
         current = store.get(role.id)
         if (context.role_id != role.id or current is None or role.id in _channel_roles_deleting
-                or 'message_push' not in current.agentConfig.enabledTools or not is_channel_owner):
+                or not is_channel_owner):
             return False
         channel_origin = bool(source_account_id or source_thread_id and source_thread_id != f'desktop:{role.id}')
         if channel_origin != context.session_key.startswith('thread:'):
@@ -4158,6 +4155,9 @@ def _runtime_tool_candidates(
             max_output_chars=shell.maxOutputChars,
             tasks=task_runtime, origin_resolver=task_origin, authorized=shell_authorized,
             authorized_command=shell_command_authorized,
+            platform_shell=True,
+            restricted_enabled=shell.enabled,
+            restricted_authorized=restricted_shell_authorized,
         ),
         TaskOutputTool(task_runtime, origin_resolver=task_origin, authorized=shell_authorized),
         TaskStopTool(task_runtime, origin_resolver=task_origin, authorized=shell_authorized),
@@ -4234,7 +4234,7 @@ def _screen_unavailable_reason(role) -> str:
 
 def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[str]:
     shell = role.agentConfig.shell
-    enabled: set[str] = set()
+    enabled: set[str] = set(DEFAULT_BUILTIN_TOOLS)
     if not _desktop_pet_application().unavailable_reason(role.id):
         enabled.add('pet_action')
     if computer_use.dependency_status(role)["status"] != "unavailable":
@@ -4247,21 +4247,9 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
         enabled.add("lookup_group_member")
     if include_channel or group_repository.has_group_data(role.id):
         enabled.update({"lookup_group_context", "update_group_context"})
-    enabled.update(set(role.agentConfig.enabledTools) & {"memorize", "forget_memory"})
-    enabled.update(set(role.agentConfig.enabledTools) & MESSAGE_HISTORY_TOOL_NAMES)
-    enabled.update(set(role.agentConfig.enabledTools) & {"web_search", "web_fetch"})
-    enabled.update(FILE_TOOL_NAMES.intersection(role.agentConfig.enabledTools))
-    enabled.update({'message_push'}.intersection(role.agentConfig.enabledTools))
-    enabled.update(SCHEDULE_NAMES.intersection(role.agentConfig.enabledTools))
-    if "tool_search" in role.agentConfig.enabledTools:
-        enabled.update(MCP_MANAGEMENT_NAMES.intersection(role.agentConfig.enabledTools))
-    if shell.enabled and shell.allowedCommands:
-        enabled.update(SHELL_TOOL_NAMES)
-    if role.agentConfig.spawn.enabled:
-        enabled.update(SPAWN_TOOL_NAMES)
     if role.agentConfig.coding.enabled and _coding_application().config.public()['enabled']:
         enabled.update(CODING_TOOL_NAMES)
-    if memory_settings_store.get().enabled and role.agentConfig.memoryRecall.enabled:
+    if memory_settings_store.get().enabled:
         enabled.add("recall_memory")
     if owner_knowledge_plugin.status().enabled:
         enabled.add("search_owner_knowledge")
@@ -4386,13 +4374,13 @@ async def _runtime_capabilities(
         if external_only:
             return "MCP is not allowed for external context"
         current_role = store.get(role.id)
-        if current_role is None or "tool_search" not in current_role.agentConfig.enabledTools:
+        if current_role is None:
             return "MCP discovery permission was revoked"
         return source_authority.authorization_denial(multichannel_store) if source_authority is not None else None
 
     def mcp_tool_enabled(name):
         current_role = store.get(role.id)
-        return current_role is not None and name in current_role.agentConfig.enabledTools
+        return current_role is not None and (name in DEFAULT_BUILTIN_TOOLS or name in current_role.agentConfig.enabledTools)
 
     mcp_run = mcp_host.freeze(
         role_id=role.id, session_key=session_key, run_id=run_id,
@@ -4426,7 +4414,7 @@ async def _runtime_capabilities(
     def authorize_call(definition, context, arguments):
         if definition.name == "shell" and isinstance(arguments.get("command"), str):
             current_role = store.get(role.id)
-            if current_role is None or not ShellTool.command_is_allowed(arguments["command"], current_role.agentConfig.shell.allowedCommands):
+            if current_role is None:
                 return "command permission was revoked by the current role policy"
         return True
     host_services: dict[str, object] = {}
@@ -4449,8 +4437,6 @@ async def _runtime_capabilities(
         candidates = tuple(tool for tool in candidates if tool.definition.name not in MCP_MANAGEMENT_NAMES) + mcp_run.tools
     def skill_dependency_check(skill, name):
         if skill.skill_id == 'codex-delegate' and name == 'codex':
-            if not role.agentConfig.spawn.enabled:
-                return '角色的 spawn 开关已关闭'
             status = _coding_application().config.availability(role.id, role.agentConfig.coding, executor='codex_exec')
             return None if status['status'] == 'available' else status['reason']
         import shutil
@@ -4562,7 +4548,7 @@ def _coding_application():
 
 def _spawn_origin_authorized(origin: TaskOrigin) -> bool:
     role = store.get(origin.role_id)
-    if role is None or not role.agentConfig.spawn.enabled or role.id in _channel_roles_deleting:
+    if role is None or role.id in _channel_roles_deleting:
         return False
     if origin.source_authority_json:
         try:
@@ -4657,7 +4643,7 @@ _schedules: ScheduleApplication | None = None
 
 def _schedule_origin_authorized(origin: TaskOrigin) -> bool:
     role = store.get(origin.role_id)
-    if role is None or 'schedule' not in role.agentConfig.enabledTools or role.id in _channel_roles_deleting:
+    if role is None or role.id in _channel_roles_deleting:
         return False
     if origin.source_authority_json:
         try:
@@ -4745,7 +4731,8 @@ async def _schedule_execute(plan):
         return bool(_schedule_authorized(plan) and current is not None and definition.name in _enabled_runtime_tool_names(current))
     def authorize_call(definition, context, arguments):
         current = store.get(role.id)
-        return bool(current is not None and (definition.name != 'shell' or ShellTool.command_is_allowed(str(arguments.get('command', '')), current.agentConfig.shell.allowedCommands)))
+        return bool(current is not None and (definition.name != 'shell' or (
+            current.agentConfig.shell.enabled and ShellTool.command_is_allowed(str(arguments.get('command', '')), current.agentConfig.shell.allowedCommands))))
     frozen = await CapabilityRegistry(candidates).resolve_async(role_id=role.id, session_key=origin.session_key,
         run_id=plan['id'], enabled_tools=enabled, allowed_risks={'read_only', 'mutating', 'external'},
         authorize_tool=authorize, authorize_call=authorize_call)
@@ -5522,7 +5509,7 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
             provider_timeout=120.0,
             tool_timeout=max(32.0, role.agentConfig.shell.timeoutSeconds + 2,
                              network_tools_config.timeout_seconds + 1
-                             if {"web_fetch", "web_search"} & set(role.agentConfig.enabledTools) else 0.0,
+                             if any(tool.name in {"web_fetch", "web_search"} for tool in capabilities.snapshot.tools) else 0.0,
                              330.0 if any(tool.name == 'generate_image' for tool in capabilities.snapshot.tools) else 0.0),
             on_message_end=persist_runtime_message,
         ):
@@ -5956,7 +5943,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     tool_timeout=max(
                         max(32.0, shell_config.timeoutSeconds + 2) if runtime_tools else 30.0,
                         browser_use_sessions.timeout_seconds if role.agentConfig.browserUse.enabled else 0.0,
-                        network_tools_config.timeout_seconds + 1 if {"web_fetch", "web_search"} & set(role.agentConfig.enabledTools) else 0.0,
+                        network_tools_config.timeout_seconds + 1 if any(tool.name in {"web_fetch", "web_search"} for tool in capabilities.snapshot.tools) else 0.0,
                         36.0 if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools) else 0.0,
                         330.0 if any(tool.name == 'generate_image' for tool in capabilities.snapshot.tools) else 0.0,
                     ),
