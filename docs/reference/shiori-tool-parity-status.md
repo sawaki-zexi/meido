@@ -4,6 +4,10 @@
 
 最后核验：2026-10-17（Asia/Shanghai）。当前集成分支已包含 #191 表情维护与 #195 Electron 桌宠，尚未合入 main；已同步 `main@e32fc0d133a62176e7e8cdf9bb44c572768b481f`。最近已核对的公开 `258d226` [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38994832054)完整通过：后端2766 passed/41 skipped/2 warnings、前端260项/46文件及网页111/桌宠22模块构建；[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38994828623)前端相同通过，后端2765 passed/41 skipped/1 failed，不能记为整组绿。唯一失败位于既有主动来源恢复夹具的终态轮询：原transaction在50ms内遇SQLITE_BUSY而直接退出；本次仅修夹具，在原8秒期限内重试原生BUSY/LOCKED，其他错误重抛，生产0改动，原nonce/唯一提交/调用次数/owner退出断言不变。三个handover原场景在Windows/Linux各3 passed，原Proactive/MCP/TaskRuntime均完成关闭、无新增线程或非本地连接；原件位于 `D:/meido-artifacts/ci178-query-busy-fix-5777500fb6` 与 Linux `/tmp/ci178-query-busy-linux-fix-ae69bad7bc`。新组合准确 CI 以总 PR 检查为准，不能以旧PR成功覆盖修正提交。
 
+随后 `869d7ae` [push CI](https://github.com/sawaki-zexi/meido/actions/runs/38995914505)全部通过：后端2766 passed/41 skipped/2 warnings（772.33秒）、前端260项/46文件及111+22模块构建。[PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38995918464)前端同样通过，后端停在既有 `novelai_scene_fixtures.scene_main` 收尾，90秒堆栈显示 `server_close()` 等待空HTTP连接的 `handle_one_request/readinto`。原运行约24分钟后为取得日志而取消，明确不计通过。
+
+新增原夹具窄回归仅建立空TCP连接：旧源测试主体通过但原server_close需看门狗关闭连接，产生1项teardown ERROR，原件 Linux `/tmp/ci173-idle-red-f32361b876`。修正只给合成场景Provider设置1秒读取期限，仍保留非daemon线程和原server_close/join；新窄例+原6个辅助失败场景在Windows7 passed（20.64秒）、Linux7 passed（24.12秒）且原App/线程退出、guard保持到收尾。原件 `D:/meido-artifacts/ci173-idle-windows-green-51560bd915`、Linux `/tmp/ci173-idle-green-e7c4986415`；生产0diff，不修改真实模型/生图预算或请求次数。新准确组合CI另核，未无解释重跑旧取消作业。
+
 此前 `db5d252` 两条CI各剩两项隔离子进程Linux依赖路径假设失败，`7ce5e4a` 已以原父进程依赖路径修正；两例Windows/Linux均通过，且258d两轮中均通过。
 
 历史完整绿色总头 `4dcfd8f8723c96dd36bd6cb30e0933d74d56ed6a` 的两套 CI 各2610 passed/39 skipped/2 warnings、前端252项/44文件；它不涵盖后来 #191/#195。各功能固定证据和限制保留在下表。

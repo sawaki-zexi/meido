@@ -38,6 +38,9 @@ def scene_main(novelai_main, monkeypatch, request):
         aux_release=threading.Event(), aux_second=threading.Event(), aux_block=False, manual=False,
         aux_text=None, aux_status=200, aux_tool=False)
     class Provider(BaseHTTPRequestHandler):
+        # A cancelled HTTP client can connect without sending a request. Keep
+        # the original non-daemon reader join finite during fixture shutdown.
+        timeout = 1.0
         def log_message(self, *args): pass
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
