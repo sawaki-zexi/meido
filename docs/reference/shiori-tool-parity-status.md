@@ -6,7 +6,7 @@
 
 #169 的完整与修正两轴审查均无遗留；准确源本地61项相关检查、编译与同7源相对6751基线的9→9类型诊断对照通过（0新增，不称全类型绿）。受控原生六项、禁用准入一项与失败辅助候选各有自己的固定快照，范围见[原生手册](../handbook/computer-use-native-acceptance.md)。前期 #180 本地115项交叉、252项前端及136/144输入补验证据保留在[目标验收](../research/autonomy-channel-targets-acceptance-2026-10-16.md)，不冒称本次重复执行。
 
-完整目标仍未完成。固定f4ac全范围审计发现的 #148 中文/提示词召回及访客推送可见性差距，已由独立源 `6d04af6` 修正并进入集成分支，规范/规格两轴无遗留，相关134项通过，见[搜索验收](../research/tool-discovery-relevance-acceptance-2026-10-17.md)。旧7b的PR CI通过、push后端已取消且无测试汇总；未将旧push计成功，也未据缺task身份的堆栈断言其唯一根因。#192 独立最终源 `e6b9dd8` 已完成Windows/Linux本地窄验收及两轴0 findings，精确汇入 `c36e7f3`，并由后续准确总头的两套完整CI通过，见[取消验收](../research/disconnect-cleanup-192-validation.md)。真实本地WAV和独立RSS/enclosure→原生ASR→下一Provider/SSE/历史已有[音频/Podcast验收](../research/summarize-audio-podcast-acceptance-2026-10-17.md)。#191 的 UI、共享库恢复和逐请求图像计量已进入本地总分支；受审源 `0d7d422` 的151项组合通过，两轴无遗留，原并发夹具的指定参与者定位限制单独保留，见[表情维护验收](../research/drift-meme-maintenance-acceptance-2026-10-17.md)。桌宠宿主选择仍待既有答复。
+完整目标仍未完成。固定f4ac全范围审计发现的 #148 中文/提示词召回及访客推送可见性差距，已由独立源 `6d04af6` 修正并进入集成分支，规范/规格两轴无遗留，相关134项通过，见[搜索验收](../research/tool-discovery-relevance-acceptance-2026-10-17.md)。旧7b的PR CI通过、push后端已取消且无测试汇总；未将旧push计成功，也未据缺task身份的堆栈断言其唯一根因。#192 独立最终源 `e6b9dd8` 已完成Windows/Linux本地窄验收及两轴0 findings，精确汇入 `c36e7f3`，并由后续准确总头的两套完整CI通过，见[取消验收](../research/disconnect-cleanup-192-validation.md)。真实本地WAV和独立RSS/enclosure→原生ASR→下一Provider/SSE/历史已有[音频/Podcast验收](../research/summarize-audio-podcast-acceptance-2026-10-17.md)。#191 的 UI、共享库恢复和逐请求图像计量已进入本地总分支；受审源 `0d7d422` 的151项组合通过，两轴无遗留，原并发夹具的指定参与者定位限制单独保留，见[表情维护验收](../research/drift-meme-maintenance-acceptance-2026-10-17.md)。桌宠 Electron 独立宿主已获明确选择，按[#195](https://github.com/sawaki-zexi/meido/issues/195)及[具体规格](../specs/desktop-pet-spec.md)继续实施。
 
 事实来源：[目标规格](../specs/shiori-tool-parity-spec.md)、[固定版本源码调研](../research/shiori-tool-system-and-portability.md)、下表所列 Issue/PR、仓库行为测试和单独标明的原生验收。规格中的旧基线描述不代表最新代码状态。
 
@@ -15,9 +15,9 @@
 - 总目标是 31 个核心工具、45 个插件工具、8 个 Skill、主动决策和 Drift。工具名字或 schema 存在不等于行为验收完成。
 - 已获批准并合并 PR #145、#143、#146、#147、#150、#151，对应 #138–#144 中的六张实施票已关闭。
 - 用户随后明确要求剩余多个 PR 汇总为一个大 PR；剩余改动汇入 [草稿 PR #162](https://github.com/sawaki-zexi/meido/pull/162)。原 Skills 草稿 PR #161 已关闭为被替代，未单独合并，#152 保持开放。
-- D01–D03 及屏幕感知已批准，见 ADR [0011](../adr/0011-versioned-tool-activation.md)、[0012](../adr/0012-owned-task-runtime.md)、[0013](../adr/0013-independent-generic-schedules.md)、[0014](../adr/0014-explicit-screen-vision-binding.md)。2026-10-16 主人另明确批准 [Windows 桌面控制](../adr/0015-owned-windows-computer-use.md)、[NovelAI](../adr/0016-bounded-novelai-generation.md)、[Coding Agent](../adr/0017-owned-coding-agent-runtime.md)、[主动决策/Drift](../adr/0018-explicit-autonomy-and-drift-grants.md)四项具体规格第3节，正在实施；真实账号、消费及外部事务仍按各自范围另批。桌宠宿主选择仍待回答。
+- D01–D03 及屏幕感知已批准，见 ADR [0011](../adr/0011-versioned-tool-activation.md)、[0012](../adr/0012-owned-task-runtime.md)、[0013](../adr/0013-independent-generic-schedules.md)、[0014](../adr/0014-explicit-screen-vision-binding.md)。2026-10-16 主人另明确批准 [Windows 桌面控制](../adr/0015-owned-windows-computer-use.md)、[NovelAI](../adr/0016-bounded-novelai-generation.md)、[Coding Agent](../adr/0017-owned-coding-agent-runtime.md)、[主动决策/Drift](../adr/0018-explicit-autonomy-and-drift-grants.md)四项具体规格第3节，正在实施；真实账号、消费及外部事务仍按各自范围另批。桌宠已明确选择 Electron 独立宿主，见[ADR-0020](../adr/0020-owned-electron-desktop-pet.md)。
 - 汇总 PR 不具有合并批准；实现、审查、CI 和必要验收完成后仍需人工批准。剩余 Issue 不因进入集成分支而关闭。
-- 主人已明确批准 #191 [Drift 表情维护规格第3节](../specs/drift-meme-maintenance-spec.md)的一揽子方案，范围为实现及无费用本地验收；真实模型消费、账号与平台事务另批。该批准不改变桌宠宿主选择的待答状态。
+- 主人已明确批准 #191 [Drift 表情维护规格第3节](../specs/drift-meme-maintenance-spec.md)的一揽子方案，范围为实现及无费用本地验收；真实模型消费、账号与平台事务另批。桌宠后来已独立获得 Electron 路线选择，见[ADR-0020](../adr/0020-owned-electron-desktop-pet.md)，两项批准范围分别保留。
 
 ## 范围追踪
 
@@ -40,7 +40,7 @@
 | P02 桌面控制 8 工具 | #169 原固定源 `7aa8108` 已两轴复核并整合；8工具/图像下一模型请求、单观察/lease/Job收尾有真实专用窗口和HTTP/provider证据。实际调用回执修正完成17个协议TDD周期，含转义坏载体拒绝；f700驱动在freeze4有6项原生通过，freeze6独立真实Windows禁用目标零输入拒绝1项通过，最新freeze7宿主61项相关回归通过且未重跑原生；旧freeze5辅助候选1通过/1失败原件保留，不称辅助分支已证。Python编译通过，7源类型相对准确6751基线9→9、0新增，不称全类型绿。次数、辅助API、禁用准入与恢复事实见[契约](computer-use.md)及[原生手册](../handbook/computer-use-native-acceptance.md) | 本次修正完整/增量两轴无遗留，准确f4ac两套完整CI通过；辅助VK实际触发/到件、多DPI/多屏/锁屏、双采集失败与遮挡等未验收环境继续保留，不扩大真实应用操作许可 |
 | P03 Coding Agent 5 工具 | #174固定源`5a5a2c4`及关闭/配置夹具修正均已两轴复核并通过`fff08b1`两条CI；7项Herdr/两合成CLI原生通过，见[验收](../handbook/coding-agent-acceptance.md)。#175固定源`0e2da975`完成完整两轴及修正复核后合入，独立Codex exec复用spawn coding，见[S07验收](../handbook/codex-delegate-acceptance.md)；准确13c集成两轴与两套完整CI通过。#176独立源`eddfdb9`完成精确提交/发布及两轴修正复核，已整合`3c5e4c3`且集成两轴无遗留；准确交叉308项、前端221项、构建及窄类型通过，随后`cd73682`两套完整CI均通过 | 总PR后续跨模块验收；旧首push unknown原因未解释，隔离通过不当作根因修复。真实认证/消费/发布另批，不能以合成CLI代替真实服务 |
 | P04 屏幕感知 1 工具 | #160 已进入集成分支；提前拒绝/重复取消连接回收最终两轴复核均无剩余 finding；相关后端 196 passed/1 native 条件 skip，前端 69 passed；真实受控 Windows 主屏/125% DPI/本地视觉及取消通过，无原图落盘 | 总 PR 最终集成；尚无双屏、混合 DPI、实际锁屏/远程断开或 frozen 分发实证，也未调用真实远端视觉服务 |
-| P05 桌宠 1 工具 | 待实现；Electron/PySide6 宿主选择待回答 | 真实透明置顶窗口、动作包、move/play 与完整生命周期 |
+| P05 桌宠 1 工具 | 主人已选择 Electron 独立宿主；[#195](https://github.com/sawaki-zexi/meido/issues/195)及[具体规格](../specs/desktop-pet-spec.md)已就绪，生产实现与原生验收待完成 | 真实透明置顶窗口、动作包、move/play 与完整生命周期 |
 | P06 生图 1 工具 | #171/#172已两轴复核并通过准确13c两套完整CI，含当前主人txt2img/img2img、唯一原来源、历史、指定图片CAS重生成和受管后台。#173源`0d1b918`完成人类回合CG、受限标签与卡片写回；首次资产落库丢责任P2真实RED后修正，源和集成两轴均无遗留；`929974f`本地交叉321项、前端215项及构建通过，后续`e71145a`两套完整CI均通过，见[手册](../handbook/novelai-generation-acceptance.md) | 后续功能集成回归；真实NovelAI账号生成和费用另批 |
 | P07 QQ 附件 1 工具 | #164 已进入集成分支；多字节长行自动字符分页、当前/引用真实入站与存储/Runtime 往返、旧附件/跨群拒绝均经过两轴独立审查 | 平台实机验收另列；传输夹具不是 QQ 真人收件证据 |
 | S01 weather | #152 已进入集成分支；真实 curl、wttr.in、Open-Meteo 和公开 HTTP 工具往返 | 最终配置集成；Shell 仍须主人显式授权 |

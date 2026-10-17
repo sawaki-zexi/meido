@@ -1,6 +1,6 @@
 # P05 桌宠原生宿主：固定上游与迁移接缝调研
 
-状态：当前研究／D04 宿主选择仍待原问题答复；未选 Electron 或 PySide6，未实施、安装、启动窗口或完成原生验收。最后核验：2026-10-17（Asia/Shanghai）。
+状态：当前研究／比较完成后主人于 2026-10-17 明确选择 Electron 独立宿主并要求继续实施；原比较事实保留，具体见[实施规格](../specs/desktop-pet-spec.md)和[ADR-0020](../adr/0020-owned-electron-desktop-pet.md)。实现和原生验收尚未完成。最后核验：2026-10-17（Asia/Shanghai）。
 
 事实来源：Shiori 固定 `4f266aeaf42fcd611362e2456417b91f659341cf` 的 Git blob（仅 `git show`／`git ls-tree`，没有切换或执行其工作树）；Meido 固定 `4dcfd8f8723c96dd36bd6cb30e0933d74d56ed6a` 的总规格和发行依赖；2026-10-17 实际查询的 Electron／Qt／Pillow 官方资料。下文明确标出已提取、推断与计划。动态文档不等于版本锁；Qt 部分采用明确6.10文档，其余 live 文档不可据此推定已选发行版本。
 
@@ -91,9 +91,9 @@
 
 ## 8. 剩余决定与执行边界
 
-**仍待原答复：** Electron sidecar还是Python/PySide6 sidecar。若原答复选择PySide6，纯Qt绘制与QtWebEngine嵌入的播放器路线也需明确；本研究只提供成本差异，没有替主人选择或再次发问。之后才能形成具体Spec／ADR与从用户角度完整的垂直Ticket，确认桥认证、进程owner、支持平台和发行范围；此后仍须独立双轴审查及实机闭环，不能把本报告算作P05交付。
+**后续决定已收到：** 主人重新了解两案后，明确选择“Electron 独立宿主（推荐）”并要求按此继续实施。原研究不替主人选择；当前实施按[具体规格](../specs/desktop-pet-spec.md)、[ADR-0020](../adr/0020-owned-electron-desktop-pet.md)及[#195](https://github.com/sawaki-zexi/meido/issues/195)推进，保持原主入口和 Windows 透明窗口/角色绑定/move/play/停用重启范围。尚需完成代码、必要检查和真实窗口闭环，不能把研究或选择本身算作 P05 交付。
 
-研究期间未改aggregate／Shiori工作树，未读取动态#191实现，未安装依赖、运行app/tests/Node/native、访问真实账号、创建Issue、发送外部消息或发布代码。浏览仅查询官方技术／许可主来源；read-only gh只列开放标题。
+原只读研究期间未改aggregate／Shiori工作树，未读取动态#191实现，未安装依赖、运行app/tests/Node/native、访问真实账号、创建Issue、发送外部消息或发布代码。浏览仅查询官方技术／许可主来源；read-only gh只列开放标题。
 
 ## 固定源码身份抽样
 
