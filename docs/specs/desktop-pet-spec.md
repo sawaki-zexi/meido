@@ -1,6 +1,6 @@
 # Electron 桌宠
 
-状态：当前实施规格；主人于 2026-10-17 明确选择“Electron 独立宿主（推荐）”，并要求按此继续实施。路线已批准，尚未完成实现或原生验收。真实模型、账号、外部发布与总 PR 合并许可没有扩大。
+状态：当前实施规格；主人于 2026-10-17 明确选择“Electron 独立宿主（推荐）”，并要求按此继续实施。实现和当前 Windows 本地原生验收见[验收记录](../research/desktop-pet-acceptance-2026-10-17.md)；准确总提交 CI 及交付检查以 PR 为准。真实模型、账号、外部发布与总 PR 合并许可没有扩大。
 
 实施票：[#195](https://github.com/sawaki-zexi/meido/issues/195)。Parent：[#137](https://github.com/sawaki-zexi/meido/issues/137)，统一交付[总 PR #162](https://github.com/sawaki-zexi/meido/pull/162)。事实来源：[总规格 P05/D04](shiori-tool-parity-spec.md)、[固定上游调研](../research/pet-host-primary-sources-2026-10-17.md)、[ADR-0020](../adr/0020-owned-electron-desktop-pet.md)。
 

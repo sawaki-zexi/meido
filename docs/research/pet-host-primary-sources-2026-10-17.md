@@ -1,6 +1,6 @@
 # P05 桌宠原生宿主：固定上游与迁移接缝调研
 
-状态：当前研究／比较完成后主人于 2026-10-17 明确选择 Electron 独立宿主并要求继续实施；原比较事实保留，具体见[实施规格](../specs/desktop-pet-spec.md)和[ADR-0020](../adr/0020-owned-electron-desktop-pet.md)。实现和原生验收尚未完成。最后核验：2026-10-17（Asia/Shanghai）。
+状态：当前研究／比较完成后主人于 2026-10-17 明确选择 Electron 独立宿主并要求继续实施；原比较事实保留，具体见[实施规格](../specs/desktop-pet-spec.md)、[ADR-0020](../adr/0020-owned-electron-desktop-pet.md)及后续[实现验收](desktop-pet-acceptance-2026-10-17.md)。下文的原缺口属于调研时点，不代表新实现状态。最后核验：2026-10-17（Asia/Shanghai）。
 
 事实来源：Shiori 固定 `4f266aeaf42fcd611362e2456417b91f659341cf` 的 Git blob（仅 `git show`／`git ls-tree`，没有切换或执行其工作树）；Meido 固定 `4dcfd8f8723c96dd36bd6cb30e0933d74d56ed6a` 的总规格和发行依赖；2026-10-17 实际查询的 Electron／Qt／Pillow 官方资料。下文明确标出已提取、推断与计划。动态文档不等于版本锁；Qt 部分采用明确6.10文档，其余 live 文档不可据此推定已选发行版本。
 

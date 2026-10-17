@@ -323,9 +323,9 @@ def test_native_owner_http_discovery_move_play_restart_disable_and_disconnect(ap
         assert work['y'] <= bounds['y'] <= work['y'] + work['height'] - bounds['height']
         if command['action'] == 'move':
             target = command['target']
-            expected_x = work['x'] + (round((work['width'] - 192) / 2) if target == 'center'
+            expected_x = work['x'] + ((work['width'] - 192 + 1) // 2 if target == 'center'
                 else work['width'] - 192 if target.endswith('right') else 0)
-            expected_y = work['y'] + (round((work['height'] - 208) / 2) if target == 'center'
+            expected_y = work['y'] + ((work['height'] - 208 + 1) // 2 if target == 'center'
                 else work['height'] - 208 if target.startswith('bottom') else 0)
             assert (bounds['x'], bounds['y']) == (expected_x, expected_y), actual_window
         history = client.get(path).json()['history']
