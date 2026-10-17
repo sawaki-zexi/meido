@@ -1,4 +1,5 @@
 import { ComputerUseSettings } from "./ComputerUseSettings";
+import { DesktopPetSettings } from './DesktopPetSettings';
 import type { FormEvent } from "react";
 import type { RolesState } from "./useRoles";
 import type { RoleProfile } from "../../api/types";
@@ -143,6 +144,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
     <SpawnSettings draft={draft} onChange={setDraft} disabled={locked} />
     <CodingRoleSettings roleId={selected?.id} draft={draft} onChange={setDraft} disabled={locked} />
     {selected && !creating && <AutonomySettings key={selected.id} roleId={selected.id} disabled={locked} />}
+    {selected && !creating && <DesktopPetSettings key={`pet-${selected.id}`} roleId={selected.id} disabled={locked} />}
     {selected && !creating && <ToolCatalog key={`${selected.id}:${selected.updatedAt}`} roleId={selected.id} hasUnsavedChanges={toolsChanged} />}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {state.importPreview && <section className="role-import-preview" aria-label="角色卡导入预览">

@@ -32,6 +32,9 @@ from .screen_perception import ObserveScreenTool, ScreenPerception
 from .computer_use import ComputerUseHost, COMPUTER_USE_TOOL_NAMES, load_computer_tools, register_computer_use_plugin, guard_provider
 from .novelai_generation.application import NovelaiApplication
 from .novelai_generation.api import novelai_router
+from .desktop_pet.application import DesktopPetApplication
+from .desktop_pet.api import router as desktop_pet_router
+from .desktop_pet.tools import PetActionTool, register_desktop_pet_plugin
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
 from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryQueryFilters, MemoryScope
@@ -255,6 +258,7 @@ application_plugin_manager.register("owner-knowledge", owner_knowledge_plugin)
 register_todo_agent_plugin(plugin_registry)
 register_browser_use_plugin(plugin_registry)
 register_computer_use_plugin(plugin_registry)
+register_desktop_pet_plugin(plugin_registry)
 browser_use_sessions = BrowserSessions(
     Path(os.getenv("MEIDO_BROWSER_USE_DATA_DIR", str(data_root / "browser-use"))).resolve(),
     BrowserUseConfig(),
@@ -262,6 +266,20 @@ browser_use_sessions = BrowserSessions(
 )
 task_runtime = TaskRuntime(data_root / "tasks")
 _novelai: NovelaiApplication | None = None
+_desktop_pet: DesktopPetApplication | None = None
+_desktop_pet_gate = threading.RLock()
+
+
+def _desktop_pet_application() -> DesktopPetApplication:
+    global _desktop_pet
+    with _desktop_pet_gate:
+        root = Path(session_store.database_path).parent / 'desktop-pet'
+        if (_desktop_pet is None or _desktop_pet.closed or _desktop_pet.store.roles is not store
+                or _desktop_pet.store.root != root):
+            if _desktop_pet is not None and _desktop_pet.has_live_owner:
+                raise RuntimeError('桌宠原宿主尚未退出')
+            _desktop_pet = DesktopPetApplication(store, root)
+        return _desktop_pet
 
 
 def _publish_generation_message(role_id: str, message: Message) -> None:
@@ -836,6 +854,8 @@ async def _memory_engine_delete(mutation: MemoryMutation) -> None:
 
 async def _close_memory_workers() -> None:
     closers = []
+    if _desktop_pet is not None:
+        closers.append(_desktop_pet.close)
     if _proactive is not None:
         closers.append(_proactive.close)
     if _coding is not None:
@@ -876,6 +896,7 @@ async def _start_memory_workers() -> None:
     _coding_application().start()
     _schedule_application().start()
     _proactive_application().start()
+    await _desktop_pet_application().start()
     _ensure_spawn_completion_worker()
     mail_service.start()
     todo_plugin.sessions = session_store
@@ -946,6 +967,7 @@ app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown
 app.include_router(mail_router)
 app.include_router(mcp_router(lambda: mcp_host, lambda: store))
 app.include_router(novelai_router(_novelai_application))
+app.include_router(desktop_pet_router(_desktop_pet_application))
 app.include_router(coding_router(lambda: _coding_application(), lambda: store))
 app.include_router(autonomy_router(lambda: _proactive_application(), workspace_getter=lambda role_id: store.root / role_id / "workspace"))
 app.add_middleware(
@@ -1659,6 +1681,11 @@ def get_role_tools(role_id: str) -> dict[str, object]:
         reasons["mail.manage"] = "邮件服务尚未就绪"
     dependencies = {name: browser_use_sessions.dependency_status() for name in BROWSER_USE_TOOL_NAMES}
     dependencies['message_push'] = {'status': 'ready', 'reason': '只写入当前角色的桌面对话，无需外部渠道账号'}
+    pet_reason = _desktop_pet_application().unavailable_reason(role.id)
+    dependencies['pet_action'] = {'status': 'unavailable' if pet_reason else 'ready',
+        'reason': pet_reason or '当前角色桌宠原生窗口已就绪'}
+    if pet_reason:
+        reasons['pet_action'] = pet_reason
     computer_dependency = computer_use.dependency_status(role)
     for name in COMPUTER_USE_TOOL_NAMES:
         dependencies[name] = computer_dependency
@@ -2021,6 +2048,7 @@ async def delete_role(role_id: str) -> None:
         await screen_perception.invalidate(role_id=role_id)
         await computer_use.invalidate(role_id=role_id)
         await _novelai_application().invalidate(role_id)
+        await _desktop_pet_application().invalidate(role_id)
         await browser_use_sessions.set_role_enabled(role_id, False)
         await _coding_application().prepare_role_deletion(role_id)
         await asyncio.to_thread(task_runtime.set_role_enabled, role_id, False)
@@ -2060,6 +2088,7 @@ async def delete_role(role_id: str) -> None:
         deletion_succeeded = True
         try:
             _novelai_application().purge_role(role_id)
+            await _desktop_pet_application().purge_role(role_id)
         except (OSError, sqlite3.Error, ValueError) as error:
             memory_worker.errors.append(f"{role_id}: generation cleanup deferred: {type(error).__name__}")
         await mcp_host.delete_role(role_id)
@@ -4079,6 +4108,20 @@ def _runtime_tool_candidates(
         return (context.session_key.startswith('thread:') or
                 run is not None and run.modelSnapshot.get('humanInputSource') == 'desktop_owner')
 
+    def pet_source_authorized(context):
+        if (context.role_id != role.id or context.session_key != f'role:{role.id}'
+                or not is_channel_owner or source_account_id
+                or source_thread_id not in {None, '', f'desktop:{role.id}'}
+                or store.get(role.id) is None or role.id in _channel_roles_deleting):
+            return False
+        run = session_store.get_run(context.run_id)
+        user = session_store.user_message_for_run(context.run_id)
+        return bool(run and run.roleId == role.id and run.sessionKey == context.session_key
+            and run.status in {'created', 'running'} and run.modelSnapshot.get('humanInputSource') == 'desktop_owner'
+            and user and user.role == 'user' and user.status == 'completed' and user.messageType == 'text'
+            and user.sessionKey == context.session_key and not user.metadata.get('internalEvent')
+            and user.metadata.get('channel', 'desktop') == 'desktop')
+
     memory_access = _memory_runtime_access(role, is_channel_owner=is_channel_owner, source_thread_id=source_thread_id)
     group_access = GroupToolAccess(multichannel_store, role_id=role.id,
         source_thread_id=source_thread_id, is_owner=is_channel_owner,
@@ -4088,6 +4131,7 @@ def _runtime_tool_candidates(
         file_tools = _proactive_application().drift_skills.author_tools(file_tools, role.id,
             authorized=schedule_source_authorized)
     tools: list[object] = [
+        PetActionTool(_desktop_pet_application(), role.id, authorized=pet_source_authorized),
         _novelai_application().tool_for(role.id, is_owner=is_channel_owner,
             source_thread_id=source_thread_id, source_account_id=source_account_id, frozen_role=role),
         ScheduleTool(_schedule_application, session_store, origin_resolver=task_origin,
@@ -4190,6 +4234,8 @@ def _screen_unavailable_reason(role) -> str:
 def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[str]:
     shell = role.agentConfig.shell
     enabled: set[str] = set()
+    if not _desktop_pet_application().unavailable_reason(role.id):
+        enabled.add('pet_action')
     if computer_use.dependency_status(role)["status"] != "unavailable":
         enabled.update(COMPUTER_USE_TOOL_NAMES)
     if not _novelai_application().unavailable_reason(role):
@@ -4247,7 +4293,7 @@ def _runtime_tools(
 def _deferred_discovery_tools() -> frozenset[str]:
     # Fixed Shiori always_on metadata: these existing tools are deferred.
     # Meido-specific todo/mail retain their own declarations.
-    return frozenset({*BROWSER_USE_TOOL_NAMES, "account_list", "account_targets", "account_send",
+    return frozenset({*BROWSER_USE_TOOL_NAMES, "pet_action", "account_list", "account_targets", "account_send",
         "lookup_group_context", "update_group_context", "set_group_listening", "lookup_group_member", "read_attachment", *MCP_MANAGEMENT_NAMES, *CODING_TOOL_NAMES})
 
 
@@ -4256,7 +4302,7 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     host_enabled = set(enabled_tools)
     enabled_tools.update(agent_config.enabledTools)
-    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | CODING_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image"}) - host_enabled)
+    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | CODING_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image", "pet_action"}) - host_enabled)
     if not include_channel:
         enabled_tools.difference_update({
             "account_list", "account_targets", "account_send", "set_group_listening", "read_attachment",
@@ -4269,6 +4315,12 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     )
     granted_capabilities = set(agent_config.grantedCapabilities)
     provided_capabilities: set[str] = set()
+    if 'pet_action' in host_enabled:
+        enabled_plugins.add('desktop_pet')
+        granted_capabilities.add('desktop.pet')
+        provided_capabilities.add('desktop.pet')
+    else:
+        enabled_plugins.discard('desktop_pet')
     if todo_enabled:
         enabled_plugins.add("todo")
         enabled_tools.update({"todo.write", "todo.reminder_control"})
@@ -4311,6 +4363,10 @@ async def _runtime_capabilities(
     )
     policy = _runtime_capability_policy(role, include_channel=include_channel)
     source_run = session_store.get_run(run_id)
+    if (session_key != f'role:{role.id}' or source_run is None
+            or source_run.modelSnapshot.get('humanInputSource') != 'desktop_owner'):
+        policy = replace(policy, enabled_tools=policy.enabled_tools - {'pet_action'},
+            enabled_plugins=policy.enabled_plugins - {'desktop_pet'})
     if (session_key != f"role:{role.id}" or source_run is None
             or source_run.modelSnapshot.get("screenPerceptionSource") != "desktop_owner"):
         policy = replace(policy, enabled_tools=policy.enabled_tools - {"observe_screen"})
@@ -4372,6 +4428,8 @@ async def _runtime_capabilities(
                 return "command permission was revoked by the current role policy"
         return True
     host_services: dict[str, object] = {}
+    if 'desktop.pet' in policy.provided_capabilities:
+        host_services['desktop.pet'] = _desktop_pet_application()
     if "todo.write" in policy.provided_capabilities:
         host_services["todo.write"] = _todo_application()
     if "desktop.control" in policy.provided_capabilities:
