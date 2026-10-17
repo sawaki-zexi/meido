@@ -120,13 +120,14 @@ class DriftFiles:
                         new_directories += 1
                 old_identity = _identity(path) if path.exists() else None
                 size, items = _scan(root)
+                meme_size, meme_items = self.app.memes.storage.extra(role_id) if hasattr(self.app, 'memes') else (0, 0)
                 temporary = path.parent / ('.meido-' + uuid.uuid4().hex + '.tmp')
                 journal_id = uuid.uuid4().hex
                 head_bytes = 0 if host_projection else self.limits.headroom_bytes
                 head_items = 0 if host_projection else self.limits.headroom_items
                 # Old target and temporary new copy coexist until atomic replace.
-                if (size + len(data) + head_bytes > self.limits.role_bytes
-                        or items + new_directories + 1 + head_items > self.limits.role_items):
+                if (size + meme_size + len(data) + head_bytes > self.limits.role_bytes
+                        or items + meme_items + new_directories + 1 + head_items > self.limits.role_items):
                     self._settle(role_id, root, identity, size, items)
                     raise ValueError('managed Drift allocation quota exhausted before write')
                 with self.app._transaction() as db:
@@ -175,8 +176,12 @@ class DriftFiles:
             root.mkdir(exist_ok=True)
             self.reconcile(role_id)
             size, items = _scan(root)
-            if size + self.limits.headroom_bytes > self.limits.role_bytes or items + self.limits.headroom_items > self.limits.role_items:
-                raise ValueError('managed Drift directory has exhausted its finite allocation')
+            if hasattr(self.app, 'memes'):
+                self.app.memes.storage.refresh_all()
+            meme_size, meme_items = self.app.memes.storage.extra(role_id) if hasattr(self.app, 'memes') else (0, 0)
+            if size + meme_size + self.limits.headroom_bytes > self.limits.role_bytes or items + meme_items + self.limits.headroom_items > self.limits.role_items:
+                from .meme_storage import MemeQuotaError
+                raise MemeQuotaError('managed Drift and meme combined allocation quota exhausted')
             with self.app._transaction() as db:
                 retention.check_capacity(db, role_id)
             return _directory_identity(root)

@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .config import AutonomyConfig
+from .config import AutonomyConfig, MemePurposeConflict
 from .source_authoring import preview_artifact
 from .targets import TargetDirectoryRequest, TargetSelection, TargetConflict
 from ..channels.directory import DirectoryError
@@ -59,6 +59,15 @@ class DriftAdoptionRequest(DriftPreviewRequest):
 
 def autonomy_router(application, *, workspace_getter=None):
     router = APIRouter(prefix="/api/roles/{role_id}/autonomy")
+
+    @router.get('/meme-library')
+    async def meme_library(role_id: str):
+        try:
+            return application().memes.status(role_id)
+        except KeyError:
+            raise HTTPException(404, '角色不存在') from None
+        except (sqlite3.Error, ValueError, OSError):
+            raise HTTPException(503, '表情维护事实暂不可确认，请保留原操作并重试') from None
 
     @router.get('/target-accounts')
     async def target_accounts(role_id: str):
@@ -280,6 +289,8 @@ def autonomy_router(application, *, workspace_getter=None):
             raise HTTPException(404, "角色不存在") from None
         except TargetConflict:
             raise HTTPException(409, '原目标观察、账号或主人绑定已变化，请重新读取并选择') from None
+        except MemePurposeConflict:
+            raise HTTPException(409, '旧表情维护资源仍在自然收尾；主人可继续普通编辑，确认退出后再启用新代际') from None
         except PermissionError:
             raise HTTPException(422, '自主渠道存储或目标许可不可用') from None
         except ValueError as error:

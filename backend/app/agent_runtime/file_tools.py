@@ -12,6 +12,7 @@ import io
 import os
 import stat
 import threading
+import time
 import uuid
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
@@ -56,17 +57,20 @@ class _OperationSignal(CancellationToken):
 
 
 @contextmanager
-def _file_lock(path: Path, context: ToolContext):
+def _file_lock(path: Path, context: ToolContext, *, wait_seconds=None):
     key = os.path.normcase(str(path))
     with _LOCK_GUARD:
         lock, users = _FILE_LOCKS.get(key, (threading.Lock(), 0))
         _FILE_LOCKS[key] = lock, users + 1
     acquired = False
+    deadline = time.monotonic() + wait_seconds if wait_seconds is not None else None
     try:
         while not acquired:
             if context.signal.is_cancelled():
                 raise _FileFailure("File operation cancelled.", "cancelled")
             acquired = lock.acquire(timeout=.05)
+            if not acquired and deadline is not None and time.monotonic() >= deadline:
+                raise _FileFailure('path_busy: file publication is currently busy; retry.', 'path_busy')
         yield
     finally:
         if acquired:
@@ -186,7 +190,7 @@ class _FileTool:
             self._check(context)
             ToolRegistry.validate_definition(self.definition, dict(arguments))
             path = self._path(arguments["path"])
-            with _file_lock(path, context):
+            with nullcontext() if getattr(self.write_policy, 'short_publication', False) else _file_lock(path, context):
                 self._path(str(path))
                 return self._execute(path, arguments, context)
         except _FileFailure as error:
@@ -234,13 +238,18 @@ class _FileTool:
                         stream.write(data[start:start + 65536])
                     stream.flush()
                     os.fsync(stream.fileno())
-                self._check(context)
-                self._path(str(path))
-                if allocation is not None:
-                    allocation.check()
-                os.replace(temporary, path)
-                if allocation is not None:
-                    allocation.committed()
+                prepared = getattr(allocation, 'prepared', None)
+                if prepared is not None:
+                    prepared()
+                publication = getattr(allocation, 'publication', None)
+                with publication() if publication is not None else nullcontext():
+                    self._check(context)
+                    self._path(str(path))
+                    if allocation is not None:
+                        allocation.check()
+                    os.replace(temporary, path)
+                    if allocation is not None:
+                        allocation.committed()
             finally:
                 if allocation is not None:
                     allocation.cleanup()

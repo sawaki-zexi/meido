@@ -1,7 +1,7 @@
 """Bounded A01 model loop and durable draft/finish, without a human session."""
 import asyncio
-from contextlib import aclosing, contextmanager
-from dataclasses import asdict
+from contextlib import aclosing, contextmanager, nullcontext
+from dataclasses import asdict, fields, is_dataclass, replace
 import hashlib
 import inspect
 import json
@@ -12,6 +12,7 @@ from jsonschema import Draft202012Validator, ValidationError
 from ..ai.model_types import (ModelAssistantMessage, ModelStreamDone, ModelStreamError,
     ModelSystemMessage, ModelTextBlock, ModelToolCallBlock, ModelToolResultMessage, ModelUserMessage)
 from ..task_runtime import TaskOutcome
+from ..ai.request_budget import ImageProof, ImageRequestBudgetError, image_request_budget
 from .tool_schemas import SCHEMAS
 from .bindings import persona
 from . import retention
@@ -19,6 +20,93 @@ from . import retention
 
 def _text(value):
     return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+
+
+def _image_fragments(protected):
+    return frozenset(fragment for image in protected for fragment in
+        (*[image[offset:offset + 64] for offset in range(0, max(0, len(image) - 63), 32)], image[-64:]) if len(fragment) == 64)
+
+
+def _audit_projection(value, protected=(), fragments=None):
+    """Request-only images are never copied into durable transcripts."""
+    if fragments is None:
+        fragments = _image_fragments(protected)
+    if isinstance(value, dict):
+        if value.get('type') == 'image' and isinstance(value.get('data_base64'), str):
+            encoded = value['data_base64']
+            return {'type': 'image', 'media_type': value.get('media_type'), 'encodedBytes': len(encoded),
+                'sha256': hashlib.sha256(encoded.encode('ascii')).hexdigest(), 'ephemeral': True}
+        return {_audit_projection(key, protected, fragments): _audit_projection(item, protected, fragments) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_audit_projection(item, protected, fragments) for item in value]
+    if isinstance(value, str):
+        for image in protected:
+            value = value.replace(image, '[ephemeral image omitted]')
+        if any(value[offset:offset + 64] in fragments for offset in range(max(0, len(value) - 63))):
+            return '[ephemeral image echo omitted]'
+    return value
+
+
+def _echo_paths(value, protected):
+    """Find a whole image distributed across structured string leaves or keys."""
+    tokens = []
+    def visit(item, path=(), key=False):
+        if is_dataclass(item) and not isinstance(item, type):
+            for field in fields(item):
+                if field.name not in {'type', 'role'}:
+                    visit(getattr(item, field.name), (*path, field.name))
+        elif isinstance(item, dict):
+            for index, (name, child) in enumerate(item.items()):
+                visit(name, (*path, 'key', index), True)
+                visit(child, (*path, 'value', index))
+        elif isinstance(item, (tuple, list)):
+            for index, child in enumerate(item):
+                visit(child, (*path, index))
+        elif isinstance(item, str):
+            tokens.append((path, item, key))
+    visit(value)
+    blocked = set()
+    groups = (tokens, [token for token in tokens if not token[2]], [token for token in tokens if token[2]])
+    for group in groups:
+        joined = ''.join(token[1] for token in group)
+        for image in protected:
+            start = joined.find(image)
+            while start >= 0:
+                end, offset = start + len(image), 0
+                for path, text, _ in group:
+                    if offset < end and offset + len(text) > start:
+                        blocked.add(path)
+                    offset += len(text)
+                start = joined.find(image, start + 1)
+    return blocked
+
+
+def _safe_assistant(message, protected):
+    if not protected:
+        return message
+    blocked = _echo_paths(message, protected)
+    fragments = _image_fragments(protected)
+    def safe(value, path=()):
+        if is_dataclass(value) and not isinstance(value, type):
+            if getattr(value, 'type', None) == 'image':
+                raise ValueError('autonomous model response contains an unsupported output image')
+            return replace(value, **{field.name: safe(getattr(value, field.name), (*path, field.name)) for field in fields(value)})
+        if isinstance(value, dict):
+            result = {}
+            for index, (key, item) in enumerate(value.items()):
+                safe_key = '[ephemeral image key omitted]' if (*path, 'key', index) in blocked else _audit_projection(key, protected, fragments)
+                if safe_key != key:
+                    safe_key = 'ephemeral_image_key_' + hashlib.sha256(str(key).encode('utf-8')).hexdigest()[:16]
+                result[safe_key] = safe(item, (*path, 'value', index))
+            return result
+        if isinstance(value, tuple):
+            return tuple(safe(item, (*path, index)) for index, item in enumerate(value))
+        if isinstance(value, list):
+            return [safe(item, (*path, index)) for index, item in enumerate(value)]
+        if path in blocked:
+            return '[ephemeral image echo omitted]'
+        return _audit_projection(value, protected, fragments)
+    return safe(message)
 
 
 class DecisionTurn:
@@ -164,31 +252,49 @@ class DecisionTurn:
 
 
 async def _request(turn, adapter, configuration, messages, cancelled, *, schemas=SCHEMAS, max_tokens=1024):
+    check_request = getattr(turn, 'check_model_request', None)
+    if check_request is not None:
+        check_request()
     method = getattr(adapter, "stream_rich_messages", None)
     if method is None or "max_tokens" not in inspect.signature(method).parameters:
         raise ValueError("autonomous model adapter does not support a token budget")
     payload = {"messages": [asdict(message) for message in messages], "tools": schemas}
-    turn.reserve_request(len(_text(payload).encode("utf-8")), max_tokens)
+    images = [block for message in payload['messages'] for block in message.get('content', ()) if block.get('type') == 'image']
+    protected = tuple(dict.fromkeys((*getattr(turn, '_image_audit_secrets', ()), *(image['data_base64'] for image in images))))
+    turn._image_audit_secrets = protected
+    reserve = getattr(turn, 'reserve_image_request', None) if getattr(turn, 'meme_scope', None) is not None else None
+    if images and reserve is None:
+        raise ValueError('this autonomous mode does not support image budgeting')
+    audit_payload = _audit_projection(payload, protected)
+    canonical_bytes = len(_text(audit_payload).encode('utf-8'))
+    turn.reserve_request(canonical_bytes, max_tokens)
     with turn.transaction() as db:
-        retention.record_transcript(db, turn.origin.tick_id, {"direction": "request", **payload}, turn.app._now(db))
+        retention.record_transcript(db, turn.origin.tick_id, {"direction": "request", **audit_payload}, turn.app._now(db))
     response, output_bytes = None, 0
     source = method(tuple(messages), configuration, schemas, max_tokens=max_tokens,
                     cancel_check=cancelled.is_set)
-    async with asyncio.timeout(30), aclosing(source):
-        async for event in source:
-            if cancelled.is_set() or not turn.app._authorized(turn.origin):
-                raise asyncio.CancelledError()
-            output_bytes += len(_text(asdict(event)).encode("utf-8"))
-            if output_bytes > 64 * 1024:
-                raise RuntimeError("autonomous model response exceeds byte budget")
-            if isinstance(event, ModelStreamError):
-                raise RuntimeError("autonomous model request failed")
-            if isinstance(event, ModelStreamDone):
-                response = event.message
+    proofs = tuple(ImageProof(image['media_type'], hashlib.sha256(image['data_base64'].encode('ascii')).hexdigest(),
+        len(image['data_base64'])) for image in images)
+    budget = image_request_budget(images=proofs, canonical_text_bytes=canonical_bytes, reserve=reserve) if reserve is not None else nullcontext()
+    with budget:
+        async with asyncio.timeout(30), aclosing(source):
+            async for event in source:
+                if cancelled.is_set() or not turn.app._authorized(turn.origin):
+                    raise asyncio.CancelledError()
+                output_bytes += len(_text(asdict(event)).encode("utf-8"))
+                if output_bytes > 64 * 1024:
+                    raise RuntimeError("autonomous model response exceeds byte budget")
+                if isinstance(event, ModelStreamError):
+                    if event.error.startswith('image_budget:') and event.error.rsplit(':', 1)[-1].startswith(('run_', 'authorization')):
+                        raise ImageRequestBudgetError(event.error.rsplit(':', 1)[-1])
+                    raise RuntimeError("autonomous model request failed")
+                if isinstance(event, ModelStreamDone):
+                    response = event.message
     if response is None:
         raise RuntimeError("autonomous model response did not finish")
+    response = _safe_assistant(response, protected)
     with turn.transaction() as db:
-        retention.record_transcript(db, turn.origin.tick_id, {"direction": "response", "message": asdict(response)}, turn.app._now(db))
+        retention.record_transcript(db, turn.origin.tick_id, {"direction": "response", "message": _audit_projection(asdict(response), protected)}, turn.app._now(db))
     return response
 
 

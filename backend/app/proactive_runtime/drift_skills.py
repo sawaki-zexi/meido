@@ -128,6 +128,7 @@ class DriftSkillCatalog:
 
     def author_tools(self, tools, role_id, *, authorized):
         scope = self.configuration(role_id).driftAuthoring
+        tools = self.app.memes.owner_tools(tools, role_id, authorized)
         return tuple(_AuthorTool(self, tool.with_write_policy(self.app.drift_files.policy(role_id)), role_id, scope, authorized)
             if tool.definition.name in {'write_file', 'edit_file'} else tool for tool in tools)
 
@@ -206,6 +207,8 @@ class DriftSkillCatalog:
             raise ValueError('Drift artifact identity changed')
         files = [(skill.path, materialized.content_hash, len(raw)), *resources]
         digest = _digest(_json(files).encode())
+        from .meme_profile import effective
+        materialized = effective(materialized, root)
         return materialized, sidecar, files, digest
 
     @staticmethod
@@ -282,6 +285,9 @@ class DriftSkillCatalog:
     @staticmethod
     def _forbidden(skill, manifest, scope):
         allowed = set(scope.allowedTools) | _INTERNAL
+        from .meme_profile import is_profile
+        if is_profile(skill):
+            allowed.add('meme_copy_image')
         declared_mcp = {f'mcp_{server.serverId}__{tool.name}' for server in manifest.requiresMCP for tool in server.tools}
         return ([name for name in skill.tools if name not in allowed and not (name.startswith('mcp_') and scope.allowMcp)]
             + (['MCP declaration'] if manifest.requiresMCP and not scope.allowMcp else [])
@@ -327,6 +333,14 @@ class DriftSkillCatalog:
                 role = self.app.role_getter(role_id)
                 from .bindings import shape, local_tool_names
                 local = local_tool_names(shape(role, role=True))
+                from .meme_profile import is_profile
+                if is_profile(skill):
+                    # The finite maintenance purpose authorizes this fixed
+                    # builtin. It grants no S06 or custom-skill authorship.
+                    verified = config.driftMeme.enabled
+                    forbidden = [name for name in skill.tools if name not in _INTERNAL | {'read_file', 'list_dir', 'write_file', 'edit_file', 'meme_copy_image'}]
+                    local.add('meme_copy_image')
+                    missing = [name for name in missing if name != 'meme_copy_image']
                 missing = sorted(set(missing) | {name for name in skill.tools if name not in _INTERNAL and not name.startswith('mcp_') and name not in local})
                 grants = {grant.serverId: grant for grant in config.driftMcpGrants}
                 missing_mcp = []
@@ -350,8 +364,8 @@ class DriftSkillCatalog:
                     missing_shell.extend(identifier for identifier in manifest.shellRuleIds if identifier not in rules or not available(rules[identifier], shape(role, role=True)))
                     missing_shell = sorted(set(missing_shell))
                 source = evidence[0] if authored and verified else None
-                reason = ('当前 Drift 模式不支持该技能所需可见图片核验、表情库写入与复制；可在主人聊天使用。'
-                    if builtin and skill.skill_id == 'meme-manage' else
+                reason = ('尚未明确启用本角色 Drift 表情库图片核验与视觉维护用途；请配置同一 Drift 视觉模型、库读与类别许可；普通主人聊天仍可使用原表情技能。'
+                    if builtin and skill.skill_id == 'meme-manage' and not config.driftMeme.enabled else
                     '尚未允许 Drift 自主作者；可在主人聊天使用本技能。'
                     if builtin and skill.skill_id == 'create-drift-skill' and not scope.allowAutonomousAuthoring else None)
                 result.append({'id': skill.skill_id, 'version': skill.version, 'description': skill.description,
@@ -418,6 +432,13 @@ class DriftSkillCatalog:
         if current is None or current['status'] != 'available':
             raise PermissionError('Drift skill is untrusted or lacks dependencies')
         registry = self._registry(role_id)
+        if identifier == 'meme-manage':
+            descriptor = next((item for item in registry.skills if item.skill_id == identifier), None)
+            if descriptor is not None and descriptor.source == 'builtin':
+                skill, manifest, _, digest = self._bundle(role_id, descriptor, BUILTIN_ROOT)
+                if digest != current['bundleSha256']:
+                    raise PermissionError('builtin meme bundle changed before activation')
+                return skill, manifest, digest
         resolution = registry.resolve(prompt='', explicit_ids={identifier},
             available_tools=self.execution_tools(self.configuration(role_id)) | _INTERNAL,
             enabled_tools=self.execution_tools(self.configuration(role_id)) | _INTERNAL)

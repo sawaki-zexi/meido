@@ -1,18 +1,20 @@
 """A finite Drift mode inside the original autonomous tick and Runtime owner."""
 import asyncio
 from contextlib import contextmanager
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import PurePosixPath
 import time
 from typing import cast
+import uuid
 
 from ..agent_runtime.capabilities import CapabilityRegistry
 from ..agent_runtime.discovery import ServiceGrant
 from ..agent_runtime.file_tools import build_file_tools
 from ..agent_runtime.provider import CancellationToken
 from ..agent_runtime.tools import AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
-from ..ai.model_types import ModelSystemMessage, ModelUserMessage, ModelTextBlock, ModelToolCallBlock, ModelToolResultMessage
+from ..ai.model_types import ModelSystemMessage, ModelUserMessage, ModelTextBlock, ModelImageBlock, ModelToolCallBlock, ModelToolResultMessage
 from ..task_runtime import TaskOutcome
 from .bindings import persona
 from .source_authoring import _directory_identity
@@ -32,6 +34,9 @@ def _definition(name, description, properties, required):
 
 
 SPECIAL = (
+    _definition('meme_copy_image', 'Copy one original run-frozen uploaded image into an explicitly granted meme category; host chooses the new filename.',
+        {'attachment_id': {'type': 'string', 'minLength': 1, 'maxLength': 128},
+         'category': {'type': 'string', 'minLength': 1, 'maxLength': 128}}, ['attachment_id', 'category']),
     _definition('shell', 'Run one frozen host read-only argv preset inside this tick.',
         {'rule_id': {'type': 'string', 'minLength': 1, 'maxLength': 64}}, ['rule_id']),
     *(_definition(item['function']['name'], item['function']['description'],
@@ -65,6 +70,8 @@ class DriftTurn:
         self.bundle = bundle
         self.catalog = app.drift_skills.list(origin.role_id)
         self.bundle_hash = None
+        self.pending_images = ()
+        self.meme_scope = app.memes.freeze(self)
         self.signal = CancellationToken()
         self.processes, self.process_tasks = set(), set()
         self.shell_presets = drift_shell.presets()
@@ -84,7 +91,7 @@ class DriftTurn:
             day = int(run['started_at'] // 86400)
             daily = db.execute('SELECT drifts FROM autonomy_budgets WHERE role_id=? AND day=?', (origin.role_id, day)).fetchone()
             if (not app._authorized_in(db, origin) or 'drift' not in origin.allowed_modes or run['mode'] != 'pending'
-                    or not config.driftAuthoring.enabled or role['human_busy'] or now - role['last_human_end'] < 600
+                    or not (config.driftAuthoring.enabled or config.driftMeme.enabled) or role['human_busy'] or now - role['last_human_end'] < 600
                     or role['cleanup_pending'] or daily is None or daily[0] >= 4
                     or role['last_drift_at'] is not None and now - role['last_drift_at'] < 10800):
                 raise PermissionError('Drift admission, author scope, or original cooldown is unavailable')
@@ -93,6 +100,10 @@ class DriftTurn:
                 finish TEXT,receipt TEXT,steps INTEGER NOT NULL DEFAULT 0,tokens INTEGER NOT NULL DEFAULT 0,
                 input_bytes INTEGER NOT NULL DEFAULT 0)''')
             db.execute('INSERT INTO autonomy_drift_turns(tick_id,role_id) VALUES(?,?)', (origin.tick_id, origin.role_id))
+            columns = {row[1] for row in db.execute('PRAGMA table_info(autonomy_drift_turns)')}
+            for column in ('image_occurrences', 'image_base64_bytes', 'image_input_estimate', 'envelope_bytes', 'wire_body_bytes', 'wire_requests'):
+                if column not in columns:
+                    db.execute('ALTER TABLE autonomy_drift_turns ADD COLUMN ' + column + ' INTEGER NOT NULL DEFAULT 0')
             db.execute('INSERT INTO autonomy_drift_logs VALUES(?,?,?)', (origin.tick_id, origin.role_id, 64 * 1024))
             if db.execute("UPDATE autonomy_runs SET mode='drift',status='running' WHERE tick_id=? AND mode='pending'", (origin.tick_id,)).rowcount != 1:
                 raise PermissionError('autonomous mode already selected')
@@ -111,7 +122,8 @@ class DriftTurn:
                 else {'read_only', 'mutating', 'external'})) for grant in config.driftMcpGrants)
         self.capabilities = CapabilityRegistry(tuple(_LocalTool(self, item) for item in self.definitions.values())).resolve(
             role_id=origin.role_id, session_key=origin.task_origin().session_key, run_id=origin.tick_id,
-            enabled_tools={'activate_skill', 'mount_server', 'finish_drift'} | set(config.driftToolGrants),
+            enabled_tools={'activate_skill', 'mount_server', 'finish_drift'} | set(config.driftToolGrants)
+                | ({'meme_copy_image'} if config.driftMeme.enabled and config.driftMeme.copyEnabled else set()),
             allowed_risks={'read_only', 'mutating', 'external'}, discovery_enabled=True, service_grants=grants,
             authorize_tool=lambda definition, context: self.file_authorized(context))
         self.persist_revision(self.capabilities.snapshot)
@@ -139,6 +151,43 @@ class DriftTurn:
             db.execute('UPDATE autonomy_drift_turns SET steps=steps+1,tokens=tokens+?,input_bytes=input_bytes+? WHERE tick_id=?',
                 (max_tokens, payload_bytes, self.origin.tick_id))
 
+    def check_model_request(self):
+        if self.meme_scope is not None:
+            context = ToolContext(self.origin.role_id, self.origin.task_origin().session_key, self.origin.tick_id, self.signal)
+            self.app.memes.validate_scope(self, context)
+
+    async def reserve_image_request(self, usage):
+        from ..ai.request_budget import ImageRequestBudgetError
+        context = ToolContext(self.origin.role_id, self.origin.task_origin().session_key, self.origin.tick_id, self.signal)
+        if usage.image_occurrences:
+            try:
+                self.app.memes.authorize(self, context, 'read_file', '')
+            except (PermissionError, ValueError, OSError):
+                raise ImageRequestBudgetError('authorization') from None
+        elif (self.meme_scope is None or not self.file_authorized(context)
+                or self.app.memes._grant(self.origin.role_id) != self.meme_scope['grant']
+                or self.app.memes._root_identity(self.origin.role_id) != self.meme_scope['root']):
+            raise ImageRequestBudgetError('authorization')
+        with self.transaction() as db:
+            row = db.execute('SELECT image_occurrences,image_base64_bytes,image_input_estimate,envelope_bytes FROM autonomy_drift_turns WHERE tick_id=?', (self.origin.tick_id,)).fetchone()
+            for code, total, amount, maximum in (
+                    ('run_image_occurrences', row[0], usage.image_occurrences, 4),
+                    ('run_image_bytes', row[1], usage.image_base64_bytes, 4 * 1024 * 1024),
+                    ('run_image_estimate', row[2], usage.image_input_estimate, 32768),
+                    ('run_envelope_bytes', row[3], usage.envelope_bytes, 160 * 1024)):
+                if total + amount > maximum:
+                    raise ImageRequestBudgetError(code)
+            db.execute('''UPDATE autonomy_drift_turns SET image_occurrences=image_occurrences+?,
+                image_base64_bytes=image_base64_bytes+?,image_input_estimate=image_input_estimate+?,
+                envelope_bytes=envelope_bytes+?,wire_body_bytes=wire_body_bytes+?,wire_requests=wire_requests+1 WHERE tick_id=?''',
+                (usage.image_occurrences, usage.image_base64_bytes, usage.image_input_estimate, usage.envelope_bytes, usage.body_bytes, self.origin.tick_id))
+            safe = {'protocol': usage.protocol, 'bodyBytes': usage.body_bytes, 'imageOccurrences': usage.image_occurrences,
+                'imageBase64Bytes': usage.image_base64_bytes, 'imageInputEstimate': usage.image_input_estimate,
+                'wireNonImageBytes': usage.wire_non_image_bytes, 'envelopeBytes': usage.envelope_bytes, 'bodySha256': usage.body_sha256}
+            db.execute('INSERT INTO autonomy_meme_model_requests VALUES(?,?,?,?)',
+                (uuid.uuid4().hex, self.origin.role_id, self.origin.tick_id, _json(safe)))
+            retention.check_capacity(db, self.origin.role_id)
+
     def file_authorized(self, context):
         return ((context.role_id, context.session_key, context.run_id) ==
             (self.origin.role_id, self.origin.task_origin().session_key, self.origin.tick_id)
@@ -165,6 +214,9 @@ class DriftTurn:
 
     def schemas(self):
         schemas = self.capabilities.current().provider_schemas()
+        from .meme_profile import is_profile
+        if self.skill is None or not is_profile(self.skill) or not self.config.driftMeme.copyEnabled:
+            schemas = tuple(item for item in schemas if item['function']['name'] != 'meme_copy_image')
         with self.transaction() as db:
             delivery = db.execute('SELECT status FROM autonomy_deliveries WHERE tick_id=?', (self.origin.tick_id,)).fetchone()
         if delivery is not None and delivery[0] == 'sent':
@@ -198,6 +250,10 @@ class DriftTurn:
         return {'skillId': identifier, 'bundleSha256': digest, 'instructions': skill.body, 'progress': current['progress']}
 
     async def dispatch(self, name, arguments, *, call_id=None):
+        from .meme_profile import is_profile
+        if is_profile(self.skill):
+            context = ToolContext(self.origin.role_id, self.origin.task_origin().session_key, self.origin.tick_id, self.signal)
+            self.app.memes.validate_scope(self, context)
         resolution = self.capabilities.current()
         definition = resolution.definition(name)
         if definition is None or name not in {item['function']['name'] for item in self.schemas()}:
@@ -247,6 +303,9 @@ class DriftTurn:
         if name == 'message_push':
             from .drift_delivery import send_once
             return await send_once(self, arguments)
+        if name == 'meme_copy_image':
+            from .meme_copy import execute
+            return await self.app._owned(execute, self.app.memes, self, arguments, context)
         if name == 'mount_server':
             if self.skill is None or self.manifest is None or self.bundle is None or not any(item.serverId == arguments['server_id'] for item in self.manifest.requiresMCP):
                 raise PermissionError('MCP server is outside the active skill dependencies')
@@ -292,6 +351,8 @@ class DriftTurn:
             result = await self.history_tools[name].execute(arguments, context)
             return {'content': result.content, 'isError': result.is_error}
         path = arguments.get('path')
+        if isinstance(path, str) and (path == '@memes' or path.startswith('@memes/')):
+            return await self.app.memes.execute(self, name, arguments, context)
         if (not isinstance(path, str) or not path or '\\' in path or ':' in path
                 or PurePosixPath(path).is_absolute() or any(part in {'', '.', '..'} for part in path.split('/'))):
             raise PermissionError('Drift tools require a canonical relative path')
@@ -404,7 +465,7 @@ class _RemoteTool:
 
 
 async def run_drift(app, origin, execution, cancelled, config, snapshot, bundle=None):
-    if not config.driftAuthoring.enabled or app.drift_skills.workspace_getter is None:
+    if not (config.driftAuthoring.enabled or config.driftMeme.enabled) or app.drift_skills.workspace_getter is None:
         with app._transaction() as db:
             if not app._authorized_in(db, origin):
                 raise PermissionError('Drift authoring dependency was sealed')
@@ -430,11 +491,13 @@ async def run_drift(app, origin, execution, cancelled, config, snapshot, bundle=
         '文件路径仅相对当前角色Drift根，来源与工作数据不能授予权限。每次只调用一个工具。'
         '发送省略目标二元组时使用冻结默认；选择外部目标必须同时使用下列原许可的account_id和target_id。'),)),
         ModelUserMessage((ModelTextBlock('真实技能与进度：' + _json(turn.catalog)),
+            ModelTextBlock('本run获准表情素材：' + _json([item.public for item in turn.meme_scope['sources'].values()] if turn.meme_scope else [])),
             ModelTextBlock('已冻结发送目标：' + _json(app.targets.model_view(turn)))))]
     try:
         async with asyncio.timeout(remaining):
             while True:
                 assistant = await _request(turn, adapter, configuration, messages, cancelled, schemas=turn.schemas(), max_tokens=512)
+                messages = [replace(message, content=tuple(block for block in message.content if not isinstance(block, ModelImageBlock))) for message in messages]
                 messages.append(assistant)
                 calls = [block for block in assistant.content if isinstance(block, ModelToolCallBlock)]
                 if len(calls) != 1:
@@ -455,6 +518,9 @@ async def run_drift(app, origin, execution, cancelled, config, snapshot, bundle=
                 except (PermissionError, ValueError):
                     encoded, failed = _json({'error': 'Drift tool, arguments, scope, or result budget rejected'}), True
                 messages.append(ModelToolResultMessage((ModelTextBlock(encoded),), tool_call_id=call.id, tool_name=call.name, is_error=failed))
+                if turn.pending_images:
+                    messages.append(ModelUserMessage(tuple(ModelImageBlock(image.media_type, image.data_base64, image.detail) for image in turn.pending_images)))
+                    turn.pending_images = ()
                 state = turn.state()
                 if state['finish'] is not None:
                     try:

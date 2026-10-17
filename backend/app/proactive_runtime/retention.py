@@ -153,6 +153,10 @@ def _usage(db):
             metadata[role]=metadata.get(role,0)+meta
     if 'autonomy_drift_allocations' in tables:
         total += db.execute('SELECT COALESCE(SUM(committed_bytes+reserved_bytes),0) FROM autonomy_drift_allocations').fetchone()[0]
+    if 'autonomy_meme_allocations' in tables:
+        total += db.execute('SELECT COALESCE(SUM(committed_bytes),0) FROM autonomy_meme_allocations').fetchone()[0]
+    if 'autonomy_meme_reservations' in tables:
+        total += db.execute('SELECT COALESCE(SUM(bytes),0) FROM autonomy_meme_reservations').fetchone()[0]
     if 'autonomy_drift_logs' in tables:
         total += db.execute('SELECT COALESCE(SUM(bytes),0) FROM autonomy_drift_logs').fetchone()[0]
     return total,counts,metadata
@@ -162,8 +166,10 @@ def usage(db,role_id):
     """Logical current allocation, including unfinished reservations."""
     total,counts,metadata=_usage(db)
     files = db.execute('SELECT committed_bytes+reserved_bytes FROM autonomy_drift_allocations WHERE role_id=?', (role_id,)).fetchone() if 'autonomy_drift_allocations' in _tables(db) else None
+    meme_files = db.execute('SELECT committed_bytes FROM autonomy_meme_allocations WHERE role_id=?', (role_id,)).fetchone() if 'autonomy_meme_allocations' in _tables(db) else None
+    meme_reserved = db.execute('SELECT COALESCE(SUM(bytes),0) FROM autonomy_meme_reservations WHERE role_id=?', (role_id,)).fetchone() if 'autonomy_meme_reservations' in _tables(db) else None
     return {"globalBytes":total,"roleRecords":counts.get(role_id,0),"roleBytes":metadata.get(role_id,0),
-        'filesystemBytes': files[0] if files else 0}
+        'filesystemBytes': (files[0] if files else 0) + (meme_files[0] if meme_files else 0) + (meme_reserved[0] if meme_reserved else 0)}
 
 
 def _check(db,role_id,limits):
@@ -285,6 +291,9 @@ def _resolved(db,tick_id):
         return False
     if 'autonomy_drift_write_journal' in tables and db.execute(
             "SELECT 1 FROM autonomy_drift_write_journal WHERE operation_id=? AND status='pending'", (tick_id,)).fetchone():
+        return False
+    if 'autonomy_meme_operations' in tables and db.execute(
+            "SELECT 1 FROM autonomy_meme_operations WHERE run_id=? AND status NOT IN ('recorded','not_published')", (tick_id,)).fetchone():
         return False
     if 'autonomy_drift_progress' in tables and db.execute(
             'SELECT 1 FROM autonomy_drift_progress WHERE last_tick_id=? AND projection_pending=1', (tick_id,)).fetchone():

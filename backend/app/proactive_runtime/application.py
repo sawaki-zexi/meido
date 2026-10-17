@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 from ..session_store import SessionStore
 from ..task_runtime import TaskRuntime, TaskBudget, TaskOutcome
 from ..mcp_stdio import finish_cleanup
-from .config import AutonomyConfig
+from .config import AutonomyConfig, MemePurposeConflict
 from .identity import AutonomyOrigin
 from .execution import AutonomyExecutor
 from .sources import collect_snapshot
@@ -114,6 +114,8 @@ class ProactiveApplication:
         self.drift_skills = DriftSkillCatalog(self, workspace_getter)
         from .drift_workspace import DriftFiles
         self.drift_files = DriftFiles(self, self.drift_skills.workspace)
+        from .meme_library import MemeLibrary
+        self.memes = MemeLibrary(self)
         from .drift_delivery import DesktopDriftDelivery
         self.drift_delivery = DesktopDriftDelivery(self)
         from .targets import TargetGrants
@@ -146,6 +148,11 @@ class ProactiveApplication:
                                     (config.driftEnabled, config.driftModelConfigurationId)):
             if enabled and (identifier is None or self.model_getter(identifier) is None):
                 raise ValueError("explicit saved model is unavailable")
+        if config.driftMeme.enabled:
+            from ..ai.model_adapter_registry import ModelAdapterRegistry
+            model = self.model_getter(config.driftMeme.visionModelConfigurationId)
+            if model is None or not ModelAdapterRegistry().supports_images(model):
+                raise ValueError('meme purpose requires an explicitly saved image-capable Drift model')
         for source in config.sourceGrants:
             if source.enabled:
                 server = self.mcp_host.store.get(source.serverId) if self.mcp_host else None
@@ -180,7 +187,20 @@ class ProactiveApplication:
             from .drift_skills import authoring_revision
             previous = AutonomyConfig.model_validate_json(old['config']).driftAuthoring if old else AutonomyConfig().driftAuthoring
             authoring = authoring_revision(config.driftAuthoring, previous)
-            saved = config.model_copy(update={"revision": revision + 1, "sourceGrants": sources, 'driftAuthoring': authoring})
+            previous_meme = AutonomyConfig.model_validate_json(old['config']).driftMeme if old else AutonomyConfig().driftMeme
+            requested_meme = config.driftMeme
+            if (requested_meme.enabled and not previous_meme.enabled and old is not None
+                    and (old['cleanup_pending'] or db.execute('SELECT 1 FROM autonomy_runs WHERE role_id=? AND runtime_acknowledged=0', (role_id,)).fetchone())):
+                raise MemePurposeConflict('meme purpose cannot be re-enabled until the original owned resources finish cleanup')
+            if requested_meme.managedEpoch and requested_meme.managedEpoch != previous_meme.managedEpoch:
+                raise ValueError('meme managed epoch is allocated by the host')
+            unchanged_meme = requested_meme.model_dump(exclude={'revision', 'managedEpoch'}) == previous_meme.model_dump(exclude={'revision', 'managedEpoch'})
+            meme = previous_meme if unchanged_meme else requested_meme.model_copy(update={
+                'managedEpoch': uuid.uuid4().hex if requested_meme.enabled and not previous_meme.enabled else previous_meme.managedEpoch,
+                'revision': previous_meme.revision + 1})
+            if meme.enabled:
+                self.memes.adopt(db, role_id, meme)
+            saved = config.model_copy(update={"revision": revision + 1, "sourceGrants": sources, 'driftAuthoring': authoring, 'driftMeme': meme})
             db.execute("""INSERT INTO autonomy_roles
                 (role_id,revision,generation,config,next_at,next_poll_at,last_human_end)
                 VALUES(?,?,?,?,?,?,?) ON CONFLICT(role_id) DO UPDATE SET
@@ -835,6 +855,15 @@ class ProactiveApplication:
         with self._transaction() as db:
             projections = [row[0] for row in db.execute('SELECT DISTINCT role_id FROM autonomy_drift_progress WHERE projection_pending=1')]
             journals = [row[0] for row in db.execute("SELECT DISTINCT role_id FROM autonomy_drift_write_journal WHERE status='pending'")]
+            meme_roles = [row[0] for row in db.execute("SELECT DISTINCT role_id FROM autonomy_meme_operations WHERE status NOT IN ('recorded','not_published')")]
+        for role_id in meme_roles:
+            if (self.role_getter(role_id) is None or self.sessions.active_run(role_id) is not None
+                    or any(executor.origin.role_id == role_id for executor in self._executors.values())):
+                continue
+            try:
+                await self._owned(self.memes.reconcile, role_id)
+            except (ValueError, OSError, sqlite3.Error):
+                pass  # A journal is responsibility, never authority to replay a copy.
         for role_id in journals:
             if self.role_getter(role_id) is None or any(executor.origin.role_id == role_id for executor in self._executors.values()):
                 continue

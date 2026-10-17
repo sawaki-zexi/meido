@@ -4,6 +4,8 @@ import threading
 
 from ..task_runtime import TaskOutcome
 from ..mcp_stdio import finish_cleanup
+from .meme_storage import MemeQuotaError
+from ..ai.request_budget import ImageRequestBudgetError
 
 
 class AutonomyExecutor:
@@ -50,6 +52,13 @@ class AutonomyExecutor:
         except asyncio.CancelledError:
             self.application._abort_tick(self.origin, "cancelled")
             return TaskOutcome("cancelled")
+        except MemeQuotaError:
+            self.application._abort_tick(self.origin, MemeQuotaError.code)
+            return TaskOutcome('failed', output_tail=MemeQuotaError.code)
+        except ImageRequestBudgetError as error:
+            cause = 'drift_image_budget:' + error.code
+            self.application._abort_tick(self.origin, cause)
+            return TaskOutcome('failed', output_tail=cause)
         except Exception:
             self.application._abort_tick(self.origin, "failed")
             return TaskOutcome("failed", output_tail="autonomy tick failed")

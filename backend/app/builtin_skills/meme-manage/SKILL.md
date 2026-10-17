@@ -1,6 +1,6 @@
 ---
 id: meme-manage
-version: 1.0.0
+version: 1.1.0
 description: 维护表情包库，添加图片、类别、描述、别名，整理 memes manifest。
 tools: [read_file, list_dir, write_file, edit_file, shell]
 activation: explicit

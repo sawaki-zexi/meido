@@ -8,6 +8,36 @@ DRIFT_TOOL_NAMES = frozenset({'read_file', 'write_file', 'edit_file', 'list_dir'
 DRIFT_RESOURCE_IDS = frozenset({'role-profile', 'proactive-context', 'builtin-create-drift-skill', 'builtin-meme-manage'})
 
 
+class MemePurposeConflict(ValueError):
+    """The owner may retry only after the original resources are confirmed closed."""
+
+
+class DriftMemeGrant(BaseModel):
+    """An owner-adopted library purpose, separate from ordinary file access."""
+    model_config = ConfigDict(extra='forbid', strict=True, frozen=True)
+    enabled: bool = False
+    managedEpoch: str = Field(default='', max_length=64)
+    revision: int = Field(default=0, ge=0)
+    visionModelConfigurationId: str | None = Field(default=None, min_length=1, max_length=128)
+    readEnabled: bool = False
+    editEnabled: bool = False
+    copyEnabled: bool = False
+    allowedCategories: list[str] = Field(default_factory=list, max_length=32)
+    sourceAttachmentIds: list[str] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode='after')
+    def finite_library(self):
+        for values in (self.allowedCategories, self.sourceAttachmentIds):
+            if len(set(values)) != len(values) or any(not value or len(value) > 128 for value in values):
+                raise ValueError('meme purpose requires finite unique categories and source IDs')
+        if any(value in {'.', '..'} or any(char in value for char in '\\/:\x00')
+               or value.rstrip(' .') != value for value in self.allowedCategories):
+            raise ValueError('meme categories must be single canonical directory names')
+        if self.enabled and (not self.readEnabled or not self.visionModelConfigurationId or not self.allowedCategories):
+            raise ValueError('meme purpose requires explicit vision model, library read and categories')
+        return self
+
+
 class DriftAuthoringGrant(BaseModel):
     """Permission to author declarations, separate from future execution grants."""
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
@@ -93,6 +123,7 @@ class AutonomyConfig(BaseModel):
     sourceGrants: list[SourceGrant] = Field(default_factory=list, max_length=8)
     driftToolGrants: list[str] = Field(default_factory=list, max_length=128)
     driftAuthoring: DriftAuthoringGrant = Field(default_factory=DriftAuthoringGrant)
+    driftMeme: DriftMemeGrant = Field(default_factory=DriftMemeGrant)
     driftMcpGrants: list[DriftMcpGrant] = Field(default_factory=list, max_length=8)
     driftReadResourceIds: list[str] = Field(default_factory=list, max_length=16)
     driftAttachmentIds: list[str] = Field(default_factory=list, max_length=16)
@@ -105,6 +136,8 @@ class AutonomyConfig(BaseModel):
             raise ValueError("active decision requires an explicit model")
         if self.driftEnabled and not self.driftModelConfigurationId:
             raise ValueError("Drift requires an explicit model")
+        if self.driftMeme.enabled and self.driftMeme.visionModelConfigurationId != self.driftModelConfigurationId:
+            raise ValueError('meme vision purpose must explicitly select the same saved Drift model')
         if (self.activeDecisionEnabled or self.driftEnabled) and self.consentRevision < 1:
             raise ValueError("enabled autonomy requires finite-operation consent")
         if len(set(self.allowedTargetRefs)) != len(self.allowedTargetRefs):
