@@ -1,6 +1,6 @@
 # Drift 表情维护本地实证（#191）
 
-状态：实现、完整 copy 重建闭环与最终 50 项 core 回归已本地实证；完整两轴审查和总 PR 集成待完成。不作为已集成或 CI 通过声明。固定提交后的完整 Git checkout 字节证明随外部最终交接包交付。最后核验：2026-10-17。
+状态：完整两轴发现的问题已修正，本地新组合 151 项通过；固定 c38 的原 50 项及 checkout 保留为历史证据。新固定头增量两轴和总 PR 集成待完成，不作为已集成或 CI 通过声明。固定提交后的完整 Git checkout 字节证明随外部最终交接包交付。最后核验：2026-10-17。
 
 事实来源：[批准规格](../specs/drift-meme-maintenance-spec.md)、[HTTP 与真实 tick 测试](../../tests/python/test_drift_meme_api.py)、[完整应用子进程](../../tests/fixtures/drift_meme_rebuild.py)、[逐协议实际发送](../../tests/python/test_model_image_request_budget.py)、[稳定契约](../reference/drift-meme-maintenance.md)、[验收手册](../handbook/drift-meme-maintenance-acceptance.md)。实现基点为双 CI 验证的 `f4ac973a04cdcd8327f80f20bd58d5088fdf8b77`。唯一总 PR 为 [#162](https://github.com/sawaki-zexi/meido/pull/162)。
 
@@ -33,15 +33,33 @@
 
 ## 组合与静态检查
 
-LF 与取消后无额外请求断言修正后的最终 core 为 `drift191-cycle31-fresh-checkout-green-final-core-96998ea947`：50 pass、0 skip、0 warning，pytest 日志 171.21 秒（JUnit suite 170.921 秒）；615 个当前输入前后 SHA 全相同，50 份原应用 owner 关闭证明确认，vault 237 次空 get/0 set，无新增线程或非 localhost 连接。原 exec 29525 自然终态 exit0，守卫在原 owner 退出后恢复。此前 `drift191-final-core-scope-v1-916995253c` 的 49 项通过仅证明修正前源，不替代这次最终 50 项。
+固定 c38 时 LF 与取消后无额外请求断言修正的 core 为 `drift191-cycle31-fresh-checkout-green-final-core-96998ea947`：50 pass、0 skip、0 warning，pytest 日志 171.21 秒（JUnit suite 170.921 秒）；615 个当时输入前后 SHA 全相同，50 份原应用 owner 关闭证明确认，vault 237 次空 get/0 set，无新增线程或非 localhost 连接。原 exec 29525 自然终态 exit0，守卫在原 owner 退出后恢复。此前 `drift191-final-core-scope-v1-916995253c` 的 49 项通过仅证明更早源，不替代这次 50 项或后述新组合。
 
 `drift191-cross-scope-v1-0fa2574083` 的 522 项实际为 516 pass、5 fail、1 skip，耗时 920.26 秒；615 个输入前后 SHA 不变、49 份原 App closer 证明均确认，vault 2109 次空 get/0 set，无新增线程或非 localhost 连接。5 项都在旧 `test_builtin_skills.directory_link` 启动 `powershell.exe` 时 WinError2，尚未进入产品断言。新 v4 runner 只把实际系统 `WindowsPowerShell/v1.0` 加到清理后的固定 PATH；30 轮原 builtin 13 项全部通过，包含这 5 个真实 junction 场景。未把原失败整组改称全绿。
 
-最终 UI 在本地完整整合树重新运行：`drift191-ui-combined-full-v1-b4e341845531` 259 项/45 文件通过；`drift191-ui-combined-build-v1-50613567e37d` TS 与 Vite 均 exit0、109 模块。132 个前端输入前后不变；不是只沿用子组件 33 项。
+固定 c38 的 UI 在本地完整整合树重新运行：`drift191-ui-combined-full-v1-b4e341845531` 259 项/45 文件通过；`drift191-ui-combined-build-v1-50613567e37d` TS 与 Vite 均 exit0、109 模块。132 个前端输入前后不变；不是只沿用子组件 33 项。
 
 准确 f4ac 完整 backend tar 归档、同一 18 个既有文件加 9 个新增文件、相同 flags 的 mypy 2.1.0 检查，LF 修复后 `drift191-static-types-v2-dd0d7ce9e6/result.json` SHA `dce72ef33f0fcbbff4d929342e042bd20274a00a7f252af2fb35118bd3d243c5`：58→58，按准确未改源行/列/完整消息及消息内引用行映射，0 新诊断；483 个 backend/test 源通过 `compile()`。两侧 mypy 原退出码仍为 1，不是全仓类型绿色。最初类型 58→100 原件保留，新增 JSON/fixture 注解及缺失 Path 导入已修，不忽略新诊断或改旧基线。mypy API 捕获文本的 LF digest 与 Windows 导出文本文件的 CRLF 原字节 SHA 分开记录，不宣称二者相等。
 
 发布字节检查发现仅加 `eol=lf` 尚不足：原工作区 SKILL 的 CRLF 字节匹配旧常量，但真实 Git checkout 转为 LF 后公开 catalog 拒绝该 builtin。31 轮 `drift191-cycle31-fresh-checkout-red-v2-6289ad710c` 在实际 private-index checkout、`core.autocrlf=true` 后复现 `invalid`；最初找不到 Git 的装配失败另留原件，不算产品 RED。修正 SKILL 物理 LF 与宿主 hash 为 `972dc06af0cd269d6d9b2900448c2bd900be6d75b1c0f30c181e1c8bb35976c9`，profile JSON 仍为 `62143d5248aa431f78b28a6489ef409e8ca40667eab557a866b8e69ddd614c1a`；普通正文与版本不变。最终 50 项中的新测试通过公开 catalog 验证真正安装字节，未用 archive 代替 checkout。该 RED/GREEN 原件另经 root 独立核实，proof `drift191-cycle31-root-verification-v1.json` SHA `df5f65af8fd6e3f2e98aca6cdd919ab872c1a6ceea9a41a478f6bc98c7253bcf`；proof 中原 handle 当时待确认的历史措辞由随后作者收取的权威 exit0 补齐，不回写原件。
+
+## 完整两轴复核后的修正
+
+准确 `f4ac→c38ab118193b46c790b8dce75788024ef6961018` 完整 37 文件复核：Spec 初报告 2 项，另类别补充后合计 P2 跨响应原图直拆、P2 类别许可、P3 保存时机提示；Standards hard 0、possible P3 大位置参数 1。原报告与 c38 冻结保持不变，不能沿用组件 0 findings 宣称整项已通过。修正计划公开于 [#191 comment6227203870](https://github.com/sawaki-zexi/meido/issues/191#issuecomment-6227203870)。
+
+32 轮先用真实 read_file→下一 provider 自制 1×1 PNG，再跨独立响应输出 32/32/28 片段，合法 list_dir 或实际 write_file.content 往返，最后仍完成正常分类与 nextAction。`drift191-cycle32-cross-response-echo-red-d937809955` 4 fail → `drift191-cycle32-cross-response-echo-green-a69d212c9b` 10 pass（含旧 4/正常 2）。单一 offset 首版仍会被正常短值毒化，且未处理 thinking/签名：`drift191-cycle32-cross-response-variants-red-f2fc4de38e` 准确 9 fail/5 pass → `drift191-cycle32-cross-response-variants-green-a52296e06d` 20 pass。新增 14 项覆盖两种分片边界×text、参数 content、首字符噪声、thinking、thinking signature、text signature、tool thought signature；检查全部持久历史版本而非只取最后一行，原工具实际文件也不能重组整图。原 owner 均自然结束；root 独立核验 proof SHA `7519bc51a03d713dfda7e9cf20e87afe57b5e4302aac957b190f6fe34f075ca4`。
+
+有限守卫保留每个已知原图的多个可达原串前缀，0 分支持续可用，正常元数据不重置匹配；文本、thinking、签名、参数及组合顺序参与，完成整图的当前字段在 response 持久化/dispatch 前投影。`drift191-echo-capacity-qualification-v2/result.json` SHA `49118061d8d0099668b2cac2e6a9af16faee04cadb470d5c80154be3a37dd660` 以真实自制 PNG、实际 model_types、准确 AST 验证：2048 状态处正常业务仍保留，新增状态固定失败；131072 工作界前正常多 block 保留，超界固定失败。该纯资格的 sink 是返回后模拟回调，不是 HTTP/owner 证明；root 另核 proof SHA `6de75d2bc21a5eca294ce2eb7782a5877202bf0fbeb2b64aa4f4fe4ffd1a9664`。首容量 v1 仅因 HOME/USERPROFILE 同新路径重复 mkdir 在 app/模型 import 前装配失败，不算产品 RED。
+
+33 轮 `drift191-cycle33-category-grant-red-552490478e` 准确 3 fail/1 pass：许可 happy 时，旧 manifest 的 happy/../secret 与 happy/nested 实际写出新图；manifest.json 样式导致异常，secret 原本正确拒绝。root 在固定 c38 独立真实 HTTP 也证实图被写到 secret，纵使 tool 文本 generic rejected；proof SHA `fe32a3629ee914a07113a64e85158312568cc1d7e2c98a0ae9d0a47ab429d61f`。修复在开始、staging 与最终发布均按 copy 的精确冻结类别资格，不借 read_manifest 首段例外。UI 仅将归属提示改为运行前核验，不新增保存行为。
+
+复制发布边界由 23 个位置参数收拢为有限 frozen CopyPlan 与三个 immutable 文件计划，完整 journal JSON、原源身份与字节/hash 仍固定。34 轮 `drift191-cycle34-copy-rename-fact-red-9d7b6cbf97` 真 1 fail：OS rename 返回且新图实际存在，但其后身份与恢复均无法确认时仍宣称 files_ready。修复先保存 rename 返回事实与物理阶段，再核身份，未知仍为 conflict。首组合 `drift191-cycle33-34-copy-plan-green-62caa0b866` 实际 10 pass/1 fail，原因是 fixture 用 PermissionError 按原合同继续下一模型却仍断言 3 次；改 OS 身份故障 OSError 后保持原 abort 合同，未改变生产业务重试。
+
+第二组合 `drift191-cycle33-34-copy-plan-green-v2-029736d2e4` 仍是 10 pass/1 fail，真实并发恢复先读同一 revision，后来的事实投影把另一原恢复已 recorded 临时降为 conflict；不能当夹具失败。35 轮 `drift191-cycle35-concurrent-recovery-red-f911de5aac` 以两个原 owned 恢复在实际 manifest 事实处受控交错，真 1 fail，JUnit 记录第二恢复在第一 held 时已返回；无 sleep，watchdog 只释放 fixture Event，原两个 owner 仍 join。同角色独立恢复门串行处理该原事实，不占主人 path/app gate，不放宽 owner 版本检查。`drift191-cycle33-35-copy-recovery-green-884b5d7321` 13 pass 覆盖类别 4、阶段 6、正常 copy 2 与 disabled 整应用重建 1。
+
+修正后 UI 相关 `drift191-ui-review-correction-related-9efabbc15c52` 33 pass/6 文件，`drift191-ui-review-correction-build-0cc306d832a0` TS/Vite exit0、109 模块。未因提示文字重复全前端 259。新类型 `drift191-static-types-v2-03a5ffb9e9/result.json` SHA `b9daa7904c6cf07282d667eb6b5141fad49ed1a5e60576d804a12a2708efba94` 仍准确 f4ac 完整归档、18 既有+9 新增、58→58/0 新、483 compile；两侧 mypy exit1。中间 58→60 仅两处新测试 tuple/None 注解错误，原件保留并已修，不忽略诊断。
+
+新完整 `drift191-review-corrections-final-core-adapter-02386a3fab` 为 151 pass（70 core+81 adapter）、0 fail/error/skip/warning，日志 300.76 秒/XML 300.497 秒。615 个执行输入前后与当前源匹配，70 份原 App 关闭证明（不是 151 份 App）、vault 254 次空 get/0 set、无新增线程或非 localhost 错误；原 exec30563 自然 terminal exit0，守卫在原 owner 退出后恢复。新的不可覆盖 `drift191-review-corrections-evidence-index-v4.json` SHA `0d62cc159fe9aab9ecc945badc3e713d2779c6eb405513b2868006054d169147` 完整原样包含 v3，再追加 32–35 的 10 次原尝试与新组合、容量/类型/React/原报告。root 独立 final151 proof SHA `f886bd4fa01a1452614006cfdf93ca64d7f27b5c787299ded9a5348e6f3bcbe4` 保留写时原 handle 待作者确认的历史措辞，随后作者权威 exit0 补齐，不回写原件。旧 50/20/13 不代替该组合，原 c38 报告也不冒新头增量两轴已通过。
 
 ## 失败原件与界限
 

@@ -25,7 +25,7 @@
 
 普通聊天 S04 保留 `read_file/list_dir/write_file/edit_file/shell` 声明。其固定 1.1.0 Drift profile 为 `read_file/list_dir/write_file/edit_file/meme_copy_image/finish_drift`，不需要 Shell 或白名单。完整 SKILL 与唯一 profile 支持文件共同参与发现、依赖、激活、schema 和 dispatch 的身份核验。
 
-Drift 普通相对路径仍只访问私有 Drift 根；`@memes/` 明确映射当前角色 `workspace/memes`。分类写仅接受 manifest，保留未获准类别；新图只能用 `meme_copy_image(attachment_id, category)`，宿主选择新名称。工具返回原素材 public ID、实际副本路径/hash/字节与操作 ID，不创建新的发送身份。没有 public ID 或新 metadata 的旧库图片仍能读取、维护。
+Drift 普通相对路径仍只访问私有 Drift 根；`@memes/` 明确映射当前角色 `workspace/memes`。分类写仅接受 manifest，保留未获准类别；新图只能用 `meme_copy_image(attachment_id, category)`，宿主选择新名称。复制类别必须精确属于冻结许可的单个规范目录名，不能借旧 manifest 的路径样式 key 扩权；操作开始、staging 与最终发布前均重验。工具返回原素材 public ID、实际副本路径/hash/字节与操作 ID，不创建新的发送身份。没有 public ID 或新 metadata 的旧库图片仍能读取、维护。
 
 从未启用或停用后的普通主人 FileTools 保持原合同。启用时，主人与 Drift 的库写共同遵守本 run 的实际读观察与库版本 CAS：已有目标未读返回 `needs_read`，旧观察冲突须重新读；本 run 自己完成 copy 也会推进库版本，随后编辑须重新读取 manifest。其他文件不参加该新增合同。真实准备、解码、缩放、扫描、fsync 与 hash 不持发布路径锁；最终准入和 replace 使用共享短临界段。受管动作每次取路径锁最多等待 250ms，可能返回 `path_busy`；这不是 OS 操作完成时限。
 
@@ -37,7 +37,7 @@ Drift 普通相对路径仍只访问私有 Drift 根；`@memes/` 明确映射当
 
 操作公开 `operationId/runId/callId/path/status/physicalPhase`。持久意图保留原身份、权限代际、expected 文件/root/hash/版本、全部 planned 内容及有限预留。阶段包括 `reserved/files_ready/files_published/manifest_published/recorded`；不能确认时为 `cleanup_pending/conflict`，没有发布为 `not_published`。
 
-图片 rename 后普通读者可能已看见完整图片。manifest 的 replace 是分类发布点，图片、metadata 与 SQLite 没有跨存储原子性。恢复只核实原计划已发生的真实事实，允许补原收据；不重新请求模型、复制、提交旧分类、回滚或删除可能被主人采用的最终文件。仅身份仍准确归属原操作的私有 staging 可以清理。后续主人修改、根/代际变化或矛盾事实保留为 conflict，旧空间责任继续计量。
+图片 rename 后普通读者可能已看见完整图片；即使随后身份核验失败，也保留 rename 已返回及相应物理阶段，不能降写为 files_ready。manifest 的 replace 是分类发布点，图片、metadata 与 SQLite 没有跨存储原子性。恢复只核实原计划已发生的真实事实，允许补原收据；不重新请求模型、复制、提交旧分类、回滚或删除可能被主人采用的最终文件。同角色恢复任务共享独立恢复门，避免两个原事实投影互相降级；该门不占主人文件或应用发布门。仅身份仍准确归属原操作的私有 staging 可以清理。后续主人修改、根/代际变化或矛盾事实保留为 conflict，旧空间责任继续计量。
 
 ## 存储与图片预算
 
@@ -57,6 +57,6 @@ Drift 普通相对路径仍只访问私有 Drift 根；`@memes/` 明确映射当
 
 图片预留在原 adapter 的实际 HTTPX 序列化 body 发送前落入原 run 的持久账本。`modelRequests` 区分 `protocol/bodyBytes/imageOccurrences/imageBase64Bytes/imageInputEstimate/wireNonImageBytes/envelopeBytes/bodySha256`。失败、取消、没有 usage 均不退款；未经计量的隐式重试不受支持。无此用途 context 时原 adapter 行为保留。
 
-真实图片仅在 owned 当前请求内存中流转，下一请求后移除。transcript、工具文本、SSE、错误与后续历史只保存安全投影；模型正常回显中的已知图像、字典键与跨字符串片段也在持久化前投影。此机制不宣称识别任意未知编码或变换后的图像内容。
+视觉块只发送给下一实际请求，随后从消息序列移除；原 run 的已知图像保护串只在有限内存中保留至原 owner 结束。transcript、工具文本、SSE、错误与后续历史使用安全投影。同 response 的整图、字典键与字符串分片，以及跨 response 的原串连续片段均受保护：已接受短值可以形成多个可达前缀分支，正常短值和工具元数据不会毒化唯一匹配；完成已知原图的当前字符串在任何持久化或工具 dispatch 前替换。保护包括实际 text/thinking、参数、签名和其他持久字段；不承诺此前所有不足以还原整图的短值都被清除。最多保留 2048 个前缀位置，每 response 最多 131072 次匹配工作；超界以固定原因中止当前响应，不扩大原步数/token/deadline。此机制不宣称识别任意重新编码、重排或标签变换。
 
 协作锁只约束同进程 Meido 的相关入口。任意同账号外部程序、OS 动作与多文件/SQLite 之间无原子 CAS；外部变化在可观察检查处拒绝或事后保留冲突责任。真实模型识图质量、账号与费用仍需独立具体批准。

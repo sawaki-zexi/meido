@@ -21,6 +21,8 @@
 7. 用真实文件分别填满角色字节、项数和全局空间，包含旧库、未知文件、新临时副本及完整 journal JSON 转义字节。确认写任何 staging 前拒绝、原文件保留。不要使用稀疏文件或计划摘要代替真实空间反例。
 8. 分别核对未激活、S06、已采用的同名 role 技能、伪 builtin/hash 变更、错误素材/类别、其他角色、真实 link、root ABA 与模型换代；检查无新图、copy 或发布资格。随后跑普通 S04/S06、FileTools 和原主动投递/恢复合同回归。
 
+补充持久面与并发反例：将实际收到的已知图片分成跨 response 连续短片，覆盖 1 字符边界、正常首字符干扰、text/thinking/参数与签名；扫描全部历史版本和实际工具文件不能重组整图，正常分类及 nextAction 仍须完成。容量纯资格只证明有限投影，不冒称真实 HTTP 或 owner 收尾证明。令 rename 已返回但其后身份无法确认，保留 files_published 及 conflict；再让实际双恢复在旧 revision 观察后交错，不得把另一原恢复已核验的 recorded 降级。夹具 watchdog 只能释放自己的 Event，所有原恢复 owner 仍须自然 join。
+
 ## 记录结果
 
 每次保留执行前后源码/资源 SHA、准确 argv、清理过的环境名字、原日志/XML、vault 次数、网络守卫与原 owner 终态。反例要区分产品失败、夹具装配失败与人为中断；未确认清理的尝试不得归入成功或有效 RED。跨进程记录每个真实 PID、原 Job/EOF/handle 终态与各 phase 的原 closers，不能只保存父 pytest 的绿色摘要。

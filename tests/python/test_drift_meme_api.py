@@ -22,7 +22,7 @@ from PIL import Image
 import pytest
 
 from backend.app import main
-from backend.app.ai.model_types import ModelAssistantMessage, ModelImageBlock, ModelStreamDone, ModelTextBlock, ModelToolCallBlock
+from backend.app.ai.model_types import ModelAssistantMessage, ModelImageBlock, ModelStreamDone, ModelTextBlock, ModelThinkingBlock, ModelToolCallBlock
 from backend.app.model_adapter import ModelTextDelta, ModelToolCall
 from test_background_shell_api import api as shell_api  # noqa: F401
 from test_spawn_api import api as spawn_api
@@ -835,11 +835,13 @@ def test_global_storage_quota_counts_another_managed_roles_actual_old_library_be
 
 @pytest.mark.parametrize(('cut', 'expected_status', 'expected_phase', 'published_files'), [
     ('before_image', 'not_published', 'files_ready', 0),
+    ('after_image_identity', 'conflict', 'files_published', 1),
     ('after_metadata', 'cleanup_pending', 'files_published', 2),
     ('after_manifest', 'recorded', 'manifest_published', 3),
+    ('concurrent_after_manifest', 'recorded', 'manifest_published', 3),
     ('before_receipt_sql', 'recorded', 'manifest_published', 3),
 ])
-def test_recovery_reports_each_real_copy_publication_boundary_without_replaying_it(api, monkeypatch, cut, expected_status, expected_phase, published_files):
+def test_recovery_reports_each_real_copy_publication_boundary_without_replaying_it(api, monkeypatch, record_property, cut, expected_status, expected_phase, published_files):
     client, roles, sessions, _ = api
     now = [time.time()]
     monkeypatch.setattr(main, '_proactive_clock', lambda: now[0])
@@ -858,6 +860,11 @@ def test_recovery_reports_each_real_copy_publication_boundary_without_replaying_
     manifest = library / 'manifest.json'
     manifest_raw = json.dumps({'version': 1, 'categories': {'happy': {'desc': '保留原类别', 'aliases': [], 'enabled': True}}}).encode()
     manifest.write_bytes(manifest_raw)
+    original_reconcile = main._proactive.memes.reconcile
+    if cut == 'concurrent_after_manifest':
+        # Keep the actual partial intent until the two original recovery owners
+        # are deliberately admitted; no filesystem/parser or original run is replaced.
+        monkeypatch.setattr(main._proactive.memes, 'reconcile', lambda role_id: None)
     if cut == 'before_receipt_sql':
         with sqlite3.connect(sessions.database_path) as db:
             db.execute("""CREATE TRIGGER fixture_reject_receipt BEFORE UPDATE ON autonomy_meme_operations
@@ -873,11 +880,26 @@ def test_recovery_reports_each_real_copy_publication_boundary_without_replaying_
             cuts.append(str(target))
             raise OSError('fixture: image publication did not start')
         result = original_replace(source, target)
-        if not cuts and ((cut == 'after_metadata' and metadata_target) or (cut == 'after_manifest' and manifest_target)):
+        if not cuts and ((cut == 'after_metadata' and metadata_target) or (cut in {'after_manifest', 'concurrent_after_manifest'} and manifest_target)):
             cuts.append(str(target))
             raise OSError('fixture: lost response after actual file publication')
         return result
     monkeypatch.setattr(os, 'replace', publication_boundary)
+    if cut == 'after_image_identity':
+        from backend.app.proactive_runtime import meme_recovery
+        original_fast = main._proactive.memes._fast_fact
+        original_published = meme_recovery._published
+        def unavailable_identity(role_id, target):
+            if Path(target).parent == library / 'happy':
+                cuts.append(str(target))
+                raise OSError('fixture: identity proof unavailable after rename returned')
+            return original_fast(role_id, target)
+        def unresolved_recovery(target, *arguments):
+            if Path(target).parent == library / 'happy':
+                raise PermissionError('fixture: original final identity remains unconfirmed')
+            return original_published(target, *arguments)
+        monkeypatch.setattr(main._proactive.memes, '_fast_fact', unavailable_identity)
+        monkeypatch.setattr(meme_recovery, '_published', unresolved_recovery)
     class Provider:
         calls = 0
         async def stream_rich_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check=None):
@@ -891,6 +913,47 @@ def test_recovery_reports_each_real_copy_publication_boundary_without_replaying_
     now[0] += 1800
     state = client.portal.call(settled, main._proactive, role)
     assert state['runs'][0]['status'] == 'aborted'
+    if cut == 'concurrent_after_manifest':
+        from backend.app.proactive_runtime import meme_recovery
+        original_published = meme_recovery._published
+        entered, release = threading.Event(), threading.Event()
+        admission_lock = threading.Lock()
+        admissions = [0]
+        second_finished_first = []
+        def controlled_reconcile(role_id):
+            with admission_lock:
+                admissions[0] += 1
+                ordinal = admissions[0]
+            if ordinal <= 2:
+                original_reconcile(role_id)
+        def hold_first_original_fact(target, *arguments):
+            result = original_published(target, *arguments)
+            if Path(target) == manifest and not entered.is_set():
+                entered.set()
+                assert release.wait(15), 'Fixture watchdog must release only its own held fact'
+            return result
+        monkeypatch.setattr(main._proactive.memes, 'reconcile', controlled_reconcile)
+        monkeypatch.setattr(meme_recovery, '_published', hold_first_original_fact)
+        watchdog = threading.Timer(2, release.set)
+        with ThreadPoolExecutor(max_workers=2) as requests:
+            first = requests.submit(client.portal.call, main._proactive.recover)
+            try:
+                assert entered.wait(10)
+                second = requests.submit(client.portal.call, main._proactive.recover)
+                def completed(_future):
+                    second_finished_first.append(not release.is_set())
+                    release.set()
+                second.add_done_callback(completed)
+                watchdog.start()
+                first.result(20)
+                second.result(20)
+            finally:
+                release.set()
+                watchdog.cancel()
+                if watchdog.ident is not None:
+                    watchdog.join()
+        record_property('second_recovery_finished_while_first_held', any(second_finished_first))
+        assert admissions[0] >= 2
     operation = client.get(path + '/meme-library').json()['operations'][0]
     assert operation['status'] == expected_status and operation['physicalPhase'] == expected_phase, operation
     assert provider.calls == 3 and manifest.read_bytes() == manifest_raw
@@ -986,6 +1049,190 @@ def test_provider_normal_split_image_echo_is_removed_before_history_or_persisten
     assert state['runs'][0]['status'] == 'finished_silent'
     assert provider.clean_next_request, 'Provider image echoes must not become text history in the next request'
     assert all(fragment.encode('ascii') not in Path(sessions.database_path).read_bytes() for fragment in provider.fragments if len(fragment) >= 32)
+
+
+@pytest.mark.parametrize('echo_surface', ['text', 'argument_content', 'text_after_prefix_noise',
+    'thinking', 'thinking_signature', 'text_signature', 'tool_signature'])
+@pytest.mark.parametrize('split', ['thirty_two', 'one_character_boundaries'])
+def test_known_image_echo_cannot_be_reassembled_across_separate_responses_before_history_persistence_or_dispatch(api, monkeypatch, echo_surface, split):
+    client, roles, sessions, _ = api
+    now = [time.time()]
+    monkeypatch.setattr(main, '_proactive_clock', lambda: now[0])
+    model = client.post('/api/model/configurations', json={'providerId': 'custom', 'provider': 'local',
+        'baseUrl': 'http://127.0.0.1:1/v1', 'model': 'local-vision-fixture', 'apiKey': 'fixture'}).json()['configuration']
+    role, path = configure_meme(client, model)
+    library = roles.workspace_path(role) / 'memes'
+    (library / 'happy').mkdir()
+    Image.new('RGB', (1, 1), (0, 0, 0)).save(library / 'happy/legacy.png')
+    before = {'version': 1, 'categories': {'happy': {'desc': '原类别', 'aliases': [], 'enabled': True}}}
+    after = {'version': 1, 'categories': {'happy': {'desc': '正常业务分类仍可维护', 'aliases': ['保留别名'], 'enabled': True}}}
+    (library / 'manifest.json').write_text(json.dumps(before, ensure_ascii=False), encoding='utf-8')
+
+    def pieces(value):
+        result = {}
+        def visit(item):
+            if isinstance(item, dict):
+                content = item.get('content', [])
+                if isinstance(content, list):
+                    for call in content:
+                        if isinstance(call, dict) and str(call.get('id', '')).startswith('cross-echo-'):
+                            number = int(call['id'].removeprefix('cross-echo-'))
+                            if echo_surface in {'text', 'text_after_prefix_noise'}:
+                                result[number] = ''.join(block['text'] for block in content
+                                    if isinstance(block, dict) and block.get('type') == 'text')
+                            elif echo_surface == 'argument_content':
+                                result[number] = call['arguments']['content']
+                            elif echo_surface in {'thinking', 'thinking_signature'}:
+                                field = 'text' if echo_surface == 'thinking' else 'signature'
+                                result[number] = ''.join(block[field] for block in content
+                                    if isinstance(block, dict) and block.get('type') == 'thinking')
+                            elif echo_surface == 'text_signature':
+                                result[number] = ''.join(block['text_signature'] for block in content
+                                    if isinstance(block, dict) and block.get('type') == 'text')
+                            else:
+                                result[number] = call['thought_signature']
+                for child in item.values():
+                    visit(child)
+            elif isinstance(item, list):
+                for child in item:
+                    visit(child)
+        visit(value)
+        return result
+
+    class Provider:
+        calls = 0
+        encoded = ''
+        fragments: tuple[str, ...] = ()
+        actual_image_requests = 0
+        history_pieces: dict[int, set[str]] = {}
+        async def stream_rich_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check=None):
+            self.calls += 1
+            for index, value in pieces([asdict(message) for message in messages]).items():
+                self.history_pieces.setdefault(index, set()).add(value)
+            images = [block for message in messages for block in message.content if isinstance(block, ModelImageBlock)]
+            if images:
+                assert self.calls == 4 and len(images) == 1
+                self.actual_image_requests += 1
+                self.encoded = images[0].data_base64
+                with Image.open(io.BytesIO(base64.b64decode(self.encoded))) as actual:
+                    assert actual.size == (1, 1) and actual.getpixel((0, 0)) == (0, 0, 0)
+                assert 64 < len(self.encoded) <= 128
+                edges = (0, 1, 31, 32, 63, 64, len(self.encoded)) if split == 'one_character_boundaries' else tuple(range(0, len(self.encoded), 32)) + (len(self.encoded),)
+                self.fragments = tuple(self.encoded[start:end] for start, end in zip(edges, edges[1:]))
+                assert ''.join(self.fragments) == self.encoded
+            echo_start = 5 if echo_surface == 'text_after_prefix_noise' else 4
+            if self.calls <= 3:
+                name, arguments = [('activate_skill', {'skill_id': 'meme-manage'}),
+                    ('read_file', {'path': '@memes/manifest.json'}),
+                    ('read_file', {'path': '@memes/happy/legacy.png'})][self.calls - 1]
+                yield ModelStreamDone(ModelAssistantMessage((ModelToolCallBlock('cross-setup-' + str(self.calls), name, arguments),)))
+            elif self.calls == 4 and echo_surface == 'text_after_prefix_noise':
+                yield ModelStreamDone(ModelAssistantMessage((ModelTextBlock(self.encoded[0]),
+                    ModelToolCallBlock('cross-noise', 'list_dir', {'path': '@memes/happy'}))))
+            elif self.calls < echo_start + len(self.fragments):
+                index = self.calls - echo_start
+                fragment = self.fragments[index]
+                name, arguments = ('write_file', {'path': 'echo-' + str(index) + '.txt', 'content': fragment}) if echo_surface == 'argument_content' else (
+                    'list_dir', {'path': '@memes/happy'})
+                text: tuple[Any, ...]
+                if echo_surface in {'text', 'text_after_prefix_noise'}:
+                    text = (ModelTextBlock(fragment),)
+                elif echo_surface in {'thinking', 'thinking_signature'}:
+                    text = (ModelThinkingBlock(text=fragment),) if echo_surface == 'thinking' else (ModelThinkingBlock(text='保留正常思考', signature=fragment),)
+                elif echo_surface == 'text_signature':
+                    text = (ModelTextBlock('保留正常说明', text_signature=fragment),)
+                else:
+                    text = ()
+                call = ModelToolCallBlock('cross-echo-' + str(index), name, arguments,
+                    thought_signature=fragment if echo_surface == 'tool_signature' else None)
+                yield ModelStreamDone(ModelAssistantMessage((*text, call)))
+            elif self.calls == echo_start + len(self.fragments):
+                yield ModelStreamDone(ModelAssistantMessage((ModelToolCallBlock('cross-business-write', 'write_file',
+                    {'path': '@memes/manifest.json', 'content': json.dumps(after, ensure_ascii=False)}),)))
+            else:
+                assert self.calls == echo_start + len(self.fragments) + 1, 'Normal classification/finish must remain finite and usable'
+                yield ModelStreamDone(ModelAssistantMessage((ModelToolCallBlock('cross-business-finish', 'finish_drift',
+                    {'skill_used': 'meme-manage', 'one_line': '完成正常类别维护', 'next_action': '下次继续维护正常类别', 'message_result': 'silent'}),)))
+    provider = Provider()
+    monkeypatch.setattr(main, 'model_adapter', provider)
+    now[0] += 1800
+    state = client.portal.call(settled, main._proactive, role)
+    assert state['runs'][0]['status'] == 'finished_silent', state
+    assert provider.actual_image_requests == 1
+    assert json.loads((library / 'manifest.json').read_text(encoding='utf-8')) == after
+    skill = next(item for item in client.get(path + '/drift-skills').json()['skills'] if item['id'] == 'meme-manage')
+    assert skill['progress']['nextAction'] == '下次继续维护正常类别'
+    with sqlite3.connect(sessions.database_path) as db:
+        durable_pieces: dict[int, set[str]] = {}
+        for table, in db.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+            quoted = '"' + table.replace('"', '""') + '"'
+            for row in db.execute('SELECT * FROM ' + quoted):
+                for value in row:
+                    if isinstance(value, str):
+                        assert provider.encoded not in value, 'No durable text field may contain the known raw image'
+                        try:
+                            document = json.loads(value)
+                        except (ValueError, TypeError):
+                            continue
+                        for index, text in pieces(document).items():
+                            durable_pieces.setdefault(index, set()).add(text)
+    assert not all(fragment in durable_pieces.get(index, set()) for index, fragment in enumerate(provider.fragments)), 'No selection from all persisted responses may reassemble the known image'
+    assert not all(fragment in provider.history_pieces.get(index, set()) for index, fragment in enumerate(provider.fragments)), 'No selection from all later provider histories may reassemble the known image'
+    if echo_surface == 'argument_content':
+        private = roles.workspace_path(role) / 'drift'
+        published = ''.join((private / ('echo-' + str(index) + '.txt')).read_text(encoding='utf-8') for index in range(len(provider.fragments)))
+        assert published != provider.encoded, 'Tool dispatch must not publish the completing known-image fragment'
+
+
+@pytest.mark.parametrize('category', ['happy/../secret', 'happy/nested', 'manifest.json', 'secret'])
+def test_copy_requires_an_exact_canonical_category_in_the_frozen_finite_grant_before_any_stage_or_publication(api, monkeypatch, category):
+    client, roles, _, _ = api
+    now = [time.time()]
+    monkeypatch.setattr(main, '_proactive_clock', lambda: now[0])
+    model = client.post('/api/model/configurations', json={'providerId': 'custom', 'provider': 'local',
+        'baseUrl': 'http://127.0.0.1:1/v1', 'model': 'local-vision-fixture', 'apiKey': 'fixture'}).json()['configuration']
+    role, endpoint = configure_meme(client, model)
+    output = io.BytesIO()
+    Image.new('RGB', (720, 540), '#637f91').save(output, 'PNG')
+    uploaded = client.post(f'/api/roles/{role}/attachments', content=output.getvalue(),
+        headers={'x-attachment-filename': 'category-fixture.png', 'content-type': 'image/png'})
+    assert uploaded.status_code == 200, uploaded.text
+    source = uploaded.json()
+    config = client.get(endpoint).json()['config']
+    saved = client.put(endpoint, json={'expectedRevision': config['revision'], 'config': {**config,
+        'driftMeme': {**config['driftMeme'], 'copyEnabled': True, 'sourceAttachmentIds': [source['id']]}}})
+    assert saved.status_code == 200, saved.text
+    library = roles.workspace_path(role) / 'memes'
+    (library / 'happy').mkdir()
+    (library / 'secret').mkdir()
+    item = {'desc': '已有主人类别', 'aliases': [], 'enabled': True}
+    original = json.dumps({'version': 1, 'categories': {'happy': item, 'secret': item, category: item}}, ensure_ascii=False)
+    (library / 'manifest.json').write_text(original, encoding='utf-8')
+    before = {str(path.relative_to(library)): path.read_bytes() for path in library.rglob('*') if path.is_file()}
+    class Provider:
+        calls = 0
+        copy_result = None
+        async def stream_rich_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check=None):
+            self.calls += 1
+            if self.calls <= 3:
+                name, arguments = [('activate_skill', {'skill_id': 'meme-manage'}),
+                    ('read_file', {'path': '@memes/manifest.json'}),
+                    ('meme_copy_image', {'attachment_id': source['id'], 'category': category})][self.calls - 1]
+            else:
+                assert self.calls == 4
+                self.copy_result = json.loads(messages[-1].content[0].text)
+                name, arguments = 'finish_drift', {'skill_used': 'meme-manage', 'one_line': '有限类别拒绝完成',
+                    'next_action': '保留主人有限类别许可', 'message_result': 'silent'}
+            yield ModelStreamDone(ModelAssistantMessage((ModelToolCallBlock('category-' + str(self.calls), name, arguments),)))
+    provider = Provider()
+    monkeypatch.setattr(main, 'model_adapter', provider)
+    now[0] += 1800
+    state = client.portal.call(settled, main._proactive, role)
+    assert provider.calls == 4 and state['runs'][0]['status'] == 'finished_silent', state
+    assert {str(path.relative_to(library)): path.read_bytes() for path in library.rglob('*') if path.is_file()} == before, 'An out-of-grant category must not publish any image even when the tool reports rejected'
+    assert isinstance(provider.copy_result, dict) and provider.copy_result.get('status') != 'recorded'
+    assert client.get(endpoint + '/meme-library').json()['operations'] == [], 'Reject category before reserving journal or staging'
+    assert not (library.parent / '.meido-memes/staging').exists()
 
 
 @pytest.mark.parametrize('image_mapping', ['one_each_request', 'same_payload_twice', 'history_reintroduced'])

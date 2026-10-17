@@ -109,6 +109,75 @@ def _safe_assistant(message, protected):
     return safe(message)
 
 
+class _ImageEchoState:
+    """Keep only bounded progress through original images, never response history.
+
+    Raw contiguous pieces may be separated by tool metadata or unrelated business
+    strings. Only accepted business strings advance a match; the completing piece
+    is omitted before it can reach dispatch, a future request or durable storage.
+    The zero branch always remains available: a coincidental short business value
+    cannot poison the only match. All original accepted branches remain reachable.
+    Text, thinking, signatures, arguments and their combined order are independent.
+    """
+    def __init__(self):
+        self.positions: dict[tuple[str, str], set[int]] = {}
+
+    def project(self, message, protected):
+        work = 0
+        def text(value, channel):
+            nonlocal work
+            if not value:
+                return value
+            updates: dict[tuple[str, str], set[int]] = {}
+            for image in protected:
+                for group in (channel, 'combined'):
+                    key = (image, group)
+                    for offset in (0, *self.positions.get(key, ())):
+                        work += 1
+                        if work > 131072:
+                            raise ValueError('autonomous image echo matching work budget exhausted')
+                        if image.startswith(value, offset):
+                            end = offset + len(value)
+                            if end == len(image):
+                                return '[ephemeral image echo omitted]'
+                            updates.setdefault(key, set()).add(end)
+            added = sum(len(values - self.positions.get(key, set())) for key, values in updates.items())
+            if sum(map(len, self.positions.values())) + added > 2048:
+                raise ValueError('autonomous image echo matching state budget exhausted')
+            for key, values in updates.items():
+                self.positions.setdefault(key, set()).update(values)
+            return value
+
+        def project(value, channel='metadata'):
+            if isinstance(value, str):
+                return text(value, channel)
+            if is_dataclass(value) and not isinstance(value, type):
+                attributes = {}
+                for field in fields(value):
+                    item = getattr(value, field.name)
+                    if field.name in {'type', 'role'}:
+                        attributes[field.name] = item
+                        continue
+                    group = ('arguments' if field.name == 'arguments' else
+                        'signatures' if field.name.endswith('signature') else
+                        getattr(value, 'type', 'metadata') if field.name == 'text' else channel)
+                    attributes[field.name] = project(item, group)
+                return replace(value, **attributes)
+            if isinstance(value, dict):
+                result = {}
+                for key, item in value.items():
+                    safe_key = text(key, channel) if isinstance(key, str) else key
+                    if safe_key != key:
+                        safe_key = 'ephemeral_image_key_' + hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]
+                    result[safe_key] = project(item, channel)
+                return result
+            if isinstance(value, (tuple, list)):
+                projected = [project(item, channel) for item in value]
+                return tuple(projected) if isinstance(value, tuple) else projected
+            return value
+        return project(message)
+
+
 class DecisionTurn:
     def __init__(self, app, origin, config, snapshot):
         self.app, self.origin, self.config, self.snapshot = app, origin, config, snapshot
@@ -293,6 +362,10 @@ async def _request(turn, adapter, configuration, messages, cancelled, *, schemas
     if response is None:
         raise RuntimeError("autonomous model response did not finish")
     response = _safe_assistant(response, protected)
+    if protected:
+        if not hasattr(turn, '_image_echo_state'):
+            turn._image_echo_state = _ImageEchoState()
+        response = turn._image_echo_state.project(response, protected)
     with turn.transaction() as db:
         retention.record_transcript(db, turn.origin.tick_id, {"direction": "response", "message": _audit_projection(asdict(response), protected)}, turn.app._now(db))
     return response

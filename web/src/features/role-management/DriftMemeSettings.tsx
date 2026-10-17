@@ -60,7 +60,7 @@ export function DriftMemeSettings({ config, models, onChange }: {
       <small>最多32个类别，每项最多128字符；填写单个目录名，不接收路径。</small></label>
     <label className="field"><span>允许复制的已登记素材 ID（每行一个）</span><textarea aria-label="允许复制的已登记素材 ID（每行一个）" rows={3}
       value={sources} onChange={(event) => { setSources(event.target.value); update({ sourceAttachmentIds: lines(event.target.value) }); }} />
-      <small>最多16个当前角色已上传登记的素材 ID；保存时核对归属。不接受文件路径，也不创建发送许可。</small></label>
+      <small>最多16个当前角色已上传登记的素材 ID；运行前核对归属。不接受文件路径，也不创建发送许可。</small></label>
     <p>复制不需要开启 Shell；还须具有相应的文件读写和 Drift 工具许可。维护本身不会发送消息。</p>
     {error && <p role="status">{error}</p>}
     <p>以上为许可草稿，点击“保存自主设置”并成功返回后生效；维护时仍须满足 Drift 的其他运行条件。</p>

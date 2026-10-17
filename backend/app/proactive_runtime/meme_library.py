@@ -1,5 +1,6 @@
 """A current-role library seam; raw images live only in the owned next request."""
 import base64
+from _thread import LockType
 from contextlib import contextmanager
 from dataclasses import replace
 import hashlib
@@ -7,7 +8,9 @@ import io
 import json
 import os
 from pathlib import Path, PurePosixPath
+from threading import Lock
 import uuid
+from weakref import WeakValueDictionary
 
 from PIL import Image, ImageOps
 
@@ -27,6 +30,8 @@ def _json(value):
 class MemeLibrary:
     def __init__(self, app):
         self.app = app
+        self._recovery_gates: WeakValueDictionary[str, LockType] = WeakValueDictionary()
+        self._recovery_gate_lock = Lock()
         with app._transaction() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS autonomy_meme_observations (
                 role_id TEXT NOT NULL,run_id TEXT NOT NULL,path TEXT NOT NULL,fact TEXT NOT NULL,
@@ -81,7 +86,16 @@ class MemeLibrary:
 
     def reconcile(self, role_id):
         from .meme_recovery import reconcile
-        reconcile(self, role_id)
+        # Recovery owners for one role share one original factual projection.
+        # This gate is never an owner file/publication lock or the application gate.
+        # Waiting owners retain the same gate; unused role entries disappear.
+        with self._recovery_gate_lock:
+            gate = self._recovery_gates.get(role_id)
+            if gate is None:
+                gate = Lock()
+                self._recovery_gates[role_id] = gate
+        with gate:
+            reconcile(self, role_id)
 
     def root(self, role_id):
         return self.app.drift_skills.workspace(role_id) / 'memes'
@@ -177,6 +191,8 @@ class MemeLibrary:
             raise PermissionError('meme copy purpose is disabled')
         if not grant.readEnabled:
             raise PermissionError('meme library read purpose is disabled')
+        if name == 'meme_copy_image' and relative not in grant.allowedCategories:
+            raise PermissionError('meme copy category is outside the exact original finite purpose')
         parts = PurePosixPath(relative).parts
         if parts and parts[0] != 'manifest.json' and parts[0] not in grant.allowedCategories:
             raise PermissionError('meme category is outside the original finite purpose')
