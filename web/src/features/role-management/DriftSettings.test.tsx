@@ -126,7 +126,7 @@ it('requires a fresh complete configuration after a version conflict instead of 
   expect(calls.filter((call) => call.method === 'PUT').map((call) => (call.body as { expectedRevision: number }).expectedRevision)).toEqual([4, 5]);
 });
 
-it('exposes the working Drift configuration in the actual role editor and reopens its saved independent model', async () => {
+it('exposes the working Drift configuration in the actual tool settings and reopens its saved independent model', async () => {
   let saved = state;
   const { calls } = fakeBackend({
     'GET /api/roles': () => ({ body: { roles: [role({ id: 'r1', name: 'Drift角色' })] } }),
@@ -139,8 +139,9 @@ it('exposes the working Drift configuration in the actual role editor and reopen
     'PUT /api/roles/r1/autonomy': (request) => { saved = { ...state, config: { ...JSON.parse(String(request?.body)).config, revision: 5 } }; return { body: saved }; },
   });
   const user = userEvent.setup(); render(<App />);
-  await user.click(await screen.findByRole('button', { name: '角色资料' }));
-  const editor = within(await screen.findByRole('dialog', { name: '角色资料' }));
+  await user.click(await screen.findByRole('button', { name: '设置' }));
+  await user.click(screen.getByRole('button', { name: '工具与插件' }));
+  const editor = within(await screen.findByRole('dialog', { name: '设置' }));
   await editor.findByRole('checkbox', { name: '开启 Drift' });
   await user.click(editor.getByRole('checkbox', { name: '开启 Drift' }));
   await user.selectOptions(editor.getByRole('combobox', { name: 'Drift 模型连接' }), 'drift-model');
@@ -148,7 +149,8 @@ it('exposes the working Drift configuration in the actual role editor and reopen
   await user.click(editor.getByRole('button', { name: '保存自主设置' }));
   await waitFor(() => expect(saved.config.driftEnabled).toBe(true));
   await user.keyboard('{Escape}');
-  await user.click(screen.getByRole('button', { name: '角色资料' }));
+  await user.click(screen.getByRole('button', { name: '设置' }));
+  await user.click(screen.getByRole('button', { name: '工具与插件' }));
   await waitFor(() => expect(screen.getByRole('checkbox', { name: '开启 Drift' })).toBeChecked());
   expect(screen.getByRole('combobox', { name: 'Drift 模型连接' })).toHaveValue('drift-model');
   expect(screen.getByRole('checkbox', { name: '开启主动决策' })).not.toBeChecked();

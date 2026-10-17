@@ -11,7 +11,7 @@ export function CodingRoleSettings({ roleId, draft, onChange, disabled }: { role
   const change = (patch: Partial<typeof value>) => onChange({ ...draft, preservedAgentConfig: { ...draft.preservedAgentConfig, coding: { ...value, ...patch } } });
   const toggle = (field: "repoGrantIds" | "profileIds", id: string, checked: boolean) => change({ [field]: checked ? [...new Set([...value[field], id])] : value[field].filter(item => item !== id) });
   return <fieldset><legend>编程委托</legend>
-    <label className="checkbox-field"><input type="checkbox" aria-label="允许编程委托" checked={value.enabled} disabled={disabled} onChange={event => onChange({ ...draft, otherEnabledTools: event.target.checked ? [...new Set([...draft.otherEnabledTools, 'tool_search'])] : draft.otherEnabledTools, preservedAgentConfig: { ...draft.preservedAgentConfig, coding: { ...value, enabled: event.target.checked } } })} />允许编程委托</label>
+    <label className="checkbox-field"><input type="checkbox" aria-label="允许编程委托" checked={value.enabled} disabled={disabled} onChange={event => change({ enabled: event.target.checked })} />允许编程委托</label>
     <p className="field-hint">在专用 worktree 使用已核验 CLI。仓库中的验证程序会以当前账号权限运行，请仅授权信任的仓库。</p>
     {error && <p role="alert">{error}</p>}
     {!configuration?.enabled && <p>先在设置 → 编程委托启用全局开关并登记仓库和 CLI。</p>}
@@ -20,7 +20,7 @@ export function CodingRoleSettings({ roleId, draft, onChange, disabled }: { role
     {configuration?.profiles.filter(item => item.allowedRoleIds.includes(roleId ?? "")).map(item => <label className="field checkbox-field" key={item.id}><input type="checkbox" checked={value.profileIds.includes(item.id)} disabled={disabled} onChange={event => toggle("profileIds", item.id, event.target.checked)} />{item.name} · {item.verification.status === "verified" ? "已核验" : item.verification.reason ?? "尚未核验"}</label>)}
     <label className="field">默认 Herdr CLI<select aria-label="默认 Herdr CLI" disabled={disabled} value={value.defaultHerdrProfileId ?? ""} onChange={event => change({ defaultHerdrProfileId: event.target.value || null })}><option value="">请选择</option>{configuration?.profiles.filter(item => item.executor === "herdr" && value.profileIds.includes(item.id) && item.allowedRoleIds.includes(roleId ?? "")).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
     <label className="field">默认 Codex exec CLI<select aria-label="默认 Codex exec CLI" disabled={disabled} value={value.defaultCodexProfileId ?? ""} onChange={event => change({ defaultCodexProfileId: event.target.value || null })}><option value="">请选择</option>{configuration?.profiles.filter(item => item.executor === "codex_exec" && value.profileIds.includes(item.id) && item.allowedRoleIds.includes(roleId ?? "")).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-    <p className="field-hint">codex-delegate 还需启用独立子任务（spawn）。显式激活 Skill 后，以 coding profile 后台委托；不会授予 Shell 或发布权限。</p>
+    <p className="field-hint">codex-delegate 使用默认提供的独立子任务（spawn）。显式激活 Skill 后，以 coding profile 后台委托；不会授予 Shell 或发布权限。</p>
     <label className="field">每天最多尝试次数<input aria-label="每天最多编程尝试次数" type="number" min={1} max={100} disabled={disabled} value={value.maxAttemptsPerDay} onChange={event => change({ maxAttemptsPerDay: Number(event.target.value) })} /></label>
   </fieldset>;
 }

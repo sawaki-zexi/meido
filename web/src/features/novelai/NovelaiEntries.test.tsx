@@ -24,7 +24,8 @@ it('exposes actual service settings, role permission, and current-role generatio
   const history = await screen.findByRole('dialog', { name: '诗织的生图与历史' });
   expect(await within(history).findByText('暂无生图历史。')).toBeInTheDocument();
   await user.keyboard('{Escape}');
-  await user.click(screen.getByRole('button', { name: '角色资料' }));
+  await user.click(screen.getByRole('button', { name: '设置' }));
+  await user.click(screen.getByRole('button', { name: '工具与插件' }));
   expect(await screen.findByRole('group', { name: '角色生图许可' })).toBeInTheDocument();
   await user.keyboard('{Escape}');
   await user.click(screen.getByRole('button', { name: '设置' }));

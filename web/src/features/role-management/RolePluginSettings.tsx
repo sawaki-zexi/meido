@@ -13,6 +13,12 @@ export function RolePluginSettings({ roleId, draft, onChange, disabled }: {
     <legend>插件设置</legend>
     <p className="field-hint">特殊插件按角色启用或暂停。关闭保留已有配置；基础工具不需要在这里开启。</p>
     <label className="field checkbox-field">
+      <input type="checkbox" aria-label="允许查询主人待办" checked={draft.todoSearchEnabled}
+        disabled={disabled} onChange={(event) => onChange({ ...draft, todoSearchEnabled: event.target.checked })} />
+      <span>允许查询主人待办</span>
+      <small className="field-hint">只读取与当前问题相关的事项。</small>
+    </label>
+    <label className="field checkbox-field">
       <input type="checkbox" aria-label="允许浏览器操作网页" checked={draft.browserUseEnabled}
         disabled={disabled} onChange={(event) => onChange({ ...draft, browserUseEnabled: event.target.checked })} />
       <span>允许浏览器操作网页</span>

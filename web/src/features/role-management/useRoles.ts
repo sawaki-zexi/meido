@@ -225,7 +225,8 @@ export function useRoles() {
     const cardImageSnapshot = cardImageFile;
     const removeAvatarSnapshot = avatarRemoved && Boolean(selectedSnapshot?.avatarUrl);
     const removeCardImageSnapshot = cardImageRemoved && Boolean(selectedSnapshot?.cardImageUrl);
-    const payload = JSON.stringify(payloadFromDraft(draft));
+    const { agentConfig: _separateSettings, ...profilePayload } = payloadFromDraft(draft);
+    const payload = JSON.stringify(profilePayload);
     try {
       const data = creatingSnapshot
         ? await api<{ role: Role }>("/api/roles", { method: "POST", body: payload })

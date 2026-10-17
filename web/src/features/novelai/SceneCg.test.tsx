@@ -111,6 +111,7 @@ it('saves and reopens CG permission in the actual app and refreshes a late CG in
     parentAttemptId: null, deliveryMode: 'source_completion', deliveryMessageId: 'cg-message', expectedAttachmentId: null };
   const { calls } = fakeBackend({
     'GET /api/roles': () => ({ body: { roles: [saved] } }),
+    'GET /api/roles/r1': () => ({ body: { role: saved } }),
     'GET /api/roles/r1/session': () => ({ body: { session: { sessionKey: 'role:r1', roleId: 'r1' }, messages: complete ? [
       message({ id: 'cg-message', role: 'assistant', content: '雨中的场景', messageType: 'internal_completion',
         metadata: { attachments: [image], generationAttemptIds: ['cg-attempt'] } })] : [] } }),
@@ -125,8 +126,9 @@ it('saves and reopens CG permission in the actual app and refreshes a late CG in
   });
   const user = userEvent.setup(); render(<App />);
   await screen.findByRole('heading', { name: '场景角色', level: 1 });
-  await user.click(screen.getByRole('button', { name: '角色资料' }));
-  const editor = within(await screen.findByRole('dialog', { name: '角色资料' }));
+  await user.click(screen.getByRole('button', { name: '设置' }));
+  await user.click(screen.getByRole('button', { name: '工具与插件' }));
+  const editor = within(await screen.findByRole('dialog', { name: '设置' }));
   await editor.findByText(/账户每日最多 20 次/);
   await user.click(editor.getByRole('checkbox', { name: '允许主人回合场景 CG' }));
   await user.selectOptions(editor.getByRole('combobox', { name: 'CG 辅助模型连接' }), 'helper');
@@ -135,7 +137,8 @@ it('saves and reopens CG permission in the actual app and refreshes a late CG in
   await waitFor(() => expect((saved.agentConfig as AgentToolConfig & { novelai?: NovelaiRoleConfig }).novelai)
     .toMatchObject({ manualEnabled: false, sceneCgEnabled: true, scenePromptModelConfigurationId: 'helper', consentRevision: 3 }));
   await user.click(editor.getByRole('button', { name: '关闭' }));
-  await user.click(screen.getByRole('button', { name: '角色资料' }));
+  await user.click(screen.getByRole('button', { name: '设置' }));
+  await user.click(screen.getByRole('button', { name: '工具与插件' }));
   expect(screen.getByRole('checkbox', { name: '允许主人回合场景 CG' })).toBeChecked();
   expect(screen.getByRole('combobox', { name: 'CG 辅助模型连接' })).toHaveValue('helper');
   await user.keyboard('{Escape}');

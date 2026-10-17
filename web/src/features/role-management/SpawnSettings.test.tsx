@@ -15,14 +15,16 @@ it("子任务默认提供，调整预算并重开时保留已有工具和配置"
   } });
   const { calls } = fakeBackend({
     "GET /api/roles": () => ({ body: { roles: [saved] } }),
+    "GET /api/roles/r1": () => ({ body: { role: saved } }),
     "GET /api/roles/r1/session": () => ({ body: { session: { sessionKey: "role:r1", roleId: "r1" }, messages: [] } }),
     "PUT /api/roles/r1": (init) => { saved = { ...saved, ...JSON.parse(String(init?.body)) }; return { body: { role: saved } }; },
   });
   const user = userEvent.setup();
   render(<App />);
   await screen.findByRole("heading", { name: "子任务角色", level: 1 });
-  await user.click(screen.getByRole("button", { name: "角色资料" }));
-  const form = within(await screen.findByRole("dialog", { name: "角色资料" }));
+  await user.click(screen.getByRole("button", { name: "设置" }));
+  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  const form = within(await screen.findByRole("dialog", { name: "设置" }));
   expect(form.queryByLabelText("允许委托独立子任务")).not.toBeInTheDocument();
   await user.clear(form.getByLabelText("子任务超时（秒）"));
   await user.type(form.getByLabelText("子任务超时（秒）"), "45");
@@ -32,8 +34,9 @@ it("子任务默认提供，调整预算并重开时保留已有工具和配置"
     enabledPlugins: ["custom"], grantedCapabilities: ["custom.read"],
     spawn: { enabled: false, timeoutSeconds: 45, maxTurns: 12, maxOutputChars: 20000, maxModelOutputChars: 60000, extension: "keep" } });
   await user.click(form.getByRole("button", { name: "关闭" }));
-  await user.click(screen.getByRole("button", { name: "角色资料" }));
-  const reopened = within(await screen.findByRole("dialog", { name: "角色资料" }));
+  await user.click(screen.getByRole("button", { name: "设置" }));
+  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  const reopened = within(await screen.findByRole("dialog", { name: "设置" }));
   expect(reopened.queryByLabelText("允许委托独立子任务")).not.toBeInTheDocument();
   expect(reopened.getByLabelText("子任务超时（秒）")).toHaveValue(45);
   await user.click(reopened.getByRole("button", { name: "保存" }));

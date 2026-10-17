@@ -4,6 +4,9 @@ import type { Role } from '../../api/types';
 import { draftFromRole, payloadFromDraft, type RoleDraft } from '../role-management/draft';
 import { RolePluginSettings } from '../role-management/RolePluginSettings';
 import { ToolCatalog } from '../role-management/ToolCatalog';
+import { BasicToolSettings } from '../role-management/BasicToolSettings';
+import { ShellSettings } from '../role-management/ShellSettings';
+import { SpawnSettings } from '../role-management/SpawnSettings';
 
 export function PluginSettings({ onRoleSaved }: { onRoleSaved?: (role: Role) => void }) {
   const [roles, setRoles] = useState<Role[]>([]);
@@ -28,16 +31,25 @@ export function PluginSettings({ onRoleSaved }: { onRoleSaved?: (role: Role) => 
     const request = ++generation.current;
     setBusy(true); setError(''); setNotice('');
     try {
-      // Only update plugin configuration; stale settings must not overwrite profile edits.
+      // Only update edited tool settings; preserve the latest role profile and other configuration.
       const fresh = await api<{ role: Role }>(`/api/roles/${encodeURIComponent(selected.id)}`);
       if (request !== generation.current) return;
       const config = payloadFromDraft(draft).agentConfig;
       const current = fresh.role.agentConfig;
+      const before = payloadFromDraft(draftFromRole(selected)).agentConfig;
+      const changes: Record<string, unknown> = {};
+      for (const key of ['browserUse', 'computerUse', 'screenPerception', 'novelai', 'coding', 'shell', 'spawn'] as const) {
+        if (JSON.stringify(config[key]) !== JSON.stringify(before[key])) changes[key] = config[key];
+      }
+      if (draft.todoSearchEnabled !== draftFromRole(selected).todoSearchEnabled) {
+        const updated = payloadFromDraft({ ...draftFromRole(fresh.role), todoSearchEnabled: draft.todoSearchEnabled }).agentConfig;
+        changes.enabledTools = updated.enabledTools;
+        changes.enabledPlugins = updated.enabledPlugins;
+        changes.grantedCapabilities = updated.grantedCapabilities;
+      }
       const { role: saved } = await api<{ role: Role }>(`/api/roles/${encodeURIComponent(selected.id)}`, {
         method: 'PUT', body: JSON.stringify({ name: fresh.role.name, description: fresh.role.description,
-          profile: fresh.role.profile, agentConfig: { ...current,
-            browserUse: config.browserUse, computerUse: config.computerUse,
-            screenPerception: config.screenPerception, novelai: config.novelai, coding: config.coding } }),
+          profile: fresh.role.profile, agentConfig: { ...current, ...changes } }),
       });
       if (request !== generation.current) return;
       setRoles((items) => items.map((item) => item.id === saved.id ? saved : item));
@@ -48,7 +60,7 @@ export function PluginSettings({ onRoleSaved }: { onRoleSaved?: (role: Role) => 
     } finally { if (request === generation.current) setBusy(false); }
   };
   return <section aria-label="插件设置">
-    <h3>插件</h3>
+    <h3>工具与插件</h3>
     <p>基础工具默认随角色提供。特殊插件的运行依赖和服务凭据使用各自设置。</p>
     {error && <p role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
@@ -60,11 +72,14 @@ export function PluginSettings({ onRoleSaved }: { onRoleSaved?: (role: Role) => 
         setDraft(role ? draftFromRole(role) : null);
       }}>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select>
     </label>}
-    {selected && draft && <>
+    {selected && draft && <form onSubmit={(event) => { event.preventDefault(); void save(); }}>
+      <BasicToolSettings draft={draft} onChange={setDraft} disabled={busy} />
+      <ShellSettings draft={draft} onChange={setDraft} disabled={busy} />
+      <SpawnSettings draft={draft} onChange={setDraft} disabled={busy} />
       <RolePluginSettings key={selected.id} roleId={selected.id} draft={draft} onChange={setDraft} disabled={busy} />
-      <button type="button" className="primary" disabled={busy} onClick={() => void save()}>{busy ? '保存中…' : '保存插件设置'}</button>
+      <button type="submit" className="primary" disabled={busy}>{busy ? '保存中…' : '保存'}</button>
       <ToolCatalog key={`${selected.id}:${selected.updatedAt}`} roleId={selected.id}
         hasUnsavedChanges={JSON.stringify(payloadFromDraft(draft).agentConfig) !== JSON.stringify(payloadFromDraft(draftFromRole(selected)).agentConfig)} />
-    </>}
+    </form>}
   </section>;
 }

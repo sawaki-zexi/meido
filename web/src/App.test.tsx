@@ -413,7 +413,6 @@ describe("角色管理", () => {
     expect(calls.find((call) => call.method === "POST")?.body).toEqual({
       name: "新角色", description: "",
       profile: { profile: "她的设定", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" },
-      agentConfig: { memoryRecall: { enabled: false }, enabledPlugins: [], grantedCapabilities: [], enabledTools: [] },
     });
     expect(sessionStorage.getItem("meido:create-role-draft")).toBeNull();
 
@@ -437,27 +436,7 @@ describe("角色管理", () => {
     expect(within(form).queryByRole("checkbox", { name: "允许主动检索记忆" })).not.toBeInTheDocument();
     await user.click(within(form).getByRole("button", { name: "保存" }));
 
-    await waitFor(() => expect(calls.find((call) => call.method === "POST")?.body).toMatchObject({
-      agentConfig: { memoryRecall: { enabled: false } },
-    }));
-  });
-
-  it("可以为角色显式启用只读待办查询工具", async () => {
-    const { calls } = fakeBackend({
-      "GET /api/roles": () => ({ body: { roles: [] } }),
-      "POST /api/roles": () => ({ body: { role: role({ id: "r1", name: "待办角色" }) } }),
-    });
-    const user = userEvent.setup();
-    render(<App />);
-    await user.click(await screen.findByRole("button", { name: "创建角色" }));
-    const form = await dialog("创建角色");
-    await user.type(within(form).getByLabelText(/名称/), "待办角色");
-    await user.type(within(form).getByLabelText(/角色设定/), "设定");
-    await user.click(within(form).getByRole("checkbox", { name: "允许查询主人待办" }));
-    await user.click(within(form).getByRole("button", { name: "保存" }));
-    await waitFor(() => expect(calls.find((call) => call.method === "POST" && call.path === "/api/roles")?.body).toMatchObject({
-      agentConfig: { enabledPlugins: ["todo"], grantedCapabilities: ["todo.read"], enabledTools: ["todo.search"] },
-    }));
+    await waitFor(() => expect(calls.find((call) => call.method === "POST")?.body).not.toHaveProperty("agentConfig"));
   });
 
   it("创建角色时预览并上传头像，保存后显示在角色卡", async () => {

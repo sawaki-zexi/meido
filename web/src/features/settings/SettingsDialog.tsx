@@ -18,7 +18,7 @@ import type { Role } from '../../api/types';
 export type SettingsSectionId = "model" | "memory" | "owner-knowledge" | "todo" | "mail" | "channels" | "identity" | "mcp" | "novelai" | "coding" | "plugins";
 const sections: { id: SettingsSectionId; label: string; icon: IconName; render: () => ReactNode }[] = [
   { id: "model", label: "模型", icon: "model", render: () => <ModelSettings /> },
-  { id: 'plugins', label: '插件', icon: 'plug', render: () => <PluginSettings /> },
+  { id: 'plugins', label: '工具与插件', icon: 'plug', render: () => <PluginSettings /> },
   { id: "memory", label: "记忆", icon: "memory", render: () => <MemorySettings /> },
   { id: "owner-knowledge", label: "主人资料", icon: "knowledge", render: () => <OwnerKnowledgeSettings /> },
   { id: "todo", label: "待办", icon: "todo", render: () => <TodoSettings /> },

@@ -30,10 +30,11 @@ it("edits an independent Codex exec profile and qualifies its own hash without H
   expect(calls.find(call => call.path.endsWith("/probe"))?.body).toMatchObject({ buildSha256: "a".repeat(64), approveNativeTurns: 2 });
 });
 
-it("preserves coding grants when another role field changes and enables discovery with the owner switch", async () => {
+it("saves coding grants in settings without rewriting default-tool selections", async () => {
   let saved = role({ id: "r1", name: "编程角色", agentConfig: { shell: { enabled: true, allowedCommands: ["git"], timeoutSeconds: 20, maxOutputChars: 3000 }, coding: { enabled: false, repoGrantIds: ["repo-one"], profileIds: ["cli-one", "exec-one"], defaultHerdrProfileId: "cli-one", defaultCodexProfileId: null, maxAttemptsPerDay: 4 } } });
   fakeBackend({
     "GET /api/roles": () => ({ body: { roles: [saved] } }),
+    "GET /api/roles/r1": () => ({ body: { role: saved } }),
     "GET /api/coding/configuration": () => ({ body: { enabled: true, repositories: [], nativeBuild: null, profiles: [
       { id: "exec-one", name: "独立 exec", executor: "codex_exec", allowedRoleIds: ["r1"], verification: { status: "verified" } },
     ] } }),
@@ -43,8 +44,9 @@ it("preserves coding grants when another role field changes and enables discover
   const user = userEvent.setup();
   render(<App />);
   await screen.findByRole("heading", { name: "编程角色", level: 1 });
-  await user.click(screen.getByRole("button", { name: "角色资料" }));
-  const form = within(await screen.findByRole("dialog", { name: "角色资料" }));
+  await user.click(screen.getByRole("button", { name: "设置" }));
+  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  const form = within(await screen.findByRole("dialog", { name: "设置" }));
   expect(form.getByRole("checkbox", { name: "允许编程委托" })).not.toBeChecked();
   await user.click(form.getByRole("checkbox", { name: "允许编程委托" }));
   await user.selectOptions(form.getByRole("combobox", { name: "默认 Codex exec CLI" }), "exec-one");
@@ -55,11 +57,12 @@ it("preserves coding grants when another role field changes and enables discover
   expect(saved.agentConfig?.coding?.defaultCodexProfileId).toBe("exec-one");
   expect(saved.agentConfig?.coding?.maxAttemptsPerDay).toBe(4);
   expect(saved.agentConfig?.shell?.allowedCommands).toEqual(["git"]);
-  expect(saved.agentConfig?.enabledTools).toContain("tool_search");
+  expect(saved.agentConfig?.enabledTools).toBeUndefined();
   await user.click(form.getByRole("button", { name: "关闭" }));
-  await user.click(screen.getByRole("button", { name: "角色资料" }));
-  expect(within(await screen.findByRole("dialog", { name: "角色资料" })).getByRole("checkbox", { name: "允许编程委托" })).toBeChecked();
-  expect(within(screen.getByRole("dialog", { name: "角色资料" })).getByRole("combobox", { name: "默认 Codex exec CLI" })).toHaveValue("exec-one");
+  await user.click(screen.getByRole("button", { name: "设置" }));
+  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  expect(within(await screen.findByRole("dialog", { name: "设置" })).getByRole("checkbox", { name: "允许编程委托" })).toBeChecked();
+  expect(within(screen.getByRole("dialog", { name: "设置" })).getByRole("combobox", { name: "默认 Codex exec CLI" })).toHaveValue("exec-one");
 });
 
 it("requires explicit native-turn cost consent, displays blocked facts, and revokes exact persisted CLI grants", async () => {
