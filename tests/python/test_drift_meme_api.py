@@ -88,11 +88,10 @@ def test_owner_can_explicitly_enable_builtin_meme_maintenance_without_shell(api)
     assert roles.get(role['id']).agentConfig.shell.enabled is False
 
 
-def test_builtin_remains_available_after_a_real_fresh_git_checkout_with_windows_text_conversion(api, monkeypatch, record_property):
+def test_builtin_remains_available_after_a_real_fresh_git_checkout_with_windows_text_conversion(api, monkeypatch, record_property, tmp_path_factory):
     from backend.app.proactive_runtime import drift_skills, meme_profile
     root = Path(__file__).resolve().parents[2]
-    installed = Path(os.environ['MEIDO_DATA_DIR']).parent / 'r31'
-    installed.mkdir()
+    installed = tmp_path_factory.mktemp('r31')
     environment = {**os.environ, 'GIT_INDEX_FILE': str(installed / 'index')}
     executable = shutil.which('git')
     if executable is None and os.name == 'nt':
@@ -636,12 +635,11 @@ def test_owner_library_observation_is_invalidated_by_a_different_managed_file_pu
     assert (library / 'owner-notes.txt').read_text(encoding='utf-8') == '本轮另一个真实库编辑'
 
 
-def test_next_real_application_process_reads_and_maintains_the_same_library_after_full_owner_shutdown(api, tmp_path):
+def test_next_real_application_process_reads_and_maintains_the_same_library_after_full_owner_shutdown(api, tmp_path, tmp_path_factory):
     from backend.app.task_runtime import TaskOrigin, TaskBudget
     from backend.app.task_runtime.process import ProcessExecutor
     _, _, _, tasks = api
-    persistent = Path(os.environ['MEIDO_DATA_DIR']).parent / 'r30'
-    persistent.mkdir()
+    persistent = tmp_path_factory.mktemp('r30')
     fixture = Path(__file__).resolve().parents[1] / 'fixtures/drift_meme_rebuild.py'
     reports = []
     for phase in (1, 2):
@@ -1438,14 +1436,13 @@ def test_peak_quota_reserves_the_full_persisted_json_journal_bytes_including_tex
     assert client.get(path + '/meme-library').json()['operations'] == []
 
 
-def test_fully_rebuilt_disabled_application_preserves_pending_copy_and_owner_actually_edits_and_reads_the_same_new_image(api, tmp_path):
+def test_fully_rebuilt_disabled_application_preserves_pending_copy_and_owner_actually_edits_and_reads_the_same_new_image(api, tmp_path, tmp_path_factory):
     from backend.app.task_runtime import TaskOrigin, TaskBudget
     from backend.app.task_runtime.process import ProcessExecutor
     _, _, _, tasks = api
     # Keep the real Windows attachment/staging paths below MAX_PATH; each run
     # still owns fresh absolute roots, HOME and TEMP before child app import.
-    persistent = Path(os.environ['MEIDO_DATA_DIR']).parent / 'r21'
-    persistent.mkdir()
+    persistent = tmp_path_factory.mktemp('r21')
     fixture = Path(__file__).resolve().parents[1] / 'fixtures/drift_meme_rebuild.py'
     reports = []
     for phase in (1, 2):

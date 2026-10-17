@@ -80,10 +80,15 @@ class _Reply:
 async def _runtime_settled(application, role):
     async with asyncio.timeout(30):
         while True:
-            await application.recover()
-            state = application.query(role)
-            if state['runs'] and all(run['runtimeAcknowledged'] for run in state['runs']):
-                return state
+            try:
+                await application.recover()
+                state = application.query(role)
+            except sqlite3.OperationalError as error:
+                if (getattr(error, 'sqlite_errorcode', 0) & 0xFF) not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                    raise
+            else:
+                if state['runs'] and all(run['runtimeAcknowledged'] for run in state['runs']):
+                    return state
             await asyncio.sleep(.01)
 
 

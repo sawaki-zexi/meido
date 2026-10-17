@@ -173,7 +173,7 @@ def test_managed_qq_process_exit_is_reported_and_user_can_retry(channel_api, mon
             try:
                 for _ in range(100):
                     account = (await client.get(accounts_url)).json()["accounts"][0]
-                    if account["connectionStatus"] == "error":
+                    if account["connectionStatus"] == "error" and account["lastError"]:
                         break
                     await asyncio.sleep(.01)
                 assert account["connectionStatus"] == "error"
