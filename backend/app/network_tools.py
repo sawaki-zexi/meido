@@ -264,7 +264,7 @@ class WebFetchTool:
                 "timeout": {"type": "integer", "minimum": 1, "maximum": 120},
             }, "required": ["url"], "additionalProperties": False},
             external_allowed=True, approval="auto" if self.config.enabled else "deny",
-            timeout_seconds=self.config.timeout_seconds + 1,
+            timeout_seconds=self.config.timeout_seconds + 1, search_hint='读取网址 浏览网页',
         )
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None):
@@ -325,7 +325,7 @@ class WebSearchTool:
                 "type": {"type": "string", "enum": ["auto", "fast", "deep"]},
             }, "required": ["query"], "additionalProperties": False},
             external_allowed=True, approval="auto" if self.config.enabled else "deny",
-            timeout_seconds=min(25, self.config.timeout_seconds) + 1,
+            timeout_seconds=min(25, self.config.timeout_seconds) + 1, search_hint='谷歌 Bing 查资料',
         )
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None):

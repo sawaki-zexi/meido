@@ -1,3 +1,5 @@
+import type { NovelaiRoleConfig } from './novelai';
+import type { CodingRoleConfig } from "./coding";
 export type RoleProfile = { profile: string; personality: string; behaviorRules: string; responseConstraints: string; nickname: string };
 export type RoleCardImportAsset = { kind: string; name: string; mediaType: string; size: number; dataUrl?: string };
 export type RoleCardImportPreview = {
@@ -7,7 +9,8 @@ export type RoleCardImportPreview = {
   compatibility: { format: string; warnings: string[]; discardedFields: string[]; unsupportedMacros: string[]; unsupportedResources: string[] };
 };
 export type MemoryRecallToolConfig = { enabled: boolean };
-export type AgentToolConfig = { memoryRecall?: MemoryRecallToolConfig; browserUse?: { enabled: boolean }; enabledTools?: string[]; enabledPlugins?: string[]; grantedCapabilities?: string[]; shell?: { enabled: boolean; allowedCommands: string[]; timeoutSeconds: number; maxOutputChars: number } };
+export type SpawnToolConfig = { enabled: boolean; timeoutSeconds: number; maxTurns: number; maxOutputChars: number; maxModelOutputChars: number };
+export type AgentToolConfig = { coding?: CodingRoleConfig; memoryRecall?: MemoryRecallToolConfig; browserUse?: { enabled: boolean }; computerUse?: { enabled: boolean }; spawn?: SpawnToolConfig; screenPerception?: { enabled: boolean; visionModelConfigurationId: string | null }; novelai?: NovelaiRoleConfig; enabledTools?: string[]; enabledPlugins?: string[]; grantedCapabilities?: string[]; shell?: { enabled: boolean; allowedCommands: string[]; timeoutSeconds: number; maxOutputChars: number } };
 export type RoleToolCatalog = {
   roleId: string; sessionKey: string; preview: boolean;
   tools: { name: string; description: string; source: string; version: string | null; risk: string | null; exposure: string | null; registered: boolean; enabled: boolean; authorized: boolean; modelVisible: boolean | null; dependency: { status: "ready" | "unavailable" | "unchecked"; reason: string }; reason: string }[];
@@ -16,7 +19,7 @@ export type RoleToolCatalog = {
 export type Role = { id: string; name: string; description: string; profile: RoleProfile; agentConfig?: AgentToolConfig; createdAt: string; updatedAt: string; avatarUrl?: string | null; avatarMediaType?: string | null; avatarOriginalUrl?: string | null; avatarOriginalMediaType?: string | null; cardImageUrl?: string | null; cardImageMediaType?: string | null };
 export type MessageStatus = "streaming" | "completed" | "failed";
 export type ChatAttachment = { id: string; name: string; mediaType: string; size: number; kind: "image" | "file" };
-export type Message = { id: string; sessionKey: string; sequence: number; role: "user" | "assistant"; content: string; status: MessageStatus; createdAt: string; messageType?: "text" | "proactive_reminder"; runId?: string | null; metadata?: Record<string, unknown> };
+export type Message = { id: string; sessionKey: string; sequence: number; role: "user" | "assistant"; content: string; status: MessageStatus; createdAt: string; messageType?: "text" | "proactive_reminder" | "internal_completion" | "desktop_push"; runId?: string | null; metadata?: Record<string, unknown> };
 export type Session = { sessionKey: string; roleId: string; createdAt: string; updatedAt: string };
 export type Provider = { id: string; label: string; provider: string; baseUrl: string; modelHint: string; api?: string };
 export type ModelConfiguration = { id: string; providerId: string; provider: string; api?: string; apiOptions?: Record<string, string>; baseUrl: string; model: string; apiKeyConfigured: boolean; active?: boolean };

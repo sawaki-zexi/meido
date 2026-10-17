@@ -4,7 +4,8 @@
 事实来源：`agent_runtime/memory_write_tools.py`、`agent_runtime/memory_tool.py`、
 `memory_engine.py` 与 `tests/python/test_memory_write_tools.py`、`test_memory_tools_api.py`。
 
-角色通过 `agentConfig.enabledTools` 授权 `memorize`、`forget_memory`；召回继续由既有
+网页可在[基础工具授权](role-basic-tools.md)中分别选择 `memorize`、`forget_memory`，
+对应 `agentConfig.enabledTools`；召回继续由既有
 `memoryRecall.enabled` 和能力策略授权。全局记忆开关关闭后，手填任何工具名称都不能恢复权限。
 三个工具均绑定当前角色与来源会话，只允许桌面主人或仍获授权的已配对主人私聊；群和访客不开放主人私有记忆。
 

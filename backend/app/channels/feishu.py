@@ -227,13 +227,17 @@ class FeishuAdapter(ChannelAdapter):
             if not attachment.url or attachment.url.startswith(("http://", "https://")) or attachment.kind not in {"image", "file"}:
                 raise ChannelAdapterError("飞书出站附件必须是受支持的本地图片或文件")
             path = Path(attachment.url)
-            try:
-                if path.stat().st_size > self.config.max_attachment_bytes:
-                    raise ChannelAdapterError("飞书出站附件超过大小限制")
-                data = await asyncio.to_thread(path.read_bytes)
-            except OSError as error:
-                raise ChannelAdapterError("飞书出站附件无法读取") from error
-            if len(data) > self.config.max_attachment_bytes:
+            data = attachment.frozen_data
+            if data is None:
+                try:
+                    if path.stat().st_size > self.config.max_attachment_bytes:
+                        raise ChannelAdapterError("飞书出站附件超过大小限制")
+                    data = await asyncio.to_thread(path.read_bytes)
+                except OSError as error:
+                    raise ChannelAdapterError("飞书出站附件无法读取") from error
+            elif not path.is_absolute():
+                raise ChannelAdapterError("飞书冻结附件必须保留原本地附件路径")
+            if not isinstance(data, bytes) or len(data) > self.config.max_attachment_bytes:
                 raise ChannelAdapterError("飞书出站附件超过大小限制")
             prepared.append((attachment, path, data))
         if not message.content.strip() and not prepared:

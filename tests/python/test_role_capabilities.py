@@ -7,6 +7,7 @@ from backend.app import main
 from backend.app.agent_runtime.types import ToolResultMessage
 from backend.app.model_adapter import ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
+from backend.app.memory_config import MemorySettingsStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
 from backend.app.session_store import SessionStore
@@ -18,7 +19,7 @@ from backend.app.ai.model_types import ModelAssistantMessage, ModelStreamDone, M
 
 
 @pytest.fixture
-def role_api(tmp_path, monkeypatch):
+def role_api(tmp_path, monkeypatch, local_platform_only):
     initialize_databases(tmp_path / "data")
     roles = RoleStore(tmp_path / "roles")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
@@ -27,6 +28,9 @@ def role_api(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))
     monkeypatch.setattr(main, "model_configuration_store", ModelConfigurationStore(tmp_path / "data" / "models.json"))
     monkeypatch.setattr(main, "role_locks", {})
+    memory = MemorySettingsStore(tmp_path / "data" / "memory-settings.json")
+    memory.update(enabled=False)
+    monkeypatch.setattr(main, "memory_settings_store", memory)
     todos = TodoStore(tmp_path / "data" / "todos.db")
     todos.update_settings(enabled=True)
     monkeypatch.setattr(main, "todo_store", todos)
@@ -124,8 +128,8 @@ def test_model_capability_description_matches_actual_schemas_and_preserves_role_
     assert "shell" in prompt
     assert "todo.write" in prompt
     assert "agent_browser_open" not in prompt
-    assert {item["function"]["name"] for item in schemas} == {"shell", "todo.write", "todo.reminder_control"}
-    assert {item["name"] for item in catalog["tools"] if item["modelVisible"]} == {"shell", "todo.write", "todo.reminder_control"}
+    assert {item["function"]["name"] for item in schemas} == {"shell", "task_output", "task_stop", "todo.write", "todo.reminder_control"}
+    assert {item["name"] for item in catalog["tools"] if item["modelVisible"]} == {"shell", "task_output", "task_stop", "todo.write", "todo.reminder_control"}
     assert role_api.get(f"/api/roles/{role['id']}").json()["role"]["profile"]["profile"] == "核心身份设定"
 
 
@@ -133,6 +137,7 @@ def test_saved_shell_and_capability_settings_survive_role_store_restart(role_api
     config = {
         "shell": {"enabled": True, "allowedCommands": [sys.executable], "timeoutSeconds": 47, "maxOutputChars": 32100},
         "memoryRecall": {"enabled": True}, "browserUse": {"enabled": False},
+        "spawn": {"enabled": True, "timeoutSeconds": 45.0, "maxTurns": 5, "maxOutputChars": 12345, "maxModelOutputChars": 54321},
         "enabledTools": ["custom.query"], "enabledPlugins": ["custom"], "grantedCapabilities": ["memory.read"],
     }
     created = role_api.post("/api/roles", json={"name": "原名", "profile": {"profile": "设定"}, "agentConfig": config}).json()["role"]
@@ -141,7 +146,14 @@ def test_saved_shell_and_capability_settings_survive_role_store_restart(role_api
     monkeypatch.setattr(main, "store", RoleStore(tmp_path / "roles"))
     reopened = role_api.get(f"/api/roles/{created['id']}").json()["role"]
     assert reopened["name"] == "新名"
-    assert reopened["agentConfig"] == config
+    assert reopened["agentConfig"] == {**config, "screenPerception": {"enabled": False, "visionModelConfigurationId": None},
+        "computerUse": {"enabled": False},
+        "novelai": {"manualEnabled": False, "manualDailyAttempts": 10, "sceneCgEnabled": False,
+            "sceneCgDailyAttempts": 3, "scenePromptModelConfigurationId": None,
+            "autoWritebackRoleAssets": False, "promptTagsEnabled": False,
+            "allowedPromptTagRatings": ["general"], "consentRevision": 0},
+        "coding": {"enabled": False, "repoGrantIds": [], "profileIds": [], "defaultHerdrProfileId": None,
+                   "defaultCodexProfileId": None, "maxAttemptsPerDay": 5}}
 
 
 def test_native_model_without_tools_receives_an_explicit_empty_capability_list(role_api, monkeypatch):

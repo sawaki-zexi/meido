@@ -88,6 +88,10 @@ class ToolExecutionStartEvent:
     tool_call_id: str
     tool_name: str
     arguments: dict[str, object] = field(default_factory=dict)
+    snapshot_id: str | None = None
+    tool_source: str | None = None
+    tool_version: str | None = None
+    policy_decision: str | None = None
     type: Literal["tool_execution_start"] = "tool_execution_start"
     run_id: str = ""
     sequence: int = 0

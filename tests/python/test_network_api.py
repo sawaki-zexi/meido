@@ -58,7 +58,7 @@ def test_authorized_role_network_tool_completes_http_conversation_and_persists_s
     monkeypatch.setattr(httpx._client, "AsyncHTTPTransport", lambda **kwargs: httpx.MockTransport(handler))
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="联网角色", profile=RoleProfile(profile="设定"),
-        agentConfig=AgentToolConfig(enabledTools=[tool_name], shell=ShellToolConfig(timeoutSeconds=1))))
+        agentConfig=AgentToolConfig(shell=ShellToolConfig(timeoutSeconds=1))))
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     provider = Provider()
@@ -69,7 +69,14 @@ def test_authorized_role_network_tool_completes_http_conversation_and_persists_s
     monkeypatch.setattr(main, "model_configuration_store", ModelConfigurationStore(tmp_path / "data" / "models.json"))
     monkeypatch.setattr(main, "role_locks", {})
 
-    reply = TestClient(main.app).post(f"/api/roles/{role.id}/messages", json={"content": "查询来源"})
+    client = TestClient(main.app)
+    catalog = {item["name"]: item for item in client.get(f"/api/roles/{role.id}/tools").json()["tools"]}
+    assert not catalog[tool_name]["enabled"]
+    saved = client.put(f"/api/roles/{role.id}", json={"name": role.name, "profile": role.profile.model_dump(),
+        "agentConfig": {"enabledTools": [tool_name], "shell": {"timeoutSeconds": 1}}})
+    assert saved.status_code == 200
+    assert client.get(f"/api/roles/{role.id}").json()["role"]["agentConfig"]["enabledTools"] == [tool_name]
+    reply = client.post(f"/api/roles/{role.id}/messages", json={"content": "查询来源"})
     assert reply.status_code == 200
     assert "event: assistant_completed" in reply.text
     assert len(requests) == 1
@@ -110,7 +117,14 @@ def test_unapproved_network_tools_are_hidden_and_forged_calls_cannot_execute(tmp
     monkeypatch.setattr(main, "role_locks", {})
     monkeypatch.setattr(httpx._client, "AsyncHTTPTransport", lambda **kwargs: httpx.MockTransport(unexpected))
 
-    response = TestClient(main.app).post(f"/api/roles/{role.id}/messages", json={"content": "联网"})
+    client = TestClient(main.app)
+    if role_enabled and not host_enabled:
+        catalog = {item["name"]: item for item in client.get(f"/api/roles/{role.id}/tools").json()["tools"]}
+        for name in ("web_fetch", "web_search"):
+            assert catalog[name]["enabled"] and not catalog[name]["authorized"]
+            assert catalog[name]["reason"] == "宿主联网已关闭"
+            assert catalog[name]["dependency"]["status"] == "unavailable"
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "联网"})
     assert "event: assistant_completed" in response.text
     assert {"web_fetch", "web_search"}.isdisjoint({item["function"]["name"] for item in provider.requests[0][1]})
     results = [item for item in sessions.runtime_messages(f"role:{role.id}") if isinstance(item, ToolResultMessage)]

@@ -1,0 +1,54 @@
+# 验收确切编程成果与发布 #176
+
+状态：本地实现和无费用夹具；固定源eddfdb9完成完整两轴及修正复核，并整合到总分支3c5e4c3。集成两轴无遗留finding，准确广组308项通过，新HEAD完整CI另行记录。真实 CLI 登录/模型与 GitHub 发布均未执行。最后核验：2026-10-16。事实来源：[公开链](../../tests/python/test_coding_publication_main.py)、[真实 Git/HTTP/SQL 故障](../../tests/python/test_coding_publication.py)、[HTTP 期限与退出](../../tests/python/test_coding_publication_http.py)、[Git smart HTTP](../../tests/python/test_coding_publication_git_http.py)、[原生证据](../../tests/python/test_coding_attestation.py)、[资源与原来源恢复](../../tests/python/test_coding_publication_recovery.py)、[React](../../web/src/features/coding/CodingPublication.test.tsx)。接口见[reference](../reference/owned-coding-tasks.md)。
+
+## 主人使用
+
+1. 先完成已获账号/费用许可的 CLI profile 核验，登记可信仓库与固定验证。按需单独开启 localCommit、push、draftPr；发布 remote 必须是唯一 GitHub HTTPS 地址。配置许可本身不会发布。
+2. 明确启动本地任务，等待真实 `validated_diff`、完整宿主证据与资源退出。在角色的编程任务页审阅 diff、原角色/来源/session、base/当前HEAD、验证命令与时间，填写作者/邮箱/提交说明，再勾选并批准本次提交。
+3. 原任务提交窗口到期或重启后无法证明期限时，保留修改但不提交。回原来源明确新 continue，理解它会新计 attempt、可能再次消耗 CLI 配额；不需要时可自行保留成果。界面刷新不会续期或自动启动 CLI。
+4. 单独设置发布凭据。只有已证实的宿主 commit 能准备 Draft PR，审阅确切 SHA、remote、base、唯一分支与完整 title/body 后再一次批准。首次真实发布仍须另获该测试仓库、确切 HEAD 与真实账号事务许可；当前验收只用假 token。
+5. unknown 时只读核对原操作。已证实 push 且 PR 尚未派发，才会提供“审阅剩余 PR”，再次批准只创建 PR；已经派发却无法证明的事务不会重试。取消停止本地资源，不能承诺远端回滚。
+
+## 无账号复现
+
+收集/import main 前建立三个全新 MEIDO 根，移除 MEIDO_PROJECT_ROOT；localhost-only DNS/socket/asyncio guard 必须覆盖整条命令至所有 Runtime/Job/reader/writer/HTTP/渠道 owner 退出。使用新的短 basetemp，公开任务额外加普通 AppData 层级。专用 CLI 仅本机 Python/Rust 合成进程、假认证；Git 使用临时仓库与 bare，GitHub REST 使用真实 localhost HTTP+SQLite 夹具。不可把 fake CLI 或本地协议验收写成真实 Codex/Claude 模型任务。
+
+```powershell
+# 启动器先完成上述隔离与 guard，再运行；原生7项需已构建的固定bundle/合成launcher。
+$env:MEIDO_TEST_HERDR = 'D:/meido-artifacts/coding174-herdr-bundle/herdr.exe'
+$env:MEIDO_TEST_CODING_CLI = 'D:/meido-artifacts/coding174-toolchain/codex.exe'
+python -m pytest tests/python/test_coding_publication.py tests/python/test_coding_publication_main.py tests/python/test_coding_publication_recovery.py tests/python/test_coding_attestation.py -q --basetemp=D:/fresh-176-owned
+python -m mypy backend/app/coding_tasks/publication.py backend/app/coding_tasks/owned_http.py backend/app/coding_tasks/github_publication.py backend/app/coding_tasks/evidence.py backend/app/coding_tasks/artifact_budget.py backend/app/coding_tasks/api.py --ignore-missing-imports --follow-imports=silent --check-untyped-defs
+npm run test:web
+npm run build
+git diff --check
+```
+
+## 已记录的失败与修正
+
+- 首个交叉组 `39 passed / 1 failed` 捕获 owner worker 写入成功事实与 Runtime 查询间竞态：真实 Draft PR 已落平台、完整证明已持久，旧 `running` 副本却覆盖为 unknown。现在同 SQLite 事务读取最新业务后复制 result+ACKdirty。保留失败 XML，收到响应的发布测试使用真实 HTTP POST 屏障稳定覆盖该顺序；原生 attempt 相同竞态也以真实 Runtime/SQLite 屏障 RED→GREEN。
+- Ledger 真实 continue 曾继承上个 attempt 的期限/证据而拒绝新预算，随后旧操作回执又被错误抑制。现在仅继承 task 身份/session/host HEAD，原 attempt 和独立操作各守其预算、来源与 sent 事实；新 attempt 必须由主人明确发起。
+- SQLite trigger 覆盖 approval 插入回滚、Runtime ID 写入、复制前失败、ACK 后 dirty 清理失败；Runtime 接受后返回丢失只查原 key，不重跑。同一真实 Git commit 只产生一次。最终业务写入失败时，Runtime 终态触发独立 owner 重新收尾，unknown commit 仅按预计算 SHA 只读恢复。
+- 晚到真实渠道 receipt、重启 running 资源日志、原生清理失败仍排空独立 broker、凭据换代先停旧 owner、Git cleanup 失败仍关闭 HTTP 均保留实际 RED，再进行修正。probe 新 `drain()` 只收尾不关闭 DB，统一所有 owner 确认后才 close，失败可重试。
+- 宿主关闭曾把待交付 outbox 误记为来源撤权。现在 shutdown 完成 copy/ACK 与资源收尾、暂缓交付；重启只恢复原来源结果，不重新执行 CLI。来源真正撤销仍抑制交付，已经 sent 的事实不会被本地 dirty 投影降级。
+- push 之后远端 base 分支推进的真实 bare/HTTP 夹具曾证明 PR 仍被 POST。现 dispatch 前再核 base SHA，变化时保留已发生 push，禁止创建 PR；平台在派发后发生变化仍只能记 unknown，不能承诺 GitHub 分支原子冻结。
+- Git filter 夹具在旧快照检查中确实写出 marker；目前在任何 status/worktree checkout 前拒绝 filter 配置。私有硬链接和超2GiB保留文件在写事务前拒绝。固定验证不通过、文件/index/模式/HEAD变化不能借旧 validatedHead 发布。
+- 原生适配器完整 snapshot/expected HEAD 两路测试与 owner 服务的宿主 commit→精确 session continue 分开记录；Herdr boundary 夹具使用真实受管编辑进程/Git，不等于实际 Herdr/真实账号任务。原7项固定 Herdr+合成 CLI 是独立原生兼容验收。
+- Standards 的真实慢滴流/末期停读探针捕获旧 HTTP 只在请求前检查期限。永久回归保留4类 RED，改用受管、可取消 transport 后验证同一期限/撤权、真实连接与线程退出；首次实现把 TLS/异步库冷准备放进请求线程造成另一轮4 RED，已恢复到 Client 构造边界，未放宽预算。observe 入口固定30秒，锁等待仅取剩余时间；冷准备过期不开始 HTTP。
+- Git 认证按官方 checkout 的 Basic 协议修正；真实本地 smart HTTP 核验 GET/POST 实际认证头、精确 SHA/唯一分支、原 main 不变与 token 不落仓库配置。旧本地夹具原先不开放 HTTP 协议，其 RED 不证明线上 GitHub 拒绝旧 Bearer。原始外部探针首例未捕获合法 TimeoutError，装配局限单独记录；末期停读例保持原字节复验通过，不修改原探针或伪称原样双例全绿。
+- Spec 独立真实夹具捕获“仅剩 PR”操作已经 POST、丢回执却无法只读核对的 RED。现在沿原 push 与新主人消费审批的确切替代链核对，不要求新操作伪造自己的 push dispatch。[永久回归](../../tests/python/test_coding_publication_remaining.py) 使用实际 Runtime ACK/prune、应用重建、真实远端 Draft 持久记录及原 QQ 线程 receipt/消息；错误链、不同批准身份、撤权/ABA 在 GET 前拒绝，POST 已派发时不再取得剩余写机会。
+- root 另行线程准入故障诊断与独立 Spec finding 分开记录：Thread.start 的 RuntimeError 若确定新线程从未启动，保留原异常、无自动重试，close 不再对未启动线程 join。实际启动后才报错仍保留 owner 并真实关闭；[HTTP 回归](../../tests/python/test_coding_publication_http.py)及[真实 SQLite 宿主关闭](../../tests/python/test_coding_publication_recovery.py)确认无虚假容量/DB义务。
+- 后续 Standards 的真实 Runtime GET 发现 HTTP 线程会继承 daemon=True，现显式设置False；TaskRuntime 策略不改。真实 SQLite trigger 阻止 cleanup_failed 写入时，第二次核对、剩余动作准入和凭据替换/移除仍尊重内存 owner；不得先创建新平台、覆盖旧引用或启用新凭据。[永久 owned 回归](../../tests/python/test_coding_publication_owners.py)先6 RED后通过，并证实 sent/synced 的历史记录也能由现有轮询实际关闭 owner、释放容量。
+
+作者本地 XML 位于 D:/meido-artifacts/coding176-*.xml，各轮不能相加或视作最终 HEAD CI。完整前端208项、TS/Vite已过，包括晚到凭据 GET 不覆盖新保存修订的 RED→GREEN；最终相关组与两轴结论以固定交付记录为准。所有真实账号、费用、实际首次/resume CLI 权限与 GitHub 发布仍需要对应许可和证据。
+
+后续“仅剩PR”修正组曾在第一次push就出现unknown、没有pushConfirmed；旧测试随后取taskId失败，尚未进入新的只读链校验。隔离观测与原用例后来通过，首次业务目录却已被全局pytest retention清理，无法回溯当时SQL/平台证据，原因仍未解释。原日志/XML保留，后续固定helper会在相同失败时直接展示完整原记录；不将这次独立通过或owned gate修正称作历史首因已修复。
+
+## 总分支整合核对
+
+最新已验证基点e71145a的两套完整CI各2308项后端、215项前端及构建通过后，四个已审源提交顺序进入3c5e4c3，未发生冲突。38份源文件中36个git blob完全一致，差异仅main装配及S07历史验收段；main只变更三个Coding工厂/发送/receipt函数，与已审源逐AST相同，另241函数及非函数节点保持。SessionStore只增加operation独立完成消息；CG、来源作者、原来源授权及all-owner收尾保留。
+
+集成规范轴静态复核无遗留；规格轴另2 passed/1 warning（7.40秒），真实HTTP构造独立假vault，真实canonical SQLite配合合成transport证明native/commit/publication即使marker相同仍按Kind和ID各取原receipt，撤权及非法Kind零新派发、无桌面回退。该短组不代表真实配对或平台收件。完整前端221 passed/39文件（37.48秒），TypeScript/Vite100模块构建、13个改动Coding源默认类型及6源check-untyped-defs通过；没有重复计作源208项或原257项的新覆盖。
+
+准确3c5e4c3后端交叉组308 passed/3 warnings（1406.45秒），涵盖全部Coding/Codex、TaskRuntime、发现/角色许可、聊天停止、来源作者/验证、角色删除及CG优先级/渠道/资产责任。固定Herdr与无网络合成CLI均实际运行；不等于真实模型任务。556份后端/测试/前端输入在运行前后逐SHA不变，内外localhost guard通过，所有main owner自然退出，原测试目录与XML保留。90秒faulthandler输出是诊断堆栈，不是失败或超时判定。新HEAD完整CI仍须独立核验。

@@ -27,6 +27,8 @@ KNOWN_CAPABILITIES = frozenset({
     "todo.read",
     "todo.write",
     "browser.session",
+    "desktop.control",
+    "desktop.pet",
 })
 HookMode = str
 Cleanup = Callable[[], object | Awaitable[object]]

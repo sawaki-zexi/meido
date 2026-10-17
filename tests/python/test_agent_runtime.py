@@ -1009,7 +1009,9 @@ def test_runtime_persists_tool_result_before_requesting_next_provider_turn(tmp_p
     assert store.get_run(run.runId).status == "completed"
 
 
-def test_http_text_run_persists_agent_run_and_keeps_sse_compatibility(tmp_path, monkeypatch):
+def test_http_text_run_persists_agent_run_and_keeps_sse_compatibility(tmp_path, monkeypatch, local_platform_only):
+    from backend.app.memory_config import MemorySettingsStore
+
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="运行角色", profile=RoleProfile(profile="设定")))
     initialize_databases(tmp_path / "data")
@@ -1026,6 +1028,9 @@ def test_http_text_run_persists_agent_run_and_keeps_sse_compatibility(tmp_path, 
     monkeypatch.setattr(main, "model_adapter", Adapter())
     monkeypatch.setattr(main, "model_configuration_store", ModelConfigurationStore(tmp_path / "data" / "model-config.json"))
     monkeypatch.setattr(main, "role_locks", {})
+    memory_settings = MemorySettingsStore(tmp_path / "data" / "memory-settings.json")
+    memory_settings.update(enabled=False)
+    monkeypatch.setattr(main, "memory_settings_store", memory_settings)
 
     response = TestClient(main.app).post(f"/api/roles/{role.id}/messages", json={"content": "你好"})
     assert response.status_code == 200

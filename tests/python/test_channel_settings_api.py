@@ -14,9 +14,11 @@ from backend.app.models import AgentRun
 from channels.test_host import FakeAdapter, make_target
 from test_channel_api import channel_api as channel_api
 
+pytestmark = pytest.mark.usefixtures("local_platform_only")
+
 
 @pytest.fixture(autouse=True)
-def isolated_channel_settings_runtime(monkeypatch):
+def isolated_channel_settings_runtime(monkeypatch, local_platform_only):
     monkeypatch.setattr(main, "_managed_qq_pending", {})
     monkeypatch.setattr(main, "channel_platform_locks", {})
 
@@ -27,13 +29,21 @@ class RecordingNapCatTransport:
     def __init__(self, endpoint, **_kwargs):
         self.endpoint = endpoint
         self.connected = False
+        self.online = None
+        self.observed_at = None
         self.instances.append(self)
 
     async def start(self, _handler):
         self.connected = True
+        self.observed_at = datetime.now(timezone.utc).isoformat()
 
     async def stop(self):
         self.connected = False
+        self.online = None
+
+    def connection_snapshot(self):
+        return {"connection": "connected" if self.connected else "disconnected",
+                "online": self.online, "observedAt": self.observed_at, "reason": "fixture_transport_observation"}
 
     async def wait_connected(self):
         pass
@@ -42,6 +52,8 @@ class RecordingNapCatTransport:
         if action == "get_login_info":
             return {"user_id": self.endpoint, "nickname": "QQ"}
         if action == "get_status":
+            self.online = True
+            self.observed_at = datetime.now(timezone.utc).isoformat()
             return {"online": True, "good": True}
         return {"data": []}
 
@@ -161,7 +173,7 @@ def test_managed_qq_process_exit_is_reported_and_user_can_retry(channel_api, mon
             try:
                 for _ in range(100):
                     account = (await client.get(accounts_url)).json()["accounts"][0]
-                    if account["connectionStatus"] == "error":
+                    if account["connectionStatus"] == "error" and account["lastError"]:
                         break
                     await asyncio.sleep(.01)
                 assert account["connectionStatus"] == "error"

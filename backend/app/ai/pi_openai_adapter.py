@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass, field
 import json
 import time
 
 import httpx
+
+from .request_budget import image_budget_client_kwargs, budgeted_model_stream, budgeted_model_completion
 from partial_json_parser import MalformedJSON, loads as parse_partial_json
 
 from .message_transform import transform_messages
@@ -539,6 +542,7 @@ class OpenAICompletionsRichAdapter:
         headers = {"Authorization": f"Bearer {configuration.apiKey}"} if configuration.apiKey else {}
         return request_data, headers, {alias: name for name, alias in aliases.items()}
 
+    @budgeted_model_stream
     async def stream_messages(
         self,
         messages: Sequence[ModelMessage],
@@ -547,7 +551,7 @@ class OpenAICompletionsRichAdapter:
         *,
         max_tokens: int | None = None,
         cancel_check: Callable[[], None] | None = None,
-    ) -> AsyncIterator[ModelStreamEvent]:
+    ) -> AsyncGenerator[ModelStreamEvent, None]:
         request_data, headers, internal_names = self._prepare_request(
             messages,
             configuration,
@@ -563,7 +567,7 @@ class OpenAICompletionsRichAdapter:
         completed = False
         yield ModelStreamStart()
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs("openai-completions")) as client:
                 async with client.stream(
                     "POST",
                     f"{configuration.baseUrl.rstrip('/')}/chat/completions",
@@ -627,6 +631,7 @@ class OpenAICompletionsRichAdapter:
             yield event
         yield ModelStreamDone(message)
 
+    @budgeted_model_completion
     async def complete_messages(
         self,
         messages: Sequence[ModelMessage],
@@ -645,7 +650,7 @@ class OpenAICompletionsRichAdapter:
             stream=False,
         )
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs("openai-completions")) as client:
                 response = await client.post(
                     f"{configuration.baseUrl.rstrip('/')}/chat/completions",
                     headers=headers,
@@ -691,15 +696,16 @@ class OpenAICompletionsRichAdapter:
         *,
         max_tokens: int | None = None,
         cancel_check: Callable[[], None] | None = None,
-    ) -> AsyncIterator[ModelStreamEvent]:
-        async for event in self.stream_messages(
+    ) -> AsyncGenerator[ModelStreamEvent, None]:
+        async with aclosing(self.stream_messages(
             messages,
             configuration,
             tools,
             max_tokens=max_tokens,
             cancel_check=cancel_check,
-        ):
-            yield event
+        )) as stream:
+            async for event in stream:
+                yield event
 
     def stream(
         self,

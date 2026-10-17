@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Iterable
+from typing import Callable, Iterable
 
 
 _SKILL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -65,8 +67,12 @@ class SkillDescriptor:
     body_path: str | None = None
     root_path: str | None = None
     supporting_files: tuple[SkillResourceDescriptor, ...] = ()
+    required_bins: tuple[str, ...] = ()
+    required_env: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "required_bins", _dependencies(self.required_bins, environment=False))
+        object.__setattr__(self, "required_env", _dependencies(self.required_env, environment=True))
         if self.trust_level not in _TRUST_LEVELS:
             raise ValueError(f"unsupported skill trust level: {self.trust_level}")
         _validate_relative_path(self.path, "skill path")
@@ -90,6 +96,7 @@ class SkillDescriptor:
             "path": self.path,
             "contentHash": self.content_hash or None,
             "supportingFiles": [item.to_dict() for item in self.supporting_files],
+            "requires": {"bins": list(self.required_bins), "env": list(self.required_env)},
         }
 
     def materialize(self) -> SkillDescriptor:
@@ -99,7 +106,7 @@ class SkillDescriptor:
             return self
         path = Path(self.body_path)
         root = Path(self.root_path) if self.root_path is not None else path.parent
-        if path.is_symlink() or path.parent.is_symlink():
+        if _path_has_link(root) or _path_has_link(path):
             raise ValueError("symlinked skills are not supported")
         resolved = path.resolve()
         try:
@@ -111,7 +118,7 @@ class SkillDescriptor:
             raise ValueError("skill changed after discovery")
         for resource in self.supporting_files:
             resource_path = root / resource.path
-            if resource_path.is_symlink() or resource_path.parent.is_symlink():
+            if _path_has_link(resource_path):
                 raise ValueError("symlinked skill resource is not supported")
             resolved_resource = resource_path.resolve()
             try:
@@ -165,7 +172,11 @@ class SkillRegistry:
     def discover(cls, root: str | Path, *, source: str = "project") -> SkillRegistry:
         if source not in _SOURCE_TRUST_LEVELS:
             raise ValueError(f"unsupported skill source: {source}")
-        root_path = Path(root).resolve()
+        configured_root = Path(root).absolute()
+        if _path_has_link(configured_root):
+            return cls(diagnostics=({"path": str(configured_root), "source": source,
+                "error": "linked skill discovery root is not supported"},))
+        root_path = configured_root.resolve()
         if not root_path.exists() or not root_path.is_dir():
             return cls()
         candidates = (
@@ -176,7 +187,7 @@ class SkillRegistry:
         loaded: list[SkillDescriptor] = []
         diagnostics: list[dict[str, object]] = []
         for path in candidates:
-            if path.is_symlink() or path.parent.is_symlink():
+            if _is_link(path) or _is_link(path.parent):
                 diagnostics.append({
                     "path": str(path),
                     "source": source,
@@ -191,6 +202,7 @@ class SkillRegistry:
                         root_path=root_path,
                         source=source,
                         trust_level=_SOURCE_TRUST_LEVELS[source],
+                        discovery_root=configured_root,
                     )
                 )
             except (OSError, UnicodeError, ValueError) as error:
@@ -219,14 +231,17 @@ class SkillRegistry:
             registry = cls.discover(root, source=source)
             loaded.extend(registry.skills)
             diagnostics.extend(registry.diagnostics)
-        try:
-            return cls(loaded, diagnostics=diagnostics)
-        except ValueError as error:
-            diagnostics.append({"error": str(error)})
-            unique: dict[str, SkillDescriptor] = {}
-            for skill in loaded:
-                unique.setdefault(skill.skill_id, skill)
-            return cls(unique.values(), diagnostics=diagnostics)
+        # Root order breaks ties within one source (workspace before legacy).
+        # A role's customization takes precedence over project and bundled text.
+        priority = {"role": 0, "project": 1, "installed": 2, "external": 3, "builtin": 4}
+        unique: dict[str, SkillDescriptor] = {}
+        for skill in sorted(loaded, key=lambda item: priority[item.source]):
+            if skill.skill_id in unique:
+                diagnostics.append({"skillId": skill.skill_id, "status": "shadowed", "source": skill.source,
+                                    "version": skill.version, "selectedSource": unique[skill.skill_id].source})
+            else:
+                unique[skill.skill_id] = skill
+        return cls(unique.values(), diagnostics=diagnostics)
 
     def resolve(
         self,
@@ -235,8 +250,12 @@ class SkillRegistry:
         explicit_ids: set[str] | frozenset[str] = frozenset(),
         available_tools: set[str] | frozenset[str] | None = None,
         enabled_tools: set[str] | frozenset[str] | None = None,
+        available_env: set[str] | frozenset[str] = frozenset(),
+        dependency_check: Callable[[SkillDescriptor, str], str | None] | None = None,
     ) -> SkillResolution:
+        explicit_ids = set(explicit_ids) | set(re.findall(r"(?<![\w$])\$([a-z0-9][a-z0-9._-]*)", prompt))
         selected: list[SkillDescriptor] = []
+        dependency_sections: list[str] = []
         diagnostics = [dict(item) for item in self.diagnostics]
         unknown_ids = set(explicit_ids) - set(self._skills)
         diagnostics.extend(
@@ -260,6 +279,26 @@ class SkillRegistry:
                 })
                 continue
             if not _is_active(skill, prompt=prompt, explicit_ids=explicit_ids):
+                continue
+            reasons = {name: dependency_check(skill, name) if dependency_check is not None
+                       else None if shutil.which(name) is not None else 'command is unavailable'
+                       for name in skill.required_bins}
+            missing_bins = [name for name, reason in reasons.items() if reason is not None]
+            # Only names explicitly exposed by the host count. Shell's minimal
+            # environment does not inherit arbitrary backend credentials.
+            missing_env = [name for name in skill.required_env if name not in available_env]
+            if missing_bins or missing_env:
+                diagnostic: dict[str, object] = {
+                    "skillId": skill.skill_id,
+                    "status": "unavailable",
+                    "error": "skill dependencies are unavailable",
+                    "missingBins": missing_bins,
+                    "missingEnv": missing_env,
+                }
+                diagnostics.append(diagnostic)
+                if dependency_check is not None:
+                    diagnostic['dependencyReasons'] = {name: reasons[name] for name in missing_bins}
+                dependency_sections.append("Skill unavailable: " + json.dumps(diagnostic, ensure_ascii=False))
                 continue
             allowed_tools: list[str] = []
             for name in skill.tools:
@@ -296,12 +335,12 @@ class SkillRegistry:
             )
         return SkillResolution(
             skills=tuple(selected),
-            prompt_sections=tuple(skill.body for skill in selected if skill.body),
-            diagnostics=tuple(MappingProxyType(item) for item in diagnostics),
+            prompt_sections=tuple(skill.body for skill in selected if skill.body) + tuple(dependency_sections),
+            diagnostics=tuple(MappingProxyType({key: _freeze_metadata(value) for key, value in item.items()}) for item in diagnostics),
         )
 
 
-def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str) -> SkillDescriptor:
+def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str, discovery_root: Path) -> SkillDescriptor:
     resolved = path.resolve()
     if resolved.parent != root_path and resolved.parent.parent != root_path:
         raise ValueError("skill path escapes discovery root")
@@ -338,8 +377,10 @@ def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str) 
         body="",
         trust_level=trust_level,
         body_path=str(resolved),
-        root_path=str(root_path),
+        root_path=str(discovery_root),
         supporting_files=supporting_files,
+        required_bins=_dependencies(front_matter.get("requires.bins", []), environment=False),
+        required_env=_dependencies(front_matter.get("requires.env", []), environment=True),
     )
 
 
@@ -408,14 +449,14 @@ def _discover_supporting_files(
     trust_level: str,
 ) -> tuple[SkillResourceDescriptor, ...]:
     resources: list[SkillResourceDescriptor] = []
-    for directory_name in ("references", "assets"):
+    for directory_name in ("references", "assets", "scripts"):
         directory = skill_directory / directory_name
         if not directory.exists():
             continue
-        if directory.is_symlink():
+        if _is_link(directory):
             raise ValueError("symlinked skill resource directory is not supported")
         for candidate in sorted(directory.rglob("*")):
-            if candidate.is_symlink() or candidate.parent.is_symlink():
+            if _is_link(candidate) or _is_link(candidate.parent):
                 raise ValueError("symlinked skill resource is not supported")
             if not candidate.is_file():
                 continue
@@ -433,6 +474,22 @@ def _validate_relative_path(value: str, label: str) -> None:
     path = Path(value)
     if not value.strip() or path.is_absolute() or ".." in path.parts:
         raise ValueError(f"{label} must stay within the discovery root")
+
+
+def _is_link(path: Path) -> bool:
+    return path.is_symlink() or path.is_junction()
+
+
+def _path_has_link(path: Path) -> bool:
+    return any(_is_link(part) for part in (path, *path.parents))
+
+
+def _freeze_metadata(value: object) -> object:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze_metadata(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_metadata(item) for item in value)
+    return value
 
 
 def _split_front_matter(raw: str) -> tuple[dict[str, object], str]:
@@ -465,11 +522,11 @@ def _parse_front_matter(lines: list[str]) -> dict[str, object]:
             raise ValueError(f"invalid front matter line: {raw_line}")
         key, raw_value = line.split(":", 1)
         key = key.strip()
-        if key not in {"id", "version", "description", "tools", "activation"}:
+        if key not in {"id", "version", "description", "tools", "activation", "requires.bins", "requires.env"}:
             raise ValueError(f"unsupported front matter field: {key}")
         if key in values:
             raise ValueError(f"duplicate front matter field: {key}")
-        if key == "tools":
+        if key in {"tools", "requires.bins", "requires.env"}:
             inline = raw_value.strip()
             if not inline:
                 values[key] = []
@@ -537,6 +594,17 @@ def _tools(value: object) -> tuple[str, ...]:
             raise ValueError(f"duplicate tool reference: {name}")
         cleaned.append(name)
     return tuple(cleaned)
+
+
+def _dependencies(value: object, *, environment: bool) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)) or len(value) > 32:
+        raise ValueError("skill dependencies must be a list of at most 32 names")
+    pattern = r"[A-Za-z_][A-Za-z0-9_]{0,127}" if environment else r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}"
+    if any(not isinstance(item, str) or re.fullmatch(pattern, item) is None for item in value):
+        raise ValueError("skill dependencies must contain plain command or environment names")
+    if len(set(value)) != len(value):
+        raise ValueError("duplicate skill dependency")
+    return tuple(value)
 
 
 def _front_matter_metadata(path: Path) -> tuple[str | None, str | None]:

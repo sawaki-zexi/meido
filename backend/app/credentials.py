@@ -23,7 +23,8 @@ class SystemCredentialStore:
     # generic credential blob. Leave headroom for backend encoding details.
     _CHUNK_SIZE_UNITS = 1000
 
-    def __init__(self, service: str | None = None) -> None:
+    def __init__(self, service: str | None = None, *, strict_cleanup: bool = False) -> None:
+        self._strict_cleanup = strict_cleanup
         if service:
             self._service = service
         else:
@@ -85,6 +86,25 @@ class SystemCredentialStore:
                 "清理旧的系统凭据分片失败：%s", type(error).__name__
             )
 
+    def _delete_password_strict(self, keyring: Any, key: str) -> None:
+        try:
+            keyring.delete_password(self._service, key)
+        except keyring.errors.PasswordDeleteError:
+            # Backends can use this error both for an absent key and a failed
+            # deletion. Only verified absence is a successful cleanup.
+            pass
+        if keyring.get_password(self._service, key) is not None:
+            raise RuntimeError("系统凭据清理未完成")
+
+    def _clear_strict(self, keyring: Any, key: str, metadata: tuple[str, int, int] | None) -> None:
+        if metadata is not None:
+            generation, count, _ = metadata
+            for index in range(count):
+                self._delete_password_strict(keyring, self._chunk_key(key, generation, index))
+        # Keep the manifest until every chunk is verifiably absent, including
+        # chunks already removed by an earlier, partially successful attempt.
+        self._delete_password_strict(keyring, key)
+
     def get(self, key: str) -> str:
         try:
             import keyring  # type: ignore[import-not-found]
@@ -115,6 +135,9 @@ class SystemCredentialStore:
             old_value = keyring.get_password(self._service, key) or ""
             old_metadata = self._chunk_metadata(old_value)
             if not value:
+                if self._strict_cleanup:
+                    self._clear_strict(keyring, key, old_metadata)
+                    return
                 try:
                     keyring.delete_password(self._service, key)
                 except keyring.errors.PasswordDeleteError:
@@ -123,6 +146,11 @@ class SystemCredentialStore:
                     self._delete_chunks_best_effort(keyring, key, old_metadata)
                 return
 
+            if self._strict_cleanup and old_metadata is not None:
+                # A strict caller must not overwrite the only manifest for a
+                # previous generation whose chunks have not been deleted.
+                self._clear_strict(keyring, key, old_metadata)
+                old_metadata = None
             chunks = self._split_value(value)
             if len(chunks) == 1:
                 keyring.set_password(self._service, key, value)
@@ -132,13 +160,21 @@ class SystemCredentialStore:
 
             generation = uuid.uuid4().hex
             total_units = self._utf16_units(value)
+            marker = f"{self._CHUNK_MARKER}{generation}:{len(chunks)}:{total_units}"
+            if self._strict_cleanup:
+                # The MCP cleanup queue owns this primary key before writing.
+                # Publish its manifest first so partial/uncertain chunk writes
+                # still have a durable address for a later strict clear.
+                keyring.set_password(self._service, key, marker)
+                for index, chunk in enumerate(chunks):
+                    keyring.set_password(self._service, self._chunk_key(key, generation, index), chunk)
+                return
             staged_keys: list[str] = []
             try:
                 for index, chunk in enumerate(chunks):
                     chunk_key = self._chunk_key(key, generation, index)
                     keyring.set_password(self._service, chunk_key, chunk)
                     staged_keys.append(chunk_key)
-                marker = f"{self._CHUNK_MARKER}{generation}:{len(chunks)}:{total_units}"
                 keyring.set_password(self._service, key, marker)
             except Exception:
                 for chunk_key in staged_keys:

@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳，待实现。批准时间：2026-10-15。
+已采纳。批准时间：2026-10-15。#149 的后台 Shell、#157 的独立 spawn 与持久完成交付、#158 的通用调度均已完成两轴独立复核并进入总 PR #162 集成分支；Coding执行器具体方案于2026-10-16获批（见ADR-0017）；#174–#176本地实现及两轴复核已完成并进入总PR #162，相关实现已由准确312b7f1两套完整CI覆盖。上述功能均未合入main，真实认证、模型消费及发布仍另验。
 
 ## 背景
 
@@ -27,4 +27,6 @@
 - [完整复刻规格](../specs/shiori-tool-parity-spec.md)，D02。
 - [ADR-0003](0003-tau-inspired-agent-runtime-boundary.md)、[ADR-0004](0004-role-scoped-shell-tool-boundary.md)。
 
-本文是已批准目标决定，不表示代码已经实现或验收。
+当前实现与验收边界见 [后台 Shell Reference](../reference/owned-background-shell.md)；本决定不表示全部后续执行器已经完成。
+
+独立 spawn 的执行、有限工具子集和无工具完成整理见[子任务契约](../reference/owned-subagents.md)，同步不获取普通角色锁，后台完成阶段才协调原角色；#157 已在两轴审查与修复复核后进入总 PR #162 集成分支，仍未合入 main。

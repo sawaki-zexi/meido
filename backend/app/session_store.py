@@ -1,6 +1,8 @@
 import sqlite3
 import uuid
 import json
+import hashlib
+from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,6 +70,23 @@ def _runtime_assistant_metadata(metadata: dict[str, Any]) -> dict[str, object]:
         "runtimePlaceholder",
     }
     return {key: value for key, value in metadata.items() if key not in internal_keys}
+
+
+def _runtime_assistant_message(stored: Message) -> AssistantMessage:
+    content = stored.content
+    if stored.messageType == "desktop_push":
+        raw_attachments = stored.metadata.get("attachments", [])
+        attachments = raw_attachments if isinstance(raw_attachments, list) else []
+        labels = [f"{item.get('name', '附件')}（attachment_id={item['id']}）"
+                  for item in attachments if isinstance(item, dict) and item.get('id')]
+        if labels:
+            content = "\n".join(filter(None, (content, "已推送附件：" + "；".join(labels))))
+    return AssistantMessage(content, metadata=_runtime_assistant_metadata(stored.metadata),
+                            timestamp=_timestamp(stored.metadata))
+
+
+class AttachmentConflict(ValueError):
+    """The explicitly selected message/image no longer has its original slot."""
 
 
 class SessionStore:
@@ -163,6 +182,409 @@ class SessionStore:
             )
             connection.execute("UPDATE sessions SET updated_at = ? WHERE session_key = ?", (now, session_key))
         return Message(id=message_id, sessionKey=session_key, sequence=sequence, role=role, content=content, status=status, createdAt=datetime.fromisoformat(now), messageType=message_type, toolCallId=tool_call_id, toolName=tool_name, toolArguments=tool_arguments, toolResult=tool_result, isError=is_error, runId=run_id, metadata=metadata or {})
+
+    def append_task_completion(self, role_id: str, session_key: str, task_id: str, content: str, *, task_status: str) -> Message:
+        """Append one clearly internal completion to an existing original session.
+
+        This application boundary never creates a session or a user turn and
+        cannot drive owner memory maintenance. The deterministic ID closes the
+        crash window between this database and the task outbox acknowledgement.
+        """
+        message_id = f"{session_key}:task-completion:{task_id}"
+        with sqlite3.connect(self.database_path, timeout=.05) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            session = connection.execute("SELECT role_id FROM sessions WHERE session_key=?", (session_key,)).fetchone()
+            if session is None and session_key.startswith("thread:"):
+                session = connection.execute("SELECT role_id FROM channel_threads WHERE session_key=?", (session_key,)).fetchone()
+            if session is None or session[0] != role_id:
+                raise PermissionError("original task session no longer exists")
+            existing = connection.execute("SELECT message_id,session_key,sequence,role,content,status,created_at,message_type,tool_call_id,tool_name,tool_arguments_json,tool_result_json,is_error,run_id,metadata_json FROM messages WHERE message_id=?", (message_id,)).fetchone()
+            if existing is not None:
+                return self._message(existing)
+            sequence = connection.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE session_key=?", (session_key,)).fetchone()[0]
+            now = _now()
+            metadata = {"internalEvent": "spawn_completion", "taskId": task_id, "taskStatus": task_status}
+            channel = connection.execute("SELECT channel FROM channel_threads WHERE session_key=? AND role_id=?", (session_key, role_id)).fetchone() if session_key.startswith("thread:") else None
+            if session_key.startswith("thread:") and channel is None:
+                raise PermissionError("original task channel no longer exists")
+            if channel is not None:
+                # The very first durable row must already be excluded from
+                # delivered history, including a crash before the outbox ack.
+                metadata.update({"channel": channel[0], "deliveryStatus": "pending"})
+            connection.execute("INSERT INTO messages(message_id,session_key,sequence,role,content,status,created_at,message_type,metadata_json) VALUES(?,?,?,'assistant',?,'completed',?,'internal_completion',?)",
+                               (message_id, session_key, sequence, content, now, _dump(metadata)))
+            connection.execute("UPDATE sessions SET updated_at=? WHERE session_key=?", (now, session_key))
+            if session_key.startswith("thread:"):
+                connection.execute("UPDATE channel_threads SET last_activity=? WHERE session_key=?", (now, session_key))
+        return Message(id=message_id, sessionKey=session_key, sequence=sequence, role="assistant", content=content,
+                       status="completed", createdAt=datetime.fromisoformat(now), messageType="internal_completion", metadata=metadata)
+
+    def reconcile_task_completion(self, role_id: str, session_key: str, task_id: str, *,
+                                  delivery_status: str, delivery_attempt_id: object) -> None:
+        """Repair an existing channel completion without a long event-loop lock wait."""
+        if delivery_status not in {"pending", "sent", "failed", "uncertain"}:
+            raise ValueError("invalid task delivery status")
+        message_id = f"{session_key}:task-completion:{task_id}"
+        with sqlite3.connect(self.database_path, timeout=.05) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT m.metadata_json,t.channel FROM messages m JOIN channel_threads t ON t.session_key=m.session_key "
+                "WHERE m.message_id=? AND m.session_key=? AND t.role_id=? AND m.role='assistant' AND m.message_type='internal_completion'",
+                (message_id, session_key, role_id),
+            ).fetchone()
+            if row is None:
+                return
+            metadata = {**(_load_dict(row[0]) or {}), "channel": row[1], "deliveryStatus": delivery_status,
+                        "deliveryAttemptId": delivery_attempt_id}
+            connection.execute("UPDATE messages SET metadata_json=? WHERE message_id=?", (_dump(metadata), message_id))
+
+    def append_generation_attachments_once(self, role_id: str, session_key: str, run_id: str,
+                                          message_id: str, attempt_id: str, attachments: list[dict[str, object]], *,
+                                          connection: sqlite3.Connection, authorized: Callable[[], bool]) -> Message:
+        """Consume generated media with its business outbox's existing transaction."""
+        if not connection.in_transaction:
+            raise ValueError("generation consumption requires an owned transaction")
+        database = connection.execute("PRAGMA database_list").fetchone()
+        if database is None or Path(database[2]).resolve() != Path(self.database_path).resolve():
+            raise ValueError("generation transaction uses a different database")
+        if not attempt_id or len(attempt_id) > 128 or not 1 <= len(attachments) <= 4:
+            raise ValueError("invalid generation attachment claim")
+        ids = []
+        for item in attachments:
+            identifier = item.get("id")
+            if (not isinstance(identifier, str) or not identifier or identifier in ids
+                    or not str(item.get("mediaType", "")).startswith("image/")
+                    or any(key in item for key in ("path", "data", "base64", "data_base64"))):
+                raise ValueError("generation requires public image attachment references")
+            ids.append(identifier)
+        owner = connection.execute("SELECT role_id FROM sessions WHERE session_key=?", (session_key,)).fetchone()
+        if owner is None and session_key.startswith("thread:"):
+            owner = connection.execute("SELECT role_id FROM channel_threads WHERE session_key=?", (session_key,)).fetchone()
+        run = connection.execute("SELECT role_id,session_key,status FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
+        if (owner is None or owner[0] != role_id or run is None
+                or (run[0], run[1], run[2]) != (role_id, session_key, "completed")):
+            raise PermissionError("generation reply does not belong to its completed source run")
+        columns = 'message_id,session_key,sequence,role,content,status,created_at,message_type,tool_call_id,tool_name,tool_arguments_json,tool_result_json,is_error,run_id,metadata_json'
+        row = connection.execute(f"SELECT {columns} FROM messages WHERE message_id=?", (message_id,)).fetchone()
+        if row is None:
+            raise PermissionError("generation final reply is unavailable")
+        message = self._message(row)
+        if ((message.sessionKey, message.runId, message.role, message.status, message.messageType)
+                != (session_key, run_id, "assistant", "completed", "text")
+                or not connection.execute("SELECT 1 FROM messages WHERE run_id=? AND role='user' AND message_type='text'",
+                                          (run_id,)).fetchone()):
+            raise PermissionError("generation requires the original final assistant reply")
+        metadata = dict(message.metadata)
+        consumed = metadata.get("generationAttemptIds", [])
+        prior = metadata.get("attachments", [])
+        if (not isinstance(consumed, list) or any(not isinstance(value, str) for value in consumed)
+                or not isinstance(prior, list) or any(not isinstance(item, dict) for item in prior)):
+            raise ValueError("generation reply has invalid attachment metadata")
+        if not authorized():
+            raise PermissionError("generation delivery permission was revoked")
+        if attempt_id in consumed:
+            return message
+        prior_ids = {item.get("id") for item in prior if isinstance(item.get("id"), str)}
+        metadata["attachments"] = [*prior, *(item for item in attachments if item["id"] not in prior_ids)]
+        metadata["generationAttemptIds"] = [*consumed, attempt_id]
+        if not authorized():
+            raise PermissionError("generation delivery permission was revoked")
+        connection.execute("UPDATE messages SET metadata_json=? WHERE message_id=?", (_dump(metadata), message_id))
+        return message.model_copy(update={"metadata": metadata})
+
+    def append_autonomy_message_once(self, role_id: str, tick_id: str, intent_id: str, content: str, *,
+                                     connection: sqlite3.Connection, authorized: Callable[[], bool],
+                                     mood: str, thought: str, mode: str = 'active_decision',
+                                     attachments: tuple[dict[str, object], ...] = ()) -> Message:
+        """The autonomy outbox owns this transaction and canonical receipt."""
+        if not connection.in_transaction:
+            raise ValueError("autonomous delivery requires an owned transaction")
+        database = connection.execute("PRAGMA database_list").fetchone()
+        if database is None or Path(database[2]).resolve() != Path(self.database_path).resolve():
+            raise ValueError("autonomous delivery uses a different database")
+        session_key = f"role:{role_id}"
+        message_id = f"{session_key}:autonomy:{intent_id}"
+        if mode not in {'active_decision', 'drift'}:
+            raise ValueError('invalid autonomous delivery mode')
+        metadata: dict[str, Any] = {"internalEvent": mode, "autonomyTickId": tick_id,
+                    "autonomyIntentId": intent_id, "channel": "desktop", "deliveryStatus": "sent",
+                    "mood": mood, "thought": thought}
+        if attachments:
+            metadata['attachments'] = list(attachments)
+        result = self._append_owned_message_once(connection, role_id, session_key, message_id, content,
+            message_type="internal_completion", metadata=metadata, authorized=authorized, create_session=True)
+        if result.content != content or result.metadata != metadata or result.messageType != "internal_completion":
+            raise ValueError("autonomous desktop receipt conflicts with its original intent")
+        return result
+
+    def replace_attachment_once(self, role_id: str, session_key: str, message_id: str,
+                                expected_attachment_id: str, new_attachment: dict[str, object], attempt_id: str, *,
+                                connection: sqlite3.Connection, authorized: Callable[[], bool]) -> Message:
+        """Replace one image while its canonical generation outbox owns the transaction."""
+        if not connection.in_transaction:
+            raise ValueError('generation replacement requires an owned transaction')
+        database = connection.execute('PRAGMA database_list').fetchone()
+        if database is None or Path(database[2]).resolve() != Path(self.database_path).resolve():
+            raise ValueError('generation replacement uses a different database')
+        size = new_attachment.get('size')
+        if (not attempt_id or len(attempt_id) > 128 or not expected_attachment_id
+                or not isinstance(new_attachment.get('id'), str) or not new_attachment['id']
+                or set(new_attachment) - {'id', 'name', 'mediaType', 'size', 'kind'}
+                or new_attachment.get('mediaType') not in {'image/png', 'image/jpeg', 'image/webp'}
+                or not isinstance(new_attachment.get('name'), str)
+                or new_attachment.get('kind', 'image') != 'image'
+                or not isinstance(size, int) or isinstance(size, bool) or size < 1):
+            raise ValueError('generation replacement requires public image references')
+        if not authorized():
+            raise PermissionError('generation replacement permission was revoked')
+        owner = connection.execute('SELECT role_id FROM sessions WHERE session_key=?', (session_key,)).fetchone()
+        if owner is None and session_key.startswith('thread:'):
+            owner = connection.execute('SELECT role_id FROM channel_threads WHERE session_key=?', (session_key,)).fetchone()
+        columns = 'message_id,session_key,sequence,role,content,status,created_at,message_type,tool_call_id,tool_name,tool_arguments_json,tool_result_json,is_error,run_id,metadata_json'
+        row = connection.execute(f'SELECT {columns} FROM messages WHERE message_id=?', (message_id,)).fetchone()
+        if owner is None or owner[0] != role_id:
+            raise PermissionError('original generation message is unavailable')
+        if row is None:
+            raise AttachmentConflict('original generation message was removed')
+        message = self._message(row)
+        if ((message.sessionKey, message.role, message.status) != (session_key, 'assistant', 'completed')
+                or message.messageType not in {'text', 'internal_completion'}):
+            raise PermissionError('generation replacement requires a final assistant message')
+        if message.messageType == 'text':
+            run = connection.execute('SELECT role_id,session_key,status FROM agent_runs WHERE run_id=?', (message.runId,)).fetchone()
+            if (run is None or tuple(run) != (role_id, session_key, 'completed')
+                    or not connection.execute("SELECT 1 FROM messages WHERE run_id=? AND role='user' AND message_type='text'", (message.runId,)).fetchone()):
+                raise PermissionError('generation replacement requires the completed source run')
+        elif message.metadata.get('internalEvent') != 'novelai_generation':
+            raise PermissionError('generation replacement requires a generated completion')
+        metadata = dict(message.metadata)
+        prior, consumed = metadata.get('attachments', []), metadata.get('generationAttemptIds', [])
+        receipts = metadata.get('generationReplacementReceipts', {})
+        if (not isinstance(prior, list) or any(not isinstance(item, dict) for item in prior)
+                or not isinstance(consumed, list) or any(not isinstance(value, str) for value in consumed)
+                or not isinstance(receipts, dict)):
+            raise ValueError('generation message has invalid attachment metadata')
+        fingerprint = hashlib.sha256(json.dumps([expected_attachment_id, new_attachment],
+            ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        if attempt_id in receipts:
+            if receipts[attempt_id] != fingerprint:
+                raise ValueError('generation replacement conflicts with its original receipt')
+            if not authorized():
+                raise PermissionError('generation replacement permission was revoked')
+            return message
+        slots = [index for index, item in enumerate(prior) if item.get('id') == expected_attachment_id]
+        if (len(slots) != 1 or not str(prior[slots[0]].get('mediaType', '')).startswith('image/')
+                or any(item.get('id') == new_attachment['id'] for item in prior)):
+            raise AttachmentConflict('selected generation attachment has changed')
+        metadata['attachments'] = [new_attachment if index == slots[0] else item for index, item in enumerate(prior)]
+        metadata['generationAttemptIds'] = [*consumed, *([] if attempt_id in consumed else [attempt_id])]
+        metadata['generationReplacementReceipts'] = {**receipts, attempt_id: fingerprint}
+        if not authorized():
+            raise PermissionError('generation replacement permission was revoked')
+        connection.execute('UPDATE messages SET metadata_json=? WHERE message_id=?', (_dump(metadata), message_id))
+        return message.model_copy(update={'metadata': metadata})
+
+    def append_desktop_push_once(self, role_id: str, source_run_id: str, call_id: str, content: str, *,
+                                 attachments: list[dict[str, object]], authorized: Callable[[], bool]) -> Message:
+        """Persist a role's own message independently of the parent run outcome."""
+        session_key = f"role:{role_id}"
+        event = hashlib.sha256(json.dumps([role_id, source_run_id, call_id]).encode()).hexdigest()
+        message_id = f"{session_key}:desktop-push:{event}"
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            metadata = {"internalEvent": "desktop_push", "channel": "desktop", "deliveryStatus": "sent",
+                        "sourceRunId": source_run_id, "sourceToolCallId": call_id, "attachments": attachments}
+            return self._append_owned_message_once(connection, role_id, session_key, message_id, content,
+                message_type='desktop_push', metadata=metadata, authorized=authorized, create_session=True)
+
+    def append_generation_completion_once(self, role_id: str, session_key: str, attempt_id: str,
+                                          attachments: list[dict[str, object]], *,
+                                          connection: sqlite3.Connection, authorized: Callable[[], bool],
+                                          status: str = 'succeeded', channel: str = 'desktop',
+                                          delivery_status: str = 'sent') -> Message:
+        """Publish owned media in its existing original session without a human run."""
+        if not connection.in_transaction:
+            raise ValueError('generation completion requires an owned transaction')
+        database = connection.execute('PRAGMA database_list').fetchone()
+        if database is None or Path(database[2]).resolve() != Path(self.database_path).resolve():
+            raise ValueError('generation transaction uses a different database')
+        if (not attempt_id or len(attempt_id) > 128 or status != 'succeeded'
+                or delivery_status not in {'pending', 'sent', 'failed', 'uncertain'}
+                or not 1 <= len(attachments) <= 16):
+            raise ValueError('invalid generation completion source or media')
+        if session_key == f'role:{role_id}':
+            if channel != 'desktop' or delivery_status != 'sent':
+                raise ValueError('invalid desktop generation completion')
+        elif session_key.startswith('thread:'):
+            thread = connection.execute('SELECT role_id,channel FROM channel_threads WHERE session_key=?', (session_key,)).fetchone()
+            if thread is None or (thread[0], thread[1]) != (role_id, channel):
+                raise PermissionError('original generation channel is unavailable')
+        else:
+            raise ValueError('invalid original generation session')
+        ids = set()
+        for item in attachments:
+            identifier = item.get('id')
+            size = item.get('size')
+            if (not isinstance(identifier, str) or not identifier or identifier in ids
+                    or set(item) - {'id', 'name', 'mediaType', 'size', 'kind'}
+                    or item.get('mediaType') not in {'image/png', 'image/jpeg', 'image/webp'}
+                    or not isinstance(size, int) or isinstance(size, bool) or size < 1):
+                raise ValueError('generation completion requires public image references')
+            ids.add(identifier)
+        # The owner of this exact business transaction also holds its admission
+        # lock; the callback rechecks immediately before the shared insert seam.
+        if not authorized():
+            raise PermissionError('generation completion permission was revoked')
+        metadata = {'internalEvent': 'novelai_generation', 'channel': channel,
+                    'deliveryStatus': delivery_status, 'generationAttemptIds': [attempt_id], 'attachments': attachments}
+        return self._append_owned_message_once(connection, role_id, session_key,
+            f'{session_key}:generation:{attempt_id}', '图片已生成', message_type='internal_completion',
+            metadata=metadata, authorized=authorized, create_session=False)
+
+    def _append_owned_message_once(self, connection, role_id, session_key, message_id, content, *,
+                                   message_type, metadata, authorized, create_session=False):
+        """Called inside the owning application's write transaction."""
+        if not authorized():
+            raise PermissionError('internal delivery permission was revoked')
+        columns = 'message_id,session_key,sequence,role,content,status,created_at,message_type,tool_call_id,tool_name,tool_arguments_json,tool_result_json,is_error,run_id,metadata_json'
+        now = _now()
+        if create_session:
+            connection.execute('INSERT OR IGNORE INTO sessions(session_key,role_id,created_at,updated_at) VALUES(?,?,?,?)',
+                               (session_key, role_id, now, now))
+        session = connection.execute('SELECT role_id FROM sessions WHERE session_key=?', (session_key,)).fetchone()
+        if session is None and session_key.startswith('thread:'):
+            session = connection.execute('SELECT role_id FROM channel_threads WHERE session_key=?', (session_key,)).fetchone()
+        if session is None or session[0] != role_id:
+            raise PermissionError('original delivery session is unavailable')
+        existing = connection.execute(f'SELECT {columns} FROM messages WHERE message_id=?', (message_id,)).fetchone()
+        if existing is not None:
+            return self._message(existing)
+        sequence = connection.execute('SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE session_key=?', (session_key,)).fetchone()[0]
+        if not authorized():
+            raise PermissionError('internal delivery permission was revoked')
+        connection.execute("INSERT INTO messages(message_id,session_key,sequence,role,content,status,created_at,message_type,metadata_json) VALUES(?,?,?,'assistant',?,'completed',?,?,?)",
+                           (message_id, session_key, sequence, content, now, message_type, _dump(metadata)))
+        connection.execute('UPDATE sessions SET updated_at=? WHERE session_key=?', (now, session_key))
+        if session_key.startswith('thread:'):
+            connection.execute('UPDATE channel_threads SET last_activity=? WHERE session_key=?', (now, session_key))
+        stored = connection.execute(f'SELECT {columns} FROM messages WHERE message_id=?', (message_id,)).fetchone()
+        return self._message(stored)
+
+    def reconcile_generation_receipt(self, role_id, session_key, message_id, attempt_id, receipt, *,
+                                     connection, authorized):
+        """Project a durable media receipt in its outbox owner's transaction."""
+        if not connection.in_transaction:
+            raise ValueError('generation receipt requires an owned transaction')
+        database = connection.execute('PRAGMA database_list').fetchone()
+        if database is None or Path(database[2]).resolve() != Path(self.database_path).resolve():
+            raise ValueError('generation receipt uses a different database')
+        if set(receipt) != {'status', 'deliveryAttemptId', 'platformMessageId'} or receipt['status'] not in {'pending', 'sent', 'failed', 'uncertain'}:
+            raise ValueError('invalid generation receipt')
+        columns = 'message_id,session_key,sequence,role,content,status,created_at,message_type,tool_call_id,tool_name,tool_arguments_json,tool_result_json,is_error,run_id,metadata_json'
+        row = connection.execute(f'SELECT {columns} FROM messages WHERE message_id=? AND session_key=?', (message_id, session_key)).fetchone()
+        if row is None:
+            return None
+        message = self._message(row)
+        owner = connection.execute('SELECT role_id FROM channel_threads WHERE session_key=?', (session_key,)).fetchone()
+        if (owner is None or owner[0] != role_id or message.role != 'assistant'
+                or message.messageType not in {'text', 'internal_completion'}
+                or attempt_id not in message.metadata.get('generationAttemptIds', [])):
+            raise PermissionError('generation receipt does not belong to its original media message')
+        metadata = {**message.metadata, 'deliveryStatus': receipt['status'],
+            'deliveryAttemptId': receipt['deliveryAttemptId'], 'platformMessageId': receipt['platformMessageId']}
+        if receipt['status'] == 'sent':
+            metadata.pop('deliveryError', None)
+        if not authorized():
+            raise PermissionError('generation receipt projection was revoked')
+        connection.execute('UPDATE messages SET metadata_json=?,status=? WHERE message_id=?',
+            (_dump(metadata), 'completed' if receipt['status'] == 'sent' else 'failed', message_id))
+        return self._message(connection.execute(f'SELECT {columns} FROM messages WHERE message_id=?', (message_id,)).fetchone())
+
+    def append_schedule_message_once(self, role_id, session_key, schedule_id, occurrence_id, content, *,
+                                      authorized, connection, channel='desktop', delivery_status='sent', attempt_id=None):
+        """Schedule's own transaction includes both its cancel gate and receipt."""
+        message_id = f'{session_key}:schedule:{occurrence_id}'
+        metadata = {'internalEvent': 'schedule', 'scheduleId': schedule_id, 'occurrenceId': occurrence_id,
+                    'channel': channel, 'deliveryStatus': delivery_status, 'deliveryAttemptId': attempt_id}
+        message = self._append_owned_message_once(connection, role_id, session_key, message_id, content,
+            message_type='internal_completion', metadata=metadata, authorized=authorized)
+        if message.metadata != metadata:
+            connection.execute('UPDATE messages SET metadata_json=? WHERE message_id=?', (_dump(metadata), message_id))
+        return message
+
+    def append_coding_completion_once(self, role_id, session_key, task_id, attempt_id, content, *,
+                                      authorized, connection, delivery_status='pending', delivery_attempt_id=None,
+                                      task_status='unknown'):
+        """Coding outbox and its existing-session message share one transaction."""
+        if delivery_status not in {'pending', 'sent', 'failed', 'uncertain'}:
+            raise ValueError('invalid coding delivery status')
+        if not task_id or not attempt_id or len(task_id) > 100 or len(attempt_id) > 100:
+            raise ValueError('invalid coding completion identity')
+        database = connection.execute('PRAGMA database_list').fetchone()
+        if database is None or Path(database[2]).resolve() != Path(self.database_path).resolve():
+            raise ValueError('coding completion requires its canonical session database')
+        channel = 'desktop'
+        if session_key.startswith('thread:'):
+            row = connection.execute('SELECT channel FROM channel_threads WHERE session_key=? AND role_id=?',
+                                     (session_key, role_id)).fetchone()
+            if row is None:
+                raise PermissionError('original coding thread no longer exists')
+            channel = row[0]
+        elif session_key != f'role:{role_id}':
+            raise PermissionError('original coding desktop session does not match role')
+        message_id = f'{session_key}:coding-completion:{attempt_id}'
+        metadata = {'internalEvent': 'coding_completion', 'codingTaskId': task_id, 'attemptId': attempt_id,
+                    'taskStatus': task_status, 'channel': channel, 'deliveryStatus': delivery_status,
+                    'deliveryAttemptId': delivery_attempt_id}
+        message = self._append_owned_message_once(connection, role_id, session_key, message_id, content,
+            message_type='internal_completion', metadata=metadata, authorized=authorized)
+        if message.content != content:
+            raise ValueError('coding completion content conflicts with its durable identity')
+        # A later failed local projection must never downgrade a real receipt.
+        if message.metadata.get('deliveryStatus') == 'sent':
+            metadata['deliveryStatus'] = 'sent'
+            metadata['deliveryAttemptId'] = message.metadata.get('deliveryAttemptId')
+        if message.metadata != metadata:
+            connection.execute('UPDATE messages SET metadata_json=? WHERE message_id=?', (_dump(metadata), message_id))
+            message.metadata.update(metadata)
+        return message
+
+    def append_coding_operation_once(self, role_id, session_key, task_id, attempt_id, operation_id, kind, content, *,
+                                     connection, authorized, operation_status, delivery_status, delivery_attempt_id=None):
+        """A reviewed host operation has its own original-source completion."""
+        if kind not in {'coding_commit', 'coding_publication'} or delivery_status not in {'pending', 'sent', 'failed', 'uncertain'}:
+            raise ValueError('invalid Coding operation completion')
+        if not all(isinstance(value, str) and 1 <= len(value) <= 100 for value in (task_id, attempt_id, operation_id)):
+            raise ValueError('invalid Coding operation identity')
+        database = connection.execute('PRAGMA database_list').fetchone()
+        if not connection.in_transaction or database is None or Path(database[2]).resolve() != Path(self.database_path).resolve():
+            raise ValueError('Coding operation requires its canonical transaction')
+        channel = 'desktop'
+        if session_key.startswith('thread:'):
+            row = connection.execute('SELECT channel FROM channel_threads WHERE session_key=? AND role_id=?',
+                (session_key, role_id)).fetchone()
+            if row is None:
+                raise PermissionError('original Coding operation thread no longer exists')
+            channel = row[0]
+        elif session_key != f'role:{role_id}':
+            raise PermissionError('original Coding operation session does not match role')
+        metadata = {'internalEvent': kind, 'codingTaskId': task_id, 'attemptId': attempt_id,
+            'operationId': operation_id, 'operationStatus': operation_status, 'channel': channel,
+            'deliveryStatus': delivery_status, 'deliveryAttemptId': delivery_attempt_id}
+        message_id = f'{session_key}:coding-operation:{operation_id}'
+        message = self._append_owned_message_once(connection, role_id, session_key, message_id, content,
+            message_type='internal_completion', metadata=metadata, authorized=authorized)
+        if message.content != content:
+            raise ValueError('Coding operation completion content conflicts with durable identity')
+        if message.metadata.get('deliveryStatus') == 'sent':
+            metadata['deliveryStatus'] = 'sent'
+            metadata['deliveryAttemptId'] = message.metadata.get('deliveryAttemptId')
+        if message.metadata != metadata:
+            if not authorized():
+                raise PermissionError('Coding operation projection was revoked')
+            connection.execute('UPDATE messages SET metadata_json=? WHERE message_id=?', (_dump(metadata), message_id))
+            message.metadata.update(metadata)
+        return message
 
     def append_proactive_message_once(
         self,
@@ -417,13 +839,22 @@ class SessionStore:
                         timestamp=_timestamp(group[0].metadata),
                     ))
 
-                    # Results are expected immediately after the assistant call group.
+                    # A push commits while its tool is executing, before the
+                    # result row. Keep its SQLite sequence but replay it only
+                    # after every result in this provider call group.
                     # Only matching IDs are replayable; duplicates and orphan results
                     # stay in SQLite for diagnostics but never poison provider context.
                     result_rows: dict[str, Message] = {}
+                    independent_messages: list[Message] = []
                     result_cursor = cursor
-                    while result_cursor < len(stored_messages) and stored_messages[result_cursor].messageType == "tool_result":
+                    while result_cursor < len(stored_messages):
                         result = stored_messages[result_cursor]
+                        if result.messageType == "desktop_push" and result.role == "assistant" and result.status == "completed":
+                            independent_messages.append(result)
+                            result_cursor += 1
+                            continue
+                        if result.messageType != "tool_result":
+                            break
                         if (
                             result.status == "completed"
                             and result.runId == group_run_id
@@ -457,13 +888,14 @@ class SessionStore:
                                 # reconstructed from SQLite on later runs.
                                 images=(),
                             ))
+                    messages.extend(_runtime_assistant_message(item) for item in independent_messages)
                     index = result_cursor
                     continue
             elif stored.messageType == "tool_result":
                 # A result without a replayable assistant call is an orphan.
                 index += 1
                 continue
-            elif stored.messageType == "text" and stored.status == "completed":
+            elif stored.messageType in {"text", "internal_completion", "desktop_push"} and stored.status == "completed":
                 if stored.role == "user":
                     messages.append(UserMessage(
                         _channel_user_content(stored),
@@ -474,11 +906,7 @@ class SessionStore:
                     if stored.metadata.get("channel") not in {None, "", "desktop"} and stored.metadata.get("deliveryStatus") != "sent":
                         index += 1
                         continue
-                    messages.append(AssistantMessage(
-                        stored.content,
-                        metadata=_runtime_assistant_metadata(stored.metadata),
-                        timestamp=_timestamp(stored.metadata),
-                    ))
+                    messages.append(_runtime_assistant_message(stored))
             index += 1
         if max_messages is None or max_messages < 1 or len(messages) <= max_messages:
             return messages
@@ -510,6 +938,7 @@ class SessionStore:
         *,
         assistant_status: str = "streaming",
         attachments: list[dict[str, object]] | None = None,
+        received_at: float | None = None,
     ) -> tuple[AgentRun, Message, Message]:
         """Atomically create a run, its user message, and stream placeholder."""
 
@@ -529,14 +958,14 @@ class SessionStore:
             assistant_sequence = user_sequence + 1
             connection.execute(
                 "INSERT INTO messages (message_id, session_key, sequence, role, content, status, created_at, message_type, run_id, metadata_json) VALUES (?, ?, ?, 'user', ?, 'completed', ?, 'text', ?, ?)",
-                (user_id, run.sessionKey, user_sequence, user_content, now, run.runId, _dump({"attachments": attachments or []})),
+                (user_id, run.sessionKey, user_sequence, user_content, now, run.runId, _dump({"attachments": attachments or [], **({'hostReceivedAt': received_at} if received_at is not None else {})})),
             )
             connection.execute(
                 "INSERT INTO messages (message_id, session_key, sequence, role, content, status, created_at, message_type, run_id, metadata_json) VALUES (?, ?, ?, 'assistant', '', ?, ?, 'text', ?, ?)",
                 (assistant_id, run.sessionKey, assistant_sequence, assistant_status, now, run.runId, _dump({"runtimePlaceholder": True})),
             )
             connection.execute("UPDATE sessions SET updated_at = ? WHERE session_key = ?", (now, run.sessionKey))
-        user_message = Message(id=user_id, sessionKey=run.sessionKey, sequence=user_sequence, role="user", content=user_content, status="completed", createdAt=datetime.fromisoformat(now), runId=run.runId, metadata={"attachments": attachments or []})
+        user_message = Message(id=user_id, sessionKey=run.sessionKey, sequence=user_sequence, role="user", content=user_content, status="completed", createdAt=datetime.fromisoformat(now), runId=run.runId, metadata={"attachments": attachments or [], **({'hostReceivedAt': received_at} if received_at is not None else {})})
         assistant_message = Message(id=assistant_id, sessionKey=run.sessionKey, sequence=assistant_sequence, role="assistant", content="", status=assistant_status, createdAt=datetime.fromisoformat(now), runId=run.runId, metadata={"runtimePlaceholder": True})
         return run, user_message, assistant_message
 
@@ -770,6 +1199,58 @@ class SessionStore:
                 (run.runId, run.roleId, run.sessionKey, run.status, run.modelConfigurationId, json.dumps(run.modelSnapshot, ensure_ascii=False), run.turnCount, run.startedAt.isoformat(), run.endedAt.isoformat() if run.endedAt else None, run.cancelReason, run.error),
             )
         return run
+
+    def latest_capability_revision(self, role_id: str, session_key: str) -> dict[str, Any] | None:
+        """Read activation evidence only from a completed run of this origin."""
+        with sqlite3.connect(self.database_path) as connection:
+            row = connection.execute("""SELECT model_snapshot_json FROM agent_runs WHERE role_id=? AND session_key=?
+                AND status='completed' AND json_array_length(json_extract(model_snapshot_json,'$.capabilityRevisions'))>0
+                ORDER BY started_at DESC LIMIT 1""", (role_id, session_key)).fetchone()
+        return json.loads(row[0])["capabilityRevisions"][-1] if row is not None else None
+
+    def capability_revision_for_call(self, run_id: str, call_id: str) -> dict[str, Any] | None:
+        """Return the persisted provider version bound to a tool call."""
+        run = self.get_run(run_id)
+        if run is None:
+            return None
+        snapshot_id = run.modelSnapshot.get("capabilityCalls", {}).get(call_id)
+        return next((item for item in run.modelSnapshot.get("capabilityRevisions", []) if item["snapshotId"] == snapshot_id), None)
+
+    def record_capability_call(self, run_id: str, call_id: str, snapshot_id: str) -> None:
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT model_snapshot_json FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            snapshot = json.loads(row[0])
+            if not any(item["snapshotId"] == snapshot_id for item in snapshot.get("capabilityRevisions", [])):
+                raise ValueError("tool call references an unknown capability revision")
+            calls = snapshot.setdefault("capabilityCalls", {})
+            if call_id in calls and calls[call_id] != snapshot_id:
+                raise ValueError("tool call cannot change capability revision")
+            calls[call_id] = snapshot_id
+            connection.execute("UPDATE agent_runs SET model_snapshot_json=? WHERE run_id=?", (json.dumps(snapshot, ensure_ascii=False), run_id))
+
+    def append_capability_revision(self, run_id: str, revision: dict[str, Any]) -> None:
+        """Durably append one immutable visibility version before it is used."""
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT model_snapshot_json,role_id,session_key FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            if (revision.get("runId"), revision.get("roleId"), revision.get("sessionKey")) != (run_id, row[1], row[2]):
+                raise PermissionError("capability revision scope does not match its run")
+            snapshot = json.loads(row[0])
+            versions = snapshot.setdefault("capabilityRevisions", [])
+            if any(item["snapshotId"] == revision["snapshotId"] for item in versions):
+                if next(item for item in versions if item["snapshotId"] == revision["snapshotId"]) != revision:
+                    raise ValueError("cannot overwrite an immutable capability revision")
+                return
+            expected_parent = versions[-1]["snapshotId"] if versions else None
+            if revision.get("parentSnapshotId") != expected_parent or revision.get("visibilityVersion") != len(versions):
+                raise ValueError("capability revision is out of sequence")
+            versions.append(revision)
+            connection.execute("UPDATE agent_runs SET model_snapshot_json=? WHERE run_id=?", (json.dumps(snapshot, ensure_ascii=False), run_id))
 
     def update_run(self, run_id: str, *, status: str, turn_count: int | None = None, ended_at: datetime | None = None, cancel_reason: str | None = None, error: str | None = None, model_snapshot: dict[str, Any] | None = None) -> AgentRun:
         with sqlite3.connect(self.database_path) as connection:

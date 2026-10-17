@@ -2,7 +2,7 @@
 
 状态：当前
 
-最后核验：2026-10-15
+最后核验：2026-10-16
 
 事实来源：[目录模块](../../backend/app/agent_runtime/catalog.py)、[角色 HTTP API](../../backend/app/main.py)、[模型请求适配](../../backend/app/agent_runtime/meido_provider.py)、[角色操作回归](../../tests/python/test_role_capabilities.py)、[网页操作回归](../../web/src/features/role-management/RoleCapabilities.test.tsx)。对应 [Issue #138](https://github.com/sawaki-zexi/meido/issues/138)；完整复刻目标见[整体规格](../specs/shiori-tool-parity-spec.md)。
 
@@ -12,7 +12,7 @@
 
 保存角色资料会保留 Shell 配置以及其他工具、插件和授权项。取消编辑恢复已保存值；创建草稿在当前浏览器标签页恢复。
 
-点击“查看实际工具”可查询工具和插件目录。目录使用已保存配置，修改后需保存并刷新。它预览下一次桌面对话的能力；外部渠道还会应用当前发言者、线程和附件约束。正在执行的运行继续使用开始时冻结的能力快照。
+点击“查看实际工具”可查询工具和插件目录。目录使用已保存配置，修改后需保存并刷新。它预览下一次桌面对话的初始能力；外部渠道还会应用当前发言者、线程和附件约束。运行开始冻结授权候选，开启发现后可追加不可变的可见性版本；撤权可以阻止执行。
 
 ## HTTP 契约
 
@@ -38,4 +38,4 @@
 
 原生 rich 和 structured 模型请求根据当前请求的实际 schema 添加简短能力说明，工具名不从旧会话或静态文案复制。未启用工具时原生模型获得明确的空清单。已有角色设定、Skill 提示词、工具结果与冻结能力策略继续保留；仅支持旧式文本 `stream_reply` 的第三方适配器沿用原有文本协议。
 
-此变更不实现 `tool_search`、动态工具激活、后台任务或通用调度，不代表整体 Shiori 复刻目标完成。
+`enabledTools` 包含 `tool_search` 时，已获授权的延迟工具可以显示 `authorized=true`、`modelVisible=false`，发现后在同次运行的下一次请求提供 schema。配置和版本语义见[工具发现契约](tool-discovery.md)。后台任务和[通用调度](owned-schedules.md)使用独立宿主生命周期；目录或发现功能不代表整体 Shiori 复刻目标完成。

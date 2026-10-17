@@ -9,9 +9,14 @@ import { api } from "../../api/client";
 import type { TodoSettings } from "../../api/types";
 import { TodoDrawer } from "../todo/TodoDrawer";
 import { useChatAttachments } from "./useChatAttachments";
+import { GenerationDrawer } from "../novelai/GenerationDrawer";
+import { CodingTasks } from "../coding/CodingTasks";
+import { Dialog } from "../../ui/Dialog";
+import { GeneratedImageAction } from "../novelai/GeneratedImageAction";
+import type { GenerationSelection } from "../../api/novelai";
 import { useChatScroll } from "./useChatScroll";
 
-function MessageItem({ message, role, highlighted }: { message: Message; role: Role; highlighted: boolean }) {
+function MessageItem({ message, role, highlighted, onRegenerate }: { message: Message; role: Role; highlighted: boolean; onRegenerate: (selection: GenerationSelection) => void }) {
   const mine = message.role === "user";
   const streaming = message.status === "streaming";
   const failed = message.status === "failed";
@@ -22,6 +27,8 @@ function MessageItem({ message, role, highlighted }: { message: Message; role: R
   const attachments = Array.isArray(message.metadata?.attachments)
     ? message.metadata.attachments.filter((item): item is ChatAttachment => Boolean(item && typeof item === "object" && "id" in item && "name" in item))
     : [];
+  const generationAttempts = Array.isArray(message.metadata?.generationAttemptIds)
+    ? message.metadata.generationAttemptIds.filter((item): item is string => typeof item === 'string' && Boolean(item)) : [];
   return <li ref={ref} className={`message ${message.role}${failed ? " failed" : ""}${highlighted ? " source-highlight" : ""}`} aria-busy={streaming || undefined}>
     {!mine && <Avatar id={role.id} name={role.name} size="sm" avatarUrl={role.avatarUrl} />}
     <div className="message-body">
@@ -37,7 +44,8 @@ function MessageItem({ message, role, highlighted }: { message: Message; role: R
         {attachments.map((attachment) => {
           const href = `/api/roles/${encodeURIComponent(role.id)}/attachments/${encodeURIComponent(attachment.id)}`;
           return attachment.kind === "image"
-            ? <a href={href} target="_blank" rel="noreferrer" key={attachment.id}><img src={href} alt={attachment.name} /></a>
+            ? <div key={attachment.id}><a href={href} target="_blank" rel="noreferrer"><img src={href} alt={attachment.name} /></a>
+              {!mine && message.status === 'completed' && generationAttempts.length > 0 && <GeneratedImageAction roleId={role.id} messageId={message.id} image={attachment} attemptIds={generationAttempts} onSelect={onRegenerate} />}</div>
             : <a className="message-file" href={href} target="_blank" rel="noreferrer" key={attachment.id}>{attachment.name}</a>;
         })}
       </div>}
@@ -117,6 +125,10 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
   const [todoSettings, setTodoSettings] = useState<TodoSettings | null>(null);
   const [todoUnread, setTodoUnread] = useState(0);
   const [todoOpen, setTodoOpen] = useState(false);
+  const [generationRoleId, setGenerationRoleId] = useState<string | null>(null);
+  const [selectedGenerationImage, setSelectedGenerationImage] = useState<GenerationSelection | undefined>();
+  useEffect(() => { setGenerationRoleId(null); setSelectedGenerationImage(undefined); }, [role.id]);
+  const [codingOpen, setCodingOpen] = useState(false);
   useEffect(() => {
     if (!chat.session || chat.sending) return;
     const timer = window.setInterval(() => void chat.refresh(), 10000);
@@ -163,11 +175,14 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
       </div>
       {todoSettings?.enabled && <button type="button" className="icon-button todo-entry" aria-label={todoUnread ? `待办提醒 ${todoUnread}` : "待办"} title="待办" onClick={() => setTodoOpen(true)}><Icon name="todo" />{todoUnread > 0 && <span>{todoUnread > 99 ? "99+" : todoUnread}</span>}</button>}
       <IconButton icon="memory" label="角色记忆" onClick={onShowMemories} />
+      <button type="button" className="ghost" onClick={() => { setSelectedGenerationImage(undefined); setGenerationRoleId(role.id); }}>生图与历史</button>
       <IconButton icon="profile" label="角色资料" onClick={onShowProfile} />
+      {role.agentConfig?.coding?.enabled && <button type="button" onClick={() => setCodingOpen(true)}>编程任务</button>}
     </header>
     <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
       {chat.messages.length
-        ? <ol ref={listRef} className="message-list" aria-live="polite">{chat.messages.map((message) => <MessageItem key={message.id} message={message} role={role} highlighted={message.id === highlightedId} />)}</ol>
+        ? <ol ref={listRef} className="message-list" aria-live="polite">{chat.messages.map((message) => <MessageItem key={message.id} message={message} role={role} highlighted={message.id === highlightedId}
+          onRegenerate={(selection) => { setSelectedGenerationImage(selection); setGenerationRoleId(role.id); }} />)}</ol>
         : <Placeholder>发送第一条消息开始对话。</Placeholder>}
     </div>
     <div className="composer-dock">
@@ -175,6 +190,10 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
       <Composer key={role.id} roleId={role.id} placeholder={`对${role.name}说点什么…`} sending={chat.sending} stopping={chat.stopping} disabled={chat.opening} onSend={chat.send} onStop={chat.stop} />
     </div>
     {todoOpen && <TodoDrawer onClose={() => setTodoOpen(false)} onOpenSource={(roleId, sessionKey, messageId) => { setTodoOpen(false); onOpenTodoSource(roleId, sessionKey, messageId); }} />}
+    {generationRoleId === role.id && <GenerationDrawer key={role.id} role={role} onClose={() => setGenerationRoleId(null)} onGenerated={chat.refresh} selectedImage={selectedGenerationImage}
+      attachments={chat.messages.flatMap((message) => Array.isArray(message.metadata?.attachments)
+        ? message.metadata.attachments.filter((item): item is ChatAttachment => Boolean(item && typeof item === 'object' && 'id' in item && 'name' in item)) : [])} />}
+    {codingOpen && <Dialog title="编程任务" onClose={() => setCodingOpen(false)}><CodingTasks roleId={role.id} /></Dialog>}
   </section>;
 }
 

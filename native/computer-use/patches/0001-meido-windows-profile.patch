@@ -1,0 +1,1492 @@
+diff --git a/libs/cua-driver/rust/crates/platform-windows/src/capture.rs b/libs/cua-driver/rust/crates/platform-windows/src/capture.rs
+index eb2e52c29..40b66843c 100644
+--- a/libs/cua-driver/rust/crates/platform-windows/src/capture.rs
++++ b/libs/cua-driver/rust/crates/platform-windows/src/capture.rs
+@@ -234,80 +234,7 @@ unsafe fn target_is_obscured(target: HWND) -> bool {
+ /// surfaces that PrintWindow can't reach, as long as the window is on-screen
+ /// (the daemon's typical case — see module docs).
+ unsafe fn screenshot_via_screen_region(hwnd: HWND) -> Result<(Vec<u8>, i32, i32, FrameGeometry)> {
+-    use windows::Win32::Foundation::RECT;
+-    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+-
+-    let mut rect = RECT::default();
+-    GetWindowRect(hwnd, &mut rect)?;
+-
+-    // Under Per-Monitor V2 DPI awareness, GetWindowRect already returns
+-    // PHYSICAL pixels (coordinate virtualization only applies to
+-    // DPI-unaware/system-aware processes), and BitBlt operates in physical
+-    // pixels too — use the rect as-is. Scaling by DPI/96 here would shift
+-    // and oversize the captured screen region (issue #1879).
+-    let physical_left = rect.left;
+-    let physical_top = rect.top;
+-
+-    let geometry = FrameGeometry::from_bounds((rect.left, rect.top, rect.right, rect.bottom))
+-        .ok_or_else(|| anyhow::anyhow!("screen-region fallback: invalid window bounds"))?;
+-    let w = geometry.width;
+-    let h = geometry.height;
+-
+-    let screen_dc = GetDC(HWND(std::ptr::null_mut())); // NULL HWND → desktop DC
+-    let mem_dc = CreateCompatibleDC(screen_dc);
+-    let bitmap = CreateCompatibleBitmap(screen_dc, w, h);
+-    let old_bitmap = SelectObject(mem_dc, bitmap);
+-
+-    // Copy from physical screen coords into our memory DC at (0, 0).
+-    let blt_ok = BitBlt(
+-        mem_dc,
+-        0,
+-        0,
+-        w,
+-        h,
+-        screen_dc,
+-        physical_left,
+-        physical_top,
+-        SRCCOPY,
+-    );
+-
+-    let mut bmi = BITMAPINFO {
+-        bmiHeader: BITMAPINFOHEADER {
+-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+-            biWidth: w,
+-            biHeight: -h, // top-down
+-            biPlanes: 1,
+-            biBitCount: 32,
+-            biCompression: BI_RGB.0,
+-            biSizeImage: (w * h * 4) as u32,
+-            ..Default::default()
+-        },
+-        bmiColors: [RGBQUAD::default(); 1],
+-    };
+-    let pixel_count = (w * h) as usize;
+-    let mut pixels = vec![0u8; pixel_count * 4];
+-    let ok = GetDIBits(
+-        mem_dc,
+-        bitmap,
+-        0,
+-        h as u32,
+-        Some(pixels.as_mut_ptr() as *mut _),
+-        &mut bmi,
+-        DIB_RGB_COLORS,
+-    );
+-
+-    SelectObject(mem_dc, old_bitmap);
+-    let _ = DeleteObject(bitmap);
+-    let _ = DeleteDC(mem_dc);
+-    ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+-
+-    if blt_ok.is_err() {
+-        bail!("screen-region fallback: BitBlt failed: {:?}", blt_ok);
+-    }
+-    if ok == 0 {
+-        bail!("screen-region fallback: GetDIBits returned 0");
+-    }
+-    Ok((pixels, w, h, geometry))
++    bail!("Meido profile forbids desktop-region BitBlt capture")
+ }
+ 
+ /// Capture a window by HWND, returning raw PNG bytes.
+@@ -386,6 +313,23 @@ fn screenshot_window_mapped(hwnd: u64) -> Result<(Vec<u8>, bool, Option<FrameGeo
+     }
+ }
+ 
++
++/// Source-bound capture evidence. WGC lacks a proven screen origin here.
++pub fn screenshot_window_evidence(hwnd: u64) -> Result<(Vec<u8>, serde_json::Value)> {
++    let (png, occluded, geometry) = screenshot_window_mapped(hwnd)?;
++    if occluded { bail!("Meido refuses occluding-window pixels"); }
++    let (w, h) = png_dimensions_pub(&png)?;
++    let evidence = serde_json::json!({
++        "provenance": if geometry.is_some() { "print_window" } else { "wgc" },
++        "source_window_id": hwnd,
++        "source_dimensions": [w, h], "image_dimensions": [w, h],
++        "physical_origin": geometry.map(|g| [g.left, g.top]),
++        "resize_ratio": geometry.map(|_| 1.0),
++        "pixel_coordinates_available": geometry.is_some()
++    });
++    Ok((png, evidence))
++}
++
+ /// Capture a window by HWND, returning (base64_png, width, height).
+ pub fn screenshot_window(hwnd: u64) -> Result<(String, u32, u32)> {
+     let png_bytes = screenshot_window_bytes(hwnd)?;
+@@ -513,7 +457,11 @@ unsafe fn screenshot_window_bytes_with_occlusion_unsafe(
+ 
+     let pw_ok = PrintWindow(hwnd, mem_dc, PW_RENDERFULLCONTENT);
+     if !pw_ok.as_bool() {
+-        BitBlt(mem_dc, 0, 0, w, h, screen_dc, 0, 0, SRCCOPY)?;
++        SelectObject(mem_dc, old_bitmap);
++        let _ = DeleteObject(bitmap);
++        let _ = DeleteDC(mem_dc);
++        ReleaseDC(hwnd, screen_dc);
++        bail!("Meido forbids window-DC BitBlt fallback");
+     }
+ 
+     // Compute the DWM-extended-frame bounds. On Win10+ the OS draws an
+@@ -661,6 +609,8 @@ unsafe fn screenshot_window_bytes_with_occlusion_unsafe(
+         }
+     }
+ 
++    if mostly_black { bail!("Meido PrintWindow and WGC unavailable"); }
++
+     // BGRA → PNG via the shared `image_utils::encode_bgra_to_png`
+     // helper (extracted from this file 2026-05; was a hand-rolled
+     // uncompressed-PNG path that produced ~5x larger output. The
+diff --git a/libs/cua-driver/rust/crates/platform-windows/src/input/inject.rs b/libs/cua-driver/rust/crates/platform-windows/src/input/inject.rs
+index 649f1989b..360f07f49 100644
+--- a/libs/cua-driver/rust/crates/platform-windows/src/input/inject.rs
++++ b/libs/cua-driver/rust/crates/platform-windows/src/input/inject.rs
+@@ -29,7 +29,7 @@
+ 
+ use anyhow::{bail, Result};
+ use core::ffi::c_void;
+-use std::sync::Mutex;
++use std::sync::{Arc, Mutex};
+ use std::thread::sleep;
+ use std::time::Duration;
+ 
+@@ -113,9 +113,172 @@ impl Drop for ForegroundLockGuard {
+ /// honored even on a foreground-locked session without UIAccess (mirrors the
+ /// `bring_to_front` tool). Single attach, no retry loop — bounded. Returns
+ /// whether `target` actually became foreground.
++/// A receipt belongs to one public input call. It is passed explicitly through
++/// blocking workers and nested focus clicks; no process or thread context is used.
++#[derive(Clone, Default)]
++pub(crate) struct InputReceipt(Arc<Mutex<InputReceiptData>>);
++
++#[derive(Clone, Copy, PartialEq, serde::Serialize)]
++#[serde(rename_all = "snake_case")]
++pub(crate) enum InputStage {
++    Click,
++    Keyboard,
++    FocusClick,
++    Scroll,
++}
++
++#[derive(Default)]
++struct InputReceiptData {
++    foreground: Vec<ForegroundReceipt>,
++    business: Vec<BusinessReceipt>,
++    restore: Vec<RestoreReceipt>,
++    business_unknown: bool,
++}
++
++#[derive(serde::Serialize)]
++struct ForegroundReceipt {
++    stage: InputStage,
++    checks: u8,
++    already_foreground_checks: u8,
++    set_foreground_calls: u8,
++    assisted_attempts: u8,
++    vk_noname_down_api_called: bool,
++    vk_noname_up_api_called: bool,
++    activated: bool,
++}
++
++#[derive(serde::Serialize)]
++struct BusinessReceipt {
++    stage: InputStage,
++    input_api_called: bool,
++}
++
++#[derive(serde::Serialize)]
++struct RestoreReceipt {
++    stage: InputStage,
++    status: &'static str,
++    set_foreground_calls: Option<u8>,
++    confirmed: Option<bool>,
++    #[serde(skip)]
++    attempted_calls: u8,
++}
++
++impl InputReceipt {
++    pub(crate) fn new(foreground: bool) -> Self {
++        let receipt = Self::default();
++        if !foreground {
++            // Uninstrumented UIA/background routes retain their conservative
++            // effect. An empty foreground list never implies no business input.
++            receipt.mark_unknown();
++        }
++        receipt
++    }
++
++    fn update<T>(&self, f: impl FnOnce(&mut InputReceiptData) -> T) -> T {
++        f(&mut self.0.lock().unwrap_or_else(|poison| poison.into_inner()))
++    }
++
++    pub(crate) fn mark_unknown(&self) {
++        self.update(|data| data.business_unknown = true);
++    }
++
++    pub(crate) fn prepare_business(&self, stage: InputStage) {
++        self.update(|data| {
++            if !data.business.iter().any(|item| item.stage == stage) {
++                data.business.push(BusinessReceipt { stage, input_api_called: false });
++            }
++        });
++    }
++
++    pub(crate) fn business_api_called(&self, stage: InputStage) {
++        self.prepare_business(stage);
++        self.update(|data| {
++            data.business_unknown = true;
++            if let Some(item) = data.business.iter_mut().find(|item| item.stage == stage) {
++                item.input_api_called = true;
++            }
++        });
++    }
++
++    fn begin_foreground(&self, stage: InputStage) -> usize {
++        self.prepare_business(stage);
++        self.update(|data| {
++            let index = data.foreground.len();
++            data.foreground.push(ForegroundReceipt {
++                stage, checks: 0, already_foreground_checks: 0, set_foreground_calls: 0,
++                assisted_attempts: 0, vk_noname_down_api_called: false,
++                vk_noname_up_api_called: false, activated: false,
++            });
++            index
++        })
++    }
++
++    pub(crate) fn begin_restore(&self, stage: InputStage) -> usize {
++        self.update(|data| {
++            let index = data.restore.len();
++            data.restore.push(RestoreReceipt {
++                stage, status: "pending", set_foreground_calls: None, confirmed: None,
++                attempted_calls: 0,
++            });
++            index
++        })
++    }
++
++    pub(crate) fn finish_restore(&self, index: usize, calls: u8, confirmed: Option<bool>) {
++        self.update(|data| {
++            let item = &mut data.restore[index];
++            item.status = "available";
++            item.set_foreground_calls = Some(calls);
++            item.confirmed = confirmed;
++        });
++    }
++
++    pub(crate) fn restore_api_called(&self, index: usize) {
++        self.update(|data| {
++            let item = &mut data.restore[index];
++            item.attempted_calls += 1;
++        });
++    }
++
++    pub(crate) fn finish_restore_if_unattempted(&self, index: usize) {
++        self.update(|data| {
++            let item = &mut data.restore[index];
++            if item.status == "pending" && item.attempted_calls == 0 {
++                item.status = "available";
++                item.set_foreground_calls = Some(0);
++            }
++        });
++    }
++
++    pub(crate) fn attach(&self, mut result: cua_driver_core::protocol::ToolResult) -> cua_driver_core::protocol::ToolResult {
++        let value = self.update(|data| serde_json::json!({
++            "status": "available", "foreground": data.foreground,
++            "business_effect": if data.business_unknown { "unknown" } else { "not_started" },
++            "business": data.business, "restore": data.restore,
++        }));
++        result.content.push(cua_driver_core::protocol::Content::text(
++            serde_json::json!({ "meido_input_receipt_v1": value }).to_string(),
++        ));
++        result
++    }
++}
++
+ pub(crate) unsafe fn force_foreground_attached(target: HWND) -> bool {
++    unsafe { force_foreground_attached_recorded(target, None) }
++}
++
++unsafe fn force_foreground_attached_recorded(
++    target: HWND,
++    recording: Option<(&InputReceipt, usize)>,
++) -> bool {
++    if let Some((receipt, index)) = recording {
++        receipt.update(|data| data.foreground[index].checks += 1);
++    }
+     let cur = GetForegroundWindow();
+     if cur == target {
++        if let Some((receipt, index)) = recording {
++            receipt.update(|data| data.foreground[index].already_foreground_checks += 1);
++        }
+         return true;
+     }
+     let my_tid = GetCurrentThreadId();
+@@ -125,6 +288,9 @@ pub(crate) unsafe fn force_foreground_attached(target: HWND) -> bool {
+     if attached {
+         let _ = AttachThreadInput(my_tid, cur_tid, true);
+     }
++    if let Some((receipt, index)) = recording {
++        receipt.update(|data| data.foreground[index].set_foreground_calls += 1);
++    }
+     let _ = SetForegroundWindow(target);
+     if attached {
+         let _ = AttachThreadInput(my_tid, cur_tid, false);
+@@ -136,17 +302,48 @@ pub(crate) unsafe fn force_foreground_attached(target: HWND) -> bool {
+ /// key grants this process the most-recent-input token. The key has no
+ /// application meaning; the retry count keeps the transition bounded.
+ pub(crate) unsafe fn force_foreground_assisted(target: HWND) -> (bool, bool) {
+-    if unsafe { force_foreground_attached(target) } {
++    unsafe { force_foreground_assisted_recorded(target, None) }
++}
++
++pub(crate) unsafe fn force_foreground_assisted_with_receipt(
++    target: HWND,
++    receipt: &InputReceipt,
++    stage: InputStage,
++) -> bool {
++    unsafe { force_foreground_assisted_recorded(target, Some((receipt, stage))).0 }
++}
++
++unsafe fn force_foreground_assisted_recorded(
++    target: HWND,
++    recording: Option<(&InputReceipt, InputStage)>,
++) -> (bool, bool) {
++    let recording = recording.map(|(receipt, stage)| (receipt, receipt.begin_foreground(stage)));
++    if unsafe { force_foreground_attached_recorded(target, recording) } {
++        if let Some((receipt, index)) = recording {
++            receipt.update(|data| data.foreground[index].activated = true);
++        }
+         return (true, false);
+     }
+ 
+     const VK_NONAME: u8 = 0xFC;
+     unsafe {
++        if let Some((receipt, index)) = recording {
++            receipt.update(|data| data.foreground[index].vk_noname_down_api_called = true);
++        }
+         keybd_event(VK_NONAME, 0, KEYBD_EVENT_FLAGS(0), 0);
++        if let Some((receipt, index)) = recording {
++            receipt.update(|data| data.foreground[index].vk_noname_up_api_called = true);
++        }
+         keybd_event(VK_NONAME, 0, KEYEVENTF_KEYUP, 0);
+     }
+     for _ in 0..3 {
+-        if unsafe { force_foreground_attached(target) } {
++        if let Some((receipt, index)) = recording {
++            receipt.update(|data| data.foreground[index].assisted_attempts += 1);
++        }
++        if unsafe { force_foreground_attached_recorded(target, recording) } {
++            if let Some((receipt, index)) = recording {
++                receipt.update(|data| data.foreground[index].activated = true);
++            }
+             return (true, true);
+         }
+         sleep(Duration::from_millis(25));
+@@ -166,61 +363,11 @@ pub(crate) unsafe fn force_foreground_assisted(target: HWND) -> (bool, bool) {
+ /// while the window still RECEIVES the click/key. It is per-window (no session
+ /// side effects) and reversed on drop. Covers the self-activation that the
+ /// EnableWindow/UWP bypass cannot (WPF `UIElement.Focus()`→SetForegroundWindow).
+-pub struct NoActivateGuard {
+-    // Store the handle as an integer so the guard is `Send` and can be held
+-    // across `.await` in the async tools.
+-    root_addr: isize,
+-    applied: bool,
+-}
+-
+-impl NoActivateGuard {
+-    /// Arm on the top-level (GA_ROOT) ancestor of `hwnd`.
+-    pub fn arm(hwnd: HWND) -> Self {
+-        unsafe {
+-            let root = {
+-                let r = GetAncestor(hwnd, GA_ROOT);
+-                if r.0.is_null() {
+-                    hwnd
+-                } else {
+-                    r
+-                }
+-            };
+-            let prev = GetWindowLongPtrW(root, GWL_EXSTYLE);
+-            let want = WS_EX_NOACTIVATE.0 as isize;
+-            // Apply WS_EX_NOACTIVATE if not already set (prev can be 0, so don't
+-            // gate on it — we just need to check the bit and set it if absent).
+-            let applied = (prev & want) == 0 && {
+-                SetWindowLongPtrW(root, GWL_EXSTYLE, prev | want);
+-                // Confirm it took (cross-process SetWindowLongPtr can be denied
+-                // by UIPI on higher-integrity targets).
+-                (GetWindowLongPtrW(root, GWL_EXSTYLE) & want) != 0
+-            };
+-            Self {
+-                root_addr: root.0 as isize,
+-                applied,
+-            }
+-        }
+-    }
+-}
+-
+-impl Drop for NoActivateGuard {
+-    fn drop(&mut self) {
+-        if self.applied {
+-            unsafe {
+-                let root = HWND(self.root_addr as *mut _);
+-                let current = GetWindowLongPtrW(root, GWL_EXSTYLE);
+-                let noactivate = WS_EX_NOACTIVATE.0 as isize;
+-                // Clear only the bit this guard added. Restoring the full
+-                // captured value can clobber unrelated style changes the app
+-                // made while the background action was in flight.
+-                SetWindowLongPtrW(root, GWL_EXSTYLE, current & !noactivate);
+-            }
+-        }
+-    }
+-}
++// Meido: invoke admission rejects background routes requiring changes
++// to an external HWND. An already-foreground exact target needs no guard.
++pub struct NoActivateGuard;
++impl NoActivateGuard { pub fn arm(_hwnd: HWND) -> Self { Self } }
+ 
+-/// PEN_FLAG_BARREL (winuser.h) — pen barrel button held == secondary (right)
+-/// button. `penFlags` is a raw u32 in the bindings, so use the literal.
+ const PEN_FLAG_BARREL: u32 = 0x00000001;
+ 
+ // (Removed ZorderGuard.) The macOS-aligned contract forbids a `background`
+diff --git a/libs/cua-driver/rust/crates/platform-windows/src/input/keyboard.rs b/libs/cua-driver/rust/crates/platform-windows/src/input/keyboard.rs
+index 1a1d2e516..bc3b77914 100644
+--- a/libs/cua-driver/rust/crates/platform-windows/src/input/keyboard.rs
++++ b/libs/cua-driver/rust/crates/platform-windows/src/input/keyboard.rs
+@@ -442,6 +442,26 @@ pub fn send_key_synthesized_after_focus(
+     key: &str,
+     modifiers: &[&str],
+     focus: impl FnOnce() -> Result<()>,
++) -> Result<()> {
++    send_key_synthesized_after_focus_recorded(hwnd, key, modifiers, focus, None)
++}
++
++pub(crate) fn send_key_synthesized_after_focus_with_receipt(
++    hwnd: u64,
++    key: &str,
++    modifiers: &[&str],
++    receipt: &crate::input::inject::InputReceipt,
++    focus: impl FnOnce() -> Result<()>,
++) -> Result<()> {
++    send_key_synthesized_after_focus_recorded(hwnd, key, modifiers, focus, Some(receipt))
++}
++
++fn send_key_synthesized_after_focus_recorded(
++    hwnd: u64,
++    key: &str,
++    modifiers: &[&str],
++    focus: impl FnOnce() -> Result<()>,
++    receipt: Option<&crate::input::inject::InputReceipt>,
+ ) -> Result<()> {
+     let target = HWND(hwnd as *mut _);
+     if target.0.is_null() {
+@@ -471,14 +491,16 @@ pub fn send_key_synthesized_after_focus(
+         events.push(key_input(*mvk, true));
+     }
+ 
+-    with_confirmed_foreground(target, "key delivery", focus, || unsafe {
++    with_confirmed_foreground(target, "key delivery", focus, receipt, || unsafe {
++        if let Some(receipt) = receipt {
++            receipt.business_api_called(crate::input::inject::InputStage::Keyboard);
++        }
+         let sent = SendInput(&events, std::mem::size_of::<INPUT>() as i32);
+         if sent as usize != events.len() {
+             bail!(
+                 "SendInput inserted only {sent} of {} events. Likely cause: \
+-                 the daemon is not at UIAccess integrity, so SetForegroundWindow \
+-                 was rejected and the events landed on the wrong window. Run \
+-                 hotkey through the cua-driver-uia worker.",
++                 Windows rejected or partially inserted this direct input; \
++                 its business effect is unknown. Do not replay the input.",
+                 events.len()
+             );
+         }
+@@ -507,6 +529,24 @@ pub fn send_text_synthesized_after_focus(
+     hwnd: u64,
+     text: &str,
+     focus: impl FnOnce() -> Result<()>,
++) -> Result<()> {
++    send_text_synthesized_after_focus_recorded(hwnd, text, focus, None)
++}
++
++pub(crate) fn send_text_synthesized_after_focus_with_receipt(
++    hwnd: u64,
++    text: &str,
++    receipt: &crate::input::inject::InputReceipt,
++    focus: impl FnOnce() -> Result<()>,
++) -> Result<()> {
++    send_text_synthesized_after_focus_recorded(hwnd, text, focus, Some(receipt))
++}
++
++fn send_text_synthesized_after_focus_recorded(
++    hwnd: u64,
++    text: &str,
++    focus: impl FnOnce() -> Result<()>,
++    receipt: Option<&crate::input::inject::InputReceipt>,
+ ) -> Result<()> {
+     let target = HWND(hwnd as *mut _);
+     if target.0.is_null() {
+@@ -548,13 +588,16 @@ pub fn send_text_synthesized_after_focus(
+         return Ok(());
+     }
+ 
+-    with_confirmed_foreground(target, "text delivery", focus, || unsafe {
++    with_confirmed_foreground(target, "text delivery", focus, receipt, || unsafe {
++        if let Some(receipt) = receipt {
++            receipt.business_api_called(crate::input::inject::InputStage::Keyboard);
++        }
+         let sent = SendInput(&events, std::mem::size_of::<INPUT>() as i32);
+         if sent as usize != events.len() {
+             bail!(
+                 "SendInput inserted only {sent} of {} key events. Likely cause: \
+-                 the daemon is not at UIAccess integrity, so SetForegroundWindow \
+-                 was rejected and the events landed on the wrong window.",
++                 Windows rejected or partially inserted this direct input; \
++                 its business effect is unknown. Do not replay the input.",
+                 events.len()
+             );
+         }
+@@ -585,19 +628,21 @@ fn with_confirmed_foreground<T>(
+     target: HWND,
+     operation: &str,
+     focus: impl FnOnce() -> Result<()>,
++    receipt: Option<&crate::input::inject::InputReceipt>,
+     body: impl FnOnce() -> Result<T>,
+ ) -> Result<T> {
+     let previous = unsafe { GetForegroundWindow() };
+-    let _ = unsafe { crate::input::force_foreground_assisted(target) };
++    match receipt {
++        Some(receipt) => { let _ = unsafe { crate::input::inject::force_foreground_assisted_with_receipt(target, receipt, crate::input::inject::InputStage::Keyboard) }; }
++        None => { let _ = unsafe { crate::input::force_foreground_assisted(target) }; }
++    }
+     if !wait_for_exact_foreground(target, Duration::from_millis(500)) {
+         let actual = unsafe { GetForegroundWindow() };
+-        if !previous.0.is_null() && previous != target {
+-            let _ = unsafe { SetForegroundWindow(previous) };
+-        }
++        restore_previous_foreground(previous, target, receipt);
+         bail!(
+             "foreground_unavailable: Windows did not confirm exact target HWND {:?} for {operation} \
+-             within 500 ms (actual foreground HWND {:?}). Route the request through the \
+-             UIAccess-manifested cua-driver-uia worker; no input was sent.",
++             within 500 ms (actual foreground HWND {:?}). Direct activation is unavailable; \
++             business keyboard input was not started.",
+             target.0,
+             actual.0
+         );
+@@ -605,12 +650,10 @@ fn with_confirmed_foreground<T>(
+ 
+     let Some(foreground_target) = crate::win32::capture_foreground_target(target.0 as usize as u64)
+     else {
+-        if !previous.0.is_null() && previous != target {
+-            let _ = unsafe { SetForegroundWindow(previous) };
+-        }
++        restore_previous_foreground(previous, target, receipt);
+         bail!(
+             "foreground_unavailable: exact target HWND {:?} disappeared before {operation}; \
+-             no input was sent",
++             business keyboard input was not started",
+             target.0
+         );
+     };
+@@ -638,7 +681,7 @@ fn with_confirmed_foreground<T>(
+             bail!(
+                 "foreground_unavailable: exact target HWND {:?} or a verified same-process \
+                  owned window was not foreground while preparing {operation} \
+-                 (actual foreground HWND {:?}); no input was sent",
++                 (actual foreground HWND {:?}); business keyboard input was not started",
+                 target.0,
+                 actual.0
+             );
+@@ -651,10 +694,27 @@ fn with_confirmed_foreground<T>(
+     if result.is_ok() {
+         sleep(Duration::from_millis(40));
+     }
++    restore_previous_foreground(previous, target, receipt);
++    result
++}
++
++fn restore_previous_foreground(
++    previous: HWND,
++    target: HWND,
++    receipt: Option<&crate::input::inject::InputReceipt>,
++) {
++    let index = receipt.map(|receipt| receipt.begin_restore(crate::input::inject::InputStage::Keyboard));
+     if !previous.0.is_null() && previous != target {
++        if let (Some(receipt), Some(index)) = (receipt, index) {
++            receipt.restore_api_called(index);
++        }
+         let _ = unsafe { SetForegroundWindow(previous) };
++        if let (Some(receipt), Some(index)) = (receipt, index) {
++            receipt.finish_restore(index, 1, Some(unsafe { GetForegroundWindow() } == previous));
++        }
++    } else if let (Some(receipt), Some(index)) = (receipt, index) {
++        receipt.finish_restore(index, 0, None);
+     }
+-    result
+ }
+ 
+ /// Build a single Unicode keyboard INPUT struct for one UTF-16 code unit,
+diff --git a/libs/cua-driver/rust/crates/platform-windows/src/input/mouse.rs b/libs/cua-driver/rust/crates/platform-windows/src/input/mouse.rs
+index 30c9c9218..9a36b26fa 100644
+--- a/libs/cua-driver/rust/crates/platform-windows/src/input/mouse.rs
++++ b/libs/cua-driver/rust/crates/platform-windows/src/input/mouse.rs
+@@ -448,7 +448,7 @@ pub fn send_click_synthesized_mods(
+     button: &str,
+     modifiers: &[&str],
+ ) -> Result<()> {
+-    send_click_synthesized_mods_impl(target, sx, sy, count, button, modifiers, false)
++    send_click_synthesized_mods_impl(target, sx, sy, count, button, modifiers, false, None)
+ }
+ 
+ /// SendInput click for an explicit foreground request. Unlike the historical
+@@ -463,7 +463,20 @@ pub fn send_click_synthesized_active_mods(
+     button: &str,
+     modifiers: &[&str],
+ ) -> Result<()> {
+-    send_click_synthesized_mods_impl(target, sx, sy, count, button, modifiers, true)
++    send_click_synthesized_mods_impl(target, sx, sy, count, button, modifiers, true, None)
++}
++
++pub(crate) fn send_click_synthesized_active_mods_with_receipt(
++    target: u64,
++    sx: i32,
++    sy: i32,
++    count: usize,
++    button: &str,
++    modifiers: &[&str],
++    receipt: &crate::input::inject::InputReceipt,
++    stage: crate::input::inject::InputStage,
++) -> Result<()> {
++    send_click_synthesized_mods_impl(target, sx, sy, count, button, modifiers, true, Some((receipt, stage)))
+ }
+ 
+ fn send_click_synthesized_mods_impl(
+@@ -474,6 +487,7 @@ fn send_click_synthesized_mods_impl(
+     button: &str,
+     modifiers: &[&str],
+     activate: bool,
++    recording: Option<(&crate::input::inject::InputReceipt, crate::input::inject::InputStage)>,
+ ) -> Result<()> {
+     let target = HWND(target as *mut _);
+     if target.0.is_null() {
+@@ -576,11 +590,19 @@ fn send_click_synthesized_mods_impl(
+         // Capture whether the target was ALREADY always-on-top so we don't strip
+         // that state on restore — only demote below if WE promoted it.
+         let was_topmost = (GetWindowLongPtrW(target, GWL_EXSTYLE) as u32) & WS_EX_TOPMOST.0 != 0;
+-        if activate && !crate::input::force_foreground_assisted(target).0 {
++        let activated = if activate {
++            match recording {
++                Some((receipt, stage)) => crate::input::inject::force_foreground_assisted_with_receipt(target, receipt, stage),
++                None => crate::input::force_foreground_assisted(target).0,
++            }
++        } else {
++            true
++        };
++        if !activated {
+             let actual = GetForegroundWindow();
+             bail!(
+                 "foreground_unavailable: Windows did not activate exact target HWND {:?} \
+-                 (actual foreground HWND {:?}); no mouse input was sent",
++                 (actual foreground HWND {:?}); business mouse input was not started",
+                 target.0,
+                 actual.0
+             );
+@@ -613,6 +635,9 @@ fn send_click_synthesized_mods_impl(
+         // Move the cursor so the OS hover state matches before the click; the
+         // MOUSEEVENTF_MOVE input ensures Chromium's input filter sees a
+         // coordinated move event.
++        if let Some((receipt, stage)) = recording {
++            receipt.business_api_called(stage);
++        }
+         let _ = SetCursorPos(sx, sy);
+ 
+         // Hold modifier keys (ctrl/shift/alt/win) across the click — the macOS
+@@ -622,6 +647,9 @@ fn send_click_synthesized_mods_impl(
+         let (mod_downs, mod_ups) = crate::input::keyboard::modifier_hold_inputs(modifiers);
+         let mut sent_ok = true;
+         if !mod_downs.is_empty() {
++            if let Some((receipt, stage)) = recording {
++                receipt.business_api_called(stage);
++            }
+             let sent = SendInput(&mod_downs, std::mem::size_of::<INPUT>() as i32);
+             sent_ok = sent as usize == mod_downs.len();
+             sleep(Duration::from_millis(5));
+@@ -636,6 +664,9 @@ fn send_click_synthesized_mods_impl(
+             // records act at the current pointer position; adding ABSOLUTE to
+             // them can prevent retained-mode controls from seeing the press.
+             let events = [move_input, down_input, up_input];
++            if let Some((receipt, stage)) = recording {
++                receipt.business_api_called(stage);
++            }
+             let sent = SendInput(&events, std::mem::size_of::<INPUT>() as i32);
+             if sent as usize != events.len() {
+                 sent_ok = false;
+@@ -935,6 +966,20 @@ fn wheel_mouse_data(ticks: i32) -> u32 {
+ /// delivery follows the cursor, so positioning the cursor is sufficient. The
+ /// cursor is restored to its previous position afterward.
+ pub fn send_wheel_synthesized(sx: i32, sy: i32, ticks: i32, horizontal: bool) -> Result<()> {
++    send_wheel_synthesized_recorded(sx, sy, ticks, horizontal, None)
++}
++
++pub(crate) fn send_wheel_synthesized_with_receipt(
++    sx: i32, sy: i32, ticks: i32, horizontal: bool,
++    receipt: &crate::input::inject::InputReceipt,
++) -> Result<()> {
++    send_wheel_synthesized_recorded(sx, sy, ticks, horizontal, Some(receipt))
++}
++
++fn send_wheel_synthesized_recorded(
++    sx: i32, sy: i32, ticks: i32, horizontal: bool,
++    receipt: Option<&crate::input::inject::InputReceipt>,
++) -> Result<()> {
+     let flag = if horizontal {
+         MOUSEEVENTF_HWHEEL
+     } else {
+@@ -961,9 +1006,15 @@ pub fn send_wheel_synthesized(sx: i32, sy: i32, ticks: i32, horizontal: bool) ->
+         let _ = GetCursorPos(&mut prev_cursor);
+ 
+         // Wheel routes to the window under the cursor — place it on the target.
++        if let Some(receipt) = receipt {
++            receipt.business_api_called(crate::input::inject::InputStage::Scroll);
++        }
+         let _ = SetCursorPos(sx, sy);
+ 
+         let events = [wheel_input];
++        if let Some(receipt) = receipt {
++            receipt.business_api_called(crate::input::inject::InputStage::Scroll);
++        }
+         let sent = SendInput(&events, std::mem::size_of::<INPUT>() as i32);
+         if sent as usize != events.len() {
+             let _ = SetCursorPos(prev_cursor.x, prev_cursor.y);
+diff --git a/libs/cua-driver/rust/crates/platform-windows/src/tools/impl_.rs b/libs/cua-driver/rust/crates/platform-windows/src/tools/impl_.rs
+index 9d0d4cfcd..d57b7850e 100644
+--- a/libs/cua-driver/rust/crates/platform-windows/src/tools/impl_.rs
++++ b/libs/cua-driver/rust/crates/platform-windows/src/tools/impl_.rs
+@@ -1409,14 +1409,20 @@ impl Tool for GetWindowStateTool {
+             // to call `bring_to_front` instead of retrying).
+             // The previous `Err(_) => None` silently dropped the error and
+             // upstream agents saw an empty response with no signal.
++            let mut capture_evidence = Value::Null;
+             let (screenshot, screenshot_err) = if do_shot {
+-                match crate::capture::screenshot_window_bytes(hwnd) {
+-                    Ok(raw) => {
++                match crate::capture::screenshot_window_evidence(hwnd) {
++                    Ok((raw, evidence)) => {
++                        capture_evidence = evidence;
+                         let orig_w = crate::capture::png_dimensions_pub(&raw)
+                             .map(|(w, _)| w)
+                             .unwrap_or(0);
+                         let png = crate::capture::resize_png_if_needed(&raw, max_dim)?;
+                         let (w, h) = crate::capture::png_dimensions_pub(&png)?;
++                        capture_evidence["image_dimensions"] = json!([w, h]);
++                        if capture_evidence["pixel_coordinates_available"] == json!(true) {
++                            capture_evidence["resize_ratio"] = json!(orig_w as f64 / w as f64);
++                        }
+                         let original_w = if w < orig_w { Some(orig_w) } else { None };
+                         // `screenshot_out_file` set (any mode) → write to disk and
+                         // surface the path, never embed bytes. Otherwise (vision,
+@@ -1434,7 +1440,7 @@ impl Tool for GetWindowStateTool {
+             } else {
+                 (None, None)
+             };
+-            Ok((tree_result, screenshot, screenshot_err))
++            Ok((tree_result, screenshot, screenshot_err, capture_evidence))
+         });
+         // Timeout: Chrome's UIA provider can block indefinitely on property reads.
+         let result: Result<anyhow::Result<_>, _> =
+@@ -1463,9 +1469,9 @@ impl Tool for GetWindowStateTool {
+         let result = result.and_then(|r| r);
+ 
+         match result {
+-            Ok((tree_opt, screenshot_opt, screenshot_err)) => {
++            Ok((tree_opt, screenshot_opt, screenshot_err, capture_evidence)) => {
+                 let mut content = Vec::new();
+-                let mut structured = json!({ "window_id": hwnd, "pid": pid });
++                let mut structured = json!({ "window_id": hwnd, "pid": pid, "capture": capture_evidence, "meido_profile": "meido-windows-169-v1" });
+ 
+                 if let Some((tr, payload)) = tree_opt {
+                     let is_msaa = tr.nodes.iter().any(|node| node.msaa_role.is_some());
+@@ -1865,6 +1871,22 @@ fn should_restore_foreground_after_launch(shape: LaunchTargetShape) -> bool {
+ /// `!Send` and would prevent this future from being scheduled on the
+ /// multi-threaded tokio runtime.
+ async fn restore_foreground_polling_best_effort(prior_foreground_addr: usize, spawned_pid: u32) {
++    restore_foreground_polling_recorded(prior_foreground_addr, spawned_pid, None).await;
++}
++
++fn spawn_input_restore(
++    prior: usize, pid: u32, receipt: &crate::input::inject::InputReceipt,
++    stage: crate::input::inject::InputStage,
++) {
++    let index = receipt.begin_restore(stage);
++    tokio::spawn(restore_foreground_polling_recorded(prior, pid, Some((receipt.clone(), index))));
++}
++
++async fn restore_foreground_polling_recorded(
++    prior_foreground_addr: usize, spawned_pid: u32,
++    recording: Option<(crate::input::inject::InputReceipt, usize)>,
++) {
++    async {
+     use windows::Win32::Foundation::{CloseHandle, HWND};
+     use windows::Win32::System::Threading::{
+         OpenProcess, WaitForInputIdle, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+@@ -1963,7 +1985,13 @@ async fn restore_foreground_polling_best_effort(prior_foreground_addr: usize, sp
+                     );
+                     Some(true)
+                 } else {
++                    if let Some((receipt, index)) = &recording {
++                        receipt.restore_api_called(*index);
++                    }
+                     let ok = unsafe { SetForegroundWindow(prior) }.as_bool();
++                    if let Some((receipt, index)) = &recording {
++                        receipt.finish_restore(*index, 1, Some(unsafe { GetForegroundWindow() } == prior));
++                    }
+                     if !ok {
+                         tracing::trace!(
+                             target: "launch_app.focus_restore",
+@@ -1989,6 +2017,10 @@ async fn restore_foreground_polling_best_effort(prior_foreground_addr: usize, sp
+         }
+         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+     }
++    }.await;
++    if let Some((receipt, index)) = &recording {
++        receipt.finish_restore_if_unattempted(*index);
++    }
+ }
+ 
+ pub struct LaunchAppTool;
+@@ -3119,6 +3151,29 @@ impl Tool for ClickTool {
+     }
+ 
+     async fn invoke(&self, args: Value) -> ToolResult {
++        let receipt = crate::input::inject::InputReceipt::new(args.get("delivery_mode").and_then(Value::as_str) == Some("foreground"));
++        let result = self.invoke_with_input_receipt(args, receipt.clone(), crate::input::inject::InputStage::Click).await;
++        receipt.attach(result)
++    }
++}
++
++impl ClickTool {
++    async fn invoke_with_input_receipt(
++        &self, args: Value, receipt: crate::input::inject::InputReceipt,
++        stage: crate::input::inject::InputStage,
++    ) -> ToolResult {
++        // Meido: refuse routes needing external no-activate/disable guards
++        // before dispatch. Background is supported for an already-foreground
++        // exact target; never silently activate or mutate an external HWND.
++        if args.get("delivery_mode").and_then(Value::as_str) != Some("foreground") {
++            let target = args.get("window_id").and_then(Value::as_u64).unwrap_or(0);
++            let foreground = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }.0 as u64;
++            if target == 0 || foreground != target {
++                return ToolResult::error("background_unavailable: exact target is not already foreground")
++                    .with_structured(json!({"code":"background_unavailable","effect":"not_started"}));
++            }
++        }
++
+         use crate::input::delivery::{DeliveryMode, EventKind};
+         use crate::uia::cache::SnapshotKind;
+         use cua_driver_core::tool_args::ArgsExt;
+@@ -3195,10 +3250,11 @@ impl Tool for ClickTool {
+             // Click the HWND that owned the pixel before the driver overlay
+             // moved there. The active SendInput path performs the foreground
+             // swap and UIPI checks needed for Chromium and retained-mode apps.
++            let worker_receipt = receipt.clone();
+             let send_result = tokio::task::spawn_blocking(move || -> anyhow::Result<u64> {
+                 let mod_refs: Vec<&str> = modifiers.iter().map(String::as_str).collect();
+-                crate::input::send_click_synthesized_active_mods(
+-                    hwnd_u, sx, sy, count, &button, &mod_refs,
++                crate::input::mouse::send_click_synthesized_active_mods_with_receipt(
++                    hwnd_u, sx, sy, count, &button, &mod_refs, &worker_receipt, stage,
+                 )?;
+                 Ok(hwnd_u)
+             })
+@@ -3217,7 +3273,7 @@ impl Tool for ClickTool {
+                     .with_structured(json!({ "path": "pixel", "verified": false, "effect": "unverifiable" }))
+                 }
+                 Ok(Err(e)) => ToolResult::error(e.to_string()),
+-                Err(e) => ToolResult::error(format!("Task error: {e}")),
++                Err(e) => { receipt.mark_unknown(); ToolResult::error(format!("Task error: {e}")) },
+             };
+         }
+ 
+@@ -3406,13 +3462,14 @@ impl Tool for ClickTool {
+                 let mods_owned = modifiers.clone();
+                 let activate = delivery == DeliveryMode::Foreground;
+                 let send_result = tokio::task::spawn_blocking({
++                    let receipt = receipt.clone();
+                     let admitted = admitted.clone();
+                     move || {
+                         let _admission = &admitted;
+                         let mod_refs: Vec<&str> = mods_owned.iter().map(String::as_str).collect();
+                         if activate {
+-                            crate::input::send_click_synthesized_active_mods(
+-                                hwnd, tx, ty, count, &btn_fg, &mod_refs,
++                            crate::input::mouse::send_click_synthesized_active_mods_with_receipt(
++                                hwnd, tx, ty, count, &btn_fg, &mod_refs, &receipt, stage,
+                             )
+                         } else {
+                             crate::input::send_click_synthesized_mods(
+@@ -3422,7 +3479,7 @@ impl Tool for ClickTool {
+                     }
+                 })
+                 .await;
+-                tokio::spawn(restore_foreground_polling_best_effort(prev_fg_addr, pid));
++                spawn_input_restore(prev_fg_addr, pid, &receipt, stage);
+                 let half = if want_expand { "dropdown" } else { "press" };
+                 return match send_result {
+                     Ok(Ok(())) => ToolResult::text(format!(
+@@ -3432,7 +3489,7 @@ impl Tool for ClickTool {
+                         json!({ "path": "msaa", "verified": false, "effect": "unverifiable" }),
+                     ),
+                     Ok(Err(e)) => ToolResult::error(e.to_string()),
+-                    Err(e) => ToolResult::error(format!("Task error: {e}")),
++                    Err(e) => { receipt.mark_unknown(); ToolResult::error(format!("Task error: {e}")) },
+                 };
+             }
+ 
+@@ -3470,6 +3527,7 @@ impl Tool for ClickTool {
+             // WPF/WinUI menus and tree nodes whose visual click target is
+             // transient or scroll-adjusted.
+             if action_req.as_deref() == Some("expand") {
++                receipt.mark_unknown();
+                 let expand = tokio::task::spawn_blocking({
+                     let admitted = admitted.clone();
+                     move || -> anyhow::Result<()> {
+@@ -3550,6 +3608,7 @@ impl Tool for ClickTool {
+                 } else {
+                     (cx, cy)
+                 };
++                receipt.mark_unknown();
+                 let (cx, cy) = match resolve_onscreen_point_with_scroll(
+                     &admitted,
+                     hwnd,
+@@ -3570,24 +3629,25 @@ impl Tool for ClickTool {
+                     windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as usize
+                 };
+                 let send_result = tokio::task::spawn_blocking({
++                    let receipt = receipt.clone();
+                     let admitted = admitted.clone();
+                     move || {
+                         let _admission = &admitted;
+                         let mod_refs: Vec<&str> = mods_owned.iter().map(String::as_str).collect();
+-                        crate::input::send_click_synthesized_active_mods(
+-                            hwnd, cx, cy, count, &btn_fg, &mod_refs,
++                        crate::input::mouse::send_click_synthesized_active_mods_with_receipt(
++                            hwnd, cx, cy, count, &btn_fg, &mod_refs, &receipt, stage,
+                         )
+                     }
+                 })
+                 .await;
+-                tokio::spawn(restore_foreground_polling_best_effort(prev_fg_addr, pid));
++                spawn_input_restore(prev_fg_addr, pid, &receipt, stage);
+                 return match send_result {
+                     Ok(Ok(())) => ToolResult::text(format!(
+                         "✅ Performed SendInput click on [{idx}] at screen ({cx},{cy}) (delivery_mode:foreground)."
+                     ))
+                     .with_structured(json!({ "path": "pixel", "verified": false, "effect": "unverifiable" })),
+                     Ok(Err(e)) => ToolResult::error(e.to_string()),
+-                    Err(e) => ToolResult::error(format!("Task error: {e}")),
++                    Err(e) => { receipt.mark_unknown(); ToolResult::error(format!("Task error: {e}")) },
+                 };
+             }
+             // UIA and posted-message routes can report success without a
+@@ -3916,17 +3976,18 @@ impl Tool for ClickTool {
+                 };
+                 let mods_owned = modifiers.clone();
+                 let send_result = tokio::task::spawn_blocking({
++                    let receipt = receipt.clone();
+                     let admitted = admitted.clone();
+                     move || {
+                         let _admission = &admitted;
+                         let mod_refs: Vec<&str> = mods_owned.iter().map(String::as_str).collect();
+-                        crate::input::send_click_synthesized_active_mods(
+-                            hwnd, sx as i32, sy as i32, count, &btn, &mod_refs,
++                        crate::input::mouse::send_click_synthesized_active_mods_with_receipt(
++                            hwnd, sx as i32, sy as i32, count, &btn, &mod_refs, &receipt, stage,
+                         )
+                     }
+                 })
+                 .await;
+-                tokio::spawn(restore_foreground_polling_best_effort(prev_fg_addr, pid));
++                spawn_input_restore(prev_fg_addr, pid, &receipt, stage);
+                 return match send_result {
+                     Ok(Ok(())) => {
+                         let click_word = match count {
+@@ -3940,7 +4001,7 @@ impl Tool for ClickTool {
+                         .with_structured(json!({ "path": "pixel", "verified": false, "effect": "unverifiable" }))
+                     }
+                     Ok(Err(e)) => ToolResult::error(e.to_string()),
+-                    Err(e) => ToolResult::error(format!("Task error: {e}")),
++                    Err(e) => { receipt.mark_unknown(); ToolResult::error(format!("Task error: {e}")) },
+                 };
+             }
+ 
+@@ -4091,7 +4152,7 @@ impl Tool for ClickTool {
+                     posted_pixel_click_result(pid, click_word)
+                 }
+                 Ok(Err(e)) => ToolResult::error(e.to_string()),
+-                Err(e) => ToolResult::error(format!("Task error: {e}")),
++                Err(e) => { receipt.mark_unknown(); ToolResult::error(format!("Task error: {e}")) },
+             }
+         } else {
+             // Match Swift's error wording for the missing-target case.
+@@ -4264,6 +4325,7 @@ async fn focus_by_pixel(
+     session: Option<String>,
+     session_id: Option<String>,
+     from_zoom: bool,
++    receipt: &crate::input::inject::InputReceipt,
+ ) -> Result<(), ToolResult> {
+     let mut click_args = json!({
+         "pid": pid, "x": x, "y": y,
+@@ -4284,7 +4346,7 @@ async fn focus_by_pixel(
+     let focus = ClickTool {
+         state: state.clone(),
+     }
+-    .invoke(click_args)
++    .invoke_with_input_receipt(click_args, receipt.clone(), crate::input::inject::InputStage::FocusClick)
+     .await;
+     if focus.is_error == Some(true) {
+         // Preserve the click tool's structured background refusal (for example
+@@ -4332,6 +4394,7 @@ fn focus_cached_element_for_foreground(
+     hwnd: u64,
+     element_index: usize,
+     click_point: Option<(i32, i32)>,
++    receipt: &crate::input::inject::InputReceipt,
+ ) -> anyhow::Result<()> {
+     // `fg_bypass` is a background-only shield: for Chromium it disables the
+     // top-level HWND while UIA runs so the provider cannot self-activate. A
+@@ -4339,6 +4402,7 @@ fn focus_cached_element_for_foreground(
+     // which would make the enclosing verify-before-SendInput transaction
+     // fail closed. The foreground route has already activated the exact HWND,
+     // so focus the cached element directly and verify it below.
++    receipt.mark_unknown(); // UIA SetFocus may change visible application state.
+     let set_focus = admitted
+         .as_ref()
+         .ok_or_else(|| anyhow::anyhow!("missing admitted element"))
+@@ -4350,7 +4414,7 @@ fn focus_cached_element_for_foreground(
+     }
+ 
+     if let Some((x, y)) = click_point {
+-        crate::input::send_click_synthesized_active_mods(hwnd, x, y, 1, "left", &[])?;
++        crate::input::mouse::send_click_synthesized_active_mods_with_receipt(hwnd, x, y, 1, "left", &[], receipt, crate::input::inject::InputStage::FocusClick)?;
+         if wait_for_cached_element_keyboard_focus(admitted, std::time::Duration::from_millis(500)) {
+             return Ok(());
+         }
+@@ -4420,6 +4484,20 @@ impl Tool for TypeTextTool {
+     }
+ 
+     async fn invoke(&self, args: Value) -> ToolResult {
++        let receipt = crate::input::inject::InputReceipt::new(args.get("delivery_mode").and_then(Value::as_str) == Some("foreground"));
++        let result = async {
++        // Meido: refuse routes needing external no-activate/disable guards
++        // before dispatch. Background is supported for an already-foreground
++        // exact target; never silently activate or mutate an external HWND.
++        if args.get("delivery_mode").and_then(Value::as_str) != Some("foreground") {
++            let target = args.get("window_id").and_then(Value::as_u64).unwrap_or(0);
++            let foreground = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }.0 as u64;
++            if target == 0 || foreground != target {
++                return ToolResult::error("background_unavailable: exact target is not already foreground")
++                    .with_structured(json!({"code":"background_unavailable","effect":"not_started"}));
++            }
++        }
++
+         use crate::input::delivery::{DeliveryMode, EventKind};
+         use cua_driver_core::tool_args::ArgsExt;
+         let cursor_key = resolve_cursor_key(&args);
+@@ -4427,6 +4505,7 @@ impl Tool for TypeTextTool {
+             && args.get("pid").is_none()
+             && args.get("window_id").is_none()
+         {
++            receipt.mark_unknown(); // Non-Meido desktop path is not instrumented.
+             let input = match parse_typed_projection::<TypeTextInput>("type_text", &args) {
+                 Ok(input) => input,
+                 Err(result) => return result,
+@@ -4515,6 +4594,7 @@ impl Tool for TypeTextTool {
+                     args.opt_str("session"),
+                     args.opt_str("_session_id"),
+                     from_zoom,
++                    &receipt,
+                 )
+                 .await
+                 {
+@@ -4625,6 +4705,7 @@ impl Tool for TypeTextTool {
+                     ))
+                     }
+                 };
++                receipt.mark_unknown(); // ScrollIntoView may already change application state.
+                 let (cx, cy) = match resolve_onscreen_point_with_scroll(
+                     &admitted,
+                     hwnd,
+@@ -4642,12 +4723,13 @@ impl Tool for TypeTextTool {
+             };
+             let text_fg = text.clone();
+             let r = tokio::task::spawn_blocking({
++                let receipt = receipt.clone();
+                 let admitted = admitted.clone();
+                 move || {
+                     let _admission = &admitted;
+-                    crate::input::send_text_synthesized_after_focus(hwnd, &text_fg, || {
++                    crate::input::keyboard::send_text_synthesized_after_focus_with_receipt(hwnd, &text_fg, &receipt, || {
+                         if let Some((idx, point)) = focus_target {
+-                            focus_cached_element_for_foreground(&admitted, hwnd, idx, Some(point))?;
++                            focus_cached_element_for_foreground(&admitted, hwnd, idx, Some(point), &receipt)?;
+                         }
+                         Ok(())
+                     })
+@@ -4667,7 +4749,7 @@ impl Tool for TypeTextTool {
+                     "effect": "unverifiable",
+                 })),
+                 Ok(Err(e)) => ToolResult::error(e.to_string()),
+-                Err(e)     => ToolResult::error(format!("Task error: {e}")),
++                Err(e) => { receipt.mark_unknown(); ToolResult::error(format!("Task error: {e}")) },
+             };
+         }
+ 
+@@ -4943,8 +5025,10 @@ impl Tool for TypeTextTool {
+                 }
+             }
+             Ok((Err(e), _, _, _)) => ToolResult::error(e.to_string()),
+-            Err(e) => ToolResult::error(format!("Task error: {e}")),
++            Err(e) => { receipt.mark_unknown(); ToolResult::error(format!("Task error: {e}")) },
+         }
++        }.await;
++        receipt.attach(result)
+     }
+ }
+ 
+@@ -5177,12 +5261,27 @@ impl Tool for PressKeyTool {
+     }
+ 
+     async fn invoke(&self, args: Value) -> ToolResult {
++        let receipt = crate::input::inject::InputReceipt::new(args.get("delivery_mode").and_then(Value::as_str) == Some("foreground"));
++        let result = async {
++        // Meido: refuse routes needing external no-activate/disable guards
++        // before dispatch. Background is supported for an already-foreground
++        // exact target; never silently activate or mutate an external HWND.
++        if args.get("delivery_mode").and_then(Value::as_str) != Some("foreground") {
++            let target = args.get("window_id").and_then(Value::as_u64).unwrap_or(0);
++            let foreground = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }.0 as u64;
++            if target == 0 || foreground != target {
++                return ToolResult::error("background_unavailable: exact target is not already foreground")
++                    .with_structured(json!({"code":"background_unavailable","effect":"not_started"}));
++            }
++        }
++
+         use crate::input::delivery::{DeliveryMode, EventKind};
+         use cua_driver_core::tool_args::ArgsExt;
+         if args.get("scope").and_then(Value::as_str) == Some("desktop")
+             && args.get("pid").is_none()
+             && args.get("window_id").is_none()
+         {
++            receipt.mark_unknown(); // Non-Meido desktop path is not instrumented.
+             let input = match parse_typed_projection::<PressKeyInput>("press_key", &args) {
+                 Ok(input) => input,
+                 Err(result) => return result,
+@@ -5273,6 +5372,7 @@ impl Tool for PressKeyTool {
+                     args.opt_str("session"),
+                     args.opt_str("_session_id"),
+                     from_zoom,
++                    &receipt,
+                 )
+                 .await
+                 {
+@@ -5373,6 +5473,7 @@ impl Tool for PressKeyTool {
+                 args.opt_str("session"),
+                 args.opt_str("_session_id"),
+                 false,
++                &receipt,
+             )
+             .await
+             {
+@@ -5415,13 +5516,14 @@ impl Tool for PressKeyTool {
+                 (idx as usize, point)
+             });
+             let send_result = tokio::task::spawn_blocking({
++                let receipt = receipt.clone();
+                 let admitted = admitted.clone();
+                 move || {
+                     let _admission = &admitted;
+                     let m: Vec<&str> = mods.iter().map(String::as_str).collect();
+-                    crate::input::send_key_synthesized_after_focus(hwnd, &key, &m, || {
++                    crate::input::keyboard::send_key_synthesized_after_focus_with_receipt(hwnd, &key, &m, &receipt, || {
+                         if let Some((idx, point)) = focus_target {
+-                            focus_cached_element_for_foreground(&admitted, hwnd, idx, point)?;
++                            focus_cached_element_for_foreground(&admitted, hwnd, idx, point, &receipt)?;
+                         }
+                         Ok(())
+                     })
+@@ -5433,7 +5535,7 @@ impl Tool for PressKeyTool {
+                     "✅ Sent {key_display} via SendInput on pid {raw_pid} (delivery_mode:foreground)."
+                 )),
+                 Ok(Err(e)) => ToolResult::error(e.to_string()),
+-                Err(e)     => ToolResult::error(format!("Task error: {e}")),
++                Err(e) => { receipt.mark_unknown(); ToolResult::error(format!("Task error: {e}")) },
+             };
+         }
+         let result = tokio::task::spawn_blocking({
+@@ -5463,8 +5565,10 @@ impl Tool for PressKeyTool {
+                 },
+             })),
+             Ok(Err(e)) => ToolResult::error(e.to_string()),
+-            Err(e) => ToolResult::error(format!("Task error: {e}")),
++            Err(e) => { receipt.mark_unknown(); ToolResult::error(format!("Task error: {e}")) },
+         }
++        }.await;
++        receipt.attach(result)
+     }
+ }
+ 
+@@ -5539,12 +5643,27 @@ impl Tool for HotkeyTool {
+     }
+ 
+     async fn invoke(&self, args: Value) -> ToolResult {
++        let receipt = crate::input::inject::InputReceipt::new(args.get("delivery_mode").and_then(Value::as_str) == Some("foreground"));
++        let result = async {
++        // Meido: refuse routes needing external no-activate/disable guards
++        // before dispatch. Background is supported for an already-foreground
++        // exact target; never silently activate or mutate an external HWND.
++        if args.get("delivery_mode").and_then(Value::as_str) != Some("foreground") {
++            let target = args.get("window_id").and_then(Value::as_u64).unwrap_or(0);
++            let foreground = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }.0 as u64;
++            if target == 0 || foreground != target {
++                return ToolResult::error("background_unavailable: exact target is not already foreground")
++                    .with_structured(json!({"code":"background_unavailable","effect":"not_started"}));
++            }
++        }
++
+         use crate::input::delivery::{DeliveryMode, EventKind};
+         use cua_driver_core::tool_args::ArgsExt;
+         if args.get("scope").and_then(Value::as_str) == Some("desktop")
+             && args.get("pid").is_none()
+             && args.get("window_id").is_none()
+         {
++            receipt.mark_unknown(); // Non-Meido desktop path is not instrumented.
+             let input = match parse_typed_projection::<HotkeyInput>("hotkey", &args) {
+                 Ok(input) => input,
+                 Err(result) => return result,
+@@ -5710,6 +5829,7 @@ impl Tool for HotkeyTool {
+                     args.opt_str("session"),
+                     args.opt_str("_session_id"),
+                     from_zoom,
++                    &receipt,
+                 )
+                 .await
+                 {
+@@ -5722,6 +5842,7 @@ impl Tool for HotkeyTool {
+         };
+ 
+         if !px_focus && crate::input::is_xaml_host_hwnd(hwnd) {
++            receipt.mark_unknown(); // UIA accelerator business execution may begin.
+             let mut accelerator_keys = mods.clone();
+             accelerator_keys.push(key.clone());
+             let accelerator_combo = accelerator_keys.join("+");
+@@ -5759,7 +5880,7 @@ impl Tool for HotkeyTool {
+                      element directly."
+                 )),
+                 Ok(Err(e)) => ToolResult::error(format!("hotkey (UIA path): {e}")),
+-                Err(e) => ToolResult::error(format!("Task error: {e}")),
++                Err(e) => { receipt.mark_unknown(); ToolResult::error(format!("Task error: {e}")) },
+             };
+         }
+ 
+@@ -5826,14 +5947,15 @@ impl Tool for HotkeyTool {
+             (idx, point)
+         });
+         let result = tokio::task::spawn_blocking({
++            let receipt = receipt.clone();
+             let admitted = admitted.clone();
+             move || {
+                 let _admission = &admitted;
+                 let m: Vec<&str> = mods.iter().map(String::as_str).collect();
+                 if use_send_input {
+-                    crate::input::send_key_synthesized_after_focus(hwnd, &key, &m, || {
++                    crate::input::keyboard::send_key_synthesized_after_focus_with_receipt(hwnd, &key, &m, &receipt, || {
+                         if let Some((idx, point)) = focus_target {
+-                            focus_cached_element_for_foreground(&admitted, hwnd, idx, point)?;
++                            focus_cached_element_for_foreground(&admitted, hwnd, idx, point, &receipt)?;
+                         }
+                         Ok(())
+                     })
+@@ -5854,8 +5976,10 @@ impl Tool for HotkeyTool {
+                  (Win32 target)."
+             )),
+             Ok(Err(e)) => ToolResult::error(e.to_string()),
+-            Err(e) => ToolResult::error(format!("Task error: {e}")),
++            Err(e) => { receipt.mark_unknown(); ToolResult::error(format!("Task error: {e}")) },
+         }
++        }.await;
++        receipt.attach(result)
+     }
+ }
+ 
+@@ -6088,6 +6212,20 @@ impl Tool for ScrollTool {
+     }
+ 
+     async fn invoke(&self, args: Value) -> ToolResult {
++        let receipt = crate::input::inject::InputReceipt::new(args.get("delivery_mode").and_then(Value::as_str) == Some("foreground"));
++        let result = async {
++        // Meido: refuse routes needing external no-activate/disable guards
++        // before dispatch. Background is supported for an already-foreground
++        // exact target; never silently activate or mutate an external HWND.
++        if args.get("delivery_mode").and_then(Value::as_str) != Some("foreground") {
++            let target = args.get("window_id").and_then(Value::as_u64).unwrap_or(0);
++            let foreground = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }.0 as u64;
++            if target == 0 || foreground != target {
++                return ToolResult::error("background_unavailable: exact target is not already foreground")
++                    .with_structured(json!({"code":"background_unavailable","effect":"not_started"}));
++            }
++        }
++
+         use crate::input::delivery::{DeliveryMode, EventKind};
+         use cua_driver_core::tool_args::ArgsExt;
+         // ── Window-less screen-absolute branch (desktop target) ───────────────
+@@ -6110,6 +6248,7 @@ impl Tool for ScrollTool {
+                     "suggestion": "pass scope=desktop",
+                 }));
+             }
++            receipt.mark_unknown();
+             let input = match parse_typed_projection::<ScrollInput>("scroll", &args) {
+                 Ok(input) => input,
+                 Err(error) => return error,
+@@ -6136,7 +6275,7 @@ impl Tool for ScrollTool {
+                     "✅ Scrolled {dir_disp} via SendInput wheel ({amount} tick(s)) at screen ({sx},{sy}) (desktop scope)."
+                 )),
+                 Ok(Err(e)) => ToolResult::error(e.to_string()),
+-                Err(e)     => ToolResult::error(format!("Task error: {e}")),
++                Err(e) => { receipt.mark_unknown(); ToolResult::error(format!("Task error: {e}")) },
+             };
+         }
+ 
+@@ -6213,6 +6352,7 @@ impl Tool for ScrollTool {
+             );
+         }
+         if let Some(idx) = elem_idx {
++            receipt.mark_unknown();
+             let prev_fg_addr = if delivery == DeliveryMode::Background {
+                 Some(unsafe {
+                     windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize
+@@ -6368,10 +6508,11 @@ impl Tool for ScrollTool {
+             let dir_disp = direction.clone();
+             let tick_disp = ticks.abs();
+             let result = tokio::task::spawn_blocking({
++                let receipt = receipt.clone();
+                 let admitted = admitted.clone();
+                 move || {
+                     let _admission = &admitted;
+-                    crate::input::send_wheel_synthesized(cx, cy, ticks, horizontal)
++                    crate::input::mouse::send_wheel_synthesized_with_receipt(cx, cy, ticks, horizontal, &receipt)
+                 }
+             })
+             .await;
+@@ -6381,11 +6522,12 @@ impl Tool for ScrollTool {
+                      screen ({cx},{cy}) (delivery_mode:foreground)."
+                 )),
+                 Ok(Err(e)) => ToolResult::error(e.to_string()),
+-                Err(e) => ToolResult::error(format!("Task error: {e}")),
++                Err(e) => { receipt.mark_unknown(); ToolResult::error(format!("Task error: {e}")) },
+             };
+         }
+ 
+         let result = tokio::task::spawn_blocking({
++            let receipt = receipt.clone();
+             let admitted = admitted.clone();
+             move || -> anyhow::Result<()> {
+                 let _admission = &admitted;
+@@ -6410,6 +6552,7 @@ impl Tool for ScrollTool {
+                 };
+                 for _ in 0..amount {
+                     unsafe {
++                        receipt.business_api_called(crate::input::inject::InputStage::Scroll);
+                         PostMessageW(hwnd_win, msg, WPARAM(code.0 as usize), LPARAM(0))?;
+                     }
+                 }
+@@ -6439,8 +6582,10 @@ impl Tool for ScrollTool {
+                 ))
+             }
+             Ok(Err(e)) => ToolResult::error(e.to_string()),
+-            Err(e) => ToolResult::error(format!("Task error: {e}")),
++            Err(e) => { receipt.mark_unknown(); ToolResult::error(format!("Task error: {e}")) },
+         }
++        }.await;
++        receipt.attach(result)
+     }
+ }
+ 
+diff --git a/libs/cua-driver/rust/crates/platform-windows/src/uia/fg_bypass.rs b/libs/cua-driver/rust/crates/platform-windows/src/uia/fg_bypass.rs
+index 34e83bd1f..1dfa60784 100644
+--- a/libs/cua-driver/rust/crates/platform-windows/src/uia/fg_bypass.rs
++++ b/libs/cua-driver/rust/crates/platform-windows/src/uia/fg_bypass.rs
+@@ -36,43 +36,9 @@ use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GA_ROOT};
+ /// RAII guard that disables a window on construction and restores its
+ /// previous enabled-state on Drop. Always re-arms on Drop even if the
+ /// wrapped action panics.
+-pub struct DisabledHwndGuard {
+-    hwnd: HWND,
+-    was_enabled: bool,
+-    armed: bool,
+-}
+-
+-impl DisabledHwndGuard {
+-    /// Disable `hwnd` for the lifetime of the guard. No-op for null HWND.
+-    pub fn disable(hwnd: HWND) -> Self {
+-        if hwnd.0.is_null() {
+-            return Self {
+-                hwnd,
+-                was_enabled: false,
+-                armed: false,
+-            };
+-        }
+-        // `EnableWindow` returns nonzero iff the window was *previously
+-        // disabled* — invert to get the "was enabled" state we want to
+-        // restore at Drop time.
+-        let was_disabled = unsafe { EnableWindow(hwnd, false).as_bool() };
+-        Self {
+-            hwnd,
+-            was_enabled: !was_disabled,
+-            armed: true,
+-        }
+-    }
+-}
+-
+-impl Drop for DisabledHwndGuard {
+-    fn drop(&mut self) {
+-        if self.armed {
+-            unsafe {
+-                let _ = EnableWindow(self.hwnd, self.was_enabled);
+-            }
+-        }
+-    }
+-}
++// Meido never disables an external HWND, even temporarily.
++pub struct DisabledHwndGuard;
++impl DisabledHwndGuard { pub fn disable(_hwnd: HWND) -> Self { Self } }
+ 
+ /// Wrap an activation closure (Invoke / Expand / Toggle / SelectionItem.Select)
+ /// in a UWP foreground-steal bypass.
+@@ -98,32 +64,4 @@ pub fn run_with_uwp_bypass<T>(host_hwnd: isize, action: impl FnOnce() -> T) -> T
+     action()
+ }
+ 
+-fn make_guard(host_hwnd: isize) -> Option<DisabledHwndGuard> {
+-    if host_hwnd == 0 {
+-        return None;
+-    }
+-    // XAML/UWP/WinUI hosts self-foreground during UIA pattern handling (the
+-    // original case). Chromium/Electron hosts (`Chrome_WidgetWin_*`) exhibit the
+-    // SAME bug: their UIA `InvokePattern.Invoke` handler reaches the browser's
+-    // focus path and calls `SetForegroundWindow(self)`, stealing focus from the
+-    // user's window on a *background* click (measured 7/8 ax-bg actions stole on
+-    // Windows — Chromium-specific; macOS WKWebView / Linux Electron hold).
+-    // `WS_EX_NOACTIVATE` (the injection path's `NoActivateGuard`) does NOT stop
+-    // an explicit self-`SetForegroundWindow`, but the `EnableWindow` shield does:
+-    // a *disabled* top-level cannot be made the foreground window, while the UIA
+-    // Invoke still lands (it's delivered over the kernel accessibility channel,
+-    // not the input queue `EnableWindow` gates). Same mechanism, same 0-z-drop
+-    // result as UWP — so gate the shield on Chromium too.
+-    let shielded = crate::input::is_xaml_host_hwnd(host_hwnd as u64)
+-        || crate::input::is_chromium_target_window(host_hwnd as u64);
+-    if !shielded {
+-        return None;
+-    }
+-    let h = HWND(host_hwnd as *mut _);
+-    // Defensive: walk up to the root in case the caller handed us a child
+-    // HWND inside the XAML host's HWND tree. UWP elements always disable
+-    // cleanly via the AppFrame root.
+-    let root = unsafe { GetAncestor(h, GA_ROOT) };
+-    let target = if root.0.is_null() { h } else { root };
+-    Some(DisabledHwndGuard::disable(target))
+-}
++fn make_guard(_host_hwnd: isize) -> Option<DisabledHwndGuard> { None }

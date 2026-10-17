@@ -6,12 +6,12 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, TypeAlias
 
 from ..models import AgentRun, Message
-from .events import AgentEndEvent, AgentEvent, MessageEndEvent, MessageUpdateEvent, TurnStartEvent
-from .capabilities import CapabilityResolution
+from .events import AgentEndEvent, AgentEvent, MessageEndEvent, MessageUpdateEvent, TurnStartEvent, ToolExecutionStartEvent, ToolExecutionEndEvent
+from .capabilities import CapabilityResolution, CapabilitySnapshot
 from .loop import run_agent_loop
 from .provider import CancellationToken, ModelProvider
-from .tools import AgentTool
-from .types import AgentMessage, AssistantMessage
+from .tools import AgentTool, summarize_tool_arguments
+from .types import AgentMessage, AssistantMessage, ToolResultMessage
 
 if TYPE_CHECKING:
     from ..session_store import SessionStore
@@ -33,44 +33,59 @@ class RuntimeManager:
         self._tasks: dict[str, asyncio.Task[object]] = {}
         self._reserved_roles: dict[str, str] = {}
         self._assistant_message_ids: dict[str, str | None] = {}
+        self._reservation_end: dict[str, Callable[[], None]] = {}
 
     def lock_for(self, role_id: str) -> asyncio.Lock:
         return self.role_locks.setdefault(role_id, asyncio.Lock())
 
-    async def reserve_run(self, run: AgentRun, user_content: str, *, attachments: list[dict[str, object]] | None = None) -> tuple[AgentRun, Message, Message]:
+    async def reserve_run(self, run: AgentRun, user_content: str, *, attachments: list[dict[str, object]] | None = None, received_at: float | None = None,
+                          on_accepting: Callable[[], Callable[[], None] | None] | None = None) -> tuple[AgentRun, Message, Message]:
         """Reserve a role and atomically create its run and initial messages."""
 
         lock = self.lock_for(run.roleId)
         if lock.locked():
             raise ActiveRunError(f"role already has an active run: {run.roleId}")
         await lock.acquire()
+        on_end = None
         try:
-            result = self.sessions.create_run_with_messages(run, user_content, attachments=attachments)
+            on_end = on_accepting() if on_accepting is not None else None
+            result = self.sessions.create_run_with_messages(run, user_content, attachments=attachments, received_at=received_at)
         except BaseException:
             lock.release()
+            if on_end is not None:
+                on_end()
             raise
         self._reserved_roles[run.runId] = run.roleId
         self._assistant_message_ids[run.runId] = result[2].id
         self._tokens[run.runId] = CancellationToken()
+        if on_end is not None:
+            self._reservation_end[run.runId] = on_end
         return result
 
-    async def reserve_existing_user_message(self, run: AgentRun, message_id: str, *, can_start: Callable[[], bool] | None = None) -> tuple[AgentRun, Message, Message]:
+    async def reserve_existing_user_message(self, run: AgentRun, message_id: str, *, can_start: Callable[[], bool] | None = None,
+                                            on_accepting: Callable[[], Callable[[], None] | None] | None = None) -> tuple[AgentRun, Message, Message]:
         """Reserve a run around a channel message already written to SQLite."""
 
         lock = self.lock_for(run.roleId)
         # Network intake has already durably accepted this message. Queue it
         # behind the current role turn instead of dropping it as ActiveRunError.
         await lock.acquire()
+        on_end = None
         try:
             if can_start is not None and not can_start():
                 raise ActiveRunError("message is no longer admitted")
+            on_end = on_accepting() if on_accepting is not None else None
             result = self.sessions.create_run_with_existing_user_message(run, message_id)
         except BaseException:
             lock.release()
+            if on_end is not None:
+                on_end()
             raise
         self._reserved_roles[run.runId] = run.roleId
         self._assistant_message_ids[run.runId] = result[2].id
         self._tokens[run.runId] = CancellationToken()
+        if on_end is not None:
+            self._reservation_end[run.runId] = on_end
         return result
 
     def attach_current_task(self, run_id: str) -> bool:
@@ -204,6 +219,12 @@ class RuntimeManager:
             if self.sessions.get_run(run.runId) is None:
                 self.sessions.create_run(run)
             self.sessions.update_run(run.runId, status="running")
+            if capabilities is not None and capabilities.snapshot.candidates:
+                self.sessions.append_capability_revision(run.runId, capabilities.snapshot.to_dict(include_prompt_sections=False))
+
+            def persist_capability_revision(snapshot: CapabilitySnapshot) -> None:
+                self.sessions.append_capability_revision(run.runId, snapshot.to_dict(include_prompt_sections=False))
+
             async for event in run_agent_loop(
                 provider=provider,
                 model=model,
@@ -219,12 +240,30 @@ class RuntimeManager:
                 run_id=run.runId,
                 provider_timeout=provider_timeout,
                 tool_timeout=tool_timeout,
+                on_capability_revision=persist_capability_revision,
             ):
                 if isinstance(event, MessageUpdateEvent) and isinstance(event.message, AssistantMessage):
                     assistant_content = event.message.content
                 if isinstance(event, TurnStartEvent):
                     turn_count = event.turn
                     self.sessions.update_run(run.runId, status="running", turn_count=turn_count)
+                if isinstance(event, ToolExecutionStartEvent):
+                    if event.snapshot_id is not None and capabilities is not None and capabilities.snapshot.candidates:
+                        self.sessions.record_capability_call(run.runId, event.tool_call_id, event.snapshot_id)
+                    self.sessions.start_tool_audit(
+                        run_id=run.runId, role_id=run.roleId, tool_name=event.tool_name,
+                        call_id=event.tool_call_id, argument_summary=summarize_tool_arguments(event.arguments),
+                        snapshot_id=event.snapshot_id, tool_source=event.tool_source,
+                        tool_version=event.tool_version, policy_decision=event.policy_decision,
+                    )
+                if isinstance(event, ToolExecutionEndEvent):
+                    details = event.result.details if isinstance(event.result.details, dict) else {}
+                    self.sessions.finish_tool_audit(
+                        run_id=run.runId, call_id=event.tool_call_id,
+                        result_category=str(details.get("status") or ("error" if event.result.is_error else "succeeded")),
+                        error_type=str(details["errorType"]) if details.get("errorType") else None,
+                        error_message=str(details["message"]) if details.get("message") else None,
+                    )
                 if isinstance(event, MessageEndEvent):
                     if isinstance(event.message, AssistantMessage):
                         assistant_content = event.message.content
@@ -234,6 +273,9 @@ class RuntimeManager:
                             persisted = await persisted
                         if isinstance(event.message, AssistantMessage) and isinstance(persisted, Message):
                             self.set_assistant_message(run.runId, persisted.id)
+                    elif capabilities is not None and capabilities.snapshot.candidates and (
+                            isinstance(event.message, ToolResultMessage) or isinstance(event.message, AssistantMessage) and event.message.tool_calls):
+                        self.sessions.append_agent_message(run.sessionKey, event.message, run_id=run.runId)
                 if isinstance(event, AgentEndEvent):
                     assistant = next(
                         (message for message in reversed(event.messages) if isinstance(message, AssistantMessage)),
@@ -311,6 +353,8 @@ class RuntimeManager:
                 error=error,
             )
             self._assistant_message_ids[run_id] = message.id
+            self.sessions.finish_open_tool_audits(run_id, result_category=status,
+                error_type="RuntimeError" if error else None, error_message=error)
             return message
         except BaseException:
             raise
@@ -324,3 +368,6 @@ class RuntimeManager:
             lock = self.lock_for(role_id)
             if lock.locked():
                 lock.release()
+        on_end = self._reservation_end.pop(run_id, None)
+        if on_end is not None:
+            on_end()

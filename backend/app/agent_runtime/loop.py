@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import replace
 import math
+import inspect
 import time
 from typing import Literal
 
@@ -22,7 +23,7 @@ from .events import (
     TurnStartEvent,
     stamp_event,
 )
-from .capabilities import CapabilityResolution
+from .capabilities import CapabilityResolution, CapabilitySnapshot
 from .provider import (
     AssistantDoneEvent,
     CancellationToken,
@@ -31,7 +32,7 @@ from .provider import (
     TextDeltaEvent,
     ToolCallEndEvent,
 )
-from .tools import AgentTool, AgentToolResult, ToolContext, ToolRegistry, resolve_tool_result
+from .tools import AgentTool, AgentToolResult, ToolContext, ToolDefinition, ToolRegistry, resolve_tool_result
 from .types import AgentMessage, AssistantMessage, ToolCall, ToolResultMessage
 
 
@@ -51,6 +52,7 @@ async def run_agent_loop(
     run_id: str = "",
     provider_timeout: float | None = None,
     tool_timeout: float | None = None,
+    on_capability_revision: Callable[[CapabilitySnapshot], Awaitable[None] | None] | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run the provider/tool loop while keeping the transcript mutable.
 
@@ -62,6 +64,7 @@ async def run_agent_loop(
     token = signal or CancellationToken()
     registry = ToolRegistry(tools) if capabilities is None else capabilities
     sequence = 0
+    used_call_ids = {call.id for message in messages if isinstance(message, AssistantMessage) for call in message.tool_calls}
 
     async def emit(event: AgentEvent) -> AsyncIterator[AgentEvent]:
         nonlocal sequence
@@ -73,6 +76,8 @@ async def run_agent_loop(
     turn = 0
 
     while True:
+        if capabilities is not None:
+            registry = capabilities.current()
         if token.is_cancelled():
             aborted = AssistantMessage(stop_reason="aborted")
             messages.append(aborted)
@@ -180,6 +185,7 @@ async def run_agent_loop(
                 metadata=dict(assistant.metadata),
             )
 
+        assistant = _assign_call_identities(assistant, used_call_ids, run_id=run_id, turn=turn)
         messages.append(assistant)
         if not started:
             async for event in emit(MessageStartEvent(assistant)):
@@ -196,7 +202,14 @@ async def run_agent_loop(
 
         results: list[ToolResultMessage] = []
         for call in assistant.tool_calls:
-            async for event in emit(ToolExecutionStartEvent(call.id, call.name, dict(call.arguments))):
+            definition = registry.candidate_definition(call.name) if isinstance(registry, CapabilityResolution) else None
+            async for event in emit(ToolExecutionStartEvent(
+                call.id, call.name, dict(call.arguments),
+                snapshot_id=registry.snapshot.snapshot_id if isinstance(registry, CapabilityResolution) else None,
+                tool_source=definition.source if definition is not None else None,
+                tool_version=definition.version if definition is not None else None,
+                policy_decision=registry.snapshot.policy_decisions.get(call.name) if isinstance(registry, CapabilityResolution) else None,
+            )):
                 yield event
             tool_context = (
                 ToolContext(
@@ -205,6 +218,7 @@ async def run_agent_loop(
                     run_id=registry.snapshot.run_id,
                     signal=token,
                     tool_call_id=call.id,
+                    capability_snapshot_id=registry.snapshot.snapshot_id,
                 )
                 if isinstance(registry, CapabilityResolution)
                 else ToolContext(role_id=role_id, session_key=session_key, run_id=run_id, signal=token, tool_call_id=call.id)
@@ -236,12 +250,40 @@ async def run_agent_loop(
                 yield event
             async for event in emit(MessageEndEvent(tool_message)):
                 yield event
+            if capabilities is not None and not tool_message.is_error and not token.is_cancelled():
+                revision = capabilities.pending_revision(call.id)
+                if revision is not None:
+                    if on_capability_revision is not None:
+                        persisted = on_capability_revision(revision.snapshot)
+                        if inspect.isawaitable(persisted):
+                            await persisted
+                    if not token.is_cancelled():
+                        capabilities.publish_revision(revision)
         async for event in emit(TurnEndEvent(assistant, tuple(results))):
             yield event
         if not assistant.tool_calls:
             async for event in emit(AgentEndEvent(tuple(messages), reason="completed")):
                 yield event
             return
+
+
+def _assign_call_identities(assistant: AssistantMessage, used_ids: set[str], *, run_id: str, turn: int) -> AssistantMessage:
+    if not assistant.tool_calls:
+        return assistant
+    calls = []
+    provider_ids = {}
+    for index, call in enumerate(assistant.tool_calls):
+        identity = call.id
+        counter = 0
+        while identity in used_ids:
+            identity = f"host-call-{run_id}-{turn}-{index}-{counter}"
+            counter += 1
+        used_ids.add(identity)
+        provider_ids[identity] = call.id
+        calls.append(replace(call, id=identity))
+    return replace(assistant, tool_calls=tuple(calls), metadata={
+        **assistant.metadata, "provider_tool_call_ids": provider_ids,
+    })
 
 
 async def _execute_tool(
@@ -306,9 +348,15 @@ async def _execute_tool(
         signal.raise_if_cancelled()
         arguments = dict(call.arguments)
         if isinstance(registry, CapabilityResolution):
+            denial = registry.authorization_denial(registry.definition(call.name), context, arguments)
+            if denial is not None:
+                return finish(AgentToolResult(denial, details={"reason": denial}, is_error=True), status="denied"), updates
             arguments, hook_error = await registry.prepare_tool_call(call.name, arguments, context)
             if hook_error is not None:
                 return finish(hook_error), updates
+            denial = registry.authorization_denial(registry.definition(call.name), context, arguments)
+            if denial is not None:
+                return finish(AgentToolResult(denial, details={"reason": denial}, is_error=True), status="denied"), updates
         try:
             registry.validate_arguments(call.name, arguments)
         except ValueError as error:
@@ -320,7 +368,9 @@ async def _execute_tool(
                 ),
                 status="invalid_arguments",
             ), updates
-        pending = resolve_tool_result(tool.execute(arguments, context, on_update))
+        tool_signal = CancellationToken(parent=signal)
+        tool_context = replace(context, signal=tool_signal)
+        pending = resolve_tool_result(tool.execute(arguments, tool_context, on_update))
         definition = (
             registry.definition(call.name)
             if isinstance(registry, CapabilityResolution)
@@ -332,7 +382,10 @@ async def _execute_tool(
             if timeout is not None and tool_timeout is not None
             else tool_timeout if tool_timeout is not None else timeout
         )
-        result = await asyncio.wait_for(pending, timeout=effective_timeout) if effective_timeout is not None else await pending
+        result = await _await_authorized_tool(
+            pending, registry=registry, definition=definition, context=context,
+            signal=signal, tool_signal=tool_signal, timeout=effective_timeout, arguments=arguments,
+        )
         if not isinstance(result, AgentToolResult):
             return finish(AgentToolResult("tool returned an invalid result", is_error=True), status="failed"), updates
         return finish(result), updates
@@ -347,6 +400,7 @@ async def _execute_tool(
         ), updates
     except RuntimeError as error:
         if str(error) == "agent run cancelled":
+            signal.cancel()
             return finish(
                 AgentToolResult(
                     "tool cancelled",
@@ -372,6 +426,44 @@ async def _execute_tool(
             ),
             status="failed",
         ), updates
+
+
+async def _await_authorized_tool(
+    pending: Awaitable[AgentToolResult], *, registry: ToolRegistry | CapabilityResolution,
+    definition: ToolDefinition, context: ToolContext, signal: CancellationToken,
+    tool_signal: CancellationToken, timeout: float | None, arguments: Mapping[str, object],
+) -> AgentToolResult:
+    task = asyncio.ensure_future(pending)
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    try:
+        while True:
+            signal.raise_if_cancelled()
+            if tool_signal.is_cancelled():
+                signal.cancel()
+                signal.raise_if_cancelled()
+            if isinstance(registry, CapabilityResolution):
+                denial = registry.authorization_denial(definition, context, arguments)
+                if denial is not None:
+                    return AgentToolResult(denial, details={"reason": denial, "status": "denied"}, is_error=True)
+            if task.done():
+                return task.result()
+            remaining = deadline - time.monotonic() if deadline is not None else None
+            if remaining is not None and remaining <= 0:
+                raise asyncio.TimeoutError
+            await asyncio.wait((task,), timeout=min(0.05, remaining) if remaining is not None else 0.05)
+    finally:
+        tool_signal.cancel()
+        if not task.done():
+            task.cancel()
+        cleanup = asyncio.gather(task, return_exceptions=True)
+        interrupted: asyncio.CancelledError | None = None
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError as error:
+                interrupted = error
+        if interrupted is not None:
+            raise interrupted
 
 
 _TOOL_RESULT_STATUSES = frozenset({

@@ -12,7 +12,6 @@ import hashlib
 import hmac
 import json
 import logging
-import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -20,164 +19,15 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
+from websockets.exceptions import ConnectionClosed, PayloadTooBig
 
 from .base import ChannelAdapterError, EventHandler, PlatformRejectedError
+from .directory import DirectoryError, MAX_RESPONSE_BYTES, observed_now
+from .feishu_connection import FeishuLongConnectionRunner, feishu_sdk_connection_factory, wait_owned
 
 logger = logging.getLogger(__name__)
 
 WebSocketConnector = Callable[..., Any]
-
-
-class FeishuLongConnectionRunner:
-    """Run one long connection on a dedicated event loop and thread."""
-
-    def __init__(self, factory: Callable[[Callable[[Mapping[str, Any]], None]], Any], on_event: Callable[[Mapping[str, Any]], None], *, reconnect_min: float = 1.0, reconnect_max: float = 30.0) -> None:
-        self._factory = factory
-        self._on_event = on_event
-        self._reconnect_min = reconnect_min
-        self._reconnect_max = reconnect_max
-        self.connected = False
-        self._thread: threading.Thread | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._stop = threading.Event()
-        self._wake: asyncio.Event | None = None
-
-    @property
-    def alive(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
-
-    def start(self) -> None:
-        if self.alive:
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="feishu-long-connection", daemon=True)
-        self._thread.start()
-
-    async def stop(self) -> None:
-        self._stop.set()
-        if self._loop is not None and self._wake is not None:
-            self._loop.call_soon_threadsafe(self._wake.set)
-        thread = self._thread
-        if thread is not None:
-            await asyncio.to_thread(thread.join, 10)
-        self.connected = False
-
-    def _run(self) -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        self._loop = loop
-        self._wake = asyncio.Event()
-        try:
-            loop.run_until_complete(self._supervise())
-        finally:
-            pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
-            for task in pending:
-                task.cancel()
-            if pending:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            loop.close()
-            self._loop = None
-            self._wake = None
-
-    async def _supervise(self) -> None:
-        delay = self._reconnect_min
-        while not self._stop.is_set():
-            connection = None
-            try:
-                connection = self._factory(self._dispatch)
-                await connection.connect()
-                self.connected = True
-                delay = self._reconnect_min
-                keepalive = asyncio.create_task(connection.keepalive())
-                try:
-                    while not self._stop.is_set() and connection.is_connected():
-                        await self._sleep(0.1)
-                finally:
-                    keepalive.cancel()
-                    await asyncio.gather(keepalive, return_exceptions=True)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                self.connected = False
-            finally:
-                self.connected = False
-                if connection is not None:
-                    try:
-                        await asyncio.wait_for(connection.disconnect(), 5)
-                    except Exception:
-                        pass
-            if not self._stop.is_set():
-                await self._sleep(delay)
-                delay = min(delay * 2, self._reconnect_max)
-
-    async def _sleep(self, seconds: float) -> None:
-        if self._wake is None:
-            return
-        self._wake.clear()
-        try:
-            await asyncio.wait_for(self._wake.wait(), seconds)
-        except TimeoutError:
-            pass
-
-    def _dispatch(self, payload: Mapping[str, Any]) -> None:
-        if not self._stop.is_set():
-            self._on_event(payload)
-
-
-def feishu_sdk_connection_factory(app_id: str, app_secret: str, endpoint: str) -> Callable[[Callable[[Mapping[str, Any]], None]], Any]:
-    """Create a lazy lark-oapi SDK factory, keeping the optional SDK import local."""
-
-    def factory(on_event: Callable[[Mapping[str, Any]], None]) -> Any:
-        import importlib
-
-        from lark_oapi import EventDispatcherHandler, LogLevel
-        client_module = importlib.import_module("lark_oapi.ws.client")
-
-        class LoopProxy:
-            def create_task(self, coroutine: Any) -> asyncio.Task[Any]:
-                return asyncio.get_running_loop().create_task(coroutine)
-            def run_until_complete(self, awaitable: Any) -> Any:
-                return asyncio.get_event_loop().run_until_complete(awaitable)
-
-        client_module.loop = LoopProxy()
-        Client = client_module.Client
-
-        builder = EventDispatcherHandler.builder("", "")
-        builder.register_p2_customized_event("im.message.receive_v1", lambda event: on_event(_feishu_event_payload(event)))
-        client = Client(app_id, app_secret, log_level=LogLevel.WARNING, event_handler=builder.build(), domain=endpoint, auto_reconnect=False)
-
-        class Connection:
-            async def connect(self) -> None:
-                await client._connect()
-            def is_connected(self) -> bool:
-                return client._conn is not None
-            async def keepalive(self) -> None:
-                await client._ping_loop()
-            async def disconnect(self) -> None:
-                await client._disconnect()
-
-        return Connection()
-
-    return factory
-
-
-def _feishu_event_payload(event: Any) -> dict[str, Any]:
-    header = getattr(event, "header", None)
-    body = getattr(event, "event", None)
-    return {"header": {"event_id": str(getattr(header, "event_id", "") or ""), "event_type": str(getattr(header, "event_type", "") or "")}, "event": _protobuf_mapping(body)}
-
-
-def _protobuf_mapping(value: Any) -> dict[str, Any]:
-    if isinstance(value, Mapping):
-        return dict(value)
-    if value is None:
-        return {}
-    try:
-        from google.protobuf.json_format import MessageToDict
-        result = MessageToDict(value, preserving_proto_field_name=True)
-        return result if isinstance(result, dict) else {}
-    except Exception:
-        return {}
 
 
 class ChannelTransportError(ChannelAdapterError):
@@ -213,6 +63,9 @@ class NapCatWebSocketTransport:
         self.reconnect_min = reconnect_min
         self.reconnect_max = reconnect_max
         self.connected = False
+        self._online: bool | None = None
+        self._observed_at: str | None = None
+        self._connection_reason = "not_started"
         self._handler: EventHandler | None = None
         self._ws: Any = None
         self._task: asyncio.Task[None] | None = None
@@ -234,7 +87,18 @@ class NapCatWebSocketTransport:
             return
         self._handler = on_event
         self._stopping.clear()
+        self._online = None
+        self._observed_at = observed_now()
+        self._connection_reason = "connecting"
         self._task = asyncio.create_task(self._run(), name="napcat-onebot-websocket")
+
+    def connection_snapshot(self) -> dict[str, Any]:
+        connection = "connected" if self.connected else (
+            "connecting" if self._task is not None and not self._task.done() and not self._stopping.is_set()
+            else "disconnected"
+        )
+        return {"connection": connection, "online": self._online,
+                "observedAt": self._observed_at, "reason": self._connection_reason}
 
     async def stop(self) -> None:
         self._stopping.set()
@@ -254,6 +118,9 @@ class NapCatWebSocketTransport:
         if event_tasks:
             await asyncio.gather(*event_tasks, return_exceptions=True)
         self.connected = False
+        self._online = None
+        self._observed_at = observed_now()
+        self._connection_reason = "stopped"
         self._fail_pending(ChannelTransportError("NapCat WebSocket 已断开"))
 
     async def __call__(self, action: str, params: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -267,7 +134,12 @@ class NapCatWebSocketTransport:
         try:
             async with self._send_lock:
                 await ws.send(json.dumps(request, ensure_ascii=False))
-            return await asyncio.wait_for(future, timeout=self.request_timeout)
+            result = await asyncio.wait_for(future, timeout=self.request_timeout)
+            if action == "get_status" and self._ws is ws and self.connected and type(result.get("online")) is bool:
+                self._online = result["online"]
+                self._observed_at = observed_now()
+                self._connection_reason = "status_online" if self._online else "status_offline"
+            return result
         except TimeoutError:
             raise
         finally:
@@ -294,18 +166,35 @@ class NapCatWebSocketTransport:
                     open_timeout=10,
                     close_timeout=3,
                     ping_interval=20,
+                    max_size=MAX_RESPONSE_BYTES,
                 ) as ws:
                     self._ws = ws
                     self.connected = True
+                    self._online = None
+                    self._observed_at = observed_now()
+                    self._connection_reason = "online_unknown"
                     delay = self.reconnect_min
                     await self._read_loop(ws)
             except asyncio.CancelledError:
                 raise
             except Exception as error:
+                if isinstance(error, DirectoryError):
+                    self._fail_pending(error)
+                    self._connection_reason = error.code
+                elif isinstance(error, PayloadTooBig) or (
+                    isinstance(error, ConnectionClosed)
+                    and any(frame is not None and frame.code == 1009 for frame in (error.sent, error.rcvd))
+                ):
+                    self._fail_pending(DirectoryError("directory_too_large"))
+                    self._connection_reason = "directory_too_large"
+                else:
+                    self._connection_reason = "connection_lost"
                 if not self._stopping.is_set():
                     logger.warning("NapCat WebSocket 断开，将在 %.1f 秒后重连 (%s)", delay, type(error).__name__)
             finally:
                 self.connected = False
+                self._online = None
+                self._observed_at = observed_now()
                 self._ws = None
                 self._fail_pending(ChannelTransportError("NapCat WebSocket 已断开"))
             if not self._stopping.is_set():
@@ -315,6 +204,8 @@ class NapCatWebSocketTransport:
     async def _read_loop(self, ws: Any) -> None:
         while not self._stopping.is_set():
             raw = await ws.recv()
+            if len(raw.encode("utf-8") if isinstance(raw, str) else raw) > MAX_RESPONSE_BYTES:
+                raise DirectoryError("directory_too_large")
             packet = json.loads(raw)
             if not isinstance(packet, dict):
                 continue
@@ -380,6 +271,9 @@ class QQBotGatewayTransport:
         self._stopping = asyncio.Event()
         self._ws: Any = None
         self._connected = False
+        self._online: bool | None = None
+        self._observed_at: str | None = None
+        self._connection_reason = "not_started"
         self._sequence: int | None = None
         self._session_id: str | None = None
         self._resume_gateway_url: str | None = None
@@ -390,6 +284,14 @@ class QQBotGatewayTransport:
     @property
     def connected(self) -> bool:
         return self._connected
+
+    def connection_snapshot(self) -> dict[str, Any]:
+        connection = "connected" if self.connected else (
+            "connecting" if self._task is not None and not self._task.done() and not self._stopping.is_set()
+            else "disconnected"
+        )
+        return {"connection": connection, "online": self._online,
+                "observedAt": self._observed_at, "reason": self._connection_reason}
 
     async def profile(self) -> Mapping[str, Any]:
         self._ensure_http_open()
@@ -414,6 +316,9 @@ class QQBotGatewayTransport:
             return
         self._handler = on_event
         self._stopping.clear()
+        self._online = None
+        self._observed_at = observed_now()
+        self._connection_reason = "connecting"
         self._task = asyncio.create_task(self._run(), name="qqbot-gateway")
 
     async def stop(self) -> None:
@@ -428,6 +333,9 @@ class QQBotGatewayTransport:
             except asyncio.CancelledError:
                 pass
         self._connected = False
+        self._online = False
+        self._observed_at = observed_now()
+        self._connection_reason = "stopped"
         if self._event_tasks:
             await asyncio.gather(*tuple(self._event_tasks), return_exceptions=True)
         if self._owns_http:
@@ -552,6 +460,9 @@ class QQBotGatewayTransport:
                 async with self._connector()(url, open_timeout=15, close_timeout=3, ping_interval=None) as ws:
                     self._ws = ws
                     self._connected = True
+                    self._online = None
+                    self._observed_at = observed_now()
+                    self._connection_reason = "gateway_not_ready"
                     delay = self.reconnect_min
                     await self._read_gateway(ws)
             except asyncio.CancelledError:
@@ -562,6 +473,9 @@ class QQBotGatewayTransport:
             finally:
                 self._ws = None
                 self._connected = False
+                self._online = False
+                self._observed_at = observed_now()
+                self._connection_reason = "stopped" if self._stopping.is_set() else "connection_lost"
             if not self._stopping.is_set():
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, self.reconnect_max)
@@ -599,6 +513,13 @@ class QQBotGatewayTransport:
                     if event_type == "READY" and isinstance(data, dict):
                         self._session_id = str(data.get("session_id", "")) or None
                         self._resume_gateway_url = str(data.get("resume_gateway_url", "")) or None
+                        self._online = True
+                        self._observed_at = observed_now()
+                        self._connection_reason = "gateway_ready"
+                    elif event_type == "RESUMED":
+                        self._online = True
+                        self._observed_at = observed_now()
+                        self._connection_reason = "gateway_resumed"
                     event_task = asyncio.create_task(_invoke_event(self._handler, packet))
                     self._event_tasks.add(event_task)
                     event_task.add_done_callback(self._event_tasks.discard)
@@ -666,13 +587,30 @@ class FeishuWebhookTransport:
         self._long_connection_reconnect_min = max(0.0, long_connection_reconnect_min)
         self._long_connection_reconnect_max = max(self._long_connection_reconnect_min, long_connection_reconnect_max)
         self._long_connection: FeishuLongConnectionRunner | None = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._stop_task: asyncio.Task[None] | None = None
+        self._stopping = False
+        self._last_connection_snapshot: dict[str, Any] = {
+            "connection": "disconnected", "online": None, "observedAt": None, "reason": "not_started",
+        }
         self._token = ""
         self._token_expires_at = 0.0
         self._token_lock = asyncio.Lock()
 
     async def start(self, on_event: EventHandler) -> None:
+        async with self._lifecycle_lock:
+            if self._long_connection is not None and self._stopping:
+                raise ChannelTransportError("feishu_stopping")
+            self._stop_task = None
+            self._stopping = False
+            self._start(on_event)
+
+    def _start(self, on_event: EventHandler) -> None:
         self._handler = on_event
         self._host_loop = asyncio.get_running_loop()
+        self._last_connection_snapshot = {
+            "connection": "unknown", "online": None, "observedAt": None, "reason": "webhook_unobserved",
+        }
         if self._long_connection_enabled:
             factory = self._long_connection_factory
             if factory is None:
@@ -687,17 +625,43 @@ class FeishuWebhookTransport:
             self._long_connection.start()
 
     async def stop(self) -> None:
-        runner, self._long_connection = self._long_connection, None
-        if runner is not None:
-            await runner.stop()
+        self.retire()
+        if self._stop_task is None or (self._stop_task.done() and self._stop_task.exception() is not None):
+            self._stop_task = asyncio.create_task(self._stop_owned())
+        await wait_owned(self._stop_task)
+
+    def retire(self) -> None:
+        """Close new ingress while retaining ownership until cleanup succeeds."""
+        self._stopping = True
         self._handler = None
-        self._host_loop = None
-        if self._owns_http:
-            await self._http.aclose()
+
+    @property
+    def retiring(self) -> bool:
+        return self._stopping
+
+    async def _stop_owned(self) -> None:
+        async with self._lifecycle_lock:
+            runner = self._long_connection
+            if runner is not None:
+                await runner.stop()
+                self._last_connection_snapshot = runner.connection_snapshot()
+                self._long_connection = None
+            else:
+                self._last_connection_snapshot = {
+                    "connection": "disconnected", "online": None, "observedAt": observed_now(), "reason": "stopped",
+                }
+            self._host_loop = None
+            if self._owns_http:
+                await self._http.aclose()
 
     @property
     def connected(self) -> bool:
         return self._long_connection is not None and self._long_connection.connected
+
+    def connection_snapshot(self) -> dict[str, Any]:
+        if self._long_connection is not None:
+            return self._long_connection.connection_snapshot()
+        return dict(self._last_connection_snapshot)
 
     def _dispatch_long_event(self, payload: Mapping[str, Any]) -> None:
         handler, loop = self._handler, self._host_loop
@@ -713,6 +677,8 @@ class FeishuWebhookTransport:
         the untouched request body so Feishu's request signature can be checked.
         """
 
+        if self._stopping:
+            raise ChannelTransportError("feishu_stopping")
         body_text = raw_body.decode("utf-8")
         payload = json.loads(body_text)
         if not isinstance(payload, dict):

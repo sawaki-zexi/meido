@@ -99,9 +99,10 @@ def configure_session_api(tmp_path, monkeypatch, adapter):
     return role, sessions, TestClient(main.app)
 
 
-def test_completed_http_reply_finishes_when_disconnect_poll_and_cleanup_cancel_overlap(tmp_path, monkeypatch):
+def test_completed_http_reply_finishes_when_disconnect_poll_and_cleanup_cancel_overlap(tmp_path, monkeypatch, local_platform_only):
     import anyio
     from backend.app.agent_runtime.runtime import RuntimeManager
+    from backend.app.memory_config import MemorySettingsStore
 
     poll_started = asyncio.Event()
     aligned = False
@@ -113,6 +114,9 @@ def test_completed_http_reply_finishes_when_disconnect_poll_and_cleanup_cancel_o
 
     role, sessions, _ = configure_session_api(tmp_path, monkeypatch, Adapter())
     monkeypatch.setattr(main, "runtime_manager", RuntimeManager(sessions))
+    memory_settings = MemorySettingsStore(tmp_path / "memory-settings.json")
+    memory_settings.update(enabled=False)
+    monkeypatch.setattr(main, "memory_settings_store", memory_settings)
 
     async def connected_client(scope, receive, send):
         async def controlled_receive():
@@ -634,7 +638,9 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
     assert stored_run.modelSnapshot["context"]["toolAllowlist"] == [executable]
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["name"] == "shell"
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["source"] == "role"
-    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["timeoutSeconds"] == 30.0
+    # The runner retains a 30s execution budget; its tool envelope allows 2s
+    # for owned-process cleanup and persisting the terminal result.
+    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["timeoutSeconds"] == 32.0
     assert stored_run.modelSnapshot["capabilities"]["tools"][0]["outputLimit"] == 20000
     assert len(stored_run.modelSnapshot["capabilities"]["generation"]) == 24
 
@@ -1228,6 +1234,9 @@ def test_startup_finishes_interrupted_role_deletion_without_recreating_data(tmp_
     monkeypatch.setattr(main, "memory_worker", worker)
     monkeypatch.setattr(main, "memory_maintenance", MemoryMaintenance(tmp_path / "roles", sessions))
     monkeypatch.setattr(main, "memory_optimizer_loop", MemoryOptimizerLoop(optimizer, tmp_path / "roles", enabled=False))
+    # This temporary startup owns memory deletion recovery, not an autonomous
+    # clock that would outlive this test's event loop and repository fixtures.
+    monkeypatch.setattr(main.ProactiveApplication, "start", lambda _self: None)
     asyncio.run(main._start_memory_workers())
     assert all(not rows for rows in memories.snapshot_role(role.id).values())
     assert sessions.snapshot_role_session(role.id) == (None, [], [])

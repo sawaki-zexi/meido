@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import threading
@@ -9,6 +10,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from collections.abc import Callable
 
 from .models import Role, RoleInput, RoleUpdateInput
 
@@ -80,6 +82,12 @@ class RoleStore:
             current = self._roles[index]
             values = current.model_dump(exclude={"id", "createdAt", "updatedAt"})
             values.update(data.model_dump(exclude_unset=True, exclude_none=True))
+            if data.agentConfig is not None:
+                for field in ("screenPerception", "computerUse", "novelai", "coding"):
+                    settings = getattr(current.agentConfig, field).model_dump()
+                    if field in data.agentConfig.model_fields_set:
+                        settings.update(getattr(data.agentConfig, field).model_dump(exclude_unset=True))
+                    values["agentConfig"][field] = settings
             updated = Role(**values, id=current.id, createdAt=current.createdAt, updatedAt=utc_now())
             candidate = [*self._roles]
             candidate[index] = updated
@@ -104,17 +112,23 @@ class RoleStore:
             self._roles = candidate
             return updated.model_copy(deep=True)
 
-    def set_avatar(self, role_id: str, content: bytes, media_type: str, *, original: bool = False, card: bool = False) -> Role:
+    def set_avatar(self, role_id: str, content: bytes, media_type: str, *, original: bool = False, card: bool = False,
+                   expected_card_url: str | None = None, authorized: Callable[[], bool] | None = None,
+                   operation_id: str | None = None) -> Role:
         with self._lock:
             self._require_writable(role_id)
             index = next((i for i, role in enumerate(self._roles) if role.id == role_id), None)
             if index is None:
                 raise KeyError(role_id)
+            if authorized is not None and (not card or not authorized() or self._roles[index].cardImageUrl != expected_card_url):
+                raise PermissionError('role card permission or expected version changed')
+            if operation_id is not None and (len(operation_id) != 32 or any(char not in '0123456789abcdef' for char in operation_id)):
+                raise ValueError('invalid generated asset operation')
             role_dir = self.root / role_id
             file_name = "avatar-original" if original else "card-image" if card else "avatar"
             avatar_path = role_dir / file_name
-            temporary_path = role_dir / f".avatar-{uuid.uuid4().hex}.tmp"
-            previous_path = role_dir / f".avatar-{uuid.uuid4().hex}.bak"
+            temporary_path = role_dir / f".avatar-{operation_id or uuid.uuid4().hex}.tmp"
+            previous_path = role_dir / f".avatar-{operation_id or uuid.uuid4().hex}.bak"
             had_previous = avatar_path.exists()
             staged_previous = False
             installed_new = False
@@ -134,6 +148,8 @@ class RoleStore:
                 })
                 candidate = [*self._roles]
                 candidate[index] = updated
+                if authorized is not None and not authorized():
+                    raise PermissionError('role card permission was revoked before commit')
                 self._save(candidate)
             except OSError:
                 temporary_path.unlink(missing_ok=True)
@@ -146,8 +162,47 @@ class RoleStore:
             try:
                 previous_path.unlink(missing_ok=True)
             except OSError:
-                pass
+                if authorized is not None:
+                    raise
             return updated.model_copy(deep=True)
+
+    def reconcile_generated_card(self, role_id: str, *, operation_id: str,
+                                 expected_card_url: str | None, digest: str, size: int) -> bool | None:
+        """Reconcile only this operation's local files under the asset lock.
+
+        A new image without its manifest commit is a rollback obligation, not
+        proof that the card was applied. A later owner edit always wins.
+        """
+        if (len(operation_id) != 32 or any(char not in '0123456789abcdef' for char in operation_id)
+                or len(digest) != 64 or any(char not in '0123456789abcdef' for char in digest)
+                or type(size) is not int or not 1 <= size <= 64 * 1024 * 1024):
+            raise ValueError('invalid generated card recovery identity')
+        with self._lock:
+            self._require_writable(role_id)
+            role = self.get(role_id)
+            if role is None:
+                raise KeyError(role_id)
+            root = self.avatar_path(role_id).parent
+            card = root / 'card-image'
+            previous = root / ('.avatar-' + operation_id + '.bak')
+            temporary = root / ('.avatar-' + operation_id + '.tmp')
+            if any(path.is_symlink() or path.resolve().parent != root for path in (card, previous, temporary)):
+                raise PermissionError('generated card recovery must remain in its role')
+            matches = False
+            if card.is_file() and card.stat().st_size == size:
+                with card.open('rb') as handle:
+                    matches = hashlib.sha256(handle.read(size + 1)).hexdigest() == digest
+            applied = matches and role.cardImageUrl != expected_card_url
+            if role.cardImageUrl == expected_card_url and (matches or not card.exists()):
+                if previous.is_file():
+                    os.replace(previous, card)
+                elif expected_card_url is None:
+                    card.unlink(missing_ok=True)
+                else:
+                    return None  # Missing old bytes cannot be invented.
+            previous.unlink(missing_ok=True)
+            temporary.unlink(missing_ok=True)
+            return applied
 
     def remove_avatar(self, role_id: str) -> Role:
         with self._lock:

@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from backend.app import main
 from backend.app.channels import ChannelHost
 from backend.app.channels.credentials import credential_key
+from backend.app.channels.transports import FeishuWebhookTransport
 from backend.app.models import RoleInput, RoleProfile
 from backend.app.multichannel import MultichannelStore
 from backend.app.role_store import RoleStore
@@ -31,8 +32,25 @@ class MemoryCredentials:
             self.values.pop(key, None)
 
 
+class LocalFeishuConnection:
+    def __init__(self):
+        self.connected = False
+
+    async def connect(self):
+        self.connected = True
+
+    def is_connected(self):
+        return self.connected
+
+    async def keepalive(self):
+        await asyncio.Future()
+
+    async def disconnect(self):
+        self.connected = False
+
+
 @pytest.fixture
-def channel_api(tmp_path, monkeypatch):
+def channel_api(tmp_path, monkeypatch, local_platform_only):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="测试角色", profile=RoleProfile(profile="核心设定")))
     sessions = SessionStore(tmp_path / "sessions.db")
@@ -48,7 +66,36 @@ def channel_api(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "telegram_tasks", {})
     monkeypatch.setattr(main, "telegram_stops", {})
     monkeypatch.setattr(main, "channel_tasks", {})
-    return role, channels, credentials, TestClient(main.app)
+    transports, connections = [], []
+
+    async def absent_avatar(account, kind, subject_id):
+        # Avatar/profile fetching is outside these API/lifecycle tests.
+        return None
+
+    def connection_factory(on_event):
+        connection = LocalFeishuConnection()
+        connections.append(connection)
+        return connection
+
+    class LocalFeishuTransport(FeishuWebhookTransport):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs, long_connection_factory=connection_factory)
+            transports.append(self)
+
+    monkeypatch.setattr(main, "_fetch_channel_avatar", absent_avatar)
+    monkeypatch.setattr(main, "FeishuWebhookTransport", LocalFeishuTransport)
+    client = TestClient(main.app)
+    yield role, channels, credentials, client
+    client.close()
+
+    async def close_transports():
+        for transport in transports:
+            runner = transport._long_connection
+            await transport.stop()
+            assert runner is None or not runner.alive
+
+    asyncio.run(close_transports())
+    assert all(not connection.connected for connection in connections)
 
 
 @pytest.mark.parametrize("account_state", ["absent", "disabled", "unconfigured"])

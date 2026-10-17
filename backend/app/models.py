@@ -3,6 +3,9 @@ from typing import Any, Literal
 import uuid
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from .novelai_generation.config import NovelaiRoleConfig
+
+from .coding_tasks.config import CodingRoleConfig
 
 
 class RoleProfile(BaseModel):
@@ -39,10 +42,39 @@ class BrowserUseToolConfig(BaseModel):
     enabled: bool = False
 
 
+class ComputerUseToolConfig(BaseModel):
+    enabled: bool = False
+
+
+class SpawnToolConfig(BaseModel):
+    enabled: bool = False
+    timeoutSeconds: float = Field(default=120, gt=0, le=600)
+    maxTurns: int = Field(default=12, ge=1, le=30)
+    maxOutputChars: int = Field(default=20000, ge=100, le=100000)
+    maxModelOutputChars: int = Field(default=60000, ge=100, le=200000)
+
+
+class ScreenPerceptionConfig(BaseModel):
+    enabled: bool = False
+    visionModelConfigurationId: str | None = None
+
+    @field_validator("visionModelConfigurationId")
+    @classmethod
+    def validate_binding(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("视觉模型连接 ID 不能为空")
+        return value.strip() if value is not None else None
+
+
 class AgentToolConfig(BaseModel):
+    novelai: NovelaiRoleConfig = Field(default_factory=NovelaiRoleConfig)
     shell: ShellToolConfig = Field(default_factory=ShellToolConfig)
     memoryRecall: MemoryRecallToolConfig = Field(default_factory=MemoryRecallToolConfig)
     browserUse: BrowserUseToolConfig = Field(default_factory=BrowserUseToolConfig)
+    computerUse: ComputerUseToolConfig = Field(default_factory=ComputerUseToolConfig)
+    spawn: SpawnToolConfig = Field(default_factory=SpawnToolConfig)
+    screenPerception: ScreenPerceptionConfig = Field(default_factory=ScreenPerceptionConfig)
+    coding: CodingRoleConfig = Field(default_factory=CodingRoleConfig)
     enabledTools: list[str] = Field(default_factory=list)
     enabledPlugins: list[str] = Field(default_factory=list)
     grantedCapabilities: list[str] = Field(default_factory=list)

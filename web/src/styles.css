@@ -771,6 +771,10 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 }
 /* Soft pink continuum: keep the app on one canvas and use translucency for hierarchy. */
 body { background: var(--surface-gradient); background-attachment: fixed; }
+.coding-review { margin-block: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--side); }
+.coding-review dl { display: grid; grid-template-columns: minmax(100px, auto) minmax(0, 1fr); gap: 6px 12px; }
+.coding-review dd { margin: 0; overflow-wrap: anywhere; }
+.coding-review-diff { overflow: auto; max-height: 360px; padding: 12px; border-radius: 8px; background: var(--bg); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .shell { background: var(--surface-gradient); }
 .sidebar, .main, .chat, .memory-panel, .tavern, .settings-content { background: transparent; }
 .chat-header, .dialog-header { border-color: rgb(184 119 153 / 11%); }

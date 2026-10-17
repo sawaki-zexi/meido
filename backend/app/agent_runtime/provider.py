@@ -8,23 +8,24 @@ from .types import AssistantMessage, ToolCall
 
 
 class CancellationToken:
-    """Small cooperative cancellation primitive shared by providers and tools."""
+    """Cooperative cancellation; an optional parent's state flows to children."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, parent: CancellationToken | None = None) -> None:
         self._cancelled = False
+        self._parent = parent
 
     @property
     def cancelled(self) -> bool:
-        return self._cancelled
+        return self._cancelled or self._parent is not None and self._parent.cancelled
 
     def cancel(self) -> None:
         self._cancelled = True
 
     def is_cancelled(self) -> bool:
-        return self._cancelled
+        return self.cancelled
 
     def raise_if_cancelled(self) -> None:
-        if self._cancelled:
+        if self.cancelled:
             raise RuntimeError("agent run cancelled")
 
 

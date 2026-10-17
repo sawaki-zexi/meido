@@ -93,7 +93,7 @@ class MemoryRecallTool:
         version="1.0.0",
         exposure="direct",
         timeout_seconds=15.0,
-        output_limit=12000,
+        output_limit=12000, search_hint='记得 以前 历史 做过什么 有没有 重构 记忆查询',
     )
 
     def __init__(self, memory: MemoryReadPort, *, now=None) -> None:

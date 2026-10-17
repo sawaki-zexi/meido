@@ -8,9 +8,12 @@ import { MemorySettings } from "./MemorySettings";
 import { MailSettings } from "./MailSettings";
 import { ChannelSettings } from "../channels/ChannelSettings";
 import { IdentitySettings } from "../channels/IdentitySettings";
+import { McpSettings } from "./McpSettings";
+import { NovelaiSettings } from "../novelai/NovelaiSettings";
+import { CodingSettings } from "../coding/CodingSettings";
 
 /** Settings sections. Add an entry here to add a new section to the dialog. */
-export type SettingsSectionId = "model" | "memory" | "owner-knowledge" | "todo" | "mail" | "channels" | "identity";
+export type SettingsSectionId = "model" | "memory" | "owner-knowledge" | "todo" | "mail" | "channels" | "identity" | "mcp" | "novelai" | "coding";
 const sections: { id: SettingsSectionId; label: string; icon: IconName; render: () => ReactNode }[] = [
   { id: "model", label: "模型", icon: "model", render: () => <ModelSettings /> },
   { id: "memory", label: "记忆", icon: "memory", render: () => <MemorySettings /> },
@@ -19,6 +22,9 @@ const sections: { id: SettingsSectionId; label: string; icon: IconName; render: 
   { id: "mail", label: "邮件", icon: "mail", render: () => <MailSettings /> },
   { id: "channels", label: "多端连接", icon: "devices", render: () => <ChannelSettings /> },
   { id: "identity", label: "我的身份", icon: "identity", render: () => <IdentitySettings /> },
+  { id: "mcp", label: "MCP 服务", icon: "plug", render: () => <McpSettings /> },
+  { id: "novelai", label: "NovelAI 生图", icon: "image", render: () => <NovelaiSettings /> },
+  { id: "coding", label: "编程委托", icon: "code", render: () => <CodingSettings /> },
 ];
 
 export function SettingsDialog({ onClose, initialSection }: { onClose: () => void; initialSection?: SettingsSectionId }) {

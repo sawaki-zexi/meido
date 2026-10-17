@@ -717,10 +717,11 @@ describe("角色管理", () => {
     await user.clear(within(panel).getByLabelText(/名称/));
     await user.type(within(panel).getByLabelText(/名称/), "未保存名字");
     await user.click(within(panel).getByRole("button", { name: "保存" }));
-    expect(await within(panel).findByRole("alert")).toHaveTextContent("保存被拒绝");
+    // Independent settings panels can report their own errors in this dialog.
+    expect((await within(panel).findByText("保存被拒绝")).closest('[role="alert"]')).toBeVisible();
     expect(within(panel).getByLabelText(/名称/)).toHaveValue("未保存名字");
     await user.click(within(panel).getByRole("button", { name: "删除角色" }));
-    expect(await within(panel).findByRole("alert")).toHaveTextContent("删除被拒绝");
+    expect((await within(panel).findByText("删除被拒绝")).closest('[role="alert"]')).toBeVisible();
     expect(within(panel).getByLabelText(/名称/)).toBeEnabled();
     await user.click(within(panel).getByRole("button", { name: "取消" }));
     expect(await chatHeading("爱丽丝")).toBeInTheDocument();

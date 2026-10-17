@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
+from contextlib import aclosing
 import json
 import struct
 import time
 from urllib.parse import quote
 
 import httpx
+
+from .request_budget import image_budget_client_kwargs, budgeted_model_stream, budgeted_model_completion
 
 from .message_transform import transform_messages
 from .model_adapter import _payload_error_detail, _raise_for_status_with_details
@@ -174,7 +177,7 @@ class BedrockConverseAdapter:
         if cancel_check:
             cancel_check()
         url, headers, payload, name_aliases = self._prepare(messages, configuration, tools, max_tokens)
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs("bedrock-converse")) as client:
             response = await client.post(url, headers=headers, json=payload)
             await _raise_for_status_with_details(response, configuration.apiKey)
         data = response.json()
@@ -246,7 +249,8 @@ class BedrockConverseAdapter:
         if buffer:
             raise RuntimeError("Bedrock Event Stream 未完整结束")
 
-    async def stream_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check: Callable[[], None] | None = None) -> AsyncIterator[ModelStreamEvent]:
+    @budgeted_model_stream
+    async def stream_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check: Callable[[], None] | None = None) -> AsyncGenerator[ModelStreamEvent, None]:
         if not configuration.apiKey:
             yield ModelStreamStart()
             yield ModelStreamError("Bedrock Converse 需要 AWS Bedrock API Key")
@@ -290,7 +294,7 @@ class BedrockConverseAdapter:
         thinking_started = False
         yield ModelStreamStart()
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs("bedrock-converse")) as client:
                 async with client.stream("POST", url, headers=headers, json=payload) as response:
                     await _raise_for_status_with_details(response, configuration.apiKey)
                     async for event in self._event_payloads(response):
@@ -394,12 +398,14 @@ class BedrockConverseAdapter:
             return
         yield ModelStreamDone(message)
 
+    @budgeted_model_completion
     async def complete_messages(self, messages, configuration, tools=(), *, max_tokens=None) -> ModelAssistantMessage:
         return await self._complete(messages, configuration, tools, max_tokens=max_tokens, cancel_check=None)
 
-    async def stream_rich_messages(self, *args, **kwargs) -> AsyncIterator[ModelStreamEvent]:
-        async for event in self.stream_messages(*args, **kwargs):
-            yield event
+    async def stream_rich_messages(self, *args, **kwargs) -> AsyncGenerator[ModelStreamEvent, None]:
+        async with aclosing(self.stream_messages(*args, **kwargs)) as stream:
+            async for event in stream:
+                yield event
 
 
 def _nonnegative(value: object) -> int:

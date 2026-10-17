@@ -1,0 +1,23 @@
+{
+  "upstream": "https://github.com/herdrdev/herdr.git",
+  "commit": "7e26bad94044eba205033111a0ce8033ede7e24f",
+  "version": "0.9.4-meido.1",
+  "protocol": 1,
+  "patchSha256": "2a2df5e1626a1b37a89663ccb64bc11d3f8513bf6e44513041d9c29f8b98806f",
+  "rust": "1.96.1",
+  "zig": "0.16.0",
+  "target": "x86_64-pc-windows-msvc",
+  "acceptedBuildSha256": "445b03a54b314fffc6720b1229b3f6dda43bc42c28ddb4ec91c0f5144d25ce67",
+  "buildMode": "debug",
+  "msvc": "14.42.34433",
+  "sdk": "10.0.22621.0",
+  "notices": {
+    "THIRD-PARTY-NOTICES/LICENSE-APACHE-2.0": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "THIRD-PARTY-NOTICES/portable-pty-LICENSE.md": "191c46fcf52061382b1c51a70311eb9081381cc158e5899f3739473a9432185b",
+    "THIRD-PARTY-NOTICES/libghostty-vt-LICENSE": "386211873e5b7a02f663ae4d7adf96285999f91608f8f9f31fecfd0f4095e6f1",
+    "THIRD-PARTY-NOTICES/CARGO-NOTICES.txt": "ee6dae15dc2105e02bc81dbe0cb8acb04bfeb2ae3c2b35105bc355ddd3e3eb48",
+    "THIRD-PARTY-NOTICES/cargo-license-inventory.json": "00c902239e075a59f5b66c94defe7e1e75c29a857d6b952b1d656a2576deb60d",
+    "THIRD-PARTY-NOTICES/ratatui-LICENSE.txt": "50eb43e8d742c9c61a9391e42b2184fce54dbd1893a1bb1c85b8c9ee217ab1f5",
+    "THIRD-PARTY-NOTICES/wezterm-LICENSE.md": "37db33bbbd7348969eda397b89a16f252d56c1ca7481b6ccaf56ccdcbab5dcca"
+  }
+}

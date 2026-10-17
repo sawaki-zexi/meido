@@ -1,0 +1,12 @@
+{
+  "profile": "meido-windows-169-v1",
+  "upstreamCommit": "fc188250b4ca8549b8e61f937fdb1fb560770e86",
+  "patchSha256": "9ca2222bad0ef99a8011add6a07310290522c76b958127b3b0a9c33c73e70a0c",
+  "rust": "1.97.1",
+  "msvc": "14.42.34433",
+  "sdk": "10.0.22621.0",
+  "target": "x86_64-pc-windows-msvc",
+  "executionLevel": "asInvoker",
+  "uiAccess": false,
+  "sha256": "f700163b2a053dbadee45339d877abe88b425aa2974ceffd29b5d9ce2b08e587"
+}

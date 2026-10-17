@@ -1,6 +1,7 @@
 import os
 import asyncio
 import json
+import hashlib
 import inspect
 import logging
 import re
@@ -9,6 +10,8 @@ import uuid
 import sqlite3
 import secrets
 import contextvars
+import sys
+import time
 from contextlib import asynccontextmanager
 from urllib.parse import quote, unquote
 from dataclasses import asdict, replace
@@ -25,6 +28,13 @@ import httpx
 
 from .ai.model_adapter import ModelAdapter
 from .ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
+from .screen_perception import ObserveScreenTool, ScreenPerception
+from .computer_use import ComputerUseHost, COMPUTER_USE_TOOL_NAMES, load_computer_tools, register_computer_use_plugin, guard_provider
+from .novelai_generation.application import NovelaiApplication
+from .novelai_generation.api import novelai_router
+from .desktop_pet.application import DesktopPetApplication
+from .desktop_pet.api import router as desktop_pet_router
+from .desktop_pet.tools import PetActionTool, register_desktop_pet_plugin
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
 from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryQueryFilters, MemoryScope
@@ -71,22 +81,29 @@ from .agent_runtime import (
     MessageUpdateEvent,
     MeidoProvider,
     MemoryRecallTool,
-    RoleScopedMemoryReadPort,
     PluginRegistry,
     RuntimeManager,
     ShellTool,
-    summarize_tool_arguments,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
     ToolResultMessage,
 )
 from .agent_runtime.capabilities import CapabilityResolution
+from .agent_runtime.provider import CancellationToken
 from .agent_runtime.message_history_tools import MESSAGE_HISTORY_TOOL_NAMES, build_message_history_tools
 from .agent_runtime.file_tools import FILE_TOOL_NAMES, build_file_tools
 from .agent_runtime.catalog import RuntimeCapabilityPolicy, tool_catalog
+from .agent_runtime.shell_tool import SHELL_TOOL_NAMES, TaskOutputTool, TaskStopTool
+from .task_runtime import TaskOrigin, TaskRuntime
+from .agent_runtime.spawn_tool import SPAWN_TOOL_NAMES, SpawnManageTool, SpawnTool
+from .task_runtime.completion import TaskCompletionWorker
+from .agent_runtime.discovery import ToolSearchTool
 from .agent_runtime.types import UserMessage
 from .channels.attachment_tool import ReadChannelAttachmentTool
+from .channels.source_authority import FrozenChannelSource, capture_channel_source
+from .channels.group_access import GroupToolAccess
+from .channels.tools import ChannelDirectoryAccess
 from .channels.consolidation import ChannelMemoryMaintenance, finish_io
 from .agent_runtime.skills import SkillRegistry
 from .agent_runtime.memory_write_tools import MemorizeTool, ForgetMemoryTool, RoleMemoryAccess
@@ -103,6 +120,8 @@ from .multichannel import ChannelAccount, MultichannelStore, TelegramChannelServ
 from .channels import (
     ChannelHost,
     ChannelAdapter,
+    ChannelAdapterError,
+    UnsupportedTargetError,
     FeishuAdapter,
     FeishuConfig,
     NapCatAdapter,
@@ -123,10 +142,22 @@ from .channels import (
     target_from_chat,
 )
 from .channels.credentials import credential_key
-from .channels.push import ChannelPushService, MessagePushTool
+from .channels.push import ChannelPushService
+from .desktop_push import MessagePushTool
+from .schedules.application import ScheduleApplication, DeliveryDeferred
+from .schedules.tools import ScheduleTool, ScheduleManageTool, SCHEDULE_NAMES, SOFT_TOOLS
 from .channels.transports import NapCatWebSocketTransport, QQBotGatewayTransport, FeishuWebhookTransport, ChannelTransportError
 from .channels.media import MAX_CHANNEL_MEDIA_BYTES, media_filename
 from .channels.napcat_managed import ManagedNapCat
+from .credentials import SystemCredentialStore
+from .mcp_config import McpConfigStore, MCP_MANAGEMENT_NAMES
+from .mcp_runtime import McpHost, McpManagementTool, management_definitions
+from .mcp_api import mcp_router
+from .coding_tasks.application import CodingApplication
+from .coding_tasks.api import coding_router
+from .coding_tasks.tools import build_coding_tools, CODING_TOOL_NAMES
+from .proactive_runtime import ProactiveApplication
+from .proactive_runtime.api import autonomy_router
 from .chat_attachments import public_attachment, read_request_bytes, resolve_attachment, save_attachment
 
 logging.getLogger("uvicorn.access").addFilter(OAuthCallbackAccessLogFilter())
@@ -135,6 +166,7 @@ logger = logging.getLogger(__name__)
 roles_root = Path(os.getenv("MEIDO_ROLES_DIR", "roles"))
 project_root = Path(os.getenv("MEIDO_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
 data_root = Path(os.getenv("MEIDO_DATA_DIR", ".data"))
+mcp_host = McpHost(McpConfigStore(data_root / "mcp.db", SystemCredentialStore("meido.mcp", strict_cleanup=True)))
 managed_napcat = ManagedNapCat(data_root)
 _managed_qq_pending: dict[str, str] = {}
 MAX_ROLE_AVATAR_BYTES = 10 * 1024 * 1024
@@ -177,6 +209,21 @@ memory_event_bus = MemoryEventBus()
 model_adapter_registry = ModelAdapterRegistry()
 model_adapter: ModelAdapter = RoutedModelAdapter(model_adapter_registry)
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
+screen_perception = ScreenPerception(
+    role_getter=lambda role_id: store.get(role_id),
+    configuration_getter=lambda configuration_id: model_configuration_store.get(configuration_id),
+    sessions=lambda: session_store,
+    adapter=RoutedModelAdapter(ModelAdapterRegistry(timeout=12)),
+    role_unavailable=lambda role_id: role_id in _channel_roles_deleting,
+)
+computer_use = ComputerUseHost(
+    role_getter=lambda role_id: store.get(role_id),
+    configuration_getter=lambda configuration_id: model_configuration_store.get(configuration_id),
+    sessions=lambda: session_store, model_registry=model_adapter_registry,
+    resources=Path(os.getenv("MEIDO_COMPUTER_USE_RESOURCES", str(Path(__file__).resolve().parent))),
+    data_root=data_root / "computer-use",
+    role_unavailable=lambda role_id: role_id in _channel_roles_deleting,
+)
 embedding_configuration_store = EmbeddingConfigurationStore(data_root / "embedding-config.json")
 memory_settings_store = MemorySettingsStore(data_root / "memory-settings.json")
 embedding_provider = SharedEmbeddingProvider(
@@ -210,11 +257,66 @@ application_plugin_manager = ApplicationPluginManager()
 application_plugin_manager.register("owner-knowledge", owner_knowledge_plugin)
 register_todo_agent_plugin(plugin_registry)
 register_browser_use_plugin(plugin_registry)
+register_computer_use_plugin(plugin_registry)
+register_desktop_pet_plugin(plugin_registry)
 browser_use_sessions = BrowserSessions(
     Path(os.getenv("MEIDO_BROWSER_USE_DATA_DIR", str(data_root / "browser-use"))).resolve(),
     BrowserUseConfig(),
     resources=Path(os.getenv("MEIDO_BROWSER_USE_RESOURCES", str(Path(__file__).resolve().parent))).resolve(),
 )
+task_runtime = TaskRuntime(data_root / "tasks")
+_novelai: NovelaiApplication | None = None
+_desktop_pet: DesktopPetApplication | None = None
+_desktop_pet_gate = threading.RLock()
+
+
+def _desktop_pet_application() -> DesktopPetApplication:
+    global _desktop_pet
+    with _desktop_pet_gate:
+        root = Path(session_store.database_path).parent / 'desktop-pet'
+        if (_desktop_pet is None or _desktop_pet.closed or _desktop_pet.store.roles is not store
+                or _desktop_pet.store.root != root):
+            if _desktop_pet is not None and _desktop_pet.has_live_owner:
+                raise RuntimeError('桌宠原宿主尚未退出')
+            _desktop_pet = DesktopPetApplication(store, root)
+        return _desktop_pet
+
+
+def _publish_generation_message(role_id: str, message: Message) -> None:
+    if message.sessionKey.startswith('thread:'):
+        thread = multichannel_store.get_thread(role_id, message.sessionKey.removeprefix('thread:'))
+        if thread is not None:
+            multichannel_store.publish(role_id, {'type': 'message', 'roleId': role_id,
+                'thread': thread.public_dict(), 'message': public_message(message).model_dump(mode='json')})
+
+
+def _novelai_application() -> NovelaiApplication:
+    global _novelai
+    if (_novelai is None or _novelai.sessions is not session_store or _novelai.tasks is not task_runtime
+            or _novelai.roles is not store or _novelai.channels is not multichannel_store):
+        _novelai = NovelaiApplication(root=data_root / 'novelai', tasks=task_runtime,
+            sessions=session_store, roles=store, channels=multichannel_store,
+            credentials=SystemCredentialStore('meido.novelai', strict_cleanup=True),
+            is_role_deleting=lambda role_id: role_id in _channel_roles_deleting,
+            lock_for=_runtime_role_lock,
+            send_channel=lambda *args, **kwargs: channel_host.account_send(*args, **kwargs),
+            publish_message=_publish_generation_message,
+            model_configuration=lambda identifier: model_configuration_store.get(identifier) if identifier else None,
+            model_adapter=lambda: model_adapter,
+            channel_media_supported=lambda account_id: bool(channel_adapters.get(account_id)
+                and channel_adapters[account_id].capabilities.media))
+    return _novelai
+
+
+def _accept_owner_run(role_id: str, session_key: str, run_id: str):
+    """Keep each owner's synchronous admission and reservation-end callback."""
+    finish_proactive = _proactive_application().accept_human_run(role_id, run_id)
+    try:
+        _novelai_application().scenes.accept(role_id, session_key, run_id)
+    except BaseException:
+        finish_proactive()
+        raise
+    return finish_proactive
 todo_store = TodoStore(data_root / "todos.db")
 todo_application = TodoApplicationService(todo_store, session_store)
 todo_plugin = TodoPlugin(
@@ -751,19 +853,51 @@ async def _memory_engine_delete(mutation: MemoryMutation) -> None:
 
 
 async def _close_memory_workers() -> None:
-    await mail_service.close()
-    await owner_knowledge_scheduler.close()
-    await owner_knowledge_plugin.close()
-    await todo_plugin.close()
-    await memory_optimizer_loop.close()
-    await memory_worker.close()
-    await memory_optimizer_worker.drain()
-    await browser_use_sessions.close()
+    closers = []
+    if _desktop_pet is not None:
+        closers.append(_desktop_pet.close)
+    if _proactive is not None:
+        closers.append(_proactive.close)
+    if _coding is not None:
+        closers.append(_coding.close)
+    if _schedules is not None:
+        closers.append(_schedules.close)
+    if _spawn_completion_worker is not None:
+        closers.append(_spawn_completion_worker.close)
+    closers.extend([screen_perception.close, computer_use.close])
+    if _novelai is not None:
+        closers.append(_novelai.close)
+    closers.extend([
+        lambda: asyncio.to_thread(task_runtime.close), mail_service.close,
+        owner_knowledge_scheduler.close, owner_knowledge_plugin.close,
+        todo_plugin.close, memory_optimizer_loop.close, memory_worker.close,
+        memory_optimizer_worker.drain, browser_use_sessions.close, mcp_host.close,
+    ])
+    errors = []
+    for close in closers:
+        try:
+            await close()
+        except Exception as error:
+            # An unconfirmed owner keeps its original recovery obligation;
+            # independent owners still need their own shutdown opportunity.
+            errors.append(error)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise ExceptionGroup("application resource cleanup failed", errors)
 
 
 async def _start_memory_workers() -> None:
     global _channel_runtime_loop
     _channel_runtime_loop = asyncio.get_running_loop()
+    channel_host.bind_runtime_loop()
+    task_runtime.start()
+    _novelai_application().start()
+    _coding_application().start()
+    _schedule_application().start()
+    _proactive_application().start()
+    await _desktop_pet_application().start()
+    _ensure_spawn_completion_worker()
     mail_service.start()
     todo_plugin.sessions = session_store
     await todo_plugin.start()
@@ -780,10 +914,13 @@ async def _start_memory_workers() -> None:
             await memory_worker.begin_role_deletion(role_id)
             await channel_memory_maintenance.begin_role_deletion(role_id)
             await owner_knowledge_plugin.begin_role_deletion(role_id)
+            await _coding_application().delete_role(role_id)
+            await asyncio.to_thread(task_runtime.delete_role, role_id)
             session_store.delete_role_session(role_id)
             memory_store.delete_role(role_id)
             owner_knowledge_store.delete_role(role_id)
             multichannel_store.delete_role(role_id)
+            _novelai_application().purge_role(role_id)
             _channel_push_service().clear_role(role_id)
             todo_store.mark_source_unavailable(role_id)
             for marker in store.root.glob(f".deleting-{role_id}-*.json"):
@@ -797,6 +934,7 @@ async def _start_memory_workers() -> None:
             await owner_knowledge_plugin.end_role_deletion(role_id)
             if recovered:
                 _channel_roles_deleting.discard(role_id)
+    await asyncio.to_thread(task_runtime.reconcile_roles, {role.id for role in store.list()})
     if memory_settings_store.get().enabled:
         await asyncio.to_thread(memory_maintenance.resume_pending)
     if memory_settings_store.get().enabled:
@@ -827,6 +965,11 @@ def _owner_knowledge_return_url(origin: str = "") -> str:
 
 app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown=[_close_memory_workers])
 app.include_router(mail_router)
+app.include_router(mcp_router(lambda: mcp_host, lambda: store))
+app.include_router(novelai_router(_novelai_application))
+app.include_router(desktop_pet_router(_desktop_pet_application))
+app.include_router(coding_router(lambda: _coding_application(), lambda: store))
+app.include_router(autonomy_router(lambda: _proactive_application(), workspace_getter=lambda role_id: store.root / role_id / "workspace"))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=owner_knowledge_frontend_origins,
@@ -1365,10 +1508,15 @@ def _safe_model_error(error: Exception, api_key: str = "") -> str:
 
 
 @app.put("/api/model/configuration")
-def save_model_configuration(data: ModelConfigurationInput) -> dict[str, object]:
+async def save_model_configuration(data: ModelConfigurationInput) -> dict[str, object]:
     try:
         candidate = _configuration_with_saved_key(data)
+        current_id = model_configuration_store.active_id()
+        if current_id and _novelai is not None:
+            _novelai.scenes.invalidate_model(current_id)
         configuration = model_configuration_store.save(candidate)
+        await screen_perception.invalidate(configuration_id=configuration.id)
+        await computer_use.invalidate(configuration_id=configuration.id)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except OSError as error:
@@ -1389,12 +1537,18 @@ def create_model_configuration(data: ModelConfigurationInput) -> dict[str, objec
 
 
 @app.put("/api/model/configurations/{configuration_id}")
-def update_model_configuration(configuration_id: str, data: ModelConfigurationInput) -> dict[str, object]:
+async def update_model_configuration(configuration_id: str, data: ModelConfigurationInput) -> dict[str, object]:
     try:
         current = model_configuration_store.get(configuration_id)
         if current and not data.apiKey:
             data = data.model_copy(update={"apiKey": current.apiKey})
+        if _proactive is not None:
+            _proactive.invalidate_model(configuration_id)
+        if _novelai is not None:
+            _novelai.scenes.invalidate_model(configuration_id)
         configuration = model_configuration_store.update(configuration_id, data)
+        await screen_perception.invalidate(configuration_id=configuration_id)
+        await computer_use.invalidate(configuration_id=configuration_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="模型配置不存在") from error
     except ValueError as error:
@@ -1414,18 +1568,28 @@ def reveal_model_api_key(configuration_id: str, response: Response) -> dict[str,
 
 
 @app.post("/api/model/configurations/{configuration_id}/activate")
-def activate_model_configuration(configuration_id: str) -> dict[str, object]:
+async def activate_model_configuration(configuration_id: str) -> dict[str, object]:
     try:
+        previous_id = model_configuration_store.active_id()
         configuration = model_configuration_store.activate(configuration_id)
+        if previous_id != configuration.id:
+            await asyncio.gather(*(computer_use.invalidate(role_id=role.id)
+                                   for role in store.list() if role.modelConfigurationId is None))
     except KeyError as error:
         raise HTTPException(status_code=404, detail="模型配置不存在") from error
     return {"configuration": public_configuration(configuration)}
 
 
 @app.delete("/api/model/configurations/{configuration_id}")
-def delete_model_configuration(configuration_id: str) -> dict[str, object]:
+async def delete_model_configuration(configuration_id: str) -> dict[str, object]:
     try:
+        if _proactive is not None:
+            _proactive.invalidate_model(configuration_id)
+        if _novelai is not None:
+            _novelai.scenes.invalidate_model(configuration_id)
         active_id = model_configuration_store.delete(configuration_id)
+        await screen_perception.invalidate(configuration_id=configuration_id)
+        await computer_use.invalidate(configuration_id=configuration_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="模型配置不存在") from error
     return {"activeId": active_id}
@@ -1463,8 +1627,11 @@ def list_roles() -> RoleList:
 
 @app.post("/api/roles", response_model=RoleResponse, status_code=201)
 def create_role(data: RoleInput) -> RoleResponse:
+    _validate_screen_configuration(data.agentConfig.screenPerception)
     try:
-        return RoleResponse(role=store.create(data))
+        return RoleResponse(role=_novelai_application().create_role(data))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
     except OSError as error:
         raise HTTPException(status_code=500, detail=f"角色保存失败：{error}") from error
 
@@ -1488,16 +1655,22 @@ def get_role_tools(role_id: str) -> dict[str, object]:
     policy = replace(policy, enabled_tools=policy.enabled_tools - {"read_attachment"})
     definitions = {tool.definition.name: tool.definition for tool in _runtime_tool_candidates(role, include_channel=True, preview=True)}
     for definition in (
+        ToolSearchTool.definition,
         OwnerKnowledgeTool.definition, MailManageTool.definition, ReadChannelAttachmentTool.definition,
         TodoSearchTool.definition, TodoWriteTool.definition, TodoReminderControlTool.definition,
         *(tool.definition for tool in load_browser_tools(browser_use_sessions)),
     ):
         definitions.setdefault(definition.name, definition)
+    if "tool_search" in policy.enabled_tools:
+        definitions = {name: replace(definition, exposure="deferred") if name in _deferred_discovery_tools() else definition for name, definition in definitions.items()}
     reasons: dict[str, str] = {"read_attachment": "仅在当前 QQ 回合存在可读取附件时提供"}
     if not role.agentConfig.shell.enabled:
         reasons["shell"] = "角色的 Shell 开关已关闭"
     elif not role.agentConfig.shell.allowedCommands:
         reasons["shell"] = "Shell 命令白名单为空"
+    for name in ("task_output", "task_stop"):
+        if "shell" in reasons:
+            reasons[name] = reasons["shell"]
     if not memory_settings_store.get().enabled:
         reasons["recall_memory"] = "全局记忆已关闭"
     elif not role.agentConfig.memoryRecall.enabled:
@@ -1507,16 +1680,59 @@ def get_role_tools(role_id: str) -> dict[str, object]:
     if not mail_service.store.connection().auto_draft_ready:
         reasons["mail.manage"] = "邮件服务尚未就绪"
     dependencies = {name: browser_use_sessions.dependency_status() for name in BROWSER_USE_TOOL_NAMES}
+    dependencies['message_push'] = {'status': 'ready', 'reason': '只写入当前角色的桌面对话，无需外部渠道账号'}
+    pet_reason = _desktop_pet_application().unavailable_reason(role.id)
+    dependencies['pet_action'] = {'status': 'unavailable' if pet_reason else 'ready',
+        'reason': pet_reason or '当前角色桌宠原生窗口已就绪'}
+    if pet_reason:
+        reasons['pet_action'] = pet_reason
+    computer_dependency = computer_use.dependency_status(role)
+    for name in COMPUTER_USE_TOOL_NAMES:
+        dependencies[name] = computer_dependency
+        if computer_dependency["status"] == "unavailable":
+            reasons[name] = computer_dependency["reason"]
+    screen_reason = _screen_unavailable_reason(role)
+    if screen_reason:
+        reasons["observe_screen"] = screen_reason
+    dependencies["observe_screen"] = {
+        "status": "unavailable" if screen_reason else "unchecked",
+        "reason": screen_reason or "采集桌面及远端模型视觉能力将在调用时验证",
+    }
+    generation_reason = _novelai_application().unavailable_reason(role)
+    if generation_reason:
+        reasons['generate_image'] = generation_reason
+    dependencies['generate_image'] = {'status': 'unavailable' if generation_reason else 'unchecked',
+        'reason': generation_reason or '仅检查本地许可和额度；真实 NovelAI 服务尚未调用或验证'}
+    coding_status = _coding_application().config.availability(role.id, role.agentConfig.coding)
+    for name in CODING_TOOL_NAMES:
+        dependencies[name] = {"status": "ready" if coding_status['status'] == 'available' else "unavailable", "reason": coding_status['reason']}
+        if coding_status['status'] != 'available':
+            reasons[name] = coding_status['reason']
+    for names, available, reason in (
+        (("web_search", "web_fetch"), network_tools_config.enabled, "宿主联网已关闭"),
+        (("memorize", "forget_memory"), memory_settings_store.get().enabled, "全局记忆已关闭"),
+    ):
+        if not available:
+            for name in names:
+                reasons[name] = reason
+                dependencies[name] = {"status": "unavailable", "reason": reason}
     import shutil
     missing_commands = [item for item in role.agentConfig.shell.allowedCommands if shutil.which(item) is None]
     dependencies["shell"] = {
         "status": "unavailable" if missing_commands else "ready" if role.agentConfig.shell.allowedCommands else "unchecked",
         "reason": "白名单中有本机无法找到的程序" if missing_commands else "已检查程序路径；未执行命令" if role.agentConfig.shell.allowedCommands else "尚未配置命令白名单",
     }
-    for name in ("account_list", "account_targets", "account_send", "message_push", "lookup_group_context", "update_group_context", "set_group_listening", "lookup_group_member"):
+    for name in ("account_list", "account_targets", "account_send", "set_group_listening"):
         dependencies[name] = {"status": "unchecked", "reason": "网络连接和目标能力将在调用时验证"}
         if not include_channel:
             reasons[name] = "没有可用渠道账号，桌面对话不提供此工具"
+    for name in ("lookup_group_context", "update_group_context"):
+        dependencies[name] = {"status": "ready", "reason": "读取和维护本地保存的当前角色结构化群资料"}
+        if name not in policy.enabled_tools:
+            reasons[name] = "尚无已保存群资料或可用渠道账号"
+    dependencies["lookup_group_member"] = {"status": "ready", "reason": "仅读取本地保存的当前角色成员昵称与结构化档案"}
+    if "lookup_group_member" not in policy.enabled_tools:
+        reasons["lookup_group_member"] = "尚无已保存成员资料或可用渠道账号"
     return tool_catalog(
         role_id=role_id, session_key=f"role:{role_id}", definitions=tuple(definitions.values()),
         policy=policy, manifests=plugin_registry.manifests(), dependencies=dependencies, reasons=reasons,
@@ -1527,7 +1743,30 @@ def get_role_tools(role_id: str) -> dict[str, object]:
 async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
     try:
         current = store.get(role_id)
-        updated = store.update(role_id, data)
+        if current is not None and data.agentConfig is not None and "screenPerception" in data.agentConfig.model_fields_set:
+            screen = current.agentConfig.screenPerception.model_copy(update=data.agentConfig.screenPerception.model_dump(exclude_unset=True))
+            _validate_screen_configuration(screen)
+        if _proactive is not None and current is not None:
+            _proactive.stop(role_id)
+        updated = _novelai_application().update_role(role_id, data)
+        delegation_changed = current is not None and current.agentConfig.spawn != updated.agentConfig.spawn
+        if delegation_changed:
+            # Do this before any independent cleanup yields. An off/on edit
+            # cannot revive a frozen coding call while ordinary spawn joins.
+            _coding_application().seal_delegation(role_id)
+        if current is not None and current.agentConfig.novelai != updated.agentConfig.novelai:
+            await _novelai_application().invalidate(role_id)
+        if current is not None and current.agentConfig.screenPerception != updated.agentConfig.screenPerception:
+            await screen_perception.invalidate(role_id=role_id)
+        if current is not None and current.agentConfig.computerUse != updated.agentConfig.computerUse:
+            await computer_use.invalidate(role_id=role_id)
+        if current is not None and current.agentConfig.shell != updated.agentConfig.shell:
+            await asyncio.to_thread(task_runtime.cancel_role_tasks, role_id, kind="shell")
+        if current is not None and current.agentConfig.spawn != updated.agentConfig.spawn:
+            await asyncio.to_thread(task_runtime.cancel_role_tasks, role_id, kind="spawn")
+            await _coding_application().invalidate_delegation(role_id, seal=False)
+        if current is not None and current.agentConfig.coding != updated.agentConfig.coding:
+            await _coding_application().invalidate_role(role_id)
         if current is not None and current.agentConfig.browserUse.enabled != updated.agentConfig.browserUse.enabled:
             # The role policy is the plugin's explicit authorization boundary.
             # Disabling closes the current generation and blocks an old run's
@@ -1536,8 +1775,19 @@ async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
         return RoleResponse(role=updated)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
     except OSError as error:
         raise HTTPException(status_code=500, detail=f"角色保存失败：{error}") from error
+
+
+def _validate_screen_configuration(setting) -> None:
+    if not setting.enabled:
+        return
+    configuration_id = setting.visionModelConfigurationId
+    configuration = model_configuration_store.get(configuration_id) if configuration_id else None
+    if configuration is None or not configuration.baseUrl or not configuration.model:
+        raise HTTPException(status_code=422, detail="请先选择存在且完整的已保存视觉模型连接")
 
 
 @app.post("/api/role-card-import/preview")
@@ -1728,7 +1978,7 @@ def get_role_model_configuration(role_id: str) -> dict[str, str | None]:
 
 
 @app.put("/api/roles/{role_id}/model-configuration")
-def set_role_model_configuration(
+async def set_role_model_configuration(
     role_id: str,
     data: RoleModelConfigurationInput,
 ) -> dict[str, str | None]:
@@ -1737,6 +1987,7 @@ def set_role_model_configuration(
     if data.configurationId and model_configuration_store.get(data.configurationId) is None:
         raise HTTPException(status_code=404, detail="模型连接不存在")
     try:
+        await computer_use.invalidate(role_id=role_id)
         role = store.set_model_configuration(role_id, data.configurationId)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
@@ -1786,13 +2037,21 @@ async def delete_role(role_id: str) -> None:
     channel_snapshot = None
     pending_qq_refs = tuple(ref for ref, owner in _managed_qq_pending.items() if owner == role_id)
     try:
-        for ref in pending_qq_refs:
-            await managed_napcat.stop(ref, role_id=role_id)
-        await browser_use_sessions.set_role_enabled(role_id, False)
-        # Mark the gate before the first await so cancellation cannot leave a
-        # role permanently blocked from future memory work.
+        # Close memory admission before any resource cleanup can yield. The
+        # finally block owns reopening this barrier if deletion is cancelled.
         deletion_started = True
         await memory_worker.begin_role_deletion(role_id)
+        for ref in pending_qq_refs:
+            await managed_napcat.stop(ref, role_id=role_id)
+        if _proactive is not None and _proactive.sessions is session_store:
+            await _proactive.begin_role_deletion(role_id)
+        await screen_perception.invalidate(role_id=role_id)
+        await computer_use.invalidate(role_id=role_id)
+        await _novelai_application().invalidate(role_id)
+        await _desktop_pet_application().invalidate(role_id)
+        await browser_use_sessions.set_role_enabled(role_id, False)
+        await _coding_application().prepare_role_deletion(role_id)
+        await asyncio.to_thread(task_runtime.set_role_enabled, role_id, False)
         await channel_memory_maintenance.begin_role_deletion(role_id)
         await owner_knowledge_plugin.begin_role_deletion(role_id)
         deletion_lock = memory_worker.role_lock_for(role_id)
@@ -1827,6 +2086,12 @@ async def delete_role(role_id: str) -> None:
         _channel_push_service().clear_role(role_id)
         store.purge_staged_role_files(staged_path)
         deletion_succeeded = True
+        try:
+            _novelai_application().purge_role(role_id)
+            await _desktop_pet_application().purge_role(role_id)
+        except (OSError, sqlite3.Error, ValueError) as error:
+            memory_worker.errors.append(f"{role_id}: generation cleanup deferred: {type(error).__name__}")
+        await mcp_host.delete_role(role_id)
         try:
             todo_store.mark_source_unavailable(role_id)
         except Exception as error:
@@ -1907,6 +2172,8 @@ async def delete_role(role_id: str) -> None:
         raise HTTPException(status_code=500, detail=detail) from error
     finally:
         await owner_knowledge_plugin.end_role_deletion(role_id)
+        if not deletion_succeeded:
+            task_runtime.set_role_enabled(role_id, True)
         if deletion_started:
             memory_worker.end_role_deletion(role_id, deleted=deletion_succeeded)
             channel_memory_maintenance.end_role_deletion(role_id, deleted=deletion_succeeded)
@@ -1916,6 +2183,17 @@ async def delete_role(role_id: str) -> None:
         lock.release()
         _channel_roles_deleting.discard(role_id)
     if deletion_succeeded:
+        if _proactive_context_reader is not None:
+            _proactive_context_reader.forget(role_id)
+        try:
+            await _coding_application().delete_role(role_id)
+            await asyncio.to_thread(task_runtime.delete_role, role_id)
+            if _schedules is not None and _schedules.sessions is session_store:
+                await asyncio.to_thread(_schedules.delete_role, role_id)
+            if _proactive is not None and _proactive.sessions is session_store:
+                await asyncio.to_thread(_proactive.delete_role, role_id)
+        except (OSError, sqlite3.Error, RuntimeError) as error:
+            memory_worker.errors.append(f"{role_id}: task cleanup deferred: {type(error).__name__}")
         for account in channel_accounts_snapshot:
             channel_host.unregister(account.account_id)
             channel_adapters.pop(account.account_id, None)
@@ -1966,6 +2244,7 @@ def _channel_account_payload(account: ChannelAccount) -> dict[str, object]:
     if app_id:
         payload["appId"] = app_id
     payload["connectionStatus"] = _channel_connection_status(account)
+    payload.update(channel_host.connection_snapshot(account.account_id))
     adapter = channel_adapters.get(account.account_id)
     if adapter is not None:
         capabilities = adapter.capabilities
@@ -2000,25 +2279,7 @@ async def _channel_lifecycle(account_id: str):
 
 
 def _channel_connection_status(account: ChannelAccount) -> str:
-    if not multichannel_store.account_effectively_enabled(account):
-        return "disconnected"
-    if account.last_error:
-        return "error"
-    pending = channel_tasks.get(account.account_id)
-    if pending is not None and not pending.done() and account.account_id not in channel_adapters:
-        return "connecting"
-    if account.channel == "telegram":
-        task = telegram_tasks.get(account.account_id)
-        return "connected" if task is not None and not task.done() else "disconnected"
-    transport = channel_transports.get(account.account_id)
-    if transport is None:
-        return "disconnected"
-    if bool(getattr(transport, "connected", False)):
-        return "connected"
-    if account.channel == "feishu" and getattr(transport, "_handler", None) is not None:
-        return "connected"
-    task = getattr(transport, "_task", None)
-    return "connecting" if task is not None and not task.done() else "disconnected"
+    return str(channel_host.connection_snapshot(account.account_id)["connection"])
 
 
 def _channel_secret_key(account: ChannelAccount, name: str) -> str:
@@ -2060,11 +2321,13 @@ def _build_channel_adapter(account: ChannelAccount, *, register: bool = True) ->
     config = multichannel_store.channel_config(account.account_id)
     transport: object | None = None
     if account.channel == "telegram":
-        transport = _telegram_service(account.account_id).transport
+        service = _telegram_service(account.account_id)
+        transport = service.transport
         adapter = TelegramAccountAdapter(
             account.account_id,
             lambda: multichannel_store.token(account.account_id),
             transport,
+            connection_snapshot=service.connection_snapshot,
         )
     elif account.channel == "qq":
         managed_ref = str(config.get("managedRef") or "")
@@ -2182,7 +2445,8 @@ def _refresh_channel_avatars(account: ChannelAccount, sender_id: str = "", chat_
             multichannel_store.avatars.refresh(account, "chat", chat_id, lambda: _fetch_channel_avatar(account, kind, subject))
 
 
-async def _dispatch_channel_payload(account_id: str, payload: dict[str, object], *, source_adapter: ChannelAdapter | None = None) -> None:
+async def _dispatch_channel_payload(account_id: str, payload: dict[str, object], *, source_adapter: ChannelAdapter | None = None, received_at: float | None = None) -> None:
+    received_at = _schedule_clock() if received_at is None else received_at
     account = multichannel_store.get_account(account_id)
     if account is not None and account.role_id in _channel_roles_deleting:
         original = source_adapter or channel_adapters.get(account_id)
@@ -2197,7 +2461,7 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
                 if original is not None and account is not None and account.enabled:
                     if channel_host.intake.defer(
                         account_id,
-                        lambda: _dispatch_channel_payload(account_id, payload),
+                        lambda: _dispatch_channel_payload(account_id, payload, received_at=received_at),
                         lambda: _reject_channel_payload(original, payload),
                     ):
                         return
@@ -2212,7 +2476,7 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
                     return
             event = await channel_host.accept_event(account_id, payload)
             if event is not None:
-                await _handle_channel_event(event)
+                await _handle_channel_event(replace(event, received_at=received_at))
     except Exception as error:
         logger.warning("渠道入站处理失败 account=%s error=%s", account_id, type(error).__name__)
 
@@ -2326,6 +2590,8 @@ async def _handle_channel_event(event) -> None:
     """Process one account's events serially to make dedupe and attachment
     persistence atomic from the event loop's point of view."""
 
+    if event.received_at is None:
+        event = replace(event, received_at=_schedule_clock())
     if await _handle_channel_control_command(event):
         return
     lock = channel_event_locks.setdefault(event.account_id, asyncio.Lock())
@@ -2415,6 +2681,7 @@ async def _handle_channel_event_locked(event) -> None:
     saved_quote = await _persist_channel_attachments(replace(event, attachments=tuple(quoted_attachments)), account.role_id) if quoted_attachments else []
     content = event.content.strip() or ("[收到附件]" if event.attachments else "")
     metadata: dict[str, object] = {
+        "hostReceivedAt": event.received_at,
         "platformMessageId": event.external_message_id,
         "senderId": event.sender_id,
         "senderName": event.sender_name,
@@ -2864,17 +3131,30 @@ async def _save_platform_channel_account_unlocked(role_id: str, channel: str, da
         channel_transports.pop(account_id, None)
 
     async def rollback() -> None:
+        cleanup_error: Exception | None = None
+        if channel == "feishu" and account_id in channel_transports:
+            candidate = channel_transports[account_id]
+            if isinstance(candidate, FeishuWebhookTransport):
+                candidate.retire()
+            try:
+                await _stop_channel_account(account_id)
+            except Exception as error:
+                cleanup_error = error
+            else:
+                channel_host.unregister(account_id)
+                channel_adapters.pop(account_id, None)
+                channel_transports.pop(account_id, None)
         try:
             current = multichannel_store.get_account(account_id)
             if existing is None:
-                if current is not None:
+                if current is not None and cleanup_error is None:
                     multichannel_store.delete_account(account_id)
             else:
                 multichannel_store.register_channel_account(
                     role_id,
                     channel,
                     account_id=existing.account_id,
-                    enabled=existing.enabled,
+                    enabled=False if cleanup_error else existing.enabled,
                     allow_private=existing.allow_private,
                     allow_group=existing.allow_group,
                     blocked_senders=list(existing.blocked_senders),
@@ -2882,14 +3162,21 @@ async def _save_platform_channel_account_unlocked(role_id: str, channel: str, da
                     platform_id=existing.platform_id,
                 )
                 multichannel_store.set_channel_config(account_id, old_config)
-                multichannel_store.set_account_state(account_id, enabled=existing.enabled, last_error=existing.last_error)
-        except Exception:
-            logger.warning("渠道账号配置回滚失败 account=%s", account_id, exc_info=True)
+                multichannel_store.set_account_state(account_id, enabled=False if cleanup_error else existing.enabled, last_error=type(cleanup_error).__name__ if cleanup_error else existing.last_error)
+        except Exception as error:
+            logger.warning("渠道账号配置回滚失败 account=%s error=%s", account_id, type(error).__name__)
         for name, value in old_credentials.items():
+            if existing is None and cleanup_error is not None:
+                break
             try:
                 multichannel_store.credentials.set(credential_key(channel, account_id, name), value)
-            except Exception:
-                logger.warning("渠道凭据回滚失败 account=%s name=%s", account_id, name, exc_info=True)
+            except Exception as error:
+                logger.warning("渠道凭据回滚失败 account=%s name=%s error=%s", account_id, name, type(error).__name__)
+        if cleanup_error is not None:
+            # Saved desired configuration is rolled back separately from the
+            # frozen candidate still owned by these adapter/transport maps.
+            multichannel_store.set_account_state(account_id, enabled=False, last_error=type(cleanup_error).__name__)
+            raise HTTPException(status_code=503, detail="新渠道连接清理失败，账号已停用，请重试") from None
         if existing is not None and was_enabled:
             try:
                 await _start_channel_account(account_id)
@@ -3040,13 +3327,7 @@ async def set_channel_account_state(role_id: str, account_id: str, data: dict[st
             try:
                 await _start_channel_account(account_id)
             except Exception as error:
-                try:
-                    await _stop_channel_account(account_id)
-                except Exception:
-                    logger.debug("启用失败后的渠道清理失败 account=%s", account_id, exc_info=True)
-                channel_host.unregister(account_id)
-                channel_adapters.pop(account_id, None)
-                channel_transports.pop(account_id, None)
+                await _retire_failed_channel_start(account_id)
                 updated = multichannel_store.set_account_state(account_id, enabled=False, last_error=type(error).__name__)
                 raise HTTPException(status_code=502, detail="渠道连接启动失败，账号已停用") from error
         else:
@@ -3702,51 +3983,223 @@ def _runtime_tool_candidates(
 ) -> tuple[object, ...]:
     """Build every tool available to the host for a role snapshot."""
     shell = role.agentConfig.shell
+    task_sources: dict[str, FrozenChannelSource] = {}
+
+    def task_source(context):
+        if not source_thread_id or not source_account_id:
+            raise PermissionError("task channel source is unavailable")
+        source = task_sources.get(context.run_id)
+        if source is None:
+            source = capture_channel_source(
+                multichannel_store, session_store, role_id=role.id,
+                session_key=context.session_key, run_id=context.run_id,
+                owner_context=is_channel_owner,
+            )
+            if (source.thread_id, source.account_id) != (source_thread_id, source_account_id):
+                raise PermissionError("task channel source does not match the host origin")
+            task_sources[context.run_id] = source
+        if not source.owner_context or source.authorization_denial(multichannel_store) is not None:
+            raise PermissionError("task source owner permission was revoked")
+        return source
+
+    def task_origin(context):
+        if context.role_id != role.id:
+            raise ValueError("task role does not match host role")
+        run = session_store.get_run(context.run_id)
+        version = context.capability_snapshot_id
+        if not version and context.tool_call_id:
+            revision = session_store.capability_revision_for_call(context.run_id, context.tool_call_id)
+            version = revision.get("snapshotId") if revision is not None else None
+        if not version and run is not None:
+            version = run.modelSnapshot.get("capabilities", {}).get("snapshotId", "")
+        source_scope_id, source_authority_json = "", ""
+        if context.session_key.startswith("thread:"):
+            payload = task_source(context).to_dict()
+            source_authority_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            # A later message from the same actual sender/binding can observe
+            # the task; a re-pair or another sender cannot inherit its scope.
+            scope = {key: value for key, value in payload.items() if key != "message_created_at"}
+            source_scope_id = hashlib.sha256(json.dumps(scope, sort_keys=True).encode()).hexdigest()
+        return TaskOrigin(role.id, context.session_key, context.run_id, context.tool_call_id, version or "",
+                          source_thread_id or f"desktop:{role.id}", source_account_id or "",
+                          source_scope_id, source_authority_json)
+
+    def shell_authorized(context):
+        current = store.get(role.id)
+        if context.role_id != role.id or current is None or role.id in _channel_roles_deleting or not current.agentConfig.shell.enabled:
+            return False
+        if not current.agentConfig.shell.allowedCommands or not is_channel_owner:
+            return False
+        if context.session_key.startswith("thread:"):
+            try:
+                task_source(context)
+            except PermissionError:
+                return False
+            return True
+        return context.session_key == f"role:{role.id}"
+
+    def shell_command_authorized(context, command):
+        current = store.get(role.id)
+        return bool(shell_authorized(context) and current is not None
+                    and ShellTool.command_is_allowed(command, current.agentConfig.shell.allowedCommands))
+
+    def spawn_authorized(context):
+        current = store.get(role.id)
+        if (context.role_id != role.id or current is None or role.id in _channel_roles_deleting
+                or not current.agentConfig.spawn.enabled or not is_channel_owner):
+            return False
+        if context.session_key.startswith("thread:"):
+            try:
+                task_source(context)
+            except PermissionError:
+                return False
+            return True
+        return context.session_key == f"role:{role.id}"
+
+    def desktop_push_authorized(context):
+        current = store.get(role.id)
+        if (context.role_id != role.id or current is None or role.id in _channel_roles_deleting
+                or 'message_push' not in current.agentConfig.enabledTools or not is_channel_owner):
+            return False
+        channel_origin = bool(source_account_id or source_thread_id and source_thread_id != f'desktop:{role.id}')
+        if channel_origin != context.session_key.startswith('thread:'):
+            return False
+        run = session_store.get_run(context.run_id)
+        user = session_store.user_message_for_run(context.run_id)
+        if (run is None or run.roleId != role.id or run.sessionKey != context.session_key
+                or run.status not in {'created', 'running'} or user is None
+                or user.sessionKey != context.session_key
+                or user.status != 'completed' or user.messageType != 'text'):
+            return False
+        if context.session_key.startswith('thread:'):
+            try:
+                task_source(context)
+            except PermissionError:
+                return False
+            return True
+        return (context.session_key == f'role:{role.id}'
+                and user.metadata.get('channel', 'desktop') == 'desktop')
+
+    def schedule_source_authorized(context):
+        current = store.get(role.id)
+        if current is None or context.role_id != role.id or role.id in _channel_roles_deleting or not is_channel_owner:
+            return False
+        run = session_store.get_run(context.run_id)
+        user = session_store.user_message_for_run(context.run_id)
+        if (run is None or user is None or run.roleId != role.id or run.sessionKey != context.session_key
+                or user.sessionKey != context.session_key or run.status not in {'created', 'running'}):
+            return False
+        if context.session_key.startswith('thread:'):
+            try:
+                task_source(context)
+                return True
+            except PermissionError:
+                return False
+        return context.session_key == f'role:{role.id}' and user.metadata.get('channel', 'desktop') == 'desktop'
+
+    def coding_source_authorized(context):
+        current = store.get(role.id)
+        if (current is None or not current.agentConfig.coding.enabled or not schedule_source_authorized(context)):
+            return False
+        run = session_store.get_run(context.run_id)
+        user = session_store.user_message_for_run(context.run_id)
+        if user is None or user.status != 'completed' or user.messageType != 'text' or user.metadata.get('internalEvent'):
+            return False
+        return (context.session_key.startswith('thread:') or
+                run is not None and run.modelSnapshot.get('humanInputSource') == 'desktop_owner')
+
+    def pet_source_authorized(context):
+        if (context.role_id != role.id or context.session_key != f'role:{role.id}'
+                or not is_channel_owner or source_account_id
+                or source_thread_id not in {None, '', f'desktop:{role.id}'}
+                or store.get(role.id) is None or role.id in _channel_roles_deleting):
+            return False
+        run = session_store.get_run(context.run_id)
+        user = session_store.user_message_for_run(context.run_id)
+        return bool(run and run.roleId == role.id and run.sessionKey == context.session_key
+            and run.status in {'created', 'running'} and run.modelSnapshot.get('humanInputSource') == 'desktop_owner'
+            and run.modelSnapshot.get('desktopPetGeneration') == _desktop_pet_application().store.binding(role.id)[0]['generation']
+            and user and user.role == 'user' and user.status == 'completed' and user.messageType == 'text'
+            and user.sessionKey == context.session_key and not user.metadata.get('internalEvent')
+            and user.metadata.get('channel', 'desktop') == 'desktop')
+
     memory_access = _memory_runtime_access(role, is_channel_owner=is_channel_owner, source_thread_id=source_thread_id)
+    group_access = GroupToolAccess(multichannel_store, role_id=role.id,
+        source_thread_id=source_thread_id, is_owner=is_channel_owner,
+        authorized=lambda context: store.get(role.id) is not None and role.id not in _channel_roles_deleting)
+    file_tools = build_file_tools(role.id, store.root / role.id / 'workspace', is_owner=is_channel_owner)
+    if not preview:
+        file_tools = _proactive_application().drift_skills.author_tools(file_tools, role.id,
+            authorized=schedule_source_authorized)
     tools: list[object] = [
+        PetActionTool(_desktop_pet_application(), role.id, authorized=pet_source_authorized),
+        _novelai_application().tool_for(role.id, is_owner=is_channel_owner,
+            source_thread_id=source_thread_id, source_account_id=source_account_id, frozen_role=role),
+        ScheduleTool(_schedule_application, session_store, origin_resolver=task_origin,
+            authorized=schedule_source_authorized),
+        *(ScheduleManageTool(name, _schedule_application, origin_resolver=task_origin, authorized=schedule_source_authorized)
+          for name in ('list_schedules', 'cancel_schedule')),
+        MessagePushTool(session_store, lambda: store.workspace_path(role.id), role_id=role.id, authorized=desktop_push_authorized),
+        SpawnTool(task_runtime, role.agentConfig.spawn, origin_resolver=task_origin, authorized=spawn_authorized,
+            coding_application=_coding_application, coding_authorized=coding_source_authorized,
+            coding_access=_coding_application().freeze_access(role.id, role.agentConfig.coding)),
+        SpawnManageTool(task_runtime, origin_resolver=task_origin, authorized=spawn_authorized,
+            coding_application=_coding_application, coding_authorized=coding_source_authorized,
+            coding_access=_coding_application().freeze_access(role.id, role.agentConfig.coding)),
+        *build_coding_tools(_coding_application, role_id=role.id, origin_resolver=task_origin,
+            authorized=coding_source_authorized,
+            access=_coding_application().freeze_access(role.id, role.agentConfig.coding)),
+        ObserveScreenTool(screen_perception, role.agentConfig.screenPerception.visionModelConfigurationId, role_id=role.id),
+        *load_computer_tools(computer_use, role_id=role.id),
         ShellTool(
             store.root / role.id / "workspace" if preview else store.workspace_path(role.id),
             allowed_commands=shell.allowedCommands,
             timeout_seconds=shell.timeoutSeconds,
             max_output_chars=shell.maxOutputChars,
+            tasks=task_runtime, origin_resolver=task_origin, authorized=shell_authorized,
+            authorized_command=shell_command_authorized,
         ),
+        TaskOutputTool(task_runtime, origin_resolver=task_origin, authorized=shell_authorized),
+        TaskStopTool(task_runtime, origin_resolver=task_origin, authorized=shell_authorized),
         MemoryRecallTool(memory_access),
         MemorizeTool(memory_access),
         ForgetMemoryTool(memory_access),
         WebFetchTool(network_tools_config),
         WebSearchTool(network_tools_config),
-        *build_file_tools(role.id, store.root / role.id / "workspace", is_owner=is_channel_owner),
+        LookupGroupMemberTool(group_repository, role_id=role.id, is_owner=is_channel_owner,
+            source_thread_id=source_thread_id, access=group_access),
+        LookupGroupContextTool(group_repository, role_id=role.id, access=group_access),
+        UpdateGroupContextTool(group_repository, role_id=role.id, access=group_access),
+        *file_tools,
     ]
     tools.extend(build_message_history_tools(
         session_store, multichannel_store, role_id=role.id,
         source_thread_id=source_thread_id, is_owner=is_channel_owner,
     ))
+    tools.extend(McpManagementTool(item) for item in management_definitions())
     if owner_knowledge_plugin.status().enabled:
         tools.append(_owner_knowledge_runtime_tool(role))
     if mail_service.store.connection().auto_draft_ready:
         tools.append(mail_manage_tool)
     if include_channel:
+        directory_access = ChannelDirectoryAccess(authorized=schedule_source_authorized,
+            source_scope=lambda context: task_origin(context).source_scope_id)
         tools.extend((
-            ChannelAccountListTool(channel_host),
-            ChannelTargetsTool(channel_host),
-            MessagePushTool(
-                _channel_push_service(), is_owner=is_channel_owner,
-                source_thread_id=source_thread_id, source_account_id=source_account_id,
-            ),
+            ChannelAccountListTool(channel_host, access=directory_access),
+            ChannelTargetsTool(channel_host, access=directory_access),
             ChannelSendTool(
                 channel_host,
                 is_owner=is_channel_owner,
                 source_thread_id=source_thread_id,
                 source_account_id=source_account_id,
             ),
-            LookupGroupContextTool(group_repository, is_owner=is_channel_owner),
-            UpdateGroupContextTool(group_repository, is_owner=is_channel_owner),
             SetGroupListeningTool(
                 group_repository,
+                role_id=role.id,
                 is_owner=is_channel_owner,
                 source_thread_id=source_thread_id,
+                access=group_access,
             ),
-            LookupGroupMemberTool(group_repository, source_thread_id=source_thread_id),
         ))
     return tuple(tools)
 
@@ -3758,15 +4211,56 @@ def _role_has_usable_channel_account(role_id: str) -> bool:
     )
 
 
+def _screen_unavailable_reason(role) -> str:
+    setting = role.agentConfig.screenPerception
+    if not setting.enabled:
+        return "角色的屏幕感知开关已关闭"
+    if not setting.visionModelConfigurationId:
+        return "尚未显式绑定视觉模型连接"
+    configuration = model_configuration_store.get(setting.visionModelConfigurationId)
+    if configuration is None:
+        return "视觉模型连接已不存在，请重新选择"
+    if not configuration.baseUrl or not configuration.model:
+        return "视觉模型连接不完整"
+    try:
+        if not model_adapter_registry.supports_images(configuration):
+            return "所选协议或模型不支持图像编码"
+    except ValueError:
+        return "所选视觉模型协议不可用"
+    if sys.platform != "win32" or getattr(sys, "frozen", False):
+        return "仅支持 Windows 交互桌面主屏；当前平台或打包入口不可用"
+    return ""
+
+
 def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[str]:
     shell = role.agentConfig.shell
     enabled: set[str] = set()
+    if not _desktop_pet_application().unavailable_reason(role.id):
+        enabled.add('pet_action')
+    if computer_use.dependency_status(role)["status"] != "unavailable":
+        enabled.update(COMPUTER_USE_TOOL_NAMES)
+    if not _novelai_application().unavailable_reason(role):
+        enabled.add('generate_image')
+    if not _screen_unavailable_reason(role):
+        enabled.add("observe_screen")
+    if include_channel or group_repository.has_member_data(role.id):
+        enabled.add("lookup_group_member")
+    if include_channel or group_repository.has_group_data(role.id):
+        enabled.update({"lookup_group_context", "update_group_context"})
     enabled.update(set(role.agentConfig.enabledTools) & {"memorize", "forget_memory"})
     enabled.update(set(role.agentConfig.enabledTools) & MESSAGE_HISTORY_TOOL_NAMES)
     enabled.update(set(role.agentConfig.enabledTools) & {"web_search", "web_fetch"})
     enabled.update(FILE_TOOL_NAMES.intersection(role.agentConfig.enabledTools))
+    enabled.update({'message_push'}.intersection(role.agentConfig.enabledTools))
+    enabled.update(SCHEDULE_NAMES.intersection(role.agentConfig.enabledTools))
+    if "tool_search" in role.agentConfig.enabledTools:
+        enabled.update(MCP_MANAGEMENT_NAMES.intersection(role.agentConfig.enabledTools))
     if shell.enabled and shell.allowedCommands:
-        enabled.add("shell")
+        enabled.update(SHELL_TOOL_NAMES)
+    if role.agentConfig.spawn.enabled:
+        enabled.update(SPAWN_TOOL_NAMES)
+    if role.agentConfig.coding.enabled and _coding_application().config.public()['enabled']:
+        enabled.update(CODING_TOOL_NAMES)
     if memory_settings_store.get().enabled and role.agentConfig.memoryRecall.enabled:
         enabled.add("recall_memory")
     if owner_knowledge_plugin.status().enabled:
@@ -3775,7 +4269,7 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
         enabled.add("mail.manage")
     if include_channel:
         enabled.update({
-            "account_list", "account_targets", "account_send", "message_push",
+            "account_list", "account_targets", "account_send",
             "lookup_group_context", "update_group_context", "set_group_listening",
             "lookup_group_member",
             "read_attachment",
@@ -3797,23 +4291,37 @@ def _runtime_tools(
     return tuple(tool for tool in available if tool.definition.name in enabled)
 
 
+def _deferred_discovery_tools() -> frozenset[str]:
+    # Fixed Shiori always_on metadata: these existing tools are deferred.
+    # Meido-specific todo/mail retain their own declarations.
+    return frozenset({*BROWSER_USE_TOOL_NAMES, "pet_action", "account_list", "account_targets", "account_send",
+        "lookup_group_context", "update_group_context", "set_group_listening", "lookup_group_member", "read_attachment", *MCP_MANAGEMENT_NAMES, *CODING_TOOL_NAMES})
+
+
 def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabilityPolicy:
     agent_config = role.agentConfig
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     host_enabled = set(enabled_tools)
     enabled_tools.update(agent_config.enabledTools)
-    enabled_tools.difference_update({"shell", "recall_memory", "search_owner_knowledge", "mail.manage"} - host_enabled)
+    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | CODING_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image", "pet_action"}) - host_enabled)
     if not include_channel:
         enabled_tools.difference_update({
-            "account_list", "account_targets", "account_send", "message_push", "lookup_group_context",
-            "update_group_context", "set_group_listening", "lookup_group_member", "read_attachment",
+            "account_list", "account_targets", "account_send", "set_group_listening", "read_attachment",
         })
+        if not group_repository.has_group_data(role.id):
+            enabled_tools.difference_update({"lookup_group_context", "update_group_context"})
     enabled_plugins = set(agent_config.enabledPlugins)
     todo_enabled = bool(todo_store.settings()["enabled"]) and callable(
         getattr(model_adapter, "stream_structured_messages", None)
     )
     granted_capabilities = set(agent_config.grantedCapabilities)
     provided_capabilities: set[str] = set()
+    if 'pet_action' in host_enabled:
+        enabled_plugins.add('desktop_pet')
+        granted_capabilities.add('desktop.pet')
+        provided_capabilities.add('desktop.pet')
+    else:
+        enabled_plugins.discard('desktop_pet')
     if todo_enabled:
         enabled_plugins.add("todo")
         enabled_tools.update({"todo.write", "todo.reminder_control"})
@@ -3821,6 +4329,13 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
         provided_capabilities.add("todo.write")
     else:
         enabled_plugins.discard("todo")
+    if agent_config.computerUse.enabled and computer_use.dependency_status(role)["status"] != "unavailable":
+        enabled_plugins.add("computer_use")
+        granted_capabilities.add("desktop.control")
+        provided_capabilities.add("desktop.control")
+    else:
+        enabled_plugins.discard("computer_use")
+        enabled_tools.difference_update(COMPUTER_USE_TOOL_NAMES)
     if agent_config.browserUse.enabled:
         enabled_plugins.add("browser_use")
         enabled_tools.update(BROWSER_USE_TOOL_NAMES)
@@ -3848,31 +4363,505 @@ async def _runtime_capabilities(
         session_key.startswith("role:") and _role_has_usable_channel_account(role.id)
     )
     policy = _runtime_capability_policy(role, include_channel=include_channel)
+    source_run = session_store.get_run(run_id)
+    if (session_key != f'role:{role.id}' or source_run is None
+            or source_run.modelSnapshot.get('humanInputSource') != 'desktop_owner'
+            or source_run.modelSnapshot.get('desktopPetGeneration') != _desktop_pet_application().store.binding(role.id)[0]['generation']):
+        policy = replace(policy, enabled_tools=policy.enabled_tools - {'pet_action'},
+            enabled_plugins=policy.enabled_plugins - {'desktop_pet'})
+    if (session_key != f"role:{role.id}" or source_run is None
+            or source_run.modelSnapshot.get("screenPerceptionSource") != "desktop_owner"):
+        policy = replace(policy, enabled_tools=policy.enabled_tools - {"observe_screen"})
+    if (session_key != f"role:{role.id}" or source_run is None
+            or source_run.modelSnapshot.get("computerUseSource") != "desktop_owner"):
+        policy = replace(policy, enabled_tools=policy.enabled_tools - COMPUTER_USE_TOOL_NAMES,
+                         enabled_plugins=policy.enabled_plugins - {"computer_use"})
+    frozen_manifests = {item.plugin_id: item for item in plugin_registry.manifests()}
+    source_authority = capture_channel_source(
+        multichannel_store, session_store, role_id=role.id, session_key=session_key,
+        run_id=run_id, owner_context=not external_only,
+    ) if "tool_search" in policy.enabled_tools and session_key.startswith("thread:") else None
+
+    def mcp_source_denial():
+        if external_only:
+            return "MCP is not allowed for external context"
+        current_role = store.get(role.id)
+        if current_role is None or "tool_search" not in current_role.agentConfig.enabledTools:
+            return "MCP discovery permission was revoked"
+        return source_authority.authorization_denial(multichannel_store) if source_authority is not None else None
+
+    def mcp_tool_enabled(name):
+        current_role = store.get(role.id)
+        return current_role is not None and name in current_role.agentConfig.enabledTools
+
+    mcp_run = mcp_host.freeze(
+        role_id=role.id, session_key=session_key, run_id=run_id,
+        source=source_authority.to_dict() if source_authority is not None else None,
+        source_denial=mcp_source_denial, tool_enabled=mcp_tool_enabled, owner=not external_only,
+    ) if "tool_search" in policy.enabled_tools and not external_only else None
+    if mcp_run is not None:
+        await mcp_run.prepare()
+
+    def authorize_tool(definition, context):
+        if source_authority is not None:
+            origin_denial = source_authority.authorization_denial(multichannel_store)
+            if origin_denial is not None:
+                return origin_denial
+        current_role = store.get(role.id)
+        if current_role is None:
+            return "role permission was revoked"
+        current = _runtime_capability_policy(current_role, include_channel=include_channel)
+        if definition.source.startswith("mcp:") or definition.source == "builtin:mcp":
+            return (mcp_run.authorization_denial(definition) or True) if mcp_run is not None else "MCP has no frozen service grant"
+        if definition.name not in current.enabled_tools:
+            return "tool permission was revoked"
+        if definition.source.startswith("plugin:"):
+            plugin_id = definition.source.removeprefix("plugin:")
+            manifest = next((item for item in plugin_registry.manifests() if item.plugin_id == plugin_id), None)
+            if (plugin_id not in current.enabled_plugins or manifest is None or manifest != frozen_manifests.get(plugin_id)
+                    or set(manifest.requested_capabilities) - current.granted_capabilities):
+                return "plugin permission was revoked or its definition changed"
+        return True
+
+    def authorize_call(definition, context, arguments):
+        if definition.name == "shell" and isinstance(arguments.get("command"), str):
+            current_role = store.get(role.id)
+            if current_role is None or not ShellTool.command_is_allowed(arguments["command"], current_role.agentConfig.shell.allowedCommands):
+                return "command permission was revoked by the current role policy"
+        return True
     host_services: dict[str, object] = {}
+    if 'desktop.pet' in policy.provided_capabilities:
+        host_services['desktop.pet'] = _desktop_pet_application()
     if "todo.write" in policy.provided_capabilities:
         host_services["todo.write"] = _todo_application()
+    if "desktop.control" in policy.provided_capabilities:
+        host_services["desktop.control"] = computer_use
     if "browser.session" in policy.provided_capabilities:
         host_services["browser.session"] = browser_use_sessions
-    return await CapabilityRegistry(
-        _runtime_tool_candidates(role, include_channel=include_channel) if available_tools is None else available_tools,
-        skills=SkillRegistry.discover_many((
-            (roles_root / role.id / "skills", "role"),
-            (project_root / ".agents" / "skills", "project"),
-        )),
-        plugins=plugin_registry,
-    ).resolve_async(
-        role_id=role.id,
-        session_key=session_key,
-        run_id=run_id,
-        enabled_tools=policy.enabled_tools,
-        allowed_risks={"read_only", "mutating", "external"},
-        external_only=external_only,
-        prompt_text=prompt_text,
-        explicit_skill_ids=set(explicit_skill_ids or ()),
-        enabled_plugin_ids=policy.enabled_plugins,
-        granted_capabilities=policy.granted_capabilities,
-        host_services=host_services,
-    )
+    candidates = _runtime_tool_candidates(role, include_channel=include_channel) if available_tools is None else available_tools
+    for tool in candidates:
+        if tool.definition.name == 'generate_image' and 'generate_image' in policy.enabled_tools:
+            try:
+                tool.bind_run(run_id, session_key)
+            except (PermissionError, ValueError):
+                policy = replace(policy, enabled_tools=policy.enabled_tools - {'generate_image'})
+    if mcp_run is not None:
+        candidates = tuple(tool for tool in candidates if tool.definition.name not in MCP_MANAGEMENT_NAMES) + mcp_run.tools
+    def skill_dependency_check(skill, name):
+        if skill.skill_id == 'codex-delegate' and name == 'codex':
+            if not role.agentConfig.spawn.enabled:
+                return '角色的 spawn 开关已关闭'
+            status = _coding_application().config.availability(role.id, role.agentConfig.coding, executor='codex_exec')
+            return None if status['status'] == 'available' else status['reason']
+        import shutil
+        return None if shutil.which(name) is not None else 'command is unavailable'
+    try:
+        resolution = await CapabilityRegistry(
+            candidates,
+            skills=SkillRegistry.discover_many((
+                (store.root / role.id / "workspace" / "skills", "role"),
+                (roles_root / role.id / "skills", "role"),
+                (project_root / ".agents" / "skills", "project"),
+                (Path(__file__).parent / "builtin_skills", "builtin"),
+            )),
+            plugins=plugin_registry,
+        ).resolve_async(
+            role_id=role.id,
+            session_key=session_key,
+            run_id=run_id,
+            enabled_tools=policy.enabled_tools | {tool.definition.name for items in mcp_run.remote_tools.values() for tool in items} if mcp_run is not None else policy.enabled_tools,
+            allowed_risks={"read_only", "mutating", "external"},
+            external_only=external_only,
+            prompt_text=prompt_text,
+            explicit_skill_ids=set(explicit_skill_ids or ()),
+            skill_dependency_check=skill_dependency_check,
+            enabled_plugin_ids=policy.enabled_plugins,
+            granted_capabilities=policy.granted_capabilities,
+            host_services=host_services,
+            discovery_enabled="tool_search" in policy.enabled_tools,
+            deferred_tool_names=_deferred_discovery_tools(),
+            authorize_tool=authorize_tool,
+            authorize_call=authorize_call,
+            restored_activation=session_store.latest_capability_revision(role.id, session_key) if "tool_search" in policy.enabled_tools else None,
+            service_grants=mcp_run.grants if mcp_run is not None else (),
+            resource_close=mcp_run.close if mcp_run is not None else None,
+        )
+        if mcp_run is not None:
+            mcp_run.bind(resolution)
+        return resolution
+    except BaseException:
+        if mcp_run is not None:
+            await mcp_run.close()
+        raise
+
+
+_spawn_completion_worker: TaskCompletionWorker | None = None
+_coding: CodingApplication | None = None
+
+
+def _coding_origin_authorized(origin: TaskOrigin) -> bool:
+    role = store.get(origin.role_id)
+    run = session_store.get_run(origin.parent_run_id)
+    user = session_store.user_message_for_run(origin.parent_run_id)
+    if (role is None or not role.agentConfig.coding.enabled or role.id in _channel_roles_deleting
+            or run is None or run.roleId != role.id or run.sessionKey != origin.session_key
+            or user is None or user.sessionKey != origin.session_key or user.status != 'completed'
+            or user.messageType != 'text' or user.metadata.get('internalEvent')):
+        return False
+    if origin.source_authority_json:
+        try:
+            source = FrozenChannelSource.from_dict(json.loads(origin.source_authority_json))
+            return ((source.role_id, source.session_key, source.thread_id, source.account_id)
+                    == (origin.role_id, origin.session_key, origin.source_thread_id, origin.source_account_id)
+                    and source.owner_context and source.authorization_denial(multichannel_store) is None)
+        except (ValueError, TypeError, KeyError):
+            return False
+    return (origin.session_key == f'role:{origin.role_id}' and not origin.source_account_id
+            and origin.source_thread_id == f'desktop:{origin.role_id}'
+            and run.modelSnapshot.get('humanInputSource') == 'desktop_owner'
+            and user.metadata.get('channel', 'desktop') == 'desktop')
+
+
+async def _deliver_coding_completion(record, content, authorized):
+    origin = TaskOrigin(**record['origin'])
+    if not authorized():
+        raise PermissionError('coding original source was revoked')
+    source = FrozenChannelSource.from_dict(json.loads(origin.source_authority_json))
+    target = target_from_chat(account_id=source.account_id, chat_id=source.chat_id,
+        kind=TargetKind.GROUP if source.chat_type == 'group' else TargetKind.PRIVATE)
+    kind = record.get('completionKind', 'coding_completion')
+    if kind not in {'coding_completion', 'coding_commit', 'coding_publication'}:
+        raise ValueError('invalid owned Coding completion kind')
+    result = await channel_host.account_send(origin.role_id, source.account_id, target.id, content, actor='reply',
+        source_thread_id=source.thread_id, source_session_key=origin.session_key,
+        source_run_id=origin.parent_run_id, source_tool_call_id=record.get('completionId', record['attemptId']),
+        source_kind=kind, record_message=False, authorize_source=authorized)
+    return {'status': result.status.value, 'attemptId': result.attempt_id}
+
+
+def _coding_receipt(record):
+    kind = record.get('completionKind', 'coding_completion')
+    if kind not in {'coding_completion', 'coding_commit', 'coding_publication'}:
+        raise ValueError('invalid owned Coding receipt kind')
+    receipt = multichannel_store.delivery_for_source(record['origin']['role_id'],
+        source_kind=kind, source_tool_call_id=record.get('completionId', record['attemptId']))
+    return {'status': receipt[0], 'attemptId': receipt[1]} if receipt is not None else None
+
+
+def _coding_application():
+    global _coding
+    if _coding is None or _coding.tasks is not task_runtime or _coding.sessions is not session_store or _coding._resources_closed:
+        _coding = CodingApplication(data_root / 'coding', task_runtime, session_store,
+            role_config=lambda role_id: role.agentConfig.coding if (role := store.get(role_id)) is not None else None,
+            authorized=_coding_origin_authorized, deliver=_deliver_coding_completion, receipt=_coding_receipt,
+            lock_for=_runtime_role_lock,
+            delegation_authorized=lambda origin: _coding_origin_authorized(origin) and _spawn_origin_authorized(origin),
+            publication_credentials=SystemCredentialStore('meido.coding-publication', strict_cleanup=True))
+    return _coding
+
+
+def _spawn_origin_authorized(origin: TaskOrigin) -> bool:
+    role = store.get(origin.role_id)
+    if role is None or not role.agentConfig.spawn.enabled or role.id in _channel_roles_deleting:
+        return False
+    if origin.source_authority_json:
+        try:
+            source = FrozenChannelSource.from_dict(json.loads(origin.source_authority_json))
+            return ((source.role_id, source.session_key, source.thread_id, source.account_id)
+                    == (origin.role_id, origin.session_key, origin.source_thread_id, origin.source_account_id)
+                    and source.owner_context and source.authorization_denial(multichannel_store) is None)
+        except (ValueError, TypeError, KeyError):
+            return False
+    return origin.session_key == f"role:{origin.role_id}" and not origin.source_account_id
+
+
+async def _summarize_spawn_completion(snapshot) -> str:
+    from .agent_runtime.loop import run_agent_loop
+    from .agent_runtime.spawn_tool import BoundedModelProvider
+    from .agent_runtime.events import AgentEndEvent
+    from .agent_runtime.types import AssistantMessage
+    from .agent_runtime.types import AgentMessage
+    from .models import SpawnToolConfig
+    from .models import Role
+    role = store.get(snapshot.origin.role_id)
+    parent = session_store.get_run(snapshot.origin.parent_run_id)
+    if role is None or parent is None:
+        raise PermissionError("original role or run is unavailable")
+    frozen_configuration = parent.modelSnapshot.get("spawnModelConfiguration")
+    configuration = model_configuration_store.get(parent.modelConfigurationId) if parent.modelConfigurationId else None
+    if parent.modelConfigurationId and configuration is None:
+        raise PermissionError("original model connection is unavailable")
+    if configuration is not None and frozen_configuration != configuration.model_dump(mode="json", exclude={"apiKey"}):
+        raise PermissionError("original model connection changed before completion")
+    if isinstance(parent.modelSnapshot.get("role"), dict):
+        role = Role.model_validate(parent.modelSnapshot["role"])
+    provider = MeidoProvider(model_adapter, role, configuration, structured_without_tools=True, max_response_tokens=2048)
+    transcript: list[AgentMessage] = [UserMessage(f"Task {snapshot.task_id}; status={snapshot.status}; label={snapshot.description}\nResult:\n{snapshot.output[:20000]}")]
+    result = ""
+    async for event in run_agent_loop(provider=BoundedModelProvider(provider, SpawnToolConfig(maxTurns=1, maxModelOutputChars=8000)),
+            model="original-role-model", system="[internal spawn completion]\n" + provider.role_system_prompt() +
+            "\n这是内部子任务完成事件，不是主人发言。整理真实状态与结果，简短回复原会话。没有工具权限，不更新记忆或待办。",
+            messages=transcript, max_turns=1, provider_timeout=15):
+        if isinstance(event, AgentEndEvent):
+            if event.reason != "completed":
+                raise RuntimeError("completion summary failed")
+            result = next((item.content for item in reversed(transcript) if isinstance(item, AssistantMessage)), "")
+    return result
+
+
+async def _deliver_spawn_completion(snapshot, content) -> tuple[str, str | None]:
+    origin = snapshot.origin
+    if not _spawn_origin_authorized(origin):
+        return "failed", None
+    source = FrozenChannelSource.from_dict(json.loads(origin.source_authority_json))
+    target = target_from_chat(account_id=source.account_id, chat_id=source.chat_id,
+                              kind=TargetKind.GROUP if source.chat_type == "group" else TargetKind.PRIVATE)
+    result = await channel_host.account_send(origin.role_id, source.account_id, target.id, content, actor="reply",
+        source_thread_id=source.thread_id, source_session_key=origin.session_key,
+        source_run_id=origin.parent_run_id, source_tool_call_id=origin.tool_call_id,
+        source_kind="spawn_completion", record_message=False, authorize_source=lambda: _spawn_origin_authorized(origin))
+    return result.status.value, result.attempt_id
+
+
+def _ensure_spawn_completion_worker() -> None:
+    global _spawn_completion_worker
+    if (_spawn_completion_worker is None or _spawn_completion_worker.tasks is not task_runtime
+            or _spawn_completion_worker.sessions is not session_store):
+        _spawn_completion_worker = TaskCompletionWorker(task_runtime, session_store,
+            lock_for=_runtime_role_lock, authorized=_spawn_origin_authorized,
+            summarize=_summarize_spawn_completion, deliver=_deliver_spawn_completion)
+    _spawn_completion_worker.start()
+
+
+def _bind_spawn_runtime(capabilities: CapabilityResolution, provider: MeidoProvider) -> None:
+    # Capture the selected model configuration and adapter from the parent;
+    # a later role edit must never swap a running child's connection or tools.
+    frozen_role = provider.role.model_copy(deep=True)
+    frozen_config = provider.configuration.model_copy(deep=True) if provider.configuration is not None else None
+    for tool in capabilities.tools:
+        if isinstance(tool, ScheduleTool):
+            tool.bind(capabilities, frozen_role, frozen_config)
+        if isinstance(tool, SpawnTool):
+            parent = session_store.get_run(capabilities.snapshot.run_id)
+            if parent is not None:
+                session_store.update_run(parent.runId, status=parent.status, model_snapshot={**parent.modelSnapshot,
+                    "spawnModelConfiguration": frozen_config.model_dump(mode="json", exclude={"apiKey"}) if frozen_config else None})
+            tool.bind(capabilities, lambda: MeidoProvider(provider.adapter, frozen_role, frozen_config, structured_without_tools=True,
+                max_response_tokens=min(4096, frozen_role.agentConfig.spawn.maxModelOutputChars)))
+            _ensure_spawn_completion_worker()
+
+
+_schedule_clock = time.time
+_schedules: ScheduleApplication | None = None
+
+
+def _schedule_origin_authorized(origin: TaskOrigin) -> bool:
+    role = store.get(origin.role_id)
+    if role is None or 'schedule' not in role.agentConfig.enabledTools or role.id in _channel_roles_deleting:
+        return False
+    if origin.source_authority_json:
+        try:
+            source = FrozenChannelSource.from_dict(json.loads(origin.source_authority_json))
+            return (source.role_id == origin.role_id and source.session_key == origin.session_key
+                    and source.owner_context and source.authorization_denial(multichannel_store) is None)
+        except (ValueError, KeyError, TypeError):
+            return False
+    return origin.session_key == f'role:{origin.role_id}' and not origin.source_account_id
+
+
+def _schedule_target(origin, arguments):
+    channel = arguments.get('channel')
+    chat = arguments.get('chat_id')
+    if channel == 'desktop' or channel is None and not origin.source_account_id:
+        if chat not in {None, 'owner', 'user'}:
+            raise ValueError('desktop schedule target must be owner or user')
+        return {'channel': 'desktop', 'sessionKey': f'role:{origin.role_id}'}
+    source = FrozenChannelSource.from_dict(json.loads(origin.source_authority_json)) if origin.source_authority_json else None
+    accounts = [a for a in multichannel_store.list_role_accounts(origin.role_id)
+                if (channel is None and source is not None and a.account_id == source.account_id) or a.channel == channel]
+    if len(accounts) != 1:
+        raise ValueError('schedule channel account is unavailable or ambiguous')
+    account = accounts[0]
+    targets = multichannel_store.list_targets(origin.role_id, account.account_id)
+    if chat == 'owner':
+        targets = multichannel_store.owner_targets(origin.role_id, account.account_id)
+    else:
+        targets = [t for t in targets if t.chat_id == (chat if chat is not None else source.chat_id if source else '') or t.id == chat]
+    if len(targets) != 1:
+        raise ValueError('schedule target is unavailable or ambiguous')
+    target = targets[0]
+    thread = multichannel_store.get_thread_by_chat(origin.role_id, account.account_id, target.chat_id,
+        chat_type='group' if target.kind.value == 'group' else 'private')
+    if thread is None:
+        raise ValueError('schedule destination requires an existing observed conversation')
+    return {'channel': account.channel, 'accountId': account.account_id, 'accountCreatedAt': account.created_at,
+        'targetId': target.id, 'chatId': target.chat_id, 'kind': target.kind.value,
+        'sessionKey': thread.session_key, 'threadId': thread.thread_id,
+        'ownerBinding': multichannel_store.owner_target_binding(origin.role_id, account.account_id, target.chat_id)
+            if target in multichannel_store.owner_targets(origin.role_id, account.account_id) else None}
+
+
+def _schedule_authorized(plan):
+    origin = TaskOrigin(**plan['data']['origin'])
+    if not _schedule_origin_authorized(origin):
+        return False
+    target = plan['data']['target']
+    if target['channel'] == 'desktop':
+        return True
+    account = multichannel_store.get_account(target['accountId'])
+    current = multichannel_store.get_target(origin.role_id, target['accountId'], target['targetId'])
+    if (account is None or account.created_at != target['accountCreatedAt']
+            or not multichannel_store.account_effectively_enabled(account) or current is None
+            or current.chat_id != target['chatId'] or current.kind.value != target['kind']):
+        return False
+    return target.get('ownerBinding') is None or target['ownerBinding'] == multichannel_store.owner_target_binding(
+        origin.role_id, account.account_id, target['chatId'])
+
+
+async def _schedule_execute(plan):
+    from .agent_runtime.spawn_tool import SpawnExecutor
+    from .agent_runtime.tools import ToolContext
+    from .models import Role, SpawnToolConfig
+    data = plan['data']
+    origin = TaskOrigin(**data['origin'])
+    role = Role.model_validate(data['frozen']['role'])
+    frozen_configuration = data['frozen']['configuration']
+    configuration_id = frozen_configuration.get('id') if isinstance(frozen_configuration, dict) else None
+    if frozen_configuration is not None and (not isinstance(configuration_id, str) or not configuration_id):
+        raise PermissionError('original model connection has no frozen identity')
+    configuration = model_configuration_store.get(configuration_id) if configuration_id else None
+    if (configuration_id and configuration is None
+            or (configuration.model_dump(mode='json', exclude={'apiKey'}) if configuration else None) != frozen_configuration):
+        raise PermissionError('original model connection changed or was deleted')
+    definitions = {item['name']: item for item in data['frozen']['tools']}
+    candidates = tuple(tool for tool in _runtime_tool_candidates(role, preview=True)
+        if tool.definition.name in SOFT_TOOLS and asdict(tool.definition) == definitions.get(tool.definition.name))
+    current = store.get(role.id)
+    if current is None:
+        raise PermissionError('original role was deleted')
+    enabled = _enabled_runtime_tool_names(current) & set(definitions)
+    def authorize(definition, context):
+        current = store.get(role.id)
+        return bool(_schedule_authorized(plan) and current is not None and definition.name in _enabled_runtime_tool_names(current))
+    def authorize_call(definition, context, arguments):
+        current = store.get(role.id)
+        return bool(current is not None and (definition.name != 'shell' or ShellTool.command_is_allowed(str(arguments.get('command', '')), current.agentConfig.shell.allowedCommands)))
+    frozen = await CapabilityRegistry(candidates).resolve_async(role_id=role.id, session_key=origin.session_key,
+        run_id=plan['id'], enabled_tools=enabled, allowed_risks={'read_only', 'mutating', 'external'},
+        authorize_tool=authorize, authorize_call=authorize_call)
+    context = ToolContext(role.id, origin.session_key, plan['id'], CancellationToken())
+    provider = MeidoProvider(model_adapter, role, configuration, structured_without_tools=True, max_response_tokens=4096)
+    return SpawnExecutor(task=data['prompt'], profile='general', config=SpawnToolConfig(), provider=provider,
+        frozen=frozen, context=context, authorized=lambda: _schedule_authorized(plan))
+
+
+async def _schedule_deliver(plan, occurrence, authorized):
+    origin = TaskOrigin(**plan['data']['origin'])
+    target = plan['data']['target']
+    try:
+        result = await channel_host.account_send(origin.role_id, target['accountId'], target['targetId'], occurrence['content'],
+            actor='owner', source_thread_id=origin.source_thread_id, source_session_key=origin.session_key,
+            source_run_id=origin.parent_run_id, source_tool_call_id=occurrence['id'], source_kind='schedule',
+            record_message=False, authorize_source=authorized)
+    except (ChannelAdapterError, UnsupportedTargetError) as error:
+        if _schedule_receipt(plan, occurrence) is not None:
+            raise
+        if not authorized():
+            raise PermissionError('original schedule authority revoked') from error
+        raise DeliveryDeferred('transport unavailable before attempt') from error
+    return result.status.value, result.attempt_id
+
+
+def _schedule_receipt(plan, occurrence):
+    return multichannel_store.delivery_for_source(plan['role_id'], source_kind='schedule', source_tool_call_id=occurrence['id'])
+
+
+def _schedule_offline(plan):
+    target = plan['data']['target']
+    if target['channel'] == 'desktop':
+        return False
+    account = multichannel_store.get_account(target['accountId'])
+    if account is None or not account.enabled or account.created_at != target['accountCreatedAt']:
+        return False
+    if not multichannel_store.channel_enabled(account.channel):
+        return True
+    try:
+        channel_host.adapter(account.account_id)
+        return False
+    except (KeyError, ChannelAdapterError):
+        return True
+
+
+def _schedule_application():
+    global _schedules
+    if _schedules is None or _schedules.sessions is not session_store or _schedules.tasks is not task_runtime:
+        _schedules = ScheduleApplication(session_store, task_runtime, clock=lambda: _schedule_clock(),
+            authorized=_schedule_authorized, target_resolver=_schedule_target, execute=_schedule_execute,
+            deliver=_schedule_deliver, receipt=_schedule_receipt, offline=_schedule_offline)
+    return _schedules
+
+
+_proactive: ProactiveApplication | None = None
+_proactive_clock = time.time
+_proactive_context_reader = None
+
+
+def _proactive_context(role_id):
+    """Host-selected fixed file; no synthetic owner or generic file permission."""
+    global _proactive_context_reader
+    from .proactive_runtime.context import ProactiveContextReader
+
+    if _proactive_context_reader is None:
+        _proactive_context_reader = ProactiveContextReader()
+    role = store.get(role_id) if role_id not in _channel_roles_deleting else None
+    if role is None:
+        _proactive_context_reader.forget(role_id)
+        raise PermissionError("autonomous role workspace is unavailable")
+    return _proactive_context_reader.read(role_id, store.workspace_path(role_id), incarnation=role.createdAt.isoformat())
+
+
+async def _proactive_memory(origin, query, *, limit):
+    application = _proactive_application()
+    if not memory_settings_store.get().enabled or not application.tool_permitted(origin, "recall_memory"):
+        raise PermissionError("scoped autonomous memory is disabled")
+    response = await _current_memory_engine().query(MemoryQuery(text=query, intent="context", effect="read_only",
+        scope=MemoryScope(origin.role_id, f"role:{origin.role_id}"), limit=min(2, limit)))
+    return [asdict(record) for record in response.records[:2]]
+
+
+async def _proactive_web(origin, name, arguments):
+    from .agent_runtime.tools import ToolContext
+    application = _proactive_application()
+    if not application.tool_permitted(origin, name):
+        raise PermissionError("autonomous webpage permission is unavailable")
+    config = replace(network_tools_config, max_chars=min(14000, network_tools_config.max_chars), timeout_seconds=min(30, network_tools_config.timeout_seconds))
+    tool = WebFetchTool(config) if name == "web_fetch" else WebSearchTool(config)
+    result = await tool.execute(arguments, ToolContext(origin.role_id, origin.task_origin().session_key, origin.tick_id, CancellationToken()))
+    if result.is_error:
+        raise ValueError("autonomous webpage request failed")
+    return result.content
+
+
+async def _proactive_body(origin, url):
+    value = json.loads(await _proactive_web(origin, "web_fetch", {"url": url}))
+    if not isinstance(value, dict) or not isinstance(value.get("text"), str):
+        raise ValueError("source body fetch did not return text")
+    return value["text"][:8000]
+
+
+def _proactive_application():
+    global _proactive
+    if _proactive is None or _proactive.sessions is not session_store or _proactive.tasks is not task_runtime:
+        if _proactive is not None and _proactive.has_owned_work:
+            raise RuntimeError("previous autonomous owner still requires cleanup")
+        _proactive = ProactiveApplication(session_store, task_runtime, clock=lambda: _proactive_clock(),
+            role_getter=lambda key: store.get(key) if key not in _channel_roles_deleting else None,
+            model_getter=model_configuration_store.get, mcp_host=mcp_host,
+            adapter_factory=lambda configuration: model_adapter,
+            recall_memory=_proactive_memory, web_tools=_proactive_web, fetch_body=_proactive_body,
+            context_reader=_proactive_context,
+            workspace_getter=lambda role_id: store.root / role_id / 'workspace', channel_host=channel_host)
+    return _proactive
 
 
 def _runtime_message_snapshot(message: object) -> dict[str, object]:
@@ -3892,7 +4881,8 @@ def _telegram_accepts_update(account_id: str) -> bool:
     return bool(account and account.role_id not in _channel_roles_deleting and channel_host.accepts_events(account_id))
 
 
-def _defer_telegram_update(account_id: str, update) -> bool:
+def _defer_telegram_update(account_id: str, update, *, received_at: float | None = None) -> bool:
+    received_at = _schedule_clock() if received_at is None else received_at
     account = multichannel_store.get_account(account_id)
     if account is None or not multichannel_store.account_effectively_enabled(account) or account.role_id in _channel_roles_deleting:
         return False
@@ -3903,15 +4893,16 @@ def _defer_telegram_update(account_id: str, update) -> bool:
     async def reject():
         from .channels.host import CHANNEL_INTAKE_RETRY_NOTICE
         await service.transport.send_message(token, chat_id, CHANNEL_INTAKE_RETRY_NOTICE, reply_to=str(message.get("message_id") or "") or None, **({"message_thread_id": message["message_thread_id"]} if message.get("message_thread_id") else {}))
-    return channel_host.intake.defer(account_id, lambda: _dispatch_telegram_update(account_id, update), reject)
+    return channel_host.intake.defer(account_id, lambda: _dispatch_telegram_update(account_id, update, received_at=received_at), reject)
 
 
-async def _dispatch_telegram_update(account_id: str, update) -> None:
+async def _dispatch_telegram_update(account_id: str, update, *, received_at: float | None = None) -> None:
+    received_at = _schedule_clock() if received_at is None else received_at
     try:
         async with channel_host.event_scope(account_id) as admitted:
             service = _telegram_service(account_id)
-            if admitted or not _defer_telegram_update(account_id, update):
-                await service.handle_update(account_id, update)
+            if admitted or not _defer_telegram_update(account_id, update, received_at=received_at):
+                await service.handle_update(account_id, update, received_at=received_at)
     except Exception as error:
         logger.warning("Telegram 入站处理失败 account=%s error=%s", account_id, type(error).__name__)
 
@@ -4015,6 +5006,17 @@ async def _start_channel_account_unlocked(account_id: str) -> None:
     if not _channel_credentials_configured(account):
         multichannel_store.set_account_state(account_id, enabled=False, last_error="credentials_missing")
         return
+    previous = channel_transports.get(account_id)
+    if account.channel == "feishu" and isinstance(previous, FeishuWebhookTransport) and previous.retiring:
+        # A failed save may have restored desired settings while its frozen
+        # candidate still owns resources. Retire it before rebuilding anything.
+        await _stop_channel_account_unlocked(account_id)
+        channel_host.unregister(account_id)
+        channel_adapters.pop(account_id, None)
+        channel_transports.pop(account_id, None)
+        account = multichannel_store.get_account(account_id)
+        if account is None or not multichannel_store.account_effectively_enabled(account) or not _channel_owner_is_available(account):
+            return
     config = multichannel_store.channel_config(account_id)
     managed_ref = str(config.get("managedRef") or "")
     if account.channel == "qq" and managed_ref:
@@ -4168,6 +5170,24 @@ async def _stop_channel_account(account_id: str) -> None:
         await _stop_channel_account_unlocked(account_id)
 
 
+async def _retire_failed_channel_start(account_id: str) -> None:
+    candidate = channel_transports.get(account_id)
+    if isinstance(candidate, FeishuWebhookTransport):
+        candidate.retire()
+    try:
+        await _stop_channel_account(account_id)
+    except Exception as error:
+        logger.debug("启动失败后的渠道清理失败 account=%s error=%s", account_id, type(error).__name__)
+        account = multichannel_store.get_account(account_id)
+        if account is not None and account.channel == "feishu":
+            # A failed Feishu cleanup must retain adapter, host and transport
+            # together, so explicit retry and application shutdown still own it.
+            return
+    channel_host.unregister(account_id)
+    channel_adapters.pop(account_id, None)
+    channel_transports.pop(account_id, None)
+
+
 async def _start_channel_workers() -> None:
     try:
         await managed_napcat.cleanup_deleted_roles({role.id for role in store.list()})
@@ -4186,18 +5206,19 @@ async def _start_channel_workers() -> None:
         try:
             await _start_channel_account(account.account_id)
         except Exception as error:
-            try:
-                await _stop_channel_account(account.account_id)
-            except Exception:
-                logger.debug("启动失败后的渠道清理失败 account=%s", account.account_id, exc_info=True)
-            channel_host.unregister(account.account_id)
-            channel_adapters.pop(account.account_id, None)
-            channel_transports.pop(account.account_id, None)
+            await _retire_failed_channel_start(account.account_id)
             multichannel_store.set_account_state(account.account_id, enabled=False, last_error=type(error).__name__)
             logger.warning("渠道账号启动失败 account=%s error=%s", account.account_id, type(error).__name__)
 
 
 async def _close_channel_workers() -> None:
+    # The application owns every channel until the entire shutdown completes;
+    # cancellation of its caller cannot strand later accounts in this batch.
+    from .channels.feishu_connection import wait_owned
+    await wait_owned(asyncio.create_task(_close_channel_workers_owned()))
+
+
+async def _close_channel_workers_owned() -> None:
     account_ids = set(channel_adapters) | set(telegram_tasks) | set(channel_tasks)
     for account_id in account_ids:
         try:
@@ -4323,6 +5344,12 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
         runtime_manager.role_locks = role_locks
         _, user_message, assistant_message = await runtime_manager.reserve_existing_user_message(
             run, message_id, can_start=lambda: _channel_turn_can_start(thread),
+            on_accepting=lambda: (
+                _accept_owner_run(thread.role_id, thread.session_key, run_id)
+                if owner and multichannel_store.identity_is_owner(role_id=thread.role_id, channel=thread.channel,
+                    scope=_channel_identity_scope(thread.channel), platform_user_id=str(metadata.get("senderId") or ""),
+                    account_id=thread.account_id) else None
+            ),
         )
     except ActiveRunError:
         await _notify_channel_turn_not_started(thread, metadata)
@@ -4459,6 +5486,7 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
             external_context = group_repository.prompt_context(thread.role_id, thread.thread_id, str(metadata.get("senderId") or ""))
             memory_context = "\n\n".join(part for part in (memory_context, external_context) if part)
         provider = MeidoProvider(model_adapter, role, configuration, memory_context, capabilities.prompt_context())
+        _bind_spawn_runtime(capabilities, provider)
         target = target_from_chat(
             account_id=thread.account_id,
             chat_id=thread.chat_id,
@@ -4492,14 +5520,17 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
             capabilities=capabilities,
             max_turns=8,
             provider_timeout=120.0,
-            tool_timeout=max(30.0, network_tools_config.timeout_seconds + 1
-                             if {"web_fetch", "web_search"} & set(role.agentConfig.enabledTools) else 0.0),
+            tool_timeout=max(32.0, role.agentConfig.shell.timeoutSeconds + 2,
+                             network_tools_config.timeout_seconds + 1
+                             if {"web_fetch", "web_search"} & set(role.agentConfig.enabledTools) else 0.0,
+                             330.0 if any(tool.name == 'generate_image' for tool in capabilities.snapshot.tools) else 0.0),
             on_message_end=persist_runtime_message,
         ):
             if isinstance(event, MessageUpdateEvent) and isinstance(event.message, AssistantMessage) and event.message.content.strip():
                 streamed_content = event.message.content
                 adapter = channel_adapters.get(thread.account_id)
-                if adapter is not None and adapter.capabilities.streaming and (
+                if (not any(tool.name == 'generate_image' for tool in capabilities.snapshot.tools)
+                        and adapter is not None and adapter.capabilities.streaming) and (
                     thread.channel != "telegram" or thread.chat_type == "private"
                 ):
                     if stream_queue is None:
@@ -4524,6 +5555,8 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
             if isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage) and not event.message.tool_calls:
                 final_content = event.message.content
         delivery_metadata: dict[str, object] | None = None
+        generation_reply = await _novelai_application().claim_channel_reply(thread.role_id,
+            thread.session_key, run_id, final_message_id) if final_message_id is not None else None
         if stream_queue is not None and stream_task is not None:
             terminal_content = final_content if final_content.strip() else streamed_content
             if terminal_content.strip():
@@ -4540,13 +5573,15 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
             except Exception as error:
                 logger.warning("渠道回复投递失败 role=%s thread=%s error=%s", thread.role_id, thread.thread_id, type(error).__name__)
                 delivery_metadata = {"deliveryStatus": "failed", "deliveryError": type(error).__name__}
-        elif final_content.strip():
+        elif final_content.strip() or generation_reply is not None:
             try:
                 result = await channel_host.account_send(
                     thread.role_id,
                     thread.account_id,
                     target.id,
                     final_content,
+                    attachment_ids=generation_reply.attachment_ids if generation_reply is not None else (),
+                    authorize_source=generation_reply.authorized if generation_reply is not None else None,
                     reply_to_message_id=str(metadata.get("platformMessageId")) if metadata.get("platformMessageId") else None,
                     actor="reply",
                     source_thread_id=thread.thread_id,
@@ -4563,9 +5598,14 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
                     "platformMessageId": result.platform_message_id,
                     "deliveryError": result.error,
                 }
+                if generation_reply is not None:
+                    await _novelai_application().record_channel_receipt(generation_reply, status=result.status.value,
+                        delivery_id=result.attempt_id, platform_message_id=result.platform_message_id)
             except Exception as error:
                 logger.warning("渠道回复投递失败 role=%s thread=%s error=%s", thread.role_id, thread.thread_id, type(error).__name__)
-                delivery_metadata = {"deliveryStatus": "failed", "deliveryError": type(error).__name__}
+                delivery_metadata = {"deliveryStatus": "uncertain" if generation_reply is not None else "failed", "deliveryError": type(error).__name__}
+                if generation_reply is not None:
+                    await _novelai_application().record_channel_receipt(generation_reply, status='uncertain')
         if final_message_id is not None and delivery_metadata is not None:
             message = next((item for item in session_store.list_messages(thread.session_key) if item.id == final_message_id), None)
             if message is not None:
@@ -4575,6 +5615,10 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
                     message.status if delivery_metadata.get("deliveryStatus") == "sent" else "failed",
                     metadata={**message.metadata, **delivery_metadata},
                 )
+                if generation_reply is not None:
+                    await _novelai_application().mark_reply_synced(generation_reply)
+                if owner and updated.status == 'completed' and delivery_metadata.get('deliveryStatus') == 'sent':
+                    _novelai_application().scenes.complete(thread.role_id, thread.session_key, run_id)
                 multichannel_store.publish(thread.role_id, {
                     "type": "message",
                     "roleId": thread.role_id,
@@ -4631,11 +5675,13 @@ async def stop_role_reply(role_id: str, run_id: str) -> SessionResponse:
     runtime_manager.role_locks = role_locks
     if not await runtime_manager.stop_run(run_id):
         raise HTTPException(status_code=409, detail="当前回复暂时无法停止，请刷新后重试")
+    await computer_use.close_run(role_id, run_id)
     return session_manager.open_role_session(role_id)
 
 
 @app.post("/api/roles/{role_id}/messages")
 async def send_role_message(role_id: str, data: SendMessageInput, request: Request) -> StreamingResponse:
+    received_at = _schedule_clock()
     if store.get(role_id) is None:
         raise HTTPException(status_code=404, detail="角色不存在")
     attachments: list[dict[str, object]] = []
@@ -4670,6 +5716,10 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         model_snapshot = {
             "modelConfiguration": configuration_snapshot,
             "role": role_snapshot,
+            "screenPerceptionSource": "desktop_owner",
+            "computerUseSource": "desktop_owner",
+            "humanInputSource": "desktop_owner",
+            "desktopPetGeneration": _desktop_pet_application().store.binding(role_id)[0]['generation'],
         }
         run = AgentRun(
             runId=run_id,
@@ -4682,7 +5732,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         )
         runtime_manager.sessions = session_store
         runtime_manager.role_locks = role_locks
-        _, user_message, assistant_message = await runtime_manager.reserve_run(run, data.content, attachments=attachments)
+        _, user_message, assistant_message = await runtime_manager.reserve_run(run, data.content, attachments=attachments, received_at=received_at,
+            on_accepting=lambda: _accept_owner_run(role_id, session.session.sessionKey, run_id))
     except sqlite3.IntegrityError as error:
         raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试") from error
     except ActiveRunError as error:
@@ -4715,7 +5766,12 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
             return payload
 
         async def watch_disconnect() -> None:
+            watcher_task = asyncio.current_task()
             while not disconnect_watcher_stopped:
+                # Request's AnyIO probe can absorb the exception while the
+                # task still has an outstanding external cancellation request.
+                if watcher_task is not None and watcher_task.cancelling():
+                    return
                 await asyncio.sleep(0.1)
                 if await request.is_disconnected():
                     runtime_manager.cancel_run(run_id)
@@ -4868,6 +5924,9 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     memory_context,
                     capabilities.prompt_context(),
                 )
+                _bind_spawn_runtime(capabilities, provider)
+                if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools):
+                    provider = guard_provider(provider, computer_use, role_id=role_id, run_id=run_id)
                 capabilities_owned_by_runtime = True
                 async for runtime_event in runtime_manager.run(
                     AgentRun(
@@ -4885,16 +5944,21 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     messages=runtime_messages,
                     tools=runtime_tools,
                     capabilities=capabilities,
-                    max_turns=8,
+                    # Observation/action pairs need room for the complete
+                    # eight-tool workflow; the desktop lease still expires
+                    # at its independent five-minute deadline.
+                    max_turns=32 if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools) else 8,
                     provider_timeout=120.0,
                     # The outer timeout must not shorten Browser Use's own
                     # per-action policy when a role also enables a shorter
                     # shell timeout; each ToolDefinition still applies its
                     # own limit inside the runtime.
                     tool_timeout=max(
-                        shell_config.timeoutSeconds if runtime_tools else 30.0,
+                        max(32.0, shell_config.timeoutSeconds + 2) if runtime_tools else 30.0,
                         browser_use_sessions.timeout_seconds if role.agentConfig.browserUse.enabled else 0.0,
                         network_tools_config.timeout_seconds + 1 if {"web_fetch", "web_search"} & set(role.agentConfig.enabledTools) else 0.0,
+                        36.0 if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools) else 0.0,
+                        330.0 if any(tool.name == 'generate_image' for tool in capabilities.snapshot.tools) else 0.0,
                     ),
                     on_message_end=persist_runtime_message,
                 ):
@@ -4923,27 +5987,6 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                             runtime_event.tool_name,
                             runtime_event.arguments,
                         )
-                        definition = (
-                            capabilities.get(runtime_event.tool_name).definition
-                            if capabilities is not None and capabilities.get(runtime_event.tool_name) is not None
-                            else None
-                        )
-                        policy_decision = (
-                            capabilities.snapshot.policy_decisions.get(runtime_event.tool_name)
-                            if capabilities is not None
-                            else None
-                        )
-                        session_store.start_tool_audit(
-                            run_id=run_id,
-                            role_id=role_id,
-                            tool_name=runtime_event.tool_name,
-                            call_id=runtime_event.tool_call_id,
-                            argument_summary=summarize_tool_arguments(runtime_event.arguments),
-                            snapshot_id=capabilities.snapshot.snapshot_id if capabilities is not None else None,
-                            tool_source=definition.source if definition is not None else None,
-                            tool_version=definition.version if definition is not None else None,
-                            policy_decision=str(policy_decision) if policy_decision is not None else None,
-                        )
                         yield _event("tool_execution_start", runtime_event_payload({
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
@@ -4959,14 +6002,6 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         }, runtime_event.sequence))
                     elif isinstance(runtime_event, ToolExecutionEndEvent):
                         safe_result, _ = sanitize_browser_text(runtime_event.result.content)
-                        details = runtime_event.result.details if isinstance(runtime_event.result.details, dict) else {}
-                        session_store.finish_tool_audit(
-                            run_id=run_id,
-                            call_id=runtime_event.tool_call_id,
-                            result_category=str(details.get("status") or ("error" if runtime_event.result.is_error else "succeeded")),
-                            error_type=str(details["errorType"]) if details.get("errorType") else None,
-                            error_message=str(details["message"]) if details.get("message") else None,
-                        )
                         yield _event("tool_execution_end", runtime_event_payload({
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
@@ -4998,6 +6033,11 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     if item.runId == run_id and item.role == "assistant" and item.messageType == "text"
                 )
                 message = final_message
+                attached = await _novelai_application().attach_foreground_reply(role_id,
+                    session.session.sessionKey, run_id, final_message.id)
+                if attached is not None:
+                    message = attached
+                _novelai_application().scenes.complete(role_id, session.session.sessionKey, run_id)
                 try:
                     memory_worker.publish(TurnCommitted(
                         role_id,
@@ -5047,12 +6087,15 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     await capabilities.close()
                 except Exception:
                     pass
-            try:
-                # Browser sessions are scoped to this run; the profile remains
-                # on disk while the owned MCP/Chrome generation is reaped.
-                await browser_use_sessions.close_run(role_id, run_id)
-            except Exception as error:
-                memory_worker.errors.append(f"{role_id}: browser run cleanup failed: {type(error).__name__}")
+            # Each owner must complete its cleanup even when another owner's
+            # cleanup fails; keep failures isolated and await both joins.
+            cleanup_results = await asyncio.gather(
+                computer_use.finish_run(role_id, run_id),
+                browser_use_sessions.close_run(role_id, run_id), return_exceptions=True,
+            )
+            for owner_name, result in zip(("computer", "browser"), cleanup_results):
+                if isinstance(result, BaseException):
+                    memory_worker.errors.append(f"{role_id}: {owner_name} run cleanup failed: {type(result).__name__}")
             if disconnect_watcher is not None:
                 # Request's nonblocking AnyIO probe can absorb a concurrent
                 # Task.cancel(); the stop flag must also end its polling loop.

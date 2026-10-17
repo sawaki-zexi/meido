@@ -1,3 +1,5 @@
+import { ComputerUseSettings } from "./ComputerUseSettings";
+import { DesktopPetSettings } from './DesktopPetSettings';
 import type { FormEvent } from "react";
 import type { RolesState } from "./useRoles";
 import type { RoleProfile } from "../../api/types";
@@ -6,7 +8,14 @@ import { IconButton } from "../../ui/Icon";
 import { Notice } from "../../ui/Status";
 import { AvatarCropper } from "./AvatarCropper";
 import { ShellSettings } from "./ShellSettings";
+import { SpawnSettings } from "./SpawnSettings";
 import { ToolCatalog } from "./ToolCatalog";
+import { BasicToolSettings } from "./BasicToolSettings";
+import { ScreenPerceptionSettings } from "./ScreenPerceptionSettings";
+import { NovelaiRoleSettings } from "../novelai/NovelaiRoleSettings";
+import { CodingRoleSettings } from "../coding/CodingRoleSettings";
+import { AutonomySettings } from "./AutonomySettings";
+import { draftFromRole, payloadFromDraft } from "./draft";
 
 type TextFieldKey = keyof RoleProfile | "name" | "description";
 type Field = { key: TextFieldKey; label: string; placeholder?: string; hint?: string; multiline?: boolean; required?: boolean };
@@ -31,6 +40,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
   const writable = creating || editing;
   const cropping = Boolean(state.avatarSource || state.cardImageSource);
   const locked = !writable || busy;
+  const toolsChanged = selected !== null && JSON.stringify(payloadFromDraft(draft).agentConfig) !== JSON.stringify(payloadFromDraft(draftFromRole(selected)).agentConfig);
   const [showAdvanced, setShowAdvanced] = useState(!creating);
   const avatarInput = useRef<HTMLInputElement>(null);
   const cardInput = useRef<HTMLInputElement>(null);
@@ -92,6 +102,9 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
     </fieldset>
     <fieldset>
       <legend>能力</legend>
+      <ScreenPerceptionSettings draft={draft} onChange={setDraft} disabled={locked} />
+      <ComputerUseSettings draft={draft} onChange={setDraft} disabled={locked} />
+      <NovelaiRoleSettings draft={draft} onChange={setDraft} disabled={locked} />
       <label className="field checkbox-field">
         <input
           type="checkbox"
@@ -126,8 +139,13 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
         <small className="field-hint">只允许读取与当前问题相关的事项。</small>
       </label>
     </fieldset>
+    <BasicToolSettings draft={draft} onChange={setDraft} disabled={locked} />
     <ShellSettings draft={draft} onChange={setDraft} disabled={locked} />
-    {selected && !creating && <ToolCatalog key={`${selected.id}:${selected.updatedAt}`} roleId={selected.id} />}
+    <SpawnSettings draft={draft} onChange={setDraft} disabled={locked} />
+    <CodingRoleSettings roleId={selected?.id} draft={draft} onChange={setDraft} disabled={locked} />
+    {selected && !creating && <AutonomySettings key={selected.id} roleId={selected.id} disabled={locked} />}
+    {selected && !creating && <DesktopPetSettings key={`pet-${selected.id}`} roleId={selected.id} disabled={locked} />}
+    {selected && !creating && <ToolCatalog key={`${selected.id}:${selected.updatedAt}`} roleId={selected.id} hasUnsavedChanges={toolsChanged} />}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {state.importPreview && <section className="role-import-preview" aria-label="角色卡导入预览">
       <div className="role-import-preview-header"><strong>导入预览</strong><button type="button" className="ghost" onClick={state.cancelImport}>取消</button></div>

@@ -1,0 +1,7 @@
+{
+  "profile": "meido-drift-meme-v1",
+  "version": 1,
+  "skillId": "meme-manage",
+  "tools": ["read_file", "list_dir", "write_file", "edit_file", "meme_copy_image", "finish_drift"],
+  "instructions": "仅维护宿主固定的当前角色 @memes 地址空间。先 list_dir @memes、read_file @memes/manifest.json，再 read_file 实际图片供本次明确 Drift 视觉模型检查。保留其他类别和图片，分类写入须沿原观察版本。仅用 meme_copy_image 从本run明确许可的 attachment_id 复制原字节到获准 category；不使用 Shell，不接任意源/目标路径，不自动发送。完成后核验真实文件并 finish_drift(message_result=silent)，保存实际进度和 next_action。"
+}
