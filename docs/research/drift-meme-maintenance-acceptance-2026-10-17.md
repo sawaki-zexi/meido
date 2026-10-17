@@ -61,6 +61,8 @@
 
 新完整 `drift191-review-corrections-final-core-adapter-02386a3fab` 为 151 pass（70 core+81 adapter）、0 fail/error/skip/warning，日志 300.76 秒/XML 300.497 秒。615 个执行输入前后与当前源匹配，70 份原 App 关闭证明（不是 151 份 App）、vault 254 次空 get/0 set、无新增线程或非 localhost 错误；原 exec30563 自然 terminal exit0，守卫在原 owner 退出后恢复。新的不可覆盖 `drift191-review-corrections-evidence-index-v4.json` SHA `0d62cc159fe9aab9ecc945badc3e713d2779c6eb405513b2868006054d169147` 完整原样包含 v3，再追加 32–35 的 10 次原尝试与新组合、容量/类型/React/原报告。root 独立 final151 proof SHA `f886bd4fa01a1452614006cfdf93ca64d7f27b5c787299ded9a5348e6f3bcbe4` 保留写时原 handle 待作者确认的历史措辞，随后作者权威 exit0 补齐，不回写原件。旧 50/20/13 不代替该组合，原 c38 报告也不冒新头增量两轴已通过。
 
+并发恢复的参与者资格补充：旧 13 项及 final151 的 `second_recovery_finished_while_first_held=True` 受全局 ordinal 截断影响，后台恢复可能消耗名额，不能据此确认两个指定 actor 都进入原 reconcile；最终 recorded 的行为证据仍有效，旧原件保持不变。新同一封存外部 fixture SHA `89e8ea6735c4940b8d227578b65779ce2592ad2b8d99f7976fdad1de97cf823f` 在固定 c38 的 `drift191-specified-recovery-actors-red-eef3b1294e` 真 1 fail（8.33 秒、final conflict），在 0d7 生产源的 `drift191-specified-recovery-actors-green-497710a14e` 真 1 pass（9.51 秒、final recorded）。ContextVar 标记的 A/B 各委派原 reconcile 恰好一次，记录各自不同线程的 entry/return；背景分别暂缓 0/2 次。RED 由 B 原方法返回释放 A，GREEN 由有限 watchdog 释放 fixture Event 后两个原方法返回；不宣称观测了 native gate attempt/acquired。原句柄 7501/54505 均自然终态（exit1/0），原 owner 关闭与 guard 恢复均确认，0 live handle；root 独立核验 `drift191-specified-actors-root-verification-v1.json` SHA `309f7b2fc05a2fe082efc5947ae39cf29c986c4234f56b5e414fcf1006387df0`。本次仅修正测试与本页，未改生产或重跑 151/前端/ASR；随后只补局部显式类型，旧 0d7 的 58→58 类型结果限于当时测试源，窄静态辅助在 mypy 前预检停止，当前测试类型由统一 CI 检查。
+
 ## 失败原件与界限
 
 19 轮第一次 `drift191-cycle19-prepublication-red-a11b1a8d7e` 是人为中断，原 closers 未证明；不纳入成功清理或产品 RED。后续 v2 有真实 staging hash 持发布门导致停用超时的反例，green 将长准备移至锁外；watchdog 仅释放 fixture Event，未代替原 owner。

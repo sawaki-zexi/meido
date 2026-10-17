@@ -3,6 +3,7 @@ import asyncio
 import base64
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, suppress
+from contextvars import ContextVar
 from dataclasses import asdict
 import hashlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -917,43 +918,81 @@ def test_recovery_reports_each_real_copy_publication_boundary_without_replaying_
         from backend.app.proactive_runtime import meme_recovery
         original_published = meme_recovery._published
         entered, release = threading.Event(), threading.Event()
-        admission_lock = threading.Lock()
-        admissions = [0]
-        second_finished_first = []
+        actor: ContextVar[str] = ContextVar('drift191_recovery_actor', default='')
+        observation_lock = threading.Lock()
+        calls: dict[str, int] = {'A': 0, 'B': 0}
+        observations: list[dict[str, Any]] = []
+        background_deferred: list[int] = [0]
+        release_by: list[str] = []
+        def observe(phase, identity):
+            with observation_lock:
+                observations.append({'sequence': len(observations) + 1, 'actor': identity,
+                    'phase': phase, 'thread': threading.get_ident(),
+                    'aHeld': entered.is_set() and not release.is_set()})
+        def release_fixture(identity):
+            with observation_lock:
+                if not release.is_set():
+                    release_by.append(identity)
+                    release.set()
         def controlled_reconcile(role_id):
-            with admission_lock:
-                admissions[0] += 1
-                ordinal = admissions[0]
-            if ordinal <= 2:
+            identity = actor.get()
+            if identity not in calls:
+                with observation_lock:
+                    background_deferred[0] += 1
+                return
+            with observation_lock:
+                calls[identity] += 1
+            observe('entry', identity)
+            try:
                 original_reconcile(role_id)
+            except BaseException:
+                observe('error', identity)
+                raise
+            else:
+                observe('return', identity)
+                if identity == 'B':
+                    release_fixture('B-original-reconcile-returned')
         def hold_first_original_fact(target, *arguments):
             result = original_published(target, *arguments)
-            if Path(target) == manifest and not entered.is_set():
+            if Path(target) == manifest and actor.get() == 'A':
+                assert not entered.is_set(), 'Only the designated A owner may hold this original fact once'
                 entered.set()
+                observe('original-manifest-fact-held', 'A')
                 assert release.wait(15), 'Fixture watchdog must release only its own held fact'
             return result
+        async def recover_as(identity):
+            token = actor.set(identity)
+            try:
+                await main._proactive.recover()
+            finally:
+                actor.reset(token)
         monkeypatch.setattr(main._proactive.memes, 'reconcile', controlled_reconcile)
         monkeypatch.setattr(meme_recovery, '_published', hold_first_original_fact)
-        watchdog = threading.Timer(2, release.set)
+        watchdog = threading.Timer(2, release_fixture, args=('fixture-watchdog',))
         with ThreadPoolExecutor(max_workers=2) as requests:
-            first = requests.submit(client.portal.call, main._proactive.recover)
+            first = requests.submit(client.portal.call, recover_as, 'A')
             try:
                 assert entered.wait(10)
-                second = requests.submit(client.portal.call, main._proactive.recover)
-                def completed(_future):
-                    second_finished_first.append(not release.is_set())
-                    release.set()
-                second.add_done_callback(completed)
+                second = requests.submit(client.portal.call, recover_as, 'B')
                 watchdog.start()
                 first.result(20)
                 second.result(20)
             finally:
-                release.set()
+                release_fixture('fixture-finally')
                 watchdog.cancel()
                 if watchdog.ident is not None:
                     watchdog.join()
-        record_property('second_recovery_finished_while_first_held', any(second_finished_first))
-        assert admissions[0] >= 2
+        record_property('recovery_actor_calls', json.dumps(calls, sort_keys=True))
+        record_property('recovery_actor_observations', json.dumps(observations, sort_keys=True))
+        record_property('recovery_background_deferred', background_deferred[0])
+        record_property('recovery_fixture_release_by', json.dumps(release_by))
+        assert calls == {'A': 1, 'B': 1}, 'Both designated owners must invoke the original reconcile exactly once'
+        for identity in calls:
+            assert [event['phase'] for event in observations if event['actor'] == identity and event['phase'] in {'entry', 'return', 'error'}] == ['entry', 'return']
+        entries = [event for event in observations if event['phase'] == 'entry']
+        assert {event['actor'] for event in entries} == {'A', 'B'}
+        assert len({event['thread'] for event in entries}) == 2
+        assert next(event for event in entries if event['actor'] == 'B')['aHeld']
     operation = client.get(path + '/meme-library').json()['operations'][0]
     assert operation['status'] == expected_status and operation['physicalPhase'] == expected_phase, operation
     assert provider.calls == 3 and manifest.read_bytes() == manifest_raw
