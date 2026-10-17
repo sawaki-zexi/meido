@@ -32,7 +32,7 @@ os.environ.update({'SYSTEMROOT': 'C:\\Windows', 'WINDIR': 'C:\\Windows', 'PATH':
     'MEIDO_DATA_DIR': str(DATA / 'data'), 'MEIDO_ROLES_DIR': str(DATA / 'roles'),
     'MEIDO_OWNER_KNOWLEDGE_DATA_DIR': str(DATA / 'owner'), 'MEIDO_BROWSER_USE_DATA_DIR': str(DATA / 'browser'),
     'MEIDO_PROJECT_ROOT': str(DATA / 'project'), 'MEIDO_MEMORY_OPTIMIZER_ENABLED': '0',
-    'MEIDO_MEMORY_IMPLICIT_EXTRACTION_ENABLED': '0', 'PYTHONDONTWRITEBYTECODE': '1', 'NO_COLOR': '1'})
+    'MEIDO_MEMORY_IMPLICIT_EXTRACTION_ENABLED': '0', 'MEIDO_PET_NATIVE_TEST': '1', 'PYTHONDONTWRITEBYTECODE': '1', 'NO_COLOR': '1'})
 for key in ('MEIDO_DATA_DIR', 'MEIDO_ROLES_DIR', 'MEIDO_OWNER_KNOWLEDGE_DATA_DIR', 'MEIDO_BROWSER_USE_DATA_DIR', 'MEIDO_PROJECT_ROOT'):
     Path(os.environ[key]).mkdir(exist_ok=True)
 (DATA / 'data/memory-settings.json').write_text('{"enabled":false,"embeddingEnabled":false}', encoding='utf-8')
@@ -115,6 +115,7 @@ from backend.app.model_adapter import ModelTextDelta, ModelToolCall
 from backend.app.agent_runtime.types import ToolResultMessage
 import zipfile
 
+
 identity = DATA / 'pet-identity.json'
 role = None
 host = None
@@ -144,6 +145,7 @@ try:
             path = f'/api/roles/{role}/desktop-pet'
             state = client.get(path).json()
             assert state['enabled'] and state['host']['status'] == 'ready', state
+        assert state['host']['window']['alwaysOnTop'] and state['host']['window']['visible'], state
         host = main._desktop_pet_application().host
         class Adapter:
             called = False
@@ -162,6 +164,11 @@ try:
         result = [item for item in main.session_store.runtime_messages(f'role:{role}')
             if isinstance(item, ToolResultMessage) and item.tool_name == 'pet_action'][-1]
         assert not result.is_error and result.details['type'] == 'finished' and result.details['frames'] == 12, result
+        if PHASE == 2:
+            capture = host.root / 'own-window.png'
+            with Image.open(capture) as rendered:
+                assert rendered.getpixel((rendered.width // 2, rendered.height // 2))[:3] == (80, 130, 170)
+                proof['ownWindowCapture'] = {'path': str(capture), 'size': rendered.size, 'nativePid': host.process.pid}
         proof.update({'roleId': role, 'nativePid': host.process.pid, 'actionId': result.details['actionId'],
             'receipt': result.details, 'window': state['host']['window']})
     assert host.closed and host.job.exit_confirmed and all(not thread.is_alive() for thread in host._threads)

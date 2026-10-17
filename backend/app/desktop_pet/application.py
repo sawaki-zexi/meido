@@ -65,7 +65,8 @@ class DesktopPetApplication:
             return '尚未绑定当前角色桌宠'
         if sys.platform != 'win32':
             return '桌宠宿主当前仅支持 Windows'
-        if self.host is None or self.host.snapshot()['status'] != 'ready':
+        if (self.host is None or self._host_binding != (role_id, role['generation'])
+                or self.host.snapshot()['status'] != 'ready'):
             return self._error or '桌宠宿主未就绪；请构建宿主并重启桌宠'
         return ''
 
@@ -93,13 +94,20 @@ class DesktopPetApplication:
 
     async def _refresh(self):
         role_id = self.store.active_role()
-        binding = await self._owned(self.store.native_binding, role_id) if role_id is not None else None
-        key = (role_id, binding['generation']) if binding is not None else None
+        role, package, active = self.store.binding(role_id) if role_id is not None else (None, None, None)
+        key = (role_id, role['generation']) if role and role['enabled'] and package and active == role_id else None
         if self.host is not None and key != self._host_binding:
             await self._owned(self.host.close)
             self.host = None
             self._host_binding = None
-        if binding is not None and self.host is None:
+        if key is not None and self.host is None:
+            try:
+                binding = await self._owned(self.store.native_binding, role_id)
+            except (OSError, ValueError, KeyError) as error:
+                self._error = str(error)[:256]
+                return
+            if binding is None:
+                return
             from .host import PetHost
             self.host = PetHost(self.store.root / 'runtime', on_event=self._event)
             self._host_binding = key
@@ -161,7 +169,10 @@ class DesktopPetApplication:
             current, _, _ = self.store.binding(role_id)
             if current['generation'] != generation or not authorized(context) or context.signal.cancelled:
                 raise ValueError('桌宠动作派发前许可已改变')
-            return await self._owned(self.host.action, uuid.uuid4().hex, arguments)
+            def admit(send):
+                return self.store.dispatch(role_id, generation,
+                    lambda: not self.closed and not context.signal.cancelled and authorized(context), send)
+            return await self._owned(self.host.action, uuid.uuid4().hex, arguments, admit=admit)
 
     async def close(self):
         self.closed = True

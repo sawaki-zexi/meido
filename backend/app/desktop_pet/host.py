@@ -71,7 +71,8 @@ class PetHost:
         env.update({'TEMP': str(temporary), 'TMP': str(temporary), 'PATH': 'C:\\Windows\\System32'})
         with self._condition:
             self._status = 'starting'
-        self.process = subprocess.Popen([*command, '--runtime-root', str(self.root)], cwd=PROJECT, env=env,
+        capture = ['--acceptance-capture'] if os.environ.get('MEIDO_PET_NATIVE_TEST') == '1' else []
+        self.process = subprocess.Popen([*command, '--runtime-root', str(self.root), *capture], cwd=PROJECT, env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NO_WINDOW | 0x00000004)  # CREATE_SUSPENDED
         try:
@@ -147,18 +148,27 @@ class PetHost:
                     self._status = 'disconnected'
                 self._condition.notify_all()
 
-    def action(self, identifier, arguments):
+    def action(self, identifier, arguments, *, admit):
         with self._condition:
             if self._status != 'ready' or self.process.poll() is not None or self._inflight:
                 raise ValueError('桌宠未就绪或仍有未决动作')
             self._results.clear()
             self._inflight = identifier
-            try:
+            dispatched = False
+            def send():
+                nonlocal dispatched
+                dispatched = True
                 self._write({'type': 'action', 'actionId': identifier, 'arguments': arguments})
-            except (OSError, ValueError):
+            try:
+                admit(send)
+            except (OSError, ValueError, RuntimeError):
+                if not dispatched:
+                    self._inflight = None
+                    raise
                 # Dispatch uncertainty is retained, never submitted again.
                 self._status = 'disconnected'
-                raise
+                return {'type': 'unknown', 'actionId': identifier, 'roleId': self._binding['roleId'],
+                    'reason': '派发结果不明；不会自动重发'}
             deadline = time.monotonic() + 12
             while self._inflight == identifier and self._status == 'ready':
                 remaining = deadline - time.monotonic()

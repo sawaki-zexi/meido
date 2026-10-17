@@ -239,6 +239,16 @@ class PetStore:
             role['lastActionAt'] = now
             self._save(state)
 
+    def dispatch(self, role_id, generation, authorized, send):
+        """Revocation and the final pipe write share this short admission gate."""
+        with self._gate:
+            state = self._read_state()
+            role = self._role(state, role_id)
+            if (not role['enabled'] or state['activeRoleId'] != role_id
+                    or role['generation'] != generation or not authorized()):
+                raise ValueError('桌宠派发前绑定或来源许可已改变')
+            return send()
+
     def remove_package(self, role_id, package_id, expected_revision):
         with self._gate:
             state = self._read_state()

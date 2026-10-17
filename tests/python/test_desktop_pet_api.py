@@ -62,7 +62,7 @@ def package_bytes():
 
 
 def test_owner_imports_real_shiori_package_binds_it_and_retains_default_off(api):
-    client, _, _, _ = api
+    client, _, sessions, _ = api
     role = client.post('/api/roles', json={'name': '桌宠主人', 'profile': {'profile': '本地验收'},
         'agentConfig': {'enabledTools': ['read_file'], 'shell': {'enabled': False}}}).json()['role']
     path = f"/api/roles/{role['id']}/desktop-pet"
@@ -106,13 +106,10 @@ def test_bad_archive_cross_role_and_stale_settings_do_not_replace_owner_package(
     assert client.get(path).json()['packages'] == state['packages']
 
 
-def test_http_tool_calls_enforce_one_real_run_cooldown_and_default_off_after_revocation(api, monkeypatch):
-    from dataclasses import replace
-    from backend.app.agent_runtime import ToolContext, CancellationToken
+@pytest.fixture
+def protocol_host(api, monkeypatch):
     from types import SimpleNamespace
     from backend.app.desktop_pet import application as pet_application, host as pet_host
-    from backend.app.model_adapter import ModelTextDelta, ModelToolCall
-    from backend.app.agent_runtime.types import ToolResultMessage
     class Host:
         def __init__(self, root, *, on_event):
             self.closed = False
@@ -123,11 +120,20 @@ def test_http_tool_calls_enforce_one_real_run_cooldown_and_default_off_after_rev
             self.closed = True
         def snapshot(self):
             return {'status': 'stopped' if self.closed else 'ready', 'reason': ''}
-        def action(self, identifier, arguments):
+        def action(self, identifier, arguments, *, admit):
+            admit(lambda: None)
             self.count += 1
             return {'type': 'finished', 'actionId': identifier, 'roleId': self.binding['roleId']}
     monkeypatch.setattr(pet_host, 'PetHost', Host)
     monkeypatch.setattr(pet_application, 'sys', SimpleNamespace(platform='win32'))
+    return Host
+
+
+def test_http_tool_calls_enforce_one_real_run_cooldown_and_default_off_after_revocation(api, monkeypatch, protocol_host):
+    from dataclasses import replace
+    from backend.app.agent_runtime import ToolContext, CancellationToken
+    from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+    from backend.app.agent_runtime.types import ToolResultMessage
     client, _, sessions, _ = api
     role = client.post('/api/roles', json={'name': '工具验收', 'profile': {'profile': '测试'},
         'agentConfig': {'enabledTools': ['tool_search']}}).json()['role']
@@ -185,6 +191,77 @@ def test_http_tool_calls_enforce_one_real_run_cooldown_and_default_off_after_rev
     assert 'pet_action' not in value.enabled_tools
     removed = client.delete(path + '/packages/fixture-pet?expectedRevision=' + str(stopped.json()['revision']))
     assert removed.status_code == 200 and removed.json()['packages'] == []
+
+
+def test_revocation_before_original_pipe_admission_prevents_late_native_send(api, monkeypatch, protocol_host):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+    client, _, _, _ = api
+    role = client.post('/api/roles', json={'name': '派发撤权', 'profile': {'profile': '测试'},
+        'agentConfig': {'enabledTools': ['tool_search']}}).json()['role']
+    path = f"/api/roles/{role['id']}/desktop-pet"
+    raw, _ = package_bytes()
+    state = client.post(path + '/packages', content=raw).json()
+    state = client.put(path, json={'expectedRevision': state['revision'], 'packageId': 'fixture-pet', 'enabled': True}).json()
+    owner = main._desktop_pet_application().host
+    entered, release, sent = threading.Event(), threading.Event(), threading.Event()
+    def action(self, identifier, arguments, *, admit):
+        entered.set()
+        assert release.wait(10)
+        admit(sent.set)
+        return {'type': 'finished', 'actionId': identifier}
+    monkeypatch.setattr(protocol_host, 'action', action)
+    class Adapter:
+        called = False
+        async def stream_structured_messages(self, messages, configuration, tools):
+            if 'pet_action' not in {item['function']['name'] for item in tools}:
+                yield ModelToolCall('find-pet', 'tool_search', {'query': 'select:pet_action'})
+            elif not self.called:
+                self.called = True
+                yield ModelToolCall('late-pet', 'pet_action', {'action': 'play', 'name': 'wave'})
+            else:
+                yield ModelTextDelta('实际派发结果已读取')
+    monkeypatch.setattr(main, 'model_adapter', Adapter())
+    with ThreadPoolExecutor(max_workers=2) as requests:
+        response = requests.submit(client.post, f"/api/roles/{role['id']}/messages", json={'content': '随后撤权'})
+        try:
+            assert entered.wait(5)
+            stopped = requests.submit(client.put, path, json={'expectedRevision': state['revision'],
+                'packageId': 'fixture-pet', 'enabled': False})
+            deadline = time.monotonic() + 5
+            while client.get(path).json()['enabled']:
+                assert time.monotonic() < deadline
+                time.sleep(.01)
+            assert not stopped.done(), 'original admitted action is still owned'
+        finally:
+            release.set()
+        actual = response.result(timeout=10)
+        assert stopped.result(timeout=10).status_code == 200
+    from backend.app.agent_runtime.types import ToolResultMessage
+    result = [item for item in main.session_store.runtime_messages(f"role:{role['id']}")
+        if isinstance(item, ToolResultMessage) and item.tool_name == 'pet_action'][-1]
+    assert 'assistant_completed' in actual.text and result.is_error, result
+    assert not sent.is_set() and owner.closed
+
+
+def test_missing_bound_asset_is_a_pet_diagnostic_and_owner_can_disable(api, protocol_host):
+    client, _, _, _ = api
+    role = client.post('/api/roles', json={'name': '损坏诊断', 'profile': {'profile': '测试'}}).json()['role']
+    path = f"/api/roles/{role['id']}/desktop-pet"
+    raw, _ = package_bytes()
+    state = client.post(path + '/packages', content=raw).json()
+    application = main._desktop_pet_application()
+    application.store.configure(role['id'], expected_revision=state['revision'], package_id='fixture-pet', enabled=True)
+    # Simulate owner disk loss while the whole original application remains alive.
+    asset = Path(application.store.native_binding(role['id'])['spritePath'])
+    asset.unlink()
+    client.portal.call(application.start)
+    status = client.get(path)
+    assert status.status_code == 200 and status.json()['host']['status'] == 'stopped'
+    assert status.json()['unavailableReason']
+    assert client.get('/api/roles/' + role['id']).status_code == 200
+    assert client.put(path, json={'expectedRevision': status.json()['revision'], 'packageId': 'fixture-pet', 'enabled': False}).status_code == 200
 
 
 @pytest.mark.skipif(sys.platform != 'win32' or os.environ.get('MEIDO_PET_NATIVE_TEST') != '1',

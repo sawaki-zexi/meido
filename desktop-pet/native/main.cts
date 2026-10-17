@@ -197,10 +197,20 @@ ipcMain.handle('pet:initial', (event) => {
   if (!validSender(event) || !binding) throw new Error('invalid renderer');
   return { title: binding.displayName };
 });
-ipcMain.on('pet:ready', (event) => {
+ipcMain.on('pet:ready', async (event) => {
   if (!validSender(event) || ready) return;
   ready = true; window!.showInactive();
-  emit('ready', { window: geometry() });
+  // Electron's default floating level moves Windows behind the taskbar and
+  // can clear TOPMOST; keep the companion above ordinary windows explicitly.
+  window!.setAlwaysOnTop(true, 'screen-saver');
+  try {
+    if (process.argv.includes('--acceptance-capture')) {
+      // Opt-in acceptance captures this webContents only, never the desktop.
+      const frame = await window!.webContents.capturePage();
+      fs.writeFileSync(path.join(runtimeRoot, 'own-window.png'), frame.toPNG());
+    }
+    emit('ready', { window: geometry() });
+  } catch { emit('error', { reason: 'own-window capture failed' }); void shutdown(); }
 });
 ipcMain.on('pet:receipt', (event, value: { actionId: string; status: string; frames: number }) => {
   if (!validSender(event) || !flight || !value || value.actionId !== flight.id
