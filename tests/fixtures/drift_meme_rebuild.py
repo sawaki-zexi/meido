@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import socket
 import sys
+import sysconfig
 import threading
 import time
 from typing import Any
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(sys.argv[1]).absolute()
 PHASE = int(sys.argv[2])
 assert PHASE in {1, 2}
+dependency_paths_json = os.environ.get('MEIDO_TEST_SITE_PATHS')
 getattr(sys.stdout, 'reconfigure')(encoding='utf-8')
 getattr(sys.stderr, 'reconfigure')(encoding='utf-8')
 HOME = DATA / ('home-' + str(PHASE))
@@ -35,7 +37,10 @@ for key in ('MEIDO_DATA_DIR', 'MEIDO_ROLES_DIR', 'MEIDO_OWNER_KNOWLEDGE_DATA_DIR
     Path(os.environ[key]).mkdir(exist_ok=True)
 (DATA / 'data/memory-settings.json').write_text('{"enabled":false,"embeddingEnabled":false}', encoding='utf-8')
 sys.dont_write_bytecode = True
-sys.path[:0] = [str(ROOT), str(Path(sys.executable).parent / 'Lib/site-packages')]
+dependency_paths = (json.loads(dependency_paths_json) if dependency_paths_json else
+    [sysconfig.get_path('purelib'), sysconfig.get_path('platlib')])
+assert isinstance(dependency_paths, list) and all(isinstance(path, str) and Path(path).is_absolute() for path in dependency_paths)
+sys.path[:0] = [str(ROOT), *dict.fromkeys(dependency_paths)]
 initial_threads = {id(thread) for thread in threading.enumerate()}
 blocked: list[str] = []
 def check(host):

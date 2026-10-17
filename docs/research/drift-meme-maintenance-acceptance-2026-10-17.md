@@ -78,3 +78,5 @@
 ## 总分支 CI 集成修正
 
 准确 cc26d4b 的 push/PR CI 各为 2757 passed、39 skipped、4 failed、2 warnings，前端各259项/45文件及TS/Vite109模块通过；旧CI不冒新实现通过。两边共同的3项失败为测试依赖专用runner才设置的 MEIDO_DATA_DIR，现改用pytest持有的短临时目录，重建/图片/收尾断言不变。另有push的ACK验收轮询遇SQLITE_BUSY、PR的QQ验收轮询早于错误详情投影完成：前者只在原30秒期限内重试BUSY/LOCKED并继续完整状态断言，后者等待错误状态与详情同时就绪后保留原断言。均为测试修正，生产零改动。目录与ACK四个定向用例已通过（35.71秒），原App/worker退出及隔离guard确认；未再运行151或全前端，最终准确提交交CI统一检查。
+
+后续准确 db5d252 的 push/PR CI 均为2759 passed、39 skipped、2 failed、2 warnings，前端仍各259项与TS/Vite通过；剩余两项为隔离重建子进程的 Windows 专属 site-packages 路径导致 Linux 无法导入 FastAPI。现由父解释器 sysconfig 传递其真实 purelib/platlib 位置，保留子进程 -I/-S、清空环境、独立根与原 vault/localhost/owner 守卫；此修正不修改生产。Windows 两项及现有 Linux 3.12 环境同两项均通过，日志分别在 drift191-ci-import-path-fix-c089103578 与 Linux /tmp/meido-drift191-ci-import-path-linux-1dc4ed737d；仅重验受影响重建场景，准确最终提交CI另核。

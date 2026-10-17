@@ -17,6 +17,7 @@ import subprocess
 import threading
 import time
 import sys
+import sysconfig
 from typing import Any
 
 from PIL import Image
@@ -30,6 +31,7 @@ from test_spawn_api import api as spawn_api
 
 
 pytestmark = pytest.mark.usefixtures('local_platform_only')
+_REBUILD_IMPORT_PATHS = json.dumps(list(dict.fromkeys((sysconfig.get_path('purelib'), sysconfig.get_path('platlib')))))
 
 
 @pytest.fixture
@@ -644,7 +646,8 @@ def test_next_real_application_process_reads_and_maintains_the_same_library_afte
     reports = []
     for phase in (1, 2):
         origin = TaskOrigin('drift191-rebuild', 'role:drift191-rebuild', 'phase-' + str(phase))
-        executor = ProcessExecutor([sys.executable, '-I', '-S', str(fixture), str(persistent), str(phase)], tmp_path, dict(os.environ))
+        executor = ProcessExecutor([sys.executable, '-I', '-S', str(fixture), str(persistent), str(phase)], tmp_path,
+            dict(os.environ, MEIDO_TEST_SITE_PATHS=_REBUILD_IMPORT_PATHS))
         identifier = tasks.submit(origin, executor, budget=TaskBudget(60, 60000), kind='shell', description='Owned full application rebuild fixture')
         while True:
             result = tasks.query(identifier, origin, wait_seconds=.2)
@@ -1447,7 +1450,8 @@ def test_fully_rebuilt_disabled_application_preserves_pending_copy_and_owner_act
     reports = []
     for phase in (1, 2):
         origin = TaskOrigin('drift191-pending-rebuild', 'role:drift191-pending-rebuild', 'phase-' + str(phase))
-        executor = ProcessExecutor([sys.executable, '-I', '-S', str(fixture), str(persistent), str(phase), 'pending-disabled'], tmp_path, dict(os.environ))
+        executor = ProcessExecutor([sys.executable, '-I', '-S', str(fixture), str(persistent), str(phase), 'pending-disabled'], tmp_path,
+            dict(os.environ, MEIDO_TEST_SITE_PATHS=_REBUILD_IMPORT_PATHS))
         identifier = tasks.submit(origin, executor, budget=TaskBudget(60, 60000), kind='shell', description='Owned pending copy application rebuild fixture')
         while True:
             result = tasks.query(identifier, origin, wait_seconds=.2)
