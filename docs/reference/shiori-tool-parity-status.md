@@ -2,7 +2,9 @@
 
 状态：当前 / 实施中，完整目标尚未完成。
 
-最后核验：2026-10-17（Asia/Shanghai）。当前集成分支已包含 #191 表情维护与 #195 Electron 桌宠，尚未合入 main；已同步 `main@e32fc0d133a62176e7e8cdf9bb44c572768b481f`。最近已核对的公开 `db5d252` [push CI](https://github.com/sawaki-zexi/meido/actions/runs/38990303354) 与 [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38990307519) 各2759 passed/39 skipped/2 failed/2 warnings，前端各259项/45文件及类型/构建通过。剩余两项是隔离重建子进程的依赖路径假设，`7ce5e4a` 已用原父进程实际依赖路径修正，受影响两例在 Windows/Linux 均通过。新组合准确 CI 以总 PR 检查为准，不能以历史绿覆盖后续代码。
+最后核验：2026-10-17（Asia/Shanghai）。当前集成分支已包含 #191 表情维护与 #195 Electron 桌宠，尚未合入 main；已同步 `main@e32fc0d133a62176e7e8cdf9bb44c572768b481f`。最近已核对的公开 `258d226` [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38994832054)完整通过：后端2766 passed/41 skipped/2 warnings、前端260项/46文件及网页111/桌宠22模块构建；[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38994828623)前端相同通过，后端2765 passed/41 skipped/1 failed，不能记为整组绿。唯一失败位于既有主动来源恢复夹具的终态轮询：原transaction在50ms内遇SQLITE_BUSY而直接退出；本次仅修夹具，在原8秒期限内重试原生BUSY/LOCKED，其他错误重抛，生产0改动，原nonce/唯一提交/调用次数/owner退出断言不变。三个handover原场景在Windows/Linux各3 passed，原Proactive/MCP/TaskRuntime均完成关闭、无新增线程或非本地连接；原件位于 `D:/meido-artifacts/ci178-query-busy-fix-5777500fb6` 与 Linux `/tmp/ci178-query-busy-linux-fix-ae69bad7bc`。新组合准确 CI 以总 PR 检查为准，不能以旧PR成功覆盖修正提交。
+
+此前 `db5d252` 两条CI各剩两项隔离子进程Linux依赖路径假设失败，`7ce5e4a` 已以原父进程依赖路径修正；两例Windows/Linux均通过，且258d两轮中均通过。
 
 历史完整绿色总头 `4dcfd8f8723c96dd36bd6cb30e0933d74d56ed6a` 的两套 CI 各2610 passed/39 skipped/2 warnings、前端252项/44文件；它不涵盖后来 #191/#195。各功能固定证据和限制保留在下表。
 #169 的完整与修正两轴审查均无遗留；准确源本地61项相关检查、编译与同7源相对6751基线的9→9类型诊断对照通过（0新增，不称全类型绿）。受控原生六项、禁用准入一项与失败辅助候选各有自己的固定快照，范围见[原生手册](../handbook/computer-use-native-acceptance.md)。前期 #180 本地115项交叉、252项前端及136/144输入补验证据保留在[目标验收](../research/autonomy-channel-targets-acceptance-2026-10-16.md)，不冒称本次重复执行。

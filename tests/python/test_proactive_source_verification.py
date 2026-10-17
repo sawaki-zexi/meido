@@ -40,9 +40,14 @@ async def settled(verification, identifier):
     async with asyncio.timeout(8):
         while True:
             await verification.recover()
-            view = verification.query("role", identifier)
-            if view["runtimeAcknowledged"]:
-                return view
+            try:
+                view = verification.query("role", identifier)
+            except sqlite3.OperationalError as error:
+                if getattr(error, "sqlite_errorcode", None) not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                    raise
+            else:
+                if view["runtimeAcknowledged"]:
+                    return view
             await asyncio.sleep(.01)
 
 
