@@ -34,7 +34,8 @@ const documentURL = pathToFileURL(path.join(__dirname, 'renderer/index.html')).h
 function geometry() {
   return window && !window.isDestroyed() ? { bounds: window.getBounds(), visible: window.isVisible(),
     alwaysOnTop: window.isAlwaysOnTop(), focusable: window.isFocusable(), transparent: true,
-    displayId: screen.getDisplayMatching(window.getBounds()).id } : null;
+    displayId: screen.getDisplayMatching(window.getBounds()).id,
+    workArea: screen.getDisplayMatching(window.getBounds()).workArea } : null;
 }
 function emit(type: string, fields: Record<string, unknown> = {}) {
   if (!binding) return;
@@ -93,7 +94,8 @@ function move(target: string) {
     if (!window || window.isDestroyed() || !flight) return;
     const progress = Math.min(1, (performance.now() - started) / 800);
     const point = clamp({ x: bounds.x + (end.x - bounds.x) * progress, y: bounds.y + (end.y - bounds.y) * progress });
-    window.setPosition(point.x, point.y, false);
+    // Explicit bounds avoid fractional-DPI rounding accumulating in setPosition.
+    window.setBounds({ ...point, width: 192, height: 208 }, false);
     if (progress === 1) {
       clearInterval(moveTimer); moveTimer = undefined;
       flight.moved = true; finish();
@@ -132,7 +134,7 @@ async function bind(message: Envelope) {
 }
 function reposition() {
   if (window && !window.isDestroyed()) {
-    const point = clamp(window.getBounds()); window.setPosition(point.x, point.y, false);
+    const point = clamp(window.getBounds()); window.setBounds({ ...point, width: 192, height: 208 }, false);
   }
 }
 function action(message: Envelope) {

@@ -72,6 +72,13 @@ class DesktopPetApplication:
 
     async def start(self):
         async with self._serial:
+            role_id = self.store.active_role()
+            if role_id is not None:
+                role, package, _ = self.store.binding(role_id)
+                if role['enabled'] and package is not None:
+                    # Rebuilding the bridge never reuses a prior run's authority.
+                    await self._owned(self.store.configure, role_id, expected_revision=role['revision'],
+                        package_id=package['id'], enabled=True)
             await self._refresh()
 
     async def import_package(self, role_id, raw):

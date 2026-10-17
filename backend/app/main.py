@@ -4118,6 +4118,7 @@ def _runtime_tool_candidates(
         user = session_store.user_message_for_run(context.run_id)
         return bool(run and run.roleId == role.id and run.sessionKey == context.session_key
             and run.status in {'created', 'running'} and run.modelSnapshot.get('humanInputSource') == 'desktop_owner'
+            and run.modelSnapshot.get('desktopPetGeneration') == _desktop_pet_application().store.binding(role.id)[0]['generation']
             and user and user.role == 'user' and user.status == 'completed' and user.messageType == 'text'
             and user.sessionKey == context.session_key and not user.metadata.get('internalEvent')
             and user.metadata.get('channel', 'desktop') == 'desktop')
@@ -4364,7 +4365,8 @@ async def _runtime_capabilities(
     policy = _runtime_capability_policy(role, include_channel=include_channel)
     source_run = session_store.get_run(run_id)
     if (session_key != f'role:{role.id}' or source_run is None
-            or source_run.modelSnapshot.get('humanInputSource') != 'desktop_owner'):
+            or source_run.modelSnapshot.get('humanInputSource') != 'desktop_owner'
+            or source_run.modelSnapshot.get('desktopPetGeneration') != _desktop_pet_application().store.binding(role.id)[0]['generation']):
         policy = replace(policy, enabled_tools=policy.enabled_tools - {'pet_action'},
             enabled_plugins=policy.enabled_plugins - {'desktop_pet'})
     if (session_key != f"role:{role.id}" or source_run is None
@@ -5717,6 +5719,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
             "screenPerceptionSource": "desktop_owner",
             "computerUseSource": "desktop_owner",
             "humanInputSource": "desktop_owner",
+            "desktopPetGeneration": _desktop_pet_application().store.binding(role_id)[0]['generation'],
         }
         run = AgentRun(
             runId=run_id,

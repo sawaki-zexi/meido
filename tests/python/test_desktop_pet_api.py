@@ -315,6 +315,19 @@ def test_native_owner_http_discovery_move_play_restart_disable_and_disconnect(ap
             if isinstance(item, ToolResultMessage) and item.tool_name == 'pet_action'][-1]
         assert not result.is_error and result.details['type'] == 'finished', result
         assert result.details['frames'] >= (12 if command['action'] == 'play' else 24)
+        actual_window = result.details['window']
+        bounds, work = actual_window['bounds'], actual_window['workArea']
+        assert bounds['width'] == 192 and bounds['height'] == 208, actual_window
+        assert actual_window['alwaysOnTop'] and actual_window['visible']
+        assert work['x'] <= bounds['x'] <= work['x'] + work['width'] - bounds['width']
+        assert work['y'] <= bounds['y'] <= work['y'] + work['height'] - bounds['height']
+        if command['action'] == 'move':
+            target = command['target']
+            expected_x = work['x'] + (round((work['width'] - 192) / 2) if target == 'center'
+                else work['width'] - 192 if target.endswith('right') else 0)
+            expected_y = work['y'] + (round((work['height'] - 208) / 2) if target == 'center'
+                else work['height'] - 208 if target.startswith('bottom') else 0)
+            assert (bounds['x'], bounds['y']) == (expected_x, expected_y), actual_window
         history = client.get(path).json()['history']
         receipts = [item['type'] for item in history if item.get('actionId') == result.details['actionId']]
         assert receipts == ['accepted', 'started', 'finished']
@@ -369,5 +382,6 @@ def test_two_real_backends_restore_enabled_native_binding_and_finish_original_tr
     assert reports[0]['pid'] != reports[1]['pid'] and reports[0]['nativePid'] != reports[1]['nativePid']
     assert reports[0]['roleId'] == reports[1]['roleId']
     assert reports[0]['actionId'] != reports[1]['actionId']
+    assert reports[0]['receipt']['generation'] != reports[1]['receipt']['generation']
     assert all(item['nativeTreeExited'] and item['memory'] and item['channels'] and item['newThreads'] == [] for item in reports)
     assert reports[0]['receipt']['window']['bounds'] == reports[1]['window']['bounds']

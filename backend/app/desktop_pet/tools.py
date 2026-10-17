@@ -25,7 +25,7 @@ class PetActionTool:
                 'target': {'type': 'string', 'enum': ['top_left', 'top_right', 'center', 'bottom_left', 'bottom_right']},
                 'animation': {'type': 'string', 'enum': ['', 'idle', 'run']},
                 'name': {'type': 'string', 'enum': actions}}, 'required': ['action'], 'additionalProperties': False},
-            risk='mutating', source='plugin:desktop_pet', timeout_seconds=20, output_limit=4096,
+            risk='mutating', source='plugin:desktop_pet', version='1.0.0.' + (self.generation or 'off'), timeout_seconds=20, output_limit=4096,
             search_hint='桌宠 动作 移动 动画 pet move play')
 
     async def execute(self, arguments, context, on_update=None):
