@@ -1,0 +1,57 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { SettingsDialog } from './SettingsDialog';
+import { App } from '../../App';
+import { fakeBackend, role } from '../../test/fakeBackend';
+
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+it('在插件设置暂停角色浏览器，保留最新角色资料和未编辑的配置', async () => {
+  let saved = role({ id: 'r1', name: '插件角色', agentConfig: {
+    enabledTools: ['custom.query'], enabledPlugins: ['custom'], grantedCapabilities: ['custom.read'],
+    browserUse: { enabled: true }, shell: { enabled: false, allowedCommands: ['python'], timeoutSeconds: 30, maxOutputChars: 20000 },
+  } });
+  const { calls } = fakeBackend({
+    'GET /api/roles': () => ({ body: { roles: [saved] } }),
+    'GET /api/roles/r1': () => ({ body: { role: { ...saved, name: '外部更新的名称' } } }),
+    'PUT /api/roles/r1': (init) => { saved = { ...saved, ...JSON.parse(String(init?.body)) }; return { body: { role: saved } }; },
+  });
+  const user = userEvent.setup();
+  render(<SettingsDialog onClose={() => {}} initialSection="plugins" />);
+  expect(await screen.findByRole('combobox', { name: '配置角色' })).toHaveValue('r1');
+  expect(screen.getByLabelText('允许浏览器操作网页')).toBeChecked();
+  await user.click(screen.getByLabelText('允许浏览器操作网页'));
+  await user.click(screen.getByRole('button', { name: '保存插件设置' }));
+  await screen.findByText('插件设置已保存');
+  expect(saved.name).toBe('外部更新的名称');
+  expect(saved.agentConfig?.browserUse?.enabled).toBe(false);
+  expect(saved.agentConfig?.enabledTools).toEqual(['custom.query']);
+  expect(saved.agentConfig?.enabledPlugins).toEqual(['custom']);
+  expect(saved.agentConfig?.shell?.allowedCommands).toEqual(['python']);
+  await waitFor(() => expect(calls.filter((call) => call.method === 'PUT')).toHaveLength(1));
+});
+
+it('插件保存同步到当前角色，随后编辑角色资料不会恢复旧插件开关', async () => {
+  localStorage.clear(); sessionStorage.clear();
+  let saved = role({ id: 'r1', name: '同步角色', agentConfig: { browserUse: { enabled: true } } });
+  fakeBackend({
+    'GET /api/roles': () => ({ body: { roles: [saved] } }),
+    'GET /api/roles/r1': () => ({ body: { role: saved } }),
+    'GET /api/roles/r1/session': () => ({ body: { session: { sessionKey: 'role:r1', roleId: 'r1' }, messages: [] } }),
+    'PUT /api/roles/r1': (init) => { saved = { ...saved, ...JSON.parse(String(init?.body)) }; return { body: { role: saved } }; },
+  });
+  const user = userEvent.setup(); render(<App />);
+  await screen.findByRole('heading', { name: '同步角色', level: 1 });
+  await user.click(screen.getByRole('button', { name: '设置' }));
+  await user.click(screen.getByRole('button', { name: '插件' }));
+  await screen.findByRole('combobox', { name: '配置角色' });
+  await user.click(screen.getByLabelText('允许浏览器操作网页'));
+  await user.click(screen.getByRole('button', { name: '保存插件设置' }));
+  await screen.findByText('插件设置已保存');
+  await user.click(screen.getByRole('button', { name: '关闭' }));
+  await user.click(screen.getByRole('button', { name: '角色资料' }));
+  expect(screen.getByLabelText('允许浏览器操作网页')).not.toBeChecked();
+  await user.click(screen.getByRole('button', { name: '保存' }));
+  await waitFor(() => expect(saved.agentConfig?.browserUse?.enabled).toBe(false));
+});

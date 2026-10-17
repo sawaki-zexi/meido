@@ -4,7 +4,7 @@
 
 ## 许可与配置
 
-全局 `enabled` 和角色 `agentConfig.coding.enabled` 默认关闭。角色字段为 `repoGrantIds`、`profileIds`、`defaultHerdrProfileId`、`defaultCodexProfileId`、`maxAttemptsPerDay`（默认5，1–100）。Herdr 和 codex_exec 使用分别登记的 profile 与原生资格核验；后者还要求 spawn.enabled。旧客户端省略 coding 或只更新部分子字段时保留现有配置。
+全局 `enabled` 和角色 `agentConfig.coding.enabled` 默认关闭。角色字段为 `repoGrantIds`、`profileIds`、`defaultHerdrProfileId`、`defaultCodexProfileId`、`maxAttemptsPerDay`（默认5，1–100）。Herdr 和 codex_exec 使用分别登记的 profile 与原生资格核验；codex_exec 通过默认 spawn 工具路由，仍须 Coding 独立许可。旧客户端省略 coding 或只更新部分子字段时保留现有配置。
 
 仓库登记精确、存在的 Git top-level 绝对路径、commonDir 与文件系统身份；不接受子目录或可移动别名。授予显式角色 ID、baseRef、remote，以及固定 validation 数组：每项 `id`、绝对程序 `argv`、worktree 内相对 `cwd`。代码会执行主人信任的仓库及验证命令；这不构成同账号 OS 安全沙箱。localCommit、push、draftPr 独立且默认关闭；允许范围不代替具体成果批准。fetch 仍拒绝，不会隐式更新 base。发布只接受一个无认证信息、无跳转的 `https://github.com/<owner>/<repo>.git` push URL。Git clean/smudge/process filter 当前拒绝，包括配置了 filter 的 LFS 仓库，防止普通状态查询启动未受管程序。
 

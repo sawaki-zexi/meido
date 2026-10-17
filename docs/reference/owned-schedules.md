@@ -6,7 +6,7 @@
 
 ## 工具与范围
 
-基础授权中的 schedule、list_schedules、cancel_schedule 分别开启，默认关闭。主人创建计划和当前 schedule 授权构成固定投递许可，无需 spawn 或 message_push 开关。关闭 schedule 撤销计划执行；管理工具可以独立保留。
+普通主人对话默认提供 schedule、list_schedules、cancel_schedule；创建计划仍须真实主人请求及来源许可，不依赖旧 enabledTools 列表。停止计划使用 cancel_schedule，删除或来源失效继续撤销执行；普通 Shell 默认权限不授予 soft 任务受限 Shell。
 
 schedule 必填 tier（instant/soft）、trigger（at/after/every/cron）、when。instant 只接受非空 message；soft 只接受非空 prompt。可选 name、timezone、count、channel、chat_id；拒绝额外字段，模型不能供应身份、接收时间或幂等键。name≤100、when≤200、message≤4000、prompt≤20000字符。按真实 role/source/run/call 幂等。
 

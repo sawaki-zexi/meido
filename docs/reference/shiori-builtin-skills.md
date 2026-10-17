@@ -38,7 +38,7 @@
 
 选中的技能缺依赖时不注入正文，返回 `status:unavailable`、`missingBins`、`missingEnv`，并把具体缺项加入模型上下文。变量值不进入诊断。工具缺失或关闭仍按现有能力策略过滤，Skill 不能重新启用 Shell、文件、渠道或其他工具。
 
-`references/`、`assets/`、`scripts/` 下支持文件均验证范围、大小和 hash；每个文件最多 256 KiB，符号链接、Windows junction 与越界资源拒绝。发现保留原始绝对路径，在发现和激活时复查完整祖先链，角色目录或 workspace 的链接也不能绕过。脚本只是支持资源，不自动执行；执行仍须现有 Shell 白名单和预算。
+`references/`、`assets/`、`scripts/` 下支持文件均验证范围、大小和 hash；每个文件最多 256 KiB，符号链接、Windows junction 与越界资源拒绝。发现保留原始绝对路径，在发现和激活时复查完整祖先链，角色目录或 workspace 的链接也不能绕过。脚本只是支持资源，不自动执行；普通对话使用默认平台 Shell，仍受预算和真实来源限制；受限任务另须独立白名单。
 
 ## 内置流程
 

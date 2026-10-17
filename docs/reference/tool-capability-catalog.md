@@ -2,13 +2,15 @@
 
 状态：当前
 
-最后核验：2026-10-16
+最后核验：2026-10-17；默认内置方案见 [ADR-0021](../adr/0021-default-builtin-tools.md)。
 
 事实来源：[目录模块](../../backend/app/agent_runtime/catalog.py)、[角色 HTTP API](../../backend/app/main.py)、[模型请求适配](../../backend/app/agent_runtime/meido_provider.py)、[角色操作回归](../../tests/python/test_role_capabilities.py)、[网页操作回归](../../web/src/features/role-management/RoleCapabilities.test.tsx)。对应 [Issue #138](https://github.com/sawaki-zexi/meido/issues/138)；完整复刻目标见[整体规格](../specs/shiori-tool-parity-spec.md)。
 
 ## 使用
 
-打开已保存角色的“角色资料”。“允许执行 Shell 命令”控制本角色命令工具，白名单每行填写一个程序名或绝对路径；超时范围为大于 0、至多 300 秒，输出上限为 1–200000 字符。关闭或白名单为空时，下一次对话不提供 Shell，通用 `enabledTools` 不能覆盖专用开关。工作目录、最小环境和 argv 执行规则沿用 ADR-0004，不提供操作系统沙箱。
+基础工具由宿主默认提供，新旧角色无需逐项勾选。旧 `enabledTools` 空列表或部分列表不隐藏默认工具，仍保留扩展工具选择。普通主人 Shell 在 Windows 使用 PowerShell 7、其他平台使用 /bin/sh；无需开关或命令白名单。工作目录固定为角色 workspace，环境有限；超时大于0、至多300秒，输出上限1–200000字符，不提供操作系统沙箱。受限子任务和自主运行继续校验各自的独立许可。
+
+在“设置 → 插件”选择角色，启用或暂停浏览器、屏幕、桌面控制、生图、Coding、桌宠和自主功能；角色资料中也保留同一插件设置。服务凭据及依赖使用各自设置，停用不清空已有配置。插件保存同步当前角色，普通资料编辑不会恢复旧开关。
 
 保存角色资料会保留 Shell 配置以及其他工具、插件和授权项。取消编辑恢复已保存值；创建草稿在当前浏览器标签页恢复。
 
@@ -32,10 +34,10 @@
 
 插件目录包含已注册 manifest 的 ID、版本、来源、启用状态、授权、请求的 capability 和诊断原因。它只读取声明；任意插件的实际工具接口、Hook 和依赖需在真实运行初始化后确认，不把未知状态显示为健康或模型可见。
 
-浏览器检查仅核对现有运行时支持的操作系统和组件文件。Shell 检查仅定位白名单程序。网络连接、平台目标、工具行为、进程是否能成功启动仍以实际调用结果为准；工具可见和依赖检查分开表达。
+浏览器检查仅核对现有运行时支持的操作系统和组件文件。Shell 检查仅定位固定平台 Shell。网络连接、平台目标、工具行为、进程是否能成功启动仍以实际调用结果为准；工具可见和依赖检查分开表达。
 
 ## 本次模型能力说明
 
 原生 rich 和 structured 模型请求根据当前请求的实际 schema 添加简短能力说明，工具名不从旧会话或静态文案复制。未启用工具时原生模型获得明确的空清单。已有角色设定、Skill 提示词、工具结果与冻结能力策略继续保留；仅支持旧式文本 `stream_reply` 的第三方适配器沿用原有文本协议。
 
-`enabledTools` 包含 `tool_search` 时，已获授权的延迟工具可以显示 `authorized=true`、`modelVisible=false`，发现后在同次运行的下一次请求提供 schema。配置和版本语义见[工具发现契约](tool-discovery.md)。后台任务和[通用调度](owned-schedules.md)使用独立宿主生命周期；目录或发现功能不代表整体 Shiori 复刻目标完成。
+`tool_search` 默认提供。已获授权的延迟工具可以显示 `authorized=true`、`modelVisible=false`，发现后在同次运行的下一次请求提供 schema；不会由发现自动启用特殊插件或授予 MCP 服务。配置和版本语义见[工具发现契约](tool-discovery.md)。后台任务和[通用调度](owned-schedules.md)使用独立宿主生命周期；目录或发现功能不代表整体 Shiori 复刻目标完成。

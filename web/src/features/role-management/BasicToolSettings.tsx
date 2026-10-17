@@ -27,23 +27,14 @@ const groups = [
   ] },
 ] as const;
 
-export function BasicToolSettings({ draft, onChange, disabled }: { draft: RoleDraft; onChange: (draft: RoleDraft) => void; disabled: boolean }) {
-  const setEnabled = (name: string, enabled: boolean) => onChange({
-    ...draft,
-    otherEnabledTools: enabled
-      ? draft.otherEnabledTools.includes(name) ? draft.otherEnabledTools : [...draft.otherEnabledTools, name]
-      : draft.otherEnabledTools.filter((item) => item !== name),
-  });
+export function BasicToolSettings(_props: { draft: RoleDraft; onChange: (draft: RoleDraft) => void; disabled: boolean }) {
   return <fieldset>
-    <legend>基础工具授权</legend>
-    <p className="field-hint">逐项选择此角色可用的工具，保存后生效。授权不代表依赖或服务已就绪；保存后可在工具目录检查实际状态。</p>
+    <legend>默认内置工具</legend>
+    <p className="field-hint">基础工具默认提供，无需逐项配置。文件、网络、消息、记忆、Shell、后台任务、子任务和时间任务随角色可用；宿主服务与来源限制仍生效。</p>
     {groups.map((group) => <section key={group.title} aria-label={group.title}>
       <h4>{group.title}</h4>
       <p className="field-hint">{group.hint}</p>
-      {group.tools.map(([name, label]) => <label className="field checkbox-field" key={name}>
-        <input type="checkbox" aria-label={`${label}（${name}）`} checked={draft.otherEnabledTools.includes(name)} disabled={disabled} onChange={(event) => setEnabled(name, event.target.checked)} />
-        <span>{label}（{name}）</span>
-      </label>)}
+      <p>{group.tools.map(([name, label]) => `${label}（${name}）`).join('、')}</p>
     </section>)}
   </fieldset>;
 }

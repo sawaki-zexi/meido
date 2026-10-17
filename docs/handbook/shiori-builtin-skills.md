@@ -8,11 +8,11 @@
 
 在角色聊天直接输入 `$weather 上海今天的天气`、`$summarize 总结这个链接……`、`$meme-manage 更新高兴类别的别名` 或 `$skill-creater 创建学习简报技能`。角色需要相应工具许可；技能不会自动启用工具或安装命令。
 
-在角色工具配置中授予需要的文件工具；需要 CLI 时打开 Shell 并填写明确命令白名单、超时和输出上限。Shell 使用 argv，不执行管道、重定向或环境赋值，工作目录固定为该角色 workspace。
+文件和普通 Shell 默认提供，无需逐项授权或填写普通命令白名单。Windows 使用 PowerShell 7，其他平台使用 /bin/sh；支持平台 shell 语法，固定角色 workspace、有限环境和预算。受限任务另需明确命令许可。
 
 ## 天气
 
-在启动 Meido 的 PATH 中准备 curl。白名单与实际命令名保持一致，例如使用 `curl` 时允许 `curl`；也可使用真实绝对路径并将该路径加入白名单。
+在启动 Meido 的 PATH 中准备 curl，使用实际命令名或绝对路径；普通对话无需额外填写白名单。
 
 `$weather 上海当前天气` 会按说明查询 wttr.in；失败时可查询 Open-Meteo。结果应包含实际地点、单位和来源。依赖缺失或请求失败时会给出具体原因；网络请求仍受角色 Shell 超时限制。
 
@@ -30,7 +30,7 @@ npm install --prefix D:/tools/meido-summarize --ignore-scripts --no-audit --no-f
 node "D:/tools/meido-summarize/node_modules/@steipete/summarize/dist/cli.js" "https://example.com" --extract --json --firecrawl off --timeout 15s
 ```
 
-把真实 CLI.js 安装路径告诉角色；上述路径是配置示例。Node 可执行文件须单独列入角色白名单。无需给 cmd.exe、PowerShell 或任意环境赋值授权。
+把真实 CLI.js 安装路径告诉角色；上述路径是安装示例。普通 Shell 默认提供，但 Node/CLI 仍须实际安装，不会由 Skill 激活安装依赖。
 
 先验证 `--version` 和 `--help`。URL 提取可不配置密钥；由角色根据真实正文总结。CLI 自行调用模型时，按其[配置说明](https://github.com/steipete/summarize/blob/main/docs/config.md) 单独配置 `~/.summarize/config.json` 的服务与凭据；不复制 Meido 模型密钥。实际 CLI 读取它自己的配置，Shell 不继承任意后端 API key。
 
@@ -53,7 +53,7 @@ node "D:/tools/meido-summarize/node_modules/@steipete/summarize/dist/cli.js" "ht
 }
 ```
 
-这些是安装路径示例；确认真实文件存在。仅给后端设置任意 `SUMMARIZE_*` 不会穿过 Shell 的最小环境。Node 和 summarize `.bin` 仍须在启动 PATH，Node 仍须在角色 Shell 白名单；Skill 激活不会安装引擎或授予额外命令。
+这些是安装路径示例，须确认文件存在。任意 SUMMARIZE_* 不会穿过 Shell 的最小环境；Node 和 summarize .bin 仍须在启动 PATH，独立凭据按 CLI 配置。普通 Shell 无需白名单，受限任务许可保持独立。
 
 角色 workspace 的 WAV 可用 `node <真实CLI.js> ./speech.wav --extract --format text --transcriber whisper`，RSS 可用 `node <真实CLI.js> <RSS-URL> --extract --json --format text --transcriber whisper`；所选 URL 的网络访问须在既有许可内。先检查实际非空转写，角色再依据结果总结。短 WAV 的成功不保证所有格式、语言或外部 Podcast 平台；格式需要转码时须另准备所需依赖。URL JSON 的 `prompt` 可以包含实际正文，`llm:null/summary:null` 仍表示未调用 CLI 摘要模型。
 

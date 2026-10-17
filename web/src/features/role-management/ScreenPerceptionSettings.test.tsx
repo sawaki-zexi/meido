@@ -63,7 +63,7 @@ it("创建角色刷新恢复屏幕开关和视觉连接，关闭保存仍保留�
   await form.findByRole("option", { name: /vision-provider/ });
   await user.selectOptions(form.getByRole("combobox", { name: "视觉模型连接" }), "vision-model");
   await user.click(form.getByRole("checkbox", { name: "允许按需观察主屏" }));
-  await user.click(form.getByRole("checkbox", { name: "读取文件（read_file）" }));
+  expect(form.queryByRole("checkbox", { name: "读取文件（read_file）" })).not.toBeInTheDocument();
   first.unmount();
   render(<App />);
   const restored = within(await screen.findByRole("dialog", { name: "创建角色" }));
@@ -74,7 +74,7 @@ it("创建角色刷新恢复屏幕开关和视觉连接，关闭保存仍保留�
   await user.click(restored.getByRole("button", { name: "保存" }));
   await waitFor(() => expect(calls.some((call) => call.method === "POST" && call.path === "/api/roles")).toBe(true));
   expect(saved.agentConfig?.screenPerception).toEqual({ enabled: false, visionModelConfigurationId: "vision-model" });
-  expect(saved.agentConfig?.enabledTools).toEqual(["read_file"]);
+  expect(saved.agentConfig?.enabledTools).toEqual([]);
 });
 
 it("缺连接时进入现有模型设置，保存连接后返回保留角色草稿且不会误保存角色", async () => {
@@ -96,7 +96,7 @@ it("缺连接时进入现有模型设置，保存连接后返回保留角色草�
   const form = within(await screen.findByRole("dialog", { name: "角色资料" }));
   await form.findByText("暂无已保存的模型连接，请先在模型设置中添加。");
   await user.type(form.getByRole("textbox", { name: /^名称/ }), "改名草稿");
-  await user.click(form.getByRole("checkbox", { name: "读取文件（read_file）" }));
+  expect(form.queryByRole("checkbox", { name: "读取文件（read_file）" })).not.toBeInTheDocument();
   await user.click(form.getByRole("button", { name: "打开模型设置" }));
   const settings = within(await screen.findByRole("dialog", { name: "设置" }));
   await user.type(await settings.findByRole("textbox", { name: "模型 ID" }), "vision-model");
@@ -106,7 +106,7 @@ it("缺连接时进入现有模型设置，保存连接后返回保留角色草�
   await user.click(settings.getByRole("button", { name: "关闭" }));
   await form.findByRole("option", { name: /vision-provider/ });
   expect(form.getByRole("textbox", { name: /^名称/ })).toHaveValue("待配置角色改名草稿");
-  expect(form.getByRole("checkbox", { name: "读取文件（read_file）" })).toBeChecked();
+  expect(form.getByText(/基础工具默认提供/)).toBeInTheDocument();
   expect(form.getByRole("combobox", { name: "视觉模型连接" })).toHaveValue("previous-vision");
   await user.selectOptions(form.getByRole("combobox", { name: "视觉模型连接" }), "vision-model");
   await user.click(form.getByRole("checkbox", { name: "允许按需观察主屏" }));

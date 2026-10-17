@@ -71,11 +71,8 @@ def test_authorized_role_network_tool_completes_http_conversation_and_persists_s
 
     client = TestClient(main.app)
     catalog = {item["name"]: item for item in client.get(f"/api/roles/{role.id}/tools").json()["tools"]}
-    assert not catalog[tool_name]["enabled"]
-    saved = client.put(f"/api/roles/{role.id}", json={"name": role.name, "profile": role.profile.model_dump(),
-        "agentConfig": {"enabledTools": [tool_name], "shell": {"timeoutSeconds": 1}}})
-    assert saved.status_code == 200
-    assert client.get(f"/api/roles/{role.id}").json()["role"]["agentConfig"]["enabledTools"] == [tool_name]
+    assert catalog[tool_name]["enabled"]
+    assert client.get(f"/api/roles/{role.id}").json()["role"]["agentConfig"]["enabledTools"] == []
     reply = client.post(f"/api/roles/{role.id}/messages", json={"content": "查询来源"})
     assert reply.status_code == 200
     assert "event: assistant_completed" in reply.text
@@ -87,8 +84,8 @@ def test_authorized_role_network_tool_completes_http_conversation_and_persists_s
     assert "来源网页正文" in results[0].content or "https://article.example/read" in results[0].content
 
 
-@pytest.mark.parametrize("role_enabled,host_enabled", [(False, True), (True, False)])
-def test_unapproved_network_tools_are_hidden_and_forged_calls_cannot_execute(tmp_path, monkeypatch, role_enabled, host_enabled):
+@pytest.mark.parametrize("role_enabled,host_enabled", [(False, False), (True, False)])
+def test_host_disabled_network_tools_are_hidden_for_legacy_empty_and_explicit_lists(tmp_path, monkeypatch, role_enabled, host_enabled):
     class Provider:
         requests = []
 

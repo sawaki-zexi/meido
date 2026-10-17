@@ -7,7 +7,7 @@ import { fakeBackend, role } from "../../test/fakeBackend";
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it("编辑角色并调整 Shell 后保留所有能力配置，重开资料仍显示保存值", async () => {
+it("调整默认 Shell 预算并保留旧配置，重开资料仍显示保存值", async () => {
   let saved = role({ id: "r1", name: "工具角色", agentConfig: {
     shell: { enabled: true, allowedCommands: ["python"], timeoutSeconds: 45, maxOutputChars: 30000 },
     memoryRecall: { enabled: true }, browserUse: { enabled: true },
@@ -23,20 +23,20 @@ it("编辑角色并调整 Shell 后保留所有能力配置，重开资料仍显
   await screen.findByRole("heading", { name: "工具角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "角色资料" }));
   const form = within(await screen.findByRole("dialog", { name: "角色资料" }));
-  expect(form.getByLabelText("允许执行 Shell 命令")).toBeChecked();
-  expect(form.getByLabelText("命令白名单（每行一个）")).toHaveValue("python");
-  await user.clear(form.getByLabelText("命令白名单（每行一个）"));
-  await user.type(form.getByLabelText("命令白名单（每行一个）"), "python\ngit");
+  expect(form.queryByLabelText("允许执行 Shell 命令")).not.toBeInTheDocument();
+  expect(form.getByLabelText("Shell 超时（秒）")).toHaveValue(45);
+  await user.clear(form.getByLabelText("Shell 超时（秒）"));
+  await user.type(form.getByLabelText("Shell 超时（秒）"), "60");
   await user.click(form.getByRole("button", { name: "保存" }));
   await waitFor(() => expect(calls.some((call) => call.method === "PUT")).toBe(true));
   expect(saved.agentConfig).toEqual({
-    shell: { enabled: true, allowedCommands: ["python", "git"], timeoutSeconds: 45, maxOutputChars: 30000 },
+    shell: { enabled: true, allowedCommands: ["python"], timeoutSeconds: 60, maxOutputChars: 30000 },
     memoryRecall: { enabled: true }, browserUse: { enabled: true },
     enabledTools: ["calendar.search"], enabledPlugins: ["calendar"], grantedCapabilities: ["calendar.read"],
   });
   await user.click(form.getByRole("button", { name: "关闭" }));
   await user.click(screen.getByRole("button", { name: "角色资料" }));
-  expect(within(await screen.findByRole("dialog", { name: "角色资料" })).getByLabelText("命令白名单（每行一个）")).toHaveValue("python\ngit");
+  expect(within(await screen.findByRole("dialog", { name: "角色资料" })).getByLabelText("Shell 超时（秒）")).toHaveValue(60);
 });
 
 it("在角色资料查询已保存配置的真实工具状态，失败后可重试", async () => {
@@ -68,7 +68,7 @@ it("在角色资料查询已保存配置的真实工具状态，失败后可重�
   expect(form.getByText(/已保存配置/)).toBeInTheDocument();
 });
 
-it("关闭 Shell 后保存开关，并保留重新启用需要的白名单和预算", async () => {
+it("默认 Shell 不提供开关，修改预算仍保留旧白名单和扩展", async () => {
   let saved = role({ id: "r1", name: "命令角色", agentConfig: {
     shell: { enabled: true, allowedCommands: ["python"], timeoutSeconds: 40, maxOutputChars: 25000 },
     enabledPlugins: ["todo"], grantedCapabilities: ["todo.write"], enabledTools: ["todo.write"],
@@ -83,10 +83,12 @@ it("关闭 Shell 后保存开关，并保留重新启用需要的白名单和预
   await screen.findByRole("heading", { name: "命令角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "角色资料" }));
   const form = within(await screen.findByRole("dialog", { name: "角色资料" }));
-  await user.click(form.getByLabelText("允许执行 Shell 命令"));
+  expect(form.queryByLabelText("允许执行 Shell 命令")).not.toBeInTheDocument();
+  await user.clear(form.getByLabelText("Shell 输出字符上限"));
+  await user.type(form.getByLabelText("Shell 输出字符上限"), "27000");
   await user.click(form.getByRole("button", { name: "保存" }));
   await waitFor(() => expect(calls.some((call) => call.method === "PUT")).toBe(true));
-  expect(saved.agentConfig?.shell).toEqual({ enabled: false, allowedCommands: ["python"], timeoutSeconds: 40, maxOutputChars: 25000 });
+  expect(saved.agentConfig?.shell).toEqual({ enabled: true, allowedCommands: ["python"], timeoutSeconds: 40, maxOutputChars: 27000 });
   expect(saved.agentConfig?.enabledPlugins).toEqual(["todo"]);
   expect(saved.agentConfig?.grantedCapabilities).toEqual(["todo.write"]);
   expect(saved.agentConfig?.enabledTools).toEqual(["todo.write"]);
