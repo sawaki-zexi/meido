@@ -2,7 +2,7 @@
 
 状态：当前
 
-最后核验：2026-10-17；默认内置方案见 [ADR-0021](../adr/0021-default-builtin-tools.md)。
+最后核验：2026-10-18；默认内置方案见 [ADR-0021](../adr/0021-default-builtin-tools.md)。
 
 事实来源：[目录模块](../../backend/app/agent_runtime/catalog.py)、[角色 HTTP API](../../backend/app/main.py)、[模型请求适配](../../backend/app/agent_runtime/meido_provider.py)、[角色操作回归](../../tests/python/test_role_capabilities.py)、[网页操作回归](../../web/src/features/role-management/RoleCapabilities.test.tsx)。对应 [Issue #138](https://github.com/sawaki-zexi/meido/issues/138)；完整复刻目标见[整体规格](../specs/shiori-tool-parity-spec.md)。
 
@@ -10,7 +10,7 @@
 
 基础工具由宿主默认提供，新旧角色无需逐项勾选。旧 `enabledTools` 空列表或部分列表不隐藏默认工具，仍保留扩展工具选择。普通主人 Shell 在 Windows 使用 PowerShell 7、其他平台使用 /bin/sh；无需开关或命令白名单。工作目录固定为角色 workspace，环境有限；超时大于0、至多300秒，输出上限1–200000字符，不提供操作系统沙箱。受限子任务和自主运行继续校验各自的独立许可。
 
-在“设置 → 工具与插件”选择角色，启用或暂停浏览器、屏幕、桌面控制、生图、Coding、桌宠和自主功能。Shell、子任务预算和实际工具目录也集中在这里。服务凭据及依赖使用各自设置，停用不清空已有配置。插件保存同步当前角色，普通资料编辑不会恢复旧开关。
+在“设置 → 工具与插件”选择角色，启用或暂停浏览器、屏幕、桌面控制、生图、Coding、桌宠和自主功能。首页只显示可选插件的说明、已保存状态、设置和启停操作；默认工具清单不展示。Shell、子任务预算和实际工具目录位于“高级运行设置”。服务凭据及依赖使用各自设置，关闭保留连接、额度、仓库等配置；NovelAI 按钮明确撤销手动/CG/卡片写回许可，重新启动不自动选择模式。插件保存同步当前角色，普通资料编辑不会恢复旧开关。
 
 角色资料只保存身份和设定，不提交工具配置；已有 Shell 配置以及其他工具、插件和授权项保持原值。取消编辑恢复已保存值；创建草稿在当前浏览器标签页恢复。
 

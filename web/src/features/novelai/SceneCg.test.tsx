@@ -128,6 +128,7 @@ it('saves and reopens CG permission in the actual app and refreshes a late CG in
   await screen.findByRole('heading', { name: '场景角色', level: 1 });
   await user.click(screen.getByRole('button', { name: '设置' }));
   await user.click(screen.getByRole('button', { name: '工具与插件' }));
+  await user.click(await screen.findByRole('button', { name: 'NovelAI 生图 设置' }));
   const editor = within(await screen.findByRole('dialog', { name: '设置' }));
   await editor.findByText(/账户每日最多 20 次/);
   await user.click(editor.getByRole('checkbox', { name: '允许主人回合场景 CG' }));
@@ -139,6 +140,7 @@ it('saves and reopens CG permission in the actual app and refreshes a late CG in
   await user.click(editor.getByRole('button', { name: '关闭' }));
   await user.click(screen.getByRole('button', { name: '设置' }));
   await user.click(screen.getByRole('button', { name: '工具与插件' }));
+  await user.click(await screen.findByRole('button', { name: 'NovelAI 生图 设置' }));
   expect(screen.getByRole('checkbox', { name: '允许主人回合场景 CG' })).toBeChecked();
   expect(screen.getByRole('combobox', { name: 'CG 辅助模型连接' })).toHaveValue('helper');
   await user.keyboard('{Escape}');

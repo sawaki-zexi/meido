@@ -141,6 +141,7 @@ it('exposes the working Drift configuration in the actual tool settings and reop
   const user = userEvent.setup(); render(<App />);
   await user.click(await screen.findByRole('button', { name: '设置' }));
   await user.click(screen.getByRole('button', { name: '工具与插件' }));
+  await user.click(await screen.findByRole('button', { name: '自主行为 设置' }));
   const editor = within(await screen.findByRole('dialog', { name: '设置' }));
   await editor.findByRole('checkbox', { name: '开启 Drift' });
   await user.click(editor.getByRole('checkbox', { name: '开启 Drift' }));
@@ -151,6 +152,7 @@ it('exposes the working Drift configuration in the actual tool settings and reop
   await user.keyboard('{Escape}');
   await user.click(screen.getByRole('button', { name: '设置' }));
   await user.click(screen.getByRole('button', { name: '工具与插件' }));
+  await user.click(await screen.findByRole('button', { name: '自主行为 设置' }));
   await waitFor(() => expect(screen.getByRole('checkbox', { name: '开启 Drift' })).toBeChecked());
   expect(screen.getByRole('combobox', { name: 'Drift 模型连接' })).toHaveValue('drift-model');
   expect(screen.getByRole('checkbox', { name: '开启主动决策' })).not.toBeChecked();

@@ -24,6 +24,7 @@ it("edits an independent Codex exec profile and qualifies its own hash without H
   await user.click(screen.getByRole("button", { name: "登记 CLI" }));
   await screen.findByText("CLI 已登记，尚未核验。保存不会登录或调用模型。");
   expect(calls.find(call => call.path === "/api/coding/profiles" && call.method === "POST")?.body).toMatchObject({ executor: "codex_exec", kind: "codex", id: "exec-one" });
+  await user.click(screen.getByText("原生核验", { selector: "summary" }));
   await user.click(screen.getByRole("checkbox", { name: /我批准所选 CLI 执行首次和继续两个任务回合/ }));
   await user.click(screen.getByRole("button", { name: "核验 独立 exec" }));
   await waitFor(() => expect(calls.some(call => call.path.endsWith("/probe"))).toBe(true));
@@ -46,6 +47,7 @@ it("saves coding grants in settings without rewriting default-tool selections", 
   await screen.findByRole("heading", { name: "编程角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "设置" }));
   await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(await screen.findByRole("button", { name: "编程委托 设置" }));
   const form = within(await screen.findByRole("dialog", { name: "设置" }));
   expect(form.getByRole("checkbox", { name: "允许编程委托" })).not.toBeChecked();
   await user.click(form.getByRole("checkbox", { name: "允许编程委托" }));
@@ -61,6 +63,7 @@ it("saves coding grants in settings without rewriting default-tool selections", 
   await user.click(form.getByRole("button", { name: "关闭" }));
   await user.click(screen.getByRole("button", { name: "设置" }));
   await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(await screen.findByRole("button", { name: "编程委托 设置" }));
   expect(within(await screen.findByRole("dialog", { name: "设置" })).getByRole("checkbox", { name: "允许编程委托" })).toBeChecked();
   expect(within(screen.getByRole("dialog", { name: "设置" })).getByRole("combobox", { name: "默认 Codex exec CLI" })).toHaveValue("exec-one");
 });
@@ -77,6 +80,7 @@ it("requires explicit native-turn cost consent, displays blocked facts, and revo
   });
   const user = userEvent.setup();
   render(<CodingSettings />);
+  await user.click(screen.getByText("原生核验", { selector: "summary" }));
   expect(await screen.findByRole("button", { name: "核验 专用 Codex" })).toBeDisabled();
   expect(screen.getByText(/内部可能多次请求模型；最多运行 600 秒/)).toBeInTheDocument();
   await user.click(screen.getByRole("checkbox", { name: /我批准所选 CLI 执行首次和继续两个任务回合/ }));
@@ -89,4 +93,26 @@ it("requires explicit native-turn cost consent, displays blocked facts, and revo
   await screen.findByText("已撤销 CLI 的角色许可并停止当前任务");
   expect(configuration.profiles[0].allowedRoleIds).toEqual([]);
   expect(configuration.profiles[0].id).toBe("cli-one");
+});
+
+
+it("编程设置默认折叠细节，以真实启停按钮保存全局状态", async () => {
+  let configuration = { enabled: false, repositories: [], profiles: [], nativeBuild: null };
+  const { calls } = fakeBackend({
+    "GET /api/roles": () => ({ body: { roles: [role({ id: "r1", name: "诗织" })] } }),
+    "GET /api/coding/configuration": () => ({ body: configuration }),
+    "PUT /api/coding/configuration": init => { configuration = { ...configuration, ...JSON.parse(String(init?.body)) }; return { body: configuration }; },
+  });
+  const user = userEvent.setup(); render(<CodingSettings />);
+  const start = await screen.findByRole("button", { name: "启动编程委托" });
+  await waitFor(() => expect(start).toBeEnabled());
+  expect(screen.getByRole("textbox", { name: "可信仓库路径" })).not.toBeVisible();
+  expect(calls.some(call => call.method !== "GET")).toBe(false);
+  await user.click(start);
+  await screen.findByRole("button", { name: "关闭编程委托" });
+  expect(configuration.enabled).toBe(true);
+  await user.click(screen.getByRole("button", { name: "关闭编程委托" }));
+  await screen.findByRole("button", { name: "启动编程委托" });
+  expect(configuration.enabled).toBe(false);
+  expect(calls.filter(call => call.method === "PUT").map(call => call.body)).toEqual([{ enabled: true }, { enabled: false }]);
 });

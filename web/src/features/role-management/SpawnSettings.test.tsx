@@ -24,6 +24,7 @@ it("子任务默认提供，调整预算并重开时保留已有工具和配置"
   await screen.findByRole("heading", { name: "子任务角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "设置" }));
   await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(await screen.findByRole("button", { name: "高级运行设置" }));
   const form = within(await screen.findByRole("dialog", { name: "设置" }));
   expect(form.queryByLabelText("允许委托独立子任务")).not.toBeInTheDocument();
   await user.clear(form.getByLabelText("子任务超时（秒）"));
@@ -36,6 +37,7 @@ it("子任务默认提供，调整预算并重开时保留已有工具和配置"
   await user.click(form.getByRole("button", { name: "关闭" }));
   await user.click(screen.getByRole("button", { name: "设置" }));
   await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(await screen.findByRole("button", { name: "高级运行设置" }));
   const reopened = within(await screen.findByRole("dialog", { name: "设置" }));
   expect(reopened.queryByLabelText("允许委托独立子任务")).not.toBeInTheDocument();
   expect(reopened.getByLabelText("子任务超时（秒）")).toHaveValue(45);
