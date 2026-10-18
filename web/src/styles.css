@@ -65,11 +65,16 @@ button.danger:hover:not(:disabled) { background: var(--danger-soft); color: var(
 button.icon { min-height: 26px; padding: 0 8px; font-size: 17px; line-height: 1; border-color: transparent; background: transparent; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
-input, textarea, select {
+input:where(:not([type="checkbox"]):not([type="radio"])), textarea, select {
   font: inherit; color: var(--ink); width: 100%; min-width: 0;
   border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
   padding: 8px 11px; background: var(--bg);
   transition: border-color .15s, box-shadow .15s;
+}
+input[type="checkbox"], input[type="radio"] {
+  font: inherit;
+  width: 16px; height: 16px; flex: 0 0 16px; margin: 0; padding: 0;
+  accent-color: var(--rose); vertical-align: middle;
 }
 input:focus, textarea:focus, select:focus { border-color: var(--focus); outline: none; box-shadow: 0 0 0 3px rgb(196 108 157 / 15%); }
 textarea { min-height: 80px; resize: vertical; line-height: 1.7; }
@@ -77,6 +82,9 @@ input:disabled, textarea:disabled, select:disabled { background: transparent; co
 ::placeholder { color: var(--placeholder); }
 
 .field { display: grid; gap: 4px; }
+.checkbox-field { display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: start; gap: 4px 8px; }
+.checkbox-field > input[type="checkbox"], .checkbox-field > input[type="radio"] { grid-column: 1; grid-row: 1; margin-top: max(0px, calc((1lh - 16px) / 2)); }
+.checkbox-field > :not(input) { grid-column: 2; min-width: 0; overflow-wrap: anywhere; }
 .field label { font-size: 13px; font-weight: 600; color: var(--ink-soft); }
 .field-hint { color: var(--ink-faint); margin-top: -2px; }
 .api-key-field { min-width: 0; }
@@ -335,10 +343,6 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 
 /* Role profile / create form */
 .role-editor { display: grid; gap: 22px; padding: 20px 22px 22px; }
-.role-editor .checkbox-field { grid-template-columns: 16px minmax(0, 1fr); align-items: center; column-gap: 8px; }
-.role-editor .checkbox-field > input[type="checkbox"] { grid-column: 1; grid-row: 1; width: 16px; height: 16px; margin: 0; padding: 0; accent-color: var(--rose); }
-.role-editor .checkbox-field > span { grid-column: 2; grid-row: 1; }
-.role-editor .checkbox-field > .field-hint { grid-column: 2; }
 .role-import-control { display: flex; align-items: center; justify-content: flex-start; gap: 8px; }
 .role-import-preview { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); background: #fff8fd; }
 .role-import-preview-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -687,7 +691,7 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .memory-editor label { display: grid; gap: 6px; font-size: 13px; color: var(--ink-soft); }
 .memory-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .memory-card { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg); }
-.memory-card-heading { display: flex; gap: 6px; }
+.memory-card-heading { display: flex; align-items: center; gap: 6px; }
 .memory-card-heading input, .memory-select-all input { accent-color: var(--rose); }
 .memory-type, .memory-status, .source-marker { padding: 2px 9px; border-radius: 999px; font-size: 12px; background: var(--role-soft); color: var(--role); }
 .memory-status { background: var(--hover); color: var(--ink-faint); }
