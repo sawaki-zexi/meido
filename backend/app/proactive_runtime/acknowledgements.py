@@ -15,6 +15,8 @@ from .source_validation import retry_allowed
 
 
 def current_source(app, db, row):
+    if not app.enabled():
+        return None
     state = db.execute("SELECT * FROM autonomy_roles WHERE role_id=?", (row["role_id"],)).fetchone()
     if state is None or app.role_getter(row["role_id"]) is None:
         return None

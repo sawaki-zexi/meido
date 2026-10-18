@@ -27,12 +27,13 @@ it('exposes actual service settings, role permission, and current-role generatio
   await user.click(screen.getByRole('button', { name: '设置' }));
   await user.click(screen.getByRole('button', { name: '插件' }));
   await user.click(await screen.findByRole('button', { name: 'NovelAI 生图 设置' }));
+  await user.click(screen.getByRole('button', { name: '角色参数' }));
   expect(await screen.findByRole('group', { name: '角色生图许可' })).toBeInTheDocument();
   await user.keyboard('{Escape}');
   await user.click(screen.getByRole('button', { name: '设置' }));
   await user.click(screen.getByRole('button', { name: '插件' }));
   await user.click(screen.getByRole('button', { name: '服务与连接' }));
   await user.click(screen.getByRole('button', { name: 'NovelAI 生图' }));
-  expect(await screen.findByRole('checkbox', { name: '启用 NovelAI 服务' })).not.toBeChecked();
+  expect(await screen.findByRole('button', { name: '启动 NovelAI' })).toBeInTheDocument();
   expect(calls.some((item) => item.method === 'POST')).toBe(false);
 });

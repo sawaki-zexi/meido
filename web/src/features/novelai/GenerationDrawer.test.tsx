@@ -7,14 +7,14 @@ import type { AgentToolConfig } from '../../api/types';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it('opens history without consuming and retries the same explicit UI operation with its original request ID', async () => {
+it('global manual grant enables a default-off role and preserves the original request ID on retry', async () => {
   let attempts = 0;
   const generated = { generationId: 'gen-171', attemptId: 'attempt-171', roleId: 'r1', status: 'succeeded',
     parameters: { prompt: 'blue sky', mode: 'txt2img', width: 1024, height: 1024, seed: 171, model: 'nai-diffusion-4-5-curated', steps: 28 },
     attachments: [{ id: 'image-171', name: 'generated.png', kind: 'image', mediaType: 'image/png', size: 171 }],
     taskId: 'task-171', createdAt: '2026-10-16T04:00:00Z', errorCode: '', consumption: 'possible', deliveryStatus: 'sent' };
   const { calls } = fakeBackend({
-    'GET /api/services/novelai': () => ({ body: { enabled: true, tokenConfigured: true, credentialCleanupPending: false, revision: 3,
+    'GET /api/services/novelai': () => ({ body: { enabled: true, manualEnabled: true, manualDailyAttempts: 5, manualConsentRevision: 3, tokenConfigured: true, credentialCleanupPending: false, revision: 3,
       allowedModels: ['nai-diffusion-4-5-curated'], defaultModel: 'nai-diffusion-4-5-curated', allowedSamplers: ['k_euler_ancestral'],
       defaultSampler: 'k_euler_ancestral', maxPixels: 1048576, maxSteps: 28, dailyAttemptLimit: 20 } }),
     'GET /api/roles/r1/generations': () => ({ body: { generations: attempts > 1 ? [generated] : [], nextCursor: null,
@@ -23,7 +23,7 @@ it('opens history without consuming and retries the same explicit UI operation w
   });
   const user = userEvent.setup();
   const refresh = vi.fn();
-  render(<GenerationDrawer role={role({ id: 'r1', name: '诗织', agentConfig: { novelai: { manualEnabled: true, manualDailyAttempts: 10, consentRevision: 3 } } as AgentToolConfig })} onClose={() => {}} onGenerated={refresh} />);
+  render(<GenerationDrawer role={role({ id: 'r1', name: '诗织', agentConfig: { novelai: { manualEnabled: false, manualDailyAttempts: 10, consentRevision: 0 } } as AgentToolConfig })} onClose={() => {}} onGenerated={refresh} />);
   await screen.findByText('暂无生图历史。');
   expect(calls.filter((item) => item.method === 'POST')).toHaveLength(0);
   await user.type(screen.getByLabelText('英文正向 tags'), 'blue sky');
@@ -41,7 +41,7 @@ it('aborts an old role request and ignores its late image after switching roles'
   let resolveGeneration: ((value: { body: unknown }) => void) | undefined;
   let generationSignal: AbortSignal | null | undefined;
   fakeBackend({
-    'GET /api/services/novelai': () => ({ body: { enabled: true, tokenConfigured: true, credentialCleanupPending: false, revision: 3,
+    'GET /api/services/novelai': () => ({ body: { enabled: true, manualEnabled: true, manualDailyAttempts: 5, manualConsentRevision: 3, tokenConfigured: true, credentialCleanupPending: false, revision: 3,
       allowedModels: ['nai-diffusion-4-5-curated'], defaultModel: 'nai-diffusion-4-5-curated', allowedSamplers: ['k_euler_ancestral'],
       defaultSampler: 'k_euler_ancestral', maxPixels: 1048576, maxSteps: 28, dailyAttemptLimit: 20 } }),
     'GET /api/roles/r[12]/generations': () => ({ body: { generations: [], nextCursor: null,

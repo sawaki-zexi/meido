@@ -83,11 +83,15 @@ class RoleStore:
             values = current.model_dump(exclude={"id", "createdAt", "updatedAt"})
             values.update(data.model_dump(exclude_unset=True, exclude_none=True))
             if data.agentConfig is not None:
-                for field in ("screenPerception", "computerUse", "novelai", "coding"):
-                    settings = getattr(current.agentConfig, field).model_dump()
-                    if field in data.agentConfig.model_fields_set:
-                        settings.update(getattr(data.agentConfig, field).model_dump(exclude_unset=True))
-                    values["agentConfig"][field] = settings
+                # Purpose-specific settings submit only edited fields. Preserve
+                # every omitted tool policy, including legacy extension grants.
+                settings = current.agentConfig.model_dump()
+                for field, change in data.agentConfig.model_dump(exclude_unset=True).items():
+                    if isinstance(change, dict) and isinstance(settings.get(field), dict):
+                        settings[field] = {**settings[field], **change}
+                    else:
+                        settings[field] = change
+                values['agentConfig'] = settings
             updated = Role(**values, id=current.id, createdAt=current.createdAt, updatedAt=utc_now())
             candidate = [*self._roles]
             candidate[index] = updated

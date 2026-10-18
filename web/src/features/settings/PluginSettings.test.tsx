@@ -1,135 +1,81 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { defaultNovelaiRoleConfig } from '../../api/novelai';
 import { SettingsDialog } from './SettingsDialog';
-import { App } from '../../App';
-import { fakeBackend, role } from '../../test/fakeBackend';
+import { fakeBackend } from '../../test/fakeBackend';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+const browser = { id: 'browser', name: '浏览器', description: '会话分别归属角色', enabled: false,
+  revision: 0, cleanupPending: false, values: { headed: false, timeout_seconds: 45 } };
 
-it('在插件设置暂停角色浏览器，保留最新角色资料和未编辑的配置', async () => {
-  let saved = role({ id: 'r1', name: '插件角色', agentConfig: {
-    enabledTools: ['custom.query'], enabledPlugins: ['custom'], grantedCapabilities: ['custom.read'],
-    browserUse: { enabled: true }, shell: { enabled: false, allowedCommands: ['python'], timeoutSeconds: 30, maxOutputChars: 20000 },
-  } });
+it('插件全局启动，无需选择角色或改写角色文件，普通工具不出现在列表', async () => {
+  let saved = browser;
   const { calls } = fakeBackend({
-    'GET /api/roles': () => ({ body: { roles: [saved] } }),
-    'GET /api/roles/r1': () => ({ body: { role: { ...saved, name: '外部更新的名称' } } }),
-    'PUT /api/roles/r1': (init) => { saved = { ...saved, ...JSON.parse(String(init?.body)) }; return { body: { role: saved } }; },
+    'GET /api/plugin-management': () => ({ body: { plugins: [saved] } }),
+    'PUT /api/plugin-management/browser/enabled': init => {
+      const body = JSON.parse(String(init?.body));
+      saved = { ...saved, enabled: body.enabled, revision: 1 };
+      return { body: saved };
+    },
   });
-  const user = userEvent.setup();
-  render(<SettingsDialog onClose={() => {}} initialSection="plugins" />);
-  expect(await screen.findByRole('combobox', { name: '配置角色' })).toHaveValue('r1');
-  await user.click(screen.getByRole('button', { name: '关闭 浏览器' }));
-  await screen.findByText('插件设置已保存');
-  expect(saved.name).toBe('外部更新的名称');
-  expect(saved.agentConfig?.browserUse?.enabled).toBe(false);
-  expect(saved.agentConfig?.enabledTools).toEqual(['custom.query']);
-  expect(saved.agentConfig?.enabledPlugins).toEqual(['custom']);
-  expect(saved.agentConfig?.shell?.allowedCommands).toEqual(['python']);
-  await waitFor(() => expect(calls.filter((call) => call.method === 'PUT')).toHaveLength(1));
+  const user = userEvent.setup(); render(<SettingsDialog onClose={() => {}} initialSection="plugins" />);
+  await user.click(await screen.findByRole('button', { name: '启动 浏览器' }));
+  expect(await screen.findByRole('button', { name: '关闭 浏览器' })).toBeInTheDocument();
+  expect(screen.queryByRole('combobox', { name: '配置角色' })).not.toBeInTheDocument();
+  expect(screen.queryByText(/read_file|默认自带|工具目录/)).not.toBeInTheDocument();
+  expect(calls.some(call => call.path.startsWith('/api/roles'))).toBe(false);
+  expect(calls.filter(call => call.method === 'PUT').map(call => call.body)).toEqual([{ enabled: true, expectedRevision: 0 }]);
 });
 
-it('插件保存同步到当前角色，随后编辑角色资料不会恢复旧插件开关', async () => {
-  localStorage.clear(); sessionStorage.clear();
-  let saved = role({ id: 'r1', name: '同步角色', agentConfig: { browserUse: { enabled: true } } });
-  fakeBackend({
-    'GET /api/roles': () => ({ body: { roles: [saved] } }),
-    'GET /api/roles/r1': () => ({ body: { role: saved } }),
-    'GET /api/roles/r1/session': () => ({ body: { session: { sessionKey: 'role:r1', roleId: 'r1' }, messages: [] } }),
-    'PUT /api/roles/r1': (init) => { saved = { ...saved, ...JSON.parse(String(init?.body)) }; return { body: { role: saved } }; },
-  });
-  const user = userEvent.setup(); render(<App />);
-  await screen.findByRole('heading', { name: '同步角色', level: 1 });
-  await user.click(screen.getByRole('button', { name: '设置' }));
-  await user.click(screen.getByRole('button', { name: '插件' }));
-  await screen.findByRole('combobox', { name: '配置角色' });
-  await user.click(screen.getByRole('button', { name: '关闭 浏览器' }));
-  await screen.findByText('插件设置已保存');
-  await user.click(screen.getByRole('button', { name: '关闭' }));
-  await user.click(screen.getByRole('button', { name: '角色资料' }));
-  expect(screen.queryByLabelText('允许浏览器操作网页')).not.toBeInTheDocument();
-  await user.click(screen.getByRole('button', { name: '保存' }));
-  await waitFor(() => expect(saved.agentConfig?.browserUse?.enabled).toBe(false));
-});
-
-
-it('设置中调整 Shell 和子任务预算并启用待办，保留刷新读取的扩展授权', async () => {
-  let saved = role({ id: 'r1', name: '预算角色', agentConfig: { enabledTools: ['custom.query'], enabledPlugins: ['custom'], grantedCapabilities: ['custom.read'] } });
-  fakeBackend({
-    'GET /api/roles': () => ({ body: { roles: [saved] } }),
-    'GET /api/roles/r1': () => ({ body: { role: saved } }),
-    'PUT /api/roles/r1': (init) => { saved = { ...saved, ...JSON.parse(String(init?.body)) }; return { body: { role: saved } }; },
-  });
-  const user = userEvent.setup(); render(<SettingsDialog initialSection="plugins" onClose={() => {}} />);
-  await screen.findByRole('combobox', { name: '配置角色' });
-  expect(screen.queryByText(/基础工具默认提供/)).not.toBeInTheDocument();
-  await user.click(screen.getByRole('button', { name: '高级运行设置' }));
-  await user.clear(screen.getByLabelText('Shell 超时（秒）'));
-  await user.type(screen.getByLabelText('Shell 超时（秒）'), '60');
-  await user.clear(screen.getByLabelText('子任务超时（秒）'));
-  await user.type(screen.getByLabelText('子任务超时（秒）'), '240');
-  saved = { ...saved, agentConfig: { ...saved.agentConfig, enabledTools: ['custom.query', 'new.query'], enabledPlugins: ['custom', 'new'], grantedCapabilities: ['custom.read', 'new.read'] } };
-  await user.click(screen.getByRole('button', { name: '保存' }));
-  await screen.findByText('插件设置已保存');
-  await user.click(screen.getByRole('button', { name: '返回插件列表' }));
-  await user.click(screen.getByRole('button', { name: '启动 待办查询' }));
-  await waitFor(() => expect(saved.agentConfig?.enabledTools).toContain('todo.search'));
-  expect(saved.agentConfig).toMatchObject({ shell: { timeoutSeconds: 60 }, spawn: { timeoutSeconds: 240 },
-    enabledTools: ['custom.query', 'new.query', 'todo.search'], enabledPlugins: ['custom', 'new', 'todo'], grantedCapabilities: ['custom.read', 'new.read', 'todo.read'] });
-});
-
-
-it('插件首页仅展示状态与启停操作，关闭失败保留已启用状态，成功后可重新启动', async () => {
-  let saved = role({ id: 'r1', name: '列表角色', agentConfig: { browserUse: { enabled: true }, shell: { enabled: true, allowedCommands: ['python'], timeoutSeconds: 30, maxOutputChars: 20000 } } });
-  let reject = true;
+it('保存公共浏览器参数不同时启用插件，失败保留草稿并显示错误', async () => {
   const { calls } = fakeBackend({
-    'GET /api/roles': () => ({ body: { roles: [saved] } }),
-    'GET /api/roles/r1': () => ({ body: { role: saved } }),
-    'PUT /api/roles/r1': (init) => { if (reject) return { status: 503, body: { detail: '暂时无法保存' } }; saved = { ...saved, ...JSON.parse(String(init?.body)) }; return { body: { role: saved } }; },
+    'GET /api/plugin-management': () => ({ body: { plugins: [browser] } }),
+    'PUT /api/plugin-management/browser/configuration': () => ({ status: 409, body: { detail: '设置已变化，请刷新' } }),
   });
-  const user = userEvent.setup(); render(<SettingsDialog initialSection="plugins" onClose={() => {}} />);
-  await screen.findByRole('combobox', { name: '配置角色' });
-  expect(screen.queryByText('默认内置工具')).not.toBeInTheDocument();
-  expect(screen.queryByText(/read_file/)).not.toBeInTheDocument();
-  expect(screen.queryByLabelText('Shell 超时（秒）')).not.toBeInTheDocument();
-  expect(screen.queryByLabelText('视觉模型连接')).not.toBeInTheDocument();
-  expect(calls.some(call => call.path === '/api/model/configurations')).toBe(false);
-  await user.click(screen.getByRole('button', { name: '关闭 浏览器' }));
-  expect(await screen.findByRole('alert')).toHaveTextContent('暂时无法保存');
-  expect(screen.getByRole('button', { name: '关闭 浏览器' })).toBeEnabled();
-  reject = false;
-  await user.click(screen.getByRole('button', { name: '关闭 浏览器' }));
-  await screen.findByRole('button', { name: '启动 浏览器' });
-  expect(saved.agentConfig?.browserUse?.enabled).toBe(false);
-  expect(saved.agentConfig?.shell?.allowedCommands).toEqual(['python']);
-  await user.click(screen.getByRole('button', { name: '启动 浏览器' }));
-  await screen.findByRole('button', { name: '关闭 浏览器' });
-  expect(saved.agentConfig?.browserUse?.enabled).toBe(true);
+  const user = userEvent.setup(); render(<SettingsDialog onClose={() => {}} initialSection="plugins" />);
+  await user.click(await screen.findByRole('button', { name: '浏览器 设置' }));
+  await user.click(screen.getByRole('checkbox', { name: '显示浏览器窗口' }));
+  await user.click(screen.getByRole('button', { name: '保存参数' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('设置已变化');
+  expect(screen.getByRole('checkbox', { name: '显示浏览器窗口' })).toBeChecked();
+  await waitFor(() => expect(calls.filter(call => call.method === 'PUT')).toHaveLength(1));
+  expect(calls.find(call => call.method === 'PUT')?.body).toEqual({ values: { headed: true, timeout_seconds: 45 }, expectedRevision: 0 });
 });
 
-
-it('关闭生成许可保留连接额度和标签，重新启动不会自动切换到手动模式或提交消费', async () => {
-  const novelai = { ...defaultNovelaiRoleConfig, sceneCgEnabled: true, autoWritebackRoleAssets: true,
-    scenePromptModelConfigurationId: 'cg-model', sceneCgDailyAttempts: 7, consentRevision: 3,
-    promptTagsEnabled: true };
-  let saved = role({ id: 'r1', name: 'CG角色', agentConfig: { novelai } });
+it('公共手动生图需明确确认费用，参数保存不切换插件且不写角色 CG', async () => {
+  let configuration = { enabled: true, manualEnabled: false, manualDailyAttempts: 10, manualConsentRevision: 0,
+    tokenConfigured: true, credentialCleanupPending: false, revision: 3, allowedModels: ['nai-diffusion-4-5-curated'],
+    defaultModel: 'nai-diffusion-4-5-curated', allowedSamplers: ['k_euler_ancestral'], defaultSampler: 'k_euler_ancestral',
+    maxPixels: 1048576, maxSteps: 28, dailyAttemptLimit: 20 };
   const { calls } = fakeBackend({
-    'GET /api/roles': () => ({ body: { roles: [saved] } }),
-    'GET /api/roles/r1': () => ({ body: { role: saved } }),
-    'GET /api/model/configurations': () => ({ body: { configurations: [] } }),
-    'PUT /api/roles/r1': (init) => { saved = { ...saved, ...JSON.parse(String(init?.body)) }; return { body: { role: saved } }; },
+    'GET /api/services/novelai': () => ({ body: configuration }),
+    'PUT /api/services/novelai': init => {
+      const { confirmManualConsumption, expectedRevision: _, ...changes } = JSON.parse(String(init?.body));
+      configuration = { ...configuration, ...changes, revision: 4, manualConsentRevision: confirmManualConsumption ? 4 : 0 };
+      return { body: configuration };
+    },
   });
-  const user = userEvent.setup(); render(<SettingsDialog initialSection="plugins" onClose={() => {}} />);
-  const close = await screen.findByRole('button', { name: '关闭 NovelAI 生图' });
-  expect(close).toHaveTextContent('关闭生成许可');
-  await user.click(close);
-  await screen.findByRole('button', { name: '启动 NovelAI 生图' });
-  expect(saved.agentConfig?.novelai).toMatchObject({ manualEnabled: false, sceneCgEnabled: false,
-    autoWritebackRoleAssets: false, scenePromptModelConfigurationId: 'cg-model', sceneCgDailyAttempts: 7, promptTagsEnabled: true });
-  await user.click(screen.getByRole('button', { name: '启动 NovelAI 生图' }));
-  expect(await screen.findByRole('checkbox', { name: '允许按主人输入生图' })).not.toBeChecked();
-  expect(screen.getByRole('checkbox', { name: '允许主人回合场景 CG' })).not.toBeChecked();
-  expect(calls.filter(call => call.method === 'PUT')).toHaveLength(1);
+  const user = userEvent.setup(); render(<SettingsDialog onClose={() => {}} initialSection="plugins" />);
+  await user.click(await screen.findByRole('button', { name: 'NovelAI 生图 设置' }));
+  await user.click(await screen.findByRole('checkbox', { name: '允许按主人输入手动生图（全部角色）' }));
+  const consent = screen.getByRole('checkbox', { name: '我确认当前公共参数的有限手动生图消费' });
+  expect(consent).not.toBeChecked(); await user.click(consent);
+  await user.click(screen.getByRole('button', { name: '保存生图设置' }));
+  await screen.findByText('公共生图参数已保存；场景 CG 在角色参数中单独确认。');
+  expect(calls.find(call => call.method === 'PUT')?.body).toMatchObject({ manualEnabled: true, confirmManualConsumption: true, expectedRevision: 3 });
+  expect(calls.find(call => call.method === 'PUT')?.body).not.toHaveProperty('enabled');
+  expect(calls.some(call => call.path.startsWith('/api/roles'))).toBe(false);
+  await user.clear(screen.getByLabelText('最多采样步数')); await user.type(screen.getByLabelText('最多采样步数'), '12');
+  expect(consent).not.toBeChecked();
+});
+
+it('待办启停只写全局开关，不回填提醒和时区参数', async () => {
+  const { calls } = fakeBackend({
+    'GET /api/todos/settings': () => ({ body: { enabled: false, remindersEnabled: true, timezone: 'Asia/Tokyo' } }),
+    'PUT /api/todos/settings': () => ({ body: { enabled: true, remindersEnabled: false, timezone: 'UTC' } }),
+  });
+  const user = userEvent.setup(); render(<SettingsDialog onClose={() => {}} initialSection="plugins" />);
+  await user.click(await screen.findByRole('button', { name: '启动 待办' }));
+  await screen.findByRole('button', { name: '关闭 待办' });
+  expect(calls.find(call => call.method === 'PUT')?.body).toEqual({ enabled: true });
 });

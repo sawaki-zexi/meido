@@ -1,90 +1,112 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, errorMessage } from '../../api/client';
 import type { Role } from '../../api/types';
-import { draftFromRole, payloadFromDraft, type RoleDraft } from '../role-management/draft';
-import { RolePluginSettings } from '../role-management/RolePluginSettings';
+import { plugins, type PluginId, type PluginState } from '../../api/plugins';
+import { novelai, type NovelaiConfiguration } from '../../api/novelai';
+import { getCodingConfiguration, type CodingConfiguration } from '../../api/coding';
+import { NovelaiSettings } from '../novelai/NovelaiSettings';
+import { CodingSettings } from '../coding/CodingSettings';
+import { TodoSettings } from '../todo/TodoSettings';
+import { PluginRow } from './PluginRow';
+import { PluginParameters } from './PluginParameters';
+import { RolePurposeSettings, type RolePurpose } from './RolePurposeSettings';
 import { SettingsTabs } from './SettingsTabs';
 import { pluginServices, type SettingsServiceId } from './navigation';
+
+type Row = { id: PluginId; name: string; description: string; enabled?: boolean; state?: PluginState; problem?: string };
+const services: Row[] = [
+  { id: 'novelai', name: 'NovelAI 生图', description: '手动生图使用公共许可；场景 CG 按角色配置。' },
+  { id: 'coding', name: '编程委托', description: '将任务委托给已授权的可信仓库和专用 CLI。' },
+  { id: 'todo', name: '待办', description: '查询、管理主人的待办和提醒。' },
+];
+const rolePurposes = new Set<PluginId>(['novelai', 'coding', 'pet', 'autonomy']);
+type TodoConfiguration = { enabled: boolean; remindersEnabled: boolean; timezone: string };
 
 export function PluginSettings({ onRoleSaved, onOpenService, serviceVersion = 0, initialTab = 'roles' }: {
   onRoleSaved?: (role: Role) => void; onOpenService?: (id: SettingsServiceId) => void;
   serviceVersion?: number; initialTab?: 'roles' | 'services';
 }) {
   const [tab, setTab] = useState<'roles' | 'services'>(initialTab);
-  const [roles, setRoles] = useState<Role[]>([]);
-  const [selectedId, setSelectedId] = useState('');
-  const [draft, setDraft] = useState<RoleDraft | null>(null);
+  const [rows, setRows] = useState<Row[]>([]);
+  const [active, setActive] = useState<PluginId | 'advanced' | null>(null);
+  const [rolesOpen, setRolesOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const generation = useRef(0);
+  const [refresh, setRefresh] = useState(0);
   useEffect(() => {
-    const request = ++generation.current;
-    void api<{ roles: Role[] }>('/api/roles').then(({ roles: result }) => {
-      if (request !== generation.current) return;
-      setRoles(result); setSelectedId(result[0]?.id ?? '');
-      setDraft(result[0] ? draftFromRole(result[0]) : null);
-    }).catch((cause) => { if (request === generation.current) setError(errorMessage(cause, '无法读取角色插件设置')); });
-    return () => { generation.current += 1; };
-  }, []);
-  const selected = roles.find((role) => role.id === selectedId);
-  const save = async (candidate: RoleDraft): Promise<boolean> => {
-    if (!selected || busy) return false;
-    const request = ++generation.current;
+    let current = true;
+    void Promise.allSettled([plugins.list(), novelai.configuration(), getCodingConfiguration(), api<TodoConfiguration>('/api/todos/settings')])
+      .then(results => {
+        if (!current) return;
+        const [host, ...external] = results;
+        const configured: Row[] = host.status === 'fulfilled' && 'plugins' in host.value
+          ? host.value.plugins.map(state => ({ ...state, state })) : [];
+        if (host.status === 'rejected') setError(errorMessage(host.reason, '无法读取插件列表'));
+        external.forEach((result, index) => {
+          const service = services[index];
+          configured.push({ ...service, enabled: result.status === 'fulfilled' && 'enabled' in result.value ? result.value.enabled : undefined,
+            problem: result.status === 'rejected' ? '状态读取失败' : undefined });
+        });
+        setRows(configured);
+      });
+    return () => { current = false; };
+  }, [serviceVersion, refresh]);
+  const selected = rows.find(row => row.id === active);
+  const configured = (state: PluginState) => setRows(items => items.map(row => row.id === state.id ? { ...row, enabled: state.enabled, state } : row));
+  async function toggle(row: Row) {
+    if (busy || row.enabled === undefined) return;
+    if (row.id === 'screen' && !row.enabled && !row.state?.values.visionModelConfigurationId) {
+      setActive('screen'); setRolesOpen(false); setNotice('请先选择公共视觉连接并保存参数，再启动插件。'); return;
+    }
     setBusy(true); setError(''); setNotice('');
     try {
-      // Only update edited tool settings; preserve the latest role profile and other configuration.
-      const fresh = await api<{ role: Role }>(`/api/roles/${encodeURIComponent(selected.id)}`);
-      if (request !== generation.current) return false;
-      const config = payloadFromDraft(candidate).agentConfig;
-      const current = fresh.role.agentConfig;
-      const before = payloadFromDraft(draftFromRole(selected)).agentConfig;
-      const changes: Record<string, unknown> = {};
-      for (const key of ['browserUse', 'computerUse', 'screenPerception', 'novelai', 'coding', 'shell', 'spawn'] as const) {
-        if (JSON.stringify(config[key]) !== JSON.stringify(before[key])) changes[key] = config[key];
+      if (row.state) configured(await plugins.enabled(row.state, row.state.cleanupPending ? false : !row.enabled));
+      else {
+        if (row.id === 'novelai') {
+          const fresh = await novelai.configuration();
+          await api<NovelaiConfiguration>('/api/services/novelai', { method: 'PUT', body: JSON.stringify({ enabled: !row.enabled, expectedRevision: fresh.revision }) });
+        } else if (row.id === 'coding') await api<CodingConfiguration>('/api/coding/configuration', { method: 'PUT', body: JSON.stringify({ enabled: !row.enabled }) });
+        else {
+          await api<TodoConfiguration>('/api/todos/settings', { method: 'PUT', body: JSON.stringify({ enabled: !row.enabled }) });
+        }
+        setRows(items => items.map(item => item.id === row.id ? { ...item, enabled: !row.enabled } : item));
       }
-      if (candidate.todoSearchEnabled !== draftFromRole(selected).todoSearchEnabled) {
-        const updated = payloadFromDraft({ ...draftFromRole(fresh.role), todoSearchEnabled: candidate.todoSearchEnabled }).agentConfig;
-        changes.enabledTools = updated.enabledTools;
-        changes.enabledPlugins = updated.enabledPlugins;
-        changes.grantedCapabilities = updated.grantedCapabilities;
-      }
-      const { role: saved } = await api<{ role: Role }>(`/api/roles/${encodeURIComponent(selected.id)}`, {
-        method: 'PUT', body: JSON.stringify({ name: fresh.role.name, description: fresh.role.description,
-          profile: fresh.role.profile, agentConfig: { ...current, ...changes } }),
-      });
-      if (request !== generation.current) return false;
-      setRoles((items) => items.map((item) => item.id === saved.id ? saved : item));
-      onRoleSaved?.(saved);
-      setDraft(draftFromRole(saved)); setNotice('插件设置已保存');
-      return true;
-    } catch (cause) {
-      if (request === generation.current) setError(errorMessage(cause, '无法保存插件设置'));
-      return false;
-    } finally { if (request === generation.current) setBusy(false); }
-  };
+      setNotice('全局插件状态已保存');
+    } catch (cause) { setError(errorMessage(cause, '插件操作失败')); setRefresh(value => value + 1); }
+    finally { setBusy(false); }
+  }
+  const open = (id: PluginId | 'advanced') => { setActive(id); setRolesOpen(false); setError(''); setNotice(''); };
+  const activeName = selected?.name ?? (active === 'advanced' ? '高级运行设置' : '');
   return <section className="plugin-settings" aria-label="插件设置">
     <h2>插件</h2>
-    <SettingsTabs label="插件分类" items={[{ id: 'roles', label: '角色功能' }, { id: 'services', label: '服务与连接' }]} current={tab} onSelect={setTab} disabled={busy} />
-    {error && <p role="alert">{error}</p>}
-    {notice && <p role="status">{notice}</p>}
-    {tab === 'services' && <div className="plugin-services">{['连接', '功能'].map(group => <section key={group} aria-label={group}>
-      <h4>{group}</h4><div className="plugin-service-list">{pluginServices.filter(service => service.group === group).map(service =>
-        <button type="button" key={service.id} className="plugin-service-entry" aria-label={service.label} disabled={!onOpenService} onClick={() => onOpenService?.(service.id)}>
-          <span><strong>{service.label}</strong><small>{service.description}</small></span><span aria-hidden="true">›</span>
-        </button>)}</div></section>)}</div>}
-    <div hidden={tab !== 'roles'} className="plugin-role-page">
-    {roles.length === 0 && <p>请先创建角色。</p>}
-    {roles.length > 0 && <label className="field"><span>配置角色</span>
-      <select aria-label="配置角色" disabled={busy} value={selectedId} onChange={(event) => {
-        generation.current += 1; setSelectedId(event.target.value); setError(''); setNotice('');
-        const role = roles.find((item) => item.id === event.target.value);
-        setDraft(role ? draftFromRole(role) : null);
-      }}>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select>
-    </label>}
-    {selected && draft && <RolePluginSettings key={selected.id} roleId={selected.id} draft={draft}
-      savedDraft={draftFromRole(selected)} onChange={setDraft} onSave={save} disabled={busy}
-      onOpenService={onOpenService} serviceVersion={serviceVersion} />}
-    </div>
+    {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
+    {active === null ? <>
+      <SettingsTabs label="插件分类" items={[{ id: 'roles', label: '功能插件' }, { id: 'services', label: '服务与连接' }]} current={tab} onSelect={setTab} disabled={busy} />
+      {tab === 'roles' ? <div className="plugin-list" aria-label="可选插件">{rows.map(row =>
+        <PluginRow key={row.id} name={row.name} description={row.description} enabled={row.enabled}
+          status={row.state?.cleanupPending ? '等待资源收尾' : row.problem ?? (row.enabled === undefined ? '正在读取' : row.enabled ? '已启用' : '已关闭')}
+          busy={busy} onConfigure={() => open(row.id)} onToggle={() => void toggle(row)}
+          startLabel={row.state?.cleanupPending ? '重试关闭' : undefined} />)}</div>
+        : <div className="plugin-services">{['连接', '功能'].map(group => <section key={group} aria-label={group}>
+          <h4>{group}</h4><div className="plugin-service-list">{pluginServices.filter(service => service.group === group).map(service =>
+            <button type="button" key={service.id} className="plugin-service-entry" aria-label={service.label} disabled={!onOpenService} onClick={() => onOpenService?.(service.id)}>
+              <span><strong>{service.label}</strong><small>{service.description}</small></span><span aria-hidden="true">›</span>
+            </button>)}</div></section>)}
+          <button type="button" className="ghost plugin-advanced" onClick={() => open('advanced')}>高级运行设置</button>
+        </div>}
+    </> : <section className="plugin-detail" aria-label={activeName + '设置'}>
+      <div className="settings-subheading"><h3>{activeName}</h3><button type="button" className="ghost" disabled={busy}
+        onClick={() => { setActive(null); setRolesOpen(false); setRefresh(value => value + 1); }}>返回插件列表</button></div>
+      {selected?.state && <PluginParameters key={active} plugin={selected.state} onSaved={configured} />}
+      {active === 'novelai' && <NovelaiSettings key={serviceVersion} />}
+      {active === 'coding' && <CodingSettings key={serviceVersion} />}
+      {active === 'todo' && <TodoSettings />}
+      {(active === 'advanced' || rolePurposes.has(active)) && <>
+        <button type="button" className="ghost" aria-expanded={rolesOpen} onClick={() => setRolesOpen(value => !value)}>
+          {rolesOpen ? '收起角色参数' : '角色参数'}</button>
+        {rolesOpen && <RolePurposeSettings key={active} purpose={active as RolePurpose} onRoleSaved={onRoleSaved} serviceVersion={serviceVersion} />}
+      </>}
+    </section>}
   </section>;
 }

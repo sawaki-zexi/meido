@@ -40,7 +40,8 @@ it("saves coding grants in settings without rewriting default-tool selections", 
       { id: "exec-one", name: "独立 exec", executor: "codex_exec", allowedRoleIds: ["r1"], verification: { status: "verified" } },
     ] } }),
     "GET /api/roles/r1/session": () => ({ body: { session: { sessionKey: "role:r1", roleId: "r1" }, messages: [] } }),
-    "PUT /api/roles/r1": init => { saved = { ...saved, ...JSON.parse(String(init?.body)) }; return { body: { role: saved } }; },
+    "PUT /api/roles/r1": init => { const body = JSON.parse(String(init?.body)); saved = { ...saved, ...body,
+      agentConfig: { ...saved.agentConfig, coding: { ...saved.agentConfig!.coding, ...body.agentConfig.coding } } }; return { body: { role: saved } }; },
   });
   const user = userEvent.setup();
   render(<App />);
@@ -48,12 +49,13 @@ it("saves coding grants in settings without rewriting default-tool selections", 
   await user.click(screen.getByRole("button", { name: "设置" }));
   await user.click(screen.getByRole("button", { name: "插件" }));
   await user.click(await screen.findByRole("button", { name: "编程委托 设置" }));
+  await user.click(screen.getByRole('button', { name: '角色参数' }));
   const form = within(await screen.findByRole("dialog", { name: "设置" }));
-  expect(form.getByRole("checkbox", { name: "允许编程委托" })).not.toBeChecked();
-  await user.click(form.getByRole("checkbox", { name: "允许编程委托" }));
+  expect(form.queryByRole("checkbox", { name: "允许编程委托" })).not.toBeInTheDocument();
   await user.selectOptions(form.getByRole("combobox", { name: "默认 Codex exec CLI" }), "exec-one");
-  await user.click(form.getByRole("button", { name: "保存" }));
-  await waitFor(() => expect(saved.agentConfig?.coding?.enabled).toBe(true));
+  await user.click(form.getByRole("button", { name: "保存角色参数" }));
+  await waitFor(() => expect(saved.agentConfig?.coding?.defaultCodexProfileId).toBe('exec-one'));
+  expect(saved.agentConfig?.coding?.enabled).toBe(false);
   expect(saved.agentConfig?.coding?.repoGrantIds).toEqual(["repo-one"]);
   expect(saved.agentConfig?.coding?.profileIds).toEqual(["cli-one", "exec-one"]);
   expect(saved.agentConfig?.coding?.defaultCodexProfileId).toBe("exec-one");
@@ -64,7 +66,8 @@ it("saves coding grants in settings without rewriting default-tool selections", 
   await user.click(screen.getByRole("button", { name: "设置" }));
   await user.click(screen.getByRole("button", { name: "插件" }));
   await user.click(await screen.findByRole("button", { name: "编程委托 设置" }));
-  expect(within(await screen.findByRole("dialog", { name: "设置" })).getByRole("checkbox", { name: "允许编程委托" })).toBeChecked();
+  await user.click(screen.getByRole('button', { name: '角色参数' }));
+  await screen.findByRole('combobox', { name: '默认 Codex exec CLI' });
   expect(within(screen.getByRole("dialog", { name: "设置" })).getByRole("combobox", { name: "默认 Codex exec CLI" })).toHaveValue("exec-one");
 });
 

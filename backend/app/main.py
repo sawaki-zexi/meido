@@ -33,6 +33,8 @@ from .computer_use import ComputerUseHost, COMPUTER_USE_TOOL_NAMES, load_compute
 from .novelai_generation.application import NovelaiApplication
 from .novelai_generation.api import novelai_router
 from .desktop_pet.application import DesktopPetApplication
+from .plugin_configuration import PluginConfigurationStore
+from .plugin_management import plugin_router
 from .desktop_pet.api import router as desktop_pet_router
 from .desktop_pet.tools import PetActionTool, register_desktop_pet_plugin
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
@@ -210,15 +212,22 @@ memory_event_bus = MemoryEventBus()
 model_adapter_registry = ModelAdapterRegistry()
 model_adapter: ModelAdapter = RoutedModelAdapter(model_adapter_registry)
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
+plugin_configuration = PluginConfigurationStore(data_root / 'plugin-settings.json')
+
+
+def _plugin_role(role_id):
+    return plugin_configuration.effective_role(store.get(role_id))
+
+
 screen_perception = ScreenPerception(
-    role_getter=lambda role_id: store.get(role_id),
+    role_getter=_plugin_role,
     configuration_getter=lambda configuration_id: model_configuration_store.get(configuration_id),
     sessions=lambda: session_store,
     adapter=RoutedModelAdapter(ModelAdapterRegistry(timeout=12)),
     role_unavailable=lambda role_id: role_id in _channel_roles_deleting,
 )
 computer_use = ComputerUseHost(
-    role_getter=lambda role_id: store.get(role_id),
+    role_getter=_plugin_role,
     configuration_getter=lambda configuration_id: model_configuration_store.get(configuration_id),
     sessions=lambda: session_store, model_registry=model_adapter_registry,
     resources=Path(os.getenv("MEIDO_COMPUTER_USE_RESOURCES", str(Path(__file__).resolve().parent))),
@@ -264,6 +273,7 @@ browser_use_sessions = BrowserSessions(
     Path(os.getenv("MEIDO_BROWSER_USE_DATA_DIR", str(data_root / "browser-use"))).resolve(),
     BrowserUseConfig(),
     resources=Path(os.getenv("MEIDO_BROWSER_USE_RESOURCES", str(Path(__file__).resolve().parent))).resolve(),
+    enabled=lambda: plugin_configuration.enabled('browser'),
 )
 task_runtime = TaskRuntime(data_root / "tasks")
 _novelai: NovelaiApplication | None = None
@@ -279,7 +289,7 @@ def _desktop_pet_application() -> DesktopPetApplication:
                 or _desktop_pet.store.root != root):
             if _desktop_pet is not None and _desktop_pet.has_live_owner:
                 raise RuntimeError('桌宠原宿主尚未退出')
-            _desktop_pet = DesktopPetApplication(store, root)
+            _desktop_pet = DesktopPetApplication(store, root, enabled=lambda: plugin_configuration.enabled('pet'))
         return _desktop_pet
 
 
@@ -893,6 +903,15 @@ async def _start_memory_workers() -> None:
     _channel_runtime_loop = asyncio.get_running_loop()
     channel_host.bind_runtime_loop()
     task_runtime.start()
+    # A crash during settings hot apply leaves a durable denied transition.
+    # Recover it as disabled before starting any autonomous/native owners.
+    for identifier in ('browser', 'screen', 'computer', 'pet', 'autonomy'):
+        state = plugin_configuration.get(identifier)
+        if state.cleanupPending:
+            state = plugin_configuration.prepare(identifier, expected_revision=state.revision, enabled=False)
+            await _cleanup_plugin(identifier, state.values)
+            plugin_configuration.finish(identifier, state.revision)
+    await browser_use_sessions.reconfigure(BrowserUseConfig.model_validate(plugin_configuration.get('browser').values))
     _novelai_application().start()
     _coding_application().start()
     _schedule_application().start()
@@ -967,6 +986,36 @@ def _owner_knowledge_return_url(origin: str = "") -> str:
 app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown=[_close_memory_workers])
 app.include_router(mail_router)
 app.include_router(mcp_router(lambda: mcp_host, lambda: store))
+async def _cleanup_plugin(identifier, values):
+    if identifier == 'browser':
+        await browser_use_sessions.reconfigure(BrowserUseConfig.model_validate(values))
+    elif identifier == 'screen':
+        for role in store.list():
+            await screen_perception.invalidate(role_id=role.id)
+    elif identifier == 'computer':
+        await computer_use.invalidate()
+    elif identifier == 'pet':
+        await _desktop_pet_application().plugin_changed()
+    elif identifier == 'autonomy' and _proactive is not None:
+        for role in store.list():
+            await _proactive.suspend_role(role.id)
+
+
+async def _activate_plugin(identifier):
+    if identifier == 'pet':
+        await _desktop_pet_application().plugin_changed()
+
+
+def _validate_plugin(identifier, changes):
+    if identifier == 'screen':
+        state = plugin_configuration.get('screen')
+        values = {**state.values, **changes.get('values', {})}
+        if changes.get('enabled', state.enabled):
+            from .models import ScreenPerceptionConfig
+            _validate_screen_configuration(ScreenPerceptionConfig(enabled=True, **values))
+
+
+app.include_router(plugin_router(lambda: plugin_configuration, _cleanup_plugin, _activate_plugin, _validate_plugin))
 app.include_router(novelai_router(_novelai_application))
 app.include_router(desktop_pet_router(_desktop_pet_application))
 app.include_router(coding_router(lambda: _coding_application(), lambda: store))
@@ -1647,7 +1696,7 @@ def get_role(role_id: str) -> RoleResponse:
 
 @app.get("/api/roles/{role_id}/tools")
 def get_role_tools(role_id: str) -> dict[str, object]:
-    role = store.get(role_id)
+    role = _plugin_role(role_id)
     if role is None:
         raise HTTPException(status_code=404, detail="角色不存在")
     include_channel = _role_has_usable_channel_account(role_id)
@@ -1760,10 +1809,8 @@ async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
         if current is not None and current.agentConfig.coding != updated.agentConfig.coding:
             await _coding_application().invalidate_role(role_id)
         if current is not None and current.agentConfig.browserUse.enabled != updated.agentConfig.browserUse.enabled:
-            # The role policy is the plugin's explicit authorization boundary.
-            # Disabling closes the current generation and blocks an old run's
-            # frozen capability snapshot from creating a replacement session.
-            await browser_use_sessions.set_role_enabled(role_id, updated.agentConfig.browserUse.enabled)
+            # Compatibility edits cannot create a second master switch.
+            await browser_use_sessions.close_role(role_id)
         return RoleResponse(role=updated)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
@@ -3974,6 +4021,7 @@ def _runtime_tool_candidates(
     preview: bool = False,
 ) -> tuple[object, ...]:
     """Build every tool available to the host for a role snapshot."""
+    role = plugin_configuration.effective_role(role)
     shell = role.agentConfig.shell
     task_sources: dict[str, FrozenChannelSource] = {}
 
@@ -4095,7 +4143,7 @@ def _runtime_tool_candidates(
         return context.session_key == f'role:{role.id}' and user.metadata.get('channel', 'desktop') == 'desktop'
 
     def coding_source_authorized(context):
-        current = store.get(role.id)
+        current = _plugin_role(role.id)
         if (current is None or not current.agentConfig.coding.enabled or not schedule_source_authorized(context)):
             return False
         run = session_store.get_run(context.run_id)
@@ -4212,9 +4260,10 @@ def _role_has_usable_channel_account(role_id: str) -> bool:
 
 
 def _screen_unavailable_reason(role) -> str:
+    role = plugin_configuration.effective_role(role)
     setting = role.agentConfig.screenPerception
     if not setting.enabled:
-        return "角色的屏幕感知开关已关闭"
+        return "屏幕感知插件已关闭"
     if not setting.visionModelConfigurationId:
         return "尚未显式绑定视觉模型连接"
     configuration = model_configuration_store.get(setting.visionModelConfigurationId)
@@ -4233,6 +4282,7 @@ def _screen_unavailable_reason(role) -> str:
 
 
 def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[str]:
+    role = plugin_configuration.effective_role(role)
     shell = role.agentConfig.shell
     enabled: set[str] = set(DEFAULT_BUILTIN_TOOLS)
     if not _desktop_pet_application().unavailable_reason(role.id):
@@ -4287,6 +4337,7 @@ def _deferred_discovery_tools() -> frozenset[str]:
 
 
 def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabilityPolicy:
+    role = plugin_configuration.effective_role(role)
     agent_config = role.agentConfig
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     host_enabled = set(enabled_tools)
@@ -4312,7 +4363,9 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
         enabled_plugins.discard('desktop_pet')
     if todo_enabled:
         enabled_plugins.add("todo")
-        enabled_tools.update({"todo.write", "todo.reminder_control"})
+        enabled_tools.update({"todo.search", "todo.write", "todo.reminder_control"})
+        granted_capabilities.add('todo.read')
+        provided_capabilities.add('todo.read')
         granted_capabilities.add("todo.write")
         provided_capabilities.add("todo.write")
     else:
@@ -4347,10 +4400,13 @@ async def _runtime_capabilities(
     explicit_skill_ids: list[str] | None = None,
     external_only: bool = False,
 ) -> CapabilityResolution:
+    role = plugin_configuration.effective_role(role)
     include_channel = session_key.startswith("thread:") or (
         session_key.startswith("role:") and _role_has_usable_channel_account(role.id)
     )
     policy = _runtime_capability_policy(role, include_channel=include_channel)
+    frozen_plugin_revisions = {identifier: plugin_configuration.get(identifier).revision
+                               for identifier in ('browser', 'computer', 'screen', 'pet')}
     source_run = session_store.get_run(run_id)
     if (session_key != f'role:{role.id}' or source_run is None
             or source_run.modelSnapshot.get('humanInputSource') != 'desktop_owner'
@@ -4391,6 +4447,13 @@ async def _runtime_capabilities(
         await mcp_run.prepare()
 
     def authorize_tool(definition, context):
+        plugin_id = ('browser' if definition.name in BROWSER_USE_TOOL_NAMES
+                     else 'computer' if definition.name in COMPUTER_USE_TOOL_NAMES
+                     else 'screen' if definition.name == 'observe_screen'
+                     else 'pet' if definition.name == 'pet_action' else None)
+        if plugin_id is not None and (not plugin_configuration.enabled(plugin_id)
+                or plugin_configuration.get(plugin_id).revision != frozen_plugin_revisions[plugin_id]):
+            return 'plugin permission was revoked or its configuration changed'
         if source_authority is not None:
             origin_denial = source_authority.authorization_denial(multichannel_store)
             if origin_denial is not None:
@@ -4486,7 +4549,7 @@ _coding: CodingApplication | None = None
 
 
 def _coding_origin_authorized(origin: TaskOrigin) -> bool:
-    role = store.get(origin.role_id)
+    role = _plugin_role(origin.role_id)
     run = session_store.get_run(origin.parent_run_id)
     user = session_store.user_message_for_run(origin.parent_run_id)
     if (role is None or not role.agentConfig.coding.enabled or role.id in _channel_roles_deleting
@@ -4538,7 +4601,7 @@ def _coding_application():
     global _coding
     if _coding is None or _coding.tasks is not task_runtime or _coding.sessions is not session_store or _coding._resources_closed:
         _coding = CodingApplication(data_root / 'coding', task_runtime, session_store,
-            role_config=lambda role_id: role.agentConfig.coding if (role := store.get(role_id)) is not None else None,
+            role_config=lambda role_id: role.agentConfig.coding if (role := _plugin_role(role_id)) is not None else None,
             authorized=_coding_origin_authorized, deliver=_deliver_coding_completion, receipt=_coding_receipt,
             lock_for=_runtime_role_lock,
             delegation_authorized=lambda origin: _coding_origin_authorized(origin) and _spawn_origin_authorized(origin),
@@ -4843,6 +4906,7 @@ def _proactive_application():
             raise RuntimeError("previous autonomous owner still requires cleanup")
         _proactive = ProactiveApplication(session_store, task_runtime, clock=lambda: _proactive_clock(),
             role_getter=lambda key: store.get(key) if key not in _channel_roles_deleting else None,
+            enabled=lambda: plugin_configuration.enabled('autonomy'),
             model_getter=model_configuration_store.get, mcp_host=mcp_host,
             adapter_factory=lambda configuration: model_adapter,
             recall_memory=_proactive_memory, web_tools=_proactive_web, fetch_body=_proactive_body,
@@ -5942,7 +6006,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     # own limit inside the runtime.
                     tool_timeout=max(
                         max(32.0, shell_config.timeoutSeconds + 2) if runtime_tools else 30.0,
-                        browser_use_sessions.timeout_seconds if role.agentConfig.browserUse.enabled else 0.0,
+                        browser_use_sessions.timeout_seconds if plugin_configuration.enabled('browser') else 0.0,
                         network_tools_config.timeout_seconds + 1 if any(tool.name in {"web_fetch", "web_search"} for tool in capabilities.snapshot.tools) else 0.0,
                         36.0 if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools) else 0.0,
                         330.0 if any(tool.name == 'generate_image' for tool in capabilities.snapshot.tools) else 0.0,

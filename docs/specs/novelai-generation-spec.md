@@ -1,5 +1,7 @@
 # NovelAI 生图、历史与人类回合场景 CG
 
+配置修订（2026-10-18）：手动生图许可、每角色手动日额度与有限消费确认移至公共设置；场景 CG、辅助连接、标签及卡片写回仍按角色独立许可。插件暂停保留参数，服务修订与任务撤销继续生效。 当前配置以 [全局插件规格](global-plugin-configuration-spec.md) 与 [ADR-0022](../adr/0022-global-plugin-configuration.md) 为准；下文原始批准保留作设计依据。
+
 状态：当前规格，第 3 节 D05/P06/T19 一揽子架构已于 2026-10-16 获主人明确批准，实施进行中；仅覆盖实现、隔离本地构建与无费用 fixture，真实生成和费用另批。所有“采用/必须”仍是验收目标，不表示已实现。决定见 [ADR-0016](../adr/0016-bounded-novelai-generation.md)。
 
 关联：[Parent #137](https://github.com/sawaki-zexi/meido/issues/137)、[总规格 P06/D05/T19](shiori-tool-parity-spec.md)、[源码与官方契约调研](../research/novelai-generation-portability-2026-10-16.md)。最后核验：2026-10-16，Meido `504d5b0b307736c14da7d1da87a1bad36e010c76`，Shiori `4f266aeaf42fcd611362e2456417b91f659341cf`。

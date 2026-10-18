@@ -99,7 +99,7 @@ def result_from_remote(value: object, *, max_image_bytes: int = 2_000_000) -> Ag
 class BrowserSessions:
     """Host-owned role sessions; the transport is injected for deterministic tests."""
 
-    def __init__(self, root: Path, config: BrowserUseConfig, *, transport: Any = None, resources: Path | None = None, runtime: Any = None) -> None:
+    def __init__(self, root: Path, config: BrowserUseConfig, *, transport: Any = None, resources: Path | None = None, runtime: Any = None, enabled=lambda: True) -> None:
         self.root = root
         self.config = config
         self.timeout_seconds = config.timeout_seconds
@@ -113,6 +113,8 @@ class BrowserSessions:
         self._active: dict[tuple[str, str], set[asyncio.Task[object]]] = {}
         self._disabled_roles: set[str] = set()
         self._closed = False
+        self._enabled = enabled
+        self._epoch = 0
 
     @staticmethod
     def _key(role_id: str, run_id: str | None) -> tuple[str, str]:
@@ -120,7 +122,7 @@ class BrowserSessions:
 
     def dependency_status(self) -> dict[str, str]:
         """Check local requirements without creating a session or process."""
-        if self._closed:
+        if self._closed or not self._enabled():
             return {"status": "unavailable", "reason": "Browser Use 插件已停用"}
         if self._transport is not None:
             return {"status": "ready", "reason": "已配置浏览器传输；尚未验证实际连接"}
@@ -142,12 +144,13 @@ class BrowserSessions:
         *,
         run_id: str = "",
     ) -> AgentToolResult:
-        if self._closed:
+        if self._closed or not self._enabled():
             return AgentToolResult("Browser Use 插件已停用", is_error=True, details={"status": "denied", "errorType": "PluginDisabled"})
         if not role_id.strip():
             return AgentToolResult("当前会话缺少角色身份，无法操作浏览器", is_error=True, details={"status": "failed"})
         if role_id in self._disabled_roles:
             return AgentToolResult("Browser Use 角色授权已关闭", is_error=True, details={"status": "denied", "errorType": "PluginDisabled"})
+        epoch = self._epoch
         key = self._key(role_id, run_id)
         if name == "agent_browser_close":
             try:
@@ -170,7 +173,7 @@ class BrowserSessions:
         try:
             async with lock:
                 signal.raise_if_cancelled()
-                if key in self._closing_runs or self._closed:
+                if key in self._closing_runs or self._closed or not self._enabled() or epoch != self._epoch:
                     return AgentToolResult("Browser Use 插件已停用", is_error=True, details={"status": "denied", "errorType": "PluginDisabled"})
                 try:
                     session = self._sessions.get(key)
@@ -266,6 +269,15 @@ class BrowserSessions:
         for key in keys:
             await self.close_run(*key)
 
+    async def reconfigure(self, config: BrowserUseConfig) -> None:
+        """Caller revokes admission before joining the original owners."""
+        self._epoch += 1
+        keys = tuple(dict.fromkeys((*self._sessions, *self._active, *self._close_tasks)))
+        for key in keys:
+            await self.close_run(*key)
+        self.config = config
+        self.timeout_seconds = config.timeout_seconds
+
     async def set_role_enabled(self, role_id: str, enabled: bool) -> None:
         if enabled:
             self._disabled_roles.discard(role_id)
@@ -303,7 +315,7 @@ class BrowserSessions:
                 await asyncio.gather(*active, return_exceptions=True)
             lock = self._locks.setdefault(key, asyncio.Lock())
             await lock.acquire()
-            session = self._sessions.pop(key, None)
+            session = self._sessions.get(key)
             if session is None:
                 lock.release()
                 return
@@ -313,9 +325,9 @@ class BrowserSessions:
                     result = close(graceful=True) if session is not self._transport else close()
                     if hasattr(result, "__await__"):
                         await result
-            finally:
                 if self._sessions.get(key) is session:
                     self._sessions.pop(key, None)
+            finally:
                 lock.release()
         finally:
             self._closing_runs.discard(key)

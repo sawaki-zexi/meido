@@ -64,6 +64,8 @@ def provider():
 
 def test_http_configuration_real_model_source_receipt_and_next_owner_history(api, source, provider, monkeypatch):
     client, roles, sessions, tasks = api
+    from backend.app.plugin_configuration import PluginConfigurationStore
+    monkeypatch.setattr(main, 'plugin_configuration', PluginConfigurationStore(roles.root.parent / 'plugins.json'))
     root, mcp_store, data, *_ = source
     now, host = [1780000000.0], McpHost(mcp_store)
     monkeypatch.setattr(main, "mcp_host", host)
@@ -90,6 +92,12 @@ def test_http_configuration_real_model_source_receipt_and_next_owner_history(api
     async def exercise():
         now[0] += 1800
         application = main._proactive_application()
+        assert await application.on_clock() == 0
+        assert provider[1] == [] and not (root / 'pid').exists()
+        # Global suspension retains this role's exact strategy and grants.
+        assert application.query(role_id)['config']['activeDecisionEnabled']
+        state = main.plugin_configuration.prepare('autonomy', expected_revision=0, enabled=True)
+        main.plugin_configuration.finish('autonomy', state.revision)
         await application.on_clock()
         async with asyncio.timeout(12):
             while True:

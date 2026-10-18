@@ -106,6 +106,11 @@ def test_http_owner_run_passes_window_image_to_current_chat_only(tmp_path, monke
 
         monkeypatch.setattr(host, "finish_run", record_finish_run)
         memory = MemorySettingsStore(tmp_path/"memory.json")
+        from backend.app.plugin_configuration import PluginConfigurationStore
+        globals_ = PluginConfigurationStore(tmp_path / 'plugins.json')
+        state = globals_.prepare('computer', expected_revision=0, enabled=True)
+        globals_.finish('computer', state.revision)
+        monkeypatch.setattr(main, 'plugin_configuration', globals_)
         memory.update(enabled=False,embedding_enabled=False)
         for key,value in {"store":roles,"model_configuration_store":models,"session_store":sessions,
             "session_manager":SessionManager(roles,sessions),"runtime_manager":RuntimeManager(sessions),"role_locks":{},

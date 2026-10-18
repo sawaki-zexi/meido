@@ -5,7 +5,7 @@ import type { ModelConfiguration } from "../../api/types";
 import { SettingsDialog } from "../settings/SettingsDialog";
 import type { RoleDraft } from "./draft";
 
-export function ScreenPerceptionSettings({ draft, onChange, disabled }: { draft: RoleDraft; onChange: (draft: RoleDraft) => void; disabled: boolean }) {
+export function ScreenPerceptionSettings({ draft, onChange, disabled, showEnabledToggle = true }: { draft: RoleDraft; onChange: (draft: RoleDraft) => void; disabled: boolean; showEnabledToggle?: boolean }) {
   const [configurations, setConfigurations] = useState<ModelConfiguration[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -28,11 +28,12 @@ export function ScreenPerceptionSettings({ draft, onChange, disabled }: { draft:
   const selected = configurations.find((item) => item.id === selectedId);
   const missing = !loading && !error && Boolean(selectedId) && !selected;
   return <section aria-label="屏幕感知配置">
-    <label className="field checkbox-field">
+    {!showEnabledToggle && <p className="field-hint">画面发送到所选视觉连接，本地不保存原图；分析摘要会用于当前对话</p>}
+    {showEnabledToggle && <label className="field checkbox-field">
       <input type="checkbox" aria-label="允许按需观察主屏" aria-describedby={hintId} checked={draft.screenPerceptionEnabled} disabled={disabled} onChange={(event) => onChange({ ...draft, screenPerceptionEnabled: event.target.checked })} />
       <span>允许按需观察主屏</span>
       <small className="field-hint" id={hintId}>画面发送到所选视觉连接，本地不保存原图；分析摘要会用于当前对话</small>
-    </label>
+    </label>}
     <label className="field">
       <span>视觉模型连接</span>
       <select

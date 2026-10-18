@@ -1,5 +1,7 @@
 # Computer Use：Windows 原生窗口控制规格
 
+配置修订（2026-10-18）：本文原每角色插件总开关由全局插件启停替代；当前聊天视觉模型、真实主人桌面身份、lease、预算和进程收尾约束保留。 当前配置以 [全局插件规格](global-plugin-configuration-spec.md) 与 [ADR-0022](../adr/0022-global-plugin-configuration.md) 为准；下文原始批准保留作设计依据。
+
 状态：当前目标规格。第 3 节已获用户明确批准，#169 已实施并通过单机专用窗口的八工具与 HTTP/provider 原生验收；其余环境和独立审查状态见[验收记录](../handbook/computer-use-native-acceptance.md)。最后核验：2026-10-16。未勾选的复合验收项包含尚未验证的环境，不代表再次等待架构许可。
 
 最后核验：2026-10-16（Asia/Shanghai）。范围：完整复刻规格 P02 / T17，[实施票 #169](https://github.com/sawaki-zexi/meido/issues/169)，Parent [#137](https://github.com/sawaki-zexi/meido/issues/137)。

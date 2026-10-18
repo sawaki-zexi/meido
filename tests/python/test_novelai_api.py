@@ -5,6 +5,31 @@ import pytest
 from novelai_fixtures import novelai_environment, novelai_main, novelai_service  # noqa: F401
 
 
+def test_global_manual_permission_applies_to_new_role_without_enabling_its_scene_cg(novelai_main):
+    client, service = novelai_main
+    role = client.post('/api/roles', json={'name': 'global manual', 'profile': {'profile': 'role'}}).json()['role']
+    path = f"/api/roles/{role['id']}/generations"
+    config = client.get('/api/services/novelai').json()
+    saved = client.put('/api/services/novelai', json={'manualEnabled': True, 'manualDailyAttempts': 2,
+        'confirmManualConsumption': True, 'expectedRevision': config['revision']})
+    assert saved.status_code == 200, saved.text
+    result = client.post(path, json={'requestId': '11811811811811811811811811811811',
+        'expectedRevision': saved.json()['revision'], 'parameters': service.request})
+    assert result.status_code == 200, result.text
+    assert result.json()['generation']['status'] == 'succeeded'
+    fresh = client.get(f"/api/roles/{role['id']}").json()['role']['agentConfig']['novelai']
+    assert not fresh['manualEnabled'] and not fresh['sceneCgEnabled'] and fresh['consentRevision'] == 0
+    assert len(service.peer.requests) == 1
+    changed = client.put('/api/services/novelai', json={'maxSteps': 12,
+        'expectedRevision': saved.json()['revision']})
+    assert changed.status_code == 200
+    assert changed.json()['manualConsentRevision'] == 0
+    denied = client.post(path, json={'requestId': '11811811811811811811811811811812',
+        'expectedRevision': changed.json()['revision'], 'parameters': service.request})
+    assert denied.status_code != 200
+    assert len(service.peer.requests) == 1
+
+
 def test_explicit_owner_ui_generates_once_in_original_session_without_fake_human_run(novelai_service):
     service = novelai_service
     application = FastAPI()
@@ -112,7 +137,7 @@ def test_unknown_consumes_persistent_finite_allowance_and_same_request_can_still
     client, service = novelai_main
     service.peer.status = 500
     current = service.application.settings.public()
-    config = client.put('/api/services/novelai', json={'dailyAttemptLimit': 1, 'expectedRevision': current['revision']}).json()
+    config = client.put('/api/services/novelai', json={'dailyAttemptLimit': 1, 'confirmManualConsumption': True, 'expectedRevision': current['revision']}).json()
     response = client.put(f'/api/roles/{service.role.id}', json={'name': service.role.name,
         'profile': service.role.profile.model_dump(), 'agentConfig': {'novelai': {'consentRevision': config['revision']}}})
     assert response.status_code == 200

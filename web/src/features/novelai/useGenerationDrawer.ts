@@ -143,7 +143,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   };
   const policy = (role.agentConfig as AgentToolConfig & { novelai?: Partial<NovelaiRoleConfig> } | undefined)?.novelai;
   const allowed = configuration?.enabled && configuration.tokenConfigured && !configuration.credentialCleanupPending
-    && policy?.manualEnabled && policy.consentRevision === configuration.revision;
+    && configuration.manualEnabled && configuration.manualConsentRevision === configuration.revision;
   const candidates = [...attachments, ...inputs].filter((item, index, all) => item.kind === 'image' && all.findIndex((other) => other.id === item.id) === index);
   const patch = (changes: Partial<GenerationParameters>) => setParameters({ ...parameters, ...changes });
   const manage = async (item: GenerationView, cancel = false) => {

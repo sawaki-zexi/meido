@@ -3,7 +3,7 @@ import { defaultCodingRole, getCodingConfiguration, type CodingConfiguration } f
 import { errorMessage } from "../../api/client";
 import type { RoleDraft } from "../role-management/draft";
 
-export function CodingRoleSettings({ roleId, draft, onChange, disabled }: { roleId?: string; draft: RoleDraft; onChange: (value: RoleDraft) => void; disabled: boolean }) {
+export function CodingRoleSettings({ roleId, draft, onChange, disabled, showEnabledToggle = true }: { roleId?: string; draft: RoleDraft; onChange: (value: RoleDraft) => void; disabled: boolean; showEnabledToggle?: boolean }) {
   const [configuration, setConfiguration] = useState<CodingConfiguration | null>(null);
   const [error, setError] = useState("");
   useEffect(() => { let live = true; void getCodingConfiguration().then(value => { if (live) setConfiguration(value); }).catch(cause => { if (live) setError(errorMessage(cause, "无法读取编程配置")); }); return () => { live = false; }; }, []);
@@ -11,7 +11,7 @@ export function CodingRoleSettings({ roleId, draft, onChange, disabled }: { role
   const change = (patch: Partial<typeof value>) => onChange({ ...draft, preservedAgentConfig: { ...draft.preservedAgentConfig, coding: { ...value, ...patch } } });
   const toggle = (field: "repoGrantIds" | "profileIds", id: string, checked: boolean) => change({ [field]: checked ? [...new Set([...value[field], id])] : value[field].filter(item => item !== id) });
   return <fieldset><legend>编程委托</legend>
-    <label className="checkbox-field"><input type="checkbox" aria-label="允许编程委托" checked={value.enabled} disabled={disabled} onChange={event => change({ enabled: event.target.checked })} />允许编程委托</label>
+    {showEnabledToggle && <label className="checkbox-field"><input type="checkbox" aria-label="允许编程委托" checked={value.enabled} disabled={disabled} onChange={event => change({ enabled: event.target.checked })} />允许编程委托</label>}
     <p className="field-hint">在专用 worktree 使用已核验 CLI。仓库中的验证程序会以当前账号权限运行，请仅授权信任的仓库。</p>
     {error && <p role="alert">{error}</p>}
     {!configuration?.enabled && <p>先在插件 → 服务与连接 → 编程委托启用全局开关并登记仓库和 CLI。</p>}

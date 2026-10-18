@@ -75,6 +75,12 @@ def setup_screen_api(tmp_path, monkeypatch, vision_url, *, code=None):
     monkeypatch.setattr(main, "runtime_manager", RuntimeManager(sessions))
     monkeypatch.setattr(main, "role_locks", {})
     monkeypatch.setattr(main, "screen_perception", service)
+    from backend.app.plugin_configuration import PluginConfigurationStore
+    globals_ = PluginConfigurationStore(tmp_path / 'plugins.json')
+    state = globals_.prepare('screen', expected_revision=0, enabled=True, values={
+        'visionModelConfigurationId': roles.get(context.role_id).agentConfig.screenPerception.visionModelConfigurationId})
+    globals_.finish('screen', state.revision)
+    monkeypatch.setattr(main, 'plugin_configuration', globals_)
     memory_settings = MemorySettingsStore(tmp_path / "memory-settings.json")
     memory_settings.update(enabled=False, embedding_enabled=False)
     monkeypatch.setattr(main, "memory_settings_store", memory_settings)
