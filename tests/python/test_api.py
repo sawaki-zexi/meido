@@ -581,9 +581,15 @@ def test_run_snapshot_keeps_recalled_memory_ephemeral(tmp_path, monkeypatch):
     }
 
 
-def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tmp_path, monkeypatch):
+def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tmp_path, monkeypatch, request):
     import sys
     from pathlib import Path
+    from backend.app.task_runtime import TaskRuntime
+
+    # Earlier application shutdowns may have closed the module-level runtime.
+    tasks = TaskRuntime(tmp_path / "tasks")
+    monkeypatch.setattr(main, "task_runtime", tasks)
+    request.addfinalizer(tasks.close)
 
     executable = str(Path(sys.executable)).replace("\\", "/")
     roles = RoleStore(tmp_path / "roles")
