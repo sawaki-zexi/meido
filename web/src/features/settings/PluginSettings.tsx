@@ -3,8 +3,14 @@ import { api, errorMessage } from '../../api/client';
 import type { Role } from '../../api/types';
 import { draftFromRole, payloadFromDraft, type RoleDraft } from '../role-management/draft';
 import { RolePluginSettings } from '../role-management/RolePluginSettings';
+import { SettingsTabs } from './SettingsTabs';
+import { pluginServices, type SettingsServiceId } from './navigation';
 
-export function PluginSettings({ onRoleSaved }: { onRoleSaved?: (role: Role) => void }) {
+export function PluginSettings({ onRoleSaved, onOpenService, serviceVersion = 0, initialTab = 'roles' }: {
+  onRoleSaved?: (role: Role) => void; onOpenService?: (id: SettingsServiceId) => void;
+  serviceVersion?: number; initialTab?: 'roles' | 'services';
+}) {
+  const [tab, setTab] = useState<'roles' | 'services'>(initialTab);
   const [roles, setRoles] = useState<Role[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [draft, setDraft] = useState<RoleDraft | null>(null);
@@ -58,10 +64,16 @@ export function PluginSettings({ onRoleSaved }: { onRoleSaved?: (role: Role) => 
     } finally { if (request === generation.current) setBusy(false); }
   };
   return <section className="plugin-settings" aria-label="插件设置">
-    <h3>插件</h3>
-    <p>按角色管理可选功能。关闭保留连接、额度和仓库等配置。</p>
+    <h2>插件</h2>
+    <SettingsTabs label="插件分类" items={[{ id: 'roles', label: '角色功能' }, { id: 'services', label: '服务与连接' }]} current={tab} onSelect={setTab} disabled={busy} />
     {error && <p role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
+    {tab === 'services' && <div className="plugin-services">{['连接', '功能'].map(group => <section key={group} aria-label={group}>
+      <h4>{group}</h4><div className="plugin-service-list">{pluginServices.filter(service => service.group === group).map(service =>
+        <button type="button" key={service.id} className="plugin-service-entry" aria-label={service.label} disabled={!onOpenService} onClick={() => onOpenService?.(service.id)}>
+          <span><strong>{service.label}</strong><small>{service.description}</small></span><span aria-hidden="true">›</span>
+        </button>)}</div></section>)}</div>}
+    <div hidden={tab !== 'roles'} className="plugin-role-page">
     {roles.length === 0 && <p>请先创建角色。</p>}
     {roles.length > 0 && <label className="field"><span>配置角色</span>
       <select aria-label="配置角色" disabled={busy} value={selectedId} onChange={(event) => {
@@ -71,6 +83,8 @@ export function PluginSettings({ onRoleSaved }: { onRoleSaved?: (role: Role) => 
       }}>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select>
     </label>}
     {selected && draft && <RolePluginSettings key={selected.id} roleId={selected.id} draft={draft}
-      savedDraft={draftFromRole(selected)} onChange={setDraft} onSave={save} disabled={busy} />}
+      savedDraft={draftFromRole(selected)} onChange={setDraft} onSave={save} disabled={busy}
+      onOpenService={onOpenService} serviceVersion={serviceVersion} />}
+    </div>
   </section>;
 }

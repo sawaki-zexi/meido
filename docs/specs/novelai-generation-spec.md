@@ -68,7 +68,7 @@ UTC日计数由持久账本记录，时钟回退不清空已用额度；提高/�
 
 应用API拟采用：GET/PUT `/api/services/novelai` 与明确token设置/清空操作；POST `/api/roles/{roleId}/generations`、GET同路径的分页历史、GET `.../{generationId}`、POST `.../{generationId}/regenerate`、POST `.../{generationId}/cancel`。UI请求带稳定requestId，服务将其绑定本地真实主人操作；不能仅凭模型伪造requestId进入UI信任入口。
 
-UI生成表单包含模式、底图附件选择、参数、用途额度说明；设置 → 工具与插件中按角色配置两种许可和辅助连接；聊天图片提供“重新生成”并明确将再次消费，历史显示attempt、实际seed/模型、状态与原图。取消/unknown不展示“未扣费”。同一按钮的网络重试复用requestId，新动作生成新ID，不自动把失败改成新动作。
+UI生成表单包含模式、底图附件选择、参数、用途额度说明；设置 → 插件 → 角色功能中按角色配置两种许可和辅助连接；聊天图片提供“重新生成”并明确将再次消费，历史显示attempt、实际seed/模型、状态与原图。取消/unknown不展示“未扣费”。同一按钮的网络重试复用requestId，新动作生成新ID，不自动把失败改成新动作。
 
 ## 5. 一个服务拥有支付状态与数据流
 

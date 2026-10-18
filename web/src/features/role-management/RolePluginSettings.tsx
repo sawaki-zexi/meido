@@ -13,6 +13,7 @@ import { SpawnSettings } from './SpawnSettings';
 import { ToolCatalog } from './ToolCatalog';
 import { PluginRow } from '../settings/PluginRow';
 import { RuntimePluginRows } from '../settings/RuntimePluginRows';
+import type { SettingsServiceId } from '../settings/navigation';
 
 type PluginId = 'todo' | 'browser' | 'screen' | 'computer' | 'novelai' | 'coding';
 const plugins: { id: PluginId; name: string; description: string; enabled: (draft: RoleDraft) => boolean }[] = [
@@ -34,9 +35,10 @@ function toggled(draft: RoleDraft, id: PluginId, enabled: boolean): RoleDraft {
     novelai: { ...defaultNovelaiRoleConfig, ...draft.preservedAgentConfig.novelai,
       manualEnabled: false, sceneCgEnabled: false, autoWritebackRoleAssets: false, consentRevision: 0 } } };
 }
-export function RolePluginSettings({ roleId, draft, savedDraft, onChange, onSave, disabled }: {
+export function RolePluginSettings({ roleId, draft, savedDraft, onChange, onSave, disabled, onOpenService, serviceVersion = 0 }: {
   roleId: string; draft: RoleDraft; savedDraft: RoleDraft; onChange: (draft: RoleDraft) => void;
   onSave: (draft: RoleDraft) => Promise<boolean>; disabled: boolean;
+  onOpenService?: (id: SettingsServiceId) => void; serviceVersion?: number;
 }) {
   const [active, setActive] = useState<PluginId | 'autonomy' | 'pet' | 'advanced' | null>(null);
   const configure = (id: NonNullable<typeof active>, start = false) => {
@@ -60,8 +62,8 @@ export function RolePluginSettings({ roleId, draft, savedDraft, onChange, onSave
   const name = plugins.find(plugin => plugin.id === active)?.name ?? { autonomy: '自主行为', pet: '桌宠', advanced: '高级运行设置' }[active as 'autonomy' | 'pet' | 'advanced'];
   const content = active === 'screen' ? <ScreenPerceptionSettings draft={draft} onChange={onChange} disabled={disabled} />
     : active === 'computer' ? <ComputerUseSettings draft={draft} onChange={onChange} disabled={disabled} />
-    : active === 'novelai' ? <NovelaiRoleSettings draft={draft} onChange={onChange} disabled={disabled} />
-    : active === 'coding' ? <CodingRoleSettings roleId={roleId} draft={draft} onChange={onChange} disabled={disabled} />
+    : active === 'novelai' ? <NovelaiRoleSettings key={serviceVersion} draft={draft} onChange={onChange} disabled={disabled} />
+    : active === 'coding' ? <CodingRoleSettings key={serviceVersion} roleId={roleId} draft={draft} onChange={onChange} disabled={disabled} />
     : active === 'advanced' ? <><ShellSettings draft={draft} onChange={onChange} disabled={disabled} /><SpawnSettings draft={draft} onChange={onChange} disabled={disabled} /></>
     : active === 'browser' || active === 'todo' ? <label className="field checkbox-field">
       <input type="checkbox" checked={active === 'browser' ? draft.browserUseEnabled : draft.todoSearchEnabled} disabled={disabled}
@@ -70,6 +72,10 @@ export function RolePluginSettings({ roleId, draft, savedDraft, onChange, onSave
   return <section className="plugin-detail" aria-label={`${name}设置`}>
     <div className="settings-subheading"><h4>{name}</h4><button type="button" className="ghost" disabled={disabled}
       onClick={() => { onChange(savedDraft); setActive(null); }}>返回插件列表</button></div>
+    {onOpenService && (active === 'novelai' || active === 'coding' || active === 'todo') && <button type="button" className="ghost plugin-service-link" disabled={disabled}
+      onClick={() => onOpenService(active === 'novelai' ? 'novelai' : active === 'coding' ? 'coding' : 'todo')}>
+      {active === 'novelai' ? 'NovelAI 服务设置' : active === 'coding' ? '编程服务设置' : '待办服务设置'}
+    </button>}
     {active === 'autonomy' ? <AutonomySettings key={roleId} roleId={roleId} disabled={disabled} />
       : active === 'pet' ? <DesktopPetSettings key={roleId} roleId={roleId} disabled={disabled} />
       : <form onSubmit={event => { event.preventDefault(); void onSave(draft); }}>

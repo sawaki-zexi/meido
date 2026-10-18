@@ -43,7 +43,7 @@ it('插件保存同步到当前角色，随后编辑角色资料不会恢复旧�
   const user = userEvent.setup(); render(<App />);
   await screen.findByRole('heading', { name: '同步角色', level: 1 });
   await user.click(screen.getByRole('button', { name: '设置' }));
-  await user.click(screen.getByRole('button', { name: '工具与插件' }));
+  await user.click(screen.getByRole('button', { name: '插件' }));
   await screen.findByRole('combobox', { name: '配置角色' });
   await user.click(screen.getByRole('button', { name: '关闭 浏览器' }));
   await screen.findByText('插件设置已保存');

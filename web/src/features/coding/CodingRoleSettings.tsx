@@ -14,7 +14,7 @@ export function CodingRoleSettings({ roleId, draft, onChange, disabled }: { role
     <label className="checkbox-field"><input type="checkbox" aria-label="允许编程委托" checked={value.enabled} disabled={disabled} onChange={event => change({ enabled: event.target.checked })} />允许编程委托</label>
     <p className="field-hint">在专用 worktree 使用已核验 CLI。仓库中的验证程序会以当前账号权限运行，请仅授权信任的仓库。</p>
     {error && <p role="alert">{error}</p>}
-    {!configuration?.enabled && <p>先在设置 → 编程委托启用全局开关并登记仓库和 CLI。</p>}
+    {!configuration?.enabled && <p>先在插件 → 服务与连接 → 编程委托启用全局开关并登记仓库和 CLI。</p>}
     {!roleId && <p>保存角色后可选择全局配置中授予她的仓库和 CLI。</p>}
     {configuration?.repositories.filter(item => item.allowedRoleIds.includes(roleId ?? "")).map(item => <label className="field checkbox-field" key={item.id}><input type="checkbox" checked={value.repoGrantIds.includes(item.id)} disabled={disabled} onChange={event => toggle("repoGrantIds", item.id, event.target.checked)} />{item.root}</label>)}
     {configuration?.profiles.filter(item => item.allowedRoleIds.includes(roleId ?? "")).map(item => <label className="field checkbox-field" key={item.id}><input type="checkbox" checked={value.profileIds.includes(item.id)} disabled={disabled} onChange={event => toggle("profileIds", item.id, event.target.checked)} />{item.name} · {item.verification.status === "verified" ? "已核验" : item.verification.reason ?? "尚未核验"}</label>)}

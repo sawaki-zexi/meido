@@ -22,6 +22,7 @@ const modelApis = [
 const emptyDraft: Draft = { providerId: "openai", provider: "openai", api: "openai-completions", apiOptions: {}, baseUrl: "", model: "", apiKey: "" };
 
 export function ModelSettings() {
+  const [editorOpen, setEditorOpen] = useState(false);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [configurations, setConfigurations] = useState<Configuration[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -42,14 +43,16 @@ export function ModelSettings() {
   };
 
   useEffect(() => {
-    void Promise.all([api<{ providers: Provider[] }>("/api/model/providers"), refreshConfigurations()]).then(([providerData]) => {
+    void Promise.all([api<{ providers: Provider[] }>("/api/model/providers"), refreshConfigurations()]).then(([providerData, modelData]) => {
       setProviders(providerData.providers);
+      setEditorOpen(modelData.configurations.length === 0);
       const initial = providerData.providers.find((item) => item.id === "openai");
       if (initial) setDraft({ ...emptyDraft, provider: initial.provider, api: initial.api ?? "openai-completions", baseUrl: initial.baseUrl });
     }).catch((cause) => setError(errorMessage(cause, "无法加载模型配置"))).finally(() => setLoading(false));
   }, []);
 
   const editConfiguration = (configuration: Configuration) => {
+    setEditorOpen(true);
     setEditingId(configuration.id);
     setDraft({ providerId: configuration.providerId, provider: configuration.provider, api: configuration.api ?? "openai-completions", apiOptions: configuration.apiOptions ?? {}, baseUrl: configuration.baseUrl, model: configuration.model, apiKey: "" });
     setTestResult("");
@@ -58,6 +61,7 @@ export function ModelSettings() {
   };
 
   const startNewConfiguration = () => {
+    setEditorOpen(true);
     const initial = providers.find((item) => item.id === "openai");
     setEditingId(null);
     setDraft(initial ? { ...emptyDraft, provider: initial.provider, api: initial.api ?? "openai-completions", baseUrl: initial.baseUrl } : emptyDraft);
@@ -133,9 +137,9 @@ export function ModelSettings() {
     </header>
     {configurations.length > 0 && <ul className="configuration-list" aria-label="已保存的模型配置">{configurations.map((configuration) => {
       const isActive = configuration.id === activeId;
-      const isEditing = configuration.id === editingId;
+      const isEditing = editorOpen && configuration.id === editingId;
       return <li className={`configuration-item${isActive ? " active" : ""}${isEditing ? " editing" : ""}`} key={configuration.id}>
-        <button type="button" className="configuration-main" onClick={() => editConfiguration(configuration)}>
+        <button type="button" className="configuration-main" disabled={busy} onClick={() => editConfiguration(configuration)}>
           <strong>{configuration.provider} · {configuration.model}</strong>
           <span>{configuration.baseUrl}</span>
           <small>{isActive ? "当前生效" : "未生效"}{configuration.apiKeyConfigured ? " · API Key 已设置" : " · 无 API Key"}{isEditing ? " · 正在编辑" : ""}</small>
@@ -147,7 +151,9 @@ export function ModelSettings() {
         </div>
       </li>;
     })}</ul>}
-    {loading ? <Placeholder loading>正在加载…</Placeholder> : <form ref={formRef} className="card-form" onSubmit={(event) => { event.preventDefault(); void submit("save"); }}>
+    {!editorOpen && error && <Notice>{error}</Notice>}
+    {!loading && !editorOpen && configurations.length === 0 && <p className="muted">尚未添加模型连接。</p>}
+    {loading ? <Placeholder loading>正在加载…</Placeholder> : editorOpen && <form ref={formRef} className="card-form" onSubmit={(event) => { event.preventDefault(); void submit("save"); }}>
       <div className="settings-subheading">
         <h3>{editingId ? `编辑配置：${editingConfiguration?.provider} · ${editingConfiguration?.model}` : "新建配置"}</h3>
         {active && <span className="muted">当前生效：{active.provider} · {active.model}</span>}
@@ -171,6 +177,7 @@ export function ModelSettings() {
       {testResult && <Notice tone={testFailed ? "error" : "success"}>{testResult}</Notice>}
       {error && <Notice>{error}</Notice>}
       <div className="form-actions">
+        <button type="button" className="ghost" disabled={busy} onClick={() => { setEditorOpen(false); setDraft(emptyDraft); setEditingId(null); setError(""); setTestResult(""); }}>取消</button>
         <button type="button" disabled={busy || loading} onClick={() => void submit("test")}>{testing ? "测试中…" : "测试连接"}</button>
         <button type="submit" className="primary" disabled={busy || loading}>{saving ? "保存中…" : "保存"}</button>
       </div>

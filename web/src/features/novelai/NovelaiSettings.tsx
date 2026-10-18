@@ -22,7 +22,7 @@ export function NovelaiSettings() {
     try {
       const { revision, tokenConfigured: _configured, credentialCleanupPending: _cleanup, ...values } = configuration;
       setConfiguration(await novelai.saveConfiguration(values, revision));
-      setMessage('生图设置已保存；请在角色资料中确认当前设置的有限消费许可。');
+      setMessage('生图设置已保存；请在插件的角色功能中确认当前设置的有限消费许可。');
     } catch (cause) { setError(errorMessage(cause, '生图设置保存失败')); }
     finally { setPending(false); }
   };

@@ -27,7 +27,7 @@ it("默认关闭且不跟随聊天或全局模型，显式选择视觉连接后�
   render(<App />);
   await screen.findByRole("heading", { name: "观察角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "设置" }));
-  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(screen.getByRole("button", { name: "插件" }));
   await user.click(await screen.findByRole("button", { name: "屏幕感知 设置" }));
   const form = within(await screen.findByRole("dialog", { name: "设置" }));
   expect(form.getByRole("checkbox", { name: "允许按需观察主屏" })).not.toBeChecked();
@@ -43,7 +43,7 @@ it("默认关闭且不跟随聊天或全局模型，显式选择视觉连接后�
   expect(saved.agentConfig?.enabledTools).toEqual(["read_file"]);
   await user.click(form.getByRole("button", { name: "关闭" }));
   await user.click(screen.getByRole("button", { name: "设置" }));
-  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(screen.getByRole("button", { name: "插件" }));
   await user.click(await screen.findByRole("button", { name: "屏幕感知 设置" }));
   const reopened = within(await screen.findByRole("dialog", { name: "设置" }));
   expect(reopened.getByRole("checkbox", { name: "允许按需观察主屏" })).toBeChecked();
@@ -68,7 +68,7 @@ it("缺连接时进入模型设置，返回保留插件草稿且不会误保存�
   render(<App />);
   await screen.findByRole("heading", { name: "待配置角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "设置" }));
-  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(screen.getByRole("button", { name: "插件" }));
   await user.click(await screen.findByRole("button", { name: "屏幕感知 设置" }));
   const form = within(await screen.findByRole("dialog", { name: "设置" }));
   await form.findByText("暂无已保存的模型连接，请先在模型设置中添加。");
@@ -106,7 +106,7 @@ it("刷新后连接已删除时保留原 ID，要求重新选择或关闭，关�
   render(<App />);
   await screen.findByRole("heading", { name: "连接变更角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "设置" }));
-  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(screen.getByRole("button", { name: "插件" }));
   await user.click(await screen.findByRole("button", { name: "屏幕感知 设置" }));
   const form = within(await screen.findByRole("dialog", { name: "设置" }));
   await form.findByRole("option", { name: /vision-provider/ });
@@ -169,7 +169,7 @@ it("加载连接失败可重试，已有视觉绑定不会被清空或替换", a
   render(<App />);
   await screen.findByRole("heading", { name: "重试角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "设置" }));
-  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(screen.getByRole("button", { name: "插件" }));
   await user.click(await screen.findByRole("button", { name: "屏幕感知 设置" }));
   const form = within(await screen.findByRole("dialog", { name: "设置" }));
   await form.findByText("视觉连接目录暂时不可用");

@@ -238,6 +238,7 @@ describe("设置", () => {
     expect(await within(panel).findByLabelText("API 地址")).toHaveValue("https://api.openai.com/v1");
     await user.click(within(panel).getByRole("button", { name: "记忆" }));
     expect(await within(panel).findByRole("heading", { name: "记忆" })).toBeInTheDocument();
+    await user.click(within(panel).getByRole("button", { name: "向量模型" }));
     expect(await within(panel).findByLabelText("启用向量模型")).toBeChecked();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -256,7 +257,8 @@ describe("设置", () => {
     render(<App />);
 
     const panel = await dialog("设置");
-    expect(within(panel).getByRole("button", { name: /主人资料/ })).toHaveAttribute("aria-current", "true");
+    expect(within(panel).getByRole("button", { name: "插件" })).toHaveAttribute("aria-current", "page");
+    expect(within(panel).getByRole("navigation", { name: "设置路径" })).toHaveTextContent("主人资料");
     expect(await within(panel).findByText("飞书授权成功，可以启用主人资料插件")).toBeInTheDocument();
   });
 
@@ -276,6 +278,8 @@ describe("设置", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "设置" }));
     const panel = await dialog("设置");
+    await user.click(within(panel).getByRole("button", { name: "插件" }));
+    await user.click(within(panel).getByRole("button", { name: "服务与连接" }));
     await user.click(within(panel).getByRole("button", { name: "待办" }));
     const reminders = within(panel).getByRole("checkbox", { name: "启用提醒" });
     expect(reminders).toBeChecked();
@@ -300,6 +304,8 @@ describe("设置", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "设置" }));
     const panel = await dialog("设置");
+    await user.click(within(panel).getByRole("button", { name: "插件" }));
+    await user.click(within(panel).getByRole("button", { name: "服务与连接" }));
     await user.click(within(panel).getByRole("button", { name: "待办" }));
 
     expect(await within(panel).findByText("未启用提醒角色，系统不会发送提醒。")).toBeTruthy();

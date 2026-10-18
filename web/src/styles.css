@@ -824,3 +824,36 @@ body { background: var(--surface-gradient); background-attachment: fixed; }
 .settings-disclosure > summary { padding: 12px 14px; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink-soft); }
 .settings-disclosure > div { display: grid; gap: 20px; padding: 0 14px 16px; }
 .settings-disclosure form { display: grid; gap: 14px; }
+
+/* Settings domains and nested plugin pages. */
+[hidden] { display: none !important; }
+.settings-content { scrollbar-gutter: stable; }
+.settings-content > * { width: 100%; max-width: 840px; margin-inline: auto; }
+.settings-nav button { white-space: nowrap; }
+.settings-subnav { display: flex; gap: 24px; overflow-x: auto; border-bottom: 1px solid var(--line); }
+.settings-subnav button { flex-shrink: 0; position: relative; border: 0; border-radius: 0; background: transparent; padding: 0 0 10px; color: var(--ink-faint); }
+.settings-subnav button[aria-current="page"] { color: var(--rose-deep); font-weight: 600; }
+.settings-subnav button[aria-current="page"]::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--rose); }
+.plugin-role-page, .plugin-services, .plugin-services > section, .settings-service-page { display: grid; gap: 18px; align-content: start; }
+.plugin-services h4 { margin: 0; font-size: 12px; color: var(--ink-faint); font-weight: 500; }
+.plugin-service-list { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.plugin-service-entry { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; padding: 14px 16px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: rgb(255 255 255 / 35%); text-align: left; }
+.plugin-service-entry:last-child { border-bottom: 0; }
+.plugin-service-entry > span:first-child { display: grid; gap: 3px; min-width: 0; }
+.plugin-service-entry strong { font-size: 14px; font-weight: 500; color: var(--ink); }
+.plugin-service-entry small { color: var(--ink-faint); font-size: 12px; }
+.plugin-service-entry > span:last-child { color: var(--ink-faint); font-size: 20px; }
+.settings-breadcrumb { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; color: var(--ink-faint); font-size: 12px; }
+.settings-breadcrumb button { display: inline-flex; align-items: center; gap: 4px; padding-left: 0; font-size: 12px; }
+.settings-breadcrumb > span::before { content: '/'; margin-right: 10px; color: var(--line-strong); }
+.settings-service-page > section { display: grid; gap: 18px; align-content: start; }
+.plugin-service-link { justify-self: start; padding-left: 0; color: var(--rose-deep); }
+@media (max-width: 760px) {
+  .settings-nav { flex-wrap: nowrap; overflow-x: auto; gap: 2px; }
+  .settings-nav button { flex: 0 0 auto; padding: 8px 10px; gap: 6px; }
+  .settings-content { padding: 18px 16px 24px; }
+}
+
+.memory-settings .settings-subheading { flex-wrap: nowrap; align-items: flex-start; }
+.memory-settings .settings-subheading > div { flex: 1; min-width: 0; }
+.memory-settings .plugin-switch { flex-shrink: 0; }

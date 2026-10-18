@@ -46,7 +46,7 @@ it("saves coding grants in settings without rewriting default-tool selections", 
   render(<App />);
   await screen.findByRole("heading", { name: "编程角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "设置" }));
-  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(screen.getByRole("button", { name: "插件" }));
   await user.click(await screen.findByRole("button", { name: "编程委托 设置" }));
   const form = within(await screen.findByRole("dialog", { name: "设置" }));
   expect(form.getByRole("checkbox", { name: "允许编程委托" })).not.toBeChecked();
@@ -62,7 +62,7 @@ it("saves coding grants in settings without rewriting default-tool selections", 
   expect(saved.agentConfig?.enabledTools).toBeUndefined();
   await user.click(form.getByRole("button", { name: "关闭" }));
   await user.click(screen.getByRole("button", { name: "设置" }));
-  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(screen.getByRole("button", { name: "插件" }));
   await user.click(await screen.findByRole("button", { name: "编程委托 设置" }));
   expect(within(await screen.findByRole("dialog", { name: "设置" })).getByRole("checkbox", { name: "允许编程委托" })).toBeChecked();
   expect(within(screen.getByRole("dialog", { name: "设置" })).getByRole("combobox", { name: "默认 Codex exec CLI" })).toHaveValue("exec-one");

@@ -23,7 +23,7 @@ it("调整默认 Shell 预算并保留旧配置，重开设置仍显示保存值
   render(<App />);
   await screen.findByRole("heading", { name: "工具角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "设置" }));
-  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(screen.getByRole("button", { name: "插件" }));
   await user.click(await screen.findByRole("button", { name: "高级运行设置" }));
   const form = within(await screen.findByRole("dialog", { name: "设置" }));
   expect(form.queryByLabelText("允许执行 Shell 命令")).not.toBeInTheDocument();
@@ -39,7 +39,7 @@ it("调整默认 Shell 预算并保留旧配置，重开设置仍显示保存值
   });
   await user.click(form.getByRole("button", { name: "关闭" }));
   await user.click(screen.getByRole("button", { name: "设置" }));
-  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(screen.getByRole("button", { name: "插件" }));
   await user.click(await screen.findByRole("button", { name: "高级运行设置" }));
   expect(within(await screen.findByRole("dialog", { name: "设置" })).getByLabelText("Shell 超时（秒）")).toHaveValue(60);
 });
@@ -62,7 +62,7 @@ it("在设置查询已保存配置的真实工具状态，失败后可重试", a
   render(<App />);
   await screen.findByRole("heading", { name: "工具目录角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "设置" }));
-  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(screen.getByRole("button", { name: "插件" }));
   await user.click(await screen.findByRole("button", { name: "高级运行设置" }));
   const form = within(await screen.findByRole("dialog", { name: "设置" }));
   await user.click(form.getByRole("button", { name: "查看实际工具" }));
@@ -91,7 +91,7 @@ it("默认 Shell 不提供开关，修改预算仍保留旧白名单和扩展", 
   render(<App />);
   await screen.findByRole("heading", { name: "命令角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "设置" }));
-  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(screen.getByRole("button", { name: "插件" }));
   await user.click(await screen.findByRole("button", { name: "高级运行设置" }));
   const form = within(await screen.findByRole("dialog", { name: "设置" }));
   expect(form.queryByLabelText("允许执行 Shell 命令")).not.toBeInTheDocument();

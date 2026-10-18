@@ -19,7 +19,7 @@ it("独立窗口授权默认关闭，保存其他配置不丢且重开一致", a
   render(<App />);
   await screen.findByRole("heading", { name: "控制角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "设置" }));
-  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(screen.getByRole("button", { name: "插件" }));
   await user.click(await screen.findByRole("button", { name: "桌面控制 设置" }));
   const form = within(await screen.findByRole("dialog", { name: "设置" }));
   expect(form.getByRole("checkbox", { name: "允许操作本机窗口" })).not.toBeChecked();
@@ -31,7 +31,7 @@ it("独立窗口授权默认关闭，保存其他配置不丢且重开一致", a
   expect(saved.agentConfig?.enabledTools).toEqual(["read_file"]);
   await user.click(form.getByRole("button", { name: "关闭" }));
   await user.click(screen.getByRole("button", { name: "设置" }));
-  await user.click(screen.getByRole("button", { name: "工具与插件" }));
+  await user.click(screen.getByRole("button", { name: "插件" }));
   await user.click(await screen.findByRole("button", { name: "桌面控制 设置" }));
   expect(within(await screen.findByRole("dialog", { name: "设置" })).getByRole("checkbox", { name: "允许操作本机窗口" })).toBeChecked();
 });

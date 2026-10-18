@@ -18,6 +18,7 @@ describe("MemorySettings embedding configuration", () => {
     });
 
     render(<MemorySettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "向量模型" }));
     const key = await screen.findByLabelText("向量 API Key");
     fireEvent.change(key, { target: { value: "secret-key" } });
     fireEvent.click(screen.getByRole("button", { name: "保存向量配置" }));
@@ -146,4 +147,22 @@ describe("ModelSettings protocol selection", () => {
       apiOptions: {},
     });
   });
+});
+
+
+it('已有模型时先显示连接列表，新建表单可取消且不会写入配置或读取密钥', async () => {
+  const configuration = { id: 'saved', providerId: 'openai', provider: 'openai', model: 'saved-model', baseUrl: 'https://model.example/v1', apiKeyConfigured: true };
+  const { calls } = fakeBackend({
+    'GET /api/model/providers': () => ({ body: { providers: [] } }),
+    'GET /api/model/configurations': () => ({ body: { configurations: [configuration], activeId: 'saved' } }),
+  });
+  render(<ModelSettings />);
+  await screen.findByRole('list', { name: '已保存的模型配置' });
+  expect(screen.queryByLabelText('模型 ID')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '新建配置' }));
+  fireEvent.change(screen.getByLabelText('模型 ID'), { target: { value: 'unsaved' } });
+  fireEvent.click(screen.getByRole('button', { name: '取消' }));
+  expect(screen.queryByLabelText('模型 ID')).not.toBeInTheDocument();
+  expect(screen.getByRole('list', { name: '已保存的模型配置' })).toBeInTheDocument();
+  expect(calls.some(call => call.method !== 'GET')).toBe(false);
 });
