@@ -2,7 +2,7 @@
 
 状态：当前
 
-事实来源：[CI 工作流](../../.github/workflows/ci.yml)、[范围判定](../../.github/scripts/ci_scope.py)、[CI 依赖](../../requirements-ci.txt)。
+事实来源：[CI 工作流](../../.github/workflows/ci.yml)、[范围判定](../../.github/scripts/ci_scope.py)、[依赖](../../requirements.txt)。
 
 最后核验：2026-10-18
 
@@ -22,17 +22,17 @@
 
 工作流本身始终启动，保留 `Frontend build` 与 `Backend tests` 检查名称；不使用工作流级路径过滤，以免必需检查一直等待。
 
-## 后端并行与本地复现
+## 后端验证与本地复现
 
-CI 安装 `requirements-ci.txt`，使用两个独立进程按文件调度；同一文件的测试留在同一进程。测试失败照常失败，worker 崩溃不自动重启，也不重试测试。
+CI 安装 `requirements.txt`，串行运行完整后端测试集，不重试失败。并行试验曾出现测试之间的共享状态和资源收尾干扰；本次精简保留既有串行执行顺序，不依赖一次并行通过的结果。
 
 本地复现时，先创建并激活独立虚拟环境，再安装下面的依赖。不要只通过 `--system-site-packages` 借用系统依赖：应用重建测试会隔离子进程，并且只显式加载当前虚拟环境的依赖目录；借用的系统包在子进程中不可用。
 
 ```sh
-python -m pip install -r requirements-ci.txt
-python -m pytest -n 2 --dist loadfile --max-worker-restart=0 -o faulthandler_timeout=90 --durations=15
+python -m pip install -r requirements.txt
+python -m pytest -o faulthandler_timeout=90 --durations=15
 ```
 
-本地开发仍可用 `python -m pytest` 串行执行。`--durations=15` 在 CI 日志中列出慢测试，后续优化以真实耗时为依据。
+`--durations=15` 在 CI 日志中列出慢测试，后续优化以真实耗时为依据。
 
 Windows 下应使用较短的工作区路径。若默认用户临时目录过长，可在测试命令后添加 `--basetemp=.pytest_cache/w`，将 pytest 临时文件放到仓库内的专用短目录，避免任务日志的嵌套路径超出 Windows 路径长度限制。该目录仅供 pytest 管理临时数据。
