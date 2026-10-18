@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches:
-      - "**"
+      - main
   pull_request:
     branches:
       - main
@@ -17,8 +17,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect changed scope
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.scope.outputs.frontend }}
+      backend: ${{ steps.scope.outputs.backend }}
+    steps:
+      - name: Check out repository
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Select checks
+        id: scope
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            git diff --name-only --no-renames -z "$BASE_SHA...$HEAD_SHA" | python .github/scripts/ci_scope.py >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+          fi
+
   frontend:
     name: Frontend build
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -42,6 +71,8 @@ jobs:
 
   backend:
     name: Backend tests
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.backend == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -52,13 +83,15 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-ci.txt
 
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install -r requirements-ci.txt
 
       - name: Compile Python sources
         run: python -m compileall -q backend tests
 
       - name: Run tests
-        run: python -m pytest -o faulthandler_timeout=90
+        run: python -m pytest -n 2 --dist loadfile --max-worker-restart=0 -o faulthandler_timeout=90 --durations=15
