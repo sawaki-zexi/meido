@@ -189,6 +189,14 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .chat { flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: var(--surface-gradient); }
 .chat-header { display: flex; align-items: center; gap: 14px; height: 70px; padding: 0 20px 0 28px; border-bottom: 1px solid transparent; }
 .chat-header > .avatar { --size: 40px; }
+.chat-profile { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; padding: 4px 0; border: 0; border-radius: 8px; background: transparent; color: inherit; text-align: left; }
+.chat-profile > .avatar { --size: 40px; flex: none; }
+.chat-profile:hover { background: var(--hover); }
+.chat-actions { position: relative; flex: none; }
+.chat-actions-menu { position: absolute; z-index: 8; right: 0; top: calc(100% + 8px); width: 208px; max-width: calc(100vw - 88px); padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-card); box-shadow: var(--panel-shadow); }
+.chat-actions-menu > button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 10px; border: 0; border-radius: 7px; background: transparent; color: var(--ink); text-align: left; }
+.chat-actions-menu > button:hover, .chat-actions-menu > button:focus-visible { background: var(--hover); }
+.chat-actions-menu > p { margin: 0; padding: 10px; font-size: 13px; color: var(--ink-soft); }
 .chat-title { flex: 1; min-width: 0; display: grid; }
 .chat-title h1 { font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-title small { font-size: 12px; color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -531,6 +539,8 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
   .main { border-radius: 16px 0 0 16px; }
   .chat-header { height: 64px; padding: 0 8px; gap: 6px; }
   .chat-header > .avatar { --size: 32px; }
+  .chat-profile { gap: 8px; }
+  .chat-profile > .avatar { --size: 32px; }
   .chat-header .icon-button { width: 30px; height: 34px; }
   .chat-title h1 { font-size: 15px; }
   .role-model-trigger { max-width: 125px; }

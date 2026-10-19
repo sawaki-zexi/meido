@@ -33,7 +33,8 @@ it("shows the exact diff and HEAD before one explicit host commit approval and n
   const user = userEvent.setup();
   render(<App />);
   await screen.findByRole("heading", { name: "编程审阅", level: 1 });
-  await user.click(screen.getByRole("button", { name: "编程任务" }));
+  await user.click(screen.getByRole('button', { name: '更多' }));
+  await user.click(await screen.findByRole('menuitem', { name: '编程任务' }));
   const dialog = within(await screen.findByRole("dialog", { name: "编程任务" }));
   await user.click(await dialog.findByRole("button", { name: "审阅本地提交 coding-one" }));
   await user.type(dialog.getByRole("textbox", { name: "提交说明" }), "已审阅的修改");

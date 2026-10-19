@@ -149,7 +149,8 @@ it('saves and reopens CG permission in the actual app and refreshes a late CG in
   await user.keyboard('{Escape}');
   complete = true; fireEvent.focus(window);
   expect(await screen.findByAltText('scene-cg.png')).toBeInTheDocument();
-  await user.click(screen.getByRole('button', { name: '生图与历史' }));
+  await user.click(screen.getByRole('button', { name: '更多' }));
+  await user.click(await screen.findByRole('menuitem', { name: '生图与历史' }));
   const record = await screen.findByRole('article', { name: '生成记录 cg-attempt' });
   expect(within(record).getByText('卡片图写回结果尚未确认，生成图已保留历史。')).toBeInTheDocument();
   expect(within(record).getByRole('button', { name: '重新生成 scene-cg.png' })).toBeDisabled();

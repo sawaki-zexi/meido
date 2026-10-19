@@ -5,9 +5,7 @@ import { Avatar, roleStyle } from "../../ui/Avatar";
 import { Icon, IconButton } from "../../ui/Icon";
 import { Notice, Placeholder } from "../../ui/Status";
 import { RoleModelSelector } from "../model/RoleModelSelector";
-import { api } from "../../api/client";
-import type { TodoSettings } from "../../api/types";
-import { TodoDrawer } from "../todo/TodoDrawer";
+import { ChatActions } from './ChatActions';
 import { useChatAttachments } from "./useChatAttachments";
 import { GenerationDrawer } from "../novelai/GenerationDrawer";
 import { CodingTasks } from "../coding/CodingTasks";
@@ -118,17 +116,15 @@ function Composer({ roleId, placeholder, disabled, sending, stopping, onSend, on
   </form>;
 }
 
-type ChatProps = { role: Role; chat: ChatState; highlightedId?: string | null; onBack: () => void; onShowProfile: () => void; onShowMemories: () => void; onOpenTodoSource: (roleId: string, sessionKey: string, messageId: string) => void };
+type ChatProps = { role: Role; chat: ChatState; highlightedId?: string | null; onBack: () => void; onShowProfile: () => void; onShowMemories: () => void };
 
-export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfile, onShowMemories, onOpenTodoSource }: ChatProps) {
+export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfile, onShowMemories }: ChatProps) {
   const { scrollRef, listRef, onScroll } = useChatScroll({ roleId: role.id, messages: chat.messages, sending: chat.sending, highlightedId });
-  const [todoSettings, setTodoSettings] = useState<TodoSettings | null>(null);
-  const [todoUnread, setTodoUnread] = useState(0);
-  const [todoOpen, setTodoOpen] = useState(false);
   const [generationRoleId, setGenerationRoleId] = useState<string | null>(null);
   const [selectedGenerationImage, setSelectedGenerationImage] = useState<GenerationSelection | undefined>();
   useEffect(() => { setGenerationRoleId(null); setSelectedGenerationImage(undefined); }, [role.id]);
   const [codingOpen, setCodingOpen] = useState(false);
+  useEffect(() => { setCodingOpen(false); }, [role.id]);
   useEffect(() => {
     if (!chat.session || chat.sending) return;
     const timer = window.setInterval(() => void chat.refresh(), 10000);
@@ -143,41 +139,20 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
   }, [chat.session?.sessionKey, chat.sending, chat.refresh]);
-  useEffect(() => {
-    let mounted = true;
-    const refresh = async () => {
-      try {
-        let settings = await api<TodoSettings>("/api/todos/settings");
-        if (settings.timezoneConfigured === false) {
-          const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-          if (timezone) settings = await api<TodoSettings>("/api/todos/settings", { method: "PUT", body: JSON.stringify({ timezone }) });
-        }
-        if (!mounted) return;
-        setTodoSettings(settings);
-        if (settings.enabled && settings.remindersEnabled) {
-          const reminders = await api<{ unreadCount: number }>("/api/todos/reminders");
-          if (mounted) setTodoUnread(reminders.unreadCount);
-        } else setTodoUnread(0);
-      } catch { if (mounted) setTodoSettings(null); }
-    };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 20000);
-    return () => { mounted = false; window.clearInterval(timer); };
-  }, []);
 
   return <section className="chat" style={roleStyle(role.id)} aria-label={`与${role.name}的会话`}>
     <header className="chat-header">
       <IconButton icon="back" label="对话列表" className="only-narrow" onClick={onBack} />
-      <Avatar id={role.id} name={role.name} size="sm" avatarUrl={role.avatarUrl} />
-      <div className="chat-title">
+      <button type="button" className="chat-profile" aria-label="角色资料" title="查看角色资料" onClick={onShowProfile}>
+        <Avatar id={role.id} name={role.name} size="sm" avatarUrl={role.avatarUrl} />
+        <span className="chat-title">
         <h1>{role.name}</h1>
         {chat.sending ? <small className="reply-state" role="status">{chat.stopping ? "正在停止…" : "正在输入…"}</small> : role.description && <small>{role.description}</small>}
-      </div>
-      {todoSettings?.enabled && <button type="button" className="icon-button todo-entry" aria-label={todoUnread ? `待办提醒 ${todoUnread}` : "待办"} title="待办" onClick={() => setTodoOpen(true)}><Icon name="todo" />{todoUnread > 0 && <span>{todoUnread > 99 ? "99+" : todoUnread}</span>}</button>}
+        </span>
+      </button>
       <IconButton icon="memory" label="角色记忆" onClick={onShowMemories} />
-      <button type="button" className="ghost" onClick={() => { setSelectedGenerationImage(undefined); setGenerationRoleId(role.id); }}>生图与历史</button>
-      <IconButton icon="profile" label="角色资料" onClick={onShowProfile} />
-      {role.agentConfig?.coding?.enabled && <button type="button" onClick={() => setCodingOpen(true)}>编程任务</button>}
+      <ChatActions key={role.id} codingEnabled={Boolean(role.agentConfig?.coding?.enabled)}
+        onGenerate={() => { setSelectedGenerationImage(undefined); setGenerationRoleId(role.id); }} onCoding={() => setCodingOpen(true)} />
     </header>
     <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
       {chat.messages.length
@@ -189,7 +164,6 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
       {chat.error && <Notice onDismiss={() => chat.setError("")}>{chat.error}</Notice>}
       <Composer key={role.id} roleId={role.id} placeholder={`对${role.name}说点什么…`} sending={chat.sending} stopping={chat.stopping} disabled={chat.opening} onSend={chat.send} onStop={chat.stop} />
     </div>
-    {todoOpen && <TodoDrawer onClose={() => setTodoOpen(false)} onOpenSource={(roleId, sessionKey, messageId) => { setTodoOpen(false); onOpenTodoSource(roleId, sessionKey, messageId); }} />}
     {generationRoleId === role.id && <GenerationDrawer key={role.id} role={role} onClose={() => setGenerationRoleId(null)} onGenerated={chat.refresh} selectedImage={selectedGenerationImage}
       attachments={chat.messages.flatMap((message) => Array.isArray(message.metadata?.attachments)
         ? message.metadata.attachments.filter((item): item is ChatAttachment => Boolean(item && typeof item === 'object' && 'id' in item && 'name' in item)) : [])} />}

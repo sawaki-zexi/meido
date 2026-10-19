@@ -78,7 +78,8 @@ it('shows a new internal completion in the original chat after observing accepte
   });
   const user = userEvent.setup();
   render(<App />);
-  await user.click(await screen.findByRole('button', { name: '生图与历史' }));
+  await user.click(await screen.findByRole('button', { name: '更多' }));
+  await user.click(await screen.findByRole('menuitem', { name: '生图与历史' }));
   await screen.findByText('暂无生图历史。');
   await user.type(screen.getByLabelText('英文正向 tags'), 'blue sky');
   await user.click(screen.getByLabelText('在后台生成，完成后交付原来源'));

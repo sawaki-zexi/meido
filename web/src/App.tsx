@@ -15,6 +15,8 @@ import { TavernView } from "./features/tavern/TavernView";
 import { Dialog } from "./ui/Dialog";
 import { Icon, IconButton } from "./ui/Icon";
 import { Notice } from "./ui/Status";
+import { TodoDrawer } from './features/todo/TodoDrawer';
+import { useTodoNavigation } from './features/todo/useTodoNavigation';
 
 /** What the main pane shows: a conversation, the role tavern (all role cards), or the open role's memories. */
 type View = "chat" | "tavern" | "memories";
@@ -35,6 +37,8 @@ export function App() {
   // A restored create-role draft reopens the create panel.
   const [panel, setPanel] = useState<Panel>(() => roles.creating ? "create" : returnedFromOwnerKnowledgeAuthorization ? "settings" : null);
   const [view, setView] = useState<View>("chat");
+  const [todoOpen, setTodoOpen] = useState(false);
+  const todoNavigation = useTodoNavigation(panel === 'settings' || todoOpen);
   const [newRole, setNewRole] = useState<Role | null>(null);
   // Narrow screens show one pane at a time; home is the conversation.
   const [showList, setShowList] = useState(false);
@@ -158,6 +162,10 @@ export function App() {
       <div className="side-tabs">
         <button type="button" aria-label="对话" title="对话" aria-current={view === "chat" || view === "memories" ? "page" : undefined} onClick={backToChat}><Icon name="chat" size={22} /></button>
         <button type="button" aria-label="角色" title="角色" aria-current={view === "tavern" ? "page" : undefined} onClick={openTavern}><Icon name="people" size={22} /></button>
+        {todoNavigation.enabled && <button type="button" className="todo-entry" aria-label={todoNavigation.unread ? `待办提醒 ${todoNavigation.unread}` : '待办'} title="待办"
+          aria-haspopup="dialog" aria-expanded={todoOpen} onClick={() => { if (panel === 'settings') setPanel(null); setTodoOpen(true); }}>
+          <Icon name="todo" size={22} />{todoNavigation.unread > 0 && <span>{todoNavigation.unread > 99 ? '99+' : todoNavigation.unread}</span>}
+        </button>}
       </div>
       <footer className="rail-footer"><IconButton icon="settings" label="设置" onClick={() => { setSettingsSection(undefined); setPanel("settings"); }} /></footer>
     </nav>
@@ -190,10 +198,11 @@ export function App() {
         : view === "memories" && chatRole
         ? <MemoryPanel key={chatRole.id} role={chatRole} onBack={backToChat} onOpenSource={(origin, messageId) => void openMemorySource(chatRole, origin, messageId)} />
         : chatRole
-        ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showProfile(chatRole)} onShowMemories={() => setView("memories")} onOpenTodoSource={(roleId, sessionKey, messageId) => void openTodoSource(roleId, sessionKey, messageId)} />
+        ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showProfile(chatRole)} onShowMemories={() => setView("memories")} />
         : <WelcomeView loading={roles.loading || openingId !== null} hasRoles={roles.roles.length > 0} error={chat.error} onDismissError={() => chat.setError("")} onCreate={startCreate} onBack={() => setShowList(true)} />}
     </main>
 
+    {todoOpen && <TodoDrawer onClose={() => setTodoOpen(false)} onOpenSource={(roleId, sessionKey, messageId) => { setTodoOpen(false); void openTodoSource(roleId, sessionKey, messageId); }} />}
     {channelSource && <Dialog title="记忆来源" onClose={() => setChannelSource(null)}>
       <ChannelView key={`${channelSource.role.id}:${channelSource.source.origin.stableSourceKey}:${channelSource.source.messageId ?? ""}`} role={channelSource.role} sourceOnly onBack={() => setChannelSource(null)} initialSource={channelSource.source} />
     </Dialog>}
