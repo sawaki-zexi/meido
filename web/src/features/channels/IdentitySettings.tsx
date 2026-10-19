@@ -37,9 +37,10 @@ export function IdentitySettings() {
     } catch { if (active.current) setFeedback("无法自动复制，请选中配对码手动复制。"); }
   };
   return <section className="channel-settings" aria-label="我的身份">
-    <header><h3>我的身份</h3><p>让角色在其他平台认出你。先连接角色账号，再用自己的平台账号私聊发送配对码。</p></header>
+    <header className="settings-heading"><h2>我的身份</h2></header>
     <div className="channel-setting-card">
       <h4>主人配对</h4>
+      <p>让角色在其他平台认出你。先连接角色账号，再用自己的平台账号私聊发送配对码。</p>
       {code && <div className="pairing-code-row"><output aria-label="配对码">{code}</output><span role="timer" aria-label="配对码剩余时间">{String(Math.floor(seconds / 60)).padStart(2, "0")}:{String(seconds % 60).padStart(2, "0")}</span><button type="button" onClick={() => void copy()}>复制配对码</button></div>}
       {pairing && !code && <p role="status">配对码已过期，请重新生成。</p>}
       <button type="button" className="primary" disabled={busy} onClick={() => void generate()}>{busy ? "生成中…" : pairing ? "重新生成配对码" : "生成配对码"}</button>

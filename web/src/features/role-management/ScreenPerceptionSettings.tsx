@@ -39,19 +39,18 @@ export function ScreenPerceptionSettings({ draft, onChange, disabled, showEnable
       <select
         aria-label="视觉模型连接"
         value={selectedId}
-        required={draft.screenPerceptionEnabled}
         disabled={disabled || loading || Boolean(error)}
         ref={(node) => node?.setCustomValidity(draft.screenPerceptionEnabled && missing ? "连接已不存在，请重新选择视觉模型连接" : "")}
         onChange={(event) => onChange({ ...draft, screenVisionModelConfigurationId: event.target.value })}
       >
-        <option value="">请选择已保存的模型连接</option>
+        <option value="">跟随角色的聊天模型</option>
         {selectedId && !selected && <option value={selectedId} disabled>{missing ? "连接已不存在" : "已选连接"}（{selectedId}）</option>}
         {configurations.map((configuration) => <option key={configuration.id} value={configuration.id}>
           {configuration.provider} · {configuration.model} · {configuration.api ?? "openai-completions"} · {configuration.id}
         </option>)}
       </select>
       {selected && <small style={{ color: "var(--ink-soft)", overflowWrap: "anywhere" }}>所选连接：{selected.provider} · {selected.model} · {selected.api ?? "openai-completions"}（ID：{selected.id}）</small>}
-      <small className="field-hint">请选择支持图片输入的连接，也可以选择聊天所用的同一连接；不会自动跟随聊天模型。视觉能力会在调用时验证。</small>
+      <small className="field-hint">默认使用角色当前的聊天模型，也可以单独选择支持图片输入的连接。已选连接失效时不会自动换用其他模型。</small>
     </label>
     {loading && <p role="status">正在加载视觉模型连接…</p>}
     {missing && <p role="status">连接已不存在，请重新选择视觉模型连接。</p>}

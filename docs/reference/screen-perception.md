@@ -1,16 +1,16 @@
 # 屏幕感知运行契约
 
-状态：当前实现，独立分支待总集成审查。最后核验：2026-10-16。
+状态：当前实现，PR #196 待合入。最后核验：2026-10-19。
 
 事实来源：[观察模块](../../backend/app/screen_perception/__init__.py)、[固定 worker](../../backend/app/screen_perception/worker.py)、[HTTP 装配](../../backend/app/main.py)、[公开工具行为测试](../../tests/python/test_screen_perception.py)、[HTTP 行为测试](../../tests/python/test_screen_perception_api.py)、[具体规格](../specs/screen-perception-spec.md)、[ADR-0014](../adr/0014-explicit-screen-vision-binding.md)。
 
 ## 配置与授权
 
-角色通过既有 POST/PUT roles 原子保存 `agentConfig.screenPerception`，字段为 `enabled`（默认 false）和 `visionModelConfigurationId`（默认 null）。关闭保留 ID；省略整个配置、旧客户端省略 screenPerception，或只修改 enabled 都保留未提供的屏幕字段。清空绑定需明确提供 null。开启须选择存在且完整的已保存连接，否则 HTTP 422。沿用模型连接的认证契约，本地服务可以没有 API Key。
+插件总开关与可选公共 `visionModelConfigurationId` 通过 `/api/plugin-management/screen` 系列接口保存。关闭保留 ID，参数保存不启用插件；显式选定的连接开启时必须存在且完整。旧角色字段保留兼容，但不覆盖公共设置。沿用模型连接的认证契约，本地服务可以没有 API Key。
 
-选择与聊天相同的保存 ID 是明确授权；没有隐式 active/chat fallback。连接删除后角色保留失效 ID，网页显示“连接已不存在”。表单、目录及保存都不截图、不测试模型。画面发往所选视觉连接，本地不保存原图；摘要可进入当前对话及正常工具历史。
+按 [ADR-0023](../adr/0023-screen-vision-chat-fallback.md)，未设置视觉连接时使用角色当前有效聊天模型（角色绑定优先，其次应用默认）；显式 ID 失效时保留并报错，不改投其他模型。工具冻结解析后的确切 ID；角色绑定和默认模型变化撤销旧候选、取消在途观察并等待资源退出。表单、目录及保存都不截图、不测试模型。画面发往解析后的连接，本地不保存原图；摘要可进入当前对话及正常工具历史。
 
-`observe_screen` 默认直接暴露，输入严格为 `{}`，read_only、external_allowed=false、source=builtin:screen_perception、timeout=20 秒。角色开关和宿主候选/执行检查都生效，enabledTools 或插件列表不能授予观察许可。仅正常桌面发送入口写入内部来源标记；观察模块同时检查真实 run、canonical role session、真实完成的 user 消息和当前配置。群、访客、配对私聊、定时和内部后台回合均不获得许可。
+`observe_screen` 默认直接暴露，输入严格为 `{}`，read_only、external_allowed=false、source=builtin:screen_perception、timeout=20 秒。全局插件开关和宿主候选/执行检查都生效，enabledTools 不能绕过插件关闭。仅正常桌面发送入口写入内部来源标记；观察模块同时检查真实 run、canonical role session、真实完成的 user 消息和当前配置。群、访客、配对私聊、定时和内部后台回合均不获得许可。
 
 ## 数据与资源
 

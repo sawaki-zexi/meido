@@ -1,6 +1,6 @@
 # 角色按需屏幕感知
 
-配置修订（2026-10-18）：本文原每角色总开关及视觉绑定改为全局插件开关、显式公共视觉连接；不自动迁移旧绑定，不回退聊天模型，原图不进历史和真实桌面身份约束保留。 当前配置以 [全局插件规格](global-plugin-configuration-spec.md) 与 [ADR-0022](../adr/0022-global-plugin-configuration.md) 为准；下文原始批准保留作设计依据。
+配置修订（2026-10-19）：本文原每角色总开关及视觉绑定改为全局插件开关、可选公共视觉连接；未选择时使用角色有效聊天模型，显式连接失效不回退。原图不进历史和真实桌面身份约束保留。当前配置以 [全局插件规格](global-plugin-configuration-spec.md)、[ADR-0022](../adr/0022-global-plugin-configuration.md) 和 [ADR-0023](../adr/0023-screen-vision-chat-fallback.md) 为准；下文原始批准保留作设计依据。
 
 状态：已实施，待总集成两轴审查。第 3 节已于 2026-10-16 获人工批准；独立分支已通过公开协议/故障进程测试和 Windows 单屏受控原生验收。双屏、混合 DPI、真实锁屏/断开场景仍未验收，见[验收记录](../research/screen-perception-acceptance-2026-10-16.md)。
 

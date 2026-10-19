@@ -14,7 +14,7 @@ const connections = [
 const initial = { id: 'screen', name: '屏幕感知', description: '主屏摘要', enabled: false, revision: 0, cleanupPending: false,
   values: { visionModelConfigurationId: null as string | null } };
 
-it('全局默认关闭，不跟随当前聊天模型，参数保存不启用且无角色编辑', async () => {
+it('全局默认关闭，可覆盖默认聊天模型，参数保存不启用且无角色编辑', async () => {
   let saved = initial;
   const { calls } = fakeBackend({
     'GET /api/plugin-management': () => ({ body: { plugins: [saved] } }),

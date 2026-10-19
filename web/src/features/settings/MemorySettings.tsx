@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../api/client";
 import type { EmbeddingConfiguration } from "../../api/types";
 import { Notice, Placeholder } from "../../ui/Status";
 import { ApiKeyInput } from "../../ui/ApiKeyInput";
 import { SettingsTabs } from "./SettingsTabs";
+import { SettingsSwitch } from "./SettingsSwitch";
 
 type EmbeddingDraft = { provider: string; baseUrl: string; model: string; dimensions: number; apiKey: string };
 type MemorySettingsState = {
@@ -20,7 +21,7 @@ const defaultDraft: EmbeddingDraft = {
   apiKey: "",
 };
 
-export function MemorySettings() {
+export function MemorySettings({ active = true }: { active?: boolean }) {
   const [tab, setTab] = useState<"general" | "embedding">("general");
   const [settings, setSettings] = useState<MemorySettingsState | null>(null);
   const [draft, setDraft] = useState(defaultDraft);
@@ -30,7 +31,9 @@ export function MemorySettings() {
   const [message, setMessage] = useState("");
   const [embeddingError, setEmbeddingError] = useState("");
   const [embeddingMessage, setEmbeddingMessage] = useState("");
-  const busy = pendingAction !== null;
+  const [refreshing, setRefreshing] = useState(false);
+  const previouslyActive = useRef(active);
+  const busy = pendingAction !== null || refreshing;
 
   const refresh = async () => {
     const result = await api<MemorySettingsState>("/api/memory/settings");
@@ -43,11 +46,23 @@ export function MemorySettings() {
     void refresh().catch((cause) => setError(errorMessage(cause, "无法加载记忆设置"))).finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => {
+    let current = true;
+    if (active && !previouslyActive.current) {
+      setRefreshing(true);
+      void api<MemorySettingsState>('/api/memory/settings').then(value => { if (current) setSettings(value); })
+        .catch(cause => { if (current) setError(errorMessage(cause, '无法刷新记忆设置')); })
+        .finally(() => { if (current) setRefreshing(false); });
+    }
+    previouslyActive.current = active;
+    return () => { current = false; };
+  }, [active]);
+
   const saveSettings = async (next: Partial<Pick<MemorySettingsState, "enabled" | "embeddingEnabled">>) => {
     if (!settings) return;
     setPendingAction("settings"); setError(""); setMessage(""); setEmbeddingError(""); setEmbeddingMessage("");
     try {
-      const result = await api<MemorySettingsState>("/api/memory/settings", { method: "PUT", body: JSON.stringify({ enabled: next.enabled ?? settings.enabled, embeddingEnabled: next.embeddingEnabled ?? settings.embeddingEnabled }) });
+      const result = await api<MemorySettingsState>("/api/memory/settings", { method: "PUT", body: JSON.stringify(next) });
       setSettings(result);
       setMessage("记忆设置已保存");
     } catch (cause) { setError(errorMessage(cause, "记忆设置保存失败")); }
@@ -75,21 +90,20 @@ export function MemorySettings() {
   const embedding = settings.embedding.configuration;
   const embeddingStatus = settings.embedding.status;
   return <section className="memory-settings page-narrow" aria-labelledby="memory-settings-title">
-    <header className="settings-heading"><div><h2 id="memory-settings-title">记忆</h2><p className="muted">管理角色记忆与共享向量模型。</p></div></header>
+    <header className="settings-heading"><h2 id="memory-settings-title">记忆</h2></header>
     <SettingsTabs label="记忆分类" items={[{ id: "general", label: "基础" }, { id: "embedding", label: "向量模型" }]} current={tab} onSelect={setTab} disabled={busy} />
     {error && <Notice>{error}</Notice>}
     {message && <Notice tone={message.startsWith("失败") ? "error" : "success"}>{message}</Notice>}
     {tab === "general" && <section className="card-form" aria-labelledby="memory-switch-title">
-      <div className="settings-subheading"><div><h3 id="memory-switch-title">记忆功能</h3><p className="muted">暂停后保留已有记忆，已开始的任务会完成。</p></div><label className="plugin-switch" title="启用或暂停记忆"><input type="checkbox" checked={settings.enabled} disabled={busy} onChange={(event) => void saveSettings({ enabled: event.target.checked })} aria-label="启用记忆功能" /><span className="plugin-switch-track" aria-hidden="true"><span /></span></label></div>
-      <p className="muted">当前状态：{settings.enabled ? "已启用" : "已暂停"}</p>
+      <div className="settings-preference"><div><h3 id="memory-switch-title">启用记忆</h3><p className="muted">暂停后保留已有记忆，已开始的任务会完成。</p></div><SettingsSwitch label="启用记忆功能" checked={settings.enabled} disabled={busy} onChange={enabled => void saveSettings({ enabled })} /></div>
     </section>}
     {tab === "embedding" && <section className="card-form" aria-labelledby="embedding-settings-title">
-      <div className="settings-subheading"><div><h3 id="embedding-settings-title">向量模型</h3><p className="muted">主人资料与长期记忆共用；暂停后仍可按关键词查找。</p></div><label className="plugin-switch" title="启用或暂停向量模型"><input type="checkbox" checked={settings.embeddingEnabled} disabled={busy} onChange={(event) => void saveSettings({ embeddingEnabled: event.target.checked })} aria-label="启用向量模型" /><span className="plugin-switch-track" aria-hidden="true"><span /></span></label></div>
+      <div className="settings-preference"><div><h3 id="embedding-settings-title">向量模型</h3><p className="muted">主人资料与长期记忆共用；暂停后仍可按关键词查找。</p></div><SettingsSwitch label="启用向量模型" checked={settings.embeddingEnabled} disabled={busy} onChange={embeddingEnabled => void saveSettings({ embeddingEnabled })} /></div>
       <div className="field"><label htmlFor="embedding-provider">服务商</label><input id="embedding-provider" value={draft.provider} disabled={busy} onChange={(event) => setDraft({ ...draft, provider: event.target.value })} /></div>
       <div className="field"><label htmlFor="embedding-base-url">向量 API 地址</label><input id="embedding-base-url" required type="url" value={draft.baseUrl} disabled={busy} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} /></div>
       <div className="field"><label htmlFor="embedding-model-id">向量模型 ID</label><input id="embedding-model-id" required value={draft.model} disabled={busy} onChange={(event) => setDraft({ ...draft, model: event.target.value })} /></div>
       <div className="field"><label htmlFor="embedding-dimensions">向量维度</label><input id="embedding-dimensions" required type="number" min={1} max={4096} value={draft.dimensions} disabled={busy} onChange={(event) => setDraft({ ...draft, dimensions: Number(event.target.value) })} /></div>
-      <ApiKeyInput id="embedding-api-key" label="向量 API Key" value={draft.apiKey} configured={embedding.apiKeyConfigured} placeholder="请输入 DashScope API Key" disabled={busy} onChange={(apiKey) => setDraft({ ...draft, apiKey })} onReveal={async () => {
+      <ApiKeyInput id="embedding-api-key" label="向量 API Key" value={draft.apiKey} configured={embedding.apiKeyConfigured} placeholder="请输入 DashScope API Key" disabled={busy || !active} onChange={(apiKey) => setDraft({ ...draft, apiKey })} onReveal={async () => {
         const result = await api<{ apiKey: string }>("/api/embedding/configuration/reveal-key", { method: "POST" });
         return result.apiKey;
       }} />

@@ -52,6 +52,17 @@ def test_browser_enable_is_global_and_does_not_rewrite_role_data(client):
         assert not next(item for item in catalog if item['name'] == 'agent_browser_open')['enabled']
 
 
+def test_memory_switch_patch_preserves_independently_paused_memory(client, monkeypatch, tmp_path):
+    from backend.app.memory_config import MemorySettings, MemorySettingsStore
+    settings = MemorySettingsStore(tmp_path / 'memory.json')
+    settings.save(MemorySettings(enabled=False, embeddingEnabled=True))
+    monkeypatch.setattr(main, 'memory_settings_store', settings)
+    response = client.put('/api/memory/settings', json={'embeddingEnabled': False})
+    assert response.status_code == 200
+    assert response.json()['enabled'] is False
+    assert response.json()['embeddingEnabled'] is False
+
+
 def test_parameters_and_activation_are_independent_and_stale_edits_conflict(client):
     browser = client.get('/api/plugin-management/browser').json()
     configured = client.put('/api/plugin-management/browser/configuration', json={

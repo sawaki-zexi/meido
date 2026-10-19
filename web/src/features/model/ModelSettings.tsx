@@ -3,6 +3,7 @@ import { api, errorMessage } from "../../api/client";
 import type { ModelConfiguration as Configuration, Provider } from "../../api/types";
 import { Notice, Placeholder } from "../../ui/Status";
 import { ApiKeyInput } from "../../ui/ApiKeyInput";
+import { Icon } from "../../ui/Icon";
 
 type Draft = { providerId: string; provider: string; api: string; apiOptions: Record<string, string>; baseUrl: string; model: string; apiKey: string };
 
@@ -21,7 +22,7 @@ const modelApis = [
 
 const emptyDraft: Draft = { providerId: "openai", provider: "openai", api: "openai-completions", apiOptions: {}, baseUrl: "", model: "", apiKey: "" };
 
-export function ModelSettings() {
+export function ModelSettings({ active: pageActive = true }: { active?: boolean }) {
   const [editorOpen, setEditorOpen] = useState(false);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [configurations, setConfigurations] = useState<Configuration[]>([]);
@@ -34,6 +35,7 @@ export function ModelSettings() {
   const [error, setError] = useState("");
   const [testResult, setTestResult] = useState("");
   const formRef = useRef<HTMLFormElement>(null);
+  const previouslyActive = useRef(pageActive);
 
   const refreshConfigurations = async () => {
     const result = await api<{ configurations: Configuration[]; activeId: string | null }>("/api/model/configurations");
@@ -50,6 +52,13 @@ export function ModelSettings() {
       if (initial) setDraft({ ...emptyDraft, provider: initial.provider, api: initial.api ?? "openai-completions", baseUrl: initial.baseUrl });
     }).catch((cause) => setError(errorMessage(cause, "无法加载模型配置"))).finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (pageActive && !previouslyActive.current) {
+      void refreshConfigurations().catch(cause => setError(errorMessage(cause, '无法刷新模型列表')));
+    }
+    previouslyActive.current = pageActive;
+  }, [pageActive]);
 
   const editConfiguration = (configuration: Configuration) => {
     setEditorOpen(true);
@@ -132,10 +141,10 @@ export function ModelSettings() {
 
   return <section className="model-settings page-narrow" aria-labelledby="model-settings-title">
     <header className="settings-heading">
-      <div><h2 id="model-settings-title">模型服务</h2><p className="muted">配置本地对话使用的默认模型。</p></div>
-      <button type="button" onClick={startNewConfiguration} disabled={loading || busy}>新建配置</button>
+      <div><h2 id="model-settings-title">模型</h2></div>
+      {!editorOpen && <button type="button" onClick={startNewConfiguration} disabled={loading || busy}><Icon name="plus" size={16} />新建配置</button>}
     </header>
-    {configurations.length > 0 && <ul className="configuration-list" aria-label="已保存的模型配置">{configurations.map((configuration) => {
+    {!editorOpen && configurations.length > 0 && <ul className="configuration-list" aria-label="已保存的模型配置">{configurations.map((configuration) => {
       const isActive = configuration.id === activeId;
       const isEditing = editorOpen && configuration.id === editingId;
       return <li className={`configuration-item${isActive ? " active" : ""}${isEditing ? " editing" : ""}`} key={configuration.id}>
@@ -155,7 +164,8 @@ export function ModelSettings() {
     {!loading && !editorOpen && configurations.length === 0 && <p className="muted">尚未添加模型连接。</p>}
     {loading ? <Placeholder loading>正在加载…</Placeholder> : editorOpen && <form ref={formRef} className="card-form" onSubmit={(event) => { event.preventDefault(); void submit("save"); }}>
       <div className="settings-subheading">
-        <h3>{editingId ? `编辑配置：${editingConfiguration?.provider} · ${editingConfiguration?.model}` : "新建配置"}</h3>
+        <button type="button" className="ghost settings-back" disabled={busy} onClick={() => setEditorOpen(false)}><Icon name="back" size={16} />返回模型列表</button>
+        <h3>{editingId ? `${editingConfiguration?.provider} · ${editingConfiguration?.model}` : "新建配置"}</h3>
         {active && <span className="muted">当前生效：{active.provider} · {active.model}</span>}
       </div>
       <div className="field"><label htmlFor="model-provider">服务商</label><select id="model-provider" value={draft.providerId} disabled={busy} onChange={(event) => updateProvider(event.target.value)}>{providers.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}<option value="custom">自定义</option></select></div>
@@ -169,7 +179,7 @@ export function ModelSettings() {
       {draft.api === "openai-codex-responses" && <div className="field"><label htmlFor="codex-account-id">ChatGPT Account ID（可选）</label><input id="codex-account-id" value={draft.apiOptions.accountId ?? ""} disabled={busy} onChange={(event) => setDraft({ ...draft, apiOptions: { ...draft.apiOptions, accountId: event.target.value } })} /></div>}
       <div className="field"><label htmlFor="model-base-url">API 地址</label><input id="model-base-url" required type="url" value={draft.baseUrl} disabled={busy} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} /></div>
       <div className="field"><label htmlFor="model-id">模型 ID</label><input id="model-id" required value={draft.model} placeholder={preset?.modelHint ?? "例如：provider/model-name"} disabled={busy} onChange={(event) => setDraft({ ...draft, model: event.target.value })} /></div>
-      <ApiKeyInput key={`${editingId ?? "new"}:${draft.providerId}:${draft.api}`} id="model-api-key" label={draft.api === "openai-codex-responses" ? "ChatGPT OAuth Token" : "API Key"} value={draft.apiKey} configured={Boolean(editingConfiguration?.apiKeyConfigured)} placeholder={draft.api === "openai-codex-responses" ? "粘贴 ChatGPT OAuth Token" : "可选，本地模型服务可能不需要"} disabled={busy} onChange={(apiKey) => setDraft({ ...draft, apiKey })} onReveal={async () => {
+      <ApiKeyInput key={`${editingId ?? "new"}:${draft.providerId}:${draft.api}`} id="model-api-key" label={draft.api === "openai-codex-responses" ? "ChatGPT OAuth Token" : "API Key"} value={draft.apiKey} configured={Boolean(editingConfiguration?.apiKeyConfigured)} placeholder={draft.api === "openai-codex-responses" ? "粘贴 ChatGPT OAuth Token" : "可选，本地模型服务可能不需要"} disabled={busy || !pageActive} onChange={(apiKey) => setDraft({ ...draft, apiKey })} onReveal={async () => {
         if (!editingId) return "";
         const result = await api<{ apiKey: string }>(`/api/model/configurations/${encodeURIComponent(editingId)}/reveal-key`, { method: "POST" });
         return result.apiKey;

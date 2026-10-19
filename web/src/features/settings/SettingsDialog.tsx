@@ -38,6 +38,7 @@ export function SettingsDialog({ onClose, initialSection = 'model', onRoleSaved 
   const content = useRef<HTMLDivElement>(null);
   const serviceNeedsRefresh = useRef(isPluginService(initialSection));
   const [current, setCurrent] = useState<SettingsSectionId>(initialSection);
+  const [visited, setVisited] = useState(() => new Set<SettingsSectionId>([initialSection]));
   const [pluginsVisited, setPluginsVisited] = useState(initialSection === 'plugins');
   const [serviceVersion, setServiceVersion] = useState(0);
   const service = isPluginService(current) ? current : null;
@@ -51,6 +52,7 @@ export function SettingsDialog({ onClose, initialSection = 'model', onRoleSaved 
       }
     }
     setCurrent(id);
+    setVisited(items => new Set([...items, id]));
     if (content.current) content.current.scrollTop = 0;
   };
   return <Dialog title="设置" variant="settings" onClose={onClose}>
@@ -62,13 +64,12 @@ export function SettingsDialog({ onClose, initialSection = 'model', onRoleSaved 
         </button>)}</nav>
       <div className="settings-content" ref={content}>
         {pluginsVisited && <div hidden={current !== 'plugins'}>
-          <PluginSettings onRoleSaved={onRoleSaved} onOpenService={select} serviceVersion={serviceVersion}
-            initialTab={isPluginService(initialSection) ? 'services' : 'roles'} />
+          <PluginSettings onRoleSaved={onRoleSaved} onOpenService={select} serviceVersion={serviceVersion} />
         </div>}
-        {current === 'model' && <ModelSettings />}
-        {current === 'memory' && <MemorySettings />}
+        {visited.has('model') && <div hidden={current !== 'model'}><ModelSettings active={current === 'model'} /></div>}
+        {visited.has('memory') && <div hidden={current !== 'memory'}><MemorySettings active={current === 'memory'} /></div>}
         {current === 'appearance' && <AppearanceSettings />}
-        {current === 'advanced' && <AdvancedSettings onRoleSaved={onRoleSaved} />}
+        {visited.has('advanced') && <div hidden={current !== 'advanced'}><AdvancedSettings onRoleSaved={onRoleSaved} /></div>}
         {current === 'identity' && <IdentitySettings />}
         {current === 'about' && <AboutSettings />}
         {service && <section className="settings-service-page" key={service}>

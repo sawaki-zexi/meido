@@ -2,29 +2,36 @@
    A soft pink canvas carries the conversation, while each role keeps her own hue (--role-hue). */
 
 :root {
-  --bg: #fff8fb;
-  --side: #fff1f7;
-  --hover: #fcebf3;
-  --blush: #f9e4ef;
-  --sakura: #edc9dc;
-  --rose: #cb6f9e;
-  --rose-deep: #a84c7c;
+  --bg: #fff8fa;
+  --side: #ffeef4;
+  --hover: #fff0f6;
+  --blush: #ffe5ed;
+  --sakura: #ffd6e4;
+  --rose: #c5467f;
+  --rose-deep: #aa386c;
+  --accent-hover: #aa386c;
+  --surface-card: #ffffff;
+  --surface-glass: rgb(255 255 255 / 55%);
+  --surface-input: #fbf9fa;
+  --switch-off: #d5cdd1;
+  --switch-off-hover: #beb4b9;
+  --panel-shadow: 0 4px 20px rgb(95 26 58 / 5%);
   --violet: #b984b7;
   --violet-deep: #95658f;
-  --line: rgb(184 119 153 / 14%);
-  --line-strong: rgb(176 104 143 / 24%);
-  --ink: #3f303c;
-  --ink-soft: #705d6b;
-  --ink-faint: #a28e9b;
+  --line: #e7e1e4;
+  --line-strong: #d5cdd1;
+  --ink: #272225;
+  --ink-soft: #554d51;
+  --ink-faint: #70666b;
   --danger: #b33e61;
   --danger-soft: #fdeaf0;
   --success: #3d7a5a;
   --success-soft: #ebf6f0;
-  --focus: #c46c9d;
+  --focus: #c5467f;
   --placeholder: #bda9b5;
-  --accent-gradient: linear-gradient(135deg, #d987b1 0%, #c66eaa 54%, #b777b4 100%);
-  --accent-gradient-soft: linear-gradient(135deg, #fff0f6 0%, #fbe9f4 72%, #f6edf8 100%);
-  --surface-gradient: linear-gradient(135deg, #fff1f7 0%, #fff5f9 46%, #f9f0f7 100%);
+  --accent-gradient: linear-gradient(135deg, #c5467f, #aa386c);
+  --accent-gradient-soft: linear-gradient(135deg, #fff8fa, #ffeef4);
+  --surface-gradient: linear-gradient(135deg, #fff2f7 0%, #fff8fa 50%, #ffeef4 100%);
   --role-hue: 340;
   --radius: 12px;
   --radius-sm: 8px;
@@ -859,7 +866,7 @@ body { background: var(--surface-gradient); background-attachment: fixed; }
 .memory-settings .plugin-switch { flex-shrink: 0; }
 
 /* Shiori-style settings workspace: the application rail remains available. */
-.dialog-settings { inset: 0 0 0 64px; background: linear-gradient(135deg, #ecf6ff, #fff4f9); }
+.dialog-settings { inset: 0 0 0 64px; background: var(--surface-gradient); background-attachment: fixed; }
 .dialog-settings .dialog-panel { position: relative; width: 100%; height: 100%; grid-template-rows: minmax(0, 1fr); background: transparent; box-shadow: none; }
 .dialog-settings .dialog-header { position: absolute; right: 18px; top: 18px; z-index: 1; padding: 0; border: 0; background: transparent; }
 .dialog-settings .dialog-header h2 { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -867,8 +874,8 @@ body { background: var(--surface-gradient); background-attachment: fixed; }
 .dialog-settings .settings-layout { grid-template-columns: 276px minmax(0, 1fr); }
 .dialog-settings .settings-nav { min-height: 0; overflow-y: auto; padding: 44px 20px; gap: 4px; }
 .dialog-settings .settings-nav button { min-height: 48px; padding: 10px 16px; gap: 14px; border-radius: 16px; font-size: 1.067rem; font-weight: 400; }
-.dialog-settings .settings-nav button.active { background: rgb(255 255 255 / 86%); color: var(--rose-deep); box-shadow: 0 5px 18px rgb(65 56 89 / 8%); }
-.dialog-settings .settings-content { margin: 12px 8px 0 0; padding: 48px clamp(24px, 7.5vw, 124px) 64px; border: 1px solid var(--line); border-radius: 20px 20px 0 0; background: rgb(255 255 255 / 38%); }
+.dialog-settings .settings-nav button.active { background: var(--surface-card); color: var(--rose-deep); box-shadow: var(--panel-shadow); }
+.dialog-settings .settings-content { margin: 12px 8px 0 0; padding: 48px clamp(24px, 7.5vw, 124px) 64px; border: 1px solid var(--line); border-radius: 20px 20px 0 0; background: var(--surface-glass); }
 .dialog-settings .settings-content > * { max-width: 1050px; }
 .dialog-settings .settings-content h2 { font-size: 1.867rem; }
 .settings-page-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 40px; }
@@ -879,26 +886,67 @@ body { background: var(--surface-gradient); background-attachment: fixed; }
 .plugin-group-heading { display: flex; align-items: baseline; gap: 10px; padding-inline: 4px; }
 .plugin-group-heading > span { font-size: .867rem; color: var(--ink-faint); }
 .plugin-group-heading .plugin-problem-count { color: var(--danger); }
-.dialog-settings .plugin-list, .settings-card { padding: 0 24px; border: 1px solid var(--line); border-radius: 20px; background: rgb(255 255 255 / 90%); box-shadow: 0 4px 20px rgb(65 56 89 / 6%); }
+.dialog-settings .plugin-list, .settings-card { padding: 0 24px; border: 1px solid var(--line); border-radius: 20px; background: var(--surface-card); box-shadow: var(--panel-shadow); }
 .dialog-settings .plugin-row { min-height: 94px; padding: 20px 0; gap: 24px; }
 .dialog-settings .plugin-row-title h4 { font-size: 1.067rem; font-weight: 500; }
 .dialog-settings .plugin-row-copy > p { font-size: .933rem; color: var(--ink-soft); }
 .dialog-settings .plugin-row-actions { gap: 10px; }
 .dialog-settings .plugin-configure { min-height: 44px; padding: 8px 18px; border-radius: 16px; background: white; font-size: .933rem; }
-button.settings-switch { flex: 0 0 54px; position: relative; width: 54px; min-height: 30px; height: 30px; padding: 2px; border: 0; border-radius: 999px; background: #d4cfd3; transition: background-color .15s; }
-button.settings-switch:hover:not(:disabled) { background: #bdb4bb; }
-button.settings-switch[aria-checked="true"] { background: #c94180; }
-button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: #b43571; }
+button.settings-switch { flex: 0 0 54px; position: relative; width: 54px; min-height: 30px; height: 30px; padding: 2px; border: 0; border-radius: 999px; background: var(--switch-off); transition: background-color .15s; }
+button.settings-switch:hover:not(:disabled) { background: var(--switch-off-hover); }
+button.settings-switch[aria-checked="true"] { background: var(--rose); }
+button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: var(--accent-hover); }
 .settings-switch > span { display: block; width: 26px; height: 26px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgb(0 0 0 / 18%); transition: transform .15s; }
 .settings-switch[aria-checked="true"] > span { transform: translateX(24px); }
 .settings-domain { gap: 32px !important; }
 .settings-preference { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 24px 0; }
 .settings-preference > span { display: grid; gap: 4px; }
+.settings-preference > .settings-switch { margin-left: auto; }
 .settings-preference strong { font-weight: 500; }
 .settings-preference small { color: var(--ink-soft); }
 .settings-preference select { width: auto; min-width: 100px; }
 .settings-card > section { display: grid; gap: 18px; padding-bottom: 24px; }
 .about-settings { display: grid; gap: 12px; padding-block: 24px; }
+.settings-preference + .settings-preference { border-top: 1px solid var(--line); }
+.settings-back { display: inline-flex; align-items: center; gap: 6px; padding-left: 0; color: var(--ink-faint); }
+.settings-page-heading:has(.settings-back) { justify-content: flex-start; }
+.dialog-settings .page-narrow { width: 100%; max-width: none; }
+.dialog-settings .model-settings, .dialog-settings .memory-settings { display: grid; gap: 24px; align-content: start; }
+.dialog-settings .settings-heading { align-items: center; min-height: 44px; margin-bottom: 8px; }
+.dialog-settings .settings-heading button { display: inline-flex; align-items: center; gap: 8px; }
+.dialog-settings .card-form, .dialog-settings .channel-setting-card, .dialog-settings .channel-identities,
+.dialog-settings .plugin-detail > form, .dialog-settings .mcp-card, .dialog-settings .plugin-service-list { border: 1px solid var(--line); border-radius: 20px; background: var(--surface-card); box-shadow: var(--panel-shadow); }
+.dialog-settings .card-form, .dialog-settings .plugin-detail > form { padding: 8px 24px 24px; gap: 0; }
+.dialog-settings .card-form > .settings-subheading { padding-block: 16px; flex-wrap: wrap; }
+.dialog-settings .card-form > .field, .dialog-settings .settings-card .field, .dialog-settings .plugin-detail > form > .field { padding-block: 18px; border-bottom: 1px solid var(--line); gap: 10px; }
+.dialog-settings .card-form > .field:last-of-type { border-bottom: 0; }
+.dialog-settings .field label, .dialog-settings label.field { font-size: .933rem; font-weight: 500; }
+.dialog-settings input:not([type="checkbox"]), .dialog-settings select, .dialog-settings textarea { background: var(--surface-input); font-size: .933rem; }
+.dialog-settings input:focus, .dialog-settings select:focus, .dialog-settings textarea:focus { background: var(--surface-card); }
+.dialog-settings .form-actions { padding-top: 24px; gap: 10px; }
+.dialog-settings button:not(.settings-switch):not(.ghost):not(.configuration-main):not(.plugin-service-entry) { border-radius: 12px; }
+.dialog-settings button.primary { background: var(--rose); color: white; border-color: transparent; }
+.dialog-settings button.primary:hover:not(:disabled) { background: var(--accent-hover); color: white; }
+.dialog-settings .configuration-list { gap: 12px; }
+.dialog-settings .configuration-item { display: flex; align-items: center; padding: 20px 24px; background: var(--surface-card); border-radius: 20px; box-shadow: var(--panel-shadow); }
+.dialog-settings .configuration-item.active { border-color: var(--sakura); background: var(--surface-card); }
+.dialog-settings .configuration-main { flex: 1; min-width: 0; }
+.dialog-settings .configuration-main strong { font-size: 1.067rem; }
+.dialog-settings .configuration-actions { flex-wrap: wrap; }
+.dialog-settings .plugin-service-entry { min-height: 88px; padding: 20px 24px; background: var(--surface-card); }
+.dialog-settings .plugin-service-entry:hover:not(:disabled) { background: var(--hover); }
+.dialog-settings .plugin-service-entry strong { font-size: 1.067rem; }
+.dialog-settings .plugin-service-entry small { font-size: .933rem; }
+.dialog-settings .plugin-services { gap: 32px; margin-top: 16px; }
+.dialog-settings .channel-identities { padding: 24px; }
+.dialog-settings .settings-subnav { margin-bottom: 8px; }
+:root[data-stream-replies="false"] .message.assistant[aria-busy="true"] .bubble { display: none; }
+@keyframes ambient-breathe { 50% { background-position: 100% 100%; } }
+:root[data-backdrop-motion="true"] .shell, :root[data-backdrop-motion="true"] .dialog-settings { background-size: 160% 160%; animation: ambient-breathe 24s ease-in-out infinite; }
+@media (min-width: 1200px) {
+  .dialog-settings .card-form > .field:not(.checkbox-field), .dialog-settings .plugin-detail > form > .field:not(.checkbox-field) { grid-template-columns: minmax(0, 1fr) minmax(240px, 360px); align-items: center; column-gap: 32px; }
+  .dialog-settings .field > .field-hint, .dialog-settings .api-key-field > small { grid-column: 2; }
+}
 :root[data-font-size="small"] { font-size: 14px; }
 :root[data-font-size="large"] { font-size: 17px; }
 :root[data-reduced-motion="true"] *, :root[data-reduced-motion="true"] *::before, :root[data-reduced-motion="true"] *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
@@ -914,4 +962,9 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: #
   .dialog-settings .plugin-row { gap: 12px; }
   .dialog-settings .plugin-row-copy { flex-basis: 100%; }
   .settings-preference { gap: 12px; flex-wrap: wrap; }
+  .dialog-settings .settings-heading { flex-direction: row; flex-wrap: wrap; }
+  .dialog-settings .configuration-item { flex-wrap: wrap; padding: 16px; }
+  .dialog-settings .configuration-main { flex-basis: 100%; }
+  .dialog-settings .configuration-actions { width: 100%; justify-content: flex-end; }
+  .dialog-settings .card-form, .dialog-settings .plugin-detail > form { padding-inline: 16px; }
 }

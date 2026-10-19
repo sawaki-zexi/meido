@@ -30,6 +30,20 @@ describe("MemorySettings embedding configuration", () => {
 });
 
 describe("ModelSettings protocol selection", () => {
+  it('列表进入模型详情后仅展示当前表单，返回可继续选其他连接', async () => {
+    const configuration = { id: 'chat', providerId: 'custom', provider: 'local', api: 'openai-completions', baseUrl: 'http://localhost:9/v1', model: 'chat', apiKeyConfigured: false };
+    fakeBackend({
+      'GET /api/model/providers': () => ({ body: { providers: [] } }),
+      'GET /api/model/configurations': () => ({ body: { configurations: [configuration], activeId: 'chat' } }),
+    });
+    render(<ModelSettings />);
+    fireEvent.click(await screen.findByRole('button', { name: '编辑' }));
+    expect(screen.queryByRole('list', { name: '已保存的模型配置' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('模型 ID')).toHaveValue('chat');
+    fireEvent.click(screen.getByRole('button', { name: '返回模型列表' }));
+    expect(screen.getByRole('list', { name: '已保存的模型配置' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('模型 ID')).not.toBeInTheDocument();
+  });
   it("masks a saved model key and only reads it when the eye is clicked", async () => {
     vi.stubGlobal("requestAnimationFrame", vi.fn(() => 0));
     const configuration = { id: "model-one", providerId: "openai", provider: "openai", api: "openai-completions", baseUrl: "https://api.openai.com/v1", model: "gpt-test", apiKeyConfigured: true };
@@ -70,6 +84,7 @@ describe("ModelSettings protocol selection", () => {
     fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
     expect(screen.getByLabelText("API Key")).toHaveValue("");
     expect(screen.getByLabelText("API Key")).toHaveAttribute("placeholder", "••••••");
+    fireEvent.click(screen.getByRole("button", { name: "返回模型列表" }));
     fireEvent.click(screen.getByRole("button", { name: "新建配置" }));
     expect(screen.getByLabelText("API Key")).not.toHaveAttribute("placeholder", "••••••");
     expect(screen.getByRole("button", { name: "显示API Key" })).toBeDisabled();

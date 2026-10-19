@@ -215,8 +215,25 @@ model_configuration_store = ModelConfigurationStore(data_root / "model-config.js
 plugin_configuration = PluginConfigurationStore(data_root / 'plugin-settings.json')
 
 
+def _effective_plugin_role(role):
+    projected = plugin_configuration.effective_role(role)
+    if projected is not None and projected.agentConfig.screenPerception.visionModelConfigurationId is None:
+        # Only an unset vision binding inherits chat. Missing explicit IDs stay
+        # explicit so they cannot silently route an image to another model.
+        projected.agentConfig.screenPerception.visionModelConfigurationId = (
+            role.modelConfigurationId or model_configuration_store.active_id()
+        )
+    return projected
+
+
 def _plugin_role(role_id):
-    return plugin_configuration.effective_role(store.get(role_id))
+    return _effective_plugin_role(store.get(role_id))
+
+
+async def _invalidate_chat_screen_fallbacks():
+    if plugin_configuration.get('screen').values['visionModelConfigurationId'] is None:
+        await asyncio.gather(*(screen_perception.invalidate(role_id=role.id)
+                               for role in store.list() if role.modelConfigurationId is None))
 
 
 screen_perception = ScreenPerception(
@@ -1425,7 +1442,7 @@ def get_memory_settings() -> dict[str, object]:
 async def update_memory_settings(data: MemorySettings) -> dict[str, object]:
     previous = memory_settings_store.get()
     try:
-        current = memory_settings_store.save(data)
+        current = memory_settings_store.save(previous.model_copy(update=data.model_dump(exclude_unset=True)))
     except (OSError, ValueError) as error:
         raise HTTPException(status_code=500, detail="记忆设置保存失败，当前设置未改变") from error
     if current.enabled and not previous.enabled:
@@ -1575,10 +1592,11 @@ async def save_model_configuration(data: ModelConfigurationInput) -> dict[str, o
 
 
 @app.post("/api/model/configurations")
-def create_model_configuration(data: ModelConfigurationInput) -> dict[str, object]:
+async def create_model_configuration(data: ModelConfigurationInput) -> dict[str, object]:
     try:
         candidate = _configuration_with_saved_key(data)
         configuration = model_configuration_store.create(candidate)
+        await _invalidate_chat_screen_fallbacks()
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except OSError as error:
@@ -1589,6 +1607,7 @@ def create_model_configuration(data: ModelConfigurationInput) -> dict[str, objec
 @app.put("/api/model/configurations/{configuration_id}")
 async def update_model_configuration(configuration_id: str, data: ModelConfigurationInput) -> dict[str, object]:
     try:
+        previous_id = model_configuration_store.active_id()
         current = model_configuration_store.get(configuration_id)
         if current and not data.apiKey:
             data = data.model_copy(update={"apiKey": current.apiKey})
@@ -1597,6 +1616,8 @@ async def update_model_configuration(configuration_id: str, data: ModelConfigura
         if _novelai is not None:
             _novelai.scenes.invalidate_model(configuration_id)
         configuration = model_configuration_store.update(configuration_id, data)
+        if previous_id != configuration.id:
+            await _invalidate_chat_screen_fallbacks()
         await screen_perception.invalidate(configuration_id=configuration_id)
         await computer_use.invalidate(configuration_id=configuration_id)
     except KeyError as error:
@@ -1623,6 +1644,7 @@ async def activate_model_configuration(configuration_id: str) -> dict[str, objec
         previous_id = model_configuration_store.active_id()
         configuration = model_configuration_store.activate(configuration_id)
         if previous_id != configuration.id:
+            await _invalidate_chat_screen_fallbacks()
             await asyncio.gather(*(computer_use.invalidate(role_id=role.id)
                                    for role in store.list() if role.modelConfigurationId is None))
     except KeyError as error:
@@ -1821,7 +1843,7 @@ async def update_role(role_id: str, data: RoleUpdateInput) -> RoleResponse:
 
 
 def _validate_screen_configuration(setting) -> None:
-    if not setting.enabled:
+    if not setting.enabled or setting.visionModelConfigurationId is None:
         return
     configuration_id = setting.visionModelConfigurationId
     configuration = model_configuration_store.get(configuration_id) if configuration_id else None
@@ -2026,6 +2048,8 @@ async def set_role_model_configuration(
     if data.configurationId and model_configuration_store.get(data.configurationId) is None:
         raise HTTPException(status_code=404, detail="模型连接不存在")
     try:
+        if plugin_configuration.get('screen').values['visionModelConfigurationId'] is None:
+            await screen_perception.invalidate(role_id=role_id)
         await computer_use.invalidate(role_id=role_id)
         role = store.set_model_configuration(role_id, data.configurationId)
     except KeyError as error:
@@ -4021,7 +4045,7 @@ def _runtime_tool_candidates(
     preview: bool = False,
 ) -> tuple[object, ...]:
     """Build every tool available to the host for a role snapshot."""
-    role = plugin_configuration.effective_role(role)
+    role = _effective_plugin_role(role)
     shell = role.agentConfig.shell
     task_sources: dict[str, FrozenChannelSource] = {}
 
@@ -4260,12 +4284,12 @@ def _role_has_usable_channel_account(role_id: str) -> bool:
 
 
 def _screen_unavailable_reason(role) -> str:
-    role = plugin_configuration.effective_role(role)
+    role = _effective_plugin_role(role)
     setting = role.agentConfig.screenPerception
     if not setting.enabled:
         return "屏幕感知插件已关闭"
     if not setting.visionModelConfigurationId:
-        return "尚未显式绑定视觉模型连接"
+        return "尚未配置可用的聊天或视觉模型连接"
     configuration = model_configuration_store.get(setting.visionModelConfigurationId)
     if configuration is None:
         return "视觉模型连接已不存在，请重新选择"
@@ -4282,7 +4306,7 @@ def _screen_unavailable_reason(role) -> str:
 
 
 def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[str]:
-    role = plugin_configuration.effective_role(role)
+    role = _effective_plugin_role(role)
     shell = role.agentConfig.shell
     enabled: set[str] = set(DEFAULT_BUILTIN_TOOLS)
     if not _desktop_pet_application().unavailable_reason(role.id):
@@ -4337,7 +4361,7 @@ def _deferred_discovery_tools() -> frozenset[str]:
 
 
 def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabilityPolicy:
-    role = plugin_configuration.effective_role(role)
+    role = _effective_plugin_role(role)
     agent_config = role.agentConfig
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     host_enabled = set(enabled_tools)
@@ -4400,7 +4424,7 @@ async def _runtime_capabilities(
     explicit_skill_ids: list[str] | None = None,
     external_only: bool = False,
 ) -> CapabilityResolution:
-    role = plugin_configuration.effective_role(role)
+    role = _effective_plugin_role(role)
     include_channel = session_key.startswith("thread:") or (
         session_key.startswith("role:") and _role_has_usable_channel_account(role.id)
     )
