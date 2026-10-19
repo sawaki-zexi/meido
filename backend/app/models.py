@@ -349,6 +349,16 @@ class ModelConfigurationInput(BaseModel):
     apiKey: str = ""
     api: str = "openai-completions"
     apiOptions: dict[str, str] = Field(default_factory=dict)
+    contextWindowTokens: int | None = Field(default=None, strict=True, gt=0, le=10000000)
+    modelAutoCompactTokenLimit: int | None = Field(default=None, strict=True, gt=0, le=10000000)
+
+    @model_validator(mode='after')
+    def validate_context_capacity(self):
+        if self.modelAutoCompactTokenLimit is not None and (
+            self.contextWindowTokens is None or self.modelAutoCompactTokenLimit >= self.contextWindowTokens
+        ):
+            raise ValueError('自动压缩阈值必须小于已填写的模型上下文容量')
+        return self
 
     @field_validator("providerId", "provider", "baseUrl", "model", "api")
     @classmethod

@@ -352,6 +352,8 @@ class SpawnManageTool:
         self.coding_authorized = coding_authorized or authorized
 
     async def execute(self, arguments, context, on_update=None):
+        if arguments.get('action') == 'continue' and not getattr(self, 'new_execution_allowed', lambda: True)():
+            return _error()
         del on_update
         try:
             ToolRegistry.validate_definition(self.definition, arguments)
@@ -380,7 +382,8 @@ class SpawnManageTool:
                     if action == 'continue':
                         result = await _owned_thread(application.continue_task, task_id, origin,
                             requirement=arguments['task'], executor='codex_exec', frozen_access=self.coding_access or None,
-                            admitted=lambda: not context.signal.is_cancelled() and self.authorized(context) and self.coding_authorized(context))
+                            admitted=lambda: not context.signal.is_cancelled() and self.authorized(context) and self.coding_authorized(context)
+                                and getattr(self, 'new_execution_allowed', lambda: True)())
                     elif action == 'cancel':
                         result = await _owned_thread(application.cancel_task, task_id, origin, executor='codex_exec')
                     details = {**result, 'job_id': result['id'], 'background': True}

@@ -318,6 +318,7 @@ class McpRun:
         self.errors: dict[str, str] = {}
         self.disconnected: set[str] = set()
         self.capabilities: CapabilityResolution | None = None
+        self.direct_exposure = False
         self.loop = asyncio.get_running_loop()
         self._closing: asyncio.Task | None = None
         self.closed = False
@@ -331,10 +332,11 @@ class McpRun:
     def tools(self) -> tuple[McpManagementTool | McpRemoteTool, ...]:
         return (*(McpManagementTool(item, self) for item in management_definitions()), *(tool for items in self.remote_tools.values() for tool in items))
 
-    def bind(self, capabilities: CapabilityResolution) -> None:
+    def bind(self, capabilities: CapabilityResolution, *, direct_exposure=False) -> None:
         if self.capabilities is not None:
             raise RuntimeError("MCP run capability directory already bound")
         self.capabilities = capabilities
+        self.direct_exposure = direct_exposure
 
     def _source_authorization_denial(self) -> str | None:
         # Once this run observes a revoked origin, resuming the platform does
@@ -443,9 +445,10 @@ class McpRun:
                 if {item.definition.name: item.definition.version for item in tools} != {name: item.version for name, item in admitted.items()}:
                     raise McpProtocolError("MCP tool directory changed; start a new run")
             elif tools:
-                current.stage_service_tools(context, grant_id=config.grant_id, parent_snapshot_id=current.snapshot.snapshot_id, tools=tools)
+                current.stage_service_tools(context, grant_id=config.grant_id, parent_snapshot_id=current.snapshot.snapshot_id, tools=tools, activate=self.direct_exposure)
             self.host.store.set_intent(self.scope_id, self.role_id, self.session_key, config)
-            return {"serverId": server_id, "status": "connected", "tools": [item.definition.name for item in tools], "tip": "结果持久化后用 tool_search 加载远端工具。"}
+            return {"serverId": server_id, "status": "connected", "tools": [item.definition.name for item in tools],
+                    "tip": "结果持久化后可直接使用远端工具。" if self.direct_exposure else "结果持久化后用 tool_search 加载远端工具。"}
         except BaseException as error:
             self.errors[server_id] = str(error) if isinstance(error, McpProtocolError) else "MCP connection failed or was revoked"
             await self.close_server(server_id)

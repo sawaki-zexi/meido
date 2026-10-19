@@ -183,17 +183,7 @@ class MeidoProvider:
         session_id: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         del model, session_id
-        names = []
-        for tool in tools:
-            function = tool.get("function")
-            if isinstance(function, Mapping) and isinstance(function.get("name"), str):
-                names.append(function["name"])
-        self._tool_prompt = "\n".join((
-            "[本次运行工具]",
-            "当前提供给模型的工具：" + ("、".join(names) if names else "无"),
-            "仅以上名称可在本次运行调用。不要根据旧对话或其他角色的工具清单声称具备能力。",
-            "工具可见不等于外部依赖已验证；实际执行状态以工具结果为准。",
-        ))
+        self._set_tool_prompt(tools)
         rich = getattr(self.adapter, "stream_rich_messages", None)
         if rich is not None:
             return self._stream_rich_structured(system, messages, tools, signal, rich)
@@ -206,6 +196,38 @@ class MeidoProvider:
                 return unsupported()
             return self._stream_structured(system, messages, tools, signal, structured)
         return self._stream(messages, signal)
+
+    def _set_tool_prompt(self, tools):
+        names = []
+        for tool in tools:
+            function = tool.get("function")
+            if isinstance(function, Mapping) and isinstance(function.get("name"), str):
+                names.append(function["name"])
+        self._tool_prompt = "\n".join((
+            "[本次运行工具]",
+            "当前提供给模型的工具：" + ("、".join(names) if names else "无"),
+            "仅以上名称可在本次运行调用。不要根据旧对话或其他角色的工具清单声称具备能力。",
+            "工具可见不等于外部依赖已验证；实际执行状态以工具结果为准。",
+        ))
+
+    def estimate_request_tokens(self, system, messages, tools):
+        from .context_provider import estimate_tokens
+        self._set_tool_prompt(tools)
+        # Use the same rendered system/memory/capability/messages as the actual rich request.
+        rendered = []
+        image_tokens = 0
+        for message in self._rich_messages(system, messages):
+            value = asdict(message)
+            content = []
+            for block in message.content:
+                if isinstance(block, RichImageBlock):
+                    image_tokens += 85 if block.detail == 'low' else 4096
+                    content.append({'type': 'image'})
+                else:
+                    content.append(asdict(block))
+            value['content'] = content
+            rendered.append(value)
+        return estimate_tokens({'messages': rendered, 'tools': list(tools)}) + 32 + image_tokens
 
     def _stream_rich_structured(self, system, messages, tools, signal, rich) -> AsyncIterator[ProviderEvent]:
         async def stream() -> AsyncIterator[ProviderEvent]:
@@ -286,7 +308,9 @@ class MeidoProvider:
             content = ""
             tool_calls: list[ToolCall] = []
             try:
-                source = structured(runtime_messages, self.configuration, [dict(tool) for tool in tools])
+                options = ({'max_tokens': self.max_response_tokens} if self.max_response_tokens is not None
+                           and 'max_tokens' in inspect.signature(structured).parameters else {})
+                source = structured(runtime_messages, self.configuration, [dict(tool) for tool in tools], **options)
                 async for event in source:
                     signal.raise_if_cancelled()
                     if isinstance(event, ModelTextDelta):
@@ -506,11 +530,10 @@ class MeidoProvider:
             accepts_memory = False
         yield ProviderStartEvent()
         role = self.role if accepts_memory or not (self.memory_context or self.capability_prompt) else self._role_with_context()
-        source: object = (
-            stream_reply(role, history, self.configuration, memory_context=self._combined_memory_context())
-            if accepts_memory
-            else stream_reply(role, history, self.configuration)
-        )
+        options = {'memory_context': self._combined_memory_context()} if accepts_memory else {}
+        if self.max_response_tokens is not None and 'max_tokens' in inspect.signature(stream_reply).parameters:
+            options['max_tokens'] = self.max_response_tokens
+        source: object = stream_reply(role, history, self.configuration, **options)
         content = ""
         async for delta in cast(AsyncIterator[str], source):
             signal.raise_if_cancelled()
@@ -531,7 +554,9 @@ class MeidoProvider:
         yield ProviderStartEvent()
         content = ""
         try:
-            source = self.adapter.stream_messages(wire_messages, self.configuration)
+            options = ({'max_tokens': self.max_response_tokens} if self.max_response_tokens is not None
+                       and 'max_tokens' in inspect.signature(self.adapter.stream_messages).parameters else {})
+            source = self.adapter.stream_messages(wire_messages, self.configuration, **options)
             async for delta in source:
                 signal.raise_if_cancelled()
                 content += delta

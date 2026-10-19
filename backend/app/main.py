@@ -177,6 +177,48 @@ ROLE_AVATAR_MEDIA_TYPES = {"image/png", "image/jpeg", "image/webp"}
 initialize_databases(data_root)
 store = RoleStore(roles_root)
 session_store = SessionStore(data_root / "sessions.db")
+from .context_windows import ContextWindowStore
+from .agent_runtime.context_provider import ContextWindowProvider
+
+
+def _context_window_store():
+    return ContextWindowStore(session_store.database_path)
+
+
+def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_id, owner=True, memory_required=True):
+    source = (capture_channel_source(multichannel_store, session_store, role_id=role_id,
+              session_key=session_key, run_id=run_id, owner_context=owner)
+              if session_key.startswith('thread:') else None)
+    authority_data = source.to_dict() if source is not None else {'role': role_id}
+    authority_data.pop('message_created_at', None)
+    if source is not None and source.chat_type == 'group' and not owner:
+        authority_data.pop('sender_id', None)
+    authority = json.dumps(authority_data, sort_keys=True)
+
+    def authorized():
+        return (store.get(role_id) is not None and role_id not in _channel_roles_deleting
+                and (not session_key.startswith('thread:') or source is not None)
+                and (source is None or source.authorization_denial(multichannel_store) is None))
+
+    async def covered(ids):
+        from .memory_engine import MemoryCoverageRequest
+        if not authorized():
+            return False
+        request = MemoryCoverageRequest(MemoryScope(role_id, f'role:{role_id}'), session_key, tuple(ids),
+                                       required=memory_required and memory_settings_store.get().enabled)
+        proof = await _current_memory_engine().ensure_coverage(request)
+        return proof.request == request and proof.status in {'covered', 'not_required'}
+
+    def diagnostic(values):
+        if not advanced_settings.values().devMode:
+            return
+        run = session_store.get_run(run_id)
+        if run is not None:
+            session_store.update_run(run_id, status=run.status, model_snapshot={**run.modelSnapshot, 'budgetDiagnostic': values})
+
+    return ContextWindowProvider(provider, settings, _context_window_store(), role_id=role_id,
+        session_key=session_key, scope='owner' if owner else 'external', authority=authority,
+        authorized=authorized, ensure_coverage=covered, on_diagnostic=diagnostic if settings.devMode else None)
 session_manager = SessionManager(store, session_store)
 multichannel_store = MultichannelStore(data_root / "sessions.db", session_store)
 channel_host = ChannelHost(
@@ -213,6 +255,8 @@ model_adapter_registry = ModelAdapterRegistry()
 model_adapter: ModelAdapter = RoutedModelAdapter(model_adapter_registry)
 model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
 plugin_configuration = PluginConfigurationStore(data_root / 'plugin-settings.json')
+from .advanced_settings import AdvancedSettings, AdvancedSettingsStore, AdvancedSettingsUpdate, SettingsConflict
+advanced_settings = AdvancedSettingsStore(data_root / 'advanced-settings.db')
 
 
 def _effective_plugin_role(role):
@@ -530,6 +574,8 @@ def _consolidate_role_memories(
     history: str,
     current_self: str,
 ) -> MemoryOptimizationResult:
+    if not memory_settings_store.get().enabled or not advanced_settings.values().memoryOptimizerEnabled:
+        raise RuntimeError('后台记忆整理已暂停')
     role = store.get(role_id)
     if role is None:
         raise ValueError("角色不存在")
@@ -684,7 +730,17 @@ memory_service = MemoryService(
     implicit_extraction_enabled=_env_bool("MEIDO_MEMORY_IMPLICIT_EXTRACTION_ENABLED", True),
     memory_enabled=lambda: memory_settings_store.get().enabled,
 )
-memory_engine = DefaultMemoryEngine(memory_service, role_exists=lambda role_id: store.get(role_id) is not None, event_bus=memory_event_bus, hyde_provider=_hyde_provider)
+async def _cover_markdown_window(request):
+    role_id = request.scope.role_id
+    if memory_worker.role_deletion_blocked(role_id):
+        return False
+    async with memory_worker.role_lock_for(role_id):
+        return await finish_io(asyncio.to_thread(memory_maintenance.ensure_coverage,
+            role_id, request.source_session_key, list(request.source_message_ids)))
+
+
+memory_engine = DefaultMemoryEngine(memory_service, role_exists=lambda role_id: store.get(role_id) is not None,
+    event_bus=memory_event_bus, hyde_provider=_hyde_provider, coverage_provider=_cover_markdown_window)
 memory_optimizer_enabled = os.getenv("MEIDO_MEMORY_OPTIMIZER_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
 try:
     memory_optimizer_interval = float(os.getenv("MEIDO_MEMORY_OPTIMIZER_INTERVAL_SECONDS", str(MemoryOptimizer.DEFAULT_INTERVAL_SECONDS)))
@@ -702,13 +758,14 @@ memory_optimizer_worker = MemoryOptimizerWorker(
             current_self,
         ),
     ),
-    enabled=lambda: memory_settings_store.get().enabled,
+    enabled=lambda: memory_settings_store.get().enabled and advanced_settings.values().memoryOptimizerEnabled,
 )
 memory_optimizer_loop = MemoryOptimizerLoop(
     memory_optimizer_worker,
     roles_root,
-    enabled=memory_optimizer_enabled,
-    interval_seconds=memory_optimizer_interval,
+    enabled=True,
+    interval_seconds=advanced_settings.values().memoryOptimizerIntervalSeconds,
+    policy_enabled=advanced_settings.values().memoryOptimizerEnabled,
     model_available=lambda role_id: (
         (role := store.get(role_id)) is not None
         and (
@@ -717,7 +774,7 @@ memory_optimizer_loop = MemoryOptimizerLoop(
             else model_configuration_store.get()
         ) is not None
     ),
-    enabled_provider=lambda: memory_settings_store.get().enabled,
+    enabled_provider=lambda: memory_settings_store.get().enabled and advanced_settings.values().memoryOptimizerEnabled,
 )
 memory_maintenance = MemoryMaintenance(
     roles_root,
@@ -725,6 +782,7 @@ memory_maintenance = MemoryMaintenance(
     _observe_consolidation_event,
     _consolidation_provider,
     role_exists=lambda role_id: store.get(role_id) is not None,
+    recent_limit_provider=lambda: advanced_settings.values().recent_memory_count,
     messages_provider=lambda role_id, session_key: (
         multichannel_store.owner_context_messages(role_id)
         if multichannel_store.sessions is session_store
@@ -757,6 +815,7 @@ def _current_memory_engine() -> DefaultMemoryEngine:
             role_exists=lambda role_id: store.get(role_id) is not None,
             event_bus=memory_event_bus,
             hyde_provider=_hyde_provider,
+            coverage_provider=_cover_markdown_window,
         )
     return memory_engine
 
@@ -1003,6 +1062,36 @@ def _owner_knowledge_return_url(origin: str = "") -> str:
 app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown=[_close_memory_workers])
 app.include_router(mail_router)
 app.include_router(mcp_router(lambda: mcp_host, lambda: store))
+
+
+@app.get('/api/settings/advanced')
+async def get_advanced_settings():
+    return advanced_settings.get()
+
+
+@app.get('/api/settings/advanced/diagnostics')
+async def get_advanced_diagnostics():
+    return {'diagnostics': session_store.budget_diagnostics() if advanced_settings.values().devMode else []}
+
+
+@app.put('/api/settings/advanced')
+async def put_advanced_settings(data: AdvancedSettingsUpdate):
+    try:
+        result = advanced_settings.update(expected_revision=data.expectedRevision,
+            operation_id=data.operationId, values=data.values)
+    except SettingsConflict as error:
+        raise HTTPException(409, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    def current_policy():
+        values = advanced_settings.values()
+        return values.memoryOptimizerEnabled, values.memoryOptimizerIntervalSeconds
+    # Replays reconcile actual runtime state. Cancellation cannot detach the old timer's cleanup.
+    await finish_io(memory_optimizer_loop.reconfigure(advanced_settings.values().memoryOptimizerIntervalSeconds,
+                                                     current_policy=current_policy))
+    return result
+
+
 async def _cleanup_plugin(identifier, values):
     if identifier == 'browser':
         await browser_use_sessions.reconfigure(BrowserUseConfig.model_validate(values))
@@ -1723,6 +1812,11 @@ def get_role_tools(role_id: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail="角色不存在")
     include_channel = _role_has_usable_channel_account(role_id)
     policy = _runtime_capability_policy(role, include_channel=include_channel)
+    advanced = advanced_settings.values()
+    if not advanced.searchEnabled:
+        policy = replace(policy, enabled_tools=policy.enabled_tools - {'tool_search'})
+    if not advanced.spawnEnabled:
+        policy = replace(policy, enabled_tools=policy.enabled_tools - {'spawn'})
     # Attachment tools exist only in an actual QQ turn with host-bound files.
     policy = replace(policy, enabled_tools=policy.enabled_tools - {"read_attachment"})
     definitions = {tool.definition.name: tool.definition for tool in _runtime_tool_candidates(role, include_channel=True, preview=True)}
@@ -1735,7 +1829,14 @@ def get_role_tools(role_id: str) -> dict[str, object]:
         definitions.setdefault(definition.name, definition)
     if "tool_search" in policy.enabled_tools:
         definitions = {name: replace(definition, exposure="deferred") if name in _deferred_discovery_tools() else definition for name, definition in definitions.items()}
+    else:
+        definitions = {name: replace(definition, exposure='direct') if definition.exposure == 'deferred' else definition for name, definition in definitions.items()}
     reasons: dict[str, str] = {"read_attachment": "仅在当前 QQ 回合存在可读取附件时提供"}
+    if not advanced.searchEnabled:
+        reasons['tool_search'] = '已关闭按需工具发现；新运行直接提供已授权工具'
+    if not advanced.spawnEnabled:
+        reasons['spawn'] = '创建子任务已暂停'
+        reasons['spawn_manage'] = '仍可查询或取消已有任务，接续执行已暂停'
     if not memory_settings_store.get().enabled:
         reasons["recall_memory"] = "全局记忆已关闭"
     if not owner_knowledge_plugin.status().enabled:
@@ -2082,6 +2183,7 @@ async def delete_role(role_id: str) -> None:
     _channel_roles_deleting.add(role_id)
     deletion_started = False
     session_snapshot = None
+    window_snapshot = None
     audit_snapshot = None
     memory_snapshot = None
     owner_knowledge_snapshot = None
@@ -2120,6 +2222,7 @@ async def delete_role(role_id: str) -> None:
         deletion_lock = memory_worker.role_lock_for(role_id)
         await deletion_lock.acquire()
         session_snapshot = session_store.snapshot_role_session(role_id)
+        window_snapshot = _context_window_store().snapshot_role(role_id)
         session_snapshot_taken = True
         audit_snapshot = session_store.snapshot_tool_audits(role_id)
         audit_snapshot_taken = True
@@ -2141,6 +2244,7 @@ async def delete_role(role_id: str) -> None:
         deleted = store.delete(role_id)
         deletion_phase = "session"
         session_store.delete_role_session(role_id)
+        _context_window_store().delete_role(role_id)
         deletion_phase = "memory"
         memory_store.delete_role(role_id)
         owner_knowledge_store.delete_role(role_id)
@@ -2202,6 +2306,11 @@ async def delete_role(role_id: str) -> None:
         if channel_snapshot is not None:
             try:
                 multichannel_store.restore_role(role_id, channel_snapshot)
+            except Exception as restore_error:
+                rollback_errors.append(restore_error)
+        if window_snapshot is not None:
+            try:
+                _context_window_store().restore_role(role_id, window_snapshot)
             except Exception as restore_error:
                 rollback_errors.append(restore_error)
         if channel_accounts_snapshot and not deletion_succeeded:
@@ -4423,12 +4532,17 @@ async def _runtime_capabilities(
     prompt_text: str = "",
     explicit_skill_ids: list[str] | None = None,
     external_only: bool = False,
+    advanced_snapshot: dict | None = None,
 ) -> CapabilityResolution:
     role = _effective_plugin_role(role)
     include_channel = session_key.startswith("thread:") or (
         session_key.startswith("role:") and _role_has_usable_channel_account(role.id)
     )
     policy = _runtime_capability_policy(role, include_channel=include_channel)
+    frozen_advanced = advanced_snapshot if advanced_snapshot is not None else advanced_settings.get()
+    direct_exposure = not frozen_advanced['values']['searchEnabled']
+    if not frozen_advanced['values']['spawnEnabled']:
+        policy = replace(policy, enabled_tools=policy.enabled_tools - {'spawn'})
     frozen_plugin_revisions = {identifier: plugin_configuration.get(identifier).revision
                                for identifier in ('browser', 'computer', 'screen', 'pet')}
     source_run = session_store.get_run(run_id)
@@ -4499,6 +4613,11 @@ async def _runtime_capabilities(
         return True
 
     def authorize_call(definition, context, arguments):
+        if definition.name == 'spawn' or (definition.name == 'spawn_manage' and arguments.get('action') == 'continue'):
+            current_advanced = advanced_settings.get()
+            if (not frozen_advanced['values']['spawnEnabled'] or not current_advanced['values']['spawnEnabled']
+                    or frozen_advanced['spawnGeneration'] != current_advanced['spawnGeneration']):
+                return '创建子任务已暂停；仍可查询或取消原任务'
         if definition.name == "shell" and isinstance(arguments.get("command"), str):
             current_role = store.get(role.id)
             if current_role is None:
@@ -4514,6 +4633,16 @@ async def _runtime_capabilities(
     if "browser.session" in policy.provided_capabilities:
         host_services["browser.session"] = browser_use_sessions
     candidates = _runtime_tool_candidates(role, include_channel=include_channel) if available_tools is None else available_tools
+    def new_spawn_allowed():
+        current = advanced_settings.get()
+        return (frozen_advanced['values']['spawnEnabled'] and current['values']['spawnEnabled']
+                and current['spawnGeneration'] == frozen_advanced['spawnGeneration'])
+    for candidate in candidates:
+        if isinstance(candidate, SpawnTool):
+            original_authorized = candidate.authorized
+            candidate.authorized = lambda context, original=original_authorized: new_spawn_allowed() and original(context)
+        elif isinstance(candidate, SpawnManageTool):
+            candidate.new_execution_allowed = new_spawn_allowed
     for tool in candidates:
         if tool.definition.name == 'generate_image' and 'generate_image' in policy.enabled_tools:
             try:
@@ -4528,6 +4657,9 @@ async def _runtime_capabilities(
             return None if status['status'] == 'available' else status['reason']
         import shutil
         return None if shutil.which(name) is not None else 'command is unavailable'
+    registry_enabled_tools = policy.enabled_tools - ({'tool_search'} if direct_exposure else set())
+    if mcp_run is not None:
+        registry_enabled_tools = registry_enabled_tools | {tool.definition.name for items in mcp_run.remote_tools.values() for tool in items}
     try:
         resolution = await CapabilityRegistry(
             candidates,
@@ -4542,7 +4674,7 @@ async def _runtime_capabilities(
             role_id=role.id,
             session_key=session_key,
             run_id=run_id,
-            enabled_tools=policy.enabled_tools | {tool.definition.name for items in mcp_run.remote_tools.values() for tool in items} if mcp_run is not None else policy.enabled_tools,
+            enabled_tools=registry_enabled_tools,
             allowed_risks={"read_only", "mutating", "external"},
             external_only=external_only,
             prompt_text=prompt_text,
@@ -4552,6 +4684,7 @@ async def _runtime_capabilities(
             granted_capabilities=policy.granted_capabilities,
             host_services=host_services,
             discovery_enabled="tool_search" in policy.enabled_tools,
+            direct_exposure=direct_exposure,
             deferred_tool_names=_deferred_discovery_tools(),
             authorize_tool=authorize_tool,
             authorize_call=authorize_call,
@@ -4560,7 +4693,7 @@ async def _runtime_capabilities(
             resource_close=mcp_run.close if mcp_run is not None else None,
         )
         if mcp_run is not None:
-            mcp_run.bind(resolution)
+            mcp_run.bind(resolution, direct_exposure=direct_exposure)
         return resolution
     except BaseException:
         if mcp_run is not None:
@@ -4706,7 +4839,7 @@ def _ensure_spawn_completion_worker() -> None:
     _spawn_completion_worker.start()
 
 
-def _bind_spawn_runtime(capabilities: CapabilityResolution, provider: MeidoProvider) -> None:
+def _bind_spawn_runtime(capabilities: CapabilityResolution, provider: MeidoProvider, *, max_iterations=None) -> None:
     # Capture the selected model configuration and adapter from the parent;
     # a later role edit must never swap a running child's connection or tools.
     frozen_role = provider.role.model_copy(deep=True)
@@ -4715,12 +4848,14 @@ def _bind_spawn_runtime(capabilities: CapabilityResolution, provider: MeidoProvi
         if isinstance(tool, ScheduleTool):
             tool.bind(capabilities, frozen_role, frozen_config)
         if isinstance(tool, SpawnTool):
+            if max_iterations is not None:
+                tool.config = tool.config.model_copy(update={'maxTurns': min(tool.config.maxTurns, max_iterations)})
             parent = session_store.get_run(capabilities.snapshot.run_id)
             if parent is not None:
                 session_store.update_run(parent.runId, status=parent.status, model_snapshot={**parent.modelSnapshot,
                     "spawnModelConfiguration": frozen_config.model_dump(mode="json", exclude={"apiKey"}) if frozen_config else None})
             tool.bind(capabilities, lambda: MeidoProvider(provider.adapter, frozen_role, frozen_config, structured_without_tools=True,
-                max_response_tokens=min(4096, frozen_role.agentConfig.spawn.maxModelOutputChars)))
+                max_response_tokens=min(provider.max_response_tokens or 4096, 4096, frozen_role.agentConfig.spawn.maxModelOutputChars)))
             _ensure_spawn_completion_worker()
 
 
@@ -5385,6 +5520,8 @@ def _channel_turn_can_start(thread) -> bool:
 
 async def _handle_channel_message(thread, content: str, metadata: dict[str, object], owner: bool) -> None:
     """Run one isolated network thread through the shared role runtime."""
+    ordinary_snapshot = advanced_settings.get()
+    ordinary_settings = AdvancedSettings.model_validate(ordinary_snapshot['values'])
 
     if thread.role_id in _channel_roles_deleting:
         await _notify_channel_turn_not_started(thread, metadata)
@@ -5510,7 +5647,7 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
         )
         runtime_messages = session_store.runtime_messages(
             thread.session_key,
-            max_messages=MemoryMaintenance.RECENT_MESSAGE_LIMIT * 2,
+            max_messages=None if configuration and configuration.contextWindowTokens else max(MemoryMaintenance.RECENT_MESSAGE_LIMIT * 2, ordinary_settings.recent_memory_count),
             since=owner_context_since,
             through_message_id=message_id,
         )
@@ -5545,6 +5682,7 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
             available_tools=available,
             prompt_text=content,
             external_only=not owner,
+            advanced_snapshot=ordinary_snapshot,
         )
         model_snapshot["capabilities"] = capabilities.snapshot.to_dict(include_prompt_sections=False)
         session_store.update_run(run_id, status="created", model_snapshot=model_snapshot)
@@ -5560,8 +5698,12 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
         if thread.chat_type == "group" or not owner:
             external_context = group_repository.prompt_context(thread.role_id, thread.thread_id, str(metadata.get("senderId") or ""))
             memory_context = "\n\n".join(part for part in (memory_context, external_context) if part)
-        provider = MeidoProvider(model_adapter, role, configuration, memory_context, capabilities.prompt_context())
-        _bind_spawn_runtime(capabilities, provider)
+        provider = MeidoProvider(model_adapter, role, configuration, memory_context, capabilities.prompt_context(),
+                                 max_response_tokens=ordinary_settings.maxTokens)
+        _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
+        provider = _ordinary_context_provider(provider, ordinary_settings, role_id=thread.role_id,
+            session_key=thread.session_key, run_id=run_id, owner=owner,
+            memory_required=owner and thread.chat_type == 'private')
         target = target_from_chat(
             account_id=thread.account_id,
             chat_id=thread.chat_id,
@@ -5593,7 +5735,7 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
             messages=runtime_messages,
             tools=runtime_tools,
             capabilities=capabilities,
-            max_turns=8,
+            max_turns=ordinary_settings.maxIterations,
             provider_timeout=120.0,
             tool_timeout=max(32.0, role.agentConfig.shell.timeoutSeconds + 2,
                              network_tools_config.timeout_seconds + 1
@@ -5756,6 +5898,8 @@ async def stop_role_reply(role_id: str, run_id: str) -> SessionResponse:
 
 @app.post("/api/roles/{role_id}/messages")
 async def send_role_message(role_id: str, data: SendMessageInput, request: Request) -> StreamingResponse:
+    ordinary_snapshot = advanced_settings.get()
+    ordinary_settings = AdvancedSettings.model_validate(ordinary_snapshot['values'])
     received_at = _schedule_clock()
     if store.get(role_id) is None:
         raise HTTPException(status_code=404, detail="角色不存在")
@@ -5815,7 +5959,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试") from error
     except Exception:
         raise
-    context_limit = MemoryMaintenance.RECENT_MESSAGE_LIMIT * 2
+    context_limit = max(MemoryMaintenance.RECENT_MESSAGE_LIMIT * 2, ordinary_settings.recent_memory_count)
     async def stream():
         if not runtime_manager.attach_current_task(run_id):
             runtime_manager.cancel_unstarted_run(run_id)
@@ -5970,7 +6114,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     todo_plugin.errors.append(f"{role_id}: todo context failed: {error}")
                 runtime_messages = session_store.runtime_messages(
                     session.session.sessionKey,
-                    max_messages=context_limit,
+                    max_messages=None if configuration and configuration.contextWindowTokens else context_limit,
                 )
                 model_snapshot["context"] = {
                     "messages": [_runtime_message_snapshot(message) for message in runtime_messages],
@@ -5987,6 +6131,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     available_tools=available_runtime_tools,
                     prompt_text=data.content,
                     explicit_skill_ids=data.skillIds,
+                    advanced_snapshot=ordinary_snapshot,
                 )
                 # Persist capability metadata and hashes, while keeping Skill bodies
                 # in the in-memory provider context only.
@@ -5998,8 +6143,11 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     configuration,
                     memory_context,
                     capabilities.prompt_context(),
+                    max_response_tokens=ordinary_settings.maxTokens,
                 )
-                _bind_spawn_runtime(capabilities, provider)
+                _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
+                provider = _ordinary_context_provider(provider, ordinary_settings, role_id=role_id,
+                    session_key=session.session.sessionKey, run_id=run_id)
                 if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools):
                     provider = guard_provider(provider, computer_use, role_id=role_id, run_id=run_id)
                 capabilities_owned_by_runtime = True
@@ -6019,10 +6167,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     messages=runtime_messages,
                     tools=runtime_tools,
                     capabilities=capabilities,
-                    # Observation/action pairs need room for the complete
-                    # eight-tool workflow; the desktop lease still expires
-                    # at its independent five-minute deadline.
-                    max_turns=32 if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools) else 8,
+                    # Ordinary chat uses its frozen budget; desktop input still has its independent lease.
+                    max_turns=ordinary_settings.maxIterations,
                     provider_timeout=120.0,
                     # The outer timeout must not shorten Browser Use's own
                     # per-action policy when a role also enables a shorter

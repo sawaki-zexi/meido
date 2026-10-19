@@ -54,6 +54,41 @@ def save_server(client, role, tmp_path, **changes):
     return client.post("/api/mcp/servers", json=values)
 
 
+def test_direct_schema_mode_connects_and_calls_mcp_without_public_tool_search(tmp_path, monkeypatch):
+    from backend.app.advanced_settings import AdvancedSettingsStore
+    settings = AdvancedSettingsStore(tmp_path / 'advanced.db')
+    settings.update(expected_revision=0, operation_id='direct', values={'searchEnabled': False})
+    monkeypatch.setattr(main, 'advanced_settings', settings)
+    client, role, sessions, configs = setup_host(tmp_path, monkeypatch)
+    assert save_server(client, role, tmp_path).status_code == 201
+    class Adapter:
+        def __init__(self, connected=False):
+            self.count, self.connected = 0, connected
+        async def stream_structured_messages(self, messages, configuration, tools, *, max_tokens=None):
+            self.count += 1
+            names = {tool['function']['name'] for tool in tools}
+            assert 'tool_search' not in names
+            if not self.connected and self.count == 1:
+                assert 'mcp_add' in names
+                assert 'mcp_notes__echo' not in names
+                yield ModelToolCall('connect', 'mcp_add', {'server_id': 'notes'})
+            elif self.count == (1 if self.connected else 2):
+                assert 'mcp_notes__echo' in names
+                yield ModelToolCall('echo-direct', 'mcp_notes__echo', {'text': 'evidence direct'})
+            else:
+                yield ModelTextDelta('direct done')
+    for connected in (False, True):
+        adapter = Adapter(connected)
+        monkeypatch.setattr(main, 'model_adapter', adapter)
+        response = client.post(f"/api/roles/{role['id']}/messages", json={'content': '调用已授权 MCP'})
+        assert 'direct done' in response.text, response.text
+        assert adapter.count == (2 if connected else 3)
+        results = [message for message in sessions.list_messages(f"role:{role['id']}")
+                   if message.messageType == 'tool_result' and message.toolCallId == 'echo-direct']
+        assert results and not results[-1].isError
+        assert 'evidence direct' in results[-1].content
+
+
 def test_owner_http_configuration_does_not_launch_and_rejects_model_launch_arguments(tmp_path, monkeypatch):
     client, role, sessions, configs = setup_host(tmp_path, monkeypatch)
     response = save_server(client, role, tmp_path)

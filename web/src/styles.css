@@ -901,6 +901,8 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
 .settings-domain { gap: 32px !important; }
 .settings-preference { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 24px 0; }
 .settings-preference > span { display: grid; gap: 4px; }
+.settings-preference > label { display: grid; gap: 4px; flex: 1; min-width: 0; }
+.settings-preference .advanced-number { width: 140px; max-width: 100%; flex: 0 0 140px; margin-left: auto; }
 .settings-preference > .settings-switch { margin-left: auto; }
 .settings-preference strong { font-weight: 500; }
 .settings-preference small { color: var(--ink-soft); }

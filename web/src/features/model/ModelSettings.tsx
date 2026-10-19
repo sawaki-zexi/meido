@@ -5,7 +5,7 @@ import { Notice, Placeholder } from "../../ui/Status";
 import { ApiKeyInput } from "../../ui/ApiKeyInput";
 import { Icon } from "../../ui/Icon";
 
-type Draft = { providerId: string; provider: string; api: string; apiOptions: Record<string, string>; baseUrl: string; model: string; apiKey: string };
+type Draft = { providerId: string; provider: string; api: string; apiOptions: Record<string, string>; baseUrl: string; model: string; apiKey: string; contextWindowTokens: string; modelAutoCompactTokenLimit: string };
 
 const modelApis = [
   { value: "openai-completions", label: "OpenAI Chat Completions" },
@@ -20,7 +20,7 @@ const modelApis = [
   { value: "pi-messages", label: "Pi Messages" },
 ];
 
-const emptyDraft: Draft = { providerId: "openai", provider: "openai", api: "openai-completions", apiOptions: {}, baseUrl: "", model: "", apiKey: "" };
+const emptyDraft: Draft = { providerId: "openai", provider: "openai", api: "openai-completions", apiOptions: {}, baseUrl: "", model: "", apiKey: "", contextWindowTokens: '', modelAutoCompactTokenLimit: '' };
 
 export function ModelSettings({ active: pageActive = true }: { active?: boolean }) {
   const [editorOpen, setEditorOpen] = useState(false);
@@ -63,7 +63,8 @@ export function ModelSettings({ active: pageActive = true }: { active?: boolean 
   const editConfiguration = (configuration: Configuration) => {
     setEditorOpen(true);
     setEditingId(configuration.id);
-    setDraft({ providerId: configuration.providerId, provider: configuration.provider, api: configuration.api ?? "openai-completions", apiOptions: configuration.apiOptions ?? {}, baseUrl: configuration.baseUrl, model: configuration.model, apiKey: "" });
+    setDraft({ providerId: configuration.providerId, provider: configuration.provider, api: configuration.api ?? "openai-completions", apiOptions: configuration.apiOptions ?? {}, baseUrl: configuration.baseUrl, model: configuration.model, apiKey: "",
+      contextWindowTokens: String(configuration.contextWindowTokens ?? ''), modelAutoCompactTokenLimit: String(configuration.modelAutoCompactTokenLimit ?? '') });
     setTestResult("");
     setError("");
     requestAnimationFrame(() => formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -94,13 +95,15 @@ export function ModelSettings({ active: pageActive = true }: { active?: boolean 
     setTestResult("");
     const setBusy = action === "test" ? setTesting : setSaving;
     setBusy(true);
+    const payload = { ...draft, contextWindowTokens: draft.contextWindowTokens === '' ? null : Number(draft.contextWindowTokens),
+      modelAutoCompactTokenLimit: draft.modelAutoCompactTokenLimit === '' ? null : Number(draft.modelAutoCompactTokenLimit) };
     try {
       if (action === "test") {
-        const result = await api<{ ok: boolean; message: string; latencyMs?: number }>("/api/model/configuration/test", { method: "POST", body: JSON.stringify(draft) });
+        const result = await api<{ ok: boolean; message: string; latencyMs?: number }>("/api/model/configuration/test", { method: "POST", body: JSON.stringify(payload) });
         setTestResult(result.ok && result.latencyMs !== undefined ? `连接成功 · ${result.latencyMs} ms` : `失败：${result.message}`);
       } else {
         const path = editingId ? `/api/model/configurations/${encodeURIComponent(editingId)}` : "/api/model/configurations";
-        const result = await api<{ configuration: Configuration }>(path, { method: editingId ? "PUT" : "POST", body: JSON.stringify(draft) });
+        const result = await api<{ configuration: Configuration }>(path, { method: editingId ? "PUT" : "POST", body: JSON.stringify(payload) });
         setEditingId(result.configuration.id);
         setDraft((current) => ({ ...current, apiKey: "" }));
         await refreshConfigurations();
@@ -179,6 +182,12 @@ export function ModelSettings({ active: pageActive = true }: { active?: boolean 
       {draft.api === "openai-codex-responses" && <div className="field"><label htmlFor="codex-account-id">ChatGPT Account ID（可选）</label><input id="codex-account-id" value={draft.apiOptions.accountId ?? ""} disabled={busy} onChange={(event) => setDraft({ ...draft, apiOptions: { ...draft.apiOptions, accountId: event.target.value } })} /></div>}
       <div className="field"><label htmlFor="model-base-url">API 地址</label><input id="model-base-url" required type="url" value={draft.baseUrl} disabled={busy} onChange={(event) => setDraft({ ...draft, baseUrl: event.target.value })} /></div>
       <div className="field"><label htmlFor="model-id">模型 ID</label><input id="model-id" required value={draft.model} placeholder={preset?.modelHint ?? "例如：provider/model-name"} disabled={busy} onChange={(event) => setDraft({ ...draft, model: event.target.value })} /></div>
+      <div className="field"><label htmlFor="model-context-window">上下文窗口（token）</label><input id="model-context-window" type="number" min="1" max="10000000" step="1" value={draft.contextWindowTokens} disabled={busy}
+        onChange={event => { setDraft({ ...draft, contextWindowTokens: event.target.value }); setTestResult(''); }} />
+        <small>按服务商实际容量填写；留空时自动压缩未启用，继续使用有界原文窗口。</small></div>
+      <div className="field"><label htmlFor="model-auto-compact">自动压缩阈值（token，可选）</label><input id="model-auto-compact" type="number" min="1" max={draft.contextWindowTokens ? Number(draft.contextWindowTokens) - 1 : undefined} step="1" value={draft.modelAutoCompactTokenLimit} disabled={busy}
+        onChange={event => { setDraft({ ...draft, modelAutoCompactTokenLimit: event.target.value }); setTestResult(''); }} />
+        <small>必须小于上下文窗口；留空时使用高级设置的触发比例。</small></div>
       <ApiKeyInput key={`${editingId ?? "new"}:${draft.providerId}:${draft.api}`} id="model-api-key" label={draft.api === "openai-codex-responses" ? "ChatGPT OAuth Token" : "API Key"} value={draft.apiKey} configured={Boolean(editingConfiguration?.apiKeyConfigured)} placeholder={draft.api === "openai-codex-responses" ? "粘贴 ChatGPT OAuth Token" : "可选，本地模型服务可能不需要"} disabled={busy || !pageActive} onChange={(apiKey) => setDraft({ ...draft, apiKey })} onReveal={async () => {
         if (!editingId) return "";
         const result = await api<{ apiKey: string }>(`/api/model/configurations/${encodeURIComponent(editingId)}/reveal-key`, { method: "POST" });

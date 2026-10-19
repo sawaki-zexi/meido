@@ -362,6 +362,7 @@ class CapabilityRegistry:
         explicit_skill_ids: set[str] | frozenset[str] = frozenset(),
         plugin_resolution: PluginResolution | None = None,
         discovery_enabled: bool = False,
+        direct_exposure: bool = False,
         authorize_tool: Callable[[ToolDefinition, ToolContext], bool | str] | None = None,
         authorize_call: Callable[[ToolDefinition, ToolContext, Mapping[str, object]], bool | str] | None = None,
         deferred_tool_names: frozenset[str] = frozenset(),
@@ -377,7 +378,8 @@ class CapabilityRegistry:
         if discovery_enabled:
             from .discovery import DiscoveryState, ToolSearchTool
             discovery = DiscoveryState(service_grants=service_grants, external_only=external_only)
-            registered_tools.append(ToolSearchTool(discovery))
+            if not direct_exposure:
+                registered_tools.append(ToolSearchTool(discovery))
         names: set[str] = set()
         for tool in registered_tools:
             if tool.definition.name in names:
@@ -395,7 +397,11 @@ class CapabilityRegistry:
             if isinstance(restored_tools, list):
                 restored_definitions = {item["name"]: item for item in restored_tools if isinstance(item, dict) and isinstance(item.get("name"), str)}
         for tool in registered_tools:
-            definition = replace(tool.definition, exposure="deferred") if discovery_enabled and tool.definition.name in deferred_tool_names else tool.definition
+            definition = tool.definition
+            if direct_exposure and definition.exposure == 'deferred':
+                definition = replace(definition, exposure='direct')
+            elif discovery_enabled and not direct_exposure and definition.name in deferred_tool_names:
+                definition = replace(definition, exposure='deferred')
             if external_only and not definition.external_allowed:
                 denied[definition.name] = "tool is not allowed for external context"
                 decisions[definition.name] = "denied:external_context"
@@ -519,6 +525,7 @@ class CapabilityRegistry:
         host_services: Mapping[str, object] = MappingProxyType({}),
         plugin_dir: str = "",
         discovery_enabled: bool = False,
+        direct_exposure: bool = False,
         authorize_tool: Callable[[ToolDefinition, ToolContext], bool | str] | None = None,
         authorize_call: Callable[[ToolDefinition, ToolContext, Mapping[str, object]], bool | str] | None = None,
         deferred_tool_names: frozenset[str] = frozenset(),
@@ -549,6 +556,7 @@ class CapabilityRegistry:
                 explicit_skill_ids=explicit_skill_ids,
                 plugin_resolution=plugin_resolution,
                 discovery_enabled=discovery_enabled,
+                direct_exposure=direct_exposure,
                 authorize_tool=authorize_tool,
                 authorize_call=authorize_call,
                 deferred_tool_names=deferred_tool_names,

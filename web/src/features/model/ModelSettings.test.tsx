@@ -30,6 +30,25 @@ describe("MemorySettings embedding configuration", () => {
 });
 
 describe("ModelSettings protocol selection", () => {
+  it('模型容量与压缩阈值读出并以数字保存，旧空值保持未配置', async () => {
+    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 0));
+    const configuration = { id: 'capacity', providerId: 'custom', provider: 'fixture', api: 'openai-completions', baseUrl: 'http://localhost/v1', model: 'fixture', apiKeyConfigured: false,
+      contextWindowTokens: 128000, modelAutoCompactTokenLimit: 96000 };
+    const { calls } = fakeBackend({
+      'GET /api/model/providers': () => ({ body: { providers: [] } }),
+      'GET /api/model/configurations': () => ({ body: { configurations: [configuration], activeId: configuration.id } }),
+      'PUT /api/model/configurations/capacity': () => ({ body: { configuration } }),
+    });
+    render(<ModelSettings />);
+    fireEvent.click(await screen.findByRole('button', { name: '编辑' }));
+    expect(screen.getByLabelText('上下文窗口（token）')).toHaveValue(128000);
+    expect(screen.getByLabelText('自动压缩阈值（token，可选）')).toHaveValue(96000);
+    fireEvent.change(screen.getByLabelText('上下文窗口（token）'), { target: { value: '200000' } });
+    fireEvent.change(screen.getByLabelText('自动压缩阈值（token，可选）'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(calls.some(call => call.method === 'PUT')).toBe(true));
+    expect(calls.find(call => call.method === 'PUT')?.body).toMatchObject({ contextWindowTokens: 200000, modelAutoCompactTokenLimit: null });
+  });
   it('列表进入模型详情后仅展示当前表单，返回可继续选其他连接', async () => {
     const configuration = { id: 'chat', providerId: 'custom', provider: 'local', api: 'openai-completions', baseUrl: 'http://localhost:9/v1', model: 'chat', apiKeyConfigured: false };
     fakeBackend({
