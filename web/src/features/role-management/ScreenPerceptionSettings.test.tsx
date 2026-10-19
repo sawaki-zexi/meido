@@ -35,12 +35,18 @@ it('全局默认关闭，不跟随当前聊天模型，参数保存不启用且�
   expect(selector).toHaveValue('');
   expect(screen.queryByRole('checkbox', { name: '允许按需观察主屏' })).not.toBeInTheDocument();
   await user.selectOptions(selector, 'vision-model');
+  await user.click(screen.getByRole('button', { name: '打开模型设置' }));
+  expect(screen.getAllByRole('dialog', { name: '设置' })).toHaveLength(1);
+  expect(screen.getAllByRole('navigation', { name: '设置分类' })).toHaveLength(1);
+  expect(screen.queryByRole('combobox', { name: '视觉模型连接' })).not.toBeInTheDocument();
+  await user.keyboard('{Escape}');
+  expect(screen.getByRole('combobox', { name: '视觉模型连接' })).toHaveValue('vision-model');
   await user.click(screen.getByRole('button', { name: '保存参数' }));
   await screen.findByText('公共参数已保存');
   expect(saved.values.visionModelConfigurationId).toBe('vision-model'); expect(saved.enabled).toBe(false);
   await user.click(screen.getByRole('button', { name: '返回插件列表' }));
-  await user.click(await screen.findByRole('button', { name: '启动 屏幕感知' }));
-  await screen.findByRole('button', { name: '关闭 屏幕感知' });
+  await user.click(await screen.findByRole('switch', { name: '启用 屏幕感知' }));
+  await waitFor(() => expect(screen.getByRole('switch', { name: '启用 屏幕感知' })).toBeChecked());
   expect(saved.enabled).toBe(true);
   expect(calls.some(call => call.path.startsWith('/api/roles'))).toBe(false);
 });
@@ -67,9 +73,9 @@ it('已启用时连接删除保持原 ID，无效参数不能保存，仍可从�
   await user.click(screen.getByRole('button', { name: '保存参数' }));
   expect(calls.some(call => call.method === 'PUT')).toBe(false);
   await user.click(screen.getByRole('button', { name: '返回插件列表' }));
-  await user.click(await screen.findByRole('button', { name: '关闭 屏幕感知' }));
-  await screen.findByRole('button', { name: '启动 屏幕感知' });
+  await user.click(await screen.findByRole('switch', { name: '启用 屏幕感知' }));
   expect(saved.enabled).toBe(false); expect(saved.values.visionModelConfigurationId).toBe('vision-model');
+  await waitFor(() => expect(screen.getByRole('switch', { name: '启用 屏幕感知' })).not.toBeChecked());
 });
 
 it('模型目录读取失败后刷新保留原公共视觉绑定，绝不补为当前连接', async () => {

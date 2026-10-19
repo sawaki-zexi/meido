@@ -51,7 +51,7 @@ export function ScreenPerceptionSettings({ draft, onChange, disabled, showEnable
         </option>)}
       </select>
       {selected && <small style={{ color: "var(--ink-soft)", overflowWrap: "anywhere" }}>所选连接：{selected.provider} · {selected.model} · {selected.api ?? "openai-completions"}（ID：{selected.id}）</small>}
-      <small className="field-hint">请明确选择视觉连接；所选模型的视觉能力会在调用时验证。</small>
+      <small className="field-hint">请选择支持图片输入的连接，也可以选择聊天所用的同一连接；不会自动跟随聊天模型。视觉能力会在调用时验证。</small>
     </label>
     {loading && <p role="status">正在加载视觉模型连接…</p>}
     {missing && <p role="status">连接已不存在，请重新选择视觉模型连接。</p>}

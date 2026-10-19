@@ -7,6 +7,7 @@ import { ChannelView, type ChannelMemorySource } from "./features/channels/Chann
 import { RoleList } from "./features/role-management/RoleList";
 import { useRoles } from "./features/role-management/useRoles";
 import { SettingsDialog, type SettingsSectionId } from "./features/settings/SettingsDialog";
+import { applyAppearance, readAppearance } from './features/settings/appearance';
 import { RoleAccountsPanel } from "./features/channels/RoleAccountsPanel";
 import { CreateRolePage } from "./features/tavern/CreateRolePage";
 import { RoleCard } from "./features/tavern/RoleCard";
@@ -25,6 +26,7 @@ const readLastRole = () => { try { return localStorage.getItem(LAST_ROLE_KEY); }
 const writeLastRole = (id: string) => { try { localStorage.setItem(LAST_ROLE_KEY, id); } catch { /* storage unavailable */ } };
 
 export function App() {
+  useEffect(() => { applyAppearance(readAppearance()); }, []);
   const roles = useRoles();
   const chat = useChat();
   const [returnedFromOwnerKnowledgeAuthorization] = useState(
@@ -51,7 +53,7 @@ export function App() {
   const searchTerm = query.trim().toLocaleLowerCase();
   const filteredRoles = roles.roles.filter((role) => `${role.name} ${role.description}`.toLocaleLowerCase().includes(searchTerm));
 
-  useEffect(() => { if (searchOpen && showList) searchRef.current?.focus(); }, [searchOpen, showList]);
+  useEffect(() => { if (searchOpen && showList && panel !== 'settings') searchRef.current?.focus(); }, [searchOpen, showList, panel]);
 
   const openChat = async (role: Role) => {
     roles.setError("");
@@ -80,8 +82,8 @@ export function App() {
   // The create page opens over whatever is showing, so closing it returns there.
   const startCreate = () => { roles.startCreate(); setPanel("create"); };
   const showProfile = (role: Role, tab: "profile" | "accounts" = "profile") => { roles.select(role); roles.startEdit(); setProfileTab(tab); setPanel("profile"); };
-  const openTavern = () => { setView("tavern"); setShowList(false); };
-  const backToChat = () => { setView("chat"); setShowList(false); setHighlightedId(null); };
+  const openTavern = () => { setView("tavern"); setShowList(false); if (panel === 'settings') setPanel(null); };
+  const backToChat = () => { setView("chat"); setShowList(false); setHighlightedId(null); if (panel === 'settings') setPanel(null); };
 
   const openMemorySource = async (role: Role, origin: MemoryOrigin, messageId?: string) => {
     chat.setError("");
@@ -151,7 +153,7 @@ export function App() {
 
   return <div className={`shell${showList ? " show-list" : ""}`}>
     <nav className="app-rail" aria-label="页面">
-      <button type="button" className="rail-search" aria-label="搜索角色" title="搜索角色" aria-expanded={searchOpen} aria-controls={searchOpen ? "role-search" : undefined} onClick={() => { setSearchOpen(true); setShowList(true); searchRef.current?.focus(); }}><Icon name="search" size={21} /></button>
+      <button type="button" className="rail-search" aria-label="搜索角色" title="搜索角色" aria-expanded={searchOpen} aria-controls={searchOpen ? "role-search" : undefined} onClick={() => { if (panel === 'settings') setPanel(null); setSearchOpen(true); setShowList(true); searchRef.current?.focus(); }}><Icon name="search" size={21} /></button>
       <span className="rail-divider" aria-hidden="true" />
       <div className="side-tabs">
         <button type="button" aria-label="对话" title="对话" aria-current={view === "chat" || view === "memories" ? "page" : undefined} onClick={backToChat}><Icon name="chat" size={22} /></button>
@@ -159,7 +161,8 @@ export function App() {
       </div>
       <footer className="rail-footer"><IconButton icon="settings" label="设置" onClick={() => { setSettingsSection(undefined); setPanel("settings"); }} /></footer>
     </nav>
-    <aside className="sidebar" aria-label={view === "tavern" ? "角色管理" : "对话列表"}>
+    <aside className="sidebar" aria-label={view === "tavern" ? "角色管理" : "对话列表"} aria-hidden={panel === 'settings' || undefined}
+      ref={element => { if (element) element.inert = panel === 'settings'; }}>
       <div className="sidebar-tools">
         {view === "tavern" && <>
           <div className="tavern-actions">
@@ -181,7 +184,7 @@ export function App() {
       </div>
     </aside>
 
-    <main className="main">
+    <main className="main" aria-hidden={panel === 'settings' || undefined} ref={element => { if (element) element.inert = panel === 'settings'; }}>
       {view === "tavern"
         ? <TavernView roles={roles.roles} query={searchTerm} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onShow={showProfile} onChat={chatWith} onPreviewAvatar={setPreviewRole} />
         : view === "memories" && chatRole

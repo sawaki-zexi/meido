@@ -223,6 +223,26 @@ describe("首页", () => {
 });
 
 describe("设置", () => {
+  it("设置页遮盖的聊天不可操作，应用导航和 Escape 可返回", async () => {
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": emptySession,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    expect(document.querySelector("main")?.inert).toBe(true);
+    expect(screen.queryByRole("heading", { name: "爱丽丝", level: 1 })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "对话" }));
+    expect(screen.queryByRole("dialog", { name: "设置" })).not.toBeInTheDocument();
+    expect(document.querySelector("main")?.inert).toBe(false);
+    await chatHeading("爱丽丝");
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "设置" })).not.toBeInTheDocument();
+    await chatHeading("爱丽丝");
+  });
   it("点击设置图标打开设置，其中包含模型配置", async () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [] } }),

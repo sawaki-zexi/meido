@@ -5,11 +5,30 @@ import { fakeBackend, role } from '../../test/fakeBackend';
 import { SettingsDialog } from './SettingsDialog';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it('顶层仅保留四个设置领域，服务在插件子页按需进入并可返回', async () => {
+it('外观偏好立即应用，重开仍保留且不调用写入 API', async () => {
+  localStorage.clear();
+  const { calls } = fakeBackend({});
+  const user = userEvent.setup();
+  const view = render(<SettingsDialog initialSection="appearance" onClose={() => {}} />);
+  await user.selectOptions(screen.getByRole('combobox', { name: '界面字号' }), 'large');
+  await user.click(screen.getByRole('switch', { name: '减弱动态效果' }));
+  expect(document.documentElement.dataset.fontSize).toBe('large');
+  expect(document.documentElement.dataset.reducedMotion).toBe('true');
+  view.unmount();
+  render(<SettingsDialog initialSection="appearance" onClose={() => {}} />);
+  expect(screen.getByRole('combobox', { name: '界面字号' })).toHaveValue('large');
+  expect(screen.getByRole('switch', { name: '减弱动态效果' })).toBeChecked();
+  expect(calls.some(call => call.method !== 'GET')).toBe(false);
+  localStorage.clear();
+  delete document.documentElement.dataset.fontSize;
+  delete document.documentElement.dataset.reducedMotion;
+});
+
+it('设置使用 Shiori 的七类侧栏，服务作为插件下级页面可返回', async () => {
   const { calls } = fakeBackend({ 'GET /api/plugin-management': () => ({ body: { plugins: [] } }) });
   const user = userEvent.setup(); render(<SettingsDialog initialSection="plugins" onClose={() => {}} />);
   const nav = within(screen.getByRole('navigation', { name: '设置分类' }));
-  expect(nav.getAllByRole('button').map(button => button.textContent)).toEqual(['模型', '记忆', '插件', '我的身份']);
+  expect(nav.getAllByRole('button').map(button => button.textContent)).toEqual(['模型', '记忆', '外观', '高级', '我的身份', '插件', '关于']);
   await user.click(screen.getByRole('button', { name: '服务与连接' }));
   await user.click(screen.getByRole('button', { name: /编程委托/ }));
   expect(await screen.findByRole('heading', { name: '编程委托', level: 2 })).toBeInTheDocument();
@@ -54,7 +73,7 @@ it('公共参数草稿在模型页往返后保留', async () => {
     'GET /api/model/configurations': () => ({ body: { configurations: [], activeId: null } }),
   });
   const user = userEvent.setup(); render(<SettingsDialog initialSection="plugins" onClose={() => {}} />);
-  await user.click(await screen.findByRole('button', { name: '浏览器 设置' }));
+  await user.click(await screen.findByRole('button', { name: 'Browser Use 设置' }));
   await user.click(screen.getByRole('checkbox', { name: '显示浏览器窗口' }));
   const nav = within(screen.getByRole('navigation', { name: '设置分类' }));
   await user.click(nav.getByRole('button', { name: '模型' }));

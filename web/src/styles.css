@@ -857,3 +857,61 @@ body { background: var(--surface-gradient); background-attachment: fixed; }
 .memory-settings .settings-subheading { flex-wrap: nowrap; align-items: flex-start; }
 .memory-settings .settings-subheading > div { flex: 1; min-width: 0; }
 .memory-settings .plugin-switch { flex-shrink: 0; }
+
+/* Shiori-style settings workspace: the application rail remains available. */
+.dialog-settings { inset: 0 0 0 64px; background: linear-gradient(135deg, #ecf6ff, #fff4f9); }
+.dialog-settings .dialog-panel { position: relative; width: 100%; height: 100%; grid-template-rows: minmax(0, 1fr); background: transparent; box-shadow: none; }
+.dialog-settings .dialog-header { position: absolute; right: 18px; top: 18px; z-index: 1; padding: 0; border: 0; background: transparent; }
+.dialog-settings .dialog-header h2 { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.dialog-settings .dialog-body { overflow: hidden; }
+.dialog-settings .settings-layout { grid-template-columns: 276px minmax(0, 1fr); }
+.dialog-settings .settings-nav { min-height: 0; overflow-y: auto; padding: 44px 20px; gap: 4px; }
+.dialog-settings .settings-nav button { min-height: 48px; padding: 10px 16px; gap: 14px; border-radius: 16px; font-size: 1.067rem; font-weight: 400; }
+.dialog-settings .settings-nav button.active { background: rgb(255 255 255 / 86%); color: var(--rose-deep); box-shadow: 0 5px 18px rgb(65 56 89 / 8%); }
+.dialog-settings .settings-content { margin: 12px 8px 0 0; padding: 48px clamp(24px, 7.5vw, 124px) 64px; border: 1px solid var(--line); border-radius: 20px 20px 0 0; background: rgb(255 255 255 / 38%); }
+.dialog-settings .settings-content > * { max-width: 1050px; }
+.dialog-settings .settings-content h2 { font-size: 1.867rem; }
+.settings-page-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 40px; }
+.plugin-services-button, .plugin-configure { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.dialog-settings .plugin-services-button { min-height: 44px; border-radius: 16px; background: white; }
+.settings-group { display: grid; align-content: start; gap: 12px; }
+.settings-group > h3, .plugin-group-heading h3 { font-size: 1rem; font-weight: 500; }
+.plugin-group-heading { display: flex; align-items: baseline; gap: 10px; padding-inline: 4px; }
+.plugin-group-heading > span { font-size: .867rem; color: var(--ink-faint); }
+.plugin-group-heading .plugin-problem-count { color: var(--danger); }
+.dialog-settings .plugin-list, .settings-card { padding: 0 24px; border: 1px solid var(--line); border-radius: 20px; background: rgb(255 255 255 / 90%); box-shadow: 0 4px 20px rgb(65 56 89 / 6%); }
+.dialog-settings .plugin-row { min-height: 94px; padding: 20px 0; gap: 24px; }
+.dialog-settings .plugin-row-title h4 { font-size: 1.067rem; font-weight: 500; }
+.dialog-settings .plugin-row-copy > p { font-size: .933rem; color: var(--ink-soft); }
+.dialog-settings .plugin-row-actions { gap: 10px; }
+.dialog-settings .plugin-configure { min-height: 44px; padding: 8px 18px; border-radius: 16px; background: white; font-size: .933rem; }
+button.settings-switch { flex: 0 0 54px; position: relative; width: 54px; min-height: 30px; height: 30px; padding: 2px; border: 0; border-radius: 999px; background: #d4cfd3; transition: background-color .15s; }
+button.settings-switch:hover:not(:disabled) { background: #bdb4bb; }
+button.settings-switch[aria-checked="true"] { background: #c94180; }
+button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: #b43571; }
+.settings-switch > span { display: block; width: 26px; height: 26px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgb(0 0 0 / 18%); transition: transform .15s; }
+.settings-switch[aria-checked="true"] > span { transform: translateX(24px); }
+.settings-domain { gap: 32px !important; }
+.settings-preference { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 24px 0; }
+.settings-preference > span { display: grid; gap: 4px; }
+.settings-preference strong { font-weight: 500; }
+.settings-preference small { color: var(--ink-soft); }
+.settings-preference select { width: auto; min-width: 100px; }
+.settings-card > section { display: grid; gap: 18px; padding-bottom: 24px; }
+.about-settings { display: grid; gap: 12px; padding-block: 24px; }
+:root[data-font-size="small"] { font-size: 14px; }
+:root[data-font-size="large"] { font-size: 17px; }
+:root[data-reduced-motion="true"] *, :root[data-reduced-motion="true"] *::before, :root[data-reduced-motion="true"] *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+@media (max-width: 760px) {
+  .dialog-settings { left: 0; }
+  .dialog-settings .dialog-header { top: 8px; right: 8px; }
+  .dialog-settings .settings-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); padding-top: 42px; }
+  .dialog-settings .settings-nav { padding: 4px 12px 12px; }
+  .dialog-settings .settings-nav button { min-height: 42px; padding: 8px 12px; gap: 8px; }
+  .dialog-settings .settings-content { margin: 0 6px; padding: 24px 16px 40px; border-radius: 16px 16px 0 0; }
+  .settings-page-heading { margin-bottom: 16px; }
+  .dialog-settings .plugin-list, .settings-card { padding-inline: 16px; border-radius: 16px; }
+  .dialog-settings .plugin-row { gap: 12px; }
+  .dialog-settings .plugin-row-copy { flex-basis: 100%; }
+  .settings-preference { gap: 12px; flex-wrap: wrap; }
+}

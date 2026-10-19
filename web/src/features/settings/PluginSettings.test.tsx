@@ -19,8 +19,8 @@ it('插件全局启动，无需选择角色或改写角色文件，普通工具�
     },
   });
   const user = userEvent.setup(); render(<SettingsDialog onClose={() => {}} initialSection="plugins" />);
-  await user.click(await screen.findByRole('button', { name: '启动 浏览器' }));
-  expect(await screen.findByRole('button', { name: '关闭 浏览器' })).toBeInTheDocument();
+  await user.click(await screen.findByRole('switch', { name: '启用 Browser Use' }));
+  expect(await screen.findByRole('switch', { name: '启用 Browser Use' })).toBeChecked();
   expect(screen.queryByRole('combobox', { name: '配置角色' })).not.toBeInTheDocument();
   expect(screen.queryByText(/read_file|默认自带|工具目录/)).not.toBeInTheDocument();
   expect(calls.some(call => call.path.startsWith('/api/roles'))).toBe(false);
@@ -33,7 +33,7 @@ it('保存公共浏览器参数不同时启用插件，失败保留草稿并显�
     'PUT /api/plugin-management/browser/configuration': () => ({ status: 409, body: { detail: '设置已变化，请刷新' } }),
   });
   const user = userEvent.setup(); render(<SettingsDialog onClose={() => {}} initialSection="plugins" />);
-  await user.click(await screen.findByRole('button', { name: '浏览器 设置' }));
+  await user.click(await screen.findByRole('button', { name: 'Browser Use 设置' }));
   await user.click(screen.getByRole('checkbox', { name: '显示浏览器窗口' }));
   await user.click(screen.getByRole('button', { name: '保存参数' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('设置已变化');
@@ -75,7 +75,7 @@ it('待办启停只写全局开关，不回填提醒和时区参数', async () =
     'PUT /api/todos/settings': () => ({ body: { enabled: true, remindersEnabled: false, timezone: 'UTC' } }),
   });
   const user = userEvent.setup(); render(<SettingsDialog onClose={() => {}} initialSection="plugins" />);
-  await user.click(await screen.findByRole('button', { name: '启动 待办' }));
-  await screen.findByRole('button', { name: '关闭 待办' });
+  await user.click(await screen.findByRole('switch', { name: '启用 待办' }));
+  await waitFor(() => expect(screen.getByRole('switch', { name: '启用 待办' })).toBeChecked());
   expect(calls.find(call => call.method === 'PUT')?.body).toEqual({ enabled: true });
 });

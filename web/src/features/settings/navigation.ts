@@ -8,5 +8,5 @@ export const pluginServices = [
   { id: 'coding', label: '编程委托', description: '登记可信仓库和专用 CLI。', group: '功能' },
 ] as const;
 export type SettingsServiceId = typeof pluginServices[number]['id'];
-export type SettingsSectionId = 'model' | 'memory' | 'identity' | 'plugins' | SettingsServiceId;
+export type SettingsSectionId = 'model' | 'memory' | 'appearance' | 'advanced' | 'identity' | 'plugins' | 'about' | SettingsServiceId;
 export const isPluginService = (id: SettingsSectionId): id is SettingsServiceId => pluginServices.some(service => service.id === id);

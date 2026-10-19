@@ -5,6 +5,9 @@ import type { Role } from '../../api/types';
 import { ModelSettings } from '../model/ModelSettings';
 import { MemorySettings } from './MemorySettings';
 import { IdentitySettings } from '../channels/IdentitySettings';
+import { AppearanceSettings } from './AppearanceSettings';
+import { AdvancedSettings } from './AdvancedSettings';
+import { AboutSettings } from './AboutSettings';
 import { PluginSettings } from './PluginSettings';
 import { OwnerKnowledgeSettings } from './OwnerKnowledgeSettings';
 import { TodoSettings } from '../todo/TodoSettings';
@@ -16,11 +19,14 @@ import { CodingSettings } from '../coding/CodingSettings';
 import { isPluginService, pluginServices, type SettingsSectionId, type SettingsServiceId } from './navigation';
 export type { SettingsSectionId } from './navigation';
 
-const sections: { id: 'model' | 'memory' | 'plugins' | 'identity'; label: string; icon: IconName }[] = [
+const sections: { id: 'model' | 'memory' | 'appearance' | 'advanced' | 'identity' | 'plugins' | 'about'; label: string; icon: IconName }[] = [
   { id: 'model', label: '模型', icon: 'model' },
   { id: 'memory', label: '记忆', icon: 'memory' },
-  { id: 'plugins', label: '插件', icon: 'plug' },
+  { id: 'appearance', label: '外观', icon: 'palette' },
+  { id: 'advanced', label: '高级', icon: 'sliders' },
   { id: 'identity', label: '我的身份', icon: 'identity' },
+  { id: 'plugins', label: '插件', icon: 'plug' },
+  { id: 'about', label: '关于', icon: 'info' },
 ];
 const services: Record<SettingsServiceId, () => ReactNode> = {
   'owner-knowledge': () => <OwnerKnowledgeSettings />, todo: () => <TodoSettings />, mail: () => <MailSettings />,
@@ -47,7 +53,7 @@ export function SettingsDialog({ onClose, initialSection = 'model', onRoleSaved 
     setCurrent(id);
     if (content.current) content.current.scrollTop = 0;
   };
-  return <Dialog title="设置" onClose={onClose}>
+  return <Dialog title="设置" variant="settings" onClose={onClose}>
     <div className="settings-layout">
       <nav className="settings-nav" aria-label="设置分类">{sections.map(item =>
         <button key={item.id} type="button" className={item.id === (service ? 'plugins' : current) ? 'active' : ''}
@@ -61,7 +67,10 @@ export function SettingsDialog({ onClose, initialSection = 'model', onRoleSaved 
         </div>}
         {current === 'model' && <ModelSettings />}
         {current === 'memory' && <MemorySettings />}
+        {current === 'appearance' && <AppearanceSettings />}
+        {current === 'advanced' && <AdvancedSettings onRoleSaved={onRoleSaved} />}
         {current === 'identity' && <IdentitySettings />}
+        {current === 'about' && <AboutSettings />}
         {service && <section className="settings-service-page" key={service}>
           <nav className="settings-breadcrumb" aria-label="设置路径"><button type="button" className="ghost" onClick={() => select('plugins')}>
             <Icon name="back" size={16} />返回插件</button><span>{pluginServices.find(item => item.id === service)?.label}</span></nav>

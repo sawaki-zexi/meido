@@ -23,10 +23,8 @@ it("子任务默认提供，调整预算并重开时保留已有工具和配置"
   render(<App />);
   await screen.findByRole("heading", { name: "子任务角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "设置" }));
-  await user.click(screen.getByRole("button", { name: "插件" }));
-  await user.click(screen.getByRole("button", { name: "服务与连接" }));
-  await user.click(await screen.findByRole("button", { name: "高级运行设置" }));
-  await user.click(screen.getByRole("button", { name: "角色参数" }));
+  await user.click(screen.getByRole("button", { name: "高级" }));
+  await user.click(within(screen.getByRole("region", { name: "高级设置" })).getByRole("button", { name: "设置" }));
   await screen.findByRole("combobox", { name: "角色参数" });
   const form = within(await screen.findByRole("dialog", { name: "设置" }));
   expect(form.queryByLabelText("允许委托独立子任务")).not.toBeInTheDocument();
@@ -39,10 +37,8 @@ it("子任务默认提供，调整预算并重开时保留已有工具和配置"
     spawn: { enabled: false, timeoutSeconds: 45, maxTurns: 12, maxOutputChars: 20000, maxModelOutputChars: 60000, extension: "keep" } });
   await user.click(form.getByRole("button", { name: "关闭" }));
   await user.click(screen.getByRole("button", { name: "设置" }));
-  await user.click(screen.getByRole("button", { name: "插件" }));
-  await user.click(screen.getByRole("button", { name: "服务与连接" }));
-  await user.click(await screen.findByRole("button", { name: "高级运行设置" }));
-  await user.click(screen.getByRole("button", { name: "角色参数" }));
+  await user.click(screen.getByRole("button", { name: "高级" }));
+  await user.click(within(screen.getByRole("region", { name: "高级设置" })).getByRole("button", { name: "设置" }));
   await screen.findByRole("combobox", { name: "角色参数" });
   const reopened = within(await screen.findByRole("dialog", { name: "设置" }));
   expect(reopened.queryByLabelText("允许委托独立子任务")).not.toBeInTheDocument();
