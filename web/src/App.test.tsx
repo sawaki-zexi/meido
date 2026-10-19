@@ -917,7 +917,7 @@ describe("角色记忆", () => {
     expect(within(list).getByText("偏好")).toBeTruthy();
 
     await user.click(within(list).getByRole('button', { name: '查看记忆：主人喜欢红茶' }));
-    await user.click(within(await dialog('记忆详情')).getByRole("button", { name: "定位到消息" }));
+    await user.click(within(await screen.findByRole('region', { name: '记忆详情' })).getByRole("button", { name: "定位到消息" }));
     expect(await chatHeading("爱丽丝")).toBeTruthy();
     const source = screen.getByText("我喜欢红茶").closest("li")!;
     expect(source).toHaveClass("source-highlight");
@@ -939,7 +939,7 @@ describe("角色记忆", () => {
     await chatHeading("爱丽丝");
     await user.click(screen.getByRole("button", { name: "角色记忆" }));
     await user.click(within(await screen.findByRole("list", { name: "记忆列表" })).getByRole('button', { name: '查看记忆：主人喜欢红茶' }));
-    await user.click(within(await dialog('记忆详情')).getByRole("button", { name: "定位到消息" }));
+    await user.click(within(await screen.findByRole('region', { name: '记忆详情' })).getByRole("button", { name: "定位到消息" }));
     const sourceDialog = await screen.findByRole("dialog", { name: "记忆来源" });
     expect((await within(sourceDialog).findByText("手机里我说喜欢红茶")).closest("li")).toHaveClass("source-highlight");
     for (let index = 0; index < 4; index++) { await user.tab(); expect(sourceDialog).toContainElement(document.activeElement as HTMLElement); }
@@ -950,7 +950,7 @@ describe("角色记忆", () => {
     expect(screen.queryByText("来源会话与当前角色不匹配")).not.toBeInTheDocument();
     await user.click(within(sourceDialog).getByRole("button", { name: "关闭" }));
     expect(screen.queryByRole("dialog", { name: "记忆来源" })).not.toBeInTheDocument();
-    expect(screen.getByRole('dialog', { name: '记忆详情' })).toHaveTextContent('主人喜欢红茶');
+    expect(screen.getByRole('region', { name: '记忆详情' })).toBeVisible();
     await user.keyboard('{Escape}');
     const navigation = screen.getByRole("navigation", { name: "页面" });
     expect(within(navigation).queryByRole("button", { name: "手机会话" })).not.toBeInTheDocument();

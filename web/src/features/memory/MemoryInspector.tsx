@@ -1,5 +1,5 @@
 import { Icon } from '../../ui/Icon';
-import { type Memory, type MemoryOrigin, typeLabels, statusLabels, sourceLabels, formatDate, originsOf } from './types';
+import { type Memory, type MemoryOrigin, sourceLabels, formatDate, originsOf } from './types';
 
 export function MemoryInspector({ memory, onEdit, onSimilar, onAction, onOpenSource }: {
   memory: Memory; onEdit: () => void; onSimilar: () => void; onAction: (action: 'forget' | 'reject' | 'delete') => void;
@@ -7,12 +7,10 @@ export function MemoryInspector({ memory, onEdit, onSimilar, onAction, onOpenSou
 }) {
   const origins = originsOf(memory);
   return <div className="memory-inspector">
-    <div className="memory-detail-tags"><span className="memory-type">{typeLabels[memory.memoryType] ?? memory.memoryType}</span><span className="memory-status">{statusLabels[memory.status] ?? memory.status}</span></div>
-    <p className="memory-detail-summary">{memory.summary}</p>
     <dl className="memory-detail-meta">
       <div><dt>记录时间</dt><dd>{formatDate(memory.createdAt)}</dd></div>
-      <div><dt>发生时间</dt><dd>{formatDate(memory.happenedAt)}</dd></div>
-      <div><dt>最近更新</dt><dd>{formatDate(memory.updatedAt)}</dd></div>
+      {memory.happenedAt && <div><dt>发生时间</dt><dd>{formatDate(memory.happenedAt)}</dd></div>}
+      {memory.updatedAt !== memory.createdAt && <div><dt>最近更新</dt><dd>{formatDate(memory.updatedAt)}</dd></div>}
     </dl>
     <section className="memory-origin-section" aria-label="记忆来源">
       <h3><Icon name="chat" size={17} />从哪里记住的</h3>
