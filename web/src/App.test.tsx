@@ -905,7 +905,7 @@ describe("角色记忆", () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": () => ({ body: { session, messages: [message({ id: "m1", role: "user", sequence: 1, content: "早安" }), message({ id: "m2", role: "user", sequence: 2, content: "我喜欢红茶" })] } }),
-      "GET /api/roles/r1/memories": () => ({ body: { memories: [memory] } }),
+      "GET /api/roles/r1/memories.*": () => ({ body: { memories: [memory] } }),
       "GET /api/roles/r1/memory-documents": () => ({ body: { documents: [], journals: [] } }),
     });
     const user = userEvent.setup();
@@ -916,7 +916,8 @@ describe("角色记忆", () => {
     expect(within(list).getByText("主人喜欢红茶")).toBeTruthy();
     expect(within(list).getByText("偏好")).toBeTruthy();
 
-    await user.click(within(list).getByRole("button", { name: "定位到消息" }));
+    await user.click(within(list).getByRole('button', { name: '查看记忆：主人喜欢红茶' }));
+    await user.click(within(await dialog('记忆详情')).getByRole("button", { name: "定位到消息" }));
     expect(await chatHeading("爱丽丝")).toBeTruthy();
     const source = screen.getByText("我喜欢红茶").closest("li")!;
     expect(source).toHaveClass("source-highlight");
@@ -929,7 +930,7 @@ describe("角色记忆", () => {
     const { calls } = fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": emptySession,
-      "GET /api/roles/r1/memories": () => ({ body: { memories: [{ ...memory, sourceRef: { ...channelOrigin, sourceKeys: [], sources: [channelOrigin] } }] } }),
+      "GET /api/roles/r1/memories.*": () => ({ body: { memories: [{ ...memory, sourceRef: { ...channelOrigin, sourceKeys: [], sources: [channelOrigin] } }] } }),
       "GET /api/roles/r1/memory-documents": () => ({ body: { documents: [], journals: [] } }),
       "GET .*threads/phone/messages.*": () => ({ body: { thread, messages: [{ id: "phone-source", sequence: 7, role: "user", content: "手机里我说喜欢红茶", createdAt: "2026-10-14T00:00:00Z", metadata: { threadId: "phone" } }], hasMore: false, nextBefore: null } }),
     });
@@ -937,12 +938,11 @@ describe("角色记忆", () => {
     render(<App />);
     await chatHeading("爱丽丝");
     await user.click(screen.getByRole("button", { name: "角色记忆" }));
-    await user.click(within(await screen.findByRole("list", { name: "记忆列表" })).getByRole("button", { name: "定位到消息" }));
+    await user.click(within(await screen.findByRole("list", { name: "记忆列表" })).getByRole('button', { name: '查看记忆：主人喜欢红茶' }));
+    await user.click(within(await dialog('记忆详情')).getByRole("button", { name: "定位到消息" }));
     const sourceDialog = await screen.findByRole("dialog", { name: "记忆来源" });
-    const navigation = screen.getByRole("navigation", { name: "页面" });
-    expect(within(navigation).queryByRole("button", { name: "手机会话" })).not.toBeInTheDocument();
-    expect(within(navigation).getByRole("button", { name: "对话" })).toHaveAttribute("aria-current", "page");
     expect((await within(sourceDialog).findByText("手机里我说喜欢红茶")).closest("li")).toHaveClass("source-highlight");
+    for (let index = 0; index < 4; index++) { await user.tab(); expect(sourceDialog).toContainElement(document.activeElement as HTMLElement); }
     expect(within(sourceDialog).queryByRole("complementary", { name: "渠道会话列表" })).not.toBeInTheDocument();
     expect(within(sourceDialog).queryByText("会话设置")).not.toBeInTheDocument();
     expect(within(sourceDialog).queryByRole("button", { name: "角色账号" })).not.toBeInTheDocument();
@@ -950,6 +950,11 @@ describe("角色记忆", () => {
     expect(screen.queryByText("来源会话与当前角色不匹配")).not.toBeInTheDocument();
     await user.click(within(sourceDialog).getByRole("button", { name: "关闭" }));
     expect(screen.queryByRole("dialog", { name: "记忆来源" })).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: '记忆详情' })).toHaveTextContent('主人喜欢红茶');
+    await user.keyboard('{Escape}');
+    const navigation = screen.getByRole("navigation", { name: "页面" });
+    expect(within(navigation).queryByRole("button", { name: "手机会话" })).not.toBeInTheDocument();
+    expect(within(navigation).getByRole("button", { name: "对话" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("list", { name: "记忆列表" })).toHaveTextContent("主人喜欢红茶");
   });
 });
