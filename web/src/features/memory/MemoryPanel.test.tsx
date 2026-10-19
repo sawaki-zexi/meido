@@ -12,6 +12,25 @@ const item = { id: 'one', roleId: 'r1', memoryType: 'preference', summary: '主�
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('按本地记录日期分组时间线，保留服务返回顺序，详细时间按需查看', async () => {
+  const first = { ...item, createdAt: new Date(2026, 9, 19, 8).toISOString() };
+  const sameDay = { ...item, id: 'two', summary: '主人也喜欢听钢琴曲', createdAt: new Date(2026, 9, 19, 9).toISOString() };
+  const earlier = { ...item, id: 'three', summary: '一起度过的周末', createdAt: new Date(2026, 9, 18, 8).toISOString() };
+  fakeBackend({ 'GET /api/roles/r1/memories.*': () => ({ body: { memories: [first, sameDay, earlier], total: 3 } }) });
+  const user = userEvent.setup();
+  render(<MemoryPanel role={owner} onBack={() => {}} onOpenSource={() => {}} />);
+  const timeline = await screen.findByRole('list', { name: '记忆列表' });
+  expect(within(timeline).getAllByRole('heading').map(heading => heading.textContent)).toEqual(['2026年10月19日', '2026年10月18日']);
+  expect(within(timeline).getAllByRole('button').map(button => button.getAttribute('aria-label'))).toEqual([
+    `查看记忆：${item.summary}`, `查看记忆：${sameDay.summary}`, `查看记忆：${earlier.summary}`,
+  ]);
+  await user.click(screen.getByRole('button', { name: `查看记忆：${item.summary}` }));
+  const detail = within(screen.getByRole('region', { name: '记忆详情' }));
+  expect(detail.getByText('记录时间')).not.toBeVisible();
+  await user.click(detail.getByText('更多操作与信息'));
+  expect(detail.getByText('记录时间')).toBeVisible();
+});
+
 it('在列表原位置展开来源和操作，编辑时才打开表单', async () => {
   const onSource = vi.fn();
   const { calls } = fakeBackend({ 'GET /api/roles/r1/memories.*': () => ({ body: { memories: [item], total: 1 } }) });
@@ -192,6 +211,13 @@ it('展开内容可以直接收起，编辑表单独占焦点并回到原行', a
   await user.keyboard('{Escape}');
   expect(opener).toHaveFocus();
   expect(screen.getByRole('region', { name: '记忆详情' })).toBeVisible();
+  const add = screen.getByRole('button', { name: '记住一件事' });
+  await user.click(add);
+  await user.keyboard('{Escape}');
+  expect(add).toHaveFocus();
+  await user.click(opener);
+  expect(screen.queryByRole('region', { name: '记忆详情' })).not.toBeInTheDocument();
+  await user.click(opener);
   await user.keyboard('{Escape}');
   expect(screen.queryByRole('region', { name: '记忆详情' })).not.toBeInTheDocument();
   expect(opener).toHaveFocus();

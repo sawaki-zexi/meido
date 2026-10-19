@@ -5,7 +5,7 @@ import { Avatar, roleStyle } from '../../ui/Avatar';
 import { Icon, IconButton } from '../../ui/Icon';
 import { Dialog } from '../../ui/Dialog';
 import { Notice, Placeholder } from '../../ui/Status';
-import { type Memory, type MemoryOrigin, typeLabels, statusLabels, formatDate } from './types';
+import { type Memory, type MemoryOrigin, typeLabels, statusLabels } from './types';
 import { MemoryInspector } from './MemoryInspector';
 import { MemoryEditor, emptyDraft, type EditorDraft } from './MemoryEditor';
 import { MemoryDocuments } from './MemoryDocuments';
@@ -88,7 +88,7 @@ export function MemoryPanel({ role, onBack, onOpenSource }: {
   const search = (event: FormEvent) => { event.preventDefault(); setPage(1); setFilters(current => ({ ...current, query: queryDraft.trim() })); };
   const resetFilters = () => { setQueryDraft(''); setFilters(initialFilters); setPage(1); };
   const startEdit = (target: Memory | 'new') => {
-    if (!detail) rememberOpener();
+    if (target === 'new' || !detail) rememberOpener();
     setError(''); setEditing(target);
     setDraft(target === 'new' ? { ...emptyDraft } : { summary: target.summary, memoryType: target.memoryType, status: target.status,
       extraJson: JSON.stringify(target.extra || {}, null, 2), sourceRefJson: JSON.stringify(target.sourceRef, null, 2),
@@ -170,15 +170,18 @@ export function MemoryPanel({ role, onBack, onOpenSource }: {
         {managing && <div className="memory-management" role="toolbar" aria-label="批量管理"><label><input type="checkbox" checked={allSelected} disabled={loading || Boolean(listError)} onChange={event => setSelected(event.target.checked ? memories.map(memory => memory.id) : [])} />全选本页</label><span>已选 {selected.length} 条</span>
           <button type="button" className="ghost danger" disabled={!selected.length || loading || Boolean(listError)} onClick={() => { rememberOpener(); setError(''); setConfirmation({ kind: 'batch', ids: [...selected] }); }}>删除选中</button><button type="button" className="ghost" onClick={() => { rememberOpener(); setError(''); setConfirmation({ kind: 'invalidate' }); }}>全部失效</button></div>}
         {loading ? <Placeholder loading>正在读取记忆…</Placeholder> : listError ? <div className="memory-empty"><Icon name="refresh" size={28} /><h2>暂时无法读取记忆</h2><p>{listError}</p><button type="button" className="ghost" onClick={() => setVersion(value => value + 1)}>重新加载</button></div>
-          : memories.length ? <ul className="memory-list" aria-label="记忆列表">{memories.map(memory => <li className={`memory-row${selected.includes(memory.id) ? ' is-selected' : ''}${detail?.id === memory.id ? ' is-expanded' : ''}`} key={memory.id} onKeyDown={event => { if (event.key === 'Escape' && !overlay && detail?.id === memory.id) { event.preventDefault(); event.stopPropagation(); setDetail(null); opener.current?.focus(); } }}>
+          : memories.length ? <ul className="memory-list" aria-label="记忆列表">{memories.map((memory, index) => <li className={`memory-row${selected.includes(memory.id) ? ' is-selected' : ''}${detail?.id === memory.id ? ' is-expanded' : ''}`} key={memory.id} onKeyDown={event => { if (event.key === 'Escape' && !overlay && detail?.id === memory.id) { event.preventDefault(); event.stopPropagation(); setDetail(null); document.getElementById(`${viewId}-${memory.id}-open`)?.focus(); } }}>
+            {(index === 0 || recordDay(memory.createdAt) !== recordDay(memories[index - 1].createdAt)) && <h2 className="memory-day-heading">{recordDay(memory.createdAt)}</h2>}
+            <div className="memory-timeline-entry">
             <div className="memory-row-heading">{managing && <input className="memory-row-check" aria-label={`选择记忆 ${memory.summary}`} type="checkbox" checked={selected.includes(memory.id)} onChange={event => setSelected(current => event.target.checked ? [...current, memory.id] : current.filter(id => id !== memory.id))} />}
-              <button type="button" className="memory-row-open" aria-label={`查看记忆：${memory.summary}`} aria-expanded={detail?.id === memory.id} aria-controls={detail?.id === memory.id ? `${viewId}-${memory.id}-detail` : undefined} onClick={() => { rememberOpener(); setError(''); setDetail(current => current?.id === memory.id ? null : memory); }}>
-                <span className="memory-row-copy"><span className="memory-row-text">{memory.summary}</span><span className="memory-row-meta"><span>{typeLabels[memory.memoryType] ?? memory.memoryType}</span>{memory.status !== 'active' && <span>{statusLabels[memory.status] ?? memory.status}</span>}<time dateTime={memory.createdAt}>{formatDate(memory.createdAt, true)}</time></span></span><span className="memory-row-chevron"><Icon name="back" size={16} /></span>
+              <button type="button" className="memory-row-open" id={`${viewId}-${memory.id}-open`} aria-label={`查看记忆：${memory.summary}`} aria-expanded={detail?.id === memory.id} aria-controls={detail?.id === memory.id ? `${viewId}-${memory.id}-detail` : undefined} onClick={() => { rememberOpener(); setError(''); setDetail(current => current?.id === memory.id ? null : memory); }}>
+                <span className="memory-row-copy"><span className="memory-row-meta"><span className="memory-category">{typeLabels[memory.memoryType] ?? memory.memoryType}</span>{memory.status !== 'active' && <span>{statusLabels[memory.status] ?? memory.status}</span>}<time dateTime={memory.createdAt}>{recordClock(memory.createdAt)}</time></span><span className="memory-row-text">{memory.summary}</span></span><span className="memory-row-chevron"><Icon name="back" size={16} /></span>
               </button>
             </div>
             {detail?.id === memory.id && <div className="memory-inline-detail" role="region" aria-label="记忆详情" id={`${viewId}-${memory.id}-detail`}>
               {!overlay && errorNotice}<MemoryInspector memory={memory} onEdit={() => startEdit(memory)} onSimilar={() => void showSimilar(memory)} onOpenSource={onOpenSource} onAction={kind => { setError(''); setConfirmation({ kind, memory }); }} />
             </div>}
+            </div>
           </li>)}</ul> : <div className="memory-empty"><h2>{filtered ? '没有找到匹配的记忆' : '暂无记忆'}</h2><p>{filtered ? '换个关键词，或调整筛选条件试试。' : '可以先记下一件事。'}</p><button type="button" className="ghost" onClick={filtered ? resetFilters : () => startEdit('new')}>{filtered ? '清除筛选' : '记住第一件事'}</button></div>}
         {!loading && !listError && pageCount > 1 && <nav className="memory-pagination" aria-label="记忆分页"><button type="button" className="ghost" disabled={page <= 1} onClick={() => setPage(value => value - 1)}>上一页</button><span>第 {page} / {pageCount} 页</span><button type="button" className="ghost" disabled={page >= pageCount} onClick={() => setPage(value => value + 1)}>下一页</button></nav>}
       </div> : <div role="tabpanel" id={`${viewId}-documents`} aria-labelledby={`${viewId}-documents-tab`}>
@@ -186,13 +189,23 @@ export function MemoryPanel({ role, onBack, onOpenSource }: {
           : <MemoryDocuments documents={documents} journals={journals} selected={selectedDocument} onSelect={setSelectedDocument} />}
       </div>}
     </div></div>
-    {editing && <Dialog modalFocus returnFocus={returnFocus} title={editing === 'new' ? '记住一件事' : '编辑记忆'} variant="drawer" onClose={() => { if (!saving) { setEditing(null); setError(''); } }}>{errorNotice}<MemoryEditor target={editing} draft={draft} onChange={setDraft} saving={saving} onSubmit={event => void save(event)} onCancel={() => { setEditing(null); setError(''); }} /></Dialog>}
-    {similar && <Dialog modalFocus returnFocus={returnFocus} title="相似记忆" variant="drawer" onClose={() => { ++similarRequest.current; setSimilar(null); }}><div className="memory-similar-intro"><span className="memory-eyebrow">正在比较的记忆</span><p>{similar.source.summary}</p></div>
+    {editing && <Dialog modalFocus returnFocus={returnFocus} title={editing === 'new' ? '记住一件事' : '编辑记忆'} variant="compact" onClose={() => { if (!saving) { setEditing(null); setError(''); } }}>{errorNotice}<MemoryEditor target={editing} draft={draft} onChange={setDraft} saving={saving} onSubmit={event => void save(event)} onCancel={() => { setEditing(null); setError(''); }} /></Dialog>}
+    {similar && <Dialog modalFocus returnFocus={returnFocus} title="相似记忆" variant="compact" onClose={() => { ++similarRequest.current; setSimilar(null); }}><div className="memory-similar-intro"><span className="memory-eyebrow">正在比较的记忆</span><p>{similar.source.summary}</p></div>
       {similar.loading ? <Placeholder loading>正在查找相似记忆…</Placeholder> : similar.items.length ? <ul className="memory-similar-list">{similar.items.map(item => <li key={item.id}><span className="memory-type">{typeLabels[item.memoryType] ?? item.memoryType}</span><p>{item.summary}</p><span className="memory-status">{statusLabels[item.status] ?? item.status}</span></li>)}</ul> : <Placeholder>没有找到相似记忆。</Placeholder>}</Dialog>}
     {confirmation && <Dialog modalFocus returnFocus={returnFocus} title={confirmationLabels[confirmation.kind]} variant="compact" onClose={() => { if (!mutating) { setConfirmation(null); setError(''); } }}><div className="memory-confirm">{errorNotice}
       <p>{confirmation.kind === 'batch' ? `将删除选中的 ${confirmation.ids?.length} 条记忆，无法撤销。` : confirmation.kind === 'invalidate' ? `这会将${role.name}的全部记忆标记为失效。` : confirmation.kind === 'delete' ? '删除后无法撤销。' : '这会改变记录状态，它将不再出现在有效记忆中。'}</p>
       {confirmation.memory && <blockquote>{confirmation.memory.summary}</blockquote>}<div className="form-actions"><button type="button" className="ghost" disabled={mutating} onClick={() => { setConfirmation(null); setError(''); }}>取消</button><button type="button" className="primary danger" disabled={mutating} onClick={() => void confirmMutation()}>{mutating ? '处理中…' : '确认'}</button></div></div></Dialog>}
   </section>;
+}
+
+function recordDay(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '记录日期未知' : date.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+function recordClock(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '时间未知' : date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 function localDateTime(value: string) {
