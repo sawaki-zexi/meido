@@ -48,6 +48,9 @@ class FakeAdapter:
     def sent_samples(self, folder, limit=8):
         return []
 
+    def related_sent(self, folder, participant, limit=24):
+        return self.sent_samples(folder, limit)
+
     def fetch_inbox(self, folder, after_uid=0):
         return [item for item in self.inbox_items if item.folder == folder and int(item.uid) > after_uid]
 
@@ -70,6 +73,7 @@ def make_service(tmp_path):
         return json.dumps({"needsReply": True, "body": "您好，收到您的邮件了。"}, ensure_ascii=False)
 
     service = MailService(store, credential_store=credentials, complete_model=complete, configuration_getter=lambda: object())
+    service.update_preferences(writing_style="", role_access=True)
     service._adapter = lambda connection=None: adapter
     return service, store, adapter
 
@@ -183,7 +187,7 @@ def test_auto_draft_prompt_includes_thread_owner_context_and_sent_samples_withou
         reply_to="sender@example.com", recipients="owner@qq.com", subject="跟进", received_at="2026-10-14T00:00:00Z", body_text="请确认时间。", in_reply_to=root.message_id, references=root.message_id,
     ))
     service.owner_search = lambda _query: asyncio.sleep(0, result=[SimpleNamespace(text="主人偏好：工作日使用简洁称呼。")])
-    adapter.sent_samples = lambda _folder, _limit=8: [SimpleNamespace(subject="已发送样本", body_text="您好，我会在周五回复。")]
+    adapter.sent_samples = lambda _folder, _limit=8: [RemoteMail("42", "Sent", "<sample@example.com>", "sample-thread", "owner@qq.com", "owner@qq.com", "sender@example.com", "已发送样本", "2026-10-10T00:00:00Z", "您好，我会在周五回复。")]
     captured = {}
 
     async def complete(messages, configuration):
@@ -193,11 +197,11 @@ def test_auto_draft_prompt_includes_thread_owner_context_and_sent_samples_withou
 
     service.complete_model = complete
 
-    decision, body = asyncio.run(service._draft_content(current, adapter))
+    result = asyncio.run(service.process_item(current.id, adapter=adapter, folders={"inbox": "INBOX", "sent": "Sent", "drafts": "Drafts"}))
 
     prompt = json.loads(captured["messages"][1]["content"])
-    assert decision is True
-    assert body == "您好，周五可以。"
+    assert result.status == "drafted"
+    assert adapter.draft_rows[0].body == "您好，周五可以。"
     assert any(entry["body"] == "约定周五联系。" for entry in prompt["thread"])
     assert prompt["ownerContext"] == "主人偏好：工作日使用简洁称呼。"
     assert prompt["sentSamples"] == [{"subject": "已发送样本", "body": "您好，我会在周五回复。"}]

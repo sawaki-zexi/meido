@@ -40,6 +40,19 @@ class MailTaskInput(BaseModel):
     requestId: str = Field(min_length=1, max_length=100)
 
 
+class MailAnswerInput(MailTaskInput):
+    questionId: str = Field(min_length=1, max_length=100)
+    answer: str = Field(min_length=1, max_length=4000)
+
+
+@router.post("/items/{mail_id}/answer")
+def answer_question(mail_id: str, data: MailAnswerInput) -> dict[str, object]:
+    try:
+        return {"job": _service().enqueue_answer(mail_id, question_id=data.questionId, answer=data.answer, request_id=data.requestId)}
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
 class MailSyncInput(BaseModel):
     requestId: str = Field(min_length=1, max_length=100)
     process: bool = True
@@ -52,6 +65,21 @@ class ProcessPendingInput(BaseModel):
 
 class ReminderRoleInput(BaseModel):
     roleId: str | None = None
+
+
+class MailPreferencesInput(BaseModel):
+    writingStyle: str = Field(max_length=2000)
+    roleAccess: bool
+
+
+@router.get("/preferences")
+def get_preferences() -> dict[str, object]:
+    return _service().preferences()
+
+
+@router.put("/preferences")
+def save_preferences(data: MailPreferencesInput) -> dict[str, object]:
+    return _service().update_preferences(writing_style=data.writingStyle, role_access=data.roleAccess)
 
 
 @router.get("/status")

@@ -271,6 +271,25 @@ class QQMailAdapter:
             result.append(RemoteMail(uid, folder, message_id, _thread_id(message_id, "", "", self.connection.username), _decode(message.get("From")), _decode(message.get("Reply-To")) or _decode(message.get("From")), _decode(message.get("To")), _decode(message.get("Subject")), str(message.get("Date") or ""), _body(message)))
         return result
 
+    def related_sent(self, folder: str, participant: str, limit: int = 24) -> list[RemoteMail]:
+        participant = participant.strip().casefold()
+        if not re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+", participant):
+            raise MailAdapterError("邮件对象地址无效")
+        result = []
+        for uid, raw in self._fetch(folder, f'TO "{participant}"', max(1, min(limit, 24))):
+            message = BytesParser(policy=email.policy.default).parsebytes(raw)
+            recipients = _decode(message.get("To"))
+            if participant not in {address.casefold() for _, address in email.utils.getaddresses([recipients])}:
+                continue
+            message_id = str(message.get("Message-ID") or f"<sent-uid-{uid}@qq.meido>").strip()
+            parent = str(message.get("In-Reply-To") or "").strip()
+            references = str(message.get("References") or "").strip()
+            result.append(RemoteMail(uid, folder, message_id,
+                _thread_id(message_id, parent, references, self.connection.username),
+                _decode(message.get("From")), _decode(message.get("Reply-To")) or _decode(message.get("From")),
+                recipients, _decode(message.get("Subject")), str(message.get("Date") or ""), _body(message), parent, references))
+        return result
+
     def drafts(self, folder: str) -> list[RemoteDraft]:
         result: list[RemoteDraft] = []
         for uid, raw in self._fetch(folder, "ALL"):

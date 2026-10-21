@@ -18,6 +18,7 @@ const emptyStatus = () => ({
 });
 
 const commonRoutes = (getStatus: () => unknown) => ({
+  "GET /api/mail/preferences": () => ({ body: { writingStyle: "", roleAccess: false } }),
   "GET /api/mail/status": () => ({ body: getStatus() }),
   "GET /api/mail/items\\?limit=50&offset=0": () => ({ body: { items: [] } }),
   "GET /api/roles": () => ({ body: { roles: [] } }),
@@ -26,6 +27,42 @@ const commonRoutes = (getStatus: () => unknown) => ({
 });
 
 describe("MailSettings", () => {
+  it("saves the owner's writing preference and explicit role mail permission", async () => {
+    const { calls } = fakeBackend({
+      ...commonRoutes(emptyStatus),
+      "PUT /api/mail/preferences": () => ({ body: calls.at(-1)?.body }),
+    });
+    render(<MailSettings />);
+    fireEvent.change(await screen.findByLabelText("邮件写作偏好"), { target: { value: "简短，不额外承诺" } });
+    fireEvent.click(screen.getByLabelText("允许角色管理邮件"));
+    fireEvent.click(screen.getByRole("button", { name: "保存邮件偏好" }));
+    await screen.findByText("邮件偏好已保存");
+    expect(calls.find((call) => call.method === "PUT" && call.path === "/api/mail/preferences")?.body).toEqual({ writingStyle: "简短，不额外承诺", roleAccess: true });
+  });
+
+  it("shows the persisted question and sources, then submits the owner's answer", async () => {
+    const status = { ...emptyStatus(), username: "owner@qq.com", verified: true, autoDraftReady: true, items: 1 };
+    const item = { id: "mail-1", threadId: "thread-1", sender: "teacher@example.com", subject: "面试邀请", receivedAt: "2026-10-20T09:00:00Z", status: "needs_input", needsReply: true, draftId: null, lastError: null };
+    const preparation = { id: "prep-1", decision: "needs_input", reason: "还需要主人决定", questions: ["是否接受周五面试？"], createdAt: "2026-10-20T09:01:00Z", model: "test", stale: false,
+      sources: [{ kind: "owner_knowledge", id: "note-1", title: "面试计划", location: "第二段", url: "https://example.com/notes" }], warnings: ["相关已发送邮件读取失败"] };
+    let answered = false;
+    const { calls } = fakeBackend({
+      ...commonRoutes(() => status),
+      "GET /api/mail/items\\?limit=50&offset=0": () => ({ body: { items: [item] } }),
+      "GET /api/mail/items/mail-1": () => ({ body: { item: { ...item, body: "周五能参加吗？", replyTo: "teacher@example.com", status: answered ? "drafted" : "needs_input" }, thread: [], drafts: [], preparation: answered ? { ...preparation, id: "prep-2", decision: "draft", questions: [] } : preparation } }),
+      "POST /api/mail/items/mail-1/answer": () => { answered = true; return { body: { job: { jobId: "answer-job" } } }; },
+      "GET /api/mail/jobs/answer-job": () => ({ body: { job: { jobId: "answer-job", status: "completed", result: { status: "drafted" } } } }),
+    });
+    render(<MailSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: /面试邀请/ }));
+    await screen.findByText("是否接受周五面试？");
+    expect(screen.getByText("相关已发送邮件读取失败")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "面试计划" })).toHaveAttribute("href", "https://example.com/notes");
+    fireEvent.change(screen.getByLabelText("补充答案"), { target: { value: "可以参加" } });
+    fireEvent.click(screen.getByRole("button", { name: "补充并继续起草" }));
+    await screen.findByText("补充已处理：草稿已创建", {}, { timeout: 3000 });
+    expect(calls.find((call) => call.method === "POST" && call.path === "/api/mail/items/mail-1/answer")?.body).toMatchObject({ questionId: "prep-1", answer: "可以参加" });
+  });
   it("requires the QQ web draft round-trip before marking the account ready", async () => {
     let status = emptyStatus();
     const { calls } = fakeBackend({

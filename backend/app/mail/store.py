@@ -98,6 +98,10 @@ class MailStore:
             CREATE TABLE IF NOT EXISTS mail_settings (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS mail_preparations (
+                id TEXT PRIMARY KEY, mail_id TEXT NOT NULL, task_key TEXT NOT NULL UNIQUE,
+                payload_json TEXT NOT NULL, created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS mail_audit (
                 id TEXT PRIMARY KEY, operation TEXT NOT NULL, source_role_id TEXT NOT NULL,
                 run_id TEXT NOT NULL, mail_id TEXT, status TEXT NOT NULL, error TEXT,
@@ -113,9 +117,13 @@ class MailStore:
             columns = {row[1] for row in db.execute("PRAGMA table_info(mail_items)")}
             if "reply_to" not in columns:
                 db.execute("ALTER TABLE mail_items ADD COLUMN reply_to TEXT NOT NULL DEFAULT ''")
+            if "direction" not in columns:
+                db.execute("ALTER TABLE mail_items ADD COLUMN direction TEXT NOT NULL DEFAULT 'inbound'")
             draft_columns = {row[1] for row in db.execute("PRAGMA table_info(mail_drafts)")}
             if "task_key" not in draft_columns:
                 db.execute("ALTER TABLE mail_drafts ADD COLUMN task_key TEXT NOT NULL DEFAULT ''")
+            if "preparation_id" not in draft_columns:
+                db.execute("ALTER TABLE mail_drafts ADD COLUMN preparation_id TEXT NOT NULL DEFAULT ''")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS mail_drafts_task_key ON mail_drafts(task_key) WHERE task_key != ''")
             task_columns = {row[1] for row in db.execute("PRAGMA table_info(mail_tasks)")}
             if "account_scope" not in task_columns:
@@ -128,6 +136,8 @@ class MailStore:
                 db.execute("ALTER TABLE mail_reminder_batches ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0")
             if "failure_summary_json" not in batch_columns:
                 db.execute("ALTER TABLE mail_reminder_batches ADD COLUMN failure_summary_json TEXT NOT NULL DEFAULT '[]'")
+            if "question_ids_json" not in batch_columns:
+                db.execute("ALTER TABLE mail_reminder_batches ADD COLUMN question_ids_json TEXT NOT NULL DEFAULT '[]'")
             active = db.execute("SELECT username FROM mail_connection WHERE id=1").fetchone()
             scope = _account_scope(str(active[0])) if active and active[0] else ""
             if scope:
@@ -244,9 +254,9 @@ class MailStore:
 
     @staticmethod
     def _item(row: sqlite3.Row) -> MailItem:
-        return MailItem(id=row["id"], source_uid=row["source_uid"], mailbox=row["mailbox"], message_id=row["message_id"], thread_id=row["thread_id"], sender=row["sender"], reply_to=row["reply_to"], recipients=row["recipients"], subject=row["subject"], received_at=row["received_at"], body_text=row["body_text"], in_reply_to=row["in_reply_to"], references=row["references_text"], status=row["status"], needs_reply=None if row["needs_reply"] is None else bool(row["needs_reply"]), draft_id=row["draft_id"], last_error=row["last_error"], created_at=row["created_at"], updated_at=row["updated_at"])
+        return MailItem(id=row["id"], source_uid=row["source_uid"], mailbox=row["mailbox"], message_id=row["message_id"], thread_id=row["thread_id"], sender=row["sender"], reply_to=row["reply_to"], recipients=row["recipients"], subject=row["subject"], received_at=row["received_at"], body_text=row["body_text"], in_reply_to=row["in_reply_to"], references=row["references_text"], status=row["status"], needs_reply=None if row["needs_reply"] is None else bool(row["needs_reply"]), draft_id=row["draft_id"], last_error=row["last_error"], created_at=row["created_at"], updated_at=row["updated_at"], direction=row["direction"])
 
-    def upsert_item(self, remote: Any, *, account: str = "") -> tuple[MailItem, bool]:
+    def upsert_item(self, remote: Any, *, account: str = "", direction: str = "inbound") -> tuple[MailItem, bool]:
         now = _now()
         with self._connect() as db:
             scope = _account_scope(account)
@@ -271,12 +281,18 @@ class MailStore:
             if not thread_id:
                 thread_id = remote_thread_id if scope and len(remote_thread_id) == 32 and all(char in "0123456789abcdef" for char in remote_thread_id.casefold()) else _thread_scope(remote_thread_id, account)
             existing = db.execute("SELECT * FROM mail_items WHERE source_uid=?", (source_uid,)).fetchone()
+            if existing is None and scope:
+                existing = db.execute("SELECT * FROM mail_items WHERE message_id=? AND source_uid LIKE ?", (remote.message_id, f"{scope}::%")).fetchone()
             if existing:
                 db.execute("UPDATE mail_items SET mailbox=?,message_id=?,thread_id=?,sender=?,reply_to=?,recipients=?,subject=?,received_at=?,body_text=?,in_reply_to=?,references_text=?,updated_at=? WHERE id=?", (remote.folder, remote.message_id, thread_id, remote.sender, remote.reply_to, remote.recipients, remote.subject, remote.received_at, remote.body_text, remote.in_reply_to, remote.references, now, existing["id"]))
+                if direction == "outbound" or existing["direction"] == "outbound":
+                    db.execute("UPDATE mail_items SET direction='outbound',status='sent' WHERE id=?", (existing["id"],))
                 row = db.execute("SELECT * FROM mail_items WHERE id=?", (existing["id"],)).fetchone()
                 return self._item(row), False
             item_id = f"mail-{uuid.uuid4().hex}"
             db.execute("INSERT INTO mail_items(id,source_uid,mailbox,message_id,thread_id,sender,reply_to,recipients,subject,received_at,body_text,in_reply_to,references_text,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (item_id, source_uid, remote.folder, remote.message_id, thread_id, remote.sender, remote.reply_to, remote.recipients, remote.subject, remote.received_at, remote.body_text, remote.in_reply_to, remote.references, "new", now, now))
+            if direction == "outbound":
+                db.execute("UPDATE mail_items SET direction='outbound',status='sent' WHERE id=?", (item_id,))
             row = db.execute("SELECT * FROM mail_items WHERE id=?", (item_id,)).fetchone()
             return self._item(row), True
 
@@ -298,7 +314,7 @@ class MailStore:
     def list_items(self, *, status: str | None = None, limit: int = 100, offset: int = 0, account: str = "") -> list[MailItem]:
         sql = "SELECT * FROM mail_items"
         args: list[object] = []
-        filters = []
+        filters = ["direction='inbound'"]
         if status:
             filters.append("status=?")
             args.append(status)
@@ -322,7 +338,7 @@ class MailStore:
         args: tuple[object, ...] = (*statuses, f"{scope}::%") if scope else statuses
         with self._connect() as db:
             rows = db.execute(
-                f"SELECT * FROM mail_items WHERE status IN ({placeholders}){account_clause} ORDER BY received_at,created_at",
+                f"SELECT * FROM mail_items WHERE direction='inbound' AND status IN ({placeholders}){account_clause} ORDER BY received_at,created_at",
                 args,
             ).fetchall()
         return [self._item(row) for row in rows]
@@ -446,7 +462,7 @@ class MailStore:
 
     def count_items(self, *, account: str = "") -> int:
         scope = _account_scope(account)
-        sql, args = ("SELECT COUNT(*) FROM mail_items WHERE source_uid LIKE ?", (f"{scope}::%",)) if scope else ("SELECT COUNT(*) FROM mail_items", ())
+        sql, args = ("SELECT COUNT(*) FROM mail_items WHERE direction='inbound' AND source_uid LIKE ?", (f"{scope}::%",)) if scope else ("SELECT COUNT(*) FROM mail_items WHERE direction='inbound'", ())
         with self._connect() as db:
             row = db.execute(sql, args).fetchone()
         return int(row[0]) if row else 0
@@ -528,6 +544,43 @@ class MailStore:
             row = db.execute("SELECT value FROM mail_settings WHERE key=?", (key,)).fetchone()
         return str(row[0]) if row else default
 
+    def thread_fingerprint(self, item: MailItem, *, account: str) -> str:
+        rows = self.thread_items(item.thread_id, account=account)
+        value = [(row.id, row.message_id, row.sender, row.recipients, row.subject, row.body_text,
+                  row.in_reply_to, row.references, row.direction) for row in sorted(rows, key=lambda row: row.id)]
+        return _hash(json.dumps(value, ensure_ascii=False))
+
+    def save_preparation(self, mail_id: str, task_key: str, payload: dict[str, object]) -> dict[str, object]:
+        with self._connect() as db:
+            db.execute("INSERT OR IGNORE INTO mail_preparations(id,mail_id,task_key,payload_json,created_at) VALUES(?,?,?,?,?)",
+                       (f"prep-{uuid.uuid4().hex}", mail_id, task_key, json.dumps(payload, ensure_ascii=False), _now()))
+            row = db.execute("SELECT * FROM mail_preparations WHERE task_key=?", (task_key,)).fetchone()
+        return self._preparation(row)
+
+    @staticmethod
+    def _preparation(row) -> dict[str, object] | None:
+        if row is None:
+            return None
+        return {**json.loads(row["payload_json"]), "id": row["id"], "mailId": row["mail_id"],
+                "taskKey": row["task_key"], "createdAt": row["created_at"]}
+
+    def preparation(self, *, account: str, preparation_id: str = "", task_key: str = "", mail_id: str = "") -> dict[str, object] | None:
+        scope = _account_scope(account)
+        column, value = ("p.id", preparation_id) if preparation_id else (("p.task_key", task_key) if task_key else ("p.mail_id", mail_id))
+        with self._connect() as db:
+            row = db.execute(f"SELECT p.* FROM mail_preparations p JOIN mail_items i ON i.id=p.mail_id WHERE {column}=? AND i.source_uid LIKE ? ORDER BY p.rowid DESC LIMIT 1",
+                             (value, f"{scope}::%")).fetchone()
+        return self._preparation(row)
+
+    def attach_preparation(self, draft_id: str, preparation_id: str) -> None:
+        with self._connect() as db:
+            db.execute("UPDATE mail_drafts SET preparation_id=? WHERE id=?", (preparation_id, draft_id))
+
+    def draft_preparation(self, draft_id: str, *, account: str) -> dict[str, object] | None:
+        with self._connect() as db:
+            row = db.execute("SELECT preparation_id FROM mail_drafts WHERE id=?", (draft_id,)).fetchone()
+        return self.preparation(account=account, preparation_id=row[0]) if row and row[0] else None
+
     def set_setting(self, key: str, value: str) -> None:
         with self._connect() as db:
             db.execute("INSERT INTO mail_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at", (key, value, _now()))
@@ -544,6 +597,7 @@ class MailStore:
         failure_count: int = 0,
         failure_summaries: list[str] | None = None,
         account: str = "",
+        question_ids: list[str] | None = None,
     ) -> bool:
         account = account or self.connection().username
         with self._connect() as db:
@@ -553,6 +607,8 @@ class MailStore:
                 VALUES(?,?,?,?,?,?,?)""",
                 (batch_id, _account_scope(account), json.dumps(draft_ids), "pending", max(0, int(failure_count)), json.dumps(failure_summaries or [], ensure_ascii=False), _now()),
             )
+            if cursor.rowcount:
+                db.execute("UPDATE mail_reminder_batches SET question_ids_json=? WHERE batch_id=?", (json.dumps(question_ids or []), batch_id))
             return cursor.rowcount > 0
 
     def pending_reminder_batches(self, limit: int = 50, *, account: str = "") -> list[dict[str, object]]:
@@ -568,6 +624,7 @@ class MailStore:
             "batchId": row["batch_id"], "draftIds": json.loads(row["draft_ids_json"]),
             "status": row["status"], "failureCount": int(row["failure_count"] or 0),
             "failureSummaries": json.loads(row["failure_summary_json"] or "[]"),
+            "questionIds": json.loads(row["question_ids_json"] or "[]"),
             "roleId": row["role_id"], "lastError": row["last_error"],
             "createdAt": row["created_at"], "deliveredAt": row["delivered_at"],
         }
@@ -627,6 +684,9 @@ class MailStore:
     def enqueue_job(self, *, job_id: str, request_key: str, kind: str, target_id: str = "", payload: dict[str, object] | None = None, account: str = "") -> dict[str, object]:
         now = _now()
         with self._connect() as db:
+            existing = db.execute("SELECT * FROM mail_jobs WHERE request_key=?", (request_key,)).fetchone()
+            if existing is not None and json.loads(existing["payload_json"]) != (payload or {}):
+                raise ValueError("同一请求标识不能提交不同内容")
             db.execute(
                 """INSERT OR IGNORE INTO mail_jobs
                 (id,request_key,kind,target_id,account_scope,payload_json,status,created_at,updated_at)

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 
-MailStatus = Literal["new", "no_reply", "queued", "processing", "drafted", "failed", "uncertain"]
+MailStatus = Literal["new", "no_reply", "queued", "processing", "drafted", "failed", "uncertain", "sent", "needs_input"]
 DraftStatus = Literal["created", "manual_modified", "stale", "missing", "uncertain"]
 
 
@@ -47,6 +47,7 @@ class MailItem:
     last_error: str | None = None
     created_at: str = ""
     updated_at: str = ""
+    direction: Literal["inbound", "outbound"] = "inbound"
 
 
 @dataclass(frozen=True, slots=True)

@@ -505,6 +505,17 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .mail-draft > div strong { color: var(--rose-deep); }
 .mail-draft p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
 .mail-draft small { overflow-wrap: anywhere; }
+.mail-preparation { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fffdfd; }
+.mail-preparation p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.mail-preparation summary { cursor: pointer; color: var(--ink-soft); font-size: 13px; }
+.mail-sources { display: grid; gap: 6px; margin: 8px 0 0; padding-left: 18px; }
+.mail-sources li { display: grid; gap: 2px; min-width: 0; }
+.mail-sources button, .mail-sources a { width: fit-content; padding: 0; border: 0; background: transparent; color: var(--rose-deep); text-align: left; font-size: 13px; text-decoration: none; }
+.mail-sources button:hover, .mail-sources a:hover { text-decoration: underline; }
+.mail-sources small { color: var(--ink-faint); overflow-wrap: anywhere; }
+.mail-question { display: grid; gap: 10px; padding: 12px; border-left: 3px solid var(--rose); background: var(--side); }
+.mail-question h5, .mail-question p { margin: 0; }
+.mail-question ol { margin: 0; padding-left: 22px; }
 .mail-settings select { min-width: 150px; max-width: 100%; }
 .mail-reminder-batches { display: grid; gap: 6px; }
 .mail-reminder-batch { display: grid; gap: 5px; min-width: 0; padding: 9px 10px; border-left: 2px solid var(--line); background: var(--side); }

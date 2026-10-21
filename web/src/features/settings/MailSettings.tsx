@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../api/client";
 import { Icon } from "../../ui/Icon";
 import { Notice, Placeholder } from "../../ui/Status";
+import { MailPreparation, type Preparation } from "./MailPreparation";
 
 type MailStatus = {
   host: string; port: number; username: string; useSsl: boolean; enabled: boolean; paused: boolean;
@@ -14,14 +15,15 @@ type MailStatus = {
 type MailItem = { id: string; threadId: string; sender: string; subject: string; receivedAt: string; status: string; needsReply: boolean | null; draftId: string | null; lastError: string | null; draft?: { id: string; status: string; stale: boolean; remoteMissing: boolean; recipients: string } };
 type MailDetail = {
   item: { id: string; threadId: string; sender: string; replyTo: string; subject: string; receivedAt: string; body: string; status: string; lastError: string | null };
-  thread: { id: string; sender: string; subject: string; receivedAt: string; body: string; status: string }[];
-  drafts: { id: string; status: string; stale: boolean; remoteMissing: boolean; body: string; subject: string; recipients: string; updatedAt: string }[];
+  thread: { id: string; sender: string; subject: string; receivedAt: string; body: string; status: string; direction?: string }[];
+  drafts: { id: string; status: string; stale: boolean; remoteMissing: boolean; body: string; subject: string; recipients: string; updatedAt: string; preparation?: Preparation | null }[];
+  preparation?: Preparation | null;
 };
 type Role = { id: string; name: string };
 type MailJob = { jobId: string; status: "queued" | "running" | "completed" | "failed"; error: string | null; result: unknown };
 type ReminderBatch = { batchId: string; status: "pending" | "failed" | "delivered" | "completed"; failureCount: number; failureSummaries: string[]; lastError: string | null; createdAt: string; deliveredAt: string | null };
 
-const labels: Record<string, string> = { new: "待处理", no_reply: "无需回复", queued: "排队中", processing: "处理中", drafted: "草稿已创建", failed: "失败", uncertain: "待核实", created: "QQ 草稿", manual_modified: "主人已修改", stale: "可能过时", missing: "已不在草稿箱" };
+const labels: Record<string, string> = { new: "待处理", no_reply: "无需回复", needs_input: "待你补充", sent: "已发送", queued: "排队中", processing: "处理中", drafted: "草稿已创建", failed: "失败", uncertain: "待核实", created: "QQ 草稿", manual_modified: "主人已修改", stale: "可能过时", missing: "已不在草稿箱" };
 const requestId = () => crypto.randomUUID();
 const pageSize = 50;
 
@@ -44,16 +46,23 @@ export function MailSettings() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const recoveringJob = useRef(false);
+  const preferencesLoaded = useRef(false);
+  const [writingStyle, setWritingStyle] = useState("");
+  const [roleAccess, setRoleAccess] = useState(false);
+  const [answer, setAnswer] = useState("");
+  const answerAttempt = useRef<{ questionId: string; answer: string; requestId: string } | null>(null);
 
   const refresh = async () => {
-    const [mail, list, roleData, reminder, batches] = await Promise.all([
+    const [mail, list, roleData, reminder, batches, preferences] = await Promise.all([
       api<MailStatus>("/api/mail/status"),
       api<{ items: MailItem[] }>(`/api/mail/items?limit=${pageSize}&offset=${page * pageSize}`),
       api<{ roles: Role[] }>("/api/roles"),
       api<{ roleId: string | null }>("/api/mail/reminder-role"),
       api<{ batches: ReminderBatch[] }>("/api/mail/reminder-batches?limit=8"),
+      api<{ writingStyle: string; roleAccess: boolean }>("/api/mail/preferences"),
     ]);
     setStatus(mail); setItems(list.items); setRoles(roleData.roles); setReminderRoleId(reminder.roleId ?? ""); setReminderBatches(batches.batches);
+    if (!preferencesLoaded.current) { setWritingStyle(preferences.writingStyle); setRoleAccess(preferences.roleAccess); preferencesLoaded.current = true; }
     if (mail.username) setUsername((value) => value || mail.username);
     if (mail.candidate?.username) { setUsername((value) => value || mail.candidate!.username); setHost(mail.candidate.host); setPort(mail.candidate.port); }
     if (selectedId && list.items.some((item) => item.id === selectedId)) {
@@ -103,7 +112,7 @@ export function MailSettings() {
   }, []);
 
   const select = async (id: string) => {
-    setSelectedId(id); setError("");
+    setSelectedId(id); setError(""); setAnswer(""); answerAttempt.current = null;
     try { setDetail(await api<MailDetail>(`/api/mail/items/${encodeURIComponent(id)}`)); }
     catch (cause) { setError(errorMessage(cause, "无法读取邮件详情")); }
   };
@@ -126,9 +135,20 @@ export function MailSettings() {
       () => api(`/api/mail/items/${encodeURIComponent(selectedId)}/${path}`, { method: "POST", body: JSON.stringify({ requestId: requestId() }) }),
       (result) => {
         const value = result as { status?: string; draftId?: string | null };
-        return kind === "regenerate" ? "已创建新的 QQ 草稿，原草稿会保留" : value.status === "drafted" ? "回复草稿已写入 QQ 草稿箱" : value.status === "no_reply" ? "该邮件无需回复" : "邮件处理完成";
+        return value.status === "drafted" ? (kind === "regenerate" ? "已创建新的 QQ 草稿，原草稿会保留" : "回复草稿已写入 QQ 草稿箱") : value.status === "no_reply" ? "该邮件无需回复" : value.status === "needs_input" ? "需要你补充信息后继续" : "邮件处理完成";
       },
     );
+  };
+
+  const submitAnswer = () => {
+    const questionId = detail?.preparation?.id;
+    if (!questionId || !answer.trim()) return;
+    if (answerAttempt.current?.questionId !== questionId || answerAttempt.current.answer !== answer.trim()) {
+      answerAttempt.current = { questionId, answer: answer.trim(), requestId: requestId() };
+    }
+    const payload = answerAttempt.current;
+    return runJob(() => api(`/api/mail/items/${encodeURIComponent(selectedId)}/answer`, { method: "POST", body: JSON.stringify(payload) }),
+      (result) => `补充已处理：${labels[(result as { status: string }).status] ?? "请查看结果"}`);
   };
 
   if (loading) return <Placeholder loading>正在加载邮件设置…</Placeholder>;
@@ -150,14 +170,31 @@ export function MailSettings() {
       {status?.autoDraftReady && <p className="mail-verified-line">已验证 QQ 网页端可编辑和手动发送草稿。Meido 不会发送、删除、归档或移动邮件。</p>}
     </section>
 
+    <section className="mail-section" aria-labelledby="mail-preferences-title">
+      <h3 id="mail-preferences-title">回复偏好</h3>
+      <div className="field"><label htmlFor="mail-writing-style">邮件写作偏好</label><textarea id="mail-writing-style" maxLength={2000} rows={3} value={writingStyle} disabled={busy} placeholder="例如：简短、直接，保留原有称呼，不做额外承诺" onChange={(event) => setWritingStyle(event.target.value)} /></div>
+      <label className="mail-process-option"><input type="checkbox" checked={roleAccess} disabled={busy} onChange={(event) => setRoleAccess(event.target.checked)} />允许角色管理邮件</label>
+      <p className="muted">允许角色在主人对话中读取邮件、准备草稿和提交补充答案。最终发送仍由你完成。</p>
+      <button type="button" disabled={busy} onClick={() => void run(() => api("/api/mail/preferences", { method: "PUT", body: JSON.stringify({ writingStyle, roleAccess }) }), () => "邮件偏好已保存")}>保存邮件偏好</button>
+    </section>
+
     <section className="mail-section" aria-labelledby="mail-operations-title">
       <div className="mail-section-heading"><div><h3 id="mail-operations-title">邮件处理</h3><p className="muted">自动检查每分钟运行；暂停后仍可手动同步和查看</p></div><div className="mail-action-row"><button type="button" disabled={busy || !status?.verified} onClick={() => void runJob(() => api("/api/mail/sync", { method: "POST", body: JSON.stringify({ process: processOnSync, requestId: requestId() }) }), (result) => { const value = result as { discovered?: number; processed?: number; errors?: string[] }; return `同步完成：发现 ${value.discovered ?? 0} 封，处理 ${value.processed ?? 0} 封，失败 ${value.errors?.length ?? 0} 封`; })}>立即同步</button><button type="button" className="primary" disabled={busy || !status?.autoDraftReady} onClick={() => void runJob(() => api("/api/mail/process-pending", { method: "POST", body: JSON.stringify({ includeUncertain: true, requestId: requestId() }) }), (result) => { const value = result as { processed?: number; errors?: string[] }; return `处理完成：${value.processed ?? 0} 封，失败 ${value.errors?.length ?? 0} 封`; })}>处理全部待处理邮件</button></div></div>
       <label className="mail-process-option"><input type="checkbox" checked={processOnSync} disabled={busy} onChange={(event) => setProcessOnSync(event.target.checked)} />同步后处理新邮件</label>
       {status?.lastErrors?.length ? <ul className="mail-errors">{status.lastErrors.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul> : null}
       <div className="mail-workspace"><div><div className="mail-list" aria-label="已同步邮件">{items.length ? items.map((item) => <button key={item.id} type="button" className={`mail-list-item${selectedId === item.id ? " is-selected" : ""}`} onClick={() => void select(item.id)}><span className="mail-item-title">{item.subject || "（无主题）"}</span><span className="mail-item-sender">{item.sender}</span><span className="mail-item-meta"><span>{labels[item.status] ?? item.status}{item.draft?.stale ? " · 可能过时" : ""}</span><time>{item.receivedAt ? new Date(item.receivedAt).toLocaleDateString() : ""}</time></span>{item.lastError && <span className="mail-item-error">{item.lastError}</span>}</button>) : <p className="mail-empty">还没有同步邮件</p>}</div><div className="mail-pagination"><button type="button" disabled={busy || page === 0} aria-label="上一页邮件" onClick={() => setPage((value) => Math.max(0, value - 1))}>←</button><span>{page + 1} / {maxPage + 1}</span><button type="button" disabled={busy || page >= maxPage} aria-label="下一页邮件" onClick={() => setPage((value) => Math.min(maxPage, value + 1))}>→</button></div></div>
         <div className="mail-detail">{detail ? <><div className="mail-detail-heading"><div><span className="muted">{detail.item.sender} · {new Date(detail.item.receivedAt).toLocaleString()}</span><h4>{detail.item.subject || "（无主题）"}</h4><span className="muted">回复至 {detail.item.replyTo}</span></div><a href="https://mail.qq.com/" target="_blank" rel="noreferrer" aria-label="在 QQ 邮箱中审核草稿">打开 QQ 邮箱 ↗</a></div>
-          <div className="mail-thread" aria-label="邮件线程">{detail.thread.map((entry) => <article key={entry.id} className={`mail-thread-message${entry.id === detail.item.id ? " is-current" : ""}`}><header><strong>{entry.sender}</strong><time>{entry.receivedAt ? new Date(entry.receivedAt).toLocaleString() : ""}</time></header><h5>{entry.subject || "（无主题）"}</h5><div className="mail-body">{entry.body || "（邮件没有正文）"}</div></article>)}</div>
-          {detail.drafts.map((draft) => <section key={draft.id} className="mail-draft"><div><strong>{labels[draft.status] ?? draft.status}</strong><span>{draft.recipients}</span>{draft.stale && <span>可能已过时</span>}{draft.remoteMissing && <span>QQ 草稿箱中已不存在</span>}</div><p>{draft.body}</p><small>{new Date(draft.updatedAt).toLocaleString()}</small></section>)}
+          {detail.preparation && <>
+            <MailPreparation value={detail.preparation} onSelect={(id) => void select(id)} />
+            {detail.preparation.decision === "needs_input" && <section className="mail-question" aria-label="待补充问题">
+              <strong>待你补充</strong><ul>{detail.preparation.questions.map((question, index) => <li key={index}>{question}</li>)}</ul>
+              <div className="field"><label htmlFor="mail-answer">补充答案</label><textarea id="mail-answer" rows={3} maxLength={4000} value={answer} disabled={busy || detail.preparation.stale} onChange={(event) => setAnswer(event.target.value)} /></div>
+              <button type="button" className="primary" disabled={busy || !answer.trim() || detail.preparation.stale} onClick={() => void submitAnswer()}>补充并继续起草</button>
+            </section>}
+            {detail.preparation.stale && <button type="button" disabled={busy || !status?.autoDraftReady} onClick={() => void task("regenerate")}>重新判断邮件</button>}
+          </>}
+          <div className="mail-thread" aria-label="邮件线程">{detail.thread.map((entry) => <article key={entry.id} className={`mail-thread-message${entry.id === detail.item.id ? " is-current" : ""}`}><header><strong>{entry.sender}</strong><span>{entry.direction === "outbound" ? "已发送" : "来信"}</span><time>{entry.receivedAt ? new Date(entry.receivedAt).toLocaleString() : ""}</time></header><h5>{entry.subject || "（无主题）"}</h5><div className="mail-body">{entry.body || "（邮件没有正文）"}</div></article>)}</div>
+          {detail.drafts.map((draft) => <section key={draft.id} className="mail-draft"><div><strong>{labels[draft.status] ?? draft.status}</strong><span>{draft.recipients}</span>{draft.stale && <span>可能已过时</span>}{draft.remoteMissing && <span>QQ 草稿箱中已不存在</span>}</div><p>{draft.body}</p><small>{new Date(draft.updatedAt).toLocaleString()}</small>{draft.preparation && draft.preparation.id !== detail.preparation?.id && <MailPreparation value={draft.preparation} onSelect={(id) => void select(id)} />}</section>)}
           <div className="mail-action-row"><button type="button" disabled={busy || !status?.autoDraftReady || ["drafted", "no_reply"].includes(detail.item.status)} onClick={() => void task("process")}>处理邮件</button>{["failed", "uncertain"].includes(detail.item.status) && <button type="button" disabled={busy} onClick={() => void task("retry")}>安全重试</button>}{detail.drafts.length > 0 && <button type="button" disabled={busy || !status?.autoDraftReady} onClick={() => void task("regenerate")}>创建新草稿版本</button>}<button type="button" disabled={busy || !status?.autoDraftReady || !detail.thread.some((entry) => ["new", "failed", "uncertain"].includes(entry.status))} onClick={() => void runJob(() => api(`/api/mail/threads/${encodeURIComponent(detail.item.threadId)}/process`, { method: "POST", body: JSON.stringify({ requestId: requestId() }) }), (result) => { const value = result as { processed?: number; errors?: string[] }; return `线程处理完成：${value.processed ?? 0} 封，失败 ${value.errors?.length ?? 0} 封`; })}>处理整个线程</button></div>{detail.item.lastError && <p className="mail-item-error">{detail.item.lastError}</p>}</> : <p className="mail-empty">选择一封邮件查看正文和草稿状态</p>}</div>
       </div>
     </section>

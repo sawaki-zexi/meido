@@ -18,6 +18,49 @@ from backend.app.agent_runtime import PluginContribution, PluginManifest, Plugin
 from backend.app.ai.model_types import ModelAssistantMessage, ModelStreamDone, ModelTextBlock
 
 
+@pytest.mark.parametrize("granted", [False, True])
+def test_owner_mail_permission_controls_real_chat_and_revokes_frozen_tool(role_api, tmp_path, monkeypatch, granted):
+    from backend.app.mail.agent import MailManageTool
+    from backend.app.mail.models import MailConnection
+    from backend.app.mail.service import MailService
+    from backend.app.mail.store import MailStore
+
+    mail_store = MailStore(tmp_path / "mail.db")
+    mail_store.save_connection(MailConnection("imap.qq.com", 993, "owner@qq.com", verified=True, auto_draft_ready=True))
+    service = MailService(mail_store)
+    service.update_preferences(writing_style="", role_access=granted)
+    monkeypatch.setattr(main, "mail_service", service)
+    monkeypatch.setattr(main, "mail_manage_tool", MailManageTool(service))
+
+    class Adapter:
+        calls = 0
+        schemas = None
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            self.calls += 1
+            if self.calls == 1:
+                self.schemas = tools
+                yield ModelToolCall("mail-first", "mail.manage", {"action": "status"})
+            elif self.calls == 2 and granted:
+                service.update_preferences(writing_style="", role_access=False)
+                yield ModelToolCall("mail-revoked", "mail.manage", {"action": "status"})
+            else:
+                yield ModelTextDelta("邮件权限已核对")
+
+    adapter = Adapter()
+    monkeypatch.setattr(main, "model_adapter", adapter)
+    role = role_api.post("/api/roles", json={"name": "邮件助手", "profile": {"profile": "设定"},
+        "agentConfig": {"enabledTools": ["mail.manage"]}}).json()["role"]
+    response = role_api.post(f"/api/roles/{role['id']}/messages", json={"content": "帮我查看邮件状态"})
+    assert "assistant_completed" in response.text
+    names = {tool["function"]["name"] for tool in adapter.schemas}
+    assert ("mail.manage" in names) is granted
+    results = [row for row in main.session_store.runtime_messages(f"role:{role['id']}") if isinstance(row, ToolResultMessage)]
+    assert results[0].is_error is (not granted)
+    if granted:
+        assert results[1].is_error
+
+
 @pytest.fixture
 def role_api(tmp_path, monkeypatch, local_platform_only):
     initialize_databases(tmp_path / "data")

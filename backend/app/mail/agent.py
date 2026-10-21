@@ -15,19 +15,23 @@ class MailManageTool:
             "You may check status, sync, enable or pause processing, list or read synchronized mail, "
             "list QQ drafts, inspect recent sent-message samples, process pending mail or a thread, "
             "retry work, resume processing, create a draft, or create a new draft version. When asked to modify a draft, "
-            "create a new version and preserve the existing one. Never send, delete, archive, "
+            "create a new version and preserve the existing one. Use read for persisted questions and sources. "
+            "Use answer with the exact questionId and the owner's explicit answer to submit a job, and job to query it. "
+            "Never send, delete, archive, "
             "or move mail. Draft creation writes only to QQ Drafts; the owner reviews and sends there. "
             "Use an exact mailId or threadId from the list."
         ),
         input_schema={
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["status", "sync", "enable", "pause", "resume", "list", "read", "drafts", "sent_samples", "process_pending", "process_thread", "process", "retry", "regenerate", "draft"]},
+                "action": {"type": "string", "enum": ["status", "sync", "enable", "pause", "resume", "list", "read", "drafts", "sent_samples", "process_pending", "process_thread", "process", "retry", "regenerate", "draft", "answer", "job"]},
                 "mailId": {"type": "string", "maxLength": 100},
                 "draftId": {"type": "string", "maxLength": 100},
                 "threadId": {"type": "string", "maxLength": 200},
                 "body": {"type": "string", "maxLength": 12000},
                 "requestId": {"type": "string", "maxLength": 100},
+                "questionId": {"type": "string", "maxLength": 100},
+                "jobId": {"type": "string", "maxLength": 100},
             },
             "required": ["action"],
             "additionalProperties": False,
@@ -52,7 +56,10 @@ class MailManageTool:
         body = str(arguments.get("body", ""))
         request_id = str(arguments.get("requestId") or context.tool_call_id or "")
         try:
-            result = await self.service.role_action(action, mail_id=mail_id, draft_id=draft_id, query=body, request_id=request_id, thread_id=thread_id, role_id=context.role_id, run_id=context.run_id)
+            if not self.service.preferences()["roleAccess"]:
+                raise PermissionError("主人尚未允许角色管理邮件，或许可已撤销")
+            result = await self.service.role_action(action, mail_id=mail_id, draft_id=draft_id, query=body, request_id=request_id, thread_id=thread_id, role_id=context.role_id, run_id=context.run_id,
+                question_id=str(arguments.get("questionId") or ""), job_id=str(arguments.get("jobId") or ""))
             return AgentToolResult(json.dumps(result, ensure_ascii=False), details={"action": action, "mailId": mail_id or None, "status": "completed"})
         except Exception as error:
             self.service.store.audit(action or "unknown", context.role_id, context.run_id, mail_id or None, "failed", str(error))

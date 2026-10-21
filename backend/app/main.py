@@ -1679,6 +1679,8 @@ def get_role_tools(role_id: str) -> dict[str, object]:
         reasons["search_owner_knowledge"] = "主人资料服务未启用"
     if not mail_service.store.connection().auto_draft_ready:
         reasons["mail.manage"] = "邮件服务尚未就绪"
+    elif not mail_service.preferences()["roleAccess"]:
+        reasons["mail.manage"] = "主人尚未允许角色管理邮件"
     dependencies = {name: browser_use_sessions.dependency_status() for name in BROWSER_USE_TOOL_NAMES}
     dependencies['message_push'] = {'status': 'ready', 'reason': '只写入当前角色的桌面对话，无需外部渠道账号'}
     pet_reason = _desktop_pet_application().unavailable_reason(role.id)
@@ -4265,7 +4267,7 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
         enabled.add("recall_memory")
     if owner_knowledge_plugin.status().enabled:
         enabled.add("search_owner_knowledge")
-    if mail_service.store.connection().auto_draft_ready:
+    if mail_service.store.connection().auto_draft_ready and mail_service.preferences()["roleAccess"]:
         enabled.add("mail.manage")
     if include_channel:
         enabled.update({
@@ -4471,6 +4473,7 @@ async def _runtime_capabilities(
             run_id=run_id,
             enabled_tools=policy.enabled_tools | {tool.definition.name for items in mcp_run.remote_tools.values() for tool in items} if mcp_run is not None else policy.enabled_tools,
             allowed_risks={"read_only", "mutating", "external"},
+            approved_tools={"mail.manage"} if not external_only and mail_service.preferences()["roleAccess"] else set(),
             external_only=external_only,
             prompt_text=prompt_text,
             explicit_skill_ids=set(explicit_skill_ids or ()),
