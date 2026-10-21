@@ -775,7 +775,7 @@ class MailService:
         if not self.store.item_belongs_to_account(item, self.store.connection().username):
             raise KeyError(mail_id)
         return {
-            "item": {"id": item.id, "sourceUid": item.source_uid, "threadId": item.thread_id, "sender": item.sender, "replyTo": item.reply_to, "recipients": item.recipients, "subject": item.subject, "receivedAt": item.received_at, "body": item.body_text, "status": item.status, "needsReply": item.needs_reply, "lastError": item.last_error},
+            "item": {"id": item.id, "sourceUid": item.source_uid, "threadId": item.thread_id, "sender": item.sender, "replyTo": item.reply_to, "recipients": item.recipients, "subject": item.subject, "receivedAt": item.received_at, "body": item.body_text, "status": item.status, "needsReply": item.needs_reply, "lastError": item.last_error, "direction": item.direction},
             "thread": [{"id": row.id, "sender": row.sender, "subject": row.subject, "receivedAt": row.received_at, "body": row.body_text, "status": row.status, "direction": row.direction} for row in self.store.thread_items(item.thread_id, account=self.store.connection().username)],
             "drafts": [{"id": row.id, "status": row.status, "stale": row.stale, "remoteMissing": row.remote_missing, "body": row.body, "subject": row.subject, "recipients": row.recipients, "messageId": row.message_id, "updatedAt": row.updated_at, "lastError": row.last_error,
                         "preparation": self._public_preparation(self.store.draft_preparation(row.id, account=self.store.connection().username), item)} for row in self.store.list_drafts_for_mail(mail_id, account=self.store.connection().username)],
