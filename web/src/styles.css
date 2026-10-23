@@ -380,7 +380,13 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .profile-actions { display: flex; gap: 2px; }
 .role-editor:not(.is-writable) input, .role-editor:not(.is-writable) textarea { border-color: transparent; padding-left: 0; padding-right: 0; resize: none; }
 .role-editor:not(.is-writable) textarea { min-height: 0; field-sizing: content; }
-.role-editor .form-actions { position: sticky; bottom: 0; padding: 12px 0 2px; background: linear-gradient(rgb(255 251 255 / 0%), var(--bg) 35%); }
+.role-save-actions { padding-top: 16px; border-top: 1px solid var(--line); }
+.role-delete-section { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding-top: 20px; border-top: 1px solid var(--line); }
+.role-delete-section h3 { margin: 0 0 6px; font-size: 14px; font-weight: 500; }
+.role-delete-section p { margin: 0; font-size: 12px; }
+.role-delete-section > button { display: inline-flex; align-items: center; gap: 6px; }
+.role-delete-confirmation { display: grid; gap: 16px; padding: 20px 22px; overflow-wrap: anywhere; }
+.role-delete-confirmation p { margin: 0; }
 
 /* Settings: section nav + content. Add sections in SettingsDialog. */
 .settings-layout { display: grid; grid-template-columns: 160px minmax(0, 1fr); height: 100%; min-height: 0; }

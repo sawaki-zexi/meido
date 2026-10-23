@@ -4,7 +4,8 @@ import type { FormEvent } from "react";
 import type { RolesState } from "./useRoles";
 import type { RoleProfile } from "../../api/types";
 import { useRef, useState } from "react";
-import { IconButton } from "../../ui/Icon";
+import { Icon } from "../../ui/Icon";
+import { RoleDeleteConfirmation } from "./RoleDeleteConfirmation";
 import { Notice } from "../../ui/Status";
 import { AvatarCropper } from "./AvatarCropper";
 import { ShellSettings } from "./ShellSettings";
@@ -42,6 +43,9 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
   const locked = !writable || busy;
   const toolsChanged = selected !== null && JSON.stringify(payloadFromDraft(draft).agentConfig) !== JSON.stringify(payloadFromDraft(draftFromRole(selected)).agentConfig);
   const [showAdvanced, setShowAdvanced] = useState(!creating);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const form = useRef<HTMLFormElement>(null);
+  const deleteButton = useRef<HTMLButtonElement>(null);
   const avatarInput = useRef<HTMLInputElement>(null);
   const cardInput = useRef<HTMLInputElement>(null);
   const importInput = useRef<HTMLInputElement>(null);
@@ -57,7 +61,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
     </div>;
   };
 
-  return <form className={`role-editor${writable ? " is-writable" : ""}`} onSubmit={submit}>
+  return <><form ref={form} className={`role-editor${writable ? " is-writable" : ""}`} onSubmit={submit}>
     <fieldset>
       {writable && <div className="role-import-control">
         <button type="button" className="ghost" disabled={busy} onClick={() => importInput.current?.click()}>{state.importing ? "解析中…" : "导入角色卡"}</button>
@@ -163,10 +167,15 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
       {state.importPreview.compatibility.unsupportedResources.length > 0 && <p className="role-import-discarded">未导入素材：{state.importPreview.compatibility.unsupportedResources.join("、")}</p>}
       <div className="form-actions"><button type="button" className="primary" onClick={() => void state.acceptImport(null)}>填充到表单</button></div>
     </section>}
-    {writable && !cropping && <div className="form-actions">
+    {writable && !cropping && <div className="form-actions role-save-actions">
       <button type="button" className="ghost" disabled={busy} onClick={onCancel}>取消</button>
-      {selected && !creating && <IconButton icon="trash" label="删除角色" className="danger" disabled={deleting || busy} onClick={onDelete} />}
       <button type="submit" className="primary" disabled={busy}>{saving ? "保存中…" : "保存"}</button>
     </div>}
-  </form>;
+    {writable && !cropping && selected && !creating && <section className="role-delete-section" aria-label="角色管理">
+      <div><h3>删除角色</h3><p className="muted">删除后无法恢复角色、聊天记录和记忆。</p></div>
+      <button ref={deleteButton} type="button" className="danger" disabled={deleting || busy} onClick={() => { setError(""); setConfirmDelete(true); }}><Icon name="trash" size={16} />删除角色</button>
+    </section>}
+  </form>
+    {confirmDelete && selected && <RoleDeleteConfirmation name={selected.name} busy={deleting} error={error} editor={form.current} trigger={deleteButton.current} onCancel={() => { if (!deleting) setConfirmDelete(false); }} onConfirm={onDelete} />}
+  </>;
 }
