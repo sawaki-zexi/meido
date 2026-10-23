@@ -31,6 +31,10 @@ it('shows the selected role history on a stage and reuses parameters without con
   render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
   expect(await screen.findByAltText('one.png')).toBeInTheDocument();
   expect(screen.getByText('1216 × 832')).toBeInTheDocument();
+  const details = screen.getByRole('region', { name: '当前作品参数' });
+  expect(within(details).getByText('blue sky')).toBeInTheDocument();
+  expect(within(details).getByText('rain')).toBeInTheDocument();
+  expect(within(details).getAllByText('文生图')).not.toHaveLength(0);
   await user.click(screen.getByRole('button', { name: '选择生成记录 attempt-second' }));
   expect(await screen.findByAltText('second.png')).toBeInTheDocument();
   expect(screen.getByText('1024 × 1024')).toBeInTheDocument();
@@ -52,6 +56,12 @@ it('keeps an img2img source and background flag when reusing historical paramete
   const user = userEvent.setup();
   render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
   await screen.findByAltText('one.png');
+  const details = within(screen.getByRole('region', { name: '当前作品参数' }));
+  expect(details.getAllByText('图生图')).toHaveLength(2);
+  expect(details.getByText('base-uploaded-earlier')).toBeInTheDocument();
+  expect(details.getByText('0.62')).toBeInTheDocument();
+  expect(details.getByText('0.18')).toBeInTheDocument();
+  expect(details.getByText('是')).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: '复用参数' }));
   expect(screen.getByLabelText('工作台生成模式')).toHaveValue('img2img');
   expect(screen.getByLabelText('工作台本角色底图')).toHaveValue('base-uploaded-earlier');
@@ -79,6 +89,61 @@ it('requires fresh consumption consent before regenerating the selected historic
   const posts = calls.filter((call) => call.method === 'POST');
   expect(posts).toHaveLength(1);
   expect(posts[0].body).toMatchObject({ sourceAttemptId: 'attempt-one', expectedAttachmentId: 'image-one', deliveryMode: 'history_only' });
+});
+
+it('clears a pending regeneration source when selecting another history record', async () => {
+  const second = { ...record, generationId: 'gen-second', attemptId: 'attempt-second', attachments: [{ ...image, id: 'image-second', name: 'second.png' }] };
+  const regenerated = { ...second, generationId: 'gen-regenerated-second', attemptId: 'attempt-regenerated-second', parentAttemptId: second.attemptId,
+    attachments: [{ ...image, id: 'image-regenerated-second', name: 'regenerated-second.png' }] };
+  const { calls } = fakeBackend({
+    'GET /api/services/novelai': () => ({ body: configuration }),
+    'GET /api/roles/r1/generations': () => ({ body: page([record, second]) }),
+    'POST /api/roles/r1/generations/gen-second/regenerate': () => ({ body: { generation: regenerated } }),
+  });
+  const user = userEvent.setup();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
+  await screen.findByAltText('one.png');
+  await user.click(screen.getByRole('button', { name: '重新生成' }));
+  expect(screen.getByText('将基于 one.png 再次生成；本次会重新消费一次尝试额度。')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '选择生成记录 attempt-second' }));
+  expect(await screen.findByAltText('second.png')).toBeInTheDocument();
+  expect(screen.queryByText('将基于 one.png 再次生成；本次会重新消费一次尝试额度。')).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '重新生成' }));
+  expect(screen.getByText('将基于 second.png 再次生成；本次会重新消费一次尝试额度。')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '确认并重新生成' })).toBeDisabled();
+  await user.click(screen.getByLabelText('我确认本次重生成可能产生费用'));
+  await user.click(screen.getByRole('button', { name: '确认并重新生成' }));
+  expect(await screen.findByAltText('regenerated-second.png')).toBeInTheDocument();
+  const posts = calls.filter((call) => call.method === 'POST');
+  expect(posts).toHaveLength(1);
+  expect(posts[0].path).toBe('/api/roles/r1/generations/gen-second/regenerate');
+  expect(posts[0].body).toMatchObject({ sourceAttemptId: 'attempt-second', expectedAttachmentId: 'image-second' });
+});
+
+it('requires fresh consumption consent after starting another regeneration from the same image', async () => {
+  const regenerated = { ...record, generationId: 'gen-regenerated-again', attemptId: 'attempt-regenerated-again', parentAttemptId: record.attemptId,
+    attachments: [{ ...image, id: 'image-regenerated-again', name: 'regenerated-again.png' }] };
+  const { calls } = fakeBackend({
+    'GET /api/services/novelai': () => ({ body: configuration }),
+    'GET /api/roles/r1/generations': () => ({ body: page([record]) }),
+    'POST /api/roles/r1/generations/gen-one/regenerate': () => ({ body: { generation: regenerated } }),
+  });
+  const user = userEvent.setup();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
+  await screen.findByAltText('one.png');
+  await user.click(screen.getByRole('button', { name: '重新生成' }));
+  await user.click(screen.getByLabelText('我确认本次重生成可能产生费用'));
+  await user.click(screen.getByRole('button', { name: '确认并重新生成' }));
+  await screen.findByAltText('regenerated-again.png');
+  await user.click(screen.getByRole('button', { name: '另开一次生成' }));
+  expect(screen.getByRole('button', { name: '确认并重新生成' })).toBeDisabled();
+  expect(calls.filter((call) => call.method === 'POST')).toHaveLength(1);
+  await user.click(screen.getByLabelText('我确认本次重生成可能产生费用'));
+  await user.click(screen.getByRole('button', { name: '确认并重新生成' }));
+  expect(await screen.findByAltText('regenerated-again.png')).toBeInTheDocument();
+  const posts = calls.filter((call) => call.method === 'POST');
+  expect(posts).toHaveLength(2);
+  expect((posts[0].body as { requestId: string }).requestId).not.toBe((posts[1].body as { requestId: string }).requestId);
 });
 
 it('submits the selected parameters once and keeps new work in studio history by default', async () => {

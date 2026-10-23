@@ -30,6 +30,10 @@ function dimensions(parameters: GenerationView['parameters']) {
   return `${parameters.width} × ${parameters.height}`;
 }
 
+function modeLabel(mode: 'txt2img' | 'img2img') {
+  return mode === 'img2img' ? '图生图' : '文生图';
+}
+
 export function NovelaiStudio({ roles, initialRoleId, selectedRoleId, onRoleChange, onGenerated, onOpenSettings }: Props) {
   const [localRoleId, setLocalRoleId] = useState(initialRoleId ?? roles[0]?.id ?? '');
   const roleId = selectedRoleId ?? localRoleId;
@@ -46,7 +50,7 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
     onGenerationAccepted: (generation) => setSelectedAttemptId(generation.attemptId) });
   const { configuration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
     source, consent, setConsent, attempt, submit, upload, allowed, candidates, patch, reuseParameters, selectImage,
-    watched, deliveryMode, setDeliveryMode, refresh, scope, isCurrent } = studio;
+    watched, deliveryMode, setDeliveryMode, refresh, scope, isCurrent, clearSource, setAccepted } = studio;
 
   useEffect(() => {
     if (role.id !== roleId) setRoleId(role.id);
@@ -65,6 +69,8 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
     : allCandidates;
 
   const selectRecord = (record: GenerationView) => {
+    if (busy || uploading || Boolean(attempt.current)) return;
+    clearSource();
     setSelectedAttemptId(record.attemptId);
     setStageError('');
   };
@@ -125,7 +131,7 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
             <label className="checkbox-field"><input type="checkbox" checked={parameters.background ?? false} onChange={(event) => patch({ background: event.target.checked })} /><span>{deliveryMode === 'history_only' ? '后台生成，结果仅保存在历史' : '后台生成，完成后交付当前角色会话'}</span></label>
           </fieldset>
           <div className="form-actions studio-actions"><button type="submit" className="primary" disabled={busy || uploading || !allowed || Boolean(source && !consent)}>{busy ? '正在生成…' : attempt.current ? '重查本次生成' : source ? '确认并重新生成' : '生成一张图片'}</button>
-            {attempt.current && !busy && <button type="button" onClick={() => { studio.attempt.current = null; setError(''); setSeed(''); setParameters({ ...parameters }); }}>另开一次生成</button>}</div>
+            {attempt.current && !busy && <button type="button" onClick={() => { studio.attempt.current = null; setConsent(false); setAccepted(false); setError(''); setSeed(''); setParameters({ ...parameters }); }}>另开一次生成</button>}</div>
           <p className="studio-usage">今日账户尝试 {page?.usage.accountAttempts ?? 0}/{configuration.dailyAttemptLimit}，本角色手动尝试 {page?.usage.manualAttempts ?? 0}/{configuration.manualDailyAttempts ?? 10}。</p>
         </>}
       </form>
@@ -136,16 +142,40 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
             : page ? <div className="studio-stage-status"><Icon name="image" size={34} /><strong>选择一张历史作品</strong><span>生成完成后，图片会出现在这里。</span></div>
             : error ? <div className="studio-stage-status" role="status"><Icon name="image" size={34} /><strong>作品读取失败</strong><span>{error}</span></div>
             : <Placeholder loading>正在加载作品…</Placeholder>}
-          {selected?.parameters && <div className="studio-stage-meta"><span>{dimensions(selected.parameters)}</span><span>{selected.parameters.model}</span><span>{selected.parameters.sampler} · {selected.parameters.steps} 步</span><span>Seed {selected.parameters.seed}</span>
-            {selectedImage && <a href={imageUrl(role.id, selectedImage.id)} download={selectedImage.name}>下载</a>}
-            <button type="button" disabled={busy || uploading || Boolean(attempt.current)} onClick={() => handleReuseParameters(selected)}>复用参数</button>
-            {selectedImage && <button type="button" disabled={busy || uploading || Boolean(attempt.current)} onClick={() => selectImage(selected, selectedImage)}>重新生成</button>}</div>}
         </div>
+        {selected?.parameters && <section className="studio-stage-meta" aria-label="当前作品参数">
+            <div className="studio-stage-summary">
+              <div className="studio-stage-facts"><span>{dimensions(selected.parameters)}</span><span>{modeLabel(selected.parameters.mode)}</span><span>{selected.parameters.model ?? '模型未记录'}</span><span>{selected.parameters.sampler ?? '采样器未记录'} · {selected.parameters.steps ?? '未知'} 步</span><span>Seed {selected.parameters.seed}</span></div>
+              <div className="studio-stage-actions">
+                {selectedImage && <a href={imageUrl(role.id, selectedImage.id)} download={selectedImage.name}>下载</a>}
+                <button type="button" disabled={busy || uploading || Boolean(attempt.current)} onClick={() => handleReuseParameters(selected)}>复用参数</button>
+                {selectedImage && <button type="button" disabled={busy || uploading || Boolean(attempt.current)} onClick={() => selectImage(selected, selectedImage)}>重新生成</button>}
+              </div>
+            </div>
+            <details open>
+              <summary>完整参数</summary>
+              <dl className="studio-parameter-list">
+                <div className="studio-parameter-wide"><dt>正向 tags</dt><dd>{selected.parameters.prompt || '（空）'}</dd></div>
+                <div className="studio-parameter-wide"><dt>负向 tags</dt><dd>{selected.parameters.negative_prompt || '（空）'}</dd></div>
+                <div><dt>生成模式</dt><dd>{modeLabel(selected.parameters.mode)}</dd></div>
+                <div><dt>模型</dt><dd>{selected.parameters.model ?? '未记录'}</dd></div>
+                <div><dt>采样器</dt><dd>{selected.parameters.sampler ?? '未记录'}</dd></div>
+                <div><dt>采样步数</dt><dd>{selected.parameters.steps ?? '未记录'}</dd></div>
+                <div><dt>Seed</dt><dd>{selected.parameters.seed}</dd></div>
+                {selected.parameters.mode === 'img2img' && <>
+                  <div><dt>图生图底图</dt><dd>{allCandidates.find((item) => item.id === selected.parameters?.base_attachment_id)?.name ?? selected.parameters.base_attachment_id ?? '未设置'}</dd></div>
+                  <div><dt>图生图强度</dt><dd>{selected.parameters.strength ?? '未记录'}</dd></div>
+                  <div><dt>图生图噪声</dt><dd>{selected.parameters.noise ?? '未记录'}</dd></div>
+                </>}
+                <div><dt>后台生成</dt><dd>{selected.parameters.background ? '是' : '否'}</dd></div>
+              </dl>
+            </details>
+        </section>}
         <nav className="novelai-filmstrip" aria-label="历史作品">
           <div className="filmstrip-heading"><h2>历史</h2><span>{records.length} 条</span></div>
           <div className="filmstrip-scroll">{records.length ? records.map((record) => {
             const preview = record.attachments.find((item) => item.kind === 'image');
-            return <button type="button" key={record.attemptId} className={record.attemptId === selected?.attemptId ? 'filmstrip-item selected' : 'filmstrip-item'} aria-label={`选择生成记录 ${record.attemptId}`} aria-pressed={record.attemptId === selected?.attemptId} onClick={() => selectRecord(record)}>
+            return <button type="button" key={record.attemptId} disabled={busy || uploading || Boolean(attempt.current)} className={record.attemptId === selected?.attemptId ? 'filmstrip-item selected' : 'filmstrip-item'} aria-label={`选择生成记录 ${record.attemptId}`} aria-pressed={record.attemptId === selected?.attemptId} onClick={() => selectRecord(record)}>
               {preview ? <img src={imageUrl(role.id, preview.id)} alt="" /> : <span>{statusLabels[record.status] ?? record.status}</span>}
             </button>;
           }) : page ? <span className="muted">暂无生图历史。</span> : error ? <span role="status">历史读取失败</span> : <span className="muted">正在加载…</span>}</div>

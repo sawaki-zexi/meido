@@ -175,7 +175,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     const { width, height, prompt, negative_prompt, mode, model, sampler, steps, base_attachment_id, strength, noise, background } = generation.parameters;
     const size = width === 1024 && height === 1024 ? 'square' : width === 1216 && height === 832 ? 'landscape'
       : width === 832 && height === 1216 ? 'portrait' : 'custom';
-    setParameters({ prompt, negative_prompt, mode, model, sampler, steps, background, size_preset: size,
+    setParameters({ prompt, negative_prompt, mode, model, sampler, steps, ...(reuseSeed ? { background } : {}), size_preset: size,
       ...(mode === 'img2img' ? { base_attachment_id, strength, noise } : {}),
       ...(size === 'custom' ? { custom_width: width, custom_height: height } : {}) });
     setSeed(reuseSeed && generation.parameters.seed !== undefined ? String(generation.parameters.seed) : '');
@@ -185,7 +185,12 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     loadParameters(generation, true);
     setSource(null); setConsent(false); setAccepted(false); setError(''); attempt.current = null;
   };
+  const clearSource = () => {
+    if (busy || uploading) return;
+    setSource(null); setConsent(false); setAccepted(false);
+  };
   return { configuration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
     source, consent, setConsent, accepted, setAccepted, deliveryMode, setDeliveryMode, attempt, controller, scope,
-    isCurrent, watched, submit, upload, policy, allowed, candidates, patch, manage, selectImage, loadParameters, reuseParameters, refresh };
+    isCurrent, watched, submit, upload, policy, allowed, candidates, patch, manage, selectImage, loadParameters, reuseParameters,
+    clearSource, refresh };
 }
