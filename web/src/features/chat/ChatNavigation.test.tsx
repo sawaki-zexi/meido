@@ -93,3 +93,35 @@ it('全局待办的来源仍跳到原角色消息，不受当前聊天角色影�
   expect(await screen.findByText('明天交报告')).toBeVisible();
   expect(screen.getByText('记忆来源')).toBeInTheDocument();
 });
+
+it('从角色聊天打开按角色隔离的多端会话视图', async () => {
+  fakeBackend({
+    'GET /api/roles': () => ({ body: { roles: [role({ id: 'r1', name: '诗织' })] } }),
+    'GET /api/roles/r1/session': () => ({ body: { session: { sessionKey: 'role:r1', roleId: 'r1' }, messages: [] } }),
+    'GET /api/roles/r1/channels/accounts': () => ({ body: { accounts: [] } }),
+    'GET /api/roles/r1/channels/threads\\?networkOnly=true': () => ({ body: { threads: [{
+      threadId: 'telegram-private', sessionKey: 'thread:telegram-private', accountId: 'account-1',
+      channel: 'telegram', chatId: '42', chatType: 'private', title: 'Alice',
+      lastActivity: '2026-10-23T00:00:00Z', viaAccount: { platform: 'telegram', displayName: 'Shiori Bot' },
+      latestMessage: { content: '外部消息', role: 'user', status: 'completed', createdAt: '2026-10-23T00:00:00Z' },
+    }] } }),
+    'GET /api/roles/r1/channels/threads/telegram-private/messages\\?limit=50&networkOnly=true': () => ({ body: {
+      thread: { threadId: 'telegram-private', sessionKey: 'thread:telegram-private', channel: 'telegram', chatType: 'private', title: 'Alice' },
+      messages: [{ id: 'm1', sequence: 1, role: 'user', content: '外部消息', createdAt: '2026-10-23T00:00:00Z', metadata: { threadId: 'telegram-private', senderName: 'Alice' } }],
+      hasMore: false, nextBefore: null,
+    } }),
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByRole('heading', { name: '诗织', level: 1 });
+
+  await user.click(screen.getByRole('button', { name: '多端会话' }));
+
+  expect(await screen.findByRole('heading', { name: '诗织 · 手机会话' })).toBeVisible();
+  expect(screen.getByRole('complementary', { name: '渠道会话列表' })).toBeVisible();
+  const thread = screen.getByRole('button', { name: /Alice/ });
+  expect(thread).toBeVisible();
+  await user.click(thread);
+  expect(await within(screen.getByRole('region', { name: '会话消息' })).findByText('外部消息')).toBeVisible();
+  expect(screen.queryByText('会话设置')).not.toBeInTheDocument();
+});
