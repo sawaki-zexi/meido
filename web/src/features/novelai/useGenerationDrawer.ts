@@ -7,9 +7,10 @@ import { errorMessage } from '../../api/client';
 export const activeGenerationStatuses = ['prepared', 'dispatching', 'received', 'local_pending'];
 export type GenerationDrawerProps = {
   role: Role; onClose: () => void; onGenerated: () => void | Promise<void>; attachments?: ChatAttachment[];
-  selectedImage?: GenerationSelection;
+  selectedImage?: GenerationSelection; defaultDeliveryMode?: 'replacement' | 'history_only';
+  onGenerationAccepted?: (generation: GenerationView) => void;
 };
-export function useGenerationDrawer({ role, onGenerated, attachments = [], selectedImage }: GenerationDrawerProps) {
+export function useGenerationDrawer({ role, onGenerated, attachments = [], selectedImage, defaultDeliveryMode = 'replacement', onGenerationAccepted }: GenerationDrawerProps) {
   const [configuration, setConfiguration] = useState<NovelaiConfiguration | null>(null);
   const [page, setPage] = useState<GenerationPage | null>(null);
   const [parameters, setParameters] = useState<GenerationParameters>({ prompt: '', mode: 'txt2img', negative_prompt: '', size_preset: 'square' });
@@ -21,7 +22,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   const [source, setSource] = useState<{ generation: GenerationView; image: ChatAttachment } | null>(null);
   const [consent, setConsent] = useState(false);
   const [accepted, setAccepted] = useState(false);
-  const [deliveryMode, setDeliveryMode] = useState<'replacement' | 'history_only'>('replacement');
+  const [deliveryMode, setDeliveryMode] = useState<'replacement' | 'history_only'>(defaultDeliveryMode);
   const attempt = useRef<{ requestId: string; revision: number; parameters: GenerationParameters;
     source: { generation: GenerationView; image: ChatAttachment } | null; deliveryMode: 'replacement' | 'history_only' } | null>(null);
   const controller = useRef<AbortController | null>(null);
@@ -29,7 +30,9 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   const currentRole = useRef(role.id);
   const scope = useRef({ roleId: role.id, active: true });
   const generatedCallback = useRef(onGenerated);
+  const acceptedCallback = useRef(onGenerationAccepted);
   generatedCallback.current = onGenerated;
+  acceptedCallback.current = onGenerationAccepted;
   currentRole.current = role.id;
   const isCurrent = (owner: typeof scope.current) => owner.active && scope.current === owner && currentRole.current === owner.roleId;
   useEffect(() => {
@@ -37,7 +40,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     const owner = { roleId: identifier, active: true };
     scope.current = owner;
     setPage(null); setConfiguration(null); setError(''); setBusy(false); setUploading(false); setInputs([]);
-    attempt.current = null; setSource(null); setConsent(false); setAccepted(false); setDeliveryMode('replacement');
+    attempt.current = null; setSource(null); setConsent(false); setAccepted(false); setDeliveryMode(defaultDeliveryMode);
     recordQueries.current = new Map();
     setParameters({ prompt: '', mode: 'txt2img', negative_prompt: '', size_preset: 'square' }); setSeed('');
     void Promise.all([novelai.configuration(), novelai.history(identifier)]).then(([config, history]) => {
@@ -111,6 +114,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
           request.deliveryMode === 'history_only' ? 'history_only' : undefined);
       if (!isCurrent(owner) || cancellation.signal.aborted) return;
       setAccepted(Boolean(request.parameters.background && activeGenerationStatuses.includes(result.generation.status)));
+      acceptedCallback.current?.(result.generation);
       updateRecord(result.generation);
       const history = await refresh(identifier, undefined, owner, result.generation).catch((cause) => {
         if (isCurrent(owner)) setError(errorMessage(cause, '历史读取失败，请重查原记录'));
@@ -163,15 +167,25 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   };
   const selectImage = (generation: GenerationView, image: ChatAttachment) => {
     if (busy || uploading || !generation.parameters || image.kind !== 'image') return;
+    loadParameters(generation);
+    setSource({ generation, image }); setConsent(false); setAccepted(false); setError(''); attempt.current = null;
+  };
+  const loadParameters = (generation: GenerationView, reuseSeed = false) => {
+    if (busy || uploading || !generation.parameters) return;
     const { width, height, prompt, negative_prompt, mode, model, sampler, steps, base_attachment_id, strength, noise } = generation.parameters;
     const size = width === 1024 && height === 1024 ? 'square' : width === 1216 && height === 832 ? 'landscape'
       : width === 832 && height === 1216 ? 'portrait' : 'custom';
     setParameters({ prompt, negative_prompt, mode, model, sampler, steps, size_preset: size,
       ...(mode === 'img2img' ? { base_attachment_id, strength, noise } : {}),
       ...(size === 'custom' ? { custom_width: width, custom_height: height } : {}) });
-    setSeed(''); setSource({ generation, image }); setConsent(false); setAccepted(false); setError(''); attempt.current = null;
+    setSeed(reuseSeed && generation.parameters.seed !== undefined ? String(generation.parameters.seed) : '');
+  };
+  const reuseParameters = (generation: GenerationView) => {
+    if (busy || uploading) return;
+    loadParameters(generation, true);
+    setSource(null); setConsent(false); setAccepted(false); setError(''); attempt.current = null;
   };
   return { configuration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
     source, consent, setConsent, accepted, setAccepted, deliveryMode, setDeliveryMode, attempt, controller, scope,
-    isCurrent, watched, submit, upload, policy, allowed, candidates, patch, manage, selectImage, refresh };
+    isCurrent, watched, submit, upload, policy, allowed, candidates, patch, manage, selectImage, loadParameters, reuseParameters, refresh };
 }
