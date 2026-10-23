@@ -4,7 +4,7 @@
 
 状态：当前规格，第 3 节 D05/P06/T19 一揽子架构已于 2026-10-16 获主人明确批准，实施进行中；仅覆盖实现、隔离本地构建与无费用 fixture，真实生成和费用另批。所有“采用/必须”仍是验收目标，不表示已实现。决定见 [ADR-0016](../adr/0016-bounded-novelai-generation.md)。
 
-关联：[Parent #137](https://github.com/sawaki-zexi/meido/issues/137)、[总规格 P06/D05/T19](shiori-tool-parity-spec.md)、[源码与官方契约调研](../research/novelai-generation-portability-2026-10-16.md)。最后核验：2026-10-16，Meido `504d5b0b307736c14da7d1da87a1bad36e010c76`，Shiori `4f266aeaf42fcd611362e2456417b91f659341cf`。
+关联：[Parent #137](https://github.com/sawaki-zexi/meido/issues/137)、[总规格 P06/D05/T19](shiori-tool-parity-spec.md)、[源码与官方契约调研](../research/novelai-generation-portability-2026-10-16.md)。最后核验：2026-10-24，Meido `origin/main` `8786b3f` 与工作台分支 `72dfb0a`，Shiori `31667efb33f371f9161eb35ae7474b8ed48957bc`。
 
 ## 1. 用户结果与完整范围
 
@@ -22,7 +22,7 @@
 - [ToolContext](../../backend/app/agent_runtime/tools.py#L78) 只有宿主 role/session/run/call/取消信息；渠道授权通过 [FrozenChannelSource](../../backend/app/channels/source_authority.py#L39) 捕获真实账号、发送者、配对与来源代际，后续检查只能收回权限。
 - [SystemCredentialStore](../../backend/app/credentials.py#L17)、[角色附件](../../backend/app/chat_attachments.py#L90)、[SessionStore](../../backend/app/session_store.py#L151) 和 [ChatView](../../web/src/features/chat/ChatView.tsx#L21) 可复用。普通 update_message 没有附件 CAS；TaskCompletionWorker 当前回灌文本，不能直接声称它已可靠交付图片。
 - [ChannelHost.account_send](../../backend/app/channels/host.py#L253) 支持 attachments、attachment_ids、原来源和授权回调；adapter.send 返回 [DeliveryResult](../../backend/app/channels/models.py#L111)，状态为 pending/sent/failed/uncertain。媒体能力依具体 adapter 核验，不伪造所有平台均支持图片。
-- 辅助模型复用 [RoutedModelAdapter.stream_rich_messages](../../backend/app/ai/model_adapter_registry.py#L122) 与已有稳定配置 ID；不新建聊天代理，不把 NovelAI token 当模型连接。当前没有本票的生成服务或宿主场景事件。
+- 辅助模型复用 [RoutedModelAdapter.stream_rich_messages](../../backend/app/ai/model_adapter_registry.py#L122) 与已有稳定配置 ID；不新建聊天代理，不把 NovelAI token 当模型连接。相对 2026-10-16 的取证基线，当前源码已实现 [NovelAI 生成服务](../../backend/app/novelai_generation/application.py)、持久 attempt ledger、受限工具/API 和 [宿主场景协调](../../backend/app/novelai_generation/scene.py)。这些实现进度不等于 P06/T19 已验收：真实 NovelAI 账号、消耗和真实渠道投递仍须按本规格另行验证。
 
 依循 [ADR-0009](../adr/0009-multichannel-conversation-threads.md)、[ADR-0011](../adr/0011-versioned-tool-activation.md)、[ADR-0012](../adr/0012-owned-task-runtime.md)。适配保留上游 MIT 署名；服务和模型适用独立条款，不能从源码许可证推导账号或图片权利。
 

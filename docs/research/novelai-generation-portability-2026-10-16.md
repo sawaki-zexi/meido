@@ -1,8 +1,25 @@
 # NovelAI 完整生图工作流的移植差距
 
-状态：草案 / 源码调研与 D05 待批准方案；P06、T19 尚未实现或验收。
+状态：历史基线，含 2026-10-24 当前源码增补。旧正文记录当时的取证和设计方案，不代表当前实现状态；判断现状时优先采用下方增补及当前源码。
 
-最后核验：2026-10-16。事实来源：Shiori-Agent 固定提交 `4f266aeaf42fcd611362e2456417b91f659341cf`；Meido 聚合分支核验时 `c03a9fbdd2450e4df5171f7272c4abbd0e4258b4`；下列 NovelAI 官方公开文档。目标为[总规格 P06、D05、T19](../specs/shiori-tool-parity-spec.md)。以下明确区分已提取事实、静态推断和未实施建议。
+历史核验：2026-10-16。历史事实来源：Shiori-Agent 固定提交 `4f266aeaf42fcd611362e2456417b91f659341cf`；Meido 聚合分支核验时 `c03a9fbdd2450e4df5171f7272c4abbd0e4258b4`。当前增补核验：2026-10-24；Shiori-Agent `31667efb33f371f9161eb35ae7474b8ed48957bc`，Meido 分支 `feat/209-novelai-image-studio` 提交 `72dfb0a`（基于 `origin/main` `8786b3f`）。下文 NovelAI 官方公开文档仍按原核验记录。
+
+## 当前源码增补（2026-10-24）
+
+### Shiori 当前实现
+
+- 工作台历史仍只取每角色最近 24 条；画布显示尺寸和 seed，并提供复用提示词。生成设置弹层提供 NSFW 模式、自动质量标签、负向预设（0/1/2）和模型信息。[ImageStage.tsx](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/ui/ImageStage.tsx)、[novelAiGeneration.ts](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/ui/novelAiGeneration.ts)、[PromptSettingsPopover.tsx](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/ui/PromptSettingsPopover.tsx)、[studioForm.ts](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/ui/studioForm.ts)。
+- 10 月 16 日之后新增按角色保存的自动 CG 补充要求；场景提示词模型读取该角色要求后生成 tags。[roleSettings.tsx](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/ui/roleSettings.tsx)、[scene_prompt.py](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/backend/scene_prompt.py)。
+- 自动 CG 当前通过 `account_send` 使用角色绑定账号投回原私聊，桌面使用 `message_push`；场景控制器取消并替换同会话旧任务。[auto_cg_controller.py](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/backend/auto_cg_controller.py)。
+- 自动 CG 对生图工具异常最多重试一次，没有在该调用路径按远端消费是否未知区分是否可重发。设置允许 `default_samples` 大于 1，请求按该值发送 `n_samples`，但当前保存路径只读取响应的第一张图。[auto_cg_controller.py](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/backend/auto_cg_controller.py)、[service.py](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/backend/service.py)。
+
+### Meido 当前实现
+
+- #209 工作台已有文生图/图生图、历史分页、完整请求参数、参数复用、重生成、下载和失败状态；当前增补从工作台打开本角色提示标签库。[NovelaiStudio.tsx](../../web/src/features/novelai/NovelaiStudio.tsx)、[PromptTagManager.tsx](../../web/src/features/novelai/PromptTagManager.tsx)。
+- NovelAI 服务和角色许可、次数限制、凭据代际及持久 attempt ledger 已落地；场景 CG 有持久去重、冷却、human-run/scene revision 校验和取消收尾。[config.py](../../backend/app/novelai_generation/config.py)、[ledger.py](../../backend/app/novelai_generation/ledger.py)、[scene.py](../../backend/app/novelai_generation/scene.py)。与 Shiori 相比，Meido 当前不提供 `add_quality_tags` / `undesired_content_preset` 设置，请求固定 `qualityToggle=false`、`ucPreset=0`；默认单图避免配置多图却只持久首图。[parameters.py](../../backend/app/novelai_generation/parameters.py)。
+- Shiori 的角色级 CG 补充要求仍是一个用户可见差异。Meido 通过独立辅助模型连接和当前角色描述生成场景提示词，但没有单独的主人自定义补充要求字段。
+
+本增补只核验固定源码和无费用测试，没有访问 NovelAI 生成接口或真实账号；不能据此声称已验证模型可用性、Anlas 消耗、取消计费或真实渠道回执。旧正文的实施建议和“尚未实现”表述只反映 2026-10-16 的基线，不应覆盖以上当前状态。
 
 本轮仅阅读本地源码与公开文档，包括公开 Swagger JSON；未读取真实 token、账号资料、系统 vault 或用户认证配置，未访问生成接口、安装依赖、启动插件或产生付费请求。没有真实生成成功、当前账号资格、Anlas 消耗或取消退款的实验证据。
 
