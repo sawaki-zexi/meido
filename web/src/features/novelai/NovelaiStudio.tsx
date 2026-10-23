@@ -3,8 +3,10 @@ import type { Role } from '../../api/types';
 import type { GenerationParameters, GenerationView } from '../../api/novelai';
 import { errorMessage } from '../../api/client';
 import { Avatar } from '../../ui/Avatar';
+import { Dialog } from '../../ui/Dialog';
 import { Icon } from '../../ui/Icon';
 import { Notice, Placeholder } from '../../ui/Status';
+import { PromptTagManager } from './PromptTagManager';
 import { useGenerationDrawer } from './useGenerationDrawer';
 
 const statusLabels: Record<string, string> = {
@@ -46,6 +48,7 @@ export function NovelaiStudio({ roles, initialRoleId, selectedRoleId, onRoleChan
 function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpenSettings }: { role: Role; roles: Role[]; roleId: string; setRoleId: (id: string) => void; onGenerated?: () => void | Promise<void>; onOpenSettings?: () => void }) {
   const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
   const [stageError, setStageError] = useState('');
+  const [promptTagsOpen, setPromptTagsOpen] = useState(false);
   const studio = useGenerationDrawer({ role, onClose: () => {}, onGenerated: onGenerated ?? (() => {}), defaultDeliveryMode: 'history_only',
     onGenerationAccepted: (generation) => setSelectedAttemptId(generation.attemptId) });
   const { configuration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
@@ -91,9 +94,12 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
         <h1>图片工作台</h1>
         <p className="muted">在角色范围内浏览作品、复用参数并开始新的生成。</p>
       </div>
-      <label className="studio-role-picker"><span>当前角色</span><select aria-label="工作台角色" value={role.id} disabled={busy || uploading} onChange={(event) => setRoleId(event.target.value)}>
-        {roles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-      </select></label>
+      <div className="studio-header-controls">
+        <button type="button" className="studio-tags-button" onClick={() => setPromptTagsOpen(true)}><Icon name="cards" size={17} /><span>管理提示标签</span></button>
+        <label className="studio-role-picker"><span>当前角色</span><select aria-label="工作台角色" value={role.id} disabled={busy || uploading} onChange={(event) => setRoleId(event.target.value)}>
+          {roles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+        </select></label>
+      </div>
     </header>
     {(error || stageError) && <Notice onDismiss={() => { setError(''); setStageError(''); }}>{error || stageError}</Notice>}
     <div className="novelai-studio-grid">
@@ -187,5 +193,8 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
       </div>
     </div>
     {watched.length > 0 && <p className="studio-background-status" role="status">有 {watched.length} 条生成或交付仍在处理中，历史会自动更新。</p>}
+    {promptTagsOpen && <Dialog title={`${role.name}的提示标签库`} variant="modal" modalFocus onClose={() => setPromptTagsOpen(false)}>
+      <PromptTagManager key={role.id} roleId={role.id} expanded />
+    </Dialog>}
   </section>;
 }

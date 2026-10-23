@@ -186,6 +186,9 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .novelai-studio-header h1 { margin: 0; font-size: 24px; }
 .novelai-studio-header .muted { margin-top: 3px; font-size: 13px; }
 .eyebrow { margin: 0 0 3px; color: var(--rose-deep); font-size: 11px; letter-spacing: 0; text-transform: uppercase; }
+.studio-header-controls { display: flex; align-items: flex-end; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+.studio-tags-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 7px; background: rgb(255 255 255 / 70%); color: var(--ink-soft); font-size: 12px; }
+.studio-tags-button:hover:not(:disabled) { border-color: var(--rose); background: var(--hover); }
 .studio-role-picker { display: grid; flex: 0 1 240px; gap: 4px; font-size: 12px; font-weight: 600; color: var(--ink-soft); }
 .novelai-studio-grid { display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 18px; width: 100%; max-width: 1240px; min-height: 0; margin: 0 auto; }
 .novelai-prompt-panel { display: grid; align-content: start; gap: 14px; min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 8px; background: rgb(255 255 255 / 58%); box-shadow: var(--panel-shadow); overflow: auto; }
@@ -241,7 +244,8 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
   .novelai-studio { display: block; padding: 16px 12px 24px; overflow-y: auto; }
   .novelai-studio-header { align-items: stretch; flex-direction: column; gap: 12px; }
   .novelai-studio-header h1 { font-size: 20px; }
-  .studio-role-picker { max-width: none; }
+  .studio-header-controls { align-items: flex-end; justify-content: space-between; }
+  .studio-role-picker { flex: 1 1 180px; max-width: none; }
   .novelai-studio-grid { display: flex; flex-direction: column; gap: 12px; }
   .novelai-prompt-panel { order: 2; max-height: none; }
   .novelai-stage-column { order: 1; min-height: 360px; }

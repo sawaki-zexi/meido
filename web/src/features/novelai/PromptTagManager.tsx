@@ -2,10 +2,10 @@ import type { PromptTagRating } from '../../api/novelai';
 import { Notice, Placeholder } from '../../ui/Status';
 import { usePromptTags } from './usePromptTags';
 
-export function PromptTagManager({ roleId }: { roleId: string }) {
-  const tags = usePromptTags(roleId);
+export function PromptTagManager({ roleId, expanded = false }: { roleId: string; expanded?: boolean }) {
+  const tags = usePromptTags(roleId, expanded);
   return <>
-    <button type="button" aria-expanded={tags.open} onClick={tags.toggle}>{tags.open ? '收起提示标签' : '管理提示标签'}</button>
+    {!expanded && <button type="button" aria-expanded={tags.open} onClick={tags.toggle}>{tags.open ? '收起提示标签' : '管理提示标签'}</button>}
     {tags.open && <section aria-label="本角色提示标签库">
       <h3>本角色提示标签库</h3>
       <p>最多 250 个标签。管理与预览只在本地进行；实际匹配取决于角色已保存的标签许可、启用状态和 rating 许可。</p>

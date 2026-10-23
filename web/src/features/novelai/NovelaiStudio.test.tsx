@@ -45,6 +45,26 @@ it('shows the selected role history on a stage and reuses parameters without con
   expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
 });
 
+it('opens the current role prompt-tag library from the studio without starting generation', async () => {
+  const tag = { id: 'a'.repeat(32), name: '雨景', keywords: ['下雨'], prompt: 'rain', negative_prompt: 'sunny', rating: 'general', enabled: true };
+  const { calls } = fakeBackend({
+    'GET /api/services/novelai': () => ({ body: configuration }),
+    'GET /api/roles/r1/generations': () => ({ body: page([]) }),
+    'GET /api/roles/r1/novelai/prompt-tags\\?limit=50': () => ({ body: { tags: [tag], revision: 1, nextCursor: null } }),
+  });
+  const user = userEvent.setup();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
+  await screen.findByText('暂无生图历史。');
+  await user.click(screen.getByRole('button', { name: '管理提示标签' }));
+  const library = await screen.findByRole('dialog', { name: '诗织的提示标签库' });
+  expect(await within(library).findByRole('region', { name: '本角色提示标签库' })).toBeInTheDocument();
+  expect(within(library).getByText('雨景')).toBeInTheDocument();
+  await user.click(within(library).getByRole('button', { name: '关闭' }));
+  expect(screen.queryByRole('dialog', { name: '诗织的提示标签库' })).not.toBeInTheDocument();
+  expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
+  expect(calls.some((call) => call.path === '/api/roles/r1/novelai/prompt-tags?limit=50')).toBe(true);
+});
+
 it('keeps an img2img source and background flag when reusing historical parameters', async () => {
   const img2img = { ...record, generationId: 'gen-img2img', attemptId: 'attempt-img2img', parameters: {
     ...record.parameters, mode: 'img2img' as const, base_attachment_id: 'base-uploaded-earlier', strength: .62, noise: .18, background: true,

@@ -3,8 +3,8 @@ import { errorMessage } from '../../api/client';
 import { novelai, type PromptTag, type PromptTagInput, type PromptTagPage, type PromptTagPreview } from '../../api/novelai';
 
 const emptyTag = (): PromptTagInput => ({ name: '', keywords: [], prompt: '', negative_prompt: '', rating: 'general', enabled: true });
-export function usePromptTags(roleId: string) {
-  const [open, setOpen] = useState(false);
+export function usePromptTags(roleId: string, initiallyOpen = false) {
+  const [open, setOpen] = useState(initiallyOpen);
   const [page, setPage] = useState<PromptTagPage | null>(null);
   const [draft, setDraft] = useState<PromptTagInput>(emptyTag);
   const [keywords, setKeywords] = useState('');
@@ -22,10 +22,15 @@ export function usePromptTags(roleId: string) {
   const current = (owner: typeof scope.current) => owner.active && owner === scope.current && currentRole.current === owner.roleId;
   useEffect(() => {
     const owner = { roleId, active: true }; scope.current = owner;
-    setOpen(false); setPage(null); setDraft(emptyTag()); setKeywords(''); setEditing(undefined);
+    setOpen(initiallyOpen); setPage(null); setDraft(emptyTag()); setKeywords(''); setEditing(undefined);
     setBusy(false); setError(''); setText(''); setPrompt(''); setNegativePrompt(''); setPreview(null); previewVersion.current++;
+    if (initiallyOpen) void novelai.promptTags(roleId).then((result) => {
+      if (current(owner)) setPage(result);
+    }).catch((cause) => {
+      if (current(owner)) setError(errorMessage(cause, '提示标签操作未完成，请重查标签库'));
+    });
     return () => { owner.active = false; };
-  }, [roleId]);
+  }, [roleId, initiallyOpen]);
   const load = async (owner = scope.current, cursor?: string) => {
     const result = await novelai.promptTags(owner.roleId, cursor);
     if (!current(owner)) return;
