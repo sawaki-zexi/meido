@@ -172,10 +172,10 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   };
   const loadParameters = (generation: GenerationView, reuseSeed = false) => {
     if (busy || uploading || !generation.parameters) return;
-    const { width, height, prompt, negative_prompt, mode, model, sampler, steps, base_attachment_id, strength, noise } = generation.parameters;
+    const { width, height, prompt, negative_prompt, mode, model, sampler, steps, base_attachment_id, strength, noise, background } = generation.parameters;
     const size = width === 1024 && height === 1024 ? 'square' : width === 1216 && height === 832 ? 'landscape'
       : width === 832 && height === 1216 ? 'portrait' : 'custom';
-    setParameters({ prompt, negative_prompt, mode, model, sampler, steps, size_preset: size,
+    setParameters({ prompt, negative_prompt, mode, model, sampler, steps, background, size_preset: size,
       ...(mode === 'img2img' ? { base_attachment_id, strength, noise } : {}),
       ...(size === 'custom' ? { custom_width: width, custom_height: height } : {}) });
     setSeed(reuseSeed && generation.parameters.seed !== undefined ? String(generation.parameters.seed) : '');

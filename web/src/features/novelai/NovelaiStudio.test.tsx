@@ -41,6 +41,46 @@ it('shows the selected role history on a stage and reuses parameters without con
   expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
 });
 
+it('keeps an img2img source and background flag when reusing historical parameters', async () => {
+  const img2img = { ...record, generationId: 'gen-img2img', attemptId: 'attempt-img2img', parameters: {
+    ...record.parameters, mode: 'img2img' as const, base_attachment_id: 'base-uploaded-earlier', strength: .62, noise: .18, background: true,
+  } };
+  fakeBackend({
+    'GET /api/services/novelai': () => ({ body: configuration }),
+    'GET /api/roles/r1/generations': () => ({ body: page([img2img]) }),
+  });
+  const user = userEvent.setup();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
+  await screen.findByAltText('one.png');
+  await user.click(screen.getByRole('button', { name: '复用参数' }));
+  expect(screen.getByLabelText('工作台生成模式')).toHaveValue('img2img');
+  expect(screen.getByLabelText('工作台本角色底图')).toHaveValue('base-uploaded-earlier');
+  expect(screen.getByRole('option', { name: '历史底图（需仍可访问）' })).toBeInTheDocument();
+  expect(screen.getByLabelText('后台生成，结果仅保存在历史')).toBeChecked();
+});
+
+it('requires fresh consumption consent before regenerating the selected historical image', async () => {
+  const regenerated = { ...record, generationId: 'gen-regenerated', attemptId: 'attempt-regenerated', parentAttemptId: record.attemptId,
+    parameters: { ...record.parameters, seed: 654 }, attachments: [{ ...image, id: 'image-regenerated', name: 'regenerated.png' }], deliveryMode: 'history_only' };
+  const { calls } = fakeBackend({
+    'GET /api/services/novelai': () => ({ body: configuration }),
+    'GET /api/roles/r1/generations': () => ({ body: page([record]) }),
+    'POST /api/roles/r1/generations/gen-one/regenerate': () => ({ body: { generation: regenerated } }),
+  });
+  const user = userEvent.setup();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
+  await screen.findByAltText('one.png');
+  await user.click(screen.getByRole('button', { name: '重新生成' }));
+  expect(screen.getByRole('button', { name: '确认并重新生成' })).toBeDisabled();
+  expect(screen.getByText('将基于 one.png 再次生成；本次会重新消费一次尝试额度。')).toBeInTheDocument();
+  await user.click(screen.getByLabelText('我确认本次重生成可能产生费用'));
+  await user.click(screen.getByRole('button', { name: '确认并重新生成' }));
+  expect(await screen.findByAltText('regenerated.png')).toBeInTheDocument();
+  const posts = calls.filter((call) => call.method === 'POST');
+  expect(posts).toHaveLength(1);
+  expect(posts[0].body).toMatchObject({ sourceAttemptId: 'attempt-one', expectedAttachmentId: 'image-one', deliveryMode: 'history_only' });
+});
+
 it('submits the selected parameters once and keeps new work in studio history by default', async () => {
   const generated = { ...record, generationId: 'gen-new', attemptId: 'attempt-new', attachments: [{ ...image, id: 'image-new', name: 'new.png' }] };
   const { calls } = fakeBackend({
@@ -113,6 +153,21 @@ it('keeps the generation action disabled and explains the current authorization 
   await waitFor(() => expect(screen.getByText('暂无生图历史。')).toBeInTheDocument());
 });
 
+it.each([
+  ['missing token', { tokenConfigured: false }, '手动生图尚未获准，请先完成独立服务、凭据和有限消费确认。'],
+  ['stale consent', { manualConsentRevision: 2 }, '手动生图尚未获准，请先完成独立服务、凭据和有限消费确认。'],
+  ['credential cleanup', { credentialCleanupPending: true }, '手动生图尚未获准，请先完成独立服务、凭据和有限消费确认。'],
+] as const)('keeps generation disabled when authorization gate is %s', async (_name, override, message) => {
+  fakeBackend({
+    'GET /api/services/novelai': () => ({ body: { ...configuration, ...override } }),
+    'GET /api/roles/r1/generations': () => ({ body: page([]) }),
+  });
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
+  const form = await screen.findByRole('form', { name: '工作台生成设置' });
+  expect(within(form).getByText(message)).toBeInTheDocument();
+  expect(within(form).getByRole('button', { name: '生成一张图片' })).toBeDisabled();
+});
+
 it('shows failed history records on the stage with their no-retry explanation', async () => {
   const failed = { ...record, generationId: 'gen-unknown', attemptId: 'attempt-unknown', status: 'unknown',
     errorCode: 'transport_unknown', attachments: [] };
@@ -136,4 +191,20 @@ it('replaces the loading stage with a readable error when the initial history lo
   expect(within(screen.getByLabelText('当前作品')).getByText('历史暂时不可用')).toBeInTheDocument();
   expect(within(screen.getByRole('navigation', { name: '历史作品' })).getByText('历史读取失败')).toBeInTheDocument();
   expect(screen.queryByText('正在加载作品…')).not.toBeInTheDocument();
+});
+
+it('shows loading states while settings and history are still pending', async () => {
+  let releaseConfiguration: ((value: { body: unknown }) => void) | undefined;
+  let releaseHistory: ((value: { body: unknown }) => void) | undefined;
+  fakeBackend({
+    'GET /api/services/novelai': () => new Promise((resolve) => { releaseConfiguration = resolve; }),
+    'GET /api/roles/r1/generations': () => new Promise((resolve) => { releaseHistory = resolve; }),
+  });
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
+  expect(screen.getByText('正在加载生图设置…')).toBeInTheDocument();
+  expect(screen.getByText('正在加载作品…')).toBeInTheDocument();
+  expect(screen.getByRole('navigation', { name: '历史作品' })).toHaveTextContent('正在加载…');
+  releaseConfiguration?.({ body: configuration });
+  releaseHistory?.({ body: page([]) });
+  await screen.findByText('暂无生图历史。');
 });

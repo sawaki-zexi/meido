@@ -45,7 +45,8 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
   const studio = useGenerationDrawer({ role, onClose: () => {}, onGenerated: onGenerated ?? (() => {}), defaultDeliveryMode: 'history_only',
     onGenerationAccepted: (generation) => setSelectedAttemptId(generation.attemptId) });
   const { configuration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
-    attempt, submit, upload, allowed, candidates, patch, reuseParameters, watched, deliveryMode, setDeliveryMode, refresh, scope, isCurrent } = studio;
+    source, consent, setConsent, attempt, submit, upload, allowed, candidates, patch, reuseParameters, selectImage,
+    watched, deliveryMode, setDeliveryMode, refresh, scope, isCurrent } = studio;
 
   useEffect(() => {
     if (role.id !== roleId) setRoleId(role.id);
@@ -58,6 +59,10 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
   const selectedImage = selected?.attachments.find((item) => item.kind === 'image') ?? null;
   const historicalImages = records.flatMap((item) => item.attachments.filter((attachment) => attachment.kind === 'image'));
   const allCandidates = [...candidates, ...historicalImages].filter((item, index, all) => all.findIndex((other) => other.id === item.id) === index);
+  const inputCandidates = parameters.mode === 'img2img' && parameters.base_attachment_id
+    && !allCandidates.some((item) => item.id === parameters.base_attachment_id)
+    ? [...allCandidates, { id: parameters.base_attachment_id, name: '历史底图（需仍可访问）', kind: 'image' as const, mediaType: 'image/*', size: 0 }]
+    : allCandidates;
 
   const selectRecord = (record: GenerationView) => {
     setSelectedAttemptId(record.attemptId);
@@ -92,6 +97,8 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
         {configuration && <>
           {!allowed && <div className="studio-policy"><span>手动生图尚未获准，请先完成独立服务、凭据和有限消费确认。</span>
             {onOpenSettings && <button type="button" onClick={onOpenSettings}>打开 NovelAI 设置</button>}</div>}
+          {source && <div className="studio-policy"><span>将基于 {source.image.name} 再次生成；本次会重新消费一次尝试额度。</span>
+            <label className="checkbox-field"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} />我确认本次重生成可能产生费用</label></div>}
           <fieldset disabled={busy || uploading || !allowed || Boolean(attempt.current)}>
             <label className="field"><span>英文正向 tags</span><textarea aria-label="工作台英文正向 tags" required maxLength={4000} value={parameters.prompt} onChange={(event) => patch({ prompt: event.target.value })} /></label>
             <label className="field"><span>英文负向 tags</span><textarea aria-label="工作台英文负向 tags" maxLength={4000} value={parameters.negative_prompt ?? ''} onChange={(event) => patch({ negative_prompt: event.target.value })} /></label>
@@ -100,7 +107,7 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
               setParameters(event.target.value === 'img2img' ? { ...rest, mode: 'img2img', strength: .7, noise: .2 } : { ...rest, mode: 'txt2img' });
             }}><option value="txt2img">文生图</option><option value="img2img">图生图</option></select></label>
             {parameters.mode === 'img2img' && <>
-              <label className="field"><span>本角色底图</span><select aria-label="工作台本角色底图" required value={parameters.base_attachment_id ?? ''} onChange={(event) => patch({ base_attachment_id: event.target.value })}><option value="">选择底图</option>{allCandidates.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
+              <label className="field"><span>本角色底图</span><select aria-label="工作台本角色底图" required value={parameters.base_attachment_id ?? ''} onChange={(event) => patch({ base_attachment_id: event.target.value })}><option value="">选择底图</option>{inputCandidates.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
               <label className="field"><span>上传底图（最多 10 MiB）</span><input aria-label="工作台上传生图底图" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { void upload(event.target.files?.[0]); event.target.value = ''; }} /></label>
               <label className="field"><span>图生图强度</span><input type="number" aria-label="工作台图生图强度" min="0.01" max="1" step="0.01" required value={parameters.strength} onChange={(event) => patch({ strength: Number(event.target.value) })} /></label>
               <label className="field"><span>图生图噪声</span><input type="number" aria-label="工作台图生图噪声" min="0" max="0.99" step="0.01" required value={parameters.noise} onChange={(event) => patch({ noise: Number(event.target.value) })} /></label>
@@ -117,7 +124,7 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
             <label className="field"><span>结果交付</span><select aria-label="工作台结果交付" value={deliveryMode} onChange={(event) => setDeliveryMode(event.target.value as typeof deliveryMode)}><option value="history_only">仅保存在工作台历史</option><option value="replacement">交付到当前角色会话</option></select></label>
             <label className="checkbox-field"><input type="checkbox" checked={parameters.background ?? false} onChange={(event) => patch({ background: event.target.checked })} /><span>{deliveryMode === 'history_only' ? '后台生成，结果仅保存在历史' : '后台生成，完成后交付当前角色会话'}</span></label>
           </fieldset>
-          <div className="form-actions studio-actions"><button type="submit" className="primary" disabled={busy || uploading || !allowed}>{busy ? '正在生成…' : attempt.current ? '重查本次生成' : '生成一张图片'}</button>
+          <div className="form-actions studio-actions"><button type="submit" className="primary" disabled={busy || uploading || !allowed || Boolean(source && !consent)}>{busy ? '正在生成…' : attempt.current ? '重查本次生成' : source ? '确认并重新生成' : '生成一张图片'}</button>
             {attempt.current && !busy && <button type="button" onClick={() => { studio.attempt.current = null; setError(''); setSeed(''); setParameters({ ...parameters }); }}>另开一次生成</button>}</div>
           <p className="studio-usage">今日账户尝试 {page?.usage.accountAttempts ?? 0}/{configuration.dailyAttemptLimit}，本角色手动尝试 {page?.usage.manualAttempts ?? 0}/{configuration.manualDailyAttempts ?? 10}。</p>
         </>}
@@ -131,7 +138,8 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
             : <Placeholder loading>正在加载作品…</Placeholder>}
           {selected?.parameters && <div className="studio-stage-meta"><span>{dimensions(selected.parameters)}</span><span>{selected.parameters.model}</span><span>{selected.parameters.sampler} · {selected.parameters.steps} 步</span><span>Seed {selected.parameters.seed}</span>
             {selectedImage && <a href={imageUrl(role.id, selectedImage.id)} download={selectedImage.name}>下载</a>}
-            <button type="button" disabled={busy || uploading || Boolean(attempt.current)} onClick={() => handleReuseParameters(selected)}>复用参数</button></div>}
+            <button type="button" disabled={busy || uploading || Boolean(attempt.current)} onClick={() => handleReuseParameters(selected)}>复用参数</button>
+            {selectedImage && <button type="button" disabled={busy || uploading || Boolean(attempt.current)} onClick={() => selectImage(selected, selectedImage)}>重新生成</button>}</div>}
         </div>
         <nav className="novelai-filmstrip" aria-label="历史作品">
           <div className="filmstrip-heading"><h2>历史</h2><span>{records.length} 条</span></div>
