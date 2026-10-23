@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import os
 import shlex
+import shutil
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
@@ -69,6 +71,9 @@ class ShellTool:
         origin_resolver: Callable[[ToolContext], TaskOrigin] = _origin,
         authorized: Callable[[ToolContext], bool] | None = None,
         authorized_command: Callable[[ToolContext, str], bool] | None = None,
+        platform_shell: bool = False,
+        restricted_enabled: bool = True,
+        restricted_authorized: Callable[[ToolContext, str | None], bool] | None = None,
     ) -> None:
         self.definition = replace(self.definition, source="role", timeout_seconds=timeout_seconds + 2,
                                   output_limit=max_output_chars)
@@ -78,6 +83,13 @@ class ShellTool:
         self.tasks, self.promote_after_seconds = tasks, promote_after_seconds
         self.origin_resolver, self.authorized = origin_resolver, authorized
         self.authorized_command = authorized_command
+        self.platform_shell = platform_shell
+        self.restricted_enabled, self.restricted_authorized = restricted_enabled, restricted_authorized
+        if platform_shell:
+            self.definition = replace(self.definition, description=(
+                'Execute a command in PowerShell 7 on Windows or /bin/sh on POSIX. '
+                'The working directory is this role workspace. Long commands may become owned '
+                'background tasks; inspect or stop them with task_output/task_stop.'))
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
         del on_update
@@ -92,14 +104,28 @@ class ShellTool:
         command = arguments.get("command")
         if not isinstance(command, str) or not command.strip():
             return _error("command must be a non-empty string")
-        try:
-            argv = shlex.split(command, posix=True)
-        except ValueError as error:
-            return _error(f"invalid command: {error}")
-        if not argv:
-            return _error("command must be a non-empty string")
-        if not self._executable_is_allowed(argv[0], self.allowed_commands):
-            return _error("command denied by role policy")
+        if self.platform_shell:
+            if os.name == 'nt':
+                executable = shutil.which('pwsh')
+                if executable is None:
+                    return _error('Windows shell requires PowerShell 7 (pwsh) on PATH', 'unavailable')
+                script = ('[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); '
+                          '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); '
+                          '$OutputEncoding = [Console]::OutputEncoding\n' + command)
+                encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+                argv = [executable, '-NoLogo', '-NoProfile', '-NonInteractive',
+                        '-OutputFormat', 'Text', '-EncodedCommand', encoded]
+            else:
+                argv = ['/bin/sh', '-c', command]
+        else:
+            try:
+                argv = shlex.split(command, posix=True)
+            except ValueError as error:
+                return _error(f"invalid command: {error}")
+            if not argv:
+                return _error("command must be a non-empty string")
+            if not self._executable_is_allowed(argv[0], self.allowed_commands):
+                return _error("command denied by role policy")
 
         def authority():
             return ((self.authorized is None or self.authorized(context))
@@ -149,6 +175,13 @@ class ShellTool:
                 await asyncio.shield(stopping)
             raise
 
+
+    def allows_restricted(self, context: ToolContext, command: str | None = None) -> bool:
+        """Restricted workers need both frozen and current, separate permission."""
+        return bool(self.restricted_enabled and self.allowed_commands
+                    and (self.authorized is None or self.authorized(context))
+                    and (self.restricted_authorized is None or self.restricted_authorized(context, command))
+                    and (command is None or self.command_is_allowed(command, self.allowed_commands)))
 
     @staticmethod
     def command_is_allowed(command: str, allowed_commands: Sequence[str]) -> bool:

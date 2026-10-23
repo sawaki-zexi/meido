@@ -19,6 +19,7 @@ from backend.app import main
 from backend.app.agent_runtime import RuntimeManager
 from backend.app.ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
 from backend.app.computer_use import ComputerUseHost
+from backend.app.plugin_configuration import PluginConfigurationStore
 from backend.app.memory_config import MemorySettingsStore
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.models import ModelConfigurationInput, RoleInput
@@ -193,11 +194,15 @@ def test_http_receipt_reaches_next_provider_sse_and_persisted_tool_history(tmp_p
         monkeypatch.setattr(host, "finish_run", record_finish_run)
         memory = MemorySettingsStore(tmp_path / "memory.json")
         memory.update(enabled=False, embedding_enabled=False)
+        plugins = PluginConfigurationStore(tmp_path / "plugins.json")
+        state = plugins.prepare("computer", expected_revision=0, enabled=True)
+        plugins.finish("computer", state.revision)
         for key, value in {
             "store": roles, "model_configuration_store": models, "session_store": sessions,
             "session_manager": SessionManager(roles, sessions), "runtime_manager": RuntimeManager(sessions),
             "role_locks": {}, "model_adapter": RoutedModelAdapter(registry), "model_adapter_registry": registry,
             "computer_use": host, "memory_settings_store": memory,
+            "plugin_configuration": plugins,
         }.items():
             monkeypatch.setattr(main, key, value)
         # As in the existing HTTP fixture, avoid a lifespan context that would

@@ -116,14 +116,14 @@ class _ChildShell:
     """A foreground process owned by the child, with no auto promotion."""
     def __init__(self, parent: ShellTool, directory: Path, execution: TaskExecution, owner: SpawnExecutor):
         self.parent, self.directory, self.execution, self.owner = parent, directory, execution, owner
-        self.definition = replace(parent.definition, input_schema={
+        self.definition = replace(parent.definition, description='Run an explicitly allowlisted argv command in the isolated task directory; shell expressions are not supported.', input_schema={
             "type": "object", "properties": {"command": {"type": "string", "minLength": 1},
                 "description": {"type": "string", "maxLength": 500}}, "required": ["command"], "additionalProperties": False})
 
     async def execute(self, arguments, context, on_update=None):
         del on_update
         command = str(arguments["command"])
-        if context.signal.is_cancelled() or not ShellTool.command_is_allowed(command, self.parent.allowed_commands):
+        if context.signal.is_cancelled() or not self.parent.allows_restricted(self.owner.context, command):
             return _error()
         env = {key: value for key, value in os.environ.items()
                if key.upper() in {"PATH", "SYSTEMROOT", "WINDIR", "HOME", "USERPROFILE", "LANG", "LC_ALL", "TMP", "TEMP"}}
@@ -164,9 +164,16 @@ class SpawnExecutor:
         self.shell_arguments: Mapping[str, object] | None = None
         self.guard = threading.Lock()
         self._cancel_requested = False
+        shell = frozen.get('shell')
+        self.restricted_shell = (shell if profile != 'research' and isinstance(shell, ShellTool)
+                                 and shell.allows_restricted(context) else None)
 
     def is_authorized(self) -> bool:
         if not self.authorized():
+            return False
+        command = self.shell_arguments.get('command') if self.shell_arguments else None
+        if self.restricted_shell is not None and not self.restricted_shell.allows_restricted(
+                self.context, str(command) if command is not None else None):
             return False
         permitted = _READ | (_WEB if self.profile != "scripting" else frozenset()) | (_WRITE if self.profile != "research" else frozenset())
         return all(self.frozen.authorization_denial(definition, self.context,
@@ -224,6 +231,8 @@ class SpawnExecutor:
             elif name in {"write_file", "edit_file"}:
                 child = task_files[name]
             elif name == "shell" and isinstance(parent, ShellTool):
+                if self.restricted_shell is None:
+                    continue
                 child = _ChildShell(parent, directory, execution, self)
                 definition = child.definition
 
@@ -343,6 +352,8 @@ class SpawnManageTool:
         self.coding_authorized = coding_authorized or authorized
 
     async def execute(self, arguments, context, on_update=None):
+        if arguments.get('action') == 'continue' and not getattr(self, 'new_execution_allowed', lambda: True)():
+            return _error()
         del on_update
         try:
             ToolRegistry.validate_definition(self.definition, arguments)
@@ -371,7 +382,8 @@ class SpawnManageTool:
                     if action == 'continue':
                         result = await _owned_thread(application.continue_task, task_id, origin,
                             requirement=arguments['task'], executor='codex_exec', frozen_access=self.coding_access or None,
-                            admitted=lambda: not context.signal.is_cancelled() and self.authorized(context) and self.coding_authorized(context))
+                            admitted=lambda: not context.signal.is_cancelled() and self.authorized(context) and self.coding_authorized(context)
+                                and getattr(self, 'new_execution_allowed', lambda: True)())
                     elif action == 'cancel':
                         result = await _owned_thread(application.cancel_task, task_id, origin, executor='codex_exec')
                     details = {**result, 'job_id': result['id'], 'background': True}

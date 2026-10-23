@@ -36,7 +36,8 @@ export const payloadFromDraft = (draft: RoleDraft) => ({
   profile: { profile: draft.profile, personality: draft.personality, behaviorRules: draft.behaviorRules, responseConstraints: draft.responseConstraints, nickname: draft.nickname },
   agentConfig: {
     ...draft.preservedAgentConfig,
-    ...(draft.spawnEnabled || draft.preservedAgentConfig.spawn ? { spawn: {
+    ...(draft.spawnEnabled || draft.preservedAgentConfig.spawn || draft.spawnTimeoutSeconds !== 120
+      || draft.spawnMaxTurns !== 12 || draft.spawnMaxOutputChars !== 20000 || draft.spawnMaxModelOutputChars !== 60000 ? { spawn: {
       ...draft.preservedAgentConfig.spawn, enabled: draft.spawnEnabled,
       timeoutSeconds: draft.spawnTimeoutSeconds, maxTurns: draft.spawnMaxTurns,
       maxOutputChars: draft.spawnMaxOutputChars, maxModelOutputChars: draft.spawnMaxModelOutputChars,
@@ -48,7 +49,8 @@ export const payloadFromDraft = (draft: RoleDraft) => ({
       ...draft.preservedAgentConfig.screenPerception, enabled: draft.screenPerceptionEnabled,
       visionModelConfigurationId: draft.screenVisionModelConfigurationId || null,
     } } : {}),
-    ...(draft.shellEnabled || draft.preservedAgentConfig.shell || draft.shellAllowedCommands ? { shell: {
+    ...(draft.shellEnabled || draft.preservedAgentConfig.shell || draft.shellAllowedCommands
+      || draft.shellTimeoutSeconds !== 30 || draft.shellMaxOutputChars !== 20000 ? { shell: {
       ...draft.preservedAgentConfig.shell, enabled: draft.shellEnabled,
       allowedCommands: [...new Set(draft.shellAllowedCommands.split(/\r?\n/).map((item) => item.trim()).filter(Boolean))],
       timeoutSeconds: draft.shellTimeoutSeconds, maxOutputChars: draft.shellMaxOutputChars,

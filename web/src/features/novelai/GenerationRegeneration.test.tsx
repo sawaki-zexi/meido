@@ -5,7 +5,7 @@ import { fakeBackend, role } from '../../test/fakeBackend';
 import type { AgentToolConfig } from '../../api/types';
 import { GenerationDrawer } from './GenerationDrawer';
 
-const configuration = { enabled: true, tokenConfigured: true, credentialCleanupPending: false, revision: 3,
+const configuration = { enabled: true, manualEnabled: true, manualDailyAttempts: 10, manualConsentRevision: 3, tokenConfigured: true, credentialCleanupPending: false, revision: 3,
   allowedModels: ['nai-diffusion-4-5-curated'], defaultModel: 'nai-diffusion-4-5-curated', allowedSamplers: ['k_euler_ancestral'],
   defaultSampler: 'k_euler_ancestral', maxPixels: 1048576, maxSteps: 28, dailyAttemptLimit: 20 };
 const owner = role({ id: 'r1', name: '诗织', agentConfig: { novelai: { manualEnabled: true, manualDailyAttempts: 10, consentRevision: 3 } } as AgentToolConfig });

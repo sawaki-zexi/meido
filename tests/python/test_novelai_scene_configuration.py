@@ -6,6 +6,8 @@ import json
 
 def test_owner_can_enable_cg_with_explicit_auxiliary_connection_without_manual_permission(novelai_main):
     client, service = novelai_main
+    public = service.application.settings.public()
+    service.application.settings.save({'manualEnabled': False}, expected_revision=public['revision'])
     connection = client.post('/api/model/configurations', json={'providerId': 'custom', 'provider': 'fixture',
         'baseUrl': 'http://127.0.0.1:9/v1', 'model': 'scene-fixture', 'api': 'openai-completions'})
     assert connection.status_code == 200, connection.text

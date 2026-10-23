@@ -608,18 +608,21 @@ def test_enabled_browser_role_completes_tool_turn_and_keeps_screenshot_ephemeral
             del configuration
             self.requests.append((messages, tools))
             if len(self.requests) == 1:
+                yield ModelToolCall('discover-browser', 'tool_search', {'query': 'select:agent_browser_open,agent_browser_screenshot,agent_browser_tab_list'})
+                return
+            if len(self.requests) == 2:
                 assert {item["function"]["name"] for item in tools} >= {
                     "agent_browser_open", "agent_browser_screenshot", "agent_browser_tab_list",
                 }
                 yield ModelToolCall("call-browser", "agent_browser_screenshot", {})
                 return
-            if len(self.requests) == 2:
-                result = next(item for item in messages if item.get("role") == "tool")
+            if len(self.requests) == 3:
+                result = next(item for item in messages if item.get("tool_call_id") == 'call-browser')
                 assert result["tool_call_id"] == "call-browser"
                 assert result["content"][1]["image_url"]["url"] == "data:image/png;base64,aW1hZ2U="
                 yield ModelToolCall("call-browser-next", "agent_browser_tab_list", {})
                 return
-            if len(self.requests) == 3:
+            if len(self.requests) == 4:
                 screenshot = next(item for item in messages if item.get("tool_call_id") == "call-browser")
                 assert screenshot["content"] == "screenshot captured"
                 yield ModelTextDelta("网页已打开")
@@ -632,9 +635,9 @@ def test_enabled_browser_role_completes_tool_turn_and_keeps_screenshot_ephemeral
 
     assert response.status_code == 200
     assert "event: assistant_completed" in response.text
-    assert len(adapter.requests) == 3
+    assert len(adapter.requests) == 4
     runtime_messages = sessions.runtime_messages(f"role:{role.id}")
-    screenshot_result = next(item for item in runtime_messages if isinstance(item, ToolResultMessage))
+    screenshot_result = next(item for item in runtime_messages if isinstance(item, ToolResultMessage) and item.tool_name == 'agent_browser_screenshot')
     assert screenshot_result.tool_name == "agent_browser_screenshot"
     assert screenshot_result.content == "screenshot captured"
     assert screenshot_result.images == ()
@@ -642,18 +645,15 @@ def test_enabled_browser_role_completes_tool_turn_and_keeps_screenshot_ephemeral
     assert "aW1hZ2U=" not in str(session_payload)
     assert all(message["messageType"] == "text" for message in session_payload["messages"])
 
-    updated = client.put(f"/api/roles/{role.id}", json={
-        "name": role.name,
-        "description": role.description,
-        "profile": role.profile.model_dump(),
-        "agentConfig": {"browserUse": {"enabled": False}},
-    })
+    state = client.get('/api/plugin-management/browser').json()
+    updated = client.put('/api/plugin-management/browser/enabled', json={
+        'enabled': False, 'expectedRevision': state['revision']})
     assert updated.status_code == 200
     assert transport.closed is True
     disabled_response = client.post(f"/api/roles/{role.id}/messages", json={"content": "再看网页"})
     assert disabled_response.status_code == 200
     assert "event: assistant_completed" in disabled_response.text
-    assert len(adapter.requests) == 4
+    assert len(adapter.requests) == 5
 
 
 def test_disabled_browser_role_rejects_forged_tool_call(tmp_path, monkeypatch):
@@ -997,6 +997,11 @@ def test_native_browser_http_tool_round_trip_and_active_role_deletion(tmp_path, 
 
 
 def _configure_browser_api(tmp_path, monkeypatch, adapter, *, enabled):
+    from backend.app.plugin_configuration import PluginConfigurationStore
+    global_plugins = PluginConfigurationStore(tmp_path / 'plugins.json')
+    state = global_plugins.prepare('browser', expected_revision=0, enabled=enabled)
+    global_plugins.finish('browser', state.revision)
+    monkeypatch.setattr(main, 'plugin_configuration', global_plugins)
     roles = main.RoleStore(tmp_path / "roles")
     role = roles.create(main.RoleInput(
         name="浏览角色",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -12,7 +13,8 @@ from backend.app import main
 from backend.app.channels import ChannelHost
 from backend.app.channels.credentials import credential_key
 from backend.app.channels.transports import FeishuWebhookTransport
-from backend.app.models import RoleInput, RoleProfile
+from backend.app.advanced_settings import AdvancedSettingsStore
+from backend.app.models import AgentRun, RoleInput, RoleProfile
 from backend.app.multichannel import MultichannelStore
 from backend.app.role_store import RoleStore
 from backend.app.session_store import SessionStore
@@ -56,9 +58,12 @@ def channel_api(tmp_path, monkeypatch, local_platform_only):
     sessions = SessionStore(tmp_path / "sessions.db")
     credentials = MemoryCredentials()
     channels = MultichannelStore(tmp_path / "sessions.db", sessions, credentials)
+    advanced = AdvancedSettingsStore(tmp_path / "advanced.db")
+    advanced.update(expected_revision=0, operation_id="direct-tools", values={"searchEnabled": False})
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "multichannel_store", channels)
+    monkeypatch.setattr(main, "advanced_settings", advanced)
     monkeypatch.setattr(main, "channel_host", ChannelHost(channels))
     monkeypatch.setattr(main, "channel_adapters", {})
     monkeypatch.setattr(main, "channel_transports", {})
@@ -117,6 +122,7 @@ def test_desktop_capabilities_hide_channel_tools_without_usable_account(channel_
 
 def test_desktop_capabilities_expose_channel_tools_with_usable_account(channel_api):
     role, channels, _, _ = channel_api
+    channels.set_channel_enabled("qq", True)
     channels.register_channel_account(role.id, "qq", account_id="qq-enabled", enabled=True)
 
     capabilities = asyncio.run(main._runtime_capabilities(
@@ -129,9 +135,17 @@ def test_desktop_capabilities_expose_channel_tools_with_usable_account(channel_a
 
 
 def test_channel_thread_capabilities_keep_channel_tools(channel_api):
-    role, _, _, _ = channel_api
+    role, channels, _, _ = channel_api
+    channels.set_channel_enabled("qq", True)
+    account = channels.register_channel_account(role.id, "qq", account_id="qq-source", enabled=True)
+    thread = channels.ensure_channel_thread(role.id, "qq", account.account_id, "source-chat", "private")
+    _, user = channels.append_event(thread, direction="inbound", content="hello",
+        external_message_id="source-1", metadata={"senderId": "owner", "senderIsOwner": True})
+    run = AgentRun(runId="channel-thread", roleId=role.id, sessionKey=thread.session_key,
+                   status="running", startedAt=datetime.now(timezone.utc))
+    main.session_store.create_run_with_existing_user_message(run, user.id)
     capabilities = asyncio.run(main._runtime_capabilities(
-        role, session_key="thread:telegram:source:chat", run_id="channel-thread", external_only=True,
+        role, session_key=thread.session_key, run_id="channel-thread", external_only=True,
     ))
 
     assert capabilities.get("account_send") is not None

@@ -69,7 +69,7 @@ def test_soft_outlives_parent_with_spawn_disabled_and_reads_a_real_file_once(api
             if child:
                 child_requests.append(messages)
                 assert 'parent-secret-158' not in str(messages)
-                assert {item['function']['name'] for item in tools} == {'read_file'}
+                assert {item['function']['name'] for item in tools} == {'read_file', 'list_dir', 'write_file', 'edit_file', 'web_search', 'web_fetch'}
                 if not results:
                     yield ModelToolCall('soft-read', 'read_file', {'path': 'time-evidence.txt'})
                 else:
@@ -127,7 +127,7 @@ def test_model_cannot_inject_host_schedule_authority_or_time(api, monkeypatch, f
     assert not any(m.metadata.get('internalEvent') == 'schedule' for m in sessions.list_messages(f"role:{role['id']}"))
 
 
-def test_revoke_schedule_stops_existing_plan_while_management_remains_available(api, monkeypatch):  # noqa: F811
+def test_legacy_tool_selection_does_not_revoke_default_plan_and_cancellation_remains_available(api, monkeypatch):  # noqa: F811
     from backend.app import main
     client, _, sessions, _ = api
     now, receipts, action = [1780000000.0], [], ['schedule']
@@ -150,16 +150,16 @@ def test_revoke_schedule_stops_existing_plan_while_management_remains_available(
     assert 'assistant_completed' in client.post(path, json={'content': '创建'}).text
     changed = client.put(f"/api/roles/{role['id']}", json={'name': role['name'], 'profile': role['profile'], 'agentConfig': {'enabledTools': ['list_schedules', 'cancel_schedule']}})
     assert changed.status_code == 200
-    now[0] += 10
-    asyncio.run(main._schedule_application().tick())
     action[0] = 'list_schedules'
     assert 'assistant_completed' in client.post(path, json={'content': '查询'}).text
-    assert receipts[-1]['schedules'][0]['planStatus'] == 'revoked'
-    assert receipts[-1]['schedules'][0]['nextAt'] is None
+    assert receipts[-1]['schedules'][0]['planStatus'] == 'active'
+    assert receipts[-1]['schedules'][0]['nextAt'] is not None
+    now[0] += 10
+    asyncio.run(main._schedule_application().tick())
     action[0] = 'cancel_schedule'
     assert 'assistant_completed' in client.post(path, json={'content': '取消'}).text
     assert receipts[-1]['cancelled'] == 1
-    assert not any(m.metadata.get('internalEvent') == 'schedule' for m in sessions.list_messages(f"role:{role['id']}"))
+    assert len([m for m in sessions.list_messages(f"role:{role['id']}") if m.metadata.get('internalEvent') == 'schedule']) == 1
 
 
 def test_relative_time_is_captured_before_history_preparation_and_model_delay(api, monkeypatch):  # noqa: F811

@@ -26,7 +26,7 @@ it('offers chat regeneration only for a host-verified generated image and preser
     ] } }),
     'GET /api/model/configurations': () => ({ body: { configurations: [] } }),
     'GET /api/roles/r1/model-configuration': () => ({ body: { configurationId: null, effectiveConfigurationId: null } }),
-    'GET /api/services/novelai': () => ({ body: { enabled: true, tokenConfigured: true, credentialCleanupPending: false, revision: 3,
+    'GET /api/services/novelai': () => ({ body: { enabled: true, manualEnabled: true, manualDailyAttempts: 10, manualConsentRevision: 3, tokenConfigured: true, credentialCleanupPending: false, revision: 3,
       allowedModels: ['nai-diffusion-4-5-curated'], defaultModel: 'nai-diffusion-4-5-curated', allowedSamplers: ['k_euler_ancestral'],
       defaultSampler: 'k_euler_ancestral', maxPixels: 1048576, maxSteps: 28, dailyAttemptLimit: 20 } }),
     'GET /api/roles/r1/generations': () => ({ body: { generations: [], nextCursor: null,
@@ -67,7 +67,7 @@ it('shows a new internal completion in the original chat after observing accepte
     ] : [] } }),
     'GET /api/model/configurations': () => ({ body: { configurations: [] } }),
     'GET /api/roles/r1/model-configuration': () => ({ body: { configurationId: null, effectiveConfigurationId: null } }),
-    'GET /api/services/novelai': () => ({ body: { enabled: true, tokenConfigured: true, credentialCleanupPending: false, revision: 3,
+    'GET /api/services/novelai': () => ({ body: { enabled: true, manualEnabled: true, manualDailyAttempts: 10, manualConsentRevision: 3, tokenConfigured: true, credentialCleanupPending: false, revision: 3,
       allowedModels: ['nai-diffusion-4-5-curated'], defaultModel: 'nai-diffusion-4-5-curated', allowedSamplers: ['k_euler_ancestral'],
       defaultSampler: 'k_euler_ancestral', maxPixels: 1048576, maxSteps: 28, dailyAttemptLimit: 20 } }),
     'GET /api/roles/r1/generations': () => ({ body: { generations: [], nextCursor: null,
@@ -78,7 +78,8 @@ it('shows a new internal completion in the original chat after observing accepte
   });
   const user = userEvent.setup();
   render(<App />);
-  await user.click(await screen.findByRole('button', { name: '生图与历史' }));
+  await user.click(await screen.findByRole('button', { name: '更多' }));
+  await user.click(await screen.findByRole('menuitem', { name: '生图与历史' }));
   await screen.findByText('暂无生图历史。');
   await user.type(screen.getByLabelText('英文正向 tags'), 'blue sky');
   await user.click(screen.getByLabelText('在后台生成，完成后交付原来源'));

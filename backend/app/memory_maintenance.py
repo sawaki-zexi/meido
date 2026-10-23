@@ -34,6 +34,7 @@ class MemoryMaintenance:
         consolidation_provider: Callable[[str, list[Message]], object] | None = None,
         role_exists: Callable[[str], bool] | None = None,
         messages_provider: Callable[[str, str], list[Message]] | None = None,
+        recent_limit_provider: Callable[[], int] | None = None,
     ) -> None:
         self.roles_root = Path(roles_root).resolve()
         self.sessions = sessions
@@ -41,6 +42,7 @@ class MemoryMaintenance:
         self.consolidation_provider = consolidation_provider
         self.role_exists = role_exists or (lambda role_id: True)
         self.messages_provider = messages_provider
+        self.recent_limit_provider = recent_limit_provider
         self.errors: list[str] = []
         self._draft_overrides: dict[str, dict[str, str]] = {}
 
@@ -67,7 +69,11 @@ class MemoryMaintenance:
                 self.errors.append(f"{role_root.name}: pending consolidation retry failed: {error}")
         return resumed
 
-    def maintain(self, role_id: str, session_key: str, *, force: bool = False) -> None:
+    @property
+    def recent_limit(self) -> int:
+        return self.recent_limit_provider() if self.recent_limit_provider else self.RECENT_MESSAGE_LIMIT
+
+    def maintain(self, role_id: str, session_key: str, *, force: bool = False, through_sequence: int | None = None) -> None:
         if session_key != f"role:{role_id}":
             raise ValueError("会话与角色不匹配")
         role_root = (self.roles_root / role_id).resolve()
@@ -92,10 +98,11 @@ class MemoryMaintenance:
 
         new_messages = [message for message in messages if message.sequence > last_sequence]
         eligible = [message for message in messages if message.sequence > last_sequence]
-        ready = len(eligible) - self.RECENT_MESSAGE_LIMIT
+        ready = len(eligible) - self.recent_limit
         event: ConsolidationCommitted | None = None
-        if force or ready >= self.CONSOLIDATION_MIN_READY_MESSAGES:
-            window = self._window(messages, last_sequence)
+        if force or ready >= max(5, self.recent_limit // 2):
+            window = (self._window(messages, last_sequence) if through_sequence is None else
+                      [message for message in eligible if message.sequence <= through_sequence])
             if window:
                 source_key = self._source_key(role_id, window)
                 history_path = memory_dir / "HISTORY.md"
@@ -179,8 +186,8 @@ class MemoryMaintenance:
         maintenance pass when the committed context exceeds the requested window.
         """
         if max_messages is None:
-            max_messages = self.RECENT_MESSAGE_LIMIT
-        if max_messages < self.RECENT_MESSAGE_LIMIT:
+            max_messages = self.recent_limit
+        if max_messages < self.recent_limit:
             raise ValueError("max_messages must include the recent context window")
         messages = self._messages(role_id, session_key)
         cursor_path = (self.roles_root / role_id / "memory" / ".maintenance.json").resolve()
@@ -190,6 +197,26 @@ class MemoryMaintenance:
             return False
         self.maintain(role_id, session_key, force=True)
         return True
+
+    def ensure_coverage(self, role_id: str, source_session: str, source_ids: list[str]) -> bool:
+        """Prove durable maintenance coverage; a failed extraction is never success."""
+        source = {m.id: m for m in self._committed_messages(self.sessions.context_messages(source_session)) if m.id in source_ids}
+        messages = self._messages(role_id, f'role:{role_id}')
+        eligible = {m.id: m for m in messages}
+        if set(source) - set(eligible):
+            return False
+        if not source:
+            return True  # Tool audit rows do not have a Markdown ingestion obligation.
+        through = max(eligible[identifier].sequence for identifier in source)
+        path = self.roles_root / role_id / 'memory' / '.maintenance.json'
+        cursor = self._context_cursor(self._read_cursor(path), messages, f'role:{role_id}')
+        if int(cursor['lastSequence']) < through or 'pendingEvent' in cursor:
+            self.maintain(role_id, f'role:{role_id}', force=True, through_sequence=through)
+        latest = self._messages(role_id, f'role:{role_id}')
+        if any(identifier not in {m.id for m in latest} for identifier in source):
+            return False
+        cursor = self._context_cursor(self._read_cursor(path), latest, f'role:{role_id}')
+        return int(cursor['lastSequence']) >= through and 'pendingEvent' not in cursor
 
     def _messages(self, role_id: str, session_key: str) -> list[Message]:
         messages = self.messages_provider(role_id, session_key) if self.messages_provider else self.sessions.context_messages(session_key)
@@ -258,7 +285,7 @@ class MemoryMaintenance:
         heading = "# 近期对话\n\n"
         selected: list[str] = []
         length = 0
-        for message in reversed(messages[-self.RECENT_MESSAGE_LIMIT :]):
+        for message in reversed(messages[-self.recent_limit :]):
             line = f"- [{message.role}] {message.content.strip()}"
             if not message.content.strip():
                 continue
@@ -273,9 +300,9 @@ class MemoryMaintenance:
 
     def _window(self, messages: list[Message], after_sequence: int) -> list[Message]:
         eligible = [message for message in messages if message.sequence > after_sequence]
-        if len(eligible) <= self.RECENT_MESSAGE_LIMIT:
+        if len(eligible) <= self.recent_limit:
             return []
-        return eligible[:-self.RECENT_MESSAGE_LIMIT]
+        return eligible[:-self.recent_limit]
 
     @staticmethod
     def _committed_messages(messages: list[Message]) -> list[Message]:

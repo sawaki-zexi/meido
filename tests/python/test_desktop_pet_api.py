@@ -61,6 +61,53 @@ def package_bytes():
     return output.getvalue(), encoded.getvalue()
 
 
+def test_global_off_during_claim_prevents_native_dispatch_and_keeps_role_binding(api, protocol_host, monkeypatch):
+    import asyncio
+    import threading
+    import httpx
+    from backend.app.agent_runtime import ToolContext, CancellationToken
+    client, _, _, _ = api
+    role = client.post('/api/roles', json={'name': 'suspend race', 'profile': {'profile': 'fixture'}}).json()['role']
+    path = f"/api/roles/{role['id']}/desktop-pet"
+    state = client.post(path + '/packages', content=package_bytes()[0]).json()
+    state = client.put(path, json={'expectedRevision': state['revision'], 'packageId': 'fixture-pet', 'enabled': True}).json()
+    app = main._desktop_pet_application()
+    host = app.host
+    entered, release = threading.Event(), threading.Event()
+    claim = app.store.claim
+    def waiting_claim(*args):
+        entered.set()
+        if not release.wait(5):
+            raise RuntimeError('fixture did not release claim')
+        return claim(*args)
+    monkeypatch.setattr(app.store, 'claim', waiting_claim)
+    async def exercise():
+        context = ToolContext(role['id'], f"role:{role['id']}", 'claimed-race-run', CancellationToken())
+        action = asyncio.create_task(app.action(role['id'], state['generation'], {'action': 'play', 'name': 'wave'},
+            context=context, authorized=lambda _: True))
+        assert await asyncio.to_thread(entered.wait, 2)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url='http://local') as settings:
+            current = (await settings.get('/api/plugin-management/pet')).json()
+            closing = asyncio.create_task(settings.put('/api/plugin-management/pet/enabled', json={
+                'enabled': False, 'expectedRevision': current['revision']}))
+            try:
+                async with asyncio.timeout(2):
+                    while main.plugin_configuration.enabled('pet'):
+                        await asyncio.sleep(.01)
+            finally:
+                release.set()
+            with pytest.raises(ValueError, match='许可已改变'):
+                await action
+            assert (await closing).status_code == 200
+    try:
+        asyncio.run(exercise())
+    finally:
+        release.set()
+    assert host.count == 0 and host.closed
+    retained = client.get(path).json()
+    assert retained['enabled'] and retained['selectedPackageId'] == 'fixture-pet'
+
+
 def test_owner_imports_real_shiori_package_binds_it_and_retains_default_off(api):
     client, _, sessions, _ = api
     role = client.post('/api/roles', json={'name': '桌宠主人', 'profile': {'profile': '本地验收'},
@@ -126,6 +173,11 @@ def protocol_host(api, monkeypatch):
             return {'type': 'finished', 'actionId': identifier, 'roleId': self.binding['roleId']}
     monkeypatch.setattr(pet_host, 'PetHost', Host)
     monkeypatch.setattr(pet_application, 'sys', SimpleNamespace(platform='win32'))
+    from backend.app.plugin_configuration import PluginConfigurationStore
+    configuration = PluginConfigurationStore(api[1].root.parent / 'plugins.json')
+    state = configuration.prepare('pet', expected_revision=0, enabled=True)
+    configuration.finish('pet', state.revision)
+    monkeypatch.setattr(main, 'plugin_configuration', configuration)
     return Host
 
 
@@ -134,6 +186,9 @@ def test_http_tool_calls_enforce_one_real_run_cooldown_and_default_off_after_rev
     from backend.app.agent_runtime import ToolContext, CancellationToken
     from backend.app.model_adapter import ModelTextDelta, ModelToolCall
     from backend.app.agent_runtime.types import ToolResultMessage
+    from types import SimpleNamespace
+    from backend.app.desktop_pet import store as pet_store
+    monkeypatch.setattr(pet_store, 'time', SimpleNamespace(time=lambda: 1780000000.0))
     client, _, sessions, _ = api
     role = client.post('/api/roles', json={'name': '工具验收', 'profile': {'profile': '测试'},
         'agentConfig': {'enabledTools': ['tool_search']}}).json()['role']

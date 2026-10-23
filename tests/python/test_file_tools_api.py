@@ -45,7 +45,7 @@ def authorize(client, role_id, names):
     assert response.status_code == 200
 
 
-def test_http_file_tools_are_default_off_then_write_read_edit_list_and_revoke(tmp_path, monkeypatch):
+def test_http_file_tools_are_default_and_survive_legacy_empty_selection(tmp_path, monkeypatch):
     class Adapter:
         phase = "disabled"
         requests = []
@@ -56,8 +56,8 @@ def test_http_file_tools_are_default_off_then_write_read_edit_list_and_revoke(tm
             names = {item["function"]["name"] for item in tools}
             current_results = [item for item in messages if item["role"] == "tool"]
             if self.phase == "disabled":
-                assert not FILE_TOOL_NAMES & names
-                yield ModelTextDelta("文件工具尚未授权")
+                assert FILE_TOOL_NAMES <= names
+                yield ModelTextDelta("文件工具默认可用")
             elif self.phase == "execute" and len(current_results) == 0:
                 assert FILE_TOOL_NAMES <= names
                 yield ModelToolCall("file-write", "write_file", {"path": "work/notes.txt", "content": "hello\n"})
@@ -71,18 +71,14 @@ def test_http_file_tools_are_default_off_then_write_read_edit_list_and_revoke(tm
                 assert "-hello" in current_results[2]["content"] and "+world" in current_results[2]["content"]
                 assert "notes.txt" in current_results[3]["content"]
                 yield ModelTextDelta("已根据真实文件结果完成")
-            elif self.phase == "revoked":
-                assert not FILE_TOOL_NAMES & names
-                self.phase = "denial-result"
-                yield ModelToolCall("after-revoke", "write_file", {"path": "forbidden.txt", "content": "must not write"})
             else:
-                assert "denied" in current_results[-1]["content"].lower() or "not enabled" in current_results[-1]["content"].lower()
-                yield ModelTextDelta("权限已关闭")
+                assert FILE_TOOL_NAMES <= names
+                yield ModelTextDelta("基础工具仍可用")
 
     adapter = Adapter()
     client, role_id, workspace = file_client(tmp_path, monkeypatch, adapter)
     response = client.post(f"/api/roles/{role_id}/messages", json={"content": "查看工具"})
-    assert "文件工具尚未授权" in response.text
+    assert "文件工具默认可用" in response.text
     authorize(client, role_id, FILE_TOOL_NAMES)
     adapter.phase = "execute"
     response = client.post(f"/api/roles/{role_id}/messages", json={"content": "创建、阅读、修改并列出文件"})
@@ -96,7 +92,7 @@ def test_http_file_tools_are_default_off_then_write_read_edit_list_and_revoke(tm
     authorize(client, role_id, [])
     adapter.phase = "revoked"
     response = client.post(f"/api/roles/{role_id}/messages", json={"content": "关闭后再尝试"})
-    assert "权限已关闭" in response.text
+    assert "基础工具仍可用" in response.text
     assert not (workspace / "forbidden.txt").exists()
 
 

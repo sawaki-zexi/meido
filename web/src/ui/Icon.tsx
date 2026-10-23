@@ -1,5 +1,8 @@
 /** Small line icons (24×24, currentColor). Decorative: the button carries the accessible name. */
 const paths = {
+  palette: 'M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 1.5-3.3 1.5 1.5 0 0 1 1.2-2.5H17a4 4 0 0 0 4-4A9 9 0 0 0 12 3Z M7 10h.01 M10 6.5h.01 M15 6.5h.01 M6.5 14h.01',
+  sliders: 'M4 7h5 M13 7h7 M4 17h10 M18 17h2 M9 4v6 M14 14v6',
+  info: 'M12 11v6 M12 7h.01 M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z',
   plus: "M12 5v14M5 12h14",
   stop: "M6 6h12v12H6V6Z",
   people: "M9 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z M2 21v-2a7 7 0 0 1 14 0v2 M17 4a4 4 0 0 1 0 8 M22 21v-2a7 7 0 0 0-4-6.3",

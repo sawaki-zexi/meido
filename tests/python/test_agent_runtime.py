@@ -1022,6 +1022,10 @@ def test_http_text_run_persists_agent_run_and_keeps_sse_compatibility(tmp_path, 
             del role, history, configuration, memory_context
             yield "完成"
 
+        async def stream_structured_messages(self, messages, configuration, tools, *, max_tokens=None):
+            from backend.app.ai.model_adapter import ModelTextDelta
+            yield ModelTextDelta('完成')
+
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "session_manager", main.SessionManager(roles, sessions))

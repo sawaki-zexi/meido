@@ -64,7 +64,8 @@ def novelai_service(tmp_path, novelai_environment):
     app = NovelaiApplication(root=tmp_path / 'generation', tasks=tasks, sessions=sessions, roles=roles,
         channels=None, credentials=Credentials(), http=NovelaiHttp.for_test(f'http://127.0.0.1:{server.server_port}'))
     app.settings.set_token('fixture-secret-171')
-    config = app.settings.save({'enabled': True}, expected_revision=app.settings.public()['revision'])
+    config = app.settings.save({'enabled': True, 'manualEnabled': True, 'confirmManualConsumption': True},
+                              expected_revision=app.settings.public()['revision'])
     role = roles.create(RoleInput(name='生图角色', profile={'profile': 'test character'},
         agentConfig={'novelai': {'manualEnabled': True, 'consentRevision': config['revision']}}))
     sessions.open_role_session(role.id)

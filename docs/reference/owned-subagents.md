@@ -8,7 +8,7 @@
 
 ## 授权与调用
 
-角色 `agentConfig.spawn.enabled` 默认关闭。开启后提供 `spawn`、`spawn_manage`；关闭不能被 `enabledTools` 中同名项覆盖。网页使用独立的“允许委托独立子任务”设置，保留原有 11 项基础工具和 Shell 白名单。
+普通主人对话默认提供 `spawn` 和 `spawn_manage`，旧 spawn.enabled 不再关闭普通委托。角色网页保留有限预算；研究/脚本/general profile 仍只消费冻结工具子集。受限 Shell 需要独立的冻结与当前命令许可。
 
 `spawn` 接收 `task`、可选 `label`、`profile`（`research` / `scripting` / `general`）、`run_in_background`（默认 false）、`retry_count`（0 或 1）。未知参数、来源身份字段、未知 profile 和超预算重试计数会被拒绝。`retry_count` 记录调用者明确发起的重试，系统不自动重跑可能产生作用的脚本。
 

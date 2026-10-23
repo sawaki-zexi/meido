@@ -23,7 +23,7 @@ class TestCredentials:
         pass
 
 
-def test_http_history_tools_are_opt_in_and_results_reach_next_model_request(tmp_path, monkeypatch, local_platform_only):
+def test_http_history_tools_are_default_and_results_reach_next_model_request(tmp_path, monkeypatch, local_platform_only):
     class Adapter:
         phase = "off"
         source_ref = None
@@ -32,8 +32,8 @@ def test_http_history_tools_are_opt_in_and_results_reach_next_model_request(tmp_
             names = {tool["function"]["name"] for tool in tools}
             results = [message for message in messages if message["role"] == "tool"]
             if self.phase == "off":
-                assert not {"search_messages", "fetch_messages"} & names
-                yield ModelTextDelta("尚未授权")
+                assert {"search_messages", "fetch_messages"} <= names
+                yield ModelTextDelta("默认工具可用")
             elif self.phase == "search":
                 assert {"search_messages", "fetch_messages"} <= names
                 self.phase = "fetch"
@@ -49,9 +49,8 @@ def test_http_history_tools_are_opt_in_and_results_reach_next_model_request(tmp_
                 assert found["messages"][0]["content"] == "暗号是月光"
                 yield ModelTextDelta("核验原文完成")
             elif self.phase == "revoked":
-                assert not {"search_messages", "fetch_messages"} & names
-                self.phase = "denied"
-                yield ModelToolCall("forged-fetch", "fetch_messages", {"source_ref": self.source_ref})
+                assert {"search_messages", "fetch_messages"} <= names
+                yield ModelTextDelta("默认工具仍可用")
             else:
                 assert "denied" in results[-1]["content"].lower()
                 yield ModelTextDelta("读取已拒绝")
@@ -76,14 +75,12 @@ def test_http_history_tools_are_opt_in_and_results_reach_next_model_request(tmp_
     assert created.status_code == 201
     role_id = created.json()["role"]["id"]
     sessions.append_message(f"role:{role_id}", "user", "暗号是月光")
-    assert "尚未授权" in client.post(f"/api/roles/{role_id}/messages", json={"content": "工具状态"}).text
-    for names, phase, expected in ((["search_messages", "fetch_messages"], "search", "核验原文完成"), ([], "revoked", "读取已拒绝")):
-        response = client.put(f"/api/roles/{role_id}", json={
-            "name": "原文女仆", "profile": {"profile": "核心设定"}, "agentConfig": {"enabledTools": names},
-        })
-        assert response.status_code == 200
-        adapter.phase = phase
-        result = client.post(f"/api/roles/{role_id}/messages", json={"content": "核验之前的消息"})
-        assert "event: assistant_completed" in result.text and expected in result.text
+    response = client.put(f"/api/roles/{role_id}", json={
+        "name": "原文女仆", "profile": {"profile": "核心设定"}, "agentConfig": {"enabledTools": []},
+    })
+    assert response.status_code == 200
+    adapter.phase = "search"
+    result = client.post(f"/api/roles/{role_id}/messages", json={"content": "核验之前的消息"})
+    assert "event: assistant_completed" in result.text and "核验原文完成" in result.text
     persisted = sessions.list_messages(f"role:{role_id}")
     assert any(message.toolName == "fetch_messages" and "暗号是月光" in message.content for message in persisted)

@@ -7,6 +7,7 @@ import { ChannelView, type ChannelMemorySource } from "./features/channels/Chann
 import { RoleList } from "./features/role-management/RoleList";
 import { useRoles } from "./features/role-management/useRoles";
 import { SettingsDialog, type SettingsSectionId } from "./features/settings/SettingsDialog";
+import { applyAppearance, readAppearance } from './features/settings/appearance';
 import { RoleAccountsPanel } from "./features/channels/RoleAccountsPanel";
 import { CreateRolePage } from "./features/tavern/CreateRolePage";
 import { RoleCard } from "./features/tavern/RoleCard";
@@ -14,6 +15,8 @@ import { TavernView } from "./features/tavern/TavernView";
 import { Dialog } from "./ui/Dialog";
 import { Icon, IconButton } from "./ui/Icon";
 import { Notice } from "./ui/Status";
+import { TodoDrawer } from './features/todo/TodoDrawer';
+import { useTodoNavigation } from './features/todo/useTodoNavigation';
 
 /** What the main pane shows: a conversation, the role tavern (all role cards), or the open role's memories. */
 type View = "chat" | "tavern" | "memories";
@@ -25,6 +28,7 @@ const readLastRole = () => { try { return localStorage.getItem(LAST_ROLE_KEY); }
 const writeLastRole = (id: string) => { try { localStorage.setItem(LAST_ROLE_KEY, id); } catch { /* storage unavailable */ } };
 
 export function App() {
+  useEffect(() => { applyAppearance(readAppearance()); }, []);
   const roles = useRoles();
   const chat = useChat();
   const [returnedFromOwnerKnowledgeAuthorization] = useState(
@@ -33,6 +37,8 @@ export function App() {
   // A restored create-role draft reopens the create panel.
   const [panel, setPanel] = useState<Panel>(() => roles.creating ? "create" : returnedFromOwnerKnowledgeAuthorization ? "settings" : null);
   const [view, setView] = useState<View>("chat");
+  const [todoOpen, setTodoOpen] = useState(false);
+  const todoNavigation = useTodoNavigation(panel === 'settings' || todoOpen);
   const [newRole, setNewRole] = useState<Role | null>(null);
   // Narrow screens show one pane at a time; home is the conversation.
   const [showList, setShowList] = useState(false);
@@ -51,7 +57,7 @@ export function App() {
   const searchTerm = query.trim().toLocaleLowerCase();
   const filteredRoles = roles.roles.filter((role) => `${role.name} ${role.description}`.toLocaleLowerCase().includes(searchTerm));
 
-  useEffect(() => { if (searchOpen && showList) searchRef.current?.focus(); }, [searchOpen, showList]);
+  useEffect(() => { if (searchOpen && showList && panel !== 'settings') searchRef.current?.focus(); }, [searchOpen, showList, panel]);
 
   const openChat = async (role: Role) => {
     roles.setError("");
@@ -80,8 +86,8 @@ export function App() {
   // The create page opens over whatever is showing, so closing it returns there.
   const startCreate = () => { roles.startCreate(); setPanel("create"); };
   const showProfile = (role: Role, tab: "profile" | "accounts" = "profile") => { roles.select(role); roles.startEdit(); setProfileTab(tab); setPanel("profile"); };
-  const openTavern = () => { setView("tavern"); setShowList(false); };
-  const backToChat = () => { setView("chat"); setShowList(false); setHighlightedId(null); };
+  const openTavern = () => { setView("tavern"); setShowList(false); if (panel === 'settings') setPanel(null); };
+  const backToChat = () => { setView("chat"); setShowList(false); setHighlightedId(null); if (panel === 'settings') setPanel(null); };
 
   const openMemorySource = async (role: Role, origin: MemoryOrigin, messageId?: string) => {
     chat.setError("");
@@ -151,15 +157,20 @@ export function App() {
 
   return <div className={`shell${showList ? " show-list" : ""}`}>
     <nav className="app-rail" aria-label="页面">
-      <button type="button" className="rail-search" aria-label="搜索角色" title="搜索角色" aria-expanded={searchOpen} aria-controls={searchOpen ? "role-search" : undefined} onClick={() => { setSearchOpen(true); setShowList(true); searchRef.current?.focus(); }}><Icon name="search" size={21} /></button>
+      <button type="button" className="rail-search" aria-label="搜索角色" title="搜索角色" aria-expanded={searchOpen} aria-controls={searchOpen ? "role-search" : undefined} onClick={() => { if (panel === 'settings') setPanel(null); setSearchOpen(true); setShowList(true); searchRef.current?.focus(); }}><Icon name="search" size={21} /></button>
       <span className="rail-divider" aria-hidden="true" />
       <div className="side-tabs">
         <button type="button" aria-label="对话" title="对话" aria-current={view === "chat" || view === "memories" ? "page" : undefined} onClick={backToChat}><Icon name="chat" size={22} /></button>
         <button type="button" aria-label="角色" title="角色" aria-current={view === "tavern" ? "page" : undefined} onClick={openTavern}><Icon name="people" size={22} /></button>
+        {todoNavigation.enabled && <button type="button" className="todo-entry" aria-label={todoNavigation.unread ? `待办提醒 ${todoNavigation.unread}` : '待办'} title="待办"
+          aria-haspopup="dialog" aria-expanded={todoOpen} onClick={() => { if (panel === 'settings') setPanel(null); setTodoOpen(true); }}>
+          <Icon name="todo" size={22} />{todoNavigation.unread > 0 && <span>{todoNavigation.unread > 99 ? '99+' : todoNavigation.unread}</span>}
+        </button>}
       </div>
       <footer className="rail-footer"><IconButton icon="settings" label="设置" onClick={() => { setSettingsSection(undefined); setPanel("settings"); }} /></footer>
     </nav>
-    <aside className="sidebar" aria-label={view === "tavern" ? "角色管理" : "对话列表"}>
+    <aside className="sidebar" aria-label={view === "tavern" ? "角色管理" : "对话列表"} aria-hidden={panel === 'settings' || undefined}
+      ref={element => { if (element) element.inert = panel === 'settings'; }}>
       <div className="sidebar-tools">
         {view === "tavern" && <>
           <div className="tavern-actions">
@@ -181,17 +192,18 @@ export function App() {
       </div>
     </aside>
 
-    <main className="main">
+    <main className="main" aria-hidden={panel === 'settings' || undefined} ref={element => { if (element) element.inert = panel === 'settings'; }}>
       {view === "tavern"
         ? <TavernView roles={roles.roles} query={searchTerm} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onShow={showProfile} onChat={chatWith} onPreviewAvatar={setPreviewRole} />
         : view === "memories" && chatRole
         ? <MemoryPanel key={chatRole.id} role={chatRole} onBack={backToChat} onOpenSource={(origin, messageId) => void openMemorySource(chatRole, origin, messageId)} />
         : chatRole
-        ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showProfile(chatRole)} onShowMemories={() => setView("memories")} onOpenTodoSource={(roleId, sessionKey, messageId) => void openTodoSource(roleId, sessionKey, messageId)} />
+        ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showProfile(chatRole)} onShowMemories={() => setView("memories")} />
         : <WelcomeView loading={roles.loading || openingId !== null} hasRoles={roles.roles.length > 0} error={chat.error} onDismissError={() => chat.setError("")} onCreate={startCreate} onBack={() => setShowList(true)} />}
     </main>
 
-    {channelSource && <Dialog title="记忆来源" onClose={() => setChannelSource(null)}>
+    {todoOpen && <TodoDrawer onClose={() => setTodoOpen(false)} onOpenSource={(roleId, sessionKey, messageId) => { setTodoOpen(false); void openTodoSource(roleId, sessionKey, messageId); }} />}
+    {channelSource && <Dialog modalFocus title="记忆来源" onClose={() => setChannelSource(null)}>
       <ChannelView key={`${channelSource.role.id}:${channelSource.source.origin.stableSourceKey}:${channelSource.source.messageId ?? ""}`} role={channelSource.role} sourceOnly onBack={() => setChannelSource(null)} initialSource={channelSource.source} />
     </Dialog>}
 
@@ -210,7 +222,7 @@ export function App() {
         </div>
       </div>
     </Dialog>}
-    {panel === "settings" && <SettingsDialog initialSection={settingsSection} onClose={() => setPanel(null)} />}
+    {panel === "settings" && <SettingsDialog initialSection={settingsSection} onRoleSaved={roles.receiveRole} onClose={() => setPanel(null)} />}
     {previewRole && <Dialog title={`${previewRole.name}头像`} variant="modal" onClose={() => setPreviewRole(null)}>
       <div className="avatar-lightbox"><img src={previewRole.avatarOriginalUrl ?? previewRole.avatarUrl ?? ""} alt={`${previewRole.name}头像`} /></div>
     </Dialog>}

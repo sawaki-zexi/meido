@@ -353,7 +353,7 @@ def test_real_authored_source_fails_verification_for_broken_collection_contract(
     assert not (value.root / 'state').exists()
 
 
-def test_explicit_author_skill_writes_a_real_role_file_without_shell_or_registration(api, monkeypatch):
+def test_explicit_author_skill_writes_a_real_role_file_without_registration(api, monkeypatch):
     client, roles, sessions, _ = api
     monkeypatch.setattr(main, '_proactive', None)
 
@@ -366,7 +366,9 @@ def test_explicit_author_skill_writes_a_real_role_file_without_shell_or_registra
             assert 'meido-source-author-v2' in system
             assert '--meido-contract-test' in system
             assert 'trustLocalCode' in system
-            assert 'shell' not in {item['function']['name'] for item in tools}
+            # Shell is a default built-in tool now; the explicit skill still
+            # keeps it out of its own declared tool set below.
+            assert 'shell' in {item['function']['name'] for item in tools}
             if self.calls == 1:
                 yield ModelToolCall('author-source', 'write_file', {'path': 'mcp/example/README.md',
                     'content': 'Synthetic source only; owner MCP trust and source permission are still required.'})

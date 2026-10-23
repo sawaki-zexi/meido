@@ -49,6 +49,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -70,10 +71,15 @@ jobs:
         run: npm run test:web
 
   backend:
-    name: Backend tests
+    name: Backend tests (${{ matrix.group }})
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.backend == 'true') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [core, channels, drift]
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -92,4 +98,30 @@ jobs:
         run: python -m compileall -q backend tests
 
       - name: Run tests
-        run: python -m pytest -o faulthandler_timeout=90 --durations=15
+        shell: bash
+        run: |
+          mkdir -p test-results
+          case "${{ matrix.group }}" in
+            channels)
+              python -m pytest tests/python/channels -o faulthandler_timeout=90 --durations=15 \
+                --junitxml="test-results/${{ matrix.group }}.xml"
+              ;;
+            drift)
+              python -m pytest tests/python/test_drift_meme_api.py -o faulthandler_timeout=90 --durations=15 \
+                --junitxml="test-results/${{ matrix.group }}.xml"
+              ;;
+            core)
+              mapfile -t backend_tests < <(find tests/python -maxdepth 1 -type f -name 'test_*.py' \
+                ! -name 'test_drift_meme_api.py' -print | sort)
+              python -m pytest "${backend_tests[@]}" -o faulthandler_timeout=90 --durations=15 \
+                --junitxml="test-results/${{ matrix.group }}.xml"
+              ;;
+          esac
+
+      - name: Upload backend test report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-tests-${{ matrix.group }}
+          path: test-results/${{ matrix.group }}.xml
+          if-no-files-found: ignore

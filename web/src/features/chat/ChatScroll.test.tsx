@@ -142,7 +142,7 @@ describe("聊天滚动", () => {
   it("来源定位后发送新消息恢复底部跟随", async () => {
     const origin = { kind: "message", sessionKey: "role:r1", messageIds: ["old-u"], messageRange: null, stableSourceKey: "message:old-u" };
     backend({
-      "GET /api/roles/r1/memories": () => ({ body: { memories: [{ id: "mem1", roleId: "r1", memoryType: "preference", summary: "一条记忆", status: "active", happenedAt: null, createdAt: alice.createdAt, updatedAt: alice.updatedAt, sourceRef: { ...origin, sourceKeys: [], sources: [origin] } }] } }),
+      "GET /api/roles/r1/memories.*": () => ({ body: { memories: [{ id: "mem1", roleId: "r1", memoryType: "preference", summary: "一条记忆", status: "active", happenedAt: null, createdAt: alice.createdAt, updatedAt: alice.updatedAt, sourceRef: { ...origin, sourceKeys: [], sources: [origin] } }] } }),
       "GET /api/roles/r1/memory-documents": () => ({ body: { documents: [], journals: [] } }),
     });
     const user = userEvent.setup();
@@ -150,6 +150,7 @@ describe("聊天滚动", () => {
     await screen.findByText("旧回复");
     await user.click(screen.getByRole("button", { name: "角色记忆" }));
     await screen.findByText("一条记忆");
+    await user.click(screen.getByRole('button', { name: '查看记忆：一条记忆' }));
     await user.click(screen.getByRole("button", { name: "定位到消息" }));
     await screen.findByText("记忆来源");
     const viewport = conversationViewport();

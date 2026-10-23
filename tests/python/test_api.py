@@ -3,6 +3,7 @@ from starlette.requests import Request
 from datetime import datetime, timezone
 import asyncio
 import json
+import os
 import re
 import sqlite3
 import httpx
@@ -539,8 +540,9 @@ def test_role_message_snapshot_does_not_persist_legacy_role_secrets(tmp_path, mo
     assert "legacy-secret" not in str(run.modelSnapshot)
     assert "modelConfig" not in run.modelSnapshot["role"]
     assert run.modelSnapshot["context"]["toolAllowlist"] == []
-    assert run.modelSnapshot["capabilities"]["tools"] == []
-    assert run.modelSnapshot["context"]["messages"] == [{"content": "你好", "role": "user"}]
+    assert run.modelSnapshot["capabilities"]["tools"]
+    context_message = run.modelSnapshot["context"]["messages"][0]
+    assert context_message["content"] == "你好" and context_message["role"] == "user"
 
 
 def test_run_snapshot_keeps_recalled_memory_ephemeral(tmp_path, monkeypatch):
@@ -609,9 +611,9 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
             del configuration
             self.requests.append((messages, tools))
             if len(self.requests) == 1:
-                yield ModelToolCall("call-shell", "shell", {
-                    "command": f'{executable} -c "print(\'shell-ok\')"',
-                })
+                command = ('Write-Output "shell-ok"' if os.name == "nt"
+                           else f'{executable} -c "print(\'shell-ok\')"')
+                yield ModelToolCall("call-shell", "shell", {"command": command})
             else:
                 assert any(
                     message.get("role") == "tool"
@@ -634,7 +636,8 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
     assert response.status_code == 200
     assert "event: assistant_completed" in response.text
     assert len(adapter.requests) == 2
-    assert adapter.requests[0][1][0]["function"]["name"] == "shell"
+    shell_schema = next(item for item in adapter.requests[0][1] if item["function"]["name"] == "shell")
+    assert shell_schema["function"]["name"] == "shell"
     messages = sessions.runtime_messages(f"role:{role.id}")
     assert any(isinstance(message, ToolResultMessage) and message.content.strip() == "shell-ok" for message in messages)
     run = sessions.list_messages(f"role:{role.id}")[-1].runId
@@ -642,12 +645,12 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
     stored_run = sessions.get_run(run)
     assert stored_run is not None
     assert stored_run.modelSnapshot["context"]["toolAllowlist"] == [executable]
-    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["name"] == "shell"
-    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["source"] == "role"
+    shell_snapshot = next(item for item in stored_run.modelSnapshot["capabilities"]["tools"] if item["name"] == "shell")
+    assert shell_snapshot["source"] == "role"
     # The runner retains a 30s execution budget; its tool envelope allows 2s
     # for owned-process cleanup and persisting the terminal result.
-    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["timeoutSeconds"] == 32.0
-    assert stored_run.modelSnapshot["capabilities"]["tools"][0]["outputLimit"] == 20000
+    assert shell_snapshot["timeoutSeconds"] == 32.0
+    assert shell_snapshot["outputLimit"] == 20000
     assert len(stored_run.modelSnapshot["capabilities"]["generation"]) == 24
 
 
@@ -759,7 +762,8 @@ def test_role_capability_config_controls_plugin_resolution(tmp_path, monkeypatch
         prompt_text="使用插件",
     ))
 
-    assert [definition.name for definition in capabilities.snapshot.tools] == ["plugin.echo"]
+    names = {definition.name for definition in capabilities.snapshot.tools}
+    assert "plugin.echo" in names
     assert capabilities.snapshot.plugins[0].manifest.plugin_id == "demo"
     assert capabilities.snapshot.policy_decisions["plugin.echo"] == "allowed"
 
@@ -869,7 +873,7 @@ def test_enabled_role_memory_recall_is_scoped_and_hidden_from_session_api(tmp_pa
             del configuration
             self.requests.append((messages, tools))
             if len(self.requests) == 1:
-                assert tools[0]["function"]["name"] == "recall_memory"
+                assert any(item["function"]["name"] == "recall_memory" for item in tools)
                 yield ModelToolCall("call-memory", "recall_memory", {"query": "喜欢什么", "limit": 1})
             else:
                 assert any(item.get("role") == "tool" and "喜欢海边" in str(item.get("content")) for item in messages)
@@ -908,8 +912,8 @@ def test_enabled_role_memory_recall_is_scoped_and_hidden_from_session_api(tmp_pa
     run_id = sessions.list_messages(f"role:{role.id}")[0].runId
     run = sessions.get_run(run_id)
     assert run is not None
-    assert run.modelSnapshot["capabilities"]["tools"][0]["name"] == "recall_memory"
-    assert run.modelSnapshot["capabilities"]["tools"][0]["source"] == "builtin:memory"
+    recall_snapshot = next(item for item in run.modelSnapshot["capabilities"]["tools"] if item["name"] == "recall_memory")
+    assert recall_snapshot["source"] == "builtin:memory"
     audits = sessions.list_tool_audits(run_id)
     assert len(audits) == 1
     assert audits[0]["roleId"] == role.id

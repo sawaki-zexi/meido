@@ -29,6 +29,12 @@ export function useRoles() {
   const requestId = useRef(0);
   const importRequestId = useRef(0);
 
+  const receiveRole = (role: Role) => {
+    setRoles((current) => current.map((item) => item.id === role.id ? role : item));
+    setSelected((current) => current?.id === role.id ? role : current);
+    if (selected?.id === role.id && !creating && !editing) setDraft(draftFromRole(role));
+  };
+
   useEffect(() => {
     if (!avatarFile) { setAvatarPreviewUrl(null); return; }
     const previewUrl = URL.createObjectURL(avatarFile);
@@ -219,7 +225,8 @@ export function useRoles() {
     const cardImageSnapshot = cardImageFile;
     const removeAvatarSnapshot = avatarRemoved && Boolean(selectedSnapshot?.avatarUrl);
     const removeCardImageSnapshot = cardImageRemoved && Boolean(selectedSnapshot?.cardImageUrl);
-    const payload = JSON.stringify(payloadFromDraft(draft));
+    const { agentConfig: _separateSettings, ...profilePayload } = payloadFromDraft(draft);
+    const payload = JSON.stringify(profilePayload);
     try {
       const data = creatingSnapshot
         ? await api<{ role: Role }>("/api/roles", { method: "POST", body: payload })
@@ -300,7 +307,7 @@ export function useRoles() {
     }
   };
 
-  return { roles, loading, loadFailed, selected, draft, setDraft, creating, editing, saving, deleting, busy: saving || deleting || importing, error, setError, importing, importPreview, previewImport, cancelImport, acceptImport, avatarFile, avatarSource, avatarOriginalFile, avatarRemoved, avatarPreviewUrl, chooseAvatar, acceptAvatarCrop, cancelAvatarCrop, clearAvatar, cardImageFile, cardImageSource, cardImagePreviewUrl, cardImageRemoved, chooseCardImage, acceptCardImageCrop, cancelCardImageCrop, clearCardImage, select, startCreate, startEdit, cancel, save, remove };
+  return { roles, receiveRole, loading, loadFailed, selected, draft, setDraft, creating, editing, saving, deleting, busy: saving || deleting || importing, error, setError, importing, importPreview, previewImport, cancelImport, acceptImport, avatarFile, avatarSource, avatarOriginalFile, avatarRemoved, avatarPreviewUrl, chooseAvatar, acceptAvatarCrop, cancelAvatarCrop, clearAvatar, cardImageFile, cardImageSource, cardImagePreviewUrl, cardImageRemoved, chooseCardImage, acceptCardImageCrop, cancelCardImageCrop, clearCardImage, select, startCreate, startEdit, cancel, save, remove };
 }
 
 export type RolesState = ReturnType<typeof useRoles>;

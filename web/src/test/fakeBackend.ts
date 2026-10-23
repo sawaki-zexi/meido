@@ -42,6 +42,13 @@ export function fakeBackend(routes: Record<string, Handler>) {
       const status = reply.status ?? 200;
       return new Response(status === 204 ? null : JSON.stringify(reply.body ?? {}), { status, headers: { "content-type": "application/json" } });
     }
+    if (method === 'GET' && path === '/api/plugin-management') return new Response(JSON.stringify({ plugins: [
+      { id: 'browser', name: '浏览器', description: '访问网页', values: { headed: false, timeout_seconds: 45 } },
+      { id: 'screen', name: '屏幕感知', description: '主屏摘要', values: { visionModelConfigurationId: null } },
+      { id: 'computer', name: '桌面控制', description: '窗口操作', values: {} },
+      { id: 'pet', name: '桌宠', description: '桌面角色', values: {} },
+      { id: 'autonomy', name: '自主行为', description: '主动决策与 Drift', values: {} },
+    ].map(plugin => ({ ...plugin, enabled: false, revision: 0, cleanupPending: false })) }), { status: 200, headers: { 'content-type': 'application/json' } });
     if (method === "GET" && path === "/api/todos/settings") return new Response(JSON.stringify({ enabled: false, remindersEnabled: true, timezone: "Asia/Shanghai" }), { status: 200, headers: { "content-type": "application/json" } });
     if (method === "GET" && path === "/api/coding/configuration") return new Response(JSON.stringify({ enabled: false, repositories: [], profiles: [], nativeBuild: null }), { status: 200, headers: { "content-type": "application/json" } });
     if (method === "GET" && path === "/api/coding/probes") return new Response(JSON.stringify({ probes: [] }), { status: 200, headers: { "content-type": "application/json" } });

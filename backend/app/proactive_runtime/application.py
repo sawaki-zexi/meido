@@ -32,12 +32,13 @@ class ProactiveApplication:
     def __init__(self, sessions: SessionStore, tasks: TaskRuntime, *,
                  role_getter: Callable, model_getter: Callable, clock: Callable = time.time,
                  mcp_host=None, adapter_factory=None, fetch_body=None, recall_memory=None, web_tools=None,
-                 context_reader=None, workspace_getter=None, channel_host=None):
+                 context_reader=None, workspace_getter=None, channel_host=None, enabled=lambda: True):
         self.sessions, self.tasks = sessions, tasks
         self.role_getter, self.model_getter, self.clock = role_getter, model_getter, clock
         self.mcp_host, self.adapter_factory, self.fetch_body = mcp_host, adapter_factory, fetch_body
         self.recall_memory, self.web_tools = recall_memory, web_tools
         self.context_reader = context_reader
+        self.enabled = enabled
         self._gate = threading.RLock()
         self._closed = False
         self._executors: dict[str, AutonomyExecutor] = {}
@@ -265,7 +266,7 @@ class ProactiveApplication:
             return False
 
     def _authorized_in(self, db, origin):
-        if self._closed or self.role_getter(origin.role_id) is None:
+        if self._closed or not self.enabled() or self.role_getter(origin.role_id) is None:
             return False
         config = db.execute("SELECT revision,generation,human_busy FROM autonomy_roles WHERE role_id=?", (origin.role_id,)).fetchone()
         run = db.execute("SELECT origin,kind,bindings,frozen_config FROM autonomy_runs WHERE tick_id=?", (origin.tick_id,)).fetchone()
@@ -378,6 +379,11 @@ class ProactiveApplication:
             if row and row[0]:
                 raise RuntimeError("role autonomous process cleanup remains pending")
 
+    async def suspend_role(self, role_id):
+        # The same generation fence and owned cleanup apply to app suspension;
+        # retain the role's strategy, grants, receipts and recovery journals.
+        await self.begin_role_deletion(role_id)
+
     def delete_role(self, role_id):
         self.source_verifications.delete_role(role_id)
         with self._transaction() as db:
@@ -466,6 +472,8 @@ class ProactiveApplication:
         if self._closed:
             return 0
         await self.recover()
+        if not self.enabled():
+            return 0
         await self._schedule_polls()
         admitted = []
         with self._transaction() as db:
@@ -849,7 +857,7 @@ class ProactiveApplication:
                 # Disabled/filtered origins and database contention prove
                 # nothing about whether an old submit/ACK reached its owner.
                 continue
-        if not self._closed:
+        if not self._closed and self.enabled():
             from .acknowledgements import schedule_acks
             await schedule_acks(self)
         with self._transaction() as db:

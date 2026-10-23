@@ -136,8 +136,7 @@ class McpStdioSession:
 
     async def close(self) -> None:
         process = self.process
-        self.process = None
-        owner, self._owner = self._owner, None
+        owner = self._owner
         async with self._pending_lock:
             pending = tuple(self._pending.values())
             for future in pending:
@@ -156,6 +155,7 @@ class McpStdioSession:
             if owner is not None:
                 try:
                     await release_process_tree_owner(owner)
+                    self._owner = None
                 except BaseException:
                     if process is not None:
                         await terminate_process_tree(process)
@@ -169,15 +169,22 @@ class McpStdioSession:
                     except asyncio.TimeoutError:
                         await terminate_process_tree(process)
         finally:
-            if process is not None and process.returncode is None:
-                await terminate_process_tree(process)
+            try:
+                if process is not None and process.returncode is None:
+                    await terminate_process_tree(process)
+            finally:
+                if process is not None and process.returncode is not None:
+                    self.process = None
 
     async def disconnect(self) -> None:
         process = self.process
         if process is None:
+            if self._owner is not None:
+                await release_process_tree_owner(self._owner)
+                self._owner = None
             await self._stop_reader_tasks()
             return
-        owner, self._owner = self._owner, None
+        owner = self._owner
         if process.stdin is not None:
             process.stdin.close()
             try:
@@ -189,10 +196,12 @@ class McpStdioSession:
         except asyncio.TimeoutError:
             await terminate_process_tree(process)
         finally:
-            self.process = None
             try:
                 await release_process_tree_owner(owner)
+                self._owner = None
             finally:
+                if process.returncode is not None:
+                    self.process = None
                 await self._stop_reader_tasks()
 
     async def _stop_reader_tasks(self) -> None:

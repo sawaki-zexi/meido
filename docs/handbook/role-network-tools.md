@@ -4,10 +4,7 @@
 事实来源：`backend/app/network_tools.py`、`backend/app/network_extract.py`、
 `tests/python/test_network_tools.py`、`tests/python/test_network_api.py`；Refs #140。
 
-网页可在[基础工具授权](role-basic-tools.md)中分别选择两个联网工具。角色默认关闭。
-安装根目录 `requirements.txt` 后启动后端。也可通过现有角色 API
-的 `agentConfig.enabledTools` 显式加入 `web_search`、`web_fetch`，保留该配置中其他已授权工具。
-模型连接必须支持结构化工具调用。角色设置中的工具目录由对应能力配置功能提供。
+网络搜索和抓取默认随角色提供，不需要逐项配置 enabledTools。宿主联网开关、请求预算和真实来源限制仍生效。安装 requirements.txt 后启动后端，模型连接须支持结构化工具调用；在角色工具目录查看真实依赖状态。
 
 调用示例：
 

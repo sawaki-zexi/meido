@@ -1,5 +1,13 @@
 # Shiori 复刻实施与验收状态
 
+当前交付：总 [PR #162](https://github.com/sawaki-zexi/meido/pull/162) 已于2026-10-17阶段合入 main@048acc8，桌宠 #195 已关闭；#137 和真实服务验收继续开放。准确3b81源的push/PR两套CI均通过，各后端2767 passed/41 skipped、前端260 passed，原生结果沿各自记录。
+
+当前增量：主人进一步要求 Shiori 式默认内置工具及插件启停，见[默认工具规格](../specs/default-builtin-tools-spec.md)与[ADR-0021](../adr/0021-default-builtin-tools.md)。旧角色空 enabledTools 不再隐藏基础能力，普通 Shell 默认使用平台 shell，受限用途仍校验独立许可。该增量检查与交付记录以其后续 PR 为准，不冒称包含在 #162。
+
+## 阶段合入前的固定记录
+
+以下保留当时的CI、失败及集成过程；其中“尚未合入”“草稿”和旧基础授权描述均属于该时点，不能覆盖以上当前交付与新决定。
+
 状态：当前 / 实施中，完整目标尚未完成。
 
 最后核验：2026-10-17（Asia/Shanghai）。当前集成分支已包含 #191 表情维护与 #195 Electron 桌宠，尚未合入 main；已同步 `main@e32fc0d133a62176e7e8cdf9bb44c572768b481f`。最近已核对的公开 `258d226` [PR CI](https://github.com/sawaki-zexi/meido/actions/runs/38994832054)完整通过：后端2766 passed/41 skipped/2 warnings、前端260项/46文件及网页111/桌宠22模块构建；[push CI](https://github.com/sawaki-zexi/meido/actions/runs/38994828623)前端相同通过，后端2765 passed/41 skipped/1 failed，不能记为整组绿。唯一失败位于既有主动来源恢复夹具的终态轮询：原transaction在50ms内遇SQLITE_BUSY而直接退出；本次仅修夹具，在原8秒期限内重试原生BUSY/LOCKED，其他错误重抛，生产0改动，原nonce/唯一提交/调用次数/owner退出断言不变。三个handover原场景在Windows/Linux各3 passed，原Proactive/MCP/TaskRuntime均完成关闭、无新增线程或非本地连接；原件位于 `D:/meido-artifacts/ci178-query-busy-fix-5777500fb6` 与 Linux `/tmp/ci178-query-busy-linux-fix-ae69bad7bc`。新组合准确 CI 以总 PR 检查为准，不能以旧PR成功覆盖修正提交。

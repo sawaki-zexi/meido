@@ -8,11 +8,7 @@ export function SpawnSettings({ draft, onChange, disabled }: { draft: RoleDraft;
     { key: "spawnMaxModelOutputChars", label: "子任务模型累计输出字符上限", min: 100, max: 200000 },
   ] as const;
   return <section aria-label="子任务委托配置">
-    <label className="field checkbox-field">
-      <input type="checkbox" aria-label="允许委托独立子任务" checked={draft.spawnEnabled} disabled={disabled} onChange={(event) => onChange({ ...draft, spawnEnabled: event.target.checked })} />
-      <span>允许委托独立子任务</span>
-      <small className="field-hint">角色可以同步等待结果，或让任务在后台继续；完成结果仅回原会话。子任务只使用角色本次已获授权的工具子集。</small>
-    </label>
+    <p className="field-hint">独立子任务默认提供，可同步等待或在后台继续，完成结果仅回原会话。子任务只使用本次获准的工具子集。</p>
     {fields.map(({ key, label, min, max }) => <label className="field" key={key}><span>{label}</span>
       <input type="number" aria-label={label} min={min} max={max} step="1" required value={Number.isFinite(draft[key]) ? draft[key] : ""} disabled={disabled} onChange={(event) => onChange({ ...draft, [key]: event.target.valueAsNumber })} />
     </label>)}

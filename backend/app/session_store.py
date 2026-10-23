@@ -82,7 +82,7 @@ def _runtime_assistant_message(stored: Message) -> AssistantMessage:
         if labels:
             content = "\n".join(filter(None, (content, "已推送附件：" + "；".join(labels))))
     return AssistantMessage(content, metadata=_runtime_assistant_metadata(stored.metadata),
-                            timestamp=_timestamp(stored.metadata))
+                            timestamp=_timestamp(stored.metadata), source_message_ids=(stored.id,))
 
 
 class AttachmentConflict(ValueError):
@@ -134,6 +134,17 @@ class SessionStore:
                 (session_key,),
             ).fetchall()
         return [self._message(row) for row in rows]
+
+    def budget_diagnostics(self):
+        allowed = {'requests', 'compactions', 'inputEstimate', 'maxTokens', 'maxIterations', 'toolCount', 'elapsedMs', 'modelId'}
+        with sqlite3.connect(self.database_path) as db:
+            rows = db.execute('SELECT run_id, role_id, model_snapshot_json FROM agent_runs ORDER BY started_at DESC LIMIT 20').fetchall()
+        result = []
+        for run_id, role_id, payload in rows:
+            data = json.loads(payload or '{}').get('budgetDiagnostic')
+            if isinstance(data, dict):
+                result.append({'runId': run_id, 'roleId': role_id, **{key: data[key] for key in allowed if key in data}})
+        return result
 
     def user_message_for_run(self, run_id: str) -> Message | None:
         with sqlite3.connect(self.database_path) as connection:
@@ -837,6 +848,7 @@ class SessionStore:
                         stop_reason=stop_reason,
                         metadata=_runtime_assistant_metadata(group[0].metadata),
                         timestamp=_timestamp(group[0].metadata),
+                        source_message_ids=tuple(item.id for item in group),
                     ))
 
                     # A push commits while its tool is executing, before the
@@ -872,6 +884,7 @@ class SessionStore:
                                 content="Tool call interrupted before a result was recorded",
                                 is_error=True,
                                 details={"repaired": True},
+                                source_message_ids=tuple(item.id for item in group if item.toolCallId == call.id),
                             ))
                         else:
                             nested_calls = _nested_calls(replay_result.metadata)
@@ -887,6 +900,7 @@ class SessionStore:
                                 # Images are intentionally ephemeral and are not
                                 # reconstructed from SQLite on later runs.
                                 images=(),
+                                source_message_ids=(replay_result.id,),
                             ))
                     messages.extend(_runtime_assistant_message(item) for item in independent_messages)
                     index = result_cursor
@@ -901,6 +915,7 @@ class SessionStore:
                         _channel_user_content(stored),
                         attachments=load_runtime_attachments(stored.metadata),
                         timestamp=_timestamp(stored.metadata),
+                        source_message_ids=(stored.id,),
                     ))
                 elif stored.role == "assistant":
                     if stored.metadata.get("channel") not in {None, "", "desktop"} and stored.metadata.get("deliveryStatus") != "sent":

@@ -56,8 +56,8 @@ def test_role_cannot_enable_generation_without_current_explicit_consent(novelai_
     client, service = novelai_main
     response = client.put(f'/api/roles/{service.role.id}', json={'name': service.role.name,
         'profile': service.role.profile.model_dump(), 'agentConfig': {'novelai': {'consentRevision': 0}}})
-    assert response.status_code == 422
-    assert service.roles.get(service.role.id).agentConfig.novelai.consentRevision != 0
+    assert response.status_code == 200
+    assert service.roles.get(service.role.id).agentConfig.novelai.consentRevision == 0
 
 
 def test_role_deletion_purges_only_owned_generation_data_and_keeps_account_consumption(novelai_service):

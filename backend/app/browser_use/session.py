@@ -44,7 +44,7 @@ class BrowserSession:
 
     @property
     def closed(self) -> bool:
-        return self._closed
+        return self._closed and self._client is None and self._daemon is None and self._lease is None
 
     async def call(self, name: str, arguments: dict[str, object], **kwargs) -> object:
         del kwargs
@@ -91,11 +91,11 @@ class BrowserSession:
             raise
 
     async def close(self, *, graceful: bool = False) -> None:
-        if self._closed and self._client is None and self._lease is None:
+        if self.closed:
             return
         self._closed = True
-        client, self._client = self._client, None
-        daemon, self._daemon = self._daemon, None
+        failure = None
+        client, daemon = self._client, self._daemon
         try:
             if client is not None:
                 try:
@@ -107,14 +107,21 @@ class BrowserSession:
                 if disconnect is None:
                     disconnect = client.close
                 await disconnect()
-        finally:
-            try:
-                if daemon is not None:
-                    await daemon.close()
-            finally:
-                try:
-                    self._config_path.unlink(missing_ok=True)
-                finally:
-                    if self._lease is not None:
-                        self._lease.close()
-                        self._lease = None
+                self._client = None
+        except BaseException as error:
+            failure = error
+        try:
+            if daemon is not None:
+                await daemon.close()
+                self._daemon = None
+        except BaseException as error:
+            failure = failure or error
+        # Keep the profile lease and the exact failed native references until
+        # both original owners confirm exit. A retry never substitutes owners.
+        if self._client is None and self._daemon is None:
+            self._config_path.unlink(missing_ok=True)
+            if self._lease is not None:
+                self._lease.close()
+                self._lease = None
+        if failure is not None:
+            raise failure

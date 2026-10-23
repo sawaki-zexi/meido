@@ -8,7 +8,7 @@
 
 ## 授权与调用
 
-四个工具默认关闭。通过现有角色更新 API 的 `agentConfig.enabledTools` 分别授予 `read_file`、`list_dir`、`write_file`、`edit_file`。例如，更新角色时保留其他角色字段及已有配置，并把所需工具名加入列表；移除工具名后，后续对话不再提供其 schema，模型伪造旧调用也会被运行时拒绝。权限按每次运行的能力快照固定，修改配置影响下一次运行。
+四个文件工具默认随角色提供，无需在 enabledTools 逐项授权。旧空列表和只保存普通资料不会移除工具；实际读写始终受角色 workspace、附件和可信来源约束，群/访客不继承主人文件权限。具体默认策略见 [ADR-0021](../adr/0021-default-builtin-tools.md)。
 
 宿主将角色不可变 ID 和 `workspace` 绑定到工具实例；模型参数只包含路径、分页或文件内容，没有角色、根目录或身份参数。相对路径从该角色 workspace 起算；绝对路径也必须落在相同范围。跨角色、父目录逃逸、符号链接、Windows junction/reparse point、硬链接、Windows ADS 与设备文件名均拒绝。目录列表会标记链接，但不会跟随链接读取内容。
 

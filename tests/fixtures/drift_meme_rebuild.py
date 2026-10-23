@@ -79,6 +79,17 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from backend.app import main
 from backend.app.ai.model_types import ModelAssistantMessage, ModelImageBlock, ModelStreamDone, ModelToolCallBlock, ModelTextBlock
+from backend.app.plugin_configuration import PluginConfigurationStore
+
+# This child is an explicit autonomous-runtime integration fixture.  Enable
+# only its isolated persisted autonomy plugin; ordinary product defaults stay
+# unchanged and no real account or remote service is touched.
+fixture_plugins = PluginConfigurationStore(Path(os.environ['MEIDO_DATA_DIR']) / 'plugins.json')
+fixture_current = fixture_plugins.get('autonomy')
+if not fixture_current.enabled:
+    fixture_state = fixture_plugins.prepare('autonomy', expected_revision=fixture_current.revision, enabled=True)
+    fixture_plugins.finish('autonomy', fixture_state.revision)
+main.plugin_configuration = fixture_plugins
 
 proof: dict[str, Any] = {'phase': PHASE, 'pid': os.getpid(), 'memory': False, 'channels': False, 'errors': []}
 for index, callback in enumerate(main.app.router.on_shutdown):

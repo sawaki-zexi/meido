@@ -35,6 +35,8 @@ class NovelaiRoleConfig(BaseModel):
 class NovelaiSettings(BaseModel):
     model_config = ConfigDict(extra='forbid')
     enabled: StrictBool = False
+    manualEnabled: StrictBool = False
+    manualDailyAttempts: StrictInt = Field(default=10, ge=1, le=100)
     allowedModels: list[str] = Field(default_factory=lambda: [MODELS[0]], min_length=1, max_length=2)
     defaultModel: str = MODELS[0]
     allowedSamplers: list[str] = Field(default_factory=lambda: list(SAMPLERS), min_length=1, max_length=2)
@@ -62,23 +64,41 @@ class NovelaiSettingsStore:
         self.lock = lock or threading.RLock()
         with sqlite3.connect(self.database_path) as connection:
             connection.execute('CREATE TABLE IF NOT EXISTS novelai_settings(singleton INTEGER PRIMARY KEY CHECK(singleton=1), settings TEXT NOT NULL, revision INTEGER NOT NULL, token_configured INTEGER NOT NULL, cleanup_pending INTEGER NOT NULL DEFAULT 0)')
-            connection.execute('INSERT OR IGNORE INTO novelai_settings VALUES(1,?,1,0,0)', (NovelaiSettings().model_dump_json(),))
+            connection.execute('INSERT OR IGNORE INTO novelai_settings(singleton,settings,revision,token_configured,cleanup_pending) VALUES(1,?,1,0,0)', (NovelaiSettings().model_dump_json(),))
+            if 'manual_consent_revision' not in {row[1] for row in connection.execute('PRAGMA table_info(novelai_settings)')}:
+                connection.execute('ALTER TABLE novelai_settings ADD COLUMN manual_consent_revision INTEGER NOT NULL DEFAULT 0')
 
     def public(self) -> dict[str, object]:
         with self.lock, sqlite3.connect(self.database_path) as connection:
-            row = connection.execute('SELECT settings,revision,token_configured,cleanup_pending FROM novelai_settings WHERE singleton=1').fetchone()
-        return {**json.loads(row[0]), 'revision': row[1], 'tokenConfigured': bool(row[2]), 'credentialCleanupPending': bool(row[3])}
+            row = connection.execute('SELECT settings,revision,token_configured,cleanup_pending,manual_consent_revision FROM novelai_settings WHERE singleton=1').fetchone()
+        return {**NovelaiSettings.model_validate_json(row[0]).model_dump(), 'revision': row[1],
+                'tokenConfigured': bool(row[2]), 'credentialCleanupPending': bool(row[3]), 'manualConsentRevision': row[4]}
 
     def save(self, changes: dict[str, object], *, expected_revision: int) -> dict[str, object]:
         with self.lock, sqlite3.connect(self.database_path) as connection:
             connection.execute('BEGIN IMMEDIATE')
-            row = connection.execute('SELECT settings,revision FROM novelai_settings WHERE singleton=1').fetchone()
+            row = connection.execute('SELECT settings,revision,manual_consent_revision,token_configured,cleanup_pending FROM novelai_settings WHERE singleton=1').fetchone()
             if type(expected_revision) is not int or row[1] != expected_revision:
                 raise ValueError('service revision changed')
-            settings = NovelaiSettings.model_validate({**json.loads(row[0]), **changes})
+            values = dict(changes)
+            confirmation = values.pop('confirmManualConsumption', None)
+            if confirmation is not None and type(confirmation) is not bool:
+                raise ValueError('explicit consumption confirmation required')
+            previous = NovelaiSettings.model_validate_json(row[0])
+            settings = NovelaiSettings.model_validate({**previous.model_dump(), **values})
             if settings.defaultModel not in settings.allowedModels or settings.defaultSampler not in settings.allowedSamplers:
                 raise ValueError('default must be in allowlist')
-            connection.execute('UPDATE novelai_settings SET settings=?, revision=revision+1 WHERE singleton=1', (settings.model_dump_json(),))
+            next_revision = row[1] + 1
+            parameters_changed = settings.model_dump(exclude={'enabled'}) != previous.model_dump(exclude={'enabled'})
+            consent = next_revision if not parameters_changed and row[2] == row[1] else 0
+            if confirmation is False or not settings.manualEnabled:
+                consent = 0
+            elif confirmation is True:
+                if not settings.enabled or not row[3] or row[4]:
+                    raise ValueError('configure the service and credential before approving consumption')
+                consent = next_revision
+            connection.execute('UPDATE novelai_settings SET settings=?, revision=?,manual_consent_revision=? WHERE singleton=1',
+                               (settings.model_dump_json(), next_revision, consent))
         return self.public()
 
     def set_token(self, token: str) -> dict[str, object]:
@@ -103,7 +123,7 @@ class NovelaiSettingsStore:
 
     def _prepare_credential_change(self):
         with sqlite3.connect(self.database_path) as connection:
-            connection.execute('UPDATE novelai_settings SET token_configured=0,cleanup_pending=1,revision=revision+1 WHERE singleton=1')
+            connection.execute('UPDATE novelai_settings SET token_configured=0,cleanup_pending=1,revision=revision+1,manual_consent_revision=0 WHERE singleton=1')
 
     def dispatch_token(self) -> str:
         """Called only after a durably admitted dispatch, never during save/health."""
