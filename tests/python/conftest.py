@@ -55,7 +55,8 @@ def enable_autonomy_for_proactive_integration_tests(request, monkeypatch, tmp_pa
     here without changing the product default or the plugin configuration
     contract tests.
     """
-    if not request.node.path.name.startswith("test_proactive"):
+    if not (request.node.path.name.startswith("test_proactive")
+            or request.node.path.name == "test_drift_meme_api.py"):
         return
     from backend.app import main
     from backend.app.plugin_configuration import PluginConfigurationStore

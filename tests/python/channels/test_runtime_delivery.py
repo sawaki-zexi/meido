@@ -61,7 +61,7 @@ def test_real_channel_runtime_commits_reply_only_after_confirmed_delivery(tmp_pa
             return DeliveryResult(delivery_status, message.target, "receipt" if delivery_status is DeliveryStatus.SENT else None)
 
     class Provider:
-        def __init__(self, adapter, role, configuration, *_args):
+        def __init__(self, adapter, role, configuration, *_args, **_kwargs):
             self.adapter, self.role, self.configuration = adapter, role, configuration
 
         async def stream_response(self, **kwargs):

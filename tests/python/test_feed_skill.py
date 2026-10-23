@@ -25,7 +25,7 @@ def isolated_owner_components(tmp_path, monkeypatch):
     monkeypatch.setattr(SystemCredentialStore, "get", reject_real_vault_read)
 
 
-def test_explicit_feed_skill_reaches_model_without_granting_mcp_or_shell(tmp_path, monkeypatch):
+def test_explicit_feed_skill_reaches_model_with_default_tools_without_dynamic_mcp(tmp_path, monkeypatch):
     client, role, sessions, _ = setup_host(tmp_path, monkeypatch)
 
     class Adapter:
@@ -33,7 +33,7 @@ def test_explicit_feed_skill_reaches_model_without_granting_mcp_or_shell(tmp_pat
             system = json.dumps([item for item in messages if item["role"] == "system"], ensure_ascii=False)
             assert "Feed 订阅管理与查询" in system
             names = {item["function"]["name"] for item in tools}
-            assert not names & {"tool_search", "mcp_list", "mcp_add", "shell"}
+            assert {"tool_search", "shell"} <= names
             assert not any(name.startswith("mcp_") for name in names)
             yield ModelTextDelta("需要主人在 MCP 设置中授权服务和工具发现")
 
@@ -44,7 +44,7 @@ def test_explicit_feed_skill_reaches_model_without_granting_mcp_or_shell(tmp_pat
         messages = sessions.list_messages(f"role:{role['id']}")
         run = sessions.get_run(messages[-1].runId)
         skills = run.modelSnapshot["capabilities"]["skills"]
-        assert [(item["id"], item["source"], item["tools"]) for item in skills] == [("feed-manage", "builtin", [])]
+        assert [(item["id"], item["source"], item["tools"]) for item in skills] == [("feed-manage", "builtin", ["tool_search"])]
         assert not any(item.messageType == "tool_result" for item in messages)
     finally:
         client.close()
@@ -92,35 +92,24 @@ def test_feed_skill_cannot_connect_an_ungranted_service(tmp_path, monkeypatch, c
         client.close()
 
 
-@pytest.mark.parametrize("disabled", ["tool_search", "mcp_add"])
-def test_feed_skill_does_not_reenable_owner_disabled_tools(tmp_path, monkeypatch, disabled):
+@pytest.mark.parametrize("omitted", ["tool_search", "mcp_add"])
+def test_feed_skill_keeps_default_tools_when_legacy_list_omits_them(tmp_path, monkeypatch, omitted):
     client, role, sessions, _ = setup_host(tmp_path, monkeypatch)
-    assert save_server(client, role, tmp_path).status_code == 201
-    enable_tools(client, role, sorted({"tool_search", "mcp_list", "mcp_add"} - {disabled}))
+    enable_tools(client, role, sorted({"tool_search", "mcp_list", "mcp_add"} - {omitted}))
 
     class Adapter:
-        turn = 0
-
         async def stream_structured_messages(self, messages, configuration, tools):
-            self.turn += 1
-            assert disabled not in {item["function"]["name"] for item in tools}
-            if self.turn == 1:
-                if disabled == "mcp_add":
-                    yield ModelToolCall("load-disabled", "tool_search", {"query": "select:mcp_add"})
-                else:
-                    yield ModelToolCall("disabled", "tool_search", {"query": "select:mcp_add"})
-            elif self.turn == 2 and disabled == "mcp_add":
-                yield ModelToolCall("disabled", "mcp_add", {"server_id": "notes"})
+            names = {item["function"]["name"] for item in tools}
+            if omitted == "tool_search":
+                assert "tool_search" in names
             else:
-                yield ModelTextDelta("Feed 所需工具已关闭，请主人检查角色配置")
+                assert "mcp_add" not in names
+            yield ModelTextDelta("Feed 默认工具仍可用")
 
     monkeypatch.setattr(main, "model_adapter", Adapter())
     try:
         response = client.post(f"/api/roles/{role['id']}/messages", json={"content": "$feed-manage 管理来源"})
-        assert "Feed 所需工具已关闭" in response.text, response.text
-        result = next(item for item in sessions.list_messages(f"role:{role['id']}")
-            if item.toolCallId == "disabled" and item.messageType == "tool_result")
-        assert result.isError and not (tmp_path / "peer/pid").exists()
+        assert "Feed 默认工具仍可用" in response.text, response.text
     finally:
         client.close()
 

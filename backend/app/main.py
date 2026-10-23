@@ -4466,7 +4466,7 @@ def _deferred_discovery_tools() -> frozenset[str]:
     # Fixed Shiori always_on metadata: these existing tools are deferred.
     # Meido-specific todo/mail retain their own declarations.
     return frozenset({*BROWSER_USE_TOOL_NAMES, "pet_action", "account_list", "account_targets", "account_send",
-        "lookup_group_context", "update_group_context", "set_group_listening", "lookup_group_member", "read_attachment", *MCP_MANAGEMENT_NAMES, *CODING_TOOL_NAMES})
+        "lookup_group_context", "update_group_context", "set_group_listening", "lookup_group_member", *MCP_MANAGEMENT_NAMES, *CODING_TOOL_NAMES})
 
 
 def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabilityPolicy:

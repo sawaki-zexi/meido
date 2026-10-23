@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import main
+from backend.app.advanced_settings import AdvancedSettingsStore
 from backend.app.agent_runtime.runtime import RuntimeManager
 from backend.app.channels import ChannelHost
 from backend.app.channels.group_tools import MultichannelGroupRepository
@@ -28,6 +29,8 @@ def test_qq_nickname_observations_are_queryable_from_desktop_when_account_is_off
     channels = MultichannelStore(tmp_path / "sessions.db", sessions, MemoryCredentials())
     settings = MemorySettingsStore(tmp_path / "memory.json")
     settings.update(enabled=False)
+    advanced = AdvancedSettingsStore(tmp_path / "advanced.db")
+    advanced.update(expected_revision=0, operation_id="direct-tools", values={"searchEnabled": False})
     host = ChannelHost(channels)
 
     async def avatar(*args, **kwargs):
@@ -39,6 +42,7 @@ def test_qq_nickname_observations_are_queryable_from_desktop_when_account_is_off
         "group_repository": MultichannelGroupRepository(channels),
         "model_configuration_store": ModelConfigurationStore(tmp_path / "models.json"),
         "memory_settings_store": settings, "runtime_manager": RuntimeManager(sessions),
+        "advanced_settings": advanced,
         "role_locks": {}, "channel_event_locks": {}, "_fetch_channel_avatar": avatar,
     }.items():
         monkeypatch.setattr(main, name, value)

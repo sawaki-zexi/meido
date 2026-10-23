@@ -68,7 +68,7 @@ def test_owner_memory_write_recall_forget_roundtrip_uses_real_engine_and_updates
         monkeypatch.setattr(main, name, value)
     client = TestClient(main.app)
     before = {item["name"]: item for item in client.get(f"/api/roles/{role.id}/tools").json()["tools"]}
-    assert not before["memorize"]["enabled"] and not before["forget_memory"]["enabled"]
+    assert before["memorize"]["enabled"] and before["forget_memory"]["enabled"]
     saved = client.put(f"/api/roles/{role.id}", json={"name": role.name, "profile": role.profile.model_dump(),
         "agentConfig": {"enabledTools": ["memorize", "forget_memory"], "memoryRecall": {"enabled": True}}})
     assert saved.status_code == 200

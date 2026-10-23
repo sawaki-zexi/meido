@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shlex
 import sys
 import time
@@ -149,10 +150,14 @@ def test_http_role_revocation_or_deletion_releases_real_background_process(api, 
             self.calls += 1
             self.schemas.append(tools)
             if self.calls == 1:
-                yield ModelToolCall("start", "shell", {"command": shlex.join([
-                    sys.executable.replace("\\", "/"), "-u", "-c",
-                    "import os,time; from pathlib import Path; Path('pid').write_text(str(os.getpid())); time.sleep(10)",
-                ]), "run_in_background": True})
+                command = (
+                    "$PID | Set-Content pid; Start-Sleep -Seconds 10"
+                    if os.name == "nt" else shlex.join([
+                        sys.executable.replace("\\", "/"), "-u", "-c",
+                        "import os,time; from pathlib import Path; Path('pid').write_text(str(os.getpid())); time.sleep(10)",
+                    ])
+                )
+                yield ModelToolCall("start", "shell", {"command": command, "run_in_background": True})
             else:
                 yield ModelTextDelta("已处理")
 
@@ -166,7 +171,7 @@ def test_http_role_revocation_or_deletion_releases_real_background_process(api, 
     submitted = next(message for message in sessions.runtime_messages(f"role:{role_id}") if isinstance(message, ToolResultMessage))
     pid_file = roles.workspace_path(role_id) / "pid"
     deadline = time.monotonic() + 2
-    while not pid_file.exists():
+    while not pid_file.exists() or not pid_file.read_text().strip():
         assert time.monotonic() < deadline
         time.sleep(.01)
     pid = int(pid_file.read_text())
@@ -178,7 +183,7 @@ def test_http_role_revocation_or_deletion_releases_real_background_process(api, 
         response = client.put(f"/api/roles/{role_id}", json={"name": role["name"], "profile": role["profile"], "agentConfig": config})
         assert response.status_code == 200
         assert client.post(f"/api/roles/{role_id}/messages", json={"content": "仍想查询"}).status_code == 200
-        assert not {"shell", "task_output", "task_stop"} & {schema["function"]["name"] for schema in adapter.schemas[-1]}
+        assert {"shell", "task_output", "task_stop"} <= {schema["function"]["name"] for schema in adapter.schemas[-1]}
     else:
         assert client.delete(f"/api/roles/{role_id}").status_code == 204
         assert not Path(submitted.details["logPath"]).exists()

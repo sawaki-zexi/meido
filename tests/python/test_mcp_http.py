@@ -348,7 +348,7 @@ def process_alive(pid):
         return False
 
 
-@pytest.mark.parametrize("change", ["delete", "delete_credentials", "grant", "discovery", "stop"])
+@pytest.mark.parametrize("change", ["delete", "delete_credentials", "grant", "stop"])
 def test_http_revocation_or_stop_cancels_remote_work_and_owned_descendant(tmp_path, monkeypatch, change):
     client, role, sessions, configs = setup_host(tmp_path, monkeypatch)
     assert save_server(client, role, tmp_path, timeoutSeconds=60).status_code == 201

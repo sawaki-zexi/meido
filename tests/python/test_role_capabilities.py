@@ -21,6 +21,8 @@ from backend.app.ai.model_types import ModelAssistantMessage, ModelStreamDone, M
 
 @pytest.fixture
 def role_api(tmp_path, monkeypatch, local_platform_only):
+    from backend.app.task_runtime import TaskRuntime
+
     initialize_databases(tmp_path / "data")
     roles = RoleStore(tmp_path / "roles")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
@@ -35,7 +37,12 @@ def role_api(tmp_path, monkeypatch, local_platform_only):
     todos = TodoStore(tmp_path / "data" / "todos.db")
     todos.update_settings(enabled=True)
     monkeypatch.setattr(main, "todo_store", todos)
-    return TestClient(main.app)
+    tasks = TaskRuntime(tmp_path / "tasks")
+    monkeypatch.setattr(main, "task_runtime", tasks)
+    try:
+        yield TestClient(main.app)
+    finally:
+        tasks.close()
 
 
 def test_legacy_empty_config_has_default_tools_without_enabling_special_plugins(role_api):

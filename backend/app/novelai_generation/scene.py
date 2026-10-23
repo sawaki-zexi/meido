@@ -210,8 +210,13 @@ class SceneCoordinator:
             with self.app._lock, self.app.ledger.connect() as db:
                 if not self.current(source):
                     return
-                if db.execute('SELECT 1 FROM novelai_scene_manual WHERE role_id=? AND source_scope=? AND human_key=?',
-                        (source.origin.role_id, source.source_scope, source.human_key)).fetchone():
+                # Manual generation and the post-turn scene candidate may be
+                # captured through different source projections (the completed
+                # reply has a refreshed source scope), but they still belong
+                # to the same human turn.  Match the durable human key so an
+                # unverifiable manual result suppresses the auxiliary CG.
+                if db.execute('SELECT 1 FROM novelai_scene_manual WHERE role_id=? AND human_key=?',
+                        (source.origin.role_id, source.human_key)).fetchone():
                     return
             await self.app.submit(source, {'background': True}, scene_input=contents)
         except (ValueError, PermissionError, OSError, sqlite3.Error, RuntimeError) as error:

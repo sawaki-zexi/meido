@@ -1,3 +1,4 @@
+import os
 import pytest
 from fastapi.testclient import TestClient
 
@@ -203,6 +204,7 @@ def test_activation_failure_leaves_plugin_denied_until_explicit_cleanup(client, 
     assert retry.status_code == 200 and not retry.json()['enabled'] and not retry.json()['cleanupPending']
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Coding Agent host is Windows-only by specification')
 def test_coding_global_enable_ignores_legacy_switch_but_requires_trusted_repository(client):
     role = client.post('/api/roles', json={'name': 'coding policy', 'profile': {'profile': 'role'}}).json()['role']
     assert not role['agentConfig']['coding']['enabled']

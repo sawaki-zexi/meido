@@ -80,7 +80,21 @@ class ContextWindowProvider:
                 'modelId': self.provider.configuration.id if self.provider.configuration else None})
 
     def _estimate(self, system, messages, tools):
-        return self.provider.estimate_request_tokens(system, messages, tools)
+        estimator = getattr(self.provider, 'estimate_request_tokens', None)
+        if callable(estimator):
+            return estimator(system, messages, tools)
+        # Keep the provider seam usable for lightweight hosts and test
+        # adapters that implement only the ModelProvider protocol.  The
+        # concrete MeidoProvider supplies a more accurate estimate; this
+        # fallback preserves the same conservative budget behavior without
+        # making every alternate provider grow an unrelated helper method.
+        payload = {
+            'system': system,
+            'messages': [asdict(message) if hasattr(message, '__dataclass_fields__') else repr(message)
+                         for message in messages],
+            'tools': tools,
+        }
+        return estimate_tokens(payload)
 
     @staticmethod
     def _summary_message(summary):

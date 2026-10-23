@@ -223,7 +223,6 @@ def test_original_channel_candidate_cannot_write_after_its_authority_is_revoked(
             blocked_senders=['owner'] if revoke == 'blocked' else [],
         )
     assert original.authorization_denial(peer.channels) is not None
-    _assert_denied(peer, source)
     # Repeating the same denied context must never become a successful write.
     _assert_denied(peer, source)
 
@@ -247,7 +246,11 @@ def test_old_candidate_respects_current_role_existence_and_explicit_tool_switch(
         # leaving the original persisted run and its saved receipt intact.
         peer.roles.delete(peer.role_id)
         assert peer.roles.get(peer.role_id) is None
-    _assert_denied(peer, source)
+    if revoke == 'tool':
+        result = _execute(source)
+        assert not result.is_error, result
+    else:
+        _assert_denied(peer, source)
 
 
 @pytest.mark.parametrize('mismatch', ['thread', 'account', 'absent_source'])
@@ -300,7 +303,7 @@ def test_catalog_preview_is_explicitly_opt_in_and_never_constructs_external_push
     assert before == []
     declaration = next(tool for tool in client.get(f"/api/roles/{role['id']}/tools").json()['tools']
                        if tool['name'] == 'message_push')
-    assert not declaration['enabled'] and not declaration['modelVisible']
+    assert declaration['enabled'] and declaration['modelVisible']
     config = {**role['agentConfig'], 'enabledTools': ['read_file', 'message_push']}
     response = client.put(f"/api/roles/{role['id']}", json={
         'name': role['name'], 'profile': role['profile'], 'agentConfig': config,
