@@ -13,6 +13,7 @@ from typing import Any
 from collections.abc import Callable
 
 from .models import Role, RoleInput, RoleUpdateInput
+from .role_migration import CURRENT_MANIFEST_VERSION, migrate_manifest, overlay_fields
 
 
 def utc_now() -> datetime:
@@ -28,7 +29,9 @@ class RoleStore:
         self._lock = threading.RLock()
         self._deleting: set[str] = set()
         self.recovery_errors: list[str] = []
+        self._removed_role_payloads: dict[str, dict[str, Any]] = {}
         self.root.mkdir(parents=True, exist_ok=True)
+        self._manifest_payload: dict[str, Any] = {"version": CURRENT_MANIFEST_VERSION, "roles": []}
         self._roles: list[Role] = self._load()
         self.cleanup_staged_role_files()
 
@@ -82,6 +85,10 @@ class RoleStore:
             current = self._roles[index]
             values = current.model_dump(exclude={"id", "createdAt", "updatedAt"})
             values.update(data.model_dump(exclude_unset=True, exclude_none=True))
+            values["profile"] = overlay_fields(
+                current.profile.model_dump(),
+                data.profile.model_dump(exclude_unset=True),
+            )
             if data.agentConfig is not None:
                 # Purpose-specific settings submit only edited fields. Preserve
                 # every omitted tool policy, including legacy extension grants.
@@ -295,8 +302,14 @@ class RoleStore:
             if index is None:
                 raise KeyError(role_id)
             deleted = self._roles[index]
+            deleted_payload = next(
+                (item for item in self._manifest_payload.get("roles", []) if isinstance(item, dict) and item.get("id") == role_id),
+                None,
+            )
             candidate = [*self._roles[:index], *self._roles[index + 1 :]]
             self._save(candidate)
+            if deleted_payload is not None:
+                self._removed_role_payloads[role_id] = deepcopy(deleted_payload)
             self._roles = candidate
             return deleted.model_copy(deep=True)
 
@@ -306,6 +319,7 @@ class RoleStore:
                 return
             candidate = [*self._roles, role.model_copy(deep=True)]
             self._save(candidate)
+            self._removed_role_payloads.pop(role.id, None)
             self._ensure_role_dirs(role.id)
             self._roles = candidate
 
@@ -340,6 +354,7 @@ class RoleStore:
     def end_role_deletion(self, role_id: str) -> None:
         with self._lock:
             self._deleting.discard(role_id)
+            self._removed_role_payloads.pop(role_id, None)
 
     def complete_role_deletion(self, marker: Path | None) -> None:
         if marker is None:
@@ -433,31 +448,31 @@ class RoleStore:
     def _load(self) -> list[Role]:
         if not self.manifest_path.exists():
             return []
-        raw = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-        roles = raw.get("roles", []) if isinstance(raw, dict) else []
-        return [Role.model_validate(self._normalize(item)) for item in roles if isinstance(item, dict)]
-
-    @staticmethod
-    def _normalize(item: dict[str, Any]) -> dict[str, Any]:
-        profile = item.get("profile") or {}
-        return {
-            "id": item.get("id") or f"role-{uuid.uuid4().hex}",
-            "name": item.get("name", ""),
-            "description": item.get("description", ""),
-            "profile": profile,
-            "modelConfig": item.get("modelConfig") or {},
-            "modelConfigurationId": item.get("modelConfigurationId"),
-            "avatarUrl": item.get("avatarUrl"),
-            "avatarMediaType": item.get("avatarMediaType"),
-            "avatarOriginalUrl": item.get("avatarOriginalUrl"),
-            "avatarOriginalMediaType": item.get("avatarOriginalMediaType"),
-            "cardImageUrl": item.get("cardImageUrl"),
-            "cardImageMediaType": item.get("cardImageMediaType"),
-            "proactiveConfig": item.get("proactiveConfig") or {},
-            "agentConfig": item.get("agentConfig") or {},
-            "createdAt": item.get("createdAt") or utc_now(),
-            "updatedAt": item.get("updatedAt") or utc_now(),
-        }
+        try:
+            raw = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("角色清单不是有效的 UTF-8 JSON；原始文件已保留") from error
+        payload, changed = migrate_manifest(raw)
+        roles = []
+        seen_ids: set[str] = set()
+        for index, item in enumerate(payload["roles"]):
+            try:
+                profile = item.get("profile")
+                if not isinstance(profile, dict) or "version" not in profile or "character" not in profile:
+                    raise ValueError("角色设定缺少版本化结构")
+                role = Role.model_validate(item)
+                if not role.id or role.id in seen_ids:
+                    raise ValueError("角色 ID 为空或重复")
+                seen_ids.add(role.id)
+                roles.append(role)
+            except ValueError:
+                # Pydantic diagnostics can contain private inputs. Report only
+                # the manifest version and role position, never the raw payload.
+                raise ValueError(f"角色清单 v{raw.get('version', 1)} 的角色索引 {index} 无效；原始文件已保留") from None
+        if changed:
+            self._write_payload(payload)
+        self._manifest_payload = payload
+        return roles
 
     def _ensure_role_dirs(self, role_id: str) -> None:
         (self.root / role_id / "memory").mkdir(parents=True, exist_ok=True)
@@ -466,7 +481,23 @@ class RoleStore:
 
     def _save(self, roles: list[Role] | None = None) -> None:
         persisted_roles = roles if roles is not None else self._roles
-        payload = {"version": 1, "roles": [role.model_dump(mode="json") for role in persisted_roles]}
-        temporary = self.manifest_path.with_name(f".{self.manifest_path.name}.{os.getpid()}.tmp")
-        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.replace(temporary, self.manifest_path)
+        previous = {item.get("id"): item for item in self._manifest_payload.get("roles", []) if isinstance(item, dict)}
+        previous.update(self._removed_role_payloads)
+        payload = {
+            **self._manifest_payload,
+            "version": CURRENT_MANIFEST_VERSION,
+            "roles": [
+                overlay_fields(previous.get(role.id, {}), role.model_dump(mode="json"))
+                for role in persisted_roles
+            ],
+        }
+        self._write_payload(payload)
+        self._manifest_payload = payload
+
+    def _write_payload(self, payload: dict[str, Any]) -> None:
+        temporary = self.manifest_path.with_name(f".{self.manifest_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            os.replace(temporary, self.manifest_path)
+        finally:
+            temporary.unlink(missing_ok=True)

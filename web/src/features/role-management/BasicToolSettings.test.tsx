@@ -50,6 +50,6 @@ it('创建角色只保存资料，旧草稿里的隐藏插件许可不会被提�
   expect(form.queryByLabelText('子任务超时（秒）')).not.toBeInTheDocument();
   expect(form.queryByRole('group', { name: '插件设置' })).not.toBeInTheDocument();
   await user.click(form.getByRole('button', { name: '保存' }));
-  await waitFor(() => expect(calls.find((call) => call.method === 'POST')?.body).toMatchObject({ name: '草稿角色', profile: { profile: '设定' } }));
+  await waitFor(() => expect(calls.find((call) => call.method === 'POST')?.body).toMatchObject({ name: '草稿角色', profile: { version: 1, character: { profile: '设定' } } }));
   expect(calls.find((call) => call.method === 'POST')?.body).not.toHaveProperty('agentConfig');
 });

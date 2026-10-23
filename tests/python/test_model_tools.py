@@ -649,6 +649,41 @@ def test_meido_provider_sends_user_image_as_multimodal_content():
         {"type": "text", "text": "看看这张图"},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,aW1hZ2U=", "detail": "low"}},
     ]
+
+
+def test_meido_provider_excludes_import_provenance_from_model_prompt():
+    role = RoleInput(name="来源角色", profile=RoleProfile(
+        character={"profile": "谨慎而温柔"},
+        importProvenance={
+            "format": "json",
+            "source": "DO_NOT_INCLUDE_PRIVATE_CARD_SOURCE.json",
+            "importedAt": "2026-10-23T00:00:00Z",
+        },
+    ))
+    captured = []
+
+    class RecordingAdapter:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            captured.extend(messages)
+            yield ModelTextDelta("完成")
+
+    provider = MeidoProvider(
+        RecordingAdapter(), role, None,
+        memory_context="[角色记忆]", capability_prompt="[运行能力]",
+    )
+
+    async def collect():
+        return [event async for event in provider.stream_response(
+            model="test", system="", messages=[], tools=[{"type": "function", "function": {"name": "sample"}}],
+            signal=CancellationToken(),
+        )]
+
+    asyncio.run(collect())
+    prompt = captured[0]["content"]
+    assert "谨慎而温柔" in prompt
+    assert "[角色记忆]" in prompt
+    assert "[运行能力]" in prompt
+    assert "DO_NOT_INCLUDE_PRIVATE_CARD_SOURCE.json" not in prompt
 def test_meido_provider_maps_structured_transcript_and_tool_call():
     role = RoleInput(name="工具角色", profile=RoleProfile(profile="设定"), agentConfig={})
     seen = []

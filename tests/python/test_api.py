@@ -173,6 +173,12 @@ def test_role_api_crud_and_duplicate_names(tmp_path, monkeypatch):
     first = first_response.json()["role"]
     second = second_response.json()["role"]
     assert first["id"] != second["id"]
+    assert first["profile"] == {
+        "version": 1, "character": {
+            "profile": "核心设定", "personality": "", "behaviorRules": "",
+            "responseConstraints": "", "nickname": "",
+        }, "importProvenance": None,
+    }
 
     updated_response = client.put(
         f"/api/roles/{first['id']}",
@@ -182,6 +188,36 @@ def test_role_api_crud_and_duplicate_names(tmp_path, monkeypatch):
     assert updated_response.json()["role"]["id"] == first["id"]
     assert client.get(f"/api/roles/{first['id']}").json()["role"]["name"] == "改名"
     assert len(client.get("/api/roles").json()["roles"]) == 2
+
+
+def test_role_api_saves_versioned_profiles_and_keeps_import_attribution_on_legacy_edits(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "store", RoleStore(tmp_path / "roles"))
+    client = TestClient(main.app)
+    provenance = {"format": "json", "source": "mio.json", "importedAt": "2026-10-23T00:00:00Z"}
+    created = client.post("/api/roles", json={
+        "name": "Mio", "profile": {
+            "version": 1, "character": {"profile": "背景", "nickname": "主人"},
+            "importProvenance": provenance,
+        },
+    })
+    assert created.status_code == 201
+    role_id = created.json()["role"]["id"]
+    updated = client.put(f"/api/roles/{role_id}", json={
+        "name": "Mio renamed", "profile": {"profile": "新背景"},
+    })
+    assert updated.status_code == 200
+    assert updated.json()["role"]["profile"]["importProvenance"] == provenance
+    monkeypatch.setattr(main, "store", RoleStore(tmp_path / "roles"))
+    reloaded = client.get(f"/api/roles/{role_id}").json()["role"]["profile"]
+    assert reloaded["character"]["profile"] == "新背景"
+    assert reloaded["character"]["nickname"] == "主人"
+    assert reloaded["importProvenance"] == provenance
+
+    rejected = client.put(f"/api/roles/{role_id}", json={
+        "name": "Invalid", "profile": {"version": 99, "character": {"profile": "未来版本"}},
+    })
+    assert rejected.status_code == 422
+    assert client.get(f"/api/roles/{role_id}").json()["role"]["name"] == "Mio renamed"
 
 
 def test_feishu_oauth_callback_reports_local_credential_store_failure(monkeypatch):

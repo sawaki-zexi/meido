@@ -110,6 +110,7 @@ it("角色卡只填充资料，保留屏幕连接和其他未知能力配置", a
     "GET /api/model/configurations": () => ({ body: { configurations: connections } }),
     "POST /api/role-card-import/preview": () => ({ body: {
       draft: { name: "导入后角色", description: "新简介", profile: "导入角色设定", personality: "温柔", behaviorRules: "", responseConstraints: "", nickname: "主人" },
+      importProvenance: { format: "json", source: "card.json", importedAt: "2026-10-23T00:00:00Z" },
       source: "card.json", assets: [], compatibility: { format: "json", warnings: [], discardedFields: [], unsupportedMacros: [], unsupportedResources: [] },
     } }),
     "PUT /api/roles/r1": (init) => { saved = { ...saved, ...JSON.parse(String(init?.body)) }; return { body: { role: saved } }; },
@@ -124,7 +125,8 @@ it("角色卡只填充资料，保留屏幕连接和其他未知能力配置", a
   expect(form.queryByRole("checkbox", { name: "允许按需观察主屏" })).not.toBeInTheDocument();
   await user.click(form.getByRole("button", { name: "保存" }));
   await waitFor(() => expect(saved.name).toBe("导入后角色"));
-  expect(saved.profile.profile).toBe("导入角色设定");
+  expect(saved.profile.character.profile).toBe("导入角色设定");
+  expect(saved.profile.importProvenance).toEqual({ format: "json", source: "card.json", importedAt: "2026-10-23T00:00:00Z" });
   expect(saved.agentConfig).toMatchObject(capabilities);
 });
 

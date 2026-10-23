@@ -17,12 +17,58 @@ DEFAULT_BUILTIN_TOOLS = (
 )
 
 
-class RoleProfile(BaseModel):
+class RoleCharacterDefinition(BaseModel):
     profile: str = ""
     personality: str = ""
     behaviorRules: str = ""
     responseConstraints: str = ""
     nickname: str = ""
+
+
+class RoleImportProvenance(BaseModel):
+    """Attribution only; never a source of runtime instructions."""
+
+    format: Literal["json", "png", "apng", "charx"]
+    source: str = Field(min_length=1, max_length=255)
+    importedAt: datetime
+
+    @field_validator("source")
+    @classmethod
+    def normalize_source(cls, value: str) -> str:
+        return value.replace(chr(92), "/").rsplit("/", 1)[-1].strip() or "role-card"
+
+
+class RoleProfile(BaseModel):
+    version: int = Field(default=1, strict=True, ge=1, le=1)
+    character: RoleCharacterDefinition = Field(default_factory=RoleCharacterDefinition)
+    importProvenance: RoleImportProvenance | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_fields(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "character" not in value and "version" not in value:
+            return {"character": value}
+        return value
+
+    @property
+    def profile(self) -> str:
+        return self.character.profile
+
+    @property
+    def personality(self) -> str:
+        return self.character.personality
+
+    @property
+    def behaviorRules(self) -> str:
+        return self.character.behaviorRules
+
+    @property
+    def responseConstraints(self) -> str:
+        return self.character.responseConstraints
+
+    @property
+    def nickname(self) -> str:
+        return self.character.nickname
 
 
 class ShellToolConfig(BaseModel):
@@ -113,7 +159,7 @@ class RoleInput(BaseModel):
     @field_validator("profile")
     @classmethod
     def validate_profile(cls, value: RoleProfile) -> RoleProfile:
-        if not value.profile.strip():
+        if not value.character.profile.strip():
             raise ValueError("角色设定不能为空")
         return value
 
@@ -135,7 +181,7 @@ class RoleUpdateInput(BaseModel):
     @field_validator("profile")
     @classmethod
     def validate_profile(cls, value: RoleProfile) -> RoleProfile:
-        if not value.profile.strip():
+        if not value.character.profile.strip():
             raise ValueError("角色设定不能为空")
         return value
 

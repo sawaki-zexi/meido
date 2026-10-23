@@ -12,6 +12,7 @@ import re
 import struct
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -333,6 +334,17 @@ def _charx(raw: bytes) -> tuple[Any, list[ImportAsset], list[str]]:
 
 
 def parse_role_card(filename: str, raw: bytes) -> dict[str, Any]:
+    filename = filename.replace(chr(92), "/").rsplit("/", 1)[-1]
+    result = _parse_role_card(filename, raw)
+    result["importProvenance"] = {
+        "format": posixpath.splitext(filename.lower())[1][1:],
+        "source": filename,
+        "importedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    return result
+
+
+def _parse_role_card(filename: str, raw: bytes) -> dict[str, Any]:
     if len(raw) > MAX_SOURCE_BYTES:
         raise RoleCardImportError("角色卡文件不能超过 50 MB")
     suffix = posixpath.splitext(filename.lower())[1]

@@ -10,6 +10,25 @@ from fastapi.testclient import TestClient
 from backend.app import main
 from backend.app import role_card_import as import_module
 from backend.app.role_card_import import RoleCardImportError, parse_role_card
+from backend.app.models import RoleInput, RoleUpdateInput
+from backend.app.role_store import RoleStore
+
+
+def test_import_attribution_survives_save_reload_and_ordinary_profile_edit(tmp_path):
+    result = parse_role_card("C:/private/cards/mio.json", b'{"name":"Mio","description":"Maid"}')
+    assert result["importProvenance"]["format"] == "json"
+    assert result["importProvenance"]["source"] == "mio.json"
+    assert result["importProvenance"]["importedAt"]
+    store = RoleStore(tmp_path / "roles")
+    draft = result["draft"]
+    role = store.create(RoleInput(name=draft["name"], profile={
+        "version": 1, "character": {k: v for k, v in draft.items() if k not in {"name", "description"}},
+        "importProvenance": result["importProvenance"],
+    }))
+    store.update(role.id, RoleUpdateInput(name="Mio edited", profile={"profile": "New description"}))
+    reloaded = RoleStore(tmp_path / "roles").get(role.id)
+    assert reloaded.profile.importProvenance.source == "mio.json"
+    assert reloaded.profile.importProvenance.importedAt.isoformat() == role.profile.importProvenance.importedAt.isoformat()
 
 
 def test_json_role_card_maps_tavern_fields_and_reports_unmapped_fields():
@@ -119,6 +138,9 @@ def test_preview_api_returns_draft_without_creating_a_role():
     )
     assert response.status_code == 200
     assert response.json()["draft"]["name"] == "Preview"
+    assert response.json()["importProvenance"]["source"] == "preview.json"
+    assert response.json()["importProvenance"]["format"] == "json"
+    assert response.json()["importProvenance"]["importedAt"]
     assert len(main.store.list()) == before
 
 

@@ -2,9 +2,11 @@
 
 状态：当前
 事实来源：Shiori-Agent 源码链接，以及 Meido 的 `backend/app/role_card_import.py`、`web/src/features/role-management/RoleEditor.tsx` 和 `tests/python/test_role_card_import.py`
-最后核验：2026-10-10
+最后核验：2026-10-23
 
-研究对象：[`YinFengWindy/Shiori-Agent`](https://github.com/YinFengWindy/Shiori-Agent)，以当前仓库源码为一手资料（浅克隆提交时间：2026-09-28）。本文只记录可借鉴的设计，不建议直接复制其完整架构。
+研究对象：[YinFengWindy/Shiori-Agent](https://github.com/YinFengWindy/Shiori-Agent)，以提交 1c241a2627bbcc99124aef71abaee237ac057499 的本地源码为一手资料。本文只记录可借鉴的设计，不建议直接复制其完整架构。
+
+本轮重新核对了 profile、manifest migration 和 Meido 当前分支实现。早期关于 Meido 迁移到 SQLite 的建议已撤回：Meido 继续使用自身 JSON manifest，新增 profile schema version 和原子迁移；当前提交是 #204 的实现分支，尚未合并。
 
 ## 1. 角色领域模型
 
@@ -45,7 +47,7 @@ Shiori-Agent 默认将角色保存为工作区下的 JSON 清单：[`apps/backen
 
 **可借鉴点**：后端生成不可变 ID；创建/更新使用 trim 校验；保存时采用原子写入和版本迁移；角色素材放在按 ID 分隔的目录中。
 
-**针对 meido 的建议**：Issue 当前已有 SQLite 方案时，不必改成 JSON。可在 SQLite 中保留 `role_id` 主键、profile JSON 或结构化列、时间戳，并沿用“版本字段/后端 ID/事务写入”的语义。
+**针对 Meido 的建议**：沿用现有 JSON manifest；使用角色稳定身份、独立 profile 版本和同目录原子替换。角色清单与会话、记忆 SQLite 数据库分别管理。
 
 ## 3. API/桥接流程
 
@@ -97,6 +99,19 @@ Shiori-Agent 默认将角色保存为工作区下的 JSON 清单：[`apps/backen
 1. 使用独立 `Role`/`CharacterDefinition` 类型，profile 内按字段组织角色设定。
 2. 后端生成稳定 ID，名称允许重复，更新时间由后端维护。
 3. 角色列表、创建页、详情编辑页分离；创建成功后进入详情，保存后以服务端快照刷新。
-4. 将角色设定持久化在现有 SQLite 中，使用事务和可选 schema/profile 版本；不要为了模仿参考项目而引入 JSON 清单或其插件/渠道/素材架构。
+4. 沿用 Meido 当前 JSON manifest 和角色目录边界，只借用显式 profile 版本与可恢复迁移；不要为了模仿 Shiori 而改成其多渠道 RoleRecord、插件命名空间或素材布局。
 5. 以 `role_id` 作为未来会话绑定点，但本 Issue 只实现角色 CRUD 和维护流程。
+
+## 8. 2026-10-23 角色 profile 核对
+
+| 关注点 | Shiori-Agent（核验提交） | Meido #204 实现分支 | 取舍 |
+| --- | --- | --- | --- |
+| Profile | version、嵌套 character、可选 import_provenance；五个设定字段位于 character | version 1、嵌套 character、可选 importProvenance；API 继续使用项目 camelCase | 复用稳定嵌套边界，不复制字段命名风格 |
+| Manifest | 根版本 v9、有序迁移链、JSON 原子写入和保留插件 namespace | 根版本从 v1 升至 v2；在同目录临时文件原子替换；保留根、角色、profile、能力对象中的不透明字段 | 不复制 Shiori 的 v9 schema 或 plugin_data |
+| 旧数据 | 在 Role model projection 前做 migration，再构造 profile | 先变换原始 JSON，再校验整份 Role 快照；v1 的身份缺省只生成一次并随升级保存 | 防止 Pydantic projection 静默丢失未知字段，也避免启动时身份漂移 |
+| 导入来源 | Shiori 记录卡片声明的 creator、tags、source、card timestamps 与实际 imported_at | Meido 只记录实际输入文件 basename、识别格式和预览时间；不把卡片声明内容混同于来源路径 | 本 Ticket 选择最小、非敏感 provenance，不凭卡片自报内容冒充文件来源 |
+| 运行提示词 | provenance 在角色 profile 对象中，但角色编译器只读 character | Meido runtime / legacy adapter 只读 character；来源不会被格式化进系统提示词 | 保持相同的身份/来源边界；完整独立编译规则在 #207 |
+| 角色状态 | RoleRecord 包含主动推送、transport 候选等 Shiori runtime 域 | Meido 仍保持自己的角色、唯一会话、记忆、工具策略和模型连接边界 | 只借鉴 profile/migration 设计，不合并角色与运行时职责 |
+
+事实来源：Shiori apps/backend/core/roles/profile_models.py、migration.py、manifest.py、role_prompt_compiler.py；Meido [profile contract](../reference/role-profiles.md)、[model](../../backend/app/models.py)、[migration tests](../../tests/python/test_role_manifest_migration.py)。Shiori 的格式定义和 Meido 的实际实现不同，不能把兼容导入理解成运行时或权限兼容。
 

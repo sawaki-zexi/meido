@@ -1,6 +1,6 @@
-import type { AgentToolConfig, Role } from "../../api/types";
+import type { AgentToolConfig, Role, RoleImportProvenance } from "../../api/types";
 
-export const emptyDraft = { name: "", description: "", profile: "", personality: "", behaviorRules: "", responseConstraints: "", nickname: "", memoryRecallEnabled: false, todoSearchEnabled: false, browserUseEnabled: false, computerUseEnabled: false, screenPerceptionEnabled: false, screenVisionModelConfigurationId: "", spawnEnabled: false, spawnTimeoutSeconds: 120, spawnMaxTurns: 12, spawnMaxOutputChars: 20000, spawnMaxModelOutputChars: 60000, shellEnabled: false, shellAllowedCommands: "", shellTimeoutSeconds: 30, shellMaxOutputChars: 20000, preservedAgentConfig: {} as AgentToolConfig, otherEnabledTools: [] as string[], otherEnabledPlugins: [] as string[], otherGrantedCapabilities: [] as string[] };
+export const emptyDraft = { name: "", description: "", profile: "", personality: "", behaviorRules: "", responseConstraints: "", nickname: "", importProvenance: null as RoleImportProvenance | null, memoryRecallEnabled: false, todoSearchEnabled: false, browserUseEnabled: false, computerUseEnabled: false, screenPerceptionEnabled: false, screenVisionModelConfigurationId: "", spawnEnabled: false, spawnTimeoutSeconds: 120, spawnMaxTurns: 12, spawnMaxOutputChars: 20000, spawnMaxModelOutputChars: 60000, shellEnabled: false, shellAllowedCommands: "", shellTimeoutSeconds: 30, shellMaxOutputChars: 20000, preservedAgentConfig: {} as AgentToolConfig, otherEnabledTools: [] as string[], otherEnabledPlugins: [] as string[], otherGrantedCapabilities: [] as string[] };
 export type RoleDraft = typeof emptyDraft;
 
 const storageKey = "meido:create-role-draft";
@@ -8,7 +8,8 @@ const storageKey = "meido:create-role-draft";
 export const draftFromRole = (role: Role): RoleDraft => ({
   name: role.name,
   description: role.description,
-  ...role.profile,
+  ...role.profile.character,
+  importProvenance: role.profile.importProvenance ?? null,
   memoryRecallEnabled: role.agentConfig?.memoryRecall?.enabled ?? false,
   todoSearchEnabled: role.agentConfig?.enabledPlugins?.includes("todo") === true && role.agentConfig?.grantedCapabilities?.includes("todo.read") === true && role.agentConfig?.enabledTools?.includes("todo.search") === true,
   browserUseEnabled: role.agentConfig?.browserUse?.enabled === true,
@@ -33,7 +34,11 @@ export const draftFromRole = (role: Role): RoleDraft => ({
 export const payloadFromDraft = (draft: RoleDraft) => ({
   name: draft.name,
   description: draft.description,
-  profile: { profile: draft.profile, personality: draft.personality, behaviorRules: draft.behaviorRules, responseConstraints: draft.responseConstraints, nickname: draft.nickname },
+  profile: {
+    version: 1 as const,
+    character: { profile: draft.profile, personality: draft.personality, behaviorRules: draft.behaviorRules, responseConstraints: draft.responseConstraints, nickname: draft.nickname },
+    importProvenance: draft.importProvenance,
+  },
   agentConfig: {
     ...draft.preservedAgentConfig,
     ...(draft.spawnEnabled || draft.preservedAgentConfig.spawn || draft.spawnTimeoutSeconds !== 120
@@ -78,9 +83,11 @@ export function readCreateDraft(): RoleDraft | null {
     const readText = (field: keyof RoleDraft) => typeof parsed[field] === "string" ? parsed[field] as string : "";
     const draft: RoleDraft = {
       ...emptyDraft,
-      name: readText("name"), description: readText("description"), profile: readText("profile"),
-      personality: readText("personality"), behaviorRules: readText("behaviorRules"),
-      responseConstraints: readText("responseConstraints"), nickname: readText("nickname"),
+      name: readText("name"), description: readText("description"),
+      profile: readText("profile"), personality: readText("personality"),
+      behaviorRules: readText("behaviorRules"), responseConstraints: readText("responseConstraints"),
+      nickname: readText("nickname"),
+      importProvenance: validProvenance(parsed.importProvenance) ? parsed.importProvenance : null,
     };
     draft.memoryRecallEnabled = parsed.memoryRecallEnabled === true;
     draft.todoSearchEnabled = parsed.todoSearchEnabled === true;
@@ -104,6 +111,13 @@ export function readCreateDraft(): RoleDraft | null {
   } catch {
     return null;
   }
+}
+
+function validProvenance(value: unknown): value is RoleImportProvenance {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return ["json", "png", "apng", "charx"].includes(String(item.format))
+    && typeof item.source === "string" && typeof item.importedAt === "string";
 }
 
 export function writeCreateDraft(draft: RoleDraft): void {
