@@ -18,6 +18,24 @@ from backend.app.memory_store import MemoryStore
 from backend.app.models import MemorySourceRef
 
 
+def test_coverage_port_binds_proof_to_request_and_disabled_memory_is_not_required(tmp_path):
+    from backend.app.memory_engine import MemoryCoverageRequest
+    service = MemoryService(MemoryStore(tmp_path / 'coverage.db'))
+    seen = []
+    async def coverage(request):
+        seen.append(request)
+        return False
+    engine = DefaultMemoryEngine(service, role_exists=lambda role: role == 'r', coverage_provider=coverage)
+    request = MemoryCoverageRequest(MemoryScope('r', 'role:r'), 'thread:source', ('message-id',))
+    assert asyncio.run(engine.ensure_coverage(request)).status == 'pending'
+    proof = asyncio.run(engine.ensure_coverage(MemoryCoverageRequest(request.scope, request.source_session_key, request.source_message_ids, required=False)))
+    assert proof.status == 'not_required'
+    assert proof.request.source_message_ids == ('message-id',)
+    assert seen == [request]
+    with pytest.raises(ValueError):
+        asyncio.run(engine.ensure_coverage(MemoryCoverageRequest(MemoryScope('other', 'role:other'), 'role:other', ('id',))))
+
+
 @pytest.mark.parametrize("role_id", ["", "   "])
 def test_memory_scope_requires_a_role_id(role_id):
     with pytest.raises(ValueError, match="role_id"):

@@ -2,17 +2,17 @@
 
 状态：当前。最后核验：2026-10-16。
 
-当前实现复用 #148 的共用来源授权，原 9 个公开 AgentTool 反例由红转绿；另验证平台暂停、同 ID 账号重建、同源后续回合与重新配对后的日志隔离。#149 已完成两轴独立复核并进入总 PR #162 集成分支；后续共享回归随 #158 通过 `4b1b3b8` 的两套完整 CI，尚未合入 main，不代表完整 Shiori 目标完成。
+#149 已随 PR #162 合入 main；以下为现行协议，普通默认 Shell 的授权决定见 [ADR-0021](../adr/0021-default-builtin-tools.md)。不代表真实服务全部验收完成。
 
 事实来源：[ADR-0012](../adr/0012-owned-task-runtime.md)、[TaskRuntime](../../backend/app/task_runtime/runtime.py)、[真实进程执行器](../../backend/app/task_runtime/process.py)、[AgentTool](../../backend/app/agent_runtime/shell_tool.py)、[进程验收](../../tests/python/test_background_shell.py)、[HTTP 验收](../../tests/python/test_background_shell_api.py)。对应 #149 / 完整复刻规格 C03、D02、T07。
 
 ## 工具协议
 
-角色 `agentConfig.shell.enabled` 为真且白名单非空时，提供 `shell`、`task_output`、`task_stop`。关闭开关或清空白名单后，把这些名字放入 `enabledTools` 也不能重新启用。配置改变会停止角色现有 Shell 任务；旧能力快照不能重新启动已撤销的命令许可。任务日志与角色工作目录分开存储。
+普通主人对话默认提供 `shell`、`task_output`、`task_stop`，不要求角色 enabled 或命令白名单；旧空配置同样生效。角色、真实来源、取消和删除仍在调用与后台观察时校验。`agentConfig.shell` 保留预算及受限任务许可，旧开关不再控制普通 Shell。任务日志与角色工作目录分开存储。
 
 | 工具 | 参数 | 行为 |
 | --- | --- | --- |
-| `shell` | 必填 `command`；可选 `description`（最多 500 字符）、`timeout`（秒）、`run_in_background`、`auto_promote` | 保留 argv 解析、白名单、固定 workspace、最小环境与关闭 stdin。仅 command 的旧调用兼容；前台完成直接返回输出。显式后台立即返回稳定 task ID；默认运行 15 秒后自动提升后台，`auto_promote=false` 保持前台 |
+| `shell` | 必填 `command`；可选 `description`、`timeout`、`run_in_background`、`auto_promote` | Windows 使用 PowerShell 7，POSIX 使用 /bin/sh；固定 workspace、最小环境与关闭 stdin。后台/自动提升仍使用原 TaskRuntime 预算与进程树生命周期。 |
 | `task_output` | 必填 `task_id`；可选 `block=false`、`timeout_ms=30000`（0–30000） | 返回当前快照或有界等待后的快照；等待结束不停止、不重跑任务；取消观察也不停止后台执行 |
 | `task_stop` | 必填 `task_id` | 停止整个受管进程树，等待资源释放后返回终态；重复停止保留第一次终态 |
 
@@ -20,7 +20,7 @@
 
 渠道任务从真实入站消息冻结 sender、角色/线程/账号及创建代际、配对 identity/pairedAt 和主人私聊边界；不读取正文自报身份。提交、查询和后台授权观察复用 `FrozenChannelSource`，平台/账号暂停、响应范围关闭、屏蔽、解绑或重绑均会拒绝日志访问并停止原执行。来源 scope 不包含单条消息时间，因而同一绑定/发送者的后续回合可查询；重新配对即使还是同一平台 ID，也不能继承旧任务。前台工具 child token 结束不撤销已返回的后台任务。
 
-Shell 同时遵守冻结实例白名单与当前最终命令白名单；后台观察也检查原命令是否仍许可。Windows 环境变量名按大小写不敏感匹配既有许可集合，保留 `SYSTEMROOT`，不扩大可继承环境范围。
+普通 Shell 不做 argv 白名单过滤。受限子任务与 soft schedule 独立校验创建时及当前开关/命令白名单；它们不继承普通默认 Shell。Windows 环境名按大小写不敏感匹配既有最小集合，保留 SYSTEMROOT，不继承服务密钥。
 
 结果 `details` 包含 `taskId`、`status`、`exitCode`、`background`、`durationSeconds`、`description`、`kind`、`timeoutSeconds`、`outputChars`、`truncated`、`logPath`、`logBytes`、`logComplete`、`logTruncated`、`logError`、`progress` 和 `origin`。`origin` 固定角色、会话、来源线程/账号、父 run、宿主唯一 tool call、该调用实际能力版本及 `sourceScopeId/sourceAuthority`；后续同来源回合读取时仍返回原 origin。不存在与不属于当前来源使用相同错误，不泄漏记录是否存在。
 
@@ -44,10 +44,10 @@ Windows 使用以挂起方式创建的进程和 `KILL_ON_JOB_CLOSE` Job，启动
 
 `TaskRuntime.submit(origin, executor, budget, kind, description, authorized)` 提交真实执行；`query` 只观察，`stop` 取消，`cancel_role_tasks`、`set_role_enabled`、`delete_role`、`reconcile_roles`、`close/start` 管理归属和应用生命周期。`TaskExecutor.run(TaskExecution)` 必须返回 `TaskOutcome`，`cancel()` 必须释放其资源。`TaskExecution` 提供冻结 budget/deadline 和有界日志/进度写入；`TaskOutcome.output_tail` 可提供终态展示，Runtime 再次按同一预算截断，保留日志与实际消费计数不被它替换。
 
-Shell 是此边界的首个完整执行器。#157 的[独立子任务](owned-subagents.md)复用任务身份、SQLite、预算、日志与取消，并增加实际消费的任务目录、原来源列表和持久完成 outbox。未交付 pending/sending 任务占用有限保留额度，不能被普通清理静默移除；额度无法释放时新任务提交被拒绝。#158 的[通用调度](owned-schedules.md)已复用同一 Runtime，并补齐幂等交接及结果保留/ACK，两者均已复核并进入集成分支；Coding 执行器仍待具体方案批准及后续实施。
+Shell 是此边界的首个完整执行器。#157 的[独立子任务](owned-subagents.md)复用任务身份、SQLite、预算、日志与取消，并增加实际消费的任务目录、原来源列表和持久完成 outbox。未交付 pending/sending 任务占用有限保留额度，不能被普通清理静默移除；额度无法释放时新任务提交被拒绝。#158 的[通用调度](owned-schedules.md)已复用同一 Runtime，并补齐幂等交接及结果保留/ACK，两者均已复核并进入集成分支；Coding 执行器已随总 PR #162 合入，真实认证和消费另验。
 
 ## 与 Shiori 的明确差异
 
-[固定上游 Shell 实现](https://github.com/YinFengWindy/Shiori-Agent/tree/4f266aeaf42fcd611362e2456417b91f659341cf/apps/backend/agent/tools/shell) 使用 pwsh/系统 shell，显式后台未传 timeout 时可无硬截止，终态日志采用短暂内存注册表。本实现保留 Meido 已批准的 argv 白名单、有限宿主截止、最小环境和固定目录，以 SQLite 保留真实终态，停止任务后保留受预算约束的日志供原来源查询。参数使用上游名称；结果沿用 Meido `AgentToolResult` 的 camelCase 元数据，没有伪造上游 JSON 字段兼容性。
+[固定上游 Shell 实现](https://github.com/YinFengWindy/Shiori-Agent/tree/4f266aeaf42fcd611362e2456417b91f659341cf/apps/backend/agent/tools/shell) 使用 pwsh/系统 shell，显式后台未传 timeout 时可无硬截止，终态日志采用短暂内存注册表。本实现按 ADR-0021 默认使用平台 Shell，保留有限宿主截止、最小环境和固定目录，以 SQLite 保留真实终态，停止任务后保留受预算约束的日志供原来源查询。参数使用上游名称；结果沿用 Meido `AgentToolResult` 的 camelCase 元数据，没有伪造上游 JSON 字段兼容性。
 
-这仍是以宿主操作系统身份运行的白名单进程，不能将白名单或角色日志归属称为操作系统沙箱。
+这仍以宿主操作系统身份运行，普通 Shell 可执行本机命令；固定目录和日志归属不是操作系统沙箱。

@@ -24,11 +24,13 @@ it('saves ordinary settings without reading or resubmitting the existing token',
   render(<NovelaiSettings />);
   expect(await screen.findByText('独立凭据已配置')).toBeInTheDocument();
   expect(screen.getByLabelText('新的 NovelAI token')).toHaveValue('');
-  await user.click(screen.getByRole('checkbox', { name: '启用 NovelAI 服务' }));
+  await user.clear(screen.getByLabelText('最多采样步数'));
+  await user.type(screen.getByLabelText('最多采样步数'), '12');
   await user.click(screen.getByRole('button', { name: '保存生图设置' }));
-  expect(await screen.findByText(/生图设置已保存/)).toBeInTheDocument();
+  expect(await screen.findByText(/公共生图参数已保存/)).toBeInTheDocument();
   const saves = calls.filter((item) => item.method !== 'GET');
   expect(saves).toHaveLength(1);
   expect(saves[0].body).not.toHaveProperty('token');
+  expect(saves[0].body).not.toHaveProperty('enabled');
   expect(calls.every((item) => !item.path.includes('generate'))).toBe(true);
 });

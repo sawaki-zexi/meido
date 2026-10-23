@@ -59,6 +59,6 @@ def test_regeneration_rechecks_current_model_allowlist_after_new_owner_consent(n
     assert changed.status_code == 200, changed.text
     body['expectedRevision'] = revision
     rejected = client.post(endpoint, json=body)
-    assert rejected.status_code == 422, rejected.text
+    assert rejected.status_code == 403, rejected.text
     assert len(service.peer.requests) == 1
     assert len(service.application.history(service.role.id)['generations']) == 1

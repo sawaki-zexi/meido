@@ -44,7 +44,7 @@ Do not wrap JSON in Markdown or add other text."""
 
 _MESSAGES = {
     "permission_denied": "仅允许已启用角色当前由主人发起的桌面回合观察主屏",
-    "configuration_missing": "请为角色显式选择存在且完整的已保存视觉模型连接",
+    "configuration_missing": "请配置存在且完整的聊天模型，或单独选择视觉模型连接",
     "configuration_changed": "屏幕授权或视觉连接已变更，请在新的对话调用中重试",
     "vision_unsupported": "所选模型协议或模型的图像编码不可用",
     "capture_unavailable": "无法读取 Windows 交互桌面的主屏；请检查会话、锁屏和桌面权限",

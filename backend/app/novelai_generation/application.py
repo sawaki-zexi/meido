@@ -72,7 +72,7 @@ class NovelaiApplication:
         if policy.sceneCgEnabled and (not policy.scenePromptModelConfigurationId
                 or self.model_configuration(policy.scenePromptModelConfigurationId) is None):
             raise ValueError('场景 CG 需要明确且仍存在的辅助模型连接')
-        if policy.manualEnabled or policy.sceneCgEnabled:
+        if policy.sceneCgEnabled:
             public = self.settings.public()
             if not public['enabled'] or not public['tokenConfigured'] or public['credentialCleanupPending'] or policy.consentRevision != public['revision']:
                 raise ValueError('请先配置服务并确认当前版本的有限生图消费许可')
@@ -133,15 +133,15 @@ class NovelaiApplication:
         if not config['tokenConfigured'] or config['credentialCleanupPending']:
             return '尚未配置独立 NovelAI 凭据，或凭据清理尚未完成'
         policy = role.agentConfig.novelai
-        if not (policy.sceneCgEnabled if scene else policy.manualEnabled):
-            return '角色的手动生图许可已关闭'
+        if not (policy.sceneCgEnabled if scene else config['manualEnabled']):
+            return '场景 CG 许可已关闭' if scene else '全局手动生图许可已关闭'
         if scene and (not policy.scenePromptModelConfigurationId or self.model_configuration(policy.scenePromptModelConfigurationId) is None):
             return '场景辅助模型连接已不可用'
-        if policy.consentRevision != config['revision']:
+        if (policy.consentRevision if scene else config['manualConsentRevision']) != config['revision']:
             return '请主人确认当前服务设置的有限生图消费许可'
         usage = self.ledger.usage(role.id)
         if include_usage and (usage['accountAttempts'] >= config['dailyAttemptLimit'] or
-                (usage['cgAttempts'] >= policy.sceneCgDailyAttempts if scene else usage['manualAttempts'] >= policy.manualDailyAttempts)):
+                (usage['cgAttempts'] >= policy.sceneCgDailyAttempts if scene else usage['manualAttempts'] >= config['manualDailyAttempts'])):
             return '今日生图尝试额度已用完；次数不是 Anlas 估价'
         return ''
 
@@ -151,8 +151,8 @@ class NovelaiApplication:
         return bool(not self._closed and (allow_sealed or not self._sealed(source)) and role is not None and not self.is_role_deleting(role.id)
             and public['enabled'] and public['tokenConfigured'] and not public['credentialCleanupPending']
             and public['revision'] == service_revision
-            and (role.agentConfig.novelai.sceneCgEnabled if source.scene_revision is not None else role.agentConfig.novelai.manualEnabled)
-            and role.agentConfig.novelai.consentRevision == public['revision']
+            and (role.agentConfig.novelai.sceneCgEnabled if source.scene_revision is not None else public['manualEnabled'])
+            and (role.agentConfig.novelai.consentRevision if source.scene_revision is not None else public['manualConsentRevision']) == public['revision']
             and self._role_revision(role) == role_revision and source.denial(self.channels) is None
             and (receipt or self.scenes.current(source)))
 
@@ -268,7 +268,7 @@ class NovelaiApplication:
                     human_key=source.human_key, request_key=source.request_key, parameters=parameters,
                     origin=source.to_dict(), service_revision=public['revision'], role_revision=self._role_revision(role),
                     account_limit=settings.dailyAttemptLimit, role_limit=(role.agentConfig.novelai.sceneCgDailyAttempts
-                        if scene_input is not None else role.agentConfig.novelai.manualDailyAttempts),
+                        if scene_input is not None else settings.manualDailyAttempts),
                     fingerprint=fingerprint, delivery_mode=delivery_mode or ('replacement' if regeneration is not None else
                         'source_completion' if source.ui_action or parameters['background'] else 'foreground_reply'),
                     publication_ready=publication_ready,

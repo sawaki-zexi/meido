@@ -45,7 +45,7 @@ def test_skill_created_by_real_file_tool_is_explicitly_usable_next_turn_without_
         async def stream_structured_messages(self, messages, configuration, tools):
             self.calls += 1
             names = {item["function"]["name"] for item in tools}
-            assert "write_file" in names and "shell" not in names
+            assert {"write_file", "shell"} <= names
             if self.calls == 1:
                 assert "skills/<skill-id>/SKILL.md" in json.dumps(
                     [item for item in messages if item["role"] == "system"], ensure_ascii=False)
@@ -68,8 +68,9 @@ def test_skill_created_by_real_file_tool_is_explicitly_usable_next_turn_without_
     assert "已使用新技能" in second.text
     run_id = sessions.list_messages(f"role:{role_id}")[-1].runId
     snapshot = sessions.get_run(run_id).modelSnapshot["capabilities"]
-    assert [(item["id"], item["source"], item["tools"]) for item in snapshot["skills"]] == [("briefing", "role", [])]
-    assert any(item.get("tool") == "shell" for item in snapshot["skillDiagnostics"])
+    assert [(item["id"], item["source"], item["tools"]) for item in snapshot["skills"]] == [("briefing", "role", ["shell"])]
+    assert not any(item.get("tool") == "shell" and item.get("status") == "unavailable"
+                   for item in snapshot["skillDiagnostics"])
 
 
 def test_meme_skill_updates_role_manifest_and_checks_actual_image_with_file_tools(tmp_path, monkeypatch):
@@ -112,7 +113,7 @@ def test_missing_builtin_clis_reach_model_as_specific_dependency_diagnostics(tmp
         async def stream_structured_messages(self, messages, configuration, tools):
             system = json.dumps([item for item in messages if item["role"] == "system"], ensure_ascii=False)
             assert "missingBins" in system and "curl" in system and "summarize" in system
-            assert "shell" not in {item["function"]["name"] for item in tools}
+            assert "shell" in {item["function"]["name"] for item in tools}
             yield ModelTextDelta("缺少 curl 与 summarize，需先配置依赖")
 
     client, role_id, _, sessions = skill_client(tmp_path, monkeypatch, Adapter())

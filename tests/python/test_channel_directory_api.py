@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import main
+from backend.app.advanced_settings import AdvancedSettingsStore
 from backend.app.agent_runtime.runtime import RuntimeManager
 from backend.app.channels import ChannelHost
 from backend.app.channels.models import TargetKind, target_from_chat
@@ -47,12 +48,15 @@ def directory_api(tmp_path, monkeypatch, local_platform_only):
     channels = MultichannelStore(tmp_path / "sessions.db", sessions, Credentials())
     settings = MemorySettingsStore(tmp_path / "memory.json")
     settings.update(enabled=False)
+    advanced = AdvancedSettingsStore(tmp_path / "advanced.db")
+    advanced.update(expected_revision=0, operation_id="direct-tools", values={"searchEnabled": False})
     host = ChannelHost(channels)
     for name, value in {
         "store": roles, "session_store": sessions, "session_manager": SessionManager(roles, sessions),
         "multichannel_store": channels, "channel_host": host,
         "model_configuration_store": ModelConfigurationStore(tmp_path / "models.json"),
         "memory_settings_store": settings, "runtime_manager": RuntimeManager(sessions),
+        "advanced_settings": advanced,
         "role_locks": {}, "channel_adapters": {}, "channel_transports": {},
         "telegram_services": {}, "telegram_tasks": {}, "channel_tasks": {},
     }.items():

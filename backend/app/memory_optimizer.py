@@ -666,6 +666,7 @@ class MemoryOptimizerLoop:
         sleep: Callable[[float], object] | None = None,
         model_available: Callable[[str], bool] | None = None,
         enabled_provider: Callable[[], bool] | None = None,
+        policy_enabled: bool | None = None,
     ) -> None:
         self.worker = worker
         self.roles_root = Path(roles_root).resolve()
@@ -678,17 +679,41 @@ class MemoryOptimizerLoop:
         self._task: asyncio.Task[object] | None = None
         self.closed = False
         self.errors: list[str] = []
+        self._policy_enabled = policy_enabled
+        self._started = False
+        self._reconfigure_lock = asyncio.Lock()
 
     def start(self) -> bool:
         if not self.enabled or self.closed or self._task is not None:
             return False
+        self._started = True
         self.worker.start()
         self._task = asyncio.create_task(self._run())
         return True
 
-    async def _run(self) -> None:
+    async def reconfigure(self, interval_seconds: float, *, current_policy=None) -> None:
+        """Rearm only the timer; saving never starts an immediate optimization."""
+        async with self._reconfigure_lock:
+            desired_enabled, desired_interval = current_policy() if current_policy else (self._policy_enabled, interval_seconds)
+            desired_interval = max(self.MIN_INTERVAL_SECONDS, float(desired_interval))
+            if (self._policy_enabled == desired_enabled and self.interval_seconds == desired_interval
+                    and self._task is not None and not self._task.done()):
+                return
+            if self._task is not None:
+                self._task.cancel()
+                await asyncio.gather(self._task, return_exceptions=True)
+            # A newer committed write may have arrived while the old owner was closing.
+            if current_policy:
+                desired_enabled, desired_interval = current_policy()
+            self.interval_seconds = max(self.MIN_INTERVAL_SECONDS, float(desired_interval))
+            if self._started and not self.closed:
+                self._task = asyncio.create_task(self._run(initial=False))
+            self._policy_enabled = desired_enabled
+
+    async def _run(self, *, initial=True) -> None:
         try:
-            await self.run_once(startup=True)
+            if initial:
+                await self.run_once(startup=True)
             while not self.closed:
                 await self._sleep(self.interval_seconds)
                 if not self.closed:

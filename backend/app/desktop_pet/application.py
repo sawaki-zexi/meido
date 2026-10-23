@@ -10,7 +10,7 @@ from .store import PetStore
 
 
 class DesktopPetApplication:
-    def __init__(self, roles, root: Path):
+    def __init__(self, roles, root: Path, *, enabled=lambda: True):
         self.store = PetStore(roles, root)
         self.host = None
         self.closed = False
@@ -20,6 +20,7 @@ class DesktopPetApplication:
         self._events = deque(maxlen=64)
         self._event_gate = threading.RLock()
         self._error = ''
+        self._enabled = enabled
 
     @property
     def has_live_owner(self):
@@ -58,6 +59,8 @@ class DesktopPetApplication:
             self._events.append(event)
 
     def unavailable_reason(self, role_id):
+        if not self._enabled():
+            return '桌宠插件已关闭'
         role, package, active = self.store.binding(role_id)
         if not role['enabled']:
             return '角色桌宠已关闭'
@@ -102,7 +105,7 @@ class DesktopPetApplication:
     async def _refresh(self):
         role_id = self.store.active_role()
         role, package, active = self.store.binding(role_id) if role_id is not None else (None, None, None)
-        key = (role_id, role['generation']) if role and role['enabled'] and package and active == role_id else None
+        key = (role_id, role['generation']) if self._enabled() and role and role['enabled'] and package and active == role_id else None
         if self.host is not None and key != self._host_binding:
             await self._owned(self.host.close)
             self.host = None
@@ -128,7 +131,7 @@ class DesktopPetApplication:
     async def restart(self, role_id):
         async with self._serial:
             role, package, active = self.store.binding(role_id)
-            if not role['enabled'] or package is None or active != role_id or self.closed:
+            if not self._enabled() or not role['enabled'] or package is None or active != role_id or self.closed:
                 raise ValueError('请先启用当前角色桌宠')
             # Rotating the binding rejects tools frozen before this restart.
             await self._owned(self.store.configure, role_id, expected_revision=role['revision'],
@@ -139,6 +142,16 @@ class DesktopPetApplication:
     async def invalidate(self, role_id):
         await self._owned(self.store.revoke, role_id)
         async with self._serial:
+            await self._refresh()
+
+    async def plugin_changed(self):
+        """Rotate old actions while retaining role/package preferences."""
+        async with self._serial:
+            role_id = self.store.active_role()
+            if role_id is not None:
+                role, package, _ = self.store.binding(role_id)
+                await self._owned(self.store.configure, role_id, expected_revision=role['revision'],
+                    package_id=package['id'] if package else None, enabled=role['enabled'])
             await self._refresh()
 
     async def remove_package(self, role_id, package_id, expected_revision):
@@ -174,11 +187,11 @@ class DesktopPetApplication:
                 raise ValueError(self.unavailable_reason(role_id))
             await self._owned(self.store.claim, role_id, generation, context.run_id)
             current, _, _ = self.store.binding(role_id)
-            if current['generation'] != generation or not authorized(context) or context.signal.cancelled:
+            if current['generation'] != generation or not self._enabled() or not authorized(context) or context.signal.cancelled:
                 raise ValueError('桌宠动作派发前许可已改变')
             def admit(send):
                 return self.store.dispatch(role_id, generation,
-                    lambda: not self.closed and not context.signal.cancelled and authorized(context), send)
+                    lambda: not self.closed and self._enabled() and not context.signal.cancelled and authorized(context), send)
             return await self._owned(self.host.action, uuid.uuid4().hex, arguments, admit=admit)
 
     async def close(self):

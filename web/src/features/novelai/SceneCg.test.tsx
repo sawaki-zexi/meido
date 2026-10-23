@@ -111,6 +111,7 @@ it('saves and reopens CG permission in the actual app and refreshes a late CG in
     parentAttemptId: null, deliveryMode: 'source_completion', deliveryMessageId: 'cg-message', expectedAttachmentId: null };
   const { calls } = fakeBackend({
     'GET /api/roles': () => ({ body: { roles: [saved] } }),
+    'GET /api/roles/r1': () => ({ body: { role: saved } }),
     'GET /api/roles/r1/session': () => ({ body: { session: { sessionKey: 'role:r1', roleId: 'r1' }, messages: complete ? [
       message({ id: 'cg-message', role: 'assistant', content: '雨中的场景', messageType: 'internal_completion',
         metadata: { attachments: [image], generationAttemptIds: ['cg-attempt'] } })] : [] } }),
@@ -125,23 +126,31 @@ it('saves and reopens CG permission in the actual app and refreshes a late CG in
   });
   const user = userEvent.setup(); render(<App />);
   await screen.findByRole('heading', { name: '场景角色', level: 1 });
-  await user.click(screen.getByRole('button', { name: '角色资料' }));
-  const editor = within(await screen.findByRole('dialog', { name: '角色资料' }));
+  await user.click(screen.getByRole('button', { name: '设置' }));
+  await user.click(screen.getByRole('button', { name: '插件' }));
+  await user.click(await screen.findByRole('button', { name: 'NovelAI 生图 设置' }));
+  await user.click(screen.getByRole('button', { name: '角色参数' }));
+  const editor = within(await screen.findByRole('dialog', { name: '设置' }));
   await editor.findByText(/账户每日最多 20 次/);
   await user.click(editor.getByRole('checkbox', { name: '允许主人回合场景 CG' }));
   await user.selectOptions(editor.getByRole('combobox', { name: 'CG 辅助模型连接' }), 'helper');
   await user.click(editor.getByRole('checkbox', { name: /我确认当前设置的有限生图消费/ }));
-  await user.click(editor.getByRole('button', { name: '保存' }));
+  await user.click(editor.getByRole('button', { name: '保存角色参数' }));
   await waitFor(() => expect((saved.agentConfig as AgentToolConfig & { novelai?: NovelaiRoleConfig }).novelai)
     .toMatchObject({ manualEnabled: false, sceneCgEnabled: true, scenePromptModelConfigurationId: 'helper', consentRevision: 3 }));
   await user.click(editor.getByRole('button', { name: '关闭' }));
-  await user.click(screen.getByRole('button', { name: '角色资料' }));
+  await user.click(screen.getByRole('button', { name: '设置' }));
+  await user.click(screen.getByRole('button', { name: '插件' }));
+  await user.click(await screen.findByRole('button', { name: 'NovelAI 生图 设置' }));
+  await user.click(screen.getByRole('button', { name: '角色参数' }));
+  await screen.findByRole('combobox', { name: 'CG 辅助模型连接' });
   expect(screen.getByRole('checkbox', { name: '允许主人回合场景 CG' })).toBeChecked();
   expect(screen.getByRole('combobox', { name: 'CG 辅助模型连接' })).toHaveValue('helper');
   await user.keyboard('{Escape}');
   complete = true; fireEvent.focus(window);
   expect(await screen.findByAltText('scene-cg.png')).toBeInTheDocument();
-  await user.click(screen.getByRole('button', { name: '生图与历史' }));
+  await user.click(screen.getByRole('button', { name: '更多' }));
+  await user.click(await screen.findByRole('menuitem', { name: '生图与历史' }));
   const record = await screen.findByRole('article', { name: '生成记录 cg-attempt' });
   expect(within(record).getByText('卡片图写回结果尚未确认，生成图已保留历史。')).toBeInTheDocument();
   expect(within(record).getByRole('button', { name: '重新生成 scene-cg.png' })).toBeDisabled();

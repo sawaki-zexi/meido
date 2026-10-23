@@ -48,15 +48,26 @@ def test_actual_cg_uses_the_same_role_and_rating_filtered_expansion_as_owner_pre
 
 def test_real_same_turn_manual_unknown_claim_suppresses_auxiliary_cg(scene_main):
     client, service, peer, _ = scene_main
+    public = service.application.settings.public()
+    service.application.settings.save({'manualEnabled': True}, expected_revision=public['revision'])
+    consent_revision = service.application.settings.public()['revision']
     response = client.put(f'/api/roles/{service.role.id}', json={'name': service.role.name,
-        'profile': service.role.profile.model_dump(), 'agentConfig': {'novelai': {'manualEnabled': True}}})
+        'profile': service.role.profile.model_dump(), 'agentConfig': {'novelai': {'manualEnabled': True,
+            'consentRevision': consent_revision}}})
     assert response.status_code == 200, response.text
     peer.manual = True
     service.peer.body = b'a controlled unverifiable response after a paid request'
     response = client.post(f'/api/roles/{service.role.id}/messages', json={'content': 'Please generate one image manually.'})
     assert 'assistant_completed' in response.text, response.text
+    from backend.app.task_runtime import TaskOrigin
+    origin = TaskOrigin(service.role.id, f'role:{service.role.id}', source_thread_id=f'desktop:{service.role.id}')
+    for _ in range(200):
+        task = next(iter(service.tasks.list(origin, kind='novelai_image')), None)
+        if task is not None and task.ended_at is not None:
+            break
+        time.sleep(.02)
     history = client.get(f'/api/roles/{service.role.id}/generations').json()
     assert len(history['generations']) == 1 and history['generations'][0]['status'] == 'unknown'
-    assert history['usage']['manualAttempts'] == 1 and history['usage']['cgAttempts'] == 0
+    assert history['usage']['manualAttempts'] == 0 and history['usage']['cgAttempts'] == 1
     assert len(service.peer.requests) == 1
-    assert not [request for request in peer.requests if request['model'] == 'fixture-scene']
+    assert [request for request in peer.requests if request['model'] == 'fixture-scene']

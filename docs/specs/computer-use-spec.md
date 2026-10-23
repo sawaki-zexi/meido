@@ -1,5 +1,7 @@
 # Computer Use：Windows 原生窗口控制规格
 
+配置修订（2026-10-18）：本文原每角色插件总开关由全局插件启停替代；当前聊天视觉模型、真实主人桌面身份、lease、预算和进程收尾约束保留。 当前配置以 [全局插件规格](global-plugin-configuration-spec.md) 与 [ADR-0022](../adr/0022-global-plugin-configuration.md) 为准；下文原始批准保留作设计依据。
+
 状态：当前目标规格。第 3 节已获用户明确批准，#169 已实施并通过单机专用窗口的八工具与 HTTP/provider 原生验收；其余环境和独立审查状态见[验收记录](../handbook/computer-use-native-acceptance.md)。最后核验：2026-10-16。未勾选的复合验收项包含尚未验证的环境，不代表再次等待架构许可。
 
 最后核验：2026-10-16（Asia/Shanghai）。范围：完整复刻规格 P02 / T17，[实施票 #169](https://github.com/sawaki-zexi/meido/issues/169)，Parent [#137](https://github.com/sawaki-zexi/meido/issues/137)。
@@ -54,7 +56,7 @@ P02 的八个工具都属于本票。P04 `observe_screen` 仍独立：它把主�
 
 | 决定 | 计划采用 | 取舍及边界 |
 | --- | --- | --- |
-| 配置和授权 | 新增角色 `agentConfig.computerUse.enabled=false`；一个开关包含窗口画面向当前聊天连接发送和窗口输入。角色编辑保存、目录和执行重检同一字段。 | 不借用 screenPerception、browserUse、enabledTools、MCP grant 或 Shell 开关。无需逐次操作弹窗；一般外部事务仍遵守主人原有授权范围。开关 UI 必须写清“可操作本机窗口，窗口截图发送至当前聊天模型”。 |
+| 配置和授权 | 新增角色 `agentConfig.computerUse.enabled=false`；一个开关包含窗口画面向当前聊天连接发送和窗口输入。设置中的角色插件保存、目录和执行重检同一字段。 | 不借用 screenPerception、browserUse、enabledTools、MCP grant 或 Shell 开关。无需逐次操作弹窗；一般外部事务仍遵守主人原有授权范围。开关 UI 必须写清“可操作本机窗口，窗口截图发送至当前聊天模型”。 |
 | 工具目录 | 八项统一 `risk=external`、`external_allowed=false`、`source=plugin:computer_use`、`exposure=direct`；开关由现有角色策略映射到该插件及 `desktop.control`，不另要求主人勾第二个同义 grant。 | 沿用上游整组高风险分类；开启后的工具直接可见是明确适配，避免人为依赖延迟搜索票。目录仍保留关闭/不可用原因，执行时重检。 |
 | 原生实现与维护 | 以 **CUA MIT 固定 commit `fc188250b4ca8549b8e61f937fdb1fb560770e86`** 为源，维护 Meido 最小 Windows 补丁并仅构建本票 direct 模式实际使用的 `cua-driver.exe`；现有 ctypes 做身份/桌面校验，Pillow 验证图像，不新增 Python 包。 | 明确不直接运行原封 0.28.2 发布 exe：它的外部窗口 guard 与截图回退不满足本稿边界。补丁仅覆盖后台 guard、窗口 capture/metadata 与普通权限 manifest，八个公开工具和显式 foreground 激活保持上游接口。代价是固定 Rust/MSVC/SDK 构建及每次升级的补丁重放、许可和原生回归，见 §3.1。 |
 | 后台原生边界 | Meido 构建禁止对外部 HWND 调 EnableWindow 或修改 exstyle；依赖 NoActivateGuard/fg_bypass 的路由在输入前返回 background_unavailable，保留无需这些变更的后台路由。 | 不承诺所有应用后台可控；每个保留路由须受控原生验证，不把删除 guard 后仍强行注入算作修复。后台组合键和 click modifier 仍输入前拒绝；不加外部窗口修复 watchdog。 |

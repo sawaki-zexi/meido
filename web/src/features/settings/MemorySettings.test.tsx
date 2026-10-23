@@ -26,6 +26,7 @@ describe("MemorySettings", () => {
     });
 
     render(<MemorySettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "向量模型" }));
     const key = await screen.findByLabelText("向量 API Key");
     expect(key).toHaveValue("");
     expect(key).toHaveAttribute("placeholder", "••••••");
@@ -69,6 +70,7 @@ describe("MemorySettings", () => {
     });
 
     render(<MemorySettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "向量模型" }));
     const key = await screen.findByLabelText("向量 API Key");
     fireEvent.change(key, { target: { value: "secret-key" } });
     fireEvent.click(screen.getByRole("button", { name: "保存向量配置" }));
@@ -114,6 +116,7 @@ describe("MemorySettings", () => {
     });
 
     render(<MemorySettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "向量模型" }));
     const embedding = within(await screen.findByRole("region", { name: "向量模型" }));
     fireEvent.click(embedding.getByRole("button", { name: "测试连接" }));
 
@@ -143,6 +146,7 @@ describe("MemorySettings", () => {
     });
 
     render(<MemorySettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "向量模型" }));
     const embedding = within(await screen.findByRole("region", { name: "向量模型" }));
 
     expect(embedding.getByRole("alert")).toHaveTextContent("向量服务暂时不可用");
@@ -157,7 +161,7 @@ describe("MemorySettings", () => {
         embedding: { configuration: { provider: "dashscope", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "text-embedding-v3", dimensions: 1024, apiKeyConfigured: false }, status: { configured: false, ready: false, enabled: state.embeddingEnabled } },
       } }),
       "PUT /api/memory/settings": (init) => {
-        state = JSON.parse(String(init?.body)) as typeof state;
+        state = { ...state, ...JSON.parse(String(init?.body)) };
         return { body: {
           ...state,
           embedding: { configuration: { provider: "dashscope", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "text-embedding-v3", dimensions: 1024, apiKeyConfigured: false }, status: { configured: false, ready: false, enabled: state.embeddingEnabled } },
@@ -167,15 +171,55 @@ describe("MemorySettings", () => {
     });
 
     render(<MemorySettings />);
-    const memoryToggle = await screen.findByRole("checkbox", { name: "启用记忆功能" });
-    const embeddingToggle = screen.getByRole("checkbox", { name: "启用向量模型" });
+    const memoryToggle = await screen.findByRole("switch", { name: "启用记忆功能" });
     fireEvent.click(memoryToggle);
     await waitFor(() => expect(calls.some((call) => call.method === "PUT" && call.path === "/api/memory/settings" && (call.body as { enabled: boolean }).enabled === false)).toBe(true));
-    fireEvent.click(embeddingToggle);
+    fireEvent.click(screen.getByRole("button", { name: "向量模型" }));
+    fireEvent.click(screen.getByRole("switch", { name: "启用向量模型" }));
     await waitFor(() => expect(calls.some((call) => call.method === "PUT" && call.path === "/api/memory/settings" && (call.body as { embeddingEnabled: boolean }).embeddingEnabled === false)).toBe(true));
     fireEvent.change(screen.getByLabelText("向量 API Key"), { target: { value: "secret-key" } });
     fireEvent.click(screen.getByRole("button", { name: "保存向量配置" }));
     await waitFor(() => expect(calls.some((call) => call.method === "PUT" && call.path === "/api/embedding/configuration")).toBe(true));
     expect(calls.find((call) => call.path === "/api/embedding/configuration")?.body).toMatchObject({ apiKey: "secret-key" });
   });
+});
+
+
+it('基础页不堆叠向量表单，子页往返保留未保存内容', async () => {
+  const { calls } = fakeBackend({ 'GET /api/memory/settings': () => ({ body: { enabled: true, embeddingEnabled: false,
+    embedding: { configuration: { provider: 'local', baseUrl: 'http://localhost/v1', model: 'embedding', dimensions: 1024, apiKeyConfigured: false }, status: { configured: false, ready: false, enabled: false } } } }) });
+  render(<MemorySettings />);
+  await screen.findByRole('switch', { name: '启用记忆功能' });
+  expect(screen.queryByLabelText('向量模型 ID')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '向量模型' }));
+  fireEvent.change(screen.getByLabelText('向量模型 ID'), { target: { value: 'unsaved-embedding' } });
+  fireEvent.click(screen.getByRole('button', { name: '基础' }));
+  expect(screen.queryByLabelText('向量模型 ID')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '向量模型' }));
+  expect(screen.getByLabelText('向量模型 ID')).toHaveValue('unsaved-embedding');
+  expect(calls.some(call => call.method !== 'GET')).toBe(false);
+});
+
+it('重回缓存页面刷新开关事实并保留向量草稿，切换只提交当前字段', async () => {
+  let enabled = true;
+  const configuration = { provider: 'local', baseUrl: 'http://localhost/v1', model: 'saved-embedding', dimensions: 32, apiKeyConfigured: false };
+  const state = () => ({ enabled, embeddingEnabled: false, embedding: { configuration, status: { configured: false, ready: false, enabled: false } } });
+  const { calls } = fakeBackend({
+    'GET /api/memory/settings': () => ({ body: state() }),
+    'PUT /api/memory/settings': () => ({ body: state() }),
+  });
+  const view = render(<MemorySettings />);
+  await screen.findByRole('switch', { name: '启用记忆功能' });
+  fireEvent.click(screen.getByRole('button', { name: '向量模型' }));
+  fireEvent.change(screen.getByLabelText('向量模型 ID'), { target: { value: 'unsaved-embedding' } });
+  view.rerender(<MemorySettings active={false} />);
+  enabled = false;
+  view.rerender(<MemorySettings />);
+  await waitFor(() => expect(calls.filter(call => call.method === 'GET')).toHaveLength(2));
+  expect(screen.getByLabelText('向量模型 ID')).toHaveValue('unsaved-embedding');
+  fireEvent.click(screen.getByRole('button', { name: '基础' }));
+  await waitFor(() => expect(screen.getByRole('switch', { name: '启用记忆功能' })).not.toBeChecked());
+  fireEvent.click(screen.getByRole('button', { name: '向量模型' }));
+  fireEvent.click(screen.getByRole('switch', { name: '启用向量模型' }));
+  await waitFor(() => expect(calls.find(call => call.method === 'PUT')?.body).toEqual({ embeddingEnabled: true }));
 });

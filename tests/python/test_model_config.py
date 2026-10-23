@@ -355,6 +355,13 @@ def test_model_adapter_uses_request_configuration_snapshot(tmp_path, monkeypatch
             if len(seen) == 1:
                 config_store.save(ModelConfigurationInput(**payload(model="new-model")))
 
+        async def stream_structured_messages(self, messages, configuration, tools, *, max_tokens=None):
+            from backend.app.ai.model_adapter import ModelTextDelta
+            seen.append(configuration)
+            yield ModelTextDelta('回复')
+            if len(seen) == 1:
+                config_store.save(ModelConfigurationInput(**payload(model='new-model')))
+
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))

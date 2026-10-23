@@ -97,13 +97,13 @@ class BrowserDaemon:
         return port if 0 < port < 65536 else None
 
     async def close(self) -> None:
-        process, self._process = self._process, None
-        owner, self._owner = self._owner, None
+        process, owner = self._process, self._owner
         failure = None
         try:
             if owner is not None:
                 try:
                     await release_process_tree_owner(owner)
+                    self._owner = None
                 except BaseException as error:
                     failure = error
             if process is not None and process.returncode is None:
@@ -119,6 +119,8 @@ class BrowserDaemon:
             if failure is not None:
                 raise failure
         finally:
+            if process is not None and process.returncode is not None:
+                self._process = None
             for path in (self._port_file, self._config_file):
                 if path is not None:
                     path.unlink(missing_ok=True)

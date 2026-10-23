@@ -15,6 +15,7 @@ export type NovelaiConfiguration = {
   enabled: boolean; tokenConfigured: boolean; credentialCleanupPending: boolean; revision: number;
   allowedModels: string[]; defaultModel: string; allowedSamplers: string[]; defaultSampler: string;
   maxPixels: number; maxSteps: number; dailyAttemptLimit: number;
+  manualEnabled?: boolean; manualDailyAttempts?: number; manualConsentRevision?: number;
 };
 export type GenerationParameters = {
   prompt: string; mode: 'txt2img' | 'img2img'; negative_prompt?: string; base_attachment_id?: string;
@@ -46,7 +47,7 @@ export const novelai = {
   previewPromptTags: (roleId: string, text: string, prompt: string, negative_prompt: string) => api<PromptTagPreview>(`${tagsPath(roleId)}/preview`,
     { method: 'POST', body: JSON.stringify({ text, prompt, negative_prompt }) }),
   configuration: () => api<NovelaiConfiguration>('/api/services/novelai'),
-  saveConfiguration: (configuration: Omit<NovelaiConfiguration, 'revision' | 'tokenConfigured' | 'credentialCleanupPending'>, expectedRevision: number) =>
+  saveConfiguration: (configuration: Partial<Omit<NovelaiConfiguration, 'revision' | 'tokenConfigured' | 'credentialCleanupPending' | 'manualConsentRevision'>> & { confirmManualConsumption?: boolean }, expectedRevision: number) =>
     api<NovelaiConfiguration>('/api/services/novelai', { method: 'PUT', body: JSON.stringify({ ...configuration, expectedRevision }) }),
   setToken: (token: string) => api<NovelaiConfiguration>('/api/services/novelai/token', { method: 'PUT', body: JSON.stringify({ token }) }),
   clearToken: () => api<NovelaiConfiguration>('/api/services/novelai/token', { method: 'DELETE' }),

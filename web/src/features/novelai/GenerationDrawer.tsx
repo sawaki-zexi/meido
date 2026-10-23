@@ -32,10 +32,10 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
     {accepted && watched.length > 0 && <p role="status">后台生成已受理。关闭此面板后仍会继续，可在历史查询或停止。</p>}
     {!page && !error && <Placeholder loading>正在加载生图历史…</Placeholder>}
     {configuration && <>
-      {!allowed && <p>手动生图尚未获准：请检查独立服务、凭据与角色当前版本的有限消费许可。</p>}
+      {!allowed && <p>手动生图尚未获准：请检查独立服务、凭据与公共参数当前版本的有限消费许可。</p>}
       <p>场景 CG：{policy?.sceneCgEnabled ? '角色已开启；每次仍需校验当前服务、辅助连接和有限消费许可。' : '角色未开启。'}</p>
       <p>每次生成计入尝试额度；次数不是 Anlas 估价。未知结果可能已计费，不会自动再次请求。</p>
-      {page && <p>今日账户尝试 {page.usage.accountAttempts}/{configuration.dailyAttemptLimit}，本角色手动尝试 {page.usage.manualAttempts}/{policy?.manualDailyAttempts ?? 10}，本角色 CG 尝试 {page.usage.cgAttempts ?? 0}/{policy?.sceneCgDailyAttempts ?? 3}（UTC 日）。</p>}
+      {page && <p>今日账户尝试 {page.usage.accountAttempts}/{configuration.dailyAttemptLimit}，本角色手动尝试 {page.usage.manualAttempts}/{configuration.manualDailyAttempts ?? 10}，本角色 CG 尝试 {page.usage.cgAttempts ?? 0}/{policy?.sceneCgDailyAttempts ?? 3}（UTC 日）。</p>}
       <form aria-label="生成图片" onSubmit={(event) => void submit(event)}>
         <fieldset disabled={busy || uploading || !allowed || Boolean(attempt.current)}>
           {source && <><p>{deliveryMode === 'replacement' ? `替换 ${source.image.name}；其他图片和附件保持不变。` : `基于 ${source.image.name} 再次生成，仅保存在历史，不替换原消息。`}</p>

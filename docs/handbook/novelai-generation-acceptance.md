@@ -8,6 +8,8 @@
 
 ## 运行受控测试
 
+当前网页入口（2026-10-19 核验）：先在设置 → 插件 → NovelAI 生图启用服务，再从角色聊天右上角“更多”进入“生图与历史”。服务关闭时隐藏该菜单项；启用只控制入口和服务，生成仍须原有有限消费许可与参数校验。查看旧消息图片和当前历史不会自动提交生成。
+
 所有平台/HTTP peer 都必须为 localhost；测试使用 fixture credentials，不读取用户 vault。pytest 收集前设置完整三数据根，PROJECT_ROOT 不能代替 owner knowledge 数据根：
 
 ```powershell

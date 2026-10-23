@@ -1,4 +1,5 @@
 import sys
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -63,6 +64,8 @@ def test_owner_mail_permission_controls_real_chat_and_revokes_frozen_tool(role_a
 
 @pytest.fixture
 def role_api(tmp_path, monkeypatch, local_platform_only):
+    from backend.app.task_runtime import TaskRuntime
+
     initialize_databases(tmp_path / "data")
     roles = RoleStore(tmp_path / "roles")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
@@ -77,18 +80,85 @@ def role_api(tmp_path, monkeypatch, local_platform_only):
     todos = TodoStore(tmp_path / "data" / "todos.db")
     todos.update_settings(enabled=True)
     monkeypatch.setattr(main, "todo_store", todos)
-    return TestClient(main.app)
+    tasks = TaskRuntime(tmp_path / "tasks")
+    monkeypatch.setattr(main, "task_runtime", tasks)
+    try:
+        yield TestClient(main.app)
+    finally:
+        tasks.close()
+
+
+def test_legacy_empty_config_has_default_tools_without_enabling_special_plugins(role_api):
+    role = role_api.post('/api/roles', json={
+        'name': '默认工具', 'profile': {'profile': '设定'},
+        'agentConfig': {'enabledTools': [], 'shell': {'enabled': False, 'allowedCommands': []}},
+    }).json()['role']
+    catalog = role_api.get(f"/api/roles/{role['id']}/tools").json()
+    visible = {item['name'] for item in catalog['tools'] if item['modelVisible']}
+    assert {'read_file', 'list_dir', 'write_file', 'edit_file', 'web_search', 'web_fetch',
+            'search_messages', 'fetch_messages', 'tool_search',
+            'shell', 'task_output', 'task_stop', 'message_push', 'spawn', 'spawn_manage',
+            'schedule', 'list_schedules', 'cancel_schedule'} <= visible
+    assert not {'agent_browser_open', 'computer_click', 'generate_image', 'pet_action', 'observe_screen'} & visible
+    for name in ('memorize', 'forget_memory'):
+        item = next(item for item in catalog['tools'] if item['name'] == name)
+        assert item['enabled'] and item['reason'] == '全局记忆已关闭'
+    # Saving unrelated profile data or an old client's empty list cannot hide defaults.
+    saved = role_api.put(f"/api/roles/{role['id']}", json={
+        'name': role['name'], 'profile': {'profile': '更新设定'},
+        'agentConfig': {'enabledTools': ['custom.query'], 'enabledPlugins': ['custom']},
+    }).json()['role']
+    assert 'custom.query' in saved['agentConfig']['enabledTools']
+    assert 'custom' in saved['agentConfig']['enabledPlugins']
+    again = role_api.get(f"/api/roles/{role['id']}/tools").json()
+    assert next(item for item in again['tools'] if item['name'] == 'read_file')['modelVisible']
+
+
+def test_default_tools_execute_file_and_platform_shell_in_real_http_turn(role_api, tmp_path, monkeypatch):
+    from backend.app.task_runtime import TaskRuntime
+    tasks = TaskRuntime(tmp_path / 'owned-default-shell')
+    monkeypatch.setattr(main, 'task_runtime', tasks)
+
+    class Adapter:
+        requests = 0
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            self.requests += 1
+            names = {item['function']['name'] for item in tools}
+            assert {'write_file', 'shell', 'tool_search'} <= names
+            results = [message for message in messages if message['role'] == 'tool']
+            if self.requests == 1:
+                yield ModelToolCall('default-file', 'write_file', {'path': 'default.txt', 'content': '默认文件'})
+            elif self.requests == 2:
+                assert 'Wrote' in results[-1]['content']
+                command = ('$number = 20 + 22; Write-Output "默认Shell:$number"' if os.name == 'nt'
+                           else 'number=$((20+22)); printf "默认Shell:%s\\n" "$number"')
+                yield ModelToolCall('default-shell', 'shell', {'command': command})
+            else:
+                assert '默认Shell:42' in results[-1]['content']
+                yield ModelTextDelta('默认工具执行完成')
+
+    adapter = Adapter()
+    monkeypatch.setattr(main, 'model_adapter', adapter)
+    role = role_api.post('/api/roles', json={'name': '默认执行', 'profile': {'profile': '设定'}}).json()['role']
+    try:
+        response = role_api.post(f"/api/roles/{role['id']}/messages", json={'content': '写文件并计算'})
+        assert response.status_code == 200 and '默认工具执行完成' in response.text
+        assert adapter.requests == 3
+        assert (main.store.workspace_path(role['id']) / 'default.txt').read_text(encoding='utf-8') == '默认文件'
+    finally:
+        tasks.close()
 
 
 @pytest.mark.parametrize("enabled,commands", [(False, [sys.executable]), (True, [])])
-def test_shell_off_or_empty_allowlist_cannot_be_reenabled_by_generic_tool_list(role_api, monkeypatch, enabled, commands):
+def test_legacy_shell_switch_and_empty_allowlist_do_not_hide_ordinary_shell(role_api, monkeypatch, enabled, commands):
     class Adapter:
         requests = []
 
         async def stream_structured_messages(self, messages, configuration, tools):
             self.requests.append(tools)
             if len(self.requests) == 1:
-                yield ModelToolCall("forged-shell", "shell", {"command": f'"{sys.executable}" -c "print(123)"'})
+                yield ModelToolCall("default-shell", "shell", {"command": "Write-Output 123" if os.name == "nt" else "printf 123"})
             else:
                 yield ModelTextDelta("拒绝后继续对话")
 
@@ -99,14 +169,14 @@ def test_shell_off_or_empty_allowlist_cannot_be_reenabled_by_generic_tool_list(r
         "agentConfig": {"shell": {"enabled": enabled, "allowedCommands": commands}, "enabledTools": ["shell"]},
     }).json()["role"]
     catalog = role_api.get(f"/api/roles/{role['id']}/tools").json()
-    assert not next(item for item in catalog["tools"] if item["name"] == "shell")["modelVisible"]
+    assert next(item for item in catalog["tools"] if item["name"] == "shell")["modelVisible"]
     response = role_api.post(f"/api/roles/{role['id']}/messages", json={"content": "试试执行命令"})
     assert response.status_code == 200
     assert "assistant_completed" in response.text
-    assert "shell" not in {tool["function"]["name"] for tool in adapter.requests[0]}
+    assert "shell" in {tool["function"]["name"] for tool in adapter.requests[0]}
     results = [item for item in main.session_store.runtime_messages(f"role:{role['id']}") if isinstance(item, ToolResultMessage)]
     assert results[0].tool_name == "shell"
-    assert results[0].is_error
+    assert not results[0].is_error and "123" in results[0].content
 
 
 @pytest.mark.parametrize("granted", [False, True])
@@ -133,9 +203,10 @@ def test_tool_directory_explains_disabled_and_missing_dependencies_without_initi
     assert response.status_code == 200
     catalog = response.json()
     tools = {item["name"]: item for item in catalog["tools"]}
-    assert tools["shell"]["enabled"] is False
-    assert tools["shell"]["modelVisible"] is False
-    assert tools["agent_browser_open"]["modelVisible"] is True
+    assert tools["shell"]["enabled"] is True
+    assert tools["shell"]["modelVisible"] is True
+    assert tools["agent_browser_open"]["modelVisible"] is False
+    assert tools["agent_browser_open"]["exposure"] == "deferred"
     assert tools["agent_browser_open"]["dependency"]["status"] == "unavailable"
     assert tools["agent_browser_open"]["dependency"]["reason"]
     assert tools["custom.run"]["modelVisible"] is (None if granted else False)
@@ -171,8 +242,9 @@ def test_model_capability_description_matches_actual_schemas_and_preserves_role_
     assert "shell" in prompt
     assert "todo.write" in prompt
     assert "agent_browser_open" not in prompt
-    assert {item["function"]["name"] for item in schemas} == {"shell", "task_output", "task_stop", "todo.write", "todo.reminder_control"}
-    assert {item["name"] for item in catalog["tools"] if item["modelVisible"]} == {"shell", "task_output", "task_stop", "todo.write", "todo.reminder_control"}
+    schema_names = {item["function"]["name"] for item in schemas}
+    assert {"read_file", "write_file", "shell", "tool_search", "spawn", "schedule", "todo.write"} <= schema_names
+    assert schema_names == {item["name"] for item in catalog["tools"] if item["modelVisible"]}
     assert role_api.get(f"/api/roles/{role['id']}").json()["role"]["profile"]["profile"] == "核心身份设定"
 
 
@@ -199,7 +271,7 @@ def test_saved_shell_and_capability_settings_survive_role_store_restart(role_api
                    "defaultCodexProfileId": None, "maxAttemptsPerDay": 5}}
 
 
-def test_native_model_without_tools_receives_an_explicit_empty_capability_list(role_api, monkeypatch):
+def test_native_model_receives_default_capabilities_without_role_opt_in(role_api, monkeypatch):
     class Adapter:
         request = None
 
@@ -213,5 +285,5 @@ def test_native_model_without_tools_receives_an_explicit_empty_capability_list(r
     response = role_api.post(f"/api/roles/{role['id']}/messages", json={"content": "你有什么工具"})
     assert "assistant_completed" in response.text
     messages, tools = adapter.request
-    assert not tools
-    assert "当前提供给模型的工具：无" in messages[0].content[0].text
+    assert {"read_file", "shell", "tool_search"} <= {tool["function"]["name"] for tool in tools}
+    assert "read_file" in messages[0].content[0].text

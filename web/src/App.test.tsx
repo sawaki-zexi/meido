@@ -223,6 +223,26 @@ describe("首页", () => {
 });
 
 describe("设置", () => {
+  it("设置页遮盖的聊天不可操作，应用导航和 Escape 可返回", async () => {
+    fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": emptySession,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    expect(document.querySelector("main")?.inert).toBe(true);
+    expect(screen.queryByRole("heading", { name: "爱丽丝", level: 1 })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "对话" }));
+    expect(screen.queryByRole("dialog", { name: "设置" })).not.toBeInTheDocument();
+    expect(document.querySelector("main")?.inert).toBe(false);
+    await chatHeading("爱丽丝");
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "设置" })).not.toBeInTheDocument();
+    await chatHeading("爱丽丝");
+  });
   it("点击设置图标打开设置，其中包含模型配置", async () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [] } }),
@@ -234,10 +254,11 @@ describe("设置", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "设置" }));
     const panel = await dialog("设置");
-    expect(within(panel).getByRole("button", { name: /模型/ })).toBeTruthy();
+    expect(within(within(panel).getByRole('navigation', { name: '设置分类' })).getByRole('button', { name: '模型' })).toBeTruthy();
     expect(await within(panel).findByLabelText("API 地址")).toHaveValue("https://api.openai.com/v1");
     await user.click(within(panel).getByRole("button", { name: "记忆" }));
     expect(await within(panel).findByRole("heading", { name: "记忆" })).toBeInTheDocument();
+    await user.click(within(panel).getByRole("button", { name: "向量模型" }));
     expect(await within(panel).findByLabelText("启用向量模型")).toBeChecked();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -256,7 +277,8 @@ describe("设置", () => {
     render(<App />);
 
     const panel = await dialog("设置");
-    expect(within(panel).getByRole("button", { name: /主人资料/ })).toHaveAttribute("aria-current", "true");
+    expect(within(panel).getByRole("button", { name: "插件" })).toHaveAttribute("aria-current", "page");
+    expect(within(panel).getByRole("navigation", { name: "设置路径" })).toHaveTextContent("主人资料");
     expect(await within(panel).findByText("飞书授权成功，可以启用主人资料插件")).toBeInTheDocument();
   });
 
@@ -276,7 +298,8 @@ describe("设置", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "设置" }));
     const panel = await dialog("设置");
-    await user.click(within(panel).getByRole("button", { name: "待办" }));
+    await user.click(within(panel).getByRole("button", { name: "插件" }));
+      await user.click(await within(panel).findByRole("button", { name: "待办 设置" }));
     const reminders = within(panel).getByRole("checkbox", { name: "启用提醒" });
     expect(reminders).toBeChecked();
     await user.click(reminders);
@@ -300,7 +323,8 @@ describe("设置", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "设置" }));
     const panel = await dialog("设置");
-    await user.click(within(panel).getByRole("button", { name: "待办" }));
+    await user.click(within(panel).getByRole("button", { name: "插件" }));
+      await user.click(await within(panel).findByRole("button", { name: "待办 设置" }));
 
     expect(await within(panel).findByText("未启用提醒角色，系统不会发送提醒。")).toBeTruthy();
     const role = await within(panel).findByRole("checkbox", { name: "爱丽丝" });
@@ -413,7 +437,6 @@ describe("角色管理", () => {
     expect(calls.find((call) => call.method === "POST")?.body).toEqual({
       name: "新角色", description: "",
       profile: { profile: "她的设定", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" },
-      agentConfig: { memoryRecall: { enabled: false }, enabledPlugins: [], grantedCapabilities: [], enabledTools: [] },
     });
     expect(sessionStorage.getItem("meido:create-role-draft")).toBeNull();
 
@@ -422,7 +445,7 @@ describe("角色管理", () => {
     expect(within(await roleList()).getByText("新角色")).toBeTruthy();
   });
 
-  it("创建角色时可以启用主动记忆检索", async () => {
+  it("创建角色时无需额外勾选记忆检索", async () => {
     const created = role({ id: "r4", name: "记忆角色" });
     const { calls } = fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [] } }),
@@ -434,30 +457,10 @@ describe("角色管理", () => {
     const form = await dialog("创建角色");
     await user.type(within(form).getByLabelText(/名称/), "记忆角色");
     await user.type(within(form).getByLabelText(/角色设定/), "设定");
-    await user.click(within(form).getByRole("checkbox", { name: "允许主动检索记忆" }));
+    expect(within(form).queryByRole("checkbox", { name: "允许主动检索记忆" })).not.toBeInTheDocument();
     await user.click(within(form).getByRole("button", { name: "保存" }));
 
-    await waitFor(() => expect(calls.find((call) => call.method === "POST")?.body).toMatchObject({
-      agentConfig: { memoryRecall: { enabled: true } },
-    }));
-  });
-
-  it("可以为角色显式启用只读待办查询工具", async () => {
-    const { calls } = fakeBackend({
-      "GET /api/roles": () => ({ body: { roles: [] } }),
-      "POST /api/roles": () => ({ body: { role: role({ id: "r1", name: "待办角色" }) } }),
-    });
-    const user = userEvent.setup();
-    render(<App />);
-    await user.click(await screen.findByRole("button", { name: "创建角色" }));
-    const form = await dialog("创建角色");
-    await user.type(within(form).getByLabelText(/名称/), "待办角色");
-    await user.type(within(form).getByLabelText(/角色设定/), "设定");
-    await user.click(within(form).getByRole("checkbox", { name: "允许查询主人待办" }));
-    await user.click(within(form).getByRole("button", { name: "保存" }));
-    await waitFor(() => expect(calls.find((call) => call.method === "POST" && call.path === "/api/roles")?.body).toMatchObject({
-      agentConfig: { enabledPlugins: ["todo"], grantedCapabilities: ["todo.read"], enabledTools: ["todo.search"] },
-    }));
+    await waitFor(() => expect(calls.find((call) => call.method === "POST")?.body).not.toHaveProperty("agentConfig"));
   });
 
   it("创建角色时预览并上传头像，保存后显示在角色卡", async () => {
@@ -708,7 +711,6 @@ describe("角色管理", () => {
       "PUT /api/roles/r1": () => ({ status: 409, body: { detail: "保存被拒绝" } }),
       "DELETE /api/roles/r1": () => ({ status: 409, body: { detail: "删除被拒绝" } }),
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
     render(<App />);
     await chatHeading("爱丽丝");
@@ -721,8 +723,13 @@ describe("角色管理", () => {
     expect((await within(panel).findByText("保存被拒绝")).closest('[role="alert"]')).toBeVisible();
     expect(within(panel).getByLabelText(/名称/)).toHaveValue("未保存名字");
     await user.click(within(panel).getByRole("button", { name: "删除角色" }));
-    expect((await within(panel).findByText("删除被拒绝")).closest('[role="alert"]')).toBeVisible();
+    const confirmation = await dialog("删除角色");
+    await user.click(within(confirmation).getByRole("button", { name: "确认删除" }));
+    expect(await within(confirmation).findByRole("alert")).toHaveTextContent("删除被拒绝");
+    expect(within(confirmation).getByRole("button", { name: "确认删除" })).toBeEnabled();
+    await user.click(within(confirmation).getByRole("button", { name: "取消" }));
     expect(within(panel).getByLabelText(/名称/)).toBeEnabled();
+    expect(within(panel).getByLabelText(/名称/)).toHaveValue("未保存名字");
     await user.click(within(panel).getByRole("button", { name: "取消" }));
     expect(await chatHeading("爱丽丝")).toBeInTheDocument();
     expect(screen.getByText("原有聊天")).toBeInTheDocument();
@@ -737,7 +744,7 @@ describe("角色管理", () => {
       "GET /api/roles/r1/session": emptySession,
       "DELETE /api/roles/r1": () => ({ status: 204 }),
     });
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const confirm = vi.spyOn(window, "confirm");
     const user = userEvent.setup();
     render(<App />);
     await chatHeading("爱丽丝");
@@ -745,11 +752,55 @@ describe("角色管理", () => {
     const panel = await dialog("角色资料");
 
     await user.click(within(panel).getByRole("button", { name: "删除角色" }));
+    const confirmation = await dialog("删除角色");
+    expect(within(confirmation).getByText(/爱丽丝/)).toBeVisible();
+    expect(within(confirmation).getByText(/全部聊天记录和记忆/)).toBeVisible();
+    expect(within(confirmation).getByRole("button", { name: "取消" })).toHaveFocus();
     expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "删除角色" })).not.toBeInTheDocument();
+    expect(panel).toBeVisible();
+    expect(within(panel).getByRole("button", { name: "删除角色" })).toHaveFocus();
 
     await user.click(within(panel).getByRole("button", { name: "删除角色" }));
+    await user.click(within(await dialog("删除角色")).getByRole("button", { name: "取消" }));
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    await user.click(within(panel).getByRole("button", { name: "删除角色" }));
+    await user.click(within(await dialog("删除角色")).getByRole("button", { name: "确认删除" }));
     expect(await screen.findByText(/还没有角色。先创建一位/)).toBeTruthy();
-    expect(confirm.mock.calls[1][0]).toContain("爱丽丝");
+    expect(confirm).not.toHaveBeenCalled();
+    expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("删除请求进行中禁止重复删除或关闭确认框，键盘焦点保持在确认框内", async () => {
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": emptySession,
+      "DELETE /api/roles/r1": async () => { await pending; return { status: 204 }; },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    await user.click(screen.getByRole("button", { name: "角色资料" }));
+    await user.click(within(await dialog("角色资料")).getByRole("button", { name: "删除角色" }));
+    const confirmation = await dialog("删除角色");
+    await user.tab();
+    expect(within(confirmation).getByRole("button", { name: "确认删除" })).toHaveFocus();
+    await user.tab();
+    expect(within(confirmation).getByRole("button", { name: "关闭" })).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(within(confirmation).getByRole("button", { name: "确认删除" })).toHaveFocus();
+    await user.dblClick(within(confirmation).getByRole("button", { name: "确认删除" }));
+    expect(within(confirmation).getByRole("button", { name: "删除中…" })).toBeDisabled();
+    expect(within(confirmation).getByRole("button", { name: "取消" })).toBeDisabled();
+    await user.keyboard("{Escape}");
+    await user.click(within(confirmation).getByRole("button", { name: "关闭" }));
+    expect(confirmation).toBeVisible();
+    expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+    finish();
+    expect(await screen.findByText(/还没有角色。先创建一位/)).toBeVisible();
   });
 });
 
@@ -902,7 +953,7 @@ describe("角色记忆", () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": () => ({ body: { session, messages: [message({ id: "m1", role: "user", sequence: 1, content: "早安" }), message({ id: "m2", role: "user", sequence: 2, content: "我喜欢红茶" })] } }),
-      "GET /api/roles/r1/memories": () => ({ body: { memories: [memory] } }),
+      "GET /api/roles/r1/memories.*": () => ({ body: { memories: [memory] } }),
       "GET /api/roles/r1/memory-documents": () => ({ body: { documents: [], journals: [] } }),
     });
     const user = userEvent.setup();
@@ -913,7 +964,8 @@ describe("角色记忆", () => {
     expect(within(list).getByText("主人喜欢红茶")).toBeTruthy();
     expect(within(list).getByText("偏好")).toBeTruthy();
 
-    await user.click(within(list).getByRole("button", { name: "定位到消息" }));
+    await user.click(within(list).getByRole('button', { name: '查看记忆：主人喜欢红茶' }));
+    await user.click(within(await screen.findByRole('region', { name: '记忆详情' })).getByRole("button", { name: "定位到消息" }));
     expect(await chatHeading("爱丽丝")).toBeTruthy();
     const source = screen.getByText("我喜欢红茶").closest("li")!;
     expect(source).toHaveClass("source-highlight");
@@ -926,7 +978,7 @@ describe("角色记忆", () => {
     const { calls } = fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": emptySession,
-      "GET /api/roles/r1/memories": () => ({ body: { memories: [{ ...memory, sourceRef: { ...channelOrigin, sourceKeys: [], sources: [channelOrigin] } }] } }),
+      "GET /api/roles/r1/memories.*": () => ({ body: { memories: [{ ...memory, sourceRef: { ...channelOrigin, sourceKeys: [], sources: [channelOrigin] } }] } }),
       "GET /api/roles/r1/memory-documents": () => ({ body: { documents: [], journals: [] } }),
       "GET .*threads/phone/messages.*": () => ({ body: { thread, messages: [{ id: "phone-source", sequence: 7, role: "user", content: "手机里我说喜欢红茶", createdAt: "2026-10-14T00:00:00Z", metadata: { threadId: "phone" } }], hasMore: false, nextBefore: null } }),
     });
@@ -934,12 +986,11 @@ describe("角色记忆", () => {
     render(<App />);
     await chatHeading("爱丽丝");
     await user.click(screen.getByRole("button", { name: "角色记忆" }));
-    await user.click(within(await screen.findByRole("list", { name: "记忆列表" })).getByRole("button", { name: "定位到消息" }));
+    await user.click(within(await screen.findByRole("list", { name: "记忆列表" })).getByRole('button', { name: '查看记忆：主人喜欢红茶' }));
+    await user.click(within(await screen.findByRole('region', { name: '记忆详情' })).getByRole("button", { name: "定位到消息" }));
     const sourceDialog = await screen.findByRole("dialog", { name: "记忆来源" });
-    const navigation = screen.getByRole("navigation", { name: "页面" });
-    expect(within(navigation).queryByRole("button", { name: "手机会话" })).not.toBeInTheDocument();
-    expect(within(navigation).getByRole("button", { name: "对话" })).toHaveAttribute("aria-current", "page");
     expect((await within(sourceDialog).findByText("手机里我说喜欢红茶")).closest("li")).toHaveClass("source-highlight");
+    for (let index = 0; index < 4; index++) { await user.tab(); expect(sourceDialog).toContainElement(document.activeElement as HTMLElement); }
     expect(within(sourceDialog).queryByRole("complementary", { name: "渠道会话列表" })).not.toBeInTheDocument();
     expect(within(sourceDialog).queryByText("会话设置")).not.toBeInTheDocument();
     expect(within(sourceDialog).queryByRole("button", { name: "角色账号" })).not.toBeInTheDocument();
@@ -947,6 +998,11 @@ describe("角色记忆", () => {
     expect(screen.queryByText("来源会话与当前角色不匹配")).not.toBeInTheDocument();
     await user.click(within(sourceDialog).getByRole("button", { name: "关闭" }));
     expect(screen.queryByRole("dialog", { name: "记忆来源" })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '记忆详情' })).toBeVisible();
+    await user.keyboard('{Escape}');
+    const navigation = screen.getByRole("navigation", { name: "页面" });
+    expect(within(navigation).queryByRole("button", { name: "手机会话" })).not.toBeInTheDocument();
+    expect(within(navigation).getByRole("button", { name: "对话" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("list", { name: "记忆列表" })).toHaveTextContent("主人喜欢红茶");
   });
 });

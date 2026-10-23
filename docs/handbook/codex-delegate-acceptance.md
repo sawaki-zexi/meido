@@ -8,7 +8,7 @@
 
 ## 设置与用户闭环
 
-1. 在设置→编程委托登记真实 Git top-level、固定验证 argv/cwd 和允许角色。登记专用 CLI，委托方式选 Codex exec，固定 Codex 0.159.3 的程序/哈希、模型与显式专用认证目录；不从桌面登录自动导入。Codex exec 不需要配置 Herdr。
+1. 在设置 → 插件 → 编程委托 → 设置登记真实 Git top-level、固定验证 argv/cwd 和允许角色。登记专用 CLI，委托方式选 Codex exec，固定 Codex 0.159.3 的程序/哈希、模型与显式专用认证目录；不从桌面登录自动导入。Codex exec 不需要配置 Herdr。
 2. 保存只登记配置。未经匹配 profile 的两回合原生核验，状态仍 unverified、Skill 依赖不可用。真实核验会调用账号模型，只有另有明确费用/账号许可才点击同意按钮；本票只使用测试创建的假认证和本地合成 CLI。
 3. 角色资料选择 repo/profile/default Codex exec，开启 Coding 与独立子任务。保持其他 Shell/CU/NovelAI 配置。显式 `$codex-delegate` 或 skillIds 激活后，传完整需求与获准 repository 给 spawn coding，明确后台 true、retry_count=0。
 4. 父回合完成后仍可 get/list，完成只回原会话；追加要求通过 spawn_manage continue，同 job/new attempt/exact UUID；cancel 等待本地收尾。关闭再开启 spawn 不复活旧回合或重发未知 prompt。

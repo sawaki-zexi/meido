@@ -49,7 +49,7 @@ def test_owner_generation_runs_in_real_runtime_and_reopens_owned_history(tmp_pat
         channels=None, credentials=Credentials(), http=NovelaiHttp.for_test(f'http://127.0.0.1:{server.server_port}'))
     try:
         app.settings.set_token('fixture-secret-171')
-        config = app.settings.save({'enabled': True}, expected_revision=app.settings.public()['revision'])
+        config = app.settings.save({'enabled': True, 'manualEnabled': True, 'confirmManualConsumption': True}, expected_revision=app.settings.public()['revision'])
         role = roles.create(RoleInput(name='生成角色', profile={'profile': 'fixture'},
             agentConfig={'novelai': {'manualEnabled': True, 'consentRevision': config['revision']}}))
         key = sessions.open_role_session(role.id).sessionKey

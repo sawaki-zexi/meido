@@ -190,6 +190,8 @@ def public_configuration(config: ModelConfiguration | None) -> dict | None:
         "model": config.model,
         "apiKeyConfigured": bool(config.apiKey),
         "apiOptions": config.apiOptions,
+        "contextWindowTokens": config.contextWindowTokens,
+        "modelAutoCompactTokenLimit": config.modelAutoCompactTokenLimit,
     }
 
 

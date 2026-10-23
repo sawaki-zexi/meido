@@ -8,6 +8,15 @@ from .novelai_generation.config import NovelaiRoleConfig
 from .coding_tasks.config import CodingRoleConfig
 
 
+# Host-owned ordinary tools. Legacy empty/partial opt-in lists cannot hide them.
+DEFAULT_BUILTIN_TOOLS = (
+    'read_file', 'list_dir', 'write_file', 'edit_file', 'web_search', 'web_fetch',
+    'search_messages', 'fetch_messages', 'memorize', 'forget_memory', 'tool_search',
+    'shell', 'task_output', 'task_stop', 'message_push', 'spawn', 'spawn_manage',
+    'schedule', 'list_schedules', 'cancel_schedule', 'mcp_add', 'mcp_list', 'mcp_remove',
+)
+
+
 class RoleProfile(BaseModel):
     profile: str = ""
     personality: str = ""
@@ -17,7 +26,7 @@ class RoleProfile(BaseModel):
 
 
 class ShellToolConfig(BaseModel):
-    """Role-scoped policy for the optional process execution tool."""
+    """Budgets and legacy restricted-use policy; ordinary Shell is host-provided."""
 
     enabled: bool = False
     allowedCommands: list[str] = Field(default_factory=list)
@@ -340,6 +349,16 @@ class ModelConfigurationInput(BaseModel):
     apiKey: str = ""
     api: str = "openai-completions"
     apiOptions: dict[str, str] = Field(default_factory=dict)
+    contextWindowTokens: int | None = Field(default=None, strict=True, gt=0, le=10000000)
+    modelAutoCompactTokenLimit: int | None = Field(default=None, strict=True, gt=0, le=10000000)
+
+    @model_validator(mode='after')
+    def validate_context_capacity(self):
+        if self.modelAutoCompactTokenLimit is not None and (
+            self.contextWindowTokens is None or self.modelAutoCompactTokenLimit >= self.contextWindowTokens
+        ):
+            raise ValueError('自动压缩阈值必须小于已填写的模型上下文容量')
+        return self
 
     @field_validator("providerId", "provider", "baseUrl", "model", "api")
     @classmethod

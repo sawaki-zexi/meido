@@ -92,6 +92,8 @@ def scene_main(novelai_main, monkeypatch, request):
             connections.append(response.json()['configuration']['id'])
         response = client.put(f'/api/roles/{service.role.id}/model-configuration', json={'configurationId': connections[0]})
         assert response.status_code == 200, response.text
+        public = service.application.settings.public()
+        service.application.settings.save({'manualEnabled': False}, expected_revision=public['revision'])
         response = client.put(f'/api/roles/{service.role.id}', json={'name': service.role.name,
             'profile': service.role.profile.model_dump(), 'agentConfig': {'novelai': {'manualEnabled': False,
                 'sceneCgEnabled': True, 'scenePromptModelConfigurationId': connections[1],

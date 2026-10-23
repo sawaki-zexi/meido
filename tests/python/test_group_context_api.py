@@ -3,6 +3,7 @@ import json
 from fastapi.testclient import TestClient
 
 from backend.app import main
+from backend.app.advanced_settings import AdvancedSettingsStore
 from backend.app.agent_runtime import RuntimeManager
 from backend.app.channels.group_tools import MultichannelGroupRepository
 from backend.app.channels.host import ChannelHost
@@ -22,11 +23,14 @@ def test_offline_group_notes_match_catalog_schema_and_reach_the_next_provider_re
     groups = MultichannelGroupRepository(channels)
     settings = MemorySettingsStore(tmp_path / "memory.json")
     settings.update(enabled=False)
+    advanced = AdvancedSettingsStore(tmp_path / "advanced.db")
+    advanced.update(expected_revision=0, operation_id="direct-tools", values={"searchEnabled": False})
     for name, value in {
         "store": roles, "session_store": sessions, "session_manager": SessionManager(roles, sessions),
         "multichannel_store": channels, "channel_host": ChannelHost(channels), "group_repository": groups,
         "model_configuration_store": ModelConfigurationStore(tmp_path / "models.json"),
         "memory_settings_store": settings, "runtime_manager": RuntimeManager(sessions),
+        "advanced_settings": advanced,
         "role_locks": {}, "channel_event_locks": {}, "channel_adapters": {},
     }.items():
         monkeypatch.setattr(main, name, value)

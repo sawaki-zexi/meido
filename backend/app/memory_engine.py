@@ -77,6 +77,20 @@ class MemoryScope:
 
 
 @dataclass(frozen=True)
+class MemoryCoverageRequest:
+    scope: MemoryScope
+    source_session_key: str
+    source_message_ids: tuple[str, ...]
+    required: bool = True
+
+
+@dataclass(frozen=True)
+class MemoryCoverageResult:
+    request: MemoryCoverageRequest
+    status: Literal['covered', 'not_required', 'pending']
+
+
+@dataclass(frozen=True)
 class MemoryEngineDescriptor:
     name: str
     profile: EngineProfile
@@ -300,7 +314,7 @@ class MemoryAdminApi(Protocol):
 
 @runtime_checkable
 class MemoryEngine(MemoryIngestApi, MemoryRetrievalApi, MemoryWriteApi, MemoryAdminApi, Protocol):
-    pass
+    async def ensure_coverage(self, request: MemoryCoverageRequest) -> MemoryCoverageResult: ...
 
 
 class DefaultMemoryEngine:
@@ -320,13 +334,24 @@ class DefaultMemoryEngine:
         role_exists: Callable[[str], bool],
         event_bus: object | None = None,
         hyde_provider: Callable[..., list[str]] | None = None,
+        coverage_provider: Callable | None = None,
     ) -> None:
         self.service = service
         self.store = service.store
         self._role_exists = role_exists
         self.event_bus = event_bus
         self.hyde_provider = hyde_provider
+        self.coverage_provider = coverage_provider
         self.admin = self
+
+    async def ensure_coverage(self, request: MemoryCoverageRequest) -> MemoryCoverageResult:
+        self._validate_scope(request.scope)
+        if not request.required or not self.service.memory_enabled():
+            return MemoryCoverageResult(request, 'not_required')
+        if self.coverage_provider is None:
+            return MemoryCoverageResult(request, 'pending')
+        covered = await self.coverage_provider(request)
+        return MemoryCoverageResult(request, 'covered' if covered is True else 'pending')
 
     def _validate_scope(self, scope: MemoryScope | None) -> MemoryScope:
         if scope is None:

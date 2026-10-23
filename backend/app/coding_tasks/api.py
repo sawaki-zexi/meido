@@ -221,7 +221,7 @@ def coding_router(application, roles) -> APIRouter:
         # This is the trusted local owner UI. Model tools keep the narrower
         # original-session scope and cannot use this API to inherit sources.
         return {'tasks': [public_task(record) | {'ownerActions': current.publication.task_summary(record)} for record in reversed(records)],
-                'availability': current.config.availability(role_id, role.agentConfig.coding)}
+                'availability': current.config.availability(role_id, current.role_config(role_id))}
 
     @router.get('/probes')
     async def probes():

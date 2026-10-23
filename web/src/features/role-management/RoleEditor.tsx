@@ -1,21 +1,11 @@
-import { ComputerUseSettings } from "./ComputerUseSettings";
-import { DesktopPetSettings } from './DesktopPetSettings';
 import type { FormEvent } from "react";
 import type { RolesState } from "./useRoles";
 import type { RoleProfile } from "../../api/types";
 import { useRef, useState } from "react";
-import { IconButton } from "../../ui/Icon";
+import { Icon } from "../../ui/Icon";
+import { RoleDeleteConfirmation } from "./RoleDeleteConfirmation";
 import { Notice } from "../../ui/Status";
 import { AvatarCropper } from "./AvatarCropper";
-import { ShellSettings } from "./ShellSettings";
-import { SpawnSettings } from "./SpawnSettings";
-import { ToolCatalog } from "./ToolCatalog";
-import { BasicToolSettings } from "./BasicToolSettings";
-import { ScreenPerceptionSettings } from "./ScreenPerceptionSettings";
-import { NovelaiRoleSettings } from "../novelai/NovelaiRoleSettings";
-import { CodingRoleSettings } from "../coding/CodingRoleSettings";
-import { AutonomySettings } from "./AutonomySettings";
-import { draftFromRole, payloadFromDraft } from "./draft";
 
 type TextFieldKey = keyof RoleProfile | "name" | "description";
 type Field = { key: TextFieldKey; label: string; placeholder?: string; hint?: string; multiline?: boolean; required?: boolean };
@@ -40,8 +30,10 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
   const writable = creating || editing;
   const cropping = Boolean(state.avatarSource || state.cardImageSource);
   const locked = !writable || busy;
-  const toolsChanged = selected !== null && JSON.stringify(payloadFromDraft(draft).agentConfig) !== JSON.stringify(payloadFromDraft(draftFromRole(selected)).agentConfig);
   const [showAdvanced, setShowAdvanced] = useState(!creating);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const form = useRef<HTMLFormElement>(null);
+  const deleteButton = useRef<HTMLButtonElement>(null);
   const avatarInput = useRef<HTMLInputElement>(null);
   const cardInput = useRef<HTMLInputElement>(null);
   const importInput = useRef<HTMLInputElement>(null);
@@ -57,7 +49,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
     </div>;
   };
 
-  return <form className={`role-editor${writable ? " is-writable" : ""}`} onSubmit={submit}>
+  return <><form ref={form} className={`role-editor${writable ? " is-writable" : ""}`} onSubmit={submit}>
     <fieldset>
       {writable && <div className="role-import-control">
         <button type="button" className="ghost" disabled={busy} onClick={() => importInput.current?.click()}>{state.importing ? "解析中…" : "导入角色卡"}</button>
@@ -100,52 +92,6 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
         {characterFields.slice(1).map(renderField)}
       </div>}
     </fieldset>
-    <fieldset>
-      <legend>能力</legend>
-      <ScreenPerceptionSettings draft={draft} onChange={setDraft} disabled={locked} />
-      <ComputerUseSettings draft={draft} onChange={setDraft} disabled={locked} />
-      <NovelaiRoleSettings draft={draft} onChange={setDraft} disabled={locked} />
-      <label className="field checkbox-field">
-        <input
-          type="checkbox"
-          aria-label="允许主动检索记忆"
-          checked={draft.memoryRecallEnabled}
-          disabled={locked}
-          onChange={(event) => setDraft({ ...draft, memoryRecallEnabled: event.target.checked })}
-        />
-        <span>允许主动检索记忆</span>
-        <small className="field-hint">关闭时仍保留每轮自动记忆召回，但模型不能主动查询记忆。</small>
-      </label>
-      <label className="field checkbox-field">
-        <input
-          type="checkbox"
-          aria-label="允许浏览器操作网页"
-          checked={draft.browserUseEnabled}
-          disabled={locked}
-          onChange={(event) => setDraft({ ...draft, browserUseEnabled: event.target.checked })}
-        />
-        <span>允许浏览器操作网页</span>
-        <small className="field-hint">启用后角色可以在独立浏览器中访问网页、执行交互并读取截图。</small>
-      </label>
-      <label className="field checkbox-field">
-        <input
-          type="checkbox"
-          aria-label="允许查询主人待办"
-          checked={draft.todoSearchEnabled}
-          disabled={locked}
-          onChange={(event) => setDraft({ ...draft, todoSearchEnabled: event.target.checked })}
-        />
-        <span>允许查询主人待办</span>
-        <small className="field-hint">只允许读取与当前问题相关的事项。</small>
-      </label>
-    </fieldset>
-    <BasicToolSettings draft={draft} onChange={setDraft} disabled={locked} />
-    <ShellSettings draft={draft} onChange={setDraft} disabled={locked} />
-    <SpawnSettings draft={draft} onChange={setDraft} disabled={locked} />
-    <CodingRoleSettings roleId={selected?.id} draft={draft} onChange={setDraft} disabled={locked} />
-    {selected && !creating && <AutonomySettings key={selected.id} roleId={selected.id} disabled={locked} />}
-    {selected && !creating && <DesktopPetSettings key={`pet-${selected.id}`} roleId={selected.id} disabled={locked} />}
-    {selected && !creating && <ToolCatalog key={`${selected.id}:${selected.updatedAt}`} roleId={selected.id} hasUnsavedChanges={toolsChanged} />}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {state.importPreview && <section className="role-import-preview" aria-label="角色卡导入预览">
       <div className="role-import-preview-header"><strong>导入预览</strong><button type="button" className="ghost" onClick={state.cancelImport}>取消</button></div>
@@ -163,10 +109,15 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete }: Props) {
       {state.importPreview.compatibility.unsupportedResources.length > 0 && <p className="role-import-discarded">未导入素材：{state.importPreview.compatibility.unsupportedResources.join("、")}</p>}
       <div className="form-actions"><button type="button" className="primary" onClick={() => void state.acceptImport(null)}>填充到表单</button></div>
     </section>}
-    {writable && !cropping && <div className="form-actions">
+    {writable && !cropping && <div className="form-actions role-save-actions">
       <button type="button" className="ghost" disabled={busy} onClick={onCancel}>取消</button>
-      {selected && !creating && <IconButton icon="trash" label="删除角色" className="danger" disabled={deleting || busy} onClick={onDelete} />}
       <button type="submit" className="primary" disabled={busy}>{saving ? "保存中…" : "保存"}</button>
     </div>}
-  </form>;
+    {writable && !cropping && selected && !creating && <section className="role-delete-section" aria-label="角色管理">
+      <div><h3>删除角色</h3><p className="muted">删除后无法恢复角色、聊天记录和记忆。</p></div>
+      <button ref={deleteButton} type="button" className="danger" disabled={deleting || busy} onClick={() => { setError(""); setConfirmDelete(true); }}><Icon name="trash" size={16} />删除角色</button>
+    </section>}
+  </form>
+    {confirmDelete && selected && <RoleDeleteConfirmation name={selected.name} busy={deleting} error={error} editor={form.current} trigger={deleteButton.current} onCancel={() => { if (!deleting) setConfirmDelete(false); }} onConfirm={onDelete} />}
+  </>;
 }
