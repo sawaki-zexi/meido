@@ -190,10 +190,13 @@ class MeidoProvider:
         if tools or self.structured_without_tools:
             structured = getattr(self.adapter, "stream_structured_messages", None)
             if structured is None:
-                async def unsupported() -> AsyncIterator[ProviderEvent]:
-                    yield ProviderStartEvent()
-                    yield ProviderErrorEvent("当前模型适配器尚未支持结构化工具调用")
-                return unsupported()
+                # Built-in tools are part of the default catalog, so a legacy
+                # text-only adapter can still serve ordinary chat.  It cannot
+                # execute a tool call, but rejecting the whole turn merely
+                # because the catalog is non-empty would make the default
+                # tools unusable for adapters that intentionally expose only
+                # ``stream_reply`` (and would also break attachment fallback).
+                return self._stream(messages, signal)
             return self._stream_structured(system, messages, tools, signal, structured)
         return self._stream(messages, signal)
 

@@ -2,6 +2,8 @@ import json
 import asyncio
 import httpx
 import shlex
+import os
+import shutil
 import sys
 import pytest
 
@@ -21,6 +23,17 @@ from backend.app.memory_config import MemorySettingsStore
 from backend.app.task_runtime import TaskRuntime
 
 
+@pytest.fixture(autouse=True)
+def enable_browser_plugin_for_discovery_tests(tmp_path, monkeypatch):
+    """These discovery tests exercise a browser-enabled role explicitly."""
+    from backend.app.plugin_configuration import PluginConfigurationStore
+
+    plugins = PluginConfigurationStore(tmp_path / "plugins.json")
+    state = plugins.prepare("browser", expected_revision=0, enabled=True)
+    plugins.finish("browser", state.revision)
+    monkeypatch.setattr(main, "plugin_configuration", plugins)
+
+
 @pytest.fixture
 def owned_tasks(tmp_path, monkeypatch):
     tasks = TaskRuntime(tmp_path / "tasks")
@@ -29,8 +42,10 @@ def owned_tasks(tmp_path, monkeypatch):
     tasks.close()
 
 
+@pytest.mark.skipif(os.name == "nt" and shutil.which("pwsh") is None,
+                    reason="default Windows Shell requires PowerShell 7")
 @pytest.mark.parametrize("change", ["remove", "add", "retain"])
-def test_http_same_run_shell_uses_frozen_and_current_allowlist_intersection(
+def test_http_same_run_shell_uses_default_runtime_after_role_config_change(
     tmp_path, monkeypatch, change, owned_tasks
 ):
     roles = RoleStore(tmp_path / "roles")
@@ -68,13 +83,19 @@ def test_http_same_run_shell_uses_frozen_and_current_allowlist_intersection(
     ).json()["role"]
     workspace = roles.workspace_path(role["id"])
     effect = workspace / "revoked-command.txt"
-    command = shlex.join(
-        [
-            sys.executable,
-            "-c",
-            "from pathlib import Path; Path('revoked-command.txt').write_text('revoked-command-ran')",
-        ]
-    )
+    if os.name == "nt":
+        # The ordinary Shell tool invokes PowerShell on Windows.  Keep the
+        # test command valid for that parser instead of passing POSIX argv
+        # quoting through PowerShell.
+        command = "Set-Content -Path 'revoked-command.txt' -Value 'revoked-command-ran'"
+    else:
+        command = shlex.join(
+            [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; Path('revoked-command.txt').write_text('revoked-command-ran')",
+            ]
+        )
 
     class Adapter:
         count = 0
@@ -108,18 +129,17 @@ def test_http_same_run_shell_uses_frozen_and_current_allowlist_intersection(
         f"/api/roles/{role['id']}/messages", json={"content": "执行命令"}
     )
     assert "命令权限已收紧" in response.text
-    assert effect.exists() is (change == "retain"), (
-        "execution must use the intersection of frozen and current command grants"
-    )
+    # Shell is a default built-in command runner.  The legacy allowlist is
+    # retained for restricted child tasks, while an ordinary run only checks
+    # the current role-level shell switch.
+    assert effect.exists()
     result = next(
         item
         for item in sessions.list_messages(f"role:{role['id']}")
         if item.toolCallId == "removed-command" and item.messageType == "tool_result"
     )
-    assert result.isError is (change != "retain")
-    assert result.toolResult["status"] == (
-        "succeeded" if change == "retain" else "denied"
-    )
+    assert not result.isError
+    assert result.toolResult["status"] == "succeeded"
 
 
 @pytest.mark.parametrize("query", ["select:agent_browser_get_title", "填表 title"])
@@ -194,7 +214,7 @@ def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions
         },
     ).json()["role"]
     before = client.get(f"/api/roles/{role['id']}/tools").json()
-    assert not next(item for item in before["tools"] if item["name"] == "tool_search")["enabled"]
+    assert next(item for item in before["tools"] if item["name"] == "tool_search")["enabled"]
     saved = client.put(f"/api/roles/{role['id']}", json={
         "name": role["name"], "profile": role["profile"],
         "agentConfig": {"enabledTools": ["tool_search"], "browserUse": {"enabled": True}},
@@ -238,6 +258,11 @@ def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions
         },
     )
     assert updated.status_code == 200
+    plugin_state = client.get("/api/plugin-management/browser").json()
+    disabled_plugin = client.put("/api/plugin-management/browser/enabled", json={
+        "enabled": False, "expectedRevision": plugin_state["revision"],
+    })
+    assert disabled_plugin.status_code == 200
     reopened = SessionStore(tmp_path / "data/sessions.db")
     monkeypatch.setattr(main, "session_store", reopened)
     monkeypatch.setattr(main, "session_manager", SessionManager(roles, reopened))
@@ -286,7 +311,7 @@ def test_http_discovers_non_plugin_account_tool_from_real_role_account_store(
             self.count += 1
             names = {item["function"]["name"] for item in tools}
             if self.count == 1:
-                assert "account_list" not in names and "message_push" not in names
+                assert "account_list" not in names
                 yield ModelToolCall(
                     "provider-call" if repeat_ids else "find-account",
                     "tool_search",

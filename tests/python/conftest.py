@@ -43,3 +43,26 @@ def local_platform_only(monkeypatch, request):
     yield blocked
     # Check after dependent fixtures and their owned background work close.
     assert blocked == [], f"Unexpected non-local connection attempts: {blocked}"
+
+
+@pytest.fixture(autouse=True)
+def enable_autonomy_for_proactive_integration_tests(request, monkeypatch, tmp_path):
+    """Give legacy proactive integration fixtures their explicit global grant.
+
+    The application now keeps autonomy behind a global plugin switch, which is
+    intentionally off by default for users.  These tests exercise the runtime
+    itself and historically enabled only the role-level grants, so opt them in
+    here without changing the product default or the plugin configuration
+    contract tests.
+    """
+    if not request.node.path.name.startswith("test_proactive"):
+        return
+    from backend.app import main
+    from backend.app.plugin_configuration import PluginConfigurationStore
+
+    # Keep this fixture's file separate from tests that intentionally create a
+    # fresh store at the test root to verify the disabled default.
+    store = PluginConfigurationStore(tmp_path / "__autonomy_fixture" / "plugins.json")
+    state = store.prepare("autonomy", expected_revision=0, enabled=True)
+    store.finish("autonomy", state.revision)
+    monkeypatch.setattr(main, "plugin_configuration", store)
