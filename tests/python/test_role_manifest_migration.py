@@ -122,7 +122,7 @@ def test_failed_atomic_upgrade_preserves_original_manifest_and_cleans_temporary_
         raise OSError("simulated replacement failure")
 
     monkeypatch.setattr(role_store_module.os, "replace", fail_replace)
-    with pytest.raises(OSError, match="simulated"):
+    with pytest.raises(OSError, match=r"角色清单迁移 v1→v2 写入失败.*角色索引范围：0-0.*原始文件已保留"):
         RoleStore(root)
 
     assert manifest.read_bytes() == original

@@ -470,7 +470,15 @@ class RoleStore:
                 # the manifest version and role position, never the raw payload.
                 raise ValueError(f"角色清单 v{raw.get('version', 1)} 的角色索引 {index} 无效；原始文件已保留") from None
         if changed:
-            self._write_payload(payload)
+            affected_indices = payload["roles"]
+            index_range = f"0-{len(affected_indices) - 1}" if affected_indices else "无"
+            try:
+                self._write_payload(payload)
+            except OSError as error:
+                raise OSError(
+                    f"角色清单迁移 v{raw.get('version', 1)}→v{payload['version']} 写入失败；"
+                    f"角色索引范围：{index_range}；原始文件已保留"
+                ) from error
         self._manifest_payload = payload
         return roles
 
