@@ -286,10 +286,9 @@ export function useRoles() {
     }
   };
 
-  /** Deletes the selected role after confirmation. Resolves true once deleted. */
+  /** Called after the editor's confirmation. Resolves true once deleted. */
   const remove = async (): Promise<boolean> => {
-    if (!selected || creating || deleting) return false;
-    if (!window.confirm(`确定删除角色“${selected.name}”吗？\n\n角色、全部聊天记录和记忆将永久删除，且无法恢复。`)) return false;
+    if (!selected || creating || deleting || saving || importing) return false;
     setError("");
     setDeleting(true);
     try {

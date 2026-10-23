@@ -711,7 +711,6 @@ describe("角色管理", () => {
       "PUT /api/roles/r1": () => ({ status: 409, body: { detail: "保存被拒绝" } }),
       "DELETE /api/roles/r1": () => ({ status: 409, body: { detail: "删除被拒绝" } }),
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
     render(<App />);
     await chatHeading("爱丽丝");
@@ -724,8 +723,13 @@ describe("角色管理", () => {
     expect((await within(panel).findByText("保存被拒绝")).closest('[role="alert"]')).toBeVisible();
     expect(within(panel).getByLabelText(/名称/)).toHaveValue("未保存名字");
     await user.click(within(panel).getByRole("button", { name: "删除角色" }));
-    expect((await within(panel).findByText("删除被拒绝")).closest('[role="alert"]')).toBeVisible();
+    const confirmation = await dialog("删除角色");
+    await user.click(within(confirmation).getByRole("button", { name: "确认删除" }));
+    expect(await within(confirmation).findByRole("alert")).toHaveTextContent("删除被拒绝");
+    expect(within(confirmation).getByRole("button", { name: "确认删除" })).toBeEnabled();
+    await user.click(within(confirmation).getByRole("button", { name: "取消" }));
     expect(within(panel).getByLabelText(/名称/)).toBeEnabled();
+    expect(within(panel).getByLabelText(/名称/)).toHaveValue("未保存名字");
     await user.click(within(panel).getByRole("button", { name: "取消" }));
     expect(await chatHeading("爱丽丝")).toBeInTheDocument();
     expect(screen.getByText("原有聊天")).toBeInTheDocument();
@@ -740,7 +744,7 @@ describe("角色管理", () => {
       "GET /api/roles/r1/session": emptySession,
       "DELETE /api/roles/r1": () => ({ status: 204 }),
     });
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const confirm = vi.spyOn(window, "confirm");
     const user = userEvent.setup();
     render(<App />);
     await chatHeading("爱丽丝");
@@ -748,11 +752,55 @@ describe("角色管理", () => {
     const panel = await dialog("角色资料");
 
     await user.click(within(panel).getByRole("button", { name: "删除角色" }));
+    const confirmation = await dialog("删除角色");
+    expect(within(confirmation).getByText(/爱丽丝/)).toBeVisible();
+    expect(within(confirmation).getByText(/全部聊天记录和记忆/)).toBeVisible();
+    expect(within(confirmation).getByRole("button", { name: "取消" })).toHaveFocus();
     expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "删除角色" })).not.toBeInTheDocument();
+    expect(panel).toBeVisible();
+    expect(within(panel).getByRole("button", { name: "删除角色" })).toHaveFocus();
 
     await user.click(within(panel).getByRole("button", { name: "删除角色" }));
+    await user.click(within(await dialog("删除角色")).getByRole("button", { name: "取消" }));
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    await user.click(within(panel).getByRole("button", { name: "删除角色" }));
+    await user.click(within(await dialog("删除角色")).getByRole("button", { name: "确认删除" }));
     expect(await screen.findByText(/还没有角色。先创建一位/)).toBeTruthy();
-    expect(confirm.mock.calls[1][0]).toContain("爱丽丝");
+    expect(confirm).not.toHaveBeenCalled();
+    expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("删除请求进行中禁止重复删除或关闭确认框，键盘焦点保持在确认框内", async () => {
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": emptySession,
+      "DELETE /api/roles/r1": async () => { await pending; return { status: 204 }; },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading("爱丽丝");
+    await user.click(screen.getByRole("button", { name: "角色资料" }));
+    await user.click(within(await dialog("角色资料")).getByRole("button", { name: "删除角色" }));
+    const confirmation = await dialog("删除角色");
+    await user.tab();
+    expect(within(confirmation).getByRole("button", { name: "确认删除" })).toHaveFocus();
+    await user.tab();
+    expect(within(confirmation).getByRole("button", { name: "关闭" })).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(within(confirmation).getByRole("button", { name: "确认删除" })).toHaveFocus();
+    await user.dblClick(within(confirmation).getByRole("button", { name: "确认删除" }));
+    expect(within(confirmation).getByRole("button", { name: "删除中…" })).toBeDisabled();
+    expect(within(confirmation).getByRole("button", { name: "取消" })).toBeDisabled();
+    await user.keyboard("{Escape}");
+    await user.click(within(confirmation).getByRole("button", { name: "关闭" }));
+    expect(confirmation).toBeVisible();
+    expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+    finish();
+    expect(await screen.findByText(/还没有角色。先创建一位/)).toBeVisible();
   });
 });
 
