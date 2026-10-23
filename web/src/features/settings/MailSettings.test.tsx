@@ -63,6 +63,27 @@ describe("MailSettings", () => {
     await screen.findByText("补充已处理：草稿已创建", {}, { timeout: 3000 });
     expect(calls.find((call) => call.method === "POST" && call.path === "/api/mail/items/mail-1/answer")?.body).toMatchObject({ questionId: "prep-1", answer: "可以参加" });
   });
+
+  it("opens sent source details without offering inbound processing actions", async () => {
+    const status = { ...emptyStatus(), username: "owner@qq.com", verified: true, autoDraftReady: true, items: 1 };
+    const inbound = { id: "inbound-1", threadId: "thread-1", sender: "teacher@example.com", subject: "面试邀请", receivedAt: "2026-10-20T09:00:00Z", status: "needs_input", needsReply: true, draftId: null, lastError: null };
+    const sent = { id: "sent-1", threadId: "thread-sent", sender: "owner@qq.com", replyTo: "teacher@example.com", subject: "历史往来", receivedAt: "2026-10-19T09:00:00Z", body: "此前的回复", status: "sent", lastError: null, direction: "outbound" };
+    const preparation = { id: "prep-1", decision: "needs_input", reason: "还需要主人决定", questions: ["是否接受周五面试？"], createdAt: "2026-10-20T09:01:00Z", model: "test", stale: false, warnings: [],
+      sources: [{ kind: "sent_sample", id: "sent-1", title: "历史往来", sender: "owner@qq.com" }] };
+    fakeBackend({
+      ...commonRoutes(() => status),
+      "GET /api/mail/items\\?limit=50&offset=0": () => ({ body: { items: [inbound] } }),
+      "GET /api/mail/items/inbound-1": () => ({ body: { item: { ...inbound, body: "周五能参加吗？", replyTo: "teacher@example.com" }, thread: [], drafts: [], preparation } }),
+      "GET /api/mail/items/sent-1": () => ({ body: { item: sent, thread: [sent], drafts: [] } }),
+    });
+    render(<MailSettings />);
+    await screen.findByText("QQ 邮件");
+    fireEvent.click(await screen.findByRole("button", { name: /面试邀请/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "历史往来" }));
+    expect(await screen.findByText("此前的回复")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "处理邮件" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "处理整个线程" })).not.toBeInTheDocument();
+  });
   it("requires the QQ web draft round-trip before marking the account ready", async () => {
     let status = emptyStatus();
     const { calls } = fakeBackend({

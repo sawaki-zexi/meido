@@ -1,7 +1,7 @@
 export type Preparation = {
   id: string; decision: "draft" | "no_reply" | "needs_input"; reason: string; questions: string[];
   createdAt: string; model: string; stale: boolean; warnings: string[];
-  sources: { kind: string; id: string; title: string; location?: string; url?: string; sender?: string; receivedAt?: string }[];
+  sources: { kind: string; id: string; title: string; location?: string; url?: string; sender?: string; receivedAt?: string; sourceChars?: number; providedChars?: number; truncated?: boolean }[];
 };
 
 function safeLink(value?: string) {
@@ -24,7 +24,7 @@ export function MailPreparation({ value, onSelect }: { value: Preparation; onSel
           {source.kind === "thread" || source.kind === "sent_sample"
             ? <button type="button" onClick={() => onSelect(source.id)}>{source.title || "（无主题邮件）"}</button>
             : href ? <a href={href} target="_blank" rel="noreferrer">{source.title}</a> : <span>{source.title}</span>}
-          <small>{source.kind === "owner_knowledge" ? "主人资料" : source.kind === "sent_sample" ? "历史回复" : "当前往来"}{source.location ? ` · ${source.location}` : ""}{source.sender ? ` · ${source.sender}` : ""}</small>
+          <small>{source.kind === "owner_knowledge" ? "主人资料" : source.kind === "sent_sample" ? "历史回复" : source.kind === "current_email" ? "当前来信" : "当前往来"}{source.location ? ` · ${source.location}` : ""}{source.sender ? ` · ${source.sender}` : ""}{source.truncated ? ` · 已提供 ${source.providedChars ?? 0}/${source.sourceChars ?? 0} 字符` : ""}</small>
         </li>;
       })}</ul>
     </details>

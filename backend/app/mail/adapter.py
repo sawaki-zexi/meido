@@ -276,11 +276,13 @@ class QQMailAdapter:
         if not re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+", participant):
             raise MailAdapterError("邮件对象地址无效")
         result = []
-        for uid, raw in self._fetch(folder, f'TO "{participant}"', max(1, min(limit, 24))):
+        query = f'OR OR TO "{participant}" CC "{participant}" BCC "{participant}"'
+        for uid, raw in self._fetch(folder, query, max(1, min(limit, 24))):
             message = BytesParser(policy=email.policy.default).parsebytes(raw)
-            recipients = _decode(message.get("To"))
-            if participant not in {address.casefold() for _, address in email.utils.getaddresses([recipients])}:
+            recipient_headers = [str(message.get(header)) for header in ("To", "Cc", "Bcc") if message.get(header)]
+            if participant not in {address.casefold() for _, address in email.utils.getaddresses(recipient_headers)}:
                 continue
+            recipients = ", ".join(_decode(header) for header in recipient_headers)
             message_id = str(message.get("Message-ID") or f"<sent-uid-{uid}@qq.meido>").strip()
             parent = str(message.get("In-Reply-To") or "").strip()
             references = str(message.get("References") or "").strip()

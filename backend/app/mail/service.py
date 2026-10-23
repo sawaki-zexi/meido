@@ -13,6 +13,7 @@ from email.utils import getaddresses, parseaddr
 from ..credentials import CredentialStore, SystemCredentialStore
 from ..models import ModelConfiguration
 from .adapter import MailAdapterError, QQMailAdapter
+from .date import mail_date_key
 from .models import MailConnection, MailItem, MailSyncResult
 from .store import MailStore
 from .preparation import parse_reply, safe_source_url
@@ -261,7 +262,8 @@ class MailService:
                     continue
                 if kind in {"process", "retry", "regenerate", "answer"}:
                     result_item = await self.process_item(target_id, regenerate=kind == "regenerate", request_id=str(payload.get("requestId") or job_id),
-                        question_id=str(payload.get("questionId") or ""), answer=str(payload.get("answer") or ""))
+                        question_id=str(payload.get("questionId") or ""), answer=str(payload.get("answer") or ""),
+                        source_role_id=str(payload.get("sourceRoleId") or ""), run_id=str(payload.get("runId") or ""))
                     result = {"itemId": result_item.id, "status": result_item.status, "draftId": result_item.draft_id, "lastError": result_item.last_error}
                 elif kind == "sync":
                     sync_result = await self.sync(trigger="manual", process=bool(payload.get("process", True)), batch_key=f"job:{job_id}")
@@ -463,7 +465,8 @@ class MailService:
             elif remote.raw_hash != draft.remote_hash:
                 self.store.update_draft(draft.id, remote_uid=remote.uid, remote_hash=remote.raw_hash, stale=True, status="manual_modified")
 
-    def enqueue_answer(self, mail_id: str, *, question_id: str, answer: str, request_id: str) -> dict[str, object]:
+    def enqueue_answer(self, mail_id: str, *, question_id: str, answer: str, request_id: str,
+                       source_role_id: str = "", run_id: str = "") -> dict[str, object]:
         if not answer.strip() or len(answer) > 4000 or not question_id or not request_id:
             raise ValueError("请提供问题标识、请求标识和不超过 4000 字符的补充答案")
         account = self.store.connection().username
@@ -477,8 +480,19 @@ class MailService:
             if (current is None or current["id"] != question_id or item is None or item.status != "needs_input"
                     or question["threadFingerprint"] != self.store.thread_fingerprint(item, account=account)):
                 raise ValueError("邮件线程或问题已更新，请重新处理后补充")
+        request_key = f"{self.store.account_scope(account)}:answer:{mail_id}:{request_id.strip()}"
+        existing_job = self.store.get_job_by_request_key(request_key, account=account)
+        if existing_job is not None:
+            existing_payload = existing_job["payload"]
+            if (existing_job["targetId"] != mail_id or existing_payload.get("questionId") != question_id
+                    or existing_payload.get("answer") != answer.strip()
+                    or existing_payload.get("sourceRoleId", "") != source_role_id):
+                raise ValueError("同一请求标识不能提交不同内容")
+            return {"jobId": existing_job["jobId"], "status": existing_job["status"],
+                    "kind": existing_job["kind"], "createdAt": existing_job["createdAt"]}
         return self.enqueue_job("answer", target_id=mail_id, request_id=request_id,
-                                payload={"questionId": question_id, "answer": answer.strip(), "requestId": request_id})
+                                payload={"questionId": question_id, "answer": answer.strip(), "requestId": request_id,
+                                         "sourceRoleId": source_role_id, "runId": run_id})
 
     async def process_item(self, item_id: str, *, adapter: QQMailAdapter | None = None, folders: dict[str, str] | None = None, regenerate: bool = False, request_id: str | None = None, source_role_id: str = "", run_id: str = "", question_id: str = "", answer: str = "") -> MailItem:
         item = self.store.get_item(item_id, account=self.store.connection().username)
@@ -492,6 +506,8 @@ class MailService:
             raise RuntimeError("该邮件已有处理任务正在运行")
         account = self.store.connection().username
         connection = self._require_draft_ready()
+        if source_role_id and not self.preferences()["roleAccess"]:
+            raise PermissionError("角色邮件许可已撤销，任务未执行")
         task_key = f"regen:{item_id}:{request_id or uuid.uuid4().hex}" if regenerate else f"auto:{item_id}:v1"
         if question_id:
             task_key = f"answer:{item_id}:{question_id}:{request_id}"
@@ -525,6 +541,7 @@ class MailService:
                     adapter.close()
         self._processing.add(item_id)
         generation_started = False
+        remote_write_started = False
         try:
             if not self.store.task_claim(task_key, item_id, account=account):
                 if self.store.task_status(task_key, account=account) == "running":
@@ -560,14 +577,18 @@ class MailService:
                 if source_role_id or run_id:
                     self.store.audit("regenerate" if regenerate else "process", source_role_id, run_id, item_id, "completed")
                 return self.store.update_item(item_id, status="drafted", needs_reply=True, draft_id=existing.id, last_error=None)
-            if question_id and preparation is None:
+            if question_id:
                 question = self.store.preparation(account=account, preparation_id=question_id)
                 latest = self.store.preparation(account=account, mail_id=item_id)
                 sync = await self.sync(trigger="manual", process=False)
                 if sync.errors:
                     raise RuntimeError("无法核对最新邮件，请同步成功后再补充")
                 await self._related_history(item, adapter)
-                if (question is None or latest is None or question["id"] != latest["id"]
+                preparation_matches_question = (
+                    (preparation is None and latest is not None and question is not None and latest["id"] == question["id"])
+                    or (preparation is not None and preparation.get("parentId") == question_id)
+                )
+                if (question is None or not preparation_matches_question
                         or question["mailId"] != item_id or question["decision"] != "needs_input"
                         or question["threadFingerprint"] != self.store.thread_fingerprint(item, account=account)):
                     raise ValueError("邮件线程或问题已更新，请重新处理后补充")
@@ -593,6 +614,7 @@ class MailService:
             self._check_preparation(item, preparation, account=account)
             if source_role_id and not self.preferences()["roleAccess"]:
                 raise PermissionError("角色邮件许可已撤销，未写入草稿")
+            remote_write_started = True
             write = asyncio.create_task(asyncio.to_thread(adapter.append_draft, folders["drafts"], marker=marker, recipients=item.reply_to or item.sender, subject=subject, body=body, in_reply_to=item.message_id, references=_reply_references(item.message_id, item.references)))
             try:
                 await asyncio.shield(write)
@@ -617,7 +639,7 @@ class MailService:
             self.store.update_item(item_id, status="uncertain", last_error="邮件任务停止，草稿结果待核实")
             raise
         except Exception as error:
-            status = "uncertain" if isinstance(error, MailAdapterError) else "failed"
+            status = "uncertain" if remote_write_started or isinstance(error, MailAdapterError) else "failed"
             if self.store.task_status(task_key, account=account) == "running":
                 self.store.task_finish(task_key, status, _clean_error(error), account=account)
             if generation_started or not question_id:
@@ -643,7 +665,7 @@ class MailService:
                 continue
             saved, _ = self.store.upsert_item(row, account=connection.username, direction="outbound")
             selected.append(saved)
-        return selected
+        return sorted(selected, key=lambda item: mail_date_key(item.received_at, item.message_id, item.id))
 
     def _check_preparation(self, item: MailItem, preparation: dict[str, object], *, account: str) -> None:
         if self.store.connection().username.casefold() != account.casefold():
@@ -669,27 +691,51 @@ class MailService:
         owner_texts = []
         if self.owner_search is not None:
             try:
+                if len(item.body_text) > 1600:
+                    warnings.append("主人资料检索仅使用当前来信正文前 1600 字符")
                 hits = await self.owner_search(f"{item.subject}\n{item.body_text[:1600]}")
                 for hit in hits[:5]:
-                    text = str(getattr(hit, "text", hit))[:1200]
+                    original_text = str(getattr(hit, "text", hit))
+                    text = original_text[:1200]
+                    truncated = len(original_text) > len(text)
+                    if truncated:
+                        warnings.append("主人资料片段已截断至 1200 字符")
                     owner_texts.append(text)
                     sources.append({"kind": "owner_knowledge", "id": str(getattr(hit, "document_id", "") or _hash(text)),
                         "title": str(getattr(hit, "title", "") or "主人资料")[:200],
                         "location": str(getattr(hit, "location", "") or "")[:300],
-                        "url": safe_source_url(getattr(hit, "url", "")), "fingerprint": _hash(text)})
+                        "url": safe_source_url(getattr(hit, "url", "")), "fingerprint": _hash(original_text),
+                        "providedFingerprint": _hash(text), "sourceChars": len(original_text),
+                        "providedChars": len(text), "truncated": truncated})
             except Exception as error:
                 warnings.append(f"主人资料读取失败（{type(error).__name__}）")
         thread = self.store.thread_items(item.thread_id, account=account)[-8:]
         samples = [row for row in reversed(history) if row.thread_id != item.thread_id][:3]
         for kind, rows in (("thread", thread), ("sent_sample", samples)):
             for row in rows:
+                body_limit = 2500 if kind == "thread" else 1800
+                provided_body = row.body_text[:body_limit]
+                truncated = len(row.body_text) > len(provided_body)
+                if truncated:
+                    warnings.append(f"{'当前往来' if kind == 'thread' else '历史回复'}正文已截断至 {body_limit} 字符")
                 sources.append({"kind": kind, "id": row.id, "messageId": row.message_id,
                     "title": row.subject[:200], "sender": row.sender[:300], "recipients": row.recipients[:300],
-                    "receivedAt": row.received_at, "direction": row.direction, "fingerprint": _hash(row.body_text)})
+                    "receivedAt": row.received_at, "direction": row.direction, "fingerprint": _hash(row.body_text),
+                    "providedFingerprint": _hash(provided_body), "sourceChars": len(row.body_text),
+                    "providedChars": len(provided_body), "truncated": truncated})
+        current_body_truncated = len(item.body_text) > 12000
+        if current_body_truncated:
+            warnings.append("当前来信正文已截断至 12000 字符")
+        sources.append({"kind": "current_email", "id": item.id, "messageId": item.message_id,
+            "title": item.subject[:200], "sender": item.sender[:300], "recipients": item.recipients[:300],
+            "receivedAt": item.received_at, "direction": item.direction, "fingerprint": _hash(item.body_text),
+            "providedFingerprint": _hash(item.body_text[:12000]),
+            "sourceChars": len(item.body_text), "providedChars": min(len(item.body_text), 12000),
+            "truncated": current_body_truncated})
         fingerprint = self.store.thread_fingerprint(item, account=account)
         prompt = {
-            "sender": item.sender, "subject": item.subject, "body": item.body_text[:12000],
-            "thread": [{"subject": row.subject, "sender": row.sender, "body": row.body_text[:2500]} for row in thread],
+            "sender": item.sender[:300], "subject": item.subject[:300], "body": item.body_text[:12000],
+            "thread": [{"subject": row.subject[:300], "sender": row.sender[:300], "body": row.body_text[:2500]} for row in thread],
             "ownerContext": "\n".join(owner_texts),
             "sentSamples": [{"subject": row.subject[:300], "body": row.body_text[:1800]} for row in samples],
             "writingStyle": self.preferences()["writingStyle"], "ownerAnswer": owner_answer.strip(),
@@ -705,7 +751,7 @@ class MailService:
             {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
         ]
         result = parse_reply(await self.complete_model(messages, configuration))
-        result.update({"threadFingerprint": fingerprint, "sources": sources, "warnings": warnings,
+        result.update({"threadFingerprint": fingerprint, "sources": sources, "warnings": list(dict.fromkeys(warnings)),
                        "model": str(getattr(configuration, "model", ""))[:200], "ownerAnswer": owner_answer.strip()})
         return result
 
@@ -804,7 +850,8 @@ class MailService:
             self.store.audit(action, role_id, run_id, None, "completed")
             return {"job": job}
         if action == "answer":
-            result = self.enqueue_answer(mail_id, question_id=question_id, answer=query, request_id=request_id)
+            result = self.enqueue_answer(mail_id, question_id=question_id, answer=query, request_id=request_id,
+                                         source_role_id=role_id, run_id=run_id)
             self.store.audit(action, role_id, run_id, mail_id, "queued")
             return result
         if action in {"enable", "resume"}:

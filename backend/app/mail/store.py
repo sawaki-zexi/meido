@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import DraftStatus, MailConnection, MailDraft, MailItem
+from .date import mail_date_key
 
 
 def _now() -> str:
@@ -366,7 +367,8 @@ class MailStore:
                 rows = db.execute("SELECT * FROM mail_items WHERE thread_id=? AND source_uid LIKE ? ORDER BY received_at,created_at", (thread_id, f"{_account_scope(account)}::%")).fetchall()
             else:
                 rows = db.execute("SELECT * FROM mail_items WHERE thread_id=? ORDER BY received_at,created_at", (thread_id,)).fetchall()
-            return [self._item(row) for row in rows]
+            items = [self._item(row) for row in rows]
+            return sorted(items, key=lambda item: mail_date_key(item.received_at, item.message_id, item.id))
 
     def update_item(self, item_id: str, **fields: object) -> MailItem:
         allowed = {"status", "needs_reply", "draft_id", "last_error"}
@@ -712,6 +714,15 @@ class MailStore:
                 row = db.execute("SELECT * FROM mail_jobs WHERE id=? AND account_scope=?", (job_id, _account_scope(account))).fetchone()
             else:
                 row = db.execute("SELECT * FROM mail_jobs WHERE id=?", (job_id,)).fetchone()
+        return self._job(row) if row else None
+
+    def get_job_by_request_key(self, request_key: str, *, account: str = "") -> dict[str, object] | None:
+        with self._connect() as db:
+            if account:
+                row = db.execute("SELECT * FROM mail_jobs WHERE request_key=? AND account_scope=?",
+                                 (request_key, _account_scope(account))).fetchone()
+            else:
+                row = db.execute("SELECT * FROM mail_jobs WHERE request_key=?", (request_key,)).fetchone()
         return self._job(row) if row else None
 
     def recover_interrupted_jobs(self) -> None:
