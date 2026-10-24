@@ -1,4 +1,14 @@
 /** Turns a FastAPI error body into a readable message. */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 export function errorDetail(data: { detail?: unknown; error?: unknown }, status: number): string {
   if (Array.isArray(data.detail)) {
     const joined = data.detail.map((item: { msg?: string }) => item?.msg).filter(Boolean).join("；");
@@ -18,7 +28,7 @@ export async function request(path: string, init?: RequestInit): Promise<Respons
   }
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    throw new Error(errorDetail(data, response.status));
+    throw new ApiError(errorDetail(data, response.status), response.status);
   }
   return response;
 }
