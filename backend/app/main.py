@@ -28,6 +28,7 @@ import httpx
 
 from .ai.model_adapter import ModelAdapter
 from .ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
+from .ai.model_types import ModelTextBlock
 from .screen_perception import ObserveScreenTool, ScreenPerception
 from .computer_use import ComputerUseHost, COMPUTER_USE_TOOL_NAMES, load_computer_tools, register_computer_use_plugin, guard_provider
 from .novelai_generation.application import NovelaiApplication
@@ -63,7 +64,7 @@ from .owner_knowledge import (
     owner_knowledge_error_message,
     owner_understanding_model_configuration,
 )
-from .mail import MailService, MailStore
+from .mail import MailModelCompletion, MailService, MailStore
 from .mail.agent import MailManageTool
 from .mail.api import router as mail_router, set_mail_service
 from .models import AgentRun, EmbeddingConfiguration, EmbeddingConfigurationInput, MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, Message, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
@@ -401,11 +402,32 @@ todo_plugin = TodoPlugin(
 )
 
 
-async def _mail_complete_model(messages: list[dict[str, object]], configuration) -> str:
-    complete = getattr(model_adapter, "complete_messages", None)
-    if not callable(complete):
+async def _mail_complete_model(messages: list[dict[str, object]], configuration) -> MailModelCompletion:
+    complete_rich = getattr(model_adapter, "complete_rich_messages", None)
+    if not callable(complete_rich):
         raise RuntimeError("当前模型适配器不支持邮件草稿生成")
-    return await complete(messages, configuration, max_tokens=1800)
+    response = await complete_rich(messages, configuration, max_tokens=1800)
+    if isinstance(response, str):
+        return MailModelCompletion(response)
+    text = "".join(block.text for block in getattr(response, "content", ()) if isinstance(block, ModelTextBlock))
+    usage = getattr(getattr(response, "metadata", None), "usage", None)
+    cost = getattr(usage, "cost", None)
+    usage_payload = {
+        "inputTokens": int(getattr(usage, "input_tokens", 0) or 0),
+        "outputTokens": int(getattr(usage, "output_tokens", 0) or 0),
+        "cacheReadTokens": int(getattr(usage, "cache_read_tokens", 0) or 0),
+        "cacheWriteTokens": int(getattr(usage, "cache_write_tokens", 0) or 0),
+        "reasoningTokens": int(getattr(usage, "reasoning_tokens", 0) or 0),
+        "cost": {
+            "input": float(getattr(cost, "input", 0.0) or 0.0),
+            "output": float(getattr(cost, "output", 0.0) or 0.0),
+            "cacheRead": float(getattr(cost, "cache_read", 0.0) or 0.0),
+            "cacheWrite": float(getattr(cost, "cache_write", 0.0) or 0.0),
+            "total": float(getattr(cost, "total", 0.0) or 0.0),
+        },
+    }
+    has_usage = any(value for key, value in usage_payload.items() if key != "cost") or any(usage_payload["cost"].values())
+    return MailModelCompletion(text, usage_payload if has_usage else {})
 
 
 async def _mail_owner_search(query: str):
@@ -1844,6 +1866,8 @@ def get_role_tools(role_id: str) -> dict[str, object]:
         reasons["search_owner_knowledge"] = "主人资料服务未启用"
     if not mail_service.store.connection().auto_draft_ready:
         reasons["mail.manage"] = "邮件服务尚未就绪"
+    elif not mail_service.preferences()["roleAccess"]:
+        reasons["mail.manage"] = "主人尚未允许角色管理邮件"
     dependencies = {name: browser_use_sessions.dependency_status() for name in BROWSER_USE_TOOL_NAMES}
     dependencies['message_push'] = {'status': 'ready', 'reason': '只写入当前角色的桌面对话，无需外部渠道账号'}
     pet_reason = _desktop_pet_application().unavailable_reason(role.id)
@@ -4434,7 +4458,7 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
         enabled.add("recall_memory")
     if owner_knowledge_plugin.status().enabled:
         enabled.add("search_owner_knowledge")
-    if mail_service.store.connection().auto_draft_ready:
+    if mail_service.store.connection().auto_draft_ready and mail_service.preferences()["roleAccess"]:
         enabled.add("mail.manage")
     if include_channel:
         enabled.update({
@@ -4674,6 +4698,7 @@ async def _runtime_capabilities(
             run_id=run_id,
             enabled_tools=registry_enabled_tools,
             allowed_risks={"read_only", "mutating", "external"},
+            approved_tools={"mail.manage"} if not external_only and mail_service.preferences()["roleAccess"] else set(),
             external_only=external_only,
             prompt_text=prompt_text,
             explicit_skill_ids=set(explicit_skill_ids or ()),

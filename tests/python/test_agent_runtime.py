@@ -525,6 +525,28 @@ def test_session_store_rebuilds_structured_runtime_transcript(tmp_path):
     ]
 
 
+def test_session_store_redacts_mail_tool_bodies_from_persisted_transcript(tmp_path):
+    initialize_databases(tmp_path / "data")
+    store = SessionStore(tmp_path / "data" / "sessions.db")
+    session = store.open_role_session("role-mail")
+    call = ToolCall("call-mail", "mail.manage", {"action": "read", "mailId": "mail-1"})
+    result = ToolResultMessage(
+        "call-mail", "mail.manage",
+        '{"item":{"body":"主人私密正文"},"drafts":[{"body":"私密草稿"}]}',
+        details={"action": "read", "mailId": "mail-1", "status": "completed"},
+    )
+    store.append_agent_message(session.sessionKey, AssistantMessage(tool_calls=(call,), stop_reason="tool_use"), run_id="run-mail")
+    store.append_agent_message(session.sessionKey, result, run_id="run-mail")
+
+    persisted = store.list_messages(session.sessionKey)
+    assert "主人私密正文" not in persisted[1].content
+    assert "私密草稿" not in persisted[1].content
+    replayed = store.runtime_messages(session.sessionKey)[-1]
+    assert isinstance(replayed, ToolResultMessage)
+    assert "主人私密正文" not in replayed.content
+    assert replayed.details == result.details
+
+
 def test_session_store_round_trips_tool_result_diagnostics(tmp_path):
     initialize_databases(tmp_path / "data")
     store = SessionStore(tmp_path / "data" / "sessions.db")
