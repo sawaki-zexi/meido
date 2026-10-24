@@ -12,6 +12,7 @@ import { RoleAccountsPanel } from "./features/channels/RoleAccountsPanel";
 import { CreateRolePage } from "./features/tavern/CreateRolePage";
 import { RoleCard } from "./features/tavern/RoleCard";
 import { TavernView } from "./features/tavern/TavernView";
+import { RoleWorkspace, type RoleWorkspaceTab } from "./features/role-management/RoleWorkspace";
 import { Dialog } from "./ui/Dialog";
 import { Icon, IconButton } from "./ui/Icon";
 import { Notice } from "./ui/Status";
@@ -19,7 +20,7 @@ import { TodoDrawer } from './features/todo/TodoDrawer';
 import { useTodoNavigation } from './features/todo/useTodoNavigation';
 
 /** What the main pane shows: a conversation, the role tavern, memories, or the role's channel threads. */
-type View = "chat" | "tavern" | "memories" | "channels";
+type View = "chat" | "tavern" | "role" | "memories" | "channels";
 /** Overlay on top of the main pane; null means none. "card" reveals a newly created role's card. */
 type Panel = null | "create" | "profile" | "settings" | "card";
 
@@ -49,7 +50,7 @@ export function App() {
   const [channelSource, setChannelSource] = useState<{ role: Role; source: ChannelMemorySource } | null>(null);
   const [previewRole, setPreviewRole] = useState<Role | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [profileTab, setProfileTab] = useState<"profile" | "accounts">("profile");
+  const [profileTab, setProfileTab] = useState<RoleWorkspaceTab>("profile");
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId | undefined>(returnedFromOwnerKnowledgeAuthorization ? "owner-knowledge" : undefined);
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -85,7 +86,8 @@ export function App() {
 
   // The create page opens over whatever is showing, so closing it returns there.
   const startCreate = () => { roles.startCreate(); setPanel("create"); };
-  const showProfile = (role: Role, tab: "profile" | "accounts" = "profile") => { roles.select(role); roles.startEdit(); setProfileTab(tab); setPanel("profile"); };
+  const showProfile = (role: Role, tab: RoleWorkspaceTab = "profile") => { roles.select(role); setProfileTab(tab); setPanel(null); setView("role"); setShowList(false); };
+  const showChatProfile = (role: Role, tab: "profile" | "accounts" = "profile") => { roles.select(role); roles.startEdit(); setProfileTab(tab); setPanel("profile"); };
   const openTavern = () => { setView("tavern"); setShowList(false); if (panel === 'settings') setPanel(null); };
   const backToChat = () => { setView("chat"); setShowList(false); setHighlightedId(null); if (panel === 'settings') setPanel(null); };
   const openChannels = () => { setView("channels"); setShowList(false); setHighlightedId(null); if (panel === 'settings') setPanel(null); };
@@ -146,6 +148,7 @@ export function App() {
     const deletedId = roles.selected?.id;
     if (!await roles.remove()) return;
     setPanel(null);
+    if (view === "role") { setView("tavern"); return; }
     if (deletedId !== chat.roleId) return;
     chat.reset();
     // In the tavern the user stays with the cards; in a conversation, move on to the next role.
@@ -170,7 +173,7 @@ export function App() {
       </div>
       <footer className="rail-footer"><IconButton icon="settings" label="设置" onClick={() => { setSettingsSection(undefined); setPanel("settings"); }} /></footer>
     </nav>
-    <aside className="sidebar" aria-label={view === "tavern" ? "角色管理" : "对话列表"} aria-hidden={panel === 'settings' || undefined}
+    <aside className="sidebar" aria-label={view === "tavern" || view === "role" ? "角色管理" : "对话列表"} aria-hidden={panel === 'settings' || undefined}
       ref={element => { if (element) element.inert = panel === 'settings'; }}>
       <div className="sidebar-tools">
         {view === "tavern" && <>
@@ -189,19 +192,21 @@ export function App() {
       </div>
       <div className="sidebar-body">
         {roles.error && panel === null && view !== "tavern" && <Notice onDismiss={() => roles.setError("")}>{roles.error}</Notice>}
-        <RoleList roles={filteredRoles} loading={roles.loading} loadFailed={roles.loadFailed} searching={Boolean(searchTerm)} activeId={view === "tavern" ? null : chat.roleId} disabled={lockSwitch} onOpen={chatWith} />
+        <RoleList roles={filteredRoles} loading={roles.loading} loadFailed={roles.loadFailed} searching={Boolean(searchTerm)} activeId={view === "tavern" ? null : view === "role" ? roles.selected?.id ?? null : chat.roleId} disabled={lockSwitch} onOpen={view === "role" ? (role) => showProfile(role) : chatWith} />
       </div>
     </aside>
 
     <main className="main" aria-hidden={panel === 'settings' || undefined} ref={element => { if (element) element.inert = panel === 'settings'; }}>
       {view === "tavern"
-        ? <TavernView roles={roles.roles} query={searchTerm} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onShow={showProfile} onChat={chatWith} onPreviewAvatar={setPreviewRole} />
+        ? <TavernView roles={roles.roles} query={searchTerm} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onShow={showChatProfile} onWorkspace={showProfile} onChat={chatWith} onPreviewAvatar={setPreviewRole} />
+        : view === "role" && roles.selected
+        ? <RoleWorkspace role={roles.selected} state={roles} tab={profileTab} onTabChange={setProfileTab} onBack={openTavern} onChat={() => void openChat(roles.selected!)} onEdit={() => roles.startEdit()} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} onOpenSettings={() => { roles.cancel(); setSettingsSection("plugins"); setPanel("settings"); }} onOpenChannelSettings={() => { roles.cancel(); setSettingsSection("channels"); setPanel("settings"); }} onOpenMemorySource={(origin, messageId) => void openMemorySource(roles.selected!, origin, messageId)} />
         : view === "memories" && chatRole
         ? <MemoryPanel key={chatRole.id} role={chatRole} onBack={backToChat} onOpenSource={(origin, messageId) => void openMemorySource(chatRole, origin, messageId)} />
         : view === "channels" && chatRole
-        ? <ChannelView role={chatRole} onBack={backToChat} onAccounts={() => showProfile(chatRole, "accounts")} />
+        ? <ChannelView role={chatRole} onBack={backToChat} onAccounts={() => showChatProfile(chatRole, "accounts")} />
         : chatRole
-        ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showProfile(chatRole)} onShowMemories={() => setView("memories")} onShowChannels={openChannels} />
+        ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showChatProfile(chatRole)} onShowMemories={() => setView("memories")} onShowChannels={openChannels} />
         : <WelcomeView loading={roles.loading || openingId !== null} hasRoles={roles.roles.length > 0} error={chat.error} onDismissError={() => chat.setError("")} onCreate={startCreate} onBack={() => setShowList(true)} />}
     </main>
 

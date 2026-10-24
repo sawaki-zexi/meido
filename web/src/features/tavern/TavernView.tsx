@@ -13,12 +13,13 @@ type Props = {
   chatDisabled?: boolean;
   onBack: () => void;
   onShow: (role: Role) => void;
+  onWorkspace?: (role: Role) => void;
   onChat: (role: Role) => void;
   onPreviewAvatar: (role: Role) => void;
 };
 
 /** Role tavern: every role as a card. New roles are created here and get their own card. */
-export function TavernView({ roles, query = "", loading, error, onDismissError, chatDisabled, onBack, onShow, onChat, onPreviewAvatar }: Props) {
+export function TavernView({ roles, query = "", loading, error, onDismissError, chatDisabled, onBack, onShow, onWorkspace, onChat, onPreviewAvatar }: Props) {
   const cards = roles.map((role, index) => ({ role, number: index + 1 }))
     .filter(({ role }) => `${role.name} ${role.description}`.toLocaleLowerCase().includes(query));
   return <section className="tavern" aria-label="角色酒馆">
@@ -36,7 +37,7 @@ export function TavernView({ roles, query = "", loading, error, onDismissError, 
           {cards.length === 0 && <Placeholder>{query ? "没有匹配的角色卡片，换个关键词试试。" : "还没有角色，从角色列表的“新建”开始吧。"}</Placeholder>}
           <ul className="card-grid" aria-label="角色卡牌">
             {cards.map(({ role, number }) => <li key={role.id}>
-              <RoleCard role={role} number={number} onPreviewAvatar={onPreviewAvatar}>
+              <RoleCard role={role} number={number} onPreviewAvatar={onPreviewAvatar} onWorkspace={onWorkspace}>
                 <button type="button" className="card-hit" aria-label={`与${role.name}对话`} onClick={() => onChat(role)} disabled={chatDisabled} />
                 <IconButton icon="edit" label={`编辑${role.name}`} className="card-edit" onClick={() => onShow(role)} />
               </RoleCard>
