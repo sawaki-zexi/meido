@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from threading import Lock, RLock
 from collections import deque
 from datetime import datetime
 from typing import Any
@@ -19,6 +20,8 @@ class GroupListeningStore:
     def __init__(self, store) -> None:
         self.store = store
         self._windows: dict[str, deque[dict[str, Any]]] = {}
+        self._thread_locks: dict[str, RLock] = {}
+        self._thread_locks_guard = Lock()
         with store._connect() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS channel_listening_records (
@@ -62,6 +65,10 @@ class GroupListeningStore:
             raise KeyError(thread_id)
         return thread
 
+    def _thread_lock(self, thread_id: str) -> RLock:
+        with self._thread_locks_guard:
+            return self._thread_locks.setdefault(thread_id, RLock())
+
     def state(self, role_id: str, thread_id: str) -> dict[str, Any]:
         thread = self.group(role_id, thread_id)
         with self.store._connect() as db:
@@ -91,6 +98,10 @@ class GroupListeningStore:
             db.execute("INSERT INTO channel_listening_toggles VALUES(?,?,?,?)", (thread_id, int(enabled), operator, datetime.now().astimezone().isoformat()))
 
     def hear(self, thread, content: str, external_message_id: str, metadata: dict[str, Any], *, timestamp: datetime | None = None) -> dict[str, Any] | None:
+        with self._thread_lock(thread.thread_id):
+            return self._hear(thread, content, external_message_id, metadata, timestamp=timestamp)
+
+    def _hear(self, thread, content: str, external_message_id: str, metadata: dict[str, Any], *, timestamp: datetime | None = None) -> dict[str, Any] | None:
         self.group(thread.role_id, thread.thread_id)
         if not self.store.group_listening(thread.role_id, thread.account_id, thread.chat_id):
             return None
@@ -118,7 +129,13 @@ class GroupListeningStore:
             message["sequence"] = int(sequence)
             db.execute("INSERT INTO channel_listening_records VALUES(?,?,?,?,?,?,?,?)", (message["id"], thread.thread_id, sequence, content, json.dumps(source, ensure_ascii=False), external_message_id or None, moment.isoformat(), moment.date().isoformat()))
             db.execute("UPDATE channel_threads SET last_activity=? WHERE thread_id=?", (moment.isoformat(), thread.thread_id))
-        self.store.publish(thread.role_id, {"type": "listening_heard", "roleId": thread.role_id, "threadId": thread.thread_id, "message": message})
+        self.store.publish(thread.role_id, {
+            "type": "listening_heard",
+            "roleId": thread.role_id,
+            "threadId": thread.thread_id,
+            "thread": self.store.public_thread_payload(thread),
+            "message": self.store.public_message_payload(thread, message),
+        })
         return message
 
     @staticmethod
@@ -156,14 +173,23 @@ class GroupListeningStore:
         return "群里最近的其他消息（旁听，未触发角色）：\n" + "\n".join(reversed(lines)) if lines else ""
 
     def clear(self, role_id: str, thread_id: str) -> int:
-        self.group(role_id, thread_id)
-        with self.store._connect() as db:
-            count = db.execute("SELECT COUNT(*) FROM channel_listening_records WHERE thread_id=?", (thread_id,)).fetchone()[0]
-            db.execute("DELETE FROM channel_listening_records WHERE thread_id=?", (thread_id,))
-            db.execute("DELETE FROM channel_listening_cursors WHERE thread_id=?", (thread_id,))
-        self._windows.pop(thread_id, None)
-        self.store.publish(role_id, {"type": "listening_cleared", "roleId": role_id, "threadId": thread_id})
-        return int(count)
+        thread = self.group(role_id, thread_id)
+        with self._thread_lock(thread_id):
+            with self.store._connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                record_count = db.execute("SELECT COUNT(*) FROM channel_listening_records WHERE thread_id=?", (thread_id,)).fetchone()[0]
+                legacy_rows = db.execute(
+                    "SELECT message_id FROM messages WHERE session_key=? AND json_extract(metadata_json, '$.listening') = 1",
+                    (thread.session_key,),
+                ).fetchall()
+                db.execute("DELETE FROM channel_listening_records WHERE thread_id=?", (thread_id,))
+                db.execute("DELETE FROM channel_listening_cursors WHERE thread_id=?", (thread_id,))
+                if legacy_rows:
+                    db.executemany("DELETE FROM messages WHERE message_id=?", legacy_rows)
+                    db.execute("UPDATE channel_threads SET last_activity=? WHERE thread_id=?", (datetime.now().astimezone().isoformat(), thread_id))
+            self._windows.pop(thread_id, None)
+            self.store.publish(role_id, {"type": "listening_cleared", "roleId": role_id, "threadId": thread_id, "chatId": thread.chat_id})
+            return int(record_count) + len(legacy_rows)
 
     def delete_role(self, role_id: str) -> None:
         with self.store._connect() as db:

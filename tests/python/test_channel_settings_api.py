@@ -398,6 +398,30 @@ def test_legacy_desktop_thread_and_messages_remain_readable_without_channel_avat
     assert message["content"] == "desktop history"
     assert message["metadata"]["senderAvatarUrl"] is None
     assert message["metadata"]["viaAccount"]["avatarUrl"] is None
+    network_view = client.get(
+        f"/api/roles/{role.id}/channels/threads/{desktop['threadId']}/messages",
+        params={"networkOnly": "true"},
+    )
+    assert network_view.status_code == 404
+
+
+def test_network_only_thread_listing_excludes_desktop_and_empty_threads(channel_api):
+    role, channels, _, client = channel_api
+    session_key = f"role:{role.id}"
+    now = datetime.now(timezone.utc).isoformat()
+    channels.register_desktop_thread(role.id, session_key, now, now)
+    account = channels.save_account(role.id, account_id="telegram-network", token="fixture-token", enabled=True)
+    empty = channels.ensure_channel_thread(role.id, "telegram", account.account_id, "empty", "private", title="空线程")
+    populated = channels.ensure_channel_thread(role.id, "telegram", account.account_id, "populated", "private", title="有消息")
+    channels.append_event(populated, direction="inbound", content="网络历史", external_message_id="network-1")
+
+    response = client.get(f"/api/roles/{role.id}/channels/threads", params={"networkOnly": "true"})
+
+    assert response.status_code == 200
+    rows = response.json()["threads"]
+    assert [row["threadId"] for row in rows] == [populated.thread_id]
+    assert rows[0]["channel"] == "telegram"
+    assert empty.thread_id not in {row["threadId"] for row in rows}
 
 
 def test_disabled_platform_rejects_events_and_sends_but_preserves_history(channel_api):
