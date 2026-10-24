@@ -19,8 +19,8 @@ import { TodoDrawer } from './features/todo/TodoDrawer';
 import { useTodoNavigation } from './features/todo/useTodoNavigation';
 import { NovelaiStudio } from './features/novelai/NovelaiStudio';
 
-/** What the main pane shows: a conversation, the role tavern, memories, channel threads, or the NovelAI studio. */
-type View = "chat" | "tavern" | "memories" | "channels" | "novelai";
+/** What the main pane shows: a conversation, the role tavern, memories, or the NovelAI studio. */
+type View = "chat" | "tavern" | "memories" | "novelai";
 /** Overlay on top of the main pane; null means none. "card" reveals a newly created role's card. */
 type Panel = null | "create" | "profile" | "settings" | "card";
 
@@ -44,6 +44,7 @@ export function App() {
   const [newRole, setNewRole] = useState<Role | null>(null);
   // Narrow screens show one pane at a time; home is the conversation.
   const [showList, setShowList] = useState(false);
+  const [channelsOpen, setChannelsOpen] = useState(false);
   const [openingId, setOpeningId] = useState<string | null>(null);
   const booted = useRef(false);
   // The message a memory came from; the chat scrolls to and marks it.
@@ -69,6 +70,7 @@ export function App() {
     if (!opened) return null;
     writeLastRole(role.id);
     setHighlightedId(null);
+    setChannelsOpen(false);
     setView("chat");
     setShowList(false);
     return opened;
@@ -89,8 +91,8 @@ export function App() {
   const startCreate = () => { roles.startCreate(); setPanel("create"); };
   const showProfile = (role: Role, tab: "profile" | "accounts" = "profile") => { roles.select(role); roles.startEdit(); setProfileTab(tab); setPanel("profile"); };
   const openTavern = () => { setView("tavern"); setShowList(false); if (panel === 'settings') setPanel(null); };
-  const backToChat = () => { setView("chat"); setShowList(false); setHighlightedId(null); if (panel === 'settings') setPanel(null); };
-  const openChannels = () => { setView("channels"); setShowList(false); setHighlightedId(null); if (panel === 'settings') setPanel(null); };
+  const backToChat = () => { setChannelsOpen(false); setView("chat"); setShowList(false); setHighlightedId(null); if (panel === 'settings') setPanel(null); };
+  const openChannels = () => { setChannelsOpen(true); setView("chat"); setShowList(false); setHighlightedId(null); if (panel === 'settings') setPanel(null); };
   const openNovelai = (roleId = studioRoleId ?? chat.roleId ?? roles.roles[0]?.id) => { if (roleId) setStudioRoleId(roleId); setView("novelai"); setShowList(false); if (panel === 'settings') setPanel(null); };
 
   const openMemorySource = async (role: Role, origin: MemoryOrigin, messageId?: string) => {
@@ -164,7 +166,7 @@ export function App() {
       <button type="button" className="rail-search" aria-label="搜索角色" title="搜索角色" aria-expanded={searchOpen} aria-controls={searchOpen ? "role-search" : undefined} onClick={() => { if (panel === 'settings') setPanel(null); setSearchOpen(true); setShowList(true); searchRef.current?.focus(); }}><Icon name="search" size={21} /></button>
       <span className="rail-divider" aria-hidden="true" />
       <div className="side-tabs">
-        <button type="button" aria-label="对话" title="对话" aria-current={view === "chat" || view === "memories" || view === "channels" ? "page" : undefined} onClick={backToChat}><Icon name="chat" size={22} /></button>
+        <button type="button" aria-label="对话" title="对话" aria-current={view === "chat" || view === "memories" ? "page" : undefined} onClick={backToChat}><Icon name="chat" size={22} /></button>
         <button type="button" aria-label="角色" title="角色" aria-current={view === "tavern" ? "page" : undefined} onClick={openTavern}><Icon name="people" size={22} /></button>
         <button type="button" aria-label="NovelAI 图片工作台" title="NovelAI 图片工作台" aria-current={view === "novelai" ? "page" : undefined} onClick={() => openNovelai()}><Icon name="image" size={22} /></button>
         {todoNavigation.enabled && <button type="button" className="todo-entry" aria-label={todoNavigation.unread ? `待办提醒 ${todoNavigation.unread}` : '待办'} title="待办"
@@ -205,14 +207,15 @@ export function App() {
           onGenerated={chat.refresh} settingsOpen={panel === 'settings'} onOpenSettings={() => { setSettingsSection('novelai'); setPanel('settings'); }} />
         : view === "memories" && chatRole
         ? <MemoryPanel key={chatRole.id} role={chatRole} onBack={backToChat} onOpenSource={(origin, messageId) => void openMemorySource(chatRole, origin, messageId)} />
-        : view === "channels" && chatRole
-        ? <ChannelView role={chatRole} onBack={backToChat} onAccounts={() => showProfile(chatRole, "accounts")} />
         : chatRole
         ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showProfile(chatRole)} onShowMemories={() => setView("memories")} onShowChannels={openChannels} />
         : <WelcomeView loading={roles.loading || openingId !== null} hasRoles={roles.roles.length > 0} error={chat.error} onDismissError={() => chat.setError("")} onCreate={startCreate} onBack={() => setShowList(true)} />}
     </main>
 
     {todoOpen && <TodoDrawer onClose={() => setTodoOpen(false)} onOpenSource={(roleId, sessionKey, messageId) => { setTodoOpen(false); void openTodoSource(roleId, sessionKey, messageId); }} />}
+    {channelsOpen && chatRole && <Dialog modalFocus variant="phone" title={`${chatRole.name}的多端会话`} onClose={backToChat}>
+      <ChannelView role={chatRole} phoneMode onBack={backToChat} onAccounts={() => { setChannelsOpen(false); showProfile(chatRole, "accounts"); }} onOpenSettings={() => { setChannelsOpen(false); setSettingsSection("channels"); setPanel("settings"); }} />
+    </Dialog>}
     {channelSource && <Dialog modalFocus title="记忆来源" onClose={() => setChannelSource(null)}>
       <ChannelView key={`${channelSource.role.id}:${channelSource.source.origin.stableSourceKey}:${channelSource.source.messageId ?? ""}`} role={channelSource.role} sourceOnly onBack={() => setChannelSource(null)} initialSource={channelSource.source} />
     </Dialog>}

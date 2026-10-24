@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, errorMessage } from "../../api/client";
 import { Dialog } from "../../ui/Dialog";
+import { Icon } from "../../ui/Icon";
 import { Notice } from "../../ui/Status";
-import { accountStatus, channelName, defaultCapabilities, type Account, type Channel } from "./channelAccounts";
+import { accountStatus, channelName, channels, defaultCapabilities, type Account, type Channel } from "./channelAccounts";
 import { ManagedQQLogin } from "./ManagedQQLogin";
 
 type ConnectionForm = {
@@ -21,7 +22,7 @@ type ConnectionForm = {
   blockedSenders: string;
 };
 
-export function AccountDetailDialog({ roleId, channel, account, platformEnabled, onAccountChange, onClose, onOpenSettings }: {
+export function AccountDetail({ roleId, channel, account, platformEnabled, onAccountChange, onClose, onOpenSettings, presentation = "dialog" }: {
   roleId: string;
   channel: Channel;
   account: Account | null;
@@ -29,6 +30,7 @@ export function AccountDetailDialog({ roleId, channel, account, platformEnabled,
   onAccountChange: (account: Account | null) => void;
   onClose: () => void;
   onOpenSettings?: () => void;
+  presentation?: "dialog" | "page";
 }) {
   const [form, setForm] = useState<ConnectionForm>(() => ({
     displayName: account?.displayName ?? "", endpoint: account?.endpoint ?? "", appId: account?.appId ?? account?.platformId ?? "",
@@ -43,7 +45,9 @@ export function AccountDetailDialog({ roleId, channel, account, platformEnabled,
   const live = useRef(true);
   const credentialsDetails = useRef<HTMLDetailsElement>(null);
   const previousAccountId = useRef(account?.accountId);
+  const backButton = useRef<HTMLButtonElement>(null);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+  useEffect(() => { if (presentation === "page") backButton.current?.focus(); }, [presentation]);
   useEffect(() => {
     if (previousAccountId.current === account?.accountId) return;
     previousAccountId.current = account?.accountId;
@@ -123,9 +127,8 @@ export function AccountDetailDialog({ roleId, channel, account, platformEnabled,
     <div className="account-actions"><button type="button" className="primary" disabled={!valid && account?.mode !== "managed"} onClick={() => void saveConnection()}>{busy ? "正在保存…" : account ? "保存连接配置" : "保存并连接"}</button></div>
   </fieldset>;
 
-  return createPortal(<Dialog title={`${channelName[channel]} 账号`} variant="compact" onClose={onClose}>
-    <div className="account-detail">
-      {account && <div className="account-summary">{account.avatarUrl && <img src={account.avatarUrl} alt="账号头像" className="role-account-avatar" />}<div><strong>{account.displayName || channelName[channel]}</strong>{account.platformId && <small>{account.platformId}</small>}</div><span className={`role-account-status${connected ? " connected" : ""}`}>{accountStatus(account, platformEnabled)}</span></div>}
+  const body = <div className="account-detail">
+      {account && presentation === "dialog" && <div className="account-summary">{account.avatarUrl && <img src={account.avatarUrl} alt="账号头像" className="role-account-avatar" />}<div><strong>{account.displayName || channelName[channel]}</strong>{account.platformId && <small>{account.platformId}</small>}</div><span className={`role-account-status${connected ? " connected" : ""}`}>{accountStatus(account, platformEnabled)}</span></div>}
       {!canConnect && <div className="account-platform-paused" role="status"><p>此平台已在全局设置中暂停。启用后才能连接账号。</p>{onOpenSettings && <button type="button" onClick={() => { onClose(); onOpenSettings(); }}>打开渠道设置</button>}</div>}
       {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
       {notice && <p className="account-feedback" role="status">{notice}</p>}
@@ -135,6 +138,22 @@ export function AccountDetailDialog({ roleId, channel, account, platformEnabled,
       {channel === "qq" && account?.mode === "managed" && account.managedRef && !connected && (account.enabled ? <ManagedQQLogin roleId={roleId} existingAccount={{ managedRef: account.managedRef, accountId: account.accountId }} canConnect={canConnect} getRules={rules} onConnected={onAccountChange} /> : <p className="role-accounts-hint">点击连接以启动 QQ 扫码登录。</p>)}
       {connected && <section className="account-response-rules" aria-label="响应规则"><h3>响应规则</h3>{capabilities.group && <p>群聊在 @ 角色或回复角色消息时响应。</p>}<fieldset disabled={busy}><label className="account-checkbox"><input type="checkbox" checked={form.allowPrivate} disabled={!capabilities.private} onChange={(event) => update("allowPrivate", event.target.checked)} />响应私聊</label>{capabilities.group && <label className="account-checkbox"><input type="checkbox" checked={form.allowGroup} onChange={(event) => update("allowGroup", event.target.checked)} />响应群聊</label>}<label className="field">屏蔽发送者（ID 或平台别名）<textarea rows={3} value={form.blockedSenders} onChange={(event) => update("blockedSenders", event.target.value)} placeholder="每行一个 ID 或别名" /></label><div className="account-actions"><button type="button" onClick={() => void saveRules()}>保存响应规则</button></div></fieldset></section>}
       {account && <div className="account-remove"><button type="button" className="danger" disabled={busy} onClick={() => void remove()}>移除账号</button><small>历史会话会保留。</small></div>}
+    </div>;
+
+  if (presentation === "page") return <section className="channel-account-page" aria-label={`${channelName[channel]} 账号`}>
+    <header className="channel-phone-settings-header">
+      <button ref={backButton} type="button" className="icon-button" aria-label="返回渠道账号" onClick={onClose}><Icon name="back" size={20} /></button>
+      <h2>{channelName[channel]} 账号</h2>
+    </header>
+    <div className="channel-account-scroll">
+      <div className="channel-account-hero">
+        {account?.avatarUrl ? <img src={account.avatarUrl} alt="账号头像" className="role-account-avatar" /> : <span className={`role-account-mark ${channel}`}>{channel === "telegram" ? "T" : channel === "qq" ? "Q" : channel === "qqbot" ? "B" : "飞"}</span>}
+        <h3>{account?.displayName || channelName[channel]}</h3>
+        <p>{channels.find(item => item.id === channel)?.summary}</p>
+        <span className={`role-account-status${connected ? " connected" : ""}`}>{accountStatus(account, platformEnabled)}</span>
+      </div>
+      {body}
     </div>
-  </Dialog>, document.body);
+  </section>;
+  return createPortal(<Dialog title={`${channelName[channel]} 账号`} variant="compact" onClose={onClose}>{body}</Dialog>, document.body);
 }
