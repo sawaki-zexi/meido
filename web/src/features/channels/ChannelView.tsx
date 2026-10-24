@@ -4,6 +4,7 @@ import { api, errorMessage } from "../../api/client";
 import { Icon, IconButton } from "../../ui/Icon";
 import { Notice } from "../../ui/Status";
 import { GroupListeningPanel } from "./GroupListeningPanel";
+import { RoleAccountsPanel } from "./RoleAccountsPanel";
 import { channelName, type Account } from "./channelAccounts";
 import type { MemoryOrigin } from "../memory/MemoryPanel";
 import "./channels.css";
@@ -116,6 +117,7 @@ export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnl
   const [error, setError] = useState("");
   const [sourceError, setSourceError] = useState("");
   const [sourceHighlightedId, setSourceHighlightedId] = useState<string | null>(null);
+  const [phoneSettingsOpen, setPhoneSettingsOpen] = useState(false);
   const [listeningSource, setListeningSource] = useState<ConversationMessage | null>(null);
   const loadRequest = useRef(0);
   const listeningRequest = useRef(0);
@@ -133,6 +135,7 @@ export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnl
   const liveListeningThreads = useRef(new Map<string, Set<string>>());
   const selectedThread = useMemo(() => threads.find((thread) => thread.threadId === selected) ?? null, [threads, selected]);
   const showPhoneSetup = phoneMode && !sourceOnly && threadsLoaded && !error && accounts.length === 0 && threads.length === 0;
+  const openAccounts = () => { if (phoneMode) setPhoneSettingsOpen(true); else onAccounts?.(); };
   const threadsRef = useRef<Thread[]>(threads);
   threadsRef.current = threads;
   const messagesRef = useRef<ConversationMessage[]>(messages);
@@ -600,15 +603,18 @@ export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnl
   }, [timelineMessages, canLoadOlder, loadingOlder, messagesReady, listeningReady, error, sourceOnly]);
 
   return <section className={`channel-view${sourceOnly ? " channel-source-view" : ""}`} aria-label={sourceOnly ? "渠道记忆来源" : undefined} aria-labelledby={sourceOnly ? undefined : "channel-view-title"}>
-    {!sourceOnly && <header className="channel-view-header">
+    {!sourceOnly && !phoneSettingsOpen && <header className="channel-view-header">
       <IconButton icon="back" label="返回聊天" onClick={onBack} />
-      <div><h1 id="channel-view-title">{role.name} · 手机会话</h1><p>{threads.length} 个会话</p></div>
-      <div className="channel-view-actions">{onAccounts && <button type="button" className="channel-accounts-button" aria-label="角色账号" title="角色账号" onClick={onAccounts}><Icon name="settings" size={16} /><span>角色账号</span></button>}<IconButton icon="refresh" label="刷新会话" onClick={() => void load()} /></div>
+      <div><h1 id="channel-view-title">{phoneMode ? role.name : `${role.name} · 手机会话`}</h1><p>{threads.length} 个会话</p></div>
+      <div className="channel-view-actions">{onAccounts && <button type="button" className="channel-accounts-button" aria-label="角色账号" title="角色账号" onClick={openAccounts}><Icon name="settings" size={16} /><span>角色账号</span></button>}{!phoneMode && <IconButton icon="refresh" label="刷新会话" onClick={() => void load()} />}</div>
     </header>}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {sourceError && <Notice onDismiss={() => setSourceError("")}>{sourceError}</Notice>}
-    {showPhoneSetup ? <div className="channel-phone-setup" aria-label="渠道设置">
-      {onAccounts && <IconButton icon="settings" label="设置渠道" className="channel-phone-setup-button" onClick={onAccounts} />}
+    {phoneSettingsOpen ? <div className="channel-phone-settings-app" aria-label="设置">
+      <header className="channel-phone-settings-header"><IconButton icon="back" label="返回多端会话" onClick={() => setPhoneSettingsOpen(false)} /><h2>设置</h2></header>
+      <RoleAccountsPanel roleId={role.id} />
+    </div> : showPhoneSetup ? <div className="channel-phone-setup" aria-label="渠道设置">
+      {onAccounts && <IconButton icon="settings" label="设置渠道" className="channel-phone-setup-button" onClick={openAccounts} />}
     </div> : <div className="channel-workspace">
       {!sourceOnly && <aside className="channel-thread-list" aria-label="渠道会话列表">
         <h2>会话</h2>

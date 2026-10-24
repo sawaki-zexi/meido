@@ -120,7 +120,7 @@ it('从角色聊天打开按角色隔离的多端会话视图', async () => {
   const phone = await screen.findByRole('dialog', { name: '诗织的多端会话' });
   expect(phone).toBeVisible();
   expect(phone).toHaveAttribute('aria-modal', 'true');
-  expect(await screen.findByRole('heading', { name: '诗织 · 手机会话' })).toBeVisible();
+  expect(await within(phone).findByRole('heading', { name: '诗织', level: 1 })).toBeVisible();
   expect(screen.getByRole('complementary', { name: '渠道会话列表' })).toBeVisible();
   const thread = screen.getByRole('button', { name: /Alice/ });
   expect(thread).toBeVisible();
@@ -139,6 +139,12 @@ it('没有渠道配置和历史线程时，手机屏幕只显示设置入口', a
     'GET /api/roles/r1/session': () => ({ body: { session: { sessionKey: 'role:r1', roleId: 'r1' }, messages: [] } }),
     'GET /api/roles/r1/channels/accounts': () => ({ body: { accounts: [] } }),
     'GET /api/roles/r1/channels/threads\\?networkOnly=true': () => ({ body: { threads: [] } }),
+    'GET /api/channels/settings': () => ({ body: { channels: [
+      { channel: 'telegram', name: 'Telegram', enabled: true, configuredAccounts: 0, connectedAccounts: 0 },
+      { channel: 'qq', name: 'QQ', enabled: true, configuredAccounts: 0, connectedAccounts: 0 },
+      { channel: 'qqbot', name: '官方 QQBot', enabled: true, configuredAccounts: 0, connectedAccounts: 0 },
+      { channel: 'feishu', name: '飞书', enabled: true, configuredAccounts: 0, connectedAccounts: 0 },
+    ] } }),
   });
   const user = userEvent.setup();
   render(<App />);
@@ -146,7 +152,13 @@ it('没有渠道配置和历史线程时，手机屏幕只显示设置入口', a
 
   await user.click(screen.getByRole('button', { name: '多端会话' }));
 
-  expect(await screen.findByRole('button', { name: '设置渠道' })).toBeVisible();
+  const setup = await screen.findByRole('button', { name: '设置渠道' });
+  expect(setup).toBeVisible();
   expect(screen.queryByText('暂无渠道会话')).not.toBeInTheDocument();
   expect(screen.queryByText('选择一个会话')).not.toBeInTheDocument();
+  await user.click(setup);
+  expect(await screen.findByRole('heading', { name: '设置', level: 2 })).toBeVisible();
+  expect(await screen.findByRole('heading', { name: '渠道账号', level: 3 })).toBeVisible();
+  await user.click(screen.getByRole('button', { name: '返回多端会话' }));
+  expect(screen.getByRole('button', { name: '设置渠道' })).toBeVisible();
 });

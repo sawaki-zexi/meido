@@ -181,3 +181,13 @@
 .dialog-phone .channel-phone-setup { display: grid; flex: 1; min-height: 0; place-items: center; background: radial-gradient(circle at 50% 38%, #fff5f9, transparent 42%), #fffafe; }
 .dialog-phone .channel-phone-setup-button { width: 68px; height: 68px; border: 1px solid #f1cfdf; border-radius: 50%; background: #fff1f7; color: #bd6a90; box-shadow: 0 12px 28px rgb(191 93 137 / 18%), inset 0 1px #fff; }
 .dialog-phone .channel-phone-setup-button:hover:not(:disabled) { background: #ffe7f1; color: #a9537b; }
+.dialog-phone .channel-phone-settings-app { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: auto; background: #fffafe; }
+.dialog-phone .channel-phone-settings-header { display: flex; flex: none; align-items: center; gap: 8px; min-height: 58px; padding: 8px 12px; border-bottom: 1px solid #f2dce5; background: #fff9fc; }
+.dialog-phone .channel-phone-settings-header h2 { margin: 0; font-size: 16px; }
+.dialog-phone .channel-phone-settings-app .role-accounts { gap: 14px; padding: 14px; }
+.dialog-phone .channel-phone-settings-app .role-accounts-heading { align-items: center; }
+.dialog-phone .channel-phone-settings-app .role-accounts-heading p, .dialog-phone .channel-phone-settings-app .role-accounts-actions, .dialog-phone .channel-phone-settings-app .role-accounts-hint { display: none; }
+.dialog-phone .channel-phone-settings-app .role-accounts-heading h3 { margin: 0; font-size: 15px; }
+.dialog-phone .channel-phone-settings-app .role-account-list { border-color: #f1d8e3; border-radius: 14px; }
+.dialog-phone .channel-phone-settings-app .role-account-row { min-height: 62px; padding: 11px 10px; }
+.dialog-phone .channel-phone-settings-app .role-account-copy small { font-size: 11px; }
