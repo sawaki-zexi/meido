@@ -62,6 +62,21 @@ export function Dialog({ title, variant = "modal", onClose, children, modalFocus
   };
 
   useEffect(() => {
+    if (variant !== "phone") return;
+    const keepPhoneVisible = () => {
+      const frame = panelRef.current?.getBoundingClientRect();
+      if (!frame) return;
+      phoneDragRef.current = null;
+      setPhoneDragging(false);
+      const x = clamp(frame.left, 8, Math.max(8, window.innerWidth - 8 - frame.width)) - frame.left;
+      const y = clamp(frame.top, 8, Math.max(8, window.innerHeight - 8 - frame.height)) - frame.top;
+      if (x || y) setPhoneOffset(current => ({ x: current.x + x, y: current.y + y }));
+    };
+    window.addEventListener("resize", keepPhoneVisible);
+    return () => window.removeEventListener("resize", keepPhoneVisible);
+  }, [variant]);
+
+  useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const panels = Array.from(document.querySelectorAll<HTMLElement>('.dialog-panel'));
     const covered = variant === 'settings' ? panels.filter(panel => panel !== panelRef.current).at(-1) : undefined;

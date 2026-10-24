@@ -133,7 +133,7 @@ it('从角色聊天打开按角色隔离的多端会话视图', async () => {
   expect(await screen.findByRole('heading', { name: '诗织', level: 1 })).toBeVisible();
 });
 
-it('没有渠道配置和历史线程时，手机屏幕只显示设置入口', async () => {
+it('空白手机可以进入内嵌账号页，再逐级返回会话', async () => {
   fakeBackend({
     'GET /api/roles': () => ({ body: { roles: [role({ id: 'r1', name: '诗织' })] } }),
     'GET /api/roles/r1/session': () => ({ body: { session: { sessionKey: 'role:r1', roleId: 'r1' }, messages: [] } }),
@@ -152,6 +152,7 @@ it('没有渠道配置和历史线程时，手机屏幕只显示设置入口', a
 
   await user.click(screen.getByRole('button', { name: '多端会话' }));
 
+  const phone = screen.getByRole('dialog', { name: '诗织的多端会话' });
   const setup = await screen.findByRole('button', { name: '设置渠道' });
   expect(setup).toBeVisible();
   expect(screen.queryByText('暂无渠道会话')).not.toBeInTheDocument();
@@ -159,6 +160,37 @@ it('没有渠道配置和历史线程时，手机屏幕只显示设置入口', a
   await user.click(setup);
   expect(await screen.findByRole('heading', { name: '设置', level: 2 })).toBeVisible();
   expect(await screen.findByRole('heading', { name: '渠道账号', level: 3 })).toBeVisible();
+  await user.click(await within(phone).findByRole('button', { name: /^QQ.*未连接/ }));
+  expect(within(phone).getByRole('heading', { name: 'QQ 账号', level: 2 })).toBeVisible();
+  expect(screen.getAllByRole('dialog')).toHaveLength(1);
+  expect(within(phone).getByRole('button', { name: '准备并扫码登录' })).toBeVisible();
+  await user.click(within(phone).getByRole('button', { name: '返回渠道账号' }));
+  expect(within(phone).getByRole('button', { name: /^QQ.*未连接/ })).toHaveFocus();
   await user.click(screen.getByRole('button', { name: '返回多端会话' }));
   expect(screen.getByRole('button', { name: '设置渠道' })).toBeVisible();
+});
+
+it.each(['账号列表', '暂停账号详情'])('从手机%s可直达平台总开关', async (entry) => {
+  fakeBackend({
+    'GET /api/roles': () => ({ body: { roles: [role({ id: 'r1', name: '诗织' })] } }),
+    'GET /api/roles/r1/session': () => ({ body: { session: { sessionKey: 'role:r1', roleId: 'r1' }, messages: [] } }),
+    'GET /api/roles/r1/channels/accounts': () => ({ body: { accounts: [] } }),
+    'GET /api/roles/r1/channels/threads\\?networkOnly=true': () => ({ body: { threads: [] } }),
+    'GET /api/channels/settings': () => ({ body: { channels: [
+      { channel: 'telegram', name: 'Telegram', enabled: false, configuredAccounts: 0, connectedAccounts: 0 },
+      { channel: 'qq', name: 'QQ', enabled: true, configuredAccounts: 0, connectedAccounts: 0 },
+      { channel: 'qqbot', name: '官方 QQBot', enabled: true, configuredAccounts: 0, connectedAccounts: 0 },
+      { channel: 'feishu', name: '飞书', enabled: true, configuredAccounts: 0, connectedAccounts: 0 },
+    ] } }),
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByRole('heading', { name: '诗织', level: 1 });
+  await user.click(screen.getByRole('button', { name: '多端会话' }));
+  await user.click(await screen.findByRole('button', { name: '设置渠道' }));
+  if (entry === '暂停账号详情') await user.click(await screen.findByRole('button', { name: 'Telegram 平台已暂停' }));
+  await user.click(screen.getByRole('button', { name: entry === '账号列表' ? '平台总开关' : '打开渠道设置' }));
+  const settings = await screen.findByRole('region', { name: '多端连接' });
+  expect(await within(settings).findByRole('button', { name: '启用 Telegram 渠道' })).toBeVisible();
+  expect(screen.queryByRole('dialog', { name: '诗织的多端会话' })).not.toBeInTheDocument();
 });
