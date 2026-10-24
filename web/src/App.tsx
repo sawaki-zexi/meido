@@ -207,7 +207,7 @@ export function App() {
 
     {todoOpen && <TodoDrawer onClose={() => setTodoOpen(false)} onOpenSource={(roleId, sessionKey, messageId) => { setTodoOpen(false); void openTodoSource(roleId, sessionKey, messageId); }} />}
     {channelsOpen && chatRole && <Dialog modalFocus variant="phone" title={`${chatRole.name}的多端会话`} onClose={backToChat}>
-      <ChannelView role={chatRole} onBack={backToChat} onAccounts={() => { setChannelsOpen(false); showProfile(chatRole, "accounts"); }} />
+      <ChannelView role={chatRole} phoneMode onBack={backToChat} onAccounts={() => { setChannelsOpen(false); showProfile(chatRole, "accounts"); }} />
     </Dialog>}
     {channelSource && <Dialog modalFocus title="记忆来源" onClose={() => setChannelSource(null)}>
       <ChannelView key={`${channelSource.role.id}:${channelSource.source.origin.stableSourceKey}:${channelSource.source.messageId ?? ""}`} role={channelSource.role} sourceOnly onBack={() => setChannelSource(null)} initialSource={channelSource.source} />

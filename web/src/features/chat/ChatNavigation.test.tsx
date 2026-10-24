@@ -132,3 +132,21 @@ it('从角色聊天打开按角色隔离的多端会话视图', async () => {
   expect(screen.queryByRole('dialog', { name: '诗织的多端会话' })).not.toBeInTheDocument();
   expect(await screen.findByRole('heading', { name: '诗织', level: 1 })).toBeVisible();
 });
+
+it('没有渠道配置和历史线程时，手机屏幕只显示设置入口', async () => {
+  fakeBackend({
+    'GET /api/roles': () => ({ body: { roles: [role({ id: 'r1', name: '诗织' })] } }),
+    'GET /api/roles/r1/session': () => ({ body: { session: { sessionKey: 'role:r1', roleId: 'r1' }, messages: [] } }),
+    'GET /api/roles/r1/channels/accounts': () => ({ body: { accounts: [] } }),
+    'GET /api/roles/r1/channels/threads\\?networkOnly=true': () => ({ body: { threads: [] } }),
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByRole('heading', { name: '诗织', level: 1 });
+
+  await user.click(screen.getByRole('button', { name: '多端会话' }));
+
+  expect(await screen.findByRole('button', { name: '设置渠道' })).toBeVisible();
+  expect(screen.queryByText('暂无渠道会话')).not.toBeInTheDocument();
+  expect(screen.queryByText('选择一个会话')).not.toBeInTheDocument();
+});

@@ -95,7 +95,7 @@ function ChannelAttachments({ roleId, attachments, onMediaLoad }: { roleId: stri
   })}</>;
 }
 
-export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnly = false }: { role: Role; onBack: () => void; onAccounts?: () => void; initialSource?: ChannelMemorySource | null; sourceOnly?: boolean }) {
+export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnly = false, phoneMode = false }: { role: Role; onBack: () => void; onAccounts?: () => void; initialSource?: ChannelMemorySource | null; sourceOnly?: boolean; phoneMode?: boolean }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [threads, setThreads] = useState<Thread[]>([]);
   const [threadsLoaded, setThreadsLoaded] = useState(false);
@@ -132,6 +132,7 @@ export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnl
   const liveListening = useRef(new Map<string, number>());
   const liveListeningThreads = useRef(new Map<string, Set<string>>());
   const selectedThread = useMemo(() => threads.find((thread) => thread.threadId === selected) ?? null, [threads, selected]);
+  const showPhoneSetup = phoneMode && !sourceOnly && threadsLoaded && !error && accounts.length === 0 && threads.length === 0;
   const threadsRef = useRef<Thread[]>(threads);
   threadsRef.current = threads;
   const messagesRef = useRef<ConversationMessage[]>(messages);
@@ -602,11 +603,13 @@ export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnl
     {!sourceOnly && <header className="channel-view-header">
       <IconButton icon="back" label="返回聊天" onClick={onBack} />
       <div><h1 id="channel-view-title">{role.name} · 手机会话</h1><p>{threads.length} 个会话</p></div>
-      <div className="channel-view-actions">{onAccounts && <button type="button" onClick={onAccounts}>角色账号</button>}<IconButton icon="refresh" label="刷新会话" onClick={() => void load()} /></div>
+      <div className="channel-view-actions">{onAccounts && <button type="button" className="channel-accounts-button" aria-label="角色账号" title="角色账号" onClick={onAccounts}><Icon name="settings" size={16} /><span>角色账号</span></button>}<IconButton icon="refresh" label="刷新会话" onClick={() => void load()} /></div>
     </header>}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {sourceError && <Notice onDismiss={() => setSourceError("")}>{sourceError}</Notice>}
-    <div className="channel-workspace">
+    {showPhoneSetup ? <div className="channel-phone-setup" aria-label="渠道设置">
+      {onAccounts && <IconButton icon="settings" label="设置渠道" className="channel-phone-setup-button" onClick={onAccounts} />}
+    </div> : <div className="channel-workspace">
       {!sourceOnly && <aside className="channel-thread-list" aria-label="渠道会话列表">
         <h2>会话</h2>
         {threads.length === 0 && <p className="channel-empty">暂无渠道会话</p>}
@@ -674,6 +677,6 @@ export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnl
         </> : <div className="channel-no-selection"><Icon name="chat" size={22} /><p>{sourceOnly ? sourceError ? "来源当前不可访问" : "正在读取记忆来源…" : "选择一个会话"}</p></div>}
       </section>
 
-    </div>
+    </div>}
   </section>;
 }
