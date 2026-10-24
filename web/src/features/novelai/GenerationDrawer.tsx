@@ -4,6 +4,7 @@ import { Dialog } from '../../ui/Dialog';
 import { Notice, Placeholder } from '../../ui/Status';
 import { useGenerationDrawer, activeGenerationStatuses as activeStatuses, type GenerationDrawerProps } from './useGenerationDrawer';
 import { PromptTagManager } from './PromptTagManager';
+import { undesiredContentPresetLabel } from './promptPreferences';
 
 const labels: Record<string, string> = { completed_without_image: '观察完成，未生成图片', prepared: '等待生成', dispatching: '生成中', received: '已收图，等待保存',
   succeeded: '已生成', unknown: '消费结果不确定', failed_response: '远端返回错误，可能已计费',
@@ -26,13 +27,17 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
   const { role, onClose } = props;
   const { configuration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
     source, consent, setConsent, accepted, setAccepted, deliveryMode, setDeliveryMode, attempt, controller, scope,
-    isCurrent, watched, submit, upload, policy, allowed, candidates, patch, manage, selectImage, refresh } = useGenerationDrawer(props);
+    isCurrent, watched, submit, upload, policy, allowed, modeAllowed, candidates, patch, manage, selectImage, refresh } = useGenerationDrawer(props);
+  const txt2imgAllowed = configuration?.allowTxt2Img !== false;
+  const img2imgAllowed = configuration?.allowImg2Img !== false;
   return <Dialog title={`${role.name}的生图与历史`} variant="drawer" onClose={onClose}>
     {error && <Notice onDismiss={() => setError('')}>{error}</Notice>}
     {accepted && watched.length > 0 && <p role="status">后台生成已受理。关闭此面板后仍会继续，可在历史查询或停止。</p>}
     {!page && !error && <Placeholder loading>正在加载生图历史…</Placeholder>}
     {configuration && <>
       {!allowed && <p>手动生图尚未获准：请检查独立服务、凭据与公共参数当前版本的有限消费许可。</p>}
+      {!modeAllowed && <p role="status">当前选择的生图模式已被服务设置关闭，请切换到已启用的模式。</p>}
+      {!txt2imgAllowed && !img2imgAllowed && <p role="status">文生图和图生图都已关闭，当前不能提交新的生图请求。</p>}
       <p>场景 CG：{policy?.sceneCgEnabled ? '角色已开启；每次仍需校验当前服务、辅助连接和有限消费许可。' : '角色未开启。'}</p>
       <p>每次生成计入尝试额度；次数不是 Anlas 估价。未知结果可能已计费，不会自动再次请求。</p>
       {page && <p>今日账户尝试 {page.usage.accountAttempts}/{configuration.dailyAttemptLimit}，本角色手动尝试 {page.usage.manualAttempts}/{configuration.manualDailyAttempts ?? 10}，本角色 CG 尝试 {page.usage.cgAttempts ?? 0}/{policy?.sceneCgDailyAttempts ?? 3}（UTC 日）。</p>}
@@ -50,7 +55,7 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
           <label className="field"><span>生成模式</span><select aria-label="生成模式" value={parameters.mode} onChange={(event) => {
             const { base_attachment_id: _base, strength: _strength, noise: _noise, ...rest } = parameters;
             setParameters(event.target.value === 'img2img' ? { ...rest, mode: 'img2img', strength: .7, noise: .2 } : { ...rest, mode: 'txt2img' });
-          }}><option value="txt2img">文生图</option><option value="img2img">图生图</option></select></label>
+          }}><option value="txt2img" disabled={!txt2imgAllowed}>文生图{!txt2imgAllowed ? '（服务已关闭）' : ''}</option><option value="img2img" disabled={!img2imgAllowed}>图生图{!img2imgAllowed ? '（服务已关闭）' : ''}</option></select></label>
           {parameters.mode === 'img2img' && <>
             <label className="field"><span>本角色底图</span><select aria-label="本角色底图" required value={parameters.base_attachment_id ?? ''} onChange={(event) => patch({ base_attachment_id: event.target.value })}><option value="">选择底图</option>{candidates.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
             <label className="field"><span>上传底图（最多 10 MiB）</span><input aria-label="上传生图底图" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { void upload(event.target.files?.[0]); event.target.value = ''; }} /></label>
@@ -65,10 +70,14 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
           <label className="field"><span>模型</span><select aria-label="生图模型" required value={configuration.allowedModels.includes(parameters.model ?? '') ? parameters.model : ''} onChange={(event) => patch({ model: event.target.value })}><option value="">选择当前允许的模型</option>{configuration.allowedModels.map((item) => <option key={item}>{item}</option>)}</select></label>
           <label className="field"><span>采样器</span><select aria-label="生图采样器" required value={configuration.allowedSamplers.includes(parameters.sampler ?? '') ? parameters.sampler : ''} onChange={(event) => patch({ sampler: event.target.value })}><option value="">选择当前允许的采样器</option>{configuration.allowedSamplers.map((item) => <option key={item}>{item}</option>)}</select></label>
           <label className="field"><span>采样步数</span><input aria-label="生图采样步数" type="number" min="1" max={configuration.maxSteps} step="1" required value={parameters.steps} onChange={(event) => patch({ steps: Number(event.target.value) })} /></label>
+          <label className="field"><span>生成张数</span><select aria-label="生成张数" value={parameters.samples ?? 1} onChange={(event) => patch({ samples: Number(event.target.value) })}>
+            {[1, 2, 3, 4].map((count) => <option value={count} key={count}>{count} 张</option>)}
+          </select></label>
+          {source && deliveryMode === 'replacement' && (parameters.samples ?? 1) > 1 && <p role="status">替换单张历史图片时只能生成一张；多张结果请选择仅保存历史。</p>}
           <label className="field"><span>Seed（留空生成并保存）</span><input aria-label="生图 Seed" type="number" min="0" max="4294967295" step="1" value={seed} onChange={(event) => setSeed(event.target.value)} /></label>
           <label><input type="checkbox" checked={parameters.background ?? false} onChange={(event) => patch({ background: event.target.checked })} />{deliveryMode === 'history_only' ? '在后台生成，结果仅保存在历史' : '在后台生成，完成后交付原来源'}</label>
         </fieldset>
-        <button type="submit" className="primary" disabled={busy || uploading || !allowed || Boolean(source && !consent)}>{busy ? '正在生成…' : attempt.current ? '重查本次生成' : source ? '确认并重新生成' : '生成一张图片'}</button>
+        <button type="submit" className="primary" disabled={busy || uploading || !allowed || !modeAllowed || Boolean(source && !consent)}>{busy ? '正在生成…' : attempt.current ? '重查本次生成' : source ? '确认并重新生成' : (parameters.samples ?? 1) === 1 ? '生成一张图片' : `生成 ${parameters.samples} 张图片`}</button>
         {busy && !parameters.background && <button type="button" onClick={() => controller.current?.abort()}>取消本地生成</button>}
         {attempt.current && !busy && <button type="button" onClick={() => { attempt.current = null; setConsent(false); setAccepted(false); setError(''); setSeed(''); setParameters({ ...parameters }); }}>另开一次生成</button>}
       </form>
@@ -83,6 +92,7 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
         <p>消费：{item.consumption === 'possible' ? '已出网，可能计费；未确认实际扣费。' : item.consumption === 'not_dispatched' ? '生成请求尚未出网。' : '消费状态尚未确认。'}</p>
         {item.purpose === 'scene_cg' && <p>{item.auxiliaryConsumption === 'possible' ? '辅助请求已出网，可能计费；未出图仍计入 CG 与账户尝试。' : item.auxiliaryConsumption === 'not_dispatched' ? '辅助请求尚未出网。' : '辅助消费状态尚未确认。'}</p>}
         {item.parameters ? <p>{item.parameters.model} · Seed {item.parameters.seed} · {item.parameters.width}×{item.parameters.height} · {item.parameters.steps} 步</p> : <p>尚无生图参数，本次可能仅进行场景观察。</p>}
+        {item.parameters && <p>质量标签：{item.parameters.qualityToggle === undefined ? '未记录' : item.parameters.qualityToggle ? '开启' : '关闭'} · 负向预设：{undesiredContentPresetLabel(item.parameters.ucPreset)}</p>}
         {item.writebackStatus && writebackLabels[item.writebackStatus] && <p>{writebackLabels[item.writebackStatus]}</p>}
         <p>投递：{deliveryLabels[item.deliveryStatus] ?? '尚未确认'}</p>
         {item.errorCode && <p>{errorLabels[item.errorCode] ?? (item.errorCode.startsWith('http_') ? '远端服务返回错误，请检查账号配置与原记录。' : '本次请求未正常完成，请检查当前许可与归属历史。')}</p>}

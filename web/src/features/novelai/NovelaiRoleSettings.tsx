@@ -33,6 +33,9 @@ export function NovelaiRoleSettings({ draft, onChange, disabled = false, sceneOn
       {modelLoading && <Placeholder loading>正在读取 CG 辅助连接…</Placeholder>}
       {modelError && <Notice onDismiss={dismissModelError}>{modelError}</Notice>}
       <button type="button" disabled={disabled || modelLoading} onClick={refreshModels}>刷新 CG 辅助连接</button>
+      <label className="field"><span>角色 CG 补充要求</span><textarea aria-label="角色 CG 补充要求" rows={5} maxLength={2000}
+        value={config.sceneCgPromptInstructions} onChange={(event) => patch({ sceneCgPromptInstructions: event.target.value, consentRevision: 0 })} />
+        <small className="field-hint">仅作为本角色的绘图偏好；场景 CG 会采用第三人称电影构图、让角色入镜，并排除第一人称、POV 与自拍视角。</small></label>
       <label className="field"><span>角色 CG 每日最多尝试</span><input aria-label="角色 CG 每日最多尝试" type="number" min="1" max="100" step="1" required value={config.sceneCgDailyAttempts}
         onChange={(event) => patch({ sceneCgDailyAttempts: Number(event.target.value), consentRevision: 0 })} /></label>
       <label className="field checkbox-field"><input type="checkbox" checked={config.autoWritebackRoleAssets}

@@ -11,11 +11,16 @@ from .parameters import GenerationRequest
 
 _SCHEMA = GenerationRequest.model_json_schema()
 _SCHEMA.pop('title', None)
+# The runtime applies the owner-controlled service default when the optional
+# field is omitted; exposing Pydantic's static fallback of 1 would be stale
+# after the owner selects another default in settings.
+_SCHEMA['properties']['samples'].pop('default', None)
+_SCHEMA['properties']['samples']['description'] = '生成张数（1–4）；省略时使用当前服务 defaultSamples。'
 
 
 class GenerateImageTool:
     definition = ToolDefinition(name='generate_image',
-        description='Generate one approved NovelAI image from English tags or an image attachment in this owner input. Uses finite paid-attempt allowance; unknown results are never retried. Explicit background=true returns accepted with its task and later delivers once to this original conversation.',
+        description='Generate up to four approved NovelAI images from English tags or an image attachment in this owner input. Uses finite paid-attempt allowance; unknown results are never retried. Explicit background=true returns accepted with its task and later delivers once to this original conversation.',
         input_schema=_SCHEMA, risk='external', source='builtin:novelai', exposure='direct',
         external_allowed=False, timeout_seconds=330, output_limit=4000, search_hint='生图 生成图片 NovelAI 立绘 场景图')
 
@@ -50,7 +55,7 @@ class GenerateImageTool:
             result = await self.application.submit(source, dict(arguments), signal=context.signal,
                 expected_revision=self.service_revision, expected_role_revision=self.role_revision)
             details = {key: result[key] for key in ('generationId', 'attemptId', 'status', 'attachments', 'taskId', 'errorCode', 'consumption')}
-            details['parameters'] = {key: result['parameters'][key] for key in ('model', 'sampler', 'seed', 'width', 'height', 'steps')}
+            details['parameters'] = {key: result['parameters'][key] for key in ('model', 'sampler', 'seed', 'samples', 'width', 'height', 'steps')}
             accepted = result['backgroundAccepted']
             if accepted:
                 details['status'] = 'accepted'

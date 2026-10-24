@@ -6,14 +6,14 @@ import { fakeBackend, role } from '../../test/fakeBackend';
 import { NovelaiStudio } from './NovelaiStudio';
 
 const configuration = { enabled: true, manualEnabled: true, manualDailyAttempts: 10, manualConsentRevision: 3,
-  tokenConfigured: true, credentialCleanupPending: false, revision: 3,
-  allowedModels: ['nai-diffusion-4-5-curated'], defaultModel: 'nai-diffusion-4-5-curated',
+  tokenConfigured: true, credentialCleanupPending: false, revision: 3, addQualityTags: false, undesiredContentPreset: 0,
+  allowedModels: ['nai-diffusion-4-5-curated'], defaultModel: 'nai-diffusion-4-5-curated', nsfwEnabled: false, nsfwModel: 'nai-diffusion-4-5-full',
   allowedSamplers: ['k_euler_ancestral'], defaultSampler: 'k_euler_ancestral', maxPixels: 1048576, maxSteps: 28, dailyAttemptLimit: 20 };
 const ownerConfig = { novelai: { manualEnabled: true, manualDailyAttempts: 10, consentRevision: 3 } } as AgentToolConfig;
 const image = { id: 'image-one', name: 'one.png', kind: 'image' as const, mediaType: 'image/png', size: 100 };
 const record = { generationId: 'gen-one', attemptId: 'attempt-one', parentAttemptId: null, roleId: 'r1', status: 'succeeded',
   parameters: { prompt: 'blue sky', negative_prompt: 'rain', mode: 'txt2img' as const, width: 1216, height: 832, seed: 321,
-    model: 'nai-diffusion-4-5-curated', sampler: 'k_euler_ancestral', steps: 20 }, attachments: [image], taskId: 'task-one',
+    model: 'nai-diffusion-4-5-curated', sampler: 'k_euler_ancestral', steps: 20, qualityToggle: true, ucPreset: 2 }, attachments: [image], taskId: 'task-one',
   createdAt: '2026-10-16T04:00:00Z', errorCode: '', consumption: 'possible', deliveryStatus: 'history_only', deliveryMode: 'history_only',
   deliveryMessageId: null, expectedAttachmentId: null };
 const page = (generations: unknown[]) => ({ generations, nextCursor: null, usage: { day: '2026-10-16', accountAttempts: 1, manualAttempts: 1 } });
@@ -34,6 +34,8 @@ it('shows the selected role history on a stage and reuses parameters without con
   const details = screen.getByRole('region', { name: '当前作品参数' });
   expect(within(details).getByText('blue sky')).toBeInTheDocument();
   expect(within(details).getByText('rain')).toBeInTheDocument();
+  expect(within(details).getByText('自动质量标签')).toBeInTheDocument();
+  expect(within(details).getByText('重度（2）')).toBeInTheDocument();
   expect(within(details).getAllByText('文生图')).not.toHaveLength(0);
   await user.click(screen.getByRole('button', { name: '选择生成记录 attempt-second' }));
   expect(await screen.findByAltText('second.png')).toBeInTheDocument();
@@ -43,6 +45,36 @@ it('shows the selected role history on a stage and reuses parameters without con
   expect(screen.getByLabelText('工作台英文正向 tags')).toHaveValue('blue sky');
   expect(screen.getByLabelText('工作台 Seed')).toHaveValue(654);
   expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
+});
+
+it('edits quality preferences in the studio and renews manual consumption consent', async () => {
+  let config = { ...configuration, addQualityTags: false, undesiredContentPreset: 0 };
+  const { calls } = fakeBackend({
+    'GET /api/services/novelai': () => ({ body: config }),
+    'GET /api/roles/r1/generations': () => ({ body: page([]) }),
+    'PUT /api/services/novelai': (init) => {
+      const { expectedRevision, ...changes } = JSON.parse(String(init?.body));
+      expect(expectedRevision).toBe(config.revision);
+      config = { ...config, ...changes, revision: config.revision + 1, manualConsentRevision: config.revision + 1 };
+      return { body: config };
+    },
+  });
+  const user = userEvent.setup();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
+  await screen.findByText('暂无生图历史。');
+  await user.click(screen.getByRole('button', { name: '生成偏好' }));
+  const dialog = screen.getByRole('dialog', { name: '工作台生成偏好' });
+  await user.click(within(dialog).getByLabelText('自动添加质量标签'));
+  await user.selectOptions(within(dialog).getByLabelText('负向预设'), '2');
+  expect(within(dialog).getByRole('button', { name: '保存生成偏好' })).toBeEnabled();
+  await user.click(within(dialog).getByLabelText('我确认当前有限生图许可可用于这些设置'));
+  await user.click(within(dialog).getByRole('button', { name: '保存生成偏好' }));
+  expect(await within(dialog).findByText('工作台生成偏好已保存；当前手动许可已按新配置确认。')).toBeInTheDocument();
+  expect(config).toMatchObject({ addQualityTags: true, undesiredContentPreset: 2, revision: 4, manualConsentRevision: 4 });
+  expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
+  expect(calls.find((call) => call.method === 'PUT')?.body).toMatchObject({
+    addQualityTags: true, undesiredContentPreset: 2, confirmManualConsumption: true,
+  });
 });
 
 it('opens the current role prompt-tag library from the studio without starting generation', async () => {
@@ -183,6 +215,63 @@ it('submits the selected parameters once and keeps new work in studio history by
   expect(posts).toHaveLength(1);
   expect(posts[0].body).toMatchObject({ expectedRevision: 3, deliveryMode: 'history_only',
     parameters: { prompt: 'blue sky', negative_prompt: 'rain', seed: 321, size_preset: 'landscape' } });
+});
+
+it('sends the selected sample count and renders every returned image', async () => {
+  const generated = { ...record, generationId: 'gen-multi', attemptId: 'attempt-multi', parameters: { ...record.parameters, samples: 3 },
+    attachments: [1, 2, 3].map((index) => ({ ...image, id: `image-multi-${index}`, name: `multi-${index}.png` })) };
+  const { calls } = fakeBackend({
+    'GET /api/services/novelai': () => ({ body: configuration }),
+    'GET /api/roles/r1/generations': () => ({ body: page([]) }),
+    'POST /api/roles/r1/generations': () => ({ body: { generation: generated } }),
+  });
+  const user = userEvent.setup();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
+  await screen.findByText('暂无生图历史。');
+  await user.type(screen.getByLabelText('工作台英文正向 tags'), 'blue sky');
+  await user.selectOptions(screen.getByLabelText('工作台生成张数'), '3');
+  await user.click(screen.getByRole('button', { name: '生成 3 张图片' }));
+  expect(await screen.findByAltText('multi-1.png')).toBeInTheDocument();
+  expect(screen.getByAltText('multi-2.png')).toBeInTheDocument();
+  expect(screen.getByAltText('multi-3.png')).toBeInTheDocument();
+  expect(screen.getByLabelText('当前作品 3 张图片')).toBeInTheDocument();
+  const posts = calls.filter((call) => call.method === 'POST');
+  expect(posts).toHaveLength(1);
+  expect(posts[0].body).toMatchObject({ parameters: { samples: 3 } });
+});
+
+it('starts new work with the service default sample count', async () => {
+  const { calls } = fakeBackend({
+    'GET /api/services/novelai': () => ({ body: { ...configuration, defaultSamples: 3 } }),
+    'GET /api/roles/r1/generations': () => ({ body: page([]) }),
+    'POST /api/roles/r1/generations': () => ({ body: { generation: { ...record, generationId: 'gen-default-samples', attemptId: 'attempt-default-samples', parameters: { ...record.parameters, samples: 3 }, attachments: [{ ...image, id: 'image-default-samples', name: 'default-samples.png' }] } } }),
+  });
+  const user = userEvent.setup();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
+  await screen.findByText('暂无生图历史。');
+  expect(screen.getByLabelText('工作台生成张数')).toHaveValue('3');
+  await user.type(screen.getByLabelText('工作台英文正向 tags'), 'blue sky');
+  await user.click(screen.getByRole('button', { name: '生成 3 张图片' }));
+  expect(await screen.findByAltText('default-samples.png')).toBeInTheDocument();
+  expect(calls.find((call) => call.method === 'POST')?.body).toMatchObject({ parameters: { samples: 3 } });
+});
+
+it('rejects a multi-image replacement while keeping the historical slot untouched', async () => {
+  const { calls } = fakeBackend({
+    'GET /api/services/novelai': () => ({ body: configuration }),
+    'GET /api/roles/r1/generations': () => ({ body: page([record]) }),
+  });
+  const user = userEvent.setup();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
+  await screen.findByAltText('one.png');
+  await user.click(screen.getByRole('button', { name: '重新生成' }));
+  await user.selectOptions(screen.getByLabelText('工作台结果交付'), 'replacement');
+  await user.selectOptions(screen.getByLabelText('工作台生成张数'), '2');
+  expect(screen.getByText('替换单张历史图片时只能生成一张；多张结果请选择仅保存历史。')).toBeInTheDocument();
+  await user.click(screen.getByLabelText('我确认本次重生成可能产生费用'));
+  await user.click(screen.getByRole('button', { name: '确认并重新生成' }));
+  expect(await screen.findByText('替换历史中的单张图片时只能生成一张；请选择仅保存历史，或将生成张数改为 1。')).toBeInTheDocument();
+  expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
 });
 
 it('rechecks a failed request with its original request ID', async () => {

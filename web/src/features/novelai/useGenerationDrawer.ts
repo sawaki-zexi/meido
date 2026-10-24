@@ -13,7 +13,7 @@ export type GenerationDrawerProps = {
 export function useGenerationDrawer({ role, onGenerated, attachments = [], selectedImage, defaultDeliveryMode = 'replacement', onGenerationAccepted }: GenerationDrawerProps) {
   const [configuration, setConfiguration] = useState<NovelaiConfiguration | null>(null);
   const [page, setPage] = useState<GenerationPage | null>(null);
-  const [parameters, setParameters] = useState<GenerationParameters>({ prompt: '', mode: 'txt2img', negative_prompt: '', size_preset: 'square' });
+  const [parameters, setParameters] = useState<GenerationParameters>({ prompt: '', mode: 'txt2img', negative_prompt: '', samples: 1, size_preset: 'square' });
   const [seed, setSeed] = useState('');
   const [inputs, setInputs] = useState<ChatAttachment[]>([]);
   const [busy, setBusy] = useState(false);
@@ -46,7 +46,8 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     void Promise.all([novelai.configuration(), novelai.history(identifier)]).then(([config, history]) => {
       if (!isCurrent(owner)) return;
       setConfiguration(config); setPage(history);
-      setParameters((value) => ({ ...value, model: config.defaultModel, sampler: config.defaultSampler, steps: config.maxSteps,
+      const mode = config.allowTxt2Img !== false ? 'txt2img' : config.allowImg2Img !== false ? 'img2img' : 'txt2img';
+      setParameters((value) => ({ ...value, mode, samples: config.defaultSamples ?? value.samples ?? 1, model: config.nsfwEnabled ? config.nsfwModel : config.defaultModel, sampler: config.defaultSampler, steps: config.maxSteps,
         ...(config.maxPixels < 1048576 ? { size_preset: 'custom', custom_width: 64, custom_height: 64 } : {}) }));
       if (selectedImage?.generation.roleId === identifier) selectImage(selectedImage.generation, selectedImage.image);
     }).catch((cause) => { if (isCurrent(owner)) setError(errorMessage(cause, '无法读取生图设置和历史')); });
@@ -98,6 +99,15 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!configuration || busy || uploading || (source && !consent && !attempt.current)) return;
+    const modeAllowed = parameters.mode === 'txt2img' ? configuration.allowTxt2Img !== false : configuration.allowImg2Img !== false;
+    if (!modeAllowed) {
+      setError(parameters.mode === 'txt2img' ? '当前服务已关闭文生图，请切换到已启用的模式。' : '当前服务已关闭图生图，请切换到已启用的模式。');
+      return;
+    }
+    if (source && deliveryMode === 'replacement' && (parameters.samples ?? 1) !== 1) {
+      setError('替换历史中的单张图片时只能生成一张；请选择仅保存历史，或将生成张数改为 1。');
+      return;
+    }
     const identifier = role.id;
     const owner = scope.current;
     if (!attempt.current) attempt.current = { requestId: crypto.randomUUID(), revision: configuration.revision,
@@ -148,6 +158,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   const policy = (role.agentConfig as AgentToolConfig & { novelai?: Partial<NovelaiRoleConfig> } | undefined)?.novelai;
   const allowed = configuration?.enabled && configuration.tokenConfigured && !configuration.credentialCleanupPending
     && configuration.manualEnabled && configuration.manualConsentRevision === configuration.revision;
+  const modeAllowed = configuration ? (parameters.mode === 'txt2img' ? configuration.allowTxt2Img !== false : configuration.allowImg2Img !== false) : false;
   const candidates = [...attachments, ...inputs].filter((item, index, all) => item.kind === 'image' && all.findIndex((other) => other.id === item.id) === index);
   const patch = (changes: Partial<GenerationParameters>) => setParameters({ ...parameters, ...changes });
   const manage = async (item: GenerationView, cancel = false) => {
@@ -172,10 +183,10 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   };
   const loadParameters = (generation: GenerationView, reuseSeed = false) => {
     if (busy || uploading || !generation.parameters) return;
-    const { width, height, prompt, negative_prompt, mode, model, sampler, steps, base_attachment_id, strength, noise, background } = generation.parameters;
+    const { width, height, prompt, negative_prompt, mode, model, sampler, steps, samples, base_attachment_id, strength, noise, background } = generation.parameters;
     const size = width === 1024 && height === 1024 ? 'square' : width === 1216 && height === 832 ? 'landscape'
       : width === 832 && height === 1216 ? 'portrait' : 'custom';
-    setParameters({ prompt, negative_prompt, mode, model, sampler, steps, ...(reuseSeed ? { background } : {}), size_preset: size,
+    setParameters({ prompt, negative_prompt, mode, model, sampler, steps, samples: samples ?? 1, ...(reuseSeed ? { background } : {}), size_preset: size,
       ...(mode === 'img2img' ? { base_attachment_id, strength, noise } : {}),
       ...(size === 'custom' ? { custom_width: width, custom_height: height } : {}) });
     setSeed(reuseSeed && generation.parameters.seed !== undefined ? String(generation.parameters.seed) : '');
@@ -189,8 +200,8 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     if (busy || uploading) return;
     setSource(null); setConsent(false); setAccepted(false);
   };
-  return { configuration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
+  return { configuration, setConfiguration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
     source, consent, setConsent, accepted, setAccepted, deliveryMode, setDeliveryMode, attempt, controller, scope,
-    isCurrent, watched, submit, upload, policy, allowed, candidates, patch, manage, selectImage, loadParameters, reuseParameters,
+    isCurrent, watched, submit, upload, policy, allowed, modeAllowed, candidates, patch, manage, selectImage, loadParameters, reuseParameters,
     clearSource, refresh };
 }

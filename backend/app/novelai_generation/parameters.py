@@ -25,6 +25,7 @@ class GenerationRequest(BaseModel):
     custom_height: StrictInt | None = Field(default=None, ge=64, le=1024)
     steps: StrictInt | None = Field(default=None, ge=1, le=28)
     seed: StrictInt | None = Field(default=None, ge=0, le=2**32-1)
+    samples: StrictInt = Field(default=1, ge=1, le=4)
     sampler: str | None = None
     model: str | None = None
     strength: StrictFloat | None = Field(default=None, ge=.01, le=1, allow_inf_nan=False)
@@ -42,9 +43,18 @@ class GenerationRequest(BaseModel):
 
 
 def normalize_request(arguments: dict[str, object], settings: NovelaiSettings) -> dict[str, object]:
-    request = GenerationRequest.model_validate(arguments)
+    # Apply the owner-controlled service default only when samples was
+    # omitted. An explicit null remains invalid under StrictInt.
+    request = GenerationRequest.model_validate({
+        **arguments,
+        'samples': settings.defaultSamples if 'samples' not in arguments else arguments['samples'],
+    })
     if not request.prompt or request.intent != 'user_requested' or request.scene_key is not None:
         raise ValueError('scene generation requires a host-committed observation')
+    if request.mode == 'txt2img' and not settings.allowTxt2Img:
+        raise ValueError('txt2img mode is disabled')
+    if request.mode == 'img2img' and not settings.allowImg2Img:
+        raise ValueError('img2img mode is disabled')
     if request.mode == 'img2img':
         if request.base_attachment_id is None:
             raise ValueError('img2img requires an owned current-source attachment')
@@ -61,12 +71,14 @@ def normalize_request(arguments: dict[str, object], settings: NovelaiSettings) -
     if width * height > settings.maxPixels:
         raise ValueError('pixel budget exceeded')
     steps = request.steps if request.steps is not None else settings.maxSteps
-    model, sampler = request.model or settings.defaultModel, request.sampler or settings.defaultSampler
+    model = request.model or (settings.nsfwModel if settings.nsfwEnabled else settings.defaultModel)
+    sampler = request.sampler or settings.defaultSampler
     if model not in settings.allowedModels or sampler not in settings.allowedSamplers or steps > settings.maxSteps:
         raise ValueError('model, sampler or steps not currently allowed')
     value = request.model_dump(exclude_none=True)
     value.update(width=width, height=height, steps=steps, model=model, sampler=sampler,
-                 seed=request.seed if request.seed is not None else secrets.randbelow(2**32))
+                 seed=request.seed if request.seed is not None else secrets.randbelow(2**32),
+                 qualityToggle=settings.addQualityTags, ucPreset=settings.undesiredContentPreset)
     if request.mode == 'img2img':
         value.update(strength=request.strength if request.strength is not None else .7,
                      noise=request.noise if request.noise is not None else .2)
@@ -75,11 +87,11 @@ def normalize_request(arguments: dict[str, object], settings: NovelaiSettings) -
 
 def generation_payload(request: dict[str, object], *, base_image: bytes | None = None) -> dict[str, object]:
     parameters = {key: request[key] for key in ('width', 'height', 'steps', 'sampler', 'seed', 'negative_prompt')}
-    parameters.update(n_samples=1, scale=5, params_version=3, noise_schedule='native', cfg_rescale=0,
+    parameters.update(n_samples=request.get('samples', 1), scale=5, params_version=3, noise_schedule='native', cfg_rescale=0,
         dynamic_thresholding=False, characterPrompts=[], controlnet_strength=1,
         deliberate_euler_ancestral_bug=False, prefer_brownian=True, reference_image_multiple=[],
         reference_information_extracted_multiple=[], reference_strength_multiple=[], skip_cfg_above_sigma=None,
-        use_coords=False, qualityToggle=False, ucPreset=0,
+        use_coords=False, qualityToggle=request.get('qualityToggle', False), ucPreset=request.get('ucPreset', 0),
         v4_prompt={'caption': {'base_caption': request['prompt'], 'char_captions': []}, 'use_coords': False, 'use_order': True},
         v4_negative_prompt={'caption': {'base_caption': request['negative_prompt'], 'char_captions': []}})
     if request['mode'] == 'img2img':

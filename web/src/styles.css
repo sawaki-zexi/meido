@@ -207,6 +207,9 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .novelai-stage-column { display: grid; grid-template-rows: minmax(260px, 1fr) auto auto; gap: 12px; min-width: 0; min-height: 0; }
 .novelai-stage { position: relative; display: grid; place-items: center; min-height: 260px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: rgb(255 255 255 / 50%); box-shadow: var(--panel-shadow); }
 .novelai-stage > img { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.novelai-stage-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); align-items: center; gap: 12px; width: 100%; max-height: 100%; overflow: auto; padding: 12px; }
+.novelai-stage-gallery a { display: grid; place-items: center; min-width: 0; min-height: 0; }
+.novelai-stage-gallery img { display: block; max-width: 100%; max-height: 430px; width: auto; height: auto; object-fit: contain; }
 .studio-stage-status { display: grid; justify-items: center; gap: 8px; padding: 24px; color: var(--ink-faint); text-align: center; }
 .studio-stage-status strong { color: var(--ink-soft); font-size: 14px; }
 .studio-stage-status span { max-width: 360px; overflow-wrap: anywhere; font-size: 12px; }

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../../api/client';
+import { uploadChatAttachment } from '../../api/chat';
 import { novelai, type PromptTag, type PromptTagInput, type PromptTagPage, type PromptTagPreview } from '../../api/novelai';
 
-const emptyTag = (): PromptTagInput => ({ name: '', keywords: [], prompt: '', negative_prompt: '', rating: 'general', enabled: true });
+const emptyTag = (): PromptTagInput => ({ name: '', category: 'composition', keywords: [], prompt: '', negative_prompt: '', rating: 'general', enabled: true, reference_attachment_id: null });
 export function usePromptTags(roleId: string, initiallyOpen = false) {
   const [open, setOpen] = useState(initiallyOpen);
   const [page, setPage] = useState<PromptTagPage | null>(null);
@@ -49,13 +50,23 @@ export function usePromptTags(roleId: string, initiallyOpen = false) {
   const resetDraft = () => { setDraft(emptyTag()); setKeywords(''); setEditing(undefined); };
   const save = () => run(async (owner) => {
     const words = keywords.split(/\r?\n/).map((word) => word.trim()).filter(Boolean);
-    if (!draft.name.trim() || draft.name.length > 80 || words.length < 1 || words.length > 16 || words.some((word) => word.length > 80))
-      throw new Error('标签名称最多 80 字符；请填写 1–16 个关键词，每个最多 80 字符。');
+    if (!draft.name.trim() || draft.name.length > 80 || !draft.category.trim() || draft.category.length > 80
+      || words.length < 1 || words.length > 16 || words.some((word) => word.length > 80))
+      throw new Error('标签名称和分类各最多 80 字符；请填写 1–16 个关键词，每个最多 80 字符。');
     if ([draft.prompt, draft.negative_prompt].some((value) => value.length > 4000 || /[^\x20-\x7e]/.test(value)))
       throw new Error('正负 tags 各最多 4000 字符，只能使用英文 ASCII 且不能包含控制符。');
-    await novelai.savePromptTag(owner.roleId, { ...draft, name: draft.name.trim(), keywords: words }, editing);
+    await novelai.savePromptTag(owner.roleId, { ...draft, name: draft.name.trim(), category: draft.category.trim(), keywords: words }, editing);
     if (!current(owner)) return;
     resetDraft(); invalidatePreview(); await load(owner);
+  });
+  const uploadReference = (file: File) => run(async (owner) => {
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type))
+      throw new Error('参考图只支持 PNG、JPEG 或 WebP。');
+    const uploaded = await uploadChatAttachment(owner.roleId, file);
+    if (!current(owner)) return;
+    if (uploaded.kind !== 'image') throw new Error('上传的文件不是图片。');
+    setDraft((previous) => ({ ...previous, reference_attachment_id: uploaded.id }));
+    invalidatePreview();
   });
   const remove = (tag: PromptTag) => run(async (owner) => {
     await novelai.deletePromptTag(owner.roleId, tag.id);
@@ -75,7 +86,12 @@ export function usePromptTags(roleId: string, initiallyOpen = false) {
     dismissError: () => setError(''), toggle: () => { if (open) setOpen(false); else { setOpen(true); void run((owner) => load(owner)); } },
     reload: () => run((owner) => load(owner)), more: () => run((owner) => load(owner, page?.nextCursor ?? undefined)),
     patch: (changes: Partial<PromptTagInput>) => setDraft({ ...draft, ...changes }), setKeywords,
-    edit: (tag: PromptTag) => { const { id, ...input } = tag; setDraft(input); setEditing(id); setKeywords(input.keywords.join('\n')); },
+    edit: (tag: PromptTag) => {
+      const { id, referenceAttachment: _referenceAttachment, ...input } = tag;
+      setDraft({ ...emptyTag(), ...input, category: input.category || 'composition', reference_attachment_id: input.reference_attachment_id ?? null });
+      setEditing(id); setKeywords(input.keywords.join('\n'));
+    },
+    uploadReference,
     resetDraft, save, remove, inspect,
     setText: (value: string) => { setText(value); invalidatePreview(); },
     setPrompt: (value: string) => { setPrompt(value); invalidatePreview(); },

@@ -55,6 +55,23 @@ def test_owner_regeneration_uses_new_attempt_seed_and_only_replaces_the_selected
         assert len(history['generations']) == 2 and history['usage']['manualAttempts'] == 2
 
 
+def test_regeneration_rejects_multiple_images_for_single_slot_replacement(novelai_service):
+    service = novelai_service
+    app = FastAPI()
+    app.include_router(service.application.router())
+    with TestClient(app) as client:
+        path = f'/api/roles/{service.role.id}/generations'
+        revision = client.get('/api/services/novelai').json()['revision']
+        parent = client.post(path, json={'requestId': '17217217217217217217217217217218',
+            'expectedRevision': revision, 'parameters': service.request}).json()['generation']
+        response = client.post(path + '/' + parent['generationId'] + '/regenerate', json={
+            'requestId': '27227227227227227227227227227228', 'expectedRevision': revision,
+            'sourceAttemptId': parent['attemptId'], 'expectedAttachmentId': parent['attachments'][0]['id'],
+            'parameters': {**service.request, 'samples': 2}})
+        assert response.status_code == 422, response.text
+        assert len(service.peer.requests) == 1
+
+
 @pytest.mark.parametrize('seed,expected_status', [(172, 200), (171, 422)])
 def test_regeneration_keeps_an_explicit_new_seed_and_rejects_reusing_the_old_seed(novelai_service, seed, expected_status):
     service = novelai_service

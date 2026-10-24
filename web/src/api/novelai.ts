@@ -3,27 +3,31 @@ import type { ChatAttachment } from './types';
 
 export type NovelaiRoleConfig = {
   manualEnabled: boolean; manualDailyAttempts: number; sceneCgEnabled: boolean; sceneCgDailyAttempts: number;
-  scenePromptModelConfigurationId: string | null; autoWritebackRoleAssets: boolean; consentRevision: number;
+  scenePromptModelConfigurationId: string | null; sceneCgPromptInstructions: string;
+  autoWritebackRoleAssets: boolean; consentRevision: number;
   promptTagsEnabled: boolean; allowedPromptTagRatings: PromptTagRating[];
 };
 export const defaultNovelaiRoleConfig: NovelaiRoleConfig = {
   manualEnabled: false, manualDailyAttempts: 10, sceneCgEnabled: false, sceneCgDailyAttempts: 3,
-  scenePromptModelConfigurationId: null, autoWritebackRoleAssets: false, consentRevision: 0,
+  scenePromptModelConfigurationId: null, sceneCgPromptInstructions: '', autoWritebackRoleAssets: false, consentRevision: 0,
   promptTagsEnabled: false, allowedPromptTagRatings: ['general'],
 };
 export type NovelaiConfiguration = {
   enabled: boolean; tokenConfigured: boolean; credentialCleanupPending: boolean; revision: number;
-  allowedModels: string[]; defaultModel: string; allowedSamplers: string[]; defaultSampler: string;
-  maxPixels: number; maxSteps: number; dailyAttemptLimit: number;
+  allowTxt2Img: boolean; allowImg2Img: boolean;
+  allowedModels: string[]; defaultModel: string; nsfwEnabled: boolean; nsfwModel: string; allowedSamplers: string[]; defaultSampler: string;
+  maxPixels: number; maxSteps: number; dailyAttemptLimit: number; defaultSamples: number; addQualityTags: boolean; undesiredContentPreset: number;
   manualEnabled?: boolean; manualDailyAttempts?: number; manualConsentRevision?: number;
 };
 export type GenerationParameters = {
   prompt: string; mode: 'txt2img' | 'img2img'; negative_prompt?: string; base_attachment_id?: string;
   size_preset?: 'square' | 'landscape' | 'portrait' | 'custom'; custom_width?: number; custom_height?: number;
-  model?: string; sampler?: string; steps?: number; seed?: number; strength?: number; noise?: number; background?: boolean;
+  model?: string; sampler?: string; steps?: number; seed?: number; samples?: number; strength?: number; noise?: number; background?: boolean;
 };
 export type GenerationView = {
-  generationId: string; attemptId: string; roleId: string; status: string; parameters: (GenerationParameters & { width: number; height: number; seed: number }) | null;
+  generationId: string; attemptId: string; roleId: string; status: string; parameters: (GenerationParameters & {
+    width: number; height: number; seed: number; samples?: number; qualityToggle?: boolean; ucPreset?: number;
+  }) | null;
   purpose?: 'manual' | 'scene_cg'; phase?: 'auxiliary' | 'generation' | 'completed';
   auxiliaryConsumption?: 'possible' | 'not_dispatched'; auxiliaryStatus?: 'not_dispatched' | 'dispatching' | 'succeeded' | 'failed';
   writebackStatus?: 'not_requested' | 'writing' | 'uncertain' | 'applied' | 'failed';
@@ -34,8 +38,8 @@ export type GenerationView = {
 export type GenerationPage = { generations: GenerationView[]; nextCursor: string | null; usage: { day: string; accountAttempts: number; manualAttempts: number; cgAttempts?: number; roleAssetBytes?: number } };
 export type GenerationSelection = { generation: GenerationView; image: ChatAttachment };
 export type PromptTagRating = 'general' | 'mature' | 'explicit';
-export type PromptTagInput = { name: string; keywords: string[]; prompt: string; negative_prompt: string; rating: PromptTagRating; enabled: boolean };
-export type PromptTag = PromptTagInput & { id: string };
+export type PromptTagInput = { name: string; category: string; keywords: string[]; prompt: string; negative_prompt: string; rating: PromptTagRating; enabled: boolean; reference_attachment_id: string | null };
+export type PromptTag = PromptTagInput & { id: string; referenceAttachment: ChatAttachment | null };
 export type PromptTagPage = { tags: PromptTag[]; revision: number; nextCursor: string | null };
 export type PromptTagPreview = { prompt: string; negative_prompt: string; matchedIds: string[]; revision: number };
 const tagsPath = (roleId: string) => `/api/roles/${encodeURIComponent(roleId)}/novelai/prompt-tags`;

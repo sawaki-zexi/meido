@@ -179,7 +179,11 @@ class GenerationLedger:
 
     def imported(self, attempt_id, attachments):
         with self.connect() as connection:
-            connection.execute("UPDATE novelai_attempts SET status='succeeded',attachments=?,reserved_bytes=0,media_bytes=?,error_code=?,updated_at=? WHERE attempt_id=? AND status IN ('received','local_pending')", (canonical(attachments), sum(item['size'] for item in attachments), 'unexpected_multiple_images' if len(attachments) > 1 else '', time.time(), attempt_id))
+            row = connection.execute('SELECT parameters FROM novelai_attempts WHERE attempt_id=?', (attempt_id,)).fetchone()
+            parameters = json.loads(row['parameters']) if row is not None else {}
+            expected = parameters.get('samples', 1)
+            error_code = '' if len(attachments) == expected else 'unexpected_multiple_images'
+            connection.execute("UPDATE novelai_attempts SET status='succeeded',attachments=?,reserved_bytes=0,media_bytes=?,error_code=?,updated_at=? WHERE attempt_id=? AND status IN ('received','local_pending')", (canonical(attachments), sum(item['size'] for item in attachments), error_code, time.time(), attempt_id))
 
     def staged_images(self, attempt_id, attachments):
         """Durable import references precede deletion of the complete raw response."""

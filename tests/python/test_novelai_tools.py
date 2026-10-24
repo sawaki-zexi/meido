@@ -4,6 +4,13 @@ from datetime import datetime, timezone
 from novelai_fixtures import novelai_environment, novelai_main, novelai_service  # noqa: F401
 
 
+def test_tool_schema_explains_service_default_for_omitted_samples():
+    from backend.app.novelai_generation.tools import GenerateImageTool
+    samples = GenerateImageTool.definition.input_schema['properties']['samples']
+    assert 'default' not in samples
+    assert 'defaultSamples' in samples['description']
+
+
 def test_frozen_tool_cannot_use_later_broader_generation_grant(novelai_service):
     from backend.app.agent_runtime.provider import CancellationToken
     from backend.app.agent_runtime.tools import ToolContext
@@ -40,3 +47,33 @@ def test_role_permission_off_on_does_not_revive_an_unused_frozen_tool(novelai_ma
     result = asyncio.run(tool.execute(service.request, ToolContext(role.id, key, 'aba-run', CancellationToken(), 'aba-call')))
     assert result.is_error
     assert not service.peer.requests
+
+
+def test_owner_tool_expands_role_tags_from_the_current_owner_message(novelai_service):
+    from datetime import datetime, timezone
+    from backend.app.agent_runtime.provider import CancellationToken
+    from backend.app.agent_runtime.tools import ToolContext
+    from backend.app.models import AgentRun, RoleUpdateInput
+
+    service = novelai_service
+    app, role = service.application, service.role
+    app.tags.save(role.id, {'name': 'Garden', 'keywords': ['garden'],
+        'prompt': 'flowers, sunlight', 'negative_prompt': 'night', 'rating': 'general', 'enabled': True})
+    service.roles.update(role.id, RoleUpdateInput(name=role.name, profile=role.profile,
+        agentConfig={'novelai': {'manualEnabled': True, 'promptTagsEnabled': True,
+            'consentRevision': app.settings.public()['revision']}}))
+    session_key = f'role:{role.id}'
+    service.sessions.create_run_with_messages(AgentRun(runId='tag-run', roleId=role.id,
+        sessionKey=session_key, status='running', startedAt=datetime.now(timezone.utc),
+        modelSnapshot={'humanInputSource': 'desktop_owner'}), 'Please draw the garden.')
+    tool = app.tool_for(role.id, is_owner=True)
+
+    result = asyncio.run(tool.execute(
+        {**service.request, 'prompt': 'blue sky', 'negative_prompt': 'rain'},
+        ToolContext(role.id, session_key, 'tag-run', CancellationToken(), 'tag-call')))
+
+    assert not result.is_error
+    assert len(service.peer.requests) == 1
+    payload = service.peer.requests[0]['body']
+    assert payload['input'] == 'blue sky, flowers, sunlight'
+    assert payload['parameters']['negative_prompt'] == 'rain, night'

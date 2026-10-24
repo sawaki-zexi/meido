@@ -2,7 +2,7 @@
 
 当前总集成补充：#172最终源`60860fb`的完整两轴及修正复核均无遗留。规范独立17项后端/13项React通过，关闭原journal P2；规格独立10项后端、原DOM反例1项和history_only确认1项通过，关闭跨来源私图P1与渠道新媒体提示P2。原反例和失败历史保留，各组重叠不相加。源经`d9a71f4`、`0522a00`、`043a775`、`d551de3`从f7be合入总分支；只解决SessionStore与ChatView的两处内容冲突，保留主动提交/最终授权、Coding任务入口以及NovelAI图片CAS。当时私有生成模块与#172最终源完全一致。固定`43fc03a`总组合610 passed/1 Windows符号链接权限skip、前端202项及构建通过，集成两轴无遗留；准确13c两套完整CI已通过：各后端2235 passed/35 skipped/2 warnings、前端202 passed/35文件及TS/Vite，详见[总状态](../reference/shiori-tool-parity-status.md)。
 
-状态：当前本地受控验证，真实 NovelAI 未验收。最后核验：2026-10-16。事实来源：[Reference](../reference/novelai-generation.md)、[公开消息用例](../../tests/python/test_novelai_main.py)、[真实渠道用例](../../tests/python/test_novelai_channel.py)、[真实断连](../../tests/python/test_novelai_cancellation.py)、[恢复](../../tests/python/test_novelai_recovery.py)。Parent #137，当前本地实现覆盖 #171/#172；#173 源已完成独立两轴及修正复核，准确总集成正在验证。下方历史记录保留当时范围和失败事实，各组不相加。
+状态：当前本地受控验证，真实 NovelAI 未验收。最后核验：2026-10-24。事实来源：[Reference](../reference/novelai-generation.md)、[公开消息用例](../../tests/python/test_novelai_main.py)、[真实渠道用例](../../tests/python/test_novelai_channel.py)、[真实断连](../../tests/python/test_novelai_cancellation.py)、[恢复](../../tests/python/test_novelai_recovery.py)。Parent #137，当前工作树组合了 #209 工作台、#211 角色 CG 提示词要求及既有 #171/#172/#173 行为；下方历史记录保留此前范围和失败事实，各组不相加。当前 NovelAI 后端组为 `199 passed`，角色能力联动测试另有 `9 passed`；NovelAI 前端组为 `53 passed`，类型检查与构建通过；工作树仍未合入 `main`。
 
 用户已明确批准完整具体规格第3节的实现及本地无费用夹具；真实 token、账号、模型/生成费用和外部发布另批。其中 #171 从获准的已验证 aggregate `30002a9a8de551a12a44b2c2f5724d5640aca50d` 开始，分支 feat/171-novelai-generation，统一整合总 PR162，不新建堆叠 PR，不合并或关闭 Issue。
 
@@ -31,7 +31,7 @@ git diff --check
 
 ## 已验证的公开行为
 
-独立服务设置、默认关闭角色许可和旧客户端部分更新保留；普通配置保存不读 token。严格参数、冻结 seed 与完整 v4.5 请求、主人的当前附件 img2img、无源/内部run拒绝；同请求重查和 humanRun intent claim；持久账户/角色尝试及 Runtime 既有并发实际生效。
+独立服务设置、默认关闭角色许可和旧客户端部分更新保留；普通配置保存不读 token。txt2img/img2img 可由服务设置分别关闭，关闭会推进 revision，严格参数归一化和场景 CG 辅助调用前都会拒绝对应模式。严格参数、冻结 seed 与完整 v4.5 请求、主人的当前附件 img2img、无源/内部run拒绝；同请求重查和 humanRun intent claim；持久账户/角色尝试及 Runtime 既有并发实际生效。
 
 真实 main `/messages` → localhost OpenAI SSE provider → 宿主冻结 generate_image → 真实 TaskRuntime → 独立 localhost NovelAI HTTP201 ZIP → 工具安全引用 → 下一次 provider → 唯一完成回复附件/下载 → owned 历史闭环。txt2img 与 img2img 参数化覆盖；后者先通过公开附件上传和消息 attachments 字段提交不同颜色的底图，逐字节核对生成 POST 的原图，后续模型只保留当前用户输入图，不收到生成图 base64。provider 路径和生成路径为两个真实 HTTP 服务；不使用真实模型。
 
@@ -55,7 +55,7 @@ React 覆盖真实 App 设置/角色/历史入口、有限消费显式确认、�
 
 新主人被接受后，旧辅助 finally 和已收图片导入分别被受控挂起：主聊天完成而下一CG尚不进入；释放旧 owned 收尾后才进行新观察。真实CG关闭再开、模型配置变版、原群解绑再绑定不能复活旧结果。OneBot WebSocket 覆盖原群单次媒体、丢回执uncertain、媒体能力关闭出网前拒绝，以及已sent但SQLite回执未同步时下一主人输入到达；最后一项先RED，再修正仅本地receipt投影，不增加send/POST。
 
-标签用公开HTTP证明owner CRUD、角色隔离、分页、字面NFKC匹配、rating和enabled过滤、边界拒绝；实际CG参数与当前消息预览一致。无效输入不调用模型。卡片写回只改当前角色cardImage，核对额外字节副本计入配额；主人随后手选卡片优先，额外副本超额保留正常历史。manifest故障、真实RoleStore文件替换后/manifest前的崩溃切点、SQLite回执失败及整个业务宿主重建均仅本地恢复，不再次生成。崩溃切点测试最初因没有恢复接口RED，修正后保留原卡片字节。
+标签用公开HTTP证明 owner CRUD、角色隔离、分页、字面 NFKC 匹配、rating/enabled 过滤、分类和角色图片附件归属、命中关键词排序及 top-5 上限、边界拒绝；实际 CG 参数与当前消息预览一致。无效输入不调用模型。卡片写回只改当前角色 cardImage，核对额外字节副本计入配额；主人随后手选卡片优先，额外副本超额保留正常历史。manifest故障、真实RoleStore文件替换后/manifest前的崩溃切点、SQLite回执失败及整个业务宿主重建均仅本地恢复，不再次生成。崩溃切点测试最初因没有恢复接口RED，修正后保留原卡片字节。
 
 辅助错误组使用真实本地HTTP 503、工具调用、重复JSON字段、超大响应、非ASCII提示词与超时。超时夹具将辅助上限缩为2秒以可重复验证取消；生产仍为30秒辅助/300秒attempt，未调大期限。资产与辅助故障合组11 passed/44.60s；原4项渠道组4 passed/20.37s、后补receipt-revision单项1 passed/12.33s。它们是阶段证据，不当作最终全组统计。
 
