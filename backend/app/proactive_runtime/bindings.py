@@ -45,8 +45,15 @@ def current(app, role_id, frozen):
                 for identifier, digest in frozen.get("models", {}).items()))
 
 
-def persona(frozen):
+def character_profile(frozen):
+    """Expose character instructions without profile version or import attribution."""
     role = frozen.get("role") or {}
     profile = role.get("profile", {})
-    payload = {"name": role.get("name", ""), "profile": profile if isinstance(profile, dict) else {}}
+    character = profile.get("character") if isinstance(profile, dict) else None
+    return character if isinstance(character, dict) else {}
+
+
+def persona(frozen):
+    role = frozen.get("role") or {}
+    payload = {"name": role.get("name", ""), "profile": character_profile(frozen)}
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:12000]

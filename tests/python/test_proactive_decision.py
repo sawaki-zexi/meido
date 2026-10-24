@@ -6,6 +6,7 @@ import pytest
 
 from backend.app.ai.model_types import ModelAssistantMessage, ModelStreamDone, ModelToolCallBlock, ModelTextBlock
 from backend.app.mcp_runtime import McpHost
+from backend.app.models import RoleProfile
 from backend.app.proactive_runtime import ProactiveApplication
 from backend.app.proactive_runtime.config import AutonomyConfig
 from backend.app.session_store import SessionStore
@@ -46,13 +47,18 @@ class ScriptedDecision:
 
 
 @pytest.mark.parametrize("never_finish", [False, True])
-def test_real_tick_model_tool_loop_requires_explicit_finish(source, tmp_path, never_finish):
+def test_real_tick_requires_explicit_finish_and_uses_only_character_definition(source, tmp_path, never_finish):
     _, store, *_ = source
     data = tmp_path / "decision"
     initialize_databases(data)
     sessions, tasks = SessionStore(data / "sessions.db"), TaskRuntime(data / "tasks")
     now, host, adapter = [1780000000.0], McpHost(store), ScriptedDecision(never_finish=never_finish)
-    app = ProactiveApplication(sessions, tasks, clock=lambda: now[0], role_getter=lambda key: {"id": key},
+    character = {"profile": "Maid background", "personality": "Gentle personality", "behaviorRules": "Patient behavior",
+        "responseConstraints": "Concise replies", "nickname": "Owner nickname"}
+    profile = RoleProfile(character=character, importProvenance={"format": "charx", "source": "IMPORT_SOURCE_ONLY.charx",
+        "importedAt": "2099-12-31T00:00:00Z"})
+    app = ProactiveApplication(sessions, tasks, clock=lambda: now[0],
+        role_getter=lambda key: {"id": key, "name": "Mio", "profile": profile.model_dump(mode="json")},
         model_getter=lambda key: {"id": key}, mcp_host=host, adapter_factory=lambda config: adapter)
     app.configure("role", AutonomyConfig(activeDecisionEnabled=True,
         decisionModelConfigurationId="explicit-model", consentRevision=1,
@@ -73,6 +79,11 @@ def test_real_tick_model_tool_loop_requires_explicit_finish(source, tmp_path, ne
             assert run["status"] == ("aborted" if never_finish else "skipped")
             assert len(adapter.requests) == (12 if never_finish else 4)
             assert all(request[2] == 1024 for request in adapter.requests)
+            prompt = adapter.requests[0][0][0].content[0].text
+            assert all(value in prompt for value in character.values())
+            assert "importProvenance" not in prompt
+            assert "IMPORT_SOURCE_ONLY.charx" not in prompt
+            assert "2099-12-31" not in prompt
             names = {tool["function"]["name"] for tool in adapter.requests[0][1]}
             assert len(names) == 12 and {"message_push", "finish_turn", "recall_memory"} <= names
             assert sessions.list_messages("role:role") == []
