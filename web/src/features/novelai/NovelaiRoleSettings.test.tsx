@@ -57,7 +57,6 @@ it('saves a bounded role-specific CG prompt instruction and requires fresh conse
   const user = userEvent.setup();
   render(<Harness />);
   const instruction = await screen.findByLabelText('角色 CG 补充要求');
-  expect(screen.getByText(/第三人称电影构图、让角色入镜，并排除第一人称、POV 与自拍视角/)).toBeInTheDocument();
   await user.type(instruction, 'Warm lighting and a wide composition.');
   expect(screen.getByRole('checkbox', { name: /我确认当前设置的有限生图消费/ })).not.toBeChecked();
   await user.click(screen.getByRole('checkbox', { name: /我确认当前设置的有限生图消费/ }));

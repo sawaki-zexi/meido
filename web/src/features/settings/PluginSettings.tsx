@@ -20,6 +20,7 @@ const services: Row[] = [
   { id: 'todo', name: '待办', description: '查询、管理主人的待办和提醒。' },
 ];
 const rolePurposes = new Set<PluginId>(['novelai', 'coding', 'pet', 'autonomy']);
+const publicParameters = new Set<PluginId>(['browser', 'screen']);
 const displayNames = { browser: 'Browser Use', computer: 'Computer Use', autonomy: '主动推送与 Drift' };
 const displayOrder: PluginId[] = ['browser', 'computer', 'pet', 'coding', 'novelai', 'autonomy', 'screen', 'todo'];
 type TodoConfiguration = { enabled: boolean; remindersEnabled: boolean; timezone: string };
@@ -77,6 +78,7 @@ export function PluginSettings({ onRoleSaved, onOpenService, serviceVersion = 0 
   }
   const open = (id: PluginId) => { setActive(id); setRolesOpen(false); setError(''); setNotice(''); };
   const activeName = selected?.name ?? '';
+  const roleOnly = active === 'pet' || active === 'autonomy';
   return <section className="plugin-settings" aria-label="插件设置">
     <header className="settings-page-heading">
       {active !== null && <button type="button" className="ghost settings-back" disabled={busy}
@@ -90,7 +92,7 @@ export function PluginSettings({ onRoleSaved, onOpenService, serviceVersion = 0 
         <div className="plugin-list" aria-label="可选插件">{rows.map(row =>
         <PluginRow key={row.id} name={row.name} description={row.description} enabled={row.enabled}
           status={row.state?.cleanupPending ? '等待资源收尾' : row.problem ?? (row.enabled === undefined ? '正在读取' : row.enabled ? '已启用' : '已关闭')}
-          busy={busy} onConfigure={() => open(row.id)} onToggle={() => void toggle(row)}
+          busy={busy} onConfigure={publicParameters.has(row.id) || rolePurposes.has(row.id) || services.some(service => service.id === row.id) ? () => open(row.id) : undefined} onToggle={() => void toggle(row)}
           startLabel={row.state?.cleanupPending ? '重试关闭' : undefined} />)}</div></section>
         <div className="plugin-services">{['连接', '资料'].map(group => <section className="settings-group" key={group} aria-label={group}>
           <h3>{group}</h3><div className="plugin-service-list">{pluginServices.filter(service => group === '连接' ? service.group === '连接' : service.id === 'owner-knowledge').map(service =>
@@ -99,14 +101,14 @@ export function PluginSettings({ onRoleSaved, onOpenService, serviceVersion = 0 
             </button>)}</div></section>)}
         </div>
     </> : <section className="plugin-detail" aria-label={activeName + '设置'}>
-      {selected?.state && <PluginParameters key={active} plugin={selected.state} onSaved={configured} />}
+      {selected?.state && publicParameters.has(active) && <PluginParameters key={active} plugin={selected.state} onSaved={configured} />}
       {active === 'novelai' && <NovelaiSettings key={serviceVersion} showTitle={false} />}
       {active === 'coding' && <CodingSettings key={serviceVersion} showTitle={false} />}
       {active === 'todo' && <TodoSettings showTitle={false} />}
       {rolePurposes.has(active) && <>
-        <button type="button" className="ghost" aria-expanded={rolesOpen} onClick={() => setRolesOpen(value => !value)}>
-          {rolesOpen ? '收起角色参数' : '角色参数'}</button>
-        {rolesOpen && <RolePurposeSettings key={active} purpose={active as RolePurpose} onRoleSaved={onRoleSaved} serviceVersion={serviceVersion} />}
+        {!roleOnly && <button type="button" className="ghost" aria-expanded={rolesOpen} onClick={() => setRolesOpen(value => !value)}>
+          {rolesOpen ? '收起角色参数' : '角色参数'}</button>}
+        {(roleOnly || rolesOpen) && <RolePurposeSettings key={active} purpose={active as RolePurpose} onRoleSaved={onRoleSaved} serviceVersion={serviceVersion} />}
       </>}
     </section>}
   </section>;

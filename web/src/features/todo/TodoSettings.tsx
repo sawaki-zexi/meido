@@ -99,7 +99,7 @@ export function TodoSettings({ showTitle = true }: { showTitle?: boolean }) {
       {settings.enabled && settings.remindersEnabled && <>
         <fieldset className="todo-reminder-roles">
           <legend>提醒角色</legend>
-          <p className="todo-muted">每天会从已启用的角色中随机选一位负责当天全部提醒；关闭立即生效，启用从次日生效。</p>
+          <p className="todo-muted">每天随机选一位提醒；启用次日生效，关闭立即生效。</p>
           {reminderRoles.length ? <ul>{reminderRoles.map((role) => <li key={role.id}>
             <label className="field checkbox-field">
               <input type="checkbox" checked={role.enabled} disabled={saving} onChange={() => void toggleRole(role)} />
@@ -115,7 +115,7 @@ export function TodoSettings({ showTitle = true }: { showTitle?: boolean }) {
           <input type="checkbox" checked={Boolean(today?.paused)} disabled={saving} onChange={(event) => void setPausedToday(event.target.checked)} />
           <span>暂停今天的提醒</span>
         </label>
-        {today?.paused && <p className="todo-muted">今天的提醒已暂停，明天自动恢复；暂停期间跳过的提醒不会补发。</p>}
+        {today?.paused && <p className="todo-muted">明天自动恢复，已跳过的提醒不补发。</p>}
       </>}
     </>}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}

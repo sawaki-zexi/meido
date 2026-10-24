@@ -132,7 +132,7 @@ export function AutonomySettings({ roleId, disabled }: { roleId: string; disable
     </> : <>
       <label className="field checkbox-field"><input type="checkbox" aria-label="开启主动决策"
         checked={draft.activeDecisionEnabled} onChange={(event) => setDraft({ ...draft, activeDecisionEnabled: event.target.checked })} />
-        <span>开启主动决策</span><small className="field-hint">每30分钟判断一次，主人回合结束至少10分钟后才运行；首次等待一个间隔。</small></label>
+        <span>开启主动决策</span><small className="field-hint">每30分钟检查，距上次对话至少10分钟。</small></label>
       <label className="field"><span>主动决策模型</span><select aria-label="主动决策模型" value={draft.decisionModelConfigurationId ?? ""}
         onChange={(event) => setDraft({ ...draft, decisionModelConfigurationId: event.target.value || null })}>
         <option value="">请选择已保存的模型连接</option>
@@ -146,12 +146,12 @@ export function AutonomySettings({ roleId, disabled }: { roleId: string; disable
       <AutonomyTargets key={`targets-${roleId}-${state.config.revision}`} roleId={roleId} revision={state.config.revision}
         config={draft} grants={state.targetGrants ?? []} choices={targetChoices}
         onChange={(changes, choices) => { setTargetChoices(choices); setDraft({ ...draft, ...changes }); }} />
-      <p className="field-hint">每角色每天至多24次决策，全应用至多120次；主动决策单次最多12288个输出 token 预算。次数与 token 上限不是费用估算。</p>
+      <p className="field-hint">每天最多24次（全应用120次），单次最多12288输出 token；不代表实际费用。</p>
       <label className="field checkbox-field"><input type="checkbox" aria-label="同意有限自主读取、消息和来源 ACK，可能产生模型费用"
         checked={draft.consentRevision > 0} onChange={(event) => setDraft({ ...draft, consentRevision: event.target.checked ? 1 : 0 })} />
         <span>同意有限自主读取、消息和来源 ACK，可能产生模型费用</span></label>
       <label className="field"><span>来源许可草稿</span><textarea aria-label="来源许可草稿" rows={7} value={sources}
-        onChange={(event) => setSources(event.target.value)} /><small className="field-hint">粘贴已验证来源的配置数组；每项绑定当前角色已信任的 MCP 服务及具体 get、poll、ACK 工具。保存和预览不会连接服务。</small></label>
+        onChange={(event) => setSources(event.target.value)} /><small className="field-hint">填写 JSON 数组，绑定已授权的 MCP 来源；保存与预览不连接服务。</small></label>
       <div className="form-actions"><button type="button" disabled={!ready} onClick={() => void operate()}>保存自主设置</button>
         <button type="button" className="ghost" onClick={() => void operate(true)}>停止当前自主运行</button>
         <button type="button" className="ghost" onClick={() => void refresh()}>刷新自主状态</button>

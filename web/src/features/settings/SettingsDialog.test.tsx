@@ -80,7 +80,7 @@ it('系统减弱动态效果生效时，背景呼吸显示关闭并暂停操作'
   render(<SettingsDialog initialSection="appearance" onClose={() => {}} />);
   expect(screen.getByRole('switch', { name: '背景呼吸' })).not.toBeChecked();
   expect(screen.getByRole('switch', { name: '背景呼吸' })).toBeDisabled();
-  expect(screen.getByText('系统已开启减弱动态效果。')).toBeInTheDocument();
+  expect(screen.getByText('系统已减弱动态效果。')).toBeInTheDocument();
 });
 
 it('设置使用 Shiori 的七类侧栏，服务作为插件下级页面可返回', async () => {

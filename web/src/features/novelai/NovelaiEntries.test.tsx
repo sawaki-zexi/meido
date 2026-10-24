@@ -31,11 +31,11 @@ it('refreshes studio permission and defaults after saving plugin settings withou
   expect(screen.getByRole('button', { name: '生成一张图片' })).toBeDisabled();
   await user.click(screen.getByRole('button', { name: 'NovelAI 设置' }));
   const settings = await screen.findByRole('dialog', { name: '设置' });
-  await user.click(await within(settings).findByLabelText('允许角色在聊天中自主生成表情（同时开放手动生图）'));
+  await user.click(await within(settings).findByLabelText('允许聊天表情与手动生图'));
   await user.selectOptions(within(settings).getByLabelText('默认生成张数'), '3');
-  await user.click(within(settings).getByLabelText('我确认当前公共参数的有限生图消费'));
+  await user.click(within(settings).getByLabelText('我确认生图消费'));
   await user.click(within(settings).getByRole('button', { name: '保存生图设置' }));
-  await within(settings).findByText('NovelAI 生图设置已保存；场景 CG 在角色参数中单独确认。');
+  await within(settings).findByText('NovelAI 生图设置已保存。');
   await user.click(within(settings).getByRole('button', { name: '关闭' }));
   await waitFor(() => expect(screen.getByRole('button', { name: '生成 3 张图片' })).toBeEnabled());
   await user.type(screen.getByLabelText('工作台英文正向 tags'), 'blue sky');

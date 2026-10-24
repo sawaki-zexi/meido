@@ -61,7 +61,6 @@ export function RolePurposeSettings({ purpose, onRoleSaved, serviceVersion = 0 }
     finally { setBusy(false); }
   }
   return <section className="role-purpose-settings" aria-label="角色用途参数">
-    <p className="field-hint">仅配置此功能需要的角色差异；插件启停由全局列表控制。</p>
     {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
     {roles.length === 0 && <p>请先创建角色。</p>}
     {roles.length > 0 && <label className="field">角色<select aria-label="角色参数" value={selectedId} disabled={busy} onChange={event => {

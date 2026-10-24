@@ -44,7 +44,7 @@ it('enables CG independently with an explicit model and renews consent when asse
   expect(saved).toMatchObject({ agentConfig: { novelai: { manualEnabled: false, sceneCgEnabled: true,
     scenePromptModelConfigurationId: 'helper', autoWritebackRoleAssets: true, promptTagsEnabled: true,
     allowedPromptTagRatings: ['general', 'mature'], consentRevision: 3 } } });
-  expect(screen.getByText(/辅助调用本身也计入/)).toBeInTheDocument();
+  expect(screen.getByText(/辅助调用也计入额度，未出图可能计费/)).toBeInTheDocument();
   await user.click(screen.getByRole('checkbox', { name: '允许 explicit 标签' }));
   expect(screen.getByRole('checkbox', { name: /我确认当前设置的有限生图消费/ })).not.toBeChecked();
   await user.click(cg);

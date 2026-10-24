@@ -28,7 +28,7 @@ export function DesktopPetSettings({ roleId, disabled = false }: { roleId: strin
   const locked = disabled || busy || !state;
   const selected = state?.packages.find((item) => item.id === state.selectedPackageId);
   return <fieldset aria-label="桌宠设置"><legend>桌宠</legend>
-    <p className="field-hint">导入 Shiori 动作包后显式开启。设置立即生效；同一时间只显示一个角色，仅当前主人桌面对话可以控制。</p>
+    <p className="field-hint">导入 Shiori 动作包后开启；同一时间显示一个角色。</p>
     <label className="field">导入桌宠 ZIP
       <input type="file" accept=".zip,application/zip" aria-label="导入桌宠ZIP" disabled={locked}
         onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = '';
@@ -44,7 +44,7 @@ export function DesktopPetSettings({ roleId, disabled = false }: { roleId: strin
       disabled={locked || !selected} onChange={(event) => { const enabled = event.currentTarget.checked;
         if (state) void perform(() => desktopPet.configure(roleId, state, state.selectedPackageId, enabled)); }} /><span>开启角色桌宠</span></label>
     {selected && <div><img src={desktopPet.preview(roleId, selected.id)} alt={`${selected.displayName}预览`} width="96" height="104" style={{ objectFit: 'contain' }} />
-      <p>{selected.description}</p><p>可用动作：{Object.keys(selected.actions).join('、') || '无自定义动作'}；支持移动到五个桌面位置。</p></div>}
+      <p>{selected.description}</p><p>可用动作：{Object.keys(selected.actions).join('、') || '无自定义动作'}</p></div>}
     <p role="status">{state ? labels[state.host.status] ?? state.host.status : '正在读取…'}{state?.unavailableReason ? ` · ${state.unavailableReason}` : ''}</p>
     <button type="button" className="ghost" disabled={locked || !state?.enabled} onClick={() => void perform(() => desktopPet.restart(roleId))}>重启桌宠</button>
     <button type="button" className="ghost" disabled={locked} onClick={() => void perform(() => desktopPet.status(roleId))}>刷新状态</button>

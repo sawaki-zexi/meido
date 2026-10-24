@@ -17,7 +17,7 @@ it('独立保存桌宠开关并显示原生状态与动作回执', async () => {
       return { body: state };
     } });
   render(<DesktopPetSettings roleId="r1" />);
-  expect(await screen.findByText('可用动作：wave；支持移动到五个桌面位置。')).toBeTruthy();
+  expect(await screen.findByText('可用动作：wave')).toBeTruthy();
   const toggle = screen.getByRole('checkbox', { name: '开启角色桌宠' });
   expect(toggle).not.toBeChecked();
   await userEvent.click(toggle);

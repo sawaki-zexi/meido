@@ -28,11 +28,11 @@ export function ScreenPerceptionSettings({ draft, onChange, disabled, showEnable
   const selected = configurations.find((item) => item.id === selectedId);
   const missing = !loading && !error && Boolean(selectedId) && !selected;
   return <section className="screen-perception-settings" aria-label="屏幕感知配置">
-    {!showEnabledToggle && <p className="field-hint">画面发送到所选视觉连接，本地不保存原图；分析摘要会用于当前对话</p>}
+    {!showEnabledToggle && <p className="field-hint">截图发送给所选模型，本地不保存。</p>}
     {showEnabledToggle && <label className="field checkbox-field">
       <input type="checkbox" aria-label="允许按需观察主屏" aria-describedby={hintId} checked={draft.screenPerceptionEnabled} disabled={disabled} onChange={(event) => onChange({ ...draft, screenPerceptionEnabled: event.target.checked })} />
       <span>允许按需观察主屏</span>
-      <small className="field-hint" id={hintId}>画面发送到所选视觉连接，本地不保存原图；分析摘要会用于当前对话</small>
+      <small className="field-hint" id={hintId}>截图发送给所选模型，本地不保存。</small>
     </label>}
     <label className="field">
       <span>视觉模型连接</span>
@@ -49,13 +49,11 @@ export function ScreenPerceptionSettings({ draft, onChange, disabled, showEnable
           {configuration.provider} · {configuration.model} · {configuration.api ?? "openai-completions"} · {configuration.id}
         </option>)}
       </select>
-      {selected && <small style={{ color: "var(--ink-soft)", overflowWrap: "anywhere" }}>所选连接：{selected.provider} · {selected.model} · {selected.api ?? "openai-completions"}（ID：{selected.id}）</small>}
-      <small className="field-hint">默认使用角色当前的聊天模型，也可以单独选择支持图片输入的连接。已选连接失效时不会自动换用其他模型。</small>
     </label>
     {loading && <p role="status">正在加载视觉模型连接…</p>}
     {missing && <p role="status">连接已不存在，请重新选择视觉模型连接。</p>}
     {error && <p role="status">{error}</p>}
-    {!loading && !error && configurations.length === 0 && <p>暂无已保存的模型连接，请先在模型设置中添加。</p>}
+    {!loading && !error && configurations.length === 0 && <p>请先添加模型连接。</p>}
     <div className="screen-perception-actions">
       <button type="button" className="ghost" disabled={disabled || loading} onClick={() => setRevision((value) => value + 1)}>刷新视觉连接</button>
       <button type="button" className="ghost" disabled={disabled} onClick={() => setSettingsOpen(true)}>打开模型设置</button>
