@@ -139,6 +139,8 @@ class GenerationLedger:
             if scene_input is not None:
                 connection.execute("UPDATE novelai_attempts SET purpose='scene_cg',phase='auxiliary',scene_input=?,asset_writeback_pending=? WHERE attempt_id=?",
                     (canonical(scene_input), int(asset_writeback_requested), attempt_id))
+            elif parameters.get('intent') == 'chat_expression':
+                connection.execute("UPDATE novelai_attempts SET purpose='chat_expression' WHERE attempt_id=?", (attempt_id,))
             connection.execute('INSERT INTO novelai_human_claims VALUES(?,?,?,?)', (role_id, source_scope, human_key, attempt_id))
             for owner in ('*',) if scene_input is not None else ('*', role_id):
                 connection.execute('INSERT INTO novelai_daily VALUES(?,?,1) ON CONFLICT(day,role_id) DO UPDATE SET attempts=attempts+1', (day, owner))

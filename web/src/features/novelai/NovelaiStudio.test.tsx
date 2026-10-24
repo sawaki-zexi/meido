@@ -47,34 +47,19 @@ it('shows the selected role history on a stage and reuses parameters without con
   expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
 });
 
-it('edits quality preferences in the studio and renews manual consumption consent', async () => {
-  let config = { ...configuration, addQualityTags: false, undesiredContentPreset: 0 };
+it('keeps service preferences in plugin settings while retaining manual parameter entry', async () => {
   const { calls } = fakeBackend({
-    'GET /api/services/novelai': () => ({ body: config }),
+    'GET /api/services/novelai': () => ({ body: configuration }),
     'GET /api/roles/r1/generations': () => ({ body: page([]) }),
-    'PUT /api/services/novelai': (init) => {
-      const { expectedRevision, ...changes } = JSON.parse(String(init?.body));
-      expect(expectedRevision).toBe(config.revision);
-      config = { ...config, ...changes, revision: config.revision + 1, manualConsentRevision: config.revision + 1 };
-      return { body: config };
-    },
   });
   const user = userEvent.setup();
-  render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
+  const openSettings = vi.fn();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" onOpenSettings={openSettings} />);
   await screen.findByText('暂无生图历史。');
-  await user.click(screen.getByRole('button', { name: '生成偏好' }));
-  const dialog = screen.getByRole('dialog', { name: '工作台生成偏好' });
-  await user.click(within(dialog).getByLabelText('自动添加质量标签'));
-  await user.selectOptions(within(dialog).getByLabelText('负向预设'), '2');
-  expect(within(dialog).getByRole('button', { name: '保存生成偏好' })).toBeEnabled();
-  await user.click(within(dialog).getByLabelText('我确认当前有限生图许可可用于这些设置'));
-  await user.click(within(dialog).getByRole('button', { name: '保存生成偏好' }));
-  expect(await within(dialog).findByText('工作台生成偏好已保存；当前手动许可已按新配置确认。')).toBeInTheDocument();
-  expect(config).toMatchObject({ addQualityTags: true, undesiredContentPreset: 2, revision: 4, manualConsentRevision: 4 });
+  await user.click(screen.getByRole('button', { name: 'NovelAI 设置' }));
+  expect(openSettings).toHaveBeenCalledTimes(1);
+  expect(screen.getByLabelText('工作台英文正向 tags')).toBeInTheDocument();
   expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
-  expect(calls.find((call) => call.method === 'PUT')?.body).toMatchObject({
-    addQualityTags: true, undesiredContentPreset: 2, confirmManualConsumption: true,
-  });
 });
 
 it('opens the current role prompt-tag library from the studio without starting generation', async () => {

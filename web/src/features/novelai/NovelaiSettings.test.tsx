@@ -28,7 +28,7 @@ it('saves ordinary settings without reading or resubmitting the existing token',
   await user.clear(screen.getByLabelText('最多采样步数'));
   await user.type(screen.getByLabelText('最多采样步数'), '12');
   await user.click(screen.getByRole('button', { name: '保存生图设置' }));
-  expect(await screen.findByText(/公共生图参数已保存/)).toBeInTheDocument();
+  expect(await screen.findByText(/NovelAI 生图设置已保存/)).toBeInTheDocument();
   const saves = calls.filter((item) => item.method !== 'GET');
   expect(saves).toHaveLength(1);
   expect(saves[0].body).not.toHaveProperty('token');
@@ -57,7 +57,7 @@ it('saves prompt-quality options and reloads the owner-selected values', async (
   await user.click(screen.getByLabelText('自动添加质量标签'));
   await user.selectOptions(screen.getByLabelText('负向预设'), '2');
   await user.click(screen.getByRole('button', { name: '保存生图设置' }));
-  expect(await screen.findByText(/公共生图参数已保存/)).toBeInTheDocument();
+  expect(await screen.findByText(/NovelAI 生图设置已保存/)).toBeInTheDocument();
   expect(config.addQualityTags).toBe(true);
   expect(config.undesiredContentPreset).toBe(2);
   first.unmount();
@@ -90,7 +90,7 @@ it('enables NSFW default-model mode only after full is explicitly allowed', asyn
   expect(screen.getByLabelText('NSFW 默认模型模式')).not.toBeDisabled();
   await user.click(screen.getByLabelText('NSFW 默认模型模式'));
   await user.click(screen.getByRole('button', { name: '保存生图设置' }));
-  expect(await screen.findByText(/公共生图参数已保存/)).toBeInTheDocument();
+  expect(await screen.findByText(/NovelAI 生图设置已保存/)).toBeInTheDocument();
   expect(config).toMatchObject({ allowedModels: ['nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full'], nsfwEnabled: true,
     nsfwModel: 'nai-diffusion-4-5-full' });
   expect(calls.find((item) => item.method === 'PUT')?.body).toMatchObject({ nsfwEnabled: true, nsfwModel: 'nai-diffusion-4-5-full' });
@@ -116,7 +116,7 @@ it('persists independent txt2img and img2img mode switches', async () => {
   expect(screen.getByLabelText('允许图生图')).toBeChecked();
   await user.click(screen.getByLabelText('允许图生图'));
   await user.click(screen.getByRole('button', { name: '保存生图设置' }));
-  expect(await screen.findByText(/公共生图参数已保存/)).toBeInTheDocument();
+  expect(await screen.findByText(/NovelAI 生图设置已保存/)).toBeInTheDocument();
   expect(config.allowTxt2Img).toBe(true);
   expect(config.allowImg2Img).toBe(false);
   expect(calls.find((item) => item.method === 'PUT')?.body).toMatchObject({ allowTxt2Img: true, allowImg2Img: false });
@@ -141,7 +141,7 @@ it('persists the owner-selected default sample count', async () => {
   await screen.findByLabelText('默认生成张数');
   await user.selectOptions(screen.getByLabelText('默认生成张数'), '3');
   await user.click(screen.getByRole('button', { name: '保存生图设置' }));
-  expect(await screen.findByText(/公共生图参数已保存/)).toBeInTheDocument();
+  expect(await screen.findByText(/NovelAI 生图设置已保存/)).toBeInTheDocument();
   expect(config.defaultSamples).toBe(3);
   expect(calls.find((item) => item.method === 'PUT')?.body).toMatchObject({ defaultSamples: 3 });
 });

@@ -15,7 +15,7 @@ import { pluginServices, type SettingsServiceId } from './navigation';
 
 type Row = { id: PluginId; name: string; description: string; enabled?: boolean; state?: PluginState; problem?: string };
 const services: Row[] = [
-  { id: 'novelai', name: 'NovelAI 生图', description: '手动生图使用公共许可；场景 CG 按角色配置。' },
+  { id: 'novelai', name: 'NovelAI 生图', description: '角色在聊天中自主决定是否生成表情；手动工作台与场景 CG 共用这里的服务边界。' },
   { id: 'coding', name: '编程委托', description: '将任务委托给已授权的可信仓库和专用 CLI。' },
   { id: 'todo', name: '待办', description: '查询、管理主人的待办和提醒。' },
 ];

@@ -8,7 +8,7 @@
 
 ## 1. 用户结果与完整范围
 
-主人独立配置 NovelAI 服务并批准角色的有限消费额度后，角色在主人真实输入的当前回合中按需 txt2img 或使用当前获授权底图 img2img。图片保存为角色附件，在原会话显示；后台生成完成后也只回原来源。主人能浏览持久历史、查看实际参数并明确发起一次新的重生成，替换指定消息图片而不影响其他附件。
+主人在插件设置中独立配置 NovelAI 服务并批准有限消费额度后，角色可以在主人真实输入的当前回合自行判断是否值得生成一张表情图；模型工具只提交英文情绪、动作和构图 tags，宿主补齐受控参数并以 txt2img 回到原会话。主人仍能从聊天侧或独立图片工作台手动填写完整 txt2img/img2img 参数，浏览持久历史、查看实际参数并明确发起一次新的重生成，替换指定消息图片而不影响其他附件。
 
 主人另行开启人类回合场景 CG 并选择辅助模型后，宿主从该回合已完成的对话提交场景观察，按场景变化、视觉去重和冷却生成图片。手动生图、CG、历史、重生成和媒体单次消费都属于本票，不能以只有健康检查或只有一个工具名称验收。
 
@@ -31,7 +31,7 @@
 | 决策 | 本草案采用的方案 |
 | --- | --- |
 | 服务与凭据 | 一个应用级 NovelAI 服务，固定 https://image.novelai.net；token 存独立系统 vault 键。生产不开放自定义 endpoint；不读取角色聊天密钥或整进程环境。 |
-| 启用与消费许可 | 服务、角色 manual、角色 auto-CG、角色资产写回均默认关；`allowTxt2Img` 与 `allowImg2Img` 默认开启且可独立关闭。开启 manual/CG 时主人必须确认该用途的有限消费许可及“次数不是 Anlas 估价”；仅 role enabled 不授予无限消费。 |
+| 启用与消费许可 | NovelAI 服务和公共聊天/手动生图许可默认关闭；角色 auto-CG、角色资产写回也默认关闭；`allowTxt2Img` 与 `allowImg2Img` 默认开启且可独立关闭。开启公共生图许可或 CG 时主人必须确认有限消费许可及“次数不是 Anlas 估价”；仅 role enabled 不授予无限消费。 |
 | 当前来源 | 只接真实主人当前输入或主人明确的 UI 生成/重生成操作；渠道沿用被冻结的 owner_context、账号/配对代际与线程授权，禁止模型自报身份。 |
 | 模型与参数 | allowedModels 默认仅 nai-diffusion-4-5-curated；主人可显式加入 nai-diffusion-4-5-full。默认生成张数由 `defaultSamples` 控制（1–4，默认1），显式批量最多4张、1,048,576像素、28步、k_euler_ancestral；不自动升级版本。NSFW 默认模型模式只有在 `nsfwModel` 已进入 allowlist 后才可开启，只影响未指定模型的默认选择，显式模型仍须通过 allowlist。 |
 | 有限额度 | 默认账户合计20次/UTC日，每角色 manual含重生成10次/日、CG含辅助调用3次/日；同一真实输入回合最多一个生成意图。均为本地尝试上限，不是官方费用或免费额度。 |
@@ -54,20 +54,20 @@ UTC日计数由持久账本记录，时钟回退不清空已用额度；提高/�
 
 在 `agentConfig.novelai` 保存 manualEnabled、manualDailyAttempts=10、sceneCgEnabled、sceneCgDailyAttempts=3、scenePromptModelConfigurationId=null、sceneCgPromptInstructions（默认空，最多2000字符）、autoWritebackRoleAssets=false、consentRevision。补充要求按角色隔离，仅作为已授权 CG 辅助模型的主人绘图偏好；它与场景事实分开注入，在候选创建时冻结，手动生图不读取。宿主为 CG 正向 tags 追加 `third-person view`、`cinematic composition`、`character visible in frame`，负向 tags 追加 `first-person view`、`pov`、`selfie`，均按逗号 tag 大小写不敏感去重。任何 NovelAI 角色配置修改都会使旧在途使用资格失效。开启对应用途时记录主人确认的设置版本；CG开启必须有存在的辅助连接ID，绝不回退 active/chat 配置。降低额度立即生效，连接/许可修改使在途使用资格失效。
 
-工具 definition：name=generate_image、risk=external、source=builtin:novelai、exposure=direct、external_allowed=false、timeout_seconds=330、output_limit=4000。外层余量只用于300秒执行deadline触发后的本地取消收尾，不能延长外部请求期限或先返回后留后台资源。这是主人来源许可，非“禁止所有渠道”；渠道主人仍须通过现有 owner_context 门禁。冻结候选、版本与执行检查沿用ADR-0011，Skill/模型/搜索结果不能增权。目录解释关闭、缺凭据、缺额度、辅助连接失效；目录和配置健康检查只读本地，不试生图或访问账号诊断接口。
+工具 definition：name=generate_image、risk=external、source=builtin:novelai、exposure=direct、external_allowed=false、timeout_seconds=330、output_limit=4000。普通聊天只要求必填 `prompt` 与可选 `negative_prompt`，角色自行判断是否调用且不应每回合调用；schema 保留 mode、尺寸、模型等可选高级字段以兼容主人明确要求的历史参数复用。普通聊天省略高级字段时，宿主固定 `txt2img`、一张图默认、默认模型/采样器/尺寸/步数/seed、`intent=chat_expression` 和原回复投递；显式高级字段仍受同一 allowlist 和来源校验。主人手动工作台/API 仍使用完整参数契约。外层余量只用于300秒执行deadline触发后的本地取消收尾，不能延长外部请求期限或先返回后留后台资源。这是主人来源许可，非“禁止所有渠道”；渠道主人仍须通过现有 owner_context 门禁。冻结候选、版本与执行检查沿用ADR-0011，Skill/模型/搜索结果不能增权。目录解释关闭、缺凭据、缺额度、辅助连接失效；目录和配置健康检查只读本地，不试生图或访问账号诊断接口。
 
 | 工具参数 | 具体约束 |
 | --- | --- |
-| prompt / negative_prompt | prompt必填、非空≤4000字符，negative≤4000；首版保留上游ASCII英文提示词适配，不把此要求写成所有NovelAI模型的官方限制。真实主人聊天工具请求会先用当前主人消息匹配角色标签库，再把命中的正负 tags 写入本次 attempt；工作台 UI 和重生成不读取宿主当前消息做隐式手动扩写；场景 CG 仍使用候选中冻结的主人消息走独立 CG 扩写路径。 |
-| mode / base_attachment_id | mode必填txt2img或img2img；后者必填当前人类消息及其宿主核验引用附件allowlist中的图片ID，前者禁止底图字段；保留引用不等于开放任意历史附件。 |
+| prompt / negative_prompt | prompt必填、非空≤4000字符，negative≤4000；首版保留上游ASCII英文提示词适配，不把此要求写成所有NovelAI模型的官方限制。普通聊天只由角色提供这两个字段，宿主补齐其他参数；请求会先用当前主人消息匹配角色标签库，再把命中的正负 tags 写入本次 attempt。工作台 UI 和重生成不读取宿主当前消息做隐式手动扩写；场景 CG 仍使用候选中冻结的主人消息走独立 CG 扩写路径。 |
+| mode / base_attachment_id | 手动/API mode 为必填 txt2img 或 img2img；后者必填当前人类消息及其宿主核验引用附件allowlist中的图片ID，前者禁止底图字段。普通聊天省略 mode 和底图时由宿主固定 txt2img；schema 保留高级字段只为兼容主人明确的历史参数复用，不能借此选择任意来源附件或申请场景 CG。 |
 | size_preset / custom_width / custom_height | square=1024×1024、landscape=1216×832、portrait=832×1216；custom每边64–1024且为64倍数，须同时提供；面积始终≤1,048,576。64倍数是首版收紧值，真实模型接受能力仍须验收。 |
 | steps / seed / sampler / model | steps整数1–28默认28；seed整数0–2³²−1，省略则宿主生成并持久后再发送；sampler在显式allowlist中，首版允许k_euler_ancestral、k_euler；model只能选当前allowedModels。未指定模型时按 `nsfwEnabled` 选择 `nsfwModel` 或 `defaultModel`。 |
 | strength / noise | 仅img2img允许；有限number，strength=.7且范围.01–1，noise=.2且范围0–.99；拒绝bool、NaN、Infinity和隐式字符串转换。 |
-| intent / scene_key | intent默认user_requested；scene_cg必须非空scene_key且匹配本次宿主已提交观察。模型不能靠填写intent申请CG许可或制造场景。 |
-| samples | StrictInt，默认1，范围1–4；手动聊天/工作台显式选择并按一次 attempt 保存、展示全部返回图片。CG 与 replacement 必须为1；响应数量不一致时保留已验证图片并记录协议异常，不静默丢图。 |
+| intent / scene_key | 手动/API intent默认user_requested；聊天工具由宿主固定为chat_expression；scene_cg必须非空scene_key且匹配本次宿主已提交观察。模型不能靠填写intent申请CG许可或制造场景。 |
+| samples | StrictInt，默认1，范围1–4；手动工作台显式选择并按一次 attempt 保存、展示全部返回图片，普通聊天省略时由宿主固定一张，显式高级兼容参数仍受1–4边界约束。CG 与 replacement 必须为1；响应数量不一致时保留已验证图片并记录协议异常，不静默丢图。 |
 | background | 可选bool，默认false；true为明确受管后台执行，父回合结束仍继续，结果由原来源outbox回灌；不是延长普通前台取消的借口。 |
 
-所有对象 additionalProperties=false，条件必填在schema和运行入口双检；拒绝role/session/source/token/endpoint/path等额外字段。NovelAI payload 的 `n_samples` 来自已校验的 `samples`；省略 `samples` 的手动请求使用服务级 `defaultSamples`，只开放有限的1–4张，不复制 Shiori 的任意其他默认样本语义。上游其余固定v4.5参数按被测请求构造保留，不宣称支持Vibe/人物参考、inpaint或其他未暴露能力。
+所有对象 additionalProperties=false，条件必填在schema和运行入口双检；拒绝role/session/source/token/endpoint/path等额外字段。手动/API 请求省略 `samples` 时使用服务级 `defaultSamples`；普通聊天省略 `samples` 时由宿主固定一张，显式高级字段仍受同一 allowlist 和来源校验。NovelAI payload 的 `n_samples` 来自已校验的 `samples`，只开放有限的1–4张，不复制 Shiori 的任意其他默认样本语义。上游其余固定v4.5参数按被测请求构造保留，不宣称支持Vibe/人物参考、inpaint或其他未暴露能力。
 
 应用API拟采用：GET/PUT `/api/services/novelai` 与明确token设置/清空操作；POST `/api/roles/{roleId}/generations`、GET同路径的分页历史、GET `.../{generationId}`、POST `.../{generationId}/regenerate`、POST `.../{generationId}/cancel`。UI请求带稳定requestId，服务将其绑定本地真实主人操作；不能仅凭模型伪造requestId进入UI信任入口。
 

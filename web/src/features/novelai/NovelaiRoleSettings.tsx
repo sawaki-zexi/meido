@@ -10,13 +10,13 @@ export function NovelaiRoleSettings({ draft, onChange, disabled = false, sceneOn
     selectedModel, dismissError, dismissModelError, refreshModels } = useNovelaiRoleSettings(draft, onChange);
   return <fieldset aria-label="角色生图许可" disabled={disabled}>
     <legend>生图</legend>
-    <p>按主人当前输入或明确操作生成；图片只属于本角色和原来源。开启并确认有限许可后才接受新的生成请求。</p>
+    <p>{sceneOnly ? '聊天中的表情生图由 NovelAI 插件设置统一启用，角色会自行判断是否需要调用；这里继续配置本角色的场景 CG、标签和资产写回。' : '角色可以在聊天中自行判断是否生成当前表情；图片只属于本角色和原来源。主人需要先在 NovelAI 插件设置中确认有限消费许可。'}</p>
     {error && <Notice onDismiss={dismissError}>{error}</Notice>}
     {!configuration ? <Placeholder loading>正在读取独立服务设置…</Placeholder> : !available ? <p>请先在设置中开启 NovelAI 服务并配置独立凭据。</p> : <p>账户每日最多 {configuration.dailyAttemptLimit} 次，每张最多 {configuration.maxPixels.toLocaleString()} 像素、{configuration.maxSteps} 步。</p>}
     {!sceneOnly && <><label className="field checkbox-field"><input type="checkbox" checked={config.manualEnabled}
       disabled={disabled || (!available && !config.manualEnabled)}
-      onChange={(event) => patch({ manualEnabled: event.target.checked, consentRevision: 0 })} />允许按主人输入生图</label>
-    {config.manualEnabled && <label className="field"><span>角色手动每日最多尝试</span><input aria-label="角色手动每日最多尝试" type="number" min="1" max="100" step="1" required value={config.manualDailyAttempts}
+      onChange={(event) => patch({ manualEnabled: event.target.checked, consentRevision: 0 })} />允许本角色在聊天中自主生成表情</label>
+    {config.manualEnabled && <label className="field"><span>本角色聊天表情每日最多尝试</span><input aria-label="本角色聊天表情每日最多尝试" type="number" min="1" max="100" step="1" required value={config.manualDailyAttempts}
       onChange={(event) => patch({ manualDailyAttempts: Number(event.target.value), consentRevision: 0 })} /></label>}</>}
     <label className="field checkbox-field"><input type="checkbox" checked={config.sceneCgEnabled}
       disabled={disabled || (!available && !config.sceneCgEnabled)}
@@ -45,7 +45,7 @@ export function NovelaiRoleSettings({ draft, onChange, disabled = false, sceneOn
     <label className="field checkbox-field"><input type="checkbox" checked={config.promptTagsEnabled}
       onChange={(event) => patch({ promptTagsEnabled: event.target.checked, consentRevision: 0 })} />允许匹配本角色提示标签</label>
     {config.promptTagsEnabled && <>
-      <p>在本角色“生图与历史”中管理标签和本地预览。只匹配当前主人输入，预览不调用模型或生成图片。</p>
+      <p>角色聊天生图会匹配当前主人输入；预览不调用模型或生成图片。</p>
       {(['general', 'mature', 'explicit'] as PromptTagRating[]).map((rating) => <label className="field checkbox-field" key={rating}>
         <input type="checkbox" checked={config.allowedPromptTagRatings.includes(rating)}
           disabled={disabled || (config.allowedPromptTagRatings.length === 1 && config.allowedPromptTagRatings.includes(rating))}

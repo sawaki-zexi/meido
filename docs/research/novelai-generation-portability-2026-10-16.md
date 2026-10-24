@@ -17,7 +17,7 @@
 
 ### Meido 当前实现
 
-- #209 工作台已有文生图/图生图、历史分页、完整请求参数、参数复用、重生成、下载和失败状态；工作台可直接打开服务级质量标签/负向预设设置与本角色提示标签库，历史详情显示每次请求实际冻结的质量选项。[NovelaiStudio.tsx](../../web/src/features/novelai/NovelaiStudio.tsx)、[StudioGenerationPreferences.tsx](../../web/src/features/novelai/StudioGenerationPreferences.tsx)、[PromptTagManager.tsx](../../web/src/features/novelai/PromptTagManager.tsx)。
+- #209 工作台已有文生图/图生图、历史分页、完整请求参数、参数复用、重生成、下载和失败状态；服务级质量标签、负向预设、模型和模式开关统一放在插件设置，工作台保留本次 tags/尺寸/底图等手动参数并可跳转 NovelAI 设置；历史详情显示每次请求实际冻结的质量选项。[NovelaiStudio.tsx](../../web/src/features/novelai/NovelaiStudio.tsx)、[NovelaiSettings.tsx](../../web/src/features/novelai/NovelaiSettings.tsx)、[PromptTagManager.tsx](../../web/src/features/novelai/PromptTagManager.tsx)。
 - NovelAI 服务和角色许可、次数限制、凭据代际及持久 attempt ledger 已落地；场景 CG 有持久去重、冷却、human-run/scene revision 校验和取消收尾。[config.py](../../backend/app/novelai_generation/config.py)、[ledger.py](../../backend/app/novelai_generation/ledger.py)、[scene.py](../../backend/app/novelai_generation/scene.py)。工作分支现已补齐全局 `addQualityTags` / `undesiredContentPreset` 设置，并将选择冻结在 attempt、发送为 `qualityToggle` / `ucPreset`，历史显示当次值；同时提供受 allowlist 约束的 `nsfwEnabled` / `nsfwModel` 默认模型模式，不自动放宽角色成人标签评级。现在支持服务级 `defaultSamples` 和显式1–4张，账本完整保存并展示返回图片；CG与单槽 replacement 仍固定一张。[parameters.py](../../backend/app/novelai_generation/parameters.py)。
 - Shiori 的角色级 CG 补充要求已在当前工作树对齐：Meido 通过 `sceneCgPromptInstructions` 保存按角色隔离、最多 2000 字符的主人绘图偏好，在候选创建时冻结并只注入 CG 辅助模型 system prompt；它不进入场景事实消息，也不影响手动生图。工作树仍未合入 `main`，所以该能力不代表当前主分支已提供。
 

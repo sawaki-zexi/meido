@@ -28,7 +28,7 @@ export type GenerationView = {
   generationId: string; attemptId: string; roleId: string; status: string; parameters: (GenerationParameters & {
     width: number; height: number; seed: number; samples?: number; qualityToggle?: boolean; ucPreset?: number;
   }) | null;
-  purpose?: 'manual' | 'scene_cg'; phase?: 'auxiliary' | 'generation' | 'completed';
+  purpose?: 'manual' | 'chat_expression' | 'scene_cg'; phase?: 'auxiliary' | 'generation' | 'completed';
   auxiliaryConsumption?: 'possible' | 'not_dispatched'; auxiliaryStatus?: 'not_dispatched' | 'dispatching' | 'succeeded' | 'failed';
   writebackStatus?: 'not_requested' | 'writing' | 'uncertain' | 'applied' | 'failed';
   attachments: ChatAttachment[]; taskId: string | null; createdAt: string; errorCode: string; consumption: string; deliveryStatus: string;

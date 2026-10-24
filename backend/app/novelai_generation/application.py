@@ -136,7 +136,7 @@ class NovelaiApplication:
             return '尚未配置独立 NovelAI 凭据，或凭据清理尚未完成'
         policy = role.agentConfig.novelai
         if not (policy.sceneCgEnabled if scene else config['manualEnabled']):
-            return '场景 CG 许可已关闭' if scene else '全局手动生图许可已关闭'
+            return '场景 CG 许可已关闭' if scene else '聊天表情和手动生图许可已关闭'
         if scene and (not policy.scenePromptModelConfigurationId or self.model_configuration(policy.scenePromptModelConfigurationId) is None):
             return '场景辅助模型连接已不可用'
         if (policy.consentRevision if scene else config['manualConsentRevision']) != config['revision']:
@@ -216,8 +216,8 @@ class NovelaiApplication:
         validate_image(content, max_pixels=16 * 1024 * 1024)
         return content
 
-    def _expand_manual_prompt_tags(self, source: GenerationContext, role, arguments):
-        """Apply the role tag library only to a real owner-turn tool request."""
+    def _expand_chat_prompt_tags(self, source: GenerationContext, role, arguments):
+        """Apply the role tag library to a real owner-turn expression request."""
         policy = role.agentConfig.novelai
         if source.ui_action or not policy.promptTagsEnabled:
             return arguments
@@ -276,9 +276,9 @@ class NovelaiApplication:
                     raise PermissionError('generation request was cancelled')
                 if scene_input is not None and (source.scene_revision is None or not self.scenes.current(source)):
                     raise PermissionError('scene generation requires a current host candidate')
-                manual_arguments = arguments
+                chat_arguments = arguments
                 if scene_input is None:
-                    manual_arguments = self._expand_manual_prompt_tags(source, role, arguments)
+                    chat_arguments = self._expand_chat_prompt_tags(source, role, arguments)
                 parameters: dict[str, object] = ({
                     'background': True,
                     # Scene preferences are captured with the candidate. The
@@ -286,7 +286,7 @@ class NovelaiApplication:
                     # newer service configuration while committing its image.
                     'qualityToggle': settings.addQualityTags,
                     'ucPreset': settings.undesiredContentPreset,
-                } if scene_input is not None else normalize_request(manual_arguments, settings))
+                } if scene_input is not None else normalize_request(chat_arguments, settings))
                 if regeneration is not None and delivery_mode == 'replacement' and parameters.get('samples', 1) != 1:
                     raise ValueError('replacement delivery supports exactly one generated image')
                 owned_input = None if scene_input is not None else self._input(source, parameters)

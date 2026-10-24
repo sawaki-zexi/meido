@@ -30,7 +30,7 @@ class GenerationRequest(BaseModel):
     model: str | None = None
     strength: StrictFloat | None = Field(default=None, ge=.01, le=1, allow_inf_nan=False)
     noise: StrictFloat | None = Field(default=None, ge=0, le=.99, allow_inf_nan=False)
-    intent: Literal['user_requested', 'scene_cg'] = 'user_requested'
+    intent: Literal['user_requested', 'chat_expression', 'scene_cg'] = 'user_requested'
     scene_key: str | None = Field(default=None, max_length=80)
     background: StrictBool = False
 
@@ -49,7 +49,7 @@ def normalize_request(arguments: dict[str, object], settings: NovelaiSettings) -
         **arguments,
         'samples': settings.defaultSamples if 'samples' not in arguments else arguments['samples'],
     })
-    if not request.prompt or request.intent != 'user_requested' or request.scene_key is not None:
+    if not request.prompt or request.intent not in {'user_requested', 'chat_expression'} or request.scene_key is not None:
         raise ValueError('scene generation requires a host-committed observation')
     if request.mode == 'txt2img' and not settings.allowTxt2Img:
         raise ValueError('txt2img mode is disabled')

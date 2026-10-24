@@ -22,13 +22,13 @@ it('requires explicit current-version finite consent and preserves unrelated rol
   }
   const user = userEvent.setup();
   render(<Harness />);
-  expect(await screen.findByRole('checkbox', { name: '允许按主人输入生图' })).not.toBeChecked();
+  expect(await screen.findByRole('checkbox', { name: '允许本角色在聊天中自主生成表情' })).not.toBeChecked();
   await screen.findByText(/账户每日最多 20 次/);
-  await user.click(screen.getByRole('checkbox', { name: '允许按主人输入生图' }));
+  await user.click(screen.getByRole('checkbox', { name: '允许本角色在聊天中自主生成表情' }));
   await user.click(screen.getByRole('button', { name: '保存角色' }));
   expect(saved).toBeUndefined();
-  await user.clear(screen.getByLabelText('角色手动每日最多尝试'));
-  await user.type(screen.getByLabelText('角色手动每日最多尝试'), '5');
+  await user.clear(screen.getByLabelText('本角色聊天表情每日最多尝试'));
+  await user.type(screen.getByLabelText('本角色聊天表情每日最多尝试'), '5');
   await user.click(screen.getByRole('checkbox', { name: /我确认当前设置的有限生图消费/ }));
   await user.click(screen.getByRole('button', { name: '保存角色' }));
   expect(saved).toMatchObject({ agentConfig: { enabledTools: ['read_file'], novelai: { manualEnabled: true,

@@ -87,7 +87,7 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
       {page?.generations.length === 0 && <p>暂无生图历史。</p>}
       {page?.generations.filter((item) => item.roleId === role.id).map((item) => <article key={item.attemptId} aria-label={`生成记录 ${item.attemptId}`}>
         <p>尝试 {item.attemptId}{item.parentAttemptId && ` · 重生成自 ${item.parentAttemptId}`}</p>
-        <p>{item.purpose === 'scene_cg' ? '主人回合场景 CG' : '手动生成'}{item.phase === 'auxiliary' ? ' · 辅助场景观察中' : item.phase === 'generation' ? ' · 图片生成阶段' : item.phase === 'completed' ? ' · 本次已结束' : ''}</p>
+        <p>{item.purpose === 'scene_cg' ? '主人回合场景 CG' : item.purpose === 'chat_expression' ? '聊天表情' : '手动生成'}{item.phase === 'auxiliary' ? ' · 辅助场景观察中' : item.phase === 'generation' ? ' · 图片生成阶段' : item.phase === 'completed' ? ' · 本次已结束' : ''}</p>
         <p>{labels[item.status] ?? item.status} · {new Date(item.createdAt).toLocaleString()}</p>
         <p>消费：{item.consumption === 'possible' ? '已出网，可能计费；未确认实际扣费。' : item.consumption === 'not_dispatched' ? '生成请求尚未出网。' : '消费状态尚未确认。'}</p>
         {item.purpose === 'scene_cg' && <p>{item.auxiliaryConsumption === 'possible' ? '辅助请求已出网，可能计费；未出图仍计入 CG 与账户尝试。' : item.auxiliaryConsumption === 'not_dispatched' ? '辅助请求尚未出网。' : '辅助消费状态尚未确认。'}</p>}
