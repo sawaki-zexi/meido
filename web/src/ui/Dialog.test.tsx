@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { Dialog } from "./Dialog";
 
 afterEach(cleanup);
@@ -43,4 +43,22 @@ it('顶层模态独占键盘，下层提前卸载也能在最后关闭时恢复�
   expect(screen.getByRole('dialog', { name: '记忆来源' })).toContainElement(document.activeElement as HTMLElement);
   await user.keyboard('{Escape}');
   expect(screen.getByRole('button', { name: '后台入口' })).toBeVisible();
+});
+
+it('手机会话可以从顶部拖动并更新浮层位置', () => {
+  render(<Dialog variant="phone" title="手机会话" onClose={() => undefined}><p>会话内容</p></Dialog>);
+  const handle = screen.getByRole('button', { name: '拖动手机会话' });
+  const panel = screen.getByRole('dialog', { name: '手机会话' });
+  vi.spyOn(panel, 'getBoundingClientRect').mockReturnValue({ left: 300, top: 20, width: 416, height: 400, right: 716, bottom: 420, x: 300, y: 20, toJSON: () => ({}) } as DOMRect);
+
+  const pointerEvent = (type: string, values: Record<string, number>) => {
+    const event = new Event(type, { bubbles: true });
+    for (const [key, value] of Object.entries(values)) Object.defineProperty(event, key, { value });
+    return event;
+  };
+  fireEvent(handle, pointerEvent('pointerdown', { pointerId: 1, button: 0, clientX: 100, clientY: 100 }));
+  fireEvent(handle, pointerEvent('pointermove', { pointerId: 1, clientX: 140, clientY: 130 }));
+
+  expect(panel).toHaveStyle('transform: translate3d(40px, 30px, 0)');
+  fireEvent(handle, pointerEvent('pointerup', { pointerId: 1, clientX: 140, clientY: 130 }));
 });
