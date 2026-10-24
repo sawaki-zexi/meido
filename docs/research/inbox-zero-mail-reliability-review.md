@@ -4,7 +4,7 @@
 
 最后核验：2026-10-24（Asia/Shanghai）。
 
-研究基线：Inbox Zero `main@aea0ec2db43a1147b90776d9bbf3f467afc0af26`，通过 GitHub `gh api` 固定读取；Meido 初次比较快照为 `feat/201-mail-draft-assistance` 的 `50494bd2b92db6fb123f542812703c686bf2407b`。后续源码复核覆盖提交 `45fea9b` 和 2026-10-24 本地未提交改动；前者是研究记录的固定基线，不代表当前 HEAD。未连接真实邮箱，未调用真实模型，未发送或删除邮件。
+研究基线：Inbox Zero `main@aea0ec2db43a1147b90776d9bbf3f467afc0af26`，通过 GitHub `gh api` 固定读取；Meido 初次比较快照为 `feat/201-mail-draft-assistance` 的 `50494bd2b92db6fb123f542812703c686bf2407b`。后续源码复核覆盖提交 `45fea9b` 和当前提交 `734a4dba69a990d239a395c7d7141ecfdb1dd6f1`；前者是研究记录的固定基线，不代表当前 HEAD。未连接真实邮箱，未调用真实模型，未发送或删除邮件。
 
 事实来源：
 
@@ -135,7 +135,7 @@ Meido 当前 `_draft_content` 已收集主人资料的 document ID、标题、�
 
 ## 研究限制
 
-本报告只读取公开 GitHub 源码和 Meido 本地源码/测试；没有运行 Inbox Zero 的完整应用、没有连接 Gmail/Outlook/QQ、没有调用真实模型。Inbox Zero 的行为结论固定到 `aea0ec2...`，Meido 结论覆盖 `45fea9b` 和 2026-10-24 本地未提交改动。
+本报告只读取公开 GitHub 源码和 Meido 本地源码/测试；没有运行 Inbox Zero 的完整应用、没有连接 Gmail/Outlook/QQ、没有调用真实模型。Inbox Zero 的行为结论固定到 `aea0ec2...`，Meido 结论覆盖 `45fea9b` 和当前提交 `734a4db`。
 
 ## 本轮验证
 

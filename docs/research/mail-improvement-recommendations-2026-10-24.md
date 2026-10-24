@@ -2,7 +2,7 @@
 
 状态：当前；本文区分已实现改进与仍需验证的建议，不表示真实邮箱验收已经完成。
 
-最后核验：2026-10-24；Meido `feat/201-mail-draft-assistance` 当前本地源码及未提交改动；Inbox Zero 固定提交 `aea0ec2db43a1147b90776d9bbf3f467afc0af26`。
+最后核验：2026-10-24；Meido `feat/201-mail-draft-assistance` 当前提交 `734a4dba69a990d239a395c7d7141ecfdb1dd6f1`；Inbox Zero 固定提交 `aea0ec2db43a1147b90776d9bbf3f467afc0af26`。
 
 事实来源：下列本地源码、测试，以及固定提交的 GitHub 原始源码。完整外部缓存的 HEAD 与固定提交不同，因此本次外部结论直接读取固定提交，未采用缓存工作树的新版本。
 
