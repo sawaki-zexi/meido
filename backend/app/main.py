@@ -360,7 +360,8 @@ def _publish_generation_message(role_id: str, message: Message) -> None:
         thread = multichannel_store.get_thread(role_id, message.sessionKey.removeprefix('thread:'))
         if thread is not None:
             multichannel_store.publish(role_id, {'type': 'message', 'roleId': role_id,
-                'thread': thread.public_dict(), 'message': public_message(message).model_dump(mode='json')})
+                'thread': multichannel_store.public_thread_payload(thread),
+                'message': multichannel_store.public_message_payload(thread, message)})
 
 
 def _novelai_application() -> NovelaiApplication:
@@ -3703,10 +3704,10 @@ def clear_channel_group_listening_messages(role_id: str, account_id: str, chat_i
 
 
 @app.get("/api/roles/{role_id}/channels/threads")
-def list_channel_threads(role_id: str, limit: int = 100) -> dict[str, object]:
+def list_channel_threads(role_id: str, limit: int = 100, networkOnly: bool = False) -> dict[str, object]:
     _require_channel_role(role_id)
-    threads = multichannel_store.list_threads(role_id, limit=limit)
-    return {"threads": [{**item.public_dict(), "avatarUrl": multichannel_store.avatars.url(item.account_id, "chat", item.chat_id)} for item in threads]}
+    threads = multichannel_store.list_threads(role_id, limit=limit, network_only=networkOnly)
+    return {"threads": [multichannel_store.public_thread_payload(item) for item in threads]}
 
 
 @app.get("/api/channels/avatars/{avatar_id}")
@@ -3718,23 +3719,7 @@ def get_channel_avatar(avatar_id: str) -> Response:
 
 
 def _channel_message_payload(thread, message) -> dict[str, object]:
-    payload = public_message(message).model_dump(mode="json")
-    metadata = dict(payload.get("metadata") or {})
-    metadata["threadId"] = thread.thread_id
-    sender_id = str(metadata.get("senderId") or "")
-    metadata["senderAvatarUrl"] = multichannel_store.avatars.url(thread.account_id, "sender", sender_id)
-    metadata["senderIsOwner"] = bool(sender_id) and multichannel_store.identity_is_owner(
-        role_id=thread.role_id, channel=thread.channel, scope=_channel_identity_scope(thread.channel),
-        platform_user_id=sender_id, account_id=thread.account_id,
-    )
-    source = metadata.get("viaAccount")
-    if isinstance(source, dict):
-        source = dict(source)
-        own_id = str(source.get("platformAccountId") or thread.account_id)
-        source["avatarUrl"] = multichannel_store.avatars.url(thread.account_id, "account", own_id)
-        metadata["viaAccount"] = source
-    payload["metadata"] = metadata
-    return payload
+    return multichannel_store.public_message_payload(thread, message)
 
 
 @app.get("/api/channels/listening/defaults")
@@ -3775,20 +3760,24 @@ def update_channel_listening_cap(role_id: str, thread_id: str, data: dict[str, o
 def list_channel_listening_messages(role_id: str, thread_id: str, before: int | None = None, limit: int = 50) -> dict[str, object]:
     _require_channel_role(role_id)
     try:
-        return multichannel_store.listening.page(role_id, thread_id, before=before, limit=limit)
+        page = multichannel_store.listening.page(role_id, thread_id, before=before, limit=limit)
+        thread = multichannel_store.get_thread(role_id, thread_id)
+        if thread is None:
+            raise KeyError(thread_id)
+        return {**page, "messages": [multichannel_store.public_message_payload(thread, item) for item in page["messages"]]}
     except KeyError as error:
         raise HTTPException(status_code=404, detail="当前角色的旁听群不存在") from error
 
 
 @app.get("/api/roles/{role_id}/channels/threads/{thread_id}/messages")
-def list_channel_thread_messages(role_id: str, thread_id: str, before: int | None = None, limit: int = 50) -> dict[str, object]:
+def list_channel_thread_messages(role_id: str, thread_id: str, before: int | None = None, limit: int = 50, networkOnly: bool = False) -> dict[str, object]:
     _require_channel_role(role_id)
     try:
-        thread, messages, has_more, next_before = multichannel_store.list_messages(role_id, thread_id, before=before, limit=limit)
+        thread, messages, has_more, next_before = multichannel_store.list_messages(role_id, thread_id, before=before, limit=limit, network_only=networkOnly)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="渠道线程不存在") from error
     return {
-        "thread": thread.public_dict(),
+        "thread": multichannel_store.public_thread_payload(thread),
         "messages": [_channel_message_payload(thread, item) for item in messages],
         "hasMore": has_more,
         "nextBefore": next_before,
@@ -3807,6 +3796,15 @@ async def channel_events(role_id: str) -> StreamingResponse:
 
     async def stream():
         async for payload in multichannel_store.subscribe(role_id):
+            if payload.get("type") in {"message", "listening_heard"}:
+                message = payload.get("message")
+                snapshot = payload.get("thread")
+                thread_id = payload.get("threadId") or (snapshot.get("threadId") if isinstance(snapshot, dict) else None)
+                thread = multichannel_store.get_thread(role_id, str(thread_id or ""))
+                if thread is None or thread.channel == "desktop" or not isinstance(message, dict):
+                    continue
+                payload = {**payload, "thread": multichannel_store.public_thread_payload(thread),
+                           "message": multichannel_store.public_message_payload(thread, message)}
             yield _event("channel_update", payload)
 
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -5864,8 +5862,8 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
                 multichannel_store.publish(thread.role_id, {
                     "type": "message",
                     "roleId": thread.role_id,
-                    "thread": multichannel_store.get_thread(thread.role_id, thread.thread_id).public_dict(),
-                    "message": public_message(updated).model_dump(mode="json"),
+                    "thread": multichannel_store.public_thread_payload(multichannel_store.get_thread(thread.role_id, thread.thread_id) or thread),
+                    "message": multichannel_store.public_message_payload(thread, updated),
                 })
                 try:
                     if not memory_worker.role_deletion_blocked(thread.role_id):
@@ -5899,10 +5897,11 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
                     runtime_manager.abandon_unstarted_run(run_id, "渠道回合在 Runtime 启动前中断")
                 terminal = next((item for item in reversed(session_store.list_messages(thread.session_key)) if item.runId == run_id and item.role == "assistant"), None)
                 if terminal is not None:
+                    current_thread = multichannel_store.get_thread(thread.role_id, thread.thread_id) or thread
                     multichannel_store.publish(thread.role_id, {
                         "type": "message", "roleId": thread.role_id,
-                        "threadId": thread.thread_id,
-                        "message": public_message(terminal).model_dump(mode="json"),
+                        "thread": multichannel_store.public_thread_payload(current_thread),
+                        "message": multichannel_store.public_message_payload(current_thread, terminal),
                     })
 
 

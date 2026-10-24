@@ -45,6 +45,7 @@ def test_listening_permissions_clear_and_toggle_log_are_group_scoped(tmp_path):
     store, sessions, thread = _group(tmp_path)
     store.listening.hear(thread, "heard", "heard", {"senderId": "sender"})
     store.append_event(thread, direction="inbound", content="@role", external_message_id="trigger", metadata={"listening": False})
+    store.append_event(thread, direction="inbound", content="legacy heard", external_message_id="legacy-heard", metadata={"listening": True})
     with pytest.raises(KeyError):
         store.listening.page("other-role", thread.thread_id)
     with pytest.raises(ValueError):
@@ -52,7 +53,7 @@ def test_listening_permissions_clear_and_toggle_log_are_group_scoped(tmp_path):
     store.set_group_listening("role", "qq", "group", False, operator="role")
     assert store.listening.hear(thread, "off", "off", {}) is None
     assert [toggle["operator"] for toggle in store.listening.state("role", thread.thread_id)["toggles"]] == ["role", "user"]
-    assert store.clear_listening_messages("role", "qq", "group") == 1
+    assert store.clear_listening_messages("role", "qq", "group") == 2
     assert [message.content for message in sessions.list_messages(thread.session_key)] == ["@role"]
     assert store.listening.page("role", thread.thread_id)["messages"] == []
 

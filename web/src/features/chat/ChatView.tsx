@@ -116,9 +116,9 @@ function Composer({ roleId, placeholder, disabled, sending, stopping, onSend, on
   </form>;
 }
 
-type ChatProps = { role: Role; chat: ChatState; highlightedId?: string | null; onBack: () => void; onShowProfile: () => void; onShowMemories: () => void };
+type ChatProps = { role: Role; chat: ChatState; highlightedId?: string | null; onBack: () => void; onShowProfile: () => void; onShowMemories: () => void; onShowChannels: () => void };
 
-export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfile, onShowMemories }: ChatProps) {
+export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfile, onShowMemories, onShowChannels }: ChatProps) {
   const { scrollRef, listRef, onScroll } = useChatScroll({ roleId: role.id, messages: chat.messages, sending: chat.sending, highlightedId });
   const [generationRoleId, setGenerationRoleId] = useState<string | null>(null);
   const [selectedGenerationImage, setSelectedGenerationImage] = useState<GenerationSelection | undefined>();
@@ -150,6 +150,7 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
         {chat.sending ? <small className="reply-state" role="status">{chat.stopping ? "正在停止…" : "正在输入…"}</small> : role.description && <small>{role.description}</small>}
         </span>
       </button>
+      <IconButton icon="devices" label="多端会话" onClick={onShowChannels} />
       <IconButton icon="memory" label="角色记忆" onClick={onShowMemories} />
       <ChatActions key={role.id} codingEnabled={Boolean(role.agentConfig?.coding?.enabled)}
         onGenerate={() => { setSelectedGenerationImage(undefined); setGenerationRoleId(role.id); }} onCoding={() => setCodingOpen(true)} />
