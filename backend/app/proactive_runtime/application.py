@@ -163,16 +163,18 @@ class ProactiveApplication:
         return AutonomyConfig.model_validate({**config.model_dump(),
             'decisionModelConfigurationId': identifier, 'driftModelConfigurationId': identifier})
 
-    def _preserves_inactive_grants(self, role_id, config):
+    def _retains_grants_on_shutdown(self, role_id, config):
         if config.activeDecisionEnabled or config.driftEnabled:
             return False
         with self._transaction() as db:
             row = db.execute('SELECT config FROM autonomy_roles WHERE role_id=?', (role_id,)).fetchone()
         if row is None:
             return False
+        previous = AutonomyConfig.model_validate_json(row[0])
+        if not (previous.activeDecisionEnabled or previous.driftEnabled):
+            return False
         ignored = {'revision', 'activeDecisionEnabled', 'driftEnabled', 'inheritRoleModel',
             'consentRevision', *ProactivePreferences.model_fields}
-        previous = AutonomyConfig.model_validate_json(row[0])
         return previous.model_dump(exclude=ignored) == config.model_dump(exclude=ignored)
 
     def configure(self, role_id: str, config: AutonomyConfig, *, expected_revision: int, target_selections=None):
@@ -181,9 +183,9 @@ class ProactiveApplication:
             raise RuntimeError("autonomy application is closed")
         config = self.effective_config(role_id, config)
         # Turning off must remain possible after a model/source/target expires.
-        # Only already-saved, unchanged grants may be retained without validation;
-        # re-enabling or editing any grant still runs all dependency checks.
-        retain_inactive = self._preserves_inactive_grants(role_id, config)
+        # Only an enabled-to-disabled transition may retain unchanged grants;
+        # ordinary saves and re-enabling still run all dependency checks.
+        retain_inactive = self._retains_grants_on_shutdown(role_id, config)
         for enabled, identifier in ((config.activeDecisionEnabled, config.decisionModelConfigurationId),
                                     (config.driftEnabled, config.driftModelConfigurationId)):
             if enabled and (identifier is None or self.model_getter(identifier) is None):

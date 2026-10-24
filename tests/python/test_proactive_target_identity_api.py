@@ -84,7 +84,8 @@ def test_repairing_owner_rejects_original_selection_even_when_directory_revision
         assert_no_run_or_send(client, path, platform, revision=1)
 
 
-def test_saving_other_settings_does_not_rebind_an_invalid_saved_owner_grant(api, monkeypatch, platform):
+@pytest.mark.parametrize('changes', [{}, {'profile': 'quiet'}])
+def test_saving_other_settings_does_not_rebind_an_invalid_saved_owner_grant(api, monkeypatch, platform, changes):
     with role_target(api, monkeypatch, platform) as (client, role, account, channels):
         path = f'/api/roles/{role}/autonomy'
         saved, selected = save_external(client, path, account, {})
@@ -94,7 +95,7 @@ def test_saving_other_settings_does_not_rebind_an_invalid_saved_owner_grant(api,
         assert state['targetGrants'][0]['current'] is False
         assert state['targetGrants'][0]['denial']
 
-        response = client.put(path, json={'expectedRevision': 1, 'config': saved['config']})
+        response = client.put(path, json={'expectedRevision': 1, 'config': {**saved['config'], **changes}})
         assert response.status_code == 409, response.text
         invalid = assert_no_run_or_send(client, path, platform, revision=1)
         assert invalid['config']['defaultTargetRef'] == selected['targetRef']
@@ -104,6 +105,36 @@ def test_saving_other_settings_does_not_rebind_an_invalid_saved_owner_grant(api,
         assert restored['config']['revision'] == 2
         assert restored['targetGrants'][0]['current'] is True
         assert_no_run_or_send(client, path, platform, revision=2)
+
+
+@pytest.mark.parametrize('mode,model_field', [
+    ('activeDecisionEnabled', 'decisionModelConfigurationId'),
+    ('driftEnabled', 'driftModelConfigurationId'),
+])
+def test_compact_shutdown_retains_invalid_target_without_authorizing_later_saves(api, monkeypatch, platform, mode, model_field):
+    with role_target(api, monkeypatch, platform) as (client, role, account, channels):
+        path = f'/api/roles/{role}/autonomy'
+        model = client.post('/api/model/configurations', json={'providerId': 'custom', 'provider': 'local',
+            'baseUrl': 'http://127.0.0.1:1/v1', 'model': 'fixture', 'apiKey': 'fixture-not-real'}).json()['configuration']
+        _, selected = save_external(client, path, account, {mode: True, model_field: model['id'], 'consentRevision': 1})
+        repair_owner(client, role, account, channels)
+
+        preferences = client.get(path + '/settings').json()['settings']
+        revision = preferences.pop('revision')
+        shutdown = client.put(path + '/settings', json={**preferences, 'expectedRevision': revision, 'enabled': False})
+        assert shutdown.status_code == 200, shutdown.text
+        disabled = assert_no_run_or_send(client, path, platform, revision=2)
+        assert not disabled['config']['activeDecisionEnabled'] and not disabled['config']['driftEnabled']
+        assert disabled['config']['defaultTargetRef'] == selected['targetRef']
+        assert disabled['targetGrants'][0]['current'] is False
+
+        # Once stopped, saving preferences or enabling again is an ordinary
+        # configuration change and must not silently adopt the replacement owner.
+        for enabled in (False, True):
+            response = client.put(path + '/settings', json={**preferences, 'expectedRevision': 2,
+                'enabled': enabled, 'profile': 'quiet'})
+            assert response.status_code == 409, response.text
+            assert_no_run_or_send(client, path, platform, revision=2)
 
 
 def test_replacing_adapter_requires_a_new_observation_before_first_grant(api, monkeypatch, platform):
