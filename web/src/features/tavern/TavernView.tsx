@@ -37,8 +37,9 @@ export function TavernView({ roles, query = "", loading, error, onDismissError, 
           {cards.length === 0 && <Placeholder>{query ? "没有匹配的角色卡片，换个关键词试试。" : "还没有角色，从角色列表的“新建”开始吧。"}</Placeholder>}
           <ul className="card-grid" aria-label="角色卡牌">
             {cards.map(({ role, number }) => <li key={role.id}>
-              <RoleCard role={role} number={number} onPreviewAvatar={onPreviewAvatar} onWorkspace={onWorkspace}>
-                <button type="button" className="card-hit" aria-label={`与${role.name}对话`} onClick={() => onChat(role)} disabled={chatDisabled} />
+              <RoleCard role={role} number={number} onPreviewAvatar={onPreviewAvatar}>
+                {onWorkspace && <button type="button" className="card-open" aria-label={`查看${role.name}工作区`} onClick={() => onWorkspace(role)} />}
+                <IconButton icon="chat" label={`与${role.name}对话`} className="card-chat" onClick={() => onChat(role)} disabled={chatDisabled} />
                 <IconButton icon="edit" label={`编辑${role.name}`} className="card-edit" onClick={() => onShow(role)} />
               </RoleCard>
             </li>)}

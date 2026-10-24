@@ -1,7 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { Role } from "../../api/types";
 import { Avatar, roleStyle } from "../../ui/Avatar";
-import { IconButton } from "../../ui/Icon";
 
 const glyphs = ["❀", "✦", "☾", "♡", "✧", "❁"];
 const motifs = 5;
@@ -19,10 +18,10 @@ export function cardTraits(id: string) {
   return { motif: value % motifs, glyph: glyphs[(value >>> 8) % glyphs.length] };
 }
 
-type Props = { role: Role; number: number; className?: string; children?: ReactNode; onPreviewAvatar?: (role: Role) => void; onWorkspace?: (role: Role) => void };
+type Props = { role: Role; number: number; className?: string; children?: ReactNode; onPreviewAvatar?: (role: Role) => void };
 
 /** A role's card: number, glyph, her initial over her motif, name, summary and how she calls you. */
-export function RoleCard({ role, number, className = "", children, onPreviewAvatar, onWorkspace }: Props) {
+export function RoleCard({ role, number, className = "", children, onPreviewAvatar }: Props) {
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const { motif, glyph } = cardTraits(role.id);
   const initial = Array.from(role.name.trim())[0] ?? "?";
@@ -44,7 +43,6 @@ export function RoleCard({ role, number, className = "", children, onPreviewAvat
       <small>{role.description || "暂无简介"}</small>
       {role.profile.nickname && <em>称呼你为「{role.profile.nickname}」</em>}
     </div>
-    {onWorkspace && <IconButton icon="profile" label={`查看${role.name}工作区`} className="card-workspace" onClick={() => onWorkspace(role)} />}
     {children}
   </div>;
 }

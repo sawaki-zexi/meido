@@ -39,7 +39,7 @@ export function RoleWorkspace({ role, state, tab, onTabChange, onBack, onChat, o
     <header className="role-workspace-hero">
       <IconButton icon="back" label="返回角色" onClick={onBack} />
       <Avatar id={role.id} name={role.name} avatarUrl={role.avatarUrl} size="lg" />
-      <div className="role-workspace-identity"><h1>{role.name}</h1><p>{role.description || "还没有简介"}</p>
+      <div className="role-workspace-identity">{writable ? <><input aria-label="名称（角色名称）" value={state.draft.name} placeholder="未命名角色" onChange={event => state.setDraft({ ...state.draft, name: event.target.value })} /><input aria-label="角色简介" value={state.draft.description} placeholder="添加一行角色简介" onChange={event => state.setDraft({ ...state.draft, description: event.target.value })} /></> : <><h1>{role.name}</h1><p>{role.description || "还没有简介"}</p></>}
         <div className="role-workspace-actions"><span className="role-state"><Icon name="profile" size={15} />平静</span><button type="button" className="ghost" onClick={onEdit}><Icon name="edit" size={15} />{writable ? "编辑中" : "编辑资料"}</button></div>
       </div>
       <button type="button" className="primary role-workspace-chat" onClick={onChat}><Icon name="chat" size={16} />去聊天</button>
@@ -49,8 +49,7 @@ export function RoleWorkspace({ role, state, tab, onTabChange, onBack, onChat, o
     </nav>
     <div className="role-workspace-content">
       {tab === "profile" && <div className="role-workspace-profile" role="tabpanel" aria-label="资料">
-        {!writable && <div className="role-profile-intro"><span>角色设定</span><p>{role.profile.profile}</p></div>}
-        <RoleEditor state={state} onSubmit={onSubmit} onCancel={onCancel} onDelete={onDelete} />
+        <RoleEditor state={state} onSubmit={onSubmit} onCancel={onCancel} onDelete={onDelete} hideIdentity />
       </div>}
       {tab === "memory" && <div className="role-workspace-memory" role="tabpanel" aria-label="记忆"><MemoryPanel role={role} embedded onBack={onBack} onOpenSource={onOpenMemorySource} /></div>}
       {tab === "capabilities" && <RoleCapabilitiesPanel role={role} onOpenSettings={onOpenSettings} />}
