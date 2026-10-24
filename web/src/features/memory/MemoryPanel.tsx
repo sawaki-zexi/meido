@@ -15,8 +15,8 @@ type Confirmation = { kind: 'delete' | 'batch' | 'invalidate' | 'forget' | 'reje
 const initialFilters = { query: '', status: 'active', memoryType: '', domain: '', embedding: '' };
 const confirmationLabels = { delete: '删除这条记忆', batch: '删除选中的记忆', invalidate: '使全部记忆失效', forget: '忘记这条记忆', reject: '拒绝这条记忆' };
 
-export function MemoryPanel({ role, onBack, onOpenSource }: {
-  role: Role; onBack: () => void; onOpenSource: (origin: MemoryOrigin, messageId?: string) => void;
+export function MemoryPanel({ role, onBack, onOpenSource, embedded = false }: {
+  role: Role; onBack: () => void; onOpenSource: (origin: MemoryOrigin, messageId?: string) => void; embedded?: boolean;
 }) {
   const base = `/api/roles/${encodeURIComponent(role.id)}`;
   const viewId = useId();
@@ -144,11 +144,11 @@ export function MemoryPanel({ role, onBack, onOpenSource }: {
   const filtered = Boolean(filters.query || filters.memoryType || filterCount);
   const overlay = Boolean(editing || similar || confirmation);
   const errorNotice = error && <Notice onDismiss={() => setError('')}>{error}</Notice>;
-  return <section className="memory-panel" style={roleStyle(role.id)} aria-label={`${role.name}的记忆`}>
-    <header className="chat-header memory-topbar"><IconButton icon="back" label="返回对话" onClick={onBack} />
+  return <section className={`memory-panel${embedded ? ' is-embedded' : ''}`} style={roleStyle(role.id)} aria-label={`${role.name}的记忆`}>
+    {!embedded && <header className="chat-header memory-topbar"><IconButton icon="back" label="返回对话" onClick={onBack} />
       <Avatar id={role.id} name={role.name} avatarUrl={role.avatarUrl} size="sm" />
       <div className="chat-title"><h1 ref={title} tabIndex={-1}>{role.name}的记忆</h1></div>
-      <button type="button" className="primary memory-add" onClick={() => startEdit('new')}><Icon name="plus" size={17} />记住一件事</button></header>
+      <button type="button" className="primary memory-add" onClick={() => startEdit('new')}><Icon name="plus" size={17} />记住一件事</button></header>}
     <div className="memory-scroll"><div className="memory-workspace">
       <div className="memory-view-tabs" role="tablist" aria-label="记忆视图">{([['entries', '记忆条目'], ['documents', '记忆文档']] as const).map(([id, label]) =>
         <button type="button" role="tab" key={id} id={`${viewId}-${id}-tab`} aria-selected={view === id} aria-controls={`${viewId}-${id}`} tabIndex={view === id ? 0 : -1} onKeyDown={changeTab} onClick={() => setView(id)}>{label}</button>)}</div>
