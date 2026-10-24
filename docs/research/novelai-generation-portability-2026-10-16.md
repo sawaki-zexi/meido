@@ -4,6 +4,8 @@
 
 历史核验：2026-10-16。历史事实来源：Shiori-Agent 固定提交 `4f266aeaf42fcd611362e2456417b91f659341cf`；Meido 聚合分支核验时 `c03a9fbdd2450e4df5171f7272c4abbd0e4258b4`。当前增补核验：2026-10-24；Shiori-Agent `31667efb33f371f9161eb35ae7474b8ed48957bc`，Meido 分支 `feat/209-novelai-image-studio` 基于 `origin/main` `8786b3f`，已包含 `72dfb0a` 工作台改动及本次质量预设实现。下文 NovelAI 官方公开文档仍按原核验记录。
 
+最新源码补充：本地 Shiori 研究仓库当前为 1c241a2627bbcc99124aef71abaee237ac057499。相对上述固定基线，Shiori 已移除角色级 CG 补充要求编辑和提示词注入，自动 CG 改为统一调用 message_push，并把生成记录/标签资产迁移到宿主私有 storage。Meido 继续实现 #211 要求的角色级 CG 偏好，因为这是 Meido 当前开放 Issue 的产品目标；Meido 的角色 workspace 附件和持久 attempt/outbox 是本地数据所有权设计，不直接复制 Shiori 的存储接口。
+
 ## 当前源码增补（2026-10-24）
 
 ### Shiori 当前实现

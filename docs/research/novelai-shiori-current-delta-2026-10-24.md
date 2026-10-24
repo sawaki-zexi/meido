@@ -2,6 +2,8 @@
 
 对照基线：Shiori-Agent 固定提交 [31667efb33f371f9161eb35ae7474b8ed48957bc](https://github.com/YinFengWindy/Shiori-Agent/tree/31667efb33f371f9161eb35ae7474b8ed48957bc)；Meido `main` 基线为 `8786b3f`。#209 工作树当前已移植 #211 的 CG 提示词行为，但两项工作仍未合入 `main`，且存在未提交修改。下表凡标注工作树能力都不是当前 `main` 能力；主分支集成仍需单独验证。
 
+补充核验：本地 Shiori 研究仓库当前提交为 1c241a2627bbcc99124aef71abaee237ac057499。该提交相对固定基线的 NovelAI 变化已纳入判断：Shiori 移除了角色级 CG 补充要求设置及其辅助模型注入，改为只保留 autoSceneCgEnabled；自动 CG 统一通过 message_push 投递，并把生成/标签数据迁移到宿主私有 storage。Meido 保留 #211 的角色级要求，是当前 Issue 明确要求的能力；Meido 的角色 workspace 附件、SQLite attempt ledger 和持久 outbox 也不是 Shiori 私有 storage 的一比一复制。Shiori 仍保留自动 CG 的一次异常重试和进程外来源触发，因此这些行为继续按外部消费边界处理。
+
 ## 已经存在的差异
 
 | 方面 | Shiori | Meido | 判断 |
