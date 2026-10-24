@@ -47,10 +47,10 @@ def prepare(client, monkeypatch, *, extra_tools=(), author=None, authoring_extra
     return role['id'], path, now
 
 
-async def settled(app, identifier, *, clock=True):
+async def settled(app, identifier, *, clock=True, timeout=20):
     if clock:
         await app.on_clock()
-    async with asyncio.timeout(20):
+    async with asyncio.timeout(timeout):
         while True:
             await app.recover()
             state = app.query(identifier)

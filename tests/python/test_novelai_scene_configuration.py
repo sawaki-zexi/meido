@@ -26,6 +26,34 @@ def test_owner_can_enable_cg_with_explicit_auxiliary_connection_without_manual_p
     assert not service.peer.requests
 
 
+def test_role_cg_prompt_instructions_persist_independently_with_a_strict_limit(novelai_main):
+    client, service = novelai_main
+    other = client.post('/api/roles', json={'name': '另一个角色', 'profile': {'profile': 'other'}}).json()['role']
+    current = client.get(f'/api/roles/{service.role.id}').json()['role']
+    agent_config = current['agentConfig']
+    agent_config['novelai']['sceneCgPromptInstructions'] = '暖色调，远景构图'
+    saved = client.put(f'/api/roles/{service.role.id}', json={
+        'name': current['name'], 'profile': current['profile'], 'agentConfig': agent_config})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()['role']['agentConfig']['novelai']['sceneCgPromptInstructions'] == '暖色调，远景构图'
+    assert client.get(f"/api/roles/{other['id']}").json()['role']['agentConfig']['novelai']['sceneCgPromptInstructions'] == ''
+
+    agent_config['novelai']['sceneCgPromptInstructions'] = 'x' * 2001
+    rejected = client.put(f'/api/roles/{service.role.id}', json={
+        'name': current['name'], 'profile': current['profile'], 'agentConfig': agent_config})
+    assert rejected.status_code == 422
+
+    agent_config['novelai']['sceneCgPromptInstructions'] = 123
+    rejected = client.put(f'/api/roles/{service.role.id}', json={
+        'name': current['name'], 'profile': current['profile'], 'agentConfig': agent_config})
+    assert rejected.status_code == 422
+    agent_config['novelai']['sceneCgPromptInstructions'] = ''
+    cleared = client.put(f'/api/roles/{service.role.id}', json={
+        'name': current['name'], 'profile': current['profile'], 'agentConfig': agent_config})
+    assert cleared.status_code == 200, cleared.text
+    assert client.get(f'/api/roles/{service.role.id}').json()['role']['agentConfig']['novelai']['sceneCgPromptInstructions'] == ''
+
+
 def test_default_new_tag_permissions_do_not_revoke_saved_172_manual_request(novelai_main):
     client, service = novelai_main
     body = {'requestId': 'e' * 32, 'expectedRevision': service.application.settings.public()['revision'],

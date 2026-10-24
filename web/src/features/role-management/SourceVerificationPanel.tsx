@@ -65,20 +65,24 @@ export function SourceVerificationPanel({ roleId, revision, sources, attempts, r
   const ready = trusted && available.some((source) => source.sourceId === sourceId)
     && manifestPath.trim().length > 0 && /^[a-f0-9]{64}$/.test(manifestSha256);
   return <fieldset aria-label="来源 ACK 契约验证" disabled={busy}>
-    <legend>来源 ACK 契约验证</legend>
+    <legend className="settings-sr-only">来源 ACK 契约验证</legend>
     <SourceArtifactPreview key={roleId} roleId={roleId} importSources={importSources} importManifest={(path, sha) => {
       setManifestPath(path); setManifestSha256(sha); setTrusted(false); setMessage("");
     }} />
-    <p className="field-hint">先保存来源许可，再验证其持久去重与原期限。验证会运行你信任的本地源码，在独立临时数据中测试，不使用服务账号凭据。未通过验证的来源只尝试一次 ACK，回执不明时不重试。</p>
+    <div className="settings-subsection">
+    <h4>契约验证</h4>
+    <p className="field-hint">先保存来源许可。验证会运行本地源码，使用临时数据，不使用服务账号凭据。</p>
     <label className="field"><span>待验证来源</span><select aria-label="待验证来源" value={sourceId}
       onChange={(event) => { setSourceId(event.target.value); setTrusted(false); }}>
       <option value="">请选择已保存的来源</option>
       {available.map((source) => <option key={String(source.sourceId)} value={String(source.sourceId)}>{String(source.sourceId)}</option>)}
     </select></label>
+    <div className="settings-field-grid">
     <label className="field"><span>来源验证清单路径</span><input aria-label="来源验证清单路径" value={manifestPath}
       onChange={(event) => { setManifestPath(event.target.value); setTrusted(false); }} /></label>
     <label className="field"><span>来源验证清单 SHA256</span><input aria-label="来源验证清单 SHA256" value={manifestSha256}
       onChange={(event) => { setManifestSha256(event.target.value.trim().toLowerCase()); setTrusted(false); }} /></label>
+    </div>
     <label className="field checkbox-field"><input type="checkbox" checked={trusted}
       onChange={(event) => setTrusted(event.target.checked)} /><span>信任并运行该本地来源产物</span></label>
     <button type="button" disabled={!ready} onClick={() => void verify()}>{contextOnly ? "验证来源读取契约" : "验证来源 ACK 契约"}</button>
@@ -94,5 +98,6 @@ export function SourceVerificationPanel({ roleId, revision, sources, attempts, r
         }}>使用验证结果</button>}
       {!attempt.runtimeAcknowledged && <button type="button" onClick={() => void cancel(attempt.id)}>取消 {attempt.sourceId} 验证</button>}
     </div>)}</div>
+    </div>
   </fieldset>;
 }

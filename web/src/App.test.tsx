@@ -334,7 +334,7 @@ describe("设置", () => {
     expect(await within(panel).findByText("提醒角色从生效日期起参与；今天不会发送提醒。")).toBeTruthy();
     await user.click(within(panel).getByRole("checkbox", { name: "暂停今天的提醒" }));
     await waitFor(() => expect(calls.some((call) => call.method === "PUT" && call.path === "/api/todos/reminders/today?paused=true")).toBe(true));
-    expect(await within(panel).findByText(/暂停期间跳过的提醒不会补发/)).toBeTruthy();
+    expect(await within(panel).findByText(/已跳过的提醒不补发/)).toBeTruthy();
   });
 });
 

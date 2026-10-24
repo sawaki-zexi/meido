@@ -41,9 +41,15 @@ def test_actual_cg_uses_the_same_role_and_rating_filtered_expansion_as_owner_pre
     preview = client.post(path + '/preview', json={'text': 'The garden', 'prompt': 'blue sky, garden', 'negative_prompt': 'rain'})
     assert preview.status_code == 200, preview.text
     result, _ = owner_turn(client, service, 'The garden')
-    assert result['parameters']['prompt'] == preview.json()['prompt'] == 'blue sky, garden, flowers'
-    assert result['parameters']['negative_prompt'] == preview.json()['negative_prompt'] == 'rain, fog'
-    assert service.peer.requests[0]['body']['input'] == 'blue sky, garden, flowers'
+    expected_prompt = 'blue sky, garden, flowers'
+    expected_negative = 'rain, fog'
+    assert preview.json()['prompt'] == expected_prompt
+    assert preview.json()['negative_prompt'] == expected_negative
+    assert result['parameters']['prompt'].startswith(expected_prompt + ', ')
+    assert result['parameters']['negative_prompt'].startswith(expected_negative + ', ')
+    assert all(tag in result['parameters']['prompt'] for tag in ('third-person view', 'cinematic composition', 'character visible in frame'))
+    assert all(tag in result['parameters']['negative_prompt'] for tag in ('first-person view', 'pov', 'selfie'))
+    assert service.peer.requests[0]['body']['input'] == result['parameters']['prompt']
 
 
 def test_real_same_turn_manual_unknown_claim_suppresses_auxiliary_cg(scene_main):

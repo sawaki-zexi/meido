@@ -1,8 +1,27 @@
 # NovelAI 完整生图工作流的移植差距
 
-状态：草案 / 源码调研与 D05 待批准方案；P06、T19 尚未实现或验收。
+状态：历史基线，含 2026-10-24 当前源码增补。旧正文记录当时的取证和设计方案，不代表当前实现状态；判断现状时优先采用下方增补及当前源码。
 
-最后核验：2026-10-16。事实来源：Shiori-Agent 固定提交 `4f266aeaf42fcd611362e2456417b91f659341cf`；Meido 聚合分支核验时 `c03a9fbdd2450e4df5171f7272c4abbd0e4258b4`；下列 NovelAI 官方公开文档。目标为[总规格 P06、D05、T19](../specs/shiori-tool-parity-spec.md)。以下明确区分已提取事实、静态推断和未实施建议。
+历史核验：2026-10-16。历史事实来源：Shiori-Agent 固定提交 `4f266aeaf42fcd611362e2456417b91f659341cf`；Meido 聚合分支核验时 `c03a9fbdd2450e4df5171f7272c4abbd0e4258b4`。当前增补核验：2026-10-24；Shiori-Agent `31667efb33f371f9161eb35ae7474b8ed48957bc`，Meido 分支 `feat/209-novelai-image-studio` 基于 `origin/main` `8786b3f`，已包含 `72dfb0a` 工作台改动及本次质量预设实现。下文 NovelAI 官方公开文档仍按原核验记录。
+
+最新源码补充：本地 Shiori 研究仓库当前为 1c241a2627bbcc99124aef71abaee237ac057499。相对上述固定基线，Shiori 已移除角色级 CG 补充要求编辑和提示词注入，自动 CG 改为统一调用 message_push，并把生成记录/标签资产迁移到宿主私有 storage。Meido 继续实现 #211 要求的角色级 CG 偏好，因为这是 Meido 当前开放 Issue 的产品目标；Meido 的角色 workspace 附件和持久 attempt/outbox 是本地数据所有权设计，不直接复制 Shiori 的存储接口。
+
+## 当前源码增补（2026-10-24）
+
+### Shiori 当前实现
+
+- 工作台历史仍只取每角色最近 24 条；画布显示尺寸和 seed，并提供复用提示词。生成设置弹层提供 NSFW 模式、自动质量标签、负向预设（0/1/2）和模型信息。[ImageStage.tsx](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/ui/ImageStage.tsx)、[novelAiGeneration.ts](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/ui/novelAiGeneration.ts)、[PromptSettingsPopover.tsx](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/ui/PromptSettingsPopover.tsx)、[studioForm.ts](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/ui/studioForm.ts)。
+- 10 月 16 日之后新增按角色保存的自动 CG 补充要求；场景提示词模型读取该角色要求后生成 tags。[roleSettings.tsx](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/ui/roleSettings.tsx)、[scene_prompt.py](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/backend/scene_prompt.py)。
+- 自动 CG 当前通过 `account_send` 使用角色绑定账号投回原私聊，桌面使用 `message_push`；场景控制器取消并替换同会话旧任务。[auto_cg_controller.py](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/backend/auto_cg_controller.py)。
+- 自动 CG 对生图工具异常最多重试一次，没有在该调用路径按远端消费是否未知区分是否可重发。设置允许 `default_samples` 大于 1，请求按该值发送 `n_samples`，但当前保存路径只读取响应的第一张图。[auto_cg_controller.py](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/backend/auto_cg_controller.py)、[service.py](https://github.com/YinFengWindy/Shiori-Agent/blob/31667ef/plugins/novelai/backend/service.py)。
+
+### Meido 当前实现
+
+- #209 工作台已有文生图/图生图、历史分页、完整请求参数、参数复用、重生成、下载和失败状态；服务级质量标签、负向预设、模型和模式开关统一放在插件设置，工作台保留本次 tags/尺寸/底图等手动参数并可跳转 NovelAI 设置；历史详情显示每次请求实际冻结的质量选项。[NovelaiStudio.tsx](../../web/src/features/novelai/NovelaiStudio.tsx)、[NovelaiSettings.tsx](../../web/src/features/novelai/NovelaiSettings.tsx)、[PromptTagManager.tsx](../../web/src/features/novelai/PromptTagManager.tsx)。
+- NovelAI 服务和角色许可、次数限制、凭据代际及持久 attempt ledger 已落地；场景 CG 有持久去重、冷却、human-run/scene revision 校验和取消收尾。[config.py](../../backend/app/novelai_generation/config.py)、[ledger.py](../../backend/app/novelai_generation/ledger.py)、[scene.py](../../backend/app/novelai_generation/scene.py)。工作分支现已补齐全局 `addQualityTags` / `undesiredContentPreset` 设置，并将选择冻结在 attempt、发送为 `qualityToggle` / `ucPreset`，历史显示当次值；同时提供受 allowlist 约束的 `nsfwEnabled` / `nsfwModel` 默认模型模式，不自动放宽角色成人标签评级。现在支持服务级 `defaultSamples` 和显式1–4张，账本完整保存并展示返回图片；CG与单槽 replacement 仍固定一张。[parameters.py](../../backend/app/novelai_generation/parameters.py)。
+- Shiori 的角色级 CG 补充要求已在当前工作树对齐：Meido 通过 `sceneCgPromptInstructions` 保存按角色隔离、最多 2000 字符的主人绘图偏好，在候选创建时冻结并只注入 CG 辅助模型 system prompt；它不进入场景事实消息，也不影响手动生图。工作树仍未合入 `main`，所以该能力不代表当前主分支已提供。
+
+本增补只核验固定源码和无费用测试，没有访问 NovelAI 生成接口或真实账号；不能据此声称已验证模型可用性、Anlas 消耗、取消计费或真实渠道回执。旧正文的实施建议和“尚未实现”表述只反映 2026-10-16 的基线，不应覆盖以上当前状态。
 
 本轮仅阅读本地源码与公开文档，包括公开 Swagger JSON；未读取真实 token、账号资料、系统 vault 或用户认证配置，未访问生成接口、安装依赖、启动插件或产生付费请求。没有真实生成成功、当前账号资格、Anlas 消耗或取消退款的实验证据。
 
@@ -47,7 +66,7 @@ P06 不止一个工具名称：txt2img、img2img、模型/尺寸/seed、归属�
 | 项目 | 固定服务实际行为与移植差距 |
 | --- | --- |
 | 尺寸与步数 | square=1024×1024、landscape=1216×832、portrait=832×1216；custom 每边正整数且 ≤1024；所有模式面积 ≤max_pixels，默认 1,048,576。steps 默认 max_steps=28，须在上限内；未见 64 倍数校验。API 的 int 转换与 tool schema 要统一，禁止布尔、NaN/Infinity 等隐式接受。 |
-| 模型 | 默认 curated，另配 full。显式 model 只须等于两者之一；即使 nsfw_enabled=false，显式 full 仍能通过。该开关实际选择默认模型，不是完整模型授权边界。Meido 应改为主人批准的明确 allowedModels。 |
+| 模型 | 默认 curated，另配 full。显式 model 只须等于两者之一；即使 nsfw_enabled=false，显式 full 仍能通过。该开关实际选择默认模型，不是完整模型授权边界。Meido 以主人批准的明确 allowedModels 为基础，并在此之上提供受约束的默认切换。 |
 | img2img | base_image_path 经 SDK resolve_path 限于宿主 workspace 后读全文件，支持 PNG/JPEG/GIF/BMP/WebP；并非任意主机路径，但没有当前角色/原来源附件授权或此处的字节上限。strength 实际 .01–1，noise 0–.99，与 schema 的 0–1 不完全一致。 |
 | seed/sampler | seed 给出才发；未给时记录可能仍为 null，没有取回实际 seed 的完整流程。tool 默认 sampler=k_euler_ancestral，而 RPC 默认 k_euler。不能以相同 seed 代替消费幂等。 |
 | reference | img2img 底图是实际参考媒体；v4.5 请求构造中 reference_*_multiple 数组为空，没有工具输入可配置 Vibe/人物参考。不能将这些空数组宣称为已支持额外参考能力。 |
@@ -63,7 +82,7 @@ P06 不止一个工具名称：txt2img、img2img、模型/尺寸/seed、归属�
 | default_model / nsfw_model / nsfw_enabled | nai-diffusion-4-5-curated / nai-diffusion-4-5-full / false；行为见上表。 |
 | allow_txt2img / allow_img2img | 均 true；独立模式开关。 |
 | auto_writeback_role_assets | false；允许时保存为角色立绘并设置聊天背景，属于额外角色资产变更。 |
-| max_pixels / max_steps / default_samples | 1,048,576 / 28 / 1；default_samples 直接发给 n_samples，但当前返回路径只保存第一张。 |
+| max_pixels / max_steps / default_samples | 1,048,576 / 28 / 1；default_samples 直接发给 n_samples，Meido 通过服务级 `defaultSamples` 支持1–4张并完整保存返回图片，CG与单槽 replacement 固定一张。 |
 | add_quality_tags / undesired_content_preset | false / 0；v4.5 请求 qualityToggle / ucPreset。 |
 
 证据：[config.py L17–37](https://github.com/YinFengWindy/Shiori-Agent/blob/4f266aeaf42fcd611362e2456417b91f659341cf/plugins/novelai/backend/config.py#L17-L37)、[failures.py L35–70](https://github.com/YinFengWindy/Shiori-Agent/blob/4f266aeaf42fcd611362e2456417b91f659341cf/plugins/novelai/backend/failures.py#L35-L70)、[service.py L214–307](https://github.com/YinFengWindy/Shiori-Agent/blob/4f266aeaf42fcd611362e2456417b91f659341cf/plugins/novelai/backend/service.py#L214-L307)。

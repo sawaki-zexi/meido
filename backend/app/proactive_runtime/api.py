@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import AutonomyConfig, MemePurposeConflict
+from .settings import SettingsUpdate, query_settings, save_settings
 from .source_authoring import preview_artifact
 from .targets import TargetDirectoryRequest, TargetSelection, TargetConflict
 from ..channels.directory import DirectoryError
@@ -217,6 +218,32 @@ def autonomy_router(application, *, workspace_getter=None):
             raise HTTPException(403, '产物不在当前角色目录或所选服务许可内') from None
         except (ValueError, OSError, TypeError, RecursionError):
             raise HTTPException(422, '产物草稿无效；检查相对清单路径、声明文件、链接、大小与已保存服务') from None
+
+    @router.get('/settings')
+    async def settings(role_id: str):
+        try:
+            return query_settings(application(), role_id)
+        except KeyError:
+            raise HTTPException(404, '角色不存在') from None
+        except (sqlite3.Error, RuntimeError):
+            raise HTTPException(503, '主动推送设置暂不可读，请重试') from None
+
+    @router.put('/settings')
+    async def update_settings(role_id: str, data: SettingsUpdate):
+        try:
+            return save_settings(application(), role_id, data)
+        except KeyError:
+            raise HTTPException(404, '角色不存在') from None
+        except (TargetConflict, MemePurposeConflict):
+            raise HTTPException(409, '原有授权已变化，请在高级设置中检查主动推送授权') from None
+        except PermissionError:
+            raise HTTPException(422, '原有目标授权不可用，请在高级设置中检查主动推送授权') from None
+        except ValueError as error:
+            if str(error) == 'autonomy configuration revision changed':
+                raise HTTPException(409, '配置已变化，请重新读取后保存') from None
+            raise HTTPException(422, '请先配置角色聊天模型；已有来源或表情授权可在高级设置中检查') from None
+        except (sqlite3.Error, RuntimeError):
+            raise HTTPException(503, '主动推送设置暂不可写，请重试') from None
 
     @router.get("")
     async def query(role_id: str):

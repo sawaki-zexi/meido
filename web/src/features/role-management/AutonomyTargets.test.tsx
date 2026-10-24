@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { defaultDriftAuthoring, type AutonomyConfiguration, type AutonomyState, type AutonomyTarget,
   type AutonomyTargetAccount, type AutonomyTargetDirectory } from '../../api/autonomy';
 import { fakeBackend } from '../../test/fakeBackend';
-import { AutonomySettings } from './AutonomySettings';
+import { AutonomyManagement as AutonomySettings } from './AutonomyManagement';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const config: AutonomyConfiguration = { revision: 0, activeDecisionEnabled: false, driftEnabled: false,
@@ -35,6 +35,7 @@ it('失效目标和目录错误仍保留原目标，重新观察前不可保存�
   });
   const user = userEvent.setup();
   render(<AutonomySettings roleId="r1" disabled={false} />);
+  await userEvent.click(await screen.findByText('添加渠道目标', { selector: 'summary > span' }));
   await screen.findByRole('option', { name: 'a1 · telegram' });
   expect(screen.getByText(/目标许可已失效：主人绑定已撤销/)).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '保存自主设置' })).toBeDisabled();
@@ -55,6 +56,7 @@ it('桌面计入四个许可上限，移除默认目标后须明确重新选择�
   ]) }) });
   const user = userEvent.setup();
   render(<AutonomySettings roleId="r1" disabled={false} />);
+  await userEvent.click(await screen.findByText('添加渠道目标', { selector: 'summary > span' }));
   await screen.findByRole('option', { name: 'a1 · telegram' });
   await user.selectOptions(screen.getByRole('combobox', { name: '自主发送账号' }), 'a1');
   expect(within(screen.getByRole('combobox', { name: '目标目录类型' })).queryByRole('option', { name: '好友' })).not.toBeInTheDocument();
@@ -62,7 +64,7 @@ it('桌面计入四个许可上限，移除默认目标后须明确重新选择�
   await screen.findByRole('checkbox', { name: '许可目标 主人一' });
   expect(screen.getByRole('checkbox', { name: '许可目标 成员资料' })).toBeDisabled();
   for (const name of ['主人一', '主人二', '主人三']) await user.click(screen.getByRole('checkbox', { name: `许可目标 ${name}` }));
-  expect(screen.getByText('当前已选择 4/4 个目标。')).toBeInTheDocument();
+  expect(screen.getByText('已选 4/4')).toBeVisible();
   expect(screen.getByRole('checkbox', { name: '许可目标 主人四' })).toBeDisabled();
   await user.selectOptions(screen.getByRole('combobox', { name: '自主默认目标' }), 'ref-主人一');
   await user.click(screen.getByRole('checkbox', { name: '保留目标 主人一' }));
@@ -91,6 +93,7 @@ it('目录分页与查询绑定，账号A到B再到A后旧页不能污染新观�
   });
   const user = userEvent.setup();
   render(<AutonomySettings roleId="r1" disabled={false} />);
+  await userEvent.click(await screen.findByText('添加渠道目标', { selector: 'summary > span' }));
   await screen.findByRole('option', { name: 'a1 · telegram' });
   await user.selectOptions(screen.getByRole('combobox', { name: '自主发送账号' }), 'a1');
   expect(screen.getByText('在线')).toBeInTheDocument();

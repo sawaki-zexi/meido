@@ -57,11 +57,11 @@ it('公共手动生图需明确确认费用，参数保存不切换插件且不�
   });
   const user = userEvent.setup(); render(<SettingsDialog onClose={() => {}} initialSection="plugins" />);
   await user.click(await screen.findByRole('button', { name: 'NovelAI 生图 设置' }));
-  await user.click(await screen.findByRole('checkbox', { name: '允许按主人输入手动生图（全部角色）' }));
-  const consent = screen.getByRole('checkbox', { name: '我确认当前公共参数的有限手动生图消费' });
+  await user.click(await screen.findByRole('checkbox', { name: '允许聊天表情与手动生图' }));
+  const consent = screen.getByRole('checkbox', { name: '我确认生图消费' });
   expect(consent).not.toBeChecked(); await user.click(consent);
   await user.click(screen.getByRole('button', { name: '保存生图设置' }));
-  await screen.findByText('公共生图参数已保存；场景 CG 在角色参数中单独确认。');
+  await screen.findByText('NovelAI 生图设置已保存。');
   expect(calls.find(call => call.method === 'PUT')?.body).toMatchObject({ manualEnabled: true, confirmManualConsumption: true, expectedRevision: 3 });
   expect(calls.find(call => call.method === 'PUT')?.body).not.toHaveProperty('enabled');
   expect(calls.some(call => call.path.startsWith('/api/roles'))).toBe(false);
