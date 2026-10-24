@@ -245,7 +245,7 @@ def test_model_capability_description_matches_actual_schemas_and_preserves_role_
     schema_names = {item["function"]["name"] for item in schemas}
     assert {"read_file", "write_file", "shell", "tool_search", "spawn", "schedule", "todo.write"} <= schema_names
     assert schema_names == {item["name"] for item in catalog["tools"] if item["modelVisible"]}
-    assert role_api.get(f"/api/roles/{role['id']}").json()["role"]["profile"]["profile"] == "核心身份设定"
+    assert role_api.get(f"/api/roles/{role['id']}").json()["role"]["profile"]["character"]["profile"] == "核心身份设定"
 
 
 def test_saved_shell_and_capability_settings_survive_role_store_restart(role_api, tmp_path, monkeypatch):

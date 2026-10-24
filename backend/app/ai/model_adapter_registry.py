@@ -71,7 +71,7 @@ class RoutedModelAdapter:
         configuration = OpenAICompatibleAdapter._effective_configuration(configuration)
 
         async def stream() -> AsyncIterator[str]:
-            profile = role.profile
+            profile = role.profile.character
             system = "\n\n".join(part for part in (
                 f"你正在扮演 {role.name}。",
                 f"简介：{role.description}" if role.description else "",

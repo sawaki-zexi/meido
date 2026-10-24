@@ -367,7 +367,7 @@ class OpenAICompatibleAdapter:
     ) -> AsyncIterator[str]:
         effective_configuration = self._effective_configuration(configuration)
 
-        profile = role.profile
+        profile = role.profile.character
         system_prompt = "\n\n".join(part for part in [
             f"你正在扮演 {role.name}。",
             f"简介：{role.description}" if role.description else "",

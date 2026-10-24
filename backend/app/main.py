@@ -502,7 +502,7 @@ def _generate_todo_reminder(role_id: str, event_id: str, kind: str, payload: lis
     if configuration is None:
         raise RuntimeError("提醒角色没有可用模型")
     facts = json.dumps(payload, ensure_ascii=False)
-    profile = role.profile
+    profile = role.profile.character
     fallback = "今天的待办：" + "、".join(str(item.get("title", "")) for item in payload)
 
     async def collect() -> str:

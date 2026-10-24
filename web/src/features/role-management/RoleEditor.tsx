@@ -1,13 +1,13 @@
 import type { FormEvent } from "react";
 import type { RolesState } from "./useRoles";
-import type { RoleProfile } from "../../api/types";
+import type { RoleCharacterDefinition } from "../../api/types";
 import { useRef, useState } from "react";
 import { Icon } from "../../ui/Icon";
 import { RoleDeleteConfirmation } from "./RoleDeleteConfirmation";
 import { Notice } from "../../ui/Status";
 import { AvatarCropper } from "./AvatarCropper";
 
-type TextFieldKey = keyof RoleProfile | "name" | "description";
+type TextFieldKey = keyof RoleCharacterDefinition | "name" | "description";
 type Field = { key: TextFieldKey; label: string; placeholder?: string; hint?: string; multiline?: boolean; required?: boolean };
 
 const identityFields: Field[] = [

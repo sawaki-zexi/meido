@@ -3,6 +3,7 @@ import json
 
 from ..agent_runtime.skills import SkillRegistry
 from ..agent_runtime.message_history_tools import MessageHistoryTool, ConversationHistory
+from .bindings import character_profile
 from .drift_skills import BUILTIN_ROOT
 
 RESOURCES = {'role-profile': '当前角色设定', 'proactive-context': '当前角色主动上下文',
@@ -11,7 +12,7 @@ RESOURCES = {'role-profile': '当前角色设定', 'proactive-context': '当前�
 
 def freeze(app, origin):
     frozen = app.frozen_bindings(origin)
-    result = {'role-profile': json.dumps(frozen.get('role', {}).get('profile', {}), ensure_ascii=False),
+    result = {'role-profile': json.dumps(character_profile(frozen), ensure_ascii=False),
         'proactive-context': frozen.get('context', {}).get('text', '')}
     registry = SkillRegistry.discover(BUILTIN_ROOT, source='builtin')
     for identifier in ('create-drift-skill', 'meme-manage'):

@@ -29,6 +29,13 @@ def test_real_resource_is_readonly_and_history_reuses_original_evidence_without_
                 yield event
     role, _, now = prepare(client, monkeypatch, extra_tools=('fetch_messages',), author=Author(),
         authoring_extra={'allowedResourceIds': ['role-profile']}, config_extra={'driftReadResourceIds': ['role-profile']})
+    character = {'profile': '仅合成夹具', 'personality': 'Gentle personality', 'behaviorRules': 'Patient behavior',
+        'responseConstraints': 'Concise replies', 'nickname': 'Owner nickname'}
+    provenance = {'format': 'charx', 'source': 'DRIFT_IMPORT_ONLY.charx', 'importedAt': '2099-12-31T00:00:00Z'}
+    saved = client.get(f'/api/roles/{role}').json()['role']
+    updated = client.put(f'/api/roles/{role}', json={'name': saved['name'],
+        'profile': {'version': 1, 'character': character, 'importProvenance': provenance}})
+    assert updated.status_code == 200, updated.text
     other = client.post('/api/roles', json={'name': 'foreign', 'profile': {'profile': 'foreign'}}).json()['role']['id']
     assert 'assistant_completed' in client.post(f'/api/roles/{other}/messages', json={'content': 'foreign-private-evidence'}).text
     foreign = next(item for item in sessions.list_messages(f'role:{other}') if item.role == 'user')
@@ -39,11 +46,13 @@ def test_real_resource_is_readonly_and_history_reuses_original_evidence_without_
         async def stream_rich_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check=None):
             self.requests += 1
             if self.requests == 1:
+                self.system_prompt = messages[0].content[0].text
                 name, arguments = 'activate_skill', {'skill_id': 'reading-notes'}
             elif self.requests == 2:
                 name, arguments = 'read_file', {'path': '@resource/role-profile'}
             elif self.requests == 3:
-                assert '仅合成夹具' in json.loads(messages[-1].content[0].text)['content']
+                self.role_resource = json.loads(messages[-1].content[0].text)['content']
+                assert '仅合成夹具' in self.role_resource
                 name, arguments = 'write_file', {'path': '@resource/role-profile', 'content': 'never mutate persona'}
             elif self.requests == 4:
                 assert messages[-1].is_error
@@ -62,6 +71,12 @@ def test_real_resource_is_readonly_and_history_reuses_original_evidence_without_
         now[0] += 1800
         state = asyncio.run(settled(main._proactive, role))
         assert adapter.requests == 5 and state['runs'][0]['status'] == 'finished_silent', state
+        assert all(value in adapter.system_prompt for value in character.values())
+        assert 'importProvenance' not in adapter.system_prompt
+        assert 'DRIFT_IMPORT_ONLY.charx' not in adapter.system_prompt
+        assert '2099-12-31' not in adapter.system_prompt
+        assert json.loads(adapter.role_resource) == character
+        assert client.get(f'/api/roles/{role}').json()['role']['profile']['importProvenance'] == provenance
         assert not (roles.workspace_path(role) / 'drift/@resource').exists()
     finally:
         asyncio.run(main._proactive.close())

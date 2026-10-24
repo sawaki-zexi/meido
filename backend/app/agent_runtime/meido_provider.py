@@ -489,7 +489,7 @@ class MeidoProvider:
         return "\n\n".join(part for part in (system, self.capability_prompt, self._tool_prompt) if part)
 
     def role_system_prompt(self) -> str:
-        profile = self.role.profile
+        profile = self.role.profile.character
         return "\n\n".join(part for part in [
             f"你正在扮演 {self.role.name}。",
             f"简介：{self.role.description}" if self.role.description else "",
@@ -508,8 +508,8 @@ class MeidoProvider:
 
     def _role_with_context(self) -> Role:
         profile = self.role.profile.model_copy(deep=True)
-        profile.profile = "\n\n".join(
-            part for part in (profile.profile, self.capability_prompt) if part
+        profile.character.profile = "\n\n".join(
+            part for part in (profile.character.profile, self.capability_prompt) if part
         )
         return self.role.model_copy(deep=True, update={"profile": profile})
 

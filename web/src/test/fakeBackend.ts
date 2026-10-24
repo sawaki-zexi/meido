@@ -6,7 +6,7 @@ type Handler = (init: RequestInit | undefined, match: RegExpMatchArray) => Reply
 
 export const role = (overrides: Partial<Role> & { id: string; name: string }): Role => ({
   description: "",
-  profile: { profile: "设定", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" },
+  profile: { version: 1, character: { profile: "设定", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" }, importProvenance: null },
   createdAt: "2026-09-30T00:00:00Z",
   updatedAt: "2026-09-30T00:00:00Z",
   ...overrides,

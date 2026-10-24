@@ -184,7 +184,7 @@ class SceneCoordinator:
             scene_tag_revision=self.app.tags.revision(role_id))
         user = self.app.sessions.user_message_for_run(run_id)
         contents = {'user': user.content, 'assistant': final.content,
-            'role': role.description + '\n' + role.profile.profile,
+            'role': role.description + '\n' + role.profile.character.profile,
             'cardImageUrl': role.cardImageUrl,
             'previous': {key: state[key] for key in ('scene_key', 'visual_key', 'description', 'human_count', 'revision')}}
         if len(canonical(contents)) > 48000:

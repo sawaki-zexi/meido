@@ -201,7 +201,7 @@ export function useRoles() {
         return;
       }
     }
-    setDraft({ ...draft, ...preview.draft });
+    setDraft({ ...draft, ...preview.draft, importProvenance: preview.importProvenance });
     if (importedImage) {
       if (asset?.kind === "avatar") {
         setAvatarSource(importedImage);

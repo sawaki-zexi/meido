@@ -1,9 +1,12 @@
 import type { NovelaiRoleConfig } from './novelai';
 import type { CodingRoleConfig } from "./coding";
-export type RoleProfile = { profile: string; personality: string; behaviorRules: string; responseConstraints: string; nickname: string };
+export type RoleCharacterDefinition = { profile: string; personality: string; behaviorRules: string; responseConstraints: string; nickname: string };
+export type RoleImportProvenance = { format: "json" | "png" | "apng" | "charx"; source: string; importedAt: string };
+export type RoleProfile = { version: 1; character: RoleCharacterDefinition; importProvenance?: RoleImportProvenance | null };
 export type RoleCardImportAsset = { kind: string; name: string; mediaType: string; size: number; dataUrl?: string };
 export type RoleCardImportPreview = {
   draft: { name: string; description: string; profile: string; personality: string; behaviorRules: string; responseConstraints: string; nickname: string };
+  importProvenance: RoleImportProvenance;
   source: string;
   assets: RoleCardImportAsset[];
   compatibility: { format: string; warnings: string[]; discardedFields: string[]; unsupportedMacros: string[]; unsupportedResources: string[] };

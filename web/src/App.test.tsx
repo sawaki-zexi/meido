@@ -111,6 +111,7 @@ describe("首页", () => {
       "GET /api/roles": () => ({ body: { roles: [] } }),
       "POST /api/role-card-import/preview": () => ({ body: {
         draft: { name: "导入角色", description: "简介", profile: "设定", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" },
+        importProvenance: { format: "json", source: "card.json", importedAt: "2026-10-23T00:00:00Z" },
         source: "card.json", assets: [], compatibility: { format: "json", warnings: [], discardedFields: [], unsupportedMacros: [], unsupportedResources: [] },
       } }),
     });
@@ -362,6 +363,7 @@ describe("角色管理", () => {
       "GET /api/roles": () => ({ body: { roles: [] } }),
       "POST /api/role-card-import/preview": () => ({ body: {
         draft: { name: "导入角色", description: "导入简介", profile: "导入设定", personality: "温柔", behaviorRules: "", responseConstraints: "", nickname: "主人" },
+        importProvenance: { format: "json", source: "card.json", importedAt: "2026-10-23T00:00:00Z" },
         source: "card.json", assets: [], compatibility: { format: "json", warnings: [], discardedFields: [], unsupportedMacros: [], unsupportedResources: [] },
       } }),
     });
@@ -393,6 +395,7 @@ describe("角色管理", () => {
       "GET /api/roles": () => ({ body: { roles: [] } }),
       "POST /api/role-card-import/preview": () => ({ body: {
         draft: { name: "导入角色", description: "", profile: "设定", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" },
+        importProvenance: { format: "charx", source: "card.charx", importedAt: "2026-10-23T00:00:00Z" },
         source: "card.charx", assets: [
           { kind: "avatar", name: "main.png", mediaType: "image/png", size: 3, dataUrl: "data:image/png;base64,YWJj" },
           { kind: "background", name: "background.png", mediaType: "image/png", size: 3, dataUrl: "data:image/png;base64,YWJj" },
@@ -411,7 +414,7 @@ describe("角色管理", () => {
   });
 
   it("在角色酒馆中创建角色，生成她的专属卡牌，再从卡牌进入对话", async () => {
-    const created = role({ id: "r2", name: "新角色", description: "新来的", profile: { ...alice.profile, profile: "她的设定" } });
+    const created = role({ id: "r2", name: "新角色", description: "新来的", profile: { ...alice.profile, character: { ...alice.profile.character, profile: "她的设定" } } });
     const { calls } = fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [] } }),
       "POST /api/roles": () => ({ status: 201, body: { role: created } }),
@@ -436,7 +439,7 @@ describe("角色管理", () => {
     expect(within(await screen.findByRole("list", { name: "角色卡牌" })).getByRole("button", { name: "编辑新角色" })).toBeTruthy();
     expect(calls.find((call) => call.method === "POST")?.body).toEqual({
       name: "新角色", description: "",
-      profile: { profile: "她的设定", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" },
+      profile: { version: 1, character: { profile: "她的设定", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" }, importProvenance: null },
     });
     expect(sessionStorage.getItem("meido:create-role-draft")).toBeNull();
 
