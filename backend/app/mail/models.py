@@ -5,7 +5,9 @@ from typing import Literal
 
 
 MailStatus = Literal["new", "no_reply", "queued", "processing", "drafted", "failed", "uncertain", "sent", "needs_input"]
-DraftStatus = Literal["created", "manual_modified", "stale", "missing", "uncertain"]
+DraftStatus = Literal["created", "manual_modified", "stale", "missing", "uncertain", "sent"]
+SentAssociationState = Literal["pending", "matched", "ambiguous", "unknown"]
+ThreadFollowupState = Literal["to_reply", "awaiting_reply", "closed", "unknown"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +26,7 @@ class MailConnection:
     last_error: str | None = None
     last_sync_at: str | None = None
     updated_at: str = ""
+    account_epoch: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +71,55 @@ class MailDraft:
     created_at: str
     updated_at: str
     last_error: str | None = None
+    revision: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class MailDraftSend:
+    draft_id: str
+    state: SentAssociationState
+    sent_uid: str | None
+    sent_message_id: str | None
+    sent_at: str | None
+    match_basis: str
+    candidate_count: int
+    checked_at: str | None
+    last_error: str | None
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class MailThreadState:
+    thread_id: str
+    state: ThreadFollowupState
+    reason: str
+    latest_event_at: str | None
+    next_reminder_at: str | None
+    reminder_enabled: bool
+    event_fingerprint: str
+    last_evaluated_at: str | None
+    last_error: str | None
+    updated_at: str
+    manual_state: str | None = None
+    manual_event_fingerprint: str | None = None
+    analysis: dict[str, object] | None = None
+    account_epoch: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class MailFollowupReminder:
+    reminder_id: str
+    thread_id: str
+    due_key: str
+    state: str
+    due_at: str
+    attempts: int
+    last_error: str | None
+    role_id: str | None
+    created_at: str
+    updated_at: str
+    delivered_at: str | None
+    account_epoch: int = 0
 
 
 @dataclass(frozen=True, slots=True)

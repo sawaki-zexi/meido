@@ -28,6 +28,7 @@ import httpx
 
 from .ai.model_adapter import ModelAdapter
 from .ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
+from .ai.model_types import ModelTextBlock
 from .screen_perception import ObserveScreenTool, ScreenPerception
 from .computer_use import ComputerUseHost, COMPUTER_USE_TOOL_NAMES, load_computer_tools, register_computer_use_plugin, guard_provider
 from .novelai_generation.application import NovelaiApplication
@@ -63,7 +64,7 @@ from .owner_knowledge import (
     owner_knowledge_error_message,
     owner_understanding_model_configuration,
 )
-from .mail import MailService, MailStore
+from .mail import MailModelCompletion, MailService, MailStore
 from .mail.agent import MailManageTool
 from .mail.api import router as mail_router, set_mail_service
 from .models import AgentRun, EmbeddingConfiguration, EmbeddingConfigurationInput, MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, Message, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
@@ -400,11 +401,32 @@ todo_plugin = TodoPlugin(
 )
 
 
-async def _mail_complete_model(messages: list[dict[str, object]], configuration) -> str:
-    complete = getattr(model_adapter, "complete_messages", None)
-    if not callable(complete):
+async def _mail_complete_model(messages: list[dict[str, object]], configuration) -> MailModelCompletion:
+    complete_rich = getattr(model_adapter, "complete_rich_messages", None)
+    if not callable(complete_rich):
         raise RuntimeError("当前模型适配器不支持邮件草稿生成")
-    return await complete(messages, configuration, max_tokens=1800)
+    response = await complete_rich(messages, configuration, max_tokens=1800)
+    if isinstance(response, str):
+        return MailModelCompletion(response)
+    text = "".join(block.text for block in getattr(response, "content", ()) if isinstance(block, ModelTextBlock))
+    usage = getattr(getattr(response, "metadata", None), "usage", None)
+    cost = getattr(usage, "cost", None)
+    usage_payload = {
+        "inputTokens": int(getattr(usage, "input_tokens", 0) or 0),
+        "outputTokens": int(getattr(usage, "output_tokens", 0) or 0),
+        "cacheReadTokens": int(getattr(usage, "cache_read_tokens", 0) or 0),
+        "cacheWriteTokens": int(getattr(usage, "cache_write_tokens", 0) or 0),
+        "reasoningTokens": int(getattr(usage, "reasoning_tokens", 0) or 0),
+        "cost": {
+            "input": float(getattr(cost, "input", 0.0) or 0.0),
+            "output": float(getattr(cost, "output", 0.0) or 0.0),
+            "cacheRead": float(getattr(cost, "cache_read", 0.0) or 0.0),
+            "cacheWrite": float(getattr(cost, "cache_write", 0.0) or 0.0),
+            "total": float(getattr(cost, "total", 0.0) or 0.0),
+        },
+    }
+    has_usage = any(value for key, value in usage_payload.items() if key != "cost") or any(usage_payload["cost"].values())
+    return MailModelCompletion(text, usage_payload if has_usage else {})
 
 
 async def _mail_owner_search(query: str):
