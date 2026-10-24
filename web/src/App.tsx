@@ -19,7 +19,6 @@ import { TodoDrawer } from './features/todo/TodoDrawer';
 import { useTodoNavigation } from './features/todo/useTodoNavigation';
 import { NovelaiStudio } from './features/novelai/NovelaiStudio';
 
-/** What the main pane shows: a conversation, the role tavern, memories, or the role's channel threads. */
 /** What the main pane shows: a conversation, the role tavern, memories, channel threads, or the NovelAI studio. */
 type View = "chat" | "tavern" | "memories" | "channels" | "novelai";
 /** Overlay on top of the main pane; null means none. "card" reveals a newly created role's card. */
@@ -203,7 +202,7 @@ export function App() {
         ? <TavernView roles={roles.roles} query={searchTerm} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onShow={showProfile} onChat={chatWith} onPreviewAvatar={setPreviewRole} />
         : view === "novelai"
         ? <NovelaiStudio roles={roles.roles} selectedRoleId={studioRoleId ?? chat.roleId ?? roles.roles[0]?.id} onRoleChange={setStudioRoleId}
-          onGenerated={chat.refresh} onOpenSettings={() => { setSettingsSection('novelai'); setPanel('settings'); }} />
+          onGenerated={chat.refresh} settingsOpen={panel === 'settings'} onOpenSettings={() => { setSettingsSection('novelai'); setPanel('settings'); }} />
         : view === "memories" && chatRole
         ? <MemoryPanel key={chatRole.id} role={chatRole} onBack={backToChat} onOpenSource={(origin, messageId) => void openMemorySource(chatRole, origin, messageId)} />
         : view === "channels" && chatRole

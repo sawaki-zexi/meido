@@ -1581,6 +1581,10 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
     border-bottom: 1px solid rgb(177 112 145 / 10%);
   }
 
+  .dialog-settings .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .dialog-settings .settings-nav button {
     min-height: 40px;
     padding: 8px 11px;
