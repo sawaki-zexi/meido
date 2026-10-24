@@ -172,22 +172,20 @@ export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnl
       const activeThread = activeThreadId ? threadsRef.current.find((item) => item.threadId === activeThreadId) : null;
       if (activeThreadId && activeThread && activeThreadId === refreshThreadId
         && refreshMessageRequestId === messageRequest.current
-        && refreshListeningRequestId === listeningRequest.current
         && isVisible(activeThreadId)) {
         const listening = activeThread.channel === "qq" && activeThread.chatType === "group";
         const messagePage = api<{ messages: ConversationMessage[]; hasMore: boolean; nextBefore: number | null }>(
           `/api/roles/${encodeURIComponent(role.id)}/channels/threads/${encodeURIComponent(activeThreadId)}/messages?limit=50&networkOnly=true`,
         );
-        const listeningPage = listening
+        const listeningPage = listening && refreshListeningRequestId === listeningRequest.current
           ? api<{ messages: ConversationMessage[]; hasMore: boolean; nextBefore: number | null }>(
             `/api/roles/${encodeURIComponent(role.id)}/channels/threads/${encodeURIComponent(activeThreadId)}/listening/messages?limit=50`,
           )
           : Promise.resolve(null);
-        void Promise.all([messagePage, listeningPage])
-          .then(([data, heardData]) => {
+        void messagePage
+          .then((data) => {
             if (requestId !== loadRequest.current || selectedRef.current !== activeThreadId
-              || refreshMessageRequestId !== messageRequest.current
-              || refreshListeningRequestId !== listeningRequest.current) return;
+              || refreshMessageRequestId !== messageRequest.current) return;
             setMessages((current) => mergeMessageSnapshot(current, data.messages, activeThreadId, liveMessages.current, startedAt));
             setMessagesReady(true);
             const currentMessages = messagesRef.current.filter((message) => eventMessageThreadId(message) === activeThreadId);
@@ -201,21 +199,25 @@ export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnl
               setHasOlderMessages(data.hasMore);
               setOlderCursor(data.nextBefore);
             }
-            if (heardData) {
-              const heard = heardData.messages.map((message) => ({ ...message, metadata: { ...message.metadata, threadId: activeThreadId, listening: true } }));
-              setListeningMessages((current) => mergeMessageSnapshot(current, heard, activeThreadId, liveListening.current, startedAt));
-              setListeningReady(true);
-              const currentListening = listeningMessagesRef.current.filter((message) => eventMessageThreadId(message) === activeThreadId);
-              const currentListeningStart = currentListening[0]?.sequence;
-              const currentListeningEnd = currentListening.at(-1)?.sequence;
-              const refreshedListeningStart = heardData.messages[0]?.sequence;
-              const listeningGap = currentListeningEnd !== undefined && refreshedListeningStart !== undefined
-                && refreshedListeningStart > currentListeningEnd + 1;
-              if (listeningGap || currentListeningStart === undefined || refreshedListeningStart === undefined
-                || currentListeningStart > refreshedListeningStart) {
-                setHasOlderListening(heardData.hasMore);
-                setListeningCursor(heardData.nextBefore);
-              }
+          })
+          .catch(() => { /* the existing page remains readable after a refresh failure */ });
+        void listeningPage
+          .then((heardData) => {
+            if (!heardData || requestId !== loadRequest.current || selectedRef.current !== activeThreadId
+              || refreshListeningRequestId !== listeningRequest.current) return;
+            const heard = heardData.messages.map((message) => ({ ...message, metadata: { ...message.metadata, threadId: activeThreadId, listening: true } }));
+            setListeningMessages((current) => mergeMessageSnapshot(current, heard, activeThreadId, liveListening.current, startedAt));
+            setListeningReady(true);
+            const currentListening = listeningMessagesRef.current.filter((message) => eventMessageThreadId(message) === activeThreadId);
+            const currentListeningStart = currentListening[0]?.sequence;
+            const currentListeningEnd = currentListening.at(-1)?.sequence;
+            const refreshedListeningStart = heardData.messages[0]?.sequence;
+            const listeningGap = currentListeningEnd !== undefined && refreshedListeningStart !== undefined
+              && refreshedListeningStart > currentListeningEnd + 1;
+            if (listeningGap || currentListeningStart === undefined || refreshedListeningStart === undefined
+              || currentListeningStart > refreshedListeningStart) {
+              setHasOlderListening(heardData.hasMore);
+              setListeningCursor(heardData.nextBefore);
             }
           })
           .catch(() => { /* the existing page remains readable after a refresh failure */ });

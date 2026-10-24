@@ -221,6 +221,65 @@ describe("渠道会话查看", () => {
     expect(await screen.findByText("清理前普通消息")).toBeVisible();
   });
 
+  it.each(["目录读取中", "消息读取中"])("刷新%s遇到旁听清理时，普通消息仍可读且迟到的旁听不会恢复", async (phase) => {
+    const sources: EventTarget[] = [];
+    class Source extends EventTarget {
+      constructor(_url: string) { super(); sources.push(this); }
+      close() {}
+    }
+    vi.stubGlobal("EventSource", Source);
+    let releaseInitial!: (reply: { body: unknown }) => void;
+    let releaseThreads!: (reply: { body: unknown }) => void;
+    let releaseMessages!: (reply: { body: unknown }) => void;
+    let releaseListening!: (reply: { body: unknown }) => void;
+    const initialPage = new Promise<{ body: unknown }>((resolve) => { releaseInitial = resolve; });
+    const refreshedThreads = new Promise<{ body: unknown }>((resolve) => { releaseThreads = resolve; });
+    const refreshedMessages = new Promise<{ body: unknown }>((resolve) => { releaseMessages = resolve; });
+    const refreshedListening = new Promise<{ body: unknown }>((resolve) => { releaseListening = resolve; });
+    const threads = [{
+      threadId: "refresh-clear", sessionKey: "thread:refresh-clear", channel: "qq", chatId: "42", chatType: "group", title: "刷新清理竞态", lastActivity: "2026-10-23T00:01:00Z",
+      latestMessage: { content: "触发消息", role: "user", createdAt: "2026-10-23T00:01:00Z" },
+    }];
+    const message = (id: string, content: string) => ({ id, sequence: 1, role: "user", content, createdAt: "2026-10-23T00:01:00Z", metadata: { threadId: "refresh-clear" } });
+    let threadPageCount = 0;
+    let messagePageCount = 0;
+    let listeningPageCount = 0;
+    const { calls } = fakeBackend({
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [] } }),
+      "GET /api/roles/r1/channels/threads\\?networkOnly=true": () => ++threadPageCount === 1 ? { body: { threads } } : refreshedThreads,
+      "GET .*threads/refresh-clear/messages\\?limit=50&networkOnly=true": () => ++messagePageCount === 1 ? initialPage : refreshedMessages,
+      "GET .*threads/refresh-clear/listening/messages\\?limit=50": () => ++listeningPageCount === 1 ? { body: { messages: [], hasMore: false, nextBefore: null } } : refreshedListening,
+      "GET .*threads/refresh-clear/listening": () => ({ body: { enabled: true, dailyCap: 200, defaultDailyCap: 200, toggles: [] } }),
+    });
+    const user = userEvent.setup();
+    render(<ChannelView role={role({ id: "r1", name: "诗织" })} onBack={() => undefined} />);
+    await user.click(await screen.findByRole("button", { name: /刷新清理竞态/ }));
+    await user.click(screen.getByRole("button", { name: "刷新会话" }));
+    if (phase === "消息读取中") {
+      await act(async () => { releaseThreads({ body: { threads } }); await refreshedThreads; });
+      await waitFor(() => expect(calls.filter((call) => call.path.endsWith("refresh-clear/messages?limit=50&networkOnly=true"))).toHaveLength(2));
+    }
+    await act(async () => {
+      sources[0].dispatchEvent(new MessageEvent("channel_update", { data: JSON.stringify({ type: "listening_cleared", roleId: "r1", threadId: "refresh-clear" }) }));
+    });
+    if (phase === "目录读取中") {
+      await act(async () => { releaseThreads({ body: { threads } }); await refreshedThreads; });
+    }
+    await act(async () => {
+      releaseMessages({ body: { messages: [message("fresh", "刷新后普通消息")], hasMore: false, nextBefore: null } });
+      await refreshedMessages;
+    });
+    expect(await screen.findByText("刷新后普通消息")).toBeVisible();
+    await act(async () => {
+      releaseListening({ body: { messages: [message("heard", "已清理的旁听消息")], hasMore: false, nextBefore: null } });
+      releaseInitial({ body: { messages: [message("stale", "迟到的旧首屏消息")], hasMore: false, nextBefore: null } });
+      await Promise.all([refreshedListening, initialPage]);
+    });
+    expect(screen.queryByText("已清理的旁听消息")).not.toBeInTheDocument();
+    expect(screen.queryByText("迟到的旧首屏消息")).not.toBeInTheDocument();
+    expect(screen.getByText("刷新后普通消息")).toBeVisible();
+  });
+
   it("刷新返回后忽略迟到的首屏消息响应", async () => {
     let releaseInitial!: (reply: { body: unknown }) => void;
     const initialPage = new Promise<{ body: unknown }>((resolve) => { releaseInitial = resolve; });
