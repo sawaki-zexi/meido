@@ -22,6 +22,7 @@ it('旧自主配置默认关闭表情库维护，视觉用途不继承已选 Dri
     'GET /api/roles/r1/autonomy/target-accounts': () => ({ body: { accounts: [] } }),
   });
   render(<AutonomySettings roleId="r1" disabled={false} />);
+  await userEvent.click(await screen.findByText('表情库维护', { selector: 'summary > span' }));
   expect(await screen.findByRole('checkbox', { name: '允许 Drift 维护当前角色表情库' })).not.toBeChecked();
   expect(screen.getByRole('combobox', { name: '表情库视觉模型' })).toHaveValue('');
   expect(calls.every((call) => call.method === 'GET')).toBe(true);
@@ -45,6 +46,7 @@ it('更换 Drift 模型必须重新选择视觉用途，关闭维护仍可保存
   });
   const user = userEvent.setup();
   render(<AutonomySettings roleId="r1" disabled={false} />);
+  await userEvent.click(await screen.findByText('表情库维护', { selector: 'summary > span' }));
   await screen.findByRole('combobox', { name: '表情库视觉模型' });
   await user.selectOptions(screen.getByRole('combobox', { name: 'Drift 模型连接' }), 'drift-next');
   expect(screen.getByRole('combobox', { name: '表情库视觉模型' })).toHaveValue('drift-current');
@@ -83,6 +85,7 @@ it('主人明确视觉、读编辑复制和登记素材范围后保存，同一�
   });
   const user = userEvent.setup();
   render(<AutonomySettings roleId="r1" disabled={false} />);
+  await userEvent.click(await screen.findByText('表情库维护', { selector: 'summary > span' }));
   await user.click(await screen.findByRole('checkbox', { name: '允许 Drift 维护当前角色表情库' }));
   await user.selectOptions(screen.getByRole('combobox', { name: '表情库视觉模型' }), 'drift-current');
   await user.click(screen.getByRole('checkbox', { name: '查看当前角色表情库图片' }));
@@ -95,8 +98,8 @@ it('主人明确视觉、读编辑复制和登记素材范围后保存，同一�
   await waitFor(() => expect(screen.getByRole('button', { name: '保存自主设置' })).toBeEnabled());
   expect(screen.getByRole('checkbox', { name: '允许 Drift 维护当前角色表情库' })).toBeChecked();
   expect(screen.getByRole('textbox', { name: '允许维护的类别（每行一个）' })).toHaveValue('开心\nsurprise');
-  expect(screen.getByText(/固定使用当前角色的表情库/)).toBeInTheDocument();
-  expect(screen.getByText(/复制不需要开启 Shell/)).toBeInTheDocument();
+  expect(screen.getByText(/仅维护当前角色的表情库/)).toBeVisible();
+  expect(screen.getByText(/维护不授予图片发送许可/)).toBeVisible();
   expect(screen.queryByText(/host-observed-epoch|server-new-epoch/)).not.toBeInTheDocument();
 });
 
@@ -111,13 +114,17 @@ it('类别和素材范围必须有限且有效，主人修正输入后可以保�
   });
   const user = userEvent.setup();
   render(<AutonomySettings roleId="r1" disabled={false} />);
+  await userEvent.click(await screen.findByText('表情库维护', { selector: 'summary > span' }));
   const categories = await screen.findByRole('textbox', { name: '允许维护的类别（每行一个）' });
   const sources = screen.getByRole('textbox', { name: '允许复制的已登记素材 ID（每行一个）' });
   const save = screen.getByRole('button', { name: '保存自主设置' });
   const replace = async (field: HTMLElement, text: string) => { await user.clear(field); await user.click(field); await user.paste(text); };
   await replace(categories, '../其他角色');
   expect(save).toBeDisabled();
-  expect(screen.getByText(/类别须为单个目录名/)).toBeInTheDocument();
+  await user.click(screen.getByText('表情库维护', { selector: 'summary > span' }));
+  expect(categories).not.toBeVisible();
+  expect(screen.getByText(/类别须为单个目录名/)).toBeVisible();
+  await user.click(screen.getByText('表情库维护', { selector: 'summary > span' }));
   await replace(categories, '开心\n开心');
   expect(save).toBeDisabled();
   expect(screen.getByText(/类别不能重复/)).toBeInTheDocument();
@@ -134,7 +141,7 @@ it('类别和素材范围必须有限且有效，主人修正输入后可以保�
   expect(calls.every((call) => call.method === 'GET')).toBe(true);
 });
 
-it('原资源未退的保存拒绝保留主人草稿，清楚解释并发、占用和配额边界', async () => {
+it('原资源未退时显示保存拒绝原因，并保留主人草稿', async () => {
   const purpose = { enabled: false, managedEpoch: 'host-only', revision: 2,
     visionModelConfigurationId: 'drift-current', readEnabled: true, editEnabled: true, copyEnabled: false,
     allowedCategories: ['开心'], sourceAttachmentIds: [] };
@@ -146,15 +153,14 @@ it('原资源未退的保存拒绝保留主人草稿，清楚解释并发、占�
   });
   const user = userEvent.setup();
   render(<AutonomySettings roleId="r1" disabled={false} />);
+  await userEvent.click(await screen.findByText('表情库维护', { selector: 'summary > span' }));
   const panel = await screen.findByRole('group', { name: 'Drift 表情库维护' });
   await user.click(within(panel).getByRole('checkbox', { name: '允许 Drift 维护当前角色表情库' }));
   await user.click(screen.getByRole('button', { name: '保存自主设置' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('旧维护资源仍在退出，请稍后重新开启');
   expect(within(panel).getByRole('checkbox', { name: '允许 Drift 维护当前角色表情库' })).toBeChecked();
   expect(within(panel).getByRole('textbox', { name: '允许维护的类别（每行一个）' })).toHaveValue('开心');
-  expect(within(panel).getByText(/主人和 Drift 更新前都须先读取/)).toBeInTheDocument();
-  expect(within(panel).getByText(/64 MiB.*256.*1 GiB/)).toBeInTheDocument();
-  expect(within(panel).getByText(/短暂占用时请稍后重试/)).toBeInTheDocument();
+  expect(within(panel).getByText(/重新开启要等待原运行资源收尾/)).toBeVisible();
   expect(calls.filter((call) => call.method === 'PUT')).toHaveLength(1);
 });
 
@@ -174,6 +180,7 @@ it.each([
   });
   const user = userEvent.setup();
   render(<AutonomySettings roleId="r1" disabled={false} />);
+  await userEvent.click(await screen.findByText('表情库维护', { selector: 'summary > span' }));
   await user.click(await screen.findByRole('checkbox', { name: '允许 Drift 维护当前角色表情库' }));
   await user.click(screen.getByRole('button', { name: '保存自主设置' }));
   await waitFor(() => expect(complete).toBeDefined());

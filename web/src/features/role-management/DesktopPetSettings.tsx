@@ -27,7 +27,7 @@ export function DesktopPetSettings({ roleId, disabled = false }: { roleId: strin
   }
   const locked = disabled || busy || !state;
   const selected = state?.packages.find((item) => item.id === state.selectedPackageId);
-  return <fieldset aria-label="桌宠设置"><legend>桌宠</legend>
+  return <section className="settings-section"><h3>动作与窗口</h3><fieldset aria-label="桌宠设置">
     <p className="field-hint">导入 Shiori 动作包后开启；同一时间显示一个角色。</p>
     <label className="field">导入桌宠 ZIP
       <input type="file" accept=".zip,application/zip" aria-label="导入桌宠ZIP" disabled={locked}
@@ -46,13 +46,15 @@ export function DesktopPetSettings({ roleId, disabled = false }: { roleId: strin
     {selected && <div><img src={desktopPet.preview(roleId, selected.id)} alt={`${selected.displayName}预览`} width="96" height="104" style={{ objectFit: 'contain' }} />
       <p>{selected.description}</p><p>可用动作：{Object.keys(selected.actions).join('、') || '无自定义动作'}</p></div>}
     <p role="status">{state ? labels[state.host.status] ?? state.host.status : '正在读取…'}{state?.unavailableReason ? ` · ${state.unavailableReason}` : ''}</p>
+    <div className="settings-inline-actions">
     <button type="button" className="ghost" disabled={locked || !state?.enabled} onClick={() => void perform(() => desktopPet.restart(roleId))}>重启桌宠</button>
     <button type="button" className="ghost" disabled={locked} onClick={() => void perform(() => desktopPet.status(roleId))}>刷新状态</button>
-    {state?.packages.map((item) => <div key={item.id}><span>{item.displayName}</span>
+    </div>
+    {state?.packages.map((item) => <div className="settings-inline-actions" key={item.id}><span>{item.displayName}</span>
       <button type="button" className="ghost" disabled={locked || state.enabled && state.selectedPackageId === item.id}
         onClick={() => void perform(() => desktopPet.remove(roleId, state, item.id))}>删除动作包 {item.displayName}</button></div>)}
     {state?.history.length ? <details><summary>最近窗口与动作回执</summary><ul>{state.history.slice(-12).map((event, index) =>
       <li key={`${event.actionId ?? 'window'}:${event.type}:${index}`}>{receipts[event.type] ?? event.type}{event.actionId ? ` · ${event.actionId.slice(0, 8)}` : ''}{event.reason ? ` · ${event.reason}` : ''}</li>)}</ul></details> : null}
     {error && <p role="alert">{error}</p>}
-  </fieldset>;
+  </fieldset></section>;
 }

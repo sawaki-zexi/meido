@@ -63,17 +63,17 @@ export function RolePurposeSettings({ purpose, onRoleSaved, serviceVersion = 0 }
   return <section className="role-purpose-settings" aria-label="角色用途参数">
     {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
     {roles.length === 0 && <p>请先创建角色。</p>}
-    {roles.length > 0 && <label className="field">角色<select aria-label="角色参数" value={selectedId} disabled={busy} onChange={event => {
+    {roles.length > 0 && <label className="field settings-role-picker">角色<select aria-label="角色参数" value={selectedId} disabled={busy} onChange={event => {
       setSelectedId(event.target.value); setDraft(draftFromRole(roles.find(role => role.id === event.target.value)!)); setError(''); setNotice('');
     }}>{roles.map(role => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>}
     {selected && draft && <div key={selected.id}>
       {purpose === 'autonomy' ? <AutonomySettings roleId={selected.id} disabled={busy} />
         : purpose === 'pet' ? <DesktopPetSettings roleId={selected.id} disabled={busy} />
-        : <form onSubmit={event => { event.preventDefault(); void save(); }}>
+        : <form className="settings-section" onSubmit={event => { event.preventDefault(); void save(); }}>
           {purpose === 'novelai' ? <NovelaiRoleSettings key={serviceVersion} draft={draft} onChange={setDraft} disabled={busy} sceneOnly />
             : purpose === 'coding' ? <CodingRoleSettings key={serviceVersion} roleId={selected.id} draft={draft} onChange={setDraft} disabled={busy} showEnabledToggle={false} />
             : <><ShellSettings draft={draft} onChange={setDraft} disabled={busy} /><SpawnSettings draft={draft} onChange={setDraft} disabled={busy} /></>}
-          <button type="submit" className="primary" disabled={busy}>{busy ? '保存中…' : '保存角色参数'}</button>
+          <div className="form-actions settings-save-actions"><button type="submit" className="primary" disabled={busy}>{busy ? '保存中…' : '保存角色参数'}</button></div>
         </form>}
       {purpose === 'advanced' && <ToolCatalog roleId={selected.id} />}
     </div>}

@@ -1059,6 +1059,7 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
 .dialog-settings .checkbox-field { align-items: start; column-gap: 10px; row-gap: 6px; line-height: 1.6; }
 .dialog-settings .checkbox-field > input[type="checkbox"], .dialog-settings .checkbox-field > input[type="radio"] { margin: max(0px, calc((1lh - 16px) / 2)) 0 0; }
 .dialog-settings .field-hint { line-height: 1.65; font-weight: 400; overflow-wrap: anywhere; }
+.dialog-settings .card-form > .field > small { color: var(--ink-faint); font-weight: 400; line-height: 1.65; }
 .dialog-settings .plugin-settings:has(.plugin-detail) > .settings-page-heading { margin-bottom: 6px; }
 .dialog-settings .plugin-detail > form > .field-hint { margin: 12px 0 4px; }
 .dialog-settings .plugin-detail > form > button[type="submit"] { justify-self: end; margin-top: 20px; }
@@ -1093,14 +1094,65 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
 .dialog-settings .plugin-services { gap: 32px; margin-top: 16px; }
 .dialog-settings .channel-identities { padding: 24px; }
 .dialog-settings .settings-subnav { margin-bottom: 8px; }
+.settings-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.settings-section { display: grid; align-content: start; gap: 18px; min-width: 0; padding: 24px; border: 1px solid var(--line); border-radius: 20px; background: var(--surface-card); }
+.settings-section > h3 { margin: 0; font-size: 1rem; font-weight: 600; }
+.settings-section > p, .settings-section fieldset > p { margin: 0; }
+.settings-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 20px 24px; }
+.settings-field-grid > .field { min-width: 0; }
+.settings-inline-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.settings-inline-button { justify-self: start; }
+.settings-subsection { display: grid; gap: 18px; min-width: 0; padding-top: 20px; border-top: 1px solid var(--line); }
+.settings-subsection > button { justify-self: start; }
+.settings-subsection > p { margin: 0; }
+.autonomy-settings { gap: 18px; }
+.autonomy-core-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.autonomy-core-grid > .settings-disclosure { grid-column: 1 / -1; }
+.autonomy-runtime-actions { padding-top: 18px; border-top: 1px solid var(--line); }
+.autonomy-settings p, .autonomy-settings small { overflow-wrap: anywhere; }
+.autonomy-settings .field > small { font-weight: 400; color: var(--ink-faint); line-height: 1.65; }
+.autonomy-records ul { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.autonomy-records li, .settings-permission-list > fieldset { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; }
+.autonomy-records p { margin: 0; font-size: .867rem; line-height: 1.7; }
+.settings-permission-list { display: grid; gap: 20px; min-width: 0; }
+.settings-permission-list > button { justify-self: start; }
+.settings-validation { margin: 0; padding: 12px 16px; border-radius: 12px; background: var(--hover); color: var(--danger); font-size: .933rem; }
+.dialog-settings .settings-role-picker { width: min(100%, 400px); margin-bottom: 4px; }
+.dialog-settings .settings-section { box-shadow: var(--panel-shadow); }
+.dialog-settings .settings-section fieldset { gap: 18px; }
+.dialog-settings .settings-section fieldset > legend:not(.settings-sr-only) { margin-bottom: 12px; font-size: .933rem; font-weight: 500; letter-spacing: normal; }
+.dialog-settings .settings-disclosure > summary, .dialog-settings .settings-disclosure-trigger { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; list-style: none; color: var(--ink); }
+.dialog-settings .settings-disclosure > summary::-webkit-details-marker { display: none; }
+.dialog-settings .settings-disclosure > summary::after, .dialog-settings .settings-disclosure-trigger::after { content: ''; flex: 0 0 6px; width: 6px; height: 6px; margin-left: auto; border-right: 1.5px solid var(--ink-faint); border-bottom: 1.5px solid var(--ink-faint); transform: rotate(45deg); }
+.dialog-settings .settings-disclosure[open] > summary::after, .dialog-settings .settings-disclosure-trigger[aria-expanded="true"]::after { transform: rotate(225deg); }
+.dialog-settings .settings-disclosure > summary > small { margin-left: auto; font-size: .8rem; font-weight: 400; white-space: nowrap; }
+.dialog-settings .settings-disclosure > summary:has(> small)::after { margin-left: 4px; }
+.dialog-settings .settings-disclosure > summary:hover { background: var(--hover); border-radius: 16px; }
+.dialog-settings .settings-disclosure > div { padding-top: 8px; gap: 18px; }
+.dialog-settings .settings-disclosure-trigger { padding: 16px 20px; border: 0; background: transparent; font-size: .933rem; font-weight: 500; }
+.dialog-settings .settings-disclosure-inset { border-radius: 12px; box-shadow: none; background: transparent; }
+.dialog-settings .settings-disclosure-inset > summary { padding: 14px 16px; }
+.dialog-settings .settings-disclosure-inset > div { padding: 4px 16px 16px; }
+.dialog-settings .settings-save-actions { justify-content: flex-end; padding-top: 0; }
+.dialog-settings .settings-disclosure :is(section, article, fieldset) > button { justify-self: start; }
+.dialog-settings .settings-disclosure :is(section, article, fieldset) > button[type="submit"] { justify-self: end; }
+.dialog-settings .settings-disclosure article + article { padding-top: 18px; border-top: 1px solid var(--line); }
+.dialog-settings .mail-section, .dialog-settings .owner-plugin-section { padding: 24px; border: 1px solid var(--line); border-radius: 20px; background: var(--surface-card); box-shadow: var(--panel-shadow); }
+.dialog-settings .mail-section h3, .dialog-settings .owner-plugin-section h3 { font-size: 1rem; }
+.dialog-settings .mail-section > button { justify-self: end; }
+.dialog-settings .mail-section-heading .muted, .dialog-settings .mail-section > .muted { font-size: .867rem; line-height: 1.65; }
 :root[data-stream-replies="false"] .message.assistant[aria-busy="true"] .bubble { display: none; }
 @keyframes ambient-breathe { 50% { background-position: 100% 100%; } }
 :root[data-backdrop-motion="true"] .shell, :root[data-backdrop-motion="true"] .dialog-settings { background-size: 160% 160%; animation: ambient-breathe 24s ease-in-out infinite; }
 @media (min-width: 1200px) {
   .dialog-settings .card-form > .field:not(.checkbox-field), .dialog-settings .plugin-detail > form > .field:not(.checkbox-field) { grid-template-columns: minmax(0, 1fr) minmax(240px, 360px); align-items: center; column-gap: 32px; }
+  .dialog-settings .card-form > .field:not(.checkbox-field) > small,
   .dialog-settings .card-form > .field:not(.checkbox-field) > .field-hint,
   .dialog-settings .plugin-detail > form > .field:not(.checkbox-field) > .field-hint,
   .dialog-settings .card-form > .api-key-field > small { grid-column: 2; }
+}
+@media (max-width: 1100px) {
+  .autonomy-core-grid, .settings-field-grid { grid-template-columns: minmax(0, 1fr); }
 }
 :root[data-font-size="small"] { font-size: 14px; }
 :root[data-font-size="large"] { font-size: 17px; }
@@ -1122,6 +1174,10 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
   .dialog-settings .configuration-main { flex-basis: 100%; }
   .dialog-settings .configuration-actions { width: 100%; justify-content: flex-end; }
   .dialog-settings .card-form, .dialog-settings .plugin-detail > form { padding-inline: 16px; }
+  .settings-field-grid { grid-template-columns: minmax(0, 1fr); }
+  .dialog-settings .settings-section, .dialog-settings .mail-section, .dialog-settings .owner-plugin-section { padding: 20px 16px; border-radius: 16px; }
+  .dialog-settings .settings-disclosure > summary, .dialog-settings .settings-disclosure-trigger { padding: 16px; }
+  .dialog-settings .settings-disclosure > div { padding-inline: 16px; }
 }
 
 /* Role memories: a quiet reading surface with a chronological thread. */
@@ -1409,7 +1465,7 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
   border-bottom: 1px solid var(--line);
 }
 
-.novelai-parameter-group:last-child { padding-bottom: 0; border-bottom: 0; }
+.novelai-parameter-group:last-of-type { padding-bottom: 0; border-bottom: 0; }
 
 .novelai-parameter-group legend {
   margin-bottom: 12px;
@@ -1437,13 +1493,9 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
 }
 
 .dialog-settings .novelai-form-actions {
-  position: sticky;
-  bottom: -1px;
-  z-index: 2;
   justify-content: flex-end;
-  padding: 12px 0;
+  padding: 20px 0 0;
   border-top: 1px solid var(--line);
-  background: var(--surface-card);
 }
 
 .novelai-form-actions .primary {

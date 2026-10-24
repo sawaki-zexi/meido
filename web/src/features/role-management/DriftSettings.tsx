@@ -7,8 +7,9 @@ export function DriftSettings({ roleId, config, models, onChange }: {
   roleId: string; config: AutonomyConfiguration; models: ModelConfiguration[]; onChange: (changes: Partial<AutonomyConfiguration>) => void;
 }) {
   const grants = useDriftGrants(roleId, config, onChange);
-  return <fieldset aria-label="Drift 独立设置">
-    <legend>Drift</legend>
+  return <><section className="settings-section">
+    <h3>Drift</h3>
+    <fieldset aria-label="Drift 独立设置">
     <label className="field checkbox-field"><input type="checkbox" aria-label="开启 Drift" checked={config.driftEnabled}
       onChange={(event) => onChange({ driftEnabled: event.target.checked, consentRevision: 0 })} />开启 Drift</label>
     <label className="field"><span>Drift 模型连接</span><select aria-label="Drift 模型连接" value={config.driftModelConfigurationId ?? ''}
@@ -18,20 +19,25 @@ export function DriftSettings({ roleId, config, models, onChange }: {
         && <option value={config.driftModelConfigurationId} disabled>原 Drift 连接已不存在</option>}
       {models.map((model) => <option key={model.id} value={model.id}>{model.provider} · {model.model}（{model.id}）</option>)}
     </select></label>
-    <p>仅来源可信且没有 alert/content、没有主人运行且回合结束满10分钟后进入；至少间隔3小时，UTC每日最多4次，并计入角色24次及应用120次额度。单次最多600秒、20步、8192输出 token；尝试不退还，这些上限不是费用估算。</p>
+    <p className="field-hint">空闲时执行获准任务，每天最多4次、间隔至少3小时。</p>
+    </fieldset>
+    </section>
+    <details className="settings-disclosure">
+    <summary><span>技能创作与工具许可</span></summary>
+    <div>
     <label className="field checkbox-field"><input type="checkbox" checked={config.driftAuthoring.enabled}
       onChange={(event) => grants.author({ enabled: event.target.checked })} />允许创建或更新 Drift 技能</label>
-    <p>普通主人聊天显式使用 $create-drift-skill 准备长期技能。作者的声明上界不等于执行许可；可以先保存缺依赖的同一产物，补齐许可后重验原 hash，无需重新生成。</p>
-    <p>宿主作者范围：{config.driftAuthoring.scopeId || '尚未分配'} · 版本 {config.driftAuthoring.revision}</p>
+    <p className="field-hint">在聊天中使用 $create-drift-skill 创建技能；声明的依赖仍需单独授予执行许可。</p>
+    {config.driftAuthoring.scopeId && <p className="field-hint">作者范围：{config.driftAuthoring.scopeId} · 版本 {config.driftAuthoring.revision}</p>}
     <label className="field checkbox-field"><input type="checkbox" checked={config.driftAuthoring.allowMcp}
       onChange={(event) => grants.author({ allowMcp: event.target.checked })} />作者可声明 MCP 依赖</label>
     <label className="field checkbox-field"><input type="checkbox" checked={config.driftAuthoring.allowShell}
       onChange={(event) => grants.author({ allowShell: event.target.checked })} />作者可声明受限 Shell 依赖</label>
     <label className="field checkbox-field"><input type="checkbox" checked={config.driftAuthoring.allowAutonomousAuthoring}
       onChange={(event) => grants.author({ allowAutonomousAuthoring: event.target.checked })} />允许在自主运行中创作 Drift 技能</label>
-    <button type="button" aria-expanded={grants.open} onClick={grants.toggle}>配置 Drift 工具许可</button>
-    {grants.open && <section aria-label="Drift 声明与执行许可">
-      <p>此目录只读取本地缓存，不启动 MCP 或访问服务账号。保存配置也不会发送消息或运行来源。</p>
+    <button type="button" className="settings-inline-button" aria-expanded={grants.open} onClick={grants.toggle}>配置 Drift 工具许可</button>
+    {grants.open && <section className="settings-permission-list" aria-label="Drift 声明与执行许可">
+      <p className="field-hint">目录来自本地缓存；保存配置不会执行工具。</p>
       {grants.busy && <Placeholder loading>正在读取 Drift 许可目录…</Placeholder>}
       {grants.error && <Notice onDismiss={grants.dismissError}>{grants.error}</Notice>}
       <button type="button" disabled={grants.busy} onClick={() => void grants.reload()}>刷新 Drift 许可目录</button>
@@ -94,5 +100,7 @@ export function DriftSettings({ roleId, config, models, onChange }: {
       <label className="field"><span>获准 Drift 附件 ID（每行一个）</span><textarea aria-label="获准 Drift 附件 ID（每行一个）" value={grants.attachmentText}
         onChange={(event) => grants.attachments(event.target.value)} /><small>最多16个当前角色已有公共附件；保存时由宿主验证归属。</small></label>
     </section>}
-  </fieldset>;
+    </div>
+    </details>
+  </>;
 }

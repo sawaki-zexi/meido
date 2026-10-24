@@ -51,7 +51,7 @@ it('requires an explicit current opaque preview adoption and explains pending de
   expect(calls.find((call) => call.path.endsWith('drift-skill-adoptions'))?.body).toEqual({
     previewId: 'b'.repeat(32), skillId: 'reading-notes', bundleSha256: hash,
     authoringScopeId: 'scope-current', expectedScopeRevision: 2, expectedRevision: 4 });
-  expect(screen.getByText(/同一 hash/)).toBeInTheDocument();
+  expect(screen.getByText(/补齐缺失许可后刷新即可，无需重新生成/)).toBeVisible();
   dependencyReady = true;
   await user.click(screen.getByRole('button', { name: '刷新 Drift 技能状态' }));
   expect(await screen.findByText('本地许可与可信产物齐备')).toBeInTheDocument();

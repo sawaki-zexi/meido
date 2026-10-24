@@ -13,6 +13,33 @@ const config = { revision: 0, activeDecisionEnabled: false, driftEnabled: false,
 const state = { config, runs: [], acknowledgements: [], cleanupPending: false, humanBusy: false };
 const models = [{ id: "explicit", provider: "local", model: "autonomy", api: "openai-completions" }];
 
+it("默认收起进阶配置，展开编辑再收起仍保留草稿并正常保存", async () => {
+  const { calls } = fakeBackend({
+    "GET /api/roles/r1/autonomy": () => ({ body: state }),
+    "GET /api/model/configurations": () => ({ body: { configurations: models } }),
+    "GET /api/roles/r1/autonomy/target-accounts": () => ({ body: { accounts: [] } }),
+    "PUT /api/roles/r1/autonomy": init => ({ body: { ...state, config: { ...JSON.parse(String(init?.body)).config, revision: 1 } } }),
+  });
+  const user = userEvent.setup();
+  render(<AutonomySettings roleId="r1" disabled={false} />);
+  expect(await screen.findByRole("checkbox", { name: "开启主动决策" })).toBeVisible();
+  const sources = screen.getByRole("textbox", { name: "来源许可草稿", hidden: true });
+  expect(sources).not.toBeVisible();
+  const summary = screen.getByText("表情库维护", { selector: "summary > span" });
+  await user.click(summary);
+  const categories = screen.getByRole("textbox", { name: "允许维护的类别（每行一个）" });
+  await user.type(categories, "开心");
+  await user.click(summary);
+  expect(categories).not.toBeVisible();
+  await user.click(summary);
+  expect(categories).toHaveValue("开心");
+  await user.click(screen.getByRole("button", { name: "保存自主设置" }));
+  await waitFor(() => expect(calls.filter(call => call.method === "PUT")).toHaveLength(1));
+  expect(calls.find(call => call.method === "PUT")?.body).toMatchObject({
+    config: { activeDecisionEnabled: false, driftEnabled: false, driftMeme: { enabled: false, allowedCategories: ["开心"] } },
+  });
+});
+
 it("显式读取主人目标目录后选择外部默认目标，保存仅携带本次观察许可", async () => {
   let saves = 0;
   const { calls } = fakeBackend({
@@ -43,6 +70,7 @@ it("显式读取主人目标目录后选择外部默认目标，保存仅携带�
   });
   const user = userEvent.setup();
   render(<AutonomySettings roleId="r1" disabled={false} />);
+  await user.click(await screen.findByText("添加渠道目标", { selector: "summary > span" }));
   await screen.findByRole("combobox", { name: "自主发送账号" });
   await screen.findByRole("option", { name: "主人机器人 · telegram" });
   expect(calls.some((call) => call.method === "POST")).toBe(false);
@@ -209,6 +237,7 @@ it("显式信任本地产物后才能提交来源契约验证，验证结果须�
   const user = userEvent.setup();
   render(<AutonomySettings roleId="r1" disabled={false} />);
   await screen.findByRole("checkbox", { name: "开启主动决策" });
+  await user.click(screen.getByText("来源与验证", { selector: "summary > span" }));
   await user.selectOptions(screen.getByRole("combobox", { name: "待验证来源" }), "news");
   await user.type(screen.getByRole("textbox", { name: "来源验证清单路径" }), "D:/trusted/manifest.json");
   await user.type(screen.getByRole("textbox", { name: "来源验证清单 SHA256" }), "a".repeat(64));

@@ -124,8 +124,8 @@ export function NovelaiSettings({ showTitle = true }: { showTitle?: boolean }) {
           <label className="field checkbox-field novelai-option-row"><input type="checkbox" aria-label="自动添加质量标签" checked={configuration.addQualityTags ?? false} disabled={pending}
             onChange={(event) => patch({ addQualityTags: event.target.checked })} /><span>自动添加质量标签</span></label>
         </fieldset>
-      </section>
       <div className="form-actions novelai-form-actions"><button type="submit" className="primary" disabled={pending}>保存生图设置</button></div>
+      </section>
     </form>
     <section className="novelai-settings-card novelai-credentials-card" aria-label="独立 NovelAI 凭据"><div className="novelai-card-heading"><h3>独立凭据</h3></div>
       <label className="field"><span>新的 NovelAI token</span><input aria-label="新的 NovelAI token" type="password" autoComplete="new-password" value={token} disabled={pending} onChange={(event) => setToken(event.target.value)} /></label>

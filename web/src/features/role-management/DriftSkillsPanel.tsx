@@ -9,11 +9,10 @@ export function DriftSkillsPanel({ roleId, config, hasUnsavedChanges }: {
   roleId: string; config: AutonomyConfiguration; hasUnsavedChanges: boolean;
 }) {
   const state = useDriftSkills(roleId, config, hasUnsavedChanges);
-  return <section aria-label="Drift 长期技能">
-    <button type="button" aria-expanded={state.open} onClick={state.toggle}>查看 Drift 技能</button>
-    {state.open && <>
-      <h4>Drift 长期技能</h4>
-      <p>在普通聊天中显式使用 $create-drift-skill 准备技能。缺依赖时保留同一 hash，补齐许可并刷新即可，无需重新生成。可用状态不代表 MCP 服务在线，每次运行仍需真实握手。</p>
+  return <section className="settings-disclosure" aria-label="Drift 长期技能">
+    <button className="settings-disclosure-trigger" type="button" aria-expanded={state.open} onClick={state.toggle}>查看 Drift 技能</button>
+    {state.open && <div>
+      <p className="field-hint">在聊天中使用 $create-drift-skill 创建技能。补齐缺失许可后刷新即可，无需重新生成。</p>
       {state.error && <Notice onDismiss={state.dismissError}>{state.error}</Notice>}
       {state.message && <Notice tone="success" onDismiss={state.dismissMessage}>{state.message}</Notice>}
       {state.busy && <Placeholder loading>正在读取或核对 Drift 技能…</Placeholder>}
@@ -55,6 +54,6 @@ export function DriftSkillsPanel({ roleId, config, hasUnsavedChanges }: {
           <button type="button" disabled={!state.canAdopt} onClick={() => void state.adopt()}>{state.pendingAdoption ? '重查本次采用' : '采用当前 Drift 产物'}</button>
         </>}
       </fieldset>
-    </>}
+    </div>}
   </section>;
 }

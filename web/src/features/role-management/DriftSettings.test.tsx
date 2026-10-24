@@ -59,6 +59,7 @@ it('separates author declaration bounds from execution grants and saves only exp
   });
   const user = userEvent.setup(); render(<AutonomySettings roleId="r1" disabled={false} />);
   await screen.findByRole('checkbox', { name: '开启 Drift' });
+  await user.click(screen.getByText('技能创作与工具许可'));
   await user.click(screen.getByRole('button', { name: '配置 Drift 工具许可' }));
   await screen.findByRole('checkbox', { name: '作者可声明 web_fetch' });
   await user.click(screen.getByRole('checkbox', { name: '允许创建或更新 Drift 技能' }));
@@ -77,7 +78,7 @@ it('separates author declaration bounds from execution grants and saves only exp
       serverId: 'notes', configRevision: 'config-v2', grantRevision: 'grant-v3', risk: 'read_only',
       operations: [{ name: 'search', definitionHash: hash }] }] } }));
   expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
-  expect(screen.getByText(/声明上界不等于执行许可/)).toBeInTheDocument();
+  expect(screen.getByText(/声明的依赖仍需单独授予执行许可/)).toBeVisible();
 });
 
 it('shows real Drift finish, message receipt, Runtime ACK and cleanup as separate facts', async () => {
