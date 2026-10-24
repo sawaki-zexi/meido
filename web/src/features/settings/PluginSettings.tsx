@@ -21,7 +21,7 @@ const services: Row[] = [
 ];
 const rolePurposes = new Set<PluginId>(['novelai', 'coding', 'pet', 'autonomy']);
 const publicParameters = new Set<PluginId>(['browser', 'screen']);
-const displayNames = { browser: 'Browser Use', computer: 'Computer Use', autonomy: '主动推送与 Drift' };
+const displayNames = { browser: 'Browser Use', computer: 'Computer Use', autonomy: '主动推送' };
 const displayOrder: PluginId[] = ['browser', 'computer', 'pet', 'coding', 'novelai', 'autonomy', 'screen', 'todo'];
 type TodoConfiguration = { enabled: boolean; remindersEnabled: boolean; timezone: string };
 
@@ -44,7 +44,7 @@ export function PluginSettings({ onRoleSaved, onOpenService, serviceVersion = 0 
         const [host, ...external] = results;
         const configured: Row[] = host.status === 'fulfilled' && 'plugins' in host.value
           ? host.value.plugins.map(state => ({ ...state, name: state.id in displayNames ? displayNames[state.id as keyof typeof displayNames] : state.name,
-            description: state.id === 'autonomy' ? '主动推送：判断何时联系主人；Drift：空闲时执行获准任务。' : state.description, state })) : [];
+            description: state.id === 'autonomy' ? '主动与你交流，空闲时执行任务。' : state.description, state })) : [];
         if (host.status === 'rejected') setError(errorMessage(host.reason, '无法读取插件列表'));
         external.forEach((result, index) => {
           const service = services[index];

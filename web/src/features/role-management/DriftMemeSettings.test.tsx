@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { fakeBackend } from '../../test/fakeBackend';
-import { AutonomySettings } from './AutonomySettings';
+import { AutonomyManagement as AutonomySettings } from './AutonomyManagement';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 

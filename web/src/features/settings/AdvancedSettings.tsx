@@ -32,6 +32,7 @@ const groups = [
 
 export function AdvancedSettings({ onRoleSaved }: { onRoleSaved?: (role: Role) => void }) {
   const [open, setOpen] = useState(false);
+  const [autonomyOpen, setAutonomyOpen] = useState(false);
   const settings = useAdvancedDraft();
   const [diagnostics, setDiagnostics] = useState<Array<{ runId: string; roleId: string; requests: number; compactions: number; inputEstimate: number; toolCount: number; elapsedMs: number }>>([]);
   const [diagnosticError, setDiagnosticError] = useState('');
@@ -64,6 +65,12 @@ export function AdvancedSettings({ onRoleSaved }: { onRoleSaved?: (role: Role) =
       {diagnosticError && <p role="alert">{diagnosticError}</p>}
       {diagnostics.length === 0 && <p>暂无诊断。启用并保存后，下一次普通聊天会记录预算信息。</p>}
       {diagnostics.map(item => <p key={item.runId}>{item.roleId} · 请求 {item.requests} 次 · 压缩 {item.compactions} 次 · 输入估算 {item.inputEstimate} token · 工具 {item.toolCount} 个 · {item.elapsedMs} ms</p>)}
+    </div></section>}
+    {settings.draft.devMode === true && <section className="settings-group"><h3>主动推送诊断与授权</h3><div className="settings-card">
+      <div className="settings-preference"><span><strong>来源、工具授权与运行记录</strong></span>
+        <button type="button" aria-expanded={autonomyOpen} onClick={() => setAutonomyOpen(value => !value)}>{autonomyOpen ? '收起' : '管理'}</button>
+      </div>
+      {autonomyOpen && <RolePurposeSettings purpose="autonomy-management" />}
     </div></section>}
     <section className="settings-group"><h3>运行设置</h3><div className="settings-card">
       <div className="settings-preference"><span><strong>角色执行预算与工具诊断</strong><small>Shell、子任务与工具权限。</small></span>

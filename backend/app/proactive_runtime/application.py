@@ -15,6 +15,7 @@ from ..session_store import SessionStore
 from ..task_runtime import TaskRuntime, TaskBudget, TaskOutcome
 from ..mcp_stdio import finish_cleanup
 from .config import AutonomyConfig, MemePurposeConflict
+from .preferences import ProactivePreferences
 from .identity import AutonomyOrigin
 from .execution import AutonomyExecutor
 from .sources import collect_snapshot
@@ -32,9 +33,11 @@ class ProactiveApplication:
     def __init__(self, sessions: SessionStore, tasks: TaskRuntime, *,
                  role_getter: Callable, model_getter: Callable, clock: Callable = time.time,
                  mcp_host=None, adapter_factory=None, fetch_body=None, recall_memory=None, web_tools=None,
-                 context_reader=None, workspace_getter=None, channel_host=None, enabled=lambda: True):
+                 context_reader=None, workspace_getter=None, channel_host=None, enabled=lambda: True,
+                 role_model_getter=lambda role_id: None):
         self.sessions, self.tasks = sessions, tasks
         self.role_getter, self.model_getter, self.clock = role_getter, model_getter, clock
+        self.role_model_getter = role_model_getter
         self.mcp_host, self.adapter_factory, self.fetch_body = mcp_host, adapter_factory, fetch_body
         self.recall_memory, self.web_tools = recall_memory, web_tools
         self.context_reader = context_reader
@@ -107,8 +110,9 @@ class ProactiveApplication:
             db.execute("UPDATE autonomy_roles SET poll_not_before=MAX(poll_not_before,COALESCE(last_poll_at+150,0))")
             # Process downtime never creates catch-up decisions. Original claims
             # will be recovered separately; no old model action is replayed.
-            db.execute("UPDATE autonomy_roles SET next_at=?,next_poll_at=MAX(?,poll_not_before),human_busy=0,last_human_end=?,initial_poll_id=NULL,poll_ready_generation=0",
-                       (now + 1800, now, now))
+            self._postpone_decisions(db, now)
+            db.execute("UPDATE autonomy_roles SET next_poll_at=MAX(?,poll_not_before),human_busy=0,last_human_end=?,initial_poll_id=NULL,poll_ready_generation=0",
+                       (now, now))
             db.execute("UPDATE autonomy_human_runs SET ended=1")
         self.source_verifications = SourceVerificationApplication(self)
         from .drift_skills import DriftSkillCatalog
@@ -141,26 +145,61 @@ class ProactiveApplication:
         if self.role_getter(role_id) is None:
             raise KeyError("role is unavailable")
 
+    @staticmethod
+    def _postpone_decisions(db, now):
+        for row in db.execute('SELECT role_id,config FROM autonomy_roles').fetchall():
+            config = AutonomyConfig.model_validate_json(row['config'])
+            db.execute('UPDATE autonomy_roles SET next_at=? WHERE role_id=?',
+                (now + config.decision_interval, row['role_id']))
+
+    def effective_config(self, role_id, config):
+        if not config.inheritRoleModel or not (config.activeDecisionEnabled or config.driftEnabled):
+            return config
+        model = self.role_model_getter(role_id)
+        identifier = bindings.shape(model).get('id') if model is not None else None
+        if identifier is None or self.model_getter(identifier) is None:
+            raise ValueError('role model is unavailable')
+        # Inheriting a chat model cannot retarget an existing vision grant.
+        return AutonomyConfig.model_validate({**config.model_dump(),
+            'decisionModelConfigurationId': identifier, 'driftModelConfigurationId': identifier})
+
+    def _preserves_inactive_grants(self, role_id, config):
+        if config.activeDecisionEnabled or config.driftEnabled:
+            return False
+        with self._transaction() as db:
+            row = db.execute('SELECT config FROM autonomy_roles WHERE role_id=?', (role_id,)).fetchone()
+        if row is None:
+            return False
+        ignored = {'revision', 'activeDecisionEnabled', 'driftEnabled', 'inheritRoleModel',
+            'consentRevision', *ProactivePreferences.model_fields}
+        previous = AutonomyConfig.model_validate_json(row[0])
+        return previous.model_dump(exclude=ignored) == config.model_dump(exclude=ignored)
+
     def configure(self, role_id: str, config: AutonomyConfig, *, expected_revision: int, target_selections=None):
         self._require_role(role_id)
         if self._closed:
             raise RuntimeError("autonomy application is closed")
+        config = self.effective_config(role_id, config)
+        # Turning off must remain possible after a model/source/target expires.
+        # Only already-saved, unchanged grants may be retained without validation;
+        # re-enabling or editing any grant still runs all dependency checks.
+        retain_inactive = self._preserves_inactive_grants(role_id, config)
         for enabled, identifier in ((config.activeDecisionEnabled, config.decisionModelConfigurationId),
                                     (config.driftEnabled, config.driftModelConfigurationId)):
             if enabled and (identifier is None or self.model_getter(identifier) is None):
                 raise ValueError("explicit saved model is unavailable")
-        if config.driftMeme.enabled:
+        if config.driftMeme.enabled and not retain_inactive:
             from ..ai.model_adapter_registry import ModelAdapterRegistry
             model = self.model_getter(config.driftMeme.visionModelConfigurationId)
             if model is None or not ModelAdapterRegistry().supports_images(model):
                 raise ValueError('meme purpose requires an explicitly saved image-capable Drift model')
-        for source in config.sourceGrants:
+        for source in (() if retain_inactive else config.sourceGrants):
             if source.enabled:
                 server = self.mcp_host.store.get(source.serverId) if self.mcp_host else None
                 if (server is None or not server.enabled or role_id not in server.role_ids
                         or (server.revision, server.grant_id) != (source.configRevision, source.grantRevision)):
                     raise ValueError("enabled source requires its exact saved MCP grant")
-        for grant in config.driftMcpGrants:
+        for grant in (() if retain_inactive else config.driftMcpGrants):
             server = self.mcp_host.store.get(grant.serverId) if self.mcp_host else None
             if (server is None or not server.enabled or role_id not in server.role_ids
                     or (server.revision, server.grant_id, server.risk) != (grant.configRevision, grant.grantRevision, grant.risk)):
@@ -170,7 +209,8 @@ class ProactiveApplication:
             revision = old["revision"] if old else 0
             if expected_revision != revision:
                 raise ValueError("autonomy configuration revision changed")
-            self.targets.save(db, role_id, config, expected_revision, target_selections)
+            if not retain_inactive or target_selections is not None:
+                self.targets.save(db, role_id, config, expected_revision, target_selections)
             now = self._now(db)
             sources = []
             for source in config.sourceGrants:
@@ -199,7 +239,7 @@ class ProactiveApplication:
             meme = previous_meme if unchanged_meme else requested_meme.model_copy(update={
                 'managedEpoch': uuid.uuid4().hex if requested_meme.enabled and not previous_meme.enabled else previous_meme.managedEpoch,
                 'revision': previous_meme.revision + 1})
-            if meme.enabled:
+            if meme.enabled and not retain_inactive:
                 self.memes.adopt(db, role_id, meme)
             saved = config.model_copy(update={"revision": revision + 1, "sourceGrants": sources, 'driftAuthoring': authoring, 'driftMeme': meme})
             db.execute("""INSERT INTO autonomy_roles
@@ -207,9 +247,9 @@ class ProactiveApplication:
                 VALUES(?,?,?,?,?,?,?) ON CONFLICT(role_id) DO UPDATE SET
                 revision=excluded.revision,generation=excluded.generation,
                 config=excluded.config,next_at=excluded.next_at,next_poll_at=excluded.next_poll_at,
-                initial_poll_id=NULL,poll_ready_generation=0""",
+                initial_poll_id=NULL,poll_ready_generation=0,admission_error=''""",
                 (role_id, revision + 1, (old["generation"] if old else 0) + 1,
-                 json.dumps(saved.model_dump(mode="json")), now + 1800,
+                 json.dumps(saved.model_dump(mode="json")), now + saved.decision_interval,
                  max(now, old["poll_not_before"]) if old else now, now))
             if old:
                 db.execute("UPDATE autonomy_roles SET cleanup_pending=EXISTS(SELECT 1 FROM autonomy_runs WHERE role_id=? AND runtime_acknowledged=0) WHERE role_id=?", (role_id, role_id))
@@ -294,6 +334,13 @@ class ProactiveApplication:
             row = db.execute("SELECT bindings FROM autonomy_runs WHERE tick_id=?", (origin.tick_id,)).fetchone()
             return json.loads(row[0]) if row else {}
 
+    def frozen_configuration(self, origin):
+        with self._transaction() as db:
+            row = db.execute('SELECT frozen_config FROM autonomy_runs WHERE tick_id=?', (origin.tick_id,)).fetchone()
+            if row is None:
+                raise PermissionError('autonomous run is unavailable')
+            return AutonomyConfig.model_validate_json(row[0])
+
     def drift_permissions_current(self, role_id, grants):
         for grant in grants:
             server = self.mcp_host.store.get(grant.serverId) if self.mcp_host else None
@@ -353,7 +400,13 @@ class ProactiveApplication:
             affected = []
             for row in db.execute("SELECT role_id,config FROM autonomy_roles"):
                 config = AutonomyConfig.model_validate_json(row["config"])
-                if configuration_id in {config.decisionModelConfigurationId, config.driftModelConfigurationId}:
+                identifiers = {config.decisionModelConfigurationId, config.driftModelConfigurationId}
+                if config.inheritRoleModel:
+                    model = bindings.shape(self.role_model_getter(row['role_id']))
+                    identifiers = {model.get('id')} if model else set()
+                    for run in db.execute('SELECT bindings FROM autonomy_runs WHERE role_id=? AND runtime_acknowledged=0', (row['role_id'],)):
+                        identifiers.update(json.loads(run['bindings']).get('models', {}))
+                if configuration_id in identifiers:
                     db.execute("UPDATE autonomy_roles SET generation=generation+1,cleanup_pending=1 WHERE role_id=?", (row["role_id"],))
                     affected.append(row["role_id"])
         for role_id in affected:
@@ -403,7 +456,8 @@ class ProactiveApplication:
             self._closed = False
             with self._transaction() as db:
                 now = self._now(db)
-                db.execute("UPDATE autonomy_roles SET next_at=?,next_poll_at=MAX(?,poll_not_before),initial_poll_id=NULL,poll_ready_generation=0", (now + 1800, now))
+                self._postpone_decisions(db, now)
+                db.execute("UPDATE autonomy_roles SET next_poll_at=MAX(?,poll_not_before),initial_poll_id=NULL,poll_ready_generation=0", (now,))
             self._worker = asyncio.create_task(self._clock_loop())
 
     async def _clock_loop(self):
@@ -493,7 +547,7 @@ class ProactiveApplication:
                     # submit race with the snapshot. Keep the original due
                     # time while this prerequisite is still in flight.
                     continue
-                db.execute("UPDATE autonomy_roles SET next_at=? WHERE role_id=?", (now + 1800, row["role_id"]))
+                db.execute("UPDATE autonomy_roles SET next_at=? WHERE role_id=?", (now + config.decision_interval, row["role_id"]))
                 if (not (config.activeDecisionEnabled or config.driftEnabled) or row["human_busy"]
                         or now - row["last_human_end"] < 600 or row["cleanup_pending"]
                         or self.role_getter(row["role_id"]) is None
@@ -504,6 +558,11 @@ class ProactiveApplication:
                     continue
                 if db.execute("SELECT 1 FROM autonomy_runs WHERE role_id=? AND kind='autonomy_tick' AND runtime_acknowledged=0",
                               (row["role_id"],)).fetchone():
+                    continue
+                try:
+                    config = self.effective_config(row['role_id'], config)
+                except ValueError:
+                    db.execute("UPDATE autonomy_roles SET admission_error='角色模型或表情维护授权已变化，请检查设置' WHERE role_id=?", (row['role_id'],))
                     continue
                 day = int(now // 86400)
                 db.execute("INSERT OR IGNORE INTO autonomy_budgets(role_id,day) VALUES(?,?)", (row["role_id"], day))
@@ -526,7 +585,7 @@ class ProactiveApplication:
                     continue
                 frozen = bindings.freeze(self, origin.role_id, config)
                 db.execute("INSERT INTO autonomy_runs(tick_id,role_id,origin,started_at,frozen_config,bindings) VALUES(?,?,?,?,?,?)",
-                           (origin.tick_id, origin.role_id, origin.serialized(), now, row["config"], json.dumps(frozen, ensure_ascii=False)))
+                           (origin.tick_id, origin.role_id, origin.serialized(), now, config.model_dump_json(), json.dumps(frozen, ensure_ascii=False)))
                 db.execute("UPDATE autonomy_budgets SET decisions=decisions+1 WHERE role_id=? AND day=?", (origin.role_id, day))
                 db.execute("UPDATE autonomy_roles SET admission_error='' WHERE role_id=?", (origin.role_id,))
                 admitted.append(origin)
@@ -727,7 +786,8 @@ class ProactiveApplication:
                     bundle = self.mcp_host.freeze_autonomy(origin, grants, authorized=lambda: self._authorized(origin), mount_grants=mounts)
                 snapshot = await collect_snapshot(bundle, sources, observed_at=observed_at,
                     eligible=lambda grant, identifier: self._event_eligible(origin.role_id, grant, identifier),
-                    rotation=rotation, fetch_body=(lambda url: self.fetch_body(origin, url)) if self.fetch_body else None)
+                    rotation=rotation, fetch_body=(lambda url: self.fetch_body(origin, url)) if self.fetch_body else None,
+                    content_limit=config.agentContentLimit, web_fetch_max_chars=config.agentWebFetchMaxChars)
             health = {(state["sourceId"], state["revision"]): state
                       for state in poll_health.get("sources", [])} if poll_health.get("generation") == origin.generation else {}
             polled = {(source.sourceId, source.revision) for source in sources if source.pollTool}

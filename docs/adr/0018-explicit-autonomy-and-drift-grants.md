@@ -13,3 +13,5 @@
 显式目标和聊天忙闲替代上游 presence/relationship fallback，增加配置和持久状态，但避免隐式身份或改投。S06/S08 产物须经相应信任与许可后由后续运行真实消费。批准覆盖实现和本地合成验收；真实账号、服务事务及费用另批。
 
 事实来源：[具体规格](../specs/proactive-drift-spec.md)、[#177 实施计划](https://github.com/sawaki-zexi/meido/issues/177#issuecomment-6207491543)。批准不表示生产实现或真实自主事务验收完成。
+
+设置入口与模型继承的后续决定见 [ADR-0025](0025-proactive-settings-and-role-model.md)。

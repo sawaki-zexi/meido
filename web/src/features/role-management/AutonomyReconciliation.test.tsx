@@ -3,7 +3,7 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event';
 import { defaultDriftAuthoring, type AutonomyConfiguration, type AutonomyDelivery, type AutonomyState } from '../../api/autonomy';
 import { fakeBackend } from '../../test/fakeBackend';
-import { AutonomySettings } from './AutonomySettings';
+import { AutonomyManagement as AutonomySettings } from './AutonomyManagement';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const config: AutonomyConfiguration = { revision: 0, activeDecisionEnabled: false, driftEnabled: false,

@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { defaultDriftAuthoring, type AutonomyConfiguration, type AutonomyState, type AutonomyTarget,
   type AutonomyTargetAccount, type AutonomyTargetDirectory } from '../../api/autonomy';
 import { fakeBackend } from '../../test/fakeBackend';
-import { AutonomySettings } from './AutonomySettings';
+import { AutonomyManagement as AutonomySettings } from './AutonomyManagement';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const config: AutonomyConfiguration = { revision: 0, activeDecisionEnabled: false, driftEnabled: false,

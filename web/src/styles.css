@@ -1106,6 +1106,17 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
 .settings-subsection > button { justify-self: start; }
 .settings-subsection > p { margin: 0; }
 .autonomy-settings { gap: 18px; }
+.proactive-settings { display: grid; gap: 16px; min-width: 0; }
+.dialog-settings .proactive-settings-card { display: grid; gap: 24px; min-width: 0; margin: 0; padding: 24px; }
+.proactive-settings-card > .settings-preference { padding: 0; }
+.dialog-settings .proactive-settings-card .field { padding: 0; border-bottom: 0; }
+.proactive-profile { max-width: 400px; }
+.dialog-settings .proactive-execution { border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
+.dialog-settings .proactive-execution > summary { padding: 20px 0 0; }
+.dialog-settings .proactive-execution[open] > summary { padding-bottom: 20px; }
+.dialog-settings .proactive-execution > div { padding: 0; gap: 24px; }
+.dialog-settings .proactive-execution .settings-section { padding: 20px 0 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none; }
+.proactive-settings-card > p { margin: 0; }
 .autonomy-core-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 .autonomy-core-grid > .settings-disclosure { grid-column: 1 / -1; }
 .autonomy-runtime-actions { padding-top: 18px; border-top: 1px solid var(--line); }

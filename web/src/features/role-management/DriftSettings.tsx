@@ -12,14 +12,13 @@ export function DriftSettings({ roleId, config, models, onChange }: {
     <fieldset aria-label="Drift 独立设置">
     <label className="field checkbox-field"><input type="checkbox" aria-label="开启 Drift" checked={config.driftEnabled}
       onChange={(event) => onChange({ driftEnabled: event.target.checked, consentRevision: 0 })} />开启 Drift</label>
-    <label className="field"><span>Drift 模型连接</span><select aria-label="Drift 模型连接" value={config.driftModelConfigurationId ?? ''}
+    {!config.inheritRoleModel && <label className="field"><span>Drift 模型连接</span><select aria-label="Drift 模型连接" value={config.driftModelConfigurationId ?? ''}
       onChange={(event) => onChange({ driftModelConfigurationId: event.target.value || null, consentRevision: 0 })}>
       <option value="">请选择已保存的 Drift 模型连接</option>
       {config.driftModelConfigurationId && !models.some((model) => model.id === config.driftModelConfigurationId)
         && <option value={config.driftModelConfigurationId} disabled>原 Drift 连接已不存在</option>}
       {models.map((model) => <option key={model.id} value={model.id}>{model.provider} · {model.model}（{model.id}）</option>)}
-    </select></label>
-    <p className="field-hint">空闲时执行获准任务，每天最多4次、间隔至少3小时。</p>
+    </select></label>}
     </fieldset>
     </section>
     <details className="settings-disclosure">

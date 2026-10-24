@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { fakeBackend, role } from '../../test/fakeBackend';
 import { App } from '../../App';
-import { AutonomySettings } from './AutonomySettings';
+import { AutonomyManagement as AutonomySettings } from './AutonomyManagement';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); localStorage.clear(); });
 const config = { revision: 4, activeDecisionEnabled: false, driftEnabled: false,
@@ -15,6 +15,29 @@ const config = { revision: 4, activeDecisionEnabled: false, driftEnabled: false,
   driftMcpGrants: [], driftReadResourceIds: [], driftAttachmentIds: [] };
 const state = { config, runs: [], acknowledgements: [], cleanupPending: false, humanBusy: false };
 const models = [{ id: 'drift-model', provider: 'local', model: 'drift-helper', api: 'openai-completions' }];
+
+it('管理页继承模型时不展示无效的独立选择，明确退出继承后保存选择', async () => {
+  const inherited = { ...state, config: { ...config, inheritRoleModel: true, activeDecisionEnabled: true,
+    driftEnabled: true, consentRevision: 1, decisionModelConfigurationId: 'role-model', driftModelConfigurationId: 'role-model' } };
+  const { calls } = fakeBackend({
+    'GET /api/roles/r1/autonomy': () => ({ body: inherited }),
+    'GET /api/model/configurations': () => ({ body: { configurations: [...models, { ...models[0], id: 'role-model' }] } }),
+    'PUT /api/roles/r1/autonomy': request => ({ body: { ...state, config: { ...JSON.parse(String(request?.body)).config, revision: 5 } } }),
+  });
+  const user = userEvent.setup(); render(<AutonomySettings roleId="r1" disabled={false} />);
+  const inherit = await screen.findByRole('checkbox', { name: '使用角色聊天模型' });
+  expect(inherit).toBeChecked();
+  expect(screen.queryByRole('combobox', { name: '主动决策模型' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('combobox', { name: 'Drift 模型连接' })).not.toBeInTheDocument();
+  await user.click(inherit);
+  await user.selectOptions(screen.getByRole('combobox', { name: '主动决策模型' }), 'drift-model');
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Drift 模型连接' }), 'drift-model');
+  await user.click(screen.getByRole('checkbox', { name: /同意有限自主读取/ }));
+  await user.click(screen.getByRole('button', { name: '保存自主设置' }));
+  await waitFor(() => expect(calls.find(call => call.method === 'PUT')?.body).toMatchObject({
+    config: { inheritRoleModel: false, decisionModelConfigurationId: 'drift-model', driftModelConfigurationId: 'drift-model' },
+  }));
+});
 
 it('enables Drift independently with an explicit model and finite consent while preserving the complete source configuration', async () => {
   let saved: unknown;
@@ -38,7 +61,6 @@ it('enables Drift independently with an explicit model and finite consent while 
     driftEnabled: true, driftModelConfigurationId: 'drift-model', consentRevision: 1 } }));
   expect(screen.getByRole('checkbox', { name: '开启主动决策' })).not.toBeChecked();
   expect(calls.filter((call) => call.method !== 'GET').map((call) => call.path)).toEqual(['/api/roles/r1/autonomy']);
-  expect(screen.getByText(/最多4次/)).toBeInTheDocument();
 });
 
 it('separates author declaration bounds from execution grants and saves only explicit observed MCP hashes without connecting', async () => {
@@ -127,9 +149,10 @@ it('requires a fresh complete configuration after a version conflict instead of 
   expect(calls.filter((call) => call.method === 'PUT').map((call) => (call.body as { expectedRevision: number }).expectedRevision)).toEqual([4, 5]);
 });
 
-it('exposes the working Drift configuration in the actual tool settings and reopens its saved independent model', async () => {
+it('保留开发者管理入口，重新打开仍能读取已保存的独立模型与授权', async () => {
   let saved = state;
   const { calls } = fakeBackend({
+    'GET /api/settings/advanced': () => ({ body: { revision: 0, values: { devMode: true } } }),
     'GET /api/roles': () => ({ body: { roles: [role({ id: 'r1', name: 'Drift角色' })] } }),
     'GET /api/roles/r1/session': () => ({ body: { session: { sessionKey: 'role:r1', roleId: 'r1' }, messages: [] } }),
     'GET /api/roles/r1/model-configuration': () => ({ body: { configurationId: null, effectiveConfigurationId: null } }),
@@ -141,8 +164,8 @@ it('exposes the working Drift configuration in the actual tool settings and reop
   });
   const user = userEvent.setup(); render(<App />);
   await user.click(await screen.findByRole('button', { name: '设置' }));
-  await user.click(screen.getByRole('button', { name: '插件' }));
-  await user.click(await screen.findByRole('button', { name: '主动推送与 Drift 设置' }));
+  await user.click(screen.getByRole('button', { name: '高级' }));
+  await user.click(await screen.findByRole('button', { name: '管理' }));
   expect(screen.queryByRole('button', { name: '角色参数' })).not.toBeInTheDocument();
   const editor = within(await screen.findByRole('dialog', { name: '设置' }));
   await editor.findByRole('checkbox', { name: '开启 Drift' });
@@ -153,8 +176,8 @@ it('exposes the working Drift configuration in the actual tool settings and reop
   await waitFor(() => expect(saved.config.driftEnabled).toBe(true));
   await user.keyboard('{Escape}');
   await user.click(screen.getByRole('button', { name: '设置' }));
-  await user.click(screen.getByRole('button', { name: '插件' }));
-  await user.click(await screen.findByRole('button', { name: '主动推送与 Drift 设置' }));
+  await user.click(screen.getByRole('button', { name: '高级' }));
+  await user.click(await screen.findByRole('button', { name: '管理' }));
   await waitFor(() => expect(screen.getByRole('checkbox', { name: '开启 Drift' })).toBeChecked());
   expect(screen.getByRole('combobox', { name: 'Drift 模型连接' })).toHaveValue('drift-model');
   expect(screen.getByRole('checkbox', { name: '开启主动决策' })).not.toBeChecked();

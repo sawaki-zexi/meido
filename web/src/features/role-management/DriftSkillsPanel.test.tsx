@@ -2,7 +2,7 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { fakeBackend } from '../../test/fakeBackend';
-import { AutonomySettings } from './AutonomySettings';
+import { AutonomyManagement as AutonomySettings } from './AutonomyManagement';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const config = { revision: 4, activeDecisionEnabled: false, driftEnabled: false,

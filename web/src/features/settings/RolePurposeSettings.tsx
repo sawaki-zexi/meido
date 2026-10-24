@@ -5,12 +5,13 @@ import { draftFromRole, payloadFromDraft, type RoleDraft } from '../role-managem
 import { NovelaiRoleSettings } from '../novelai/NovelaiRoleSettings';
 import { CodingRoleSettings } from '../coding/CodingRoleSettings';
 import { AutonomySettings } from '../role-management/AutonomySettings';
+import { AutonomyManagement } from '../role-management/AutonomyManagement';
 import { DesktopPetSettings } from '../role-management/DesktopPetSettings';
 import { ShellSettings } from '../role-management/ShellSettings';
 import { SpawnSettings } from '../role-management/SpawnSettings';
 import { ToolCatalog } from '../role-management/ToolCatalog';
 
-export type RolePurpose = 'novelai' | 'coding' | 'autonomy' | 'pet' | 'advanced';
+export type RolePurpose = 'novelai' | 'coding' | 'autonomy' | 'autonomy-management' | 'pet' | 'advanced';
 export function RolePurposeSettings({ purpose, onRoleSaved, serviceVersion = 0 }: {
   purpose: RolePurpose; onRoleSaved?: (role: Role) => void; serviceVersion?: number;
 }) {
@@ -68,6 +69,7 @@ export function RolePurposeSettings({ purpose, onRoleSaved, serviceVersion = 0 }
     }}>{roles.map(role => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>}
     {selected && draft && <div key={selected.id}>
       {purpose === 'autonomy' ? <AutonomySettings roleId={selected.id} disabled={busy} />
+        : purpose === 'autonomy-management' ? <AutonomyManagement roleId={selected.id} disabled={busy} />
         : purpose === 'pet' ? <DesktopPetSettings roleId={selected.id} disabled={busy} />
         : <form className="settings-section" onSubmit={event => { event.preventDefault(); void save(); }}>
           {purpose === 'novelai' ? <NovelaiRoleSettings key={serviceVersion} draft={draft} onChange={setDraft} disabled={busy} sceneOnly />

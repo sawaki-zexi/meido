@@ -19,7 +19,7 @@ def grant_for(source):
         eventDomain="synthetic-events", enabled=True)
 
 
-def snapshot(source):
+def snapshot(source, **preferences):
     _, store, _, frozen, origin = source
     host = McpHost(store)
 
@@ -27,24 +27,25 @@ def snapshot(source):
         bundle = host.freeze_autonomy(origin, (frozen,), authorized=lambda: True)
         try:
             return await collect_snapshot(bundle, [grant_for(source)], observed_at=1234,
-                eligible=lambda *_: True, rotation=0)
+                eligible=lambda *_: True, rotation=0, **preferences)
         finally:
             await bundle.close()
             await host.close()
     return asyncio.run(exercise())
 
 
-def test_real_source_body_and_ids_are_frozen_and_host_bound(source):
+@pytest.mark.parametrize('limit,chars', [(5, 8000), (2, 512)])
+def test_real_source_body_and_ids_are_frozen_and_host_bound(source, limit, chars):
     root = source[0]
     events = [{"id": str(index), "kind": "content", "title": f"Item {index}", "body": "正文" * 5000}
               for index in range(7)]
     (root / "events.json").write_text(json.dumps(events), encoding="utf-8")
-    value = snapshot(source)
-    assert len(value["contents"]) == 5
-    assert len({item["id"] for item in value["contents"]}) == 5
+    value = snapshot(source, content_limit=limit, web_fetch_max_chars=chars)
+    assert len(value["contents"]) == limit
+    assert len({item["id"] for item in value["contents"]}) == limit
     assert value["contents"][0]["id"] != "0"
     assert value["contents"][0]["sourceId"] == "feed"
-    assert all(len(body) == 8000 for body in value["bodies"].values())
+    assert all(len(body) == chars for body in value["bodies"].values())
     assert value["trustedEmpty"] is False
     assert value["sources"][0]["status"] == "ok"
     assert len((root / "calls.jsonl").read_text().splitlines()) == 1

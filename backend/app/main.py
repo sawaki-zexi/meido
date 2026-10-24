@@ -5066,7 +5066,8 @@ async def _proactive_web(origin, name, arguments):
     application = _proactive_application()
     if not application.tool_permitted(origin, name):
         raise PermissionError("autonomous webpage permission is unavailable")
-    config = replace(network_tools_config, max_chars=min(14000, network_tools_config.max_chars), timeout_seconds=min(30, network_tools_config.timeout_seconds))
+    preferences = application.frozen_configuration(origin)
+    config = replace(network_tools_config, max_chars=min(preferences.agentWebFetchMaxChars, network_tools_config.max_chars), timeout_seconds=min(30, network_tools_config.timeout_seconds))
     tool = WebFetchTool(config) if name == "web_fetch" else WebSearchTool(config)
     result = await tool.execute(arguments, ToolContext(origin.role_id, origin.task_origin().session_key, origin.tick_id, CancellationToken()))
     if result.is_error:
@@ -5089,6 +5090,7 @@ def _proactive_application():
         _proactive = ProactiveApplication(session_store, task_runtime, clock=lambda: _proactive_clock(),
             role_getter=lambda key: store.get(key) if key not in _channel_roles_deleting else None,
             enabled=lambda: plugin_configuration.enabled('autonomy'),
+            role_model_getter=_role_model_configuration,
             model_getter=model_configuration_store.get, mcp_host=mcp_host,
             adapter_factory=lambda configuration: model_adapter,
             recall_memory=_proactive_memory, web_tools=_proactive_web, fetch_body=_proactive_body,
