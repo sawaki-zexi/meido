@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.app.agent_runtime import CancellationToken, ToolContext
+import backend.app.mail.adapter as mail_adapter_module
 from backend.app.mail.adapter import MailAdapterError, QQMailAdapter, RemoteDraft, RemoteMail
 from backend.app.mail.agent import MailManageTool
 from backend.app.mail import api as mail_api
@@ -38,6 +39,8 @@ class FakeAdapter:
         self.counter = 0
         self.inbox_items = []
         self.append_calls = []
+        self.uid_validities = {}
+        self.fetch_inbox_calls = []
 
     def close(self):
         pass
@@ -48,8 +51,19 @@ class FakeAdapter:
     def sent_samples(self, folder, limit=8):
         return []
 
-    def fetch_inbox(self, folder, after_uid=0):
-        return [item for item in self.inbox_items if item.folder == folder and int(item.uid) > after_uid]
+    def related_sent(self, folder, participant, limit=24):
+        return self.sent_samples(folder, limit)
+
+    def fetch_inbox(self, folder, after_uid=0, limit=None):
+        self.fetch_inbox_calls.append((folder, after_uid, limit))
+        rows = sorted(
+            (item for item in self.inbox_items if item.folder == folder and int(item.uid) > after_uid),
+            key=lambda item: int(item.uid),
+        )
+        return rows[:limit] if limit is not None else rows
+
+    def folder_uid_validity(self, folder):
+        return self.uid_validities.get(folder)
 
     def append_draft(self, folder, *, marker, recipients, subject, body, in_reply_to="", references=""):
         self.counter += 1
@@ -70,8 +84,178 @@ def make_service(tmp_path):
         return json.dumps({"needsReply": True, "body": "您好，收到您的邮件了。"}, ensure_ascii=False)
 
     service = MailService(store, credential_store=credentials, complete_model=complete, configuration_getter=lambda: object())
+    service.update_preferences(writing_style="", role_access=True)
     service._adapter = lambda connection=None: adapter
     return service, store, adapter
+
+
+def test_sync_restarts_from_zero_when_provider_uidvalidity_changes(tmp_path):
+    service, store, adapter = make_service(tmp_path)
+    first = RemoteMail(
+        "1", "INBOX", "<uid-old@example.com>", "uid-old-thread", "sender@example.com", "sender@example.com",
+        "owner@qq.com", "旧 UID", "2026-10-10T00:00:00Z", "旧内容", uid_validity="100",
+    )
+    second = RemoteMail(
+        "1", "INBOX", "<uid-new@example.com>", "uid-new-thread", "sender@example.com", "sender@example.com",
+        "owner@qq.com", "新 UID", "2026-10-11T00:00:00Z", "新内容", uid_validity="200",
+    )
+    adapter.uid_validities["INBOX"] = "100"
+    adapter.inbox_items = [first]
+    asyncio.run(service.sync(process=False))
+    assert adapter.fetch_inbox_calls[-1][:2] == ("INBOX", 0)
+    assert store.checkpoint("INBOX", account="owner@qq.com") == 1
+
+    adapter.uid_validities["INBOX"] = "200"
+    adapter.inbox_items = [second]
+    asyncio.run(service.sync(process=False))
+
+    assert adapter.fetch_inbox_calls[-1][:2] == ("INBOX", 0)
+    assert store.count_items(account="owner@qq.com") == 2
+    assert store.sync_state("INBOX", account="owner@qq.com")["uidValidity"] == "200"
+
+
+def test_sync_paginates_large_inbox_deltas_and_advances_checkpoint_per_page(tmp_path):
+    service, store, adapter = make_service(tmp_path)
+    adapter.inbox_items = [
+        RemoteMail(
+            str(uid), "INBOX", f"<page-{uid}@example.com>", f"page-thread-{uid}", "sender@example.com",
+            "sender@example.com", "owner@qq.com", f"主题 {uid}", "2026-10-20T00:00:00Z", f"内容 {uid}",
+        )
+        for uid in range(1, 402)
+    ]
+
+    result = asyncio.run(service.sync(process=False))
+
+    assert result.discovered == 401
+    assert store.count_items(account="owner@qq.com") == 401
+    assert store.checkpoint("INBOX", account="owner@qq.com") == 401
+    assert [call[1] for call in adapter.fetch_inbox_calls] == [0, 200, 400]
+
+
+def test_adapter_inbox_pages_read_oldest_uid_first():
+    messages = {}
+    for uid in range(1, 7):
+        message = EmailMessage()
+        message["Message-ID"] = f"<page-{uid}@example.com>"
+        message["From"] = "sender@example.com"
+        message["To"] = "owner@qq.com"
+        message["Subject"] = f"主题 {uid}"
+        message["Date"] = "Tue, 20 Oct 2026 09:00:00 +0000"
+        message.set_content(f"内容 {uid}")
+        messages[str(uid).encode()] = message.as_bytes()
+
+    class Client:
+        def select(self, _folder, readonly=True):
+            assert readonly is True
+            return "OK", [b"6"]
+
+        def uid(self, command, uid, _query):
+            if command == "SEARCH":
+                return "OK", [b"6 2 5 1 4 3"]
+            return "OK", [(uid + b" BODY[]", messages[uid])]
+
+    adapter = QQMailAdapter(MailConnection(host="imap.qq.com", port=993, username="owner@qq.com"), "secret")
+    adapter._imap = Client()
+
+    first = adapter.fetch_inbox("INBOX", 0, limit=2)
+    second = adapter.fetch_inbox("INBOX", int(first[-1].uid), limit=2)
+    sent_first = adapter.fetch_sent("Sent", 0, limit=2)
+    sent_incremental = adapter.fetch_sent("Sent", 2, limit=2)
+
+    assert [item.uid for item in first] == ["1", "2"]
+    assert [item.uid for item in second] == ["3", "4"]
+    assert [item.uid for item in sent_first] == ["5", "6"]
+    assert [item.uid for item in sent_incremental] == ["3", "4"]
+
+
+def test_adapter_sent_without_reply_to_preserves_recipients_for_followup():
+    message = EmailMessage()
+    message["Message-ID"] = "<sent-no-reply-to@example.com>"
+    message["From"] = "owner@qq.com"
+    message["To"] = "teacher@example.com"
+    message["Subject"] = "Re: 项目进度"
+    message["Date"] = "Tue, 20 Oct 2026 09:00:00 +0000"
+    message.set_content("请确认预计完成时间。")
+    raw = message.as_bytes()
+
+    class Client:
+        def select(self, _folder, readonly=True):
+            assert readonly is True
+            return "OK", [b"1"]
+
+        def uid(self, command, uid, _query):
+            if command == "SEARCH":
+                return "OK", [b"1"]
+            return "OK", [(uid + b" BODY[]", raw)]
+
+    adapter = QQMailAdapter(MailConnection(host="imap.qq.com", port=993, username="owner@qq.com"), "secret")
+    adapter._imap = Client()
+
+    sent = adapter.fetch_sent("Sent")
+
+    assert sent[0].reply_to == ""
+    assert sent[0].recipients == "teacher@example.com"
+
+
+def test_adapter_reconnects_read_only_fetch_after_transient_imap_failure(monkeypatch):
+    message = EmailMessage()
+    message["Message-ID"] = "<retry@example.com>"
+    message["From"] = "sender@example.com"
+    message["To"] = "owner@qq.com"
+    message["Subject"] = "重连"
+    message["Date"] = "Tue, 20 Oct 2026 09:00:00 +0000"
+    message.set_content("连接恢复后读取")
+    raw = message.as_bytes()
+
+    class Client:
+        def __init__(self, fail_search=False):
+            self.fail_search = fail_search
+            self.logged_out = False
+
+        def select(self, _folder, readonly=True):
+            assert readonly is True
+            return "OK", [b"1"]
+
+        def logout(self):
+            self.logged_out = True
+
+        def uid(self, command, uid, _query):
+            if command == "SEARCH":
+                if self.fail_search:
+                    self.fail_search = False
+                    raise OSError("connection reset")
+                return "OK", [b"1"]
+            return "OK", [(uid + b" BODY[]", raw)]
+
+    first = Client(fail_search=True)
+    second = Client()
+    adapter = QQMailAdapter(MailConnection(host="imap.qq.com", port=993, username="owner@qq.com"), "secret")
+    adapter._imap = first
+    monkeypatch.setattr(adapter, "_connect", lambda: second)
+    sleeps = []
+    monkeypatch.setattr(mail_adapter_module.time, "sleep", sleeps.append)
+
+    rows = adapter.fetch_inbox("INBOX", 0, limit=2)
+
+    assert [row.uid for row in rows] == ["1"]
+    assert first.logged_out is True
+    assert sleeps == [mail_adapter_module.READ_RETRY_BASE_DELAY_SECONDS]
+
+
+def test_mail_status_exposes_sync_queue_and_reconciliation_state(tmp_path):
+    service, store, _adapter = make_service(tmp_path)
+    store.prepare_sync_state("INBOX", account="owner@qq.com", uid_validity="100")
+    service.enqueue_job("process", target_id="mail-1", request_id="observability")
+
+    status = service.public_status()
+    stats = service.mail_stats()
+
+    assert status["syncStates"] == [{
+        "folder": "INBOX", "lastUid": 0, "uidValidity": "100", "updatedAt": status["syncStates"][0]["updatedAt"],
+    }]
+    assert status["queue"]["jobs"]["queued"] == 1
+    assert status["reconciliation"]["total"] == 0
+    assert stats["queue"]["jobs"]["queued"] == 1
 
 
 def add_owner_item(store, remote):
@@ -160,6 +344,19 @@ def test_reply_draft_references_include_the_source_message_id(tmp_path):
     assert adapter.append_calls[0]["references"] == "<source-root@example.com>"
 
 
+def test_reply_draft_does_not_address_owner_when_reply_to_is_self(tmp_path):
+    service, store, adapter = make_service(tmp_path)
+    item, _ = add_owner_item(store, SimpleNamespace(
+        uid="13-self", folder="INBOX", message_id="<self-reply-to@example.com>", thread_id="self-reply-to-thread",
+        sender="Alice <alice@example.com>", reply_to="owner@qq.com", recipients="owner@qq.com", subject="回复",
+        received_at="2026-10-14T00:00:00Z", body_text="请回复", in_reply_to="", references="",
+    ))
+
+    asyncio.run(service.process_item(item.id, adapter=adapter, folders={"inbox": "INBOX", "sent": "Sent", "drafts": "Drafts"}))
+
+    assert adapter.append_calls[0]["recipients"] == "Alice <alice@example.com>"
+
+
 def test_reply_draft_preserves_existing_reference_chain(tmp_path):
     service, _store, adapter = make_service(tmp_path)
     item, _ = add_owner_item(_store, SimpleNamespace(
@@ -183,7 +380,7 @@ def test_auto_draft_prompt_includes_thread_owner_context_and_sent_samples_withou
         reply_to="sender@example.com", recipients="owner@qq.com", subject="跟进", received_at="2026-10-14T00:00:00Z", body_text="请确认时间。", in_reply_to=root.message_id, references=root.message_id,
     ))
     service.owner_search = lambda _query: asyncio.sleep(0, result=[SimpleNamespace(text="主人偏好：工作日使用简洁称呼。")])
-    adapter.sent_samples = lambda _folder, _limit=8: [SimpleNamespace(subject="已发送样本", body_text="您好，我会在周五回复。")]
+    adapter.sent_samples = lambda _folder, _limit=8: [RemoteMail("42", "Sent", "<sample@example.com>", "sample-thread", "owner@qq.com", "owner@qq.com", "sender@example.com", "已发送样本", "2026-10-10T00:00:00Z", "您好，我会在周五回复。")]
     captured = {}
 
     async def complete(messages, configuration):
@@ -193,14 +390,18 @@ def test_auto_draft_prompt_includes_thread_owner_context_and_sent_samples_withou
 
     service.complete_model = complete
 
-    decision, body = asyncio.run(service._draft_content(current, adapter))
+    result = asyncio.run(service.process_item(current.id, adapter=adapter, folders={"inbox": "INBOX", "sent": "Sent", "drafts": "Drafts"}))
 
     prompt = json.loads(captured["messages"][1]["content"])
-    assert decision is True
-    assert body == "您好，周五可以。"
+    system_prompt = captured["messages"][0]["content"]
+    assert result.status == "drafted"
+    assert adapter.draft_rows[0].body == "您好，周五可以。"
     assert any(entry["body"] == "约定周五联系。" for entry in prompt["thread"])
     assert prompt["ownerContext"] == "主人偏好：工作日使用简洁称呼。"
     assert prompt["sentSamples"] == [{"subject": "已发送样本", "body": "您好，我会在周五回复。"}]
+    assert "不要复述或逐句镜像来信" in system_prompt
+    assert "使用最新邮件的主要语言" in system_prompt
+    assert "不要自行提出可用时间" in system_prompt
     assert "secret" not in json.dumps(captured["messages"], ensure_ascii=False)
     assert "candidate-secret" not in json.dumps(captured["messages"], ensure_ascii=False)
 
@@ -237,6 +438,7 @@ def test_regenerate_creates_new_draft_without_overwriting_existing(tmp_path):
 
     drafts = store.list_drafts()
     assert len(drafts) == 2
+    assert sorted(d.revision for d in drafts) == [1, 2]
     assert any(d.status == "manual_modified" for d in drafts)
     assert len(adapter.draft_rows) == 2
 
@@ -251,6 +453,47 @@ def test_mail_runtime_tool_does_not_expose_credentials(tmp_path):
     assert result.is_error is False
     assert "secret" not in result.content
     assert "qq-password" not in result.content
+
+
+def test_mail_runtime_tool_can_search_synchronized_mail(tmp_path):
+    service, store, _adapter = make_service(tmp_path)
+    add_owner_item(store, SimpleNamespace(
+        uid="701", folder="INBOX", message_id="<role-search-1@example.com>", thread_id="role-search-1",
+        sender="teacher@example.com", reply_to="teacher@example.com", recipients="owner@qq.com", subject="项目排期",
+        received_at="2026-10-20T09:00:00Z", body_text="请确认下周安排", in_reply_to="", references="",
+    ))
+    add_owner_item(store, SimpleNamespace(
+        uid="702", folder="INBOX", message_id="<role-search-2@example.com>", thread_id="role-search-2",
+        sender="other@example.com", reply_to="other@example.com", recipients="owner@qq.com", subject="其他主题",
+        received_at="2026-10-20T10:00:00Z", body_text="没有相关内容", in_reply_to="", references="",
+    ))
+    tool = MailManageTool(service)
+    context = ToolContext("role-1", "role:role-1", "run-search", CancellationToken(), "call-search")
+
+    result = asyncio.run(tool.execute({"action": "list", "query": "排期"}, context))
+
+    assert result.is_error is False
+    assert [item["subject"] for item in json.loads(result.content)["items"]] == ["项目排期"]
+
+
+def test_mail_runtime_tool_returns_account_scoped_inbox_stats(tmp_path):
+    service, store, _adapter = make_service(tmp_path)
+    item, _ = add_owner_item(store, SimpleNamespace(
+        uid="703", folder="INBOX", message_id="<stats@example.com>", thread_id="stats-thread",
+        sender="teacher@example.com", reply_to="teacher@example.com", recipients="owner@qq.com", subject="统计",
+        received_at="2026-10-20T09:00:00Z", body_text="请查看", in_reply_to="", references="",
+    ))
+    store.update_item(item.id, status="needs_input", needs_reply=True)
+    tool = MailManageTool(service)
+    context = ToolContext("role-1", "role:role-1", "run-stats", CancellationToken(), "call-stats")
+
+    result = asyncio.run(tool.execute({"action": "stats"}, context))
+
+    payload = json.loads(result.content)
+    assert result.is_error is False
+    assert payload["total"] == 1
+    assert payload["byStatus"]["needs_input"] == 1
+    assert "body" not in payload
 
 
 def test_new_mail_in_existing_thread_marks_previous_draft_stale(tmp_path):
@@ -285,6 +528,35 @@ def test_reminder_reports_failure_even_without_a_created_draft(tmp_path):
     assert "1 封邮件处理失败或待核实" in messages[0][2]
     assert "预算确认：模型不可用" in messages[0][2]
     assert store.pending_reminder_batches() == []
+
+
+def test_reminder_claims_are_single_owner_and_restart_recovery_reopens_inflight(tmp_path):
+    _service, store, _adapter = make_service(tmp_path)
+    account = "owner@qq.com"
+    epoch = store.connection().account_epoch
+    store.create_reminder_batch("claim-batch", [], account=account)
+    assert store.claim_reminder_batch("claim-batch", account=account) is True
+    assert store.claim_reminder_batch("claim-batch", account=account) is False
+
+    store.create_followup_reminder(
+        account,
+        "claim-thread",
+        due_key="claim-key",
+        due_at="2026-10-01T00:00:00+00:00",
+        account_epoch=epoch,
+    )
+    reminder = store.followup_reminders(account=account)[0]
+    assert store.claim_followup_reminder(reminder.reminder_id, account=account, account_epoch=epoch) is True
+    assert store.claim_followup_reminder(reminder.reminder_id, account=account, account_epoch=epoch) is False
+
+    store.recover_interrupted_reminders()
+
+    batch = store.reminder_batches(account=account)[0]
+    recovered = store.followup_reminders(account=account)[0]
+    assert batch["status"] == "failed"
+    assert batch["lastError"] == "服务停止后恢复提醒投递"
+    assert recovered.state == "failed"
+    assert recovered.last_error == "服务停止后恢复提醒投递"
 
 
 def test_uncertain_draft_state_is_included_in_the_reminder_batch(tmp_path):
@@ -728,6 +1000,113 @@ def test_mail_records_and_checkpoints_are_scoped_to_the_qq_account(tmp_path):
     assert store.checkpoint("INBOX", account="second@qq.com") == 3
 
 
+def test_uidvalidity_change_resets_checkpoint_without_overwriting_old_mail(tmp_path):
+    store = MailStore(tmp_path / "mail.db")
+    store.save_connection(MailConnection(
+        host="imap.qq.com", port=993, username="owner@qq.com", verified=True,
+        auto_draft_ready=True, inbox_folder="INBOX", sent_folder="Sent", drafts_folder="Drafts",
+    ))
+    first = SimpleNamespace(
+        uid="1", uid_validity="100", folder="INBOX", message_id="<old-uid@example.com>",
+        thread_id="old-thread", sender="sender@example.com", reply_to="sender@example.com",
+        recipients="owner@qq.com", subject="旧邮件", received_at="2026-10-10T00:00:00Z", body_text="旧内容",
+        in_reply_to="", references="",
+    )
+    second = SimpleNamespace(
+        uid="1", uid_validity="200", folder="INBOX", message_id="<new-uid@example.com>",
+        thread_id="new-thread", sender="sender@example.com", reply_to="sender@example.com",
+        recipients="owner@qq.com", subject="新邮件", received_at="2026-10-11T00:00:00Z", body_text="新内容",
+        in_reply_to="", references="",
+    )
+    old, _ = store.upsert_item(first, account="owner@qq.com")
+    store.prepare_sync_state("INBOX", account="owner@qq.com", uid_validity="100")
+    store.set_checkpoint("INBOX", 9, account="owner@qq.com", uid_validity="100")
+
+    changed = store.prepare_sync_state("INBOX", account="owner@qq.com", uid_validity="200")
+    new, created = store.upsert_item(second, account="owner@qq.com")
+
+    assert changed["changed"] is True
+    assert changed["lastUid"] == 0
+    assert changed["previousUidValidity"] == "100"
+    assert created is True
+    assert new.id != old.id
+    assert store.checkpoint("INBOX", account="owner@qq.com") == 0
+    assert store.sync_state("INBOX", account="owner@qq.com")["uidValidity"] == "200"
+    assert store.count_items(account="owner@qq.com") == 2
+
+
+def test_uidvalidity_change_does_not_merge_same_message_id_into_old_namespace(tmp_path):
+    store = MailStore(tmp_path / "mail.db")
+    store.save_connection(MailConnection(
+        host="imap.qq.com", port=993, username="owner@qq.com", verified=True,
+        auto_draft_ready=True, inbox_folder="INBOX", sent_folder="Sent", drafts_folder="Drafts",
+    ))
+    first = SimpleNamespace(
+        uid="1", uid_validity="100", folder="INBOX", message_id="<reused@example.com>",
+        thread_id="old-thread", sender="sender@example.com", reply_to="sender@example.com",
+        recipients="owner@qq.com", subject="旧命名空间", received_at="2026-10-10T00:00:00Z", body_text="旧正文",
+        in_reply_to="", references="",
+    )
+    second = SimpleNamespace(
+        uid="1", uid_validity="200", folder="INBOX", message_id="<reused@example.com>",
+        thread_id="new-thread", sender="sender@example.com", reply_to="sender@example.com",
+        recipients="owner@qq.com", subject="新命名空间", received_at="2026-10-11T00:00:00Z", body_text="新正文",
+        in_reply_to="", references="",
+    )
+
+    old, _ = store.upsert_item(first, account="owner@qq.com")
+    store.prepare_sync_state("INBOX", account="owner@qq.com", uid_validity="100")
+    store.prepare_sync_state("INBOX", account="owner@qq.com", uid_validity="200")
+    new, created = store.upsert_item(second, account="owner@qq.com")
+
+    assert created is True
+    assert new.id != old.id
+    assert new.subject == "新命名空间"
+    assert store.get_item(old.id, account="owner@qq.com").subject == "旧命名空间"
+    assert store.count_items(account="owner@qq.com") == 2
+
+
+def test_first_uidvalidity_observation_resets_an_existing_uid_only_checkpoint(tmp_path):
+    store = MailStore(tmp_path / "mail.db")
+    store.save_connection(MailConnection(
+        host="imap.qq.com", port=993, username="owner@qq.com", verified=True,
+        auto_draft_ready=True, inbox_folder="INBOX", sent_folder="Sent", drafts_folder="Drafts",
+    ))
+    old = SimpleNamespace(
+        uid="9", uid_validity="", folder="INBOX", message_id="<late-uidvalidity@example.com>",
+        thread_id="old-thread", sender="sender@example.com", reply_to="sender@example.com",
+        recipients="owner@qq.com", subject="旧 checkpoint", received_at="2026-10-10T00:00:00Z", body_text="旧正文",
+        in_reply_to="", references="",
+    )
+
+    old_item, _ = store.upsert_item(old, account="owner@qq.com")
+    store.prepare_sync_state("INBOX", account="owner@qq.com")
+    store.set_checkpoint("INBOX", 9, account="owner@qq.com")
+
+    changed = store.prepare_sync_state("INBOX", account="owner@qq.com", uid_validity="300")
+
+    assert changed["changed"] is True
+    assert changed["lastUid"] == 0
+    assert changed["previousUidValidity"] == ""
+    assert store.get_item(old_item.id, account="owner@qq.com").subject == "旧 checkpoint"
+
+
+def test_qq_adapter_reads_uidvalidity_after_readonly_select():
+    class Imap:
+        def select(self, _folder, readonly=True):
+            assert readonly
+            return "OK", [b"0"]
+
+        def response(self, name):
+            assert name == "UIDVALIDITY"
+            return "UIDVALIDITY", [b"98765"]
+
+    adapter = QQMailAdapter(MailConnection("imap.qq.com", 993, "owner@qq.com"), "secret")
+    adapter._imap = Imap()
+
+    assert adapter.folder_uid_validity("INBOX") == "98765"
+
+
 def test_reply_without_references_joins_the_known_parent_thread(tmp_path):
     store = MailStore(tmp_path / "mail.db")
     parent, _ = store.upsert_item(SimpleNamespace(
@@ -767,6 +1146,150 @@ def test_account_switch_hides_other_mail_threads_and_jobs(tmp_path):
     assert store.thread_items(active_item.thread_id, account="old@qq.com") == []
 
 
+def test_job_claim_and_retirement_are_scoped_to_account_epoch(tmp_path):
+    service, store, _adapter = make_service(tmp_path)
+    stale = store.enqueue_job(
+        job_id="stale-job", request_key="stale-request", kind="process",
+        target_id="stale-mail", account="old@qq.com", account_epoch=1,
+    )
+    active = service.enqueue_job("process", target_id="active-mail", request_id="active-request")
+
+    assert store.retire_stale_jobs(account="owner@qq.com", account_epoch=store.connection().account_epoch) == 1
+    claimed = store.claim_next_job(account="owner@qq.com", account_epoch=store.connection().account_epoch)
+
+    assert stale["status"] == "queued"
+    assert claimed is not None and claimed["jobId"] == active["jobId"]
+    assert store.get_job("stale-job", account="old@qq.com")["status"] == "failed"
+
+
+def test_job_status_retires_old_same_account_generation_before_worker_runs(tmp_path):
+    service, store, _adapter = make_service(tmp_path)
+    job = service.enqueue_job("process", target_id="active-mail", request_id="generation-read")
+    store.save_connection(MailConnection(
+        "imap.qq.com", 993, "other@qq.com", verified=True, auto_draft_ready=True,
+        enabled=True, inbox_folder="INBOX", sent_folder="Sent", drafts_folder="Drafts",
+    ))
+    store.save_connection(MailConnection(
+        "imap.qq.com", 993, "owner@qq.com", verified=True, auto_draft_ready=True,
+        enabled=True, inbox_folder="INBOX", sent_folder="Sent", drafts_folder="Drafts",
+    ))
+
+    observed = service.job_status(job["jobId"])
+
+    assert observed is not None
+    assert observed["status"] == "failed"
+    assert observed["error"] == "邮件账号已切换，任务未执行"
+
+
+def test_stale_draft_marking_is_scoped_to_the_active_account(tmp_path):
+    store = MailStore(tmp_path / "mail.db")
+    thread_id = "a" * 32
+    remote = SimpleNamespace(
+        uid="1", folder="INBOX", message_id="<same-thread@example.com>", thread_id=thread_id, sender="sender@example.com",
+        reply_to="sender@example.com", recipients="owner@qq.com", subject="same", received_at="2026-10-14T00:00:00Z", body_text="body", in_reply_to="", references="",
+    )
+    old_item, _ = store.upsert_item(remote, account="old@qq.com")
+    active_item, _ = store.upsert_item(remote, account="owner@qq.com")
+    for item, task_key in ((old_item, "old-draft"), (active_item, "active-draft")):
+        store.save_draft(item.id, task_key=task_key, remote_uid="1", folder="Drafts", body="reply", subject="Re: same",
+                         recipients="sender@example.com", message_id=f"<{task_key}@example.com>", generated_hash="g", remote_hash="r")
+
+    assert store.mark_thread_drafts_stale(thread_id, account="owner@qq.com") == 1
+    assert store.list_drafts_for_mail(old_item.id)[0].stale is False
+    assert store.list_drafts_for_mail(active_item.id)[0].stale is True
+
+
+def test_mail_list_can_filter_by_sent_association_state(tmp_path):
+    store = MailStore(tmp_path / "mail.db")
+    store.save_connection(MailConnection(
+        host="imap.qq.com", port=993, username="owner@qq.com", verified=True,
+        auto_draft_ready=True, inbox_folder="INBOX", sent_folder="Sent", drafts_folder="Drafts",
+    ))
+    first, _ = add_owner_item(store, SimpleNamespace(
+        uid="401", folder="INBOX", message_id="<association-pending@example.com>", thread_id="association-pending",
+        sender="sender@example.com", reply_to="sender@example.com", recipients="owner@qq.com", subject="待确认",
+        received_at="2026-10-20T09:00:00Z", body_text="请确认", in_reply_to="", references="",
+    ))
+    second, _ = add_owner_item(store, SimpleNamespace(
+        uid="402", folder="INBOX", message_id="<association-ambiguous@example.com>", thread_id="association-ambiguous",
+        sender="sender@example.com", reply_to="sender@example.com", recipients="owner@qq.com", subject="待核实",
+        received_at="2026-10-20T10:00:00Z", body_text="请核实", in_reply_to="", references="",
+    ))
+    first_draft = store.save_draft(
+        first.id, task_key="association-pending", remote_uid="1", folder="Drafts", body="回复",
+        subject="Re: 待确认", recipients="sender@example.com", message_id="<draft-pending@example.com>",
+        generated_hash="g1", remote_hash="r1",
+    )
+    second_draft = store.save_draft(
+        second.id, task_key="association-ambiguous", remote_uid="2", folder="Drafts", body="回复",
+        subject="Re: 待核实", recipients="sender@example.com", message_id="<draft-ambiguous@example.com>",
+        generated_hash="g2", remote_hash="r2",
+    )
+    store.update_draft_send(first_draft.id, account="owner@qq.com", state="pending")
+    store.update_draft_send(second_draft.id, account="owner@qq.com", state="ambiguous")
+
+    assert [item.id for item in store.list_items(status="sent_pending", account="owner@qq.com")] == [first.id]
+    assert store.count_items(status="sent_pending", account="owner@qq.com") == 1
+    assert [item.id for item in store.list_items(status="sent_ambiguous", account="owner@qq.com")] == [second.id]
+
+
+def test_mail_list_search_matches_subject_sender_body_and_preserves_account_scope(tmp_path):
+    store = MailStore(tmp_path / "mail.db")
+    store.save_connection(MailConnection(
+        host="imap.qq.com", port=993, username="owner@qq.com", verified=True,
+        auto_draft_ready=True, inbox_folder="INBOX", sent_folder="Sent", drafts_folder="Drafts",
+    ))
+    subject_item, _ = add_owner_item(store, SimpleNamespace(
+        uid="501", folder="INBOX", message_id="<search-subject@example.com>", thread_id="search-subject",
+        sender="sender@example.com", reply_to="sender@example.com", recipients="owner@qq.com", subject="项目排期",
+        received_at="2026-10-20T09:00:00Z", body_text="请确认下周安排", in_reply_to="", references="",
+    ))
+    body_item, _ = add_owner_item(store, SimpleNamespace(
+        uid="502", folder="INBOX", message_id="<search-body@example.com>", thread_id="search-body",
+        sender="teacher@example.com", reply_to="teacher@example.com", recipients="owner@qq.com", subject="会议",
+        received_at="2026-10-20T10:00:00Z", body_text="周五下午三点线上沟通", in_reply_to="", references="",
+    ))
+    other_account, _ = store.upsert_item(SimpleNamespace(
+        uid="501", folder="INBOX", message_id="<search-other@example.com>", thread_id="search-other",
+        sender="sender@example.com", reply_to="sender@example.com", recipients="owner@qq.com", subject="项目排期",
+        received_at="2026-10-20T11:00:00Z", body_text="另一账号数据", in_reply_to="", references="",
+    ), account="other@qq.com")
+
+    assert [item.id for item in store.list_items(query="排期", account="owner@qq.com")] == [subject_item.id]
+    assert [item.id for item in store.list_items(query="三点", account="owner@qq.com")] == [body_item.id]
+    assert store.count_items(query="项目", account="owner@qq.com") == 1
+    assert other_account.id not in [item.id for item in store.list_items(query="排期", account="owner@qq.com")]
+
+
+def test_uncertain_append_reconcile_backoff_survives_restart(tmp_path):
+    store = MailStore(tmp_path / "mail.db")
+    store.save_connection(MailConnection(host="imap.qq.com", port=993, username="owner@qq.com", verified=True, auto_draft_ready=True))
+    item, _ = add_owner_item(store, SimpleNamespace(
+        uid="31", folder="INBOX", message_id="<backoff@example.com>", thread_id="backoff-thread", sender="sender@example.com",
+        reply_to="sender@example.com", recipients="owner@qq.com", subject="待核实", received_at="2026-10-14T00:00:00Z", body_text="请回复", in_reply_to="", references="",
+    ))
+    task_key = f"auto:{item.id}:v1"
+    epoch = store.connection().account_epoch
+    assert store.task_claim(task_key, item.id, account="owner@qq.com", account_epoch=epoch)
+    assert store.task_begin_write(task_key, account="owner@qq.com", account_epoch=epoch)
+    store.task_finish(task_key, "uncertain", "QQ 返回不确定", account="owner@qq.com")
+
+    first = store.unconfirmed_append_task(item.id, account="owner@qq.com")
+    assert first is not None and first["due"] is True
+    store.note_task_reconcile(task_key, account="owner@qq.com", success=False)
+
+    migrated = MailStore(tmp_path / "mail.db")
+    second = migrated.unconfirmed_append_task(item.id, account="owner@qq.com")
+    assert second is not None
+    assert second["reconcileAttempts"] == 1
+    assert second["due"] is False
+    assert second["nextCheckAt"]
+
+    migrated.note_task_reconcile(task_key, account="owner@qq.com", success=True)
+    third = migrated.unconfirmed_append_task(item.id, account="owner@qq.com")
+    assert third is not None and third["due"] is True and third["nextCheckAt"] is None
+
+
 def test_legacy_mail_and_checkpoint_data_migrate_to_saved_account_scope(tmp_path):
     path = tmp_path / "mail.db"
     store = MailStore(path)
@@ -790,6 +1313,50 @@ def test_legacy_mail_and_checkpoint_data_migrate_to_saved_account_scope(tmp_path
         reply_to="sender@example.com", recipients="owner@qq.com", subject="Re: legacy", received_at="2026-10-14T00:00:00Z", body_text="reply", in_reply_to="<legacy@example.com>", references="<legacy@example.com>",
     ), account="owner@qq.com")
     assert follow_up.thread_id == current.thread_id
+
+
+def test_legacy_draft_versions_receive_stable_revision_numbers(tmp_path):
+    path = tmp_path / "legacy-drafts.db"
+    store = MailStore(path)
+    item, _ = add_owner_item(store, SimpleNamespace(
+        uid="17", folder="INBOX", message_id="<legacy-drafts@example.com>", thread_id="legacy-drafts",
+        sender="sender@example.com", reply_to="sender@example.com", recipients="owner@qq.com",
+        subject="versions", received_at="2026-10-13T00:00:00Z", body_text="body", in_reply_to="", references="",
+    ))
+    store.save_draft(item.id, task_key="legacy-version-1", remote_uid="1", folder="Drafts", body="one",
+        subject="Re: versions", recipients="sender@example.com", message_id="<draft-one>", generated_hash="g1", remote_hash="r1")
+    store.save_draft(item.id, task_key="legacy-version-2", remote_uid="2", folder="Drafts", body="two",
+        subject="Re: versions", recipients="sender@example.com", message_id="<draft-two>", generated_hash="g2", remote_hash="r2")
+    with store._connect() as db:
+        db.execute("DROP INDEX mail_drafts_mail_revision")
+        db.execute("ALTER TABLE mail_drafts DROP COLUMN revision")
+
+    migrated = MailStore(path)
+
+    assert sorted(draft.revision for draft in migrated.list_drafts_for_mail(item.id)) == [1, 2]
+
+
+def test_draft_send_association_migrates_and_starts_pending(tmp_path):
+    path = tmp_path / "draft-send.db"
+    store = MailStore(path)
+    item, _ = add_owner_item(store, SimpleNamespace(
+        uid="18", folder="INBOX", message_id="<draft-send@example.com>", thread_id="draft-send",
+        sender="sender@example.com", reply_to="sender@example.com", recipients="owner@qq.com",
+        subject="send association", received_at="2026-10-13T00:00:00Z", body_text="body", in_reply_to="", references="",
+    ))
+    draft = store.save_draft(item.id, task_key="draft-send-task", remote_uid="1", folder="Drafts",
+        body="reply", subject="Re: send association", recipients="sender@example.com",
+        message_id="<draft-send-copy>", generated_hash="g", remote_hash="r")
+    with store._connect() as db:
+        db.execute("DROP TABLE mail_draft_sends")
+
+    migrated = MailStore(path)
+    association = migrated.draft_send(draft.id, account="owner@qq.com")
+
+    assert association is not None
+    assert association.state == "pending"
+    assert association.sent_uid is None
+    assert migrated.get_draft(draft.id, account="owner@qq.com") is not None
 
 
 def test_mail_api_rejects_item_and_thread_ids_from_another_account(tmp_path, monkeypatch):
