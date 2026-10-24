@@ -78,7 +78,8 @@ def _normalize(grant, payload, eligible):
     return result, incomplete
 
 
-async def collect_snapshot(bundle, grants, *, observed_at, eligible, rotation, fetch_body=None):
+async def collect_snapshot(bundle, grants, *, observed_at, eligible, rotation, fetch_body=None,
+                           content_limit=5, web_fetch_max_chars=8000):
     sources, alerts, content_groups, contexts = [], [], [], []
     for grant in grants:
         if not grant.enabled:
@@ -106,7 +107,7 @@ async def collect_snapshot(bundle, grants, *, observed_at, eligible, rotation, f
                 content.append(items.pop(0))
     if content:
         start = rotation % len(content)
-        content = [*content[start:], *content[:start]][:5]
+        content = [*content[start:], *content[:start]][:content_limit]
     alerts = alerts[:20]
     context_bytes = 0
     bounded_context = []
@@ -133,7 +134,7 @@ async def collect_snapshot(bundle, grants, *, observed_at, eligible, rotation, f
             except (ValueError, RuntimeError, TimeoutError, OSError):
                 text = ""
                 body_errors[item["id"]] = "body prefetch failed"
-        bodies[item["id"]] = text[:8000]
+        bodies[item["id"]] = text[:web_fetch_max_chars]
         if not text:
             body_errors.setdefault(item["id"], "body is unavailable")
     await asyncio.gather(*(body(item) for item in content))

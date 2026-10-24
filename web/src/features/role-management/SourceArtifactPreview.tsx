@@ -70,11 +70,13 @@ export function SourceArtifactPreview(props: Props) {
 
   return <fieldset aria-label="来源产物预览">
     <legend>来源产物预览</legend>
-    <p className="field-hint">先用 $create-proactive-source 创建角色文件。此处只读计算 hash，不执行、注册或授权。修正清单需由角色文件工具或你保存后再次预览；服务命令与凭据仍在 MCP 设置中明确配置。</p>
+    <p className="field-hint">先在聊天中使用 $create-proactive-source 创建来源。预览只读取文件，服务连接需在 MCP 设置中授权。</p>
+    <div className="settings-field-grid">
     <label className="field"><span>产物相对清单路径</span><input aria-label="产物相对清单路径" value={relativePath}
       placeholder="mcp/example/manifest.json" onChange={(event) => change(event.target.value, serverId)} /></label>
     <label className="field"><span>已保存的 MCP 服务 ID</span><input aria-label="已保存的 MCP 服务 ID" value={serverId}
-      onChange={(event) => change(relativePath, event.target.value)} /><small>可留空先检查文件；填入主人已保存并授权当前角色的服务，才能准备来源许可草稿。</small></label>
+      onChange={(event) => change(relativePath, event.target.value)} /><small>仅预览文件时可留空。</small></label>
+    </div>
     <button type="button" disabled={busy || !relativePath.trim()} onClick={() => void inspect()}>预览来源产物</button>
     {error && <Notice onDismiss={dismissError}>{error}</Notice>}{message && <p role="status">{message}</p>}
     {preview && <>

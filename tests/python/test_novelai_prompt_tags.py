@@ -1,4 +1,9 @@
 """Owner tags have the same role/rating-filtered expansion as a real scene."""
+import io
+import json
+
+from PIL import Image
+
 from novelai_fixtures import novelai_environment, novelai_main, novelai_service  # noqa: F401
 
 
@@ -25,6 +30,43 @@ def test_owner_manages_role_tags_and_previews_only_currently_permitted_matches(n
     assert deleted.status_code == 200, deleted.text
     assert client.post(path + '/preview', json={'text': 'garden', 'prompt': 'blue sky', 'negative_prompt': ''}).json()['prompt'] == 'blue sky'
     assert not service.peer.requests
+
+
+def test_explicit_prompt_tags_require_service_nsfw_and_role_rating_grants(novelai_main):
+    client, service = novelai_main
+    path = f'/api/roles/{service.role.id}/novelai/prompt-tags'
+    explicit = client.post(path, json={'name': 'Adult scene', 'keywords': ['garden'],
+        'prompt': 'explicit detail', 'negative_prompt': '', 'rating': 'explicit', 'enabled': True})
+    assert explicit.status_code == 200, explicit.text
+    explicit_id = explicit.json()['tag']['id']
+    role = service.roles.get(service.role.id)
+    updated = client.put(f'/api/roles/{service.role.id}', json={'name': role.name,
+        'profile': role.profile.model_dump(), 'agentConfig': {'novelai': {
+            'promptTagsEnabled': True, 'allowedPromptTagRatings': ['general', 'explicit']}}})
+    assert updated.status_code == 200, updated.text
+
+    blocked = client.post(path + '/preview', json={'text': 'garden'}).json()
+    assert explicit_id not in blocked['matchedIds']
+    assert 'explicit detail' not in blocked['prompt']
+
+    public = service.application.settings.public()
+    enabled = service.application.settings.save({
+        'allowedModels': ['nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full'],
+        'nsfwEnabled': True,
+    }, expected_revision=public['revision'])
+    allowed = client.post(path + '/preview', json={'text': 'garden'}).json()
+    assert explicit_id in allowed['matchedIds']
+    assert 'explicit detail' in allowed['prompt']
+    assert enabled['nsfwEnabled'] is True
+
+    role = service.roles.get(service.role.id)
+    revoked = client.put(f'/api/roles/{service.role.id}', json={'name': role.name,
+        'profile': role.profile.model_dump(), 'agentConfig': {'novelai': {
+            'promptTagsEnabled': True, 'allowedPromptTagRatings': ['general']}}})
+    assert revoked.status_code == 200, revoked.text
+    role_blocked = client.post(path + '/preview', json={'text': 'garden'}).json()
+    assert explicit_id not in role_blocked['matchedIds']
+    assert 'explicit detail' not in role_blocked['prompt']
 
 
 def test_tag_library_is_role_local_paginated_and_rejects_unbounded_or_executable_inputs(novelai_main):
@@ -58,3 +100,89 @@ def test_tag_library_is_role_local_paginated_and_rejects_unbounded_or_executable
     assert updated.status_code == 200, updated.text
     assert client.post(path + '/preview', json={'text': '[garden]'}).json()['prompt'] == 'sunlight'
     assert not service.peer.requests
+
+
+def test_prompt_tag_expansion_deduplicates_case_insensitively(novelai_main):
+    client, service = novelai_main
+    path = f'/api/roles/{service.role.id}/novelai/prompt-tags'
+    saved = client.post(path, json={'name': 'Garden', 'keywords': ['garden'],
+        'prompt': 'Flowers, sunlight', 'negative_prompt': 'Night', 'rating': 'general', 'enabled': True})
+    assert saved.status_code == 200, saved.text
+    response = client.put(f'/api/roles/{service.role.id}', json={'name': service.role.name,
+        'profile': service.role.profile.model_dump(), 'agentConfig': {'novelai': {'promptTagsEnabled': True}}})
+    assert response.status_code == 200, response.text
+    preview = client.post(path + '/preview', json={'text': 'garden', 'prompt': 'flowers', 'negative_prompt': 'night'})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()['prompt'] == 'flowers, sunlight'
+    assert preview.json()['negative_prompt'] == 'night'
+
+
+def _png_bytes():
+    content = io.BytesIO()
+    Image.new('RGB', (8, 8), '#171abc').save(content, format='PNG')
+    return content.getvalue()
+
+
+def test_prompt_tags_rank_by_keyword_hits_limit_to_five_and_expose_owned_reference(novelai_main):
+    client, service = novelai_main
+    path = f'/api/roles/{service.role.id}/novelai/prompt-tags'
+    role = service.roles.get(service.role.id)
+    enabled = client.put(f'/api/roles/{service.role.id}', json={'name': role.name,
+        'profile': role.profile.model_dump(), 'agentConfig': {'novelai': {'promptTagsEnabled': True}}})
+    assert enabled.status_code == 200, enabled.text
+    uploaded = client.post(f'/api/roles/{service.role.id}/attachments', content=_png_bytes(), headers={
+        'content-type': 'image/png', 'x-attachment-filename': 'reference.png'})
+    assert uploaded.status_code == 200, uploaded.text
+    reference_id = uploaded.json()['id']
+    entries = [
+        ('Zeta', ['garden'], 'zeta'),
+        ('Alpha', ['garden', 'rain'], 'alpha'),
+        ('Beta', ['garden', 'rain'], 'beta'),
+        ('Gamma', ['garden', 'rain', 'flower'], 'gamma'),
+        ('Delta', ['garden', 'rain', 'flower', 'sun'], 'delta'),
+        ('Epsilon', ['garden', 'rain', 'flower', 'sun', 'tree'], 'epsilon'),
+    ]
+    identifiers = {}
+    for name, keywords, prompt in entries:
+        response = client.post(path, json={'name': name, 'category': 'composition', 'keywords': keywords,
+            'prompt': prompt, 'negative_prompt': '', 'rating': 'general', 'enabled': True,
+            'reference_attachment_id': reference_id if name == 'Epsilon' else None})
+        assert response.status_code == 200, response.text
+        identifiers[name] = response.json()['tag']['id']
+        if name == 'Epsilon':
+            saved = response.json()['tag']
+            assert saved['reference_attachment_id'] == reference_id
+            assert saved['referenceAttachment']['id'] == reference_id
+            assert 'path' not in saved['referenceAttachment']
+    preview = client.post(path + '/preview', json={'text': 'garden rain flower sun tree'}).json()
+    assert preview['matchedIds'] == [identifiers['Epsilon'], identifiers['Delta'], identifiers['Gamma'],
+                                     identifiers['Alpha'], identifiers['Beta']]
+    assert preview['prompt'] == 'epsilon, delta, gamma, alpha, beta'
+    listed = next(item for item in client.get(path).json()['tags'] if item['id'] == identifiers['Epsilon'])
+    assert listed['category'] == 'composition'
+    assert listed['referenceAttachment']['mediaType'] == 'image/png'
+
+
+def test_prompt_tag_reference_must_be_current_role_image_and_legacy_rows_get_defaults(novelai_main):
+    client, service = novelai_main
+    path = f'/api/roles/{service.role.id}/novelai/prompt-tags'
+    other = client.post('/api/roles', json={'name': 'Other role', 'profile': {'profile': 'isolated'}})
+    assert other.status_code == 201, other.text
+    other_id = other.json()['role']['id']
+    foreign = client.post(f'/api/roles/{other_id}/attachments', content=_png_bytes(), headers={
+        'content-type': 'image/png', 'x-attachment-filename': 'foreign.png'}).json()['id']
+    text = client.post(f'/api/roles/{service.role.id}/attachments', content=b'notes', headers={
+        'content-type': 'text/plain', 'x-attachment-filename': 'notes.txt'}).json()['id']
+    base = {'name': 'Reference', 'category': 'composition', 'keywords': ['garden'], 'prompt': 'garden',
+        'negative_prompt': '', 'rating': 'general', 'enabled': True}
+    assert client.post(path, json={**base, 'reference_attachment_id': foreign}).status_code == 422
+    assert client.post(path, json={**base, 'reference_attachment_id': text}).status_code == 422
+    assert client.post(path, json={**base, 'reference_attachment_id': 'f' * 31}).status_code == 422
+    with service.application.ledger.connect() as db:
+        db.execute('INSERT INTO novelai_prompt_tags(role_id,id,value) VALUES(?,?,?)', (service.role.id, 'c' * 32,
+            json.dumps({'name': 'Legacy', 'keywords': ['legacy'], 'prompt': 'legacy', 'negative_prompt': '',
+                        'rating': 'general', 'enabled': True})))
+    legacy = next(item for item in client.get(path).json()['tags'] if item['name'] == 'Legacy')
+    assert legacy['category'] == 'composition'
+    assert legacy['reference_attachment_id'] is None
+    assert legacy['referenceAttachment'] is None

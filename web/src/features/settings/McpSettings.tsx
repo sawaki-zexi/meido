@@ -93,7 +93,7 @@ export function McpSettings() {
   const savedEnvKeys = servers?.find((server) => server.serverId === editingId)?.envKeys ?? [];
   const missingDiscovery = draft && !draft.enableDiscovery ? roles.filter((role) => draft.roleIds.includes(role.id)).map((role) => ({ role, missing: discoveryTools.filter((name) => !role.agentConfig?.enabledTools?.includes(name)) })).filter((item) => item.missing.length > 0) : [];
   return <section className="mcp-settings" aria-labelledby="mcp-settings-title">
-    <header className="mcp-heading"><div><h2 id="mcp-settings-title">MCP 服务</h2><p className="muted">配置并授权本地 stdio 服务，让角色在对话中按需连接。</p></div><div className="mcp-actions"><button type="button" disabled={busy} onClick={() => void reload()}>刷新状态</button><button type="button" disabled={busy || servers === null} onClick={() => { setEditingId(null); setDraft(emptyDraft()); setError(""); setMessage(""); }}>添加 MCP 服务</button></div></header>
+    <header className="mcp-heading"><h2 id="mcp-settings-title">MCP 服务</h2><div className="mcp-actions"><button type="button" disabled={busy} onClick={() => void reload()}>刷新状态</button><button type="button" disabled={busy || servers === null} onClick={() => { setEditingId(null); setDraft(emptyDraft()); setError(""); setMessage(""); }}>添加 MCP 服务</button></div></header>
     {error && <Notice>{error}</Notice>}{message && <Notice tone="success">{message}</Notice>}
     {readFailed && servers !== null && <p role="status">状态读取失败；下方为上次读取结果。</p>}
     {servers === null && !error && <Placeholder loading>正在读取 MCP 服务…</Placeholder>}
@@ -115,9 +115,9 @@ export function McpSettings() {
           <div className="field"><label htmlFor="mcp-name">服务名称</label><input id="mcp-name" required maxLength={100} value={draft.name} onChange={(event) => change({ name: event.target.value })} /></div>
         </div>
         <div className="field"><label htmlFor="mcp-executable">可执行文件（绝对路径）</label><input id="mcp-executable" required value={draft.executable} onChange={(event) => change({ executable: event.target.value })} /><small className="muted">填写后端所在电脑上已有的可执行文件。</small></div>
-        <div className="field"><label htmlFor="mcp-arguments">参数（每行一个）</label><textarea id="mcp-arguments" rows={3} value={draft.arguments} onChange={(event) => change({ arguments: event.target.value })} /><small className="muted">一行对应一个固定参数，路径中的空格无需加引号。</small></div>
+        <div className="field"><label htmlFor="mcp-arguments">参数（每行一个）</label><textarea id="mcp-arguments" rows={3} value={draft.arguments} onChange={(event) => change({ arguments: event.target.value })} /><small className="muted">路径含空格也无需引号。</small></div>
         <div className="field"><label htmlFor="mcp-cwd">工作目录（绝对路径）</label><input id="mcp-cwd" required value={draft.cwd} onChange={(event) => change({ cwd: event.target.value })} /></div>
-        <div className="mcp-environment"><h4>环境变量</h4><p className="muted">变量值保存在系统凭据库，读取配置不会回显。已有变量留空保留原值；移除一行会删除该变量。</p>
+        <div className="mcp-environment"><h4>环境变量</h4><p className="muted">已有值不回显；留空保留，移除即删除。</p>
           {draft.env.map((item, index) => <div className="mcp-env-row" key={index}>
             <div className="field"><label htmlFor={`mcp-env-key-${index}`}>环境变量名称 {index + 1}</label><input id={`mcp-env-key-${index}`} required pattern="[A-Za-z_][A-Za-z0-9_]{0,127}" value={item.key} onChange={(event) => updateEnv(index, { key: event.target.value })} /></div>
             <div className="field"><label htmlFor={`mcp-env-value-${index}`}>环境变量值 {index + 1}</label><input id={`mcp-env-value-${index}`} type="password" autoComplete="new-password" required={!savedEnvKeys.includes(item.key)} placeholder={savedEnvKeys.includes(item.key) ? "已配置；留空保留原值" : "填写新变量值"} value={item.value} onChange={(event) => updateEnv(index, { value: event.target.value })} /></div>
@@ -129,7 +129,7 @@ export function McpSettings() {
           {draft.roleIds.filter((id) => !roles.some((role) => role.id === id)).map((id) => <label className="mcp-checkbox" key={id}><input type="checkbox" aria-label={`移除已删除角色 ${id} 的授权`} checked onChange={() => change({ roleIds: draft.roleIds.filter((value) => value !== id) })} /><span>已删除角色（{id}），取消勾选以移除授权</span></label>)}
         </fieldset>
         <label className="mcp-checkbox"><input type="checkbox" checked={draft.enableDiscovery} onChange={(event) => change({ enableDiscovery: event.target.checked })} /><span>同时为授权角色开启 tool_search 和 mcp_add、mcp_list、mcp_remove</span></label>
-        {!draft.enableDiscovery && <p className="muted">取消勾选仅跳过本次工具开启，不会撤销角色已有的工具权限。</p>}
+        {!draft.enableDiscovery && <p className="muted">不会撤销已有工具权限。</p>}
         {missingDiscovery.map(({ role, missing }) => <Notice key={role.id}>{`${role.name} 尚未开启 ${missing.join("、")}；需在角色设置中开启后才能使用对应的发现或连接管理操作。`}</Notice>)}
         <div className="mcp-grid">
           <div className="field"><label htmlFor="mcp-risk">远端工具风险</label><select id="mcp-risk" value={draft.risk} onChange={(event) => change({ risk: event.target.value as McpRisk })}>{Object.entries(riskLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></div>
@@ -137,11 +137,10 @@ export function McpSettings() {
           <div className="field"><label htmlFor="mcp-output">输出字符上限</label><input id="mcp-output" type="number" required min={1024} max={200000} value={draft.maxOutputChars} onChange={(event) => change({ maxOutputChars: Number(event.target.value) })} /></div>
         </div>
         <label className="mcp-checkbox"><input type="checkbox" checked={draft.enabled} onChange={(event) => change({ enabled: event.target.checked })} /><span>启用此服务授权</span></label>
-        <p className="muted">保存只更新授权配置，不会启动服务。角色需在对话中使用 mcp_add 连接。</p>
-        {editingId && <p className="muted">保存修改会断开当前连接并清除连接意愿；角色需重新连接。</p>}
+        <p className="muted">保存不启动服务，由角色按需连接。</p>
+        {editingId && <p className="muted">修改后断开现有连接，需重新连接。</p>}
         <div className="form-actions"><button type="button" onClick={() => setDraft(null)}>取消</button><button type="submit" className="primary">{busy ? "保存中…" : "保存 MCP 配置"}</button></div>
       </fieldset>
     </form>}
-    <p className="muted">运行中连接与连接意愿来自后端状态。连接意愿会在同一已授权来源的后续对话重建；实际远端工具与加载状态可在对话中通过 mcp_list 查看。</p>
   </section>;
 }

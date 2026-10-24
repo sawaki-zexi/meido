@@ -80,8 +80,7 @@ export function AutonomyTargets({ roleId, revision, config, grants, choices, onC
         expectedDirectoryRevision: directory.page.directoryRevision } });
   }
   return <fieldset aria-label="自主发送目标">
-    <legend>自主发送目标</legend>
-    <p>最多许可4个目标（含桌面），默认目标必须在许可集合中。外部仅限当前角色账号已绑定的主人私聊；保存不会发送消息或运行来源。</p>
+    <p className="field-hint">最多4个目标；渠道仅限当前角色绑定的主人私聊。</p>
     <label className="field checkbox-field"><input type="checkbox" aria-label="许可目标 当前角色桌面会话"
       checked={config.allowedTargetRefs.includes('desktop')} disabled={!config.allowedTargetRefs.includes('desktop') && config.allowedTargetRefs.length >= 4}
       onChange={(event) => select('desktop', event.target.checked)} />当前角色桌面会话</label>
@@ -102,7 +101,9 @@ export function AutonomyTargets({ roleId, revision, config, grants, choices, onC
       <option value="">请选择许可集合中的默认目标</option>
       {config.allowedTargetRefs.map((ref) => <option key={ref} value={ref}>{label(ref)}</option>)}
     </select></label>
-    <p>当前已选择 {config.allowedTargetRefs.length}/4 个目标。</p>
+    <details className="settings-disclosure settings-disclosure-inset">
+    <summary><span>添加渠道目标</span><small>已选 {config.allowedTargetRefs.length}/4</small></summary>
+    <div>
     {directory.accountsBusy && <Placeholder loading>正在读取本地账号连接事实…</Placeholder>}
     {directory.accountsError && <Notice>{directory.accountsError}</Notice>}
     <button type="button" disabled={directory.accountsBusy} onClick={() => void directory.reloadAccounts()}>刷新自主发送账号</button>
@@ -146,5 +147,7 @@ export function AutonomyTargets({ roleId, revision, config, grants, choices, onC
       })}
       {directory.page.nextCursor && <button type="button" disabled={directory.busy} onClick={() => void directory.read(true)}>读取下一页目标</button>}
     </section>}
+    </div>
+    </details>
   </fieldset>;
 }

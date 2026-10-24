@@ -46,7 +46,8 @@ class ScriptedDecision:
 
 
 @pytest.mark.parametrize("never_finish", [False, True])
-def test_real_tick_model_tool_loop_requires_explicit_finish(source, tmp_path, never_finish):
+@pytest.mark.parametrize('max_steps', [35, 3])
+def test_real_tick_model_tool_loop_requires_explicit_finish(source, tmp_path, never_finish, max_steps):
     _, store, *_ = source
     data = tmp_path / "decision"
     initialize_databases(data)
@@ -54,7 +55,7 @@ def test_real_tick_model_tool_loop_requires_explicit_finish(source, tmp_path, ne
     now, host, adapter = [1780000000.0], McpHost(store), ScriptedDecision(never_finish=never_finish)
     app = ProactiveApplication(sessions, tasks, clock=lambda: now[0], role_getter=lambda key: {"id": key},
         model_getter=lambda key: {"id": key}, mcp_host=host, adapter_factory=lambda config: adapter)
-    app.configure("role", AutonomyConfig(activeDecisionEnabled=True,
+    app.configure("role", AutonomyConfig(activeDecisionEnabled=True, agentMaxSteps=max_steps,
         decisionModelConfigurationId="explicit-model", consentRevision=1,
         sourceGrants=[grant_for(source)]), expected_revision=0)
 
@@ -70,8 +71,8 @@ def test_real_tick_model_tool_loop_requires_explicit_finish(source, tmp_path, ne
                         break
                     await asyncio.sleep(.01)
             assert run["mode"] == "active_decision"
-            assert run["status"] == ("aborted" if never_finish else "skipped")
-            assert len(adapter.requests) == (12 if never_finish else 4)
+            assert run["status"] == ("aborted" if never_finish or max_steps < 4 else "skipped")
+            assert len(adapter.requests) == min(max_steps, 12 if never_finish else 4)
             assert all(request[2] == 1024 for request in adapter.requests)
             names = {tool["function"]["name"] for tool in adapter.requests[0][1]}
             assert len(names) == 12 and {"message_push", "finish_turn", "recall_memory"} <= names

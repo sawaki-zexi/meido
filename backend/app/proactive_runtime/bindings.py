@@ -35,11 +35,16 @@ def freeze(app, role_id, config):
         (config.activeDecisionEnabled, config.decisionModelConfigurationId),
         (config.driftEnabled, config.driftModelConfigurationId)) if enabled and identifier}
     return {"role": shape(app.role_getter(role_id), role=True),
+            'inheritedModelId': config.decisionModelConfigurationId if config.inheritRoleModel else None,
             "context": freeze_context(app.context_reader, role_id),
             "models": {identifier: model_digest(app.model_getter(identifier)) for identifier in sorted(identifiers)}}
 
 
 def current(app, role_id, frozen):
+    if frozen.get('inheritedModelId'):
+        model = shape(app.role_model_getter(role_id))
+        if model is None or model.get('id') != frozen['inheritedModelId']:
+            return False
     return (shape(app.role_getter(role_id), role=True) == frozen.get("role")
         and all(app.model_getter(identifier) is not None and model_digest(app.model_getter(identifier)) == digest
                 for identifier, digest in frozen.get("models", {}).items()))

@@ -74,7 +74,7 @@ export function SettingsDialog({ onClose, initialSection = 'model', onRoleSaved 
         {current === 'about' && <AboutSettings />}
         {service && <section className="settings-service-page" key={service}>
           <nav className="settings-breadcrumb" aria-label="设置路径"><button type="button" className="ghost" onClick={() => select('plugins')}>
-            <Icon name="back" size={16} />返回插件</button><span>{pluginServices.find(item => item.id === service)?.label}</span></nav>
+            <Icon name="back" size={16} />返回插件</button><span aria-hidden="true">{pluginServices.find(item => item.id === service)?.label}</span></nav>
           {services[service]()}
         </section>}
       </div>

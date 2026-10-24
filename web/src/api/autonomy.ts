@@ -12,6 +12,7 @@ export const defaultDriftMeme: DriftMemeGrant = { enabled: false, managedEpoch: 
   allowedCategories: [], sourceAttachmentIds: [] };
 export type AutonomyConfiguration = {
   revision: number; activeDecisionEnabled: boolean; driftEnabled: boolean;
+  inheritRoleModel?: boolean;
   decisionModelConfigurationId: string | null; driftModelConfigurationId: string | null;
   defaultTargetRef: string; allowedTargetRefs: string[]; sourceGrants: Record<string, unknown>[];
   driftToolGrants: string[]; shellRuleIds: string[]; consentRevision: number;
