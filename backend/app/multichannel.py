@@ -1207,25 +1207,64 @@ class MultichannelStore:
             row = db.execute("SELECT * FROM channel_threads WHERE role_id=? AND thread_id=?", (role_id, thread_id)).fetchone()
         return self._thread(row) if row else None
 
-    def list_threads(self, role_id: str, *, limit: int = 100) -> list[ChannelThread]:
+    def public_thread_payload(self, thread: ChannelThread) -> dict[str, object]:
+        """Return the complete network row used by HTTP and live updates."""
+        payload = thread.public_dict()
+        payload["avatarUrl"] = self.avatars.url(thread.account_id, "chat", thread.chat_id)
+        payload["latestMessage"] = self.latest_message_preview(thread)
+        return payload
+
+    def latest_message_preview(self, thread: ChannelThread) -> dict[str, object] | None:
         with self._connect() as db:
-            rows = db.execute("SELECT * FROM channel_threads WHERE role_id=? ORDER BY last_activity DESC LIMIT ?", (role_id, max(1, min(limit, 500)))).fetchall()
+            latest = db.execute(
+                "SELECT content,role,status,created_at FROM messages WHERE session_key=? "
+                "AND message_type IN ('text','proactive_reminder','internal_completion') "
+                "ORDER BY sequence DESC LIMIT 1", (thread.session_key,),
+            ).fetchone()
+        return {"content": latest["content"], "role": latest["role"], "status": latest["status"],
+                "createdAt": latest["created_at"]} if latest is not None else None
+
+    def public_message_payload(self, thread: ChannelThread, message: Message | Mapping[str, object]) -> dict[str, object]:
+        """Project a message using current identity and avatar bindings."""
+        if isinstance(message, Message):
+            payload = public_message(message).model_dump(mode="json")
+        else:
+            payload = dict(message)
+        metadata = dict(payload.get("metadata") or {})
+        metadata["threadId"] = thread.thread_id
+        sender_id = str(metadata.get("senderId") or "")
+        scope = "platform" if thread.channel in {"telegram", "qq"} else "account"
+        metadata["senderAvatarUrl"] = self.avatars.url(thread.account_id, "sender", sender_id)
+        metadata["senderIsOwner"] = bool(sender_id) and self.identity_is_owner(
+            role_id=thread.role_id,
+            channel=thread.channel,
+            scope=scope,
+            platform_user_id=sender_id,
+            account_id=thread.account_id,
+        )
+        source = metadata.get("viaAccount")
+        if isinstance(source, dict):
+            source = dict(source)
+            own_id = str(source.get("platformAccountId") or thread.account_id)
+            source["avatarUrl"] = self.avatars.url(thread.account_id, "account", own_id)
+            metadata["viaAccount"] = source
+        payload["metadata"] = metadata
+        return payload
+
+    def list_threads(self, role_id: str, *, limit: int = 100, network_only: bool = False) -> list[ChannelThread]:
+        page_limit = max(1, min(limit, 500))
+        with self._connect() as db:
+            channel_clause = (" AND channel <> 'desktop' AND EXISTS (SELECT 1 FROM messages m "
+                              "WHERE m.session_key=channel_threads.session_key AND m.message_type IN "
+                              "('text','proactive_reminder','internal_completion'))") if network_only else ""
+            rows = db.execute(
+                f"SELECT * FROM channel_threads WHERE role_id=?{channel_clause} ORDER BY last_activity DESC, thread_id DESC LIMIT ?",
+                (role_id, page_limit),
+            ).fetchall()
         threads: list[ChannelThread] = []
         for row in rows:
             thread = self._thread(row)
-            messages = [item for item in self.sessions.list_messages(thread.session_key) if item.messageType in {"text", "proactive_reminder", "internal_completion"}]
-            if messages:
-                latest = messages[-1]
-                thread = replace(thread, metadata={
-                    **thread.metadata,
-                    "latestMessage": {
-                        "content": latest.content,
-                        "role": latest.role,
-                        "status": latest.status,
-                        "createdAt": latest.createdAt.isoformat(),
-                    },
-                })
-            threads.append(thread)
+            threads.append(replace(thread, metadata={**thread.metadata, "latestMessage": self.latest_message_preview(thread)}))
         return threads
 
     def clear_listening_messages(self, role_id: str, account_id: str, chat_id: str) -> int:
@@ -1234,18 +1273,7 @@ class MultichannelStore:
         thread = self.get_thread_by_chat(role_id, account_id, str(chat_id), chat_type="group")
         if thread is None or thread.channel != "qq" or thread.chat_type != "group":
             raise KeyError(chat_id)
-        heard_count = self.listening.clear(role_id, thread.thread_id)
-        with self._connect() as db:
-            rows = db.execute(
-                "SELECT message_id FROM messages WHERE session_key=? AND json_extract(metadata_json, '$.listening') = 1",
-                (thread.session_key,),
-            ).fetchall()
-            if not rows:
-                return heard_count
-            db.executemany("DELETE FROM messages WHERE message_id=?", rows)
-            db.execute("UPDATE channel_threads SET last_activity=? WHERE thread_id=?", (_now(), thread.thread_id))
-        self.publish(role_id, {"type": "listening_cleared", "roleId": role_id, "threadId": thread.thread_id, "chatId": str(chat_id)})
-        return len(rows) + heard_count
+        return self.listening.clear(role_id, thread.thread_id)
 
     def append_event(self, thread: ChannelThread, *, direction: str, content: str, external_message_id: str | None, metadata: dict[str, Any] | None = None, role: str = "user", status: str = "completed") -> tuple[bool, Any]:
         if status not in {"completed", "failed", "streaming", "pending"}:
@@ -1289,11 +1317,12 @@ class MultichannelStore:
             createdAt=datetime.fromisoformat(now),
             metadata=message_metadata,
         )
+        current_thread = self.get_thread(thread.role_id, thread.thread_id) or thread
         self.publish(thread.role_id, {
             "type": "message",
             "roleId": thread.role_id,
-            "thread": thread.public_dict(),
-            "message": public_message(message).model_dump(mode="json"),
+            "thread": self.public_thread_payload(current_thread),
+            "message": self.public_message_payload(current_thread, message),
         })
         return True, message
 
@@ -1453,9 +1482,9 @@ class MultichannelStore:
                 if not subscribers:
                     self._subscribers.pop(role_id, None)
 
-    def list_messages(self, role_id: str, thread_id: str, *, before: int | None = None, limit: int = 50) -> tuple[ChannelThread, list[Any], bool, int | None]:
+    def list_messages(self, role_id: str, thread_id: str, *, before: int | None = None, limit: int = 50, network_only: bool = False) -> tuple[ChannelThread, list[Any], bool, int | None]:
         thread = self.get_thread(role_id, thread_id)
-        if thread is None:
+        if thread is None or (network_only and thread.channel == "desktop"):
             raise KeyError(thread_id)
         rows = self.sessions.list_messages(thread.session_key)
         rows = [row for row in rows if row.messageType in {"text", "proactive_reminder", "internal_completion"}]
