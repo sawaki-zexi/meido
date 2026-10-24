@@ -2,8 +2,8 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from 'react-dom';
 import { IconButton } from "./Icon";
 
-/** Modal panel: `drawer` slides in from the right, `modal` is centred, `compact` is a small centred card. Esc and the backdrop close it. */
-export function Dialog({ title, variant = "modal", onClose, children, modalFocus = false, returnFocus }: { title: string; variant?: "modal" | "drawer" | "compact" | "page" | "settings"; onClose: () => void; children: ReactNode; modalFocus?: boolean; returnFocus?: () => HTMLElement | null }) {
+/** Modal panel: `drawer` slides in from the right, `modal` is centred, `compact` is a small centred card, and `phone` uses a handset shell. Esc and the backdrop close it. */
+export function Dialog({ title, variant = "modal", onClose, children, modalFocus = false, returnFocus }: { title: string; variant?: "modal" | "drawer" | "compact" | "page" | "settings" | "phone"; onClose: () => void; children: ReactNode; modalFocus?: boolean; returnFocus?: () => HTMLElement | null }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
