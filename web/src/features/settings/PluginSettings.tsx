@@ -15,7 +15,7 @@ import { pluginServices, type SettingsServiceId } from './navigation';
 
 type Row = { id: PluginId; name: string; description: string; enabled?: boolean; state?: PluginState; problem?: string };
 const services: Row[] = [
-  { id: 'novelai', name: 'NovelAI 生图', description: '角色在聊天中自主决定是否生成表情；手动工作台与场景 CG 共用这里的服务边界。' },
+  { id: 'novelai', name: 'NovelAI 生图', description: '在聊天中生成角色表情，或使用图片工作台；统一管理生图参数与额度。' },
   { id: 'coding', name: '编程委托', description: '将任务委托给已授权的可信仓库和专用 CLI。' },
   { id: 'todo', name: '待办', description: '查询、管理主人的待办和提醒。' },
 ];
@@ -81,7 +81,7 @@ export function PluginSettings({ onRoleSaved, onOpenService, serviceVersion = 0 
     <header className="settings-page-heading">
       {active !== null && <button type="button" className="ghost settings-back" disabled={busy}
         onClick={() => { setActive(null); setRolesOpen(false); setRefresh(value => value + 1); }}><Icon name="back" size={18} />返回插件列表</button>}
-      <h2>{active === null ? '插件' : activeName}</h2>
+      <h2>{active === null ? '插件' : active === 'todo' ? '待办与提醒' : activeName}</h2>
     </header>
     {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
     {active === null ? <>
@@ -100,9 +100,9 @@ export function PluginSettings({ onRoleSaved, onOpenService, serviceVersion = 0 
         </div>
     </> : <section className="plugin-detail" aria-label={activeName + '设置'}>
       {selected?.state && <PluginParameters key={active} plugin={selected.state} onSaved={configured} />}
-      {active === 'novelai' && <NovelaiSettings key={serviceVersion} />}
-      {active === 'coding' && <CodingSettings key={serviceVersion} />}
-      {active === 'todo' && <TodoSettings />}
+      {active === 'novelai' && <NovelaiSettings key={serviceVersion} showTitle={false} />}
+      {active === 'coding' && <CodingSettings key={serviceVersion} showTitle={false} />}
+      {active === 'todo' && <TodoSettings showTitle={false} />}
       {rolePurposes.has(active) && <>
         <button type="button" className="ghost" aria-expanded={rolesOpen} onClick={() => setRolesOpen(value => !value)}>
           {rolesOpen ? '收起角色参数' : '角色参数'}</button>

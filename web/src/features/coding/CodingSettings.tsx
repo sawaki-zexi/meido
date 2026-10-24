@@ -8,7 +8,7 @@ import { CodingPublicationCredentials } from "./CodingPublicationCredentials";
 type RepositoryDraft = { id?: string; root: string; baseRef: string; remote: string; validation: string; localCommit: boolean; push: boolean; draftPr: boolean };
 type ProfileDraft = { id?: string; name: string; kind: "codex" | "claude"; executor: "herdr" | "codex_exec"; executable: string; sha256: string; version: string; model: string; authDirectory: string };
 
-export function CodingSettings() {
+export function CodingSettings({ showTitle = true }: { showTitle?: boolean }) {
   const editor = useRef<HTMLDetailsElement>(null);
   const [configuration, setConfiguration] = useState<CodingConfiguration | null>(null);
   const [roles, setRoles] = useState<Role[]>([]);
@@ -26,8 +26,8 @@ export function CodingSettings() {
   const perform = async (operation: () => Promise<unknown>, success: string) => { setBusy(true); setError(""); setMessage(""); try { await operation(); await refresh(); setMessage(success); } catch (cause) { setError(errorMessage(cause, "保存失败")); } finally { setBusy(false); } };
   const saveRepo = (event: FormEvent) => { event.preventDefault(); void perform(() => saveCodingRepository({ ...repo, validation: JSON.parse(repo.validation), allowedRoleIds: allowed }), "可信仓库已登记；还需在插件设置中为角色选择授权。"); };
   const saveProfile = (event: FormEvent) => { event.preventDefault(); void perform(() => saveCodingProfile({ ...profile, allowedRoleIds: allowed, configurationManifest: [] }), "CLI 已登记，尚未核验。保存不会登录或调用模型。"); };
-  return <section aria-label="编程委托设置">
-    <div className="settings-heading"><div><h2>编程委托</h2><span className="muted">{configuration ? configuration.enabled ? '已启用' : '已关闭' : '正在读取'}</span></div>
+  return <section className="coding-settings" aria-label="编程委托设置">
+    <div className="settings-heading"><div>{showTitle && <h2>编程委托</h2>}<span className="muted">{configuration ? configuration.enabled ? '已启用' : '已关闭' : '正在读取'}</span></div>
       <button type="button" disabled={busy || !configuration} onClick={() => void perform(() => setCodingEnabled(!configuration!.enabled), "全局设置已保存")}>{configuration?.enabled ? '关闭编程委托' : '启动编程委托'}</button></div>
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}{message && <Notice tone="success">{message}</Notice>}
     <p>仅对信任的仓库开放。CLI 使用专门指定的认证目录；运行任务可能消耗所选账号的模型配额。发布需另行批准具体成果。</p>

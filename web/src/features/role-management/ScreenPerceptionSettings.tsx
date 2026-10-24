@@ -27,7 +27,7 @@ export function ScreenPerceptionSettings({ draft, onChange, disabled, showEnable
   const selectedId = draft.screenVisionModelConfigurationId;
   const selected = configurations.find((item) => item.id === selectedId);
   const missing = !loading && !error && Boolean(selectedId) && !selected;
-  return <section aria-label="屏幕感知配置">
+  return <section className="screen-perception-settings" aria-label="屏幕感知配置">
     {!showEnabledToggle && <p className="field-hint">画面发送到所选视觉连接，本地不保存原图；分析摘要会用于当前对话</p>}
     {showEnabledToggle && <label className="field checkbox-field">
       <input type="checkbox" aria-label="允许按需观察主屏" aria-describedby={hintId} checked={draft.screenPerceptionEnabled} disabled={disabled} onChange={(event) => onChange({ ...draft, screenPerceptionEnabled: event.target.checked })} />
@@ -56,8 +56,10 @@ export function ScreenPerceptionSettings({ draft, onChange, disabled, showEnable
     {missing && <p role="status">连接已不存在，请重新选择视觉模型连接。</p>}
     {error && <p role="status">{error}</p>}
     {!loading && !error && configurations.length === 0 && <p>暂无已保存的模型连接，请先在模型设置中添加。</p>}
-    <button type="button" className="ghost" disabled={disabled || loading} onClick={() => setRevision((value) => value + 1)}>刷新视觉连接</button>
-    <button type="button" className="ghost" disabled={disabled} onClick={() => setSettingsOpen(true)}>打开模型设置</button>
+    <div className="screen-perception-actions">
+      <button type="button" className="ghost" disabled={disabled || loading} onClick={() => setRevision((value) => value + 1)}>刷新视觉连接</button>
+      <button type="button" className="ghost" disabled={disabled} onClick={() => setSettingsOpen(true)}>打开模型设置</button>
+    </div>
     {settingsOpen && createPortal(<div onSubmit={(event) => event.stopPropagation()}>
       <SettingsDialog initialSection="model" onClose={() => { setSettingsOpen(false); setRevision((value) => value + 1); }} />
     </div>, document.body)}

@@ -4,7 +4,7 @@ import { errorMessage } from '../../api/client';
 import { Notice, Placeholder } from '../../ui/Status';
 import { undesiredContentPresetOptions } from './promptPreferences';
 
-export function NovelaiSettings() {
+export function NovelaiSettings({ showTitle = true }: { showTitle?: boolean }) {
   const [configuration, setConfiguration] = useState<NovelaiConfiguration | null>(null);
   const [token, setToken] = useState('');
   const [pending, setPending] = useState(false);
@@ -53,32 +53,32 @@ export function NovelaiSettings() {
   const credentialState = configuration.credentialCleanupPending ? '独立凭据清理未完成' : configuration.tokenConfigured ? '独立凭据已配置' : '缺少独立凭据';
   return <section className="page-narrow novelai-settings-page" aria-label="NovelAI 生图设置">
     <header className="novelai-page-heading">
-      <div className="novelai-page-title"><h2>NovelAI 生图</h2>
-        <p>角色会在聊天中判断是否需要生成当前表情图；主人也可以从聊天侧“生图与历史”或图片工作台手动填写参数。</p></div>
+      <div className="novelai-page-title">{showTitle && <h2>NovelAI 生图</h2>}
+        <p>配置聊天表情、手动生图与场景 CG 共用的服务和默认参数。</p></div>
       <div className="novelai-head-actions">
         <span className={`novelai-status-badge${configuration.enabled ? ' is-enabled' : ''}`}><span aria-hidden="true" />{configuration.enabled ? '已启用' : '已关闭'}</span>
         <button type="button" className={configuration.enabled ? 'ghost' : 'primary'} disabled={pending} onClick={() => void toggle()}>{configuration.enabled ? '关闭 NovelAI' : '启动 NovelAI'}</button>
       </div>
     </header>
-    <p className="novelai-page-note">这里集中配置服务、默认参数和消费边界。次数是本地尝试上限，不是 Anlas 估价；结果不确定时可能已计费。</p>
+    <p className="novelai-page-note">每日次数限制本地尝试次数，不代表 Anlas 费用；结果不确定时也可能已计费。</p>
     {error && <Notice>{error}</Notice>}{message && <Notice tone="success">{message}</Notice>}
     <form className="novelai-settings-form" onSubmit={(event) => void save(event)}>
       <section className="novelai-settings-card novelai-access-card" aria-labelledby="novelai-access-title">
-        <div className="novelai-card-heading"><div><h3 id="novelai-access-title">聊天与手动生图</h3><p>控制角色是否可以在聊天中自主生成表情，以及主人手动生图的每日额度。</p></div>
+        <div className="novelai-card-heading"><div><h3 id="novelai-access-title">聊天与手动生图</h3><p>开启后，角色可在聊天中生成表情，你也可以使用生图工作台。</p></div>
           <span className={`novelai-credential-badge${configuration.tokenConfigured && !configuration.credentialCleanupPending ? ' is-ready' : ''}${configuration.credentialCleanupPending ? ' is-warning' : ''}`}>{credentialState}</span></div>
         <label className="field checkbox-field novelai-option-row"><input type="checkbox" aria-label="允许角色在聊天中自主生成表情（同时开放手动生图）" checked={configuration.manualEnabled ?? false} disabled={pending}
           onChange={event => patch({ manualEnabled: event.target.checked })} /><span>允许角色在聊天中自主生成表情（同时开放手动生图）</span></label>
         {configuration.manualEnabled && <div className="novelai-consent-block">
-          <label className="field novelai-budget-field"><span>每个角色每日最多尝试</span><small>聊天表情与手动生图共用此上限</small><input aria-label="每个角色每日最多尝试（聊天表情与手动生图）" type="number" min={1} max={100} required
-            value={configuration.manualDailyAttempts ?? 10} disabled={pending} onChange={event => patch({ manualDailyAttempts: Number(event.target.value) })} /></label>
+          <label className="field novelai-budget-field"><span>每个角色每日最多尝试</span><input aria-label="每个角色每日最多尝试（聊天表情与手动生图）" type="number" min={1} max={100} required
+            value={configuration.manualDailyAttempts ?? 10} disabled={pending} onChange={event => patch({ manualDailyAttempts: Number(event.target.value) })} /><small>聊天表情与手动生图共用此上限。</small></label>
           <label className="field checkbox-field novelai-consent-row"><input type="checkbox" aria-label="我确认当前公共参数的有限生图消费" checked={consent} disabled={pending || !configuration.enabled || !configuration.tokenConfigured || configuration.credentialCleanupPending}
             onChange={event => setConsent(event.target.checked)} /><span>我确认当前公共参数的有限生图消费</span></label>
           {!consent && <p className="field-hint">确认并保存后，聊天表情和手动工作台才可以调用生图；此确认不启用角色场景 CG。</p>}
         </div>}
       </section>
       <section className="novelai-settings-card novelai-generation-card" aria-labelledby="novelai-generation-title">
-        <div className="novelai-card-heading"><div><h3 id="novelai-generation-title">生成参数</h3><p>设置聊天表情、手动工作台和场景 CG 共用的默认边界。</p></div></div>
-        <fieldset className="novelai-mode-fieldset" disabled={pending}>
+        <div className="novelai-card-heading"><div><h3 id="novelai-generation-title">生成参数</h3><p>修改后，需要重新确认并保存消费许可。</p></div></div>
+        <fieldset className="novelai-parameter-group" disabled={pending}>
           <legend>允许的生成模式</legend>
           <div className="novelai-mode-options">
             <label className="field checkbox-field novelai-option-row"><input type="checkbox" aria-label="允许文生图" checked={configuration.allowTxt2Img ?? true}
@@ -88,30 +88,43 @@ export function NovelaiSettings() {
           </div>
           {!configuration.allowTxt2Img && !configuration.allowImg2Img && <p className="field-hint">两种模式都关闭后，聊天表情、手动生图和场景 CG 都会被阻止。</p>}
         </fieldset>
-        <div className="novelai-settings-grid">
-          <label className="field"><span>账户每日最多尝试</span><input aria-label="账户每日最多尝试" type="number" min="1" max="1000" step="1" required value={configuration.dailyAttemptLimit} disabled={pending} onChange={(event) => patch({ dailyAttemptLimit: Number(event.target.value) })} /></label>
-          <label className="field"><span>默认生成张数</span><select aria-label="默认生成张数" value={configuration.defaultSamples ?? 1} disabled={pending} onChange={(event) => patch({ defaultSamples: Number(event.target.value) })}>
-            {[1, 2, 3, 4].map((count) => <option value={count} key={count}>{count} 张</option>)}
-          </select></label>
-          <label className="field"><span>每张最大像素</span><input aria-label="每张最大像素" type="number" min="4096" max="1048576" step="1" required value={configuration.maxPixels} disabled={pending} onChange={(event) => patch({ maxPixels: Number(event.target.value) })} /></label>
-          <label className="field"><span>最多采样步数</span><input aria-label="最多采样步数" type="number" min="1" max="28" step="1" required value={configuration.maxSteps} disabled={pending} onChange={(event) => patch({ maxSteps: Number(event.target.value) })} /></label>
+        <fieldset className="novelai-parameter-group" disabled={pending}>
+          <legend>次数与规格</legend>
+          <div className="novelai-settings-grid">
+            <label className="field"><span>账户每日最多尝试</span><input aria-label="账户每日最多尝试" type="number" min="1" max="1000" step="1" required value={configuration.dailyAttemptLimit} disabled={pending} onChange={(event) => patch({ dailyAttemptLimit: Number(event.target.value) })} /></label>
+            <label className="field"><span>默认生成张数</span><select aria-label="默认生成张数" value={configuration.defaultSamples ?? 1} disabled={pending} onChange={(event) => patch({ defaultSamples: Number(event.target.value) })}>
+              {[1, 2, 3, 4].map((count) => <option value={count} key={count}>{count} 张</option>)}
+            </select></label>
+            <label className="field"><span>每张最大像素</span><input aria-label="每张最大像素" type="number" min="4096" max="1048576" step="1" required value={configuration.maxPixels} disabled={pending} onChange={(event) => patch({ maxPixels: Number(event.target.value) })} /></label>
+            <label className="field"><span>最多采样步数</span><input aria-label="最多采样步数" type="number" min="1" max="28" step="1" required value={configuration.maxSteps} disabled={pending} onChange={(event) => patch({ maxSteps: Number(event.target.value) })} /></label>
+          </div>
+        </fieldset>
+        <fieldset className="novelai-parameter-group" disabled={pending}>
+          <legend>默认模型</legend>
+          <label className="field checkbox-field novelai-option-row"><input type="checkbox" aria-label="允许 nai-diffusion-4-5-full" checked={configuration.allowedModels.includes('nai-diffusion-4-5-full')} disabled={pending} onChange={(event) => patch({ allowedModels: event.target.checked ? ['nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full'] : ['nai-diffusion-4-5-curated'], ...(!event.target.checked ? { defaultModel: 'nai-diffusion-4-5-curated', nsfwEnabled: false } : {}) })} /><span>允许 nai-diffusion-4-5-full</span></label>
+          <div className="novelai-settings-grid">
+            <label className="field"><span>默认模型</span><select aria-label="默认生图模型" value={configuration.defaultModel} disabled={pending} onChange={(event) => patch({ defaultModel: event.target.value })}>{configuration.allowedModels.map((value) => <option key={value}>{value}</option>)}</select></label>
+            <label className="field"><span>NSFW 默认模型</span><select aria-label="NSFW 默认模型" value={configuration.nsfwModel} disabled={pending} onChange={(event) => patch({ nsfwModel: event.target.value })}>
+              {!configuration.allowedModels.includes(configuration.nsfwModel) && <option value={configuration.nsfwModel} disabled>{configuration.nsfwModel}（未允许）</option>}
+              {configuration.allowedModels.map((value) => <option key={value}>{value}</option>)}
+            </select></label>
+          </div>
+          <label className="field checkbox-field novelai-option-row"><input type="checkbox" aria-label="NSFW 默认模型模式" checked={configuration.nsfwEnabled ?? false}
+            disabled={pending || !configuration.allowedModels.includes(configuration.nsfwModel)} onChange={(event) => patch({ nsfwEnabled: event.target.checked })} /><span>NSFW 默认模型模式</span>
+            <small className="field-hint">启用后，未指定模型时使用 NSFW 默认模型。不会放宽角色的 mature/explicit 标签许可；指定的模型仍须在允许列表内。</small></label>
+        </fieldset>
+        <fieldset className="novelai-parameter-group" disabled={pending}>
+          <legend>提示词与采样</legend>
+          <div className="novelai-settings-grid">
+            <label className="field"><span>默认采样器</span><select aria-label="默认采样器" value={configuration.defaultSampler} disabled={pending} onChange={(event) => patch({ defaultSampler: event.target.value })}>{configuration.allowedSamplers.map((value) => <option key={value}>{value}</option>)}</select></label>
+            <label className="field"><span>负向预设</span><select aria-label="负向预设" value={configuration.undesiredContentPreset ?? 0} disabled={pending}
+              onChange={(event) => patch({ undesiredContentPreset: Number(event.target.value) })}>
+              {undesiredContentPresetOptions.map(({ value, label }) => <option key={value} value={value}>{label}（{value}）</option>)}
+            </select></label>
+          </div>
           <label className="field checkbox-field novelai-option-row"><input type="checkbox" aria-label="自动添加质量标签" checked={configuration.addQualityTags ?? false} disabled={pending}
             onChange={(event) => patch({ addQualityTags: event.target.checked })} /><span>自动添加质量标签</span></label>
-          <label className="field"><span>负向预设</span><select aria-label="负向预设" value={configuration.undesiredContentPreset ?? 0} disabled={pending}
-            onChange={(event) => patch({ undesiredContentPreset: Number(event.target.value) })}>
-            {undesiredContentPresetOptions.map(({ value, label }) => <option key={value} value={value}>{label}（{value}）</option>)}
-          </select></label>
-          <label className="field checkbox-field novelai-option-row"><input type="checkbox" aria-label="允许 nai-diffusion-4-5-full" checked={configuration.allowedModels.includes('nai-diffusion-4-5-full')} disabled={pending} onChange={(event) => patch({ allowedModels: event.target.checked ? ['nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full'] : ['nai-diffusion-4-5-curated'], ...(!event.target.checked ? { defaultModel: 'nai-diffusion-4-5-curated', nsfwEnabled: false } : {}) })} /><span>允许 nai-diffusion-4-5-full</span></label>
-          <label className="field"><span>默认模型</span><select aria-label="默认生图模型" value={configuration.defaultModel} disabled={pending} onChange={(event) => patch({ defaultModel: event.target.value })}>{configuration.allowedModels.map((value) => <option key={value}>{value}</option>)}</select></label>
-          <label className="field checkbox-field novelai-option-row"><input type="checkbox" aria-label="NSFW 默认模型模式" checked={configuration.nsfwEnabled ?? false}
-            disabled={pending || !configuration.allowedModels.includes(configuration.nsfwModel)} onChange={(event) => patch({ nsfwEnabled: event.target.checked })} /><span>NSFW 默认模型模式</span></label>
-          <label className="field"><span>NSFW 默认模型</span><select aria-label="NSFW 默认模型" value={configuration.nsfwModel} disabled={pending} onChange={(event) => patch({ nsfwModel: event.target.value })}>
-            {!configuration.allowedModels.includes(configuration.nsfwModel) && <option value={configuration.nsfwModel} disabled>{configuration.nsfwModel}（未允许）</option>}
-            {configuration.allowedModels.map((value) => <option key={value}>{value}</option>)}
-          </select></label>
-          <label className="field"><span>默认采样器</span><select aria-label="默认采样器" value={configuration.defaultSampler} disabled={pending} onChange={(event) => patch({ defaultSampler: event.target.value })}>{configuration.allowedSamplers.map((value) => <option key={value}>{value}</option>)}</select></label>
-        </div>
-        <p className="field-hint novelai-model-hint">开启 NSFW 默认模型模式后，未指定模型的请求使用 {configuration.nsfwModel}；它不会自动放宽角色的 mature/explicit 标签许可。显式模型仍必须在允许列表中。</p>
+        </fieldset>
       </section>
       <div className="form-actions novelai-form-actions"><button type="submit" className="primary" disabled={pending}>保存生图设置</button></div>
     </form>

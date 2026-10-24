@@ -3,7 +3,7 @@ import { api, errorMessage } from "../../api/client";
 import type { TodoReminderDay, TodoReminderRole, TodoSettings as TodoSettingsData } from "../../api/types";
 import { Notice } from "../../ui/Status";
 
-export function TodoSettings() {
+export function TodoSettings({ showTitle = true }: { showTitle?: boolean }) {
   const [settings, setSettings] = useState<TodoSettingsData | null>(null);
   const [timezone, setTimezone] = useState("");
   const [reminderRoles, setReminderRoles] = useState<TodoReminderRole[]>([]);
@@ -82,7 +82,7 @@ export function TodoSettings() {
   const hasReminderRoleScheduled = reminderRoles.some((role) => role.enabled);
 
   return <section className="todo-settings">
-    <h2>待办与提醒</h2>
+    {showTitle && <h2>待办与提醒</h2>}
     {settings && <>
       <label className="field checkbox-field">
         <input type="checkbox" checked={settings.enabled} disabled={saving} onChange={(event) => void update({ enabled: event.target.checked })} />
