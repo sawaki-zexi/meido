@@ -293,6 +293,11 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .dialog-drawer { justify-content: flex-end; }
 .dialog-compact { align-items: center; justify-content: center; padding: 24px; }
 .dialog-compact .dialog-panel { width: min(360px, 100%); max-height: 100%; border-radius: 16px; animation: pop .18s ease-out; }
+.dialog-phone { align-items: center; justify-content: center; padding: 24px; background: rgb(50 28 47 / 36%); backdrop-filter: blur(5px); }
+.dialog-phone .dialog-panel { position: relative; width: min(430px, 100%); height: min(860px, calc(100dvh - 40px)); grid-template-rows: minmax(0, 1fr); padding: 9px; border: 1px solid rgb(255 255 255 / 42%); border-radius: 36px; background: linear-gradient(150deg, #65556a, #2d2538 72%); box-shadow: 0 26px 80px rgb(37 18 37 / 34%), inset 0 1px rgb(255 255 255 / 42%); animation: pop .22s ease-out; overflow: hidden; }
+.dialog-phone .dialog-panel::before { content: ""; position: absolute; z-index: 2; top: 4px; left: 50%; width: 78px; height: 5px; border-radius: 999px; background: rgb(20 14 27 / 88%); transform: translateX(-50%); pointer-events: none; }
+.dialog-phone .dialog-header { display: none; }
+.dialog-phone .dialog-body { height: 100%; overflow: hidden; border: 1px solid rgb(55 31 48 / 18%); border-radius: 28px; background: var(--surface-card); }
 .dialog-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; background: linear-gradient(145deg, rgb(255 244 249 / 95%), rgb(250 239 247 / 92%)); outline: none; box-shadow: 0 16px 48px rgb(86 48 68 / 14%); }
 .dialog-modal .dialog-panel { width: min(820px, 100%); height: min(600px, 100%); border-radius: 16px; animation: pop .18s ease-out; }
 .dialog-drawer .dialog-panel { width: min(440px, 100%); height: 100%; animation: slide .2s ease-out; }
@@ -567,6 +572,8 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
   .message .avatar { display: none; }
   .dialog-modal { padding: 0; }
   .dialog-modal .dialog-panel { width: 100%; height: 100%; border-radius: 0; }
+  .dialog-phone { padding: 12px; }
+  .dialog-phone .dialog-panel { width: min(430px, 100%); height: min(860px, calc(100dvh - 24px)); border-radius: 30px; }
   .settings-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
   .settings-nav { display: flex; flex-wrap: wrap; padding: 8px; }
   .settings-nav button { width: auto; }
@@ -590,6 +597,12 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
   .mail-connection-grid { grid-template-columns: minmax(0, 1fr); }
   .mail-action-row > button { max-width: 100%; }
   .role-editor { padding: 16px; }
+}
+
+@media (max-width: 420px) {
+  .dialog-phone { padding: 8px; }
+  .dialog-phone .dialog-panel { width: 100%; height: calc(100dvh - 16px); padding: 7px; border-radius: 28px; }
+  .dialog-phone .dialog-body { border-radius: 22px; }
 }
 
 

@@ -155,3 +155,20 @@
 .channel-source-view .channel-messages { min-height: 180px; }
 .channel-source-view .channel-messages > header { padding: 0 0 16px; }
 .channel-source-view .channel-group-settings { margin: 0 0 16px; }
+
+/* The channel browser uses a phone-shaped modal from the chat entry point. */
+.dialog-phone .channel-view { height: 100%; border-radius: 27px; background: var(--surface-card); overflow: hidden; }
+.dialog-phone .channel-view-header { min-height: 62px; padding: 9px 14px; }
+.dialog-phone .channel-view-header h1 { font-size: 16px; }
+.dialog-phone .channel-view-header p { font-size: 11px; }
+.dialog-phone .channel-view-actions { gap: 4px; }
+.dialog-phone .channel-view-actions > button:not(.icon-button) { padding: 6px 8px; font-size: 11px; }
+.dialog-phone .channel-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(118px, 26%) minmax(0, 1fr); overflow: hidden; }
+.dialog-phone .channel-thread-list { min-height: 0; padding: 12px 14px; border-right: 0; border-bottom: 1px solid var(--line); overflow: auto; }
+.dialog-phone .channel-thread-list h2 { margin-bottom: 8px; }
+.dialog-phone .channel-thread { padding: 7px 5px; }
+.dialog-phone .channel-messages { min-height: 0; }
+.dialog-phone .channel-messages > header { padding: 12px 14px; }
+.dialog-phone .channel-messages > ol { gap: 8px; padding: 14px; }
+.dialog-phone .channel-message { max-width: 90%; padding: 9px 10px; }
+.dialog-phone .channel-conversation-settings, .dialog-phone .channel-group-settings { max-height: 34%; padding: 10px 14px; }
