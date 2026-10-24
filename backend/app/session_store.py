@@ -756,6 +756,12 @@ class SessionStore:
                 from .browser_use.safety import sanitize_browser_text
 
                 safe_content, _ = sanitize_browser_text(safe_content)
+            elif message.tool_name == "mail.manage":
+                # Mail bodies and draft text are owner data. The active run
+                # still receives the real result in memory, but the ordinary
+                # role transcript must retain only a replay-safe marker so
+                # later context windows and long-term memory cannot ingest it.
+                safe_content = "邮件工具结果已处理；邮件正文仅在当前请求和邮件页可见。"
             metadata: dict[str, object] = {}
             if message.usage is not None:
                 metadata["usage"] = asdict(message.usage) if is_dataclass(message.usage) else message.usage
