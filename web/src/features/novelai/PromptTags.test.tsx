@@ -5,7 +5,7 @@ import { fakeBackend, role } from '../../test/fakeBackend';
 import { GenerationDrawer } from './GenerationDrawer';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
-const first = { id: 'a'.repeat(32), name: '雨景', keywords: ['下雨'], prompt: 'rain', negative_prompt: 'sunny', rating: 'general', enabled: true };
+const first = { id: 'a'.repeat(32), name: '雨景', category: 'atmosphere', keywords: ['下雨'], prompt: 'rain', negative_prompt: 'sunny', rating: 'general', enabled: true, reference_attachment_id: null, referenceAttachment: null };
 const second = { ...first, id: 'b'.repeat(32), name: '夜景', keywords: ['晚上'], prompt: 'night' };
 const routes = {
   'GET /api/services/novelai': () => ({ body: { enabled: false, revision: 1, allowedModels: [], allowedSamplers: [], dailyAttemptLimit: 20 } }),
@@ -18,6 +18,7 @@ it('manages a role library, paginates and previews the exact server expansion wi
   const { calls } = fakeBackend({ ...routes,
     'GET /api/roles/r1/novelai/prompt-tags\\?limit=50': () => ({ body: { tags, revision: 1, nextCursor: second.id } }),
     ['GET /api/roles/r1/novelai/prompt-tags\\?limit=50&cursor=' + second.id]: () => ({ body: { tags: [second], revision: 1, nextCursor: null } }),
+    'POST /api/roles/r1/attachments': () => ({ body: { id: 'c'.repeat(32), name: 'reference.png', mediaType: 'image/png', size: 4, kind: 'image' } }),
     'POST /api/roles/r1/novelai/prompt-tags': (request) => { const input = JSON.parse(String(request?.body)); tags = [...tags, { ...input, id: 'c'.repeat(32) }]; return { body: { tag: tags.at(-1), revision: 2 } }; },
     ['PUT /api/roles/r1/novelai/prompt-tags/' + first.id]: (request) => { tags = [{ ...JSON.parse(String(request?.body)), id: first.id }]; return { body: { tag: tags[0], revision: 3 } }; },
     ['DELETE /api/roles/r1/novelai/prompt-tags/' + first.id]: () => { tags = []; return { body: { revision: 4 } }; },
@@ -40,6 +41,9 @@ it('manages a role library, paginates and previews the exact server expansion wi
   await user.type(screen.getByLabelText('标签正向 tags'), 'beach');
   await user.selectOptions(screen.getByLabelText('标签 rating'), 'mature');
   await user.click(screen.getByRole('checkbox', { name: '启用此标签' }));
+  const reference = new File(['data'], 'reference.png', { type: 'image/png' });
+  await user.upload(screen.getByLabelText('上传参考图'), reference);
+  await waitFor(() => expect(screen.getByAltText('当前参考图')).toBeInTheDocument());
   await user.click(screen.getByRole('button', { name: '保存标签' }));
   expect(await screen.findByText('新标签')).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: '编辑标签 雨景' }));
@@ -49,9 +53,9 @@ it('manages a role library, paginates and previews the exact server expansion wi
   await user.click(screen.getByRole('button', { name: '删除标签 小雨' }));
   await waitFor(() => expect(screen.queryByText('小雨')).not.toBeInTheDocument());
   expect(calls.filter((call) => call.method === 'POST').map((call) => call.path)).toEqual([
-    '/api/roles/r1/novelai/prompt-tags/preview', '/api/roles/r1/novelai/prompt-tags']);
+    '/api/roles/r1/novelai/prompt-tags/preview', '/api/roles/r1/attachments', '/api/roles/r1/novelai/prompt-tags']);
   expect(calls.find((call) => call.path === '/api/roles/r1/novelai/prompt-tags' && call.method === 'POST')?.body)
-    .toEqual({ name: '新标签', keywords: ['海边'], prompt: 'beach', negative_prompt: '', rating: 'mature', enabled: false });
+    .toEqual({ name: '新标签', category: 'composition', keywords: ['海边'], prompt: 'beach', negative_prompt: '', rating: 'mature', enabled: false, reference_attachment_id: 'c'.repeat(32) });
 });
 
 it('rejects oversized keyword lists locally and ignores a late preview after A-B-A switching', async () => {

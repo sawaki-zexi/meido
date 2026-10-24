@@ -93,7 +93,7 @@ class DriftTurn:
             if (not app._authorized_in(db, origin) or 'drift' not in origin.allowed_modes or run['mode'] != 'pending'
                     or not (config.driftAuthoring.enabled or config.driftMeme.enabled) or role['human_busy'] or now - role['last_human_end'] < 600
                     or role['cleanup_pending'] or daily is None or daily[0] >= 4
-                    or role['last_drift_at'] is not None and now - role['last_drift_at'] < 10800):
+                    or role['last_drift_at'] is not None and now - role['last_drift_at'] < config.driftMinIntervalHours * 3600):
                 raise PermissionError('Drift admission, author scope, or original cooldown is unavailable')
             db.execute('''CREATE TABLE IF NOT EXISTS autonomy_drift_turns (
                 tick_id TEXT PRIMARY KEY,role_id TEXT NOT NULL,active_skill TEXT,bundle_hash TEXT,
@@ -145,7 +145,7 @@ class DriftTurn:
     def reserve_request(self, payload_bytes, max_tokens):
         with self.transaction() as db:
             row = db.execute('SELECT * FROM autonomy_drift_turns WHERE tick_id=?', (self.origin.tick_id,)).fetchone()
-            if (row['finish'] is not None or row['steps'] >= 20 or row['tokens'] + max_tokens > 8192
+            if (row['finish'] is not None or row['steps'] >= self.config.driftMaxSteps or row['tokens'] + max_tokens > 8192
                     or payload_bytes > 48 * 1024 or row['input_bytes'] + payload_bytes > 512 * 1024):
                 raise RuntimeError('Drift model budget exhausted')
             db.execute('UPDATE autonomy_drift_turns SET steps=steps+1,tokens=tokens+?,input_bytes=input_bytes+? WHERE tick_id=?',

@@ -85,7 +85,7 @@ it("requires explicit native-turn cost consent, displays blocked facts, and revo
   render(<CodingSettings />);
   await user.click(screen.getByText("原生核验", { selector: "summary" }));
   expect(await screen.findByRole("button", { name: "核验 专用 Codex" })).toBeDisabled();
-  expect(screen.getByText(/内部可能多次请求模型；最多运行 600 秒/)).toBeInTheDocument();
+  expect(screen.getByText(/核验最多运行 10 分钟，可能消耗模型额度/)).toBeInTheDocument();
   await user.click(screen.getByRole("checkbox", { name: /我批准所选 CLI 执行首次和继续两个任务回合/ }));
   await user.click(screen.getByRole("button", { name: "核验 专用 Codex" }));
   await screen.findByText("原生核验已启动；请刷新查看确切结果。");

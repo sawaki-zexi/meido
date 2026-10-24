@@ -1,4 +1,6 @@
 """Auxiliary protocol failures never invoke tools or repeat either paid request."""
+import time
+
 import pytest
 
 from novelai_scene_fixtures import scene_main
@@ -28,3 +30,21 @@ def test_auxiliary_failure_keeps_attempt_and_never_dispatches_generation(scene_m
         assert page['usage']['manualAttempts'] == 0
     finally:
         peer.aux_release.set()
+
+
+def test_disabled_txt2img_mode_blocks_scene_before_auxiliary_consumption(scene_main):
+    client, service, peer, _ = scene_main
+    public = service.application.settings.public()
+    disabled = service.application.settings.save({'allowTxt2Img': False}, expected_revision=public['revision'])
+    role = service.roles.get(service.role.id)
+    updated = client.put(f'/api/roles/{service.role.id}', json={'name': role.name,
+        'profile': role.profile.model_dump(), 'agentConfig': {'novelai': {
+            'sceneCgEnabled': True, 'scenePromptModelConfigurationId': role.agentConfig.novelai.scenePromptModelConfigurationId,
+            'consentRevision': disabled['revision']}}})
+    assert updated.status_code == 200, updated.text
+
+    response = client.post(f'/api/roles/{service.role.id}/messages', json={'content': 'Do not start a CG while txt2img is disabled.'})
+    assert 'assistant_completed' in response.text, response.text
+    time.sleep(.2)
+    assert not [request for request in peer.requests if request['model'] == 'fixture-scene']
+    assert client.get(f'/api/roles/{service.role.id}/generations').json()['generations'] == []

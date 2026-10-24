@@ -4,6 +4,16 @@ from datetime import datetime, timezone
 from novelai_fixtures import novelai_environment, novelai_main, novelai_service  # noqa: F401
 
 
+def test_chat_tool_schema_explains_host_defaults_for_expression_calls():
+    from backend.app.novelai_generation.tools import GenerateImageTool
+    schema = GenerateImageTool.definition.input_schema
+    assert schema['required'] == ['prompt']
+    assert {'prompt', 'negative_prompt', 'mode', 'samples', 'model', 'seed'} <= set(schema['properties'])
+    assert 'do not call it every turn' in GenerateImageTool.definition.description
+    assert 'default' not in schema['properties']['samples']
+    assert '宿主固定为一张' in schema['properties']['samples']['description']
+
+
 def test_frozen_tool_cannot_use_later_broader_generation_grant(novelai_service):
     from backend.app.agent_runtime.provider import CancellationToken
     from backend.app.agent_runtime.tools import ToolContext
@@ -40,3 +50,41 @@ def test_role_permission_off_on_does_not_revive_an_unused_frozen_tool(novelai_ma
     result = asyncio.run(tool.execute(service.request, ToolContext(role.id, key, 'aba-run', CancellationToken(), 'aba-call')))
     assert result.is_error
     assert not service.peer.requests
+
+
+def test_owner_tool_expands_role_tags_from_the_current_owner_message(novelai_service):
+    from datetime import datetime, timezone
+    from backend.app.agent_runtime.provider import CancellationToken
+    from backend.app.agent_runtime.tools import ToolContext
+    from backend.app.models import AgentRun, RoleUpdateInput
+
+    service = novelai_service
+    app, role = service.application, service.role
+    app.tags.save(role.id, {'name': 'Garden', 'keywords': ['garden'],
+        'prompt': 'flowers, sunlight', 'negative_prompt': 'night', 'rating': 'general', 'enabled': True})
+    service.roles.update(role.id, RoleUpdateInput(name=role.name, profile=role.profile,
+        agentConfig={'novelai': {'manualEnabled': True, 'promptTagsEnabled': True,
+            'consentRevision': app.settings.public()['revision']}}))
+    session_key = f'role:{role.id}'
+    service.sessions.create_run_with_messages(AgentRun(runId='tag-run', roleId=role.id,
+        sessionKey=session_key, status='running', startedAt=datetime.now(timezone.utc),
+        modelSnapshot={'humanInputSource': 'desktop_owner'}), 'Please draw the garden.')
+    tool = app.tool_for(role.id, is_owner=True)
+
+    result = asyncio.run(tool.execute(
+        # An optional compatibility intent cannot relabel this chat tool.
+        {'prompt': 'blue sky', 'negative_prompt': 'rain', 'intent': 'user_requested'},
+        ToolContext(role.id, session_key, 'tag-run', CancellationToken(), 'tag-call')))
+
+    assert not result.is_error
+    assert len(service.peer.requests) == 1
+    payload = service.peer.requests[0]['body']
+    assert payload['input'] == 'blue sky, flowers, sunlight'
+    assert payload['action'] == 'generate'
+    assert payload['model'] == 'nai-diffusion-4-5-curated'
+    assert payload['parameters']['width'] == 1024
+    assert payload['parameters']['height'] == 1024
+    assert payload['parameters']['negative_prompt'] == 'rain, night'
+    assert payload['parameters']['n_samples'] == 1
+    history = service.application.ledger.list(role.id)
+    assert history['generations'][0]['purpose'] == 'chat_expression'

@@ -3,7 +3,7 @@ import { api, errorMessage } from "../../api/client";
 import type { TodoReminderDay, TodoReminderRole, TodoSettings as TodoSettingsData } from "../../api/types";
 import { Notice } from "../../ui/Status";
 
-export function TodoSettings() {
+export function TodoSettings({ showTitle = true }: { showTitle?: boolean }) {
   const [settings, setSettings] = useState<TodoSettingsData | null>(null);
   const [timezone, setTimezone] = useState("");
   const [reminderRoles, setReminderRoles] = useState<TodoReminderRole[]>([]);
@@ -82,8 +82,10 @@ export function TodoSettings() {
   const hasReminderRoleScheduled = reminderRoles.some((role) => role.enabled);
 
   return <section className="todo-settings">
-    <h2>待办与提醒</h2>
+    {showTitle && <h2>待办与提醒</h2>}
     {settings && <>
+      <section className="settings-section">
+      <h3>常规</h3>
       <label className="field checkbox-field">
         <input type="checkbox" checked={settings.enabled} disabled={saving} onChange={(event) => void update({ enabled: event.target.checked })} />
         <span>启用待办插件</span>
@@ -96,10 +98,12 @@ export function TodoSettings() {
         <label htmlFor="todo-timezone">主人时区</label>
         <input id="todo-timezone" value={timezone} disabled={saving} placeholder="Asia/Shanghai" onChange={(event) => setTimezone(event.target.value)} onBlur={() => { if (timezone !== settings.timezone) void update({ timezone }); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }} />
       </div>
-      {settings.enabled && settings.remindersEnabled && <>
+      </section>
+      {settings.enabled && settings.remindersEnabled && <section className="settings-section">
+        <h3>提醒角色</h3>
         <fieldset className="todo-reminder-roles">
-          <legend>提醒角色</legend>
-          <p className="todo-muted">每天会从已启用的角色中随机选一位负责当天全部提醒；关闭立即生效，启用从次日生效。</p>
+          <legend className="settings-sr-only">提醒角色</legend>
+          <p className="todo-muted">每天随机选一位提醒；启用次日生效，关闭立即生效。</p>
           {reminderRoles.length ? <ul>{reminderRoles.map((role) => <li key={role.id}>
             <label className="field checkbox-field">
               <input type="checkbox" checked={role.enabled} disabled={saving} onChange={() => void toggleRole(role)} />
@@ -115,8 +119,8 @@ export function TodoSettings() {
           <input type="checkbox" checked={Boolean(today?.paused)} disabled={saving} onChange={(event) => void setPausedToday(event.target.checked)} />
           <span>暂停今天的提醒</span>
         </label>
-        {today?.paused && <p className="todo-muted">今天的提醒已暂停，明天自动恢复；暂停期间跳过的提醒不会补发。</p>}
-      </>}
+        {today?.paused && <p className="todo-muted">明天自动恢复，已跳过的提醒不补发。</p>}
+      </section>}
     </>}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
   </section>;

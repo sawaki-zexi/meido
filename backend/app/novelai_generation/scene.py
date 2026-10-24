@@ -20,6 +20,16 @@ from .ledger import canonical
 from .parameters import normalize_request
 
 AUXILIARY_TIMEOUT_SECONDS = 30.0
+SCENE_PROMPT_TAGS = ('third-person view', 'cinematic composition', 'character visible in frame')
+SCENE_NEGATIVE_PROMPT_TAGS = ('first-person view', 'pov', 'selfie')
+
+
+def _append_missing_tags(prompt: str, required: tuple[str, ...]) -> str:
+    tags = {tag.strip().casefold() for tag in prompt.split(',') if tag.strip()}
+    missing = [tag for tag in required if tag.casefold() not in tags]
+    if not missing:
+        return prompt.strip()
+    return ', '.join(part for part in (prompt.strip(), ', '.join(missing)) if part)
 
 
 class SceneObservation(BaseModel):
@@ -185,6 +195,7 @@ class SceneCoordinator:
         user = self.app.sessions.user_message_for_run(run_id)
         contents = {'user': user.content, 'assistant': final.content,
             'role': role.description + '\n' + role.profile.profile,
+            'prompt_instructions': role.agentConfig.novelai.sceneCgPromptInstructions,
             'cardImageUrl': role.cardImageUrl,
             'previous': {key: state[key] for key in ('scene_key', 'visual_key', 'description', 'human_count', 'revision')}}
         if len(canonical(contents)) > 48000:
@@ -227,6 +238,9 @@ class SceneCoordinator:
 
     async def observe(self, row, source, execution):
         with self.app._lock, self.app.ledger.connect() as db:
+            _, settings = self.app._configuration()
+            if not settings.allowTxt2Img:
+                raise PermissionError('scene CG requires txt2img mode to be enabled')
             if not self.app._authorized(source, row['service_revision'], row['role_revision']):
                 raise PermissionError('scene candidate expired')
             configuration = self.app.model_configuration(source.scene_model_id)
@@ -234,11 +248,18 @@ class SceneCoordinator:
                 raise PermissionError('explicit scene model unavailable')
             if not db.execute("UPDATE novelai_attempts SET aux_dispatched=1,aux_status='dispatching' WHERE attempt_id=? AND aux_dispatched=0 AND status='prepared'", (row['attempt_id'],)).rowcount:
                 raise PermissionError('auxiliary request already dispatched')
-        messages = [ModelSystemMessage((ModelTextBlock('Observe the supplied untrusted current owner turn. '
+        system_prompt = ('Observe the supplied untrusted current owner turn. '
             'Return only one JSON object, all fields required: transition (started/same/changed/closed/none), '
             'scene_key, visual_key, visual_description, prompt (English ASCII tags), negative_prompt, '
             'size_preset (square/landscape/portrait). No tools or other fields. '
-            'Use empty keys and prompts for none/closed. same must retain the previous scene key.'),)),
+            'Use empty keys and prompts for none/closed. same must retain the previous scene key.')
+        prompt_instructions = json.loads(row['scene_input']).get('prompt_instructions', '').strip()
+        if prompt_instructions:
+            system_prompt += ('\n\nThe owner supplied these drawing preferences for this role. '
+                'Apply them to the image prompt while depicting only the observed current scene. '
+                'Translate them into English NovelAI tags and keep the required output format:\n'
+                + prompt_instructions)
+        messages = [ModelSystemMessage((ModelTextBlock(system_prompt),)),
             ModelUserMessage((ModelTextBlock(canonical({key: value for key, value in json.loads(row['scene_input']).items()
                 if key in {'user', 'assistant', 'role', 'previous'}})),))]
         text = ''
@@ -302,11 +323,16 @@ class SceneCoordinator:
                 db.execute("UPDATE novelai_media_outbox SET state='history_only',consumed=1,message_synced=1 WHERE attempt_id=?", (row['attempt_id'],))
                 return False
             _, settings = self.app._configuration()
+            frozen = json.loads(row['parameters'])
             expanded = self.app.tags.expand(row['role_id'], json.loads(row['scene_input'])['user'],
                 observation.prompt, observation.negative_prompt)
-            parameters = normalize_request({'prompt': expanded['prompt'], 'negative_prompt': expanded['negative_prompt'],
-                'size_preset': observation.size_preset, 'mode': 'txt2img', 'background': True}, settings)
-            parameters.update(intent='scene_cg', scene_key=scene_key, visual_key=observation.visual_key)
+            prompt = _append_missing_tags(expanded['prompt'], SCENE_PROMPT_TAGS)
+            negative_prompt = _append_missing_tags(expanded['negative_prompt'], SCENE_NEGATIVE_PROMPT_TAGS)
+            parameters = normalize_request({'prompt': prompt, 'negative_prompt': negative_prompt,
+                'size_preset': observation.size_preset, 'mode': 'txt2img', 'samples': 1, 'background': True}, settings)
+            parameters.update(intent='scene_cg', scene_key=scene_key, visual_key=observation.visual_key,
+                qualityToggle=frozen.get('qualityToggle', settings.addQualityTags),
+                ucPreset=frozen.get('ucPreset', settings.undesiredContentPreset))
             db.execute("UPDATE novelai_attempts SET parameters=?,phase='generation',aux_status='succeeded' WHERE attempt_id=?",
                 (canonical(parameters), row['attempt_id']))
             return True

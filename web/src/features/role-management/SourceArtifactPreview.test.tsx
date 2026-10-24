@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { fakeBackend } from "../../test/fakeBackend";
-import { AutonomySettings } from "./AutonomySettings";
+import { AutonomyManagement as AutonomySettings } from "./AutonomyManagement";
 import { SourceArtifactPreview } from "./SourceArtifactPreview";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -27,6 +27,7 @@ it("只读预览真实hash，明确导入disabled草稿和验证路径不会授�
   });
   const user = userEvent.setup();
   render(<AutonomySettings roleId="r1" disabled={false} />);
+  await userEvent.click(await screen.findByText('来源与验证', { selector: 'summary > span' }));
   await screen.findByRole("textbox", { name: "来源许可草稿" });
   await user.type(screen.getByRole("textbox", { name: "产物相对清单路径" }), "mcp/example/manifest.json");
   await user.type(screen.getByRole("textbox", { name: "已保存的 MCP 服务 ID" }), "example");
@@ -89,6 +90,7 @@ it("纯context来源可验证读取契约，但不能导入ACK重试证明", asy
   });
   const user = userEvent.setup();
   render(<AutonomySettings roleId="r1" disabled={false} />);
+  await userEvent.click(await screen.findByText('来源与验证', { selector: 'summary > span' }));
   await user.selectOptions(await screen.findByRole("combobox", { name: "待验证来源" }), "background");
   await user.type(screen.getByRole("textbox", { name: "来源验证清单路径" }), "D:/context/manifest.json");
   await user.type(screen.getByRole("textbox", { name: "来源验证清单 SHA256" }), "a".repeat(64));

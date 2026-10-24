@@ -79,7 +79,7 @@ describe("MCP 服务设置", () => {
     await user.type(screen.getByLabelText("超时（秒）"), "45");
     await user.clear(screen.getByLabelText("输出字符上限"));
     await user.type(screen.getByLabelText("输出字符上限"), "4096");
-    expect(screen.getByText("保存修改会断开当前连接并清除连接意愿；角色需重新连接。" )).toBeInTheDocument();
+    expect(screen.getByText("修改后断开现有连接，需重新连接。" )).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "保存 MCP 配置" }));
     expect(await screen.findByRole("region", { name: "服务 新笔记" })).toHaveTextContent("授权角色：澪");
     expect(calls.find((call) => call.method === "PUT")?.body).toEqual({
@@ -108,7 +108,7 @@ describe("MCP 服务设置", () => {
     await user.click(screen.getByRole("checkbox", { name: /同时为授权角色开启 tool_search/ }));
     expect(screen.getByText("诗织 尚未开启 tool_search、mcp_add、mcp_list、mcp_remove；需在角色设置中开启后才能使用对应的发现或连接管理操作。" )).toBeInTheDocument();
     expect(screen.queryByText(/澪 尚未开启/)).not.toBeInTheDocument();
-    expect(screen.getByText("取消勾选仅跳过本次工具开启，不会撤销角色已有的工具权限。" )).toBeInTheDocument();
+    expect(screen.getByText("不会撤销已有工具权限。" )).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "保存 MCP 配置" }));
     await screen.findByText("MCP 配置已保存；连接已撤销，请在对话中重新连接。");
     expect(calls.find((call) => call.method === "PUT")?.body).toMatchObject({ roleIds: ["r1", "r2"], enableDiscovery: false });
