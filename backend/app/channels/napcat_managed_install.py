@@ -85,18 +85,14 @@ class NapCatInstaller:
                     lease = ProfileLease(self.root / "installer")
                 except RuntimeError:
                     raise RuntimeError("托管 QQ 安装正在由另一运行实例准备，请稍后重试") from None
-                if not self._package_ready():
-                    work = asyncio.create_task(asyncio.to_thread(self._prepare_sync))
-                    try:
-                        await asyncio.shield(work)
-                    except asyncio.CancelledError:
-                        # Keep the installer lease until its worker has stopped writing.
-                        await work
-                        raise
-                self._preparation = {"stage": "verifying", "percent": 99}
-                qq_runtime_dir = await asyncio.to_thread(
-                    resolve_official_qq, self.install_dir
-                )
+                work = asyncio.create_task(asyncio.to_thread(self._prepare_runtime_sync))
+                try:
+                    qq_runtime_dir = await asyncio.shield(work)
+                except asyncio.CancelledError:
+                    # Runtime caching writes too; retain the lease until all
+                    # preparation has stopped, including during cancellation.
+                    await work
+                    raise
             except Exception as exc:
                 self._validated_qq_dir = None
                 self._preparation = {"stage": "error", "percent": 0, "error": str(exc)}
@@ -107,6 +103,12 @@ class NapCatInstaller:
             self._validated_qq_dir = qq_runtime_dir
             self._preparation = {"stage": "ready", "percent": 100}
             return qq_runtime_dir
+
+    def _prepare_runtime_sync(self) -> Path:
+        if not self._package_ready():
+            self._prepare_sync()
+        self._preparation = {"stage": "verifying", "percent": 99}
+        return resolve_official_qq(self.install_dir)
 
     def _prepare_sync(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)

@@ -15,7 +15,9 @@ import re
 import secrets
 import shutil
 import socket
+import stat
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,14 @@ from ..browser_use.profile import ProfileLease
 from .napcat_managed_install import NapCatInstaller
 
 _PNG_END = b"\x00\x00\x00\x00IEND\xaeB`\x82"
+
+
+def _remove_readonly(function: Callable[[str], object], path: str, error: BaseException) -> None:
+    # QQ marks its Windows known folders read-only, including empty Documents.
+    if os.name != "nt" or not isinstance(error, PermissionError):
+        raise error
+    os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    function(path)
 
 
 def managed_available() -> bool:
@@ -383,7 +393,7 @@ class ManagedNapCat:
             self._metadata(ref, role_id)
             lease = ProfileLease(self._directory(ref))
             lease.close()
-            await asyncio.to_thread(shutil.rmtree, self._directory(ref))
+            await asyncio.to_thread(shutil.rmtree, self._directory(ref), onexc=_remove_readonly)
             self._logins.pop(ref, None)
 
     async def logout(self, ref: str, *, role_id: str) -> None:
@@ -394,7 +404,7 @@ class ManagedNapCat:
             try:
                 profile = self._path(ref, "profile")
                 if profile.exists():
-                    await asyncio.to_thread(shutil.rmtree, profile)
+                    await asyncio.to_thread(shutil.rmtree, profile, onexc=_remove_readonly)
             finally:
                 lease.close()
 
@@ -452,6 +462,6 @@ def _public_error(error: Exception) -> str:
             "QQ 登录身份与已绑定账号不匹配", "托管 QQ 进程已退出，请重新连接")
     if message in safe:
         return message
-    if "未找到官方 QQ" in message or "托管 NapCat 需要 QQ" in message:
-        return "托管 QQ 需要已安装官方 QQ 9.9.31-49738，请检查 QQ 版本后重试"
+    if "未找到官方 QQ" in message or message.startswith("QQ 运行组件"):
+        return "未检测到兼容的 QQ 运行组件，请安装官方 QQ 9.9.31 或 9.9.36 后重试，或手动连接 NapCat"
     return "托管 QQ 准备或连接失败，请检查网络、本机 QQ 安装和端口后重试"

@@ -231,7 +231,7 @@ describe("角色账号", () => {
   });
 
   it("QQ 准备失败可重新准备，并可取消本次登录", async () => {
-    const session = { ref: "temp", available: true, preparation: { stage: "error", percent: 0, error: "组件下载失败" }, login: { phase: "stopped" } };
+    const session = { ref: "temp", available: true, preparation: { stage: "error", percent: 0, error: "组件下载失败" }, login: { phase: "starting", qrcode: "data:image/png;base64,stale" } };
     let attempts = 0;
     const { calls } = fakeBackend({
       "GET /api/channels/settings": () => ({ body: settings() }),
@@ -245,6 +245,8 @@ describe("角色账号", () => {
     await user.click(await screen.findByRole("button", { name: "QQ 未连接" }));
     await user.click(screen.getByRole("button", { name: "准备并扫码登录" }));
     expect(await screen.findByText("组件下载失败")).toBeInTheDocument();
+    expect(screen.queryByText("正在启动 QQ，等待登录二维码…")).not.toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: "QQ 登录二维码" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "重试登录" }));
     expect(await screen.findByRole("img", { name: "QQ 登录二维码" })).toHaveAttribute("src", "data:image/png;base64,retry");
     await user.click(screen.getByRole("button", { name: "取消登录" }));

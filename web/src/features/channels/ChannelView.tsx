@@ -614,7 +614,13 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
       <RoleAccountsPanel roleId={role.id} presentation="page" onBack={() => setPhoneSettingsOpen(false)} onOpenSettings={onOpenSettings} />
     </div>}
     {showPhoneSetup ? <div className="channel-phone-setup" aria-label="渠道设置" hidden={phoneSettingsOpen}>
-      {onAccounts && <IconButton icon="settings" label="设置渠道" className="channel-phone-setup-button" onClick={openAccounts} />}
+      <div className="channel-phone-welcome">
+        <span className="channel-phone-welcome-icon"><Icon name="chat" size={32} /></span>
+        <h2>还没有多端会话</h2>
+        <p>从右上角添加渠道账号，<br />在熟悉的平台和{role.name}开始聊天。</p>
+        <div className="channel-phone-platforms" aria-label="支持的平台"><span>QQ</span><span>Telegram</span><span>官方 QQBot</span><span>飞书</span></div>
+        <small>连接后的聊天记录会在这里汇集</small>
+      </div>
     </div> : <div className="channel-workspace" hidden={phoneSettingsOpen}>
       {!sourceOnly && <aside className="channel-thread-list" aria-label="渠道会话列表">
         <h2>会话</h2>

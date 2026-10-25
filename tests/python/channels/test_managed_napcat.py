@@ -5,6 +5,8 @@ import base64
 import hashlib
 import io
 import json
+import os
+import stat
 from pathlib import Path
 import zipfile
 
@@ -50,6 +52,26 @@ def test_login_reference_survives_restart_and_is_bound_to_its_role(tmp_path):
         await first.close()
         await restored.close()
 
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(os.name != "nt", reason="QQ creates Windows read-only profile folders")
+def test_cancel_removes_readonly_qq_profile_and_allows_another_login(tmp_path):
+    async def scenario():
+        manager = ManagedNapCat(tmp_path)
+        ref = manager.begin("role-a")
+        documents = tmp_path / "managed-napcat/accounts" / ref / "profile/Documents"
+        documents.mkdir(parents=True)
+        documents.chmod(stat.S_IREAD)
+        try:
+            await manager.delete(ref, role_id="role-a")
+            assert manager.refs_for_role("role-a") == ()
+            replacement = manager.begin("role-a")
+            await manager.delete(replacement, role_id="role-a")
+        finally:
+            if documents.exists():
+                documents.chmod(stat.S_IWRITE)
+            await manager.close()
     asyncio.run(scenario())
 
 

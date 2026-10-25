@@ -179,8 +179,13 @@
 .dialog-phone .channel-message.assistant { border-radius: 17px 17px 6px 17px; }
 .dialog-phone .channel-conversation-settings, .dialog-phone .channel-group-settings { max-height: 34%; padding: 10px 14px; }
 .dialog-phone .channel-phone-setup { display: grid; flex: 1; min-height: 0; place-items: center; background: radial-gradient(circle at 50% 38%, #fff5f9, transparent 42%), #fffafe; }
-.dialog-phone .channel-phone-setup-button { width: 68px; height: 68px; border: 1px solid #f1cfdf; border-radius: 50%; background: #fff1f7; color: #bd6a90; box-shadow: 0 12px 28px rgb(191 93 137 / 18%), inset 0 1px #fff; }
-.dialog-phone .channel-phone-setup-button:hover:not(:disabled) { background: #ffe7f1; color: #a9537b; }
+.channel-phone-welcome { display: flex; align-items: center; flex-direction: column; max-width: 100%; padding: 28px 24px; text-align: center; }
+.channel-phone-welcome-icon { display: grid; place-items: center; width: 80px; height: 80px; margin-bottom: 24px; border: 1px solid #f1dce6; border-radius: 26px; background: linear-gradient(145deg, #fff, #fceef5); color: #bb7999; box-shadow: 0 12px 32px rgb(153 99 128 / 8%); }
+.channel-phone-welcome h2 { margin: 0 0 12px; color: var(--ink); font-size: 19px; font-weight: 600; }
+.channel-phone-welcome p { margin: 0; color: var(--ink-soft); font-size: 13px; line-height: 1.9; overflow-wrap: anywhere; }
+.channel-phone-platforms { display: flex; justify-content: center; flex-wrap: wrap; gap: 7px; margin: 24px 0 16px; }
+.channel-phone-platforms span { padding: 5px 9px; border: 1px solid #eee1e8; border-radius: 20px; background: rgb(255 255 255 / 70%); color: #9a7f90; font-size: 11px; }
+.channel-phone-welcome small { color: var(--ink-faint); font-size: 11px; }
 .dialog-phone .channel-phone-settings-app { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; background: #faf7f9; }
 .dialog-phone .channel-phone-settings-header { display: flex; flex: none; align-items: center; gap: 8px; min-height: 58px; padding: 8px 12px; border-bottom: 1px solid #f2dce5; background: #fffafd; }
 .dialog-phone .channel-phone-settings-header h2 { margin: 0; font-size: 16px; }
