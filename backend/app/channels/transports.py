@@ -124,6 +124,9 @@ class NapCatWebSocketTransport:
         self._fail_pending(ChannelTransportError("NapCat WebSocket 已断开"))
 
     async def __call__(self, action: str, params: Mapping[str, Any]) -> Mapping[str, Any]:
+        return await self.send_authorized(action, params)
+
+    async def send_authorized(self, action: str, params: Mapping[str, Any], *, authorize=None) -> Mapping[str, Any]:
         ws = self._ws
         if not self.connected or ws is None:
             raise ChannelTransportError("NapCat WebSocket 尚未连接")
@@ -133,6 +136,11 @@ class NapCatWebSocketTransport:
         request = {"action": action, "params": dict(params), "echo": echo}
         try:
             async with self._send_lock:
+                # The socket gate can yield after adapter preparation. Once
+                # ws.send begins, preserve the actual platform receipt instead.
+                if authorize is not None and not authorize():
+                    from .base import UnsupportedTargetError
+                    raise UnsupportedTargetError("原始回复已取消或来源授权已失效")
                 await ws.send(json.dumps(request, ensure_ascii=False))
             result = await asyncio.wait_for(future, timeout=self.request_timeout)
             if action == "get_status" and self._ws is ws and self.connected and type(result.get("online")) is bool:

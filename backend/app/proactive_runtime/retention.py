@@ -293,7 +293,7 @@ def _resolved(db,tick_id):
             "SELECT 1 FROM autonomy_drift_write_journal WHERE operation_id=? AND status='pending'", (tick_id,)).fetchone():
         return False
     if 'autonomy_meme_operations' in tables and db.execute(
-            "SELECT 1 FROM autonomy_meme_operations WHERE run_id=? AND status NOT IN ('recorded','not_published')", (tick_id,)).fetchone():
+            "SELECT 1 FROM autonomy_meme_operations WHERE run_id=? AND status NOT IN ('recorded','not_published','reconciled')", (tick_id,)).fetchone():
         return False
     if 'autonomy_drift_progress' in tables and db.execute(
             'SELECT 1 FROM autonomy_drift_progress WHERE last_tick_id=? AND projection_pending=1', (tick_id,)).fetchone():

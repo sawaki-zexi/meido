@@ -185,3 +185,27 @@ def test_host_rejects_unfrozen_or_out_of_scope_media_before_platform_dispatch(tm
         assert platform[0]['calls'] == [] and platform[0]['sent'] == []
         assert channels.list_deliveries('role') == []
         asyncio.run(asyncio.wait_for(host.pause_and_drain(target.account_id), 1))
+
+
+@pytest.mark.parametrize('invalid', ['untrusted-kind', 'wrong-thread', 'wrong-target', 'wrong-role', 'revoked'])
+def test_chat_meme_frozen_reply_preserves_original_source_boundaries(tmp_path, platform, invalid):
+    with owned_media(tmp_path, platform) as (host, channels, target, item):
+        thread = channels.ensure_channel_thread('role', 'qq', target.account_id, target.chat_id, 'private')
+        options = {'actor': 'reply', 'source_kind': 'chat_meme', 'source_thread_id': thread.thread_id,
+            'attachment_ids': (item['id'],), 'frozen_attachment_bytes': {item['id']: ORIGINAL},
+            'authorize_source': lambda: True}
+        if invalid == 'untrusted-kind':
+            options['source_kind'] = 'reply'
+        elif invalid == 'wrong-thread':
+            options['source_thread_id'] = 'other-thread'
+        elif invalid == 'wrong-target':
+            other = channels.ensure_channel_thread('role', 'qq', target.account_id, '202', 'private')
+            options['source_thread_id'] = other.thread_id
+        elif invalid == 'wrong-role':
+            host.attachment_resolver = lambda _role, _identifier: None
+        elif invalid == 'revoked':
+            options['authorize_source'] = lambda: False
+        with pytest.raises(UnsupportedTargetError):
+            asyncio.run(host.account_send('role', target.account_id, target.id, '', **options))
+        assert platform[0]['sent'] == []
+        assert channels.list_deliveries('role') == []

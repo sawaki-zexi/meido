@@ -105,6 +105,8 @@ from .task_runtime.completion import TaskCompletionWorker
 from .agent_runtime.discovery import ToolSearchTool
 from .agent_runtime.types import UserMessage
 from .channels.attachment_tool import ReadChannelAttachmentTool
+from .channels.meme_tools import ChatMemeTools, MEME_TOOL_PERMISSIONS
+from .channels.meme_library import ChatMemeLibrary
 from .channels.source_authority import FrozenChannelSource, capture_channel_source
 from .channels.group_access import GroupToolAccess
 from .channels.tools import ChannelDirectoryAccess
@@ -2891,6 +2893,8 @@ async def _handle_channel_event_locked(event) -> None:
         "replyToContent": str(event.metadata.get("replyToContent") or ""),
         "replyToSenderName": str(event.metadata.get("replyToSenderName") or ""),
         "quotedAttachments": saved_quote,
+        "quotedGroupVerified": event.metadata.get("quotedGroupVerified") is True,
+        "imageSourceCount": sum(item.kind == "image" for item in (*event.attachments, *quoted_attachments)),
         "attachments": attachments,
         "listening": event.chat_type is ChatType.GROUP and not event.triggered,
         "senderIsOwner": owner,
@@ -4467,6 +4471,8 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
             "lookup_group_member",
             "read_attachment",
         })
+        # Narrow QQ adapters derive authority from existing ordinary tools.
+        enabled.update(name for name, required in MEME_TOOL_PERMISSIONS.items() if required <= enabled)
     return enabled
 
 
@@ -4501,6 +4507,7 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     if not include_channel:
         enabled_tools.difference_update({
             "account_list", "account_targets", "account_send", "set_group_listening", "read_attachment",
+            *MEME_TOOL_PERMISSIONS,
         })
         if not group_repository.has_group_data(role.id):
             enabled_tools.difference_update({"lookup_group_context", "update_group_context"})
@@ -5699,6 +5706,35 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
                 thread.role_id, thread.session_key,
                 [item for key in ("attachments", "quotedAttachments") for item in metadata.get(key, []) if isinstance(item, dict)],
             ))
+        if owner and thread.channel == "qq" and thread.chat_type == "group" and metadata.get("triggered"):
+            meme_source = capture_channel_source(multichannel_store, session_store,
+                role_id=role.id, session_key=thread.session_key, run_id=run_id, owner_context=True)
+            meme_adapter = channel_host.adapter(thread.account_id)
+            meme_permissions = _runtime_capability_policy(role, include_channel=True).enabled_tools
+
+            def meme_authorized():
+                current_run = session_store.get_run(run_id)
+                return bool(store.get(role.id) is not None and role.id not in _channel_roles_deleting
+                    and current_run is not None and current_run.status in {"created", "running"}
+                    and meme_source.authorization_denial(multichannel_store) is None
+                    and channel_host.adapter(thread.account_id) is meme_adapter)
+
+            def meme_permitted(name):
+                current_role = store.get(role.id)
+                return bool(name in meme_permissions and current_role is not None
+                    and name in _runtime_capability_policy(current_role, include_channel=True).enabled_tools)
+
+            meme_tools = ChatMemeTools(ChatMemeLibrary(_proactive_application().memes, store.workspace_path),
+                channel_host, role_id=role.id, session_key=thread.session_key, run_id=run_id,
+                account_id=thread.account_id, thread_id=thread.thread_id,
+                target_id=target_from_chat(account_id=thread.account_id, chat_id=thread.chat_id,
+                    kind=TargetKind.GROUP, display_name=thread.title).id,
+                attachments=[item for key in ("attachments", "quotedAttachments")
+                    if key == "attachments" or metadata.get("quotedGroupVerified") is True
+                    for item in metadata.get(key, []) if isinstance(item, dict)],
+                image_source_count=metadata.get("imageSourceCount"),
+                authorized=meme_authorized, permitted=meme_permitted)
+            available = (*available, *meme_tools.tools())
         runtime_tools = _runtime_tools(role, candidates=available)
         capabilities = await _runtime_capabilities(
             role,

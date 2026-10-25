@@ -445,7 +445,7 @@ class ChannelHost:
         ``actor='external'`` can only contact the paired owner through the
         originating account. Guest turns cannot choose third-party targets.
         Frozen bytes require the original role-owned IDs and a continuing push
-        authorization; they never replace attachment ownership or metadata.
+        or current-source reply authorization; they never replace attachment ownership or metadata.
         """
 
         frozen_payloads: dict[str, bytes] | None = None
@@ -453,7 +453,8 @@ class ChannelHost:
             if not isinstance(frozen_attachment_bytes, Mapping) or not 1 <= len(frozen_attachment_bytes) <= 4:
                 raise UnsupportedTargetError("冻结附件必须引用原始附件 ID")
             frozen_payloads = dict(frozen_attachment_bytes)
-            if (actor != "push" or authorize_source is None or attachments
+            if (not (actor == "push" or actor == "reply" and source_kind == "chat_meme")
+                    or not callable(authorize_source) or attachments
                     or not 1 <= len(attachment_ids) <= 4
                     or len(set(attachment_ids)) != len(attachment_ids)
                     or set(frozen_payloads) != set(attachment_ids)
@@ -595,6 +596,9 @@ class ChannelHost:
                     reply_to_message_id=reply_to_message_id,
                     attachments=attachments,
                     metadata={"deliveryAttemptId": attempt_id, "mentionIds": list(mention_ids)},
+                    # Only the ordinary current-source sticker adapter uses this
+                    # last-safe-point guard; proactive frozen leases are unchanged.
+                    authorize_dispatch=authorize_source if actor == "reply" and source_kind == "chat_meme" else None,
                 )
                 stream_start = getattr(adapter, "stream_start", None)
                 stream_update = getattr(adapter, "stream_update", None)

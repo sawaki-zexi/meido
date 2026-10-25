@@ -248,6 +248,8 @@ class NapCatAdapter(ChannelAdapter):
             "replyToContent": "".join(text),
             "replyToSenderName": str(sender.get("card") or sender.get("nickname") or ""),
             "quotedAttachments": tuple(attachments),
+            "quotedGroupVerified": (event.chat_type is ChatType.GROUP and quoted_group == event.chat_id
+                and quoted.get("message_type") in (None, "group")),
         }, reply_to_sender_id=str(sender.get("user_id") or quoted.get("user_id") or event.reply_to_sender_id or "") or None)
 
     async def send(self, message: OutboundMessage) -> DeliveryResult:
@@ -291,24 +293,31 @@ class NapCatAdapter(ChannelAdapter):
                     "content": [{"type": "text", "data": {"text": text}}] + (images if index == len(paragraphs) - 1 else []),
                 }} for index, text in enumerate(paragraphs)]
                 if mentions:
-                    await self._send_receipt(operation, {**params, "message": mentions})
+                    await self._send_receipt(operation, {**params, "message": mentions}, authorize=message.authorize_dispatch)
                     visible_sends += 1
                 forward_operation = "send_group_forward_msg" if message.target.kind is TargetKind.GROUP else "send_private_forward_msg"
-                result, message_id = await self._send_receipt(forward_operation, {**params, "messages": nodes})
+                result, message_id = await self._send_receipt(forward_operation, {**params, "messages": nodes}, authorize=message.authorize_dispatch)
             else:
                 segments = [*mentions, *([{"type": "text", "data": {"text": message.content}}] if message.content else []), *images]
                 body = segments if message.target.kind is TargetKind.GROUP or images else message.content
-                result, message_id = await self._send_receipt(operation, {**params, "message": body})
+                result, message_id = await self._send_receipt(operation, {**params, "message": body}, authorize=message.authorize_dispatch)
             return DeliveryResult(DeliveryStatus.SENT, message.target, message_id, raw=dict(result))
         except Exception as error:
             status = DeliveryStatus.UNCERTAIN if visible_sends else delivery_status_for_error(error)
             return DeliveryResult(status, message.target, error=type(error).__name__)
 
-    async def _send_receipt(self, operation: str, params: Mapping[str, Any]) -> tuple[Mapping[str, Any], str]:
+    async def _send_receipt(self, operation: str, params: Mapping[str, Any], *, authorize=None) -> tuple[Mapping[str, Any], str]:
         from .base import PartialDeliveryError
 
         assert self._transport is not None
-        result = await self._transport(operation, params)
+        # Preparation can yield after the host check. Recheck before each
+        # platform request, never after an actual receipt has arrived.
+        if authorize is not None and not authorize():
+            raise UnsupportedTargetError("原始回复已取消或来源授权已失效")
+        send_authorized = getattr(self._transport, "send_authorized", None)
+        result = (await send_authorized(operation, params, authorize=authorize)
+                  if authorize is not None and callable(send_authorized)
+                  else await self._transport(operation, params))
         message_id = str(result.get("message_id") or "").strip() if isinstance(result, Mapping) else ""
         if not re.fullmatch(r"-?[1-9][0-9]*", message_id):
             raise PartialDeliveryError("NapCat 平台已接受请求但未返回有效消息回执")
