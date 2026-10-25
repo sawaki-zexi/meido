@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { TodoItem, TodoReminder } from "../../api/types";
 import { Dialog } from "../../ui/Dialog";
-import { Icon, IconButton } from "../../ui/Icon";
+import { Icon } from "../../ui/Icon";
 import { Notice, Placeholder } from "../../ui/Status";
 import { dayLabel, dateTimeLabel, filters, groupTodos, isActive, matchesFilter, statusLabels, todoTiming, zonedParts, type TodoFilter } from "./presentation";
 import { useTodos, type TodoInput } from "./useTodos";
@@ -75,7 +75,7 @@ export function TodoDrawer({ onClose, onOpenSource }: Props) {
     if (todo.sourceAvailable && todo.sourceRoleId && todo.sourceSessionKey && todo.sourceMessageId) onOpenSource(todo.sourceRoleId, todo.sourceSessionKey, todo.sourceMessageId);
   };
 
-  return <Dialog title="待办" variant="drawer" modalFocus onClose={onClose}>
+  return <Dialog title="待办" variant="page" modalFocus onClose={onClose}>
     <div className="todo-workspace">
       {data.error && <Notice onDismiss={data.dismissError}>{data.error}</Notice>}
       {editing ? <form className="todo-editor" onSubmit={event => void save(event)}>
@@ -101,7 +101,8 @@ export function TodoDrawer({ onClose, onOpenSource }: Props) {
             if (await restore(editing)) { setFilter("active"); setQuery(""); setTab("list"); closeEditor(); }
           }}>{data.busy ? "恢复中…" : "恢复待办"}</button> : <button type="submit" className="primary" disabled={data.busy || !form.title.trim()}>{data.busy ? "保存中…" : "保存"}</button>}
         </div>
-      </form> : <>
+      </form> : <div className="todo-layout">
+        <aside className="todo-navigation" aria-label="待办导航">
         <div className="todo-overview">
           <h3 ref={headingRef} tabIndex={-1}>{new Intl.DateTimeFormat("zh-CN", { timeZone: timezone, month: "long", day: "numeric", weekday: "long" }).format(new Date())}</h3>
           <p>{data.loaded ? `${activeCount} 件未完成` : "正在读取…"}</p>
@@ -116,11 +117,14 @@ export function TodoDrawer({ onClose, onOpenSource }: Props) {
           <button type="button" role="tab" id="todo-list-tab" aria-controls="todo-list-panel" aria-selected={tab === "list"} tabIndex={tab === "list" ? 0 : -1} onClick={() => selectTab("list")}>待办 <span>{activeCount}</span></button>
           <button type="button" role="tab" id="todo-reminders-tab" aria-controls="todo-reminders-panel" aria-selected={tab === "reminders"} tabIndex={tab === "reminders" ? 0 : -1} onClick={() => selectTab("reminders")}>提醒{unread + data.diagnostics.length > 0 && <span>{unread + data.diagnostics.length}</span>}</button>
           </div>
-          <IconButton icon="plus" label="新建待办" disabled={data.busy || !data.loaded} onClick={() => startEdit("new")} />
+          <button type="button" className="todo-create" disabled={data.busy || !data.loaded} onClick={() => startEdit("new")}><Icon name="plus" size={16} />新建待办</button>
         </div>
+        {tab === "list" && data.loaded && <div className="todo-filter-pills" role="group" aria-label="待办状态">{filters.map(item => <button type="button" key={item.id} aria-pressed={filter === item.id} onClick={() => setFilter(item.id)}>{item.label}<span>{data.todos.filter(todo => matchesFilter(todo, item.id)).length}</span></button>)}</div>}
+        </aside>
+        <div className="todo-content">
         {data.loading ? <Placeholder loading>正在加载待办…</Placeholder> : !data.loaded ? <div className="todo-empty"><Icon name="refresh" size={28} /><h3>暂时无法读取待办</h3><p>请重试，已有事项会在连接恢复后显示。</p><button type="button" className="primary" onClick={() => { data.dismissError(); void data.refresh(); }}>重新加载</button></div> : tab === "list" ? <div id="todo-list-panel" role="tabpanel" aria-labelledby="todo-list-tab">
           <div className="todo-list-tools">
-            <div className="todo-filter-pills" role="group" aria-label="待办状态">{filters.map(item => <button type="button" key={item.id} aria-pressed={filter === item.id} onClick={() => setFilter(item.id)}>{item.label}<span>{data.todos.filter(todo => matchesFilter(todo, item.id)).length}</span></button>)}</div>
+            <h3>{filters.find(item => item.id === filter)?.label}事项</h3>
             <label className="todo-search"><Icon name="search" size={17} /><input type="search" aria-label="搜索待办" placeholder="搜索待办" value={query} onChange={event => setQuery(event.target.value)} /></label>
           </div>
           {groups.length ? <div className="todo-groups">{groups.map(group => <section className="todo-group" key={group.key} aria-label={group.label}>
@@ -142,7 +146,8 @@ export function TodoDrawer({ onClose, onOpenSource }: Props) {
           </li>)}</ul> : <div className="todo-empty"><Icon name="todo" size={32} /><h3>暂时没有提醒</h3><p>设置好提醒后，送达记录会显示在这里。</p></div>}
           {data.diagnostics.length > 0 && <section className="todo-inbox-diagnostics" aria-label="待办整理状态"><h4>需要处理</h4>{data.diagnostics.map((item, index) => <p key={item.eventId ?? item.id ?? index}>{item.error ?? "待办操作需要确认"}</p>)}</section>}
         </section>}
-      </>}
+        </div>
+      </div>}
     </div>
   </Dialog>;
 }
