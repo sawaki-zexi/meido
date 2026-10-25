@@ -83,6 +83,10 @@ meido_baseline: 729f33c5bdcaf136d797348441fb150ae687dc51
 
 **已提取。** Meido 同时具有生成状态与渠道投递状态。消息模型有独立 `status`；回合终结可将错误原因写入 `metadata.error`；投递状态另有 `pending`、`sent`、`failed`、`uncertain`。生成失败不等于投递失败，投递不确定也不等于确定失败。[Meido 消息模型][meido-model]、[终结写入第 1336–1344 行][meido-error]、[投递状态枚举][meido-delivery]
 
+**已提取。** Meido 的投递失败与结果不确定也会把消息 `status` 写成 `failed`，因此不能只靠该字段判断生成失败；原运行的 `metadata.runtimeReason` 可以区分部分生成失败后又发生投递的情形。渠道直接发送还会把传输错误保存在 `metadata.error`，该字段单独存在也不能证明生成失败。[回合投递回写][meido-delivery-status]、[直接发送记录][meido-host-delivery]
+
+**计划。** 详情结合运行原因与投递状态判定，实时事件保留原状态；摘要缺少这些元数据时使用中性的“回复需关注”，不把投递不确定宣称为生成失败。
+
 **已提取。** Meido 基线消息行已显示来源账号、引用、结构化提及、投递状态、折叠平台消息编号和完整时间，但只要正文与附件为空就额外显示“无内容”，没有把提及与生成失败纳入该判断。列表预览也直接以空正文回退“无内容”。这正是样式优化同时需要修正的语义缺口。[Meido 消息行第 682–714 行][meido-row]、[Meido 列表第 667–670 行][meido-list]
 
 以下均为 **计划**，用于适配现有能力，不声称上游原样提供：
@@ -102,6 +106,8 @@ meido_baseline: 729f33c5bdcaf136d797348441fb150ae687dc51
 - 本次只新增本文，未修改正在实现的消息视图、共享解析、测试和原有研究文档。最终界面仍需由实现后的用户流程核验。
 
 [upstream]: https://github.com/YinFengWindy/Shiori-Agent/tree/d149de7f052f77c5bb88d4d1393d48dce1870875
+[meido-delivery-status]: https://github.com/sawaki-zexi/meido/blob/729f33c5bdcaf136d797348441fb150ae687dc51/backend/app/main.py#L5837-L5858
+[meido-host-delivery]: https://github.com/sawaki-zexi/meido/blob/729f33c5bdcaf136d797348441fb150ae687dc51/backend/app/channels/host.py#L630-L652
 [row]: https://github.com/YinFengWindy/Shiori-Agent/blob/d149de7f052f77c5bb88d4d1393d48dce1870875/apps/desktop/renderer/src/phone/PhoneChatMessageRow.tsx
 [role-avatar]: https://github.com/YinFengWindy/Shiori-Agent/blob/d149de7f052f77c5bb88d4d1393d48dce1870875/apps/desktop/renderer/src/roles/RoleAvatar.tsx#L4-L18
 [avatar]: https://github.com/YinFengWindy/Shiori-Agent/blob/d149de7f052f77c5bb88d4d1393d48dce1870875/apps/desktop/renderer/src/phone/PhoneAvatarFace.tsx#L4-L17

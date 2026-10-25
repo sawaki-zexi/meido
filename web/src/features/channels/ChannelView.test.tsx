@@ -29,6 +29,58 @@ function setupBackend(accounts: ReturnType<typeof makeAccount>[] = []) {
 }
 
 describe("手机账号应用导航", () => {
+  it.each(["failed", "uncertain"])("投递 %s 不被当成生成失败，缺少投递字段的摘要使用中性提醒", async (deliveryStatus) => {
+    const message = { id: "delivery", sequence: 1, role: "assistant", content: "已经生成的回复", status: "failed", createdAt: "2026-10-25T06:00:00Z", metadata: { threadId: "chat", deliveryStatus, error: "NetworkTimeout" } };
+    fakeBackend({
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [makeAccount("qq", "qq-1", { enabled: true, connectionStatus: "connected" })] } }),
+      "GET /api/roles/r1/channels/threads\\?networkOnly=true": () => ({ body: { threads: [{ threadId: "chat", accountId: "qq-1", channel: "qq", chatId: "42", chatType: "private", title: "投递联系人", lastActivity: message.createdAt, latestMessage: message }] } }),
+      "GET .*threads/chat/messages.*": () => ({ body: { messages: [message], hasMore: false } }),
+    });
+    const user = userEvent.setup();
+    render(<ChannelView role={role({ id: "r1", name: "诗织" })} phoneMode onBack={() => undefined} onAccounts={() => undefined} />);
+    await user.click(await screen.findByRole("button", { name: "QQ" }));
+    await user.click(screen.getByRole("button", { name: /投递联系人/ }));
+    const timeline = within(screen.getByRole("region", { name: "会话消息" }));
+    expect(await timeline.findByText("已经生成的回复")).toBeVisible();
+    expect(timeline.getByText(deliveryStatus === "failed" ? "发送失败" : "发送结果不确定")).toBeVisible();
+    expect(timeline.queryByText("回复失败")).not.toBeInTheDocument();
+    expect(timeline.queryByText("回复未能完成")).not.toBeInTheDocument();
+    expect(timeline.queryByText("NetworkTimeout")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "返回会话列表" }));
+    expect(screen.getByRole("button", { name: /投递联系人/ })).toHaveTextContent("回复需关注");
+  });
+
+  it("实时失败回复立即显示原因，部分生成失败也不被投递状态掩盖", async () => {
+    const sources: EventTarget[] = [];
+    class Source extends EventTarget {
+      constructor(_url: string) { super(); sources.push(this); }
+      close() {}
+    }
+    vi.stubGlobal("EventSource", Source);
+    const thread = { threadId: "live", accountId: "qq-1", channel: "qq", chatId: "42", chatType: "private", title: "状态联系人", lastActivity: "2026-10-25T06:00:00Z" };
+    const previous = { id: "previous", sequence: 1, role: "user", content: "旧消息", status: "completed", createdAt: thread.lastActivity, metadata: { threadId: "live" } };
+    fakeBackend({
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [makeAccount("qq", "qq-1", { enabled: true, connectionStatus: "connected" })] } }),
+      "GET /api/roles/r1/channels/threads\\?networkOnly=true": () => ({ body: { threads: [{ ...thread, latestMessage: previous }] } }),
+      "GET .*threads/live/messages.*": () => ({ body: { messages: [previous], hasMore: false } }),
+    });
+    const user = userEvent.setup();
+    render(<ChannelView role={role({ id: "r1", name: "诗织" })} phoneMode onBack={() => undefined} onAccounts={() => undefined} />);
+    await user.click(await screen.findByRole("button", { name: "QQ" }));
+    await user.click(screen.getByRole("button", { name: /状态联系人/ }));
+    const timeline = within(screen.getByRole("region", { name: "会话消息" }));
+    expect(await timeline.findByText("旧消息")).toBeVisible();
+    await act(async () => sources[0].dispatchEvent(new MessageEvent("channel_update", { data: JSON.stringify({ type: "message", roleId: "r1", thread, message: { id: "failed-live", sequence: 2, role: "assistant", content: "", status: "failed", createdAt: "2026-10-25T06:01:00Z", metadata: { threadId: "live", error: "模型暂时不可用" } } }) })));
+    expect(await timeline.findByText("模型暂时不可用")).toBeVisible();
+    expect(timeline.getByText("回复失败")).toBeVisible();
+    expect(timeline.queryByText("[非文本消息]")).not.toBeInTheDocument();
+    await act(async () => sources[0].dispatchEvent(new MessageEvent("channel_update", { data: JSON.stringify({ type: "message", roleId: "r1", thread, message: { id: "partial-live", sequence: 3, role: "assistant", content: "只生成了一半", status: "failed", createdAt: "2026-10-25T06:02:00Z", metadata: { threadId: "live", runtimeReason: "failed", error: "模型连接中断", deliveryStatus: "uncertain" } } }) })));
+    expect(await timeline.findByText("只生成了一半")).toBeVisible();
+    expect(timeline.getByText("模型连接中断")).toBeVisible();
+    expect(timeline.getByText("发送结果不确定")).toBeVisible();
+    expect(timeline.getAllByText("回复失败")).toHaveLength(2);
+  });
+
   it("按 Shiori 分组时间、折叠引用和展示媒体，保留不确定投递状态", async () => {
     fakeBackend({
       "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [makeAccount("qq", "qq-1", { enabled: true, connectionStatus: "connected" })] } }),
@@ -78,7 +130,7 @@ describe("手机账号应用导航", () => {
     render(<ChannelView role={role({ id: "r1", name: "诗织" })} phoneMode onBack={() => undefined} onAccounts={() => undefined} />);
     await user.click(await screen.findByRole("button", { name: "QQ" }));
     const row = screen.getByRole("button", { name: /联系人/ });
-    expect(within(row).getByText(/回复失败/)).toBeVisible();
+    expect(within(row).getByText("回复需关注")).toBeVisible();
     await user.click(row);
     const messages = within(screen.getByRole("region", { name: "会话消息" }));
     expect(await messages.findByText("@角色 QQ")).toBeVisible();

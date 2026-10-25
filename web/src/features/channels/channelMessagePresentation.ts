@@ -24,11 +24,14 @@ export function messagePresentation(message: ConversationMessage, messages: Conv
     return target ? String(target.metadata.senderName ?? id) : id;
   });
   const senderName = message.role === "assistant" ? role.name : String(message.metadata.senderName || message.metadata.senderId || "访客");
+  // Delivery failures also set status=failed; runtimeReason preserves a separate
+  // generation failure when a partial reply was sent to the platform.
+  const hasDeliveryStatus = ["pending", "sent", "failed", "uncertain"].includes(String(message.metadata.deliveryStatus));
   return {
     source, replyTo, replyTarget, replySender, quotedText, mentionedNames, senderName,
     attachments: attachments(message.metadata.attachments), quotedAttachments: attachments(message.metadata.quotedAttachments),
     avatarUrl: message.role === "assistant" ? role.avatarUrl : typeof message.metadata.senderAvatarUrl === "string" ? message.metadata.senderAvatarUrl : null,
-    failed: message.status === "failed",
+    failed: message.status === "failed" && (message.metadata.runtimeReason === "failed" || !hasDeliveryStatus),
     error: typeof message.metadata.error === "string" ? message.metadata.error : "",
   };
 }
@@ -89,7 +92,8 @@ export function conversationPreview(message: { content: string; role: string; st
     .replace(/(\*\*|__|~~)(.*?)\1/g, "$2")
     .replace(/(^|[^\w*])[*_]([^*_\n]+)[*_](?=[^\w*]|$)/g, "$1$2")
     .replace(/\s+/g, " ").trim();
-  if (message.status === "failed") return text ? `回复失败 · ${text}` : "回复失败";
+  // The list projection has no metadata to distinguish generation and delivery.
+  if (message.status === "failed") return text ? `回复需关注 · ${text}` : "回复需关注";
   if (text) return text;
   return message.status === "streaming" ? "正在回复…" : "[非文本消息]";
 }

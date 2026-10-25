@@ -372,6 +372,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
           sequence: typeof payload.message.sequence === "number" ? payload.message.sequence : Number.MAX_SAFE_INTEGER,
           role: String(payload.message.role ?? "user"),
           content: String(payload.message.content ?? ""),
+          status: typeof payload.message.status === "string" ? payload.message.status : undefined,
           createdAt: payload.message.createdAt,
           metadata: { ...(payload.message.metadata ?? {}), threadId },
         };
