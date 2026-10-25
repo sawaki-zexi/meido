@@ -36,7 +36,7 @@ export function CreateRolePage({ state, number, onSubmit, onCancel, onDelete = (
     <aside className="shiori-create-preview" aria-label="卡牌预览"><RoleCard role={preview} number={number} className={existing ? undefined : "is-draft"} /></aside>
     <div className="shiori-role-editor-body">
       <label className="field shiori-nickname-field"><span>对你的称呼</span><input aria-label="昵称" value={state.draft.nickname} placeholder="例如：主人" disabled={state.busy} onChange={event => state.setDraft({ ...state.draft, nickname: event.target.value })} /></label>
-      <RoleEditor state={state} onSubmit={onSubmit} onCancel={onCancel} onDelete={onDelete} hideIdentity={!state.avatarSource && !state.cardImageSource} />
+      <RoleEditor state={state} onSubmit={onSubmit} onCancel={onCancel} onDelete={onDelete} hideIdentity />
     </div>
   </div>;
 }

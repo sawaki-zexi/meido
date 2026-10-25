@@ -145,10 +145,11 @@ export function MemoryPanel({ role, onBack, onOpenSource, embedded = false }: {
   const overlay = Boolean(editing || similar || confirmation);
   const errorNotice = error && <Notice onDismiss={() => setError('')}>{error}</Notice>;
   return <section className={`memory-panel${embedded ? ' is-embedded' : ''}`} style={roleStyle(role.id)} aria-label={`${role.name}的记忆`}>
-    {!embedded && <header className="chat-header memory-topbar"><IconButton icon="back" label="返回对话" onClick={onBack} />
-      <Avatar id={role.id} name={role.name} avatarUrl={role.avatarUrl} size="sm" />
-      <div className="chat-title"><h1 ref={title} tabIndex={-1}>{role.name}的记忆</h1></div>
-      <button type="button" className="primary memory-add" onClick={() => startEdit('new')}><Icon name="plus" size={17} />记住一件事</button></header>}
+    <header className="chat-header memory-topbar">
+      {!embedded && <><IconButton icon="back" label="返回对话" onClick={onBack} />
+        <Avatar id={role.id} name={role.name} avatarUrl={role.avatarUrl} size="sm" /></>}
+      <div className="chat-title"><h1 ref={title} tabIndex={-1}>{embedded ? '记忆' : `${role.name}的记忆`}</h1></div>
+      <button type="button" className="primary memory-add" onClick={() => startEdit('new')}><Icon name="plus" size={17} />记住一件事</button></header>
     <div className="memory-scroll"><div className="memory-workspace">
       <div className="memory-view-tabs" role="tablist" aria-label="记忆视图">{([['entries', '记忆条目'], ['documents', '记忆文档']] as const).map(([id, label]) =>
         <button type="button" role="tab" key={id} id={`${viewId}-${id}-tab`} aria-selected={view === id} aria-controls={`${viewId}-${id}`} tabIndex={view === id ? 0 : -1} onKeyDown={changeTab} onClick={() => setView(id)}>{label}</button>)}</div>

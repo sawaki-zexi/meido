@@ -70,10 +70,13 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete, hideIdentity =
         </section>
       </div>
     </fieldset>
-    {!hideIdentity && <fieldset>
-      <legend>身份</legend>
+    {cropping && <fieldset>
+      <legend>图片裁切</legend>
       {state.avatarSource && <AvatarCropper file={state.avatarSource} shape="circle" onCancel={state.cancelAvatarCrop} onAccept={state.acceptAvatarCrop} onError={setError} />}
       {state.cardImageSource && <AvatarCropper file={state.cardImageSource} shape="card" onCancel={state.cancelCardImageCrop} onAccept={(image) => state.acceptCardImageCrop(image)} onError={setError} />}
+    </fieldset>}
+    {!hideIdentity && <fieldset>
+      <legend>身份</legend>
       {identityFields.map(renderField)}
     </fieldset>}
     <fieldset>

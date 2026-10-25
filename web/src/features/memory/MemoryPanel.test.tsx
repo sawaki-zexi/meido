@@ -12,6 +12,31 @@ const item = { id: 'one', roleId: 'r1', memoryType: 'preference', summary: '主�
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('工作区中已有记忆时仍可继续新增，保存后回到列表', async () => {
+  let rows = [item];
+  fakeBackend({
+    'GET /api/roles/r1/memories.*': () => ({ body: { memories: rows, total: rows.length } }),
+    'POST /api/roles/r1/memories': () => {
+      const added = { ...item, id: 'two', summary: '主人喜欢在周末散步' };
+      rows = [...rows, added];
+      return { body: added };
+    },
+  });
+  const user = userEvent.setup();
+  render(<MemoryPanel role={owner} embedded onBack={() => {}} onOpenSource={() => {}} />);
+  await screen.findByText(item.summary);
+  expect(screen.queryByRole('button', { name: '返回对话' })).not.toBeInTheDocument();
+  const add = screen.queryByRole('button', { name: '记住一件事' });
+  expect(add).not.toBeNull();
+  await user.click(add!);
+  const editor = within(screen.getByRole('dialog', { name: '记住一件事' }));
+  await user.type(editor.getByLabelText('内容'), '主人喜欢在周末散步');
+  await user.click(editor.getByRole('button', { name: '保存' }));
+  expect(await screen.findByRole('button', { name: '查看记忆：主人喜欢在周末散步' })).toBeVisible();
+  expect(screen.getByRole('button', { name: '记住一件事' })).toBeEnabled();
+  expect(screen.getByRole('heading', { name: '记忆' })).toHaveFocus();
+});
+
 it('按本地记录日期分组时间线，保留服务返回顺序，详细时间按需查看', async () => {
   const first = { ...item, createdAt: new Date(2026, 9, 19, 8).toISOString() };
   const sameDay = { ...item, id: 'two', summary: '主人也喜欢听钢琴曲', createdAt: new Date(2026, 9, 19, 9).toISOString() };

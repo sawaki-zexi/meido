@@ -17,6 +17,7 @@ type Props = {
   onTabChange: (tab: RoleWorkspaceTab) => void;
   onBack: () => void;
   onChat: () => void;
+  chatDisabled: boolean;
   onEdit: () => void;
   onSubmit: () => void;
   onCancel: () => void;
@@ -33,7 +34,7 @@ const tabs: Array<{ id: RoleWorkspaceTab; label: string }> = [
   { id: "accounts", label: "账号" },
 ];
 
-export function RoleWorkspace({ role, state, tab, onTabChange, onBack, onChat, onEdit, onSubmit, onCancel, onDelete, onOpenSettings, onOpenChannelSettings, onOpenMemorySource }: Props) {
+export function RoleWorkspace({ role, state, tab, onTabChange, onBack, onChat, chatDisabled, onEdit, onSubmit, onCancel, onDelete, onOpenSettings, onOpenChannelSettings, onOpenMemorySource }: Props) {
   const writable = state.editing || state.creating;
   return <section className="role-workspace" aria-label={`${role.name}的角色工作区`}>
     <header className="role-workspace-hero">
@@ -42,7 +43,7 @@ export function RoleWorkspace({ role, state, tab, onTabChange, onBack, onChat, o
       <div className="role-workspace-identity">{writable ? <><input aria-label="名称（角色名称）" value={state.draft.name} placeholder="未命名角色" onChange={event => state.setDraft({ ...state.draft, name: event.target.value })} /><input aria-label="角色简介" value={state.draft.description} placeholder="添加一行角色简介" onChange={event => state.setDraft({ ...state.draft, description: event.target.value })} /></> : <><h1>{role.name}</h1><p>{role.description || "还没有简介"}</p></>}
         <div className="role-workspace-actions"><span className="role-state"><Icon name="profile" size={15} />平静</span><button type="button" className="ghost" onClick={onEdit}><Icon name="edit" size={15} />{writable ? "编辑中" : "编辑资料"}</button></div>
       </div>
-      <button type="button" className="primary role-workspace-chat" onClick={onChat}><Icon name="chat" size={16} />去聊天</button>
+      <button type="button" className="primary role-workspace-chat" onClick={onChat} disabled={chatDisabled}><Icon name="chat" size={16} />去聊天</button>
     </header>
     <nav className="role-workspace-tabs" role="tablist" aria-label="角色详情">
       {tabs.map(item => <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} onClick={() => onTabChange(item.id)}>{item.label}</button>)}

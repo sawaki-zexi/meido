@@ -36,6 +36,8 @@ export function useChat() {
   /** Loads the role's session. Resolves true when the chat can be shown. */
   /** Opens a role's session. Resolves her messages, or null when it could not be opened. */
   const open = async (role: Role): Promise<Message[] | null> => {
+    // Every entry point shares this guard, including memory and task sources.
+    if (activeReply.current) return null;
     setError("");
     setOpening(true);
     try {

@@ -104,8 +104,8 @@ export function App() {
     }
     if (origin.sessionKey !== `role:${role.id}`) { chat.setError("来源会话与当前角色不匹配"); setView("chat"); return; }
     const messages = await chat.open(role);
-    setView("chat");
     if (!messages) return;
+    setView("chat");
     const [from, to] = origin.messageRange ?? [];
     const source = messageId
       ? messages.find((message) => message.id === messageId)
@@ -206,7 +206,7 @@ export function App() {
       {view === "tavern"
         ? <TavernView roles={roles.roles} query={searchTerm} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onShow={showChatProfile} onWorkspace={showProfile} onChat={chatWith} onPreviewAvatar={setPreviewRole} />
         : view === "role" && roles.selected
-        ? <RoleWorkspace role={roles.selected} state={roles} tab={profileTab} onTabChange={setProfileTab} onBack={openTavern} onChat={() => void openChat(roles.selected!)} onEdit={() => roles.startEdit()} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} onOpenSettings={() => { roles.cancel(); setSettingsSection("plugins"); setPanel("settings"); }} onOpenChannelSettings={() => { roles.cancel(); setSettingsSection("channels"); setPanel("settings"); }} onOpenMemorySource={(origin, messageId) => void openMemorySource(roles.selected!, origin, messageId)} />
+        ? <RoleWorkspace role={roles.selected} state={roles} tab={profileTab} onTabChange={setProfileTab} onBack={openTavern} onChat={() => chatWith(roles.selected!)} chatDisabled={lockSwitch} onEdit={() => roles.startEdit()} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} onOpenSettings={() => { roles.cancel(); setSettingsSection("plugins"); setPanel("settings"); }} onOpenChannelSettings={() => { roles.cancel(); setSettingsSection("channels"); setPanel("settings"); }} onOpenMemorySource={(origin, messageId) => void openMemorySource(roles.selected!, origin, messageId)} />
         : view === "novelai"
         ? <NovelaiStudio roles={roles.roles} selectedRoleId={studioRoleId ?? chat.roleId ?? roles.roles[0]?.id} onRoleChange={setStudioRoleId}
           onGenerated={chat.refresh} settingsOpen={panel === 'settings'} onOpenSettings={() => { setSettingsSection('novelai'); setPanel('settings'); }} />
