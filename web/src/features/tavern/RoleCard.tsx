@@ -20,7 +20,7 @@ export function cardTraits(id: string) {
 
 type Props = { role: Role; number: number; className?: string; children?: ReactNode; onPreviewAvatar?: (role: Role) => void };
 
-/** A role's card: number, glyph, her initial over her motif, name, summary and how she calls you. */
+/** A role's card: number, glyph, portrait, name and summary. */
 export function RoleCard({ role, number, className = "", children, onPreviewAvatar }: Props) {
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const { motif, glyph } = cardTraits(role.id);
@@ -41,7 +41,6 @@ export function RoleCard({ role, number, className = "", children, onPreviewAvat
     <div className="card-foot">
       <strong>{role.name}</strong>
       <small>{role.description || "暂无简介"}</small>
-      {role.profile.nickname && <em>称呼你为「{role.profile.nickname}」</em>}
     </div>
     {children}
   </div>;

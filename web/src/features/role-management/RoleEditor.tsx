@@ -12,7 +12,6 @@ type Field = { key: TextFieldKey; label: string; placeholder?: string; hint?: st
 
 const identityFields: Field[] = [
   { key: "name", label: "名称", placeholder: "给她起个名字", required: true },
-  { key: "nickname", label: "昵称", placeholder: "角色对你的称呼，例如：主人" },
   { key: "description", label: "简介", placeholder: "简短介绍她，让你在角色卡上一眼认出她", multiline: true },
 ];
 const characterFields: Field[] = [
@@ -50,21 +49,26 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete, hideHeaderFiel
   };
 
   return <><form ref={form} className={`role-editor${writable ? " is-writable" : ""}`} onSubmit={submit}>
-    <fieldset>
+    <fieldset className="role-media-fields">
       {writable && <div className="role-import-control">
-        <button type="button" className="ghost" disabled={busy} onClick={() => importInput.current?.click()}>{state.importing ? "解析中…" : "导入角色卡"}</button>
+        <div><h2>角色形象</h2><p>头像与卡面，都可以稍后添加。</p></div>
+        <button type="button" className="ghost" disabled={busy} onClick={() => importInput.current?.click()}><Icon name="upload" size={15} />{state.importing ? "解析中…" : "导入角色卡"}</button>
         <input ref={importInput} className="image-file-input" aria-label="导入角色卡" type="file" accept=".json,.png,.apng,.charx,application/json,image/png" disabled={busy} onChange={(event) => { void state.previewImport(event.currentTarget.files?.[0] ?? null); event.currentTarget.value = ""; }} />
       </div>}
       <div className="role-image-settings">
         <section className="image-control">
-          <span className="field-label">头像</span>
-          {writable && <button type="button" className="image-add" aria-label="上传头像" disabled={locked} onClick={() => avatarInput.current?.click()}>{state.avatarPreviewUrl || (selected?.avatarUrl && !state.avatarRemoved) ? <img src={state.avatarPreviewUrl ?? selected?.avatarUrl ?? ""} alt="" /> : <span aria-hidden="true">+</span>}</button>}
+          {writable && <button type="button" className="role-image-picker" aria-label="上传头像" disabled={locked} onClick={() => avatarInput.current?.click()}>
+            <span className="image-add">{state.avatarPreviewUrl || (selected?.avatarUrl && !state.avatarRemoved) ? <img src={state.avatarPreviewUrl ?? selected?.avatarUrl ?? ""} alt="" /> : <Icon name="plus" size={20} />}</span>
+            <span className="role-image-copy"><strong>头像</strong><small>用于聊天与角色列表</small></span>
+          </button>}
           <input ref={avatarInput} className="image-file-input" aria-label="角色头像" type="file" accept="image/png,image/jpeg,image/webp" disabled={locked} onChange={(event) => { state.chooseAvatar(event.currentTarget.files?.[0] ?? null); event.currentTarget.value = ""; }} />
           {(selected?.avatarUrl || state.avatarFile) && <button type="button" className="ghost image-remove" disabled={locked} onClick={state.clearAvatar}>移除</button>}
         </section>
         <section className="image-control">
-          <span className="field-label">卡片图</span>
-          {writable && <button type="button" className="image-add" aria-label="上传卡片图片" disabled={locked} onClick={() => cardInput.current?.click()}>{state.cardImagePreviewUrl || (selected?.cardImageUrl && !state.cardImageRemoved) ? <img src={state.cardImagePreviewUrl ?? selected?.cardImageUrl ?? ""} alt="" /> : <span aria-hidden="true">+</span>}</button>}
+          {writable && <button type="button" className="role-image-picker" aria-label="上传卡片图片" disabled={locked} onClick={() => cardInput.current?.click()}>
+            <span className="image-add is-card">{state.cardImagePreviewUrl || (selected?.cardImageUrl && !state.cardImageRemoved) ? <img src={state.cardImagePreviewUrl ?? selected?.cardImageUrl ?? ""} alt="" /> : <Icon name="image" size={20} />}</span>
+            <span className="role-image-copy"><strong>卡片图</strong><small>为她选择一张封面</small></span>
+          </button>}
           <input ref={cardInput} className="image-file-input" aria-label="卡片图片" type="file" accept="image/png,image/jpeg,image/webp" disabled={locked} onChange={(event) => { state.chooseCardImage(event.currentTarget.files?.[0] ?? null); event.currentTarget.value = ""; }} />
           {(selected?.cardImageUrl || state.cardImageFile) && <button type="button" className="ghost image-remove" disabled={locked} onClick={state.clearCardImage}>恢复头像</button>}
         </section>
@@ -75,12 +79,11 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete, hideHeaderFiel
       {state.avatarSource && <AvatarCropper file={state.avatarSource} shape="circle" onCancel={state.cancelAvatarCrop} onAccept={state.acceptAvatarCrop} onError={setError} />}
       {state.cardImageSource && <AvatarCropper file={state.cardImageSource} shape="card" onCancel={state.cancelCardImageCrop} onAccept={(image) => state.acceptCardImageCrop(image)} onError={setError} />}
     </fieldset>}
-    <fieldset>
-      <legend>{hideHeaderFields ? "对你的称呼" : "身份"}</legend>
-      {identityFields.filter(field => !hideHeaderFields || field.key === "nickname").map(renderField)}
-    </fieldset>
-    <fieldset>
-      <legend>角色设定</legend>
+    {!hideHeaderFields && <fieldset>
+      <legend>身份</legend>
+      {identityFields.map(renderField)}
+    </fieldset>}
+    <fieldset className="role-profile-fields">
       {renderField(characterFields[0])}
       <button
         type="button"
@@ -89,6 +92,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete, hideHeaderFiel
         aria-controls={showAdvanced ? "role-advanced-fields" : undefined}
         onClick={() => setShowAdvanced((current) => !current)}
       >
+        <Icon name={showAdvanced ? "close" : "plus"} size={14} />
         {showAdvanced ? "收起更多设定" : "更多设定"}
       </button>
       {showAdvanced && <div id="role-advanced-fields" className="advanced-fields">

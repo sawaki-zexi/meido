@@ -427,6 +427,7 @@ describe("角色管理", () => {
     const form = await createPage();
     expect(screen.getByRole("main")).toContainElement(form);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(within(form).queryByLabelText("昵称")).not.toBeInTheDocument();
     const preview = within(form).getByRole("complementary", { name: "卡牌预览" });
     expect(within(preview).getByText("No.001")).toBeTruthy();
     await user.type(within(form).getByLabelText(/名称/), "新角色");

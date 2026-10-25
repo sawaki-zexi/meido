@@ -403,7 +403,10 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 
 /* Role profile / create form */
 .role-editor { display: grid; gap: 22px; padding: 20px 22px 22px; }
-.role-import-control { display: flex; align-items: center; justify-content: flex-start; gap: 8px; }
+.role-import-control { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.role-import-control h2 { font-size: 15px; font-weight: 550; }
+.role-import-control p { margin-top: 4px; font-size: 12px; color: var(--ink-faint); }
+.role-import-control > button { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; font-size: 12px; }
 .role-import-preview { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); background: #fff8fd; }
 .role-import-preview-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .role-import-source, .role-import-discarded { margin: 0; color: var(--ink-faint); font-size: 12px; overflow-wrap: anywhere; }
@@ -426,6 +429,13 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .image-file-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .role-image-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .image-control { display: grid; justify-items: start; align-content: start; gap: 6px; min-width: 0; }
+.role-image-picker { display: flex; align-items: center; gap: 14px; width: 100%; padding: 16px; border-color: color-mix(in srgb, var(--rose) 12%, transparent); border-radius: 18px; background: rgb(255 255 255 / 50%); text-align: left; }
+.role-image-picker:hover:not(:disabled) { background: rgb(255 255 255 / 85%); border-color: color-mix(in srgb, var(--rose) 30%, transparent); }
+.role-image-picker .image-add { flex: 0 0 48px; border: 0; background: color-mix(in srgb, var(--rose) 7%, var(--bg)); color: color-mix(in srgb, var(--rose) 65%, var(--ink-soft)); }
+.role-image-picker .image-add.is-card { border-radius: 12px; }
+.role-image-copy { display: grid; gap: 3px; min-width: 0; }
+.role-image-copy strong { font-size: 13px; font-weight: 550; }
+.role-image-copy small { font-size: 11px; color: var(--ink-faint); }
 .image-control small { color: var(--ink-faint); overflow-wrap: anywhere; }
 .image-remove { min-height: 28px; padding: 2px 6px; font-size: 12px; }
 .avatar-cropper { display: grid; justify-items: center; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--side); }
@@ -779,7 +789,7 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 /* Shiori-style role workspace: the role stays selected in the left list while
    profile, memory, capabilities and accounts share one detail surface. */
 .role-workspace { flex: 1; width: 100%; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; background: linear-gradient(160deg, rgb(255 255 255 / 72%), rgb(255 246 252 / 72%)); }
-.role-workspace-hero { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: 24px; padding: 36px 40px; background: rgb(255 255 255 / 58%); }
+.role-workspace-hero { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: 24px; padding: 36px max(32px, calc((100% - 1240px) / 2)); background: rgb(255 255 255 / 42%); }
 .role-workspace-hero > .icon-button { align-self: start; }
 .role-workspace-hero .avatar-lg { width: 112px; height: 112px; font-size: 42px; border: 5px solid #fff; box-shadow: 0 8px 24px rgb(119 73 109 / 9%); }
 .role-workspace-identity { min-width: 0; }
@@ -793,17 +803,16 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .role-state { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 999px; background: var(--hover); color: var(--rose-deep); font-size: 13px; }
 .role-workspace-actions .ghost { display: inline-flex; align-items: center; gap: 6px; }
 .role-workspace-chat { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
-.role-workspace-tabs { display: flex; align-items: end; gap: 34px; padding: 0 40px; border-bottom: 1px solid var(--line); background: rgb(255 255 255 / 67%); }
-.role-workspace-tabs button { min-height: 58px; padding: 0 2px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--ink-soft); font-size: 15px; }
-.role-workspace-tabs button[aria-selected="true"] { border-bottom-color: var(--rose); color: var(--rose-deep); }
+.role-workspace-tabs { display: flex; align-items: end; gap: 16px; padding: 8px max(32px, calc((100% - 1240px) / 2)); border-bottom: 1px solid color-mix(in srgb, var(--rose) 9%, transparent); background: rgb(255 255 255 / 42%); }
+.role-workspace-tabs button { min-height: 38px; padding: 6px 18px; border: 0; border-radius: 999px; background: transparent; color: var(--ink-soft); font-size: 14px; }
+.role-workspace-tabs button[aria-selected="true"] { background: color-mix(in srgb, var(--rose) 7%, var(--bg)); color: var(--rose-deep); }
 .role-workspace-content { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 34px 40px 48px; }
-.role-workspace-profile { width: 100%; }
+.role-workspace-profile { width: 100%; max-width: 1120px; margin: 0 auto; }
 .role-profile-intro { margin: 0 0 22px; padding: 22px 26px; border: 1px solid var(--line); border-radius: 16px; background: rgb(255 255 255 / 70%); }
 .role-profile-intro span { color: var(--ink-faint); font-size: 13px; }
 .role-profile-intro p { margin: 10px 0 0; white-space: pre-wrap; line-height: 1.7; }
 .role-workspace-profile .role-editor { padding: 0; }
-.role-workspace-profile .role-editor:not(.is-writable) fieldset:first-child { display: none; }
-.role-workspace-profile #role-nickname { max-width: 480px; }
+.role-workspace-profile .role-editor:not(.is-writable) .role-media-fields { display: none; }
 .role-workspace-memory { min-height: 0; max-width: 1120px; margin: 0 auto; }
 .role-workspace-memory .memory-panel.is-embedded { min-height: 600px; border: 1px solid var(--line); border-radius: 18px; background: rgb(255 255 255 / 68%); }
 .role-workspace-memory .memory-panel.is-embedded .memory-scroll { padding-top: 0; background: transparent; }
@@ -836,7 +845,8 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
   .role-workspace-actions { gap: 4px; flex-wrap: wrap; margin-top: 12px; }
   .role-workspace-actions .ghost { padding: 7px 8px; }
   .role-workspace-chat { grid-column: 2; grid-row: 1; justify-self: end; }
-  .role-workspace-tabs { gap: 20px; padding: 0 16px; overflow-x: auto; }
+  .role-workspace-tabs { gap: 2px; padding: 8px 12px; overflow-x: auto; }
+  .role-workspace-tabs button { padding-inline: 13px; flex-shrink: 0; }
   .role-workspace-content { padding: 22px 16px 32px; }
   .role-section-heading { display: grid; }
   .role-section-actions { justify-content: flex-start; }
@@ -893,41 +903,84 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
   .dialog-page .dialog-body { overflow-y: auto; }
 }
 
-/* Full-page creation shares the workspace's flat header and scrollable content. */
-.create-role-page { flex: 1; width: 100%; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); background: linear-gradient(160deg, rgb(255 255 255 / 72%), rgb(255 246 252 / 72%)); }
-.role-page-heading { display: flex; align-items: center; gap: 28px; padding: 24px 40px; border-bottom: 1px solid var(--line); background: rgb(255 255 255 / 58%); }
-.role-page-heading > button { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.role-page-heading h1 { margin: 0; font-size: 24px; }
-.role-page-heading p { margin: 6px 0 0; color: var(--ink-soft); font-size: 13px; }
+/* The page fills the main pane; the writing surface keeps a comfortable line length. */
+.create-role-page { flex: 1; width: 100%; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); background: linear-gradient(145deg, rgb(255 255 255 / 68%), color-mix(in srgb, var(--bg) 85%, var(--surface-card))); }
+.role-page-heading { display: flex; align-items: center; gap: 28px; padding: 22px max(32px, calc((100% - 1240px) / 2)); border-bottom: 1px solid color-mix(in srgb, var(--rose) 8%, transparent); background: rgb(255 255 255 / 40%); }
+.role-page-heading > button { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border-radius: 999px; white-space: nowrap; font-size: 13px; }
+.role-page-heading h1 { margin: 0; font-size: 22px; font-weight: 550; letter-spacing: .02em; }
+.role-page-heading p { margin: 5px 0 0; color: var(--ink-faint); font-size: 12px; }
 .create-role-scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 32px 40px 48px; }
-.create-role-layout { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 48px; align-items: start; }
-.shiori-role-identity { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 24px; padding: 0 0 28px; margin-bottom: 28px; border-bottom: 1px solid var(--line); }
-.shiori-role-identity .avatar-lg { width: 104px; height: 104px; border: 6px solid #fff; box-shadow: 0 10px 28px rgb(119 73 109 / 13%); }
+.create-role-inner { width: 100%; max-width: 1240px; margin: 0 auto; }
+.create-role-layout { display: grid; grid-template-columns: minmax(0, 1fr) 256px; gap: 52px; align-items: start; }
+.shiori-role-identity { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 24px; padding: 0 0 20px; margin-bottom: 24px; }
+.shiori-role-identity .avatar-lg { width: 88px; height: 88px; border: 5px solid rgb(255 255 255 / 85%); background: color-mix(in srgb, var(--violet) 12%, var(--surface-card)); color: color-mix(in srgb, var(--violet-deep) 80%, var(--ink-soft)); box-shadow: 0 8px 26px rgb(119 73 109 / 6%); }
 .shiori-role-identity-fields { display: grid; gap: 8px; min-width: 0; }
-.shiori-role-identity-fields input { width: min(100%, 560px); border: 0; border-bottom: 1px solid transparent; border-radius: 0; background: transparent; padding: 0; }
-.shiori-role-identity-fields input:first-child { font-size: 28px; font-weight: 650; letter-spacing: -.03em; }
-.shiori-role-identity-fields input:nth-child(2) { color: var(--ink-soft); font-size: 16px; }
-.shiori-role-identity-fields input:focus { border-bottom-color: var(--rose); box-shadow: none; }
-.shiori-create-preview { display: grid; gap: 16px; width: 100%; padding-left: 24px; border-left: 1px solid var(--line); }
-.shiori-create-preview > span { color: var(--ink-soft); font-size: 13px; }
-.shiori-create-preview .role-card { width: 100%; }
+.shiori-role-identity-fields input { width: min(100%, 640px); border: 1px solid transparent; border-radius: 12px; background: transparent; padding: 5px 10px; }
+.shiori-role-identity-fields input:first-child { font-size: 26px; font-weight: 550; letter-spacing: -.02em; }
+.shiori-role-identity-fields input:nth-child(2) { color: var(--ink-soft); font-size: 14px; }
+.shiori-role-identity-fields input::placeholder { color: color-mix(in srgb, var(--ink-faint) 70%, var(--bg)); }
+.shiori-role-identity-fields input:hover:not(:disabled) { background: rgb(255 255 255 / 50%); }
+.shiori-role-identity-fields input:focus { border-color: color-mix(in srgb, var(--rose) 35%, transparent); background: rgb(255 255 255 / 75%); box-shadow: 0 0 0 3px color-mix(in srgb, var(--rose) 6%, transparent); }
+.shiori-create-preview { position: sticky; top: 0; display: grid; gap: 16px; width: 100%; padding: 20px; border: 1px solid rgb(255 255 255 / 85%); border-radius: 24px; background: linear-gradient(150deg, color-mix(in srgb, var(--violet) 6%, var(--bg)), color-mix(in srgb, var(--rose) 4%, var(--bg))); }
+.shiori-create-preview > span { color: var(--ink-soft); font-size: 12px; letter-spacing: .06em; }
+.shiori-create-preview > p { color: var(--ink-faint); font-size: 12px; line-height: 1.9; }
+.shiori-create-preview .role-card { width: 100%; border-color: rgb(255 255 255 / 90%); border-radius: 18px; box-shadow: 0 8px 28px rgb(111 74 99 / 5%); background: rgb(255 255 255 / 65%); transform: none; }
+.shiori-create-preview .role-card::after { display: none; }
+.shiori-create-preview .role-card:not(.has-card-image) .card-art { border-radius: 50%; margin: 24px auto 14px; width: 112px; aspect-ratio: 1; background: radial-gradient(circle at 30% 20%, #fff, color-mix(in srgb, var(--violet) 15%, var(--bg))); }
+.shiori-create-preview .role-card:not(.has-card-image) .card-art::before, .shiori-create-preview .role-card:not(.has-card-image) .card-art::after { display: none; }
+.shiori-create-preview .role-card:not(.has-card-image) .card-initial { font-size: 42px; color: color-mix(in srgb, var(--violet-deep) 70%, var(--ink-soft)); }
+.shiori-create-preview .card-top { color: var(--ink-faint); opacity: .7; font-size: 10px; }
+.shiori-create-preview .card-foot strong { font-family: inherit; font-size: 17px; font-weight: 550; }
 .shiori-role-editor-body { min-width: 0; }
 .shiori-role-editor-body .role-editor { padding: 0; }
+:is(.create-role-page, .role-workspace) .role-editor { gap: 30px; }
+:is(.create-role-page, .role-workspace) .role-media-fields { gap: 18px; }
+:is(.create-role-page, .role-workspace) .role-image-settings { max-width: 620px; gap: 14px; }
+:is(.create-role-page, .role-workspace) .role-profile-fields { gap: 18px; }
+:is(.create-role-page, .role-workspace) .field { gap: 10px; }
+:is(.create-role-page, .role-workspace) .field label { font-size: 13px; font-weight: 550; }
+:is(.create-role-page, .role-workspace) .role-profile-fields > .field > label { font-size: 15px; }
+:is(.create-role-page, .role-workspace) .is-writable textarea { border: 1px solid color-mix(in srgb, var(--rose) 12%, transparent); border-radius: 16px; padding: 16px 18px; background: rgb(255 255 255 / 65%); line-height: 1.85; min-height: 112px; }
+:is(.create-role-page, .role-workspace) .is-writable #role-profile { min-height: 168px; }
+:is(.create-role-page, .role-workspace) .is-writable textarea:focus { border-color: color-mix(in srgb, var(--rose) 42%, transparent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--rose) 5%, transparent); background: rgb(255 255 255 / 90%); }
+:is(.create-role-page, .role-workspace) .section-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; font-size: 12px; color: var(--ink-soft); background: color-mix(in srgb, var(--rose) 4%, transparent); }
+:is(.create-role-page, .role-workspace) .section-toggle:hover { background: color-mix(in srgb, var(--rose) 8%, transparent); }
+:is(.create-role-page, .role-workspace) .advanced-fields { gap: 22px; }
+:is(.create-role-page, .role-workspace) .role-save-actions { padding-top: 4px; border: 0; gap: 10px; }
+:is(.create-role-page, .role-workspace) .role-save-actions button { min-width: 88px; min-height: 40px; border-radius: 999px; }
+:is(.create-role-page, .role-workspace) .role-save-actions .primary { background: color-mix(in srgb, var(--rose) 10%, var(--bg)); }
+:is(.create-role-page, .role-workspace) .role-save-actions .primary:hover { background: color-mix(in srgb, var(--rose) 17%, var(--bg)); }
+:is(.create-role-page, .role-workspace) .role-delete-section { border-top-color: color-mix(in srgb, var(--rose) 10%, transparent); padding-top: 28px; margin-top: 12px; }
+.create-role-scroll, .role-workspace-content { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink-faint) 25%, transparent) transparent; }
 
 @media (max-width: 1100px) {
   .create-role-layout { grid-template-columns: minmax(0, 1fr); gap: 32px; }
-  .shiori-create-preview { width: min(220px, 100%); padding: 0; border: 0; }
+  .shiori-create-preview { position: static; grid-template-columns: 140px minmax(0, 1fr); align-items: center; gap: 8px 24px; width: 100%; padding: 16px; }
+  .shiori-create-preview > span { grid-column: 2; align-self: end; }
+  .shiori-create-preview > p { grid-column: 2; align-self: start; }
+  .shiori-create-preview .role-card { grid-column: 1; grid-row: 1 / span 2; grid-template-rows: 16px minmax(0, 1fr) auto; padding: 6px; }
+  .shiori-create-preview .card-top { padding: 0 3px; font-size: 9px; }
+  .shiori-create-preview .role-card:not(.has-card-image) .card-art { align-self: center; width: 56px; margin: 4px auto; }
+  .shiori-create-preview .role-card:not(.has-card-image) .card-initial { font-size: 27px; }
+  .shiori-create-preview .role-card:not(.has-card-image) .card-foot { padding: 4px 6px; gap: 2px; }
+  .shiori-create-preview .card-foot strong { font-size: 13px; }
+  .shiori-create-preview .card-foot small { min-height: 0; font-size: 11px; -webkit-line-clamp: 1; }
 }
 
 @media (max-width: 760px) {
-  .role-page-heading { align-items: flex-start; flex-direction: column; gap: 12px; padding: 16px; }
-  .role-page-heading h1 { font-size: 22px; }
-  .create-role-scroll { padding: 22px 16px 32px; }
-  .shiori-role-identity { gap: 16px; padding-bottom: 22px; margin-bottom: 22px; }
+  .role-page-heading { align-items: flex-start; flex-direction: column; gap: 8px; padding: 14px 16px; }
+  .role-page-heading h1 { font-size: 20px; }
+  .create-role-scroll { padding: 24px 16px 32px; }
+  .shiori-role-identity { gap: 10px; padding-bottom: 16px; margin-bottom: 20px; }
   .shiori-role-identity .avatar-lg { width: 60px; height: 60px; border-width: 3px; }
-  .shiori-role-identity-fields input:first-child { font-size: 22px; }
-  .shiori-role-identity-fields input:nth-child(2) { font-size: 13px; }
-  .shiori-create-preview { width: min(180px, 100%); margin: 0 auto; }
+  .shiori-role-identity-fields input:first-child { font-size: 21px; }
+  .shiori-role-identity-fields input:nth-child(2) { font-size: 12px; }
+  .role-import-control { gap: 10px; }
+  .role-import-control > button { padding-inline: 0; }
+  :is(.create-role-page, .role-workspace) .role-image-settings { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .role-image-picker { padding: 12px 14px; }
+  .shiori-create-preview { grid-template-columns: 112px minmax(0, 1fr); gap: 8px 14px; }
+  .shiori-create-preview > p { font-size: 11px; }
 }
 
 .memory-panel { flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }

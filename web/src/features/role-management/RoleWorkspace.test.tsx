@@ -7,8 +7,9 @@ import { fakeBackend, message, role, sse } from "../../test/fakeBackend";
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it("聊天资料在主页面编辑称呼，取消保留已保存值，返回原对话", async () => {
-  let alice = role({ id: "r1", name: "爱丽丝" });
+it("资料页不显示昵称，保存设定兼容旧称呼，取消保留已保存值并可返回对话", async () => {
+  const original = role({ id: "r1", name: "爱丽丝" });
+  let alice = { ...original, profile: { ...original.profile, nickname: "旧称呼" } };
   const { calls } = fakeBackend({
     "GET /api/roles": () => ({ body: { roles: [alice] } }),
     "GET /api/roles/r1/session": () => ({ body: { session: { sessionKey: "role:r1", roleId: "r1" }, messages: [message({ id: "old", role: "assistant", content: "原来的对话" })] } }),
@@ -20,16 +21,18 @@ it("聊天资料在主页面编辑称呼，取消保留已保存值，返回原�
   const workspace = within(screen.getByRole("main")).getByRole("region", { name: "爱丽丝的角色工作区" });
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(within(workspace).getByRole("tab", { name: "记忆" })).toBeVisible();
-  const nickname = within(workspace).getByLabelText("昵称");
-  await user.clear(nickname);
-  await user.type(nickname, "朋友");
+  expect(within(workspace).queryByLabelText("昵称")).not.toBeInTheDocument();
+  expect(within(workspace).queryByText("对你的称呼")).not.toBeInTheDocument();
+  const profile = within(workspace).getByRole("textbox", { name: "角色设定" });
+  await user.clear(profile);
+  await user.type(profile, "新的角色设定");
   await user.click(within(workspace).getByRole("button", { name: "保存" }));
-  await waitFor(() => expect(calls.find(call => call.method === "PUT")?.body).toMatchObject({ profile: { nickname: "朋友" } }));
+  await waitFor(() => expect(calls.find(call => call.method === "PUT")?.body).toMatchObject({ profile: { profile: "新的角色设定", nickname: "旧称呼" } }));
   await waitFor(() => expect(within(workspace).getByRole("button", { name: "保存" })).toBeEnabled());
-  await user.clear(nickname);
-  await user.type(nickname, "未保存称呼");
+  await user.clear(profile);
+  await user.type(profile, "未保存设定");
   await user.click(within(workspace).getByRole("button", { name: "取消" }));
-  expect(within(workspace).getByLabelText("昵称")).toHaveValue("朋友");
+  expect(within(workspace).getByRole("textbox", { name: "角色设定" })).toHaveValue("新的角色设定");
   await user.click(within(workspace).getByRole("button", { name: "返回对话" }));
   expect(await screen.findByText("原来的对话")).toBeVisible();
 });
