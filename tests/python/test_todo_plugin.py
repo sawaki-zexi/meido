@@ -126,6 +126,34 @@ def test_web_created_todo_has_no_chat_source(tmp_path, monkeypatch):
     assert created.json()["sourceMessageId"] is None
 
 
+def test_web_edit_interprets_changed_times_in_the_submitted_timezone(tmp_path, monkeypatch):
+    todos = TodoStore(tmp_path / "todos.db")
+    application = TodoApplicationService(todos, _sessions(tmp_path))
+    monkeypatch.setattr(main, "todo_store", todos)
+    monkeypatch.setattr(main, "todo_application", application)
+    client = TestClient(main.app)
+    created = client.post("/api/todos", json={
+        "title": "跨时区会议", "timezone": "UTC", "dueAt": "2026-10-25T00:00:00",
+    })
+    assert created.status_code == 201
+    todo_id = created.json()["id"]
+
+    edited = client.put(f"/api/todos/{todo_id}", json={
+        "timezone": "Asia/Shanghai", "dueAt": "2026-10-25T03:15:00",
+        "reminderAt": "2026-10-25T02:45:00", "reminderDate": None,
+    })
+    assert edited.status_code == 200
+    saved = client.get("/api/todos").json()["todos"][0]
+    assert saved["timezone"] == "Asia/Shanghai"
+    assert saved["dueAt"] == "2026-10-24T19:15:00+00:00"
+    assert saved["reminderAt"] == "2026-10-24T18:45:00+00:00"
+
+    renamed = client.put(f"/api/todos/{todo_id}", json={"title": "会议已确认"})
+    assert renamed.status_code == 200
+    assert renamed.json()["dueAt"] == saved["dueAt"]
+    assert renamed.json()["reminderAt"] == saved["reminderAt"]
+
+
 def test_tool_refuses_unqualified_and_missing_source_writes(tmp_path):
     todos = TodoStore(tmp_path / "todos.db")
     sessions = _sessions(tmp_path)
