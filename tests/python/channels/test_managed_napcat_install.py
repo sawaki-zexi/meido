@@ -132,6 +132,9 @@ def test_cancelling_preparation_retains_lease_until_dependency_worker_stops(tmp_
             assert await asyncio.to_thread(entered.wait, 5)
             task.cancel()
             await asyncio.sleep(.02)
+            task.cancel()
+            await asyncio.sleep(.02)
+            assert not task.done(), "repeated cancellation must not abandon a writing worker"
             second = install.NapCatInstaller(tmp_path)
             with pytest.raises(RuntimeError, match="另一运行实例"):
                 await second.prepare()

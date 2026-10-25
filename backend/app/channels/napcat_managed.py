@@ -23,9 +23,10 @@ from typing import Any
 
 import httpx
 
-from ..browser_use.process import spawn_process_tree, release_process_tree_owner
+from ..browser_use.process import release_process_tree_owner
 from ..browser_use.profile import ProfileLease
 from .napcat_managed_install import NapCatInstaller
+from .napcat_managed_process import spawn_napcat
 
 _PNG_END = b"\x00\x00\x00\x00IEND\xaeB`\x82"
 
@@ -68,7 +69,7 @@ def _free_port(excluded: set[int]) -> int:
 class ManagedNapCat:
     """Keep account refs durable while connections and login state remain live."""
 
-    def __init__(self, data_dir: Path, *, process_factory=spawn_process_tree,
+    def __init__(self, data_dir: Path, *, process_factory=spawn_napcat,
                  http_client: httpx.AsyncClient | None = None, poll_interval: float = .5) -> None:
         base = Path(data_dir).resolve()
         self.root = base / "managed-napcat"

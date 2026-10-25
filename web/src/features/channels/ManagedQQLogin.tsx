@@ -18,6 +18,7 @@ export function ManagedQQLogin({ roleId, existingAccount, canConnect, getRules, 
   const [session, setSession] = useState<ManagedQQSession | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [dismissedSessionError, setDismissedSessionError] = useState("");
   const mounted = useRef(true);
   const generation = useRef(0);
   const temporaryRef = useRef<string | null>(null);
@@ -42,7 +43,7 @@ export function ManagedQQLogin({ roleId, existingAccount, canConnect, getRules, 
 
   async function load(path: string, init?: RequestInit, createsSession = false) {
     const sequence = ++generation.current;
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setDismissedSessionError("");
     try {
       const result = await api<ManagedQQSession>(path, init);
       if (!mounted.current || generation.current !== sequence || !allowed.current) {
@@ -128,6 +129,9 @@ export function ManagedQQLogin({ roleId, existingAccount, canConnect, getRules, 
   }
 
   const loginReady = session?.preparation.stage === "ready" && session.login.phase !== "error";
+  const sessionError = session?.preparation.stage === "error" ? session.preparation.error
+    : session?.preparation.stage === "ready" ? session.login.error : null;
+  const sessionErrorKey = `${session?.ref}:${sessionError}`;
 
   return <section className="managed-qq-login" aria-label="QQ 扫码登录">
     {!session && <><p>使用 QQ 扫码登录，Meido 会准备并管理连接。</p><button type="button" className="primary" disabled={busy || !canConnect} onClick={() => void load(existingRef ? `${base}/${encodeURIComponent(existingRef)}` : `${base}/begin`, existingRef ? undefined : { method: "POST" }, !existingRef)}>{busy ? "正在准备…" : existingRef ? "读取登录状态" : "准备并扫码登录"}</button></>}
@@ -135,13 +139,12 @@ export function ManagedQQLogin({ roleId, existingAccount, canConnect, getRules, 
     {session && <>
       <p role="status">{preparationLabel[session.preparation.stage] ?? "正在准备"}{session.preparation.stage !== "ready" && session.preparation.stage !== "error" ? ` · ${session.preparation.percent}%` : ""}</p>
       {session.preparation.stage !== "ready" && session.preparation.stage !== "error" && <progress max={100} value={session.preparation.percent} aria-label="QQ 连接组件准备进度" />}
-      {session.preparation.error && <Notice>{session.preparation.error}</Notice>}
+      {sessionError && dismissedSessionError !== sessionErrorKey && <Notice onDismiss={() => setDismissedSessionError(sessionErrorKey)}>{sessionError}</Notice>}
       {loginReady && session.login.qrcode && <><img className="managed-qq-qrcode" src={session.login.qrcode} alt="QQ 登录二维码" /><p>使用手机 QQ 扫码，并在手机上确认登录。</p></>}
       {loginReady && session.login.phase === "starting" && <p role="status">正在启动 QQ，等待登录二维码…</p>}
       {loginReady && session.login.phase === "login_required" && !session.login.qrcode && <p role="status">等待登录二维码，可刷新二维码重试。</p>}
       {existingRef && session.login.phase === "stopped" && <p role="status">QQ 尚未启动，请点击上方的连接按钮。</p>}
       {loginReady && session.login.uin && <p role="status">已登录：{session.login.nickname || "QQ"}（{session.login.uin}）</p>}
-      {session.preparation.stage === "ready" && session.login.error && <Notice>{session.login.error}</Notice>}
       <div className="account-actions">
         {!existingRef && <button type="button" disabled={busy} onClick={() => void cancel()}>取消登录</button>}
         {!existingRef && (session.preparation.stage === "error" || session.login.phase === "error")

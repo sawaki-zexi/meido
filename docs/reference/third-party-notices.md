@@ -122,8 +122,9 @@ Windows发行同时保留官方 Microsoft.Windows.Console.ConPTY `1.24.260710001
 [上游许可证](https://github.com/NapNeko/NapCatQQ/blob/v4.18.28/LICENSE)全文。
 该组件有非商业使用等限制，其许可不替代 Meido 其余代码的许可。
 
-Windows x64 托管模式还要求本机已安装官方 Tencent QQ `9.9.31-49738`。
-程序核验并使用安装目录的运行组件，不复制或分发 Tencent DLL。
+Windows x64 托管模式始终使用固定运行包内的 QQ wrapper；首次从已安装官方 Tencent QQ
+校验并复制 crypto.dll、ssl.dll 到本机私有缓存，已验证的依赖组合为 `9.9.31-49738`、`9.9.36-53644`。
+之后启动重新校验缓存，不依赖桌面 QQ 当前版本。本仓库不包含或分发这些额外 DLL。
 本机 OneBot/WebUI 的随机 IPC 令牌仅保存在运行内存及 NapCat 所需的运行配置中；
 停止后清理配置，重启重新生成，不写入持久账号元数据。QQ 原生登录资料按账号隔离保留。
 

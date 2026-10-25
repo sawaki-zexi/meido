@@ -85,14 +85,20 @@ class NapCatInstaller:
                     lease = ProfileLease(self.root / "installer")
                 except RuntimeError:
                     raise RuntimeError("托管 QQ 安装正在由另一运行实例准备，请稍后重试") from None
-                work = asyncio.create_task(asyncio.to_thread(self._prepare_runtime_sync))
-                try:
-                    qq_runtime_dir = await asyncio.shield(work)
-                except asyncio.CancelledError:
-                    # Runtime caching writes too; retain the lease until all
-                    # preparation has stopped, including during cancellation.
-                    await work
-                    raise
+                work = asyncio.get_running_loop().run_in_executor(None, self._prepare_runtime_sync)
+                cancelled = False
+                while True:
+                    try:
+                        qq_runtime_dir = await asyncio.shield(work)
+                        break
+                    except asyncio.CancelledError:
+                        if work.cancelled():
+                            raise
+                        # A second cancellation must not abandon a thread
+                        # still writing while another installer takes its lease.
+                        cancelled = True
+                if cancelled:
+                    raise asyncio.CancelledError
             except Exception as exc:
                 self._validated_qq_dir = None
                 self._preparation = {"stage": "error", "percent": 0, "error": str(exc)}
