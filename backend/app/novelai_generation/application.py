@@ -122,6 +122,8 @@ class NovelaiApplication:
         if not policy['promptTagsEnabled'] and policy['allowedPromptTagRatings'] == ['general']:
             policy.pop('promptTagsEnabled')
             policy.pop('allowedPromptTagRatings')
+        if not policy['sceneCgPromptInstructions']:
+            policy.pop('sceneCgPromptInstructions')
         return hashlib.sha256(canonical([role.createdAt.isoformat(), row[0] if row else 0, policy]).encode()).hexdigest()
 
     def unavailable_reason(self, role, *, include_usage=True, scene=False):
@@ -134,7 +136,7 @@ class NovelaiApplication:
             return '尚未配置独立 NovelAI 凭据，或凭据清理尚未完成'
         policy = role.agentConfig.novelai
         if not (policy.sceneCgEnabled if scene else config['manualEnabled']):
-            return '场景 CG 许可已关闭' if scene else '全局手动生图许可已关闭'
+            return '场景 CG 许可已关闭' if scene else '聊天表情和手动生图许可已关闭'
         if scene and (not policy.scenePromptModelConfigurationId or self.model_configuration(policy.scenePromptModelConfigurationId) is None):
             return '场景辅助模型连接已不可用'
         if (policy.consentRevision if scene else config['manualConsentRevision']) != config['revision']:
@@ -214,6 +216,18 @@ class NovelaiApplication:
         validate_image(content, max_pixels=16 * 1024 * 1024)
         return content
 
+    def _expand_chat_prompt_tags(self, source: GenerationContext, role, arguments):
+        """Apply the role tag library to a real owner-turn expression request."""
+        policy = role.agentConfig.novelai
+        if source.ui_action or not policy.promptTagsEnabled:
+            return arguments
+        message = self.sessions.user_message_for_run(source.human_key)
+        if message is None or message.sessionKey != source.origin.session_key:
+            raise PermissionError('current owner input is unavailable for prompt tag expansion')
+        expanded = self.tags.expand(role.id, message.content,
+            arguments.get('prompt', ''), arguments.get('negative_prompt', ''))
+        return {**arguments, 'prompt': expanded['prompt'], 'negative_prompt': expanded['negative_prompt']}
+
     def _find_task(self, row, source):
         if row['task_id']:
             try:
@@ -245,6 +259,8 @@ class NovelaiApplication:
             public, settings = self._configuration()
             if expected_revision is not None and public['revision'] != expected_revision:
                 raise ValueError('generation service revision changed')
+            if scene_input is not None and not settings.allowTxt2Img:
+                raise PermissionError('scene CG requires txt2img mode to be enabled')
             # Preserve #171's saved UI/tool identity when no new mode was
             # requested. Explicit delivery choices remain part of the new key.
             fingerprint = fingerprint or hashlib.sha256(canonical(arguments if delivery_mode is None else
@@ -260,7 +276,19 @@ class NovelaiApplication:
                     raise PermissionError('generation request was cancelled')
                 if scene_input is not None and (source.scene_revision is None or not self.scenes.current(source)):
                     raise PermissionError('scene generation requires a current host candidate')
-                parameters: dict[str, object] = {'background': True} if scene_input is not None else normalize_request(arguments, settings)
+                chat_arguments = arguments
+                if scene_input is None:
+                    chat_arguments = self._expand_chat_prompt_tags(source, role, arguments)
+                parameters: dict[str, object] = ({
+                    'background': True,
+                    # Scene preferences are captured with the candidate. The
+                    # auxiliary model may finish later, so it must not read a
+                    # newer service configuration while committing its image.
+                    'qualityToggle': settings.addQualityTags,
+                    'ucPreset': settings.undesiredContentPreset,
+                } if scene_input is not None else normalize_request(chat_arguments, settings))
+                if regeneration is not None and delivery_mode == 'replacement' and parameters.get('samples', 1) != 1:
+                    raise ValueError('replacement delivery supports exactly one generated image')
                 owned_input = None if scene_input is not None else self._input(source, parameters)
                 if owned_input is not None:
                     parameters['inputSha256'] = hashlib.sha256(owned_input).hexdigest()

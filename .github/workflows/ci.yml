@@ -47,7 +47,7 @@ jobs:
   frontend:
     name: Frontend build
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true') }}
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -73,8 +73,8 @@ jobs:
   backend:
     name: Backend tests (${{ matrix.group }})
     needs: changes
-    # Keep each required matrix check present for frontend-only pull requests.
-    # The individual test steps below are skipped when the backend is unchanged.
+    # A skipped matrix job never expands its check names. Keep all required
+    # checks present and skip only the expensive steps for unrelated changes.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -83,16 +83,26 @@ jobs:
       matrix:
         group: [core, channels, drift]
     steps:
-      - name: Skip backend tests when unchanged
-        if: ${{ needs.changes.result == 'success' && needs.changes.outputs.backend != 'true' }}
-        run: echo "Backend files are unchanged; skipping backend tests."
+      - name: Select backend steps
+        id: scope
+        shell: bash
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          BACKEND_CHANGED: ${{ needs.changes.outputs.backend }}
+        run: |
+          if [[ "$CHANGES_RESULT" == "success" && "$BACKEND_CHANGED" == "false" ]]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No backend changes; this backend check is complete without running tests." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Check out repository
-        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.backend == 'true' }}
+        if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@v5
 
       - name: Set up Python
-        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.backend == 'true' }}
+        if: steps.scope.outputs.run == 'true'
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -100,15 +110,21 @@ jobs:
           cache-dependency-path: requirements.txt
 
       - name: Install dependencies
-        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.backend == 'true' }}
+        if: steps.scope.outputs.run == 'true'
         run: python -m pip install -r requirements.txt
 
+      - name: Verify CI workflow contract
+        if: steps.scope.outputs.run == 'true' && matrix.group == 'core'
+        run: |
+          python -m pip install -r .github/requirements-ci.txt
+          python -m unittest discover -s .github/tests -v
+
       - name: Compile Python sources
-        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.backend == 'true' }}
+        if: steps.scope.outputs.run == 'true'
         run: python -m compileall -q backend tests
 
       - name: Run tests
-        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.backend == 'true' }}
+        if: steps.scope.outputs.run == 'true'
         shell: bash
         run: |
           mkdir -p test-results
@@ -130,7 +146,7 @@ jobs:
           esac
 
       - name: Upload backend test report
-        if: ${{ always() && (needs.changes.result != 'success' || needs.changes.outputs.backend == 'true') }}
+        if: ${{ always() && steps.scope.outputs.run == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: backend-tests-${{ matrix.group }}

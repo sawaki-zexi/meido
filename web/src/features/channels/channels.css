@@ -155,3 +155,57 @@
 .channel-source-view .channel-messages { min-height: 180px; }
 .channel-source-view .channel-messages > header { padding: 0 0 16px; }
 .channel-source-view .channel-group-settings { margin: 0 0 16px; }
+
+/* The channel browser uses a phone-shaped modal from the chat entry point. */
+.dialog-phone .channel-view { height: 100%; border-radius: 23px; background: linear-gradient(180deg, #fffafe, #fff); overflow: hidden; }
+.dialog-phone .channel-view-header { min-height: 62px; padding: 9px 14px; border-bottom-color: #f2dce5; background: linear-gradient(180deg, #fffafd, #fff); }
+.dialog-phone .channel-view-header h1 { font-size: 15px; letter-spacing: .01em; }
+.dialog-phone .channel-view-header p { display: none; }
+.dialog-phone .channel-view-actions { gap: 4px; }
+.dialog-phone .channel-view-actions > button:not(.icon-button) { padding: 6px 8px; font-size: 11px; }
+.dialog-phone .channel-accounts-button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border-radius: 50%; color: #b7658b; background: #fff0f6; }
+.dialog-phone .channel-accounts-button span { display: none; }
+.dialog-phone .channel-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(118px, 26%) minmax(0, 1fr); overflow: hidden; }
+.dialog-phone .channel-thread-list { min-height: 0; padding: 12px 14px; border-right: 0; border-bottom: 1px solid var(--line); overflow: auto; }
+.dialog-phone .channel-thread-list h2 { margin-bottom: 8px; color: #a77b8d; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+.dialog-phone .channel-thread { margin-bottom: 4px; padding: 8px 7px; border: 1px solid transparent; border-radius: 13px; }
+.dialog-phone .channel-thread:hover, .dialog-phone .channel-thread.active { border-color: #f1cbdc; background: #fff0f6; }
+.dialog-phone .channel-messages { min-height: 0; }
+.dialog-phone .channel-messages > header { padding: 12px 14px; border-bottom-color: #f2dce5; background: #fff9fc; }
+.dialog-phone .channel-messages > header h2 { font-size: 14px; }
+.dialog-phone .channel-messages > header p { display: block; font-size: 10px; }
+.dialog-phone .channel-messages > ol { gap: 8px; padding: 14px; }
+.dialog-phone .channel-message { max-width: 90%; padding: 9px 11px; border-radius: 17px 17px 17px 6px; }
+.dialog-phone .channel-message.assistant { border-radius: 17px 17px 6px 17px; }
+.dialog-phone .channel-conversation-settings, .dialog-phone .channel-group-settings { max-height: 34%; padding: 10px 14px; }
+.dialog-phone .channel-phone-setup { display: grid; flex: 1; min-height: 0; place-items: center; background: radial-gradient(circle at 50% 38%, #fff5f9, transparent 42%), #fffafe; }
+.dialog-phone .channel-phone-setup-button { width: 68px; height: 68px; border: 1px solid #f1cfdf; border-radius: 50%; background: #fff1f7; color: #bd6a90; box-shadow: 0 12px 28px rgb(191 93 137 / 18%), inset 0 1px #fff; }
+.dialog-phone .channel-phone-setup-button:hover:not(:disabled) { background: #ffe7f1; color: #a9537b; }
+.dialog-phone .channel-phone-settings-app { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; background: #faf7f9; }
+.dialog-phone .channel-phone-settings-header { display: flex; flex: none; align-items: center; gap: 8px; min-height: 58px; padding: 8px 12px; border-bottom: 1px solid #f2dce5; background: #fffafd; }
+.dialog-phone .channel-phone-settings-header h2 { margin: 0; font-size: 16px; }
+.dialog-phone .channel-phone-settings-app .role-accounts { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 0; padding: 0; overflow: auto; }
+.dialog-phone .channel-phone-settings-app .role-accounts-content { gap: 16px; padding: 20px 16px; }
+.dialog-phone .channel-phone-settings-app .role-accounts-heading { align-items: center; }
+.dialog-phone .channel-phone-settings-app .role-accounts-heading p, .dialog-phone .channel-phone-settings-app .role-accounts-hint { display: none; }
+.dialog-phone .channel-phone-settings-app .role-accounts-heading { gap: 8px; }
+.dialog-phone .channel-phone-settings-app .role-accounts-actions button:not(.icon-button) { padding: 6px 10px; border-radius: 9px; font-size: 11px; }
+.dialog-phone .channel-phone-settings-app .role-accounts-heading h3 { margin: 0; font-size: 15px; }
+.dialog-phone .channel-phone-settings-app .role-account-list { border-color: #f1d8e3; border-radius: 14px; }
+.dialog-phone .channel-phone-settings-app .role-account-row { min-height: 62px; padding: 11px 10px; }
+.dialog-phone .channel-phone-settings-app .role-account-copy small { font-size: 11px; }
+.channel-account-page { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
+.channel-account-scroll { flex: 1; min-height: 0; overflow: auto; padding: 24px 16px; }
+.channel-account-hero { display: flex; align-items: center; flex-direction: column; gap: 8px; margin-bottom: 24px; text-align: center; }
+.channel-account-hero .role-account-mark, .channel-account-hero .role-account-avatar { flex-basis: 64px; width: 64px; height: 64px; border-radius: 20px; font-size: 28px; box-shadow: 0 8px 22px rgb(98 74 111 / 8%); }
+.channel-account-hero h3 { margin: 6px 0 0; font-size: 20px; font-weight: 650; }
+.channel-account-hero p { margin: 0; color: var(--ink-faint); font-size: 12px; }
+.channel-account-hero .role-account-status { padding: 4px 10px; border: 1px solid var(--line); border-radius: 20px; background: #fff; }
+.channel-account-page .account-detail { gap: 16px; padding: 0; }
+.channel-account-page .managed-qq-login, .channel-account-page .account-connection-fields, .channel-account-page .account-response-rules { padding: 18px; border: 1px solid #eee3e9; border-radius: 18px; background: #fff; }
+.channel-account-page .managed-qq-login > p { margin: 0; line-height: 1.8; }
+.channel-account-page .managed-qq-login > button { justify-self: stretch; min-height: 44px; border: 1px solid #efd0df; border-radius: 12px; background: #f8e9f0; color: var(--rose-deep); font-weight: 600; }
+.channel-account-page .account-disclosure { padding: 16px; border: 1px solid #eee3e9; border-radius: 16px; background: #fff; }
+.channel-account-page .account-disclosure > .account-connection-fields { padding: 16px 0 0; border: 0; }
+.channel-account-page .account-actions > button { min-height: 40px; }
+.channel-account-page .account-remove { flex-wrap: wrap; }

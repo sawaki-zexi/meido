@@ -184,10 +184,10 @@ export function ModelSettings({ active: pageActive = true }: { active?: boolean 
       <div className="field"><label htmlFor="model-id">模型 ID</label><input id="model-id" required value={draft.model} placeholder={preset?.modelHint ?? "例如：provider/model-name"} disabled={busy} onChange={(event) => setDraft({ ...draft, model: event.target.value })} /></div>
       <div className="field"><label htmlFor="model-context-window">上下文窗口（token）</label><input id="model-context-window" type="number" min="1" max="10000000" step="1" value={draft.contextWindowTokens} disabled={busy}
         onChange={event => { setDraft({ ...draft, contextWindowTokens: event.target.value }); setTestResult(''); }} />
-        <small>按服务商实际容量填写；留空时自动压缩未启用，继续使用有界原文窗口。</small></div>
+        <small>留空不启用自动压缩。</small></div>
       <div className="field"><label htmlFor="model-auto-compact">自动压缩阈值（token，可选）</label><input id="model-auto-compact" type="number" min="1" max={draft.contextWindowTokens ? Number(draft.contextWindowTokens) - 1 : undefined} step="1" value={draft.modelAutoCompactTokenLimit} disabled={busy}
         onChange={event => { setDraft({ ...draft, modelAutoCompactTokenLimit: event.target.value }); setTestResult(''); }} />
-        <small>必须小于上下文窗口；留空时使用高级设置的触发比例。</small></div>
+        <small>小于上下文容量；留空使用全局比例。</small></div>
       <ApiKeyInput key={`${editingId ?? "new"}:${draft.providerId}:${draft.api}`} id="model-api-key" label={draft.api === "openai-codex-responses" ? "ChatGPT OAuth Token" : "API Key"} value={draft.apiKey} configured={Boolean(editingConfiguration?.apiKeyConfigured)} placeholder={draft.api === "openai-codex-responses" ? "粘贴 ChatGPT OAuth Token" : "可选，本地模型服务可能不需要"} disabled={busy || !pageActive} onChange={(apiKey) => setDraft({ ...draft, apiKey })} onReveal={async () => {
         if (!editingId) return "";
         const result = await api<{ apiKey: string }>(`/api/model/configurations/${encodeURIComponent(editingId)}/reveal-key`, { method: "POST" });

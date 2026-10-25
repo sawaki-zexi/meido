@@ -10,7 +10,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 it('global manual grant enables a default-off role and preserves the original request ID on retry', async () => {
   let attempts = 0;
   const generated = { generationId: 'gen-171', attemptId: 'attempt-171', roleId: 'r1', status: 'succeeded',
-    parameters: { prompt: 'blue sky', mode: 'txt2img', width: 1024, height: 1024, seed: 171, model: 'nai-diffusion-4-5-curated', steps: 28 },
+    parameters: { prompt: 'blue sky', mode: 'txt2img', width: 1024, height: 1024, seed: 171, model: 'nai-diffusion-4-5-curated', steps: 28, qualityToggle: true, ucPreset: 2 },
     attachments: [{ id: 'image-171', name: 'generated.png', kind: 'image', mediaType: 'image/png', size: 171 }],
     taskId: 'task-171', createdAt: '2026-10-16T04:00:00Z', errorCode: '', consumption: 'possible', deliveryStatus: 'sent' };
   const { calls } = fakeBackend({
@@ -31,6 +31,7 @@ it('global manual grant enables a default-off role and preserves the original re
   expect(await screen.findByText('本地步骤尚未完成')).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: '重查本次生成' }));
   expect(await screen.findByAltText('generated.png')).toBeInTheDocument();
+  expect(screen.getByText(/质量标签：开启 · 负向预设：重度（2）/)).toBeInTheDocument();
   const posts = calls.filter((item) => item.method === 'POST');
   expect(posts).toHaveLength(2);
   expect((posts[0].body as { requestId: string }).requestId).toBe((posts[1].body as { requestId: string }).requestId);
@@ -68,4 +69,21 @@ it('aborts an old role request and ignores its late image after switching roles'
   expect(screen.queryByAltText('old.png')).not.toBeInTheDocument();
   expect(refresh).not.toHaveBeenCalled();
   expect(screen.getByLabelText('英文正向 tags')).toHaveValue('');
+});
+
+it('shows disabled generation modes and prevents submitting one', async () => {
+  fakeBackend({
+    'GET /api/services/novelai': () => ({ body: { enabled: true, manualEnabled: true, manualDailyAttempts: 5, manualConsentRevision: 3,
+      tokenConfigured: true, credentialCleanupPending: false, revision: 3, allowTxt2Img: true, allowImg2Img: false,
+      allowedModels: ['nai-diffusion-4-5-curated'], defaultModel: 'nai-diffusion-4-5-curated', nsfwEnabled: false, nsfwModel: 'nai-diffusion-4-5-full',
+      allowedSamplers: ['k_euler_ancestral'], defaultSampler: 'k_euler_ancestral', maxPixels: 1048576, maxSteps: 28, dailyAttemptLimit: 20 } }),
+    'GET /api/roles/r1/generations': () => ({ body: { generations: [], nextCursor: null,
+      usage: { day: '2026-10-16', accountAttempts: 0, manualAttempts: 0 } } }),
+  });
+  render(<GenerationDrawer role={role({ id: 'r1', name: '诗织', agentConfig: { novelai: { manualEnabled: true, consentRevision: 3 } } as AgentToolConfig })} onClose={() => {}} onGenerated={() => {}} />);
+  await screen.findByText('暂无生图历史。');
+  const mode = screen.getByLabelText('生成模式');
+  expect(screen.getByRole('option', { name: '图生图（服务已关闭）' })).toBeDisabled();
+  expect(mode).toHaveValue('txt2img');
+  expect(screen.getByRole('button', { name: '生成一张图片' })).toBeEnabled();
 });

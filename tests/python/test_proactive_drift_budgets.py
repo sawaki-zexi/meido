@@ -46,9 +46,10 @@ def test_multi_call_response_consumes_one_step_but_executes_neither_write_nor_se
         asyncio.run(main._proactive.close())
 
 
-def test_missing_finish_consumes_original_token_reservation_and_cooldown_without_fake_progress(api, monkeypatch):
+@pytest.mark.parametrize('max_steps,interval', [(20, 3), (3, 6)])
+def test_missing_finish_consumes_original_token_reservation_and_cooldown_without_fake_progress(api, monkeypatch, max_steps, interval):
     client, _, _, _ = api
-    role, path, now = prepare(client, monkeypatch)
+    role, path, now = prepare(client, monkeypatch, config_extra={'driftMaxSteps': max_steps, 'driftMinIntervalHours': interval})
     class NeverFinish:
         requests = 0
         async def stream_rich_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check=None):
@@ -60,18 +61,21 @@ def test_missing_finish_consumes_original_token_reservation_and_cooldown_without
     app = main._proactive
     try:
         now[0] += 1800
-        first = asyncio.run(settled(app, role))
-        assert adapter.requests == 16 and first['runs'][0]['status'] == 'aborted'
+        # The full token-limit case performs 16 persisted tool turns; Windows
+        # filesystem latency can exceed the short delivery-fixture deadline.
+        first = asyncio.run(settled(app, role, timeout=60))
+        expected = min(16, max_steps)
+        assert adapter.requests == expected and first['runs'][0]['status'] == 'aborted'
         assert first['runs'][0]['mode'] == 'drift' and first['runs'][0]['timeoutSeconds'] == 600
         skill = next(item for item in client.get(path + '/drift-skills').json()['skills'] if item['id'] == 'reading-notes')
         assert skill['progress'] is None
         with app._transaction() as db:
             budget = db.execute('SELECT steps,tokens FROM autonomy_drift_turns').fetchone()
-            assert tuple(budget) == (16, 8192)
+            assert tuple(budget) == (expected, expected * 512)
             started = db.execute('SELECT last_drift_at FROM autonomy_roles WHERE role_id=?', (role,)).fetchone()[0]
         now[0] += 1800
         second = asyncio.run(settled(app, role))
-        assert len(second['runs']) == 2 and adapter.requests == 16
+        assert len(second['runs']) == 2 and adapter.requests == expected
         with app._transaction() as db:
             row = db.execute('SELECT SUM(drifts),SUM(decisions) FROM autonomy_budgets WHERE role_id=?', (role,)).fetchone()
             assert tuple(row) == (1, 2)
@@ -80,7 +84,14 @@ def test_missing_finish_consumes_original_token_reservation_and_cooldown_without
         monkeypatch.setattr(main, '_proactive', None)
         restored = main._proactive_application()
         asyncio.run(restored.recover())
-        assert adapter.requests == 16 and len(restored.query(role)['runs']) == 2
+        assert adapter.requests == expected and len(restored.query(role)['runs']) == 2
+        now[0] = started + interval * 3600 - 1800
+        asyncio.run(restored.on_clock())
+        asyncio.run(settled(restored, role, clock=False))
+        assert adapter.requests == expected
+        now[0] = started + interval * 3600
+        asyncio.run(settled(restored, role, timeout=60))
+        assert adapter.requests == expected * 2
     finally:
         asyncio.run(main._proactive.close())
 

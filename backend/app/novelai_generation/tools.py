@@ -11,11 +11,26 @@ from .parameters import GenerationRequest
 
 _SCHEMA = GenerationRequest.model_json_schema()
 _SCHEMA.pop('title', None)
+# Manual/API requests keep ``mode`` strict, but ordinary chat expression
+# calls intentionally omit it so the host can select the safe txt2img path.
+# Keep the complete property set for backwards-compatible owner-directed
+# calls while making only the expression tags mandatory to the model.
+_SCHEMA['required'] = ['prompt']
+# The runtime applies the owner-controlled service default only to explicit
+# UI/API requests. Chat expression calls omit this field and are fixed to one
+# image below, so a static Pydantic default would be misleading to a model.
+_SCHEMA['properties']['samples'].pop('default', None)
+_SCHEMA['properties']['samples']['description'] = '生成张数（1–4）；普通聊天省略时由宿主固定为一张。'
+_SCHEMA['properties']['prompt']['description'] = '英文 NovelAI tags；普通聊天只描述角色此刻值得展示的表情、动作或构图。'
 
 
 class GenerateImageTool:
     definition = ToolDefinition(name='generate_image',
-        description='Generate one approved NovelAI image from English tags or an image attachment in this owner input. Uses finite paid-attempt allowance; unknown results are never retried. Explicit background=true returns accepted with its task and later delivers once to this original conversation.',
+        description=('Generate one approved NovelAI expression image during the current owner chat when an image adds value to the reply. '
+            'Decide yourself whether to call it; do not call it every turn and do not ask the owner to fill image parameters. '
+            'For an ordinary expression call, provide only English tags for the character\'s current emotion, pose, and framing; '
+            'the host supplies model, sampler, size, seed, limits, delivery, and a one-image default. '
+            'Explicit advanced fields remain accepted for owner-directed parameter reuse within the same allowlist. Uses one finite paid attempt; unknown results are never retried.'),
         input_schema=_SCHEMA, risk='external', source='builtin:novelai', exposure='direct',
         external_allowed=False, timeout_seconds=330, output_limit=4000, search_hint='生图 生成图片 NovelAI 立绘 场景图')
 
@@ -47,10 +62,21 @@ class GenerateImageTool:
                     or source.channel_source != self.bound_source.channel_source):
                 raise PermissionError('frozen generation source changed')
             self.application.scenes.note_manual(source)
-            result = await self.application.submit(source, dict(arguments), signal=context.signal,
+            # The normal chat path supplies only prompt tags. Keep the
+            # owner-directed advanced contract for compatibility, while
+            # applying safe host defaults when the model omits those fields.
+            request = dict(arguments)
+            request.setdefault('mode', 'txt2img')
+            request.setdefault('samples', 1)
+            request.setdefault('background', False)
+            # This tool is the chat-expression capability.  Do not let a
+            # model relabel it as a manual or scene request through an
+            # optional compatibility field.
+            request['intent'] = 'chat_expression'
+            result = await self.application.submit(source, request, signal=context.signal,
                 expected_revision=self.service_revision, expected_role_revision=self.role_revision)
             details = {key: result[key] for key in ('generationId', 'attemptId', 'status', 'attachments', 'taskId', 'errorCode', 'consumption')}
-            details['parameters'] = {key: result['parameters'][key] for key in ('model', 'sampler', 'seed', 'width', 'height', 'steps')}
+            details['parameters'] = {key: result['parameters'][key] for key in ('model', 'sampler', 'seed', 'samples', 'width', 'height', 'steps')}
             accepted = result['backgroundAccepted']
             if accepted:
                 details['status'] = 'accepted'

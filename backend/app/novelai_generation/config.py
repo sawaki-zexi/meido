@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 
 from ..credentials import CredentialStore
 
@@ -26,6 +26,7 @@ class NovelaiRoleConfig(BaseModel):
     sceneCgEnabled: StrictBool = False
     sceneCgDailyAttempts: StrictInt = Field(default=3, ge=1, le=100)
     scenePromptModelConfigurationId: str | None = None
+    sceneCgPromptInstructions: StrictStr = Field(default='', max_length=2000)
     autoWritebackRoleAssets: StrictBool = False
     promptTagsEnabled: StrictBool = False
     allowedPromptTagRatings: list[Literal['general', 'mature', 'explicit']] = Field(default_factory=_default_tag_ratings, min_length=1, max_length=3)
@@ -37,13 +38,20 @@ class NovelaiSettings(BaseModel):
     enabled: StrictBool = False
     manualEnabled: StrictBool = False
     manualDailyAttempts: StrictInt = Field(default=10, ge=1, le=100)
+    allowTxt2Img: StrictBool = True
+    allowImg2Img: StrictBool = True
     allowedModels: list[str] = Field(default_factory=lambda: [MODELS[0]], min_length=1, max_length=2)
     defaultModel: str = MODELS[0]
+    nsfwEnabled: StrictBool = False
+    nsfwModel: str = MODELS[1]
     allowedSamplers: list[str] = Field(default_factory=lambda: list(SAMPLERS), min_length=1, max_length=2)
     defaultSampler: str = SAMPLERS[0]
     maxPixels: StrictInt = Field(default=1_048_576, ge=4096, le=1_048_576)
     maxSteps: StrictInt = Field(default=28, ge=1, le=28)
     dailyAttemptLimit: StrictInt = Field(default=20, ge=1, le=1000)
+    defaultSamples: StrictInt = Field(default=1, ge=1, le=4)
+    addQualityTags: StrictBool = False
+    undesiredContentPreset: StrictInt = Field(default=0, ge=0, le=2)
 
     @field_validator('allowedModels', 'allowedSamplers')
     @classmethod
@@ -51,6 +59,13 @@ class NovelaiSettings(BaseModel):
         allowed = MODELS if info.field_name == 'allowedModels' else SAMPLERS
         if len(set(value)) != len(value) or any(item not in allowed for item in value):
             raise ValueError('unsupported allowlist')
+        return value
+
+    @field_validator('defaultModel', 'nsfwModel')
+    @classmethod
+    def model_id(cls, value):
+        if value not in MODELS:
+            raise ValueError('unsupported model')
         return value
 
 
@@ -88,6 +103,8 @@ class NovelaiSettingsStore:
             settings = NovelaiSettings.model_validate({**previous.model_dump(), **values})
             if settings.defaultModel not in settings.allowedModels or settings.defaultSampler not in settings.allowedSamplers:
                 raise ValueError('default must be in allowlist')
+            if settings.nsfwEnabled and settings.nsfwModel not in settings.allowedModels:
+                raise ValueError('NSFW default model must be in allowlist')
             next_revision = row[1] + 1
             parameters_changed = settings.model_dump(exclude={'enabled'}) != previous.model_dump(exclude={'enabled'})
             consent = next_revision if not parameters_changed and row[2] == row[1] else 0

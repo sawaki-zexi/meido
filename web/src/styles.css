@@ -180,6 +180,84 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .side-tabs button:hover { color: var(--ink); }
 .side-tabs button[aria-current="page"] { background: rgb(255 255 255 / 85%); color: var(--rose-deep); box-shadow: 0 5px 16px rgb(113 78 101 / 9%); }
 
+/* NovelAI Studio: a stage and history strip keep the current work visible while the prompt controls stay scannable. */
+.novelai-studio { display: grid; flex: 1; min-width: 0; min-height: 0; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 16px; padding: 24px clamp(16px, 3vw, 40px) 28px; overflow: auto; }
+.novelai-studio-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; max-width: 1240px; width: 100%; margin: 0 auto; }
+.novelai-studio-header h1 { margin: 0; font-size: 24px; }
+.novelai-studio-header .muted { margin-top: 3px; font-size: 13px; }
+.eyebrow { margin: 0 0 3px; color: var(--rose-deep); font-size: 11px; letter-spacing: 0; text-transform: uppercase; }
+.studio-header-controls { display: flex; align-items: flex-end; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+.studio-tags-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 7px; background: rgb(255 255 255 / 70%); color: var(--ink-soft); font-size: 12px; }
+.studio-tags-button:hover:not(:disabled) { border-color: var(--rose); background: var(--hover); }
+.studio-role-picker { display: grid; flex: 0 1 240px; gap: 4px; font-size: 12px; font-weight: 600; color: var(--ink-soft); }
+.novelai-studio-grid { display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 18px; width: 100%; max-width: 1240px; min-height: 0; margin: 0 auto; }
+.novelai-prompt-panel { display: grid; align-content: start; gap: 14px; min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 8px; background: rgb(255 255 255 / 58%); box-shadow: var(--panel-shadow); overflow: auto; }
+.studio-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.studio-panel-heading h2 { font-size: 16px; }
+.studio-panel-heading .muted { margin-top: 2px; font-size: 11.5px; }
+.studio-panel-heading .avatar { --size: 36px; }
+.studio-policy { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 9px 10px; border-radius: 8px; background: var(--danger-soft); color: var(--danger); font-size: 12px; }
+.studio-policy button { min-height: 28px; padding: 3px 8px; color: var(--danger); font-size: 11.5px; }
+.novelai-prompt-panel fieldset { gap: 11px; }
+.novelai-prompt-panel textarea { min-height: 78px; }
+.studio-size-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.studio-actions { justify-content: stretch; }
+.studio-actions button { flex: 1; }
+.studio-usage { color: var(--ink-faint); font-size: 11.5px; }
+.novelai-stage-column { display: grid; grid-template-rows: minmax(260px, 1fr) auto auto; gap: 12px; min-width: 0; min-height: 0; }
+.novelai-stage { position: relative; display: grid; place-items: center; min-height: 260px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: rgb(255 255 255 / 50%); box-shadow: var(--panel-shadow); }
+.novelai-stage > img { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.novelai-stage-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); align-items: center; gap: 12px; width: 100%; max-height: 100%; overflow: auto; padding: 12px; }
+.novelai-stage-gallery a { display: grid; place-items: center; min-width: 0; min-height: 0; }
+.novelai-stage-gallery img { display: block; max-width: 100%; max-height: 430px; width: auto; height: auto; object-fit: contain; }
+.studio-stage-status { display: grid; justify-items: center; gap: 8px; padding: 24px; color: var(--ink-faint); text-align: center; }
+.studio-stage-status strong { color: var(--ink-soft); font-size: 14px; }
+.studio-stage-status span { max-width: 360px; overflow-wrap: anywhere; font-size: 12px; }
+.studio-stage-meta { display: grid; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: rgb(255 255 255 / 58%); color: var(--ink-faint); font-size: 11.5px; }
+.studio-stage-summary { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; min-width: 0; }
+.studio-stage-facts { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; min-width: 0; }
+.studio-stage-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.studio-stage-meta details { min-width: 0; border-top: 1px solid var(--line); padding-top: 8px; }
+.studio-stage-meta summary { cursor: pointer; color: var(--ink-soft); font-weight: 600; }
+.studio-parameter-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin: 8px 0 0; }
+.studio-parameter-list > div { min-width: 0; }
+.studio-parameter-list dt { color: var(--ink-faint); font-size: 11px; }
+.studio-parameter-list dd { margin: 2px 0 0; color: var(--ink-soft); overflow-wrap: anywhere; white-space: pre-wrap; }
+.studio-parameter-wide { grid-column: 1 / -1; }
+.studio-stage-meta a { color: var(--rose-deep); text-decoration: none; }
+.studio-stage-meta a[aria-disabled="true"] { pointer-events: none; opacity: .45; }
+.studio-stage-meta button { min-height: 28px; padding: 3px 9px; font-size: 11.5px; }
+.novelai-filmstrip { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: rgb(255 255 255 / 52%); }
+.filmstrip-heading { display: grid; flex: none; gap: 1px; min-width: 48px; }
+.filmstrip-heading h2 { font-size: 14px; }
+.filmstrip-heading span { color: var(--ink-faint); font-size: 11px; }
+.filmstrip-scroll { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-x: auto; padding: 2px; }
+.filmstrip-item { display: grid; place-items: center; flex: 0 0 64px; width: 64px; height: 64px; min-height: 0; overflow: hidden; padding: 0; border: 2px solid transparent; border-radius: 8px; background: var(--surface-input); color: var(--ink-faint); font-size: 10px; }
+.filmstrip-item img { width: 100%; height: 100%; object-fit: cover; }
+.filmstrip-item.selected { border-color: var(--rose); box-shadow: 0 0 0 2px rgb(197 70 127 / 12%); }
+.filmstrip-item:hover:not(:disabled) { border-color: var(--sakura); }
+.filmstrip-more { flex: none; min-height: 28px; padding: 3px 8px; font-size: 11px; }
+.studio-background-status { width: 100%; max-width: 1240px; margin: 0 auto; color: var(--rose-deep); font-size: 12px; }
+
+@media (max-width: 900px) {
+  .novelai-studio-grid { grid-template-columns: minmax(230px, 300px) minmax(0, 1fr); gap: 12px; }
+  .novelai-studio { padding-inline: 16px; }
+}
+@media (max-width: 680px) {
+  .novelai-studio { display: block; padding: 16px 12px 24px; overflow-y: auto; }
+  .novelai-studio-header { align-items: stretch; flex-direction: column; gap: 12px; }
+  .novelai-studio-header h1 { font-size: 20px; }
+  .studio-header-controls { align-items: flex-end; justify-content: space-between; }
+  .studio-role-picker { flex: 1 1 180px; max-width: none; }
+  .novelai-studio-grid { display: flex; flex-direction: column; gap: 12px; }
+  .novelai-prompt-panel { order: 2; max-height: none; }
+  .novelai-stage-column { order: 1; min-height: 360px; }
+  .novelai-stage { min-height: 260px; }
+  .novelai-filmstrip { align-items: flex-start; }
+  .filmstrip-scroll { flex-wrap: nowrap; }
+  .studio-parameter-list { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* Conversation list rows, QQ-like: avatar, name, one-line summary. */
 .role-list { display: grid; gap: 8px; }
 .role-row {
@@ -293,6 +371,14 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .dialog-drawer { justify-content: flex-end; }
 .dialog-compact { align-items: center; justify-content: center; padding: 24px; }
 .dialog-compact .dialog-panel { width: min(360px, 100%); max-height: 100%; border-radius: 16px; animation: pop .18s ease-out; }
+.dialog-phone { align-items: center; justify-content: flex-end; padding: 24px clamp(20px, 4vw, 64px) 24px 24px; background: rgb(76 43 66 / 22%); }
+.dialog-phone .dialog-panel { position: relative; width: min(416px, 100%); height: min(820px, calc(100dvh - 40px)); grid-template-rows: 22px minmax(0, 1fr); padding: 8px; border: 1px solid rgb(255 255 255 / 88%); border-radius: 34px; background: linear-gradient(135deg, rgb(255 255 255 / 96%), #ffe8f1 44%, #f0b1c8); box-shadow: 0 24px 68px rgb(91 42 70 / 22%), 0 8px 20px rgb(203 103 145 / 15%), inset 0 2px rgb(255 255 255 / 90%), inset 0 -2px rgb(196 80 127 / 15%); animation: fade .2s ease-out; overflow: hidden; }
+.dialog-phone .dialog-panel::after { content: ""; position: absolute; z-index: 2; top: 5px; right: 23px; width: 6px; height: 6px; border: 1px solid rgb(255 255 255 / 62%); border-radius: 50%; background: #dc91b0; box-shadow: inset 0 1px rgb(125 58 87 / 25%); pointer-events: none; }
+.dialog-phone-drag-handle { display: grid; place-items: center; width: 100%; min-height: 22px; padding: 0; border: 0; background: transparent; cursor: grab; touch-action: none; }
+.dialog-phone-drag-handle span { width: 70px; height: 5px; border-radius: 999px; background: rgb(187 93 128 / 66%); box-shadow: 0 0 0 1px rgb(255 255 255 / 48%), inset 0 1px rgb(122 55 84 / 18%); }
+.dialog-phone .dialog-panel.is-dragging, .dialog-phone .dialog-panel.is-dragging .dialog-phone-drag-handle { cursor: grabbing; }
+.dialog-phone .dialog-header { display: none; }
+.dialog-phone .dialog-body { height: auto; min-height: 0; overflow: hidden; border: 2px solid rgb(255 255 255 / 94%); border-radius: 27px; background: #fff; box-shadow: inset 0 0 0 1px rgb(211 93 151 / 12%); }
 .dialog-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; background: linear-gradient(145deg, rgb(255 244 249 / 95%), rgb(250 239 247 / 92%)); outline: none; box-shadow: 0 16px 48px rgb(86 48 68 / 14%); }
 .dialog-modal .dialog-panel { width: min(820px, 100%); height: min(600px, 100%); border-radius: 16px; animation: pop .18s ease-out; }
 .dialog-drawer .dialog-panel { width: min(440px, 100%); height: 100%; animation: slide .2s ease-out; }
@@ -626,6 +712,8 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
   .message .avatar { display: none; }
   .dialog-modal { padding: 0; }
   .dialog-modal .dialog-panel { width: 100%; height: 100%; border-radius: 0; }
+  .dialog-phone { padding: 12px; }
+  .dialog-phone .dialog-panel { width: min(430px, 100%); height: min(860px, calc(100dvh - 24px)); border-radius: 30px; }
   .settings-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
   .settings-nav { display: flex; flex-wrap: wrap; padding: 8px; }
   .settings-nav button { width: auto; }
@@ -660,6 +748,12 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
   .mail-connection-grid { grid-template-columns: minmax(0, 1fr); }
   .mail-action-row > button { max-width: 100%; }
   .role-editor { padding: 16px; }
+}
+
+@media (max-width: 420px) {
+  .dialog-phone { padding: 8px; }
+  .dialog-phone .dialog-panel { width: 100%; height: calc(100dvh - 16px); padding: 7px; border-radius: 28px; }
+  .dialog-phone .dialog-body { border-radius: 22px; }
 }
 
 
@@ -1078,6 +1172,25 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
 .dialog-settings .card-form > .field, .dialog-settings .settings-card .field, .dialog-settings .plugin-detail > form > .field { padding-block: 18px; border-bottom: 1px solid var(--line); gap: 10px; }
 .dialog-settings .card-form > .field:last-of-type { border-bottom: 0; }
 .dialog-settings .field label, .dialog-settings label.field { font-size: .933rem; font-weight: 500; }
+.dialog-settings .checkbox-field { align-items: start; column-gap: 10px; row-gap: 6px; line-height: 1.6; }
+.dialog-settings .checkbox-field > input[type="checkbox"], .dialog-settings .checkbox-field > input[type="radio"] { margin: max(0px, calc((1lh - 16px) / 2)) 0 0; }
+.dialog-settings .field-hint { line-height: 1.65; font-weight: 400; overflow-wrap: anywhere; }
+.dialog-settings .card-form > .field > small { color: var(--ink-faint); font-weight: 400; line-height: 1.65; }
+.dialog-settings .plugin-settings:has(.plugin-detail) > .settings-page-heading { margin-bottom: 6px; }
+.dialog-settings .plugin-detail > form > .field-hint { margin: 12px 0 4px; }
+.dialog-settings .plugin-detail > form > button[type="submit"] { justify-self: end; margin-top: 20px; }
+.dialog-settings .coding-settings, .dialog-settings .role-purpose-settings, .dialog-settings .screen-perception-settings { display: grid; align-content: start; gap: 18px; min-width: 0; }
+.dialog-settings .coding-settings > p { color: var(--ink-soft); font-size: .933rem; line-height: 1.65; }
+.dialog-settings .plugin-detail .field:not(.checkbox-field) { gap: 8px; }
+.dialog-settings .plugin-detail > button[aria-expanded] { justify-self: start; }
+.dialog-settings .screen-perception-settings { padding-top: 16px; }
+.dialog-settings .screen-perception-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.dialog-settings .settings-disclosure { background: var(--surface-card); border-radius: 16px; }
+.dialog-settings .settings-disclosure > summary { padding: 16px 20px; font-size: .933rem; font-weight: 500; }
+.dialog-settings .settings-disclosure > div { padding: 4px 20px 20px; gap: 24px; }
+.dialog-settings .settings-disclosure form + form { padding-top: 24px; border-top: 1px solid var(--line); }
+.dialog-settings .settings-disclosure small { color: var(--ink-faint); line-height: 1.65; }
+.dialog-settings .settings-disclosure button[type="submit"] { justify-self: end; }
 .dialog-settings input:not([type="checkbox"]), .dialog-settings select, .dialog-settings textarea { background: var(--surface-input); font-size: .933rem; }
 .dialog-settings input:focus, .dialog-settings select:focus, .dialog-settings textarea:focus { background: var(--surface-card); }
 .dialog-settings .form-actions { padding-top: 24px; gap: 10px; }
@@ -1097,12 +1210,76 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
 .dialog-settings .plugin-services { gap: 32px; margin-top: 16px; }
 .dialog-settings .channel-identities { padding: 24px; }
 .dialog-settings .settings-subnav { margin-bottom: 8px; }
+.settings-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.settings-section { display: grid; align-content: start; gap: 18px; min-width: 0; padding: 24px; border: 1px solid var(--line); border-radius: 20px; background: var(--surface-card); }
+.settings-section > h3 { margin: 0; font-size: 1rem; font-weight: 600; }
+.settings-section > p, .settings-section fieldset > p { margin: 0; }
+.settings-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 20px 24px; }
+.settings-field-grid > .field { min-width: 0; }
+.settings-inline-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.settings-inline-button { justify-self: start; }
+.settings-subsection { display: grid; gap: 18px; min-width: 0; padding-top: 20px; border-top: 1px solid var(--line); }
+.settings-subsection > button { justify-self: start; }
+.settings-subsection > p { margin: 0; }
+.autonomy-settings { gap: 18px; }
+.proactive-settings { display: grid; gap: 16px; min-width: 0; }
+.dialog-settings .proactive-settings-card { display: grid; gap: 24px; min-width: 0; margin: 0; padding: 24px; }
+.proactive-settings-card > .settings-preference { padding: 0; }
+.dialog-settings .proactive-settings-card .field { padding: 0; border-bottom: 0; }
+.proactive-profile { max-width: 400px; }
+.dialog-settings .proactive-execution { border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
+.dialog-settings .proactive-execution > summary { padding: 20px 0 0; }
+.dialog-settings .proactive-execution[open] > summary { padding-bottom: 20px; }
+.dialog-settings .proactive-execution > div { padding: 0; gap: 24px; }
+.dialog-settings .proactive-execution .settings-section { padding: 20px 0 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none; }
+.proactive-settings-card > p { margin: 0; }
+.autonomy-core-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.autonomy-core-grid > .settings-disclosure { grid-column: 1 / -1; }
+.autonomy-runtime-actions { padding-top: 18px; border-top: 1px solid var(--line); }
+.autonomy-settings p, .autonomy-settings small { overflow-wrap: anywhere; }
+.autonomy-settings .field > small { font-weight: 400; color: var(--ink-faint); line-height: 1.65; }
+.autonomy-records ul { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.autonomy-records li, .settings-permission-list > fieldset { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; }
+.autonomy-records p { margin: 0; font-size: .867rem; line-height: 1.7; }
+.settings-permission-list { display: grid; gap: 20px; min-width: 0; }
+.settings-permission-list > button { justify-self: start; }
+.settings-validation { margin: 0; padding: 12px 16px; border-radius: 12px; background: var(--hover); color: var(--danger); font-size: .933rem; }
+.dialog-settings .settings-role-picker { width: min(100%, 400px); margin-bottom: 4px; }
+.dialog-settings .settings-section { box-shadow: var(--panel-shadow); }
+.dialog-settings .settings-section fieldset { gap: 18px; }
+.dialog-settings .settings-section fieldset > legend:not(.settings-sr-only) { margin-bottom: 12px; font-size: .933rem; font-weight: 500; letter-spacing: normal; }
+.dialog-settings .settings-disclosure > summary, .dialog-settings .settings-disclosure-trigger { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; list-style: none; color: var(--ink); }
+.dialog-settings .settings-disclosure > summary::-webkit-details-marker { display: none; }
+.dialog-settings .settings-disclosure > summary::after, .dialog-settings .settings-disclosure-trigger::after { content: ''; flex: 0 0 6px; width: 6px; height: 6px; margin-left: auto; border-right: 1.5px solid var(--ink-faint); border-bottom: 1.5px solid var(--ink-faint); transform: rotate(45deg); }
+.dialog-settings .settings-disclosure[open] > summary::after, .dialog-settings .settings-disclosure-trigger[aria-expanded="true"]::after { transform: rotate(225deg); }
+.dialog-settings .settings-disclosure > summary > small { margin-left: auto; font-size: .8rem; font-weight: 400; white-space: nowrap; }
+.dialog-settings .settings-disclosure > summary:has(> small)::after { margin-left: 4px; }
+.dialog-settings .settings-disclosure > summary:hover { background: var(--hover); border-radius: 16px; }
+.dialog-settings .settings-disclosure > div { padding-top: 8px; gap: 18px; }
+.dialog-settings .settings-disclosure-trigger { padding: 16px 20px; border: 0; background: transparent; font-size: .933rem; font-weight: 500; }
+.dialog-settings .settings-disclosure-inset { border-radius: 12px; box-shadow: none; background: transparent; }
+.dialog-settings .settings-disclosure-inset > summary { padding: 14px 16px; }
+.dialog-settings .settings-disclosure-inset > div { padding: 4px 16px 16px; }
+.dialog-settings .settings-save-actions { justify-content: flex-end; padding-top: 0; }
+.dialog-settings .settings-disclosure :is(section, article, fieldset) > button { justify-self: start; }
+.dialog-settings .settings-disclosure :is(section, article, fieldset) > button[type="submit"] { justify-self: end; }
+.dialog-settings .settings-disclosure article + article { padding-top: 18px; border-top: 1px solid var(--line); }
+.dialog-settings .mail-section, .dialog-settings .owner-plugin-section { padding: 24px; border: 1px solid var(--line); border-radius: 20px; background: var(--surface-card); box-shadow: var(--panel-shadow); }
+.dialog-settings .mail-section h3, .dialog-settings .owner-plugin-section h3 { font-size: 1rem; }
+.dialog-settings .mail-section > button { justify-self: end; }
+.dialog-settings .mail-section-heading .muted, .dialog-settings .mail-section > .muted { font-size: .867rem; line-height: 1.65; }
 :root[data-stream-replies="false"] .message.assistant[aria-busy="true"] .bubble { display: none; }
 @keyframes ambient-breathe { 50% { background-position: 100% 100%; } }
 :root[data-backdrop-motion="true"] .shell, :root[data-backdrop-motion="true"] .dialog-settings { background-size: 160% 160%; animation: ambient-breathe 24s ease-in-out infinite; }
 @media (min-width: 1200px) {
   .dialog-settings .card-form > .field:not(.checkbox-field), .dialog-settings .plugin-detail > form > .field:not(.checkbox-field) { grid-template-columns: minmax(0, 1fr) minmax(240px, 360px); align-items: center; column-gap: 32px; }
-  .dialog-settings .field > .field-hint, .dialog-settings .api-key-field > small { grid-column: 2; }
+  .dialog-settings .card-form > .field:not(.checkbox-field) > small,
+  .dialog-settings .card-form > .field:not(.checkbox-field) > .field-hint,
+  .dialog-settings .plugin-detail > form > .field:not(.checkbox-field) > .field-hint,
+  .dialog-settings .card-form > .api-key-field > small { grid-column: 2; }
+}
+@media (max-width: 1100px) {
+  .autonomy-core-grid, .settings-field-grid { grid-template-columns: minmax(0, 1fr); }
 }
 :root[data-font-size="small"] { font-size: 14px; }
 :root[data-font-size="large"] { font-size: 17px; }
@@ -1124,6 +1301,10 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
   .dialog-settings .configuration-main { flex-basis: 100%; }
   .dialog-settings .configuration-actions { width: 100%; justify-content: flex-end; }
   .dialog-settings .card-form, .dialog-settings .plugin-detail > form { padding-inline: 16px; }
+  .settings-field-grid { grid-template-columns: minmax(0, 1fr); }
+  .dialog-settings .settings-section, .dialog-settings .mail-section, .dialog-settings .owner-plugin-section { padding: 20px 16px; border-radius: 16px; }
+  .dialog-settings .settings-disclosure > summary, .dialog-settings .settings-disclosure-trigger { padding: 16px; }
+  .dialog-settings .settings-disclosure > div { padding-inline: 16px; }
 }
 
 /* Role memories: a quiet reading surface with a chronological thread. */
@@ -1261,4 +1442,232 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
   .memory-management > button { margin-left: 0; }
   .dialog-compact:has(.memory-entry-editor), .dialog-compact:has(.memory-similar-intro) { padding: 12px; }
   .memory-entry-editor { padding: 20px; }
+}
+
+/* NovelAI settings: scoped form layout, shared settings surfaces. */
+.novelai-settings-page {
+  display: grid;
+  gap: 18px;
+}
+
+.novelai-page-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+}
+
+.novelai-head-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.novelai-status-badge,
+.novelai-credential-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink-faint);
+  background: var(--surface-card);
+  font-size: .8rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.novelai-status-badge > span:first-child,
+.novelai-credential-badge > span:first-child {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+
+.novelai-status-badge.is-enabled,
+.novelai-credential-badge.is-ready {
+  border-color: rgb(61 122 90 / 19%);
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.novelai-status-badge.is-enabled > span:first-child,
+.novelai-credential-badge.is-ready > span:first-child {
+  background: var(--success);
+}
+
+.novelai-credential-badge.is-warning {
+  border-color: rgb(154 91 32 / 20%);
+  color: #9a5b20;
+  background: #fff5e9;
+}
+
+.novelai-credential-badge.is-warning > span:first-child {
+  background: #c9792a;
+}
+
+.novelai-head-actions button {
+  min-height: 40px;
+  padding-inline: 16px;
+}
+
+.novelai-settings-form {
+  display: grid;
+  gap: 18px;
+}
+
+.novelai-settings-card {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--surface-card);
+  box-shadow: var(--panel-shadow);
+}
+
+.novelai-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dialog-settings .novelai-card-heading h3 {
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.novelai-option-row {
+  padding: 4px 0;
+  border: 0;
+  color: var(--ink-soft);
+}
+
+.novelai-consent-block {
+  display: grid;
+  gap: 16px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.novelai-budget-field {
+  display: grid;
+  gap: 8px;
+  max-width: 360px;
+}
+
+.novelai-budget-field > small {
+  color: var(--ink-faint);
+  font-size: .867rem;
+  line-height: 1.65;
+  font-weight: 400;
+}
+
+.novelai-consent-row {
+  padding-top: 4px;
+}
+
+.novelai-consent-block > .field-hint {
+  margin: -8px 0 0 26px;
+  color: var(--rose-deep);
+  font-size: .867rem;
+}
+
+.novelai-parameter-group {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+  padding: 0 0 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.novelai-parameter-group:last-of-type { padding-bottom: 0; border-bottom: 0; }
+
+.novelai-parameter-group legend {
+  margin-bottom: 12px;
+  color: var(--ink-soft);
+  font-size: .933rem;
+  font-weight: 500;
+  letter-spacing: normal;
+}
+
+.novelai-mode-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 32px;
+}
+
+.novelai-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px 24px;
+}
+
+.novelai-settings-grid > .field {
+  min-width: 0;
+  gap: 8px;
+}
+
+.dialog-settings .novelai-form-actions {
+  justify-content: flex-end;
+  padding: 20px 0 0;
+  border-top: 1px solid var(--line);
+}
+
+.novelai-form-actions .primary {
+  min-width: 132px;
+}
+
+.novelai-credentials-card {
+  gap: 17px;
+}
+
+.novelai-credentials-card > .field {
+  gap: 8px;
+}
+
+.novelai-credential-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.novelai-credential-actions .danger {
+  color: var(--danger);
+}
+
+@media (max-width: 760px) {
+  .novelai-page-heading {
+    align-items: flex-start;
+    gap: 16px;
+  }
+
+  .novelai-head-actions {
+    justify-content: flex-start;
+  }
+
+  .novelai-settings-card {
+    padding: 20px 16px;
+    border-radius: 16px;
+  }
+
+  .novelai-card-heading {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .novelai-settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

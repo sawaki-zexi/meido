@@ -4,6 +4,7 @@ import { api, errorMessage } from "../../api/client";
 import { Icon, IconButton } from "../../ui/Icon";
 import { Notice } from "../../ui/Status";
 import { GroupListeningPanel } from "./GroupListeningPanel";
+import { RoleAccountsPanel } from "./RoleAccountsPanel";
 import { channelName, type Account } from "./channelAccounts";
 import type { MemoryOrigin } from "../memory/MemoryPanel";
 import "./channels.css";
@@ -95,7 +96,7 @@ function ChannelAttachments({ roleId, attachments, onMediaLoad }: { roleId: stri
   })}</>;
 }
 
-export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnly = false }: { role: Role; onBack: () => void; onAccounts?: () => void; initialSource?: ChannelMemorySource | null; sourceOnly?: boolean }) {
+export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialSource, sourceOnly = false, phoneMode = false }: { role: Role; onBack: () => void; onAccounts?: () => void; onOpenSettings?: () => void; initialSource?: ChannelMemorySource | null; sourceOnly?: boolean; phoneMode?: boolean }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [threads, setThreads] = useState<Thread[]>([]);
   const [threadsLoaded, setThreadsLoaded] = useState(false);
@@ -116,6 +117,7 @@ export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnl
   const [error, setError] = useState("");
   const [sourceError, setSourceError] = useState("");
   const [sourceHighlightedId, setSourceHighlightedId] = useState<string | null>(null);
+  const [phoneSettingsOpen, setPhoneSettingsOpen] = useState(false);
   const [listeningSource, setListeningSource] = useState<ConversationMessage | null>(null);
   const loadRequest = useRef(0);
   const listeningRequest = useRef(0);
@@ -132,6 +134,8 @@ export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnl
   const liveListening = useRef(new Map<string, number>());
   const liveListeningThreads = useRef(new Map<string, Set<string>>());
   const selectedThread = useMemo(() => threads.find((thread) => thread.threadId === selected) ?? null, [threads, selected]);
+  const showPhoneSetup = phoneMode && !sourceOnly && threadsLoaded && !error && accounts.length === 0 && threads.length === 0;
+  const openAccounts = () => { if (phoneMode) setPhoneSettingsOpen(true); else onAccounts?.(); };
   const threadsRef = useRef<Thread[]>(threads);
   threadsRef.current = threads;
   const messagesRef = useRef<ConversationMessage[]>(messages);
@@ -579,12 +583,12 @@ export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnl
   const canLoadOlder = hasOlderMessages || hasOlderListening;
   const keepAtBottomAfterMediaLoad = () => {
     const list = messageList.current;
-    if (list && atBottom.current) list.scrollTop = list.scrollHeight;
+    if (list && !phoneSettingsOpen && atBottom.current) list.scrollTop = list.scrollHeight;
   };
 
   useLayoutEffect(() => {
     const list = messageList.current;
-    if (!list) return;
+    if (!list || phoneSettingsOpen) return;
     const anchor = olderAnchor.current;
     if (anchor && !loadingOlder) {
       list.scrollTop = anchor.top + list.scrollHeight - anchor.height;
@@ -596,17 +600,22 @@ export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnl
       && list.clientHeight > 0 && list.scrollHeight <= list.clientHeight) {
       void loadOlderMessages();
     }
-  }, [timelineMessages, canLoadOlder, loadingOlder, messagesReady, listeningReady, error, sourceOnly]);
+  }, [timelineMessages, canLoadOlder, loadingOlder, messagesReady, listeningReady, error, sourceOnly, phoneSettingsOpen]);
 
-  return <section className={`channel-view${sourceOnly ? " channel-source-view" : ""}`} aria-label={sourceOnly ? "渠道记忆来源" : undefined} aria-labelledby={sourceOnly ? undefined : "channel-view-title"}>
-    {!sourceOnly && <header className="channel-view-header">
+  return <section className={`channel-view${sourceOnly ? " channel-source-view" : ""}`} aria-label={sourceOnly ? "渠道记忆来源" : phoneSettingsOpen ? "渠道设置" : undefined} aria-labelledby={sourceOnly || phoneSettingsOpen ? undefined : "channel-view-title"}>
+    {!sourceOnly && !phoneSettingsOpen && <header className="channel-view-header">
       <IconButton icon="back" label="返回聊天" onClick={onBack} />
-      <div><h1 id="channel-view-title">{role.name} · 手机会话</h1><p>{threads.length} 个会话</p></div>
-      <div className="channel-view-actions">{onAccounts && <button type="button" onClick={onAccounts}>角色账号</button>}<IconButton icon="refresh" label="刷新会话" onClick={() => void load()} /></div>
+      <div><h1 id="channel-view-title">{phoneMode ? role.name : `${role.name} · 手机会话`}</h1><p>{threads.length} 个会话</p></div>
+      <div className="channel-view-actions">{onAccounts && <button type="button" className="channel-accounts-button" aria-label="角色账号" title="角色账号" onClick={openAccounts}><Icon name="settings" size={16} /><span>角色账号</span></button>}{!phoneMode && <IconButton icon="refresh" label="刷新会话" onClick={() => void load()} />}</div>
     </header>}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {sourceError && <Notice onDismiss={() => setSourceError("")}>{sourceError}</Notice>}
-    <div className="channel-workspace">
+    {phoneSettingsOpen && <div className="channel-phone-settings-app" aria-label="设置">
+      <RoleAccountsPanel roleId={role.id} presentation="page" onBack={() => setPhoneSettingsOpen(false)} onOpenSettings={onOpenSettings} />
+    </div>}
+    {showPhoneSetup ? <div className="channel-phone-setup" aria-label="渠道设置" hidden={phoneSettingsOpen}>
+      {onAccounts && <IconButton icon="settings" label="设置渠道" className="channel-phone-setup-button" onClick={openAccounts} />}
+    </div> : <div className="channel-workspace" hidden={phoneSettingsOpen}>
       {!sourceOnly && <aside className="channel-thread-list" aria-label="渠道会话列表">
         <h2>会话</h2>
         {threads.length === 0 && <p className="channel-empty">暂无渠道会话</p>}
@@ -621,7 +630,7 @@ export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnl
           <header><div><h2>{selectedThread.title || selectedThread.chatId}</h2><p>{channelName[selectedThread.channel] ?? selectedThread.channel} · {selectedThread.chatType === "group" ? "群聊" : "私聊"}</p>{sourceLabel(selectedThread.viaAccount) && <p>{sourceLabel(selectedThread.viaAccount)}{selectedThread.accountRemoved ? " · 账号已移除" : ""}</p>}</div></header>
           <ol ref={messageList} onScroll={() => {
             const list = messageList.current;
-            if (!list) return;
+            if (!list || phoneSettingsOpen) return;
             atBottom.current = list.scrollHeight - list.scrollTop - list.clientHeight < 24;
           }}>
             {canLoadOlder && <li className="channel-older"><button type="button" disabled={loadingOlder} onClick={() => void loadOlderMessages()}>{loadingOlder ? "正在读取…" : "读取更早消息"}</button></li>}
@@ -674,6 +683,6 @@ export function ChannelView({ role, onBack, onAccounts, initialSource, sourceOnl
         </> : <div className="channel-no-selection"><Icon name="chat" size={22} /><p>{sourceOnly ? sourceError ? "来源当前不可访问" : "正在读取记忆来源…" : "选择一个会话"}</p></div>}
       </section>
 
-    </div>
+    </div>}
   </section>;
 }

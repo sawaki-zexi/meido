@@ -94,6 +94,32 @@ describe("渠道记忆来源只读查看", () => {
 });
 
 describe("渠道会话查看", () => {
+  it("从手机设置返回长会话后保留阅读位置", async () => {
+    const messages = Array.from({ length: 50 }, (_, index) => ({
+      id: `m-${index}`, sequence: index + 1, role: "user", content: `消息 ${index + 1}`,
+      createdAt: "2026-10-24T00:00:00Z", metadata: { threadId: "t1" },
+    }));
+    fakeBackend({
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [] } }),
+      "GET /api/roles/r1/channels/threads\\?networkOnly=true": () => ({ body: { threads: [
+        { threadId: "t1", sessionKey: "thread:t1", channel: "telegram", chatId: "42", chatType: "private", title: "长会话", lastActivity: "2026-10-24T00:00:00Z" },
+      ] } }),
+      "GET /api/roles/r1/channels/threads/t1/messages\\?limit=50&networkOnly=true": () => ({ body: { messages, hasMore: false, nextBefore: null } }),
+      "GET /api/channels/settings": () => ({ body: { channels: [] } }),
+    });
+    const user = userEvent.setup();
+    render(<ChannelView role={role({ id: "r1", name: "诗织" })} phoneMode onBack={() => undefined} onAccounts={() => undefined} />);
+    await user.click(await screen.findByRole("button", { name: /长会话/ }));
+    await screen.findByText("消息 50");
+    const list = within(screen.getByRole("region", { name: "会话消息" })).getByRole("list");
+    Object.defineProperties(list, { clientHeight: { value: 200 }, scrollHeight: { value: 2000 } });
+    list.scrollTop = 400;
+    fireEvent.scroll(list);
+    await user.click(screen.getByRole("button", { name: "角色账号" }));
+    await user.click(await screen.findByRole("button", { name: "返回多端会话" }));
+    expect(within(screen.getByRole("region", { name: "会话消息" })).getByRole("list").scrollTop).toBe(400);
+  });
+
   it("迟到的首屏目录和消息页不能覆盖实时线程及同 ID 消息", async () => {
     const sources: EventTarget[] = [];
     class Source extends EventTarget {

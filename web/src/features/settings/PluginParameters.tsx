@@ -10,14 +10,14 @@ export function PluginParameters({ plugin, onSaved }: { plugin: PluginState; onS
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  if (plugin.id !== 'browser' && plugin.id !== 'screen') return <p className="field-hint">此插件没有公共参数。</p>;
+  if (plugin.id !== 'browser' && plugin.id !== 'screen') return null;
   return <form aria-label="公共插件参数" onSubmit={event => {
     event.preventDefault(); if (busy) return;
     setBusy(true); setError(''); setNotice('');
     void plugins.configure(saved, values).then(value => { setSaved(value); setValues(value.values); onSaved(value); setNotice('公共参数已保存'); })
       .catch(cause => setError(errorMessage(cause, '无法保存公共参数'))).finally(() => setBusy(false));
   }}>
-    <p className="field-hint">公共参数对所有角色生效，保存不会启动插件。</p>
+    <p className="field-hint">对所有角色生效。</p>
     {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
     {plugin.id === 'browser' ? <>
       <label className="field checkbox-field"><input type="checkbox" checked={values.headed === true} disabled={busy}

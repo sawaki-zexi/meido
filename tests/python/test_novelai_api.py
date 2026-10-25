@@ -54,6 +54,104 @@ def test_explicit_owner_ui_generates_once_in_original_session_without_fake_human
         assert all(secret not in first.text for secret in ('fixture-secret-171', '"path"', 'base64'))
 
 
+def test_owner_quality_preferences_reach_fixture_and_are_saved_in_attempt_history(novelai_service):
+    service = novelai_service
+    current = service.application.settings.public()
+    configured = service.application.settings.save({
+        'addQualityTags': True,
+        'undesiredContentPreset': 2,
+        'confirmManualConsumption': True,
+    }, expected_revision=current['revision'])
+    application = FastAPI()
+    application.include_router(service.application.router())
+    with TestClient(application) as client:
+        path = f'/api/roles/{service.role.id}/generations'
+        common = {'requestId': '17117117117117117117117117117126',
+            'expectedRevision': configured['revision']}
+        rejected = client.post(path, json={**common,
+            'parameters': {**service.request, 'qualityToggle': False, 'ucPreset': 0}})
+        assert rejected.status_code == 422
+        assert not service.peer.requests
+
+        response = client.post(path, json={**common, 'parameters': service.request})
+        assert response.status_code == 200, response.text
+        generation = response.json()['generation']
+        assert generation['parameters']['qualityToggle'] is True
+        assert generation['parameters']['ucPreset'] == 2
+        payload = service.peer.requests[0]['body']['parameters']
+        assert payload['qualityToggle'] is True
+        assert payload['ucPreset'] == 2
+
+        history = client.get(path).json()['generations']
+        assert history[0]['attemptId'] == generation['attemptId']
+        assert history[0]['parameters']['qualityToggle'] is True
+        assert history[0]['parameters']['ucPreset'] == 2
+
+
+def test_explicit_ui_generation_keeps_its_prompt_instead_of_matching_owner_tags(novelai_service):
+    from backend.app.models import RoleUpdateInput
+
+    service = novelai_service
+    service.application.tags.save(service.role.id, {'name': 'Garden', 'keywords': ['garden'],
+        'prompt': 'flowers', 'negative_prompt': '', 'rating': 'general', 'enabled': True})
+    service.application.update_role(service.role.id, RoleUpdateInput(name=service.role.name,
+        profile=service.role.profile, agentConfig={'novelai': {'promptTagsEnabled': True}}))
+    application = FastAPI()
+    application.include_router(service.application.router())
+    with TestClient(application) as client:
+        path = f'/api/roles/{service.role.id}/generations'
+        response = client.post(path, json={'requestId': '17117117117117117117117117117127',
+            'expectedRevision': service.application.settings.public()['revision'],
+            'parameters': {**service.request, 'prompt': 'blue sky'}})
+        assert response.status_code == 200, response.text
+    assert service.peer.requests[0]['body']['input'] == 'blue sky'
+
+
+def test_ui_generation_persists_all_requested_images_and_delivers_them_once(novelai_service):
+    import io
+    import zipfile
+    service = novelai_service
+    with zipfile.ZipFile(io.BytesIO(service.peer.body)) as source:
+        png = source.read('image.png')
+    body = io.BytesIO()
+    with zipfile.ZipFile(body, 'w') as archive:
+        for index in range(3):
+            archive.writestr(f'image-{index}.png', png)
+    service.peer.body = body.getvalue()
+    app = FastAPI()
+    app.include_router(service.application.router())
+    with TestClient(app) as client:
+        path = f'/api/roles/{service.role.id}/generations'
+        revision = client.get('/api/services/novelai').json()['revision']
+        response = client.post(path, json={'requestId': '17117117117117117117117117117128',
+            'expectedRevision': revision, 'parameters': {**service.request, 'samples': 3}})
+        assert response.status_code == 200, response.text
+        generation = response.json()['generation']
+        assert generation['status'] == 'succeeded' and generation['errorCode'] == ''
+        assert generation['parameters']['samples'] == 3
+        assert len(generation['attachments']) == 3
+        assert service.peer.requests[0]['body']['parameters']['n_samples'] == 3
+        message = service.sessions.list_messages(f'role:{service.role.id}')[-1]
+        assert message.metadata['attachments'] == generation['attachments']
+
+
+def test_ui_generation_uses_service_default_samples_when_omitted(novelai_service):
+    service = novelai_service
+    current = service.application.settings.public()
+    configured = service.application.settings.save({'defaultSamples': 3,
+        'confirmManualConsumption': True}, expected_revision=current['revision'])
+    application = FastAPI()
+    application.include_router(service.application.router())
+    with TestClient(application) as client:
+        path = f'/api/roles/{service.role.id}/generations'
+        response = client.post(path, json={'requestId': '17117117117117117117117117117129',
+            'expectedRevision': configured['revision'], 'parameters': service.request})
+        assert response.status_code == 200, response.text
+        generation = response.json()['generation']
+        assert generation['parameters']['samples'] == 3
+        assert service.peer.requests[0]['body']['parameters']['n_samples'] == 3
+
+
 @pytest.mark.parametrize('status,body,expected', [(401, b'private response', 'failed_response'),
     (402, b'private response', 'failed_response'), (408, b'private response', 'unknown'),
     (429, b'private response', 'unknown'), (500, b'private response', 'unknown'),

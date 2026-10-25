@@ -2,6 +2,7 @@
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from .preferences import ProactivePreferences
 
 DRIFT_TOOL_NAMES = frozenset({'read_file', 'write_file', 'edit_file', 'list_dir', 'recall_memory', 'web_fetch',
     'web_search', 'search_messages', 'fetch_messages', 'shell', 'message_push'})
@@ -111,11 +112,12 @@ class SourceGrant(BaseModel):
         return self
 
 
-class AutonomyConfig(BaseModel):
+class AutonomyConfig(ProactivePreferences):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
     revision: int = Field(default=0, ge=0)
     activeDecisionEnabled: bool = False
     driftEnabled: bool = False
+    inheritRoleModel: bool = False
     decisionModelConfigurationId: str | None = Field(default=None, min_length=1, max_length=128)
     driftModelConfigurationId: str | None = Field(default=None, min_length=1, max_length=128)
     defaultTargetRef: str = Field(default="desktop", min_length=1, max_length=256)
@@ -132,9 +134,9 @@ class AutonomyConfig(BaseModel):
 
     @model_validator(mode="after")
     def require_explicit_grants(self):
-        if self.activeDecisionEnabled and not self.decisionModelConfigurationId:
+        if self.activeDecisionEnabled and not self.inheritRoleModel and not self.decisionModelConfigurationId:
             raise ValueError("active decision requires an explicit model")
-        if self.driftEnabled and not self.driftModelConfigurationId:
+        if self.driftEnabled and not self.inheritRoleModel and not self.driftModelConfigurationId:
             raise ValueError("Drift requires an explicit model")
         if self.driftMeme.enabled and self.driftMeme.visionModelConfigurationId != self.driftModelConfigurationId:
             raise ValueError('meme vision purpose must explicitly select the same saved Drift model')
