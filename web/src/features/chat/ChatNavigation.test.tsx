@@ -126,6 +126,7 @@ it('从角色聊天打开按角色隔离的多端会话视图', async () => {
   expect(phone).toBeVisible();
   expect(phone).toHaveAttribute('aria-modal', 'true');
   expect(await within(phone).findByRole('heading', { name: '诗织', level: 1 })).toBeVisible();
+  await user.click(await within(phone).findByRole('button', { name: /Telegram 历史/ }));
   expect(screen.getByRole('complementary', { name: '渠道会话列表' })).toBeVisible();
   const thread = screen.getByRole('button', { name: /Alice/ });
   expect(thread).toBeVisible();
@@ -133,6 +134,8 @@ it('从角色聊天打开按角色隔离的多端会话视图', async () => {
   expect(await within(screen.getByRole('region', { name: '会话消息' })).findByText('外部消息')).toBeVisible();
   expect(screen.queryByText('会话设置')).not.toBeInTheDocument();
 
+  await user.click(within(phone).getByRole('button', { name: '返回会话列表' }));
+  await user.click(within(phone).getByRole('button', { name: '返回手机主页' }));
   await user.click(screen.getByRole('button', { name: '返回聊天' }));
   expect(screen.queryByRole('dialog', { name: '诗织的多端会话' })).not.toBeInTheDocument();
   expect(await screen.findByRole('heading', { name: '诗织', level: 1 })).toBeVisible();

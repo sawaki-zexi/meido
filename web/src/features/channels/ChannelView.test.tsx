@@ -28,6 +28,86 @@ function setupBackend(accounts: ReturnType<typeof makeAccount>[] = []) {
   });
 }
 
+describe("手机账号应用导航", () => {
+  it("已连接且没有会话时显示 QQ 应用，打开后才显示单页空状态", async () => {
+    setupBackend([makeAccount("qq", "qq-1", { enabled: true, connectionStatus: "connected" })]);
+    const user = userEvent.setup();
+    render(<ChannelView role={role({ id: "r1", name: "诗织" })} phoneMode onBack={() => undefined} onAccounts={() => undefined} />);
+    const app = await screen.findByRole("button", { name: "QQ" });
+    expect(screen.getByRole("button", { name: "设置渠道" })).toBeVisible();
+    expect(screen.queryByText("选择一个会话")).not.toBeInTheDocument();
+    expect(screen.queryByText("暂无渠道会话")).not.toBeInTheDocument();
+    await user.click(app);
+    expect(await screen.findByText("还没有会话")).toBeVisible();
+    expect(screen.queryByRole("region", { name: "会话消息" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "返回手机主页" }));
+    expect(screen.getByRole("button", { name: "QQ" })).toBeVisible();
+  });
+
+  it("按账号隔离会话，离线账号和已移除账号的历史仍能逐页读取", async () => {
+    fakeBackend({
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [
+        makeAccount("qq", "qq-new", { enabled: true, connectionStatus: "connected" }),
+        makeAccount("telegram", "tg-offline"),
+      ] } }),
+      "GET /api/roles/r1/channels/threads\\?networkOnly=true": () => ({ body: { threads: [
+        { threadId: "qq-chat", accountId: "qq-new", channel: "qq", chatId: "1", chatType: "private", title: "QQ 联系人", lastActivity: "2026-10-25T00:00:00Z" },
+        { threadId: "tg-chat", accountId: "tg-offline", channel: "telegram", chatId: "2", chatType: "private", title: "Telegram 联系人", lastActivity: "2026-10-25T00:00:00Z" },
+        { threadId: "old-chat", accountId: "qq-old", channel: "qq", chatId: "3", chatType: "private", title: "旧 QQ 联系人", accountRemoved: true, viaAccount: { accountId: "qq-old", displayName: "旧账号" }, lastActivity: "2026-10-25T00:00:00Z" },
+      ] } }),
+      "GET .*threads/qq-chat/messages.*": () => ({ body: { messages: [{ id: "m1", sequence: 1, role: "user", content: "当前账号消息", createdAt: "2026-10-25T00:00:00Z", metadata: { threadId: "qq-chat" } }], hasMore: false } }),
+      "GET .*threads/old-chat/messages.*": () => ({ body: { messages: [{ id: "old1", sequence: 1, role: "user", content: "保留的旧账号消息", createdAt: "2026-10-25T00:00:00Z", metadata: { threadId: "old-chat" } }], hasMore: false } }),
+    });
+    const user = userEvent.setup();
+    render(<ChannelView role={role({ id: "r1", name: "诗织" })} phoneMode onBack={() => undefined} onAccounts={() => undefined} />);
+    await user.click(await screen.findByRole("button", { name: "QQ" }));
+    let list = within(screen.getByRole("complementary", { name: "渠道会话列表" }));
+    expect(list.getByRole("button", { name: /QQ 联系人/ })).toBeVisible();
+    expect(list.queryByRole("button", { name: /旧 QQ|Telegram/ })).not.toBeInTheDocument();
+    await user.click(list.getByRole("button", { name: /QQ 联系人/ }));
+    expect(await screen.findByText("当前账号消息")).toBeVisible();
+    expect(screen.queryByRole("complementary", { name: "渠道会话列表" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "返回会话列表" }));
+    await user.click(screen.getByRole("button", { name: "返回手机主页" }));
+    const offline = screen.getByRole("button", { name: "Telegram，离线" });
+    expect(offline).toBeEnabled();
+    await user.click(offline);
+    list = within(screen.getByRole("complementary", { name: "渠道会话列表" }));
+    expect(list.getByRole("button", { name: /Telegram 联系人/ })).toBeVisible();
+    expect(list.queryByRole("button", { name: /QQ 联系人/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "返回手机主页" }));
+    await user.click(screen.getByRole("button", { name: /QQ 历史/ }));
+    await user.click(screen.getByRole("button", { name: /旧 QQ 联系人/ }));
+    expect(await screen.findByText("保留的旧账号消息")).toBeVisible();
+  });
+
+  it("打开空账号列表期间收到首条消息后显示会话，仍由用户点击进入聊天", async () => {
+    const sources: EventTarget[] = [];
+    class Source extends EventTarget {
+      constructor(_url: string) { super(); sources.push(this); }
+      close() {}
+    }
+    vi.stubGlobal("EventSource", Source);
+    const thread = { threadId: "live", accountId: "qq-1", channel: "qq", chatId: "42", chatType: "private", title: "新联系人", lastActivity: "2026-10-25T00:00:00Z" };
+    const message = { id: "live1", sequence: 1, role: "user", content: "实时到达的消息", createdAt: thread.lastActivity, metadata: { threadId: "live" } };
+    fakeBackend({
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [makeAccount("qq", "qq-1", { enabled: true, connectionStatus: "connected" })] } }),
+      "GET /api/roles/r1/channels/threads\\?networkOnly=true": () => ({ body: { threads: [] } }),
+      "GET .*threads/live/messages.*": () => ({ body: { messages: [message], hasMore: false } }),
+    });
+    const user = userEvent.setup();
+    render(<ChannelView role={role({ id: "r1", name: "诗织" })} phoneMode onBack={() => undefined} onAccounts={() => undefined} />);
+    await user.click(await screen.findByRole("button", { name: "QQ" }));
+    expect(screen.getByText("还没有会话")).toBeVisible();
+    await act(async () => sources[0].dispatchEvent(new MessageEvent("channel_update", { data: JSON.stringify({ type: "message", roleId: "r1", thread, message }) })));
+    const row = await screen.findByRole("button", { name: /新联系人/ });
+    expect(screen.queryByRole("region", { name: "会话消息" })).not.toBeInTheDocument();
+    expect(screen.queryByText("还没有会话")).not.toBeInTheDocument();
+    await user.click(row);
+    expect(await screen.findByText("实时到达的消息")).toBeVisible();
+  });
+});
+
 describe("渠道记忆来源只读查看", () => {
   const sourceRole = role({ id: "r1", name: "Elysia" });
   const thread = { threadId: "source", sessionKey: "thread:source", channel: "telegram", chatId: "42", chatType: "private", title: "来源私聊", lastActivity: "2026-10-14T00:00:00Z" };
@@ -109,14 +189,19 @@ describe("渠道会话查看", () => {
     });
     const user = userEvent.setup();
     render(<ChannelView role={role({ id: "r1", name: "诗织" })} phoneMode onBack={() => undefined} onAccounts={() => undefined} />);
+    await user.click(await screen.findByRole("button", { name: /Telegram 历史/ }));
     await user.click(await screen.findByRole("button", { name: /长会话/ }));
     await screen.findByText("消息 50");
     const list = within(screen.getByRole("region", { name: "会话消息" })).getByRole("list");
     Object.defineProperties(list, { clientHeight: { value: 200 }, scrollHeight: { value: 2000 } });
     list.scrollTop = 400;
     fireEvent.scroll(list);
-    await user.click(screen.getByRole("button", { name: "角色账号" }));
+    await user.click(screen.getByRole("button", { name: "返回会话列表" }));
+    await user.click(screen.getByRole("button", { name: "返回手机主页" }));
+    await user.click(screen.getByRole("button", { name: "设置渠道" }));
     await user.click(await screen.findByRole("button", { name: "返回多端会话" }));
+    await user.click(await screen.findByRole("button", { name: /Telegram 历史/ }));
+    await user.click(screen.getByRole("button", { name: /长会话/ }));
     expect(within(screen.getByRole("region", { name: "会话消息" })).getByRole("list").scrollTop).toBe(400);
   });
 

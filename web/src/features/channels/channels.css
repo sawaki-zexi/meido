@@ -183,6 +183,30 @@
 .channel-phone-settings-icon { display: grid; place-items: center; width: 76px; height: 76px; border: 1px solid #efd6e2; border-radius: 23px; background: linear-gradient(145deg, #fff, #fbeef5); color: #b77194; box-shadow: 0 6px 18px rgb(153 99 128 / 8%); }
 .channel-phone-settings-button:hover .channel-phone-settings-icon { border-color: #e4bad0; background: #faeaf2; }
 .channel-phone-settings-button:focus-visible { outline: 2px solid var(--rose); outline-offset: 4px; }
+.channel-view [hidden] { display: none !important; }
+.channel-phone-home { flex: 1; min-height: 0; overflow: auto; background: #fffafe; }
+.channel-phone-apps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: start; gap: 20px 8px; padding: 28px 16px; margin: 0; list-style: none; }
+.channel-phone-apps li { min-width: 0; }
+.channel-phone-app { display: grid; justify-items: center; gap: 9px; width: 100%; min-width: 0; padding: 10px 4px; border: 0; border-radius: 18px; background: transparent; color: var(--ink); font: inherit; font-size: 12px; cursor: pointer; }
+.channel-phone-app:hover { background: #faeff5; }
+.channel-phone-app:focus-visible { outline: 2px solid var(--rose); outline-offset: 2px; }
+.channel-phone-app-icon, .channel-phone-app .channel-phone-settings-icon { display: grid; place-items: center; flex: none; width: 58px; height: 58px; margin: 0; border-radius: 18px; font-size: 26px; }
+.channel-phone-app > span:not(:first-child) { max-width: 100%; overflow-wrap: anywhere; text-align: center; }
+.channel-phone-app-icon.is-offline { opacity: .5; }
+.channel-phone-app small { color: var(--ink-faint); font-size: 10px; }
+.channel-phone-home.is-empty { display: grid; place-items: center; }
+.channel-phone-home.is-empty .channel-phone-apps { grid-template-columns: minmax(0, 104px); }
+.channel-phone-home.is-empty .channel-phone-settings-icon { width: 76px; height: 76px; border-radius: 23px; }
+.dialog-phone .channel-phone-workspace { display: flex; flex-direction: column; overflow: hidden; }
+.dialog-phone .channel-phone-workspace > .channel-thread-list { flex: 1; padding: 10px 12px; border: 0; }
+.dialog-phone .channel-phone-workspace > .channel-messages { flex: 1; min-height: 0; }
+.channel-phone-empty { display: grid; place-content: center; justify-items: center; gap: 12px; height: 100%; min-height: 180px; padding: 24px 12px; color: var(--ink-faint); text-align: center; }
+.channel-phone-empty p { margin: 0; color: var(--ink-soft); font-size: 15px; }
+.channel-phone-empty small { font-size: 12px; }
+.channel-phone-loading { margin: auto; padding: 24px; color: var(--ink-faint); font-size: 13px; }
+.channel-phone-retry { align-self: center; margin: auto; }
+.dialog-phone .channel-phone-chat-header p { display: block; font-size: 10px; }
+.channel-phone-chat-source { display: block; margin-top: 4px; color: var(--ink-faint); font-size: 10px; overflow-wrap: anywhere; }
 .dialog-phone .channel-phone-settings-app { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; background: #faf7f9; }
 .dialog-phone .channel-phone-settings-header { display: flex; flex: none; align-items: center; gap: 8px; min-height: 58px; padding: 8px 12px; border-bottom: 1px solid #f2dce5; background: #fffafd; }
 .dialog-phone .channel-phone-settings-header h2 { margin: 0; font-size: 16px; }
