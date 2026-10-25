@@ -43,10 +43,11 @@ web/src/
     settings/         设置分类注册、记忆和主人资料配置
     tavern/           角色酒馆与角色卡牌
   App.tsx          外壳布局、首页角色选择、浮层切换和跨功能协调
-  styles.css       设计变量（:root）和全部样式
+  styles.css       设计变量（:root）、全局布局和共享样式
 ```
 
 - 功能状态放在各自的 `use*` Hook 中，组件只负责渲染；`App.tsx` 只协调浮层切换和跨功能动作（例如删除角色后清空其会话）。
+- 待办面板参考 Today AI 的分组任务界面，使用 `page` 形态居中展开宽幅工作区：桌面左侧为导航与筛选，右侧为清单，详情使用宽幅表单；窄屏导航移到顶部，手机全屏展示。保留“待办 / 提醒”页签与独立详情编辑；数据加载和写入由 `useTodos` 管理，局部样式位于 `features/todo/todo.css`，复用全局外观变量。日期分组和时间编辑规则见[待办规格](todo-reminder-spec.md#9-前端行为)。
 - 流式事件先由 `api/stream.ts` 解析为类型化事件，再由 `applyStreamEvent` 纯函数更新消息列表。
 - 目录名避免使用 `roles/`：它被 `.gitignore` 用于本地角色数据。
 

@@ -67,8 +67,11 @@ it('没有角色时仍能从全局入口查看待办', async () => {
   const user = userEvent.setup();
   render(<App />);
   await user.click(await screen.findByRole('button', { name: '待办' }));
-  expect(await screen.findByRole('dialog', { name: '待办' })).toBeVisible();
-  expect(await screen.findByText('提醒已暂停，待办清单仍可继续使用。')).toBeVisible();
+  const panel = await screen.findByRole('dialog', { name: '待办' });
+  expect(panel).toBeVisible();
+  expect(await within(panel).findByRole('heading', { name: '眼前的事，都告一段落' })).toBeVisible();
+  await user.click(within(panel).getByRole('tab', { name: '提醒' }));
+  expect(await within(panel).findByText('提醒已暂停，待办清单仍可继续使用。')).toBeVisible();
   expect(calls.some(call => call.path.endsWith('/session') || call.method !== 'GET')).toBe(false);
 });
 
@@ -87,7 +90,9 @@ it('全局待办的来源仍跳到原角色消息，不受当前聊天角色影�
   render(<App />);
   await screen.findByRole('heading', { name: '诗织', level: 1 });
   await user.click(await screen.findByRole('button', { name: '待办' }));
-  await user.click(await screen.findByRole('button', { name: '查看来源' }));
+  const panel = await screen.findByRole('dialog', { name: '待办' });
+  await user.click(await within(panel).findByRole('button', { name: '查看待办：交报告' }));
+  await user.click(within(panel).getByRole('button', { name: '查看来源' }));
   expect(await screen.findByRole('heading', { name: '爱丽丝', level: 1 })).toBeVisible();
   expect(screen.queryByRole('dialog', { name: '待办' })).not.toBeInTheDocument();
   expect(await screen.findByText('明天交报告')).toBeVisible();
