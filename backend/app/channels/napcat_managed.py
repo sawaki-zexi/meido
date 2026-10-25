@@ -31,6 +31,34 @@ from .napcat_managed_process import spawn_napcat
 _PNG_END = b"\x00\x00\x00\x00IEND\xaeB`\x82"
 
 
+def _login_feedback(data: dict[str, Any]) -> tuple[str, bool]:
+    """Keep phone-confirmation progress separate from explicit runtime failures."""
+    raw = data.get("loginError")
+    if not raw:
+        return "", False
+    message = str(raw)
+    code = None
+    if message.startswith("登录失败:"):
+        try:
+            arguments = json.loads(message.partition(":")[2])
+            if isinstance(arguments, list) and len(arguments) > 1 and isinstance(arguments[1], dict):
+                message = str(arguments[1].get("message") or "")
+                code = arguments[1].get("serverErrorCode")
+        except (ValueError, TypeError):
+            pass
+    if "二维码" in message and ("过期" in message or "失效" in message):
+        return "QQ 登录二维码已过期，请刷新后重试", True
+    failed_code = code not in (None, "", 0, "0")
+    prompt = re.sub(r"\s+", "", message).lower().rstrip("。.!！…")
+    if not failed_code and data.get("loginPhase") in {"qrcode_scanned", "initializing"} and prompt in {
+        "等待手机确认", "等待手机qq确认", "请在手机qq上确认登录", "请在手机qq上确认", "请在手机上确认登录",
+    }:
+        return "", False
+    # Never expose callback payloads: they can contain URLs, tokens and paths.
+    suffix = f"（错误码 {code}）" if failed_code and re.fullmatch(r"(?:\d{1,8}|0x[\da-fA-F]{1,8})", str(code)) else ""
+    return f"QQ 登录遇到问题，请查看手机 QQ 上的提示{suffix}；当前会话会继续检查，可确认登录或手动刷新重试", False
+
+
 def _remove_readonly(function: Callable[[str], object], path: str, error: BaseException) -> None:
     # QQ marks its Windows known folders read-only, including empty Documents.
     if os.name != "nt" or not isinstance(error, PermissionError):
@@ -303,8 +331,9 @@ class ManagedNapCat:
                 return self._login("starting")
             self._clear_qr(ref)
             return self._login("online", uin=uin, nickname=str(identity.get("nick") or ""))
-        return self._login("login_required", qrcode=self._qr_image(ref, str(data.get("qrcodeurl") or "")),
-                           error="QQ 登录未完成，请刷新二维码后重试" if data.get("loginError") else "",
+        error, expired = _login_feedback(data)
+        return self._login("login_required", qrcode="" if expired else self._qr_image(ref, str(data.get("qrcodeurl") or "")),
+                           error=error,
                            loginPhase=str(data.get("loginPhase") or ""))
 
     def _clear_qr(self, ref: str) -> None:

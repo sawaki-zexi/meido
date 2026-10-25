@@ -238,3 +238,99 @@ def test_managed_login_presents_official_qr_and_rejects_account_substitution(tmp
             assert all(process.returncode == 0 for process, _ in spawned)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("pending_phase,upstream_error,expects_error,expects_qr", [
+    ("qrcode_scanned", '登录失败: [1, {"message": "等待手机确认"}]', False, True),
+    ("initializing", '登录失败: [1, {"message": "等待手机确认"}]', False, True),
+    ("qrcode_scanned", '登录失败: [1, {"serverErrorCode": 45, "message": "版本过低"}]', True, True),
+    ("qrcode_scanned", '登录失败: [1, {"serverErrorCode": 45, "message": "等待手机确认"}]', True, True),
+    ("qrcode_scanned", "二维码已过期，请刷新", True, False),
+    ("initializing", "unrecognized https://qq.test/private?token=secret", True, True),
+])
+def test_phone_confirmation_keeps_polling_and_preserves_real_errors(tmp_path, monkeypatch, pending_phase, upstream_error, expects_error, expects_qr):
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        for name in ("node.exe", "index.js", "wrapper.node", "napcat/napcat.mjs"):
+            bundle.writestr(name, "official fixture")
+    package = archive.getvalue()
+    monkeypatch.setattr(install, "ARCHIVE_SHA256", hashlib.sha256(package).hexdigest())
+    monkeypatch.setattr(install.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(package))
+    monkeypatch.setattr(install, "resolve_official_qq", lambda *a: tmp_path / "official-qq")
+    state = {"phase": "waiting_qrcode", "error": "", "online": False, "polls": 0}
+    image = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nm1kAAAAASUVORK5CYII=")
+
+    class Process:
+        returncode = None
+
+        def kill(self):
+            self.returncode = 0
+
+        async def wait(self):
+            self.returncode = 0
+
+    class Owner:
+        def __init__(self, process):
+            self.process = process
+
+        def close(self):
+            self.process.kill()
+
+    async def spawn(*command, **kwargs):
+        directory = Path(kwargs["env"]["NAPCAT_WORKDIR"]) / "cache"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "qrcode.png").write_bytes(image)
+        process = Process()
+        return process, Owner(process)
+
+    def respond(request):
+        if request.url.path.endswith("/auth/login"):
+            data = {"Credential": "fixture-secret"}
+        elif request.url.path.endswith("/CheckLoginStatus"):
+            state["polls"] += 1
+            data = {"isLogin": state["online"], "loginPhase": state["phase"], "loginError": state["error"], "qrcodeurl": "https://qq.test/scan"}
+        elif request.url.path.endswith("/GetQQLoginInfo"):
+            data = {"uin": "10001", "nick": "QQ name", "online": True}
+        else:
+            raise AssertionError(request.url.path)
+        return httpx.Response(200, json={"code": 0, "data": data})
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            manager = ManagedNapCat(tmp_path, process_factory=spawn, http_client=client, poll_interval=.001)
+            ref = manager.begin("role-a")
+            try:
+                await manager.connect(ref, role_id="role-a")
+                for _ in range(200):
+                    before = await manager.status(ref, role_id="role-a")
+                    if before["login"].get("qrcode"):
+                        break
+                    await asyncio.sleep(.001)
+                assert before["login"].get("qrcode")
+                # Synthetic responses use the pinned runtime's JSON callback shape.
+                state.update(phase=pending_phase, error=upstream_error)
+                polls = state["polls"]
+                for _ in range(200):
+                    current = await manager.status(ref, role_id="role-a")
+                    assert current["login"]["phase"] != "error", current["login"]
+                    if state["polls"] >= polls + 3:
+                        break
+                    await asyncio.sleep(.001)
+                assert state["polls"] >= polls + 3
+                assert bool(current["login"].get("error")) == expects_error
+                assert current["login"]["qrcode"] == (before["login"]["qrcode"] if expects_qr else "")
+                assert "secret" not in json.dumps(current)
+                if "serverErrorCode" in upstream_error:
+                    assert "45" in current["login"]["error"]
+                state.update(phase="ready", online=True)
+                for _ in range(200):
+                    current = await manager.status(ref, role_id="role-a")
+                    if current["login"]["phase"] == "online":
+                        break
+                    await asyncio.sleep(.001)
+                assert current["login"]["phase"] == "online"
+                assert current["login"]["uin"] == "10001"
+            finally:
+                await manager.close()
+
+    asyncio.run(scenario())
