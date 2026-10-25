@@ -33,6 +33,7 @@ export function TodoDrawer({ onClose, onOpenSource }: Props) {
   const groups = groupTodos(visible, today, timezone);
   const unread = data.reminders.filter(reminder => !reminder.readAt).length;
   const activeCount = data.todos.filter(isActive).length;
+  const readOnly = editing !== null && editing !== "new" && !isActive(editing);
 
   useEffect(() => {
     if (!focusedId || editing || tab !== "list") return;
@@ -50,7 +51,7 @@ export function TodoDrawer({ onClose, onOpenSource }: Props) {
   const selectTab = (next: "list" | "reminders") => { setFocusedId(null); setTab(next); };
   const save = async (event: FormEvent) => {
     event.preventDefault();
-    if (!form.title.trim() || !editing) return;
+    if (!form.title.trim() || !editing || readOnly) return;
     const original = editing === "new" ? emptyForm() : formFor(editing, formTimezone);
     const dueUnchanged = editing !== "new" && original.dueDate === form.dueDate && original.dueTime === form.dueTime;
     const reminderUnchanged = editing !== "new" && original.reminderDate === form.reminderDate && original.reminderTime === form.reminderTime;
@@ -80,8 +81,8 @@ export function TodoDrawer({ onClose, onOpenSource }: Props) {
       {editing ? <form className="todo-editor" onSubmit={event => void save(event)}>
         <button type="button" className="todo-back" disabled={data.busy} onClick={closeEditor}><Icon name="back" size={16} />返回清单</button>
         <div className="todo-editor-title"><h3>{editing === "new" ? "新建待办" : "待办详情"}</h3>{editing !== "new" && <span>{statusLabels[editing.status]}</span>}</div>
-        <fieldset className="todo-editor-fields" disabled={data.busy}>
-        <label className="field"><span>标题</span><input autoFocus required maxLength={200} value={form.title} onChange={event => setForm({ ...form, title: event.target.value })} /></label>
+        <fieldset className="todo-editor-fields" disabled={data.busy || readOnly}>
+        <label className="field"><span>标题</span><input autoFocus={!readOnly} required maxLength={200} value={form.title} onChange={event => setForm({ ...form, title: event.target.value })} /></label>
         <label className="field"><span>说明</span><textarea rows={4} maxLength={2000} placeholder="补充细节，或留给之后的自己" value={form.description} onChange={event => setForm({ ...form, description: event.target.value })} /></label>
         <div className="todo-editor-dates">
           <label className="field"><span>截止日期</span><input type="date" value={form.dueDate} onChange={event => setForm({ ...form, dueDate: event.target.value, dueTime: event.target.value ? form.dueTime : "" })} /></label>
@@ -90,13 +91,15 @@ export function TodoDrawer({ onClose, onOpenSource }: Props) {
           <label className="field"><span>提醒时刻</span><input type="time" disabled={!form.reminderDate} value={form.reminderTime} onChange={event => setForm({ ...form, reminderTime: event.target.value })} /></label>
         </div>
         </fieldset>
-        <p className="todo-editor-hint">{formTimezone} · 留空日期可稍后安排；仅选提醒日期时不设置具体时刻。</p>
+        <p className="todo-editor-hint">{formTimezone} · {readOnly ? "恢复待办后可以继续编辑。" : "留空日期可稍后安排；仅选提醒日期时不设置具体时刻。"}</p>
         {editing !== "new" && editing.sourceMessageId && <button type="button" className="todo-origin" disabled={!editing.sourceAvailable || data.busy} onClick={() => sourceClick(editing)}><Icon name="chat" size={15} />{editing.sourceAvailable ? "查看来源" : "来源角色已删除"}</button>}
         <div className="todo-editor-actions">
           {editing !== "new" && isActive(editing) && <button type="button" className="danger" disabled={data.busy} onClick={async () => { if (await data.setStatus(editing, "cancelled")) closeEditor(); }}>取消待办</button>}
           <span />
-          <button type="button" className="ghost" disabled={data.busy} onClick={closeEditor}>取消</button>
-          <button type="submit" className="primary" disabled={data.busy || !form.title.trim()}>{data.busy ? "保存中…" : "保存"}</button>
+          <button type="button" className="ghost" disabled={data.busy} onClick={closeEditor}>{readOnly ? "关闭详情" : "取消"}</button>
+          {readOnly ? <button type="button" className="primary" disabled={data.busy} onClick={async () => {
+            if (await restore(editing)) { setFilter("active"); setQuery(""); setTab("list"); closeEditor(); }
+          }}>{data.busy ? "恢复中…" : "恢复待办"}</button> : <button type="submit" className="primary" disabled={data.busy || !form.title.trim()}>{data.busy ? "保存中…" : "保存"}</button>}
         </div>
       </form> : <>
         <div className="todo-overview">

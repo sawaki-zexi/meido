@@ -148,6 +148,32 @@ describe("Today 风格待办面板", () => {
     expect(await within(panel).findByRole("region", { name: "未安排" })).toHaveTextContent("寄出明信片");
   });
 
+  it.each(["completed", "cancelled"] as const)("%s 事项的详情只读，恢复后可以继续编辑", async status => {
+    const items = [todo("archived", "整理旅行笔记", { status, dueDate: "2026-10-25" })];
+    serveTodos(items, {
+      "PUT /api/todos/archived/status": init => {
+        items[0] = { ...items[0], status: JSON.parse(String(init?.body)).status };
+        return { body: items[0] };
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "待办" }));
+    const panel = await screen.findByRole("dialog", { name: "待办" });
+    await user.click(await within(panel).findByRole("button", { name: status === "completed" ? /^已完成/ : /^已取消/ }));
+    await user.click(within(panel).getByRole("button", { name: "查看待办：整理旅行笔记" }));
+    expect(within(panel).getByLabelText("标题")).toBeDisabled();
+    expect(within(panel).getByLabelText("说明")).toBeDisabled();
+    expect(within(panel).getByLabelText("截止日期")).toBeDisabled();
+    expect(within(panel).queryByRole("button", { name: "保存" })).not.toBeInTheDocument();
+    await user.click(within(panel).getByRole("button", { name: "恢复待办" }));
+    const row = await within(panel).findByRole("button", { name: "查看待办：整理旅行笔记" });
+    expect(within(panel).getByRole("region", { name: "今天" })).toContainElement(row);
+    await user.click(row);
+    expect(within(panel).getByLabelText("标题")).toBeEnabled();
+    expect(within(panel).getByRole("button", { name: "保存" })).toBeEnabled();
+  });
+
   it("编辑时按主人时区显示精确截止与提醒时间，只改标题保留原始时刻，清空日期可移回未安排", async () => {
     const items = [todo("precise", "跨时区会议", { status: "scheduled", dueAt: "2026-10-24T18:15:30Z", reminderAt: "2026-10-24T17:45:20Z", timezone: "UTC" })];
     const { calls } = serveTodos(items, {

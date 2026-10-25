@@ -699,7 +699,7 @@ class TodoStore:
                             if current_status not in allowed_statuses:
                                 result, error = "needs_review", f"{operation} 操作不适用于 {current_status} 状态"
                             elif operation == "update":
-                                patch = {key: candidate[key] for key in ("title", "description", "dueDate", "dueAt", "reminderAt", "reminderDate") if key in candidate}
+                                patch = {key: candidate[key] for key in ("title", "description", "dueDate", "dueAt", "reminderAt", "reminderDate", "timezone") if key in candidate}
                                 item = self._update_in(connection, target, patch)
                                 result = "applied"
                             else:
