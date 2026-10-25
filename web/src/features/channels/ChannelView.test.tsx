@@ -29,6 +29,23 @@ function setupBackend(accounts: ReturnType<typeof makeAccount>[] = []) {
 }
 
 describe("手机账号应用导航", () => {
+  it("首次读取失败后关闭提示仍能重新读取手机应用", async () => {
+    let attempts = 0;
+    fakeBackend({
+      "GET /api/roles/r1/channels/accounts": () => ++attempts === 1
+        ? { status: 503, body: { detail: "账号目录暂不可用" } }
+        : { body: { accounts: [makeAccount("qq", "qq-1", { enabled: true, connectionStatus: "connected" })] } },
+      "GET /api/roles/r1/channels/threads\\?networkOnly=true": () => ({ body: { threads: [] } }),
+    });
+    const user = userEvent.setup();
+    render(<ChannelView role={role({ id: "r1", name: "诗织" })} phoneMode onBack={() => undefined} onAccounts={() => undefined} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("账号目录暂不可用");
+    await user.click(screen.getByRole("button", { name: "关闭提示" }));
+    await user.click(screen.getByRole("button", { name: "重新读取" }));
+    expect(await screen.findByRole("button", { name: "QQ" })).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("已连接且没有会话时显示 QQ 应用，打开后才显示单页空状态", async () => {
     setupBackend([makeAccount("qq", "qq-1", { enabled: true, connectionStatus: "connected" })]);
     const user = userEvent.setup();

@@ -124,6 +124,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [threads, setThreads] = useState<Thread[]>([]);
   const [threadsLoaded, setThreadsLoaded] = useState(false);
+  const [directoryLoading, setDirectoryLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [listeningMessages, setListeningMessages] = useState<ConversationMessage[]>([]);
@@ -178,7 +179,8 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
   const load = useCallback(async () => {
     const requestId = ++loadRequest.current;
     const startedAt = liveRevision.current;
-    if (sourceOnly) { setThreadsLoaded(true); return; }
+    if (sourceOnly) { setThreadsLoaded(true); setDirectoryLoading(false); return; }
+    setDirectoryLoading(true);
     const refreshThreadId = selectedRef.current;
     const refreshMessageRequestId = refreshThreadId ? ++messageRequest.current : null;
     const refreshListeningRequestId = refreshThreadId ? ++listeningRequest.current : null;
@@ -259,6 +261,8 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
       setError("");
     } catch (cause) {
       if (requestId === loadRequest.current) setError(errorMessage(cause, "无法读取渠道会话"));
+    } finally {
+      if (requestId === loadRequest.current) setDirectoryLoading(false);
     }
   }, [role.id, sourceOnly]);
 
@@ -269,6 +273,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
     setPhoneSettingsOpen(false);
     setThreads([]);
     setThreadsLoaded(false);
+    setDirectoryLoading(true);
     setSelected(null);
     setMessages([]);
     setListeningMessages([]);
@@ -654,7 +659,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
     </div>}
     {phoneMode && !sourceOnly && !openPhoneApp && !phoneSettingsOpen && (threadsLoaded
       ? <PhoneHome apps={apps} onOpen={(appId) => setPhoneView({ kind: "app", appId, chat: false })} onSettings={onAccounts ? openAccounts : undefined} />
-      : error ? <button type="button" className="channel-phone-retry" onClick={() => void load()}>重新读取</button> : <p className="channel-phone-loading" role="status">正在读取手机应用…</p>)}
+      : !directoryLoading ? <button type="button" className="channel-phone-retry" onClick={() => void load()}>重新读取</button> : <p className="channel-phone-loading" role="status">正在读取手机应用…</p>)}
     <div className={`channel-workspace${phoneMode && !sourceOnly ? " channel-phone-workspace" : ""}`} hidden={phoneSettingsOpen || (phoneMode && !sourceOnly && !openPhoneApp)}>
       {!sourceOnly && <aside className="channel-thread-list" aria-label="渠道会话列表" hidden={phoneChatVisible}>
         {!phoneMode && <h2>会话</h2>}
