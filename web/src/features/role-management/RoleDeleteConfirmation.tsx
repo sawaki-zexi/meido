@@ -11,7 +11,7 @@ export function RoleDeleteConfirmation({ name, busy, error, onCancel, onConfirm,
   const cancel = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    const background = editor?.closest<HTMLElement>(".dialog-panel");
+    const background = editor?.closest<HTMLElement>(".dialog-panel, .shell");
     const panel = content.current?.closest<HTMLElement>(".dialog-panel");
     background?.setAttribute("inert", "");
     background?.setAttribute("aria-hidden", "true");

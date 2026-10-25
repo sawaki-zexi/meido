@@ -16,6 +16,8 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.history.replaceState(
 const roleList = () => screen.findByRole("list", { name: "角色列表" });
 const chatHeading = (name: string) => screen.findByRole("heading", { level: 1, name });
 const dialog = (name: string) => screen.findByRole("dialog", { name });
+const createPage = () => screen.findByRole("region", { name: "创建角色" });
+const profilePage = () => screen.findByRole("region", { name: /的角色工作区$/ });
 
 describe("首页", () => {
   it("从角色资料进入账号，关闭账号详情后仍留在角色页，全局身份独立可用", async () => {
@@ -32,14 +34,14 @@ describe("首页", () => {
     await chatHeading("爱丽丝");
     await user.click(screen.getByRole("button", { name: "角色资料" }));
     await user.click(screen.getByRole("tab", { name: "账号" }));
-    const profile = await screen.findByRole("dialog", { name: "角色资料" });
+    const profile = await profilePage();
     expect(within(profile).getByRole("tab", { name: "账号" })).toHaveAttribute("aria-selected", "true");
     await user.click(await within(profile).findByRole("button", { name: /Telegram/ }));
     expect(await screen.findByLabelText("Telegram Bot Token")).toBeVisible();
     await user.keyboard("{Escape}");
     expect(screen.queryByLabelText("Telegram Bot Token")).not.toBeInTheDocument();
-    expect(screen.getByRole("dialog", { name: "角色资料" })).toBeVisible();
-    await user.keyboard("{Escape}");
+    expect(screen.getByRole("region", { name: /的角色工作区$/ })).toBeVisible();
+    await user.click(within(profile).getByRole("button", { name: "返回对话" }));
     await user.click(screen.getByRole("button", { name: "设置" }));
     await user.click(screen.getByRole("button", { name: "我的身份" }));
     expect(screen.getByRole("button", { name: "生成配对码" })).toBeEnabled();
@@ -121,7 +123,7 @@ describe("首页", () => {
     const sidebar = screen.getByRole("complementary", { name: "角色管理" });
     expect(within(sidebar).getByRole("button", { name: "导入角色卡" })).toBeEnabled();
     fireEvent.change(within(sidebar).getByLabelText("导入角色卡文件"), { target: { files: [new File(["{}"], "card.json", { type: "application/json" })] } });
-    const form = await dialog("创建角色");
+    const form = await createPage();
     expect(await within(form).findByRole("region", { name: "角色卡导入预览" })).toBeTruthy();
     await user.click(within(form).getByRole("button", { name: "填充到表单" }));
     expect(within(form).getByLabelText(/名称/)).toHaveValue("导入角色");
@@ -344,7 +346,7 @@ describe("角色管理", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByRole("button", { name: "创建角色" }));
-    const form = await dialog("创建角色");
+    const form = await createPage();
 
     expect(within(form).getByLabelText(/名称/)).toHaveAttribute("placeholder", "给她起个名字");
     expect(within(form).getByLabelText(/角色设定/)).toHaveAttribute("placeholder", "描述她的身份、背景，以及你们之间的关系");
@@ -368,7 +370,7 @@ describe("角色管理", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByRole("button", { name: "创建角色" }));
-    const form = await dialog("创建角色");
+    const form = await createPage();
     await user.type(within(form).getByLabelText(/名称/), "当前草稿");
     const file = new File([JSON.stringify({ name: "导入角色" })], "card.json", { type: "application/json" });
     const input = within(form).getByLabelText("导入角色卡");
@@ -402,7 +404,7 @@ describe("角色管理", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByRole("button", { name: "创建角色" }));
-    const form = await dialog("创建角色");
+    const form = await createPage();
     const input = within(form).getByLabelText("导入角色卡");
     fireEvent.change(input, { target: { files: [new File(["card"], "card.charx")] } });
     const preview = await within(form).findByRole("region", { name: "角色卡导入预览" });
@@ -410,7 +412,7 @@ describe("角色管理", () => {
     expect(within(form).getByRole("region", { name: "调整头像裁切" })).toBeTruthy();
   });
 
-  it("在角色酒馆中创建角色，生成她的专属卡牌，再从卡牌进入对话", async () => {
+  it("在完整页面创建角色，保存后进入工作区并可开始对话", async () => {
     const created = role({ id: "r2", name: "新角色", description: "新来的", profile: { ...alice.profile, profile: "她的设定" } });
     const { calls } = fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [] } }),
@@ -422,7 +424,10 @@ describe("角色管理", () => {
     await screen.findByText(/还没有角色。/);
     await user.click(screen.getByRole("button", { name: "角色" }));
     await user.click(await screen.findByRole("button", { name: "新建角色" }));
-    const form = await dialog("创建角色");
+    const form = await createPage();
+    expect(screen.getByRole("main")).toContainElement(form);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(within(form).queryByLabelText("昵称")).not.toBeInTheDocument();
     const preview = within(form).getByRole("complementary", { name: "卡牌预览" });
     expect(within(preview).getByText("No.001")).toBeTruthy();
     await user.type(within(form).getByLabelText(/名称/), "新角色");
@@ -430,17 +435,17 @@ describe("角色管理", () => {
     await user.type(within(form).getByLabelText(/角色设定/), "她的设定");
     await user.click(within(form).getByRole("button", { name: "保存" }));
 
-    const reveal = await dialog("新卡牌");
-    expect(within(reveal).getByText("新角色", { selector: "strong" })).toBeTruthy();
-    expect(within(reveal).getByText("No.001")).toBeTruthy();
-    expect(within(await screen.findByRole("list", { name: "角色卡牌" })).getByRole("button", { name: "编辑新角色" })).toBeTruthy();
+    const workspace = await profilePage();
+    expect(screen.getByRole("main")).toContainElement(workspace);
+    expect(within(workspace).getByLabelText(/名称/)).toHaveValue("新角色");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(calls.find((call) => call.method === "POST")?.body).toEqual({
       name: "新角色", description: "",
       profile: { profile: "她的设定", personality: "", behaviorRules: "", responseConstraints: "", nickname: "" },
     });
     expect(sessionStorage.getItem("meido:create-role-draft")).toBeNull();
 
-    await user.click(within(reveal).getByRole("button", { name: "开始对话" }));
+    await user.click(within(workspace).getByRole("button", { name: "去聊天" }));
     expect(await chatHeading("新角色")).toBeTruthy();
     expect(within(await roleList()).getByText("新角色")).toBeTruthy();
   });
@@ -454,7 +459,7 @@ describe("角色管理", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByRole("button", { name: "创建角色" }));
-    const form = await dialog("创建角色");
+    const form = await createPage();
     await user.type(within(form).getByLabelText(/名称/), "记忆角色");
     await user.type(within(form).getByLabelText(/角色设定/), "设定");
     expect(within(form).queryByRole("checkbox", { name: "允许主动检索记忆" })).not.toBeInTheDocument();
@@ -478,7 +483,7 @@ describe("角色管理", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByRole("button", { name: "创建角色" }));
-    const form = await dialog("创建角色");
+    const form = await createPage();
     await user.type(within(form).getByLabelText(/名称/), "新角色");
     await user.type(within(form).getByLabelText(/角色设定/), "设定");
     const image = new File(["portrait"], "portrait.png", { type: "image/png" });
@@ -505,9 +510,7 @@ describe("角色管理", () => {
     await user.click(within(cardCrop).getByRole("button", { name: "保存" }));
     await user.click(within(form).getByRole("button", { name: "保存" }));
 
-    const reveal = await dialog("新卡牌");
-    expect(within(reveal).getByRole("img", { name: "新角色卡片图片" })).toHaveAttribute("src", "/api/roles/r3/card-image");
-    await user.click(within(reveal).getByRole("button", { name: "稍后再聊" }));
+    expect(await profilePage()).toBeVisible();
     await user.click(screen.getByRole("button", { name: "角色" }));
     const cards = await screen.findByRole("list", { name: "角色卡牌" });
     expect(cards.querySelector('img[src="/api/roles/r3/card-image"]')).toBeTruthy();
@@ -551,22 +554,24 @@ describe("角色管理", () => {
     const cards = await screen.findByRole("list", { name: "角色卡牌" });
     expect(cards.querySelector(`img[src="${withAvatar.avatarUrl}"]`)).toBeTruthy();
     await user.click(within(cards).getByRole("button", { name: "编辑爱丽丝" }));
-    const profile = await dialog("角色资料");
+    const profile = await profilePage();
     expect(within(profile).getByLabelText(/名称/)).not.toBeDisabled();
+    await user.click(within(profile).getByRole("button", { name: "更换形象" }));
     await user.click(within(profile).getByRole("button", { name: "移除" }));
     await user.click(within(profile).getByRole("button", { name: "保存" }));
 
     await waitFor(() => expect(calls.some((call) => call.method === "DELETE" && call.path === "/api/roles/r1/avatar")).toBe(true));
-    expect(cards.querySelector("img")).toBeNull();
     expect(within(profile).getByLabelText(/名称/)).toHaveValue("爱丽丝");
+    await user.click(within(profile).getByRole("button", { name: "返回角色" }));
+    expect((await screen.findByRole("list", { name: "角色卡牌" })).querySelector("img")).toBeNull();
   });
 
-  it("从对话页打开创建页，关闭后回到对话页", async () => {
+  it("从对话页打开创建页，返回后回到对话页", async () => {
     fakeBackend({ "GET /api/roles": () => ({ body: { roles: [] } }) });
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByRole("button", { name: "创建角色" }));
-    await user.click(within(await dialog("创建角色")).getByRole("button", { name: "关闭" }));
+    await user.click(within(await createPage()).getByRole("button", { name: "返回对话" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByText(/还没有角色。先创建一位/)).toBeTruthy();
     expect(screen.queryByRole("heading", { level: 1, name: "角色酒馆" })).toBeNull();
@@ -581,7 +586,7 @@ describe("角色管理", () => {
     expect(within(tabs).getByRole("button", { name: "对话" })).toHaveAttribute("aria-current", "page");
     await user.click(within(tabs).getByRole("button", { name: "角色" }));
     await user.click(await screen.findByRole("button", { name: "新建角色" }));
-    await user.click(within(await dialog("创建角色")).getByRole("button", { name: "取消" }));
+    await user.click(within(await createPage()).getByRole("button", { name: "取消" }));
     expect(screen.getByRole("heading", { level: 1, name: "角色酒馆" })).toBeTruthy();
     await user.click(within(tabs).getByRole("button", { name: "对话" }));
     expect(await chatHeading("爱丽丝")).toBeTruthy();
@@ -603,14 +608,14 @@ describe("角色管理", () => {
     expect(within(cards).getByText("No.002")).toBeTruthy();
 
     await user.click(within(cards).getByRole("button", { name: "编辑贝拉" }));
-    const profile = await dialog("角色资料");
+    const profile = await profilePage();
     expect(within(profile).getByLabelText(/名称/)).toHaveValue("贝拉");
     expect(within(profile).getByLabelText(/名称/)).not.toBeDisabled();
-    expect(within(within(profile).getByRole("complementary", { name: "卡牌预览" })).getByText("No.002")).toBeTruthy();
-    expect(profile.closest(".dialog-layer")).toHaveClass("dialog-page");
-    await user.keyboard("{Escape}");
+    expect(screen.getByRole("main")).toContainElement(profile);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await user.click(within(profile).getByRole("button", { name: "返回角色" }));
 
-    await user.click(within(cards).getByRole("button", { name: "与贝拉对话" }));
+    await user.click(within(await screen.findByRole("list", { name: "角色卡牌" })).getByRole("button", { name: "与贝拉对话" }));
     expect(await chatHeading("贝拉")).toBeTruthy();
   });
 
@@ -622,7 +627,7 @@ describe("角色管理", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByRole("button", { name: "创建角色" }));
-    const form = await dialog("创建角色");
+    const form = await createPage();
     await user.type(within(form).getByLabelText(/名称/), "  ");
     await user.type(within(form).getByLabelText(/角色设定/), "设定");
     await user.click(within(form).getByRole("button", { name: "保存" }));
@@ -632,20 +637,24 @@ describe("角色管理", () => {
     expect(JSON.parse(sessionStorage.getItem("meido:create-role-draft")!).profile).toBe("设定");
   });
 
-  it("刷新后恢复创建草稿；关闭面板不丢草稿", async () => {
+  it("刷新后恢复创建草稿；返回不丢草稿，取消丢弃草稿", async () => {
     sessionStorage.setItem("meido:create-role-draft", JSON.stringify({ name: "草稿", profile: "未完成" }));
     fakeBackend({ "GET /api/roles": () => ({ body: { roles: [] } }) });
     const user = userEvent.setup();
     render(<App />);
-    const form = await dialog("创建角色");
+    const form = await createPage();
     expect(within(form).getByLabelText(/名称/)).toHaveValue("草稿");
-    await user.click(within(form).getByRole("button", { name: "关闭" }));
+    await user.click(within(form).getByRole("button", { name: "返回对话" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     await user.click(await screen.findByRole("button", { name: "创建角色" }));
-    expect(within(await dialog("创建角色")).getByLabelText(/名称/)).toHaveValue("草稿");
+    expect(within(await createPage()).getByLabelText(/名称/)).toHaveValue("草稿");
+    await user.click(within(await createPage()).getByRole("button", { name: "取消" }));
+    expect(sessionStorage.getItem("meido:create-role-draft")).toBeNull();
+    await user.click(await screen.findByRole("button", { name: "创建角色" }));
+    expect(within(await createPage()).getByLabelText(/名称/)).toHaveValue("");
   });
 
-  it("打开角色资料后直接编辑，取消恢复原值，保存后更新", async () => {
+  it("打开角色资料后直接编辑，重置恢复原值，保存后更新", async () => {
     const { calls } = fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": emptySession,
@@ -655,21 +664,21 @@ describe("角色管理", () => {
     render(<App />);
     await chatHeading("爱丽丝");
     await user.click(screen.getByRole("button", { name: "角色资料" }));
-    const panel = await dialog("角色资料");
+    const panel = await profilePage();
     const name = within(panel).getByLabelText(/名称/);
     expect(name).not.toBeDisabled();
     await user.clear(name);
     await user.type(name, "临时");
-    await user.click(within(panel).getByRole("button", { name: "取消" }));
-    expect(screen.queryByRole("dialog", { name: "角色资料" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "角色资料" }));
-    const reopened = await dialog("角色资料");
+    await user.click(within(panel).getByRole("button", { name: "重置" }));
+    expect(within(panel).getByLabelText(/名称/)).toHaveValue("爱丽丝");
+    const reopened = await profilePage();
     expect(within(reopened).getByLabelText(/名称/)).toHaveValue("爱丽丝");
     expect(within(reopened).getByLabelText(/名称/)).not.toBeDisabled();
     await user.clear(within(reopened).getByLabelText(/名称/));
     await user.type(within(reopened).getByLabelText(/名称/), "爱丽丝二号");
     await user.click(within(reopened).getByRole("button", { name: "保存" }));
     expect(await within(await roleList()).findByText("爱丽丝二号")).toBeTruthy();
+    await user.click(within(reopened).getByRole("button", { name: "返回对话" }));
     expect(await chatHeading("爱丽丝二号")).toBeTruthy();
     expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);
   });
@@ -688,23 +697,24 @@ describe("角色管理", () => {
     render(<App />);
     await chatHeading("爱丽丝");
     await user.click(screen.getByRole("button", { name: "角色资料" }));
-    const panel = await dialog("角色资料");
+    const panel = await profilePage();
     await user.clear(within(panel).getByLabelText(/名称/));
     await user.type(within(panel).getByLabelText(/名称/), "新名字");
     await user.click(within(panel).getByRole("button", { name: "保存" }));
-    await chatHeading("新名字");
+    await screen.findByRole("region", { name: "新名字的角色工作区" });
 
     expect(within(panel).getByLabelText(/名称/)).toBeEnabled();
     expect(within(panel).getByRole("button", { name: "删除角色" })).toBeEnabled();
     await user.clear(within(panel).getByLabelText(/名称/));
     await user.type(within(panel).getByLabelText(/名称/), "未保存名字");
-    await user.click(within(panel).getByRole("button", { name: "取消" }));
-    await user.click(screen.getByRole("button", { name: "角色资料" }));
-    expect(within(await dialog("角色资料")).getByLabelText(/名称/)).toHaveValue("新名字");
+    await user.click(within(panel).getByRole("button", { name: "重置" }));
+    await user.click(within(panel).getByRole("button", { name: "返回对话" }));
     expect(await chatHeading("新名字")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "角色资料" }));
+    expect(within(await profilePage()).getByLabelText(/名称/)).toHaveValue("新名字");
   });
 
-  it("资料保存或删除失败时保留草稿、角色和原聊天，取消后不污染其他角色", async () => {
+  it("资料保存或删除失败时保留草稿、角色和原聊天，重置后不污染其他角色", async () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice, bella] } }),
       "GET /api/roles/r1/session": () => ({ body: { session, messages: [message({ id: "old", role: "assistant", content: "原有聊天" })] } }),
@@ -715,11 +725,11 @@ describe("角色管理", () => {
     render(<App />);
     await chatHeading("爱丽丝");
     await user.click(screen.getByRole("button", { name: "角色资料" }));
-    const panel = await dialog("角色资料");
+    const panel = await profilePage();
     await user.clear(within(panel).getByLabelText(/名称/));
     await user.type(within(panel).getByLabelText(/名称/), "未保存名字");
     await user.click(within(panel).getByRole("button", { name: "保存" }));
-    // Independent settings panels can report their own errors in this dialog.
+    // Independent settings panels can report their own errors on this page.
     expect((await within(panel).findByText("保存被拒绝")).closest('[role="alert"]')).toBeVisible();
     expect(within(panel).getByLabelText(/名称/)).toHaveValue("未保存名字");
     await user.click(within(panel).getByRole("button", { name: "删除角色" }));
@@ -730,12 +740,13 @@ describe("角色管理", () => {
     await user.click(within(confirmation).getByRole("button", { name: "取消" }));
     expect(within(panel).getByLabelText(/名称/)).toBeEnabled();
     expect(within(panel).getByLabelText(/名称/)).toHaveValue("未保存名字");
-    await user.click(within(panel).getByRole("button", { name: "取消" }));
+    await user.click(within(panel).getByRole("button", { name: "重置" }));
+    await user.click(within(panel).getByRole("button", { name: "返回对话" }));
     expect(await chatHeading("爱丽丝")).toBeInTheDocument();
     expect(screen.getByText("原有聊天")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "角色" }));
     await user.click(screen.getByRole("button", { name: "编辑贝拉" }));
-    expect(within(await dialog("角色资料")).getByLabelText(/名称/)).toHaveValue("贝拉");
+    expect(within(await profilePage()).getByLabelText(/名称/)).toHaveValue("贝拉");
   });
 
   it("确认后删除角色；取消确认则不删除", async () => {
@@ -749,18 +760,20 @@ describe("角色管理", () => {
     render(<App />);
     await chatHeading("爱丽丝");
     await user.click(screen.getByRole("button", { name: "角色资料" }));
-    const panel = await dialog("角色资料");
+    const panel = await profilePage();
 
     await user.click(within(panel).getByRole("button", { name: "删除角色" }));
     const confirmation = await dialog("删除角色");
     expect(within(confirmation).getByText(/爱丽丝/)).toBeVisible();
     expect(within(confirmation).getByText(/全部聊天记录和记忆/)).toBeVisible();
     expect(within(confirmation).getByRole("button", { name: "取消" })).toHaveFocus();
+    expect(screen.queryByRole("main")).not.toBeInTheDocument();
     expect(calls.some((call) => call.method === "DELETE")).toBe(false);
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "删除角色" })).not.toBeInTheDocument();
     expect(panel).toBeVisible();
     expect(within(panel).getByRole("button", { name: "删除角色" })).toHaveFocus();
+    expect(screen.getByRole("main")).toContainElement(panel);
 
     await user.click(within(panel).getByRole("button", { name: "删除角色" }));
     await user.click(within(await dialog("删除角色")).getByRole("button", { name: "取消" }));
@@ -784,7 +797,7 @@ describe("角色管理", () => {
     render(<App />);
     await chatHeading("爱丽丝");
     await user.click(screen.getByRole("button", { name: "角色资料" }));
-    await user.click(within(await dialog("角色资料")).getByRole("button", { name: "删除角色" }));
+    await user.click(within(await profilePage()).getByRole("button", { name: "删除角色" }));
     const confirmation = await dialog("删除角色");
     await user.tab();
     expect(within(confirmation).getByRole("button", { name: "确认删除" })).toHaveFocus();

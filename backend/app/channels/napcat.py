@@ -68,6 +68,11 @@ class NapCatAdapter(ChannelAdapter):
         self._self_id = ""
         self._self_name = ""
 
+    def connection_generation(self) -> str | None:
+        """A reconnect changes source identity even when the adapter is reused."""
+        value = getattr(self._transport, "connection_generation", None)
+        return value if isinstance(value, str) else None
+
     @staticmethod
     def _segments(payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, list):
@@ -168,7 +173,7 @@ class NapCatAdapter(ChannelAdapter):
             reply_to_sender_id=reply_to_sender_id or None,
             attachments=tuple(attachments),
             triggered=triggered,
-            metadata={"self_id": str(payload.get("self_id", "")), "raw_message": payload.get("raw_message", "")},
+            metadata={"self_id": str(payload.get("self_id", "")), "raw_message": payload.get("raw_message", ""), "senderIsBot": sender.get("is_bot") is True or payload.get("sender_is_bot") is True},
         )
         kind = TargetKind.GROUP if chat_type is ChatType.GROUP else TargetKind.PRIVATE
         target = target_from_chat(account_id=self.account_id, chat_id=event.chat_id, kind=kind, display_name=event.group_name or event.sender_name)
@@ -310,8 +315,8 @@ class NapCatAdapter(ChannelAdapter):
         from .base import PartialDeliveryError
 
         assert self._transport is not None
-        # Preparation can yield after the host check. Recheck before each
-        # platform request, never after an actual receipt has arrived.
+        # Image preparation and login lookup may have yielded since the host's
+        # check. Check before each request, never after a real receipt arrives.
         if authorize is not None and not authorize():
             raise UnsupportedTargetError("原始回复已取消或来源授权已失效")
         send_authorized = getattr(self._transport, "send_authorized", None)

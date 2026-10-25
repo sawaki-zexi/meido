@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from ..session_store import SessionStore
 
 
-def _binding(
+def channel_owner_binding(
     channels: MultichannelStore, channel: str, account_id: str, sender_id: str
 ) -> dict[str, object] | None:
     scope = "platform" if channel in {"telegram", "qq"} else "account"
@@ -134,7 +134,7 @@ class FrozenChannelSource:
         ):
             return "source channel thread no longer matches the frozen origin"
         if self.owner_context:
-            binding = _binding(channels, self.channel, self.account_id, self.sender_id)
+            binding = channel_owner_binding(channels, self.channel, self.account_id, self.sender_id)
             if binding is None or (binding["identityId"], binding["pairedAt"]) != (
                 self.identity_id,
                 self.paired_at,
@@ -178,6 +178,14 @@ def capture_channel_source(
         raise PermissionError(
             "channel source requires the actual run inbound message and thread"
         )
+    return capture_channel_message_source(channels, thread, message, owner_context=owner_context)
+
+
+def capture_channel_message_source(channels, thread, message, *, owner_context: bool) -> FrozenChannelSource:
+    """Freeze an already-persisted input before it waits for the shared role lock."""
+    role_id, session_key = thread.role_id, thread.session_key
+    if message.sessionKey != session_key or message.role != "user":
+        raise PermissionError("channel source requires its actual inbound message")
     metadata = message.metadata
     if (
         metadata.get("channel"),
@@ -190,7 +198,7 @@ def capture_channel_source(
     if not isinstance(sender_id, str) or not sender_id:
         raise PermissionError("channel source has no actual sender")
     binding = (
-        _binding(channels, thread.channel, thread.account_id, sender_id)
+        channel_owner_binding(channels, thread.channel, thread.account_id, sender_id)
         if owner_context
         else None
     )

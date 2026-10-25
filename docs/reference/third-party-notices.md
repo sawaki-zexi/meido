@@ -2,9 +2,14 @@
 
 状态：当前
 
-最后核验：2026-10-16
+最后核验：2026-10-25
 
 多端会话模块参考并改编 [Shiori-Agent](https://github.com/YinFengWindy/Shiori-Agent)，固定基线为 `1c241a2627bbcc99124aef71abaee237ac057499`。引用范围包括渠道账号和身份、入站暂停缓冲、聊天上下文隔离、群旁听以及平台传输行为；具体来源见[源码研究](../research/shiori-multichannel-integration.md)。上游采用 MIT 许可证，保留其版权及许可声明如下。
+
+手机导航与消息展示进一步参考 `d149de7f052f77c5bb88d4d1393d48dce1870875`；
+`web/src/features/channels/channelMessagePresentation.ts` 的 Markdown 摘要格式改编自该版本
+[`apps/desktop/src/shared/chatPreviewText.ts`](https://github.com/YinFengWindy/Shiori-Agent/blob/d149de7f052f77c5bb88d4d1393d48dce1870875/apps/desktop/src/shared/chatPreviewText.ts)。
+来源与 Meido 适配边界见[消息源码研究](../research/shiori-channel-message-presentation.md)，适用同一 MIT 声明。
 
 ```text
 MIT License
@@ -122,8 +127,9 @@ Windows发行同时保留官方 Microsoft.Windows.Console.ConPTY `1.24.260710001
 [上游许可证](https://github.com/NapNeko/NapCatQQ/blob/v4.18.28/LICENSE)全文。
 该组件有非商业使用等限制，其许可不替代 Meido 其余代码的许可。
 
-Windows x64 托管模式还要求本机已安装官方 Tencent QQ `9.9.31-49738`。
-程序核验并使用安装目录的运行组件，不复制或分发 Tencent DLL。
+Windows x64 托管模式始终使用固定运行包内的 QQ wrapper；首次从已安装官方 Tencent QQ
+校验并复制 crypto.dll、ssl.dll 到本机私有缓存，已验证的依赖组合为 `9.9.31-49738`、`9.9.36-53644`。
+之后启动重新校验缓存，不依赖桌面 QQ 当前版本。本仓库不包含或分发这些额外 DLL。
 本机 OneBot/WebUI 的随机 IPC 令牌仅保存在运行内存及 NapCat 所需的运行配置中；
 停止后清理配置，重启重新生成，不写入持久账号元数据。QQ 原生登录资料按账号隔离保留。
 
@@ -155,3 +161,14 @@ Copyright © 2024 Mlikiowa
 `4f266aeaf42fcd611362e2456417b91f659341cf`。Copyright (c) 2026 YinFengWindy，
 适用本页 Shiori MIT 许可；完整声明也随模块 `SHIORI-LICENSE.txt` 分发。
 NovelAI 为独立服务，其账号、消费与图片条款不由源码 MIT 许可授予。
+
+## 渠道品牌图标
+
+`web/public/assets/channels/` 内置以下官方原始资源，用于识别所连接的软件；不重绘或改变品牌配色。
+
+- `qq.png`：[QQ 官网图标](https://static-res.qq.com/static-res/imqq/qq-logo.png)，来源为 [QQ 官网](https://im.qq.com/index)，用于 QQ 和官方 QQBot 的平台标识。
+- `qq-group.png`：[腾讯默认群头像](https://p.qlogo.cn/gh/0/0/100)，仅在缺少实际群头像时使用；不包含用户的自定义群头像。
+- `telegram.svg`：[Telegram 官方图标](https://telegram.org/img/t_logo.svg)。
+- `feishu.ico`：[飞书官网图标](https://www.feishu.cn/favicon.ico)。
+
+以上品牌图像与商标权利归各自权利人，不纳入前文 Shiori MIT 声明。用户账号、群聊和联系人实际头像仍通过后端缓存提供，不作为仓库静态资源提交。

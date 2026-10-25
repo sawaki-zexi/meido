@@ -470,3 +470,52 @@ def test_rejected_sticker_is_recorded_failed_and_same_candidate_retry_does_not_d
     attempts = [attempt for attempt in state.channels.list_deliveries(state.role.id) if attempt['sourceKind'] == 'chat_meme']
     assert len(attempts) == 1 and attempts[0]['status'] == 'failed'
     assert not any(attempt['status'] == 'sent' for attempt in attempts), 'A failed sticker must not count as successful use'
+
+
+def test_running_sticker_tool_cannot_send_after_same_adapter_socket_reconnect(meme_turn, monkeypatch):
+    state = meme_turn
+    state.raw = image_bytes('PNG')
+    (state.root / 'happy' / 'before-reconnect.png').write_bytes(state.raw)
+    transport = state.adapter._transport
+    transport.connection_generation = 'socket-before'
+
+    class Model:
+        calls = 0
+        finished = False
+
+        async def stream_structured_messages(self, messages, configuration, tools):
+            self.calls += 1
+            results = {item['tool_call_id']: item['content'] for item in messages if item['role'] == 'tool'}
+            if self.calls == 1:
+                yield ModelToolCall('list-before-reconnect', 'chat_meme_list', {'query': '开心'})
+            elif self.calls == 2:
+                candidates = json.loads(results['list-before-reconnect'])['candidates']
+                assert len(candidates) == 1
+                # A real transport reconnect changes its epoch without replacing
+                # the adapter or invalidating the ordinary running AgentRun.
+                transport.connection_generation = 'socket-after'
+                assert main.channel_host.adapter(state.adapter.account_id) is state.adapter
+                yield ModelToolCall('send-after-reconnect', 'chat_meme_send', {'candidate_id': candidates[0]['id']})
+            else:
+                assert json.loads(results['send-after-reconnect'])['status'] == 'failed'
+                self.finished = True
+                yield ModelTextDelta('连接已变化，没有发送旧回合表情。')
+
+    model = Model()
+    monkeypatch.setattr(main, 'model_adapter', model)
+
+    async def scenario():
+        try:
+            await main._dispatch_channel_payload(state.adapter.account_id,
+                payload('sticker-reconnect', image=False), source_adapter=state.adapter)
+            assert model.finished
+        finally:
+            if main._proactive is not None:
+                await main._proactive.close()
+
+    asyncio.run(asyncio.wait_for(scenario(), 20))
+    assert not any(operation == 'send_group_msg' for operation, _ in state.operations)
+    thread = state.channels.ensure_channel_thread(state.role.id, 'qq', state.adapter.account_id, '100', 'group')
+    result = next(message for message in state.sessions.list_messages(thread.session_key)
+                  if message.messageType == 'tool_result' and message.toolCallId == 'send-after-reconnect')
+    assert result.isError

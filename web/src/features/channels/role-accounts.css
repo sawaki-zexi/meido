@@ -16,8 +16,22 @@
 .role-account-mark.telegram { background: #e5f2fb; color: #438bb5; }
 .role-account-mark.qq, .role-account-mark.qqbot { background: #f0eefe; color: #8b7baa; }
 .role-account-mark.feishu { background: #eaf5f4; color: #548d91; }
+.role-account-mark.channel-brand-mark { background: #fff; }
+.channel-brand-logo { display: block; width: 75%; height: 75%; object-fit: contain; }
 .role-account-status { font-size: 12px; color: var(--ink-faint); white-space: nowrap; }
 .role-account-status.connected { color: var(--success); }
+.role-accounts.is-workspace { gap: 0; padding: 0; }
+.role-accounts.is-workspace .role-accounts-content { gap: 18px; }
+.role-accounts.is-workspace .role-accounts-heading { align-items: center; }
+.role-accounts.is-workspace h3 { font-size: 20px; }
+.role-accounts.is-workspace .role-account-list { gap: 3px; border: 0; overflow: visible; }
+.role-accounts.is-workspace .role-account-row { min-height: 80px; padding: 14px 2px; gap: 20px; border: 0; border-radius: 16px; background: transparent; }
+.role-accounts.is-workspace .role-account-row:hover { background: color-mix(in srgb, var(--surface-card) 65%, transparent); }
+.role-account-icon { display: grid; place-items: center; flex: none; width: 38px; color: var(--ink-soft); }
+.role-accounts.is-workspace .role-account-copy { gap: 5px; }
+.role-accounts.is-workspace .role-account-copy strong { font-size: 17px; font-weight: 500; }
+.role-accounts.is-workspace .role-account-copy small { font-size: 14px; }
+.role-account-trailing { display: grid; place-items: center; flex: none; width: 28px; margin-right: 2px; color: var(--ink-faint); }
 .account-detail, .account-connection-fields { display: grid; gap: 16px; }
 .account-detail { padding: 18px 20px; }
 .account-summary { display: flex; align-items: center; gap: 12px; padding-bottom: 4px; }

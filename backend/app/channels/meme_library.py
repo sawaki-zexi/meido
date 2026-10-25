@@ -317,7 +317,10 @@ class ChatMemeLibrary:
         return {'status':'recorded','deduplicated':existing is not None,'sha256':digest,
                 'category':actual_category,'bytes':len(raw)}
 
-    def reference(self, role_id, candidate, context):
+    def reference(self, role_id, candidate, context, *, principal='owner'):
+        # Host-only provenance, never a model argument or an authority grant.
+        if principal not in {'owner', 'natural'}:
+            raise ValueError('invalid meme reference principal')
         if context.role_id != role_id or context.signal.is_cancelled() or not self.valid(role_id,candidate):
             raise PermissionError('meme candidate is no longer valid for this role')
         raw = _read(candidate.path, MAX_IMAGE_BYTES)
@@ -344,7 +347,9 @@ class ChatMemeLibrary:
                 if _read(path,MAX_IMAGE_BYTES)!=raw or json.loads(_read(metadata_path,16*1024))!=value:
                     raise PermissionError('existing meme sending reference was replaced')
                 return value,raw
-        publication = _OwnerPublication(self.library,role_id,context,files,kind='owner_chat_reference')
+        publication = _OwnerPublication(self.library,role_id,context,files,
+            kind='natural_chat_reference' if principal == 'natural' else 'owner_chat_reference',
+            principal=principal)
         grant=self.library._grant(role_id)
         claim=(self.library.storage.claim(role_id,publication.operation,
             sum(len(data) for data in files.values())+32*1024,len(files)+3,context)
@@ -372,7 +377,7 @@ class ChatMemeLibrary:
 
 class _OwnerPublication:
     """Durable ownership of private stages, never authority to replay an edit."""
-    def __init__(self, library, role_id, context, files, *, kind):
+    def __init__(self, library, role_id, context, files, *, kind, principal='owner'):
         self.library, self.role_id, self.context = library, role_id, context
         self.operation, self.files = uuid.uuid4().hex, files
         self.private = library.root(role_id).parent / '.meido-memes'
@@ -383,7 +388,7 @@ class _OwnerPublication:
         self.grant = library._grant(role_id)
         self.prepared = {}
         self.complete = False
-        self.plan = {'kind':kind,'principal':'owner','files':[
+        self.plan = {'kind':kind,'principal':principal,'files':[
             {'target':str(path),'stage':str(self.private/'staging'/(self.operation+'-'+str(index)+'.tmp')),
              'sha256':_hash(data),'expectedIdentity':list(_identity(path)) if path.exists() else None}
             for index,(path,data) in enumerate(files.items())]}
@@ -391,7 +396,7 @@ class _OwnerPublication:
             'privateParents':[[str(path),list(_directory_identity(path))]
                 for path in (self.private,self.private/'staging')]}
         # Persist the recovery owner BEFORE claiming quota or creating a stage.
-        # It is an ordinary owner operation, never an autonomous turn or grant.
+        # Provenance describes this host publication; it never confers a tool grant.
         with library.app._transaction() as db:
             db.execute('INSERT INTO autonomy_meme_operations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
                 (self.operation,role_id,context.run_id,context.tool_call_id,

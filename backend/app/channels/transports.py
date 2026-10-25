@@ -7,6 +7,7 @@ is configured as an HTTPS webhook; the host mounts ``handle_webhook``.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import base64
 import hashlib
 import hmac
@@ -34,13 +35,20 @@ class ChannelTransportError(ChannelAdapterError):
     """A platform transport could not complete an operation."""
 
 
-async def _invoke_event(handler: EventHandler | None, payload: Mapping[str, Any]) -> None:
+napcat_received_generation: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "napcat_received_generation", default=None)
+
+
+async def _invoke_event(handler: EventHandler | None, payload: Mapping[str, Any], *, napcat_generation: str | None = None) -> None:
     if handler is None:
         return
+    token = napcat_received_generation.set(napcat_generation)
     try:
         await handler(payload)
     except Exception:
         logger.exception("渠道入站事件处理器失败")
+    finally:
+        napcat_received_generation.reset(token)
 
 
 class NapCatWebSocketTransport:
@@ -63,6 +71,7 @@ class NapCatWebSocketTransport:
         self.reconnect_min = reconnect_min
         self.reconnect_max = reconnect_max
         self.connected = False
+        self.connection_generation = uuid.uuid4().hex
         self._online: bool | None = None
         self._observed_at: str | None = None
         self._connection_reason = "not_started"
@@ -136,8 +145,8 @@ class NapCatWebSocketTransport:
         request = {"action": action, "params": dict(params), "echo": echo}
         try:
             async with self._send_lock:
-                # The socket gate can yield after adapter preparation. Once
-                # ws.send begins, preserve the actual platform receipt instead.
+                # The socket gate may have yielded after adapter preparation.
+                # Once ws.send starts, await the real receipt without rechecking.
                 if authorize is not None and not authorize():
                     from .base import UnsupportedTargetError
                     raise UnsupportedTargetError("原始回复已取消或来源授权已失效")
@@ -177,6 +186,7 @@ class NapCatWebSocketTransport:
                     max_size=MAX_RESPONSE_BYTES,
                 ) as ws:
                     self._ws = ws
+                    self.connection_generation = uuid.uuid4().hex
                     self.connected = True
                     self._online = None
                     self._observed_at = observed_now()
@@ -201,6 +211,7 @@ class NapCatWebSocketTransport:
                     logger.warning("NapCat WebSocket 断开，将在 %.1f 秒后重连 (%s)", delay, type(error).__name__)
             finally:
                 self.connected = False
+                self.connection_generation = uuid.uuid4().hex
                 self._online = None
                 self._observed_at = observed_now()
                 self._ws = None
@@ -231,7 +242,8 @@ class NapCatWebSocketTransport:
                 # refreshing the target directory).  Running it inline would
                 # deadlock this reader because API responses are delivered by
                 # the same loop.
-                event_task = asyncio.create_task(_invoke_event(self._handler, packet))
+                event_task = asyncio.create_task(_invoke_event(self._handler, packet,
+                    napcat_generation=self.connection_generation))
                 self._event_tasks.add(event_task)
                 event_task.add_done_callback(self._event_tasks.discard)
 

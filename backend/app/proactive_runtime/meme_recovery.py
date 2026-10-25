@@ -97,7 +97,7 @@ def reconcile(library, role_id):
         rows = db.execute("SELECT * FROM autonomy_meme_operations WHERE role_id=? AND status NOT IN ('recorded','not_published','reconciled')", (role_id,)).fetchall()
     for row in rows:
         actual, expected, planned = json.loads(row['actual']), json.loads(row['expected']), json.loads(row['planned'])
-        if planned.get('kind') in {'owner_chat_copy','owner_chat_reference'}:
+        if planned.get('kind') in {'owner_chat_copy','owner_chat_reference','natural_chat_reference'}:
             reconcile_owner(library,row)
             continue
         phase, status = actual.get('physicalPhase', 'reserved'), 'cleanup_pending'

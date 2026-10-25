@@ -4,12 +4,14 @@ import asyncio
 import inspect
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, TypeAlias
+from contextlib import aclosing
+from datetime import datetime, timezone
 
 from ..models import AgentRun, Message
 from .events import AgentEndEvent, AgentEvent, MessageEndEvent, MessageUpdateEvent, TurnStartEvent, ToolExecutionStartEvent, ToolExecutionEndEvent
 from .capabilities import CapabilityResolution, CapabilitySnapshot
 from .loop import run_agent_loop
-from .provider import CancellationToken, ModelProvider
+from .provider import CancellationToken, ModelProvider, AssistantDoneEvent, ToolCallEndEvent, ProviderErrorEvent
 from .tools import AgentTool, summarize_tool_arguments
 from .types import AgentMessage, AssistantMessage, ToolResultMessage
 
@@ -34,9 +36,97 @@ class RuntimeManager:
         self._reserved_roles: dict[str, str] = {}
         self._assistant_message_ids: dict[str, str | None] = {}
         self._reservation_end: dict[str, Callable[[], None]] = {}
+        self._queued_roles: dict[str, int] = {}
 
     def lock_for(self, role_id: str) -> asyncio.Lock:
         return self.role_locks.setdefault(role_id, asyncio.Lock())
+
+    async def natural_response(
+        self,
+        run: AgentRun,
+        *,
+        provider: ModelProvider,
+        model: str,
+        system: str,
+        messages: list[AgentMessage],
+        provider_timeout: float = 60.0,
+        can_start: Callable[[], bool] | None = None,
+    ) -> AssistantMessage:
+        """Make one no-tool judgment without fabricating transcript messages.
+
+        The host owns scoped input preparation and any eventual delivery. This
+        entry shares ordinary role exclusion, run identity and cancellation,
+        but its decision is not itself an assistant message sent to the group.
+        A busy role is never added to the ordinary FIFO by this low priority path.
+        """
+        if not 0 < provider_timeout <= 120:
+            raise ValueError("natural provider timeout must be between 0 and 120 seconds")
+        lock = self.lock_for(run.roleId)
+        if lock.locked() or self._queued_roles.get(run.roleId, 0):
+            raise ActiveRunError(f"role already has an active or queued run: {run.roleId}")
+        await lock.acquire()
+        token = CancellationToken()
+        created = False
+        try:
+            if can_start is not None and not can_start():
+                raise ActiveRunError("natural input is no longer admitted")
+            self.sessions.create_run(run)
+            created = True
+            self._reserved_roles[run.runId] = run.roleId
+            self._tokens[run.runId] = token
+            task = asyncio.current_task()
+            if task is not None:
+                self._tasks[run.runId] = task
+            self.sessions.update_run(run.runId, status="running", turn_count=1)
+            result = None
+            async with asyncio.timeout(provider_timeout):
+                stream = provider.stream_response(
+                    model=model, system=system, messages=messages, tools=(),
+                    signal=token, session_id=run.sessionKey,
+                )
+                async with aclosing(stream):
+                    async for event in stream:
+                        if token.is_cancelled():
+                            raise asyncio.CancelledError()
+                        if isinstance(event, ToolCallEndEvent):
+                            raise RuntimeError("natural judgments cannot call tools")
+                        if isinstance(event, ProviderErrorEvent):
+                            raise RuntimeError(event.error)
+                        if isinstance(event, AssistantDoneEvent):
+                            if event.message.tool_calls or event.message.stop_reason != "stop":
+                                raise RuntimeError("natural judgment returned an invalid completion")
+                            if result is not None:
+                                raise RuntimeError("natural judgment returned multiple completions")
+                            result = event.message
+            if token.is_cancelled():
+                raise asyncio.CancelledError()
+            if result is None:
+                raise RuntimeError("natural judgment ended without a completion")
+            # Keep provider accounting without turning a participation decision
+            # into transcript content. Read the current snapshot so caller-side
+            # diagnostics added during the request are not overwritten.
+            current = self.sessions.get_run(run.runId)
+            snapshot = dict(current.modelSnapshot if current is not None else run.modelSnapshot)
+            if "usage" in result.metadata:
+                snapshot["naturalUsage"] = result.metadata["usage"]
+            self.sessions.update_run(run.runId, status="completed", ended_at=datetime.now(timezone.utc),
+                                     model_snapshot=snapshot)
+            return result
+        except asyncio.CancelledError:
+            token.cancel()
+            if created:
+                self.sessions.update_run(run.runId, status="cancelled", ended_at=datetime.now(timezone.utc),
+                                         cancel_reason="自然回合已取消")
+            raise
+        except Exception as error:
+            if created:
+                self.sessions.update_run(run.runId, status="failed", ended_at=datetime.now(timezone.utc), error=str(error))
+            raise
+        finally:
+            if run.runId in self._reserved_roles:
+                self._release_run(run.runId)
+            else:
+                lock.release()
 
     async def reserve_run(self, run: AgentRun, user_content: str, *, attachments: list[dict[str, object]] | None = None, received_at: float | None = None,
                           on_accepting: Callable[[], Callable[[], None] | None] | None = None) -> tuple[AgentRun, Message, Message]:
@@ -69,7 +159,15 @@ class RuntimeManager:
         lock = self.lock_for(run.roleId)
         # Network intake has already durably accepted this message. Queue it
         # behind the current role turn instead of dropping it as ActiveRunError.
-        await lock.acquire()
+        self._queued_roles[run.roleId] = self._queued_roles.get(run.roleId, 0) + 1
+        try:
+            await lock.acquire()
+        finally:
+            remaining = self._queued_roles[run.roleId] - 1
+            if remaining:
+                self._queued_roles[run.roleId] = remaining
+            else:
+                self._queued_roles.pop(run.roleId, None)
         on_end = None
         try:
             if can_start is not None and not can_start():
