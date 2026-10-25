@@ -22,10 +22,10 @@ const characterFields: Field[] = [
   { key: "responseConstraints", label: "回复约束", placeholder: "例如：避免替你做决定，回答尽量简洁", multiline: true },
 ];
 
-type Props = { state: RolesState; onSubmit: () => void; onCancel: () => void; onDelete: () => void; hideIdentity?: boolean };
+type Props = { state: RolesState; onSubmit: () => void; onCancel: () => void; onDelete: () => void; hideHeaderFields?: boolean };
 
-/** Role profile opens directly in edit mode; creation uses the same form. */
-export function RoleEditor({ state, onSubmit, onCancel, onDelete, hideIdentity = false }: Props) {
+/** Shared profile fields for creating, reading and editing a role. */
+export function RoleEditor({ state, onSubmit, onCancel, onDelete, hideHeaderFields = false }: Props) {
   const { selected, draft, setDraft, creating, editing, saving, deleting, busy, error, setError } = state;
   const writable = creating || editing;
   const cropping = Boolean(state.avatarSource || state.cardImageSource);
@@ -75,10 +75,10 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete, hideIdentity =
       {state.avatarSource && <AvatarCropper file={state.avatarSource} shape="circle" onCancel={state.cancelAvatarCrop} onAccept={state.acceptAvatarCrop} onError={setError} />}
       {state.cardImageSource && <AvatarCropper file={state.cardImageSource} shape="card" onCancel={state.cancelCardImageCrop} onAccept={(image) => state.acceptCardImageCrop(image)} onError={setError} />}
     </fieldset>}
-    {!hideIdentity && <fieldset>
-      <legend>身份</legend>
-      {identityFields.map(renderField)}
-    </fieldset>}
+    <fieldset>
+      <legend>{hideHeaderFields ? "对你的称呼" : "身份"}</legend>
+      {identityFields.filter(field => !hideHeaderFields || field.key === "nickname").map(renderField)}
+    </fieldset>
     <fieldset>
       <legend>角色设定</legend>
       {renderField(characterFields[0])}

@@ -118,7 +118,7 @@ it("角色卡只填充资料，保留屏幕连接和其他未知能力配置", a
   render(<App />);
   await screen.findByRole("heading", { name: "导入前角色", level: 1 });
   await user.click(screen.getByRole("button", { name: "角色资料" }));
-  const form = within(await screen.findByRole("dialog", { name: "角色资料" }));
+  const form = within(await screen.findByRole("region", { name: /的角色工作区$/ }));
   await user.upload(form.getByLabelText("导入角色卡"), new File(["{}"], "card.json", { type: "application/json" }));
   await user.click(await form.findByRole("button", { name: "填充到表单" }));
   expect(form.queryByRole("checkbox", { name: "允许按需观察主屏" })).not.toBeInTheDocument();

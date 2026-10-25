@@ -20,7 +20,7 @@ it('角色资料只编辑身份，保存不会覆盖在设置里更新的工具�
   const user = userEvent.setup(); render(<App />);
   await screen.findByRole('heading', { name: '默认角色', level: 1 });
   await user.click(screen.getByRole('button', { name: '角色资料' }));
-  const form = within(await screen.findByRole('dialog', { name: '角色资料' }));
+  const form = within(await screen.findByRole('region', { name: /的角色工作区$/ }));
   expect(form.queryByText('默认内置工具')).not.toBeInTheDocument();
   expect(form.queryByLabelText('Shell 超时（秒）')).not.toBeInTheDocument();
   expect(form.queryByLabelText('允许浏览器操作网页')).not.toBeInTheDocument();
@@ -45,7 +45,7 @@ it('创建角色只保存资料，旧草稿里的隐藏插件许可不会被提�
     'POST /api/roles': () => ({ status: 201, body: { role: role({ id: 'new', name: '草稿角色' }) } }),
   });
   const user = userEvent.setup(); render(<App />);
-  const form = within(await screen.findByRole('dialog', { name: '创建角色' }));
+  const form = within(await screen.findByRole('region', { name: '创建角色' }));
   expect(form.getByRole('textbox', { name: /^名称/ })).toHaveValue('草稿角色');
   expect(form.queryByLabelText('子任务超时（秒）')).not.toBeInTheDocument();
   expect(form.queryByRole('group', { name: '插件设置' })).not.toBeInTheDocument();

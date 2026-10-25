@@ -16,6 +16,7 @@ type Props = {
   tab: RoleWorkspaceTab;
   onTabChange: (tab: RoleWorkspaceTab) => void;
   onBack: () => void;
+  backLabel: string;
   onChat: () => void;
   chatDisabled: boolean;
   onEdit: () => void;
@@ -34,23 +35,23 @@ const tabs: Array<{ id: RoleWorkspaceTab; label: string }> = [
   { id: "accounts", label: "账号" },
 ];
 
-export function RoleWorkspace({ role, state, tab, onTabChange, onBack, onChat, chatDisabled, onEdit, onSubmit, onCancel, onDelete, onOpenSettings, onOpenChannelSettings, onOpenMemorySource }: Props) {
+export function RoleWorkspace({ role, state, tab, onTabChange, onBack, backLabel, onChat, chatDisabled, onEdit, onSubmit, onCancel, onDelete, onOpenSettings, onOpenChannelSettings, onOpenMemorySource }: Props) {
   const writable = state.editing || state.creating;
   return <section className="role-workspace" aria-label={`${role.name}的角色工作区`}>
     <header className="role-workspace-hero">
-      <IconButton icon="back" label="返回角色" onClick={onBack} />
-      <Avatar id={role.id} name={role.name} avatarUrl={role.avatarUrl} size="lg" />
-      <div className="role-workspace-identity">{writable ? <><input aria-label="名称（角色名称）" value={state.draft.name} placeholder="未命名角色" onChange={event => state.setDraft({ ...state.draft, name: event.target.value })} /><input aria-label="角色简介" value={state.draft.description} placeholder="添加一行角色简介" onChange={event => state.setDraft({ ...state.draft, description: event.target.value })} /></> : <><h1>{role.name}</h1><p>{role.description || "还没有简介"}</p></>}
-        <div className="role-workspace-actions"><span className="role-state"><Icon name="profile" size={15} />平静</span><button type="button" className="ghost" onClick={onEdit}><Icon name="edit" size={15} />{writable ? "编辑中" : "编辑资料"}</button></div>
+      <IconButton icon="back" label={backLabel} onClick={onBack} disabled={state.busy} />
+      <Avatar id={role.id} name={writable ? state.draft.name : role.name} avatarUrl={state.avatarPreviewUrl ?? (state.avatarRemoved ? null : role.avatarUrl)} size="lg" />
+      <div className="role-workspace-identity">{writable ? <><input aria-label="名称（角色名称）" disabled={state.busy} value={state.draft.name} placeholder="未命名角色" onChange={event => state.setDraft({ ...state.draft, name: event.target.value })} /><input aria-label="角色简介" disabled={state.busy} value={state.draft.description} placeholder="添加一行角色简介" onChange={event => state.setDraft({ ...state.draft, description: event.target.value })} /></> : <><h1>{role.name}</h1><p>{role.description || "还没有简介"}</p></>}
+        <div className="role-workspace-actions"><span className="role-state"><Icon name="profile" size={15} />平静</span><button type="button" className="ghost" disabled={state.busy || writable} onClick={onEdit}><Icon name="edit" size={15} />{writable ? "编辑中" : "编辑资料"}</button></div>
       </div>
-      <button type="button" className="primary role-workspace-chat" onClick={onChat} disabled={chatDisabled}><Icon name="chat" size={16} />去聊天</button>
+      <button type="button" className="primary role-workspace-chat" onClick={onChat} disabled={chatDisabled || state.busy}><Icon name="chat" size={16} />去聊天</button>
     </header>
     <nav className="role-workspace-tabs" role="tablist" aria-label="角色详情">
       {tabs.map(item => <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} onClick={() => onTabChange(item.id)}>{item.label}</button>)}
     </nav>
     <div className="role-workspace-content">
       {tab === "profile" && <div className="role-workspace-profile" role="tabpanel" aria-label="资料">
-        <RoleEditor state={state} onSubmit={onSubmit} onCancel={onCancel} onDelete={onDelete} hideIdentity />
+        <RoleEditor state={state} onSubmit={onSubmit} onCancel={onCancel} onDelete={onDelete} hideHeaderFields />
       </div>}
       {tab === "memory" && <div className="role-workspace-memory" role="tabpanel" aria-label="记忆"><MemoryPanel role={role} embedded onBack={onBack} onOpenSource={onOpenMemorySource} /></div>}
       {tab === "capabilities" && <RoleCapabilitiesPanel role={role} onOpenSettings={onOpenSettings} />}

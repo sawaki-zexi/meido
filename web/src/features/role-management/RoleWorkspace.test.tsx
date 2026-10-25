@@ -7,6 +7,46 @@ import { fakeBackend, message, role, sse } from "../../test/fakeBackend";
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it("聊天资料在主页面编辑称呼，取消保留已保存值，返回原对话", async () => {
+  let alice = role({ id: "r1", name: "爱丽丝" });
+  const { calls } = fakeBackend({
+    "GET /api/roles": () => ({ body: { roles: [alice] } }),
+    "GET /api/roles/r1/session": () => ({ body: { session: { sessionKey: "role:r1", roleId: "r1" }, messages: [message({ id: "old", role: "assistant", content: "原来的对话" })] } }),
+    "PUT /api/roles/r1": init => { alice = { ...alice, ...JSON.parse(String(init?.body)) }; return { body: { role: alice } }; },
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(await screen.findByRole("button", { name: "角色资料" }));
+  const workspace = within(screen.getByRole("main")).getByRole("region", { name: "爱丽丝的角色工作区" });
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(within(workspace).getByRole("tab", { name: "记忆" })).toBeVisible();
+  const nickname = within(workspace).getByLabelText("昵称");
+  await user.clear(nickname);
+  await user.type(nickname, "朋友");
+  await user.click(within(workspace).getByRole("button", { name: "保存" }));
+  await waitFor(() => expect(calls.find(call => call.method === "PUT")?.body).toMatchObject({ profile: { nickname: "朋友" } }));
+  await waitFor(() => expect(within(workspace).getByRole("button", { name: "保存" })).toBeEnabled());
+  await user.clear(nickname);
+  await user.type(nickname, "未保存称呼");
+  await user.click(within(workspace).getByRole("button", { name: "取消" }));
+  expect(within(workspace).getByLabelText("昵称")).toHaveValue("朋友");
+  await user.click(within(workspace).getByRole("button", { name: "返回对话" }));
+  expect(await screen.findByText("原来的对话")).toBeVisible();
+});
+
+it("刷新后全页恢复新建草稿，已有对话加载完成也不覆盖草稿页", async () => {
+  sessionStorage.setItem("meido:create-role-draft", JSON.stringify({ name: "未完成角色", profile: "她的设定" }));
+  const { calls } = fakeBackend({
+    "GET /api/roles": () => ({ body: { roles: [role({ id: "r1", name: "爱丽丝" })] } }),
+    "GET /api/roles/r1/session": () => ({ body: { session: { sessionKey: "role:r1", roleId: "r1" }, messages: [] } }),
+  });
+  render(<App />);
+  await waitFor(() => expect(calls.some(call => call.path === "/api/roles/r1/session")).toBe(true));
+  const create = within(screen.getByRole("main")).getByRole("region", { name: "创建角色" });
+  expect(within(create).getByLabelText(/名称/)).toHaveValue("未完成角色");
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
 it("从角色卡进入 Shiori 风格工作区，提供记忆、能力和账号页且不显示好感度", async () => {
   const alice = role({ id: "r1", name: "爱丽丝", description: "安静的女仆" });
   fakeBackend({
