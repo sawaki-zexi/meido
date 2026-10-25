@@ -3,6 +3,7 @@ import { api, errorMessage } from "../../api/client";
 import { IconButton } from "../../ui/Icon";
 import { Notice } from "../../ui/Status";
 import { AccountDetail } from "./AccountDetail";
+import { ChannelLogo } from "./ChannelLogo";
 import { accountStatus, channels, type Account, type Channel, type ChannelSettings } from "./channelAccounts";
 import "./role-accounts.css";
 
@@ -77,7 +78,7 @@ function RoleAccountsForRole({ roleId, onOpenSettings, presentation = "dialog", 
       {channels.map((channel) => {
         const account = accounts.find((item) => item.channel === channel.id) ?? null;
         return <button type="button" className="role-account-row" key={channel.id} ref={node => { if (node) accountRows.current.set(channel.id, node); else accountRows.current.delete(channel.id); }} aria-label={`${channel.name}${account?.displayName ? ` ${account.displayName}` : ""} ${accountStatus(account, platformEnabled(channel.id))}`} disabled={settings.length === 0} onClick={() => setSelected(channel.id)}>
-          {account?.avatarUrl ? <img src={account.avatarUrl} alt="" className="role-account-avatar" /> : <span className={`role-account-mark ${channel.id}`}>{channel.id === "telegram" ? "T" : channel.id === "qq" ? "Q" : channel.id === "qqbot" ? "B" : "飞"}</span>}
+          {account?.avatarUrl ? <img src={account.avatarUrl} alt="" className="role-account-avatar" /> : <span className={`role-account-mark channel-brand-mark ${channel.id}`}><ChannelLogo channel={channel.id} /></span>}
           <span className="role-account-copy"><strong>{channel.name}</strong><small>{account?.displayName || channel.summary}</small></span>
           <span className={`role-account-status${platformEnabled(channel.id) && account?.enabled && account.connectionStatus === "connected" ? " connected" : ""}`}>{accountStatus(account, platformEnabled(channel.id))}</span><span aria-hidden="true">›</span>
         </button>;

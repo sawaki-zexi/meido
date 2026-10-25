@@ -6,6 +6,7 @@ import { Icon } from "../../ui/Icon";
 import { Notice } from "../../ui/Status";
 import { accountStatus, channelName, channels, defaultCapabilities, type Account, type Channel } from "./channelAccounts";
 import { ManagedQQLogin } from "./ManagedQQLogin";
+import { ChannelLogo } from "./ChannelLogo";
 
 type ConnectionForm = {
   displayName: string;
@@ -147,7 +148,7 @@ export function AccountDetail({ roleId, channel, account, platformEnabled, onAcc
     </header>
     <div className="channel-account-scroll">
       <div className="channel-account-hero">
-        {account?.avatarUrl ? <img src={account.avatarUrl} alt="账号头像" className="role-account-avatar" /> : <span className={`role-account-mark ${channel}`}>{channel === "telegram" ? "T" : channel === "qq" ? "Q" : channel === "qqbot" ? "B" : "飞"}</span>}
+        {account?.avatarUrl ? <img src={account.avatarUrl} alt="账号头像" className="role-account-avatar" /> : <span className={`role-account-mark channel-brand-mark ${channel}`}><ChannelLogo channel={channel} /></span>}
         <h3>{account?.displayName || channelName[channel]}</h3>
         <p>{channels.find(item => item.id === channel)?.summary}</p>
         <span className={`role-account-status${connected ? " connected" : ""}`}>{accountStatus(account, platformEnabled)}</span>
