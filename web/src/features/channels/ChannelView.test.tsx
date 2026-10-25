@@ -29,6 +29,68 @@ function setupBackend(accounts: ReturnType<typeof makeAccount>[] = []) {
 }
 
 describe("手机账号应用导航", () => {
+  it("按 Shiori 分组时间、折叠引用和展示媒体，保留不确定投递状态", async () => {
+    fakeBackend({
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [makeAccount("qq", "qq-1", { enabled: true, connectionStatus: "connected" })] } }),
+      "GET /api/roles/r1/channels/threads\\?networkOnly=true": () => ({ body: { threads: [{ threadId: "chat", accountId: "qq-1", channel: "qq", chatId: "42", chatType: "private", title: "媒体联系人", lastActivity: "2026-10-25T06:10:01Z", latestMessage: { role: "assistant", content: "**稍后整理** [文档](https://example.test)", createdAt: "2026-10-25T06:10:01Z" } }] } }),
+      "GET .*threads/chat/messages.*": () => ({ body: { messages: [
+        { id: "text", sequence: 1, role: "user", content: "请帮我整理资料", createdAt: "2026-10-25T06:00:00Z", metadata: { threadId: "chat", senderId: "owner", senderName: "阿宁", senderIsOwner: true } },
+        { id: "media", sequence: 2, role: "user", content: "", createdAt: "2026-10-25T06:05:00Z", metadata: { threadId: "chat", senderId: "owner", senderName: "阿宁", attachments: [{ id: "image", name: "示意图", kind: "image" }, { id: "file", name: "资料.pdf", kind: "file" }] } },
+        { id: "quote", sequence: 3, role: "assistant", content: "稍后整理", createdAt: "2026-10-25T06:10:01Z", metadata: { threadId: "chat", replyTo: "older-quote", replyToSenderName: "阿宁", replyToContent: "这是一段足够长的引用内容，需要默认折叠到两行。展开后仍然可以看到完整的原文，再点击收起可以恢复简洁的聊天界面。", mentionedIds: ["owner"], deliveryStatus: "uncertain" } },
+      ], hasMore: false } }),
+    });
+    const user = userEvent.setup();
+    render(<ChannelView role={role({ id: "r1", name: "诗织" })} phoneMode onBack={() => undefined} onAccounts={() => undefined} />);
+    await user.click(await screen.findByRole("button", { name: "QQ" }));
+    const row = screen.getByRole("button", { name: /媒体联系人/ });
+    expect(within(row).getByText("稍后整理 文档")).toBeVisible();
+    await user.click(row);
+    const messageRegion = screen.getByRole("region", { name: "会话消息" });
+    const messages = within(messageRegion);
+    expect(await messages.findByText("这是我")).toBeVisible();
+    expect(messages.getByText("@阿宁")).toBeVisible();
+    expect(messages.queryByText("（无内容）")).not.toBeInTheDocument();
+    expect(messages.getByRole("link", { name: "资料.pdf" })).toHaveAttribute("href", "/api/roles/r1/attachments/file");
+    expect(messageRegion.querySelectorAll("time")).toHaveLength(2);
+    expect(messages.getByText("发送结果不确定")).toBeVisible();
+    expect(messages.queryByText("已发送")).not.toBeInTheDocument();
+    await user.click(messages.getByRole("button", { name: "展开引用" }));
+    expect(messages.getByRole("button", { name: "收起引用" })).toBeVisible();
+    await user.click(messages.getByRole("img", { name: "示意图" }));
+    expect(screen.getByRole("dialog", { name: "图片预览" })).toBeVisible();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "图片预览" })).not.toBeInTheDocument();
+    expect(messageRegion).toBeVisible();
+  });
+
+  it("手机消息将纯提及和失败回复显示为真实内容与状态，预览不再写无内容", async () => {
+    const source = { platform: "qq", platformAccountId: "bot-id", accountId: "qq-1", displayName: "角色 QQ", avatarUrl: "/bot.png" };
+    fakeBackend({
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [makeAccount("qq", "qq-1", { enabled: true, connectionStatus: "connected", platformId: "bot-id", displayName: "角色 QQ" })] } }),
+      "GET /api/roles/r1/channels/threads\\?networkOnly=true": () => ({ body: { threads: [{ threadId: "chat", accountId: "qq-1", channel: "qq", chatId: "42", chatType: "private", title: "联系人", lastActivity: "2026-10-25T06:58:00Z", latestMessage: { role: "assistant", content: "", status: "failed", createdAt: "2026-10-25T06:58:00Z" } }] } }),
+      "GET .*threads/chat/messages.*": () => ({ body: { messages: [
+        { id: "at-only", sequence: 1, role: "user", content: "", status: "completed", createdAt: "2026-10-25T06:58:00Z", metadata: { threadId: "chat", senderId: "visitor", senderName: "联系人", senderAvatarUrl: "/visitor.png", mentionedIds: ["bot-id"], viaAccount: source, platformMessageId: "p1" } },
+        { id: "failed", sequence: 2, role: "assistant", content: "", status: "failed", createdAt: "2026-10-25T06:58:00Z", metadata: { threadId: "chat", viaAccount: source, error: "尚未设置模型连接" } },
+        { id: "failed-without-detail", sequence: 3, role: "assistant", content: "", status: "failed", createdAt: "2026-10-25T06:58:00Z", metadata: { threadId: "chat" } },
+      ], hasMore: false } }),
+    });
+    const user = userEvent.setup();
+    render(<ChannelView role={role({ id: "r1", name: "诗织" })} phoneMode onBack={() => undefined} onAccounts={() => undefined} />);
+    await user.click(await screen.findByRole("button", { name: "QQ" }));
+    const row = screen.getByRole("button", { name: /联系人/ });
+    expect(within(row).getByText(/回复失败/)).toBeVisible();
+    await user.click(row);
+    const messages = within(screen.getByRole("region", { name: "会话消息" }));
+    expect(await messages.findByText("@角色 QQ")).toBeVisible();
+    expect(messages.getAllByText("回复失败")).toHaveLength(2);
+    expect(messages.getByText("回复未能完成")).toBeVisible();
+    expect(messages.getByText("尚未设置模型连接")).toBeVisible();
+    expect(messages.queryByText("（无内容）")).not.toBeInTheDocument();
+    expect(messages.queryByAltText("经由账号头像")).not.toBeInTheDocument();
+    await user.click(messages.getAllByLabelText(/消息详情/)[0]);
+    expect(messages.getByText("消息编号：p1")).toBeVisible();
+  });
+
   it("首次读取失败后关闭提示仍能重新读取手机应用", async () => {
     let attempts = 0;
     fakeBackend({
@@ -121,7 +183,7 @@ describe("手机账号应用导航", () => {
     expect(screen.queryByRole("region", { name: "会话消息" })).not.toBeInTheDocument();
     expect(screen.queryByText("还没有会话")).not.toBeInTheDocument();
     await user.click(row);
-    expect(await screen.findByText("实时到达的消息")).toBeVisible();
+    expect(await within(screen.getByRole("region", { name: "会话消息" })).findByText("实时到达的消息")).toBeVisible();
   });
 });
 

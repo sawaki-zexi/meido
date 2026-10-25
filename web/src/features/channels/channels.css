@@ -207,6 +207,64 @@
 .channel-phone-retry { align-self: center; margin: auto; }
 .dialog-phone .channel-phone-chat-header p { display: block; font-size: 10px; }
 .channel-phone-chat-source { display: block; margin-top: 4px; color: var(--ink-faint); font-size: 10px; overflow-wrap: anywhere; }
+.dialog-phone .channel-phone-header > div:not(.channel-view-actions) { flex: 1; overflow: hidden; }
+.dialog-phone .channel-phone-header h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dialog-phone .channel-phone-header p.phone-header-subtitle { display: block; overflow: hidden; margin-top: 3px; color: var(--ink-faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.phone-chat-avatar { flex: none; width: 32px; height: 32px; border-radius: 10px; object-fit: cover; }
+.dialog-phone .channel-phone-workspace > .channel-thread-list { padding: 6px 8px; }
+.dialog-phone .channel-phone-workspace .channel-thread { grid-template-columns: 40px minmax(0, 1fr) auto; align-items: start; gap: 11px; margin: 0; padding: 13px 10px; border: 0; border-radius: 10px; background: transparent; }
+.dialog-phone .channel-phone-workspace .channel-thread.active { background: transparent; }
+.dialog-phone .channel-phone-workspace .channel-thread:hover { background: #fff0f6; }
+.dialog-phone .channel-phone-workspace .channel-thread .channel-contact-avatar, .dialog-phone .channel-phone-workspace .channel-thread .channel-mark { width: 40px; height: 40px; margin: 0; border-radius: 12px; object-fit: cover; }
+.dialog-phone .channel-phone-workspace .channel-thread .channel-mark { display: grid; place-items: center; background: #f2edf8; color: #9a86af; }
+.dialog-phone .channel-thread-copy { gap: 5px; padding-top: 1px; }
+.dialog-phone .channel-thread-copy strong { font-size: 14px; font-weight: 600; }
+.dialog-phone .channel-thread-copy small { font-size: 12px; }
+.dialog-phone .channel-thread-copy .phone-history-hint { font-size: 10px; }
+.dialog-phone .channel-thread time { padding-top: 3px; font-size: 10px; font-variant-numeric: tabular-nums; }
+.dialog-phone .channel-phone-workspace .channel-messages > ol { gap: 12px; padding: 12px; background: #faf7fa; }
+.dialog-phone .channel-message.phone-message, .dialog-phone .channel-message.phone-message.assistant { align-self: stretch; max-width: 100%; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.phone-message-date { margin: 4px 0 16px; text-align: center; }
+.phone-message-date time { display: inline-block; color: #a797a3; font-size: 11px; font-variant-numeric: tabular-nums; }
+.phone-message-row { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.phone-message-row.outgoing { flex-direction: row-reverse; }
+.phone-message-avatar { display: grid; flex: none; place-items: center; width: 32px; height: 32px; overflow: hidden; border-radius: 50%; background: #f0e7f0; color: #a27896; font-size: 13px; font-weight: 600; }
+.phone-message-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.phone-message-main { display: flex; align-items: flex-start; flex-direction: column; gap: 5px; min-width: 0; max-width: 78%; }
+.outgoing .phone-message-main { align-items: flex-end; }
+.phone-message-name { display: flex; align-items: center; gap: 4px; max-width: 100%; color: #9d8c99; font-size: 10px; overflow-wrap: anywhere; }
+.phone-message-owner { padding: 1px 5px; border-radius: 6px; background: #f5e6ef; color: #b36e95; font-size: 9px; }
+.phone-message-listened { color: #a38ca0; font-size: 9px; }
+.phone-image-preview { display: block; max-width: 100%; max-height: 75vh; margin: auto; border-radius: 10px; object-fit: contain; }
+.phone-message-bubble { max-width: 100%; padding: 8px 11px; border: 1px solid #eee6ec; border-radius: 12px; background: #fff; color: var(--ink); box-shadow: 0 2px 6px rgb(102 71 92 / 3%); }
+.outgoing .phone-message-bubble { border-color: #f0dce7; background: #fbedf4; }
+.dialog-phone .phone-message-bubble p { margin: 0; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-wrap; }
+.phone-message-mention { color: #b46891; }
+.phone-message-bubble.is-failed { border-color: #efdce2; background: #fff7f8; }
+.phone-message-error, .phone-message-failure { color: #b66c81; }
+.phone-message-bubble.is-listened { border-style: dashed; background: #f4f0f5; color: var(--ink-soft); }
+.phone-message-placeholder { color: var(--ink-faint); }
+.phone-message-quote { max-width: 100%; margin: 0; padding: 7px 9px; border-left: 2px solid #dbc3d4; border-radius: 5px; background: #f1ecf2; font-size: 11px; color: #998795; overflow-wrap: anywhere; }
+.phone-message-quote strong { display: block; margin-bottom: 3px; font-size: 10px; font-weight: 500; }
+.phone-message-quote > span { display: block; white-space: pre-wrap; }
+.phone-message-quote > span.is-collapsed { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.phone-message-quote button { margin-top: 4px; padding: 2px 0; border: 0; background: transparent; color: #b47498; font-size: 10px; cursor: pointer; }
+.phone-message-media { display: grid; justify-items: start; gap: 6px; max-width: 100%; }
+.outgoing .phone-message-media { justify-items: end; }
+.phone-message-media .channel-attachment-image { display: block; max-width: min(180px, 100%); max-height: 220px; border: 0; border-radius: 10px; }
+.phone-message-quote .channel-attachment-image { max-width: 64px; max-height: 64px; border-radius: 6px; }
+.phone-message-media .channel-attachment-file { padding: 9px 12px; border: 1px solid #e9dfeb; border-radius: 10px; background: #fff; font-size: 12px; }
+.phone-message-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; max-width: 100%; color: #ac9aa7; font-size: 10px; }
+.outgoing .phone-message-meta { justify-content: flex-end; }
+.phone-message-delivery.failed, .phone-message-delivery.uncertain { color: #b48774; }
+.phone-message-details { max-width: 100%; font-size: 10px; }
+.phone-message-details > summary { min-width: 24px; padding: 0 2px; color: #baacb6; font-size: 14px; line-height: 16px; list-style: none; cursor: pointer; opacity: .45; }
+.phone-message-details > summary::-webkit-details-marker { display: none; }
+.phone-message-row:hover .phone-message-details > summary, .phone-message-details:focus-within > summary, .phone-message-details[open] > summary { opacity: 1; }
+.phone-message-details[open] { flex-basis: 100%; }
+.phone-message-details > div { max-width: 100%; padding: 7px 9px; border: 1px solid #eee5ed; border-radius: 8px; background: #fffbfe; overflow-wrap: anywhere; }
+.dialog-phone .phone-message-details p { margin: 2px 0; font-size: 10px; line-height: 1.6; }
+.dialog-phone .channel-phone-workspace .channel-group-settings { padding: 8px 14px; background: #fffafd; color: var(--ink-faint); font-size: 11px; }
 .dialog-phone .channel-phone-settings-app { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; background: #faf7f9; }
 .dialog-phone .channel-phone-settings-header { display: flex; flex: none; align-items: center; gap: 8px; min-height: 58px; padding: 8px 12px; border-bottom: 1px solid #f2dce5; background: #fffafd; }
 .dialog-phone .channel-phone-settings-header h2 { margin: 0; font-size: 16px; }

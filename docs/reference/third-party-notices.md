@@ -6,6 +6,11 @@
 
 多端会话模块参考并改编 [Shiori-Agent](https://github.com/YinFengWindy/Shiori-Agent)，固定基线为 `1c241a2627bbcc99124aef71abaee237ac057499`。引用范围包括渠道账号和身份、入站暂停缓冲、聊天上下文隔离、群旁听以及平台传输行为；具体来源见[源码研究](../research/shiori-multichannel-integration.md)。上游采用 MIT 许可证，保留其版权及许可声明如下。
 
+手机导航与消息展示进一步参考 `d149de7f052f77c5bb88d4d1393d48dce1870875`；
+`web/src/features/channels/channelMessagePresentation.ts` 的 Markdown 摘要格式改编自该版本
+[`apps/desktop/src/shared/chatPreviewText.ts`](https://github.com/YinFengWindy/Shiori-Agent/blob/d149de7f052f77c5bb88d4d1393d48dce1870875/apps/desktop/src/shared/chatPreviewText.ts)。
+来源与 Meido 适配边界见[消息源码研究](../research/shiori-channel-message-presentation.md)，适用同一 MIT 声明。
+
 ```text
 MIT License
 

@@ -6,6 +6,9 @@ import { Notice } from "../../ui/Status";
 import { GroupListeningPanel } from "./GroupListeningPanel";
 import { RoleAccountsPanel } from "./RoleAccountsPanel";
 import { PhoneHome, type PhoneApp } from "./PhoneHome";
+import { PhoneMessage } from "./PhoneMessage";
+import { ChannelAttachments } from "./ChannelAttachments";
+import { conversationPreview, conversationTime, messagePresentation, messageTimeSeparators, type ConversationMessage, type ViaAccount } from "./channelMessagePresentation";
 import { channelName, type Account } from "./channelAccounts";
 import type { MemoryOrigin } from "../memory/MemoryPanel";
 import "./channels.css";
@@ -26,17 +29,7 @@ type Thread = {
   latestMessage?: LatestMessage | null;
   avatarUrl?: string | null;
 };
-type ViaAccount = { platform?: string; platformAccountId?: string; accountId?: string; displayName?: string; avatarUrl?: string | null };
 type LatestMessage = { content: string; role: string; status?: string; createdAt: string };
-type ConversationMessage = {
-  id: string;
-  sequence: number;
-  role: string;
-  content: string;
-  createdAt: string;
-  metadata: Record<string, unknown>;
-};
-type ChannelAttachment = { id: string; name: string; kind?: string };
 type ChannelEvent = {
   type?: string;
   roleId?: string;
@@ -102,21 +95,6 @@ function sourceLabel(source: ViaAccount | null | undefined): string | null {
 
 function deliveryLabel(status: unknown): string | null {
   return ({ pending: "发送中", sent: "已发送", failed: "发送失败", uncertain: "发送结果不确定" } as Record<string, string>)[String(status)] ?? null;
-}
-
-function messageAttachments(value: unknown): ChannelAttachment[] {
-  return Array.isArray(value) ? value.filter((item): item is ChannelAttachment => Boolean(
-    item && typeof item === "object" && typeof item.id === "string" && typeof item.name === "string",
-  )) : [];
-}
-
-function ChannelAttachments({ roleId, attachments, onMediaLoad }: { roleId: string; attachments: ChannelAttachment[]; onMediaLoad?: () => void }) {
-  return <>{attachments.map((attachment) => {
-    const href = `/api/roles/${encodeURIComponent(roleId)}/attachments/${encodeURIComponent(attachment.id)}`;
-    return attachment.kind === "image"
-      ? <a href={href} target="_blank" rel="noreferrer" key={attachment.id}><img className="channel-attachment-image" src={href} alt={attachment.name} onLoad={onMediaLoad} /></a>
-      : <a className="channel-attachment-file" href={href} target="_blank" rel="noreferrer" key={attachment.id}>{attachment.name}</a>;
-  })}</>;
 }
 
 export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialSource, sourceOnly = false, phoneMode = false }: { role: Role; onBack: () => void; onAccounts?: () => void; onOpenSettings?: () => void; initialSource?: ChannelMemorySource | null; sourceOnly?: boolean; phoneMode?: boolean }) {
@@ -618,6 +596,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
         || left.sequence - right.sequence);
   }, [messages, listeningMessages, hasOlderMessages, hasOlderListening, messagesReady, listeningReady, sourceOnly]);
   const canLoadOlder = hasOlderMessages || hasOlderListening;
+  const timeLabels = useMemo(() => messageTimeSeparators(timelineMessages), [timelineMessages]);
   const keepAtBottomAfterMediaLoad = () => {
     const list = messageList.current;
     if (list && !phoneMessagesHidden && atBottom.current) list.scrollTop = list.scrollHeight;
@@ -640,6 +619,9 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
   }, [timelineMessages, canLoadOlder, loadingOlder, messagesReady, listeningReady, error, sourceOnly, phoneMessagesHidden]);
 
   const phoneTitle = openPhoneApp ? phoneChatVisible && selectedThread ? selectedThread.title || selectedThread.chatId : openPhoneApp.label : role.name;
+  const phoneSubtitle = phoneChatVisible && selectedThread
+    ? [channelName[selectedThread.channel] || selectedThread.channel, selectedThread.chatType === "group" ? "群聊" : "私聊", selectedThread.viaAccount?.displayName, selectedThread.accountRemoved ? "账号已移除" : null].filter(Boolean).join(" · ")
+    : openPhoneApp ? [openPhoneApp.accountName, openPhoneApp.history ? "账号已移除" : openPhoneApp.offline ? "离线" : null].filter(Boolean).join(" · ") : "";
   const goBack = () => {
     if (!phoneMode || !openPhoneApp) onBack();
     else if (phoneChatVisible) setPhoneView({ kind: "app", appId: openPhoneApp.id, chat: false });
@@ -647,9 +629,10 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
   };
 
   return <section className={`channel-view${sourceOnly ? " channel-source-view" : ""}`} aria-label={sourceOnly ? "渠道记忆来源" : phoneSettingsOpen ? "渠道设置" : undefined} aria-labelledby={sourceOnly || phoneSettingsOpen ? undefined : "channel-view-title"}>
-    {!sourceOnly && !phoneSettingsOpen && <header className={`channel-view-header${phoneChatVisible ? " channel-phone-chat-header" : ""}`}>
+    {!sourceOnly && !phoneSettingsOpen && <header className={`channel-view-header${phoneMode ? " channel-phone-header" : ""}${phoneChatVisible ? " channel-phone-chat-header" : ""}`}>
       <IconButton icon="back" label={phoneMode && openPhoneApp ? phoneChatVisible ? "返回会话列表" : "返回手机主页" : "返回聊天"} onClick={goBack} />
-      <div><h1 id="channel-view-title">{phoneMode ? phoneTitle : `${role.name} · 手机会话`}</h1><p>{phoneChatVisible && selectedThread ? `${channelName[selectedThread.channel] || selectedThread.channel} · ${selectedThread.chatType === "group" ? "群聊" : "私聊"}` : `${threads.length} 个会话`}</p>{phoneChatVisible && selectedThread && (sourceLabel(selectedThread.viaAccount) || selectedThread.accountRemoved) && <small className="channel-phone-chat-source">{sourceLabel(selectedThread.viaAccount)}{selectedThread.accountRemoved ? " · 账号已移除" : ""}</small>}</div>
+      {phoneChatVisible && selectedThread?.avatarUrl && <img className="phone-chat-avatar" src={selectedThread.avatarUrl} alt="" />}
+      <div><h1 id="channel-view-title" title={phoneMode ? phoneTitle : role.name}>{phoneMode ? phoneTitle : `${role.name} · 手机会话`}</h1>{phoneMode ? phoneSubtitle && <p className="phone-header-subtitle" title={phoneSubtitle}>{phoneSubtitle}</p> : <p>{threads.length} 个会话</p>}</div>
       <div className="channel-view-actions">{onAccounts && !phoneMode && <button type="button" className="channel-accounts-button" aria-label="角色账号" title="角色账号" onClick={openAccounts}><Icon name="settings" size={16} /><span>角色账号</span></button>}{!phoneMode && <IconButton icon="refresh" label="刷新会话" onClick={() => void load()} />}</div>
     </header>}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
@@ -665,9 +648,9 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
         {!phoneMode && <h2>会话</h2>}
         {visibleThreads.length === 0 && (phoneMode ? openPhoneApp && <div className="channel-phone-empty"><Icon name="chat" size={32} /><p>还没有会话</p><small>此账号的聊天记录会显示在这里</small></div> : <p className="channel-empty">暂无渠道会话</p>)}
         {visibleThreads.map((thread) => <button key={thread.threadId} type="button" className={`channel-thread${selected === thread.threadId ? " active" : ""}`} onClick={() => { sourceRequest.current += 1; setSourceHighlightedId(null); setListeningSource(null); setSourceError(""); setSelected(thread.threadId); if (phoneMode && openPhoneApp) setPhoneView({ kind: "app", appId: openPhoneApp.id, chat: true }); }}>
-          {thread.avatarUrl ? <img src={thread.avatarUrl} alt="" className="channel-contact-avatar" /> : <span className={`channel-mark ${thread.channel}`}>{thread.channel === "telegram" ? "T" : thread.channel === "desktop" ? "M" : "•"}</span>}
-          <span className="channel-thread-copy"><strong>{thread.title || thread.chatId}</strong><small>{channelName[thread.channel] ?? thread.channel} · {thread.chatType === "group" ? "群聊" : "私聊"}</small>{thread.latestMessage && <small>{thread.latestMessage.role === "assistant" ? role.name : thread.title || "访客"}：{thread.latestMessage.content || "（无内容）"}</small>}{sourceLabel(thread.viaAccount) && <small>{sourceLabel(thread.viaAccount)}</small>}{thread.accountRemoved && <small>账号已移除</small>}</span>
-          <time>{new Date(thread.lastActivity).toLocaleDateString()}</time>
+          {thread.avatarUrl ? <img src={thread.avatarUrl} alt="" className="channel-contact-avatar" /> : <span className={`channel-mark ${thread.channel}`}>{phoneMode ? <Icon name={thread.chatType === "group" ? "people" : "profile"} size={23} /> : thread.channel === "telegram" ? "T" : thread.channel === "desktop" ? "M" : "•"}</span>}
+          <span className="channel-thread-copy"><strong>{thread.title || thread.chatId}</strong>{phoneMode ? <>{thread.latestMessage && <small>{conversationPreview(thread.latestMessage)}</small>}{thread.accountRemoved && <small className="phone-history-hint">账号已移除</small>}</> : <><small>{channelName[thread.channel] ?? thread.channel} · {thread.chatType === "group" ? "群聊" : "私聊"}</small>{thread.latestMessage && <small>{thread.latestMessage.role === "assistant" ? role.name : thread.title || "访客"}：{thread.latestMessage.content || "（无内容）"}</small>}{sourceLabel(thread.viaAccount) && <small>{sourceLabel(thread.viaAccount)}</small>}{thread.accountRemoved && <small>账号已移除</small>}</>}</span>
+          <time dateTime={thread.lastActivity} title={new Date(thread.lastActivity).toLocaleString()}>{phoneMode ? conversationTime(thread.lastActivity) : new Date(thread.lastActivity).toLocaleDateString()}</time>
         </button>)}
       </aside>}
       <section className="channel-messages" aria-label="会话消息" hidden={phoneMode && !sourceOnly && !phoneChatVisible}>
@@ -679,23 +662,14 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
             atBottom.current = list.scrollHeight - list.scrollTop - list.clientHeight < 24;
           }}>
             {canLoadOlder && <li className="channel-older"><button type="button" disabled={loadingOlder} onClick={() => void loadOlderMessages()}>{loadingOlder ? "正在读取…" : "读取更早消息"}</button></li>}
-            {timelineMessages.map((message) => {
-              const attachments = messageAttachments(message.metadata.attachments);
-              const quotedAttachments = messageAttachments(message.metadata.quotedAttachments);
-              const replyTo = typeof message.metadata.replyTo === "string" && message.metadata.replyTo ? message.metadata.replyTo : null;
-              const replyTarget = replyTo ? timelineMessages.find((item) => String(item.metadata.platformMessageId ?? "") === replyTo) : null;
-              const replySender = replyTarget ? String(replyTarget.metadata.senderName ?? (replyTarget.role === "assistant" ? role.name : "访客")) : String(message.metadata.replyToSenderName || message.metadata.replyToSenderId || "");
-              const quotedText = typeof message.metadata.replyToContent === "string" ? message.metadata.replyToContent : "";
-              const mentionedIds = Array.isArray(message.metadata.mentionedIds) ? message.metadata.mentionedIds.map(String) : [];
-              const mentionedNames = mentionedIds.map((id) => {
-                const target = timelineMessages.find((item) => String(item.metadata.senderId ?? "") === id);
-                return target ? String(target.metadata.senderName ?? id) : id;
-              });
-              const source = message.metadata.viaAccount as ViaAccount | undefined;
+            {timelineMessages.map((message, index) => {
+              const view = messagePresentation(message, timelineMessages, role, account);
+              const { attachments, quotedAttachments, replyTo, replyTarget, replySender, quotedText, mentionedNames, source } = view;
               const delivery = deliveryLabel(message.metadata.deliveryStatus);
               const sourceMessage = message.id === sourceHighlightedId;
-              return <li key={message.id} ref={sourceMessage ? (node) => { sourceElement.current = node; } : undefined} className={`channel-message ${message.role}${message.metadata.listening === true ? " listened" : ""}${sourceMessage ? " source-highlight" : ""}`} style={sourceMessage ? { boxShadow: "0 0 0 2px var(--rose)" } : undefined}>
+              return <li key={message.id} ref={sourceMessage ? (node) => { sourceElement.current = node; } : undefined} className={`channel-message ${message.role}${phoneMode && !sourceOnly ? " phone-message" : ""}${message.metadata.listening === true ? " listened" : ""}${sourceMessage ? " source-highlight" : ""}`} style={sourceMessage ? { boxShadow: "0 0 0 2px var(--rose)" } : undefined}>
                 {sourceMessage && <span className="source-marker">记忆来源</span>}
+                {phoneMode && !sourceOnly ? <PhoneMessage message={message} view={view} roleId={role.id} timeLabel={timeLabels[index]} delivery={delivery} source={sourceLabel(source)} onMediaLoad={keepAtBottomAfterMediaLoad} /> : <>
                 {message.metadata.listening === true && <span className="source-marker">旁听记录 · 不触发角色</span>}
                 <span className="channel-message-sender">
                   {message.role !== "assistant" && typeof message.metadata.senderAvatarUrl === "string" && <img src={message.metadata.senderAvatarUrl} alt="" className="channel-contact-avatar" />}
@@ -712,6 +686,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
                 {delivery && <span className={`channel-delivery channel-delivery-${message.metadata.deliveryStatus}`}>{delivery}</span>}
                 {Boolean(message.metadata.platformMessageId) && <details className="channel-receipt"><summary>{delivery ? "平台回执" : "平台消息"}</summary><span>消息编号：{String(message.metadata.platformMessageId)}</span></details>}
                 <time>{new Date(message.createdAt).toLocaleString()}</time>
+                </>}
               </li>;
             })}
           </ol>
