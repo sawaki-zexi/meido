@@ -1,5 +1,12 @@
 /** Small line icons (24×24, currentColor). Decorative: the button carries the accessible name. */
 const paths = {
+  bell: 'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9 M10 21h4 M3 5 1 8 M21 5l2 3',
+  monitor: 'M3 3h18v14H3V3Z M8 21h8 M12 17v4',
+  building: 'M3 21V8l10-5v18 M13 10h8v11 M1 21h22 M6 10v2 M10 8v2 M6 15v2 M10 13v2 M17 13v2 M17 17v2',
+  bot: 'M12 3v3 M10 2h4 M6 7h12a3 3 0 0 1 3 3v9H3v-9a3 3 0 0 1 3-3Z M8 12h.01 M16 12h.01 M9 16h6',
+  brain: 'M12 6v14 M12 6a3 3 0 0 0-5-2 4 4 0 0 0-3 6 4 4 0 0 0 1 7 4 4 0 0 0 7 3 M12 6a3 3 0 0 1 5-2 4 4 0 0 1 3 6 4 4 0 0 1-1 7 4 4 0 0 1-7 3 M7 8a3 3 0 0 1 2 3 M4 14a3 3 0 0 1 4 2 M17 8a3 3 0 0 0-2 3 M20 14a3 3 0 0 0-4 2',
+  save: 'M4 3h13l4 4v14H3V3h1Z M7 3v6h10V3 M7 21v-8h10v8',
+  undo: 'M3 4v6h6 M3 10l5-5a8 8 0 1 1-1 13',
   palette: 'M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 1.5-3.3 1.5 1.5 0 0 1 1.2-2.5H17a4 4 0 0 0 4-4A9 9 0 0 0 12 3Z M7 10h.01 M10 6.5h.01 M15 6.5h.01 M6.5 14h.01',
   sliders: 'M4 7h5 M13 7h7 M4 17h10 M18 17h2 M9 4v6 M14 14v6',
   info: 'M12 11v6 M12 7h.01 M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z',

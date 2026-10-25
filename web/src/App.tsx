@@ -8,10 +8,9 @@ import { RoleList } from "./features/role-management/RoleList";
 import { useRoles } from "./features/role-management/useRoles";
 import { SettingsDialog, type SettingsSectionId } from "./features/settings/SettingsDialog";
 import { applyAppearance, readAppearance } from './features/settings/appearance';
-import { RoleAccountsPanel } from "./features/channels/RoleAccountsPanel";
 import { CreateRolePage } from "./features/tavern/CreateRolePage";
-import { RoleCard } from "./features/tavern/RoleCard";
 import { TavernView } from "./features/tavern/TavernView";
+import { RoleWorkspace, type RoleWorkspaceTab } from "./features/role-management/RoleWorkspace";
 import { Dialog } from "./ui/Dialog";
 import { Icon, IconButton } from "./ui/Icon";
 import { Notice } from "./ui/Status";
@@ -19,10 +18,9 @@ import { TodoDrawer } from './features/todo/TodoDrawer';
 import { useTodoNavigation } from './features/todo/useTodoNavigation';
 import { NovelaiStudio } from './features/novelai/NovelaiStudio';
 
-/** What the main pane shows: a conversation, the role tavern, memories, or the NovelAI studio. */
-type View = "chat" | "tavern" | "memories" | "novelai";
-/** Overlay on top of the main pane; null means none. "card" reveals a newly created role's card. */
-type Panel = null | "create" | "profile" | "settings" | "card";
+/** What the main pane shows: a conversation, the role tavern/workspace, memories, or the NovelAI studio. */
+type View = "chat" | "tavern" | "role" | "create" | "memories" | "novelai";
+type Panel = null | "settings";
 
 const LAST_ROLE_KEY = "meido:last-role";
 const readLastRole = () => { try { return localStorage.getItem(LAST_ROLE_KEY); } catch { return null; } };
@@ -35,13 +33,13 @@ export function App() {
   const [returnedFromOwnerKnowledgeAuthorization] = useState(
     () => new URLSearchParams(window.location.search).get("ownerKnowledge") === "connected",
   );
-  // A restored create-role draft reopens the create panel.
-  const [panel, setPanel] = useState<Panel>(() => roles.creating ? "create" : returnedFromOwnerKnowledgeAuthorization ? "settings" : null);
-  const [view, setView] = useState<View>("chat");
+  const [panel, setPanel] = useState<Panel>(returnedFromOwnerKnowledgeAuthorization ? "settings" : null);
+  const [roleSettingsVersion, setRoleSettingsVersion] = useState(0);
+  const [view, setView] = useState<View>(() => roles.creating ? "create" : "chat");
+  const [roleReturnView, setRoleReturnView] = useState<Exclude<View, "role" | "create">>("chat");
   const [studioRoleId, setStudioRoleId] = useState<string | null>(null);
   const [todoOpen, setTodoOpen] = useState(false);
   const todoNavigation = useTodoNavigation(panel === 'settings' || todoOpen);
-  const [newRole, setNewRole] = useState<Role | null>(null);
   // Narrow screens show one pane at a time; home is the conversation.
   const [showList, setShowList] = useState(false);
   const [channelsOpen, setChannelsOpen] = useState(false);
@@ -52,7 +50,7 @@ export function App() {
   const [channelSource, setChannelSource] = useState<{ role: Role; source: ChannelMemorySource } | null>(null);
   const [previewRole, setPreviewRole] = useState<Role | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [profileTab, setProfileTab] = useState<"profile" | "accounts">("profile");
+  const [profileTab, setProfileTab] = useState<RoleWorkspaceTab>("profile");
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId | undefined>(returnedFromOwnerKnowledgeAuthorization ? "owner-knowledge" : undefined);
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -62,17 +60,19 @@ export function App() {
 
   useEffect(() => { if (searchOpen && showList && panel !== 'settings') searchRef.current?.focus(); }, [searchOpen, showList, panel]);
 
-  const openChat = async (role: Role) => {
+  const openChat = async (role: Role, navigate = true) => {
     roles.setError("");
     setOpeningId(role.id);
     const opened = await chat.open(role);
     setOpeningId(null);
     if (!opened) return null;
     writeLastRole(role.id);
-    setHighlightedId(null);
-    setChannelsOpen(false);
-    setView("chat");
-    setShowList(false);
+    if (navigate) {
+      setHighlightedId(null);
+      setChannelsOpen(false);
+      setView("chat");
+      setShowList(false);
+    }
     return opened;
   };
 
@@ -81,15 +81,22 @@ export function App() {
     if (roles.loading || booted.current) return;
     booted.current = true;
     const home = roles.roles.find((role) => role.id === readLastRole()) ?? roles.roles[0];
-    if (home) void openChat(home);
+    if (home) void openChat(home, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roles.loading]);
 
   const chatRole = roles.roles.find((role) => role.id === chat.roleId) ?? null;
 
-  // The create page opens over whatever is showing, so closing it returns there.
-  const startCreate = () => { roles.startCreate(); setPanel("create"); };
-  const showProfile = (role: Role, tab: "profile" | "accounts" = "profile") => { roles.select(role); roles.startEdit(); setProfileTab(tab); setPanel("profile"); };
+  const rememberRoleOrigin = () => { if (view !== "role" && view !== "create") setRoleReturnView(view); };
+  const startCreate = () => { rememberRoleOrigin(); roles.startCreate(); setPanel(null); setView("create"); setShowList(false); };
+  const showProfile = (role: Role, tab: RoleWorkspaceTab = "profile") => { rememberRoleOrigin(); roles.select(role); setProfileTab(tab); setPanel(null); setView("role"); setShowList(false); };
+  const showChatProfile = (role: Role, tab: "profile" | "accounts" = "profile") => { showProfile(role, tab); if (tab === "profile") roles.startEdit(); };
+  const backFromRole = () => {
+    // Leaving creation keeps its draft; leaving an existing role drops unsaved edits.
+    if (view === "role") roles.cancel();
+    setView(roleReturnView);
+    setShowList(false);
+  };
   const openTavern = () => { setView("tavern"); setShowList(false); if (panel === 'settings') setPanel(null); };
   const backToChat = () => { setChannelsOpen(false); setView("chat"); setShowList(false); setHighlightedId(null); if (panel === 'settings') setPanel(null); };
   const openChannels = () => { setChannelsOpen(true); setView("chat"); setShowList(false); setHighlightedId(null); if (panel === 'settings') setPanel(null); };
@@ -102,8 +109,8 @@ export function App() {
     }
     if (origin.sessionKey !== `role:${role.id}`) { chat.setError("来源会话与当前角色不匹配"); setView("chat"); return; }
     const messages = await chat.open(role);
-    setView("chat");
     if (!messages) return;
+    setView("chat");
     const [from, to] = origin.messageRange ?? [];
     const source = messageId
       ? messages.find((message) => message.id === messageId)
@@ -128,55 +135,52 @@ export function App() {
   };
   const chatWith = (role: Role) => role.id === chat.roleId ? backToChat() : void openChat(role);
 
-  const closePanel = () => {
-    // Closing the create panel keeps the draft (it is restored next time); closing a profile drops unsaved edits.
-    if (panel === "profile" && roles.editing) roles.cancel();
-    setPanel(null);
-  };
-
   const saveRole = async () => {
-    const wasCreating = roles.creating;
+    const wasCreating = view === "create";
     const saved = await roles.save();
     if (!saved) return;
-    // A new role gets her own card; the user starts chatting from there.
-    if (wasCreating) { setNewRole(saved); setPanel("card"); }
+    if (wasCreating) { setProfileTab("profile"); setView("role"); }
   };
 
   const cancelEdit = () => {
     roles.cancel();
-    setPanel(null);
+    if (view === "create") setView(roleReturnView);
   };
 
   const deleteRole = async () => {
     const deletedId = roles.selected?.id;
     if (!await roles.remove()) return;
     setPanel(null);
-    if (deletedId !== chat.roleId) return;
-    chat.reset();
-    // In the tavern the user stays with the cards; in a conversation, move on to the next role.
-    const next = roles.roles.find((role) => role.id !== deletedId);
-    if (next && view !== "tavern") void openChat(next);
+    if (deletedId === chat.roleId) chat.reset();
+    setView(roleReturnView);
+    // Returning to a conversation after deleting its role opens the next one.
+    if (roleReturnView === "chat" && deletedId === chat.roleId) {
+      const next = roles.roles.find((role) => role.id !== deletedId);
+      if (next) void openChat(next);
+    }
   };
 
   // Switching roles mid-reply would mix two conversations, so the list waits for the reply.
   const lockSwitch = chat.sending || openingId !== null;
+  const rolePage = view === "role" || view === "create";
+  const backLabel = roleReturnView === "tavern" ? "返回角色" : "返回对话";
 
   return <div className={`shell${showList ? " show-list" : ""}`}>
     <nav className="app-rail" aria-label="页面">
-      <button type="button" className="rail-search" aria-label="搜索角色" title="搜索角色" aria-expanded={searchOpen} aria-controls={searchOpen ? "role-search" : undefined} onClick={() => { if (panel === 'settings') setPanel(null); setSearchOpen(true); setShowList(true); searchRef.current?.focus(); }}><Icon name="search" size={21} /></button>
+      <button type="button" className="rail-search" aria-label="搜索角色" title="搜索角色" disabled={roles.busy} aria-expanded={searchOpen} aria-controls={searchOpen ? "role-search" : undefined} onClick={() => { if (panel === 'settings') setPanel(null); setSearchOpen(true); setShowList(true); searchRef.current?.focus(); }}><Icon name="search" size={21} /></button>
       <span className="rail-divider" aria-hidden="true" />
       <div className="side-tabs">
-        <button type="button" aria-label="对话" title="对话" aria-current={view === "chat" || view === "memories" ? "page" : undefined} onClick={backToChat}><Icon name="chat" size={22} /></button>
-        <button type="button" aria-label="角色" title="角色" aria-current={view === "tavern" ? "page" : undefined} onClick={openTavern}><Icon name="people" size={22} /></button>
-        <button type="button" aria-label="NovelAI 图片工作台" title="NovelAI 图片工作台" aria-current={view === "novelai" ? "page" : undefined} onClick={() => openNovelai()}><Icon name="image" size={22} /></button>
-        {todoNavigation.enabled && <button type="button" className="todo-entry" aria-label={todoNavigation.unread ? `待办提醒 ${todoNavigation.unread}` : '待办'} title="待办"
+        <button type="button" aria-label="对话" title="对话" disabled={roles.busy} aria-current={view === "chat" || view === "memories" ? "page" : undefined} onClick={backToChat}><Icon name="chat" size={22} /></button>
+        <button type="button" aria-label="角色" title="角色" disabled={roles.busy} aria-current={view === "tavern" || rolePage ? "page" : undefined} onClick={openTavern}><Icon name="people" size={22} /></button>
+        <button type="button" aria-label="NovelAI 图片工作台" title="NovelAI 图片工作台" disabled={roles.busy} aria-current={view === "novelai" ? "page" : undefined} onClick={() => openNovelai()}><Icon name="image" size={22} /></button>
+        {todoNavigation.enabled && <button type="button" className="todo-entry" disabled={roles.busy} aria-label={todoNavigation.unread ? `待办提醒 ${todoNavigation.unread}` : '待办'} title="待办"
           aria-haspopup="dialog" aria-expanded={todoOpen} onClick={() => { if (panel === 'settings') setPanel(null); setTodoOpen(true); }}>
           <Icon name="todo" size={22} />{todoNavigation.unread > 0 && <span>{todoNavigation.unread > 99 ? '99+' : todoNavigation.unread}</span>}
         </button>}
       </div>
-      <footer className="rail-footer"><IconButton icon="settings" label="设置" onClick={() => { setSettingsSection(undefined); setPanel("settings"); }} /></footer>
+      <footer className="rail-footer"><IconButton icon="settings" label="设置" disabled={roles.busy} onClick={() => { setSettingsSection(undefined); setPanel("settings"); }} /></footer>
     </nav>
-    <aside className="sidebar" aria-label={view === "tavern" ? "角色管理" : view === "novelai" ? "工作台角色" : "对话列表"} aria-hidden={panel === 'settings' || undefined}
+    <aside className="sidebar" aria-label={view === "tavern" || rolePage ? "角色管理" : view === "novelai" ? "工作台角色" : "对话列表"} aria-hidden={panel === 'settings' || undefined}
       ref={element => { if (element) element.inert = panel === 'settings'; }}>
       <div className="sidebar-tools">
         {view === "tavern" && <>
@@ -195,59 +199,38 @@ export function App() {
       </div>
       <div className="sidebar-body">
         {roles.error && panel === null && view !== "tavern" && <Notice onDismiss={() => roles.setError("")}>{roles.error}</Notice>}
-        <RoleList roles={filteredRoles} loading={roles.loading} loadFailed={roles.loadFailed} searching={Boolean(searchTerm)} activeId={view === "tavern" ? null : view === "novelai" ? studioRoleId : chat.roleId} disabled={view !== "novelai" && lockSwitch} onOpen={view === "novelai" ? (role) => openNovelai(role.id) : chatWith} />
+        <RoleList roles={filteredRoles} loading={roles.loading} loadFailed={roles.loadFailed} searching={Boolean(searchTerm)} activeId={view === "tavern" ? null : rolePage ? roles.selected?.id ?? null : view === "novelai" ? studioRoleId : chat.roleId} disabled={roles.busy || (view !== "novelai" && lockSwitch)} onOpen={rolePage ? (role) => showProfile(role) : view === "novelai" ? (role) => openNovelai(role.id) : chatWith} />
       </div>
     </aside>
 
     <main className="main" aria-hidden={panel === 'settings' || undefined} ref={element => { if (element) element.inert = panel === 'settings'; }}>
       {view === "tavern"
-        ? <TavernView roles={roles.roles} query={searchTerm} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onShow={showProfile} onChat={chatWith} onPreviewAvatar={setPreviewRole} />
+        ? <TavernView roles={roles.roles} query={searchTerm} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onShow={showChatProfile} onWorkspace={showProfile} onChat={chatWith} onPreviewAvatar={setPreviewRole} />
+        : view === "create"
+        ? <CreateRolePage state={roles} number={roles.roles.length + 1} onSubmit={() => void saveRole()} onCancel={cancelEdit} onBack={backFromRole} backLabel={backLabel} />
+        : view === "role" && roles.selected
+        ? <RoleWorkspace key={roles.selected.id} role={roles.selected} state={roles} tab={profileTab} onTabChange={setProfileTab} onBack={backFromRole} backLabel={backLabel} onChat={() => chatWith(roles.selected!)} chatDisabled={lockSwitch} onEdit={() => { setProfileTab("profile"); roles.startEdit(); }} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} onOpenSettings={(section = 'plugins') => { setSettingsSection(section); setPanel("settings"); }} onOpenChannelSettings={() => { setSettingsSection("channels"); setPanel("settings"); }} onOpenMemorySource={(origin, messageId) => void openMemorySource(roles.selected!, origin, messageId)} settingsVersion={roleSettingsVersion} />
         : view === "novelai"
         ? <NovelaiStudio roles={roles.roles} selectedRoleId={studioRoleId ?? chat.roleId ?? roles.roles[0]?.id} onRoleChange={setStudioRoleId}
           onGenerated={chat.refresh} settingsOpen={panel === 'settings'} onOpenSettings={() => { setSettingsSection('novelai'); setPanel('settings'); }} />
         : view === "memories" && chatRole
         ? <MemoryPanel key={chatRole.id} role={chatRole} onBack={backToChat} onOpenSource={(origin, messageId) => void openMemorySource(chatRole, origin, messageId)} />
         : chatRole
-        ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showProfile(chatRole)} onShowMemories={() => setView("memories")} onShowChannels={openChannels} />
+        ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showChatProfile(chatRole)} onShowMemories={() => setView("memories")} onShowChannels={openChannels} />
         : <WelcomeView loading={roles.loading || openingId !== null} hasRoles={roles.roles.length > 0} error={chat.error} onDismissError={() => chat.setError("")} onCreate={startCreate} onBack={() => setShowList(true)} />}
     </main>
 
     {todoOpen && <TodoDrawer onClose={() => setTodoOpen(false)} onOpenSource={(roleId, sessionKey, messageId) => { setTodoOpen(false); void openTodoSource(roleId, sessionKey, messageId); }} />}
     {channelsOpen && chatRole && <Dialog modalFocus variant="phone" title={`${chatRole.name}的多端会话`} onClose={backToChat}>
-      <ChannelView role={chatRole} phoneMode onBack={backToChat} onAccounts={() => { setChannelsOpen(false); showProfile(chatRole, "accounts"); }} onOpenSettings={() => { setChannelsOpen(false); setSettingsSection("channels"); setPanel("settings"); }} />
+      <ChannelView role={chatRole} phoneMode onBack={backToChat} onAccounts={() => { setChannelsOpen(false); showChatProfile(chatRole, "accounts"); }} onOpenSettings={() => { setChannelsOpen(false); setSettingsSection("channels"); setPanel("settings"); }} />
     </Dialog>}
     {channelSource && <Dialog modalFocus title="记忆来源" onClose={() => setChannelSource(null)}>
       <ChannelView key={`${channelSource.role.id}:${channelSource.source.origin.stableSourceKey}:${channelSource.source.messageId ?? ""}`} role={channelSource.role} sourceOnly onBack={() => setChannelSource(null)} initialSource={channelSource.source} />
     </Dialog>}
 
-    {panel === "create" && <Dialog title="创建角色" variant="page" onClose={closePanel}>
-      <CreateRolePage state={roles} number={roles.roles.length + 1} onSubmit={() => void saveRole()} onCancel={cancelEdit} />
-    </Dialog>}
-    {panel === "profile" && <Dialog title="角色资料" variant="page" onClose={closePanel}>
-      <div className="role-detail">
-        <div className="role-detail-tabs" role="tablist" aria-label="角色详情">
-          <button type="button" role="tab" aria-selected={profileTab === "profile"} onClick={() => setProfileTab("profile")}>资料</button>
-          <button type="button" role="tab" aria-selected={profileTab === "accounts"} onClick={() => setProfileTab("accounts")}>账号</button>
-        </div>
-        <div className="role-detail-panel" role="tabpanel" aria-label={profileTab === "profile" ? "资料" : "账号"}>
-          {profileTab === "profile" ? <CreateRolePage state={roles} number={roles.roles.findIndex((role) => role.id === roles.selected?.id) + 1} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} />
-            : roles.selected && <RoleAccountsPanel key={roles.selected.id} roleId={roles.selected.id} onOpenSettings={() => { roles.cancel(); setSettingsSection("channels"); setPanel("settings"); }} />}
-        </div>
-      </div>
-    </Dialog>}
-    {panel === "settings" && <SettingsDialog initialSection={settingsSection} onRoleSaved={roles.receiveRole} onClose={() => setPanel(null)} />}
+    {panel === "settings" && <SettingsDialog initialSection={settingsSection} onRoleSaved={roles.receiveRole} onClose={() => { setPanel(null); setRoleSettingsVersion(value => value + 1); }} />}
     {previewRole && <Dialog title={`${previewRole.name}头像`} variant="modal" onClose={() => setPreviewRole(null)}>
       <div className="avatar-lightbox"><img src={previewRole.avatarOriginalUrl ?? previewRole.avatarUrl ?? ""} alt={`${previewRole.name}头像`} /></div>
-    </Dialog>}
-    {panel === "card" && newRole && <Dialog title="新卡牌" variant="compact" onClose={() => setPanel(null)}>
-      <div className="card-reveal">
-        <RoleCard role={newRole} number={roles.roles.findIndex((role) => role.id === newRole.id) + 1} className="is-new" />
-        <p className="muted">{newRole.name} 加入了酒馆。</p>
-        <div className="form-actions">
-          <button type="button" className="ghost" onClick={() => setPanel(null)}>稍后再聊</button>
-          <button type="button" className="primary" onClick={() => { setPanel(null); void openChat(newRole); }}>开始对话</button>
-        </div>
-      </div>
     </Dialog>}
   </div>;
 }

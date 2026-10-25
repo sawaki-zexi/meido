@@ -27,7 +27,7 @@ it('从聊天头像和名字打开资料，待办移到全局导航且保留提�
   expect(header.getByRole('button', { name: '更多' })).toBeInTheDocument();
   expect(header.queryByRole('button', { name: '生图与历史' })).not.toBeInTheDocument();
   await user.click(profile);
-  expect(await screen.findByRole('dialog', { name: '角色资料' })).toBeVisible();
+  expect(await screen.findByRole('region', { name: /的角色工作区$/ })).toBeVisible();
 });
 
 it('更多菜单按当前插件状态显示生图，支持键盘返回且不会提前读取历史', async () => {
