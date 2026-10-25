@@ -108,79 +108,34 @@ it("清理事件清空当前群记录并丢弃清理前仍在途的旧分页", a
   expect(screen.queryByRole("button", { name: "读取更早旁听记录" })).not.toBeInTheDocument();
 });
 
-it("日常聊天默认关闭，仅开启旁听后可启用，并保存当前群开关", async () => {
-  let naturalEnabled = false;
-  const { calls } = fakeBackend({
-    "GET .*threads/t1/listening": () => ({ body: { ...settings, naturalEnabled } }),
-    "GET .*threads/t1/listening/messages": () => ({ body: { messages: [], hasMore: false, nextBefore: null } }),
-    "PUT .*threads/t1/listening/natural": () => { naturalEnabled = true; return { body: { ...settings, naturalEnabled } }; },
-  });
-  const user = userEvent.setup();
-  render(<GroupListeningPanel roleId="r1" threadId="t1" accountId="qq-1" chatId="g1" editable />);
-  await user.click(screen.getByText(/群旁听记录/));
-  const toggle = await screen.findByRole("checkbox", { name: "开启本群日常聊天" });
-  expect(toggle).not.toBeChecked();
-  await user.click(toggle);
-  expect(toggle).toBeChecked();
-  expect(calls.filter(call => call.method === "PUT")).toEqual([{ method: "PUT", path: "/api/roles/r1/channels/threads/t1/listening/natural", body: { enabled: true } }]);
-});
-
-it("旁听关闭保留日常聊天选择并显示暂停，未保存开启时不能直接开启", async () => {
-  let naturalEnabled = true;
+it("旁听记录不再承载自然回复开关，避免与群聊设置混淆", async () => {
   fakeBackend({
-    "GET .*threads/t1/listening": () => ({ body: { ...settings, enabled: false, naturalEnabled, naturalPaused: naturalEnabled } }),
+    "GET .*threads/t1/listening": () => ({ body: { ...settings, naturalEnabled: true } }),
     "GET .*threads/t1/listening/messages": () => ({ body: { messages: [], hasMore: false, nextBefore: null } }),
-    "PUT .*threads/t1/listening/natural": () => { naturalEnabled = false; return { body: { ...settings, enabled: false, naturalEnabled } }; },
   });
   const user = userEvent.setup();
-  render(<GroupListeningPanel roleId="r1" threadId="t1" accountId="qq-1" chatId="g1" editable />);
+  render(<GroupListeningPanel roleId="r1" threadId="t1" editable />);
   await user.click(screen.getByText(/群旁听记录/));
-  expect(await screen.findByText("日常聊天已暂停：请先开启本群旁听。" )).toBeVisible();
-  const toggle = screen.getByRole("checkbox", { name: "开启本群日常聊天" });
-  expect(toggle).toBeChecked();
-  await user.click(toggle);
-  expect(toggle).not.toBeChecked();
-  expect(toggle).toBeDisabled();
+  expect(await screen.findByText("暂无旁听记录")).toBeVisible();
+  expect(screen.queryByRole("checkbox", { name: /自然回复|日常聊天/ })).not.toBeInTheDocument();
 });
 
-it("切换群时丢弃旧日常聊天保存回执，新群仍可操作", async () => {
-  let finish: ((reply: { body: unknown }) => void) | undefined;
+it("旁听上限保存中切换群，不继续旧群的默认设置写入或污染新群", async () => {
+  let finish: (reply: { body: unknown }) => void = () => undefined;
   const pending = new Promise<{ body: unknown }>(resolve => { finish = resolve; });
   const { calls } = fakeBackend({
-    "GET .*threads/t[12]/listening": () => ({ body: { ...settings, naturalEnabled: false } }),
+    "GET .*threads/t[12]/listening": () => ({ body: settings }),
     "GET .*threads/t[12]/listening/messages": () => ({ body: { messages: [], hasMore: false, nextBefore: null } }),
-    "PUT .*threads/t1/listening/natural": () => pending,
-  });
-  const user = userEvent.setup();
-  const view = render(<GroupListeningPanel roleId="r1" threadId="t1" accountId="qq-1" chatId="g1" editable />);
-  await user.click(screen.getByText(/群旁听记录/));
-  const toggle = await screen.findByRole("checkbox", { name: "开启本群日常聊天" });
-  await user.dblClick(toggle);
-  expect(calls.filter(call => call.method === "PUT")).toHaveLength(1);
-  view.rerender(<GroupListeningPanel roleId="r1" threadId="t2" accountId="qq-1" chatId="g2" editable />);
-  await waitFor(() => expect(screen.getByRole("checkbox", { name: "开启本群日常聊天" })).toBeEnabled());
-  await act(async () => { finish?.({ body: { ...settings, naturalEnabled: true } }); await pending; });
-  expect(screen.getByRole("checkbox", { name: "开启本群日常聊天" })).not.toBeChecked();
-});
-
-it("日常聊天保存失败保留旧选择并允许重试，只读入口不能修改", async () => {
-  let failed = true;
-  fakeBackend({
-    "GET .*threads/t1/listening": () => ({ body: { ...settings, naturalEnabled: false } }),
-    "GET .*threads/t1/listening/messages": () => ({ body: { messages: [], hasMore: false, nextBefore: null } }),
-    "PUT .*threads/t1/listening/natural": () => failed ? { status: 409, body: { detail: "请先开启本群旁听" } } : { body: { ...settings, naturalEnabled: true } },
+    "PUT .*threads/t1/listening/cap": () => pending,
+    "PUT /api/channels/listening/defaults": () => ({ body: {} }),
   });
   const user = userEvent.setup();
   const view = render(<GroupListeningPanel roleId="r1" threadId="t1" editable />);
   await user.click(screen.getByText(/群旁听记录/));
-  const toggle = await screen.findByRole("checkbox", { name: "开启本群日常聊天" });
-  await user.click(toggle);
-  expect(await screen.findByRole("status")).toHaveTextContent("请先开启本群旁听");
-  expect(toggle).not.toBeChecked();
-  expect(toggle).toBeEnabled();
-  failed = false;
-  await user.click(toggle);
-  expect(toggle).toBeChecked();
-  view.rerender(<GroupListeningPanel roleId="r1" threadId="t1" editable={false} />);
-  expect(toggle).toBeDisabled();
+  await user.click(await screen.findByRole("button", { name: "保存旁听上限" }));
+  view.rerender(<GroupListeningPanel roleId="r1" threadId="t2" editable />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "保存旁听上限" })).toBeEnabled());
+  await act(async () => { finish({ body: {} }); await pending; });
+  expect(calls.filter(call => call.path === "/api/channels/listening/defaults")).toHaveLength(0);
+  expect(screen.getByRole("button", { name: "保存旁听上限" })).toBeEnabled();
 });

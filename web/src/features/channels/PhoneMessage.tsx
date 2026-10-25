@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Dialog } from "../../ui/Dialog";
+import { AttachmentImage } from "../../ui/AttachmentImage";
 import { ChannelAttachments } from "./ChannelAttachments";
 import type { ConversationMessage, MessagePresentation } from "./channelMessagePresentation";
 
@@ -46,6 +47,6 @@ export function PhoneMessage({ message, view, roleId, timeLabel, delivery, sourc
         </div>
       </div>
     </div>
-    {image && <Dialog title="图片预览" onClose={() => setImage(null)} modalFocus><img className="phone-image-preview" src={image.href} alt={image.name} /></Dialog>}
+    {image && <Dialog title="图片预览" onClose={() => setImage(null)} modalFocus><AttachmentImage src={image.href} alt={image.name} imageClassName="phone-image-preview" preview /></Dialog>}
   </>;
 }

@@ -296,3 +296,52 @@
 .channel-natural-settings { min-width: 0; margin: 12px 0; }
 .channel-natural-settings label { display: flex; align-items: center; gap: 8px; }
 .channel-natural-settings p { max-width: 100%; overflow-wrap: anywhere; margin: 6px 0; }
+
+/* Group settings are a destination, not a disclosure buried in the transcript. */
+.account-group-entry { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: #fffafd; }
+.account-group-entry h3 { margin: 0 0 5px; font-size: 14px; }
+.account-group-entry p { margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
+.account-group-entry button, .channel-group-settings-button { display: inline-flex; flex: none; align-items: center; gap: 5px; min-height: 36px; padding: 8px 12px; border: 1px solid #efd0df; border-radius: 10px; background: #fff7fb; color: var(--rose-deep); font-size: 12px; cursor: pointer; }
+.channel-settings-view { overflow: hidden; }
+.group-settings-page { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; max-height: 100%; color: var(--ink); }
+.group-settings-page > header { display: flex; align-items: center; gap: 12px; flex: none; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.group-settings-page > header h2 { margin: 0; font-size: 17px; }
+.group-settings-back, .group-settings-choose { min-height: 36px; padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--rose-deep); font-size: 12px; cursor: pointer; }
+.group-settings-scroll { display: flex; flex-direction: column; gap: 16px; min-height: 0; min-width: 0; overflow: auto; padding: 20px; }
+.group-settings-intro h3, .group-settings-title h3 { margin: 0 0 5px; font-size: 16px; overflow-wrap: anywhere; }
+.group-settings-intro p, .group-settings-title p { margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.7; }
+.group-settings-directory-heading { display: flex; align-items: center; justify-content: space-between; color: var(--ink-soft); font-size: 12px; }
+.group-settings-directory { margin: 0; padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; list-style: none; }
+.group-settings-directory li + li { border-top: 1px solid var(--line); }
+.group-settings-directory button { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 12px; width: 100%; padding: 14px; border: 0; background: #fff; text-align: left; cursor: pointer; }
+.group-settings-directory strong { font-size: 14px; overflow-wrap: anywhere; }
+.group-settings-directory small { grid-column: 1; color: var(--ink-faint); font-size: 11px; }
+.group-settings-directory button > span { grid-column: 2; grid-row: 1 / 3; align-self: center; color: var(--ink-faint); }
+.group-settings-manual { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.group-settings-manual .field { min-width: 0; }
+.group-settings-manual input { width: 100%; min-width: 0; box-sizing: border-box; }
+.group-settings-manual > button { min-height: 40px; border: 1px solid #efd0df; border-radius: 9px; background: #fff7fb; color: var(--rose-deep); cursor: pointer; }
+.group-settings-manual p, .group-settings-hint { margin: 0; color: var(--ink-faint); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.group-settings-choose { align-self: flex-start; padding-left: 0; }
+.group-natural-card, .group-listening-card { display: grid; gap: 12px; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: #fff; }
+.group-natural-card { border-color: #ecd5e2; background: #fffbfd; }
+.group-settings-toggle { display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; }
+.group-settings-toggle > span { min-width: 0; }
+.group-settings-toggle strong { display: block; font-size: 14px; }
+.group-settings-toggle small { display: block; margin-top: 6px; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
+.group-settings-toggle input { flex: none; width: 20px; height: 20px; accent-color: var(--rose-deep); cursor: pointer; }
+.group-settings-toggle input:disabled { cursor: not-allowed; }
+.group-settings-state { margin: 0; color: #956755; font-size: 12px; font-weight: 600; }
+.group-settings-state.is-effective { color: #527a62; }
+.group-settings-blockers { display: grid; gap: 8px; margin: 0; padding-left: 18px; color: var(--ink-soft); font-size: 12px; line-height: 1.7; }
+.group-settings-blockers button { display: block; padding: 4px 0; border: 0; background: transparent; color: var(--rose-deep); font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.group-settings-error { margin: 0; padding: 10px 12px; border-radius: 10px; background: #fff0f2; color: #a34d62; font-size: 12px; overflow-wrap: anywhere; }
+.group-settings-scroll .channel-listening-panel { margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #fff; font-size: 12px; }
+.group-settings-scroll .channel-listening-panel > summary { min-height: 24px; line-height: 24px; cursor: pointer; }
+.dialog-compact .group-settings-page { max-height: 65vh; }
+.dialog-phone .group-settings-scroll { padding: 16px 12px; }
+.dialog-phone .channel-group-settings-button { gap: 4px; min-height: 32px; padding: 6px 8px; font-size: 11px; }
+.dialog-phone .group-natural-card, .dialog-phone .group-listening-card { padding: 14px; }
+@media (max-width: 560px) { .account-group-entry { gap: 10px; padding: 12px; } .group-settings-scroll { padding: 14px; } }
+.channel-conversation-surface { display: contents; }
+.channel-messages > header:has(.channel-group-settings-button) { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

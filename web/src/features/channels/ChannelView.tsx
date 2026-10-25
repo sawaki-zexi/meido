@@ -3,13 +3,14 @@ import type { Role } from "../../api/types";
 import { api, errorMessage } from "../../api/client";
 import { Icon, IconButton } from "../../ui/Icon";
 import { Notice } from "../../ui/Status";
+import { GroupSettingsPanel, type GroupSummary } from "./GroupSettingsPanel";
 import { GroupListeningPanel } from "./GroupListeningPanel";
 import { RoleAccountsPanel } from "./RoleAccountsPanel";
 import { PhoneHome, type PhoneApp } from "./PhoneHome";
 import { PhoneMessage } from "./PhoneMessage";
 import { ChannelAttachments } from "./ChannelAttachments";
 import { conversationPreview, conversationTime, messagePresentation, messageTimeSeparators, type ConversationMessage, type ViaAccount } from "./channelMessagePresentation";
-import { channelName, type Account } from "./channelAccounts";
+import { channelName, type Account, type Channel } from "./channelAccounts";
 import type { MemoryOrigin } from "../memory/MemoryPanel";
 import "./channels.css";
 
@@ -126,6 +127,13 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
   const [sourceError, setSourceError] = useState("");
   const [sourceHighlightedId, setSourceHighlightedId] = useState<string | null>(null);
   const [phoneSettingsOpen, setPhoneSettingsOpen] = useState(false);
+  const [phoneAccountChannel, setPhoneAccountChannel] = useState<Channel | undefined>();
+  const [groupSettingsTarget, setGroupSettingsTarget] = useState<{ roleId: string; accountId?: string; group?: GroupSummary } | null>(null);
+  const groupSettingsButton = useRef<HTMLButtonElement>(null);
+  const returnFromGroupSettings = useRef(false);
+  useLayoutEffect(() => {
+    if (!groupSettingsTarget && returnFromGroupSettings.current) { groupSettingsButton.current?.focus(); returnFromGroupSettings.current = false; }
+  }, [groupSettingsTarget]);
   const [listeningSource, setListeningSource] = useState<ConversationMessage | null>(null);
   const loadRequest = useRef(0);
   const listeningRequest = useRef(0);
@@ -146,10 +154,11 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
   const openPhoneApp = phoneView.kind === "app" ? apps.find((app) => app.id === phoneView.appId) ?? null : null;
   const phoneChatVisible = phoneMode && !sourceOnly && phoneView.kind === "app" && phoneView.chat
     && Boolean(openPhoneApp && selectedThread && phoneThreadAppId(selectedThread, accounts) === openPhoneApp.id);
-  const phoneMessagesHidden = phoneSettingsOpen || (phoneMode && !sourceOnly && !phoneChatVisible);
+  const groupSettingsVisible = !sourceOnly && groupSettingsTarget?.roleId === role.id;
+  const phoneMessagesHidden = groupSettingsVisible || phoneSettingsOpen || (phoneMode && !sourceOnly && !phoneChatVisible);
   const visibleThreads = phoneMode && !sourceOnly
     ? threads.filter((thread) => openPhoneApp && phoneThreadAppId(thread, accounts) === openPhoneApp.id) : threads;
-  const openAccounts = () => { if (phoneMode) setPhoneSettingsOpen(true); else onAccounts?.(); };
+  const openAccounts = () => { if (phoneMode) { setPhoneAccountChannel(undefined); setPhoneSettingsOpen(true); } else onAccounts?.(); };
   const threadsRef = useRef<Thread[]>(threads);
   threadsRef.current = threads;
   const messagesRef = useRef<ConversationMessage[]>(messages);
@@ -254,6 +263,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
     setAccounts([]);
     setPhoneView({ kind: "home" });
     setPhoneSettingsOpen(false);
+    setGroupSettingsTarget(null);
     setThreads([]);
     setThreadsLoaded(false);
     setDirectoryLoading(true);
@@ -635,17 +645,28 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
     else setPhoneView({ kind: "home" });
   };
 
-  return <section className={`channel-view${sourceOnly ? " channel-source-view" : ""}`} aria-label={sourceOnly ? "渠道记忆来源" : phoneSettingsOpen ? "渠道设置" : undefined} aria-labelledby={sourceOnly || phoneSettingsOpen ? undefined : "channel-view-title"}>
+  const activeAppAccount = accounts.find(item => item.accountId === openPhoneApp?.id);
+  const openGroupSettings = () => setGroupSettingsTarget({ roleId: role.id, accountId: phoneMode && !phoneChatVisible ? activeAppAccount?.accountId : selectedThread?.accountId,
+    group: selectedThread && (!phoneMode || phoneChatVisible) ? { chatId: selectedThread.chatId, title: selectedThread.title, threadId: selectedThread.threadId } : undefined });
+  const groupSettingsAction = <button ref={groupSettingsButton} type="button" className="channel-group-settings-button" onClick={openGroupSettings}><Icon name="settings" size={15} /><span>群聊设置</span></button>;
+  const groupSettingsPage = groupSettingsVisible && groupSettingsTarget ? <GroupSettingsPanel roleId={role.id} account={accounts.find(item => item.accountId === groupSettingsTarget.accountId) ?? null} initialGroup={groupSettingsTarget.group}
+      onBack={() => { returnFromGroupSettings.current = true; setGroupSettingsTarget(null); }}
+      onAccountSettings={phoneMode || onAccounts ? () => { setGroupSettingsTarget(null); if (phoneMode) { setPhoneAccountChannel("qq"); setPhoneSettingsOpen(true); } else onAccounts?.(); } : undefined}
+      onOpenSettings={onOpenSettings ? () => { setGroupSettingsTarget(null); onOpenSettings(); } : undefined} /> : null;
+
+  return <section className={`channel-view${sourceOnly ? " channel-source-view" : ""}`} aria-label={sourceOnly ? "渠道记忆来源" : groupSettingsVisible ? "群聊设置页面" : phoneSettingsOpen ? "渠道设置" : undefined} aria-labelledby={sourceOnly || phoneSettingsOpen || groupSettingsVisible ? undefined : "channel-view-title"}>
+    {groupSettingsPage}
+    <div className="channel-conversation-surface" hidden={groupSettingsVisible}>
     {!sourceOnly && !phoneSettingsOpen && <header className={`channel-view-header${phoneMode ? " channel-phone-header" : ""}${phoneChatVisible ? " channel-phone-chat-header" : ""}`}>
       <IconButton icon="back" label={phoneMode && openPhoneApp ? phoneChatVisible ? "返回会话列表" : "返回手机主页" : "返回聊天"} onClick={goBack} />
       {phoneChatVisible && phoneAvatar && <img className="phone-chat-avatar" src={phoneAvatar} alt="" />}
       <div><h1 id="channel-view-title" title={phoneMode ? phoneTitle : role.name}>{phoneMode ? phoneTitle : `${role.name} · 手机会话`}</h1>{phoneMode ? phoneSubtitle && <p className="phone-header-subtitle" title={phoneSubtitle}>{phoneSubtitle}</p> : <p>{threads.length} 个会话</p>}</div>
-      <div className="channel-view-actions">{onAccounts && !phoneMode && <button type="button" className="channel-accounts-button" aria-label="角色账号" title="角色账号" onClick={openAccounts}><Icon name="settings" size={16} /><span>角色账号</span></button>}{!phoneMode && <IconButton icon="refresh" label="刷新会话" onClick={() => void load()} />}</div>
+      <div className="channel-view-actions">{phoneMode && ((phoneChatVisible && selectedThread?.channel === "qq" && selectedThread.chatType === "group") || (!phoneChatVisible && activeAppAccount?.channel === "qq")) && groupSettingsAction}{onAccounts && !phoneMode && <button type="button" className="channel-accounts-button" aria-label="角色账号" title="角色账号" onClick={openAccounts}><Icon name="settings" size={16} /><span>角色账号</span></button>}{!phoneMode && <IconButton icon="refresh" label="刷新会话" onClick={() => void load()} />}</div>
     </header>}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {sourceError && <Notice onDismiss={() => setSourceError("")}>{sourceError}</Notice>}
     {phoneSettingsOpen && <div className="channel-phone-settings-app" aria-label="设置">
-      <RoleAccountsPanel roleId={role.id} presentation="page" onBack={() => { setPhoneSettingsOpen(false); void load(); }} onOpenSettings={onOpenSettings} />
+      <RoleAccountsPanel roleId={role.id} initialChannel={phoneAccountChannel} presentation="page" onBack={() => { setPhoneSettingsOpen(false); void load(); }} onOpenSettings={onOpenSettings} />
     </div>}
     {phoneMode && !sourceOnly && !openPhoneApp && !phoneSettingsOpen && (threadsLoaded
       ? <PhoneHome apps={apps} onOpen={(appId) => setPhoneView({ kind: "app", appId, chat: false })} onSettings={onAccounts ? openAccounts : undefined} />
@@ -665,7 +686,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
       </aside>}
       <section className="channel-messages" aria-label="会话消息" hidden={phoneMode && !sourceOnly && !phoneChatVisible}>
         {selectedThread ? <>
-          {(!phoneMode || sourceOnly) && <header><div><h2>{selectedThread.title || selectedThread.chatId}</h2><p>{channelName[selectedThread.channel] ?? selectedThread.channel} · {selectedThread.chatType === "group" ? "群聊" : "私聊"}</p>{sourceLabel(selectedThread.viaAccount) && <p>{sourceLabel(selectedThread.viaAccount)}{selectedThread.accountRemoved ? " · 账号已移除" : ""}</p>}</div></header>}
+          {(!phoneMode || sourceOnly) && <header><div><h2>{selectedThread.title || selectedThread.chatId}</h2><p>{channelName[selectedThread.channel] ?? selectedThread.channel} · {selectedThread.chatType === "group" ? "群聊" : "私聊"}</p>{sourceLabel(selectedThread.viaAccount) && <p>{sourceLabel(selectedThread.viaAccount)}{selectedThread.accountRemoved ? " · 账号已移除" : ""}</p>}</div>{!sourceOnly && selectedThread.channel === "qq" && selectedThread.chatType === "group" && groupSettingsAction}</header>}
           <ol ref={messageList} onScroll={() => {
             const list = messageList.current;
             if (!list || phoneMessagesHidden) return;
@@ -680,7 +701,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
               return <li key={message.id} ref={sourceMessage ? (node) => { sourceElement.current = node; } : undefined} className={`channel-message ${message.role}${phoneMode && !sourceOnly ? " phone-message" : ""}${message.metadata.listening === true ? " listened" : ""}${sourceMessage ? " source-highlight" : ""}`} style={sourceMessage ? { boxShadow: "0 0 0 2px var(--rose)" } : undefined}>
                 {sourceMessage && <span className="source-marker">记忆来源</span>}
                 {phoneMode && !sourceOnly ? <PhoneMessage message={message} view={view} roleId={role.id} timeLabel={timeLabels[index]} delivery={delivery} source={sourceLabel(source)} onMediaLoad={keepAtBottomAfterMediaLoad} /> : <>
-                {message.metadata.listening === true && <span className="source-marker">旁听记录 · 不触发角色</span>}
+                {message.metadata.listening === true && <span className="source-marker">旁听记录 · 独立保存</span>}
                 <span className="channel-message-sender">
                   {message.role !== "assistant" && typeof message.metadata.senderAvatarUrl === "string" && <img src={message.metadata.senderAvatarUrl} alt="" className="channel-contact-avatar" />}
                   {message.role === "assistant" ? role.name : `${message.metadata.senderIsOwner === true ? "主人 · " : ""}${String(message.metadata.senderName ?? "访客")}`}
@@ -708,11 +729,12 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
               <span className="source-marker">记忆来源 · 当前群旁听记录</span><p>{listeningSource.content}</p>
               <p>{sourceOnly ? "此来源独立保存在当前群的旁听记录中。" : "此来源独立保存在当前群的旁听记录中，下面已展开旁听面板。"}</p>
             </section>}
-            {!sourceOnly && <GroupListeningPanel key={`${role.id}:${selectedThread.threadId}`} roleId={role.id} threadId={selectedThread.threadId} accountId={account?.accountId} chatId={selectedThread.chatId} editable={Boolean(account && account.enabled && account.platformEnabled !== false && !selectedThread.accountRemoved)} />}
+            {!sourceOnly && <GroupListeningPanel key={`${role.id}:${selectedThread.threadId}`} roleId={role.id} threadId={selectedThread.threadId} accountId={account?.accountId} chatId={selectedThread.chatId} editable={Boolean(account && !selectedThread.accountRemoved)} />}
           </div>}
         </> : (!phoneMode || sourceOnly) && <div className="channel-no-selection"><Icon name="chat" size={22} /><p>{sourceOnly ? sourceError ? "来源当前不可访问" : "正在读取记忆来源…" : "选择一个会话"}</p></div>}
       </section>
 
+    </div>
     </div>
   </section>;
 }

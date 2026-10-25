@@ -2,10 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../api/client";
 
 type Heard = { id: string; sequence: number; content: string; createdAt: string; metadata: Record<string, unknown> };
-type State = { enabled: boolean; naturalEnabled?: boolean; naturalEffective?: boolean; naturalPaused?: boolean; dailyCap: number | null; defaultDailyCap: number; toggles: { enabled: boolean; operator: string; at: string }[] };
+type State = { enabled: boolean; dailyCap: number | null; defaultDailyCap: number; toggles: { enabled: boolean; operator: string; at: string }[] };
 type Page = { messages: Heard[]; hasMore: boolean; nextBefore: number | null };
 
-export function GroupListeningPanel({ roleId, threadId, editable, accountId, chatId }: { roleId: string; threadId: string; editable: boolean; accountId?: string; chatId?: string }) {
+export function GroupListeningPanel({ roleId, threadId, editable, accountId, chatId, settingsManaged = false }: { roleId: string; threadId: string; editable: boolean; accountId?: string; chatId?: string; settingsManaged?: boolean }) {
   const [state, setState] = useState<State | null>(null);
   const [messages, setMessages] = useState<Heard[]>([]);
   const [cap, setCap] = useState("");
@@ -15,6 +15,7 @@ export function GroupListeningPanel({ roleId, threadId, editable, accountId, cha
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const generation = useRef(0);
+  const operation = useRef(false);
   const refreshRequest = useRef(0);
   const initialized = useRef(false);
   const settingsInitialized = useRef(false);
@@ -41,6 +42,7 @@ export function GroupListeningPanel({ roleId, threadId, editable, accountId, cha
   useEffect(() => {
     generation.current += 1;
     initialized.current = false;
+    operation.current = false;
     settingsInitialized.current = false;
     setMessages([]); setState(null); setHasMore(false); setCursor(null); setBusy(false); setError("");
     void load();
@@ -49,7 +51,7 @@ export function GroupListeningPanel({ roleId, threadId, editable, accountId, cha
       try {
         const payload = JSON.parse((event as MessageEvent).data ?? "{}");
         if (payload.type === "listening_cleared" && payload.threadId === threadId) {
-          generation.current += 1; initialized.current = false;
+          generation.current += 1; initialized.current = false; operation.current = false;
           setMessages([]); setCursor(null); setHasMore(false); setBusy(false);
         }
       } catch { /* A transport reconnect still refreshes the current thread. */ }
@@ -58,8 +60,8 @@ export function GroupListeningPanel({ roleId, threadId, editable, accountId, cha
     return () => { generation.current += 1; events?.close(); };
   }, [load, roleId, threadId]);
   const older = async () => {
-    if (busy || cursor === null) return;
-    setBusy(true);
+    if (operation.current || cursor === null) return;
+    operation.current = true; setBusy(true);
     const current = generation.current;
     try {
       const page = await api<Page>(`${base}/messages?before=${cursor}`);
@@ -67,31 +69,37 @@ export function GroupListeningPanel({ roleId, threadId, editable, accountId, cha
       setMessages((items) => [...new Map([...page.messages, ...items].map((item) => [item.id, item])).values()].sort((a, b) => a.sequence - b.sequence));
       setCursor(page.nextBefore); setHasMore(page.hasMore);
     } catch (cause) { if (current === generation.current) setError(errorMessage(cause, "无法读取更早旁听记录")); }
-    finally { if (current === generation.current) setBusy(false); }
+    finally { if (current === generation.current) { operation.current = false; setBusy(false); } }
   };
   const save = async () => {
+    if (!editable || operation.current) return;
     const groupValue = cap.trim() === "" ? null : Number(cap);
     const defaultValue = Number(defaultCap);
     if ((groupValue !== null && (!Number.isInteger(groupValue) || groupValue < 1)) || !Number.isInteger(defaultValue) || defaultValue < 1) { setError("每日入库上限必须是正整数"); return; }
-    setBusy(true);
+    operation.current = true; setBusy(true); setError("");
+    const current = generation.current;
+    refreshRequest.current += 1;
     try {
       await api(`${base}/cap`, { method: "PUT", body: JSON.stringify({ dailyCap: groupValue }) });
+      if (current !== generation.current) return;
       await api("/api/channels/listening/defaults", { method: "PUT", body: JSON.stringify({ defaultDailyCap: defaultValue }) });
+      if (current !== generation.current) return;
       await load();
-    } catch (cause) { setError(errorMessage(cause, "保存旁听上限失败")); }
-    finally { setBusy(false); }
+    } catch (cause) { if (current === generation.current) setError(errorMessage(cause, "保存旁听上限失败")); }
+    finally { if (current === generation.current) { operation.current = false; setBusy(false); } }
   };
   const change = async (enabled?: boolean) => {
-    if (!accountId || !chatId || !editable || busy) return;
+    if (!accountId || !chatId || !editable || operation.current) return;
     if (enabled === undefined && !window.confirm("清理本群旁听记录？正常对话会保留。")) return;
-    setBusy(true); setError("");
-    const current = generation.current;
+    operation.current = true; setBusy(true); setError("");
+    let current = generation.current;
+    refreshRequest.current += 1;
     const group = `/api/roles/${encodeURIComponent(roleId)}/channels/accounts/${encodeURIComponent(accountId)}/groups/${encodeURIComponent(chatId)}/listening`;
     try {
       if (enabled === undefined) {
         await api(`${group}/messages`, { method: "DELETE" });
         if (current !== generation.current) return;
-        generation.current += 1; initialized.current = false;
+        current = ++generation.current; initialized.current = false;
         setMessages([]); setCursor(null); setHasMore(false);
       } else {
         await api(group, { method: "PUT", body: JSON.stringify({ enabled }) });
@@ -99,37 +107,15 @@ export function GroupListeningPanel({ roleId, threadId, editable, accountId, cha
         setState((value) => value ? { ...value, enabled } : value);
       }
     } catch (cause) { if (current === generation.current) setError(errorMessage(cause, "更新本群旁听失败")); }
-    finally { setBusy(false); }
-  };
-  const changeNatural = async (enabled: boolean) => {
-    if (!editable || busy || !state || (enabled && !state.enabled)) return;
-    const current = generation.current;
-    // A later refresh must not overwrite the confirmed setting with an older read.
-    refreshRequest.current += 1;
-    setBusy(true); setError("");
-    try {
-      const saved = await api<State>(`${base}/natural`, { method: "PUT", body: JSON.stringify({ enabled }) });
-      if (current !== generation.current) return;
-      refreshRequest.current += 1;
-      setState(saved);
-    } catch (cause) {
-      if (current === generation.current) setError(errorMessage(cause, "更新本群日常聊天失败"));
-    } finally {
-      if (current === generation.current) setBusy(false);
-    }
+    finally { if (current === generation.current) { operation.current = false; setBusy(false); } }
   };
   return <details className="channel-listening-panel">
     <summary>群旁听记录{state ? ` · ${state.enabled ? "已开启" : "已暂停"}` : ""}</summary>
     <p>未点名角色的消息单独保存。超过每日上限的消息只保留在最近窗口，不在此处显示。</p>
     {error && <p role="status">{error}</p>}
     {state && accountId && chatId && <div className="channel-listening-actions">
-      <label><input type="checkbox" aria-label="开启本群旁听" checked={state.enabled} disabled={!editable || busy} onChange={(event) => void change(event.target.checked)} />开启本群旁听</label>
+      {!settingsManaged && <label><input type="checkbox" aria-label="开启本群旁听" checked={state.enabled} disabled={!editable || busy} onChange={(event) => void change(event.target.checked)} />开启本群旁听</label>}
       <button type="button" disabled={!editable || busy} onClick={() => void change()}>清理本群旁听记录</button>
-    </div>}
-    {state && <div className="channel-natural-settings">
-      <label><input type="checkbox" aria-label="开启本群日常聊天" checked={state.naturalEnabled ?? false} disabled={!editable || busy || (!state.enabled && !state.naturalEnabled)} onChange={(event) => void changeNatural(event.target.checked)} />日常聊天</label>
-      <p>允许角色未被 @ 时接话，可使用表情。</p>
-      {!state.enabled && <p>{state.naturalEnabled ? "日常聊天已暂停：请先开启本群旁听。" : "请先开启本群旁听，再开启日常聊天。"}</p>}
     </div>}
     {state && <div className="channel-listening-caps">
       <label>本群每日上限<input aria-label="本群每日旁听上限" type="number" min="1" value={cap} onChange={(e) => setCap(e.target.value)} placeholder={`默认 ${state.defaultDailyCap}`} disabled={!editable || busy} /></label>

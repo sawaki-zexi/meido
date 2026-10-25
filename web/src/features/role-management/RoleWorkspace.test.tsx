@@ -250,3 +250,36 @@ it.each([
   await user.click(within(workspace).getByRole("button", { name: "保存" }));
   await waitFor(() => expect(within(workspace).getByRole("button", { name: uploadName }).querySelector("img")).toHaveAttribute("src", imageUrl));
 });
+
+it('普通角色工作区直接显示素材库，返回与重复进入不会复活旧预览，也不会读取生成历史或开启 Drift', async () => {
+  const alice = role({ id: 'r1', name: '爱丽丝' });
+  const { calls } = fakeBackend({
+    'GET /api/roles': () => ({ body: { roles: [alice] } }),
+    'GET /api/roles/r1/session': () => ({ body: { session: { sessionKey: 'role:r1', roleId: 'r1' }, messages: [] } }),
+    'GET /api/roles/r1/materials': () => ({ body: { revision: 'revision-1', storageLabel: '当前角色工作区 / workspace/memes', categories: [{ name: '开心', description: '', count: 1, enabled: true }], materials: [{ id: 'm1', name: '你好.gif', category: '开心', description: '挥手打招呼', aliases: [], format: 'GIF', mediaType: 'image/gif', size: 100, width: 80, height: 40, animated: true, source: 'legacy', enabled: true, imageUrl: '/api/roles/r1/materials/m1/image' }] } }),
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(screen.getByRole('button', { name: '角色' }));
+  await user.click(await screen.findByRole('button', { name: '查看爱丽丝工作区' }));
+  const tab = screen.getByRole('tab', { name: '素材库' });
+  expect(tab).toBeVisible();
+  await user.click(tab);
+  expect(tab).toHaveAttribute('aria-selected', 'true');
+  expect(screen.getByRole('tabpanel', { name: '素材库' })).toBeVisible();
+  expect(await screen.findByText('你好.gif')).toBeVisible();
+  await user.click(screen.getByRole('button', { name: '预览你好.gif' }));
+  expect(screen.getByRole('dialog', { name: '你好.gif' })).toBeVisible();
+  await user.keyboard('{Escape}');
+  expect(screen.getByRole('button', { name: '预览你好.gif' })).toHaveFocus();
+  await user.click(screen.getByRole('button', { name: '返回角色' }));
+  expect(screen.queryByRole('region', { name: '爱丽丝的素材库' })).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '查看爱丽丝工作区' }));
+  expect(screen.getByRole('tab', { name: '资料' })).toHaveAttribute('aria-selected', 'true');
+  await user.click(screen.getByRole('tab', { name: '素材库' }));
+  expect(await screen.findByText('你好.gif')).toBeVisible();
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(calls.filter(call => call.path.endsWith('/materials'))).toHaveLength(2);
+  expect(calls.some(call => call.path.includes('/generations') || call.path.includes('/autonomy'))).toBe(false);
+  expect(calls.every(call => call.method === 'GET')).toBe(true);
+});

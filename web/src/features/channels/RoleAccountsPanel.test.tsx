@@ -401,3 +401,49 @@ describe("角色账号", () => {
     expect(calls.some((call) => call.method === "DELETE" || call.path.endsWith("/begin"))).toBe(false);
   });
 });
+
+it.each(["dialog", "page"] as const)("QQ 账号的 %s 入口可直接进入首次群聊设置，返回保留账号上下文", async presentation => {
+  const saved = account({ channel: "qq", accountId: "qq-1", enabled: false, connectionStatus: "disconnected" });
+  fakeBackend({
+    "GET /api/channels/settings": () => ({ body: settings() }),
+    "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [saved] } }),
+    "GET /api/roles/r1/channels/accounts/qq-1/groups": () => ({ body: { groups: [{ chatId: "42", title: "首次设置群" }] } }),
+    "GET /api/roles/r1/channels/accounts/qq-1/groups/42/settings": () => ({ body: { chatId: "42", title: "首次设置群", threadId: null, listening: false, naturalEnabled: false } }),
+  });
+  const user = userEvent.setup();
+  render(presentation === "page" ? <RoleAccountsPanel roleId="r1" presentation="page" onBack={() => undefined} /> : <RoleAccountsPanel roleId="r1" />);
+  await user.click(await screen.findByRole("button", { name: /^QQ.*已暂停/ }));
+  const open = screen.getByRole("button", { name: "群聊设置" });
+  await user.click(open);
+  await user.click(await screen.findByRole("button", { name: /首次设置群/ }));
+  expect(await screen.findByRole("checkbox", { name: "自然回复（无需 @）" })).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "返回上一页" }));
+  expect(screen.getByRole("button", { name: "群聊设置" })).toHaveFocus();
+  expect(screen.getByRole("button", { name: "连接" })).toBeVisible();
+  expect(screen.getByRole("checkbox", { name: "响应群聊" })).toBeVisible();
+});
+
+it("工作区 QQ 群聊设置限制键盘焦点，Escape 返回账号，再关闭回到账号行", async () => {
+  fakeBackend({
+    "GET /api/channels/settings": () => ({ body: settings() }),
+    "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [account({ channel: "qq", accountId: "qq-1", enabled: true, connectionStatus: "connected" })] } }),
+    "GET /api/roles/r1/channels/accounts/qq-1/groups": () => ({ body: { groups: [] } }),
+  });
+  const user = userEvent.setup();
+  render(<><button type="button">后台角色导航</button><RoleAccountsPanel roleId="r1" workspace /></>);
+  const accountRow = await screen.findByRole("button", { name: /^QQ.*已连接/ });
+  await user.click(accountRow);
+  expect(screen.getByRole("dialog", { name: "QQ 账号" })).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "群聊设置" }));
+  const dialog = screen.getByRole("dialog", { name: "QQ 群聊设置" });
+  expect(await within(dialog).findByText(/暂无已知群聊/)).toBeVisible();
+  const groupId = within(dialog).getByRole("textbox", { name: "群号" });
+  groupId.focus();
+  await user.tab();
+  expect(within(dialog).getByRole("button", { name: "关闭" })).toHaveFocus();
+  await user.keyboard("{Escape}");
+  expect(screen.getByRole("button", { name: "群聊设置" })).toHaveFocus();
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(accountRow).toHaveFocus();
+});

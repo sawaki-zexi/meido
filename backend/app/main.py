@@ -164,6 +164,8 @@ from .coding_tasks.api import coding_router
 from .coding_tasks.tools import build_coding_tools, CODING_TOOL_NAMES
 from .proactive_runtime import ProactiveApplication
 from .proactive_runtime.api import autonomy_router
+from .material_api import material_router
+from .material_library import OwnerMaterialLibrary
 from .chat_attachments import public_attachment, read_request_bytes, resolve_attachment, save_attachment
 
 logging.getLogger("uvicorn.access").addFilter(OAuthCallbackAccessLogFilter())
@@ -1151,6 +1153,7 @@ app.include_router(novelai_router(_novelai_application))
 app.include_router(desktop_pet_router(_desktop_pet_application))
 app.include_router(coding_router(lambda: _coding_application(), lambda: store))
 app.include_router(autonomy_router(lambda: _proactive_application(), workspace_getter=lambda role_id: store.root / role_id / "workspace"))
+app.include_router(material_router(lambda: OwnerMaterialLibrary(ChatMemeLibrary(_proactive_application().memes, store.workspace_path), store.get)))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=owner_knowledge_frontend_origins,
@@ -3931,30 +3934,134 @@ async def list_channel_targets(role_id: str, account_id: str) -> dict[str, objec
     return {"targets": targets}
 
 
-@app.get("/api/roles/{role_id}/channels/accounts/{account_id}/groups")
-def list_channel_groups(role_id: str, account_id: str) -> dict[str, object]:
+def _require_qq_group_account(role_id: str, account_id: str) -> ChannelAccount:
     _require_channel_role(role_id)
     account = multichannel_store.get_account(account_id)
     if account is None or account.role_id != role_id or account.channel != "qq":
         raise HTTPException(status_code=404, detail="NapCat 账号不存在")
+    return account
+
+
+def _channel_group_settings_payload(role_id: str, account: ChannelAccount, chat_id: str, *,
+                                    title: str | None = None, known: bool = False) -> dict[str, object]:
+    # Reading a directory entry or a manually entered ID must not manufacture a
+    # thread, transcript message, or an enabled setting.
+    thread = multichannel_store.get_thread_by_chat(role_id, account.account_id, chat_id, chat_type="group")
+    numeric_id = chat_id.isascii() and chat_id.isdecimal() and len(chat_id) <= 20 and not chat_id.startswith("0")
+    if not known and not numeric_id and thread is None and not multichannel_store.known_group(role_id, account.account_id, chat_id):
+        # Validate new manual IDs without invalidating an older, role-scoped
+        # directory or imported setting that used a different identifier.
+        if not any(str(item["chatId"]) == chat_id for item in multichannel_store.list_group_settings(role_id, account.account_id)):
+            raise HTTPException(status_code=422, detail="请输入有效的数字 QQ 群 ID")
+    state = multichannel_store.listening.state(role_id, thread.thread_id) if thread else {
+        "threadId": None, "enabled": False, "naturalEnabled": False,
+        "dailyCap": None, "defaultDailyCap": multichannel_store.listening.default_cap(), "toggles": [],
+    }
+    if title is None:
+        target = next((item for item in multichannel_store.list_targets(role_id, account.account_id)
+                       if item.kind.value == "group" and str(item.chat_id) == chat_id), None)
+        title = target.display_name if target else ""
+    title = title or (thread.title if thread else "") or chat_id
+    platform_enabled = multichannel_store.channel_enabled(account.channel)
+    connection = _channel_connection_status(account)
+    reasons = []
+    if not state["enabled"]:
+        reasons.append("listening_disabled")
+    if not account.allow_group:
+        reasons.append("group_response_disabled")
+    if not platform_enabled:
+        reasons.append("platform_paused")
+    if not account.enabled:
+        reasons.append("account_paused")
+    # A deliberately paused connection is not an unexplained network failure.
+    if platform_enabled and account.enabled and connection != "connected":
+        reasons.append("offline")
+    reason_labels = {
+        "listening_disabled": "本群旁听未开启", "group_response_disabled": "账号的群聊响应已关闭",
+        "platform_paused": "QQ 平台已暂停", "account_paused": "账号连接已暂停", "offline": "账号尚未连接",
+    }
+    natural_enabled = bool(state["naturalEnabled"])
+    return {**state, "chatId": chat_id, "title": title, "listening": bool(state["enabled"]),
+            "naturalEffective": natural_enabled and not reasons,
+            "naturalPaused": natural_enabled and bool(reasons),
+            "naturalBlockedReasons": reasons,
+            "naturalBlockedReason": "；".join(reason_labels[reason] for reason in reasons) or None,
+            "allowGroup": account.allow_group, "accountEnabled": account.enabled,
+            "platformEnabled": platform_enabled, "connectionStatus": connection}
+
+
+@app.get("/api/roles/{role_id}/channels/accounts/{account_id}/groups")
+async def list_channel_groups(role_id: str, account_id: str) -> dict[str, object]:
+    account = _require_qq_group_account(role_id, account_id)
+    warning = None
+    try:
+        # The existing directory refresh only reads platform targets. It does
+        # not send a message or create a conversation to expose a group.
+        await asyncio.wait_for(channel_host.account_targets(role_id, account_id), timeout=5)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="NapCat 账号不存在") from error
+    except Exception:
+        warning = "暂时无法刷新群列表，已显示已知群聊；也可输入群 ID。"
+    account = _require_qq_group_account(role_id, account_id)
     targets = [item for item in multichannel_store.list_targets(role_id, account_id) if item.kind.value == "group"]
-    groups = {str(item.chat_id): {"chatId": str(item.chat_id), "title": item.display_name, "listening": multichannel_store.group_listening(role_id, account_id, item.chat_id)} for item in targets}
+    groups = {str(item.chat_id): item.display_name for item in targets}
     for item in multichannel_store.list_group_settings(role_id, account_id):
-        groups.setdefault(str(item["chatId"]), {"chatId": item["chatId"], "title": str(item["chatId"]), "listening": item["listening"]})
-    return {"groups": list(groups.values())}
+        groups.setdefault(str(item["chatId"]), "")
+    # The directory is complete for cached targets and saved settings. Bound
+    # legacy thread-only discovery; older IDs remain directly addressable.
+    history = multichannel_store.list_group_threads(role_id, account_id, limit=501)
+    for thread in history[:500]:
+        groups.setdefault(thread.chat_id, thread.title)
+    if len(history) > 500:
+        warning = " ".join(filter(None, [warning, "历史群聊仅显示最近 500 个；可输入群 ID 查找更早的群。 "])).strip()
+    result: dict[str, object] = {"groups": [_channel_group_settings_payload(role_id, account, chat_id, title=title, known=True)
+                                           for chat_id, title in groups.items()]}
+    if warning:
+        result["directoryWarning"] = warning
+    return result
+
+
+@app.get("/api/roles/{role_id}/channels/accounts/{account_id}/groups/{chat_id}/settings")
+def get_channel_group_settings(role_id: str, account_id: str, chat_id: str) -> dict[str, object]:
+    account = _require_qq_group_account(role_id, account_id)
+    return _channel_group_settings_payload(role_id, account, chat_id)
 
 
 @app.put("/api/roles/{role_id}/channels/accounts/{account_id}/groups/{chat_id}/listening")
 def set_channel_group_listening(role_id: str, account_id: str, chat_id: str, data: dict[str, object]) -> dict[str, object]:
-    _require_channel_role(role_id)
+    account = _require_qq_group_account(role_id, account_id)
     enabled = data.get("enabled")
     if not isinstance(enabled, bool):
         raise HTTPException(status_code=422, detail="enabled 必须是布尔值")
+    _channel_group_settings_payload(role_id, account, chat_id)
     try:
         multichannel_store.set_group_listening(role_id, account_id, chat_id, enabled)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="NapCat 账号不存在") from error
-    return {"chatId": chat_id, "listening": enabled}
+    state = _channel_group_settings_payload(role_id, account, chat_id)
+    multichannel_store.publish(role_id, {"type": "listening_settings_updated", "roleId": role_id, "threadId": state["threadId"]})
+    return state
+
+
+@app.put("/api/roles/{role_id}/channels/accounts/{account_id}/groups/{chat_id}/natural")
+def set_channel_group_natural(role_id: str, account_id: str, chat_id: str, data: dict[str, object]) -> dict[str, object]:
+    account = _require_qq_group_account(role_id, account_id)
+    enabled = data.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=422, detail="enabled 必须是布尔值")
+    state = _channel_group_settings_payload(role_id, account, chat_id)
+    if enabled and not state["listening"]:
+        raise HTTPException(status_code=422, detail="请先开启本群旁听")
+    if enabled and not account.allow_group:
+        raise HTTPException(status_code=409, detail="请先在账号响应规则中开启群聊响应")
+    if state["threadId"] is not None:
+        try:
+            multichannel_store.listening.set_natural_enabled(role_id, str(state["threadId"]), enabled)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="NapCat 群不存在") from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+    return _channel_group_settings_payload(role_id, account, chat_id)
 
 
 @app.delete("/api/roles/{role_id}/channels/accounts/{account_id}/groups/{chat_id}/listening/messages", status_code=204)
@@ -4015,11 +4122,16 @@ def channel_listening_state(role_id: str, thread_id: str) -> dict[str, object]:
 def update_channel_natural_chat(role_id: str, thread_id: str, data: dict[str, object]) -> dict[str, object]:
     _require_channel_role(role_id)
     try:
-        return multichannel_store.listening.set_natural_enabled(role_id,thread_id,data.get("enabled"))
+        thread = multichannel_store.listening.group(role_id, thread_id)
+        account = _require_qq_group_account(role_id, thread.account_id)
+        enabled = data.get("enabled")
+        if enabled is True and not account.allow_group:
+            raise HTTPException(status_code=409, detail="请先在账号响应规则中开启群聊响应")
+        return multichannel_store.listening.set_natural_enabled(role_id, thread_id, enabled)
     except KeyError as error:
-        raise HTTPException(status_code=404,detail="NapCat 群不存在") from error
+        raise HTTPException(status_code=404, detail="NapCat 群不存在") from error
     except ValueError as error:
-        raise HTTPException(status_code=422,detail=str(error)) from error
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @app.put("/api/roles/{role_id}/channels/threads/{thread_id}/listening/cap")

@@ -96,7 +96,22 @@ def reconcile(library, role_id):
     with app._transaction() as db:
         rows = db.execute("SELECT * FROM autonomy_meme_operations WHERE role_id=? AND status NOT IN ('recorded','not_published','reconciled')", (role_id,)).fetchall()
     for row in rows:
+        # UI publications have no model/session active_run. Their host owner is
+        # registered before journaling and lives through cleanup/quota release.
+        # Re-read after the guard: a previously selected row may have completed
+        # before its owner unregistered. Never reconcile that stale projection.
+        with library._recovery_gate_lock:
+            if (role_id, row['run_id']) in getattr(library, '_owner_material_runs', ()):
+                continue
+            with app._transaction() as db:
+                row = db.execute("SELECT * FROM autonomy_meme_operations WHERE operation_id=? AND status NOT IN ('recorded','not_published','reconciled')", (row['operation_id'],)).fetchone()
+            if row is None:
+                continue
         actual, expected, planned = json.loads(row['actual']), json.loads(row['expected']), json.loads(row['planned'])
+        if planned.get('kind') == 'owner_ui_remove':
+            from ..material_library import reconcile_removal
+            reconcile_removal(library, row)
+            continue
         if planned.get('kind') in {'owner_chat_copy','owner_chat_reference','natural_chat_reference'}:
             reconcile_owner(library,row)
             continue

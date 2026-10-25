@@ -1272,6 +1272,16 @@ class MultichannelStore:
             threads.append(replace(thread, metadata={**thread.metadata, "latestMessage": self.latest_message_preview(thread)}))
         return threads
 
+    def list_group_threads(self, role_id: str, account_id: str, *, limit: int = 500) -> list[ChannelThread]:
+        """Read a bounded account-scoped QQ group directory without requiring messages."""
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM channel_threads WHERE role_id=? AND account_id=? AND channel='qq' "
+                "AND chat_type='group' ORDER BY last_activity DESC, thread_id DESC LIMIT ?",
+                (role_id, account_id, max(1, min(limit, 501))),
+            ).fetchall()
+        return [self._thread(row) for row in rows]
+
     def clear_listening_messages(self, role_id: str, account_id: str, chat_id: str) -> int:
         """Remove only stored NapCat旁听 messages for one group."""
 

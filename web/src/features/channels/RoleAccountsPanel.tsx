@@ -7,7 +7,7 @@ import { ChannelLogo } from "./ChannelLogo";
 import { accountStatus, channels, type Account, type Channel, type ChannelSettings } from "./channelAccounts";
 import "./role-accounts.css";
 
-type RoleAccountsProps = { roleId: string; onOpenSettings?: () => void; workspace?: boolean } & (
+type RoleAccountsProps = { roleId: string; onOpenSettings?: () => void; workspace?: boolean; initialChannel?: Channel } & (
   { presentation: "page"; onBack: () => void } | { presentation?: "dialog"; onBack?: never }
 );
 
@@ -20,10 +20,10 @@ const workspaceChannels: { id: Channel; name: string; icon: IconName; summary?: 
   { id: 'qqbot', name: 'QQ 官方机器人', icon: 'bot' }, { id: 'telegram', name: 'Telegram', icon: 'send' },
 ];
 
-function RoleAccountsForRole({ roleId, onOpenSettings, presentation = "dialog", onBack, workspace = false }: RoleAccountsProps) {
+function RoleAccountsForRole({ roleId, onOpenSettings, presentation = "dialog", onBack, workspace = false, initialChannel }: RoleAccountsProps) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [settings, setSettings] = useState<ChannelSettings[]>([]);
-  const [selected, setSelected] = useState<Channel | null>(null);
+  const [selected, setSelected] = useState<Channel | null>(initialChannel ?? null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const request = useRef(0);

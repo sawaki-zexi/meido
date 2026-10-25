@@ -13,6 +13,7 @@ import { Dialog } from "../../ui/Dialog";
 import { GeneratedImageAction } from "../novelai/GeneratedImageAction";
 import type { GenerationSelection } from "../../api/novelai";
 import { useChatScroll } from "./useChatScroll";
+import { AttachmentImage } from "../../ui/AttachmentImage";
 
 function MessageItem({ message, role, highlighted, onRegenerate }: { message: Message; role: Role; highlighted: boolean; onRegenerate: (selection: GenerationSelection) => void }) {
   const mine = message.role === "user";
@@ -42,7 +43,7 @@ function MessageItem({ message, role, highlighted, onRegenerate }: { message: Me
         {attachments.map((attachment) => {
           const href = `/api/roles/${encodeURIComponent(role.id)}/attachments/${encodeURIComponent(attachment.id)}`;
           return attachment.kind === "image"
-            ? <div key={attachment.id}><a href={href} target="_blank" rel="noreferrer"><img src={href} alt={attachment.name} /></a>
+            ? <div key={attachment.id}><AttachmentImage src={href} href={href} alt={attachment.name} />
               {!mine && message.status === 'completed' && generationAttempts.length > 0 && <GeneratedImageAction roleId={role.id} messageId={message.id} image={attachment} attemptIds={generationAttempts} onSelect={onRegenerate} />}</div>
             : <a className="message-file" href={href} target="_blank" rel="noreferrer" key={attachment.id}>{attachment.name}</a>;
         })}
@@ -99,13 +100,13 @@ function Composer({ roleId, placeholder, disabled, sending, stopping, onSend, on
   return <form aria-label="聊天输入" className={`composer${dragging ? " is-dragging" : ""}`} onSubmit={submit} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
     {attachments.length > 0 && <div className="composer-attachments" aria-label="待发送附件">
       {attachments.map((attachment) => attachment.kind === "image"
-        ? <div className="attachment-preview" key={attachment.id}><img src={`/api/roles/${encodeURIComponent(roleId ?? "")}/attachments/${encodeURIComponent(attachment.id)}`} alt={attachment.name} /><button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => remove(attachment.id)}>×</button></div>
+        ? <div className="attachment-preview chat-attachment-preview" key={attachment.id}><AttachmentImage src={`/api/roles/${encodeURIComponent(roleId ?? "")}/attachments/${encodeURIComponent(attachment.id)}`} alt={attachment.name} /><button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => remove(attachment.id)}>×</button></div>
         : <div className="attachment-file" key={attachment.id}><span>{attachment.name}</span><button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => remove(attachment.id)}>×</button></div>)}
     </div>}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {unsentText && <div className="composer-unsent" role="note"><p>未发送的消息：{unsentText}</p><IconButton icon="close" label="忽略未发送消息" onClick={() => setUnsentText("")} /></div>}
     <div className="composer-row">
-      <input ref={fileRef} type="file" aria-label="附件文件" multiple accept="image/png,image/jpeg,image/webp,.txt,.md,.csv,.json,.pdf,.docx" hidden onChange={(event) => { const input = event.currentTarget; const files = [...input.files ?? []]; void upload(files).finally(() => { input.value = ""; }); }} />
+      <input ref={fileRef} type="file" aria-label="附件文件" multiple accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.json,.pdf,.docx" hidden onChange={(event) => { const input = event.currentTarget; const files = [...input.files ?? []]; void upload(files).finally(() => { input.value = ""; }); }} />
       <button type="button" className="composer-attach" aria-label="添加附件" title="添加附件" disabled={disabled || sending || uploading} onClick={() => fileRef.current?.click()}><Icon name="attachment" size={18} /></button>
       <textarea ref={inputRef} aria-label="消息内容" placeholder={placeholder} rows={1} value={draft} disabled={disabled} onChange={(event) => { draftRevision.current += 1; setDraft(event.target.value); }} onKeyDown={onKeyDown} />
       {roleId && <RoleModelSelector roleId={roleId} disabled={disabled || sending || uploading} />}
