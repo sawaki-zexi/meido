@@ -7,7 +7,38 @@ import { fakeBackend, message, role, sse } from "../../test/fakeBackend";
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it("资料页不显示昵称，保存设定兼容旧称呼，取消保留已保存值并可返回对话", async () => {
+it('资料按四段单独展开编辑，工具栏保存和重置保留折叠字段及旧数据', async () => {
+  const original = role({ id: 'r1', name: '爱丽丝' });
+  let alice = { ...original, profile: { ...original.profile, nickname: '原称呼' } };
+  const { calls } = fakeBackend({
+    'GET /api/roles': () => ({ body: { roles: [alice] } }),
+    'GET /api/roles/r1/session': () => ({ body: { session: { sessionKey: 'role:r1', roleId: 'r1' }, messages: [] } }),
+    'PUT /api/roles/r1': init => { alice = { ...alice, ...JSON.parse(String(init?.body)) }; return { body: { role: alice } }; },
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(screen.getByRole('button', { name: '角色' }));
+  await user.click(await screen.findByRole('button', { name: '查看爱丽丝工作区' }));
+  const workspace = within(screen.getByRole('region', { name: '爱丽丝的角色工作区' }));
+  expect(workspace.getByRole('button', { name: '角色设定' })).toHaveAttribute('aria-expanded', 'true');
+  for (const name of ['性格', '执行规则', '回复约束']) expect(workspace.getByRole('button', { name })).toHaveAttribute('aria-expanded', 'false');
+  expect(workspace.queryByRole('button', { name: '上传头像' })).not.toBeInTheDocument();
+  expect(workspace.getByRole('button', { name: '保存' })).toBeDisabled();
+  await user.clear(workspace.getByRole('textbox', { name: '角色设定' }));
+  await user.type(workspace.getByRole('textbox', { name: '角色设定' }), '更新后的故事');
+  await user.click(workspace.getByRole('button', { name: '性格' }));
+  expect(workspace.queryByRole('textbox', { name: '角色设定' })).not.toBeInTheDocument();
+  await user.type(workspace.getByRole('textbox', { name: '性格' }), '温柔而坚定');
+  await user.click(workspace.getByRole('button', { name: '保存' }));
+  await waitFor(() => expect(workspace.getByRole('button', { name: '保存' })).toBeDisabled());
+  expect(calls.find(call => call.method === 'PUT')?.body).toMatchObject({ profile: { profile: '更新后的故事', personality: '温柔而坚定', nickname: '原称呼' } });
+  await user.clear(workspace.getByRole('textbox', { name: '性格' }));
+  await user.click(workspace.getByRole('button', { name: '重置' }));
+  expect(workspace.getByRole('textbox', { name: '性格' })).toHaveValue('温柔而坚定');
+  expect(workspace.getByRole('button', { name: '重置' })).toBeDisabled();
+});
+
+it("资料页不显示昵称，保存设定兼容旧称呼，重置保留已保存值并可返回对话", async () => {
   const original = role({ id: "r1", name: "爱丽丝" });
   let alice = { ...original, profile: { ...original.profile, nickname: "旧称呼" } };
   const { calls } = fakeBackend({
@@ -28,13 +59,34 @@ it("资料页不显示昵称，保存设定兼容旧称呼，取消保留已保�
   await user.type(profile, "新的角色设定");
   await user.click(within(workspace).getByRole("button", { name: "保存" }));
   await waitFor(() => expect(calls.find(call => call.method === "PUT")?.body).toMatchObject({ profile: { profile: "新的角色设定", nickname: "旧称呼" } }));
-  await waitFor(() => expect(within(workspace).getByRole("button", { name: "保存" })).toBeEnabled());
+  await waitFor(() => expect(within(workspace).getByRole("button", { name: "保存" })).toBeDisabled());
   await user.clear(profile);
   await user.type(profile, "未保存设定");
-  await user.click(within(workspace).getByRole("button", { name: "取消" }));
+  await user.click(within(workspace).getByRole("button", { name: "重置" }));
   expect(within(workspace).getByRole("textbox", { name: "角色设定" })).toHaveValue("新的角色设定");
   await user.click(within(workspace).getByRole("button", { name: "返回对话" }));
   expect(await screen.findByText("原来的对话")).toBeVisible();
+});
+
+it('角色设定折叠后仍校验必填，定位到空白设定并保留其他草稿', async () => {
+  const alice = role({ id: 'r1', name: '爱丽丝' });
+  const { calls } = fakeBackend({
+    'GET /api/roles': () => ({ body: { roles: [alice] } }),
+    'GET /api/roles/r1/session': () => ({ body: { session: { sessionKey: 'role:r1', roleId: 'r1' }, messages: [] } }),
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: '角色资料' }));
+  const workspace = within(screen.getByRole('region', { name: '爱丽丝的角色工作区' }));
+  await user.clear(workspace.getByRole('textbox', { name: '角色设定' }));
+  await user.click(workspace.getByRole('button', { name: '性格' }));
+  await user.type(workspace.getByRole('textbox', { name: '性格' }), '未保存的性格');
+  await user.click(workspace.getByRole('button', { name: '保存' }));
+  expect(await workspace.findByRole('alert')).toHaveTextContent('请填写角色设定');
+  expect(workspace.getByRole('textbox', { name: '角色设定' })).toHaveFocus();
+  expect(calls.some(call => call.method !== 'GET')).toBe(false);
+  await user.click(workspace.getByRole('button', { name: '性格' }));
+  expect(workspace.getByRole('textbox', { name: '性格' })).toHaveValue('未保存的性格');
 });
 
 it("刷新后全页恢复新建草稿，已有对话加载完成也不覆盖草稿页", async () => {
@@ -179,7 +231,7 @@ it.each([
   await user.click(screen.getByRole("button", { name: "角色" }));
   await user.click(await screen.findByRole("button", { name: "查看爱丽丝工作区" }));
   const workspace = screen.getByRole("region", { name: "爱丽丝的角色工作区" });
-  await user.click(within(workspace).getByRole("button", { name: "编辑资料" }));
+  await user.click(within(workspace).getByRole("button", { name: "更换形象" }));
   const input = within(workspace).getByLabelText(inputName);
   const file = new File(["original"], "picture.png", { type: "image/png" });
   await user.upload(input, file);
@@ -187,7 +239,7 @@ it.each([
   expect(crop).not.toBeNull();
   await user.click(within(crop!).getByRole("button", { name: "取消" }));
   expect(within(workspace).queryByRole("region", { name: cropName })).not.toBeInTheDocument();
-  expect(within(workspace).getByRole("button", { name: "保存" })).toBeEnabled();
+  expect(within(workspace).getByRole("button", { name: "保存" })).toBeDisabled();
   await user.upload(input, file);
   const secondCrop = within(workspace).getByRole("region", { name: cropName });
   const image = within(secondCrop).getByRole("img", { name: previewName });

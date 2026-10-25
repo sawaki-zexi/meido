@@ -1,29 +1,47 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, errorMessage } from '../../api/client';
-import type { Role } from '../../api/types';
+import type { Role, TodoReminderDay, TodoReminderRole, TodoSettings } from '../../api/types';
 import { proactive, type ProactiveState } from '../../api/proactive';
 import { desktopPet, type PetState } from '../../api/desktopPet';
 
-export type RuntimeCapability = 'autonomy' | 'pet' | 'novelai';
-const names = { autonomy: '主动推送', pet: '桌宠', novelai: '自动场景 CG' };
+export type RuntimeCapability = 'autonomy' | 'pet' | 'novelai' | 'reminders';
+const names = { autonomy: '主动推送', pet: '桌宠', novelai: '自动场景 CG', reminders: '待办提醒' };
+type ReminderState = { settings: TodoSettings; role: TodoReminderRole; today: TodoReminderDay };
+// A chat-scheduled exit may still leave this role eligible for today's reminder.
+const participatesInReminders = (role?: TodoReminderRole) => Boolean(role?.enabled || role?.activeToday);
+async function getReminders(roleId: string): Promise<ReminderState> {
+  const [settings, roles, today] = await Promise.all([
+    api<TodoSettings>('/api/todos/settings'), api<{ roles: TodoReminderRole[] }>('/api/todos/reminder-roles'),
+    api<TodoReminderDay>('/api/todos/reminders/today'),
+  ]);
+  const role = roles.roles.find(item => item.id === roleId);
+  if (!role) throw new Error('当前角色不在提醒角色列表中，请刷新后重试');
+  return { settings, role, today };
+}
 
-export function useRoleCapabilities(roleId: string, onRoleSaved?: (role: Role) => void) {
+export function useRoleCapabilities(roleId: string, onRoleSaved?: (role: Role) => void, settingsVersion = 0) {
   const [push, setPush] = useState<ProactiveState | null>(null);
   const [pet, setPet] = useState<PetState | null>(null);
   const [sceneRole, setSceneRole] = useState<Role | null>(null);
-  const [draft, setDraft] = useState({ autonomy: false, pet: false, novelai: false });
+  const [reminders, setReminders] = useState<ReminderState | null>(null);
+  const [draft, setDraft] = useState({ autonomy: false, pet: false, novelai: false, reminders: false });
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [loadErrors, setLoadErrors] = useState<Partial<Record<RuntimeCapability, string>>>({});
   const generation = useRef(0);
-  const load = useCallback(async (only?: RuntimeCapability) => {
+  const saved = { autonomy: push?.settings.enabled ?? false, pet: pet?.enabled ?? false, novelai: sceneRole?.agentConfig?.novelai?.sceneCgEnabled === true, reminders: participatesInReminders(reminders?.role) };
+  const snapshot = useRef({ saved, draft });
+  snapshot.current = { saved, draft };
+  const load = useCallback(async (only?: RuntimeCapability, preserveDraft = false) => {
     const request = ++generation.current;
+    const before = snapshot.current;
     setBusy(true); setError(''); setNotice('');
-    const keys = only ? [only] : ['autonomy', 'pet', 'novelai'] as const;
+    const keys = only ? [only] : ['autonomy', 'pet', 'novelai', 'reminders'] as const;
     const results = await Promise.allSettled(keys.map(async key => {
       if (key === 'autonomy') return { key, value: await proactive.get(roleId) } as const;
       if (key === 'pet') return { key, value: await desktopPet.status(roleId) } as const;
+      if (key === 'reminders') return { key, value: await getReminders(roleId) } as const;
       return { key, value: (await api<{ role: Role }>(`/api/roles/${encodeURIComponent(roleId)}`)).role } as const;
     }));
     if (request !== generation.current) return;
@@ -35,15 +53,16 @@ export function useRoleCapabilities(roleId: string, onRoleSaved?: (role: Role) =
       }
       const data = result.value;
       setLoadErrors(current => ({ ...current, [key]: undefined }));
-      if (data.key === 'autonomy') { setPush(data.value); setDraft(current => ({ ...current, autonomy: data.value.settings.enabled })); }
-      else if (data.key === 'pet') { setPet(data.value); setDraft(current => ({ ...current, pet: data.value.enabled })); }
-      else { setSceneRole(data.value); setDraft(current => ({ ...current, novelai: data.value.agentConfig?.novelai?.sceneCgEnabled === true })); }
+      let enabled: boolean;
+      if (data.key === 'autonomy') { setPush(data.value); enabled = data.value.settings.enabled; }
+      else if (data.key === 'pet') { setPet(data.value); enabled = data.value.enabled; }
+      else if (data.key === 'reminders') { setReminders(data.value); enabled = participatesInReminders(data.value.role); }
+      else { setSceneRole(data.value); enabled = data.value.agentConfig?.novelai?.sceneCgEnabled === true; }
+      setDraft(current => ({ ...current, [key]: preserveDraft && before.draft[key] !== before.saved[key] ? current[key] : enabled }));
     });
     setBusy(false);
   }, [roleId]);
-  useEffect(() => { void load(); return () => { ++generation.current; }; }, [load]);
-
-  const saved = { autonomy: push?.settings.enabled ?? false, pet: pet?.enabled ?? false, novelai: sceneRole?.agentConfig?.novelai?.sceneCgEnabled === true };
+  useEffect(() => { void load(undefined, true); return () => { ++generation.current; }; }, [load, settingsVersion]);
   const dirty = (Object.keys(saved) as RuntimeCapability[]).some(key => draft[key] !== saved[key]);
   function change(key: RuntimeCapability, enabled: boolean) { setDraft(current => ({ ...current, [key]: enabled })); setNotice(''); }
   function receiveScene(role: Role) {
@@ -66,6 +85,15 @@ export function useRoleCapabilities(roleId: string, onRoleSaved?: (role: Role) =
         if (request !== generation.current) return;
         setPet(value); setDraft(current => ({ ...current, pet: value.enabled })); ++savedCount;
       }
+      if (reminders && draft.reminders !== saved.reminders) {
+        const value = await api<{ roleId: string; enabled: boolean; effectiveDate: string }>(`/api/todos/reminder-roles/${encodeURIComponent(roleId)}`, {
+          method: 'PUT', body: JSON.stringify({ enabled: draft.reminders }),
+        });
+        if (request !== generation.current) return;
+        setReminders({ ...reminders, role: { ...reminders.role, enabled: value.enabled, effectiveDate: value.effectiveDate,
+          activeToday: value.enabled ? reminders.role.activeToday : false } });
+        setDraft(current => ({ ...current, reminders: value.enabled })); ++savedCount;
+      }
       // Enabling CG goes through its existing model, budget and consent form.
       if (sceneRole && saved.novelai && !draft.novelai) {
         const path = `/api/roles/${encodeURIComponent(roleId)}`;
@@ -83,6 +111,6 @@ export function useRoleCapabilities(roleId: string, onRoleSaved?: (role: Role) =
       if (request === generation.current) setError(`${savedCount ? '部分更改已保存；' : ''}${errorMessage(cause, '无法保存能力设置')}`);
     } finally { if (request === generation.current) setBusy(false); }
   }
-  return { push, pet, sceneRole, draft, saved, busy, dirty, error, notice, loadErrors, load, change, receiveScene,
+  return { push, pet, sceneRole, reminders, draft, saved, busy, dirty, error, notice, loadErrors, load, change, receiveScene,
     save, reset: () => { setDraft(saved); setError(''); setNotice(''); }, dismissError: () => setError('') };
 }

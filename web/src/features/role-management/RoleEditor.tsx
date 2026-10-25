@@ -1,11 +1,12 @@
 import type { FormEvent } from "react";
 import type { RolesState } from "./useRoles";
 import type { RoleProfile } from "../../api/types";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "../../ui/Icon";
 import { RoleDeleteConfirmation } from "./RoleDeleteConfirmation";
 import { Notice } from "../../ui/Status";
 import { AvatarCropper } from "./AvatarCropper";
+import { RoleProfileSections, type ProfileSection } from './RoleProfileSections';
 
 type TextFieldKey = keyof RoleProfile | "name" | "description";
 type Field = { key: TextFieldKey; label: string; placeholder?: string; hint?: string; multiline?: boolean; required?: boolean };
@@ -21,23 +22,34 @@ const characterFields: Field[] = [
   { key: "responseConstraints", label: "回复约束", placeholder: "例如：避免替你做决定，回答尽量简洁", multiline: true },
 ];
 
-type Props = { state: RolesState; onSubmit: () => void; onCancel: () => void; onDelete: () => void; hideHeaderFields?: boolean };
+type Props = { state: RolesState; onSubmit: () => void; onCancel: () => void; onDelete: () => void; hideHeaderFields?: boolean; workspace?: boolean; formId?: string; mediaOpen?: boolean };
 
 /** Shared profile fields for creating, reading and editing a role. */
-export function RoleEditor({ state, onSubmit, onCancel, onDelete, hideHeaderFields = false }: Props) {
+export function RoleEditor({ state, onSubmit, onCancel, onDelete, hideHeaderFields = false, workspace = false, formId, mediaOpen = true }: Props) {
   const { selected, draft, setDraft, creating, editing, saving, deleting, busy, error, setError } = state;
-  const writable = creating || editing;
+  const writable = workspace || creating || editing;
   const cropping = Boolean(state.avatarSource || state.cardImageSource);
   const locked = !writable || busy;
   const [showAdvanced, setShowAdvanced] = useState(!creating);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [expandedProfile, setExpandedProfile] = useState<ProfileSection | null>('profile');
+  const [focusInvalidProfile, setFocusInvalidProfile] = useState(false);
   const form = useRef<HTMLFormElement>(null);
   const deleteButton = useRef<HTMLButtonElement>(null);
   const avatarInput = useRef<HTMLInputElement>(null);
   const cardInput = useRef<HTMLInputElement>(null);
   const importInput = useRef<HTMLInputElement>(null);
 
-  const submit = (event: FormEvent) => { event.preventDefault(); if (!cropping) onSubmit(); };
+  useEffect(() => {
+    if (focusInvalidProfile) { form.current?.querySelector<HTMLTextAreaElement>('textarea[name="profile"]')?.focus(); setFocusInvalidProfile(false); }
+  }, [focusInvalidProfile, expandedProfile]);
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (cropping || busy) return;
+    if (workspace && !draft.name.trim()) { setError('请填写角色名称'); document.querySelector<HTMLInputElement>('[aria-label="名称（角色名称）"]')?.focus(); return; }
+    if (workspace && !draft.profile.trim()) { setError('请填写角色设定'); setExpandedProfile('profile'); setFocusInvalidProfile(true); return; }
+    onSubmit();
+  };
 
   const renderField = (field: Field) => {
     const id = `role-${field.key}`;
@@ -48,8 +60,9 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete, hideHeaderFiel
     </div>;
   };
 
-  return <><form ref={form} className={`role-editor${writable ? " is-writable" : ""}`} onSubmit={submit}>
-    <fieldset className="role-media-fields">
+  return <><form ref={form} id={formId} className={`role-editor${writable ? " is-writable" : ""}`} onSubmit={submit}>
+    {workspace && error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
+    <fieldset className="role-media-fields" hidden={workspace && !mediaOpen}>
       {writable && <div className="role-import-control">
         <div><h2>角色形象</h2><p>头像与卡面，都可以稍后添加。</p></div>
         <button type="button" className="ghost" disabled={busy} onClick={() => importInput.current?.click()}><Icon name="upload" size={15} />{state.importing ? "解析中…" : "导入角色卡"}</button>
@@ -83,7 +96,8 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete, hideHeaderFiel
       <legend>身份</legend>
       {identityFields.map(renderField)}
     </fieldset>}
-    <fieldset className="role-profile-fields">
+    {workspace ? <RoleProfileSections profile={draft} expanded={expandedProfile} onExpand={setExpandedProfile} disabled={busy}
+      onChange={(key, value) => { if (!editing) state.startEdit(); setDraft({ ...draft, [key]: value }); }} /> : <fieldset className="role-profile-fields">
       {renderField(characterFields[0])}
       <button
         type="button"
@@ -98,8 +112,8 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete, hideHeaderFiel
       {showAdvanced && <div id="role-advanced-fields" className="advanced-fields">
         {characterFields.slice(1).map(renderField)}
       </div>}
-    </fieldset>
-    {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
+    </fieldset>}
+    {!workspace && error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {state.importPreview && <section className="role-import-preview" aria-label="角色卡导入预览">
       <div className="role-import-preview-header"><strong>导入预览</strong><button type="button" className="ghost" onClick={state.cancelImport}>取消</button></div>
       <p className="role-import-source">{state.importPreview.source} · {state.importPreview.compatibility.format.toUpperCase()}</p>
@@ -116,7 +130,7 @@ export function RoleEditor({ state, onSubmit, onCancel, onDelete, hideHeaderFiel
       {state.importPreview.compatibility.unsupportedResources.length > 0 && <p className="role-import-discarded">未导入素材：{state.importPreview.compatibility.unsupportedResources.join("、")}</p>}
       <div className="form-actions"><button type="button" className="primary" onClick={() => void state.acceptImport(null)}>填充到表单</button></div>
     </section>}
-    {writable && !cropping && <div className="form-actions role-save-actions">
+    {!workspace && writable && !cropping && <div className="form-actions role-save-actions">
       <button type="button" className="ghost" disabled={busy} onClick={onCancel}>取消</button>
       <button type="submit" className="primary" disabled={busy}>{saving ? "保存中…" : "保存"}</button>
     </div>}

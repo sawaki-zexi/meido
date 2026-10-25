@@ -34,6 +34,7 @@ export function App() {
     () => new URLSearchParams(window.location.search).get("ownerKnowledge") === "connected",
   );
   const [panel, setPanel] = useState<Panel>(returnedFromOwnerKnowledgeAuthorization ? "settings" : null);
+  const [roleSettingsVersion, setRoleSettingsVersion] = useState(0);
   const [view, setView] = useState<View>(() => roles.creating ? "create" : "chat");
   const [roleReturnView, setRoleReturnView] = useState<Exclude<View, "role" | "create">>("chat");
   const [studioRoleId, setStudioRoleId] = useState<string | null>(null);
@@ -208,7 +209,7 @@ export function App() {
         : view === "create"
         ? <CreateRolePage state={roles} number={roles.roles.length + 1} onSubmit={() => void saveRole()} onCancel={cancelEdit} onBack={backFromRole} backLabel={backLabel} />
         : view === "role" && roles.selected
-        ? <RoleWorkspace key={roles.selected.id} role={roles.selected} state={roles} tab={profileTab} onTabChange={setProfileTab} onBack={backFromRole} backLabel={backLabel} onChat={() => chatWith(roles.selected!)} chatDisabled={lockSwitch} onEdit={() => { setProfileTab("profile"); roles.startEdit(); }} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} onOpenSettings={() => { roles.cancel(); setSettingsSection("plugins"); setPanel("settings"); }} onOpenChannelSettings={() => { roles.cancel(); setSettingsSection("channels"); setPanel("settings"); }} onOpenMemorySource={(origin, messageId) => void openMemorySource(roles.selected!, origin, messageId)} />
+        ? <RoleWorkspace key={roles.selected.id} role={roles.selected} state={roles} tab={profileTab} onTabChange={setProfileTab} onBack={backFromRole} backLabel={backLabel} onChat={() => chatWith(roles.selected!)} chatDisabled={lockSwitch} onEdit={() => { setProfileTab("profile"); roles.startEdit(); }} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} onOpenSettings={(section = 'plugins') => { setSettingsSection(section); setPanel("settings"); }} onOpenChannelSettings={() => { setSettingsSection("channels"); setPanel("settings"); }} onOpenMemorySource={(origin, messageId) => void openMemorySource(roles.selected!, origin, messageId)} settingsVersion={roleSettingsVersion} />
         : view === "novelai"
         ? <NovelaiStudio roles={roles.roles} selectedRoleId={studioRoleId ?? chat.roleId ?? roles.roles[0]?.id} onRoleChange={setStudioRoleId}
           onGenerated={chat.refresh} settingsOpen={panel === 'settings'} onOpenSettings={() => { setSettingsSection('novelai'); setPanel('settings'); }} />
@@ -227,7 +228,7 @@ export function App() {
       <ChannelView key={`${channelSource.role.id}:${channelSource.source.origin.stableSourceKey}:${channelSource.source.messageId ?? ""}`} role={channelSource.role} sourceOnly onBack={() => setChannelSource(null)} initialSource={channelSource.source} />
     </Dialog>}
 
-    {panel === "settings" && <SettingsDialog initialSection={settingsSection} onRoleSaved={roles.receiveRole} onClose={() => setPanel(null)} />}
+    {panel === "settings" && <SettingsDialog initialSection={settingsSection} onRoleSaved={roles.receiveRole} onClose={() => { setPanel(null); setRoleSettingsVersion(value => value + 1); }} />}
     {previewRole && <Dialog title={`${previewRole.name}头像`} variant="modal" onClose={() => setPreviewRole(null)}>
       <div className="avatar-lightbox"><img src={previewRole.avatarOriginalUrl ?? previewRole.avatarUrl ?? ""} alt={`${previewRole.name}头像`} /></div>
     </Dialog>}

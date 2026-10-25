@@ -811,8 +811,19 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .role-workspace-chat, .role-capability-actions > button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 10px 18px; min-height: 44px; border: 1px solid var(--line-strong); border-radius: 15px; white-space: nowrap; background: var(--surface-card); }
 .role-workspace-toolbar .role-workspace-chat { border: 1px solid var(--line-strong); background: var(--surface-card); }
 .role-workspace-content { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 38px 40px 48px; }
-.role-workspace-profile { width: 100%; max-width: 1120px; margin: 0 auto; }
+.role-workspace-profile { width: 100%; margin: 0 auto; }
 .role-workspace-profile .role-editor { padding: 0; }
+.role-workspace-profile .role-editor > .role-media-fields[hidden] { display: none; }
+.role-profile-sections { width: 100%; min-width: 0; }
+.role-profile-section { padding: 26px 0 22px; border-bottom: 1px solid var(--line); }
+.role-profile-section:first-child { padding-top: 4px; }
+.role-profile-section h2 > button { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; padding: 6px 10px; border: 0; border-radius: 10px; background: transparent; color: var(--ink); text-align: left; font-size: 20px; font-weight: 600; }
+.role-profile-section h2 .icon-svg { flex: none; color: var(--ink-faint); transform: rotate(-90deg); }
+.role-profile-section.is-open h2 .icon-svg { transform: rotate(90deg); }
+.role-profile-section textarea { display: block; width: 100%; min-height: 200px; margin-top: 22px; padding: 16px 18px; border: 1px solid color-mix(in srgb, var(--rose) 28%, var(--line)); border-radius: 16px; background: var(--surface-card); color: var(--ink); font: inherit; font-size: 16px; line-height: 1.8; resize: vertical; }
+.role-profile-section textarea:focus { border-color: color-mix(in srgb, var(--rose) 55%, var(--line)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--rose) 5%, transparent); }
+.role-profile-summary { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; white-space: pre-wrap; margin: 16px 10px 0; color: var(--ink-soft); font-size: 15px; line-height: 1.8; }
+.role-profile-summary.is-empty { color: var(--ink-faint); }
 .role-workspace-profile .role-editor:not(.is-writable) .role-media-fields { display: none; }
 .role-workspace-memory { min-width: 0; min-height: 0; }
 .role-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 26px; }
@@ -824,7 +835,7 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .role-runtime-icon { display: grid; place-items: center; flex: none; width: 50px; height: 50px; border-radius: 16px; background: color-mix(in srgb, var(--hover) 55%, var(--surface-card)); color: var(--rose); }
 .role-runtime-copy { display: flex; align-items: center; flex-wrap: wrap; flex: 1; min-width: 0; gap: 8px 10px; }
 .role-runtime-copy h3 { font-size: 17px; }
-.role-runtime-status { padding: 1px 10px; border-radius: 999px; background: var(--surface-input); color: var(--ink-faint); font-size: 13px; white-space: nowrap; }
+.role-runtime-status { max-width: 100%; padding: 1px 10px; border-radius: 999px; background: var(--surface-input); color: var(--ink-faint); font-size: 13px; overflow-wrap: anywhere; }
 .role-runtime-status.is-enabled { background: var(--hover); color: var(--rose-deep); }
 .role-runtime-usage { flex-basis: 100%; font-size: 12px; line-height: 1.5; color: var(--ink-faint); }
 .role-runtime-card .settings-switch { flex: none; width: 55px; height: 30px; }
@@ -837,6 +848,9 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .role-capability-error { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; color: var(--danger); font-size: 13px; }
 .role-runtime-settings { padding: 24px; }
 .role-runtime-settings .settings-section { padding-inline: 0; }
+.role-shared-capabilities { margin-top: 38px; }
+.role-shared-capabilities .role-section-heading p { margin-top: 6px; color: var(--ink-faint); font-size: 13px; }
+.role-service-card .role-runtime-usage { margin-top: 3px; }
 
 @media (max-width: 1180px) {
   .role-workspace-toolbar { gap: 16px; padding-inline: 24px; }
