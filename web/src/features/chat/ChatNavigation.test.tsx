@@ -158,9 +158,10 @@ it('空白手机可以进入内嵌账号页，再逐级返回会话', async () =
   await user.click(screen.getByRole('button', { name: '多端会话' }));
 
   const phone = screen.getByRole('dialog', { name: '诗织的多端会话' });
-  const setup = await within(phone).findByRole('button', { name: '角色账号' });
+  const setup = await within(phone).findByRole('button', { name: '设置渠道' });
   expect(setup).toBeVisible();
-  expect(await within(phone).findByRole('heading', { name: '还没有多端会话' })).toBeVisible();
+  expect(within(phone).queryByRole('button', { name: '角色账号' })).not.toBeInTheDocument();
+  expect(within(phone).queryByText('Telegram', { exact: true })).not.toBeInTheDocument();
   expect(within(phone).getAllByRole('button')).toHaveLength(3);
   expect(screen.queryByText('暂无渠道会话')).not.toBeInTheDocument();
   expect(screen.queryByText('选择一个会话')).not.toBeInTheDocument();
@@ -174,7 +175,11 @@ it('空白手机可以进入内嵌账号页，再逐级返回会话', async () =
   await user.click(within(phone).getByRole('button', { name: '返回渠道账号' }));
   expect(within(phone).getByRole('button', { name: /^QQ.*未连接/ })).toHaveFocus();
   await user.click(screen.getByRole('button', { name: '返回多端会话' }));
-  expect(screen.getByRole('button', { name: '角色账号' })).toBeVisible();
+  const setupAgain = screen.getByRole('button', { name: '设置渠道' });
+  expect(setupAgain).toBeVisible();
+  setupAgain.focus();
+  await user.keyboard('{Enter}');
+  expect(await within(phone).findByRole('heading', { name: '设置', level: 2 })).toBeVisible();
 });
 
 it.each(['账号列表', '暂停账号详情'])('从手机%s可直达平台总开关', async (entry) => {
@@ -194,7 +199,7 @@ it.each(['账号列表', '暂停账号详情'])('从手机%s可直达平台总�
   render(<App />);
   await screen.findByRole('heading', { name: '诗织', level: 1 });
   await user.click(screen.getByRole('button', { name: '多端会话' }));
-  await user.click(await screen.findByRole('button', { name: '角色账号' }));
+  await user.click(await screen.findByRole('button', { name: '设置渠道' }));
   if (entry === '暂停账号详情') await user.click(await screen.findByRole('button', { name: 'Telegram 平台已暂停' }));
   await user.click(screen.getByRole('button', { name: entry === '账号列表' ? '平台总开关' : '打开渠道设置' }));
   const settings = await screen.findByRole('region', { name: '多端连接' });

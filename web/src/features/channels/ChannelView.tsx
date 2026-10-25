@@ -606,7 +606,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
     {!sourceOnly && !phoneSettingsOpen && <header className="channel-view-header">
       <IconButton icon="back" label="返回聊天" onClick={onBack} />
       <div><h1 id="channel-view-title">{phoneMode ? role.name : `${role.name} · 手机会话`}</h1><p>{threads.length} 个会话</p></div>
-      <div className="channel-view-actions">{onAccounts && <button type="button" className="channel-accounts-button" aria-label="角色账号" title="角色账号" onClick={openAccounts}><Icon name="settings" size={16} /><span>角色账号</span></button>}{!phoneMode && <IconButton icon="refresh" label="刷新会话" onClick={() => void load()} />}</div>
+      <div className="channel-view-actions">{onAccounts && !showPhoneSetup && <button type="button" className="channel-accounts-button" aria-label="角色账号" title="角色账号" onClick={openAccounts}><Icon name="settings" size={16} /><span>角色账号</span></button>}{!phoneMode && <IconButton icon="refresh" label="刷新会话" onClick={() => void load()} />}</div>
     </header>}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {sourceError && <Notice onDismiss={() => setSourceError("")}>{sourceError}</Notice>}
@@ -614,13 +614,10 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
       <RoleAccountsPanel roleId={role.id} presentation="page" onBack={() => setPhoneSettingsOpen(false)} onOpenSettings={onOpenSettings} />
     </div>}
     {showPhoneSetup ? <div className="channel-phone-setup" aria-label="渠道设置" hidden={phoneSettingsOpen}>
-      <div className="channel-phone-welcome">
-        <span className="channel-phone-welcome-icon"><Icon name="chat" size={32} /></span>
-        <h2>还没有多端会话</h2>
-        <p>从右上角添加渠道账号，<br />在熟悉的平台和{role.name}开始聊天。</p>
-        <div className="channel-phone-platforms" aria-label="支持的平台"><span>QQ</span><span>Telegram</span><span>官方 QQBot</span><span>飞书</span></div>
-        <small>连接后的聊天记录会在这里汇集</small>
-      </div>
+      {onAccounts && <button type="button" className="channel-phone-settings-button" aria-label="设置渠道" title="设置渠道" onClick={openAccounts}>
+        <span className="channel-phone-settings-icon"><Icon name="settings" size={30} /></span>
+        <span>设置</span>
+      </button>}
     </div> : <div className="channel-workspace" hidden={phoneSettingsOpen}>
       {!sourceOnly && <aside className="channel-thread-list" aria-label="渠道会话列表">
         <h2>会话</h2>
