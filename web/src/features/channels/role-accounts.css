@@ -16,6 +16,8 @@
 .role-account-mark.telegram { background: #e5f2fb; color: #438bb5; }
 .role-account-mark.qq, .role-account-mark.qqbot { background: #f0eefe; color: #8b7baa; }
 .role-account-mark.feishu { background: #eaf5f4; color: #548d91; }
+.role-account-mark.channel-brand-mark { background: #fff; }
+.channel-brand-logo { display: block; width: 75%; height: 75%; object-fit: contain; }
 .role-account-status { font-size: 12px; color: var(--ink-faint); white-space: nowrap; }
 .role-account-status.connected { color: var(--success); }
 .role-accounts.is-workspace { gap: 0; padding: 0; }

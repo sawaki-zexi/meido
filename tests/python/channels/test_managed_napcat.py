@@ -5,6 +5,9 @@ import base64
 import hashlib
 import io
 import json
+import os
+import stat
+import sys
 from pathlib import Path
 import zipfile
 
@@ -51,6 +54,77 @@ def test_login_reference_survives_restart_and_is_bound_to_its_role(tmp_path):
         await restored.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.skipif(os.name != "nt", reason="QQ creates Windows read-only profile folders")
+def test_cancel_removes_readonly_qq_profile_and_allows_another_login(tmp_path):
+    async def scenario():
+        manager = ManagedNapCat(tmp_path)
+        ref = manager.begin("role-a")
+        documents = tmp_path / "managed-napcat/accounts" / ref / "profile/Documents"
+        documents.mkdir(parents=True)
+        documents.chmod(stat.S_IREAD)
+        try:
+            await manager.delete(ref, role_id="role-a")
+            assert manager.refs_for_role("role-a") == ()
+            replacement = manager.begin("role-a")
+            await manager.delete(replacement, role_id="role-a")
+        finally:
+            if documents.exists():
+                documents.chmod(stat.S_IWRITE)
+            await manager.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows reload servers use SelectorEventLoop")
+def test_managed_login_starts_from_windows_reload_server_loop(tmp_path, monkeypatch):
+    """Exercise the default process launcher from the same loop as Uvicorn reload."""
+    image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nm1kAAAAASUVORK5CYII="
+    script = (
+        "import os, pathlib, base64, time\n"
+        "cache=pathlib.Path(os.environ['NAPCAT_WORKDIR'])/'cache'\n"
+        "cache.mkdir(parents=True, exist_ok=True)\n"
+        f"(cache/'qrcode.png').write_bytes(base64.b64decode('{image}'))\n"
+        "time.sleep(30)\n"
+    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("node.exe", Path(sys._base_executable).read_bytes())
+        bundle.writestr("index.js", script)
+        bundle.writestr("wrapper.node", "fixture")
+        bundle.writestr("napcat/napcat.mjs", "fixture")
+    package = archive.getvalue()
+    monkeypatch.setattr(install, "ARCHIVE_SHA256", hashlib.sha256(package).hexdigest())
+    monkeypatch.setattr(install.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(package))
+    monkeypatch.setattr(install, "resolve_official_qq", lambda *a: Path(sys.base_prefix))
+    monkeypatch.setenv("PYTHONHOME", sys.base_prefix)
+
+    def respond(request):
+        if request.url.path.endswith("/auth/login"):
+            data = {"Credential": "fixture"}
+        else:
+            data = {"isLogin": False, "qrcodeurl": "https://qq.test/scan"}
+        return httpx.Response(200, json={"code": 0, "data": data})
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            manager = ManagedNapCat(tmp_path, http_client=client, poll_interval=.02)
+            ref = manager.begin("role-a")
+            try:
+                await manager.connect(ref, role_id="role-a")
+                for _ in range(200):
+                    state = await manager.status(ref, role_id="role-a")
+                    assert state["login"]["phase"] != "error", state
+                    if state["login"].get("qrcode"):
+                        return
+                    await asyncio.sleep(.02)
+                raise AssertionError(state)
+            finally:
+                await manager.delete(ref, role_id="role-a")
+                await manager.close()
+
+    with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+        runner.run(scenario())
 
 
 def test_deleted_role_cleanup_preserves_surviving_role_profiles(tmp_path):

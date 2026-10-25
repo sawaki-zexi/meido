@@ -3,6 +3,7 @@ import { api, errorMessage } from "../../api/client";
 import { Icon, IconButton, type IconName } from "../../ui/Icon";
 import { Notice } from "../../ui/Status";
 import { AccountDetail } from "./AccountDetail";
+import { ChannelLogo } from "./ChannelLogo";
 import { accountStatus, channels, type Account, type Channel, type ChannelSettings } from "./channelAccounts";
 import "./role-accounts.css";
 
@@ -83,7 +84,7 @@ function RoleAccountsForRole({ roleId, onOpenSettings, presentation = "dialog", 
         const account = accounts.find((item) => item.channel === channel.id) ?? null;
         const status = workspace && !account ? '未添加' : accountStatus(account, platformEnabled(channel.id));
         return <button type="button" className="role-account-row" key={channel.id} ref={node => { if (node) accountRows.current.set(channel.id, node); else accountRows.current.delete(channel.id); }} aria-label={`${channel.name}${account?.displayName ? ` ${account.displayName}` : ""} ${status}`} disabled={settings.length === 0} onClick={() => setSelected(channel.id)}>
-          {account?.avatarUrl ? <img src={account.avatarUrl} alt="" className="role-account-avatar" /> : workspace ? <span className="role-account-icon"><Icon name={workspaceChannels.find(item => item.id === channel.id)!.icon} size={23} /></span> : <span className={`role-account-mark ${channel.id}`}>{channel.id === "telegram" ? "T" : channel.id === "qq" ? "Q" : channel.id === "qqbot" ? "B" : "飞"}</span>}
+          {account?.avatarUrl ? <img src={account.avatarUrl} alt="" className="role-account-avatar" /> : workspace ? <span className="role-account-icon"><Icon name={workspaceChannels.find(item => item.id === channel.id)!.icon} size={23} /></span> : <span className={`role-account-mark channel-brand-mark ${channel.id}`}><ChannelLogo channel={channel.id} /></span>}
           <span className="role-account-copy"><strong>{channel.name}</strong><small>{workspace ? [account?.displayName, status].filter(Boolean).join(' · ') : account?.displayName || channel.summary}</small></span>
           {workspace ? <span className="role-account-trailing"><Icon name={account ? 'settings' : 'plus'} size={20} /></span> : <><span className={`role-account-status${platformEnabled(channel.id) && account?.enabled && account.connectionStatus === "connected" ? " connected" : ""}`}>{status}</span><span aria-hidden="true">›</span></>}
         </button>;
