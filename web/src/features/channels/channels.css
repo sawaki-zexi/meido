@@ -210,12 +210,12 @@
 .dialog-phone .channel-phone-header > div:not(.channel-view-actions) { flex: 1; overflow: hidden; }
 .dialog-phone .channel-phone-header h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dialog-phone .channel-phone-header p.phone-header-subtitle { display: block; overflow: hidden; margin-top: 3px; color: var(--ink-faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.phone-chat-avatar { flex: none; width: 32px; height: 32px; border-radius: 10px; object-fit: cover; }
+.phone-chat-avatar { flex: none; width: 32px; height: 32px; border-radius: 50%; object-fit: cover; }
 .dialog-phone .channel-phone-workspace > .channel-thread-list { padding: 6px 8px; }
 .dialog-phone .channel-phone-workspace .channel-thread { grid-template-columns: 40px minmax(0, 1fr) auto; align-items: start; gap: 11px; margin: 0; padding: 13px 10px; border: 0; border-radius: 10px; background: transparent; }
 .dialog-phone .channel-phone-workspace .channel-thread.active { background: transparent; }
 .dialog-phone .channel-phone-workspace .channel-thread:hover { background: #fff0f6; }
-.dialog-phone .channel-phone-workspace .channel-thread .channel-contact-avatar, .dialog-phone .channel-phone-workspace .channel-thread .channel-mark { width: 40px; height: 40px; margin: 0; border-radius: 12px; object-fit: cover; }
+.dialog-phone .channel-phone-workspace .channel-thread .channel-contact-avatar, .dialog-phone .channel-phone-workspace .channel-thread .channel-mark { width: 40px; height: 40px; margin: 0; border-radius: 50%; object-fit: cover; }
 .dialog-phone .channel-phone-workspace .channel-thread .channel-mark { display: grid; place-items: center; background: #f2edf8; color: #9a86af; }
 .dialog-phone .channel-thread-copy { gap: 5px; padding-top: 1px; }
 .dialog-phone .channel-thread-copy strong { font-size: 14px; font-weight: 600; }

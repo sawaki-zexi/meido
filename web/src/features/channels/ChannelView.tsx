@@ -30,6 +30,11 @@ type Thread = {
   avatarUrl?: string | null;
 };
 type LatestMessage = { content: string; role: string; status?: string; createdAt: string };
+
+function threadAvatar(thread: Thread): string | null {
+  return thread.avatarUrl || (thread.channel === "qq" && thread.chatType === "group" ? "/assets/channels/qq-group.png" : null);
+}
+
 type ChannelEvent = {
   type?: string;
   roleId?: string;
@@ -620,6 +625,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
   }, [timelineMessages, canLoadOlder, loadingOlder, messagesReady, listeningReady, error, sourceOnly, phoneMessagesHidden]);
 
   const phoneTitle = openPhoneApp ? phoneChatVisible && selectedThread ? selectedThread.title || selectedThread.chatId : openPhoneApp.label : role.name;
+  const phoneAvatar = selectedThread ? threadAvatar(selectedThread) : null;
   const phoneSubtitle = phoneChatVisible && selectedThread
     ? [channelName[selectedThread.channel] || selectedThread.channel, selectedThread.chatType === "group" ? "群聊" : "私聊", selectedThread.viaAccount?.displayName, selectedThread.accountRemoved ? "账号已移除" : null].filter(Boolean).join(" · ")
     : openPhoneApp ? [openPhoneApp.accountName, openPhoneApp.history ? "账号已移除" : openPhoneApp.offline ? "离线" : null].filter(Boolean).join(" · ") : "";
@@ -632,7 +638,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
   return <section className={`channel-view${sourceOnly ? " channel-source-view" : ""}`} aria-label={sourceOnly ? "渠道记忆来源" : phoneSettingsOpen ? "渠道设置" : undefined} aria-labelledby={sourceOnly || phoneSettingsOpen ? undefined : "channel-view-title"}>
     {!sourceOnly && !phoneSettingsOpen && <header className={`channel-view-header${phoneMode ? " channel-phone-header" : ""}${phoneChatVisible ? " channel-phone-chat-header" : ""}`}>
       <IconButton icon="back" label={phoneMode && openPhoneApp ? phoneChatVisible ? "返回会话列表" : "返回手机主页" : "返回聊天"} onClick={goBack} />
-      {phoneChatVisible && selectedThread?.avatarUrl && <img className="phone-chat-avatar" src={selectedThread.avatarUrl} alt="" />}
+      {phoneChatVisible && phoneAvatar && <img className="phone-chat-avatar" src={phoneAvatar} alt="" />}
       <div><h1 id="channel-view-title" title={phoneMode ? phoneTitle : role.name}>{phoneMode ? phoneTitle : `${role.name} · 手机会话`}</h1>{phoneMode ? phoneSubtitle && <p className="phone-header-subtitle" title={phoneSubtitle}>{phoneSubtitle}</p> : <p>{threads.length} 个会话</p>}</div>
       <div className="channel-view-actions">{onAccounts && !phoneMode && <button type="button" className="channel-accounts-button" aria-label="角色账号" title="角色账号" onClick={openAccounts}><Icon name="settings" size={16} /><span>角色账号</span></button>}{!phoneMode && <IconButton icon="refresh" label="刷新会话" onClick={() => void load()} />}</div>
     </header>}
@@ -648,11 +654,14 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
       {!sourceOnly && <aside className="channel-thread-list" aria-label="渠道会话列表" hidden={phoneChatVisible}>
         {!phoneMode && <h2>会话</h2>}
         {visibleThreads.length === 0 && (phoneMode ? openPhoneApp && <div className="channel-phone-empty"><Icon name="chat" size={32} /><p>还没有会话</p><small>此账号的聊天记录会显示在这里</small></div> : <p className="channel-empty">暂无渠道会话</p>)}
-        {visibleThreads.map((thread) => <button key={thread.threadId} type="button" className={`channel-thread${selected === thread.threadId ? " active" : ""}`} onClick={() => { sourceRequest.current += 1; setSourceHighlightedId(null); setListeningSource(null); setSourceError(""); setSelected(thread.threadId); if (phoneMode && openPhoneApp) setPhoneView({ kind: "app", appId: openPhoneApp.id, chat: true }); }}>
-          {thread.avatarUrl ? <img src={thread.avatarUrl} alt="" className="channel-contact-avatar" /> : <span className={`channel-mark ${thread.channel}`}>{phoneMode ? <Icon name={thread.chatType === "group" ? "people" : "profile"} size={23} /> : thread.channel === "telegram" ? "T" : thread.channel === "desktop" ? "M" : "•"}</span>}
+        {visibleThreads.map((thread) => {
+          const avatarUrl = threadAvatar(thread);
+          return <button key={thread.threadId} type="button" className={`channel-thread${selected === thread.threadId ? " active" : ""}`} onClick={() => { sourceRequest.current += 1; setSourceHighlightedId(null); setListeningSource(null); setSourceError(""); setSelected(thread.threadId); if (phoneMode && openPhoneApp) setPhoneView({ kind: "app", appId: openPhoneApp.id, chat: true }); }}>
+          {avatarUrl ? <img src={avatarUrl} alt="" className="channel-contact-avatar" /> : <span className={`channel-mark ${thread.channel}`}>{phoneMode ? <Icon name={thread.chatType === "group" ? "people" : "profile"} size={23} /> : thread.channel === "telegram" ? "T" : thread.channel === "desktop" ? "M" : "•"}</span>}
           <span className="channel-thread-copy"><strong>{thread.title || thread.chatId}</strong>{phoneMode ? <>{thread.latestMessage && <small>{conversationPreview(thread.latestMessage)}</small>}{thread.accountRemoved && <small className="phone-history-hint">账号已移除</small>}</> : <><small>{channelName[thread.channel] ?? thread.channel} · {thread.chatType === "group" ? "群聊" : "私聊"}</small>{thread.latestMessage && <small>{thread.latestMessage.role === "assistant" ? role.name : thread.title || "访客"}：{thread.latestMessage.content || "（无内容）"}</small>}{sourceLabel(thread.viaAccount) && <small>{sourceLabel(thread.viaAccount)}</small>}{thread.accountRemoved && <small>账号已移除</small>}</>}</span>
           <time dateTime={thread.lastActivity} title={new Date(thread.lastActivity).toLocaleString()}>{phoneMode ? conversationTime(thread.lastActivity) : new Date(thread.lastActivity).toLocaleDateString()}</time>
-        </button>)}
+        </button>;
+        })}
       </aside>}
       <section className="channel-messages" aria-label="会话消息" hidden={phoneMode && !sourceOnly && !phoneChatVisible}>
         {selectedThread ? <>

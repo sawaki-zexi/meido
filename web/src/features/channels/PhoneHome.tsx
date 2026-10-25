@@ -1,4 +1,5 @@
 import { Icon } from "../../ui/Icon";
+import { ChannelLogo } from "./ChannelLogo";
 
 export type PhoneApp = {
   id: string;
@@ -18,7 +19,7 @@ export function PhoneHome({ apps, onOpen, onSettings }: {
     <ul className="channel-phone-apps" aria-label="手机应用">
       {apps.map((app) => <li key={app.id}>
         <button type="button" className="channel-phone-app" aria-label={`${app.label}${app.history && app.accountName ? ` · ${app.accountName}` : ""}${app.offline ? "，离线" : ""}`} title={app.accountName || app.label} onClick={() => onOpen(app.id)}>
-          <span className={`channel-phone-app-icon role-account-mark ${app.channel}${app.offline ? " is-offline" : ""}`} aria-hidden="true">{({ telegram: "T", qq: "Q", qqbot: "B", feishu: "飞" } as Record<string, string>)[app.channel] || "聊"}</span>
+          <span className={`channel-phone-app-icon role-account-mark channel-brand-mark ${app.channel}${app.offline ? " is-offline" : ""}`} aria-hidden="true"><ChannelLogo channel={app.channel} /></span>
           <span>{app.label}</span>
           {app.history ? <small>账号已移除</small> : app.offline && <small>离线</small>}
         </button>

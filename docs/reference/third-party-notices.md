@@ -2,7 +2,7 @@
 
 状态：当前
 
-最后核验：2026-10-16
+最后核验：2026-10-25
 
 多端会话模块参考并改编 [Shiori-Agent](https://github.com/YinFengWindy/Shiori-Agent)，固定基线为 `1c241a2627bbcc99124aef71abaee237ac057499`。引用范围包括渠道账号和身份、入站暂停缓冲、聊天上下文隔离、群旁听以及平台传输行为；具体来源见[源码研究](../research/shiori-multichannel-integration.md)。上游采用 MIT 许可证，保留其版权及许可声明如下。
 
@@ -161,3 +161,14 @@ Copyright © 2024 Mlikiowa
 `4f266aeaf42fcd611362e2456417b91f659341cf`。Copyright (c) 2026 YinFengWindy，
 适用本页 Shiori MIT 许可；完整声明也随模块 `SHIORI-LICENSE.txt` 分发。
 NovelAI 为独立服务，其账号、消费与图片条款不由源码 MIT 许可授予。
+
+## 渠道品牌图标
+
+`web/public/assets/channels/` 内置以下官方原始资源，用于识别所连接的软件；不重绘或改变品牌配色。
+
+- `qq.png`：[QQ 官网图标](https://static-res.qq.com/static-res/imqq/qq-logo.png)，来源为 [QQ 官网](https://im.qq.com/index)，用于 QQ 和官方 QQBot 的平台标识。
+- `qq-group.png`：[腾讯默认群头像](https://p.qlogo.cn/gh/0/0/100)，仅在缺少实际群头像时使用；不包含用户的自定义群头像。
+- `telegram.svg`：[Telegram 官方图标](https://telegram.org/img/t_logo.svg)。
+- `feishu.ico`：[飞书官网图标](https://www.feishu.cn/favicon.ico)。
+
+以上品牌图像与商标权利归各自权利人，不纳入前文 Shiori MIT 声明。用户账号、群聊和联系人实际头像仍通过后端缓存提供，不作为仓库静态资源提交。
