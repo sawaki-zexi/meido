@@ -45,7 +45,7 @@ export type ManagedQQSession = {
   ref: string;
   available: boolean;
   preparation: { stage: string; percent: number; version?: string | null; error?: string | null };
-  login: { phase: string; qrcode?: string | null; uin?: string | null; nickname?: string | null; error?: string | null };
+  login: { phase: string; loginPhase?: string; qrcode?: string | null; uin?: string | null; nickname?: string | null; error?: string | null };
 };
 
 export const channels: { id: Channel; name: string; summary: string }[] = [
