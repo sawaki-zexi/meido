@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -108,6 +109,8 @@ class OutboundMessage:
     reply_to_message_id: str | None = None
     attachments: tuple[Attachment, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Host-only last-safe-point check; never derived from platform/model input.
+    authorize_dispatch: Callable[[], bool] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)

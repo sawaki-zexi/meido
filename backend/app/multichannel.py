@@ -1366,6 +1366,33 @@ class MultichannelStore:
                 (status, platform_message_id, error, content, _now(), attempt_id),
             )
 
+    def set_channel_turn_state(self, thread: ChannelThread, message_id: str, state: str) -> None:
+        """Keep accepted QQ work observable without inventing another user/run."""
+        if state not in {"queued", "running", "completed", "failed", "cancelled", "invalidated", "interrupted"}:
+            raise ValueError("invalid channel turn state")
+        with self._connect() as db:
+            row = db.execute("SELECT metadata_json FROM messages WHERE message_id=? AND session_key=? AND role='user'",
+                             (message_id, thread.session_key)).fetchone()
+            if row is None:
+                return
+            metadata = {**_loads(row[0]), "channelTurnState": state}
+            db.execute("UPDATE messages SET metadata_json=? WHERE message_id=?", (_json(metadata), message_id))
+        message = next((item for item in self.sessions.list_messages(thread.session_key) if item.id == message_id), None)
+        if message is not None:
+            self.publish(thread.role_id, {"type": "message", "roleId": thread.role_id,
+                "thread": self.public_thread_payload(self.get_thread(thread.role_id, thread.thread_id) or thread),
+                "message": self.public_message_payload(thread, message)})
+
+    def mark_interrupted_channel_turns(self) -> int:
+        """A restart retains accepted input, but never replays its external work."""
+        with self._connect() as db:
+            cursor = db.execute("""UPDATE messages SET metadata_json=json_set(metadata_json,
+                '$.channelTurnState', 'interrupted')
+                WHERE role='user' AND json_extract(metadata_json, '$.channel')='qq'
+                AND json_extract(metadata_json, '$.direction')='inbound'
+                AND json_extract(metadata_json, '$.channelTurnState') IN ('queued', 'running')""")
+            return cursor.rowcount
+
     def mark_interrupted_deliveries_uncertain(self) -> int:
         """Make process-local pending sends reviewable after a restart."""
 

@@ -171,6 +171,14 @@ class ChannelHost:
             raise KeyError(account_id)
         return adapter
 
+    def connection_generation(self, account_id: str, *, transport_generation: str | None = None) -> str | None:
+        """Opaque connection identity for an accepted, non-replayable turn."""
+        adapter = self._adapters.get(account_id)
+        generation = self._adapter_generations.get(id(adapter)) if adapter is not None else None
+        epoch_reader = getattr(adapter, "connection_generation", None)
+        epoch = transport_generation if transport_generation is not None else (epoch_reader() if callable(epoch_reader) else None)
+        return f"{generation}:{epoch}" if generation is not None and epoch is not None else generation
+
     def accepts_events(self, account_id: str) -> bool:
         account = self.store.get_account(account_id)
         return bool(account and self.store.account_effectively_enabled(account) and account_id in self._adapters and account_id not in self._paused_accounts)
@@ -595,6 +603,9 @@ class ChannelHost:
                     reply_to_message_id=reply_to_message_id,
                     attachments=attachments,
                     metadata={"deliveryAttemptId": attempt_id, "mentionIds": list(mention_ids)},
+                    # Ordinary final replies may be cancelled before dispatch;
+                    # proactive sends retain their existing frozen send lease.
+                    authorize_dispatch=authorize_source if actor == "reply" and source_kind == "reply" else None,
                 )
                 stream_start = getattr(adapter, "stream_start", None)
                 stream_update = getattr(adapter, "stream_update", None)

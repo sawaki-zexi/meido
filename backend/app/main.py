@@ -2642,9 +2642,15 @@ def _refresh_channel_avatars(account: ChannelAccount, sender_id: str = "", chat_
             multichannel_store.avatars.refresh(account, "chat", chat_id, lambda: _fetch_channel_avatar(account, kind, subject))
 
 
-async def _dispatch_channel_payload(account_id: str, payload: dict[str, object], *, source_adapter: ChannelAdapter | None = None, received_at: float | None = None) -> None:
+async def _dispatch_channel_payload(account_id: str, payload: dict[str, object], *, source_adapter: ChannelAdapter | None = None, received_at: float | None = None, source_generation: str | None = None) -> None:
     received_at = _schedule_clock() if received_at is None else received_at
     account = multichannel_store.get_account(account_id)
+    if account is not None and account.channel == "qq" and source_generation is None:
+        from .channels.transports import napcat_received_generation
+        source_generation = channel_host.connection_generation(account_id,
+            transport_generation=napcat_received_generation.get())
+        if source_adapter is not None and source_adapter is not channel_adapters.get(account_id):
+            source_generation = ""  # An already-retired adapter cannot gain the replacement's identity.
     if account is not None and account.role_id in _channel_roles_deleting:
         original = source_adapter or channel_adapters.get(account_id)
         if original is not None:
@@ -2658,7 +2664,7 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
                 if original is not None and account is not None and account.enabled:
                     if channel_host.intake.defer(
                         account_id,
-                        lambda: _dispatch_channel_payload(account_id, payload, received_at=received_at),
+                        lambda: _dispatch_channel_payload(account_id, payload, received_at=received_at, source_generation=source_generation),
                         lambda: _reject_channel_payload(original, payload),
                     ):
                         return
@@ -2673,7 +2679,8 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
                     return
             event = await channel_host.accept_event(account_id, payload)
             if event is not None:
-                await _handle_channel_event(replace(event, received_at=received_at))
+                await _handle_channel_event(replace(event, received_at=received_at,
+                    metadata={**event.metadata, "hostConnectionGeneration": source_generation}))
     except Exception as error:
         logger.warning("渠道入站处理失败 account=%s error=%s", account_id, type(error).__name__)
 
@@ -2784,8 +2791,11 @@ async def _handle_channel_control_command(event) -> bool:
 
 
 async def _handle_channel_event(event) -> None:
-    """Process one account's events serially to make dedupe and attachment
-    persistence atomic from the event loop's point of view."""
+    """Serialize acceptance, not QQ model execution or platform delivery.
+
+    Keep the original transport-owned task/event lease: spawning a detached task
+    here would inherit admission without retaining its drain accounting.
+    """
 
     if event.received_at is None:
         event = replace(event, received_at=_schedule_clock())
@@ -2793,10 +2803,12 @@ async def _handle_channel_event(event) -> None:
         return
     lock = channel_event_locks.setdefault(event.account_id, asyncio.Lock())
     async with lock:
-        await _handle_channel_event_locked(event)
+        turn = await _handle_channel_event_locked(event)
+    if turn is not None:
+        await _handle_channel_message(*turn)
 
 
-async def _handle_channel_event_locked(event) -> None:
+async def _handle_channel_event_locked(event):
     account = multichannel_store.get_account(event.account_id)
     if account is None or not multichannel_store.account_effectively_enabled(account) or account.role_id not in {role.id for role in store.list()}:
         return
@@ -2870,6 +2882,9 @@ async def _handle_channel_event_locked(event) -> None:
             account_id=event.account_id,
             chat_id=event.chat_id,
         )
+    from .channels.source_authority import channel_owner_binding
+    accepted_generation = event.metadata.get("hostConnectionGeneration", channel_host.connection_generation(event.account_id)) if event.channel == "qq" else None
+    accepted_binding = channel_owner_binding(multichannel_store, event.channel, event.account_id, event.sender_id) if owner else None
     enrich_reply = getattr(channel_adapters.get(event.account_id), "enrich_reply", None)
     if event.triggered and callable(enrich_reply):
         event = await enrich_reply(event)
@@ -2900,6 +2915,8 @@ async def _handle_channel_event_locked(event) -> None:
         if heard is not None and heard["sequence"] is not None:
             channel_memory_maintenance.heard(thread)
         return
+    if event.channel == "qq":
+        metadata["channelTurnState"] = "queued"
     accepted, stored = multichannel_store.append_event(
         thread,
         direction="inbound",
@@ -2911,12 +2928,26 @@ async def _handle_channel_event_locked(event) -> None:
         return
     if event.chat_type is ChatType.GROUP and not event.triggered:
         return
-    await _handle_channel_message(
-        thread,
-        content,
-        {**metadata, "messageId": stored.id},
-        owner,
-    )
+    turn_metadata = {**metadata, "messageId": stored.id}
+    if event.channel == "qq":
+        from .channels.source_authority import capture_channel_message_source
+        current_account = multichannel_store.get_account(event.account_id)
+        if (current_account is None or current_account.created_at != account.created_at
+                or current_account.role_id != account.role_id
+                or accepted_generation != channel_host.connection_generation(event.account_id)
+                or owner and accepted_binding != channel_owner_binding(
+                    multichannel_store, event.channel, event.account_id, event.sender_id)):
+            multichannel_store.set_channel_turn_state(thread, stored.id, "invalidated")
+            return None
+        try:
+            source = capture_channel_message_source(multichannel_store, thread, stored, owner_context=owner)
+        except PermissionError:
+            multichannel_store.set_channel_turn_state(thread, stored.id, "invalidated")
+            return None
+        turn_metadata["channelTurnSource"] = source.to_dict()
+        turn_metadata["channelTurnGeneration"] = accepted_generation
+        return thread, content, turn_metadata, owner
+    await _handle_channel_message(thread, content, turn_metadata, owner)
 
 
 def _require_channel_role(role_id: str):
@@ -5429,6 +5460,7 @@ async def _start_channel_workers() -> None:
     except (OSError, RuntimeError) as error:
         logger.warning("托管 QQ 遗留资料清理失败 error=%s", type(error).__name__)
     await channel_memory_maintenance.start()
+    multichannel_store.mark_interrupted_channel_turns()
     interrupted = multichannel_store.mark_interrupted_deliveries_uncertain()
     if interrupted:
         logger.warning("启动时发现未确认渠道投递 count=%s，已标记为 uncertain", interrupted)
@@ -5543,7 +5575,54 @@ def _channel_turn_can_start(thread) -> bool:
     )
 
 
+def _queued_channel_turn_authorized(thread, metadata, *, starting=False) -> bool:
+    source_data = metadata.get("channelTurnSource")
+    if source_data is None:
+        return True  # Existing desktop/other-channel and direct Runtime callers.
+    from .channels.source_authority import FrozenChannelSource
+    try:
+        source = FrozenChannelSource.from_dict(source_data)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        source.role_id == thread.role_id and source.thread_id == thread.thread_id
+        and source.authorization_denial(multichannel_store) is None
+        and thread.role_id not in _channel_roles_deleting
+        and metadata.get("channelTurnGeneration") is not None
+        and metadata["channelTurnGeneration"] == channel_host.connection_generation(thread.account_id)
+        and (not starting or channel_host.accepts_events(thread.account_id))
+    )
+
+
 async def _handle_channel_message(thread, content: str, metadata: dict[str, object], owner: bool) -> None:
+    queued = metadata.get("channelTurnState") == "queued"
+    try:
+        await _run_channel_message(thread, content, metadata, owner)
+    finally:
+        if queued:
+            # A cancelled waiter has no AgentRun yet, but still has durable input.
+            state = str(metadata.get("channelTurnState") or "queued")
+            if state in {"queued", "running"}:
+                state = "cancelled" if asyncio.current_task().cancelling() else "failed"
+            multichannel_store.set_channel_turn_state(thread, str(metadata["messageId"]), state)
+
+
+async def _finish_channel_delivery(work, cancellations: list[asyncio.CancelledError]):
+    """Once handed to the platform, retain its actual receipt before cancelling.
+
+    The caller still owns its event lease and awaits this child; it is never a
+    detached queue worker. Platform adapter timeouts remain authoritative.
+    """
+    pending = asyncio.create_task(work)
+    while not pending.done():
+        try:
+            await asyncio.shield(pending)
+        except asyncio.CancelledError as error:
+            cancellations.append(error)
+    return pending.result()
+
+
+async def _run_channel_message(thread, content: str, metadata: dict[str, object], owner: bool) -> None:
     """Run one isolated network thread through the shared role runtime."""
     ordinary_snapshot = advanced_settings.get()
     ordinary_settings = AdvancedSettings.model_validate(ordinary_snapshot['values'])
@@ -5580,7 +5659,7 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
         runtime_manager.sessions = session_store
         runtime_manager.role_locks = role_locks
         _, user_message, assistant_message = await runtime_manager.reserve_existing_user_message(
-            run, message_id, can_start=lambda: _channel_turn_can_start(thread),
+            run, message_id, can_start=lambda: _channel_turn_can_start(thread) and _queued_channel_turn_authorized(thread, metadata, starting=True),
             on_accepting=lambda: (
                 _accept_owner_run(thread.role_id, thread.session_key, run_id)
                 if owner and multichannel_store.identity_is_owner(role_id=thread.role_id, channel=thread.channel,
@@ -5589,7 +5668,10 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
             ),
         )
     except ActiveRunError:
-        await _notify_channel_turn_not_started(thread, metadata)
+        if metadata.get("channelTurnSource") is not None:
+            metadata["channelTurnState"] = "invalidated"
+        else:
+            await _notify_channel_turn_not_started(thread, metadata)
         return
     except (KeyError, sqlite3.IntegrityError):
         return
@@ -5611,6 +5693,8 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
     streamed_content = ""
     stream_queue: asyncio.Queue[str | None] | None = None
     stream_task: asyncio.Task[object] | None = None
+    delivery_cancellations: list[asyncio.CancelledError] = []
+    turn_task = asyncio.current_task()
 
     async def persist_runtime_message(event: MessageEndEvent) -> Message | None:
         nonlocal placeholder_id, final_message_id
@@ -5660,6 +5744,9 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
         return None
 
     try:
+        if metadata.get("channelTurnSource") is not None:
+            metadata["channelTurnState"] = "running"
+            multichannel_store.set_channel_turn_state(thread, message_id, "running")
         owner_context_since = (
             multichannel_store.owner_chat_context_since(
                 role_id=thread.role_id,
@@ -5817,13 +5904,16 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
                 delivery_metadata = {"deliveryStatus": "failed", "deliveryError": type(error).__name__}
         elif final_content.strip() or generation_reply is not None:
             try:
-                result = await channel_host.account_send(
+                delivery = channel_host.account_send(
                     thread.role_id,
                     thread.account_id,
                     target.id,
                     final_content,
                     attachment_ids=generation_reply.attachment_ids if generation_reply is not None else (),
-                    authorize_source=generation_reply.authorized if generation_reply is not None else None,
+                    authorize_source=lambda: (
+                        (metadata.get("channelTurnSource") is None or not turn_task.cancelling())
+                        and _queued_channel_turn_authorized(thread, metadata)
+                        and (generation_reply is None or generation_reply.authorized())),
                     reply_to_message_id=str(metadata.get("platformMessageId")) if metadata.get("platformMessageId") else None,
                     actor="reply",
                     source_thread_id=thread.thread_id,
@@ -5834,6 +5924,8 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
                     mention_ids=(str(metadata["senderId"]),) if thread.chat_type == "group" and thread.channel == "qq" and metadata.get("senderId") else (),
                     message_thread_id=metadata.get("messageThreadId"),
                 )
+                result = (await _finish_channel_delivery(delivery, delivery_cancellations)
+                          if metadata.get("channelTurnSource") is not None else await delivery)
                 delivery_metadata = {
                     "deliveryStatus": result.status.value,
                     "deliveryAttemptId": result.attempt_id,
@@ -5873,6 +5965,8 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
                             await channel_memory_maintenance.commit_turn(thread, owner, user_message, updated)
                 except Exception as error:
                     logger.warning("渠道记忆维护失败 role=%s error=%s", thread.role_id, type(error).__name__)
+        if delivery_cancellations:
+            raise delivery_cancellations[0]
     except Exception as error:
         logger.warning("渠道回合失败 role=%s thread=%s error=%s", thread.role_id, thread.thread_id, type(error).__name__)
     finally:
@@ -5897,6 +5991,13 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
                 pending = session_store.get_run(run_id)
                 if pending is not None and pending.status in {"created", "running"}:
                     runtime_manager.abandon_unstarted_run(run_id, "渠道回合在 Runtime 启动前中断")
+                if metadata.get("channelTurnSource") is not None:
+                    finished = session_store.get_run(run_id)
+                    metadata["channelTurnState"] = (
+                        "cancelled" if asyncio.current_task().cancelling() else
+                        "completed" if finished is not None and finished.status == "completed" else
+                        "cancelled" if finished is not None and finished.status == "cancelled" else "failed"
+                    )
                 terminal = next((item for item in reversed(session_store.list_messages(thread.session_key)) if item.runId == run_id and item.role == "assistant"), None)
                 if terminal is not None:
                     current_thread = multichannel_store.get_thread(thread.role_id, thread.thread_id) or thread
