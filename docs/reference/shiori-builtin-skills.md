@@ -1,12 +1,12 @@
 # Shiori 内置 Skill 契约
 
 状态：当前
-最后核验：2026-10-17
+最后核验：2026-10-25（QQ 表情衔接；其他契约保留原验收范围）
 事实来源：[SkillRegistry](../../backend/app/agent_runtime/skills.py)、[宿主装配](../../backend/app/main.py)、[公开行为测试](../../tests/python/test_builtin_skills.py)、[HTTP 测试](../../tests/python/test_builtin_skills_api.py)。
 
 当前内置 `weather`、`summarize`、`feed-manage`、`meme-manage`、`skill-creater`、`create-drift-skill`、`codex-delegate`、`create-proactive-source`，均显式激活。普通聊天输入 `$weather` 等名称即可选择；HTTP 的 `skillIds` 保持兼容。Skill 是指导与资源，不是执行工具或权限授予。
 
-本页列普通聊天的八份内置Skill。Drift有独立适配与许可，不能从普通目录推导其全部可执行；当前内置meme-manage的永久依赖缺口由[#191具体规格](../specs/drift-meme-maintenance-spec.md)追踪，方案尚未获批或实施。
+本页列普通聊天的八份内置 Skill。Drift 表情维护已有独立适配与许可，见[维护契约](drift-meme-maintenance.md)；不能从普通目录或 QQ 收录入口推导其自主权限。
 
 ## 发现与覆盖
 
@@ -47,7 +47,7 @@
 | weather | curl + 角色 Shell；wttr.in 优先，Open-Meteo 备用，无 API key |
 | summarize | npm 安装的 summarize + Node 24+ + 角色 Shell；本批核验 CLI 0.25.2，服务凭据独立配置 |
 | feed-manage | 主人已配置并授权的 MCP；按实际 serverId、工具名和 schema 管理订阅与查询文章；不自动推送 |
-| meme-manage | 当前角色 workspace 的文件工具；维护 manifest 与真实图片，复制二进制另需获准命令 |
+| meme-manage | 当前角色 workspace 文件工具维护 manifest；QQ 主人显式回合另有当前附件收录与原群复用的窄适配，复用文件/发送权限，见[操作手册](../handbook/shiori-builtin-skills.md)；其他二进制复制沿用获准命令 |
 | skill-creater | 当前角色文件工具；创建合法 SKILL.md、参考/资源/脚本，下一次对话显式激活 |
 | create-drift-skill | 当前角色文件工具与明确Drift作者范围；产物经信任及独立执行许可后，由后续合格Drift同hash实际消费，见[操作手册](../handbook/drift-skills.md) |
 | codex-delegate | 独立 Codex 配置及当前仓库、CLI 与 spawn coding 许可；受管后台任务、精确 session 继续和原来源结果；不新增普通工具，见[操作手册](../handbook/codex-delegate-acceptance.md) |

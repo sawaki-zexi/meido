@@ -6,9 +6,11 @@ remain in a bounded recent window for the next group turn, never in history.
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from threading import Lock, RLock
 from collections import deque
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -19,6 +21,10 @@ class GroupListeningStore:
 
     def __init__(self, store) -> None:
         self.store = store
+        self.clock = time.time
+        self._invalidated_at: dict[str, float] = {}
+        self._revisions: dict[str, int] = {}
+        self.on_invalidate: Callable[[str], None] | None = None
         self._windows: dict[str, deque[dict[str, Any]]] = {}
         self._thread_locks: dict[str, RLock] = {}
         self._thread_locks_guard = Lock()
@@ -31,6 +37,9 @@ class GroupListeningStore:
                     UNIQUE(thread_id,sequence), UNIQUE(thread_id,external_message_id)
                 );
                 CREATE INDEX IF NOT EXISTS channel_listening_day ON channel_listening_records(thread_id,day);
+                CREATE TABLE IF NOT EXISTS channel_natural_settings (
+                    thread_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0
+                );
                 CREATE TABLE IF NOT EXISTS channel_listening_config (
                     key TEXT PRIMARY KEY, value INTEGER
                 );
@@ -74,13 +83,49 @@ class GroupListeningStore:
         with self.store._connect() as db:
             cap = db.execute("SELECT value FROM channel_listening_config WHERE key=?", (thread_id,)).fetchone()
             toggles = db.execute("SELECT enabled,operator,at FROM channel_listening_toggles WHERE thread_id=? ORDER BY rowid DESC LIMIT 50", (thread_id,)).fetchall()
+            natural = db.execute("SELECT enabled FROM channel_natural_settings WHERE thread_id=?", (thread_id,)).fetchone()
+        enabled = self.store.group_listening(role_id, thread.account_id, thread.chat_id)
+        natural_enabled = bool(natural and natural[0])
         return {
+            "naturalEnabled": natural_enabled,
+            "naturalEffective": natural_enabled and enabled,
+            "naturalPaused": natural_enabled and not enabled,
             "threadId": thread_id,
-            "enabled": self.store.group_listening(role_id, thread.account_id, thread.chat_id),
+            "enabled": enabled,
             "dailyCap": int(cap[0]) if cap else None,
             "defaultDailyCap": self.default_cap(),
             "toggles": [{"enabled": bool(row[0]), "operator": row[1], "at": row[2]} for row in toggles],
         }
+
+    def revision(self, thread_id: str) -> int:
+        return self._revisions.get(thread_id, 0)
+
+    def invalidated_at(self, thread_id: str) -> float:
+        return self._invalidated_at.get(thread_id, 0.)
+
+    def invalidate(self, thread_id: str) -> None:
+        """Invalidate ephemeral natural work; never replay it after re-enabling."""
+        with self._thread_lock(thread_id):
+            self._revisions[thread_id] = self.revision(thread_id) + 1
+            self._invalidated_at[thread_id] = self.clock()
+        if self.on_invalidate is not None:
+            self.on_invalidate(thread_id)
+
+    def set_natural_enabled(self, role_id: str, thread_id: str, enabled: object) -> dict[str, Any]:
+        thread = self.group(role_id, thread_id)
+        if not isinstance(enabled, bool):
+            raise ValueError("日常聊天开关必须是布尔值")
+        with self._thread_lock(thread_id):
+            if enabled and not self.store.group_listening(role_id, thread.account_id, thread.chat_id):
+                raise ValueError("请先开启本群旁听")
+            with self.store._connect() as db:
+                row = db.execute("SELECT enabled FROM channel_natural_settings WHERE thread_id=?", (thread_id,)).fetchone()
+                changed = bool(row and row[0]) != enabled
+                db.execute("INSERT INTO channel_natural_settings VALUES(?,?) ON CONFLICT(thread_id) DO UPDATE SET enabled=excluded.enabled", (thread_id, int(enabled)))
+            if changed:
+                self.invalidate(thread_id)
+        self.store.publish(role_id, {"type": "natural_settings_updated", "roleId": role_id, "threadId": thread_id})
+        return self.state(role_id, thread_id)
 
     def set_cap(self, role_id: str, thread_id: str, cap: object) -> dict[str, Any]:
         self.group(role_id, thread_id)
@@ -97,8 +142,12 @@ class GroupListeningStore:
         with self.store._connect() as db:
             db.execute("INSERT INTO channel_listening_toggles VALUES(?,?,?,?)", (thread_id, int(enabled), operator, datetime.now().astimezone().isoformat()))
 
-    def hear(self, thread, content: str, external_message_id: str, metadata: dict[str, Any], *, timestamp: datetime | None = None) -> dict[str, Any] | None:
+    def hear(self, thread, content: str, external_message_id: str, metadata: dict[str, Any], *, timestamp: datetime | None = None,
+             accepted_revision: int | None = None, received_at: float | None = None) -> dict[str, Any] | None:
         with self._thread_lock(thread.thread_id):
+            if (accepted_revision is not None and accepted_revision != self.revision(thread.thread_id)
+                    or received_at is not None and received_at < self.invalidated_at(thread.thread_id)):
+                return None
             return self._hear(thread, content, external_message_id, metadata, timestamp=timestamp)
 
     def _hear(self, thread, content: str, external_message_id: str, metadata: dict[str, Any], *, timestamp: datetime | None = None) -> dict[str, Any] | None:
@@ -188,6 +237,7 @@ class GroupListeningStore:
                     db.executemany("DELETE FROM messages WHERE message_id=?", legacy_rows)
                     db.execute("UPDATE channel_threads SET last_activity=? WHERE thread_id=?", (datetime.now().astimezone().isoformat(), thread_id))
             self._windows.pop(thread_id, None)
+            self.invalidate(thread_id)
             self.store.publish(role_id, {"type": "listening_cleared", "roleId": role_id, "threadId": thread_id, "chatId": thread.chat_id})
             return int(record_count) + len(legacy_rows)
 
@@ -195,7 +245,7 @@ class GroupListeningStore:
         with self.store._connect() as db:
             threads = [row[0] for row in db.execute("SELECT thread_id FROM channel_threads WHERE role_id=?", (role_id,))]
             for thread_id in threads:
-                for table in ("channel_listening_records", "channel_listening_toggles", "channel_listening_cursors"):
+                for table in ("channel_listening_records", "channel_listening_toggles", "channel_listening_cursors", "channel_natural_settings"):
                     db.execute(f"DELETE FROM {table} WHERE thread_id=?", (thread_id,))
                 db.execute("DELETE FROM channel_listening_config WHERE key=?", (thread_id,))
                 self._windows.pop(thread_id, None)

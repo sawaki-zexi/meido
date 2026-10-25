@@ -4,12 +4,13 @@ import { Avatar } from "../../ui/Avatar";
 import { Icon, IconButton } from "../../ui/Icon";
 import { MemoryPanel } from "../memory/MemoryPanel";
 import { RoleAccountsPanel } from "../channels/RoleAccountsPanel";
+import { RoleMaterialLibrary } from "../materials/RoleMaterialLibrary";
 import { RoleEditor } from "./RoleEditor";
 import { RoleCapabilitiesPanel } from "./RoleCapabilitiesPanel";
 import type { RolesState } from "./useRoles";
 import type { SettingsSectionId } from '../settings/navigation';
 
-export type RoleWorkspaceTab = "profile" | "memory" | "capabilities" | "accounts";
+export type RoleWorkspaceTab = "profile" | "memory" | "capabilities" | "accounts" | "materials";
 
 type Props = {
   role: Role;
@@ -33,6 +34,7 @@ type Props = {
 const tabs: Array<{ id: RoleWorkspaceTab; label: string }> = [
   { id: "profile", label: "资料" },
   { id: "memory", label: "记忆" },
+  { id: "materials", label: "素材库" },
   { id: "capabilities", label: "能力" },
   { id: "accounts", label: "账号" },
 ];
@@ -82,6 +84,7 @@ export function RoleWorkspace({ role, state, tab, onTabChange, onBack, backLabel
       {tab === "profile" && <div className="role-workspace-profile" role="tabpanel" aria-label="资料">
         <RoleEditor state={state} onSubmit={onSubmit} onCancel={onCancel} onDelete={onDelete} hideHeaderFields workspace formId={profileFormId} mediaOpen={mediaOpen} />
       </div>}
+      {tab === "materials" && <div role="tabpanel" aria-label="素材库"><RoleMaterialLibrary roleId={role.id} roleName={role.name} /></div>}
       {tab === "memory" && <div className="role-workspace-memory" role="tabpanel" aria-label="记忆"><MemoryPanel role={role} embedded onBack={onBack} onOpenSource={onOpenMemorySource} /></div>}
       {(tab === 'capabilities' || capabilitiesOpened) && <div hidden={tab !== 'capabilities'} role="tabpanel" aria-label="能力">
         <RoleCapabilitiesPanel role={role} onRoleSaved={state.receiveRole} actionTarget={tab === 'capabilities' ? actionTarget : null} onOpenSettings={onOpenSettings} settingsVersion={settingsVersion} />

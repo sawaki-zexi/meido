@@ -79,7 +79,7 @@ class MemeStorage:
 
     def extra(self, role_id):
         with self.app._transaction() as db:
-            responsibility = db.execute("SELECT 1 FROM autonomy_meme_operations WHERE role_id=? AND status NOT IN ('recorded','not_published')", (role_id,)).fetchone()
+            responsibility = db.execute("SELECT 1 FROM autonomy_meme_operations WHERE role_id=? AND status NOT IN ('recorded','not_published','reconciled')", (role_id,)).fetchone()
         if not self.library._grant(role_id).enabled and responsibility is None:
             return 0, 0
         size, items = self.refresh(role_id)
@@ -119,12 +119,12 @@ class MemeStorage:
                 self.refresh(role_id)
                 with self.app._transaction() as db:
                     row = db.execute('SELECT status FROM autonomy_meme_operations WHERE operation_id=?', (operation_id,)).fetchone()
-                    if row is None or row[0] in {'recorded', 'not_published'}:
+                    if row is None or row[0] in {'recorded', 'not_published', 'reconciled'}:
                         db.execute('DELETE FROM autonomy_meme_reservations WHERE operation_id=?', (operation_id,))
 
     def reconciled(self, role_id, operation_id, status):
         with _ALLOCATION_GATE:
             self.refresh(role_id)
-            if status in {'recorded', 'not_published'}:
+            if status in {'recorded', 'not_published', 'reconciled'}:
                 with self.app._transaction() as db:
                     db.execute('DELETE FROM autonomy_meme_reservations WHERE operation_id=?', (operation_id,))

@@ -107,3 +107,35 @@ it("清理事件清空当前群记录并丢弃清理前仍在途的旧分页", a
   expect(screen.getByText("暂无旁听记录")).toBeVisible();
   expect(screen.queryByRole("button", { name: "读取更早旁听记录" })).not.toBeInTheDocument();
 });
+
+it("旁听记录不再承载自然回复开关，避免与群聊设置混淆", async () => {
+  fakeBackend({
+    "GET .*threads/t1/listening": () => ({ body: { ...settings, naturalEnabled: true } }),
+    "GET .*threads/t1/listening/messages": () => ({ body: { messages: [], hasMore: false, nextBefore: null } }),
+  });
+  const user = userEvent.setup();
+  render(<GroupListeningPanel roleId="r1" threadId="t1" editable />);
+  await user.click(screen.getByText(/群旁听记录/));
+  expect(await screen.findByText("暂无旁听记录")).toBeVisible();
+  expect(screen.queryByRole("checkbox", { name: /自然回复|日常聊天/ })).not.toBeInTheDocument();
+});
+
+it("旁听上限保存中切换群，不继续旧群的默认设置写入或污染新群", async () => {
+  let finish: (reply: { body: unknown }) => void = () => undefined;
+  const pending = new Promise<{ body: unknown }>(resolve => { finish = resolve; });
+  const { calls } = fakeBackend({
+    "GET .*threads/t[12]/listening": () => ({ body: settings }),
+    "GET .*threads/t[12]/listening/messages": () => ({ body: { messages: [], hasMore: false, nextBefore: null } }),
+    "PUT .*threads/t1/listening/cap": () => pending,
+    "PUT /api/channels/listening/defaults": () => ({ body: {} }),
+  });
+  const user = userEvent.setup();
+  const view = render(<GroupListeningPanel roleId="r1" threadId="t1" editable />);
+  await user.click(screen.getByText(/群旁听记录/));
+  await user.click(await screen.findByRole("button", { name: "保存旁听上限" }));
+  view.rerender(<GroupListeningPanel roleId="r1" threadId="t2" editable />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "保存旁听上限" })).toBeEnabled());
+  await act(async () => { finish({ body: {} }); await pending; });
+  expect(calls.filter(call => call.path === "/api/channels/listening/defaults")).toHaveLength(0);
+  expect(screen.getByRole("button", { name: "保存旁听上限" })).toBeEnabled();
+});

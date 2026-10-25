@@ -14,7 +14,8 @@ from fastapi import HTTPException, Request
 
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_ATTACHMENT_TEXT = 32_000
-IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
+MAX_GIF_DECODED_PIXELS = 40_000_000
+IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 TEXT_SUFFIXES = {".txt", ".md", ".csv", ".json"}
 DOCUMENT_SUFFIXES = {".pdf", ".docx"}
 PUBLIC_FIELDS = ("id", "name", "mediaType", "size", "kind")
@@ -23,6 +24,7 @@ MEDIA_TYPES_BY_SUFFIX = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
+    ".gif": "image/gif",
     ".txt": "text/plain",
     ".md": "text/markdown",
     ".csv": "text/csv",
@@ -42,6 +44,8 @@ def _image_signature(data: bytes, media_type: str) -> bool:
         media_type == "image/png" and data.startswith(b"\x89PNG\r\n\x1a\n")
     ) or (
         media_type == "image/jpeg" and data.startswith(b"\xff\xd8\xff")
+    ) or (
+        media_type == "image/gif" and data[:6] in {b"GIF87a", b"GIF89a"}
     ) or (
         media_type == "image/webp" and len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
     )
@@ -99,11 +103,13 @@ async def read_request_bytes(request: Request) -> bytes:
 
 
 def save_attachment(root: Path, filename: str, media_type: str, data: bytes) -> dict[str, object]:
+    if len(data) > MAX_ATTACHMENT_BYTES:
+        raise HTTPException(status_code=413, detail="附件不能超过 10 MB")
     name = _safe_name(filename)
     suffix = Path(name).suffix.lower()
     normalized_type = MEDIA_TYPES_BY_SUFFIX.get(suffix)
     if normalized_type is None:
-        raise HTTPException(status_code=415, detail="仅支持 PNG、JPEG、WebP、TXT、MD、CSV、JSON、PDF 或 DOCX")
+        raise HTTPException(status_code=415, detail="仅支持 PNG、JPEG、WebP、GIF、TXT、MD、CSV、JSON、PDF 或 DOCX")
     claimed_type = media_type.split(";", 1)[0].strip().lower()
     accepted_claims = {normalized_type, "application/octet-stream"}
     if normalized_type == "image/jpeg":
@@ -112,6 +118,27 @@ def save_attachment(root: Path, filename: str, media_type: str, data: bytes) -> 
         raise HTTPException(status_code=415, detail="文件扩展名与媒体类型不匹配")
     if normalized_type in IMAGE_TYPES and not _image_signature(data, normalized_type):
         raise HTTPException(status_code=415, detail="图片内容与文件格式不匹配")
+    if normalized_type == "image/gif":
+        # Validate the animation, but persist the untouched original rather than
+        # a preview. Bound cumulative decoding work as well as uploaded bytes.
+        from PIL import Image
+
+        try:
+            with Image.open(io.BytesIO(data)) as image:
+                decoded_pixels = 0
+                frame = 0
+                while True:
+                    decoded_pixels += image.width * image.height
+                    if decoded_pixels > MAX_GIF_DECODED_PIXELS:
+                        raise ValueError("GIF decoded pixels exceed 40 million")
+                    image.load()
+                    frame += 1
+                    try:
+                        image.seek(frame)
+                    except EOFError:
+                        break
+        except (OSError, ValueError, Image.DecompressionBombError) as error:
+            raise HTTPException(status_code=415, detail="GIF 附件损坏或解码总量超过 4000 万像素") from error
     if suffix == ".pdf" and not data.startswith(b"%PDF-"):
         raise HTTPException(status_code=415, detail="PDF 附件无法读取")
     if suffix == ".docx" and not zipfile.is_zipfile(io.BytesIO(data)):

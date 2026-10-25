@@ -47,8 +47,9 @@ export function DriftMemeSettings({ config, models, onChange }: {
       {model && <option value={model.id}>{model.provider} · {model.model}（{model.id}）</option>}
     </select></label>
     <p className="field-hint">需支持图片；更换 Drift 模型后请重新选择。</p>
-    <label className="field checkbox-field"><input type="checkbox" aria-label="查看当前角色表情库图片"
-      checked={grant.readEnabled} onChange={(event) => update({ readEnabled: event.target.checked })} />查看当前角色表情库图片</label>
+    <label className="field checkbox-field"><input type="checkbox" aria-label="允许 Drift 查看图片"
+      checked={grant.readEnabled} onChange={(event) => update({ readEnabled: event.target.checked })} />允许 Drift 查看图片</label>
+    <p className="field-hint">这是 Drift 的自主读图许可；主人可直接在角色工作区的“素材库”查看素材，不需要开启此项。</p>
     <label className="field checkbox-field"><input type="checkbox" aria-label="编辑类别、描述和别名"
       checked={grant.editEnabled} onChange={(event) => update({ editEnabled: event.target.checked })} />编辑类别、描述和别名</label>
     <label className="field checkbox-field"><input type="checkbox" aria-label="复制已登记素材到表情库"

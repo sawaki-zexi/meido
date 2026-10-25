@@ -539,6 +539,8 @@ class MultichannelStore:
         with self._connect() as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             db.execute("DELETE FROM channel_member_names WHERE role_id=?", (role_id,))
+            if "channel_natural_quota" in tables:
+                db.execute("DELETE FROM channel_natural_quota WHERE role_id=?", (role_id,))
             if "channel_member_profiles" in tables:
                 db.execute("DELETE FROM channel_member_profiles WHERE role_id=?", (role_id,))
             if "channel_memory_cursors" in tables:
@@ -685,6 +687,9 @@ class MultichannelStore:
             )
             if changed and thread is not None:
                 db.execute("INSERT INTO channel_listening_toggles VALUES(?,?,?,?)", (thread.thread_id, int(enabled), operator, now))
+
+        if changed and thread is not None:
+            self.listening.invalidate(thread.thread_id)
 
     def group_listening(self, role_id: str, account_id: str, chat_id: str) -> bool:
         with self._connect() as db:
@@ -1267,6 +1272,16 @@ class MultichannelStore:
             threads.append(replace(thread, metadata={**thread.metadata, "latestMessage": self.latest_message_preview(thread)}))
         return threads
 
+    def list_group_threads(self, role_id: str, account_id: str, *, limit: int = 500) -> list[ChannelThread]:
+        """Read a bounded account-scoped QQ group directory without requiring messages."""
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM channel_threads WHERE role_id=? AND account_id=? AND channel='qq' "
+                "AND chat_type='group' ORDER BY last_activity DESC, thread_id DESC LIMIT ?",
+                (role_id, account_id, max(1, min(limit, 501))),
+            ).fetchall()
+        return [self._thread(row) for row in rows]
+
     def clear_listening_messages(self, role_id: str, account_id: str, chat_id: str) -> int:
         """Remove only stored NapCat旁听 messages for one group."""
 
@@ -1366,6 +1381,33 @@ class MultichannelStore:
                 (status, platform_message_id, error, content, _now(), attempt_id),
             )
 
+    def set_channel_turn_state(self, thread: ChannelThread, message_id: str, state: str) -> None:
+        """Keep accepted QQ work observable without inventing another user/run."""
+        if state not in {"queued", "running", "completed", "failed", "cancelled", "invalidated", "interrupted"}:
+            raise ValueError("invalid channel turn state")
+        with self._connect() as db:
+            row = db.execute("SELECT metadata_json FROM messages WHERE message_id=? AND session_key=? AND role='user'",
+                             (message_id, thread.session_key)).fetchone()
+            if row is None:
+                return
+            metadata = {**_loads(row[0]), "channelTurnState": state}
+            db.execute("UPDATE messages SET metadata_json=? WHERE message_id=?", (_json(metadata), message_id))
+        message = next((item for item in self.sessions.list_messages(thread.session_key) if item.id == message_id), None)
+        if message is not None:
+            self.publish(thread.role_id, {"type": "message", "roleId": thread.role_id,
+                "thread": self.public_thread_payload(self.get_thread(thread.role_id, thread.thread_id) or thread),
+                "message": self.public_message_payload(thread, message)})
+
+    def mark_interrupted_channel_turns(self) -> int:
+        """A restart retains accepted input, but never replays its external work."""
+        with self._connect() as db:
+            cursor = db.execute("""UPDATE messages SET metadata_json=json_set(metadata_json,
+                '$.channelTurnState', 'interrupted')
+                WHERE role='user' AND json_extract(metadata_json, '$.channel')='qq'
+                AND json_extract(metadata_json, '$.direction')='inbound'
+                AND json_extract(metadata_json, '$.channelTurnState') IN ('queued', 'running')""")
+            return cursor.rowcount
+
     def mark_interrupted_deliveries_uncertain(self) -> int:
         """Make process-local pending sends reviewable after a restart."""
 
@@ -1374,7 +1416,14 @@ class MultichannelStore:
                 "UPDATE channel_delivery_attempts SET status='uncertain', error=COALESCE(error,'process_interrupted'), updated_at=? WHERE status='pending'",
                 (_now(),),
             )
-            return cursor.rowcount
+            count = cursor.rowcount
+            db.execute("""UPDATE messages SET status='failed', metadata_json=json_set(metadata_json,
+                '$.deliveryStatus','uncertain','$.error','process_interrupted')
+                WHERE json_extract(metadata_json,'$.naturalReply')=1
+                AND json_extract(metadata_json,'$.deliveryStatus')='pending'
+                AND json_extract(metadata_json,'$.deliveryAttemptId') IN
+                    (SELECT attempt_id FROM channel_delivery_attempts WHERE status='uncertain')""")
+            return count
 
     def list_deliveries(self, role_id: str, *, limit: int = 100) -> list[dict[str, object]]:
         with self._connect() as db:

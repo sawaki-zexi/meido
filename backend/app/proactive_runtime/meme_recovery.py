@@ -36,12 +36,85 @@ def _cleanup(private, actual):
             path.unlink()
 
 
+def reconcile_owner(library, row):
+    """Retire ordinary copy responsibility; never complete or retry its intent.
+
+    Only owned private stages may be removed. Final files, including replacements
+    made by the owner, are observations and are never modified by recovery.
+    """
+    role_id, root = row['role_id'], library.root(row['role_id'])
+    expected, planned, actual = (json.loads(row[key]) for key in ('expected','planned','actual'))
+    status = 'cleanup_pending'
+    try:
+        if library._root_identity(role_id) != expected['root']:
+            raise PermissionError('ordinary meme original root changed')
+        published, unconfirmed = [], False
+        for item in planned['files']:
+            target, stage = Path(item['target']), Path(item['stage'])
+            allowed = (root, root.parent/'.meido-memes/chat') if planned['kind']=='owner_chat_copy' else (root.parent/'attachments',)
+            if not any(target.is_relative_to(parent) for parent in allowed):
+                raise PermissionError('ordinary meme target escaped its fixed role scope')
+            if not stage.is_relative_to(root.parent/'.meido-memes/staging'):
+                raise PermissionError('ordinary meme stage escaped its private scope')
+            if not target.exists():
+                if str(stage) in actual.get('staging',{}) and not stage.exists():
+                    unconfirmed=True
+                continue
+            try:
+                identity=list(_identity(target))
+                if identity[:2] == actual.get('staging',{}).get(str(stage)):
+                    if hashlib.sha256(_read(target,10*1024*1024)).hexdigest()==item['sha256']:
+                        published.append(str(target))
+                    else:
+                        unconfirmed=True
+                elif identity != item['expectedIdentity']:
+                    unconfirmed=True
+            except (OSError,ValueError,PermissionError):
+                unconfirmed=True
+        _cleanup(root.parent/'.meido-memes',actual)
+        # A partial copy must invalidate old managed observations, but changing
+        # epoch already invalidated them. Never reconstruct an old permission.
+        if planned['kind']=='owner_chat_copy' and (published or actual.get('published')):
+            with library.app._transaction() as db:
+                db.execute('UPDATE autonomy_meme_roots SET revision=revision+1 WHERE role_id=? AND epoch=? AND revision=?',
+                    (role_id,row['epoch'],expected['libraryRevision']))
+        actual.update(reconciled=True, observedPublished=published,
+            outcome='unconfirmed' if unconfirmed else 'partial' if published or actual.get('published') else 'not_published')
+        status='reconciled'
+    except PermissionError:
+        status='conflict'
+    except (OSError,ValueError,KeyError,TypeError):
+        status='cleanup_pending'
+    with library.app._transaction() as db:
+        db.execute('UPDATE autonomy_meme_operations SET status=?,actual=? WHERE operation_id=?',
+            (status,_json(actual),row['operation_id']))
+    library.storage.reconciled(role_id,row['operation_id'],status)
+
+
 def reconcile(library, role_id):
     app, root = library.app, library.root(role_id)
     with app._transaction() as db:
-        rows = db.execute("SELECT * FROM autonomy_meme_operations WHERE role_id=? AND status NOT IN ('recorded','not_published')", (role_id,)).fetchall()
+        rows = db.execute("SELECT * FROM autonomy_meme_operations WHERE role_id=? AND status NOT IN ('recorded','not_published','reconciled')", (role_id,)).fetchall()
     for row in rows:
+        # UI publications have no model/session active_run. Their host owner is
+        # registered before journaling and lives through cleanup/quota release.
+        # Re-read after the guard: a previously selected row may have completed
+        # before its owner unregistered. Never reconcile that stale projection.
+        with library._recovery_gate_lock:
+            if (role_id, row['run_id']) in getattr(library, '_owner_material_runs', ()):
+                continue
+            with app._transaction() as db:
+                row = db.execute("SELECT * FROM autonomy_meme_operations WHERE operation_id=? AND status NOT IN ('recorded','not_published','reconciled')", (row['operation_id'],)).fetchone()
+            if row is None:
+                continue
         actual, expected, planned = json.loads(row['actual']), json.loads(row['expected']), json.loads(row['planned'])
+        if planned.get('kind') == 'owner_ui_remove':
+            from ..material_library import reconcile_removal
+            reconcile_removal(library, row)
+            continue
+        if planned.get('kind') in {'owner_chat_copy','owner_chat_reference','natural_chat_reference'}:
+            reconcile_owner(library,row)
+            continue
         phase, status = actual.get('physicalPhase', 'reserved'), 'cleanup_pending'
         try:
             if library._root_identity(role_id) != expected['root']:

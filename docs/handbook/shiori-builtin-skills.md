@@ -1,7 +1,7 @@
 # 使用 Shiori 内置 Skill
 
 状态：当前
-最后核验：2026-10-17
+最后核验：2026-10-25（QQ 表情收录与复用；其他流程保留各自验收日期）
 事实来源：[内置正文](../../backend/app/builtin_skills)、[接口契约](../reference/shiori-builtin-skills.md)、[真实 CLI 验收](../research/shiori-skills-native-acceptance-2026-10-16.md)。
 
 ## 选择技能
@@ -58,6 +58,14 @@ node "D:/tools/meido-summarize/node_modules/@steipete/summarize/dist/cli.js" "ht
 角色 workspace 的 WAV 可用 `node <真实CLI.js> ./speech.wav --extract --format text --transcriber whisper`，RSS 可用 `node <真实CLI.js> <RSS-URL> --extract --json --format text --transcriber whisper`；所选 URL 的网络访问须在既有许可内。先检查实际非空转写，角色再依据结果总结。短 WAV 的成功不保证所有格式、语言或外部 Podcast 平台；格式需要转码时须另准备所需依赖。URL JSON 的 `prompt` 可以包含实际正文，`llm:null/summary:null` 仍表示未调用 CLI 摘要模型。
 
 ## 表情包与新技能
+
+QQ 群中，已配对主人可通过 @ 或引用角色消息明确要求“保存这张表情到 happy”，再要求发回本群；不依赖日常聊天或 Drift 开启。宿主提供 `chat_meme_save`、`chat_meme_list`、`chat_meme_send` 窄适配，分别沿用普通文件读写与渠道发送权限，不要求为复制图片打开额外 Shell/MCP 权限。其他维护仍使用原 `$meme-manage`。
+
+只收录本回合当前或明确引用的图片；多图未指定时先澄清，不能用任意路径、旧附件编号或另一角色素材。PNG、JPEG、WebP、GIF 保存和发送真实原件（每张最多 10 MiB；动画另有解码帧/像素上限），同内容去重，保留已有分类、别名、启停和人工说明。旧库已启用分类中的有效图片可直接查询、发送，宿主自动复用内部附件引用。类别停用、文件替换或来源撤权后旧候选失效。
+
+收录或发送引用准备中断时，恢复只核验原操作事实、清理有明确归属的暂存文件并释放在途配额，不重放收录、不覆盖主人的后来修改；Drift 关闭时也恢复普通主人操作。
+
+发送结果保存在当前群的网页来源线程；只有 `sent` 表示确认送达。`failed` 和 `uncertain` 不算成功，结果不确定时不自动重发或换图掩盖；这不授权主动推送或自动收集旁听图片。
 
 表情包目录为当前角色 workspace 的 `memes/`。先放入真实、已授权图片，再让角色维护 `manifest.json` 的类别、描述、别名和启停状态。文件工具的 write_file 写 UTF-8 文本；复制图片需要独立获准命令，不能写一个路径字符串充当图片文件。read_file 可核验实际图像。
 

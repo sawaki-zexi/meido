@@ -925,7 +925,7 @@ class ProactiveApplication:
         with self._transaction() as db:
             projections = [row[0] for row in db.execute('SELECT DISTINCT role_id FROM autonomy_drift_progress WHERE projection_pending=1')]
             journals = [row[0] for row in db.execute("SELECT DISTINCT role_id FROM autonomy_drift_write_journal WHERE status='pending'")]
-            meme_roles = [row[0] for row in db.execute("SELECT DISTINCT role_id FROM autonomy_meme_operations WHERE status NOT IN ('recorded','not_published')")]
+            meme_roles = [row[0] for row in db.execute("SELECT DISTINCT role_id FROM autonomy_meme_operations WHERE status NOT IN ('recorded','not_published','reconciled')")]
         for role_id in meme_roles:
             if (self.role_getter(role_id) is None or self.sessions.active_run(role_id) is not None
                     or any(executor.origin.role_id == role_id for executor in self._executors.values())):

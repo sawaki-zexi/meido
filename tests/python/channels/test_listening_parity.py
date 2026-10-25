@@ -66,3 +66,40 @@ def test_listening_prompt_uses_only_current_group_and_respects_character_budget(
     assert len(prompt) < 3100
     other = store.ensure_channel_thread("role", "qq", "qq", "other", "group")
     assert store.listening.context("role", other.thread_id) == ""
+
+
+def test_natural_settings_default_off_scoped_and_persisted(tmp_path):
+    store, sessions, thread = _group(tmp_path)
+    other = store.ensure_channel_thread('role', 'qq', 'qq', 'other', 'group')
+    assert store.listening.state('role', thread.thread_id)['naturalEnabled'] is False
+    state = store.listening.set_natural_enabled('role', thread.thread_id, True)
+    assert state['naturalEnabled'] and state['naturalEffective'] and not state['naturalPaused']
+    assert not store.listening.state('role', other.thread_id)['naturalEnabled']
+    with pytest.raises(KeyError):
+        store.listening.set_natural_enabled('other-role', thread.thread_id, False)
+    with pytest.raises(ValueError):
+        store.listening.set_natural_enabled('role', thread.thread_id, 'true')
+    restarted = MultichannelStore(tmp_path / 'sessions.db', sessions)
+    assert restarted.listening.state('role', thread.thread_id)['naturalEnabled']
+
+
+def test_natural_pause_preserves_choice_and_clear_invalidates_without_erasing_settings(tmp_path):
+    store, _, thread = _group(tmp_path)
+    store.listening.set_natural_enabled('role', thread.thread_id, True)
+    store.set_group_listening('role', 'qq', 'group', False)
+    state = store.listening.state('role', thread.thread_id)
+    assert state['naturalEnabled'] and state['naturalPaused'] and not state['naturalEffective']
+    with pytest.raises(ValueError):
+        store.listening.set_natural_enabled('role', thread.thread_id, True)
+    store.set_group_listening('role', 'qq', 'group', True)
+    assert store.listening.state('role', thread.thread_id)['naturalEffective']
+    invalidations = []
+    store.listening.on_invalidate = invalidations.append
+    before = store.listening.revision(thread.thread_id)
+    store.listening.clear('role', thread.thread_id)
+    assert store.listening.revision(thread.thread_id) > before
+    assert invalidations == [thread.thread_id]
+    assert store.listening.state('role', thread.thread_id)['naturalEnabled']
+    store.listening.set_natural_enabled('role', thread.thread_id, False)
+    assert not store.listening.state('role', thread.thread_id)['naturalEffective']
+    assert len(invalidations) == 2

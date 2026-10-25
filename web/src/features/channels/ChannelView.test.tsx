@@ -837,8 +837,8 @@ describe("渠道会话查看", () => {
     const messages = screen.getByRole("region", { name: "会话消息" });
     expect(await within(messages).findByText("没有点名的旁听消息")).toBeVisible();
     expect(within(messages).getByText("点名后的消息")).toBeVisible();
-    expect(within(messages).getByText("旁听记录 · 不触发角色")).toBeVisible();
-    expect(within(messages).getByText("旁听记录 · 不触发角色").compareDocumentPosition(within(messages).getByText("点名后的消息")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(messages).getByText("旁听记录 · 独立保存")).toBeVisible();
+    expect(within(messages).getByText("旁听记录 · 独立保存").compareDocumentPosition(within(messages).getByText("点名后的消息")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
   it("按已验证渠道线程的记忆序号范围定位并突出来源消息", async () => {
     const source = { kind: "turn", sessionKey: "thread:t1", messageIds: ["source-7"], messageRange: [7, 8] as [number, number], stableSourceKey: "turn:source" };
@@ -1084,4 +1084,48 @@ describe("渠道会话查看", () => {
     expect(within(messages).getByText("消息编号：p-2")).toBeVisible();
   });
 
+});
+
+it.each([false, true])("群聊标题提供独立群聊设置入口，返回不丢失当前消息（手机模式 %s）", async phoneMode => {
+  const message = { id: "m", sequence: 1, role: "user", content: "群聊现有消息", createdAt: "2026-10-25T06:00:00Z", metadata: { threadId: "group-thread" } };
+  fakeBackend({
+    "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [makeAccount("qq", "qq-1", { enabled: true, connectionStatus: "connected" })] } }),
+    "GET /api/roles/r1/channels/threads\\?networkOnly=true": () => ({ body: { threads: [{ threadId: "group-thread", accountId: "qq-1", channel: "qq", chatId: "42", chatType: "group", title: "导航群", lastActivity: message.createdAt, latestMessage: message }] } }),
+    "GET .*threads/group-thread/messages.*": () => ({ body: { messages: [message], hasMore: false } }),
+    "GET .*threads/group-thread/listening": () => ({ body: { enabled: true, dailyCap: null, defaultDailyCap: 200, toggles: [] } }),
+    "GET .*threads/group-thread/listening/messages.*": () => ({ body: { messages: [], hasMore: false } }),
+    "GET /api/roles/r1/channels/accounts/qq-1/groups": () => ({ body: { groups: [{ chatId: "42", title: "导航群" }] } }),
+    "GET /api/roles/r1/channels/accounts/qq-1/groups/42/settings": () => ({ body: { chatId: "42", title: "导航群", threadId: "group-thread", listening: true, naturalEnabled: false } }),
+  });
+  const user = userEvent.setup();
+  render(<ChannelView role={role({ id: "r1", name: "诗织" })} phoneMode={phoneMode} onBack={() => undefined} onAccounts={() => undefined} />);
+  if (phoneMode) await user.click(await screen.findByRole("button", { name: "QQ" }));
+  await user.click(await screen.findByRole("button", { name: /导航群/ }));
+  expect(await within(screen.getByRole("region", { name: "会话消息" })).findByText("群聊现有消息")).toBeVisible();
+  const timeline = within(screen.getByRole("region", { name: "会话消息" })).getAllByRole("list")[0];
+  Object.defineProperties(timeline, { scrollHeight: { configurable: true, value: 2000 }, clientHeight: { configurable: true, value: 400 } });
+  timeline.scrollTop = 520;
+  fireEvent.scroll(timeline);
+  await user.click(screen.getByRole("button", { name: "群聊设置" }));
+  expect(await screen.findByRole("checkbox", { name: "自然回复（无需 @）" })).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "返回上一页" }));
+  expect(await within(screen.getByRole("region", { name: "会话消息" })).findByText("群聊现有消息")).toBeVisible();
+  expect(screen.getByRole("button", { name: "群聊设置" })).toHaveFocus();
+  expect(timeline).toBeInTheDocument();
+  expect(timeline.scrollTop).toBe(520);
+});
+
+it("手机 QQ 应用没有任何正常会话时仍可进入群聊目录", async () => {
+  fakeBackend({
+    "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [makeAccount("qq", "qq-1", { enabled: true, connectionStatus: "connected" })] } }),
+    "GET /api/roles/r1/channels/threads\\?networkOnly=true": () => ({ body: { threads: [] } }),
+    "GET /api/roles/r1/channels/accounts/qq-1/groups": () => ({ body: { groups: [{ chatId: "42", title: "还没聊过的群" }] } }),
+  });
+  const user = userEvent.setup();
+  render(<ChannelView role={role({ id: "r1", name: "诗织" })} phoneMode onBack={() => undefined} onAccounts={() => undefined} />);
+  await user.click(await screen.findByRole("button", { name: "QQ" }));
+  await user.click(screen.getByRole("button", { name: "群聊设置" }));
+  expect(await screen.findByRole("button", { name: /还没聊过的群/ })).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "返回上一页" }));
+  expect(screen.getByText("还没有会话")).toBeVisible();
 });

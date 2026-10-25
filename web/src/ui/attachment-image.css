@@ -1,0 +1,15 @@
+.attachment-image { position: relative; display: inline-grid; max-width: 100%; vertical-align: middle; border-radius: 8px; }
+.attachment-image:not(.is-loaded) { width: 150px; background: var(--hover, #f5f0f4); border: 1px solid var(--line, #e6dde3); }
+.attachment-image-link, .attachment-image > img { grid-area: 1 / 1; }
+.attachment-image-link { display: block; max-width: 100%; border-radius: inherit; }
+.attachment-image:not(.is-loaded) img { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; }
+.attachment-image-feedback { z-index: 1; grid-area: 1 / 1; display: grid; place-content: center; justify-items: center; gap: 6px; min-height: 80px; padding: 10px; color: var(--ink-soft, #73616c); font-size: 12px; line-height: 1.4; text-align: center; pointer-events: none; }
+.attachment-image .attachment-image-retry { position: static; width: auto; height: auto; padding: 3px 10px; border: 1px solid var(--line, #e6dde3); border-radius: 5px; background: var(--surface, #fff); color: var(--ink, #493b44); font: inherit; line-height: 1.4; cursor: pointer; pointer-events: auto; }
+.attachment-image .attachment-image-retry:focus-visible, .attachment-image-link:focus-visible { outline: 2px solid var(--rose, #c77c9e); outline-offset: 2px; }
+.attachment-image.attachment-image--preview { display: grid; width: 100%; justify-items: center; }
+.attachment-image--preview .attachment-image-feedback { min-height: 180px; }
+.attachment-preview.chat-attachment-preview { width: 112px; height: 76px; }
+.chat-attachment-preview .attachment-image { width: 100%; height: 100%; border: 0; }
+.chat-attachment-preview .attachment-image-feedback { min-height: 0; padding: 6px; }
+.phone-message-quote .attachment-image:not(.is-loaded) { width: 96px; }
+.phone-message-quote .attachment-image-feedback { min-height: 64px; padding: 6px; font-size: 11px; }

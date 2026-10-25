@@ -5,7 +5,7 @@ type Heard = { id: string; sequence: number; content: string; createdAt: string;
 type State = { enabled: boolean; dailyCap: number | null; defaultDailyCap: number; toggles: { enabled: boolean; operator: string; at: string }[] };
 type Page = { messages: Heard[]; hasMore: boolean; nextBefore: number | null };
 
-export function GroupListeningPanel({ roleId, threadId, editable, accountId, chatId }: { roleId: string; threadId: string; editable: boolean; accountId?: string; chatId?: string }) {
+export function GroupListeningPanel({ roleId, threadId, editable, accountId, chatId, settingsManaged = false }: { roleId: string; threadId: string; editable: boolean; accountId?: string; chatId?: string; settingsManaged?: boolean }) {
   const [state, setState] = useState<State | null>(null);
   const [messages, setMessages] = useState<Heard[]>([]);
   const [cap, setCap] = useState("");
@@ -15,6 +15,7 @@ export function GroupListeningPanel({ roleId, threadId, editable, accountId, cha
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const generation = useRef(0);
+  const operation = useRef(false);
   const refreshRequest = useRef(0);
   const initialized = useRef(false);
   const settingsInitialized = useRef(false);
@@ -41,15 +42,16 @@ export function GroupListeningPanel({ roleId, threadId, editable, accountId, cha
   useEffect(() => {
     generation.current += 1;
     initialized.current = false;
+    operation.current = false;
     settingsInitialized.current = false;
-    setMessages([]); setState(null); setHasMore(false); setCursor(null);
+    setMessages([]); setState(null); setHasMore(false); setCursor(null); setBusy(false); setError("");
     void load();
     const events = typeof EventSource === "undefined" ? null : new EventSource(`/api/roles/${encodeURIComponent(roleId)}/channels/events`);
     events?.addEventListener("channel_update", (event) => {
       try {
         const payload = JSON.parse((event as MessageEvent).data ?? "{}");
         if (payload.type === "listening_cleared" && payload.threadId === threadId) {
-          generation.current += 1; initialized.current = false;
+          generation.current += 1; initialized.current = false; operation.current = false;
           setMessages([]); setCursor(null); setHasMore(false); setBusy(false);
         }
       } catch { /* A transport reconnect still refreshes the current thread. */ }
@@ -58,8 +60,8 @@ export function GroupListeningPanel({ roleId, threadId, editable, accountId, cha
     return () => { generation.current += 1; events?.close(); };
   }, [load, roleId, threadId]);
   const older = async () => {
-    if (busy || cursor === null) return;
-    setBusy(true);
+    if (operation.current || cursor === null) return;
+    operation.current = true; setBusy(true);
     const current = generation.current;
     try {
       const page = await api<Page>(`${base}/messages?before=${cursor}`);
@@ -67,31 +69,37 @@ export function GroupListeningPanel({ roleId, threadId, editable, accountId, cha
       setMessages((items) => [...new Map([...page.messages, ...items].map((item) => [item.id, item])).values()].sort((a, b) => a.sequence - b.sequence));
       setCursor(page.nextBefore); setHasMore(page.hasMore);
     } catch (cause) { if (current === generation.current) setError(errorMessage(cause, "无法读取更早旁听记录")); }
-    finally { if (current === generation.current) setBusy(false); }
+    finally { if (current === generation.current) { operation.current = false; setBusy(false); } }
   };
   const save = async () => {
+    if (!editable || operation.current) return;
     const groupValue = cap.trim() === "" ? null : Number(cap);
     const defaultValue = Number(defaultCap);
     if ((groupValue !== null && (!Number.isInteger(groupValue) || groupValue < 1)) || !Number.isInteger(defaultValue) || defaultValue < 1) { setError("每日入库上限必须是正整数"); return; }
-    setBusy(true);
+    operation.current = true; setBusy(true); setError("");
+    const current = generation.current;
+    refreshRequest.current += 1;
     try {
       await api(`${base}/cap`, { method: "PUT", body: JSON.stringify({ dailyCap: groupValue }) });
+      if (current !== generation.current) return;
       await api("/api/channels/listening/defaults", { method: "PUT", body: JSON.stringify({ defaultDailyCap: defaultValue }) });
+      if (current !== generation.current) return;
       await load();
-    } catch (cause) { setError(errorMessage(cause, "保存旁听上限失败")); }
-    finally { setBusy(false); }
+    } catch (cause) { if (current === generation.current) setError(errorMessage(cause, "保存旁听上限失败")); }
+    finally { if (current === generation.current) { operation.current = false; setBusy(false); } }
   };
   const change = async (enabled?: boolean) => {
-    if (!accountId || !chatId || !editable || busy) return;
+    if (!accountId || !chatId || !editable || operation.current) return;
     if (enabled === undefined && !window.confirm("清理本群旁听记录？正常对话会保留。")) return;
-    setBusy(true); setError("");
-    const current = generation.current;
+    operation.current = true; setBusy(true); setError("");
+    let current = generation.current;
+    refreshRequest.current += 1;
     const group = `/api/roles/${encodeURIComponent(roleId)}/channels/accounts/${encodeURIComponent(accountId)}/groups/${encodeURIComponent(chatId)}/listening`;
     try {
       if (enabled === undefined) {
         await api(`${group}/messages`, { method: "DELETE" });
         if (current !== generation.current) return;
-        generation.current += 1; initialized.current = false;
+        current = ++generation.current; initialized.current = false;
         setMessages([]); setCursor(null); setHasMore(false);
       } else {
         await api(group, { method: "PUT", body: JSON.stringify({ enabled }) });
@@ -99,14 +107,14 @@ export function GroupListeningPanel({ roleId, threadId, editable, accountId, cha
         setState((value) => value ? { ...value, enabled } : value);
       }
     } catch (cause) { if (current === generation.current) setError(errorMessage(cause, "更新本群旁听失败")); }
-    finally { setBusy(false); }
+    finally { if (current === generation.current) { operation.current = false; setBusy(false); } }
   };
   return <details className="channel-listening-panel">
     <summary>群旁听记录{state ? ` · ${state.enabled ? "已开启" : "已暂停"}` : ""}</summary>
     <p>未点名角色的消息单独保存。超过每日上限的消息只保留在最近窗口，不在此处显示。</p>
     {error && <p role="status">{error}</p>}
     {state && accountId && chatId && <div className="channel-listening-actions">
-      <label><input type="checkbox" aria-label="开启本群旁听" checked={state.enabled} disabled={!editable || busy} onChange={(event) => void change(event.target.checked)} />开启本群旁听</label>
+      {!settingsManaged && <label><input type="checkbox" aria-label="开启本群旁听" checked={state.enabled} disabled={!editable || busy} onChange={(event) => void change(event.target.checked)} />开启本群旁听</label>}
       <button type="button" disabled={!editable || busy} onClick={() => void change()}>清理本群旁听记录</button>
     </div>}
     {state && <div className="channel-listening-caps">

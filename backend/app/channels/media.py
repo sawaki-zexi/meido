@@ -54,6 +54,7 @@ def media_filename(name: str | None, mime_type: str | None) -> str:
         "image/png": ".png",
         "image/jpeg": ".jpg",
         "image/webp": ".webp",
+        "image/gif": ".gif",
         "text/plain": ".txt",
         "text/markdown": ".md",
         "text/csv": ".csv",

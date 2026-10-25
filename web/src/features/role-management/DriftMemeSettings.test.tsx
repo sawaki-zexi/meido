@@ -88,7 +88,7 @@ it('主人明确视觉、读编辑复制和登记素材范围后保存，同一�
   await userEvent.click(await screen.findByText('表情库维护', { selector: 'summary > span' }));
   await user.click(await screen.findByRole('checkbox', { name: '允许 Drift 维护当前角色表情库' }));
   await user.selectOptions(screen.getByRole('combobox', { name: '表情库视觉模型' }), 'drift-current');
-  await user.click(screen.getByRole('checkbox', { name: '查看当前角色表情库图片' }));
+  await user.click(screen.getByRole('checkbox', { name: '允许 Drift 查看图片' }));
   await user.click(screen.getByRole('checkbox', { name: '编辑类别、描述和别名' }));
   await user.click(screen.getByRole('checkbox', { name: '复制已登记素材到表情库' }));
   await user.type(screen.getByRole('textbox', { name: '允许维护的类别（每行一个）' }), '开心\nsurprise');

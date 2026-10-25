@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../api/client";
 import { Dialog } from "../../ui/Dialog";
 import { Icon } from "../../ui/Icon";
@@ -7,6 +6,7 @@ import { Notice } from "../../ui/Status";
 import { accountStatus, channelName, channels, defaultCapabilities, type Account, type Channel } from "./channelAccounts";
 import { ManagedQQLogin } from "./ManagedQQLogin";
 import { ChannelLogo } from "./ChannelLogo";
+import { GroupSettingsPanel } from "./GroupSettingsPanel";
 
 type ConnectionForm = {
   displayName: string;
@@ -42,6 +42,19 @@ export function AccountDetail({ roleId, channel, account, platformEnabled, onAcc
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [groupSettingsOpen, setGroupSettingsOpen] = useState(false);
+  const groupSettingsButton = useRef<HTMLButtonElement>(null);
+  const connectionButton = useRef<HTMLButtonElement>(null);
+  const rulesSection = useRef<HTMLElement>(null);
+  const returnFromGroup = useRef<"button" | "rules" | "connection" | null>(null);
+  useLayoutEffect(() => {
+    if (!groupSettingsOpen && returnFromGroup.current) {
+      if (returnFromGroup.current === "rules") { rulesSection.current?.scrollIntoView?.({ block: "center" }); rulesSection.current?.querySelector<HTMLInputElement>('input[aria-label="响应群聊"]')?.focus(); }
+      else if (returnFromGroup.current === "connection") connectionButton.current?.focus();
+      else groupSettingsButton.current?.focus();
+      returnFromGroup.current = null;
+    }
+  }, [groupSettingsOpen]);
   const [manualQQ, setManualQQ] = useState(false);
   const live = useRef(true);
   const credentialsDetails = useRef<HTMLDetailsElement>(null);
@@ -134,12 +147,19 @@ export function AccountDetail({ roleId, channel, account, platformEnabled, onAcc
       {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
       {notice && <p className="account-feedback" role="status">{notice}</p>}
       {account?.lastError && <p role="status" className="account-error">连接错误：{account.lastError}</p>}
-      {account ? <><div className="account-actions"><button type="button" disabled={busy || !canConnect} onClick={() => void setConnection(!account.enabled)}>{account.enabled ? "断开连接" : "连接"}</button>{(account.lastError || account.connectionStatus === "error") && <button type="button" disabled={busy || !canConnect} onClick={() => void setConnection(true)}>重试连接</button>}<button type="button" disabled={busy || !canConnect} onClick={() => void test()}>测试连接</button></div><details className="account-disclosure" ref={credentialsDetails}><summary>更改连接配置</summary>{fields}</details></>
+      {account ? <><div className="account-actions"><button ref={connectionButton} type="button" disabled={busy || !canConnect} onClick={() => void setConnection(!account.enabled)}>{account.enabled ? "断开连接" : "连接"}</button>{(account.lastError || account.connectionStatus === "error") && <button type="button" disabled={busy || !canConnect} onClick={() => void setConnection(true)}>重试连接</button>}<button type="button" disabled={busy || !canConnect} onClick={() => void test()}>测试连接</button></div><details className="account-disclosure" ref={credentialsDetails}><summary>更改连接配置</summary>{fields}</details></>
         : channel === "qq" ? <><ManagedQQLogin roleId={roleId} canConnect={canConnect} getRules={rules} onConnected={onAccountChange} /><details className="account-disclosure" onToggle={(event) => setManualQQ(event.currentTarget.open)}><summary>高级：手动连接已有 NapCat</summary>{manualQQ && fields}</details></> : fields}
       {channel === "qq" && account?.mode === "managed" && account.managedRef && !connected && (account.enabled ? <ManagedQQLogin roleId={roleId} existingAccount={{ managedRef: account.managedRef, accountId: account.accountId }} canConnect={canConnect} getRules={rules} onConnected={onAccountChange} /> : <p className="role-accounts-hint">点击连接以启动 QQ 扫码登录。</p>)}
-      {connected && <section className="account-response-rules" aria-label="响应规则"><h3>响应规则</h3>{capabilities.group && <p>群聊在 @ 角色或回复角色消息时响应。</p>}<fieldset disabled={busy}><label className="account-checkbox"><input type="checkbox" checked={form.allowPrivate} disabled={!capabilities.private} onChange={(event) => update("allowPrivate", event.target.checked)} />响应私聊</label>{capabilities.group && <label className="account-checkbox"><input type="checkbox" checked={form.allowGroup} onChange={(event) => update("allowGroup", event.target.checked)} />响应群聊</label>}<label className="field">屏蔽发送者（ID 或平台别名）<textarea rows={3} value={form.blockedSenders} onChange={(event) => update("blockedSenders", event.target.value)} placeholder="每行一个 ID 或别名" /></label><div className="account-actions"><button type="button" onClick={() => void saveRules()}>保存响应规则</button></div></fieldset></section>}
+      {account && channel === "qq" && <section className="account-group-entry"><div><h3>群聊</h3><p>按群设置自然回复（无需 @）与旁听记录。</p></div><button ref={groupSettingsButton} type="button" onClick={() => setGroupSettingsOpen(true)}>群聊设置</button></section>}
+      {account && (connected || channel === "qq") && <section ref={rulesSection} className="account-response-rules" aria-label="响应规则"><h3>响应规则</h3>{capabilities.group && <p>{channel === "qq" ? "默认在 @ 角色或回复角色消息时响应；也可在群聊设置中按群开启自然回复（无需 @）。" : "群聊在 @ 角色或回复角色消息时响应。"}</p>}<fieldset disabled={busy}><label className="account-checkbox"><input type="checkbox" checked={form.allowPrivate} disabled={!capabilities.private} onChange={(event) => update("allowPrivate", event.target.checked)} />响应私聊</label>{capabilities.group && <label className="account-checkbox"><input type="checkbox" aria-label="响应群聊" checked={form.allowGroup} onChange={(event) => update("allowGroup", event.target.checked)} />响应群聊</label>}<label className="field">屏蔽发送者（ID 或平台别名）<textarea rows={3} value={form.blockedSenders} onChange={(event) => update("blockedSenders", event.target.value)} placeholder="每行一个 ID 或别名" /></label><div className="account-actions"><button type="button" onClick={() => void saveRules()}>保存响应规则</button></div></fieldset></section>}
+
       {account && <div className="account-remove"><button type="button" className="danger" disabled={busy} onClick={() => void remove()}>移除账号</button><small>历史会话会保留。</small></div>}
     </div>;
+
+  if (groupSettingsOpen && account) {
+    const groups = <GroupSettingsPanel roleId={roleId} account={{ ...account, platformEnabled: canConnect }} onBack={() => { returnFromGroup.current = "button"; setGroupSettingsOpen(false); }} onAccountSettings={(section) => { returnFromGroup.current = section === "rules" ? "rules" : "connection"; setGroupSettingsOpen(false); }} onOpenSettings={onOpenSettings ? () => { onClose(); onOpenSettings(); } : undefined} />;
+    return presentation === "page" ? groups : <Dialog title="QQ 群聊设置" variant="compact" modalFocus onClose={() => { returnFromGroup.current = "button"; setGroupSettingsOpen(false); }}>{groups}</Dialog>;
+  }
 
   if (presentation === "page") return <section className="channel-account-page" aria-label={`${channelName[channel]} 账号`}>
     <header className="channel-phone-settings-header">
@@ -156,5 +176,5 @@ export function AccountDetail({ roleId, channel, account, platformEnabled, onAcc
       {body}
     </div>
   </section>;
-  return createPortal(<Dialog title={`${channelName[channel]} 账号`} variant="compact" onClose={onClose}>{body}</Dialog>, document.body);
+  return <Dialog title={`${channelName[channel]} 账号`} variant="compact" modalFocus onClose={onClose}>{body}</Dialog>;
 }
