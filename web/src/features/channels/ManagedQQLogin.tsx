@@ -129,6 +129,10 @@ export function ManagedQQLogin({ roleId, existingAccount, canConnect, getRules, 
   }
 
   const loginReady = session?.preparation.stage === "ready" && session.login.phase !== "error";
+  const transitionMessage = loginReady && !error && !session.login.error && session.login.phase !== "online"
+    ? session.login.loginPhase === "qrcode_scanned" ? "二维码已扫描，请在手机 QQ 上确认登录…"
+      : session.login.loginPhase === "initializing" ? "正在完成 QQ 登录，请稍候…" : null
+    : null;
   const sessionError = session?.preparation.stage === "error" ? session.preparation.error
     : session?.preparation.stage === "ready" ? session.login.error : null;
   const sessionErrorKey = `${session?.ref}:${sessionError}`;
@@ -140,16 +144,17 @@ export function ManagedQQLogin({ roleId, existingAccount, canConnect, getRules, 
       <p role="status">{preparationLabel[session.preparation.stage] ?? "正在准备"}{session.preparation.stage !== "ready" && session.preparation.stage !== "error" ? ` · ${session.preparation.percent}%` : ""}</p>
       {session.preparation.stage !== "ready" && session.preparation.stage !== "error" && <progress max={100} value={session.preparation.percent} aria-label="QQ 连接组件准备进度" />}
       {sessionError && dismissedSessionError !== sessionErrorKey && <Notice onDismiss={() => setDismissedSessionError(sessionErrorKey)}>{sessionError}</Notice>}
-      {loginReady && session.login.qrcode && <><img className="managed-qq-qrcode" src={session.login.qrcode} alt="QQ 登录二维码" /><p>使用手机 QQ 扫码，并在手机上确认登录。</p></>}
+      {loginReady && session.login.qrcode && <><img className="managed-qq-qrcode" src={session.login.qrcode} alt="QQ 登录二维码" />{!transitionMessage && <p>使用手机 QQ 扫码，并在手机上确认登录。</p>}</>}
+      {transitionMessage && <p role="status">{transitionMessage}</p>}
       {loginReady && session.login.phase === "starting" && <p role="status">正在启动 QQ，等待登录二维码…</p>}
-      {loginReady && session.login.phase === "login_required" && !session.login.qrcode && <p role="status">等待登录二维码，可刷新二维码重试。</p>}
+      {loginReady && !transitionMessage && session.login.phase === "login_required" && !session.login.qrcode && !session.login.error && <p role="status">等待登录二维码，可刷新二维码重试。</p>}
       {existingRef && session.login.phase === "stopped" && <p role="status">QQ 尚未启动，请点击上方的连接按钮。</p>}
       {loginReady && session.login.uin && <p role="status">已登录：{session.login.nickname || "QQ"}（{session.login.uin}）</p>}
       <div className="account-actions">
         {!existingRef && <button type="button" disabled={busy} onClick={() => void cancel()}>取消登录</button>}
         {!existingRef && (session.preparation.stage === "error" || session.login.phase === "error")
           ? <button type="button" disabled={busy || !canConnect} onClick={() => void retry()}>重试登录</button>
-          : loginReady && session.login.phase === "login_required" && <button type="button" disabled={busy || !canConnect} onClick={() => void load(`${base}/${encodeURIComponent(session.ref)}/refresh`, { method: "POST" })}>刷新二维码</button>}
+          : loginReady && session.login.phase === "login_required" && <button type="button" disabled={busy || !canConnect || Boolean(transitionMessage)} onClick={() => void load(`${base}/${encodeURIComponent(session.ref)}/refresh`, { method: "POST" })}>刷新二维码</button>}
         {loginReady && session.login.phase === "online" && session.login.uin && <button type="button" className="primary" disabled={busy || !canConnect} onClick={() => void confirm()}>确认连接</button>}
       </div>
     </>}
