@@ -88,4 +88,27 @@ describe("QQ 手机确认进度", () => {
     expect(screen.getByRole("img", { name: "QQ 登录二维码" })).toHaveAttribute("src", waiting.login.qrcode);
     expect(screen.queryByText("二维码已扫描，请在手机 QQ 上确认登录…")).not.toBeInTheDocument();
   });
+
+  it("等待确认时读取状态失败退出等待提示，保留刷新和读取重试并可恢复", async () => {
+    vi.useFakeTimers();
+    let reads = 0;
+    const { calls } = fakeBackend({
+      "POST /api/roles/r1/channels/qq/managed/begin": () => ({ body: { ...waiting, login: { ...waiting.login, loginPhase: "qrcode_scanned" } } }),
+      "GET /api/roles/r1/channels/qq/managed/phone-confirmation": () => ++reads === 1
+        ? { status: 503, body: { detail: "状态服务暂不可用" } }
+        : { body: { ...waiting, login: { phase: "online", uin: "10001", qrcode: "", error: "" } } },
+      "DELETE /api/roles/r1/channels/qq/managed/phone-confirmation": () => ({ status: 204 }),
+    });
+    render(<ManagedQQLogin roleId="r1" canConnect getRules={() => ({})} onConnected={() => undefined} />);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "准备并扫码登录" })); });
+    expect(screen.getByText("二维码已扫描，请在手机 QQ 上确认登录…")).toBeVisible();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+    expect(screen.getByRole("alert")).toHaveTextContent("状态服务暂不可用");
+    expect(screen.queryByText("二维码已扫描，请在手机 QQ 上确认登录…")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "刷新二维码" })).toBeEnabled();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "重试读取状态" })); });
+    expect(screen.getByRole("button", { name: "确认连接" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(calls.some(call => call.path.endsWith("/refresh"))).toBe(false);
+  });
 });

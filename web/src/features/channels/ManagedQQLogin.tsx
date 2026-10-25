@@ -129,7 +129,7 @@ export function ManagedQQLogin({ roleId, existingAccount, canConnect, getRules, 
   }
 
   const loginReady = session?.preparation.stage === "ready" && session.login.phase !== "error";
-  const transitionMessage = loginReady && !session.login.error && session.login.phase !== "online"
+  const transitionMessage = loginReady && !error && !session.login.error && session.login.phase !== "online"
     ? session.login.loginPhase === "qrcode_scanned" ? "二维码已扫描，请在手机 QQ 上确认登录…"
       : session.login.loginPhase === "initializing" ? "正在完成 QQ 登录，请稍候…" : null
     : null;
