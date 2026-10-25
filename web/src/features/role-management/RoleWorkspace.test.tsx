@@ -79,6 +79,33 @@ it("从角色卡进入 Shiori 风格工作区，提供记忆、能力和账号�
   expect(await within(workspace).findByRole("region", { name: "角色能力" })).toBeInTheDocument();
 });
 
+it('切换工作区标签保留未保存的能力更改，保存按钮只在能力页显示', async () => {
+  const alice = role({ id: 'r1', name: '爱丽丝' });
+  const { calls } = fakeBackend({
+    'GET /api/roles': () => ({ body: { roles: [alice] } }),
+    'GET /api/roles/r1': () => ({ body: { role: alice } }),
+    'GET /api/roles/r1/session': () => ({ body: { session: { sessionKey: 'role:r1', roleId: 'r1' }, messages: [] } }),
+    'GET /api/roles/r1/autonomy/settings': () => ({ body: { settings: { enabled: false, revision: 1 }, modelReady: true } }),
+    'GET /api/roles/r1/desktop-pet': () => ({ body: { enabled: false, packages: [], selectedPackageId: null, revision: 1 } }),
+    'GET /api/roles/r1/memories.*': () => ({ body: { memories: [], total: 0 } }),
+    'GET /api/roles/r1/memory-admin/filters': () => ({ body: { domains: [] } }),
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(screen.getByRole('button', { name: '角色' }));
+  await user.click(await screen.findByRole('button', { name: '查看爱丽丝工作区' }));
+  const workspace = within(screen.getByRole('region', { name: '爱丽丝的角色工作区' }));
+  await user.click(workspace.getByRole('tab', { name: '能力' }));
+  await waitFor(() => expect(workspace.getByRole('switch', { name: '主动推送' })).toBeEnabled());
+  await user.click(workspace.getByRole('switch', { name: '主动推送' }));
+  await user.click(workspace.getByRole('tab', { name: '记忆' }));
+  expect(workspace.queryByRole('button', { name: '保存' })).not.toBeInTheDocument();
+  await user.click(workspace.getByRole('tab', { name: '能力' }));
+  expect(workspace.getByRole('switch', { name: '主动推送' })).toHaveAttribute('aria-checked', 'true');
+  expect(workspace.getByRole('button', { name: '保存' })).toBeEnabled();
+  expect(calls.filter(call => call.method !== 'GET')).toEqual([]);
+});
+
 it.each(["去聊天", "记忆来源"])("回复期间不能通过工作区%s切换会话，结束后可以切换", async (entry) => {
   const alice = role({ id: "r1", name: "爱丽丝" });
   const bella = role({ id: "r2", name: "贝拉" });

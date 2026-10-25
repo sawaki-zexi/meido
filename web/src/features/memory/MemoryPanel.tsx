@@ -9,10 +9,11 @@ import { type Memory, type MemoryOrigin, typeLabels, statusLabels } from './type
 import { MemoryInspector } from './MemoryInspector';
 import { MemoryEditor, emptyDraft, type EditorDraft } from './MemoryEditor';
 import { MemoryDocuments } from './MemoryDocuments';
+import { MemoryWorkspaceNav, memoryWorkspaceTabs } from './MemoryWorkspaceNav';
 export type { MemoryOrigin } from './types';
 
 type Confirmation = { kind: 'delete' | 'batch' | 'invalidate' | 'forget' | 'reject'; memory?: Memory; ids?: string[] };
-const initialFilters = { query: '', status: 'active', memoryType: '', domain: '', embedding: '' };
+const initialFilters = { query: '', status: 'active', memoryType: '', domain: '', embedding: '', sortOrder: 'desc' };
 const confirmationLabels = { delete: '删除这条记忆', batch: '删除选中的记忆', invalidate: '使全部记忆失效', forget: '忘记这条记忆', reject: '拒绝这条记忆' };
 
 export function MemoryPanel({ role, onBack, onOpenSource, embedded = false }: {
@@ -43,6 +44,8 @@ export function MemoryPanel({ role, onBack, onOpenSource, embedded = false }: {
   const [selectedDocument, setSelectedDocument] = useState('MEMORY.md');
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [documentsError, setDocumentsError] = useState('');
+  const [domains, setDomains] = useState<string[]>([]);
+  const [filterError, setFilterError] = useState('');
   const [version, setVersion] = useState(0);
   const [similar, setSimilar] = useState<{ source: Memory; items: Memory[]; loading: boolean } | null>(null);
   const similarRequest = useRef(0);
@@ -59,9 +62,19 @@ export function MemoryPanel({ role, onBack, onOpenSource, embedded = false }: {
     if (filters.memoryType) params.set('memoryType', filters.memoryType);
     if (filters.domain) params.set('memoryDomain', filters.domain);
     if (filters.embedding) params.set('hasEmbedding', filters.embedding);
+    if (embedded) { params.set('sortBy', 'created_at'); params.set('sortOrder', filters.sortOrder); }
     if (page > 1) params.set('page', String(page));
     return params.size ? `?${params}` : '';
-  }, [filters, page]);
+  }, [filters, page, embedded]);
+  useEffect(() => {
+    if (!embedded) return;
+    let current = true;
+    setFilterError('');
+    void api<{ domains: string[] }>(`${base}/memory-admin/filters`)
+      .then(data => { if (current) setDomains(data.domains || []); })
+      .catch(cause => { if (current) setFilterError(errorMessage(cause, '无法读取领域选项')); });
+    return () => { current = false; };
+  }, [base, embedded, version]);
   useEffect(() => {
     let current = true;
     setLoading(true); setListError(''); setSelected([]); setDetail(null);
@@ -145,29 +158,40 @@ export function MemoryPanel({ role, onBack, onOpenSource, embedded = false }: {
   const overlay = Boolean(editing || similar || confirmation);
   const errorNotice = error && <Notice onDismiss={() => setError('')}>{error}</Notice>;
   return <section className={`memory-panel${embedded ? ' is-embedded' : ''}`} style={roleStyle(role.id)} aria-label={`${role.name}的记忆`}>
-    <header className="chat-header memory-topbar">
+    <header className={embedded ? 'memory-workspace-title' : 'chat-header memory-topbar'}>
       {!embedded && <><IconButton icon="back" label="返回对话" onClick={onBack} />
         <Avatar id={role.id} name={role.name} avatarUrl={role.avatarUrl} size="sm" /></>}
       <div className="chat-title"><h1 ref={title} tabIndex={-1}>{embedded ? '记忆' : `${role.name}的记忆`}</h1></div>
-      <button type="button" className="primary memory-add" onClick={() => startEdit('new')}><Icon name="plus" size={17} />记住一件事</button></header>
+      {!embedded && <button type="button" className="primary memory-add" onClick={() => startEdit('new')}><Icon name="plus" size={17} />记住一件事</button>}</header>
     <div className="memory-scroll"><div className="memory-workspace">
-      <div className="memory-view-tabs" role="tablist" aria-label="记忆视图">{([['entries', '记忆条目'], ['documents', '记忆文档']] as const).map(([id, label]) =>
-        <button type="button" role="tab" key={id} id={`${viewId}-${id}-tab`} aria-selected={view === id} aria-controls={`${viewId}-${id}`} tabIndex={view === id ? 0 : -1} onKeyDown={changeTab} onClick={() => setView(id)}>{label}</button>)}</div>
+      {embedded ? <MemoryWorkspaceNav id={viewId} selected={view === 'entries' ? 'entries' : selectedDocument}
+        onSelect={id => { if (id === 'entries') setView('entries'); else { setSelectedDocument(id); setView('documents'); } }}
+        onRefresh={() => setVersion(value => value + 1)} refreshing={view === 'entries' ? loading : documentsLoading} onAdd={() => startEdit('new')} />
+        : <div className="memory-view-tabs" role="tablist" aria-label="记忆视图">{([['entries', '记忆条目'], ['documents', '记忆文档']] as const).map(([id, label]) =>
+          <button type="button" role="tab" key={id} id={`${viewId}-${id}-tab`} aria-selected={view === id} aria-controls={`${viewId}-${id}`} tabIndex={view === id ? 0 : -1} onKeyDown={changeTab} onClick={() => setView(id)}>{label}</button>)}</div>}
       {!overlay && !detail && errorNotice}
       {view === 'entries' ? <div role="tabpanel" id={`${viewId}-entries`} aria-labelledby={`${viewId}-entries-tab`} className="memory-entries">
-        <div className="memory-toolbar"><form className="memory-search" role="search" onSubmit={search}><Icon name="search" size={18} /><input aria-label="搜索记忆" value={queryDraft} onChange={event => setQueryDraft(event.target.value)} placeholder="搜索她记住的事…" />
+        <div className="memory-toolbar"><form className="memory-search" role="search" onSubmit={search}><input aria-label="搜索记忆" value={queryDraft} onChange={event => setQueryDraft(event.target.value)} placeholder={embedded ? '搜索' : '搜索她记住的事…'} />
           {(queryDraft || filters.query) && <IconButton icon="close" label="清除搜索" onClick={() => { setQueryDraft(''); setPage(1); setFilters(current => ({ ...current, query: '' })); }} />}
-          <button type="submit" className="ghost" disabled={loading}>搜索</button></form>
+          <button type="submit" className="ghost" aria-label="搜索" disabled={loading}>{embedded ? <Icon name="search" size={17} /> : '搜索'}</button></form>
           <select className="memory-type-filter" aria-label="类型筛选" value={filters.memoryType} onChange={event => { setPage(1); setFilters(current => ({ ...current, memoryType: event.target.value })); }}><option value="">全部类型</option>{Object.entries(typeLabels).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select>
-          <button type="button" className={`ghost memory-filter-trigger${filtersOpen || filterCount ? ' is-active' : ''}`} aria-expanded={filtersOpen} aria-controls={`${viewId}-filters`} onClick={() => setFiltersOpen(value => !value)}><Icon name="sliders" size={17} />筛选{filterCount > 0 && <span>{filterCount}</span>}</button>
+          {embedded ? <>
+            <select aria-label="领域筛选" value={filters.domain} onChange={event => { setPage(1); setFilters(current => ({ ...current, domain: event.target.value })); }}><option value="">全部领域</option>{[...new Set([...domains, ...(filters.domain ? [filters.domain] : [])])].map(domain => <option value={domain} key={domain}>{domain}</option>)}</select>
+            <select aria-label="状态筛选" value={filters.status} onChange={event => { setPage(1); setFilters(current => ({ ...current, status: event.target.value })); }}><option value="">全部状态</option>{Object.entries(statusLabels).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select>
+            <select aria-label="记忆排序" value={filters.sortOrder} onChange={event => { setPage(1); setFilters(current => ({ ...current, sortOrder: event.target.value })); }}><option value="desc">最新</option><option value="asc">最早</option></select>
+          </> : <button type="button" className={`ghost memory-filter-trigger${filtersOpen || filterCount ? ' is-active' : ''}`} aria-expanded={filtersOpen} aria-controls={`${viewId}-filters`} onClick={() => setFiltersOpen(value => !value)}><Icon name="sliders" size={17} />筛选{filterCount > 0 && <span>{filterCount}</span>}</button>}
         </div>
+        {embedded && filterError && <Notice onDismiss={() => setFilterError('')}>{filterError}<button type="button" className="ghost" onClick={() => setVersion(value => value + 1)}>重新读取领域</button></Notice>}
         {filtersOpen && <div className="memory-filter-panel" id={`${viewId}-filters`} aria-label="记忆筛选">
-          <label className="field"><span>状态</span><select aria-label="状态筛选" value={filters.status} onChange={event => { setPage(1); setFilters(current => ({ ...current, status: event.target.value })); }}><option value="active">有效记忆</option><option value="">全部状态</option>{Object.entries(statusLabels).filter(([id]) => id !== 'active').map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>
-          <label className="field"><span>领域</span><input aria-label="领域筛选" placeholder="按领域筛选" value={filters.domain} onChange={event => { setPage(1); setFilters(current => ({ ...current, domain: event.target.value })); }} /></label>
+          {!embedded && <><label className="field"><span>状态</span><select aria-label="状态筛选" value={filters.status} onChange={event => { setPage(1); setFilters(current => ({ ...current, status: event.target.value })); }}><option value="active">有效记忆</option><option value="">全部状态</option>{Object.entries(statusLabels).filter(([id]) => id !== 'active').map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>
+          <label className="field"><span>领域</span><input aria-label="领域筛选" placeholder="按领域筛选" value={filters.domain} onChange={event => { setPage(1); setFilters(current => ({ ...current, domain: event.target.value })); }} /></label></>}
           <label className="field"><span>语义索引</span><select aria-label="向量筛选" value={filters.embedding} onChange={event => { setPage(1); setFilters(current => ({ ...current, embedding: event.target.value })); }}><option value="">全部</option><option value="true">已建立</option><option value="false">未建立</option></select></label>
           <button type="button" className="ghost" onClick={resetFilters}>重置筛选</button>
         </div>}
-        <div className="memory-list-heading"><span>{loading ? '正在读取…' : listError ? '读取失败' : `共 ${total} 条记忆`}</span><button type="button" className="ghost" aria-pressed={managing} onClick={() => { setManaging(value => !value); setSelected([]); }}>{managing ? '退出管理' : '批量管理'}</button></div>
+        <div className="memory-results">
+        {(total > 0 || !embedded || filtered) && <div className="memory-list-heading"><span>{loading ? '正在读取…' : listError ? '读取失败' : `共 ${total} 条记忆`}</span><div>
+          {embedded && <button type="button" className="ghost" aria-expanded={filtersOpen} aria-controls={`${viewId}-filters`} onClick={() => setFiltersOpen(value => !value)}>更多筛选</button>}
+          <button type="button" className="ghost" aria-pressed={managing} onClick={() => { setManaging(value => !value); setSelected([]); }}>{managing ? '退出管理' : '批量管理'}</button></div></div>}
         {managing && <div className="memory-management" role="toolbar" aria-label="批量管理"><label><input type="checkbox" checked={allSelected} disabled={loading || Boolean(listError)} onChange={event => setSelected(event.target.checked ? memories.map(memory => memory.id) : [])} />全选本页</label><span>已选 {selected.length} 条</span>
           <button type="button" className="ghost danger" disabled={!selected.length || loading || Boolean(listError)} onClick={() => { rememberOpener(); setError(''); setConfirmation({ kind: 'batch', ids: [...selected] }); }}>删除选中</button><button type="button" className="ghost" onClick={() => { rememberOpener(); setError(''); setConfirmation({ kind: 'invalidate' }); }}>全部失效</button></div>}
         {loading ? <Placeholder loading>正在读取记忆…</Placeholder> : listError ? <div className="memory-empty"><Icon name="refresh" size={28} /><h2>暂时无法读取记忆</h2><p>{listError}</p><button type="button" className="ghost" onClick={() => setVersion(value => value + 1)}>重新加载</button></div>
@@ -185,9 +209,10 @@ export function MemoryPanel({ role, onBack, onOpenSource, embedded = false }: {
             </div>
           </li>)}</ul> : <div className="memory-empty"><h2>{filtered ? '没有找到匹配的记忆' : '暂无记忆'}</h2><p>{filtered ? '换个关键词，或调整筛选条件试试。' : '可以先记下一件事。'}</p><button type="button" className="ghost" onClick={filtered ? resetFilters : () => startEdit('new')}>{filtered ? '清除筛选' : '记住第一件事'}</button></div>}
         {!loading && !listError && pageCount > 1 && <nav className="memory-pagination" aria-label="记忆分页"><button type="button" className="ghost" disabled={page <= 1} onClick={() => setPage(value => value - 1)}>上一页</button><span>第 {page} / {pageCount} 页</span><button type="button" className="ghost" disabled={page >= pageCount} onClick={() => setPage(value => value + 1)}>下一页</button></nav>}
-      </div> : <div role="tabpanel" id={`${viewId}-documents`} aria-labelledby={`${viewId}-documents-tab`}>
+        </div>
+      </div> : <div role="tabpanel" id={`${viewId}-documents`} aria-labelledby={`${viewId}-${embedded ? memoryWorkspaceTabs.some(([key]) => key === selectedDocument) ? selectedDocument : 'PENDING.md' : 'documents'}-tab`}>
         {documentsLoading ? <Placeholder loading>正在读取记忆文档…</Placeholder> : documentsError ? <div className="memory-empty"><h2>暂时无法读取文档</h2><p>{documentsError}</p><button type="button" className="ghost" onClick={() => setVersion(value => value + 1)}>重新加载</button></div>
-          : <MemoryDocuments documents={documents} journals={journals} selected={selectedDocument} onSelect={setSelectedDocument} />}
+          : <MemoryDocuments documents={documents} journals={journals} selected={selectedDocument} onSelect={setSelectedDocument} compact={embedded} />}
       </div>}
     </div></div>
     {editing && <Dialog modalFocus returnFocus={returnFocus} title={editing === 'new' ? '记住一件事' : '编辑记忆'} variant="compact" onClose={() => { if (!saving) { setEditing(null); setError(''); } }}>{errorNotice}<MemoryEditor target={editing} draft={draft} onChange={setDraft} saving={saving} onSubmit={event => void save(event)} onCancel={() => { setEditing(null); setError(''); }} /></Dialog>}

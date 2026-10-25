@@ -12,6 +12,41 @@ const item = { id: 'one', roleId: 'r1', memoryType: 'preference', summary: '主�
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('角色工作区按六个分类查看记忆，领域和时间排序交给服务并可刷新文档', async () => {
+  let self = '她喜欢安静的阅读时光';
+  const { calls } = fakeBackend({
+    'GET /api/roles/r1/memories.*': () => ({ body: { memories: [item], total: 41 } }),
+    'GET /api/roles/r1/memory-admin/filters': () => ({ body: { domains: ['daily', 'work'] } }),
+    'GET /api/roles/r1/memory-documents': () => ({ body: { documents: [
+      { name: 'SELF.md', content: self }, { name: 'MEMORY.md', content: '主人喜欢红茶' },
+    ], journals: [] } }),
+  });
+  const user = userEvent.setup();
+  render(<MemoryPanel role={owner} embedded onBack={() => {}} onOpenSource={() => {}} />);
+  expect(within(screen.getByRole('tablist', { name: '记忆视图' })).getAllByRole('tab').map(tab => tab.textContent))
+    .toEqual(['时间线', '自我', '长期', '经历', '近期', '待整理']);
+  await user.click(screen.getByRole('tab', { name: '自我' }));
+  expect(await screen.findByText(self)).toBeVisible();
+  self = '她也开始喜欢与主人分享';
+  await user.click(screen.getByRole('button', { name: '刷新记忆' }));
+  expect(await screen.findByText(self)).toBeVisible();
+  await user.click(screen.getByRole('tab', { name: '长期' }));
+  expect(await screen.findByText('主人喜欢红茶')).toBeVisible();
+  await user.click(screen.getByRole('tab', { name: '时间线' }));
+  await user.click(await screen.findByRole('button', { name: '下一页' }));
+  await user.selectOptions(screen.getByRole('combobox', { name: '领域筛选' }), 'work');
+  await user.selectOptions(screen.getByRole('combobox', { name: '记忆排序' }), 'asc');
+  await waitFor(() => {
+    const latest = calls.filter(call => call.path.includes('/memories?')).at(-1)!;
+    const params = new URLSearchParams(latest.path.split('?')[1]);
+    expect(params.get('memoryDomain')).toBe('work');
+    expect(params.get('sortBy')).toBe('created_at');
+    expect(params.get('sortOrder')).toBe('asc');
+    expect(params.get('page')).toBeNull();
+  });
+  expect(screen.getByRole('button', { name: '记住一件事' })).toBeVisible();
+});
+
 it('工作区中已有记忆时仍可继续新增，保存后回到列表', async () => {
   let rows = [item];
   fakeBackend({

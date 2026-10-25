@@ -17,6 +17,23 @@ const settings = (enabled = true) => ({ channels: ["telegram", "qq", "qqbot", "f
 })) });
 
 describe("角色账号", () => {
+  it("工作区按参考顺序显示未添加账号，暂停的平台仍能进入添加入口", async () => {
+    fakeBackend({
+      "GET /api/channels/settings": () => ({ body: settings(false) }),
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [] } }),
+    });
+    const user = userEvent.setup();
+    render(<RoleAccountsPanel roleId="r1" workspace />);
+    const rows = await screen.findAllByRole('button', { name: /未添加/ });
+    expect(rows.map(row => row.getAttribute('aria-label'))).toEqual([
+      '飞书 / Lark 未添加', 'QQ 未添加', 'QQ 官方机器人 未添加', 'Telegram 未添加',
+    ]);
+    await user.click(rows[3]);
+    const detail = await screen.findByRole('dialog', { name: 'Telegram 账号' });
+    expect(within(detail).getByLabelText('Telegram Bot Token')).toBeVisible();
+    expect(within(detail).getByRole('status')).toHaveTextContent('此平台已在全局设置中暂停');
+  });
+
   it("无需先打开账号详情就能前往平台总开关", async () => {
     const openSettings = vi.fn();
     fakeBackend({

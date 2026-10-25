@@ -1,4 +1,4 @@
-import type { ComponentProps } from "react";
+import { useEffect, useId, useState, type ComponentProps } from "react";
 import type { Role } from "../../api/types";
 import { Avatar } from "../../ui/Avatar";
 import { Icon, IconButton } from "../../ui/Icon";
@@ -37,25 +37,41 @@ const tabs: Array<{ id: RoleWorkspaceTab; label: string }> = [
 
 export function RoleWorkspace({ role, state, tab, onTabChange, onBack, backLabel, onChat, chatDisabled, onEdit, onSubmit, onCancel, onDelete, onOpenSettings, onOpenChannelSettings, onOpenMemorySource }: Props) {
   const writable = state.editing || state.creating;
+  const workspaceId = useId();
+  const [actionTarget, setActionTarget] = useState<HTMLDivElement | null>(null);
+  const [capabilitiesOpened, setCapabilitiesOpened] = useState(tab === 'capabilities');
+  useEffect(() => { if (tab === 'capabilities') setCapabilitiesOpened(true); }, [tab]);
   return <section className="role-workspace" aria-label={`${role.name}的角色工作区`}>
     <header className="role-workspace-hero">
-      <IconButton icon="back" label={backLabel} onClick={onBack} disabled={state.busy} />
       <Avatar id={role.id} name={writable ? state.draft.name : role.name} avatarUrl={state.avatarPreviewUrl ?? (state.avatarRemoved ? null : role.avatarUrl)} size="lg" />
       <div className="role-workspace-identity">{writable ? <><input aria-label="名称（角色名称）" disabled={state.busy} value={state.draft.name} placeholder="未命名角色" onChange={event => state.setDraft({ ...state.draft, name: event.target.value })} /><input aria-label="角色简介" disabled={state.busy} value={state.draft.description} placeholder="添加一行角色简介" onChange={event => state.setDraft({ ...state.draft, description: event.target.value })} /></> : <><h1>{role.name}</h1><p>{role.description || "还没有简介"}</p></>}
         <div className="role-workspace-actions"><span className="role-state"><Icon name="profile" size={15} />平静</span><button type="button" className="ghost" disabled={state.busy || writable} onClick={onEdit}><Icon name="edit" size={15} />{writable ? "编辑中" : "编辑资料"}</button></div>
       </div>
-      <button type="button" className="primary role-workspace-chat" onClick={onChat} disabled={chatDisabled || state.busy}><Icon name="chat" size={16} />去聊天</button>
     </header>
-    <nav className="role-workspace-tabs" role="tablist" aria-label="角色详情">
-      {tabs.map(item => <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} onClick={() => onTabChange(item.id)}>{item.label}</button>)}
-    </nav>
+    <div className="role-workspace-toolbar">
+      <IconButton icon="back" label={backLabel} onClick={onBack} disabled={state.busy} />
+      <nav className="role-workspace-tabs" role="tablist" aria-label="角色详情">
+        {tabs.map((item, index) => <button key={item.id} id={`${workspaceId}-${item.id}-tab`} type="button" role="tab" aria-selected={tab === item.id} tabIndex={tab === item.id ? 0 : -1} onClick={() => onTabChange(item.id)} onKeyDown={event => {
+          if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+          event.preventDefault();
+          const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+          onTabChange(tabs[next].id); document.getElementById(`${workspaceId}-${tabs[next].id}-tab`)?.focus();
+        }}>{item.label}</button>)}
+      </nav>
+      <div className="role-workspace-toolbar-actions">
+        <button type="button" className="ghost role-workspace-chat" onClick={onChat} disabled={chatDisabled || state.busy}><Icon name="chat" size={16} />去聊天</button>
+        <div ref={setActionTarget} />
+      </div>
+    </div>
     <div className="role-workspace-content">
       {tab === "profile" && <div className="role-workspace-profile" role="tabpanel" aria-label="资料">
         <RoleEditor state={state} onSubmit={onSubmit} onCancel={onCancel} onDelete={onDelete} hideHeaderFields />
       </div>}
       {tab === "memory" && <div className="role-workspace-memory" role="tabpanel" aria-label="记忆"><MemoryPanel role={role} embedded onBack={onBack} onOpenSource={onOpenMemorySource} /></div>}
-      {tab === "capabilities" && <RoleCapabilitiesPanel role={role} onOpenSettings={onOpenSettings} />}
-      {tab === "accounts" && <RoleAccountsPanel roleId={role.id} onOpenSettings={onOpenChannelSettings} />}
+      {(tab === 'capabilities' || capabilitiesOpened) && <div hidden={tab !== 'capabilities'} role="tabpanel" aria-label="能力">
+        <RoleCapabilitiesPanel role={role} onRoleSaved={state.receiveRole} actionTarget={tab === 'capabilities' ? actionTarget : null} onOpenSettings={onOpenSettings} />
+      </div>}
+      {tab === "accounts" && <RoleAccountsPanel roleId={role.id} workspace onOpenSettings={onOpenChannelSettings} />}
     </div>
   </section>;
 }
