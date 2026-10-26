@@ -673,9 +673,9 @@ class ChannelHost:
                         stream_content = content
                         try:
                             async for update in stream_updates:
+                                content = stream_content = update
                                 if not dispatch_authorized():
                                     raise UnsupportedTargetError('original_stream_source_revoked')
-                                stream_content = update
                                 await stream_update(session, update)
                             content = stream_content
                             result = await stream_finalize(session, stream_content)
@@ -701,9 +701,14 @@ class ChannelHost:
                         part.update(status='uncertain', error=result.error or 'dispatch_interrupted')
                 result = replace(result, raw=latest_details,
                     platform_message_id=next(iter(latest_details.get('platform_message_ids', [])), result.platform_message_id))
-                if (not latest_details.get('streaming') and latest_details.get('parts') and all(part.get('status') == 'sent' and part.get('kind') != 'preview'
-                        for part in latest_details['parts'])):
-                    result = replace(result, status=DeliveryStatus.SENT, error=None)
+                parts = latest_details.get('parts', [])
+                if parts and not any(part.get('status') == 'uncertain' for part in parts):
+                    complete = not latest_details.get('streaming') and all(
+                        part.get('status') == 'sent' and part.get('kind') != 'preview' for part in parts)
+                    result = replace(result, status=DeliveryStatus.SENT if complete else DeliveryStatus.FAILED,
+                        error=None if complete else result.error)
+                from .delivery_projection import confirmed_parts
+                result.raw['partialDelivery'] = bool(confirmed_parts(result.raw)) and result.status is not DeliveryStatus.SENT
             if result.raw.get('parts'):
                 self.store.record_delivery_parts(attempt_id, result.raw)
             self.store.finish_delivery(

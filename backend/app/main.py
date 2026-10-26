@@ -6515,6 +6515,10 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                     )
                 terminal = next((item for item in reversed(session_store.list_messages(thread.session_key)) if item.runId == run_id and item.role == "assistant"), None)
                 if terminal is not None:
+                    receipt = multichannel_store.runtime_reply_receipt(thread.role_id, thread.session_key, run_id)
+                    if receipt is not None and (receipt.get('parts') or 'deliveryAttemptId' not in terminal.metadata):
+                        terminal = session_store.update_message(terminal.id, terminal.content or streamed_content,
+                            terminal.status, metadata={**terminal.metadata, **receipt})
                     current_thread = multichannel_store.get_thread(thread.role_id, thread.thread_id) or thread
                     multichannel_store.publish(thread.role_id, {
                         "type": "message", "roleId": thread.role_id,

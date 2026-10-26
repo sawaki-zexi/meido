@@ -1144,7 +1144,8 @@ class MultichannelStore:
             rows = db.execute(
                 """SELECT t.title,m.role,CASE WHEN json_extract(m.metadata_json,'$.partialDelivery')=1 THEN json_extract(m.metadata_json,'$.deliveredContent') ELSE m.content END AS content,m.created_at
                    FROM channel_threads t JOIN messages m ON m.session_key=t.session_key
-                   WHERE t.role_id=? AND t.thread_id<>? AND m.message_type='text' AND m.status='completed'
+                   WHERE t.role_id=? AND t.thread_id<>? AND m.message_type='text'
+                     AND (m.status='completed' OR (m.role='assistant' AND json_extract(m.metadata_json,'$.partialDelivery')=1))
                      AND (t.channel='desktop' OR m.role<>'assistant' OR json_extract(m.metadata_json,'$.deliveryStatus')='sent' OR json_extract(m.metadata_json,'$.partialDelivery')=1)
                      AND (t.channel='desktop' OR (t.chat_type='private' AND EXISTS (
                        SELECT 1 FROM channel_owner_chats c JOIN channel_identities i
@@ -1175,7 +1176,8 @@ class MultichannelStore:
         with self._connect() as db:
             rows = db.execute(
                 """SELECT m.rowid AS context_sequence,m.message_id,m.session_key FROM messages m
-                   WHERE m.status='completed' AND m.message_type='text'
+                   WHERE (m.status='completed' OR (m.role='assistant' AND json_extract(m.metadata_json,'$.partialDelivery')=1))
+                     AND m.message_type='text'
                      AND (m.session_key=? OR EXISTS (
                        SELECT 1 FROM channel_threads t JOIN channel_owner_chats c
                          ON c.role_id=t.role_id AND c.account_id=t.account_id AND c.chat_id=t.chat_id
@@ -1483,8 +1485,8 @@ class MultichannelStore:
                         part.update(status='uncertain', error='process_interrupted')
                 from .channels.delivery_projection import confirmed_parts
                 sent = confirmed_parts(details)
-                status = ('uncertain' if not parts or details.get('streaming') or any(part.get('status') == 'uncertain' for part in parts)
-                          else 'sent' if len(sent) == len(parts) else 'failed')
+                status = ('uncertain' if not parts or any(part.get('status') == 'uncertain' for part in parts)
+                          else 'sent' if not details.get('streaming') and len(sent) == len(parts) else 'failed')
                 identifier = sent[0]['platformMessageId'] if sent else row['platform_message_id']
                 if parts:
                     details.update(parts=parts, partialDelivery=bool(sent) and status != 'sent',
@@ -1515,6 +1517,23 @@ class MultichannelStore:
             row = db.execute('SELECT status,attempt_id FROM channel_delivery_attempts WHERE role_id=? AND source_kind=? AND source_tool_call_id=? ORDER BY created_at LIMIT 1',
                              (role_id, source_kind, source_tool_call_id)).fetchone()
         return (str(row[0]), str(row[1])) if row else None
+
+    def runtime_reply_receipt(self, role_id: str, session_key: str, run_id: str) -> dict[str, Any] | None:
+        """Reconcile only the original Runtime reply, including a stopped stream."""
+        with self._connect() as db:
+            rows = db.execute('''SELECT d.*,t.channel FROM channel_delivery_attempts d
+                JOIN channel_threads t ON t.thread_id=d.thread_id AND t.role_id=d.role_id
+                WHERE d.role_id=? AND d.source_session_key=? AND d.source_run_id=?
+                AND d.source_kind IN ('reply','natural') AND t.session_key=? LIMIT 2''',
+                (role_id, session_key, run_id, session_key)).fetchall()
+        if len(rows) != 1 or rows[0]['status'] == 'pending':
+            return None
+        row = rows[0]
+        details = _loads(row['details_json'])
+        return {'channel': row['channel'], 'accountId': row['account_id'], 'threadId': row['thread_id'],
+            'deliveryStatus': row['status'], 'deliveryAttemptId': row['attempt_id'],
+            'platformMessageId': row['platform_message_id'], 'deliveryError': row['error'],
+            **{key: details[key] for key in ('parts', 'partialDelivery', 'deliveredContent', 'receiptKind') if key in details}}
 
     def delivery_receipt_for_source(self, role_id: str, *, source_kind: str, source_tool_call_id: str,
                                     connection: sqlite3.Connection | None = None) -> dict[str, Any] | None:
