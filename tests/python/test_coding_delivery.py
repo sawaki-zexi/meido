@@ -1,8 +1,11 @@
 import asyncio
+import hashlib
+import json
 import time
 
 import pytest
 
+from backend.app.channels.source_authority import capture_channel_message_source
 from backend.app.coding_tasks.application import CodingApplication
 from backend.app.coding_tasks.config import CodingRoleConfig
 from backend.app.multichannel import MultichannelStore
@@ -12,6 +15,30 @@ from backend.app.task_runtime import TaskOrigin, TaskRuntime
 from test_coding_application import ControlledExecutor, GrantedConfiguration
 
 pytestmark = pytest.mark.usefixtures('local_platform_only')
+
+
+def frozen_channel_origin(channels, thread, parent_run_id, tool_call_id):
+    # These tests start new effects, so retain the original local inbound
+    # evidence rather than giving a legacy management-only origin new authority.
+    sender = 'fixture-owner'
+    code = channels.create_pairing_code(thread.role_id, thread.channel)
+    assert channels.consume_pairing_code(code, role_id=thread.role_id, channel=thread.channel,
+        scope='platform', platform_user_id=sender, account_id=thread.account_id, chat_id=thread.chat_id)
+    created, message = channels.append_event(thread, direction='inbound', content='start coding',
+        external_message_id='fixture-inbound',
+        metadata={'senderId': sender, 'senderIsOwner': True, 'chatType': thread.chat_type})
+    assert created
+    payload = capture_channel_message_source(channels, thread, message, owner_context=True).to_dict()
+    scope = {key: value for key, value in payload.items() if key != 'message_created_at'}
+    return TaskOrigin(thread.role_id, thread.session_key, parent_run_id, tool_call_id,
+        source_thread_id=thread.thread_id, source_account_id=thread.account_id,
+        source_scope_id=hashlib.sha256(json.dumps(scope, sort_keys=True).encode()).hexdigest(),
+        source_authority_json=json.dumps(payload, sort_keys=True, separators=(',', ':')))
+
+
+def coding_completions(sessions, thread):
+    return [message for message in sessions.list_messages(thread.session_key)
+        if message.metadata.get('internalEvent') == 'coding_completion']
 
 
 def test_real_sent_receipt_repairs_an_already_synced_uncertain_projection_without_resending(tmp_path):
@@ -34,21 +61,20 @@ def test_real_sent_receipt_repairs_an_already_synced_uncertain_projection_withou
     application = CodingApplication(tmp_path / 'coding', tasks, sessions,
         role_config=lambda _: CodingRoleConfig(enabled=True), authorized=lambda _: True,
         config=GrantedConfiguration(), executor_factory=ControlledExecutor, deliver=deliver, receipt=receipt)
-    origin = TaskOrigin('role-a', thread.session_key, 'channel-parent', 'channel-call',
-        source_thread_id=thread.thread_id, source_account_id=account.account_id, source_scope_id='frozen-fixture')
+    origin = frozen_channel_origin(channels, thread, 'channel-parent', 'channel-call')
     try:
         accepted = application.start_task(origin, repository=str(tmp_path), requirement='channel result')
         deadline = time.monotonic() + 4
         while time.monotonic() < deadline:
             asyncio.run(application.tick())
-            if sessions.list_messages(thread.session_key): break
+            if coding_completions(sessions, thread): break
             time.sleep(.01)
-        assert sessions.list_messages(thread.session_key)[0].metadata['deliveryStatus'] == 'uncertain'
+        assert coding_completions(sessions, thread)[0].metadata['deliveryStatus'] == 'uncertain'
         asyncio.run(application.tick())
         observed = application.inspect(accepted['id'], origin)
         assert observed['deliveryStatus'] == 'sent'
         assert len(sends) == 1
-        messages = sessions.list_messages(thread.session_key)
+        messages = coding_completions(sessions, thread)
         assert len(messages) == 1 and messages[0].metadata['deliveryStatus'] == 'sent'
         assert messages[0].metadata['channel'] == 'qq' and messages[0].runId is None
         assert observed['runtimeAckDirty'] is False
@@ -78,8 +104,7 @@ def test_external_completion_waits_for_original_role_lock_before_send(tmp_path):
         role_config=lambda _: CodingRoleConfig(enabled=True), authorized=lambda _: True,
         config=GrantedConfiguration(), executor_factory=ControlledExecutor, deliver=deliver,
         lock_for=lambda _: lock)
-    origin = TaskOrigin('role-a', thread.session_key, 'channel-parent', 'channel-call',
-        source_thread_id=thread.thread_id, source_account_id=account.account_id)
+    origin = frozen_channel_origin(channels, thread, 'channel-parent', 'channel-call')
     try:
         accepted = application.start_task(origin, repository=str(tmp_path), requirement='channel result')
         tasks.query(application.ledger.attempt(accepted['attemptId'])['runtimeTaskId'], origin, wait_seconds=2)
@@ -89,12 +114,12 @@ def test_external_completion_waits_for_original_role_lock_before_send(tmp_path):
             try:
                 await asyncio.sleep(.1)
                 assert not sends
-                assert not sessions.list_messages(thread.session_key)
+                assert not coding_completions(sessions, thread)
             finally:
                 lock.release()
                 await pending
             assert len(sends) == 1
-            assert len(sessions.list_messages(thread.session_key)) == 1
+            assert len(coding_completions(sessions, thread)) == 1
         asyncio.run(scenario())
     finally:
         asyncio.run(application.close())

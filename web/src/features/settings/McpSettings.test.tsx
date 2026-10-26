@@ -251,3 +251,32 @@ describe("MCP 服务设置", () => {
     expect(calls.find((call) => call.method === "PUT")?.body).toMatchObject({ roleIds: ["r1"] });
   });
 });
+
+it("keeps failed cleanup visibly owned and retries only cleanup without saving grants or reconnecting", async () => {
+  let owners = [{ runId: "completed-run", state: "cleanup_failed" }];
+  let attempts = 0;
+  const { calls } = fakeBackend({
+    "GET /api/mcp/servers": () => ({ body: { servers: [{ ...configuredServer(), activeProcesses: 0, cleanupOwners: owners }] } }),
+    "GET /api/roles": () => ({ body: { roles: [] } }),
+    "POST /api/mcp/servers/notes/cleanup": () => {
+      attempts += 1;
+      if (attempts === 1) return { status: 503, body: { detail: "MCP 资源清理尚未确认；请重试清理" } };
+      owners = [];
+      return { body: { serverId: "notes", status: "cleaned" } };
+    },
+  });
+  const user = userEvent.setup();
+  render(<McpSettings />);
+  expect(await screen.findByText("待确认清理：1")).toBeInTheDocument();
+  expect(screen.getByText(/completed-run/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "重试清理 本地笔记" }));
+  expect(await screen.findByText("MCP 资源清理尚未确认；请重试清理")).toBeInTheDocument();
+  expect(screen.getByText("待确认清理：1")).toBeInTheDocument();
+  expect(screen.queryByText("MCP 待清理资源已回收；未重新执行工具。" )).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "重试清理 本地笔记" }));
+  expect(await screen.findByText("MCP 待清理资源已回收；未重新执行工具。" )).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "重试清理 本地笔记" })).not.toBeInTheDocument();
+  expect(calls.filter((call) => call.method !== "GET").map((call) => call.path)).toEqual([
+    "/api/mcp/servers/notes/cleanup", "/api/mcp/servers/notes/cleanup",
+  ]);
+});

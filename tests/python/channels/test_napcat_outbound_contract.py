@@ -109,7 +109,10 @@ def test_napcat_missing_receipt_and_partial_forward_are_uncertain():
             return {"message_id": 100}
         adapter = NapCatAdapter(NapCatConfig(account_id="qq"), transport=partial)
         result = await adapter.send(OutboundMessage(target(adapter), "字" * 301, metadata={"mentionIds": ["99"]}))
-        assert result.status is DeliveryStatus.UNCERTAIN
+        assert result.status is DeliveryStatus.FAILED
+        assert result.platform_message_id == '100'
+        assert [part['status'] for part in result.raw['parts']] == ['sent', 'failed']
+        assert result.raw['deliveredContent'] == ''
         assert calls == ["get_login_info", "send_group_msg", "send_group_forward_msg"]
     asyncio.run(run())
 

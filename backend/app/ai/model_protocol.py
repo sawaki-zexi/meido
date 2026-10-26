@@ -300,3 +300,8 @@ def remap_message_tool_names(messages: Sequence[object], aliases: Mapping[str, s
             message = replace(message, tool_name=aliases.get(message.tool_name, message.tool_name))
         result.append(message)
     return tuple(result)
+
+
+def preserve_stop_reason(previous: str | None, current: str | None) -> str | None:
+    """A later normal finish must not repair an already incomplete response."""
+    return previous if previous not in {None, "stop", "tool_use"} else current

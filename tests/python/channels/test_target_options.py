@@ -60,10 +60,10 @@ def test_send_preserves_explicit_topic_and_native_mention(tmp_path):
     assert result.status == "sent"
     chat_id, content, options = transport.sent[0]
     assert chat_id == "-1001"
-    assert '<a href="tg://user?id=123">@123</a>' in content
-    assert "&lt;正文&gt;" in content
+    assert content == '@123 <正文>'
+    assert options['entities'] == [{'type': 'text_link', 'offset': 0, 'length': 4, 'url': 'tg://user?id=123'}]
     assert options["message_thread_id"] == 10
-    assert options["parse_mode"] == "HTML"
+    assert 'parse_mode' not in options
     thread = next(thread for thread in store.list_threads("role-1") if thread.channel == "telegram")
     assert store.sessions.list_messages(thread.session_key)[0].metadata["messageThreadId"] == 10
 

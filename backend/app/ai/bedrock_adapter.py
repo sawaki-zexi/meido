@@ -15,6 +15,7 @@ from .request_budget import image_budget_client_kwargs, budgeted_model_stream, b
 
 from .message_transform import transform_messages
 from .model_adapter import _payload_error_detail, _raise_for_status_with_details
+from .model_protocol import preserve_stop_reason
 from .model_protocol import compatible_tool_names, effective_tools, model_cost, normalize_tools, remap_message_tool_names, safe_tool_id
 from .model_types import (
     ModelAssistantMessage, ModelCapabilities, ModelContentBlock, ModelImageBlock, ModelMessage,
@@ -345,7 +346,7 @@ class BedrockConverseAdapter:
                                     thinking_parts.setdefault(index, {"text": "", "signature": ""})["signature"] += signature
                         stop = event.get("messageStop")
                         if isinstance(stop, Mapping):
-                            stop_reason = _stop_reason(stop.get("stopReason"))
+                            stop_reason = preserve_stop_reason(stop_reason, _stop_reason(stop.get("stopReason")))
                             terminal = True
                         metadata = event.get("metadata")
                         if isinstance(metadata, Mapping) and isinstance(metadata.get("usage"), Mapping):
@@ -383,7 +384,7 @@ class BedrockConverseAdapter:
                     if not isinstance(arguments, dict):
                         yield ModelStreamError(f"模型工具参数必须是 JSON 对象: {item['name'] or index}")
                         return
-                    call = ModelToolCallBlock(item["id"], item["name"], arguments)
+                    call = ModelToolCallBlock(item["id"], item["name"], arguments, arguments_complete=bool(item["arguments"].strip()))
                     blocks.append(call)
                     yield ModelToolCallEnd(call)
             message = ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(

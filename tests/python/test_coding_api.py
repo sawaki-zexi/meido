@@ -6,7 +6,7 @@ import time
 import pytest
 
 from backend.app.coding_tasks.application import CodingApplication
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from test_background_shell_api import api as shell_api  # noqa: F401
 from test_spawn_api import api  # noqa: F401
 from test_coding_application import ControlledExecutor, GrantedConfiguration
@@ -44,9 +44,11 @@ def test_public_owner_chat_discovers_starts_and_receives_coding_without_second_m
             if not results:
                 assert 'herdr_start_task' not in names and 'tool_search' in names
                 yield ModelToolCall('discover-coding', 'tool_search', {'query': 'select:herdr_start_task'})
+                yield ModelResponseDone("tool_use")
             elif len(results) == 1:
                 assert 'herdr_start_task' in names
                 yield ModelToolCall('start-coding', 'herdr_start_task', {'repository': 'repo-a', 'requirement': '完整需求🙂'})
+                yield ModelResponseDone("tool_use")
             else:
                 accepted.append(json.loads(results[-1]['content']))
                 yield ModelTextDelta('已交给后台')

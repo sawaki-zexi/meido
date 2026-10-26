@@ -3,6 +3,7 @@ import base64
 import io
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -275,18 +276,60 @@ def test_absolute_path_inside_workspace_is_permitted_and_hardlinks_are_refused(t
         outside.unlink()
 
 
-def test_running_read_observes_cancellation_without_waiting_for_full_scan(tmp_path):
-    (tmp_path / "large.txt").write_bytes(b"x\n" * (8 * 1024 * 1024))
+@pytest.fixture
+def paused_file_scan(tmp_path, monkeypatch):
+    path = tmp_path / "large.txt"
+    path.write_bytes(b"x\n" * 1000)
+    started, release = threading.Event(), threading.Event()
+    lines, streams = [], []
+    open_file = Path.open
+
+    def open_with_barrier(target, mode="r", *args, **kwargs):
+        stream = open_file(target, mode, *args, **kwargs)
+        if target == path and mode == "rb":
+            streams.append(stream)
+            readline = stream.readline
+
+            def read_line(*args, **kwargs):
+                line = readline(*args, **kwargs)
+                lines.append(line)
+                if len(lines) == 1:
+                    # Pause only after real I/O, not at pre-cancellation admission.
+                    started.set()
+                    assert release.wait(10), "test did not release the running read"
+                return line
+
+            monkeypatch.setattr(stream, "readline", read_line)
+        return stream
+
+    monkeypatch.setattr(Path, "open", open_with_barrier)
+    try:
+        yield started, release, lines
+    finally:
+        release.set()
+        assert all(stream.closed for stream in streams)
+
+
+def test_running_read_observes_cancellation_without_waiting_for_full_scan(tmp_path, paused_file_scan):
+    started, release, lines = paused_file_scan
 
     async def cancel_read():
         signal = CancellationToken()
-        task = asyncio.create_task(ReadFileTool("role-a", tmp_path).execute({"path": "large.txt", "offset": 8_000_000}, context(signal=signal)))
-        await asyncio.sleep(.01)
-        signal.cancel()
-        return await task
+        task = asyncio.create_task(ReadFileTool("role-a", tmp_path).execute({"path": "large.txt", "offset": 900}, context(signal=signal)))
+        try:
+            assert await asyncio.to_thread(started.wait, 10), "read did not start"
+            assert not task.done()
+            signal.cancel()
+            release.set()
+            return await asyncio.wait_for(task, 10)
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 10)
 
     result = asyncio.run(cancel_read())
     assert result.is_error and result.details["status"] == "cancelled"
+    assert lines == [b"x\n"]
 
 
 def test_concurrent_edits_from_distinct_tool_instances_do_not_lose_updates(tmp_path):
@@ -349,19 +392,39 @@ def test_non_owner_turn_cannot_call_file_tool_even_with_authorized_role(tmp_path
     assert (tmp_path / "private.txt").read_bytes() == b"private"
 
 
-def test_cancelling_one_file_operation_does_not_cancel_the_parent_run(tmp_path):
-    (tmp_path / "large.txt").write_bytes(b"x\n" * (8 * 1024 * 1024))
+def test_cancelling_one_file_operation_does_not_cancel_the_parent_run(tmp_path, monkeypatch, paused_file_scan):
+    from backend.app.agent_runtime.file_tools import _OperationSignal
+
+    started, release, lines = paused_file_scan
+    cancelled = threading.Event()
+    cancel_signal = _OperationSignal.cancel
+
+    def record_cancellation(signal):
+        cancel_signal(signal)
+        cancelled.set()
+
+    monkeypatch.setattr(_OperationSignal, "cancel", record_cancellation)
 
     async def cancel_operation():
         signal = CancellationToken()
-        task = asyncio.create_task(ReadFileTool("role-a", tmp_path).execute({"path": "large.txt", "offset": 8_000_000}, context(signal=signal)))
-        await asyncio.sleep(.01)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        task = asyncio.create_task(ReadFileTool("role-a", tmp_path).execute({"path": "large.txt", "offset": 900}, context(signal=signal)))
+        try:
+            assert await asyncio.to_thread(started.wait, 10), "read did not start"
+            assert not task.done()
+            task.cancel()
+            # Task cancellation must reach the worker before it resumes I/O.
+            assert await asyncio.to_thread(cancelled.wait, 10), "worker was not cancelled"
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 10)
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 10)
         assert not signal.is_cancelled()
 
     asyncio.run(cancel_operation())
+    assert lines == [b"x\n"]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows path namespace behavior")

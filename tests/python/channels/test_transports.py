@@ -344,7 +344,7 @@ def test_qqbot_gateway_identifies_receives_dispatch_and_sends_c2c() -> None:
         assert image == {"id": "sent-1"}
         image_call = [call for call in client.calls if call[1].endswith("/v2/users/openid-1/messages")][-1]
         assert image_call[2]["json"] == {
-            "msg_type": 7, "media": {"file_info": "file-info-1"}, "msg_seq": 12,
+            "msg_type": 7, "content": " ", "media": {"file_info": "file-info-1"}, "msg_seq": 12,
         }
         deleted = await transport("delete_c2c", {"openid": "openid-1", "message_id": "stream-1"})
         assert deleted == {"id": "deleted"}

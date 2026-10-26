@@ -11,7 +11,7 @@ from backend.app.channels import media
 from backend.app.channels.group_tools import MultichannelGroupRepository
 from backend.app.channels.napcat import NapCatAdapter, NapCatConfig
 from backend.app.memory_config import MemorySettingsStore
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.models import RoleInput, RoleProfile
 from backend.app.multichannel import MultichannelStore
@@ -89,12 +89,14 @@ def test_qq_current_and_quoted_attachment_ids_roundtrip_but_old_ids_are_rejected
                 assert set(self.ids) == {"current.txt", "quoted.md"}
                 yield ModelToolCall("read-current", "read_attachment", {"attachment_id": self.ids["current.txt"]})
                 yield ModelToolCall("read-quoted", "read_attachment", {"attachment_id": self.ids["quoted.md"]})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 2:
                 results = {item["tool_call_id"]: item["content"] for item in messages if item["role"] == "tool"}
                 assert results["read-current"].startswith("中" * 2000 + "\n")
                 assert "character_offset=2000" in results["read-current"]
                 assert results["read-quoted"].startswith("quoted attachment\n")
                 yield ModelToolCall("continue-current", "read_attachment", {"attachment_id": self.ids["current.txt"], "character_offset": 2000})
+                yield ModelResponseDone("tool_use")
             else:
                 last = next(item for item in reversed(messages) if item["role"] == "tool")
                 assert last["tool_call_id"] == "continue-current"
@@ -114,6 +116,7 @@ def test_qq_current_and_quoted_attachment_ids_roundtrip_but_old_ids_are_rejected
             self.calls += 1
             if self.calls == 1:
                 yield ModelToolCall("old-file", "read_attachment", {"attachment_id": self.attachment_id})
+                yield ModelResponseDone("tool_use")
             else:
                 result = next(item for item in reversed(messages) if item["role"] == "tool")
                 assert result["tool_call_id"] == "old-file"

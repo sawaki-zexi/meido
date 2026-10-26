@@ -3,7 +3,7 @@ import asyncio
 import json
 import pytest
 
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from test_background_shell_api import api as shell_api  # noqa: F401
 from test_spawn_api import api  # noqa: F401
 
@@ -27,6 +27,7 @@ def test_http_create_list_due_delivery_next_history_and_cancel(api, monkeypatch)
                 assert action[0] in {item['function']['name'] for item in tools}
                 arguments = {'tier': 'instant', 'trigger': 'after', 'when': '10s', 'message': 'due-known-158'} if action[0] == 'schedule' else {} if action[0] == 'list_schedules' else {'id': receipts[0]['id']}
                 yield ModelToolCall('time-call', action[0], arguments)
+                yield ModelResponseDone("tool_use")
             else:
                 receipts.append(json.loads(results[-1]['content']))
                 yield ModelTextDelta('完成')
@@ -72,12 +73,14 @@ def test_soft_outlives_parent_with_spawn_disabled_and_reads_a_real_file_once(api
                 assert {item['function']['name'] for item in tools} == {'read_file', 'list_dir', 'write_file', 'edit_file', 'web_search', 'web_fetch'}
                 if not results:
                     yield ModelToolCall('soft-read', 'read_file', {'path': 'time-evidence.txt'})
+                    yield ModelResponseDone("tool_use")
                 else:
                     assert 'file-proof-158' in str(results[-1])
                     yield ModelTextDelta('soft-delivered-158')
             elif not results:
                 yield ModelToolCall('schedule-soft', 'schedule', {'tier': 'soft', 'trigger': 'after',
                     'when': '1s', 'prompt': 'Read time-evidence.txt and return its proof.'})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('父回合已结束')
     monkeypatch.setattr(main, 'model_adapter', Adapter())
@@ -114,6 +117,7 @@ def test_model_cannot_inject_host_schedule_authority_or_time(api, monkeypatch, f
             if not any(item['role'] == 'tool' for item in messages):
                 yield ModelToolCall('forged', 'schedule', {'tier': 'instant', 'trigger': 'after', 'when': '1s',
                     'message': 'must-not-deliver', field: 'forged-host-fact'})
+                yield ModelResponseDone("tool_use")
             else:
                 receipts.append(messages[-1])
                 yield ModelTextDelta('已拒绝')
@@ -140,6 +144,7 @@ def test_legacy_tool_selection_does_not_revoke_default_plan_and_cancellation_rem
             if not results:
                 args = {'tier': 'instant', 'trigger': 'every', 'when': '10s', 'message': 'revoked'} if action[0] == 'schedule' else {} if action[0] == 'list_schedules' else {'id': receipts[0]['id']}
                 yield ModelToolCall('call', action[0], args)
+                yield ModelResponseDone("tool_use")
             else:
                 receipts.append(json.loads(results[-1]['content']))
                 yield ModelTextDelta('完成')
@@ -179,6 +184,7 @@ def test_relative_time_is_captured_before_history_preparation_and_model_delay(ap
             if not any(m['role'] == 'tool' for m in messages):
                 now[0] += 20
                 yield ModelToolCall('delay', 'schedule', {'tier': 'instant', 'trigger': 'after', 'when': '10s', 'message': 'received-based'})
+                yield ModelResponseDone("tool_use")
             else:
                 receipts.append(json.loads(messages[-1]['content']))
                 yield ModelTextDelta('创建')
@@ -225,6 +231,7 @@ def test_soft_freezes_the_resolved_default_connection_by_id(api, monkeypatch, tm
             elif not any(m['role'] == 'tool' for m in messages):
                 assert configuration.id == original.id
                 yield ModelToolCall('default-soft', 'schedule', {'tier': 'soft', 'trigger': 'after', 'when': '1s', 'prompt': 'return a proof'})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('已创建')
     monkeypatch.setattr(main, 'model_adapter', Adapter())
