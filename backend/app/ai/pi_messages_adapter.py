@@ -14,6 +14,7 @@ from .request_budget import image_budget_client_kwargs, budgeted_model_stream, b
 
 from .model_adapter import _raise_for_status_with_details, _response_error_detail
 from .message_transform import transform_messages
+from .model_protocol import preserve_stop_reason
 from .model_protocol import copy_json, effective_tools, model_cost, normalize_tools, safe_tool_id
 from .model_types import (
     ModelAssistantMessage, ModelCapabilities, ModelContentBlock, ModelImageBlock, ModelMessage,
@@ -172,8 +173,8 @@ class PiMessagesAdapter:
                                 continue
                             try:
                                 event = json.loads(raw)
-                            except json.JSONDecodeError:
-                                continue
+                            except json.JSONDecodeError as error:
+                                raise RuntimeError("模型流包含无效 JSON") from error
                             if isinstance(event, Mapping):
                                 if event.get("type") in {"done", "error"}:
                                     terminal = True
@@ -189,7 +190,7 @@ class PiMessagesAdapter:
                                     else:
                                         yield item
                                 if event.get("type") == "done":
-                                    reason = {"toolUse": "tool_use"}.get(str(event.get("reason")), str(event.get("reason") or "stop"))
+                                    reason = preserve_stop_reason(reason, {"toolUse": "tool_use"}.get(str(event.get("reason")), str(event.get("reason") or "incomplete")))
                                     usage = _usage(event.get("usage"))
                                     response_id = event.get("responseId") if isinstance(event.get("responseId"), str) else response_id
                                 if event.get("type") == "error":
@@ -201,15 +202,17 @@ class PiMessagesAdapter:
                     if data_lines:
                         try:
                             event = json.loads("\n".join(data_lines))
-                        except json.JSONDecodeError:
-                            event = None
+                        except json.JSONDecodeError as error:
+                            raise RuntimeError("模型流包含无效 JSON") from error
                         if isinstance(event, Mapping) and event.get("type") == "done":
                             terminal = True
-                            reason = {"toolUse": "tool_use"}.get(str(event.get("reason")), str(event.get("reason") or "stop"))
+                            reason = preserve_stop_reason(reason, {"toolUse": "tool_use"}.get(str(event.get("reason")), str(event.get("reason") or "incomplete")))
                             usage = _usage(event.get("usage"))
             if not terminal:
                 yield ModelStreamError("模型流式响应未收到 done/error 终止事件")
                 return
+            if any(call.get("ended") != "1" for call in tool_parts.values()):
+                reason = preserve_stop_reason(reason, "incomplete")
             yield ModelStreamDone(ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(provider=configuration.provider, api="pi-messages", model=configuration.model, response_id=response_id, usage=usage, stop_reason=reason, timestamp=int(time.time() * 1000))))
         except httpx.HTTPStatusError as error:
             detail = _response_error_detail(error.response, configuration.apiKey)
@@ -225,6 +228,8 @@ class PiMessagesAdapter:
         kind = str(event.get("type") or event_type)
         index = event.get("contentIndex", 0)
         index = index if isinstance(index, int) else 0
+        if kind in {"toolcall_start", "toolcall_delta", "toolcall_end"} and tools.get(index, {}).get("ended") == "1":
+            raise ValueError("Pi Messages 重复使用已结束的工具块")
         if kind == "text_start":
             texts.setdefault(index, "")
             blocks.append(ModelTextBlock(""))
@@ -256,13 +261,23 @@ class PiMessagesAdapter:
         if kind == "toolcall_delta":
             delta = str(event.get("delta") or "")
             tools.setdefault(index, {"id": f"call-{index}", "name": "", "arguments": ""})["arguments"] += delta
+            tools[index]["ended"] = "0"
             return ModelToolCallDelta(tools[index]["id"], delta)
         if kind == "toolcall_end":
             raw_call = event.get("toolCall")
             if not isinstance(raw_call, Mapping):
                 raw_call = tools.get(index, {})
-            arguments = raw_call.get("arguments") if isinstance(raw_call.get("arguments"), Mapping) else {}
-            call = ModelToolCallBlock(str(raw_call.get("id") or tools.get(index, {}).get("id") or f"call-{index}"), str(raw_call.get("name") or tools.get(index, {}).get("name") or ""), dict(arguments))
+            raw_arguments = raw_call.get("arguments")
+            complete = isinstance(raw_arguments, Mapping)
+            if isinstance(raw_arguments, str):
+                try:
+                    raw_arguments = json.loads(raw_arguments)
+                    complete = isinstance(raw_arguments, dict)
+                except ValueError:
+                    complete = False
+            arguments = dict(raw_arguments) if isinstance(raw_arguments, Mapping) else {}
+            call = ModelToolCallBlock(str(raw_call.get("id") or tools.get(index, {}).get("id") or f"call-{index}"), str(raw_call.get("name") or tools.get(index, {}).get("name") or ""), dict(arguments), arguments_complete=complete)
+            tools.setdefault(index, {})["ended"] = "1"
             blocks.append(call)
             return ModelToolCallEnd(call)
         return ()
