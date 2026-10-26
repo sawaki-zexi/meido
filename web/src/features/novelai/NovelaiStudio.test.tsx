@@ -70,6 +70,9 @@ it('shows the selected role history on a stage and reuses parameters without con
   render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
   expect(await screen.findByAltText('one.png')).toBeInTheDocument();
   expect(screen.getByText('1216 × 832')).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: '当前作品参数' })).not.toBeVisible();
+  expect(screen.getByRole('button', { name: '复用参数' })).toBeVisible();
+  await user.click(screen.getByText('图片信息'));
   const details = screen.getByRole('region', { name: '当前作品参数' });
   expect(within(details).getByText('blue sky')).toBeInTheDocument();
   expect(within(details).getByText('rain')).toBeInTheDocument();
@@ -112,11 +115,10 @@ it('opens the current role prompt-tag library from the studio without starting g
   render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
   await screen.findByText('暂无生图历史。');
   await user.click(screen.getByRole('button', { name: '管理提示标签' }));
-  const library = await screen.findByRole('dialog', { name: '诗织的提示标签库' });
-  expect(await within(library).findByRole('region', { name: '本角色提示标签库' })).toBeInTheDocument();
+  const library = await screen.findByRole('region', { name: '本角色提示标签库' });
   expect(within(library).getByText('雨景')).toBeInTheDocument();
-  await user.click(within(library).getByRole('button', { name: '关闭' }));
-  expect(screen.queryByRole('dialog', { name: '诗织的提示标签库' })).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '返回图片工作台' }));
+  expect(screen.queryByRole('region', { name: '本角色提示标签库' })).not.toBeInTheDocument();
   expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
   expect(calls.some((call) => call.path === '/api/roles/r1/novelai/prompt-tags?limit=50')).toBe(true);
 });
@@ -132,8 +134,9 @@ it('keeps an img2img source and background flag when reusing historical paramete
   const user = userEvent.setup();
   render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
   await screen.findByAltText('one.png');
+  await user.click(screen.getByText('图片信息'));
   const details = within(screen.getByRole('region', { name: '当前作品参数' }));
-  expect(details.getAllByText('图生图')).toHaveLength(2);
+  expect(details.getByText('图生图')).toBeVisible();
   expect(details.getByText('base-uploaded-earlier')).toBeInTheDocument();
   expect(details.getByText('0.62')).toBeInTheDocument();
   expect(details.getByText('0.18')).toBeInTheDocument();

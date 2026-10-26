@@ -3,13 +3,16 @@ import type { Role } from '../../api/types';
 import type { GenerationParameters, GenerationView } from '../../api/novelai';
 import { errorMessage } from '../../api/client';
 import { Avatar } from '../../ui/Avatar';
-import { Dialog } from '../../ui/Dialog';
 import { Icon } from '../../ui/Icon';
 import { Notice, Placeholder } from '../../ui/Status';
 import { PromptTagManager } from './PromptTagManager';
+import { StudioProgress } from './StudioProgress';
+import { StudioBaseImage } from './StudioBaseImage';
+import { StudioPromptPreferences } from './StudioPromptPreferences';
 import { undesiredContentPresetLabel } from './promptPreferences';
 import { useGenerationDrawer } from './useGenerationDrawer';
 import { statusLabels, deliveryLabels, generationErrorMessage, writebackLabels } from './generationLabels';
+import './novelaiStudio.css';
 
 type Props = { roles: Role[]; initialRoleId?: string; selectedRoleId?: string; onRoleChange?: (roleId: string) => void;
   onGenerated?: () => void | Promise<void>; onOpenSettings?: () => void; settingsOpen?: boolean };
@@ -41,6 +44,8 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [stageError, setStageError] = useState('');
   const [promptTagsOpen, setPromptTagsOpen] = useState(false);
+  const [promptTagsVisited, setPromptTagsVisited] = useState(false);
+  const [promptTab, setPromptTab] = useState<'positive' | 'negative'>('positive');
   const studio = useGenerationDrawer({ role, onClose: () => {}, onGenerated: onGenerated ?? (() => {}), defaultDeliveryMode: 'history_only',
     onGenerationAccepted: (generation) => setSelectedAttemptId(generation.attemptId) });
   const { configuration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
@@ -91,26 +96,30 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
     setStageError('');
   };
   const submitForm = (event: FormEvent) => { event.preventDefault(); void submit(event); };
+  const changeMode = (mode: GenerationParameters['mode']) => {
+    const { base_attachment_id: _base, strength: _strength, noise: _noise, ...rest } = parameters;
+    setParameters(mode === 'img2img' ? { ...rest, mode, strength: .7, noise: .2 } : { ...rest, mode });
+  };
 
   return <section className="novelai-studio" aria-label="NovelAI 图片工作台">
     <header className="novelai-studio-header">
-      <div>
-        <p className="eyebrow">NovelAI</p>
-        <h1>图片工作台</h1>
-        <p className="muted">在角色范围内浏览作品、复用参数并开始新的生成。</p>
-      </div>
+      <div className="studio-workspace-title"><Icon name={promptTagsOpen ? 'cards' : 'image'} size={20} /><h1>{promptTagsOpen ? '提示词库' : '图片工作台'}</h1></div>
       <div className="studio-header-controls">
         {onOpenSettings && <button type="button" className="studio-tags-button" onClick={onOpenSettings}>NovelAI 设置</button>}
-        <button type="button" className="studio-tags-button" onClick={() => setPromptTagsOpen(true)}><Icon name="cards" size={17} /><span>管理提示标签</span></button>
-        <label className="studio-role-picker"><span>当前角色</span><select aria-label="工作台角色" value={role.id} disabled={busy || uploading} onChange={(event) => setRoleId(event.target.value)}>
-          {roles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-        </select></label>
+        {promptTagsOpen ? <button type="button" className="studio-tags-button" onClick={() => setPromptTagsOpen(false)}><Icon name="back" size={17} /><span>返回图片工作台</span></button>
+          : <button type="button" className="studio-tags-button" onClick={() => { setPromptTagsVisited(true); setPromptTagsOpen(true); }}><Icon name="cards" size={17} /><span>管理提示标签</span></button>}
       </div>
     </header>
     {(error || stageError) && <Notice onDismiss={() => { setError(''); setStageError(''); }}>{error || stageError}</Notice>}
-    <div className="novelai-studio-grid">
-      <form className="novelai-prompt-panel" aria-label="工作台生成设置" onSubmit={submitForm}>
-        <div className="studio-panel-heading"><div><h2>生成设置</h2><p className="muted">使用插件中的生图配置，受每日次数上限约束。</p></div><Avatar id={role.id} name={role.name} avatarUrl={role.avatarUrl} /></div>
+    <div className="novelai-studio-grid" hidden={promptTagsOpen}>
+      <form className="novelai-prompt-panel" aria-label="工作台生成设置" noValidate onSubmit={submitForm}>
+        <div className="studio-panel-scroll">
+        <div className="studio-role-bar"><Avatar id={role.id} name={role.name} avatarUrl={role.avatarUrl} />
+          <label className="studio-role-picker"><select aria-label="工作台角色" value={role.id} disabled={busy || uploading} onChange={(event) => setRoleId(event.target.value)}>
+            {roles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select></label>
+          {configuration && <StudioPromptPreferences configuration={configuration} disabled={busy || uploading || configurationRefreshing || Boolean(attempt.current)} onSave={refreshConfiguration} />}
+        </div>
         {!configuration && !error && <Placeholder loading>正在加载生图设置…</Placeholder>}
         {configurationRefreshing && <p role="status">正在同步生图设置…</p>}
         {configuration && <>
@@ -122,25 +131,28 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
               : channelRegeneration && <span>本次重生成会向原渠道再次发送一条新的媒体消息。</span>}
             <label className="checkbox-field"><input type="checkbox" checked={consent} disabled={busy || uploading || Boolean(attempt.current)} onChange={(event) => setConsent(event.target.checked)} />我确认本次重生成可能产生费用</label></div>}
           <fieldset disabled={busy || uploading || !allowed || Boolean(attempt.current)}>
-            <label className="field"><span>英文正向 tags</span><textarea aria-label="工作台英文正向 tags" required maxLength={4000} value={parameters.prompt} onChange={(event) => patch({ prompt: event.target.value })} /></label>
-            <label className="field"><span>英文负向 tags</span><textarea aria-label="工作台英文负向 tags" maxLength={4000} value={parameters.negative_prompt ?? ''} onChange={(event) => patch({ negative_prompt: event.target.value })} /></label>
+            <div className="studio-prompt-tabs" role="tablist" aria-label="提示词类型">
+              <button type="button" role="tab" id="positive-prompt-tab" aria-controls="studio-prompt-editor" aria-selected={promptTab === 'positive'} onClick={() => setPromptTab('positive')}>正向提示词</button>
+              <button type="button" role="tab" id="negative-prompt-tab" aria-controls="studio-prompt-editor" aria-selected={promptTab === 'negative'} onClick={() => setPromptTab('negative')}>负向提示词{parameters.negative_prompt?.trim() && <span className="studio-tab-dot" aria-hidden="true" />}</button>
+            </div>
+            <div id="studio-prompt-editor" className="studio-prompt-editor" role="tabpanel" aria-labelledby={promptTab === 'positive' ? 'positive-prompt-tab' : 'negative-prompt-tab'}>
+              {promptTab === 'positive'
+                ? <textarea aria-label="工作台英文正向 tags" required maxLength={4000} placeholder="1girl, library, sunset light" value={parameters.prompt} onChange={(event) => patch({ prompt: event.target.value })} />
+                : <textarea aria-label="工作台英文负向 tags" maxLength={4000} placeholder="lowres, bad hands, blurry" value={parameters.negative_prompt ?? ''} onChange={(event) => patch({ negative_prompt: event.target.value })} />}
+            </div>
             {!modeAllowed && <p role="status" className="field-hint">当前选择的生图模式已被服务设置关闭，请切换到已启用的模式。</p>}
             {!txt2imgAllowed && !img2imgAllowed && <p role="status" className="field-hint">文生图和图生图都已关闭，当前不能提交新的生图请求。</p>}
-            <label className="field"><span>生成模式</span><select aria-label="工作台生成模式" value={parameters.mode} onChange={(event) => {
-              const { base_attachment_id: _base, strength: _strength, noise: _noise, ...rest } = parameters;
-              setParameters(event.target.value === 'img2img' ? { ...rest, mode: 'img2img', strength: .7, noise: .2 } : { ...rest, mode: 'txt2img' });
-            }}><option value="txt2img" disabled={!txt2imgAllowed}>文生图{!txt2imgAllowed ? '（服务已关闭）' : ''}</option><option value="img2img" disabled={!img2imgAllowed}>图生图{!img2imgAllowed ? '（服务已关闭）' : ''}</option></select></label>
-            {parameters.mode === 'img2img' && <>
-              <label className="field"><span>本角色底图</span><select aria-label="工作台本角色底图" required value={parameters.base_attachment_id ?? ''} onChange={(event) => patch({ base_attachment_id: event.target.value })}><option value="">选择底图</option>{inputCandidates.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
-              <label className="field"><span>上传底图（最多 10 MiB）</span><input aria-label="工作台上传生图底图" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { void upload(event.target.files?.[0]); event.target.value = ''; }} /></label>
-              <label className="field"><span>图生图强度</span><input type="number" aria-label="工作台图生图强度" min="0.01" max="1" step="0.01" required value={parameters.strength} onChange={(event) => patch({ strength: Number(event.target.value) })} /></label>
-              <label className="field"><span>图生图噪声</span><input type="number" aria-label="工作台图生图噪声" min="0" max="0.99" step="0.01" required value={parameters.noise} onChange={(event) => patch({ noise: Number(event.target.value) })} /></label>
-            </>}
+            <StudioBaseImage roleId={role.id} parameters={parameters} candidates={inputCandidates} disabled={busy || uploading || !allowed || !img2imgAllowed || Boolean(attempt.current)}
+              onPatch={patch} onUpload={(file) => void upload(file)} onRemove={() => changeMode(txt2imgAllowed ? 'txt2img' : 'img2img')} />
             <label className="field"><span>图片尺寸</span><select aria-label="工作台图片尺寸" value={parameters.size_preset} onChange={(event) => {
               const { custom_width: _width, custom_height: _height, ...rest } = parameters;
               setParameters({ ...rest, size_preset: event.target.value as GenerationParameters['size_preset'], ...(event.target.value === 'custom' ? { custom_width: 64, custom_height: 64 } : {}) });
             }}><option value="square">方形 1024 × 1024</option><option value="landscape">横图 1216 × 832</option><option value="portrait">竖图 832 × 1216</option><option value="custom">自定义</option></select></label>
             {parameters.size_preset === 'custom' && <div className="studio-size-fields">{(['custom_width', 'custom_height'] as const).map((name) => <label className="field" key={name}><span>{name === 'custom_width' ? '宽度' : '高度'}</span><input aria-label={name === 'custom_width' ? '工作台生图宽度' : '工作台生图高度'} type="number" min="64" max="1024" step="64" required value={parameters[name]} onChange={(event) => patch({ [name]: Number(event.target.value) })} /></label>)}</div>}
+            <details className="studio-advanced"><summary>高级参数</summary><div className="studio-advanced-fields">
+            <label className="field"><span>生成模式</span><select aria-label="工作台生成模式" value={parameters.mode} onChange={(event) => changeMode(event.target.value as GenerationParameters['mode'])}>
+              <option value="txt2img" disabled={!txt2imgAllowed}>文生图{!txt2imgAllowed ? '（服务已关闭）' : ''}</option><option value="img2img" disabled={!img2imgAllowed}>图生图{!img2imgAllowed ? '（服务已关闭）' : ''}</option>
+            </select></label>
             <label className="field"><span>模型</span><select aria-label="工作台生图模型" required value={configuration.allowedModels.includes(parameters.model ?? '') ? parameters.model : ''} onChange={(event) => patch({ model: event.target.value })}><option value="">选择当前允许的模型</option>{configuration.allowedModels.map((item) => <option key={item}>{item}</option>)}</select></label>
             <label className="field"><span>采样器</span><select aria-label="工作台采样器" required value={configuration.allowedSamplers.includes(parameters.sampler ?? '') ? parameters.sampler : ''} onChange={(event) => patch({ sampler: event.target.value })}><option value="">选择当前允许的采样器</option>{configuration.allowedSamplers.map((item) => <option key={item}>{item}</option>)}</select></label>
             <label className="field"><span>采样步数</span><input aria-label="工作台采样步数" type="number" min="1" max={configuration.maxSteps} step="1" required value={parameters.steps} onChange={(event) => patch({ steps: Number(event.target.value) })} /></label>
@@ -151,30 +163,26 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
             <label className="field"><span>结果交付</span><select aria-label="工作台结果交付" value={deliveryMode} onChange={(event) => { setDeliveryMode(event.target.value as typeof deliveryMode); setConsent(false); }}><option value="history_only">仅保存在工作台历史</option><option value="replacement">{replacementLabel}</option></select></label>
             {source && deliveryMode === 'replacement' && (parameters.samples ?? 1) > 1 && <p role="status" className="field-hint">替换单张历史图片时只能生成一张；多张结果请选择仅保存历史。</p>}
             <label className="checkbox-field"><input type="checkbox" checked={parameters.background ?? false} onChange={(event) => patch({ background: event.target.checked })} /><span>{deliveryMode === 'history_only' ? '后台生成，结果仅保存在历史' : `后台生成，完成后${replacementLabel}`}</span></label>
+            </div></details>
           </fieldset>
+        </>}
+        </div>
+        {configuration && <div className="studio-panel-footer">
           <div className="form-actions studio-actions"><button type="submit" className="primary" disabled={busy || uploading || !allowed || !modeAllowed || Boolean(source && !consent)}>{busy ? '正在生成…' : attempt.current ? '重查本次生成' : source ? '确认并重新生成' : (parameters.samples ?? 1) === 1 ? '生成一张图片' : `生成 ${parameters.samples} 张图片`}</button>
             {attempt.current && !busy && <button type="button" onClick={() => { studio.attempt.current = null; setConsent(false); setAccepted(false); setError(''); setSeed(''); setParameters({ ...parameters }); }}>另开一次生成</button>}</div>
           <p className="studio-usage">今日账户尝试 {page?.usage.accountAttempts ?? 0}/{configuration.dailyAttemptLimit}，本角色手动尝试 {page?.usage.manualAttempts ?? 0}/{configuration.manualDailyAttempts ?? 10}。</p>
-        </>}
+        </div>}
       </form>
       <div className="novelai-stage-column">
-        <div className="novelai-stage" aria-label="当前作品">
+        <div className="novelai-stage" aria-label="当前作品" aria-busy={busy || Boolean(selected && ['prepared', 'dispatching', 'received', 'local_pending'].includes(selected.status))}>
+          {(busy || (selected && ['prepared', 'dispatching', 'received', 'local_pending'].includes(selected.status))) && <StudioProgress key={selected?.attemptId ?? 'submitting'} />}
           {selectedImages.length > 0 && role ? <div className="novelai-stage-gallery" aria-label={`当前作品 ${selectedImages.length} 张图片`}>{selectedImages.map((image) => <a href={imageUrl(role.id, image.id)} target="_blank" rel="noreferrer" key={image.id}><img src={imageUrl(role.id, image.id)} alt={image.name} /></a>)}</div>
             : selected ? <div className="studio-stage-status"><Icon name="image" size={34} /><strong>{statusLabels[selected.status] ?? selected.status}</strong><span>{generationErrorMessage(selected)}</span></div>
             : page ? <div className="studio-stage-status"><Icon name="image" size={34} /><strong>选择一张历史作品</strong><span>生成完成后，图片会出现在这里。</span></div>
             : error ? <div className="studio-stage-status" role="status"><Icon name="image" size={34} /><strong>作品读取失败</strong><span>{error}</span></div>
             : <Placeholder loading>正在加载作品…</Placeholder>}
         </div>
-        {selected && <div className="studio-stage-meta" role="status" aria-label="当前作品状态">
-          <p>生成：{statusLabels[selected.status] ?? selected.status}</p>
-          <p>投递：{deliveryLabels[selected.deliveryStatus] ?? '尚未确认'}</p>
-          <p>消费：{selected.consumption === 'possible' ? '已出网，可能计费；未确认实际扣费。' : selected.consumption === 'not_dispatched' ? '生成请求尚未出网。' : '消费状态尚未确认。'}</p>
-          {selected.purpose === 'scene_cg' && <p>{selected.auxiliaryConsumption === 'possible' ? '辅助请求已出网，可能计费；未出图仍计入 CG 与账户尝试。' : selected.auxiliaryConsumption === 'not_dispatched' ? '辅助请求尚未出网。' : '辅助消费状态尚未确认。'}</p>}
-          {selected.writebackStatus && writebackLabels[selected.writebackStatus] && <p>{writebackLabels[selected.writebackStatus]}</p>}
-          {selected.errorCode && <p>{generationErrorMessage(selected)}</p>}
-        </div>}
-        {selected?.parameters && <section className="studio-stage-meta" aria-label="当前作品参数">
-            <div className="studio-stage-summary">
+        {selected?.parameters && <div className="studio-stage-summary">
               <div className="studio-stage-facts"><span>{dimensions(selected.parameters)}</span><span>{modeLabel(selected.parameters.mode)}</span><span>{selected.parameters.samples ?? 1} 张</span><span>{selected.parameters.model ?? '模型未记录'}</span><span>{selected.parameters.sampler ?? '采样器未记录'} · {selected.parameters.steps ?? '未知'} 步</span><span>Seed {selected.parameters.seed}</span></div>
               <div className="studio-stage-actions">
                 {selectedImages.length > 1 && <label className="studio-role-picker"><span>当前图片</span><select aria-label="当前作品图片" value={selectedImage?.id ?? ''} disabled={busy || uploading || Boolean(attempt.current)} onChange={(event) => { setSelectedImageId(event.target.value); clearSource(); }}>
@@ -184,9 +192,19 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
                 <button type="button" disabled={busy || uploading || Boolean(attempt.current)} onClick={() => handleReuseParameters(selected)}>复用参数</button>
                 {selectedImage && <button type="button" disabled={busy || uploading || Boolean(attempt.current)} onClick={() => selectImage(selected, selectedImage)}>重新生成</button>}
               </div>
-            </div>
-            <details open>
-              <summary>完整参数</summary>
+            </div>}
+        {selected && <details className="studio-image-info">
+          <summary>图片信息</summary>
+        {selected && <div className="studio-stage-meta" role="status" aria-label="当前作品状态">
+          <p>生成：{statusLabels[selected.status] ?? selected.status}</p>
+          <p>投递：{deliveryLabels[selected.deliveryStatus] ?? '尚未确认'}</p>
+          <p>消费：{selected.consumption === 'possible' ? '已出网，可能计费；未确认实际扣费。' : selected.consumption === 'not_dispatched' ? '生成请求尚未出网。' : '消费状态尚未确认。'}</p>
+          {selected.purpose === 'scene_cg' && <p>{selected.auxiliaryConsumption === 'possible' ? '辅助请求已出网，可能计费；未出图仍计入 CG 与账户尝试。' : selected.auxiliaryConsumption === 'not_dispatched' ? '辅助请求尚未出网。' : '辅助消费状态尚未确认。'}</p>}
+          {selected.writebackStatus && writebackLabels[selected.writebackStatus] && <p>{writebackLabels[selected.writebackStatus]}</p>}
+          {selected.errorCode && <p>{generationErrorMessage(selected)}</p>}
+        </div>}
+        {selected?.parameters && <section className="studio-stage-meta" aria-label="当前作品参数">
+            <div className="studio-full-parameters">
               <dl className="studio-parameter-list">
                 <div className="studio-parameter-wide"><dt>正向 tags</dt><dd>{selected.parameters.prompt || '（空）'}</dd></div>
                 <div className="studio-parameter-wide"><dt>负向 tags</dt><dd>{selected.parameters.negative_prompt || '（空）'}</dd></div>
@@ -205,8 +223,9 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
                 </>}
                 <div><dt>后台生成</dt><dd>{selected.parameters.background ? '是' : '否'}</dd></div>
               </dl>
-            </details>
+            </div>
         </section>}
+        </details>}
         <nav className="novelai-filmstrip" aria-label="历史作品">
           <div className="filmstrip-heading"><h2>历史</h2><span>{records.length} 条</span></div>
           <div className="filmstrip-scroll">{records.length ? records.map((record) => {
@@ -223,8 +242,8 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
       </div>
     </div>
     {watched.length > 0 && <p className="studio-background-status" role="status">有 {watched.length} 条生成或交付仍在处理中，历史会自动更新。</p>}
-    {promptTagsOpen && <Dialog title={`${role.name}的提示标签库`} variant="modal" modalFocus onClose={() => setPromptTagsOpen(false)}>
+    {promptTagsVisited && <div className="studio-tag-page" hidden={!promptTagsOpen} aria-label={`${role.name}的提示标签库`}>
       <PromptTagManager key={role.id} roleId={role.id} expanded />
-    </Dialog>}
+    </div>}
   </section>;
 }

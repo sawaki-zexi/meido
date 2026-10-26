@@ -1,0 +1,81 @@
+section.novelai-studio { display: flex; flex-direction: column; gap: 12px; padding: 16px; overflow: hidden; }
+section.novelai-studio [hidden] { display: none !important; }
+.novelai-studio .novelai-studio-header { max-width: none; align-items: center; gap: 12px; }
+.novelai-studio .studio-workspace-title { display: flex; align-items: center; gap: 10px; color: var(--ink-faint); }
+.novelai-studio .studio-workspace-title h1 { color: var(--ink); font-size: 18px; font-weight: 600; }
+.novelai-studio .novelai-studio-grid { flex: 1; max-width: none; grid-template-columns: clamp(300px, 32%, 392px) minmax(0, 1fr); gap: 16px; overflow: hidden; }
+.novelai-studio .novelai-prompt-panel { padding: 0; grid-template-rows: minmax(0, 1fr) auto; gap: 0; border-radius: 16px; overflow: hidden; }
+.novelai-studio .studio-panel-scroll { display: grid; align-content: start; gap: 16px; overflow-y: auto; padding: 16px; min-height: 0; }
+.novelai-studio .studio-role-bar { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.novelai-studio .studio-role-bar .avatar { width: 30px; height: 30px; flex-shrink: 0; }
+.novelai-studio .studio-role-bar .studio-role-picker { flex: 1; min-width: 0; }
+.novelai-studio .studio-role-bar select { width: 100%; min-width: 0; height: 40px; }
+.novelai-studio .studio-preferences { position: relative; }
+.novelai-studio .studio-preferences-trigger { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-input); }
+.novelai-studio .studio-preferences-popover { position: absolute; z-index: 6; top: calc(100% + 8px); right: 0; width: 264px; padding: 16px; display: grid; gap: 14px; border: 1px solid var(--line); border-radius: 12px; background: #fffafb; box-shadow: 0 12px 36px rgb(85 45 65 / 16%); }
+.novelai-studio .studio-preferences-popover small { color: var(--ink-faint); font-size: 11px; line-height: 1.6; }
+.novelai-studio .studio-preferences-model { display: grid; gap: 6px; color: var(--ink-faint); font-size: 12px; }
+.novelai-studio .studio-preferences-model code { overflow-wrap: anywhere; font-size: 11px; }
+.novelai-studio .studio-prompt-tabs { display: flex; padding: 3px; border-radius: 10px; background: rgb(217 193 210 / 18%); }
+.novelai-studio .studio-prompt-tabs button { display: flex; align-items: center; justify-content: center; gap: 6px; flex: 1; border: 0; border-radius: 7px; background: transparent; min-width: 0; padding: 8px 4px; color: var(--ink-faint); font-size: 13px; }
+.novelai-studio .studio-prompt-tabs button[aria-selected="true"] { background: rgb(255 255 255 / 88%); color: var(--ink); box-shadow: 0 2px 6px rgb(94 51 75 / 7%); }
+.novelai-studio .studio-tab-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--rose); }
+.novelai-studio .studio-prompt-editor textarea { height: clamp(132px, 28vh, 350px); min-height: 132px; resize: vertical; width: 100%; line-height: 1.65; }
+.novelai-studio .studio-advanced { border-top: 1px solid var(--line); padding-top: 12px; color: var(--ink-faint); }
+.novelai-studio .studio-advanced summary { cursor: pointer; font-size: 13px; }
+.novelai-studio .studio-advanced-fields { display: grid; gap: 12px; padding-top: 12px; }
+.novelai-studio .studio-panel-footer { padding: 14px 16px 12px; border-top: 1px solid var(--line); background: rgb(255 255 255 / 42%); }
+.novelai-studio .studio-panel-footer .studio-actions { margin: 0; display: grid; }
+.novelai-studio .studio-panel-footer .primary { min-height: 44px; width: 100%; }
+.novelai-studio .studio-panel-footer .studio-usage { margin: 8px 0 0; font-size: 11px; text-align: center; }
+.novelai-studio .studio-tag-page { flex: 1; overflow-y: auto; min-height: 0; padding: 12px; }
+.novelai-studio .novelai-stage-column { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
+.novelai-studio .novelai-stage { flex: 1 0 260px; border-radius: 16px; }
+.novelai-studio .novelai-stage-gallery { position: absolute; inset: 0; height: 100%; max-height: none; grid-auto-rows: minmax(0, 1fr); }
+.novelai-studio .novelai-stage-gallery a { height: 100%; overflow: hidden; }
+.novelai-studio .novelai-stage-gallery img { width: 100%; height: 100%; max-height: 100%; min-height: 0; object-fit: contain; }
+.novelai-studio .studio-stage-summary { flex: 0 0 auto; padding: 4px 2px; gap: 10px; }
+.novelai-studio .studio-stage-facts { font-size: 11px; color: var(--ink-faint); }
+.novelai-studio .studio-stage-actions { gap: 8px; }
+.novelai-studio .studio-stage-actions > a { color: var(--ink-soft); text-decoration: none; border: 1px solid var(--line); padding: 8px 12px; border-radius: 8px; font-size: 12px; }
+.novelai-studio .studio-panel-footer .primary { color: white; background: var(--rose); border-color: transparent; }
+.novelai-studio .studio-panel-scroll > p.muted { font-size: 11px; line-height: 1.6; margin: 0; color: var(--ink-faint); }
+.novelai-studio .studio-image-info { flex-shrink: 0; border: 1px solid var(--line); border-radius: 10px; background: rgb(255 255 255 / 42%); }
+.novelai-studio .studio-image-info > summary { padding: 9px 12px; font-size: 12px; color: var(--ink-faint); cursor: pointer; }
+.novelai-studio .studio-image-info .studio-stage-meta { box-shadow: none; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
+.novelai-studio .studio-progress { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: rgb(255 249 252 / 88%); color: var(--ink-soft); }
+.novelai-studio .studio-progress > span:last-child { font-size: 12px; color: var(--ink-faint); }
+.novelai-studio .studio-progress-spinner { width: 26px; height: 26px; border: 2px solid var(--line); border-top-color: var(--rose); border-radius: 50%; animation: studio-spin 1s linear infinite; }
+@keyframes studio-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .novelai-studio .studio-progress-spinner { animation: none; } }
+.novelai-studio .novelai-filmstrip { border-radius: 12px; }
+.novelai-studio .studio-base-field { display: grid; gap: 8px; }
+.novelai-studio .studio-field-label { display: flex; justify-content: space-between; font-size: 13px; color: var(--ink-soft); }
+.novelai-studio .studio-field-label small, .novelai-studio .studio-add-image small { color: var(--ink-faint); font-size: 11px; }
+.novelai-studio .studio-file-input { display: none; }
+.novelai-studio .studio-add-image { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px 10px; border: 1px dashed var(--line-strong); border-radius: 8px; background: rgb(255 255 255 / 50%); text-align: left; font-size: 13px; }
+.novelai-studio .studio-add-image span { flex: 1; }
+.novelai-studio .studio-base-card { display: grid; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: rgb(255 255 255 / 55%); }
+.novelai-studio .studio-base-preview { position: relative; min-height: 100px; background: var(--surface-input); border-radius: 8px; overflow: hidden; }
+.novelai-studio .studio-base-preview img { width: 100%; height: 144px; display: block; object-fit: cover; }
+.novelai-studio .studio-base-preview p { padding: 38px 12px; font-size: 12px; text-align: center; }
+.novelai-studio .studio-base-actions { position: absolute; right: 6px; top: 6px; display: flex; gap: 6px; }
+.novelai-studio .studio-base-actions button { display: grid; place-items: center; padding: 5px; border: 1px solid var(--line); border-radius: 6px; background: rgb(255 255 255 / 90%); }
+.novelai-studio .studio-slider { display: grid; gap: 4px; }
+.novelai-studio .studio-slider > span { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-faint); }
+.novelai-studio .studio-slider input { width: 100%; accent-color: var(--rose); padding: 0; }
+.novelai-studio .studio-existing-image span { font-size: 11px; color: var(--ink-faint); }
+@media (max-width: 1100px) {
+  .novelai-studio .novelai-studio-grid { grid-template-columns: 290px minmax(0, 1fr); gap: 12px; }
+}
+@media (max-width: 760px) {
+  section.novelai-studio { display: flex; flex-direction: column; overflow-y: auto; padding: 12px; }
+  .novelai-studio .novelai-studio-header { flex-direction: column; align-items: stretch; }
+  .novelai-studio .novelai-studio-grid { display: flex; flex-direction: column; overflow: visible; flex: 1 0 auto; }
+  .novelai-studio .novelai-prompt-panel { order: 0; overflow: visible; }
+  .novelai-studio .studio-panel-scroll { overflow: visible; }
+  .novelai-studio .studio-prompt-editor textarea { height: 150px; }
+  .novelai-studio .novelai-stage-column { order: 1; min-height: 360px; }
+  .novelai-studio .studio-tag-page { overflow: visible; padding: 0; }
+}
