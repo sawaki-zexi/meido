@@ -8,6 +8,7 @@
     "dev:api": "python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 4288 --reload",
     "dev:web": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build && npm run build:pet",
+    "build:landing": "tsc --noEmit && vite build --config vite.landing.config.ts",
     "build:pet": "tsc -p desktop-pet/tsconfig.json && vite build --config desktop-pet/vite.config.ts",
     "setup:pet": "install-electron",
     "package:pet": "npm run build:pet && node desktop-pet/package.mjs",
