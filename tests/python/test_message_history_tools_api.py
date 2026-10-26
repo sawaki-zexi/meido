@@ -3,7 +3,7 @@ import json
 from fastapi.testclient import TestClient
 
 from backend.app import main
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.memory_config import MemorySettingsStore
 from backend.app.multichannel import MultichannelStore
@@ -38,12 +38,14 @@ def test_http_history_tools_are_default_and_results_reach_next_model_request(tmp
                 assert {"search_messages", "fetch_messages"} <= names
                 self.phase = "fetch"
                 yield ModelToolCall("search-evidence", "search_messages", {"query": "暗号"})
+                yield ModelResponseDone("tool_use")
             elif self.phase == "fetch":
                 found = json.loads(results[-1]["content"])
                 assert found["messages"][0]["preview"] == "暗号是月光"
                 self.source_ref = found["messages"][0]["source_ref"]
                 self.phase = "answer"
                 yield ModelToolCall("fetch-evidence", "fetch_messages", {"source_ref": self.source_ref})
+                yield ModelResponseDone("tool_use")
             elif self.phase == "answer":
                 found = json.loads(results[-1]["content"])
                 assert found["messages"][0]["content"] == "暗号是月光"

@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from backend.app import main
 from backend.app.browser_use import BrowserSessions, BrowserUseConfig
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
@@ -121,6 +121,7 @@ def test_http_same_run_shell_uses_default_runtime_after_role_config_change(
                 )
                 assert changed.status_code == 200
                 yield ModelToolCall("removed-command", "shell", {"command": command})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("命令权限已收紧")
 
@@ -167,6 +168,7 @@ def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions
                     {"query": query, "top_k": 1},
                 )
                 yield ModelToolCall("premature-browser", "agent_browser_get_title", {})
+                yield ModelResponseDone("tool_use")
             elif self.count == 2:
                 assert "agent_browser_get_title" in names
                 results = [item for item in messages if item["role"] == "tool"]
@@ -175,6 +177,7 @@ def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions
                 ]
                 assert "tool_search" in results[-1]["content"]
                 yield ModelToolCall("title-browser", "agent_browser_get_title", {})
+                yield ModelResponseDone("tool_use")
             else:
                 assert messages[-1]["content"] == "Actual driver title"
                 yield ModelTextDelta("已在同次对话发现并调用")
@@ -235,13 +238,22 @@ def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions
         item.runId for item in messages if item.toolCallId == "search-browser"
     )
     audits = {item["callId"]: item for item in sessions.list_tool_audits(run_id)}
-    versions = sessions.get_run(run_id).modelSnapshot["capabilityRevisions"]
+    snapshot = sessions.get_run(run_id).modelSnapshot
+    assert "capabilityRevisions" not in snapshot and "capabilityCalls" not in snapshot
+    bindings = {call_id: sessions.call_binding(run_id, call_id) for call_id in audits}
     assert (
         audits["search-browser"]["snapshotId"]
         == audits["premature-browser"]["snapshotId"]
-        == versions[0]["snapshotId"]
+        == bindings["search-browser"]["snapshotId"]
     )
-    assert audits["title-browser"]["snapshotId"] == versions[1]["snapshotId"]
+    assert audits["title-browser"]["snapshotId"] == bindings["title-browser"]["snapshotId"]
+    assert bindings["search-browser"]["visibilityVersion"] == bindings["premature-browser"]["visibilityVersion"] == 0
+    assert bindings["title-browser"]["visibilityVersion"] == 1
+    assert bindings["premature-browser"]["active"] is False
+    assert bindings["title-browser"]["active"] is True
+    assert [item["name"] for item in bindings["title-browser"]["tools"]] == ["agent_browser_get_title"]
+    assert all("candidates" not in binding for binding in bindings.values())
+    assert [item["name"] for item in snapshot["toolSelection"]["selected"]] == ["agent_browser_get_title"]
     assert audits["premature-browser"]["resultCategory"] == "denied"
     assert audits["premature-browser"]["toolSource"] == "plugin:browser_use"
     # Reopen the persistent store after revocation; old activation evidence must
@@ -281,9 +293,11 @@ def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions
                     "tool_search",
                     {"query": "select:agent_browser_get_title"},
                 )
+                yield ModelResponseDone("tool_use")
             elif self.count == 2:
                 assert json.loads(messages[-1]["content"])["unlocked"] == []
                 yield ModelToolCall("call-revoked", "agent_browser_get_title", {})
+                yield ModelResponseDone("tool_use")
             else:
                 assert (
                     "denied" in messages[-1]["content"]
@@ -317,6 +331,7 @@ def test_http_discovers_non_plugin_account_tool_from_real_role_account_store(
                     "tool_search",
                     {"query": "账号", "allowed_risk": ["read-only"]},
                 )
+                yield ModelResponseDone("tool_use")
             elif self.count == 2:
                 assert "account_list" in names
                 yield ModelToolCall(
@@ -324,6 +339,7 @@ def test_http_discovers_non_plugin_account_tool_from_real_role_account_store(
                     "account_list",
                     {},
                 )
+                yield ModelResponseDone("tool_use")
             else:
                 accounts = json.loads(messages[-1]["content"])
                 assert accounts[0]["accountId"] == "test-account"
@@ -391,7 +407,7 @@ def test_http_discovers_non_plugin_account_tool_from_real_role_account_store(
         assert len(audits) == 2 and len({item["snapshotId"] for item in audits}) == 2
 
 
-def test_http_stop_after_discovery_keeps_versions_durable_without_executing_new_tool(
+def test_http_stop_after_discovery_keeps_call_fact_without_restoring_cancelled_selection(
     tmp_path, monkeypatch
 ):
     roles = RoleStore(tmp_path / "roles")
@@ -425,6 +441,7 @@ def test_http_stop_after_discovery_keeps_versions_durable_without_executing_new_
                         "tool_search",
                         {"query": "select:agent_browser_get_title"},
                     )
+                    yield ModelResponseDone("tool_use")
                 else:
                     assert "agent_browser_get_title" in {
                         item["function"]["name"] for item in tools
@@ -463,10 +480,16 @@ def test_http_stop_after_discovery_keeps_versions_durable_without_executing_new_
                 assert stopped.status_code == 200
                 terminal = sessions.get_run(run.runId)
                 assert terminal.status == "cancelled"
-                assert len(terminal.modelSnapshot["capabilityRevisions"]) == 2
-                assert set(terminal.modelSnapshot["capabilityCalls"]) == {
-                    "load-before-stop"
-                }
+                assert "capabilityRevisions" not in terminal.modelSnapshot
+                assert "capabilityCalls" not in terminal.modelSnapshot
+                assert "toolSelection" not in terminal.modelSnapshot
+                audits = sessions.list_tool_audits(run.runId)
+                assert [item["callId"] for item in audits] == ["load-before-stop"]
+                assert audits[0]["resultCategory"] == "succeeded"
+                binding = sessions.call_binding(run.runId, "load-before-stop")
+                assert binding["active"] is True
+                assert [item["name"] for item in binding["tools"]] == ["tool_search"]
+                assert sessions.latest_tool_selection(role["id"], f"role:{role['id']}") is None
             finally:
                 if not request.done():
                     request.cancel()

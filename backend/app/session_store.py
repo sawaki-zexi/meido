@@ -1066,10 +1066,17 @@ class SessionStore:
         tool_source: str | None = None,
         tool_version: str | None = None,
         policy_decision: str | None = None,
+        capability_binding: dict[str, object] | None = None,
     ) -> None:
         with sqlite3.connect(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM tool_audits WHERE audit_id=?", (f"{run_id}:{call_id}",)).fetchone():
+                raise ValueError("host tool call identity already exists; do not replay unresolved effects")
+            if capability_binding is not None and (
+                    capability_binding.get("runId") != run_id or capability_binding.get("roleId") != role_id):
+                raise PermissionError("tool call binding belongs to another run")
             connection.execute(
-                "INSERT OR REPLACE INTO tool_audits (audit_id, run_id, role_id, tool_name, call_id, argument_summary_json, snapshot_id, tool_source, tool_version, policy_decision, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO tool_audits (audit_id, run_id, role_id, tool_name, call_id, argument_summary_json, snapshot_id, tool_source, tool_version, policy_decision, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     f"{run_id}:{call_id}",
                     run_id,
@@ -1084,6 +1091,9 @@ class SessionStore:
                     _now(),
                 ),
             )
+            if capability_binding is not None:
+                connection.execute("UPDATE tool_audits SET capability_binding_json=? WHERE audit_id=?",
+                    (_dump(capability_binding), f"{run_id}:{call_id}"))
 
     def finish_tool_audit(
         self,
@@ -1146,7 +1156,7 @@ class SessionStore:
     def snapshot_tool_audits(self, role_id: str) -> list[tuple[object, ...]]:
         with sqlite3.connect(self.database_path) as connection:
             return connection.execute(
-                "SELECT audit_id, run_id, role_id, tool_name, call_id, argument_summary_json, snapshot_id, tool_source, tool_version, policy_decision, started_at, ended_at, result_category, error_type, error_message FROM tool_audits WHERE role_id = ?",
+                "SELECT audit_id, run_id, role_id, tool_name, call_id, argument_summary_json, snapshot_id, tool_source, tool_version, policy_decision, started_at, ended_at, result_category, error_type, error_message, capability_binding_json FROM tool_audits WHERE role_id = ?",
                 (role_id,),
             ).fetchall()
 
@@ -1154,8 +1164,8 @@ class SessionStore:
         with sqlite3.connect(self.database_path) as connection:
             connection.execute("DELETE FROM tool_audits WHERE role_id = ?", (role_id,))
             connection.executemany(
-                "INSERT INTO tool_audits (audit_id, run_id, role_id, tool_name, call_id, argument_summary_json, snapshot_id, tool_source, tool_version, policy_decision, started_at, ended_at, result_category, error_type, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                audits,
+                "INSERT INTO tool_audits (audit_id, run_id, role_id, tool_name, call_id, argument_summary_json, snapshot_id, tool_source, tool_version, policy_decision, started_at, ended_at, result_category, error_type, error_message, capability_binding_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(*row, None) if len(row) == 15 else row for row in audits],
             )
 
     def snapshot_role_session(self, role_id: str) -> tuple[tuple[object, ...] | None, list[tuple[object, ...]], list[tuple[object, ...]]]:
@@ -1221,6 +1231,62 @@ class SessionStore:
             )
         return run
 
+    def save_tool_selection(self, run_id: str, selection: dict[str, Any]) -> None:
+        """Write once at normal completion; failed runs never replace recovery hints."""
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT role_id,session_key,model_snapshot_json FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            if (selection.get("roleId"), selection.get("sessionKey"), selection.get("format")) != (row[0], row[1], "tool-selection-v1"):
+                raise PermissionError("tool selection does not belong to its run")
+            snapshot = json.loads(row[2])
+            snapshot["toolSelection"] = selection
+            connection.execute("UPDATE agent_runs SET model_snapshot_json=? WHERE run_id=?", (_dump(snapshot), run_id))
+
+    def latest_tool_selection(self, role_id: str, session_key: str, *, source_scope: str = "") -> dict[str, Any] | None:
+        """Existing run ownership/deletion controls cache lifetime; no detached cache."""
+        with sqlite3.connect(self.database_path) as connection:
+            rows = connection.execute("""SELECT model_snapshot_json FROM agent_runs
+                WHERE role_id=? AND session_key=? AND status='completed'
+                AND EXISTS(SELECT 1 FROM messages WHERE messages.run_id=agent_runs.run_id AND role='user' AND status='completed')
+                ORDER BY started_at DESC""", (role_id, session_key))
+            for row in rows:
+                snapshot = json.loads(row[0])
+                cache = snapshot.get("toolSelection")
+                if isinstance(cache, dict):
+                    if cache.get("sourceScope", "") == source_scope:
+                        return cache
+                    continue
+                # Old channels did not record a source-bound discovery hint.
+                # Never upgrade their session-only cache to a newly paired sender.
+                revisions = snapshot.get("capabilityRevisions", [])
+                if revisions and not source_scope and not session_key.startswith("thread:"):
+                    return revisions[-1]
+        return None
+
+    def active_call_binding(self, run_id: str, call_id: str | None, *, tool_names: set[str]) -> dict[str, Any] | None:
+        with sqlite3.connect(self.database_path) as connection:
+            row = connection.execute("SELECT tool_name,ended_at FROM tool_audits WHERE run_id=? AND call_id=?",
+                                     (run_id, call_id)).fetchone()
+        if row is None or row[0] not in tool_names or row[1] is not None:
+            return None
+        proof = self.call_binding(run_id, call_id)
+        if proof is None or proof.get("active", True) is not True:
+            return None
+        if not any(item.get("name") == row[0] for item in proof.get("tools", [])):
+            return None
+        return proof
+
+    def call_binding(self, run_id: str, call_id: str) -> dict[str, Any] | None:
+        """Read bounded new call evidence, or the original read-only legacy record."""
+        with sqlite3.connect(self.database_path) as connection:
+            row = connection.execute("SELECT capability_binding_json FROM tool_audits WHERE run_id=? AND call_id=?",
+                                     (run_id, call_id)).fetchone()
+        if row is not None and row[0]:
+            return json.loads(row[0])
+        return self._legacy_capability_revision_for_call(run_id, call_id)
+
     def latest_capability_revision(self, role_id: str, session_key: str) -> dict[str, Any] | None:
         """Read activation evidence only from a completed run of this origin."""
         with sqlite3.connect(self.database_path) as connection:
@@ -1230,48 +1296,16 @@ class SessionStore:
         return json.loads(row[0])["capabilityRevisions"][-1] if row is not None else None
 
     def capability_revision_for_call(self, run_id: str, call_id: str) -> dict[str, Any] | None:
-        """Return the persisted provider version bound to a tool call."""
+        """Compatibility reader: new records contain one used tool, not a catalog."""
+        return self.call_binding(run_id, call_id)
+
+    def _legacy_capability_revision_for_call(self, run_id: str, call_id: str) -> dict[str, Any] | None:
+        """Read historical full snapshots; never used to admit new calls."""
         run = self.get_run(run_id)
         if run is None:
             return None
         snapshot_id = run.modelSnapshot.get("capabilityCalls", {}).get(call_id)
         return next((item for item in run.modelSnapshot.get("capabilityRevisions", []) if item["snapshotId"] == snapshot_id), None)
-
-    def record_capability_call(self, run_id: str, call_id: str, snapshot_id: str) -> None:
-        with sqlite3.connect(self.database_path) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT model_snapshot_json FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
-            if row is None:
-                raise KeyError(run_id)
-            snapshot = json.loads(row[0])
-            if not any(item["snapshotId"] == snapshot_id for item in snapshot.get("capabilityRevisions", [])):
-                raise ValueError("tool call references an unknown capability revision")
-            calls = snapshot.setdefault("capabilityCalls", {})
-            if call_id in calls and calls[call_id] != snapshot_id:
-                raise ValueError("tool call cannot change capability revision")
-            calls[call_id] = snapshot_id
-            connection.execute("UPDATE agent_runs SET model_snapshot_json=? WHERE run_id=?", (json.dumps(snapshot, ensure_ascii=False), run_id))
-
-    def append_capability_revision(self, run_id: str, revision: dict[str, Any]) -> None:
-        """Durably append one immutable visibility version before it is used."""
-        with sqlite3.connect(self.database_path) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT model_snapshot_json,role_id,session_key FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
-            if row is None:
-                raise KeyError(run_id)
-            if (revision.get("runId"), revision.get("roleId"), revision.get("sessionKey")) != (run_id, row[1], row[2]):
-                raise PermissionError("capability revision scope does not match its run")
-            snapshot = json.loads(row[0])
-            versions = snapshot.setdefault("capabilityRevisions", [])
-            if any(item["snapshotId"] == revision["snapshotId"] for item in versions):
-                if next(item for item in versions if item["snapshotId"] == revision["snapshotId"]) != revision:
-                    raise ValueError("cannot overwrite an immutable capability revision")
-                return
-            expected_parent = versions[-1]["snapshotId"] if versions else None
-            if revision.get("parentSnapshotId") != expected_parent or revision.get("visibilityVersion") != len(versions):
-                raise ValueError("capability revision is out of sequence")
-            versions.append(revision)
-            connection.execute("UPDATE agent_runs SET model_snapshot_json=? WHERE run_id=?", (json.dumps(snapshot, ensure_ascii=False), run_id))
 
     def update_run(self, run_id: str, *, status: str, turn_count: int | None = None, ended_at: datetime | None = None, cancel_reason: str | None = None, error: str | None = None, model_snapshot: dict[str, Any] | None = None) -> AgentRun:
         with sqlite3.connect(self.database_path) as connection:

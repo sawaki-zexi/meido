@@ -184,7 +184,7 @@ def protocol_host(api, monkeypatch):
 def test_http_tool_calls_enforce_one_real_run_cooldown_and_default_off_after_revocation(api, monkeypatch, protocol_host):
     from dataclasses import replace
     from backend.app.agent_runtime import ToolContext, CancellationToken
-    from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+    from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
     from backend.app.agent_runtime.types import ToolResultMessage
     from types import SimpleNamespace
     from backend.app.desktop_pet import store as pet_store
@@ -204,6 +204,7 @@ def test_http_tool_calls_enforce_one_real_run_cooldown_and_default_off_after_rev
             available = {tool['function']['name'] for tool in tools}
             if 'pet_action' not in available:
                 yield ModelToolCall('find-pet', 'tool_search', {'query': 'select:pet_action'})
+                yield ModelResponseDone("tool_use")
             elif self.phase == 0:
                 self.phase += 1
                 current = sessions.active_run(role['id'])
@@ -221,6 +222,7 @@ def test_http_tool_calls_enforce_one_real_run_cooldown_and_default_off_after_rev
                     assert stale.is_error and '绑定已改变' in stale.content
                 yield ModelToolCall('first-pet', 'pet_action', {'action': 'play', 'name': 'wave'})
                 yield ModelToolCall('second-pet', 'pet_action', {'action': 'play', 'name': 'wave'})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('已读取实际结果')
     adapter = Adapter()
@@ -251,7 +253,7 @@ def test_http_tool_calls_enforce_one_real_run_cooldown_and_default_off_after_rev
 def test_revocation_before_original_pipe_admission_prevents_late_native_send(api, monkeypatch, protocol_host):
     from concurrent.futures import ThreadPoolExecutor
     import threading
-    from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+    from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
     client, _, _, _ = api
     role = client.post('/api/roles', json={'name': '派发撤权', 'profile': {'profile': '测试'},
         'agentConfig': {'enabledTools': ['tool_search']}}).json()['role']
@@ -272,9 +274,11 @@ def test_revocation_before_original_pipe_admission_prevents_late_native_send(api
         async def stream_structured_messages(self, messages, configuration, tools):
             if 'pet_action' not in {item['function']['name'] for item in tools}:
                 yield ModelToolCall('find-pet', 'tool_search', {'query': 'select:pet_action'})
+                yield ModelResponseDone("tool_use")
             elif not self.called:
                 self.called = True
                 yield ModelToolCall('late-pet', 'pet_action', {'action': 'play', 'name': 'wave'})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('实际派发结果已读取')
     monkeypatch.setattr(main, 'model_adapter', Adapter())
@@ -322,7 +326,7 @@ def test_missing_bound_asset_is_a_pet_diagnostic_and_owner_can_disable(api, prot
 @pytest.mark.skipif(sys.platform != 'win32' or os.environ.get('MEIDO_PET_NATIVE_TEST') != '1',
     reason='explicit Windows own-window acceptance required')
 def test_native_owner_http_discovery_move_play_restart_disable_and_disconnect(api, monkeypatch, tmp_path):
-    from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+    from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
     from backend.app.agent_runtime.types import ToolResultMessage
     client, roles, sessions, _ = api
     role = client.post('/api/roles', json={'name': '原生验收', 'profile': {'profile': '仅本窗口'},
@@ -349,10 +353,12 @@ def test_native_owner_http_discovery_move_play_restart_disable_and_disconnect(ap
             available = {tool['function']['name']: tool for tool in tools}
             if 'pet_action' not in available:
                 yield ModelToolCall('discover-pet', 'tool_search', {'query': 'select:pet_action'})
+                yield ModelResponseDone("tool_use")
             elif not self.called:
                 self.called = True
                 assert available['pet_action']['function']['parameters']['properties']['name']['enum'] == ['wave']
                 yield ModelToolCall('native-pet', 'pet_action', self.command)
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('已确认本窗口动作回执')
     adapter = Adapter()

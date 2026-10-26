@@ -28,6 +28,7 @@ class ModelToolCall:
     name: str
     arguments: dict[str, object]
     type: Literal["tool_call"] = "tool_call"
+    arguments_complete: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +37,15 @@ class ModelStreamError:
     type: Literal["error"] = "error"
 
 
-ModelStreamEvent = ModelTextDelta | ModelToolCall | ModelStreamError
+@dataclass(frozen=True, slots=True)
+class ModelResponseDone:
+    """Legacy structured adapter's semantic completion (iterator EOF is not it)."""
+
+    stop_reason: str
+    type: Literal["done"] = "done"
+
+
+ModelStreamEvent = ModelTextDelta | ModelToolCall | ModelStreamError | ModelResponseDone
 
 _FUNCTION_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 
@@ -434,8 +443,8 @@ class OpenAICompatibleAdapter:
                         break
                     try:
                         chunk = json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
+                    except json.JSONDecodeError as error:
+                        raise RuntimeError("模型流包含无效 JSON") from error
                     if isinstance(chunk, dict) and chunk.get("error"):
                         error = chunk["error"]
                         message = error.get("message", "模型服务返回错误") if isinstance(error, dict) else str(error)
@@ -500,6 +509,7 @@ class OpenAICompatibleAdapter:
             request_data["max_tokens"] = max_tokens
         calls: dict[int, dict[str, str]] = {}
         completed = False
+        stop_reason = "incomplete"
         async with httpx.AsyncClient(timeout=self.timeout, **image_budget_client_kwargs("openai-completions")) as client:
             async with client.stream(
                 "POST",
@@ -517,8 +527,8 @@ class OpenAICompatibleAdapter:
                         break
                     try:
                         chunk = json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
+                    except json.JSONDecodeError as error:
+                        raise RuntimeError("模型流包含无效 JSON") from error
                     if isinstance(chunk, dict) and chunk.get("error"):
                         error = chunk["error"]
                         message = error.get("message", "模型服务返回错误") if isinstance(error, dict) else str(error)
@@ -528,6 +538,10 @@ class OpenAICompatibleAdapter:
                         return
                     choices = chunk.get("choices", []) if isinstance(chunk, dict) else []
                     choice = choices[0] if isinstance(choices, list) and choices else {}
+                    if isinstance(choice, dict) and choice.get("finish_reason") is not None:
+                        from .pi_openai_adapter import _stop_reason
+                        from .model_protocol import preserve_stop_reason
+                        stop_reason = preserve_stop_reason(None if stop_reason == "incomplete" else stop_reason, _stop_reason(str(choice["finish_reason"])))
                     delta = choice.get("delta", {}) if isinstance(choice, dict) else {}
                     message = choice.get("message", {}) if isinstance(choice, dict) else {}
                     content = delta.get("content") if isinstance(delta, Mapping) else None
@@ -592,7 +606,10 @@ class OpenAICompatibleAdapter:
                 id=aggregate["id"] or f"call-{index}",
                 name=internal_names.get(aggregate["name"], aggregate["name"]),
                 arguments=arguments,
+                arguments_complete=bool(aggregate["arguments"].strip()),
             )
+
+        yield ModelResponseDone(stop_reason if calls or stop_reason != "incomplete" else "stop")
 
     @budgeted_model_completion
     async def complete_messages(

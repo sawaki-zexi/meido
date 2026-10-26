@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from backend.app import main
 from backend.app.agent_runtime.types import ToolResultMessage
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.memory_config import MemorySettingsStore
 from backend.app.role_store import RoleStore
@@ -42,9 +42,11 @@ def test_owner_mail_permission_controls_real_chat_and_revokes_frozen_tool(role_a
             if self.calls == 1:
                 self.schemas = tools
                 yield ModelToolCall("mail-first", "mail.manage", {"action": "status"})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 2 and granted:
                 service.update_preferences(writing_style="", role_access=False)
                 yield ModelToolCall("mail-revoked", "mail.manage", {"action": "status"})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("邮件权限已核对")
 
@@ -129,11 +131,13 @@ def test_default_tools_execute_file_and_platform_shell_in_real_http_turn(role_ap
             results = [message for message in messages if message['role'] == 'tool']
             if self.requests == 1:
                 yield ModelToolCall('default-file', 'write_file', {'path': 'default.txt', 'content': '默认文件'})
+                yield ModelResponseDone("tool_use")
             elif self.requests == 2:
                 assert 'Wrote' in results[-1]['content']
                 command = ('$number = 20 + 22; Write-Output "默认Shell:$number"' if os.name == 'nt'
                            else 'number=$((20+22)); printf "默认Shell:%s\\n" "$number"')
                 yield ModelToolCall('default-shell', 'shell', {'command': command})
+                yield ModelResponseDone("tool_use")
             else:
                 assert '默认Shell:42' in results[-1]['content']
                 yield ModelTextDelta('默认工具执行完成')
@@ -159,6 +163,7 @@ def test_legacy_shell_switch_and_empty_allowlist_do_not_hide_ordinary_shell(role
             self.requests.append(tools)
             if len(self.requests) == 1:
                 yield ModelToolCall("default-shell", "shell", {"command": "Write-Output 123" if os.name == "nt" else "printf 123"})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("拒绝后继续对话")
 

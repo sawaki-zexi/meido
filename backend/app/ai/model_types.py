@@ -42,6 +42,7 @@ class ModelToolCallBlock:
     type: Literal["tool_call"] = "tool_call"
     thought_signature: str | None = None
     namespace: str | None = None
+    arguments_complete: bool = True
 
 
 ModelContentBlock: TypeAlias = (

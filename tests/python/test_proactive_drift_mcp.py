@@ -12,7 +12,7 @@ from backend.app import main
 from backend.app.ai.model_types import ModelAssistantMessage, ModelStreamDone, ModelToolCallBlock
 from backend.app.mcp_config import McpConfigStore, McpServerInput
 from backend.app.mcp_runtime import McpHost
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelTextDelta, ModelToolCall, ModelResponseDone
 from test_background_shell_api import MemoryCredentials
 from test_background_shell_api import api as shell_api  # noqa: F401
 from test_spawn_api import api  # noqa: F401
@@ -89,12 +89,15 @@ def test_owner_adds_missing_permission_to_the_same_hash_then_mount_publishes_nex
             self.requests += 1
             if self.requests == 1:
                 yield ModelToolCall('load-owner-connect', 'tool_search', {'query': 'select:mcp_add'})
+                yield ModelResponseDone('tool_use')
             elif self.requests == 2:
                 assert 'mcp_add' in {item['function']['name'] for item in tools}
                 yield ModelToolCall('actual-owner-connect', 'mcp_add', {'server_id': 'source'})
+                yield ModelResponseDone('tool_use')
             else:
                 assert 'connected' in str(messages[-1])
                 yield ModelTextDelta('真实目录已观察，尚未授权Drift调用')
+                yield ModelResponseDone('stop')
 
     monkeypatch.setattr(main, 'model_adapter', Connect())
     assert 'assistant_completed' in client.post(f'/api/roles/{identifier}/messages', json={'content': '连接已保存的离线MCP'}).text
@@ -130,9 +133,8 @@ def test_owner_adds_missing_permission_to_the_same_hash_then_mount_publishes_nex
                     raise RuntimeError('fixture provider ends after the actual activation dependency rejection')
                 if fault == 'persist_failed':
                     with main._proactive._transaction() as db:
-                        previous = db.execute('SELECT MAX(version) FROM autonomy_capability_revisions').fetchone()[0]
-                        db.execute('''CREATE TRIGGER reject_mount_revision BEFORE INSERT ON autonomy_capability_revisions
-                            WHEN NEW.version>''' + str(previous) + ''' BEGIN SELECT RAISE(ABORT,'fixture rejects staged revision'); END''')
+                        db.execute('''CREATE TRIGGER reject_mount_call BEFORE INSERT ON autonomy_drift_tool_calls
+                            WHEN NEW.tool_name='mount_server' BEGIN SELECT RAISE(ABORT,'fixture rejects call evidence'); END''')
                 name, arguments = 'mount_server', {'server_id': 'source'}
             elif self.requests == 3:
                 assert remote_name in names, 'mount must publish the actual schema before this provider request'
@@ -164,7 +166,7 @@ def test_owner_adds_missing_permission_to_the_same_hash_then_mount_publishes_nex
             assert adapter.requests == (3 if fault == 'revoked' else 2) and state['runs'][0]['status'] == 'aborted', state
             assert not (root / 'calls.jsonl').exists()
             with sqlite3.connect(sessions.database_path) as db:
-                assert db.execute('SELECT COUNT(*) FROM autonomy_capability_revisions').fetchone()[0] == (2 if fault == 'revoked' else 1)
+                assert db.execute('SELECT COUNT(*) FROM autonomy_capability_revisions').fetchone()[0] == 0
                 assert db.execute('SELECT COUNT(*) FROM autonomy_drift_progress').fetchone()[0] == 0
             assert host.public()[0]['activeProcesses'] == 0
             return
@@ -174,9 +176,9 @@ def test_owner_adds_missing_permission_to_the_same_hash_then_mount_publishes_nex
         calls = [json.loads(line) for line in (root / 'calls.jsonl').read_text().splitlines()]
         assert [item['name'] for item in calls] == ['get_events']
         with sqlite3.connect(sessions.database_path) as db:
-            versions = [json.loads(row[0]) for row in db.execute('SELECT revision_json FROM autonomy_capability_revisions ORDER BY version')]
-        assert remote_name in {item['name'] for item in versions[-1]['tools']}
-        assert all(item['parentSnapshotId'] == previous['snapshotId'] for previous, item in zip(versions, versions[1:]))
+            assert db.execute('SELECT COUNT(*) FROM autonomy_capability_revisions').fetchone()[0] == 0
+            binding = json.loads(db.execute('SELECT binding_json FROM autonomy_drift_tool_calls WHERE tool_name=?', (remote_name,)).fetchone()[0])
+        assert [item['name'] for item in binding['tools']] == [remote_name]
         assert host.public()[0]['activeProcesses'] == 0
     finally:
         if main._proactive is not None:

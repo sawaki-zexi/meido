@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, cast
 from collections.abc import Mapping, Sequence
 
 from .tools import AgentTool, AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
+from .search_metadata import SearchDocument, build_search_document
+from .search_budget import select_schema_budget
 
 if TYPE_CHECKING:
     from .capabilities import CapabilityResolution
@@ -62,7 +64,7 @@ class DiscoveryState:
         service_grants: Sequence[ServiceGrant] = (),
         external_only: bool = False,
     ) -> None:
-        self.revisions: list[CapabilityResolution] = []
+        self._current: CapabilityResolution | None = None
         self.pending: dict[str | None, tuple[str, ...]] = {}
         self.extensions: dict[str, _ServiceExtension] = {}
         self.removals: dict[str, tuple[str, str]] = {}
@@ -76,7 +78,7 @@ class DiscoveryState:
             item.role_id != initial.snapshot.role_id for item in self.grants.values()
         ):
             raise PermissionError("service grant belongs to another role")
-        self.revisions.append(initial)
+        self._current = initial
         self.reserved_names = frozenset(reserved_names)
         self.name_sources = {item.name: item.source for item in initial.snapshot.candidates}
 
@@ -90,7 +92,8 @@ class DiscoveryState:
 
     @property
     def current(self) -> CapabilityResolution:
-        return self.revisions[-1]
+        assert self._current is not None
+        return self._current
 
     def view(self, context: ToolContext) -> CapabilityResolution:
         current = self.current
@@ -103,12 +106,12 @@ class DiscoveryState:
         version = getattr(context, "capability_snapshot_id", None)
         if version is None:
             return current
-        view = next(
-            (item for item in self.revisions if item.snapshot.snapshot_id == version),
-            None,
-        )
-        if view is None:
-            raise PermissionError("unknown provider capability version")
+        view = context.capability_binding
+        if (view is None and version == current.snapshot.snapshot_id):
+            view = current
+        if (view is None or view._discovery is not self
+                or view.snapshot.snapshot_id != version):
+            raise PermissionError("unknown provider capability binding")
         return view
 
     def stage_service_tools(
@@ -119,8 +122,9 @@ class DiscoveryState:
         parent_snapshot_id: str,
         tools: Sequence[AgentTool],
         activate: bool = False,
+        rebind: bool = False,
     ) -> tuple[str, ...]:
-        from .capabilities import _freeze_json
+        from .capabilities import _freeze_json, _definition_payload
 
         self.view(context)
         context.signal.raise_if_cancelled()
@@ -138,7 +142,8 @@ class DiscoveryState:
         seen: set[str] = set()
         for tool in tools:
             definition = tool.definition
-            if definition.name in seen or definition.name in self.definitions or (definition.name in names and self.name_sources.get(definition.name) != f"mcp:{grant.service_id}"):
+            if (definition.name in seen or definition.name in self.definitions and not rebind
+                    or definition.name in names and self.name_sources.get(definition.name) != f"mcp:{grant.service_id}"):
                 raise ValueError("service tool name collides with the frozen directory")
             names.add(definition.name)
             seen.add(definition.name)
@@ -163,6 +168,26 @@ class DiscoveryState:
                     ),
                 )
             )
+        if rebind:
+            expected = {name: item for name, item in self.definitions.items() if item.source == f"mcp:{grant.service_id}"}
+            if ({item.name for item in definitions} != set(expected)
+                    or any(_definition_payload(item) != _definition_payload(expected[item.name]) for item in definitions)):
+                raise ValueError("service reconnect changed an admitted definition; start a new run")
+        if activate:
+            # Direct MCP additions/Drift mounts still obey the cumulative bound.
+            # These callers promise the complete declared set, so fail atomically
+            # rather than silently publishing only part of a service contract.
+            from .search_budget import select_schema_budget
+            visible = self.current.snapshot.tools
+            pending_names = {name for key, values in self.pending.items() if key != context.tool_call_id for name in values}
+            pending_definitions = {**self.definitions, **{item.name: item for extension in self.extensions.values() for item in extension.definitions}}
+            selected = select_schema_budget(definitions,
+                baseline=[item for item in visible if item.exposure != "deferred"],
+                loaded=[item for item in visible if item.exposure == "deferred"],
+                pending=[pending_definitions[name] for name in pending_names if name in pending_definitions],
+                new_limit=None)
+            if selected.skipped:
+                raise ValueError("MCP tool declarations exceed the cumulative schema budget")
         self.extensions[context.tool_call_id] = _ServiceExtension(
             parent_snapshot_id, tuple(tools), tuple(definitions)
         )
@@ -185,6 +210,7 @@ class DiscoveryState:
             _thaw_json,
             _snapshot_generation,
             _candidate_catalog_id,
+            definition_fingerprint,
         )
 
         names = self.pending.pop(call_id, ())
@@ -216,6 +242,7 @@ class DiscoveryState:
                 }
             )
         visible = {item.name for item in current.snapshot.tools}
+        rebound = {item.name for item in extension.definitions if item.name in visible} if extension else set()
         added = [name for name in names if name not in visible]
         added = [name for name in added if name in candidate_definitions]
         if not added and extension is None and not removed:
@@ -232,7 +259,7 @@ class DiscoveryState:
         }
         if extension is not None:
             decisions.update(
-                {item.name: "denied:deferred" for item in extension.definitions if item.name not in added}
+                {item.name: "denied:deferred" for item in extension.definitions if item.name not in added and item.name not in rebound}
             )
         snapshot = replace(
             current.snapshot,
@@ -266,19 +293,23 @@ class DiscoveryState:
             denied.update(
                 {
                     item.name: f"tool is deferred; use tool_search(query='select:{item.name}')"
-                    for item in extension.definitions if item.name not in added
+                    for item in extension.definitions if item.name not in added and item.name not in rebound
                 }
             )
         return replace(
             current,
             snapshot=snapshot,
-            tools=(*(tool for tool in current.tools if tool.definition.name not in removed), *(candidate_tools[name] for name in added)),
+            tools=tuple(candidate_tools[item.name] for item in definitions),
             denied_tools=MappingProxyType(denied),
             _candidate_tools=MappingProxyType(candidate_tools),
+            _executors_by_name=MappingProxyType({**{name: method for name, method in current._executors_by_name.items() if name not in removed},
+                **({tool.definition.name: tool.execute for tool in extension.tools} if extension else {})}),
+            _definition_fingerprints=MappingProxyType({**{name: value for name, value in current._definition_fingerprints.items() if name not in removed},
+                **({tool.definition.name: definition_fingerprint(tool.definition) for tool in extension.tools} if extension else {})}),
             _tools_by_name=MappingProxyType(
                 {
                     **{name: tool for name, tool in current._tools_by_name.items() if name not in removed},
-                    **{name: candidate_tools[name] for name in added},
+                    **{name: candidate_tools[name] for name in (*added, *rebound)},
                 }
             ),
             _definitions_by_name=MappingProxyType(
@@ -292,11 +323,21 @@ class DiscoveryState:
                                 _thaw_json(candidate_definitions[name].input_schema),
                             ),
                         )
-                        for name in added
+                        for name in (*added, *rebound)
                     },
                 }
             ),
         )
+
+    def discard_pending(self, call_id: str | None = None) -> None:
+        if call_id is None:
+            self.pending.clear()
+            self.extensions.clear()
+            self.removals.clear()
+        else:
+            self.pending.pop(call_id, None)
+            self.extensions.pop(call_id, None)
+            self.removals.pop(call_id, None)
 
     def publish(self, revision: CapabilityResolution) -> None:
         if (
@@ -304,7 +345,7 @@ class DiscoveryState:
             or revision.snapshot.parent_snapshot_id != self.current.snapshot.snapshot_id
         ):
             raise ValueError("capability revision parent does not match")
-        self.revisions.append(revision)
+        self._current = revision
         self.name_sources.update({item.name: item.source for item in revision.snapshot.candidates})
 
 
@@ -354,13 +395,20 @@ class ToolSearchTool:
         allowed = {
             risks[value] for value in cast(list[str], arguments.get("allowed_risk", []))
         }
+        current = self.discovery.current
+        authorized = {
+            item.name: item for item in current.snapshot.candidates
+            if current.authorization_denial(item, context) is None
+        }
         eligible = {
             definition.name: definition
             for definition in view.snapshot.candidates
             if (not allowed or definition.risk in allowed)
+            and authorized.get(definition.name) == definition
             and view.authorization_denial(definition, context) is None
         }
         explanations: dict[str, list[str]] = {}
+        documents: dict[str, SearchDocument] = {}
         if query.lower().startswith("select:"):
             names = list(
                 dict.fromkeys(
@@ -384,13 +432,28 @@ class ToolSearchTool:
                         explanations[name] = ["名称:精确匹配"]
                         break
                     continue
-                score = _keyword_score(definition, terms)
+                documents[name] = build_search_document(definition)
+                score = _keyword_score(definition, terms, documents[name])
                 if score:
                     ranked.append((score, name))
-                    explanations[name] = _match_reasons(definition, terms)
+                    explanations[name] = _match_reasons(definition, terms, documents[name])
             ranked.sort(key=lambda item: (-item[0], item[1]))
             found = [name for _, name in ranked[: cast(int, arguments.get("top_k", 5))]]
             loaded = []
+        # Account against committed current state, not just this request's older
+        # execution view. Pending names reserve once across same-reply searches.
+        # Already-issued declarations still occupy provider context after revocation.
+        # Count their bytes, but never expose their names/metadata as new results.
+        current_definitions = list(current.snapshot.tools)
+        baseline = [item for item in current_definitions if item.exposure != "deferred"]
+        loaded_definitions = [item for item in current_definitions if item.exposure == "deferred"]
+        pending = [authorized[name] for call_id, names in self.discovery.pending.items()
+                   if call_id != context.tool_call_id for name in names if name in authorized]
+        selection = select_schema_budget([eligible[name] for name in found],
+            baseline=baseline, loaded=loaded_definitions, pending=pending)
+        found = [item.name for item in selection.selected]
+        skipped = [item.name for item in selection.skipped]
+        rejected_count = len(skipped)
         matched: list[dict[str, object]] = [
             {
                 "name": name,
@@ -405,6 +468,10 @@ class ToolSearchTool:
             for name in found
         ]
         for item in matched:
+            name = cast(str, item["name"])
+            document = documents.get(name) or build_search_document(eligible[name])
+            if document.diagnostics:
+                item["metadata_diagnostics"] = list(document.diagnostics)
             reasons = cast(list[str], item["why_matched"])
             if len(reasons) > 8 or any(len(reason) > 160 for reason in reasons):
                 item["why_matched"] = [reason if len(reason) <= 160 else reason[:159] + "…" for reason in reasons[:8]]
@@ -413,13 +480,24 @@ class ToolSearchTool:
             "matched": matched,
             "unlocked": found,
             "already_loaded": loaded,
+            "skipped_due_to_budget": skipped,
+            "budget": selection.report,
             "tip": "结果持久化后下一次模型请求加载完整 schema；直接调用 unlocked 工具。"
             if found
             else "已加载，可直接调用。"
             if loaded
+            else "匹配工具超过声明预算；现有工具仍可使用。"
+            if skipped
             else "没有匹配的已授权工具；检查名称、风险过滤或换关键词。",
         }
-        content = json.dumps(payload, ensure_ascii=False)
+        def render() -> str:
+            # Output trimming is part of selection: removed rows reserve no bytes.
+            measured = select_schema_budget([eligible[name] for name in found],
+                baseline=baseline, loaded=loaded_definitions, pending=pending)
+            payload["budget"] = {**measured.report, "rejected_count": rejected_count}
+            return json.dumps(payload, ensure_ascii=False)
+
+        content = render()
         output_limit = self.definition.output_limit
         assert output_limit is not None
         for description_limit in (80, 40, 0):
@@ -429,15 +507,19 @@ class ToolSearchTool:
             for item in matched:
                 item["description"] = cast(str, item["description"])[:description_limit]
                 item["summary"] = cast(str, item["summary"])[:description_limit]
-            content = json.dumps(payload, ensure_ascii=False)
-        while len(content) > output_limit and (found or loaded):
+            content = render()
+        while len(content) > output_limit and (found or loaded or skipped):
             payload["truncated"] = True
             if found:
                 found.pop()
                 matched.pop()
-            else:
+            elif loaded:
                 loaded.pop()
-            content = json.dumps(payload, ensure_ascii=False)
+            else:
+                skipped.pop()
+                payload["skipped_names_truncated"] = True
+            content = render()
+        context.signal.raise_if_cancelled()
         self.discovery.pending[context.tool_call_id] = tuple(found)
         return AgentToolResult(content, details=payload)
 
@@ -458,12 +540,13 @@ def _search_terms(query: str) -> set[str]:
     return terms
 
 
-def _keyword_score(definition: ToolDefinition, terms: set[str]) -> int:
+def _keyword_score(definition: ToolDefinition, terms: set[str], document: SearchDocument | None = None) -> int:
     """Fixed Shiori name-part, MCP, hint and description weights (MIT)."""
-    name = definition.name.lower()
+    document = document or build_search_document(definition)
+    name = document.name
     parts = [part for part in name.split("_") if part]
-    hint = definition.search_hint.lower()
-    description = definition.description.lower()
+    hint = document.hint
+    description = document.description
     mcp = definition.source.startswith("mcp:")
     score = 0
     for term in terms:
@@ -477,15 +560,21 @@ def _keyword_score(definition: ToolDefinition, terms: set[str]) -> int:
             score += 4
         if term in description:
             score += 2
+        if term in document.parameters:
+            score += 3
+    # A service's shared summary is weak routing evidence, not 100 copies of
+    # authoritative instructions that can outrank exact names/parameter hits.
+    score += min(2, sum(term in document.namespace for term in terms))
     return score
 
 
-def _match_reasons(definition: ToolDefinition, terms: set[str]) -> list[str]:
+def _match_reasons(definition: ToolDefinition, terms: set[str], document: SearchDocument | None = None) -> list[str]:
     """Explain matching fields independently of numeric ranking."""
-    name = definition.name.lower()
+    document = document or build_search_document(definition)
+    name = document.name
     parts = [part for part in name.split("_") if part]
-    hint = definition.search_hint.lower()
-    description = definition.description.lower()
+    hint = document.hint
+    description = document.description
     reasons = []
     for term in sorted(terms):
         if term in parts:
@@ -498,4 +587,8 @@ def _match_reasons(definition: ToolDefinition, terms: set[str]) -> list[str]:
             reasons.append(f"提示:{term}")
         if term in description:
             reasons.append(f"描述:{term}")
+        if term in document.parameters:
+            reasons.append(f"参数:{term}")
+        if term in document.namespace:
+            reasons.append(f"namespace:{term}")
     return reasons

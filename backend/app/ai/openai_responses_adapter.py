@@ -16,6 +16,7 @@ from .request_budget import image_budget_client_kwargs, budgeted_model_stream, b
 
 from .message_transform import transform_messages
 from .model_adapter import _raise_for_status_with_details, _response_error_detail
+from .model_protocol import preserve_stop_reason
 from .model_protocol import compatible_tool_names, effective_tools, json_object, model_cost, normalize_tools, remap_message_tool_names, tool_result_text
 from .model_types import (
     ModelAssistantMessage,
@@ -246,6 +247,7 @@ def _response_output_blocks(
                 name_aliases.get(name, name),
                 arguments,
                 namespace=item.get("namespace") if isinstance(item.get("namespace"), str) else None,
+                arguments_complete=("arguments" in item or "input" in item) and (isinstance(raw_arguments, Mapping) or isinstance(raw_arguments, str) and bool(raw_arguments.strip())),
             ))
     return tuple(blocks)
 
@@ -414,7 +416,7 @@ class _Accumulator:
             response = data.get("response")
             if isinstance(response, Mapping):
                 status = response.get("status")
-                self.stop_reason = "stop" if status == "completed" else str(status) if status else None
+                self.stop_reason = preserve_stop_reason(self.stop_reason, "stop" if status == "completed" else str(status) if status else None)
                 output = response.get("output")
                 if isinstance(output, list):
                     self.completed_output = output
@@ -486,7 +488,7 @@ class _Accumulator:
                     arguments = json_object(item.arguments)
                 except ValueError as error:
                     return events, None, str(error)
-                call = ModelToolCallBlock(item.id or key, self.name_aliases.get(item.name, item.name), arguments)
+                call = ModelToolCallBlock(item.id or key, self.name_aliases.get(item.name, item.name), arguments, arguments_complete=bool(item.arguments.strip()))
                 blocks.append(call)
                 events.append(ModelToolCallEnd(call))
         reason = self.stop_reason or ("tool_use" if any(isinstance(block, ModelToolCallBlock) for block in blocks) else "stop")
@@ -570,12 +572,12 @@ class OpenAIResponsesAdapter:
                         if cancel_check:
                             cancel_check()
                         if raw == "[DONE]":
-                            accumulator.completed = True
+                            # Transport EOF does not replace the protocol terminal event.
                             break
                         try:
                             data = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
+                        except json.JSONDecodeError as error:
+                            raise RuntimeError("模型流包含无效 JSON") from error
                         if isinstance(data, Mapping):
                             for event in accumulator.consume(str(data.get("type", event_type)), data):
                                 if isinstance(event, ModelStreamError):

@@ -78,7 +78,7 @@ SystemCredentialStore.get, SystemCredentialStore.set = empty, deny
 from fastapi.testclient import TestClient
 from PIL import Image
 from backend.app import main
-from backend.app.ai.model_types import ModelAssistantMessage, ModelImageBlock, ModelStreamDone, ModelToolCallBlock, ModelTextBlock
+from backend.app.ai.model_types import ModelAssistantMessage, ModelImageBlock, ModelResponseMetadata, ModelStreamDone, ModelToolCallBlock, ModelTextBlock
 from backend.app.plugin_configuration import PluginConfigurationStore
 
 # This child is an explicit autonomous-runtime integration fixture.  Enable
@@ -157,7 +157,8 @@ if len(sys.argv) > 3 and sys.argv[3] == 'pending-disabled':
                     ModelTextBlock('主人已实际读取同一新复制产物')]
                 assert self.requests <= len(steps), 'Recovery must not replay the previous model or copy'
                 block = steps[self.requests - 1]
-            yield ModelStreamDone(ModelAssistantMessage((block,)))
+            yield ModelStreamDone(ModelAssistantMessage((block,), metadata=ModelResponseMetadata(
+                stop_reason='tool_use' if isinstance(block, ModelToolCallBlock) else 'stop')))
     adapter = PendingMaintenance()
     main.model_adapter = adapter
     try:
@@ -262,7 +263,8 @@ class Maintenance:
                     assert actual.size == (800, 600) and actual.getpixel((5, 5)) == (93, 74, 161)
                 self.owner_image_requests += 1
                 block = ModelTextBlock('主人也已实际查看同一新复制产物')
-            yield ModelStreamDone(ModelAssistantMessage((block,)))
+            yield ModelStreamDone(ModelAssistantMessage((block,), metadata=ModelResponseMetadata(
+                stop_reason='tool_use' if isinstance(block, ModelToolCallBlock) else 'stop')))
             return
         self.requests += 1
         if self.requests == 1 and PHASE == 2:

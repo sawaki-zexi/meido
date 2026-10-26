@@ -63,7 +63,7 @@ class CodingApplication:
 
     def _allowed(self, record: dict) -> bool:
         try:
-            origin = TaskOrigin(**record['origin'])
+            origin = TaskOrigin.from_dict(record['origin'], require_source_authority=True)
             role = self.role_config(origin.role_id)
             if (self._closed or role is None or not role.enabled or not self.authorized(origin)
                     or self.ledger.attempt(record['attemptId']).get('delegationSealed')):
@@ -140,7 +140,7 @@ class CodingApplication:
     def _submit(self, record):
         if not self.ledger.claim_launch(record['attemptId']):
             return
-        origin = TaskOrigin(**record['origin'])
+        origin = TaskOrigin.from_dict(record['origin'])
         try:
             executor = self.executor_factory(record, self.ledger)
             with self._owner_lock:
@@ -162,7 +162,7 @@ class CodingApplication:
             raise
 
     def _find_runtime(self, record):
-        origin = TaskOrigin(**record['origin'])
+        origin = TaskOrigin.from_dict(record['origin'])
         matches = [item for item in self.tasks.list(origin, kind=self._runtime_kind(record)) if item.description == record['attemptId']]
         if len(matches) > 1:
             raise RuntimeError('ambiguous CodingTask runtime handover')
@@ -213,7 +213,7 @@ class CodingApplication:
             if owner is not None:
                 owner.cancel()
             if runtime:
-                self.tasks.stop(runtime, TaskOrigin(**record['origin']))
+                self.tasks.stop(runtime, TaskOrigin.from_dict(record['origin']))
             elif owner is None:
                 self.ledger.finish_unsubmitted(record['attemptId'], status='cancelled')
             if owner is not None:
@@ -237,7 +237,7 @@ class CodingApplication:
             self._tick_lock.release()
 
     async def _advance(self, record):
-        origin = TaskOrigin(**record['origin'])
+        origin = TaskOrigin.from_dict(record['origin'])
         with self._owner_lock:
             record = self.ledger.attempt(record['attemptId'])
             owner = self._owners.get(record['attemptId'])
@@ -347,7 +347,7 @@ class CodingApplication:
         await asyncio.to_thread(self._sync_message, record, content)
 
     def _sync_message(self, record, content):
-        origin = TaskOrigin(**record['origin'])
+        origin = TaskOrigin.from_dict(record['origin'])
         with self.ledger.transaction() as db:
             row = db.execute('SELECT body FROM coding_attempts WHERE id=?', (record['attemptId'],)).fetchone()
             import json

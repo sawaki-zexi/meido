@@ -5,7 +5,10 @@ import inspect
 import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .capabilities import CapabilityResolution
 
 from .provider import CancellationToken
 from .types import ImageContent
@@ -29,6 +32,7 @@ class ToolDefinition:
     output_limit: int | None = None
     external_allowed: bool = False
     search_hint: str = ""
+    namespace_summary: str = ""
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -37,6 +41,8 @@ class ToolDefinition:
             raise ValueError(f"tool description is required: {self.name}")
         if not isinstance(self.search_hint, str):
             raise ValueError(f"tool search hint must be a string: {self.name}")
+        if not isinstance(self.namespace_summary, str):
+            raise ValueError(f"tool namespace summary must be a string: {self.name}")
         if self.risk not in _RISKS:
             raise ValueError(f"unsupported tool risk: {self.risk}")
         if self.exposure not in _EXPOSURES:
@@ -85,6 +91,8 @@ class ToolContext:
     signal: CancellationToken
     tool_call_id: str | None = None
     capability_snapshot_id: str | None = None
+    # Host-only stable request reference; never reconstructed from model arguments.
+    capability_binding: CapabilityResolution | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)

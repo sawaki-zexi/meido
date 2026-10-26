@@ -135,6 +135,7 @@ class McpStdioClient:
         self._reader: asyncio.Task | None = None
         self._stderr: asyncio.Task | None = None
         self._closing: asyncio.Task | None = None
+        self._spawning: asyncio.Task | None = None
         self._pending: dict[int, asyncio.Future] = {}
         self._next_id = 0
         self._failure: McpProtocolError | None = None
@@ -156,17 +157,12 @@ class McpStdioClient:
 
     async def connect(self) -> tuple[dict[str, Any], ...]:
         try:
-            if self._process is not None or self.closed:
+            if self._spawning is not None or self.closed:
                 raise McpProtocolError("MCP connection cannot be reused")
-            if os.name == "nt":
-                self._process, self._owner = await spawn_process_tree(*self.config.command, cwd=self.config.cwd,
-                    env=self._environment, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                    job_name=self._job_name)
-            else:
-                self._process = await asyncio.create_subprocess_exec(*self.config.command, cwd=self.config.cwd,
-                    env=self._environment, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
-            self._reader = asyncio.create_task(self._read())
-            self._stderr = asyncio.create_task(self._drain_stderr())
+            # Spawn may return after Stop. Keep its task owned and shielded so
+            # close can join it before claiming there were no child resources.
+            self._spawning = asyncio.create_task(self._spawn())
+            await asyncio.shield(self._spawning)
             async with asyncio.timeout(self.config.timeout_seconds):
                 response = await self._request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "Meido", "version": "1"}})
                 if response.get("protocolVersion") != "2025-06-18" or not isinstance(response.get("capabilities", {}).get("tools"), dict):
@@ -213,6 +209,17 @@ class McpStdioClient:
             if isinstance(error, McpProtocolError):
                 raise
             raise McpProtocolError("MCP connection or discovery failed") from None
+
+    async def _spawn(self) -> None:
+        if os.name == "nt":
+            self._process, self._owner = await spawn_process_tree(*self.config.command, cwd=self.config.cwd,
+                env=self._environment, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                job_name=self._job_name)
+        else:
+            self._process = await asyncio.create_subprocess_exec(*self.config.command, cwd=self.config.cwd,
+                env=self._environment, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
+        self._reader = asyncio.create_task(self._read())
+        self._stderr = asyncio.create_task(self._drain_stderr())
 
     async def call(self, name: str, arguments: Mapping[str, object]) -> dict[str, Any]:
         try:
@@ -348,12 +355,16 @@ class McpStdioClient:
             await asyncio.sleep(.005)
 
     async def close(self) -> None:
+        self.closed = True
         if self._closing is None or self._closing.done() and not self._cleanup_complete:
             self._closing = asyncio.create_task(self._close())
         await finish_cleanup(self._closing)
 
     async def _close(self) -> None:
         self.closed = True
+        if self._spawning is not None:
+            # Failure to spawn creates no process, but its outcome must settle.
+            await asyncio.gather(self._spawning, return_exceptions=True)
         process = self._process
         try:
             if process is not None:
