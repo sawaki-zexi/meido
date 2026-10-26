@@ -2647,9 +2647,14 @@ def _refresh_channel_avatars(account: ChannelAccount, sender_id: str = "", chat_
             multichannel_store.avatars.refresh(account, "chat", chat_id, lambda: _fetch_channel_avatar(account, kind, subject))
 
 
-async def _dispatch_channel_payload(account_id: str, payload: dict[str, object], *, source_adapter: ChannelAdapter | None = None, received_at: float | None = None, source_generation: str | None = None) -> None:
+async def _dispatch_channel_payload(account_id: str, payload: dict[str, object], *, source_adapter: ChannelAdapter | None = None, received_at: float | None = None, source_generation: str | None = None, source_group_policy: tuple[bool, int] | None = None) -> None:
     received_at = _schedule_clock() if received_at is None else received_at
     account = multichannel_store.get_account(account_id)
+    # Freeze before admission, quote resolution, or the account event lock can
+    # suspend this input. A close/open cycle must not admit old buffered input.
+    if (source_group_policy is None and account is not None and account.channel == "qq"
+            and payload.get("message_type") == "group" and payload.get("group_id") is not None):
+        source_group_policy = multichannel_store.group_reply_policy(account.role_id, account_id, str(payload["group_id"]))
     if account is not None and account.channel == "qq" and source_generation is None:
         from .channels.transports import napcat_received_generation
         source_generation = channel_host.connection_generation(account_id,
@@ -2669,7 +2674,7 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
                 if original is not None and account is not None and account.enabled:
                     if channel_host.intake.defer(
                         account_id,
-                        lambda: _dispatch_channel_payload(account_id, payload, received_at=received_at, source_generation=source_generation),
+                        lambda: _dispatch_channel_payload(account_id, payload, received_at=received_at, source_generation=source_generation, source_group_policy=source_group_policy),
                         lambda: _reject_channel_payload(original, payload),
                     ):
                         return
@@ -2685,7 +2690,8 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
             event = await channel_host.accept_event(account_id, payload)
             if event is not None:
                 await _handle_channel_event(replace(event, received_at=received_at,
-                    metadata={**event.metadata, "hostConnectionGeneration": source_generation}))
+                    metadata={**event.metadata, "hostConnectionGeneration": source_generation,
+                              "hostGroupReplyPolicy": source_group_policy}))
     except Exception as error:
         logger.warning("渠道入站处理失败 account=%s error=%s", account_id, type(error).__name__)
 
@@ -3028,6 +3034,15 @@ async def _handle_channel_event(event) -> None:
 
     if event.received_at is None:
         event = replace(event, received_at=_schedule_clock())
+    if event.channel == "qq" and event.chat_type is ChatType.GROUP:
+        account = multichannel_store.get_account(event.account_id)
+        if account is None:
+            return
+        current_policy = multichannel_store.group_reply_policy(account.role_id, event.account_id, event.chat_id)
+        received_policy = event.metadata.get("hostGroupReplyPolicy")
+        if received_policy is not None and received_policy != current_policy:
+            return
+        event = replace(event, metadata={**event.metadata, "hostGroupReplyPolicy": current_policy})
     if await _handle_channel_control_command(event):
         return
     if event.channel == "qq" and event.chat_type is ChatType.GROUP and not event.triggered:
@@ -3056,7 +3071,10 @@ async def _handle_channel_event_locked(event):
     group_reply_revision = 0
     if event.chat_type is ChatType.GROUP:
         if event.channel == "qq":
-            replies_enabled, group_reply_revision = multichannel_store.group_reply_policy(account.role_id, event.account_id, event.chat_id)
+            current_policy = multichannel_store.group_reply_policy(account.role_id, event.account_id, event.chat_id)
+            if event.metadata.get("hostGroupReplyPolicy", current_policy) != current_policy:
+                return
+            replies_enabled, group_reply_revision = current_policy
             if not replies_enabled:
                 event = replace(event, triggered=False)
         listening = multichannel_store.group_listening(account.role_id, event.account_id, event.chat_id)

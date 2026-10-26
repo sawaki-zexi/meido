@@ -11,10 +11,17 @@ from test_meme_turn import meme_turn, payload
 def test_paired_private_identity_is_present_in_group_model_context(meme_turn, monkeypatch, sender, unbound, owner):
     state = meme_turn
     requests = []
-    private = state.channels.ensure_channel_thread(state.role.id, "qq", state.adapter.account_id, "11", "private")
-    state.channels.append_event(private, direction="inbound", content="主人私聊秘密不得进入群聊", external_message_id="private-secret")
-    if unbound:
-        state.channels.unbind_identity(str(state.channels.list_identities()[0]["identityId"]))
+    state.channels.unbind_identity(str(state.channels.list_identities()[0]["identityId"]))
+    code = state.channels.create_pairing_code(state.role.id, "qq")
+    original_transport = state.adapter._transport
+
+    async def transport(operation, params):
+        if operation == "send_private_msg":
+            assert params["user_id"] == 11
+            return {"message_id": "paired"}
+        return await original_transport(operation, params)
+
+    monkeypatch.setattr(state.adapter, "_transport", transport)
 
     class Model:
         async def stream_structured_messages(self, messages, configuration, tools):
@@ -25,6 +32,16 @@ def test_paired_private_identity_is_present_in_group_model_context(meme_turn, mo
 
     async def scenario():
         try:
+            await main._dispatch_channel_payload(state.adapter.account_id, {
+                "post_type": "message", "message_type": "private", "self_id": 99, "user_id": 11,
+                "message_id": "pair", "sender": {"user_id": 11, "nickname": "主人"},
+                "message": [{"type": "text", "data": {"text": f"/pair {code}"}}],
+            }, source_adapter=state.adapter)
+            assert len(state.channels.list_identities()) == 1
+            private = state.channels.get_thread_by_chat(state.role.id, state.adapter.account_id, "11", chat_type="private")
+            state.channels.append_event(private, direction="inbound", content="主人私聊秘密不得进入群聊", external_message_id="private-secret")
+            if unbound:
+                state.channels.unbind_identity(str(state.channels.list_identities()[0]["identityId"]))
             event = payload("owner-in-group", image=False, sender=sender)
             event["sender"]["nickname"] = "主人"
             event["senderIsOwner"] = True  # A self-reported flag cannot bind a guest.
