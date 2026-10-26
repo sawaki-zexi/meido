@@ -2,7 +2,7 @@
 
 状态：当前
 
-最后核验：2026-10-25
+最后核验：2026-10-26
 
 多端会话模块参考并改编 [Shiori-Agent](https://github.com/YinFengWindy/Shiori-Agent)，固定基线为 `1c241a2627bbcc99124aef71abaee237ac057499`。引用范围包括渠道账号和身份、入站暂停缓冲、聊天上下文隔离、群旁听以及平台传输行为；具体来源见[源码研究](../research/shiori-multichannel-integration.md)。上游采用 MIT 许可证，保留其版权及许可声明如下。
 
@@ -10,6 +10,10 @@
 `web/src/features/channels/channelMessagePresentation.ts` 的 Markdown 摘要格式改编自该版本
 [`apps/desktop/src/shared/chatPreviewText.ts`](https://github.com/YinFengWindy/Shiori-Agent/blob/d149de7f052f77c5bb88d4d1393d48dce1870875/apps/desktop/src/shared/chatPreviewText.ts)。
 来源与 Meido 适配边界见[消息源码研究](../research/shiori-channel-message-presentation.md)，适用同一 MIT 声明。
+
+`web/src/ui/MessageMarkdown.tsx` 的 Markdown 插件组合、HTML 原文显示、链接限制与图片替代文字策略
+参考同一基线的 [`ChatMarkdownContent.tsx`](https://github.com/YinFengWindy/Shiori-Agent/blob/d149de7f052f77c5bb88d4d1393d48dce1870875/apps/desktop/renderer/src/chat/ChatMarkdownContent.tsx)。
+Meido 将其用于桌面及渠道消息，并适配网页链接、现有附件入口和共享样式；适用同一 MIT 声明。
 
 ```text
 MIT License
