@@ -86,10 +86,12 @@ class GroupListeningStore:
             natural = db.execute("SELECT enabled FROM channel_natural_settings WHERE thread_id=?", (thread_id,)).fetchone()
         enabled = self.store.group_listening(role_id, thread.account_id, thread.chat_id)
         natural_enabled = bool(natural and natural[0])
+        replies_enabled = self.store.group_reply_policy(role_id, thread.account_id, thread.chat_id)[0]
         return {
+            "repliesEnabled": replies_enabled,
             "naturalEnabled": natural_enabled,
-            "naturalEffective": natural_enabled and enabled,
-            "naturalPaused": natural_enabled and not enabled,
+            "naturalEffective": natural_enabled and enabled and replies_enabled,
+            "naturalPaused": natural_enabled and not (enabled and replies_enabled),
             "threadId": thread_id,
             "enabled": enabled,
             "dailyCap": int(cap[0]) if cap else None,
@@ -118,6 +120,8 @@ class GroupListeningStore:
         with self._thread_lock(thread_id):
             if enabled and not self.store.group_listening(role_id, thread.account_id, thread.chat_id):
                 raise ValueError("请先开启本群旁听")
+            if enabled and not self.store.group_reply_policy(role_id, thread.account_id, thread.chat_id)[0]:
+                raise ValueError("请先开启本群回复")
             with self.store._connect() as db:
                 row = db.execute("SELECT enabled FROM channel_natural_settings WHERE thread_id=?", (thread_id,)).fetchone()
                 changed = bool(row and row[0]) != enabled

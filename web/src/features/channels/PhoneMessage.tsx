@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Dialog } from "../../ui/Dialog";
 import { AttachmentImage } from "../../ui/AttachmentImage";
+import { MessageMarkdown } from "../../ui/MessageMarkdown";
 import { ChannelAttachments } from "./ChannelAttachments";
 import type { ConversationMessage, MessagePresentation } from "./channelMessagePresentation";
 
@@ -29,7 +30,8 @@ export function PhoneMessage({ message, view, roleId, timeLabel, delivery, sourc
         {view.replyTo && <blockquote className="phone-message-quote"><strong>{view.replySender || "引用消息"}</strong><span className={longQuote && !quoteExpanded ? "is-collapsed" : ""}>{quotedText}</span>{longQuote && <button type="button" onClick={() => setQuoteExpanded((expanded) => !expanded)}>{quoteExpanded ? "收起引用" : "展开引用"}</button>}</blockquote>}
         {view.quotedAttachments.length > 0 && <div className="phone-message-quote" role="group" aria-label="引用消息附件"><ChannelAttachments roleId={roleId} attachments={view.quotedAttachments} onMediaLoad={onMediaLoad} onOpenImage={openImage} /></div>}
         {(message.content || view.mentionedNames.length > 0 || view.failed || !hasBody) && <div className={`phone-message-bubble${view.failed ? " is-failed" : ""}${message.metadata.listening === true ? " is-listened" : ""}`}>
-          {(message.content || view.mentionedNames.length > 0) && <p>{view.mentionedNames.map((name, index) => <span className="phone-message-mention" key={`${name}:${index}`}>@{name} </span>)}{message.content}</p>}
+          {view.mentionedNames.length > 0 && <p>{view.mentionedNames.map((name, index) => <span className="phone-message-mention" key={`${name}:${index}`}>@{name} </span>)}</p>}
+          {message.content && <MessageMarkdown content={message.content} />}
           {view.failed && (!message.content || view.error !== message.content) && <p className="phone-message-error">{view.error || "回复未能完成"}</p>}
           {!hasBody && !view.failed && <p className="phone-message-placeholder">{message.status === "streaming" ? "正在回复…" : "[非文本消息]"}</p>}
         </div>}

@@ -1,0 +1,30 @@
+.message-markdown { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.message-markdown p, .message-markdown ul, .message-markdown ol, .message-markdown blockquote, .message-markdown pre, .message-markdown-table { margin: .7em 0; }
+.message-markdown > :first-child { margin-top: 0; }
+.message-markdown > :last-child { margin-bottom: 0; }
+.message-markdown h1, .message-markdown h2, .message-markdown h3, .message-markdown h4, .message-markdown h5, .message-markdown h6 { margin: 1em 0 .5em; font-weight: 600; line-height: 1.5; }
+.message-markdown h1 { font-size: 1.3em; }
+.message-markdown h2 { font-size: 1.2em; }
+.message-markdown h3 { font-size: 1.1em; }
+.message-markdown h4, .message-markdown h5, .message-markdown h6 { font-size: 1em; }
+.message-markdown strong { font-weight: 700; }
+.message-markdown ul, .message-markdown ol { padding-left: 1.6em; }
+.message-markdown ul { list-style: disc; }
+.message-markdown ol { list-style: decimal; }
+.message-markdown li + li { margin-top: .25em; }
+.message-markdown li > ul, .message-markdown li > ol { margin: .25em 0; }
+.message-markdown .task-list-item { list-style: none; }
+.message-markdown .task-list-item input { margin: 0 .45em 0 -1.3em; accent-color: var(--rose); }
+.message-markdown a { color: var(--rose-deep); text-decoration: underline; text-underline-offset: .2em; }
+.message-markdown blockquote { padding: .15em 0 .15em 1em; border-left: 3px solid var(--line-strong); color: var(--ink-soft); }
+.message-markdown blockquote > :first-child { margin-top: 0; }
+.message-markdown blockquote > :last-child { margin-bottom: 0; }
+.message-markdown hr { margin: 1em 0; border: 0; border-top: 1px solid var(--line); }
+.message-markdown code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .9em; }
+.message-markdown :not(pre) > code { padding: .12em .35em; border-radius: 4px; background: var(--hover); }
+.message-markdown pre { max-width: 100%; padding: 12px; overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-input); white-space: pre; overflow-wrap: normal; line-height: 1.6; }
+.message-markdown-table { max-width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+.message-markdown table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: .92em; }
+.message-markdown th, .message-markdown td { padding: .45em .8em; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+.message-markdown th { background: var(--hover); font-weight: 600; }
+.message-markdown tbody tr:nth-child(even) { background: var(--surface-input); }
