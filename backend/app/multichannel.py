@@ -504,10 +504,10 @@ class MultichannelStore:
     def channel_enabled(self, channel: str) -> bool:
         with self._connect() as db:
             row = db.execute("SELECT enabled FROM channel_platform_settings WHERE channel=?", (channel,)).fetchone()
-        return bool(row["enabled"]) if row is not None else True
+        return bool(row["enabled"]) if row is not None else channel != 'grok_bot'
 
     def set_channel_enabled(self, channel: str, enabled: bool) -> None:
-        if channel not in {"telegram", "qq", "qqbot", "feishu"} or not isinstance(enabled, bool):
+        if channel not in {"telegram", "qq", "qqbot", "feishu", "grok_bot"} or not isinstance(enabled, bool):
             raise ValueError("渠道或启停状态无效")
         with self._connect() as db:
             db.execute(
@@ -544,6 +544,8 @@ class MultichannelStore:
             db.execute("DELETE FROM channel_member_names WHERE role_id=?", (role_id,))
             if "channel_natural_quota" in tables:
                 db.execute("DELETE FROM channel_natural_quota WHERE role_id=?", (role_id,))
+            if "channel_grok_exchanges" in tables:
+                db.execute("DELETE FROM channel_grok_exchanges WHERE role_id=?", (role_id,))
             if "channel_member_profiles" in tables:
                 db.execute("DELETE FROM channel_member_profiles WHERE role_id=?", (role_id,))
             if "channel_memory_cursors" in tables:
@@ -583,6 +585,7 @@ class MultichannelStore:
             "qq": ("access_token",),
             "qqbot": ("client_secret",),
             "feishu": ("app_secret", "verification_token", "encrypt_key"),
+            "grok_bot": ("webhook_key", "callback_token"),
         }.get(channel, ())
         failures: list[str] = []
         for name in credential_names:
@@ -903,8 +906,13 @@ class MultichannelStore:
             if max_bytes is not None:
                 db.execute("BEGIN")
             order = "target_id" if stable else "last_seen DESC, target_id"
-            sql = f"SELECT * FROM channel_targets WHERE role_id=? AND account_id=? ORDER BY {order}"
+            sql = "SELECT * FROM channel_targets WHERE role_id=? AND account_id=?"
             parameters: tuple = (role_id, account_id)
+            account = self.get_account(account_id)
+            if account is not None and account.channel == 'grok_bot':
+                sql += ' AND chat_id=?'
+                parameters += ('dm:' + str(self.channel_config(account_id).get('peerId', '')),)
+            sql += f' ORDER BY {order}'
             if limit is not None:
                 sql += " LIMIT ?"
                 parameters += (limit,)
@@ -1019,6 +1027,8 @@ class MultichannelStore:
         return code
 
     def consume_pairing_code(self, code: str, *, role_id: str, channel: str, scope: str, platform_user_id: str, account_id: str, chat_id: str) -> bool:
+        if channel == 'grok_bot':
+            return False
         if scope not in {"platform", "account"} or not platform_user_id.strip() or not chat_id.strip():
             raise ValueError("渠道身份格式无效")
         digest = hashlib.sha256(code.strip().upper().encode()).hexdigest()
@@ -1048,6 +1058,8 @@ class MultichannelStore:
             return True
 
     def identity_is_owner(self, *, role_id: str, channel: str, scope: str, platform_user_id: str, account_id: str) -> bool:
+        if channel == 'grok_bot':
+            return False
         with self._connect() as db:
             row = db.execute(
                 """SELECT i.owner FROM channel_identities i JOIN channel_accounts a
