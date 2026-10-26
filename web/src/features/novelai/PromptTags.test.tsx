@@ -67,6 +67,26 @@ it('combines filters, explains no matches and keeps the editing draft when clear
   expect(calls.every((call) => call.method === 'GET')).toBe(true);
 });
 
+it('keeps the selected category visible when editing its last tag into a different category', async () => {
+  let tag = first;
+  fakeBackend({
+    'GET /api/roles/r1/novelai/prompt-tags\\?limit=50': () => ({ body: { tags: [tag], revision: 1, nextCursor: null } }),
+    ['PUT /api/roles/r1/novelai/prompt-tags/' + first.id]: (request) => {
+      tag = { ...tag, ...JSON.parse(String(request?.body)) }; return { body: { tag, revision: 2 } };
+    },
+  });
+  const user = userEvent.setup(); render(<PromptTagManager roleId="r1" expanded />);
+  await screen.findByRole('article', { name: '提示标签 雨景' });
+  await user.selectOptions(screen.getByLabelText('筛选标签分类'), 'atmosphere');
+  await user.click(screen.getByRole('button', { name: '编辑标签 雨景' }));
+  await user.clear(screen.getByLabelText('标签分类')); await user.type(screen.getByLabelText('标签分类'), 'composition');
+  await user.click(screen.getByRole('button', { name: '保存标签' }));
+  await screen.findByText('没有符合条件的标签。');
+  expect(screen.getByLabelText('筛选标签分类')).toHaveValue('atmosphere');
+  await user.click(screen.getByRole('button', { name: '清空筛选' }));
+  expect(screen.getByRole('article', { name: '提示标签 雨景' })).toBeInTheDocument();
+});
+
 it.each(['failed page', 'changed library'])('does not present partial search results after a %s and can reload', async (fault) => {
   let fail = true;
   const { calls } = fakeBackend({

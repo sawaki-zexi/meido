@@ -105,7 +105,9 @@ export function usePromptTags(roleId: string, initiallyOpen = false) {
     && (!filters.rating || tag.rating === filters.rating)
     && (!filters.status || tag.enabled === (filters.status === 'enabled'))
     && [tag.name, ...tag.keywords, tag.prompt, tag.negative_prompt].some((value) => normalizeSearch(value).includes(search))) ?? [];
-  const categories = [...new Set(page?.tags.map((tag) => tag.category) ?? [])].sort((a, b) => a.localeCompare(b));
+  const categoryValues = new Set(page?.tags.map((tag) => tag.category) ?? []);
+  if (filters.category) categoryValues.add(filters.category);
+  const categories = [...categoryValues].sort((a, b) => a.localeCompare(b));
   return { open, page, draft, keywords, editing, busy, error, text, prompt, negativePrompt, preview, filters, filteredTags, categories,
     filter: (changes: Partial<TagFilters>) => setFilters((previous) => ({ ...previous, ...changes })),
     clearFilters: () => setFilters(emptyFilters()),
