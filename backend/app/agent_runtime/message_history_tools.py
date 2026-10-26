@@ -11,6 +11,7 @@ from typing import cast
 from ..models import Message
 from ..multichannel import MultichannelStore
 from ..session_store import SessionStore
+from ..conversation_history import ConversationHistoryView
 from .tools import AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
 
 MESSAGE_HISTORY_TOOL_NAMES = frozenset({"search_messages", "fetch_messages"})
@@ -18,38 +19,33 @@ MESSAGE_HISTORY_TOOL_NAMES = frozenset({"search_messages", "fetch_messages"})
 
 class ConversationHistory:
     def __init__(self, sessions: SessionStore, channels: MultichannelStore, *, role_id: str,
-                 source_thread_id: str | None, is_owner: bool) -> None:
+                 source_thread_id: str | None, is_owner: bool, view=None) -> None:
         self.sessions = sessions
         self.channels = channels
         self.role_id = role_id
         self.thread_id = source_thread_id
         self.is_owner = is_owner
+        self.view = view
+
+    def validate(self, context):
+        context.signal.raise_if_cancelled()
+        if self.view is not None:
+            self.view.require_snapshot_current()
 
     def read(self, context: ToolContext) -> list[Message]:
         context.signal.raise_if_cancelled()
         if context.role_id != self.role_id:
             raise PermissionError("message history scope does not match the current conversation")
-        if self.thread_id in {None, f"desktop:{self.role_id}"}:
-            if not self.is_owner or context.session_key != f"role:{self.role_id}":
-                raise PermissionError("message history scope does not match the current conversation")
-            messages = self.channels.owner_context_messages(self.role_id)
-            messages = _original_sequences(messages)
-        else:
-            assert self.thread_id is not None
-            thread = self.channels.get_thread(self.role_id, self.thread_id)
-            if thread is None or thread.session_key != context.session_key:
-                raise PermissionError("message history scope does not match the current conversation")
-            account = self.channels.get_account(thread.account_id)
-            if account is None or account.role_id != self.role_id or account.channel != thread.channel:
-                raise PermissionError("message history account is no longer available to this role")
-            since = (self.channels.owner_chat_context_since(
-                role_id=self.role_id, channel=thread.channel, account_id=thread.account_id, chat_id=thread.chat_id,
-            ) if self.is_owner and thread.chat_type == "private" else None)
-            messages = (_original_sequences(self.channels.owner_context_messages(self.role_id)) if since is not None
-                        else self.sessions.list_messages(thread.session_key))
-            messages = [message for message in messages if message.role != "assistant"
-                        or message.sessionKey == f"role:{self.role_id}"
-                        or message.metadata.get("deliveryStatus") == "sent"]
+        expected = f"role:{self.role_id}" if self.thread_id in {None, f"desktop:{self.role_id}"} else f"thread:{self.thread_id}"
+        if context.session_key != expected or (expected.startswith("role:") and not self.is_owner):
+            raise PermissionError("message history scope does not match the current conversation")
+        if self.view is None:
+            current = self.sessions.user_message_for_run(context.run_id)
+            if current is not None and current.sessionKey != expected:
+                raise PermissionError("message history run does not match the current conversation")
+            self.view = ConversationHistoryView(self.channels, role_id=self.role_id, thread_id=self.thread_id,
+                owner=self.is_owner, through_message_id=current.id if current else None)
+        messages = self.view.read()
         return [message for message in messages
                 if message.status == "completed" and message.messageType == "text"
                 and message.role in {"user", "assistant"}]
@@ -88,7 +84,9 @@ class MessageHistoryTool:
         ToolRegistry.validate_definition(self.definition, dict(arguments))
         stopped = Event()
         try:
-            return await asyncio.to_thread(self._execute, arguments, context, stopped)
+            result = await asyncio.to_thread(self._execute, arguments, context, stopped)
+            self.history.validate(context)
+            return result
         finally:
             stopped.set()
 
@@ -137,6 +135,7 @@ class MessageHistoryTool:
                        "messages": [{**_public(message), "content": message.content,
                                      "in_source_ref": message.id in matched} for message in selected]}
         _check_cancelled(context, stopped)
+        self.history.validate(context)
         return AgentToolResult(json.dumps(payload, ensure_ascii=False), details={"status": "succeeded", "count": payload["count"]})
 
 
@@ -149,11 +148,6 @@ def _check_cancelled(context: ToolContext, stopped: Event) -> None:
     context.signal.raise_if_cancelled()
     if stopped.is_set():
         raise RuntimeError("message history tool cancelled")
-
-
-def _original_sequences(messages: list[Message]) -> list[Message]:
-    """Undo the maintenance cursor added by owner_context_messages only."""
-    return [message.model_copy(update={"sequence": message.metadata["sourceSequence"]}) for message in messages]
 
 
 def _preview(message: Message, terms: list[str]) -> dict[str, object]:
@@ -194,6 +188,6 @@ def _source_ids(arguments: Mapping[str, object]) -> set[str]:
 
 
 def build_message_history_tools(sessions: SessionStore, channels: MultichannelStore, *, role_id: str,
-                                source_thread_id: str | None = None, is_owner: bool = True) -> tuple[MessageHistoryTool, ...]:
-    history = ConversationHistory(sessions, channels, role_id=role_id, source_thread_id=source_thread_id, is_owner=is_owner)
+                                source_thread_id: str | None = None, is_owner: bool = True, view=None) -> tuple[MessageHistoryTool, ...]:
+    history = ConversationHistory(sessions, channels, role_id=role_id, source_thread_id=source_thread_id, is_owner=is_owner, view=view)
     return MessageHistoryTool(history, search=True), MessageHistoryTool(history, search=False)

@@ -78,7 +78,10 @@ def test_desktop_reads_only_currently_bound_owner_private_history(tmp_path):
     assert [message["id"] for message in result["messages"]] == [allowed.id]
     assert result["messages"][0]["seq"] == allowed.sequence
     channels.unbind_identity(str(channels.list_identities()[0]["identityId"]))
-    assert execute(tools["fetch_messages"], {"source_ref": allowed.id}, context)["count"] == 0
+    with pytest.raises(PermissionError):
+        execute(tools["fetch_messages"], {"source_ref": allowed.id}, context)
+    fresh = build_message_history_tools(sessions, channels, role_id="r1")[1]
+    assert execute(fresh, {"source_ref": allowed.id}, context)["count"] == 0
 
 
 def test_group_and_visitor_tools_stay_in_host_bound_thread(tmp_path):
@@ -173,7 +176,8 @@ def test_paired_private_rechecks_binding_without_upgrading_visitor_run(tmp_path)
     assert {message["id"] for message in execute(owner_tool, {"query": "证据"}, context)["messages"]} == {desktop.id, allowed.id}
     assert {message["id"] for message in execute(guest_tool, {"query": "证据"}, context)["messages"]} == {old.id, allowed.id}
     channels.unbind_identity(str(channels.list_identities()[0]["identityId"]))
-    assert desktop.id not in str(execute(owner_tool, {"query": "证据"}, context))
+    with pytest.raises(PermissionError):
+        execute(owner_tool, {"query": "证据"}, context)
     channels.delete_account(account.account_id)
     with pytest.raises(PermissionError):
         execute(owner_tool, {"query": "证据"}, context)

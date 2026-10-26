@@ -1800,11 +1800,6 @@ class TelegramChannelService:
             )
             return False
         code = pairing_code(content)
-        attachment_items = [] if code is not None else await self._download_attachments(account, message)
-        if not content and not attachment_items:
-            return False
-        if not content and attachment_items:
-            content = "[收到附件]"
         if code is not None:
             paired = chat_type == "private" and self.store.consume_pairing_code(code, role_id=account.role_id, channel="telegram", scope="platform", platform_user_id=sender_id, account_id=account_id, chat_id=chat_id)
             if paired:
@@ -1813,7 +1808,18 @@ class TelegramChannelService:
         owner = self.store.identity_is_owner(role_id=account.role_id, channel="telegram", scope="platform", platform_user_id=sender_id, account_id=account_id)
         if owner and chat_type == "private":
             self.store.remember_owner_chat(role_id=account.role_id, channel="telegram", scope="platform", platform_user_id=sender_id, account_id=account_id, chat_id=chat_id)
-        quoted_attachments = await self._download_attachments(account, reply) if reply else []
+        from .conversation_history import ConversationHistoryView
+        history = ConversationHistoryView(self.store, role_id=account.role_id, thread_id=thread.thread_id) if owner and chat_type == "private" else None
+        attachment_items = await self._download_attachments(account, message, check=history.require_current if history else None)
+        if history is not None:
+            history.require_current()
+        if not content and not attachment_items:
+            return False
+        if not content and attachment_items:
+            content = "[收到附件]"
+        quoted_attachments = await self._download_attachments(account, reply, check=history.require_current if history else None) if reply else []
+        if history is not None:
+            history.require_current()
         metadata = {"hostReceivedAt": received_at, "platformMessageId": external_id, "senderId": sender_id, "senderName": sender_name, "senderIsOwner": owner, "senderKind": "chat" if sender_chat else "user", "chatType": chat_type, "triggered": triggered, "mentioned": mentioned, "mentionedIds": mentioned_ids, "replyTo": str(reply.get("message_id") or "") if reply else None, "replyToSenderId": str(reply_from.get("id") or "") if reply else None, "replyToContent": str(reply.get("text") or reply.get("caption") or "") if reply else None, "replyToSenderName": str(reply_from.get("first_name") or reply_from.get("username") or "") if reply else None, "quotedAttachments": quoted_attachments, "attachments": attachment_items}
         from .channels.reply_identity import capture_reply_identity
         metadata.update(capture_reply_identity(self.store, account,
@@ -1827,6 +1833,9 @@ class TelegramChannelService:
             return False
         if self.on_message is not None:
             metadata = {**metadata, "messageId": getattr(stored_message, "id", None)}
+            if history is not None:
+                history.include_current(stored_message.id)
+                metadata["ownerHistory"] = history.snapshot()
             outcome = self.on_message(thread, content, metadata, owner)
             if hasattr(outcome, "__await__"):
                 if background:
@@ -1846,7 +1855,7 @@ class TelegramChannelService:
             if self.store.get_account(self.account_id) is not None:
                 self.store.set_account_state(self.account_id, last_error=type(error).__name__)
 
-    async def _download_attachments(self, account: ChannelAccount, message: Mapping[str, Any]) -> list[dict[str, object]]:
+    async def _download_attachments(self, account: ChannelAccount, message: Mapping[str, Any], *, check=None) -> list[dict[str, object]]:
         if self.persist_attachment is None or not hasattr(self.transport, "get_file"):
             return []
         candidates: list[tuple[str, str, str, int | None]] = []
@@ -1863,11 +1872,17 @@ class TelegramChannelService:
             if size is not None and (size < 0 or size > MAX_ATTACHMENT_BYTES):
                 continue
             try:
+                if check:
+                    check()
                 remote = await self.transport.get_file(self.store.token(account.account_id), file_id)
+                if check:
+                    check()
                 file_path = remote.get("file_path")
                 if not isinstance(file_path, str) or not file_path:
                     continue
                 data, downloaded_mime = await self.transport.download_file(self.store.token(account.account_id), file_path)
+                if check:
+                    check()
                 if len(data) > MAX_ATTACHMENT_BYTES:
                     continue
                 attachments.append(self.persist_attachment(account.role_id, name, mime if mime != "application/octet-stream" else downloaded_mime, data))
