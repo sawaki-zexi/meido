@@ -183,6 +183,13 @@ class ChannelHost:
         account = self.store.get_account(account_id)
         return bool(account and self.store.account_effectively_enabled(account) and account_id in self._adapters and account_id not in self._paused_accounts)
 
+    def _group_reply_guard(self, account_id: str, target: Target) -> Callable[[], bool] | None:
+        account = self.store.get_account(account_id)
+        if account is None or account.channel != "qq" or target.kind is not TargetKind.GROUP:
+            return None
+        policy = self.store.group_reply_policy(account.role_id, account_id, target.chat_id)
+        return lambda: policy[0] and self.store.group_reply_policy(account.role_id, account_id, target.chat_id) == policy
+
     async def send_retry_notice(self, adapter: ChannelAdapter, event: InboundEvent) -> DeliveryResult:
         """Answer rejected intake through the original connection, without history."""
         if adapter.account_id != event.account_id or adapter.channel != event.channel:
@@ -192,6 +199,9 @@ class ChannelHost:
             kind=TargetKind.GROUP if event.chat_type is ChatType.GROUP else TargetKind.PRIVATE,
             display_name=event.group_name or event.sender_name,
         )
+        group_guard = self._group_reply_guard(event.account_id, target)
+        if group_guard is not None and not group_guard():
+            return DeliveryResult(DeliveryStatus.FAILED, target, error="本群回复已关闭")
         async with self._send_state_lock:
             if id(adapter) not in self._adapter_generations:
                 raise ChannelAdapterError("拒收提示的来源连接尚未注册")
@@ -201,6 +211,7 @@ class ChannelHost:
             adapter.remember_target(target)
             return await adapter.send(OutboundMessage(
                 target, CHANNEL_INTAKE_RETRY_NOTICE, reply_to_message_id=event.external_message_id,
+                authorize_dispatch=group_guard,
             ))
         finally:
             await self._end_activity(event.account_id, event=False)
@@ -506,6 +517,13 @@ class ChannelHost:
         if target is None:
             raise UnsupportedTargetError("目标不在渠道账号可达目录中")
 
+        group_guard = self._group_reply_guard(account_id, target)
+        if group_guard is not None and not group_guard():
+            raise UnsupportedTargetError("本群回复已关闭")
+
+        def dispatch_authorized():
+            return (group_guard is None or group_guard()) and (authorize_source is None or authorize_source())
+
         if mention_ids:
             if target.kind is not TargetKind.GROUP or account.channel not in {"qq", "telegram"}:
                 raise UnsupportedTargetError("该平台或目标不支持群成员提及")
@@ -571,7 +589,7 @@ class ChannelHost:
 
         adapter = await self._begin_send(account_id)
         try:
-            if authorize_source is not None and not authorize_source():
+            if not dispatch_authorized():
                 raise UnsupportedTargetError("原始任务来源授权已失效")
             if actor in {"external", "push"} and not any(
                 item.id == target.id for item in self.store.owner_targets(role_id, account_id)
@@ -614,7 +632,7 @@ class ChannelHost:
                     metadata={"deliveryAttemptId": attempt_id, "mentionIds": list(mention_ids)},
                     # Ordinary replies and current-source stickers share the
                     # last-safe-point guard; proactive frozen leases are unchanged.
-                    authorize_dispatch=authorize_source if actor == "reply" and source_kind in {"reply", "chat_meme", "natural"} else None,
+                    authorize_dispatch=dispatch_authorized if group_guard is not None or actor == "reply" and source_kind in {"reply", "chat_meme", "natural"} else None,
                 )
                 stream_start = getattr(adapter, "stream_start", None)
                 stream_update = getattr(adapter, "stream_update", None)

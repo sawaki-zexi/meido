@@ -43,6 +43,80 @@ def natural(meme_turn,monkeypatch):
     return s
 
 
+@pytest.mark.parametrize('sender,owner', [('11', True), ('22', False)])
+def test_natural_model_receives_host_verified_sender_identity(natural, sender, owner):
+    s = natural
+    async def run():
+        try:
+            await s.receive('identity', sender=sender)
+            await s.clock.advance(1)
+            assert len(s.calls) == 1
+            inputs = [json.loads(item['content']) for item in s.calls[0][0] if item['role'] == 'user']
+            message = next(item for item in inputs if item['messageId'] == 'identity')
+            assert message['senderIsOwner'] is owner
+            assert not s.calls[0][1]
+        finally:
+            await s.scheduler.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('quote_scope, identity, expected_text', [
+    ({'group_id': 100, 'message_type': 'group'}, '已配对主人', '明天去旅行'),
+    ({'message_type': 'private'}, '未知发送者', ''),
+    ({'message_type': 'group'}, '未知发送者', ''),
+])
+def test_natural_quote_names_owner_separately_from_guest(natural, monkeypatch, quote_scope, identity, expected_text):
+    s = natural
+    original = s.adapter._transport
+    async def transport(operation, params):
+        if operation == 'get_msg':
+            return {'data': {**quote_scope,
+                'sender': {'user_id': 11, 'nickname': 'Owner'},
+                'message': [{'type': 'text', 'data': {'text': '明天去旅行'}}]}}
+        return await original(operation, params)
+    monkeypatch.setattr(s.adapter, '_transport', transport)
+    async def run():
+        try:
+            data = payload('natural-quote', sender='22', image=False, triggered=False)
+            data['message'].insert(0, {'type': 'reply', 'data': {'id': 'owner-message'}})
+            event = await main.channel_host.accept_event(s.adapter.account_id, data)
+            await main._handle_channel_event(event)
+            await asyncio.sleep(0)
+            await s.clock.advance(1)
+            inputs = [json.loads(item['content']) for item in s.calls[0][0] if item['role'] == 'user']
+            message = next(item for item in inputs if item['messageId'] == 'natural-quote')
+            assert message['senderIsOwner'] is False
+            assert message['replyToSenderIdentity'] == identity
+            assert message['replyToContent'] == expected_text
+            if not expected_text:
+                assert '明天去旅行' not in str(s.calls)
+            assert not s.calls[0][1]
+        finally:
+            await s.scheduler.close()
+    asyncio.run(run())
+
+
+def test_disabling_group_invalidates_pending_natural_reply_and_keeps_listening(natural):
+    s = natural
+    async def run():
+        try:
+            await s.receive('before-disable')
+            s.channels.set_group_replies(s.role.id, s.adapter.account_id, '100', False)
+            await s.receive('while-disabled')
+            await s.clock.advance(1)
+            assert s.calls == [] and s.operations == []
+            assert len(s.channels.listening.recent(s.role.id, s.thread.thread_id)) == 2
+            s.channels.set_group_replies(s.role.id, s.adapter.account_id, '100', True)
+            await s.clock.advance(10)
+            assert s.calls == [] and s.operations == []
+            await s.receive('new-after-enable')
+            await s.clock.advance(1)
+            assert len(s.calls) == 1 and len(s.operations) == 1
+        finally:
+            await s.scheduler.close()
+    asyncio.run(run())
+
+
 def test_natural_reply_scoped_real_message_and_no_tools(natural):
     s=natural
     async def run():
