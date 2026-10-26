@@ -114,6 +114,7 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
         {!configuration && !error && <Placeholder loading>正在加载生图设置…</Placeholder>}
         {configurationRefreshing && <p role="status">正在同步生图设置…</p>}
         {configuration && <>
+          {allowed && <p className="muted" role="status">{unavailableMessage}</p>}
           {!allowed && <div className="studio-policy"><span>{unavailableMessage}</span>
             {onOpenSettings && <button type="button" onClick={onOpenSettings}>打开 NovelAI 设置</button>}</div>}
           {source && <div className="studio-policy"><span>将基于 {source.image.name} 再次生成；本次会重新消费一次尝试额度。</span>

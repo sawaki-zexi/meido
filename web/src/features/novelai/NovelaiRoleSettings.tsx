@@ -6,12 +6,12 @@ import { useNovelaiRoleSettings } from './useNovelaiRoleSettings';
 export function NovelaiRoleSettings({ draft, onChange, disabled = false }: {
   draft: RoleDraft; onChange: (draft: RoleDraft) => void; disabled?: boolean;
 }) {
-  const { configuration, models, modelLoading, error, modelError, config, patch, available,
+  const { configuration, models, modelLoading, error, modelError, config, patch, available, unavailableMessage,
     selectedModel, dismissError, dismissModelError, refreshModels } = useNovelaiRoleSettings(draft, onChange);
   return <fieldset aria-label="角色生图许可" disabled={disabled}>
     <legend>生图</legend>
     {error && <Notice onDismiss={dismissError}>{error}</Notice>}
-    {!configuration ? <Placeholder loading>正在读取独立服务设置…</Placeholder> : !available ? <p>请先在设置中开启 NovelAI 服务并配置独立凭据。</p> : <p>账户每日最多 {configuration.dailyAttemptLimit} 次，每张最多 {configuration.maxPixels.toLocaleString()} 像素、{configuration.maxSteps} 步。</p>}
+    {!configuration ? <Placeholder loading>正在读取独立服务设置…</Placeholder> : !available ? <p>{unavailableMessage}</p> : <p>账户每日最多 {configuration.dailyAttemptLimit} 次，每张最多 {configuration.maxPixels.toLocaleString()} 像素、{configuration.maxSteps} 步。</p>}
     <p className="field-hint">聊天和手动生图由插件设置统一启用。自动场景 CG 需在此开启，并选择辅助模型。</p>
     <label className="field checkbox-field"><input type="checkbox" checked={config.sceneCgEnabled}
       disabled={disabled || (!available && !config.sceneCgEnabled)}

@@ -29,6 +29,7 @@ it('allows a fresh role to generate with configured credentials despite legacy c
   const user = userEvent.setup();
   render(<NovelaiStudio roles={[role({ id: 'r1', name: '新角色' })]} initialRoleId="r1" />);
   await screen.findByText('暂无生图历史。');
+  expect(screen.getByText('本地配置已就绪，可发起生图；Token 有效性和账户额度将在实际生成时验证。')).toBeInTheDocument();
   await user.type(screen.getByLabelText('工作台英文正向 tags'), 'blue sky');
   await user.click(screen.getByRole('button', { name: '生成一张图片' }));
   await screen.findByAltText('one.png');

@@ -9,6 +9,14 @@ import { NovelaiRoleSettings } from './NovelaiRoleSettings';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('explains that CG needs txt2img when the plugin and token are already configured', async () => {
+  fakeBackend({ 'GET /api/services/novelai': () => ({ body: { enabled: true, tokenConfigured: true,
+    credentialCleanupPending: false, allowTxt2Img: false, allowImg2Img: true, revision: 3 } }) });
+  render(<NovelaiRoleSettings draft={draftFromRole(role({ id: 'r1', name: '角色' }))} onChange={() => {}} />);
+  expect(await screen.findByText('文生图已关闭，请在 NovelAI 设置中开启文生图后使用自动场景 CG。')).toBeInTheDocument();
+  expect(screen.getByRole('checkbox', { name: '允许主人回合场景 CG' })).toBeDisabled();
+});
+
 it('uses the plugin for chat images and preserves unrelated role policy without another consent gate', async () => {
   fakeBackend({ 'GET /api/services/novelai': () => ({ body: { enabled: true, tokenConfigured: true,
     credentialCleanupPending: false, revision: 3, dailyAttemptLimit: 20, maxPixels: 1048576, maxSteps: 28 } }) });
