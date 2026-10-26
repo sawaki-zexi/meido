@@ -119,6 +119,8 @@ def test_pure_attachment_message_is_accepted_and_text_reaches_provider(tmp_path:
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     adapter = MultimodalAdapter()
+    from backend.app.multichannel import MultichannelStore
+    monkeypatch.setattr(main, "multichannel_store", MultichannelStore(sessions.database_path, sessions))
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))

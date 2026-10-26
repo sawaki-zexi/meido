@@ -33,7 +33,7 @@ class ProactiveApplication:
     def __init__(self, sessions: SessionStore, tasks: TaskRuntime, *,
                  role_getter: Callable, model_getter: Callable, clock: Callable = time.time,
                  mcp_host=None, adapter_factory=None, fetch_body=None, recall_memory=None, web_tools=None,
-                 context_reader=None, workspace_getter=None, channel_host=None, enabled=lambda: True,
+                 context_reader=None, workspace_getter=None, channel_host=None, enabled=lambda: True, history_factory=None,
                  role_model_getter=lambda role_id: None):
         self.sessions, self.tasks = sessions, tasks
         self.role_getter, self.model_getter, self.clock = role_getter, model_getter, clock
@@ -41,6 +41,7 @@ class ProactiveApplication:
         self.mcp_host, self.adapter_factory, self.fetch_body = mcp_host, adapter_factory, fetch_body
         self.recall_memory, self.web_tools = recall_memory, web_tools
         self.context_reader = context_reader
+        self.history_factory = history_factory
         self.enabled = enabled
         self._gate = threading.RLock()
         self._closed = False

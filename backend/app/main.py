@@ -2668,9 +2668,12 @@ def _refresh_channel_avatars(account: ChannelAccount, sender_id: str = "", chat_
             multichannel_store.avatars.refresh(account, "chat", chat_id, lambda: _fetch_channel_avatar(account, kind, subject))
 
 
-async def _dispatch_channel_payload(account_id: str, payload: dict[str, object], *, source_adapter: ChannelAdapter | None = None, received_at: float | None = None, source_generation: str | None = None, source_group_policy: tuple[bool, int] | None = None) -> None:
+async def _dispatch_channel_payload(account_id: str, payload: dict[str, object], *, source_adapter: ChannelAdapter | None = None, received_at: float | None = None, source_generation: str | None = None, source_group_policy: tuple[bool, int] | None = None, history_intake=None) -> None:
     received_at = _schedule_clock() if received_at is None else received_at
     account = multichannel_store.get_account(account_id)
+    if account is not None and history_intake is None:
+        from .conversation_history import freeze_channel_history
+        history_intake = freeze_channel_history(multichannel_store, account)
     # Freeze before admission, quote resolution, or the account event lock can
     # suspend this input. A close/open cycle must not admit old buffered input.
     if (source_group_policy is None and account is not None and account.channel == "qq"
@@ -2695,7 +2698,7 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
                 if original is not None and account is not None and account.enabled:
                     if channel_host.intake.defer(
                         account_id,
-                        lambda: _dispatch_channel_payload(account_id, payload, received_at=received_at, source_generation=source_generation, source_group_policy=source_group_policy),
+                        lambda: _dispatch_channel_payload(account_id, payload, received_at=received_at, source_generation=source_generation, source_group_policy=source_group_policy, history_intake=history_intake),
                         lambda: _reject_channel_payload(original, payload),
                     ):
                         return
@@ -2712,7 +2715,7 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
             if event is not None:
                 await _handle_channel_event(replace(event, received_at=received_at,
                     metadata={**event.metadata, "hostConnectionGeneration": source_generation,
-                              "hostGroupReplyPolicy": source_group_policy}))
+                              "hostGroupReplyPolicy": source_group_policy, "hostHistoryIntake": history_intake}))
     except Exception as error:
         logger.warning("渠道入站处理失败 account=%s error=%s", account_id, type(error).__name__)
 
@@ -3073,6 +3076,12 @@ async def _handle_channel_event(event) -> None:
 
     if event.received_at is None:
         event = replace(event, received_at=_schedule_clock())
+    if event.metadata.get("hostHistoryIntake") is None:
+        account = multichannel_store.get_account(event.account_id)
+        if account is None:
+            return
+        from .conversation_history import freeze_channel_history
+        event = replace(event, metadata={**event.metadata, "hostHistoryIntake": freeze_channel_history(multichannel_store, account)})
     if event.channel == "qq" and event.chat_type is ChatType.GROUP:
         account = multichannel_store.get_account(event.account_id)
         if account is None:
@@ -3172,19 +3181,12 @@ async def _handle_channel_event_locked(event):
         platform_user_id=event.sender_id,
         account_id=event.account_id,
     )
-    if owner and event.chat_type is ChatType.PRIVATE:
-        multichannel_store.remember_owner_chat(
-            role_id=account.role_id,
-            channel=event.channel,
-            scope=scope,
-            platform_user_id=event.sender_id,
-            account_id=event.account_id,
-            chat_id=event.chat_id,
-        )
     from .channels.source_authority import channel_owner_binding
     accepted_generation = event.metadata.get("hostConnectionGeneration", channel_host.connection_generation(event.account_id)) if event.channel == "qq" else None
     accepted_binding = channel_owner_binding(multichannel_store, event.channel, event.account_id, event.sender_id) if owner else None
-    history = _owner_history(account.role_id, thread_id=thread.thread_id) if owner and event.chat_type is ChatType.PRIVATE else None
+    from .conversation_history import bind_channel_history
+    history_snapshot = bind_channel_history(multichannel_store, thread, event.sender_id, event.metadata["hostHistoryIntake"])
+    history = _owner_history(account.role_id, thread_id=thread.thread_id, snapshot=history_snapshot) if history_snapshot else None
     enrich_reply = getattr(channel_adapters.get(event.account_id), "enrich_reply", None)
     if event.triggered and callable(enrich_reply):
         event = await enrich_reply(event)
@@ -5598,6 +5600,7 @@ def _proactive_application():
             adapter_factory=lambda configuration: model_adapter,
             recall_memory=_proactive_memory, web_tools=_proactive_web, fetch_body=_proactive_body,
             context_reader=_proactive_context,
+            history_factory=_owner_history,
             workspace_getter=lambda role_id: store.root / role_id / 'workspace', channel_host=channel_host)
     return _proactive
 
@@ -5619,11 +5622,14 @@ def _telegram_accepts_update(account_id: str) -> bool:
     return bool(account and account.role_id not in _channel_roles_deleting and channel_host.accepts_events(account_id))
 
 
-def _defer_telegram_update(account_id: str, update, *, received_at: float | None = None) -> bool:
+def _defer_telegram_update(account_id: str, update, *, received_at: float | None = None, history_intake=None) -> bool:
     received_at = _schedule_clock() if received_at is None else received_at
     account = multichannel_store.get_account(account_id)
     if account is None or not multichannel_store.account_effectively_enabled(account) or account.role_id in _channel_roles_deleting:
         return False
+    if history_intake is None:
+        from .conversation_history import freeze_channel_history
+        history_intake = freeze_channel_history(multichannel_store, account)
     service = _telegram_service(account_id)
     token = multichannel_store.token(account_id)
     message = update.get("message") or update.get("edited_message") or {}
@@ -5631,16 +5637,20 @@ def _defer_telegram_update(account_id: str, update, *, received_at: float | None
     async def reject():
         from .channels.host import CHANNEL_INTAKE_RETRY_NOTICE
         await service.transport.send_message(token, chat_id, CHANNEL_INTAKE_RETRY_NOTICE, reply_to=str(message.get("message_id") or "") or None, **({"message_thread_id": message["message_thread_id"]} if message.get("message_thread_id") else {}))
-    return channel_host.intake.defer(account_id, lambda: _dispatch_telegram_update(account_id, update, received_at=received_at), reject)
+    return channel_host.intake.defer(account_id, lambda: _dispatch_telegram_update(account_id, update, received_at=received_at, history_intake=history_intake), reject)
 
 
-async def _dispatch_telegram_update(account_id: str, update, *, received_at: float | None = None) -> None:
+async def _dispatch_telegram_update(account_id: str, update, *, received_at: float | None = None, history_intake=None) -> None:
     received_at = _schedule_clock() if received_at is None else received_at
+    account = multichannel_store.get_account(account_id)
+    if account is not None and history_intake is None:
+        from .conversation_history import freeze_channel_history
+        history_intake = freeze_channel_history(multichannel_store, account)
     try:
         async with channel_host.event_scope(account_id) as admitted:
             service = _telegram_service(account_id)
-            if admitted or not _defer_telegram_update(account_id, update, received_at=received_at):
-                await service.handle_update(account_id, update, received_at=received_at)
+            if admitted or not _defer_telegram_update(account_id, update, received_at=received_at, history_intake=history_intake):
+                await service.handle_update(account_id, update, received_at=received_at, history_intake=history_intake)
     except Exception as error:
         logger.warning("Telegram 入站处理失败 account=%s error=%s", account_id, type(error).__name__)
 

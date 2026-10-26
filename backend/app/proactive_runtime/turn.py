@@ -14,7 +14,7 @@ from ..ai.model_types import (ModelAssistantMessage, ModelStreamDone, ModelStrea
 from ..task_runtime import TaskOutcome
 from ..ai.request_budget import ImageProof, ImageRequestBudgetError, image_request_budget
 from .tool_schemas import SCHEMAS
-from .bindings import persona
+from .bindings import persona, history_view
 from . import retention
 
 
@@ -181,6 +181,7 @@ class _ImageEchoState:
 class DecisionTurn:
     def __init__(self, app, origin, config, snapshot):
         self.app, self.origin, self.config, self.snapshot = app, origin, config, snapshot
+        self.history = history_view(app, origin)
         self.validators = {item["function"]["name"]: Draft202012Validator(item["function"]["parameters"]) for item in SCHEMAS}
         self.items = {item["id"]: item for item in (*snapshot["alerts"], *snapshot["contents"])}
         self.contents = {item["id"] for item in snapshot["contents"]}
@@ -221,6 +222,10 @@ class DecisionTurn:
             db.execute("UPDATE autonomy_turns SET steps=steps+1,tokens=tokens+?,input_bytes=input_bytes+? WHERE tick_id=?",
                        (max_tokens, payload_bytes, self.origin.tick_id))
 
+    def check_model_request(self):
+        if self.history is not None:
+            self.history.require_snapshot_current()
+
     def _known(self, identifiers, *, content_only=False):
         known = self.contents if content_only else self.items
         if any(identifier not in known for identifier in identifiers):
@@ -245,6 +250,12 @@ class DecisionTurn:
             encoded = _text(value)
             return value if len(encoded) <= 15000 else {"context": encoded[:14000], "truncated": True}
         if name == "get_recent_chat":
+            if self.history is not None:
+                messages = await asyncio.to_thread(self.history.read)
+                self.check_model_request()
+                return [{"role": message.role, "content": message.content[:600], "source_ref": message.id,
+                    "session_key": message.sessionKey} for message in messages
+                    if message.role in {'user', 'assistant'} and message.messageType == 'text'][-arguments.get("n", 20):]
             return self.recent_chat[-arguments.get("n", 20):]
         if name == "get_content":
             self._known(arguments["item_ids"], content_only=True)
@@ -340,15 +351,21 @@ async def _request(turn, adapter, configuration, messages, cancelled, *, schemas
     with turn.transaction() as db:
         retention.record_transcript(db, turn.origin.tick_id, {"direction": "request", **audit_payload}, turn.app._now(db))
     response, output_bytes = None, 0
+    def request_cancelled():
+        if cancelled.is_set() or not turn.app._authorized(turn.origin):
+            return True
+        if check_request is not None:
+            check_request()
+        return False
     source = method(tuple(messages), configuration, schemas, max_tokens=max_tokens,
-                    cancel_check=cancelled.is_set)
+                    cancel_check=request_cancelled)
     proofs = tuple(ImageProof(image['media_type'], hashlib.sha256(image['data_base64'].encode('ascii')).hexdigest(),
         len(image['data_base64'])) for image in images)
     budget = image_request_budget(images=proofs, canonical_text_bytes=canonical_bytes, reserve=reserve) if reserve is not None else nullcontext()
     with budget:
         async with asyncio.timeout(30), aclosing(source):
             async for event in source:
-                if cancelled.is_set() or not turn.app._authorized(turn.origin):
+                if request_cancelled():
                     raise asyncio.CancelledError()
                 output_bytes += len(_text(asdict(event)).encode("utf-8"))
                 if output_bytes > 64 * 1024:

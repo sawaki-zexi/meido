@@ -1591,7 +1591,7 @@ class MultichannelStore:
 class TelegramChannelService:
     """Normalize Telegram updates and persist isolated private/group threads."""
 
-    def __init__(self, store: MultichannelStore, account_id: str | TelegramTransport = "", transport: TelegramTransport | MessageHandler | None = None, on_message: MessageHandler | None = None, persist_attachment: Callable[[str, str, str, bytes], dict[str, object]] | None = None, on_command: CommandHandler | None = None, on_admit: AdmissionHandler | None = None, on_defer: Callable[[str, Mapping[str, Any]], bool] | None = None, on_update: Callable[[str, Mapping[str, Any]], Awaitable[None]] | None = None) -> None:
+    def __init__(self, store: MultichannelStore, account_id: str | TelegramTransport = "", transport: TelegramTransport | MessageHandler | None = None, on_message: MessageHandler | None = None, persist_attachment: Callable[[str, str, str, bytes], dict[str, object]] | None = None, on_command: CommandHandler | None = None, on_admit: AdmissionHandler | None = None, on_defer: Callable[..., bool] | None = None, on_update: Callable[[str, Mapping[str, Any]], Awaitable[None]] | None = None) -> None:
         self.store = store
         self.on_command = on_command
         self.on_admit = on_admit
@@ -1680,11 +1680,14 @@ class TelegramChannelService:
         self.store.publish(thread.role_id, {"type": "delivery", "roleId": thread.role_id, "attemptId": attempt_id})
         return result
 
-    async def handle_update(self, account_id: str, update: Mapping[str, Any], *, background: bool = False, received_at: float | None = None) -> bool:
+    async def handle_update(self, account_id: str, update: Mapping[str, Any], *, background: bool = False, received_at: float | None = None, history_intake=None) -> bool:
         received_at = datetime.now(timezone.utc).timestamp() if received_at is None else received_at
         account = self.store.get_account(account_id)
         if account is None or not account.enabled:
             return False
+        from .conversation_history import ConversationHistoryView, freeze_channel_history, bind_channel_history
+        if history_intake is None:
+            history_intake = freeze_channel_history(self.store, account)
         message = update.get("message") or update.get("edited_message")
         if not isinstance(message, Mapping):
             return False
@@ -1790,7 +1793,7 @@ class TelegramChannelService:
         if chat_type != "private" and not triggered:
             return False
         if self.on_admit is not None and not self.on_admit(account_id):
-            if self.on_defer is not None and self.on_defer(account_id, update):
+            if self.on_defer is not None and self.on_defer(account_id, update, received_at=received_at, history_intake=history_intake):
                 return False
             from .channels.host import CHANNEL_INTAKE_RETRY_NOTICE
             await self.transport.send_message(
@@ -1806,10 +1809,8 @@ class TelegramChannelService:
                 await self.transport.send_message(self.store.token(account_id), chat_id, "配对成功。")
             return paired
         owner = self.store.identity_is_owner(role_id=account.role_id, channel="telegram", scope="platform", platform_user_id=sender_id, account_id=account_id)
-        if owner and chat_type == "private":
-            self.store.remember_owner_chat(role_id=account.role_id, channel="telegram", scope="platform", platform_user_id=sender_id, account_id=account_id, chat_id=chat_id)
-        from .conversation_history import ConversationHistoryView
-        history = ConversationHistoryView(self.store, role_id=account.role_id, thread_id=thread.thread_id) if owner and chat_type == "private" else None
+        snapshot = bind_channel_history(self.store, thread, sender_id, history_intake)
+        history = ConversationHistoryView(self.store, role_id=account.role_id, thread_id=thread.thread_id, snapshot=snapshot) if snapshot else None
         attachment_items = await self._download_attachments(account, message, check=history.require_current if history else None)
         if history is not None:
             history.require_current()

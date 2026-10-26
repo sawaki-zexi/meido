@@ -28,6 +28,51 @@ def _grant_authority(grant):
     return {key: value for key, value in grant.items() if key != "title"}
 
 
+def freeze_channel_history(channels, account):
+    """Normalize no payload here: freeze the host account before adapter awaits."""
+    history = ConversationHistoryView(channels, role_id=account.role_id)
+    return {"account": history._account(account.account_id), "history": history.snapshot(),
+        "bindings": [{key: item[key] for key in ("identityId", "channel", "scope", "platformUserId", "accountId", "pairedAt", "chats")}
+            for item in channels.list_identities() if item["channel"] == account.channel
+                and (item["scope"] == "platform" or item["accountId"] == account.account_id)]}
+
+
+def bind_channel_history(channels, thread, sender_id, intake):
+    """After normalization, select only the identity already present at intake."""
+    from .channels.source_authority import channel_owner_binding
+    view = ConversationHistoryView(channels, role_id=thread.role_id, snapshot=intake["history"])
+    frozen = intake["account"]
+    current = view._account(thread.account_id)
+    if (not current or frozen["id"] != thread.account_id or frozen["createdAt"] != current["createdAt"]
+            or frozen["revision"] != current["revision"]
+            or frozen["platformId"] is not None and frozen["platformId"] != current["platformId"]):
+        raise PermissionError("入站账号来源已变化")
+    previous = next((item for item in intake["bindings"] if item["platformUserId"] == sender_id), None)
+    current_binding = channel_owner_binding(channels, thread.channel, thread.account_id, sender_id)
+    keys = ("identityId", "pairedAt")
+    if (tuple(previous[key] for key in keys) if previous else None) != (
+            tuple(current_binding[key] for key in keys) if current_binding else None):
+        raise PermissionError("排队前的入站身份已变化")
+    if previous is None or thread.chat_type != "private":
+        return None
+    view.require_current()
+    channels.remember_owner_chat(role_id=thread.role_id, channel=thread.channel, scope=previous["scope"],
+        platform_user_id=sender_id, account_id=thread.account_id, chat_id=thread.chat_id)
+    snapshot = view.snapshot()
+    with channels._connect() as db:
+        source = view._grants(db).get(thread.session_key)
+    if source is None or (source["identityId"], source["pairedAt"]) != tuple(previous[key] for key in keys):
+        raise PermissionError("入站私聊尚未获得历史授权")
+    if thread.session_key not in snapshot["grants"]:
+        known = any(chat["roleId"] == thread.role_id and chat["accountId"] == thread.account_id
+            and chat["chatId"] == thread.chat_id and chat["contextSince"] == source["since"] for chat in previous["chats"])
+        if not known and _instant(source["since"]) < view.admitted_at:
+            raise PermissionError("不能扩大排队前的历史来源")
+        snapshot["grants"][thread.session_key] = source
+    snapshot.update(sessionKey=thread.session_key, sourceAccount=current)
+    return snapshot
+
+
 class ConversationHistoryView:
     """Capture grants before waiting; a later binding can never enlarge a turn."""
     def __init__(self, channels, *, role_id, thread_id=None, owner=True, through_message_id=None,
@@ -147,6 +192,9 @@ class ConversationHistoryView:
             if grant:
                 since = _instant(grant["since"])
                 if message.createdAt < since or (source and source[1].createdAt < since):
+                    continue
+                if (message.role == "user" and message.metadata.get("senderIsOwner") is False
+                        or source and source[1].metadata.get("senderIsOwner") is False):
                     continue
                 if source and source[1].metadata.get("channelTurnState") == "invalidated":
                     continue

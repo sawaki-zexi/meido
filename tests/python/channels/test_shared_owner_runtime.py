@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 
 from backend.app import main
 from backend.app.model_adapter import ModelTextDelta
@@ -75,3 +76,51 @@ def test_private_runtime_reads_desktop_dialogue_and_two_queued_messages_keep_fro
     thread = state.channels.get_thread_by_chat(state.role.id, state.adapter.account_id, '11', chat_type='private')
     assert len(sessions.list_messages(thread.session_key)) == 6
     assert len(sessions.list_messages(f'role:{state.role.id}')) == 3
+
+
+@pytest.mark.parametrize('initial_owner', [False, True])
+def test_account_queue_cannot_promote_old_guest_or_expand_owner_history(meme_turn, monkeypatch, initial_owner):
+    state = meme_turn
+    if not initial_owner:
+        state.channels.unbind_identity(state.channels.list_identities()[0]['identityId'])
+    state.sessions.open_role_session(state.role.id)
+    state.sessions.append_message(f'role:{state.role.id}', 'user', '原桌面秘密')
+    requests = []
+    class Model:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            requests.append(messages)
+            yield ModelTextDelta('结束')
+    monkeypatch.setattr(main, 'model_adapter', Model())
+    async def send(operation, params):
+        return {'message_id': 'sent'}
+    monkeypatch.setattr(state.adapter, '_transport', send)
+    async def scenario():
+        lock = main.channel_event_locks.setdefault(state.adapter.account_id, asyncio.Lock())
+        await lock.acquire()
+        pending = asyncio.create_task(main._dispatch_channel_payload(state.adapter.account_id,
+            private_payload('queued', '配对变化前到达的输入'), source_adapter=state.adapter))
+        try:
+            await asyncio.sleep(.05)
+            assert not pending.done()
+            sender = '33' if initial_owner else '11'
+            thread = state.channels.ensure_channel_thread(state.role.id, 'qq', state.adapter.account_id, sender, 'private')
+            code = state.channels.create_pairing_code()
+            assert state.channels.consume_pairing_code(code, role_id=state.role.id, channel='qq', scope='platform',
+                platform_user_id=sender, account_id=state.adapter.account_id, chat_id=sender)
+            state.sessions.append_message(thread.session_key, 'user', '后配对私聊秘密')
+            state.sessions.append_message(f'role:{state.role.id}', 'user', '等待中的未来桌面消息')
+            lock.release()
+            await asyncio.wait_for(pending, 8)
+        finally:
+            if lock.locked():
+                lock.release()
+            if not pending.done():
+                pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+            if main._proactive is not None:
+                await main._proactive.close()
+    asyncio.run(scenario())
+    assert bool(requests) is initial_owner
+    actual = str(requests)
+    assert ('原桌面秘密' in actual) is initial_owner
+    assert '后配对私聊秘密' not in actual and '等待中的未来桌面消息' not in actual
