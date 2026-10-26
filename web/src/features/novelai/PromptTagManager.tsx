@@ -11,18 +11,31 @@ export function PromptTagManager({ roleId, expanded = false }: { roleId: string;
     {!expanded && <button type="button" aria-expanded={tags.open} onClick={tags.toggle}>{tags.open ? '收起提示标签' : '管理提示标签'}</button>}
     {tags.open && <section aria-label="本角色提示标签库">
       <h3>本角色提示标签库</h3>
-      <p>最多 250 个标签。管理与预览只在本地进行；实际匹配取决于角色已保存的标签许可、启用状态和 rating 许可。</p>
+      <p>最多 250 个标签。管理与预览只在本地进行；实际匹配取决于角色已保存的标签许可、启用状态和内容分级许可。</p>
       {tags.error && <Notice onDismiss={tags.dismissError}>{tags.error}</Notice>}
       {!tags.page && !tags.error && <Placeholder loading>正在加载提示标签…</Placeholder>}
-      {tags.page && <p>标签库版本 {tags.page.revision} · 已加载 {tags.page.tags.length} 个</p>}
+      <label className="field"><span>搜索提示标签</span><input type="search" aria-label="搜索提示标签" placeholder="搜索名称、关键词或提示词" value={tags.filters.query} onChange={(event) => tags.filter({ query: event.target.value })} /></label>
+      <div className="novelai-settings-grid">
+        <label className="field"><span>分类</span><select aria-label="筛选标签分类" value={tags.filters.category} onChange={(event) => tags.filter({ category: event.target.value })}>
+          <option value="">全部分类</option>{tags.categories.map((category) => <option key={category} value={category}>{category}</option>)}
+        </select></label>
+        <label className="field"><span>内容分级</span><select aria-label="筛选内容分级" value={tags.filters.rating} onChange={(event) => tags.filter({ rating: event.target.value as '' | PromptTagRating })}>
+          <option value="">全部分级</option><option value="general">通用（general）</option><option value="mature">成人向（mature）</option><option value="explicit">露骨（explicit）</option>
+        </select></label>
+        <label className="field"><span>启用状态</span><select aria-label="筛选启用状态" value={tags.filters.status} onChange={(event) => tags.filter({ status: event.target.value as '' | 'enabled' | 'disabled' })}>
+          <option value="">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option>
+        </select></label>
+      </div>
+      <button type="button" onClick={tags.clearFilters}>清空筛选</button>
+      {tags.page && <p role="status">显示 {tags.filteredTags.length} / {tags.page.tags.length} 个标签</p>}
       {tags.page?.tags.length === 0 && <Placeholder>暂无提示标签。</Placeholder>}
-      {tags.page?.tags.map((tag) => <article key={tag.id} aria-label={`提示标签 ${tag.name}`}>
+      {!!tags.page?.tags.length && tags.filteredTags.length === 0 && <Placeholder>没有符合条件的标签。</Placeholder>}
+      {tags.filteredTags.map((tag) => <article key={tag.id} aria-label={`提示标签 ${tag.name}`}>
         <h4>{tag.name}</h4><p>{tag.enabled ? '已启用' : '已停用'} · {tag.category} · {tag.rating} · 关键词：{tag.keywords.join('、')}</p>
         {tag.referenceAttachment && <div className="attachment-preview"><img src={attachmentUrl(roleId, tag.referenceAttachment.id)} alt={`参考图 ${tag.name}`} /></div>}
         <button type="button" disabled={tags.busy} aria-label={`编辑标签 ${tag.name}`} onClick={() => tags.edit(tag)}>编辑</button>
         <button type="button" disabled={tags.busy} aria-label={`删除标签 ${tag.name}`} onClick={() => void tags.remove(tag)}>删除</button>
       </article>)}
-      {tags.page?.nextCursor && <button type="button" disabled={tags.busy} onClick={() => void tags.more()}>加载更多标签</button>}
       <button type="button" disabled={tags.busy} onClick={() => void tags.reload()}>刷新标签库</button>
       <form aria-label={tags.editing ? '编辑提示标签' : '创建提示标签'} onSubmit={(event) => { event.preventDefault(); void tags.save(); }}>
         <fieldset disabled={tags.busy}>

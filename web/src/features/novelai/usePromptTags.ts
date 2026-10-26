@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../../api/client';
 import { uploadChatAttachment } from '../../api/chat';
-import { novelai, type PromptTag, type PromptTagInput, type PromptTagPage, type PromptTagPreview } from '../../api/novelai';
+import { novelai, type PromptTag, type PromptTagInput, type PromptTagPage, type PromptTagPreview, type PromptTagRating } from '../../api/novelai';
 
 const emptyTag = (): PromptTagInput => ({ name: '', category: 'composition', keywords: [], prompt: '', negative_prompt: '', rating: 'general', enabled: true, reference_attachment_id: null });
+const normalizeSearch = (value: string) => value.normalize('NFKC').toLowerCase();
+type TagFilters = { query: string; category: string; rating: '' | PromptTagRating; status: '' | 'enabled' | 'disabled' };
+const emptyFilters = (): TagFilters => ({ query: '', category: '', rating: '', status: '' });
 export function usePromptTags(roleId: string, initiallyOpen = false) {
   const [open, setOpen] = useState(initiallyOpen);
   const [page, setPage] = useState<PromptTagPage | null>(null);
@@ -16,28 +19,43 @@ export function usePromptTags(roleId: string, initiallyOpen = false) {
   const [prompt, setPrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
   const [preview, setPreview] = useState<PromptTagPreview | null>(null);
+  const [filters, setFilters] = useState<TagFilters>(emptyFilters);
   const scope = useRef({ roleId, active: true });
   const currentRole = useRef(roleId);
   const previewVersion = useRef(0);
   currentRole.current = roleId;
   const current = (owner: typeof scope.current) => owner.active && owner === scope.current && currentRole.current === owner.roleId;
+  const load = async (owner = scope.current) => {
+    setPage(null);
+    let result = await novelai.promptTags(owner.roleId);
+    if (!current(owner)) return;
+    const revision = result.revision;
+    const entries = [...result.tags];
+    const cursors = new Set<string>();
+    while (result.nextCursor) {
+      if (cursors.has(result.nextCursor) || entries.length >= 250)
+        throw new Error('标签库未能完整加载，请刷新后再查找。');
+      cursors.add(result.nextCursor);
+      result = await novelai.promptTags(owner.roleId, result.nextCursor);
+      if (!current(owner)) return;
+      if (result.revision !== revision) throw new Error('标签库已更新，请刷新后再查找。');
+      entries.push(...result.tags);
+    }
+    if (entries.length > 250 || new Set(entries.map((tag) => tag.id)).size !== entries.length)
+      throw new Error('标签库未能完整加载，请刷新后再查找。');
+    setPage({ tags: entries, revision, nextCursor: null });
+  };
   useEffect(() => {
     const owner = { roleId, active: true }; scope.current = owner;
     setOpen(initiallyOpen); setPage(null); setDraft(emptyTag()); setKeywords(''); setEditing(undefined);
-    setBusy(false); setError(''); setText(''); setPrompt(''); setNegativePrompt(''); setPreview(null); previewVersion.current++;
-    if (initiallyOpen) void novelai.promptTags(roleId).then((result) => {
-      if (current(owner)) setPage(result);
-    }).catch((cause) => {
+    setBusy(initiallyOpen); setError(''); setText(''); setPrompt(''); setNegativePrompt(''); setPreview(null); setFilters(emptyFilters()); previewVersion.current++;
+    if (initiallyOpen) void load(owner).catch((cause) => {
       if (current(owner)) setError(errorMessage(cause, '提示标签操作未完成，请重查标签库'));
+    }).finally(() => {
+      if (current(owner)) setBusy(false);
     });
     return () => { owner.active = false; };
   }, [roleId, initiallyOpen]);
-  const load = async (owner = scope.current, cursor?: string) => {
-    const result = await novelai.promptTags(owner.roleId, cursor);
-    if (!current(owner)) return;
-    setPage((previous) => cursor && previous ? { ...result, tags: [...previous.tags,
-      ...result.tags.filter((tag) => !previous.tags.some((old) => old.id === tag.id))] } : result);
-  };
   const run = async (action: (owner: typeof scope.current) => Promise<void>) => {
     if (busy) return;
     const owner = scope.current;
@@ -82,9 +100,17 @@ export function usePromptTags(roleId: string, initiallyOpen = false) {
     const result = await novelai.previewPromptTags(owner.roleId, text, prompt, negativePrompt);
     if (current(owner) && version === previewVersion.current) setPreview(result);
   });
-  return { open, page, draft, keywords, editing, busy, error, text, prompt, negativePrompt, preview,
+  const search = normalizeSearch(filters.query.trim());
+  const filteredTags = page?.tags.filter((tag) => (!filters.category || tag.category === filters.category)
+    && (!filters.rating || tag.rating === filters.rating)
+    && (!filters.status || tag.enabled === (filters.status === 'enabled'))
+    && [tag.name, ...tag.keywords, tag.prompt, tag.negative_prompt].some((value) => normalizeSearch(value).includes(search))) ?? [];
+  const categories = [...new Set(page?.tags.map((tag) => tag.category) ?? [])].sort((a, b) => a.localeCompare(b));
+  return { open, page, draft, keywords, editing, busy, error, text, prompt, negativePrompt, preview, filters, filteredTags, categories,
+    filter: (changes: Partial<TagFilters>) => setFilters((previous) => ({ ...previous, ...changes })),
+    clearFilters: () => setFilters(emptyFilters()),
     dismissError: () => setError(''), toggle: () => { if (open) setOpen(false); else { setOpen(true); void run((owner) => load(owner)); } },
-    reload: () => run((owner) => load(owner)), more: () => run((owner) => load(owner, page?.nextCursor ?? undefined)),
+    reload: () => run((owner) => load(owner)),
     patch: (changes: Partial<PromptTagInput>) => setDraft({ ...draft, ...changes }), setKeywords,
     edit: (tag: PromptTag) => {
       const { id, referenceAttachment: _referenceAttachment, ...input } = tag;
