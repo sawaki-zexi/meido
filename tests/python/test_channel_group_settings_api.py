@@ -63,6 +63,47 @@ def test_manual_group_get_is_read_only_and_settings_enable_without_normal_messag
     assert channels.sessions.list_messages(f"thread:{thread_id}") == []
 
 
+def test_group_reply_switch_persists_without_creating_history_and_keeps_other_groups_enabled(channel_api, monkeypatch):
+    role, channels, _, client = channel_api
+    account(channels, role.id)
+    monkeypatch.setattr(main, "_channel_connection_status", lambda _: "connected")
+    base = endpoint(role, chat_id="456")
+    disabled = client.put(f"{base}/replies", json={"enabled": False})
+    assert disabled.status_code == 200
+    assert disabled.json()["repliesEnabled"] is False
+    assert disabled.json()["threadId"] is None
+    assert channels.list_threads(role.id) == []
+    assert client.get(endpoint(role, chat_id="789") + "/settings").json()["repliesEnabled"] is True
+    from backend.app.multichannel import MultichannelStore
+    restarted = MultichannelStore(channels.sessions.database_path, channels.sessions)
+    monkeypatch.setattr(main, "multichannel_store", restarted)
+    assert client.get(f"{base}/settings").json()["repliesEnabled"] is False
+    client.put(f"{base}/listening", json={"enabled": True})
+    assert client.put(f"{base}/natural", json={"enabled": True}).status_code == 409
+    assert client.put(f"{base}/replies", json={"enabled": True}).json()["repliesEnabled"] is True
+    assert client.put(f"{base}/natural", json={"enabled": True}).json()["naturalEffective"] is True
+    disabled = client.put(f"{base}/replies", json={"enabled": False}).json()
+    assert disabled["listening"] and disabled["naturalEnabled"] and not disabled["naturalEffective"]
+    assert "group_replies_disabled" in disabled["naturalBlockedReasons"]
+    assert client.put(f"{base}/replies", json={"enabled": True}).json()["naturalEffective"] is True
+
+
+def test_existing_group_settings_upgrade_without_changing_listening_or_reply_defaults(channel_api, monkeypatch):
+    from backend.app.multichannel import MultichannelStore
+
+    role, channels, _, client = channel_api
+    account(channels, role.id)
+    monkeypatch.setattr(main, "_channel_connection_status", lambda _: "connected")
+    channels.set_group_listening(role.id, "group-settings", "123", True)
+    with channels._connect() as db:
+        db.execute("ALTER TABLE channel_group_settings DROP COLUMN replies_enabled")
+        db.execute("ALTER TABLE channel_group_settings DROP COLUMN reply_revision")
+    restarted = MultichannelStore(channels.sessions.database_path, channels.sessions)
+    monkeypatch.setattr(main, "multichannel_store", restarted)
+    state = client.get(endpoint(role, chat_id="123") + "/settings").json()
+    assert state["repliesEnabled"] is True and state["listening"] is True
+
+
 def test_saved_natural_setting_explains_ineffectiveness_and_can_always_be_turned_off(channel_api, monkeypatch):
     role, channels, _, client = channel_api
     account(channels, role.id)
@@ -113,7 +154,8 @@ def test_unavailable_directory_preserves_cached_and_saved_groups_with_warning(ch
 
 
 @pytest.mark.parametrize("suffix, method, body", [("", "get", None), ("/123/settings", "get", None),
-    ("/123/natural", "put", {"enabled": False}), ("/123/listening", "put", {"enabled": True})])
+    ("/123/natural", "put", {"enabled": False}), ("/123/listening", "put", {"enabled": True}),
+    ("/123/replies", "put", {"enabled": False})])
 def test_group_routes_reject_wrong_role_and_non_qq_accounts(channel_api, suffix, method, body):
     role, channels, _, client = channel_api
     other = main.store.create(RoleInput(name="另一角色", profile=RoleProfile(profile="隔离")))
@@ -128,7 +170,7 @@ def test_group_routes_reject_wrong_role_and_non_qq_accounts(channel_api, suffix,
 def test_invalid_switch_does_not_create_group(channel_api):
     role, channels, _, client = channel_api
     account(channels, role.id)
-    for setting in ("listening", "natural"):
+    for setting in ("listening", "natural", "replies"):
         assert client.put(endpoint(role, chat_id="123") + f"/{setting}", json={"enabled": "yes"}).status_code == 422
     assert channels.list_threads(role.id) == []
 
@@ -141,6 +183,7 @@ def test_manual_group_id_is_numeric_and_bounded(channel_api, chat_id):
     assert client.get(f"{base}/settings").status_code == 422
     assert client.put(f"{base}/listening", json={"enabled": True}).status_code == 422
     assert client.put(f"{base}/natural", json={"enabled": False}).status_code == 422
+    assert client.put(f"{base}/replies", json={"enabled": False}).status_code == 422
     assert channels.list_threads(role.id) == []
 
 

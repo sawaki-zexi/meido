@@ -416,6 +416,10 @@ class MultichannelStore:
             )
             self._migrate_thread_chat_type(db)
             self._migrate_member_names(db)
+            group_columns = {row[1] for row in db.execute("PRAGMA table_info(channel_group_settings)")}
+            for column, default in (("replies_enabled", 1), ("reply_revision", 0)):
+                if column not in group_columns:
+                    db.execute(f"ALTER TABLE channel_group_settings ADD COLUMN {column} INTEGER NOT NULL DEFAULT {default}")
             delivery_columns = {row[1] for row in db.execute("PRAGMA table_info(channel_delivery_attempts)")}
             for column in ("source_session_key", "source_run_id", "source_tool_call_id", "source_kind", "account_generation"):
                 if column not in delivery_columns:
@@ -695,6 +699,35 @@ class MultichannelStore:
         with self._connect() as db:
             row = db.execute("SELECT listening FROM channel_group_settings WHERE role_id=? AND account_id=? AND chat_id=?", (role_id, account_id, str(chat_id))).fetchone()
         return bool(row and row[0])
+
+    def group_reply_policy(self, role_id: str, account_id: str, chat_id: str) -> tuple[bool, int]:
+        """A group preference and its generation; older groups keep replying."""
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT replies_enabled,reply_revision FROM channel_group_settings WHERE role_id=? AND account_id=? AND chat_id=?",
+                (role_id, account_id, str(chat_id)),
+            ).fetchone()
+        return (bool(row[0]), int(row[1])) if row else (True, 0)
+
+    def set_group_replies(self, role_id: str, account_id: str, chat_id: str, enabled: bool) -> None:
+        if type(enabled) is not bool:
+            raise ValueError("群回复开关必须是布尔值")
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            account = self.get_account(account_id)
+            if account is None or account.role_id != role_id or account.channel != "qq":
+                raise KeyError(account_id)
+            current, revision = self.group_reply_policy(role_id, account_id, chat_id)
+            changed = current != enabled
+            db.execute(
+                "INSERT INTO channel_group_settings(role_id,account_id,chat_id,replies_enabled,reply_revision,updated_at) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(role_id,account_id,chat_id) DO UPDATE SET "
+                "replies_enabled=excluded.replies_enabled,reply_revision=excluded.reply_revision,updated_at=excluded.updated_at",
+                (role_id, account_id, str(chat_id), int(enabled), revision + int(changed), _now()),
+            )
+        thread = self.get_thread_by_chat(role_id, account_id, str(chat_id), chat_type="group")
+        if changed and thread is not None:
+            self.listening.invalidate(thread.thread_id)
 
     def list_group_settings(self, role_id: str, account_id: str) -> list[dict[str, object]]:
         with self._connect() as db:
