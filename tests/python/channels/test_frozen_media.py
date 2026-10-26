@@ -68,7 +68,7 @@ def test_platform_payload_uses_frozen_bytes_after_the_original_file_changes(tmp_
         **({'frozen_data': ORIGINAL} if frozen else {}))
     path.write_bytes(CHANGED)
 
-    result = asyncio.run(adapter.send(OutboundMessage(target, '', attachments=(attachment,))))
+    result = asyncio.run(adapter.send(OutboundMessage(target, '', attachments=(attachment,), reply_to_message_id='trigger')))
     assert result.status is DeliveryStatus.SENT, result
     assert received == [ORIGINAL if frozen else CHANGED]
 

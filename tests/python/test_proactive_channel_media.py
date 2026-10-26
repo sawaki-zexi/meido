@@ -99,7 +99,8 @@ def test_original_drift_origin_rejects_run_external_ids_and_sends_frozen_image_a
     try:
         now[0] += 1800
         final = asyncio.run(settled(app, role))
-        assert final['runs'][0]['status'] == 'finished_sent' and model.requests == 5, final
+        assert final['runs'][0]['status'] == 'finished_sent' and model.requests == 5, json.dumps({
+            'runs': final['runs'], 'deliveries': final['deliveries'], 'requests': model.requests}, ensure_ascii=True)
         assert len(platform[0]['sent']) == 1 and len(original_send) == 1
         images = [item for item in platform[0]['sent'][0]['message'] if item['type'] == 'image']
         assert len(images) == 1

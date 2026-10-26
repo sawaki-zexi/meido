@@ -111,6 +111,9 @@ class OutboundMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
     # Host-only last-safe-point check; never derived from platform/model input.
     authorize_dispatch: Callable[[], bool] | None = field(default=None, repr=False, compare=False)
+    record_delivery: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False, compare=False)
+    delivery_deadline: float | None = None
+    reserve_reply: Callable[[str, int], tuple[int, ...]] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
