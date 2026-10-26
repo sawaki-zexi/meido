@@ -273,7 +273,6 @@ class NapCatAdapter(ChannelAdapter):
         self._validate_target(message.target)
         if self._transport is None:
             raise ChannelAdapterError("NapCat transport is not configured")
-        visible_sends = 0
         try:
             # Resolve every image before the first request. NapCat may run in
             # another host/container and cannot read Meido's local paths.
@@ -298,6 +297,7 @@ class NapCatAdapter(ChannelAdapter):
                 for mention_id in message.metadata.get("mentionIds", ()) if isinstance(message.metadata.get("mentionIds"), (list, tuple)) else ():
                     if str(mention_id):
                         mentions.append({"type": "at", "data": {"qq": str(mention_id)}})
+            operations, parts = [], []
             if len(message.content) > FORWARD_MAX_CHARS or len(message.content.splitlines()) > FORWARD_MAX_LINES:
                 identity = await self._transport("get_login_info", {})
                 self._self_id = str(identity.get("user_id") or "")
@@ -310,23 +310,25 @@ class NapCatAdapter(ChannelAdapter):
                     "content": [{"type": "text", "data": {"text": text}}] + (images if index == len(paragraphs) - 1 else []),
                 }} for index, text in enumerate(paragraphs)]
                 if mentions:
-                    await self._send_receipt(operation, {**params, "message": mentions}, authorize=message.authorize_dispatch)
-                    visible_sends += 1
+                    operations.append((operation, {**params, "message": mentions}))
+                    parts.append({'kind': 'preview', 'content': ''})
                 forward_operation = "send_group_forward_msg" if message.target.kind is TargetKind.GROUP else "send_private_forward_msg"
                 operation, body = forward_operation, {**params, "messages": nodes}
             else:
                 segments = [*mentions, *([{"type": "text", "data": {"text": message.content}}] if message.content else []), *images]
                 body = segments if message.target.kind is TargetKind.GROUP or images else message.content
                 body = {**params, 'message': body}
+            operations.append((operation, body))
+            parts.append({'kind': 'text', 'content': message.content})
             attempt = DeliveryAttempt(message, scheduler=self.scheduler)
             async def send_part(part):
+                operation, body = operations[part['index']]
                 result, message_id = await self._send_receipt(operation, body, authorize=message.authorize_dispatch)
                 return {'message_id': message_id}
-            return await attempt.run([{'kind': 'text', 'content': message.content}], send_part,
+            return await attempt.run(parts, send_part,
                 receipt_id=lambda result: result.get('message_id'))
         except Exception as error:
-            status = DeliveryStatus.UNCERTAIN if visible_sends else delivery_status_for_error(error)
-            return DeliveryResult(status, message.target, error=type(error).__name__)
+            return DeliveryResult(delivery_status_for_error(error), message.target, error=type(error).__name__)
 
     async def _send_receipt(self, operation: str, params: Mapping[str, Any], *, authorize=None) -> tuple[Mapping[str, Any], str]:
         from .base import PartialDeliveryError

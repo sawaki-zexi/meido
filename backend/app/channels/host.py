@@ -44,10 +44,6 @@ def _runtime_send(method: Callable[Concatenate[ChannelHost, _SendArgs], Awaitabl
     async def owned(host: ChannelHost, *args: _SendArgs.args, **kwargs: _SendArgs.kwargs) -> _SendResult:
         kwargs['delivery_deadline'] = min(time.monotonic() + 120,
             kwargs.get('delivery_deadline') if kwargs.get('delivery_deadline') is not None else float('inf'))
-        account_id = args[1] if len(args) > 1 else kwargs.get('account_id')
-        account = host.store.get_account(account_id)
-        kwargs['_delivery_generation'] = (host.connection_generation(account_id),
-            host.store.directory_revision(account_id, account.channel)) if account is not None else None
         # Freeze the only mutable byte mapping before crossing an await/loop.
         # The original body still validates its actor, IDs, bytes and metadata
         # on the actual channel loop, including authorization after its lease.
@@ -56,6 +52,10 @@ def _runtime_send(method: Callable[Concatenate[ChannelHost, _SendArgs], Awaitabl
             if not isinstance(frozen, Mapping) or not 1 <= len(frozen) <= 4:
                 raise UnsupportedTargetError('冻结附件必须引用原始附件 ID')
             kwargs['frozen_attachment_bytes'] = dict(frozen)
+        account_id = args[1] if len(args) > 1 else kwargs.get('account_id')
+        account = host.store.get_account(account_id)
+        kwargs['_delivery_generation'] = (host.connection_generation(account_id),
+            host.store.directory_revision(account_id, account.channel)) if account is not None else None
         return await host._runtime_owner.run(lambda: method(host, *args, **kwargs))
     return owned
 

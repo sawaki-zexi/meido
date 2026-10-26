@@ -30,7 +30,7 @@ def test_revocation_during_image_preparation_never_sends(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_partial_long_reply_stops_new_dispatch_but_preserves_uncertainty():
+def test_partial_long_reply_stops_new_dispatch_but_preserves_confirmed_notice():
     async def scenario():
         calls = []
         allowed = True
@@ -47,7 +47,10 @@ def test_partial_long_reply_stops_new_dispatch_but_preserves_uncertainty():
         result = await adapter.send(OutboundMessage(target, 'long' * 100,
             reply_to_message_id='1', authorize_dispatch=lambda: allowed))
         assert calls == ['get_login_info', 'send_group_msg']
-        assert result.status is DeliveryStatus.UNCERTAIN
+        assert result.status is DeliveryStatus.FAILED
+        assert result.platform_message_id == '12'
+        assert [part['status'] for part in result.raw['parts']] == ['sent', 'failed']
+        assert result.raw['partialDelivery'] and result.raw['deliveredContent'] == ''
     asyncio.run(scenario())
 
 
