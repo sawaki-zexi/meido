@@ -73,8 +73,7 @@ def test_drift_history_tools_share_frozen_private_scope_and_recheck_before_model
             if len(requests) == 2 and revoke == 'transport':
                 await asyncio.sleep(0)
                 main.multichannel_store.unbind_identity(main.multichannel_store.list_identities()[0]['identityId'])
-                if cancel_check():
-                    raise asyncio.CancelledError()
+                cancel_check()
             requests.append(messages)
             if len(requests) == 1:
                 name, arguments = 'activate_skill', {'skill_id': 'reading-notes'}

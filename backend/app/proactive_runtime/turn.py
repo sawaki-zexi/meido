@@ -353,7 +353,7 @@ async def _request(turn, adapter, configuration, messages, cancelled, *, schemas
     response, output_bytes = None, 0
     def request_cancelled():
         if cancelled.is_set() or not turn.app._authorized(turn.origin):
-            return True
+            raise asyncio.CancelledError()
         if check_request is not None:
             check_request()
         return False
