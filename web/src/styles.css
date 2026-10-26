@@ -312,7 +312,7 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .message-heading strong { font-size: 12.5px; font-weight: 600; color: var(--ink-soft); }
 .message.assistant .message-heading strong { color: var(--role); }
 .message.user .message-heading strong { display: none; }
-.bubble { padding: 18px 20px; border-radius: 20px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.85; background: rgb(255 255 255 / 84%); box-shadow: 0 6px 24px rgb(111 62 92 / 6%); }
+.bubble { min-width: 0; max-width: 100%; padding: 18px 20px; border-radius: 20px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.85; background: rgb(255 255 255 / 84%); box-shadow: 0 6px 24px rgb(111 62 92 / 6%); }
 .message.user .bubble { border-radius: 14px 4px 14px 14px; background: var(--accent-gradient-soft); }
 .message.failed .bubble { outline: 1px dashed #d9a9d4; }
 .message-status { font-size: 11px; padding: 0 7px; border-radius: 999px; }
@@ -1049,7 +1049,8 @@ legend { padding: 0; margin-bottom: 8px; font-size: 12px; font-weight: 600; lett
 .channel-message { max-width: min(76%, 620px); padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: rgb(255 255 255 / 62%); }
 .channel-message.assistant { align-self: flex-end; border-color: var(--line-strong); background: var(--accent-gradient-soft); }
 .channel-message > span { color: var(--rose-deep); font-size: 11px; font-weight: 650; }
-.channel-message p { margin: 5px 0; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 13px; }
+.channel-message > p { margin: 5px 0; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 13px; }
+.channel-message > .message-markdown { margin: 5px 0; font-size: 13px; }
 .channel-attachment-image { display: block; max-width: min(100%, 360px); max-height: 320px; margin-top: 8px; border-radius: 4px; object-fit: contain; }
 .channel-attachment-file { display: inline-block; margin-top: 7px; overflow-wrap: anywhere; color: var(--rose-deep); font-size: 12px; }
 .channel-message time { color: var(--ink-faint); font-size: 10px; }
