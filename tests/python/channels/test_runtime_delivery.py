@@ -90,7 +90,7 @@ def test_real_channel_runtime_commits_reply_only_after_confirmed_delivery(tmp_pa
     monkeypatch.setattr(main, "MeidoProvider", Provider)
     monkeypatch.setattr(main, "_runtime_tool_candidates", lambda *args, **kwargs: ())
     monkeypatch.setattr(main, "_runtime_capabilities", resolve)
-    monkeypatch.setattr(main, "_role_memory_context", lambda *_args: "")
+    monkeypatch.setattr(main, "_role_memory_context", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(main, "memory_worker", SimpleNamespace(role_deletion_blocked=lambda *_args: False, role_lock_for=lambda *_args: worker_lock))
     monkeypatch.setattr(main, "channel_memory_maintenance", SimpleNamespace(commit_turn=commit))
 
