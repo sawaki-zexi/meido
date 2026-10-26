@@ -17,7 +17,7 @@ from backend.app.agent_runtime import CapabilityRegistry, ImageContent, ToolCont
 from backend.app.agent_runtime.provider import CancellationToken
 from backend.app.agent_runtime.meido_provider import MeidoProvider
 from backend.app.agent_runtime.types import AssistantMessage, ToolCall, ToolResultMessage, UserMessage
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.browser_use.config import BrowserUseConfig
 from backend.app.browser_use.plugin import BROWSER_USE_MANIFEST, browser_use_plugin_factory
 from backend.app.browser_use.runtime import BrowserRuntime
@@ -599,7 +599,7 @@ def test_browser_authorization_persists_through_role_api(tmp_path, monkeypatch):
     assert reloaded.agentConfig.browserUse.enabled is True
 
 
-def test_enabled_browser_role_completes_tool_turn_and_keeps_screenshot_ephemeral(tmp_path, monkeypatch):
+def test_enabled_browser_role_completes_tool_turn_and_keeps_screenshot_ephemeral(tmp_path, monkeypatch, local_platform_only):
     class StructuredAdapter:
         def __init__(self):
             self.requests = []
@@ -609,18 +609,21 @@ def test_enabled_browser_role_completes_tool_turn_and_keeps_screenshot_ephemeral
             self.requests.append((messages, tools))
             if len(self.requests) == 1:
                 yield ModelToolCall('discover-browser', 'tool_search', {'query': 'select:agent_browser_open,agent_browser_screenshot,agent_browser_tab_list'})
+                yield ModelResponseDone("tool_use")
                 return
             if len(self.requests) == 2:
                 assert {item["function"]["name"] for item in tools} >= {
                     "agent_browser_open", "agent_browser_screenshot", "agent_browser_tab_list",
                 }
                 yield ModelToolCall("call-browser", "agent_browser_screenshot", {})
+                yield ModelResponseDone("tool_use")
                 return
             if len(self.requests) == 3:
                 result = next(item for item in messages if item.get("tool_call_id") == 'call-browser')
                 assert result["tool_call_id"] == "call-browser"
                 assert result["content"][1]["image_url"]["url"] == "data:image/png;base64,aW1hZ2U="
                 yield ModelToolCall("call-browser-next", "agent_browser_tab_list", {})
+                yield ModelResponseDone("tool_use")
                 return
             if len(self.requests) == 4:
                 screenshot = next(item for item in messages if item.get("tool_call_id") == "call-browser")
@@ -656,7 +659,7 @@ def test_enabled_browser_role_completes_tool_turn_and_keeps_screenshot_ephemeral
     assert len(adapter.requests) == 5
 
 
-def test_disabled_browser_role_rejects_forged_tool_call(tmp_path, monkeypatch):
+def test_disabled_browser_role_rejects_forged_tool_call(tmp_path, monkeypatch, local_platform_only):
     class StructuredAdapter:
         def __init__(self):
             self.requests = []
@@ -667,6 +670,7 @@ def test_disabled_browser_role_rejects_forged_tool_call(tmp_path, monkeypatch):
             if len(self.requests) == 1:
                 assert "agent_browser_open" not in {item["function"]["name"] for item in tools}
                 yield ModelToolCall("call-browser", "agent_browser_open", {"url": "https://example.com"})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("无法访问网页")
 
@@ -934,8 +938,10 @@ def test_native_browser_http_tool_round_trip_and_active_role_deletion(tmp_path, 
                 self.native_pids.update(_native_browser_process_ids(runtime))
             if len(self.requests) == 1:
                 yield ModelToolCall("native-open", "agent_browser_open", {"url": url})
+                yield ModelResponseDone("tool_use")
             elif len(self.requests) == 2:
                 yield ModelToolCall("native-screenshot", "agent_browser_screenshot", {})
+                yield ModelResponseDone("tool_use")
             else:
                 assert messages[-1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
                 yield ModelTextDelta("真实浏览器完成")
@@ -997,6 +1003,11 @@ def test_native_browser_http_tool_round_trip_and_active_role_deletion(tmp_path, 
 
 
 def _configure_browser_api(tmp_path, monkeypatch, adapter, *, enabled):
+    from backend.app.memory_config import MemorySettingsStore
+    # Browser authorization/image lifetime does not need automatic embeddings.
+    memory = MemorySettingsStore(tmp_path / "memory-settings.json")
+    memory.update(enabled=False)
+    monkeypatch.setattr(main, "memory_settings_store", memory)
     from backend.app.plugin_configuration import PluginConfigurationStore
     global_plugins = PluginConfigurationStore(tmp_path / 'plugins.json')
     state = global_plugins.prepare('browser', expected_revision=0, enabled=enabled)

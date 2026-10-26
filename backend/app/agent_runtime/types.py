@@ -28,6 +28,8 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, object] = field(default_factory=dict)
+    # Typed calls are complete by contract; wire adapters mark salvaged JSON false.
+    arguments_complete: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +45,7 @@ class UserMessage:
 class AssistantMessage:
     content: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
-    stop_reason: Literal["stop", "tool_use", "error", "aborted"] = "stop"
+    stop_reason: Literal["stop", "tool_use", "length", "incomplete", "error", "aborted"] = "stop"
     role: Literal["assistant"] = "assistant"
     metadata: dict[str, object] = field(default_factory=dict)
     timestamp: int | None = None

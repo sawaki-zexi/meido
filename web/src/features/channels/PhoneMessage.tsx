@@ -4,6 +4,7 @@ import { AttachmentImage } from "../../ui/AttachmentImage";
 import { MessageMarkdown } from "../../ui/MessageMarkdown";
 import { ChannelAttachments } from "./ChannelAttachments";
 import type { ConversationMessage, MessagePresentation } from "./channelMessagePresentation";
+import { DeliveryDetails } from "./DeliveryDetails";
 
 export function PhoneMessage({ message, view, roleId, timeLabel, delivery, source, onMediaLoad }: {
   message: ConversationMessage;
@@ -36,6 +37,7 @@ export function PhoneMessage({ message, view, roleId, timeLabel, delivery, sourc
           {!hasBody && !view.failed && <p className="phone-message-placeholder">{message.status === "streaming" ? "正在回复…" : "[非文本消息]"}</p>}
         </div>}
         {view.attachments.length > 0 && <div className="phone-message-media"><ChannelAttachments roleId={roleId} attachments={view.attachments} onMediaLoad={onMediaLoad} onOpenImage={openImage} /></div>}
+        <DeliveryDetails metadata={message.metadata} />
         <div className="phone-message-meta">
           {view.failed && <span className="phone-message-failure">回复失败</span>}
           {delivery && <span className={`phone-message-delivery ${message.metadata.deliveryStatus}`}>{delivery}</span>}

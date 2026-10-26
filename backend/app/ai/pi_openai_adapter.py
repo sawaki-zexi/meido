@@ -22,6 +22,7 @@ from .model_adapter import (
     _response_error_detail,
     _remap_function_names,
 )
+from .model_protocol import preserve_stop_reason
 from .model_protocol import copy_json, effective_tools, model_cost, normalize_tools
 from .model_event_stream import AssistantEventStream
 from .model_types import (
@@ -66,6 +67,8 @@ class OpenAICompletionsOptions:
     use_max_completion_tokens: bool = False
     disable_deepseek_thinking_for_tools: bool = True
     supports_finish_reason: bool = True
+    # Opt-in for endpoints sending a full choice.message instead of finish_reason.
+    tool_completion_contract: str = "finish_reason"
 
 
 @dataclass(slots=True)
@@ -73,6 +76,7 @@ class _ToolAggregate:
     id: str = ""
     name: str = ""
     arguments: str = ""
+    complete_message: bool = False
 
 
 def _int(value: object) -> int:
@@ -158,10 +162,12 @@ class _ResponseAccumulator:
         provider: str | None = None,
         *,
         supports_finish_reason: bool = True,
+        tool_completion_contract: str = "finish_reason",
     ) -> None:
         self.internal_names = internal_names
         self.provider = provider
         self.supports_finish_reason = supports_finish_reason
+        self.tool_completion_contract = tool_completion_contract
         self.text_parts: list[str] = []
         self.thinking_parts: list[str] = []
         self.thinking_signature: str | None = None
@@ -191,7 +197,7 @@ class _ResponseAccumulator:
         choice = choices[0]
         finish = choice.get("finish_reason")
         if isinstance(finish, str) and finish:
-            self.stop_reason = _stop_reason(finish)
+            self.stop_reason = preserve_stop_reason(self.stop_reason, _stop_reason(finish))
             if self.stop_reason == "error":
                 self.error_message = f"Provider finish_reason: {finish}"
         delta = choice.get("delta")
@@ -283,6 +289,7 @@ class _ResponseAccumulator:
             self.tool_error = f"模型工具参数格式无效: {call.name or key}"
             return events
         fragment = _safe_json(arguments)
+        call.complete_message = complete and bool(fragment)
         emit_fragment = fragment
         if complete and fragment:
             previous = call.arguments
@@ -335,9 +342,11 @@ class _ResponseAccumulator:
                 aggregate = self.tool_calls[key]
                 if not aggregate.name:
                     return events, None, f"模型工具调用缺少函数名: {aggregate.id or key}"
+                arguments_complete = bool(aggregate.arguments.strip())
                 try:
                     arguments = json.loads(aggregate.arguments or "{}")
                 except json.JSONDecodeError:
+                    arguments_complete = False
                     try:
                         arguments = parse_partial_json(aggregate.arguments)
                     except MalformedJSON:
@@ -346,7 +355,7 @@ class _ResponseAccumulator:
                     return events, None, f"模型工具参数必须是 JSON 对象: {aggregate.name or key}"
                 call_id = aggregate.id or f"call-{key}"
                 name = self.internal_names.get(aggregate.name, aggregate.name)
-                call = ModelToolCallBlock(call_id, name, arguments)
+                call = ModelToolCallBlock(call_id, name, arguments, arguments_complete=arguments_complete)
                 blocks.append(call)
                 events.append(ModelToolCallEnd(call))
         if self.stop_reason == "error":
@@ -355,7 +364,13 @@ class _ResponseAccumulator:
         if stop_reason is None:
             if self.supports_finish_reason:
                 return events, None, "Stream ended without finish_reason"
-            stop_reason = "tool_use" if self.tool_calls else "stop"
+            if self.tool_calls:
+                # [DONE] is transport evidence only. The opt-in contract also
+                # requires an authoritative full message for every call.
+                stop_reason = ("tool_use" if self.tool_completion_contract == "complete_message"
+                               and all(call.complete_message for call in self.tool_calls.values()) else "incomplete")
+            else:
+                stop_reason = "stop"
         message = ModelAssistantMessage(
             content=tuple(blocks),
             metadata=ModelResponseMetadata(
@@ -563,6 +578,7 @@ class OpenAICompletionsRichAdapter:
             internal_names,
             configuration.provider,
             supports_finish_reason=self.options.supports_finish_reason,
+            tool_completion_contract=self.options.tool_completion_contract,
         )
         completed = False
         yield ModelStreamStart()
@@ -583,8 +599,8 @@ class OpenAICompletionsRichAdapter:
                             break
                         try:
                             chunk = json.loads(payload)
-                        except json.JSONDecodeError:
-                            continue
+                        except json.JSONDecodeError as error:
+                            raise RuntimeError("模型流包含无效 JSON") from error
                         if not isinstance(chunk, Mapping):
                             continue
                         if chunk.get("error") is not None:
@@ -681,6 +697,7 @@ class OpenAICompletionsRichAdapter:
             internal_names,
             configuration.provider,
             supports_finish_reason=self.options.supports_finish_reason,
+            tool_completion_contract=self.options.tool_completion_contract,
         )
         accumulator.consume(payload)
         _, message, error = accumulator.finish()

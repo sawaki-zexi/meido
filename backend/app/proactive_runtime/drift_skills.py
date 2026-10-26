@@ -142,10 +142,9 @@ class DriftSkillCatalog:
                 or run.status not in {'created', 'running'} or user.metadata.get('internalEvent')
                 or user.role != 'user' or user.messageType != 'text' or user.status != 'completed'):
             return None
-        snapshot = self.app.sessions.capability_revision_for_call(context.run_id, context.tool_call_id)
-        if snapshot is None:
-            snapshot = run.modelSnapshot.get('capabilities', {})
-        if snapshot.get('snapshotId') != context.capability_snapshot_id:
+        snapshot = self.app.sessions.active_call_binding(context.run_id, context.tool_call_id,
+            tool_names={'write_file', 'edit_file'})
+        if snapshot is None or snapshot.get('snapshotId') != context.capability_snapshot_id:
             return None
         author = next((item for item in snapshot.get('skills', []) if item.get('id') == 'create-drift-skill'), None)
         expected = next((skill for skill in SkillRegistry.discover(BUILTIN_ROOT, source='builtin').skills
@@ -155,7 +154,11 @@ class DriftSkillCatalog:
         expected = expected.materialize()
         if author.get('contentHash') != expected.content_hash:
             return None
-        return author, snapshot
+        provenance = {'format': 'drift-author-v1', 'kind': 'owner', 'roleId': role_id,
+            'runId': context.run_id, 'callId': context.tool_call_id, 'requestId': context.capability_snapshot_id,
+            'author': {'id': author['id'], 'source': author['source'], 'contentHash': author['contentHash']},
+            'scopeId': scope.scopeId, 'scopeRevision': scope.revision}
+        return author, provenance
 
     def record_write(self, role_id, scope, context, authorized, path, publication):
         evidence = self._writer(role_id, scope, context, authorized)
@@ -401,17 +404,29 @@ class DriftSkillCatalog:
         identity = self._identity_snapshot(workspace, [(name, _digest(raw), len(raw))])
         with self.app._transaction() as db:
             run = db.execute('SELECT active_skill,bundle_hash FROM autonomy_drift_turns WHERE tick_id=?', (turn.origin.tick_id,)).fetchone()
-            revision = db.execute('SELECT revision_json FROM autonomy_capability_revisions WHERE tick_id=? AND json_extract(revision_json,\'$.snapshotId\')=?',
-                (turn.origin.tick_id, context.capability_snapshot_id)).fetchone()
             call = db.execute('SELECT * FROM autonomy_drift_tool_calls WHERE tick_id=? AND call_id=?',
                 (turn.origin.tick_id, context.tool_call_id)).fetchone()
             if (not self.app._authorized_in(db, turn.origin) or run is None or tuple(run) != ('create-drift-skill', turn.bundle_hash)
-                    or revision is None or call is None or call['tool_name'] not in {'write_file', 'edit_file'}
+                    or call is None or call['tool_name'] not in {'write_file', 'edit_file'}
                     or call['snapshot_id'] != context.capability_snapshot_id or call['result'] is not None):
                 raise PermissionError('autonomous S06 has no actual active-skill and call provenance')
+            expected = next((skill.materialize() for skill in SkillRegistry.discover(BUILTIN_ROOT, source='builtin').skills
+                if skill.skill_id == 'create-drift-skill'), None)
+            binding = json.loads(call['binding_json'] or '{}')
+            if (expected is None or turn.skill.content_hash != expected.content_hash
+                    or binding.get('activeSkill') != 'create-drift-skill'
+                    or binding.get('bundleHash') != turn.bundle_hash
+                    or binding.get('authorHash') != expected.content_hash):
+                raise PermissionError('autonomous S06 author definition changed')
+            provenance = {'format': 'drift-author-v1', 'kind': 'autonomy', 'roleId': turn.origin.role_id,
+                'runId': turn.origin.tick_id, 'callId': context.tool_call_id,
+                'requestId': context.capability_snapshot_id, 'bundleHash': turn.bundle_hash,
+                'author': {'id': 'create-drift-skill', 'source': 'builtin', 'contentHash': expected.content_hash},
+                'scopeId': scope.scopeId, 'scopeRevision': scope.revision,
+                'grantRevision': turn.origin.grant_revision}
             db.execute('INSERT OR REPLACE INTO autonomy_drift_authored_files VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
                 (turn.origin.role_id, name, _digest(raw), len(raw), scope.scopeId, scope.revision,
-                 turn.origin.tick_id, context.tool_call_id, turn.skill.content_hash, revision[0], self.app._now(db), identity))
+                 turn.origin.tick_id, context.tool_call_id, turn.skill.content_hash, _json(provenance), self.app._now(db), identity))
             retention.check_capacity(db, turn.origin.role_id)
 
     @staticmethod

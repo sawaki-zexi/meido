@@ -29,6 +29,6 @@ class AutonomyOrigin:
 
     def task_origin(self):
         return TaskOrigin(self.role_id, f"autonomy:{self.role_id}", parent_run_id=self.tick_id,
-            capability_version=str(self.grant_revision),
+            grant_domain="autonomy", grant_revision=self.grant_revision,
             source_scope_id=f"autonomy:{self.role_id}:{self.grant_revision}:{self.tick_id}",
             source_authority_json=self.serialized())

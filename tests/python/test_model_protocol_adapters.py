@@ -223,7 +223,8 @@ def test_routed_native_structured_stream_preserves_tool_history_and_images(monke
     events = asyncio.run(collect(RoutedModelAdapter(ModelAdapterRegistry()).stream_structured_messages(
         history, configuration("anthropic-messages"), [{"name": "lookup", "parameters": {}}],
     )))
-    assert events == [ModelTextDelta("ok")]
+    from backend.app.ai.model_adapter import ModelResponseDone
+    assert events == [ModelTextDelta("ok"), ModelResponseDone("stop")]
     user, assistant, result = requests[0]["messages"]
     assert user["content"][1]["source"] == {"type": "base64", "media_type": "image/png", "data": "aW1hZ2U="}
     assert assistant["content"] == [{"type": "tool_use", "id": "call-1", "name": "lookup", "input": {"count": 1}}]

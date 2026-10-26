@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from backend.app.browser_use.process import spawn_process_tree
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.mcp_stdio import schema_validator, validate_instance
 from test_mcp_http import main, save_server, setup_host
 
@@ -80,13 +80,17 @@ def test_hostile_schema_has_a_killable_budget_and_does_not_block_host(tmp_path, 
             if self.count == 1:
                 self.ticker = asyncio.create_task(self.tick())
                 yield ModelToolCall("load", "tool_search", {"query": "select:mcp_add"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 2:
                 yield ModelToolCall("connect", "mcp_add", {"server_id": "notes"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 3:
                 yield ModelToolCall("find", "tool_search", {"query": "select:mcp_notes__echo"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 4:
                 self.ticks = 0
                 yield ModelToolCall("hostile", "mcp_notes__echo", {"text": "a" * 32 + "!" if mode == "regex_input" else "evidence call"})
+                yield ModelResponseDone("tool_use")
             else:
                 assert "schema validation exceeded time budget" in messages[-1]["content"]
                 assert self.ticks >= 5, "host loop and revocation watchdog must remain responsive"

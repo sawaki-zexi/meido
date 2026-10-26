@@ -1,0 +1,2688 @@
+{
+  "seed": 235,
+  "provenance": "Curated real-tool task intents, not production user logs. Production definitions frozen at 8a2d27d; five explicitly marked sanitized MCP adversarial fixtures. No services or models.",
+  "definitions": [
+    {
+      "definition": {
+        "name": "account_list",
+        "description": "查看当前角色已配置的外部聊天账号及能力。",
+        "input_schema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        },
+        "risk": "read_only",
+        "source": "builtin",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": null,
+        "output_limit": null,
+        "external_allowed": false,
+        "search_hint": "",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/channels/tools.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "account_send",
+        "description": "向 account_targets 返回的可达目标发送文本和角色附件。主人回合使用目录 target_id；外部回合只能将 target_id 设为 owner，以联系已配对主人。",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "account_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "target_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "content": {
+              "type": "string",
+              "maxLength": 4000
+            },
+            "attachments": {
+              "type": "array",
+              "maxItems": 4,
+              "items": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$"
+              }
+            },
+            "mention_ids": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "message_thread_id": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "target_id"
+          ],
+          "additionalProperties": false
+        },
+        "risk": "external",
+        "source": "builtin",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": null,
+        "output_limit": null,
+        "external_allowed": true,
+        "search_hint": "",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/channels/tools.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "account_targets",
+        "description": "按种类分页查询账号目录；省略kind取本地known观察缓存。member仅群资料，不授予发送目标；只有可发送的id可用于account_send。",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "account_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "known",
+                "friends",
+                "groups",
+                "members",
+                "member"
+              ]
+            },
+            "group_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "member_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            },
+            "cursor": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "required": [
+            "account_id"
+          ],
+          "additionalProperties": false
+        },
+        "risk": "read_only",
+        "source": "builtin",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": null,
+        "output_limit": null,
+        "external_allowed": false,
+        "search_hint": "",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/channels/tools.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_back",
+        "description": "[Browser Use] Navigate back. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object",
+          "required": []
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_check",
+        "description": "[Browser Use] Check a checkbox or switch. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "selector": {
+              "description": "Element @ref from snapshot, or a CSS selector.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "selector"
+          ],
+          "type": "object"
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_click",
+        "description": "[Browser Use] Click an element by @ref or CSS selector. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "human": {
+              "default": false,
+              "description": "Approach the target with seeded, curved mouse movement.",
+              "type": "boolean"
+            },
+            "newTab": {
+              "default": false,
+              "description": "Open link targets in a new tab after applying session setup.",
+              "type": "boolean"
+            },
+            "selector": {
+              "description": "Element @ref from snapshot, or a CSS selector.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "selector"
+          ],
+          "type": "object"
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_close",
+        "description": "[Browser Use] Close the current browser session. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object",
+          "required": []
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_eval",
+        "description": "[Browser Use] Run JavaScript in the page using stdin to avoid shell escaping. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "script": {
+              "description": "JavaScript expression or script to evaluate.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "script"
+          ],
+          "type": "object"
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_fill",
+        "description": "[Browser Use] Clear and fill an input by @ref or CSS selector. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "selector": {
+              "description": "Element @ref from snapshot, or a CSS selector.",
+              "type": "string"
+            },
+            "text": {
+              "description": "Text to fill.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "selector",
+            "text"
+          ],
+          "type": "object"
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_forward",
+        "description": "[Browser Use] Navigate forward. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object",
+          "required": []
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_get_text",
+        "description": "[Browser Use] Get visible text from an element. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "selector": {
+              "description": "Element @ref from snapshot, or a CSS selector.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "selector"
+          ],
+          "type": "object"
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_get_title",
+        "description": "[Browser Use] Get the current page title. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object",
+          "required": []
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_get_url",
+        "description": "[Browser Use] Get the current page URL. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object",
+          "required": []
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_open",
+        "description": "[Browser Use] Launch the browser and optionally navigate to a URL. On Windows, owned headless Chrome uses a private desktop and its process tree closes with the daemon, including forced termination. Headed browsers use the interactive desktop. Successful navigation responses include WebMCP availability metadata when the page exposes allowed tools. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "description": "URL to open. Omit to launch about:blank.",
+              "type": "string"
+            }
+          },
+          "type": "object",
+          "required": []
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_press",
+        "description": "[Browser Use] Press a key at the current focus. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "description": "Key name such as Enter, Tab, or Control+a.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "key"
+          ],
+          "type": "object"
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_read",
+        "description": "[Browser Use] Fetch a URL as agent-readable text, preferring text/markdown. Omit url to read the active tab. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "filter": {
+              "description": "Filter page sections, --llms links/sections, or --outline headings.",
+              "type": "string"
+            },
+            "llms": {
+              "description": "Return nearest-ancestor llms data: index for compact llms.txt links, full for llms-full.txt.",
+              "enum": [
+                "index",
+                "full"
+              ],
+              "type": "string"
+            },
+            "outline": {
+              "description": "Return a heading outline for the selected page instead of the full page text.",
+              "type": "boolean"
+            },
+            "raw": {
+              "description": "Return the response body without HTML extraction.",
+              "type": "boolean"
+            },
+            "readTimeoutMs": {
+              "description": "Request timeout in milliseconds.",
+              "type": "integer"
+            },
+            "requireMd": {
+              "description": "Fail unless the response is Content-Type: text/markdown.",
+              "type": "boolean"
+            },
+            "url": {
+              "description": "URL to read. Bare hosts are normalized to https. Omit to read the active tab.",
+              "type": "string"
+            }
+          },
+          "type": "object",
+          "required": []
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_reload",
+        "description": "[Browser Use] Reload the page. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object",
+          "required": []
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_screenshot",
+        "description": "[Browser Use] Capture a screenshot and return the saved path. Small PNG/JPEG screenshots are also returned as image content. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "annotate": {
+              "default": false,
+              "description": "Number visible elements in the screenshot.",
+              "type": "boolean"
+            },
+            "format": {
+              "description": "Screenshot format.",
+              "enum": [
+                "png",
+                "jpeg"
+              ],
+              "type": "string"
+            },
+            "fullPage": {
+              "default": false,
+              "type": "boolean"
+            },
+            "ifChanged": {
+              "default": false,
+              "description": "Recommended for repeated captures to save tokens: return image content only when pixels changed.",
+              "type": "boolean"
+            },
+            "quality": {
+              "description": "JPEG quality.",
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "selector": {
+              "description": "Optional @ref or CSS selector to capture.",
+              "type": "string"
+            },
+            "threshold": {
+              "description": "Maximum changed-pixel ratio to treat as unchanged. Implies ifChanged.",
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            }
+          },
+          "type": "object",
+          "required": []
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_scroll",
+        "description": "[Browser Use] Scroll the page or an element. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "amount": {
+              "default": 300,
+              "description": "Pixels to scroll.",
+              "type": "integer"
+            },
+            "direction": {
+              "default": "down",
+              "enum": [
+                "up",
+                "down",
+                "left",
+                "right"
+              ],
+              "type": "string"
+            },
+            "selector": {
+              "description": "Optional element selector to scroll.",
+              "type": "string"
+            }
+          },
+          "type": "object",
+          "required": []
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_select",
+        "description": "[Browser Use] Select one or more options in a select element. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "selector": {
+              "description": "Element @ref from snapshot, or a CSS selector.",
+              "type": "string"
+            },
+            "values": {
+              "description": "Option values or labels to select.",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "required": [
+            "selector",
+            "values"
+          ],
+          "type": "object"
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_snapshot",
+        "description": "[Browser Use] Return an accessibility-tree snapshot with reusable element refs. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "compact": {
+              "default": false,
+              "description": "Remove empty structural elements.",
+              "type": "boolean"
+            },
+            "delta": {
+              "default": false,
+              "description": "Return full state once, then unchanged or bounded structural deltas. Apply changes to refs and treeChange (zero-based startLine, deleteCount, lines) to the previous tree.",
+              "type": "boolean"
+            },
+            "depth": {
+              "description": "Limit tree depth.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "full": {
+              "default": false,
+              "description": "Force full state while updating the delta baseline.",
+              "type": "boolean"
+            },
+            "includeUrls": {
+              "default": false,
+              "description": "Include href URLs on links.",
+              "type": "boolean"
+            },
+            "interactive": {
+              "default": true,
+              "description": "Only include interactive elements.",
+              "type": "boolean"
+            },
+            "selector": {
+              "description": "Scope the snapshot to a CSS selector.",
+              "type": "string"
+            }
+          },
+          "type": "object",
+          "required": []
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_tab_close",
+        "description": "[Browser Use] Close a tab by id (t1), label, or CDP target id. Omit to close the current tab. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "tab": {
+              "description": "Tab id (t1), label, or CDP target id.",
+              "type": "string"
+            }
+          },
+          "type": "object",
+          "required": []
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_tab_list",
+        "description": "[Browser Use] List tabs. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object",
+          "required": []
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_tab_new",
+        "description": "[Browser Use] Open a new tab after applying session setup before its first navigation. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "type": "object",
+          "required": []
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_tab_switch",
+        "description": "[Browser Use] Switch to a tab by id (t1), label, or CDP target id. Switching also binds the session to that tab. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "tab": {
+              "description": "Tab id (t1), label, or CDP target id.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab"
+          ],
+          "type": "object"
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_type",
+        "description": "[Browser Use] Type text into an element by @ref or CSS selector. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "clear": {
+              "default": false,
+              "description": "Clear the field before typing.",
+              "type": "boolean"
+            },
+            "delayMs": {
+              "description": "Delay between keystrokes.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "selector": {
+              "description": "Element @ref from snapshot, or a CSS selector.",
+              "type": "string"
+            },
+            "text": {
+              "description": "Text to type.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "selector",
+            "text"
+          ],
+          "type": "object"
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_uncheck",
+        "description": "[Browser Use] Uncheck a checkbox or switch. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "selector": {
+              "description": "Element @ref from snapshot, or a CSS selector.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "selector"
+          ],
+          "type": "object"
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_wait_for_load",
+        "description": "[Browser Use] Wait for a page load state. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "enum": [
+                "load",
+                "domcontentloaded",
+                "networkidle"
+              ],
+              "type": "string"
+            },
+            "waitTimeoutMs": {
+              "description": "Maximum time for the browser wait condition.",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_wait_for_selector",
+        "description": "[Browser Use] Wait for an element to appear. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "selector": {
+              "description": "Element @ref from snapshot, or a CSS selector.",
+              "type": "string"
+            },
+            "waitTimeoutMs": {
+              "description": "Maximum time for the browser wait condition.",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "selector"
+          ],
+          "type": "object"
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_wait_for_text",
+        "description": "[Browser Use] Wait for text to appear. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "waitTimeoutMs": {
+              "description": "Maximum time for the browser wait condition.",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "type": "object"
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "agent_browser_wait_ms",
+        "description": "[Browser Use] Wait for a fixed time. 当前角色独立浏览器；导航或引用失效后先 snapshot 重新观察。",
+        "input_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "ms": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "ms"
+          ],
+          "type": "object"
+        },
+        "risk": "external",
+        "source": "plugin:browser_use",
+        "version": "0.38.2",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 30,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "浏览器 网页 导航 点击 填表 标签页 截图 browser",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/browser_use/tools.json + tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "forbidden_hidden",
+        "description": "operation",
+        "input_schema": {
+          "description": "发票编号 财务核算 keystrokes"
+        },
+        "risk": "read_only",
+        "source": "mcp:hidden",
+        "version": "1.0.0",
+        "exposure": "hidden",
+        "approval": "auto",
+        "timeout_seconds": null,
+        "output_limit": null,
+        "external_allowed": false,
+        "search_hint": "",
+        "namespace_summary": "隐藏服务"
+      },
+      "provenance": "Sanitized protocol fixture (not a production service or user log)"
+    },
+    {
+      "definition": {
+        "name": "forbidden_private",
+        "description": "operation",
+        "input_schema": {
+          "description": "发票编号 财务核算 keystrokes"
+        },
+        "risk": "read_only",
+        "source": "mcp:private",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": null,
+        "output_limit": null,
+        "external_allowed": false,
+        "search_hint": "",
+        "namespace_summary": "私有服务"
+      },
+      "provenance": "Sanitized protocol fixture (not a production service or user log)"
+    },
+    {
+      "definition": {
+        "name": "list_dir",
+        "description": "List actual files and directories one level deep in this role workspace, sorted by name. No recursion or glob expansion; large directories return an explicit bounded partial result.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        "risk": "read_only",
+        "source": "role",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 15,
+        "output_limit": null,
+        "external_allowed": false,
+        "search_hint": "ls 查看目录",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/agent_runtime/file_tools.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "lookup_group_context",
+        "description": "按 name（不区分大小写的群名片段）找候选，再按 group_thread_id 读取当前角色保存的群笔记、摘要及更新时间。省略名字和 ID 时分页列全部群，page 从1开始、每页20项；可查较早或离线记录，不返回聊天或旁听原文。",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "group_thread_id": {
+              "type": "string"
+            },
+            "page": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "risk": "read_only",
+        "source": "builtin",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": null,
+        "output_limit": null,
+        "external_allowed": false,
+        "search_hint": "群笔记 群摘要 群记忆 群动态 别的群 其他群 查群 找群",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/channels/group_tools.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "lookup_group_member",
+        "description": "按 name（含旧昵称）找成员，或按 member_id 与 member_channel 读档案；二选一。主人桌面/有效私聊可跨渠道，群聊和访客只限当前线程。档案来源每页5条，用 source_page 继续。对应 Shiori lookup_member。",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "member_id": {
+              "type": "string"
+            },
+            "member_channel": {
+              "type": "string"
+            },
+            "source_page": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "risk": "read_only",
+        "source": "builtin",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": null,
+        "output_limit": null,
+        "external_allowed": true,
+        "search_hint": "群友 昵称 是谁",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/channels/group_tools.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "mcp_accounts__lookup",
+        "description": "lookup",
+        "input_schema": {
+          "properties": {
+            "invoiceNumber": {
+              "type": "string",
+              "description": "发票编号"
+            }
+          }
+        },
+        "risk": "read_only",
+        "source": "mcp:accounts",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": null,
+        "output_limit": null,
+        "external_allowed": false,
+        "search_hint": "",
+        "namespace_summary": "财务核算"
+      },
+      "provenance": "Sanitized protocol fixture (not a production service or user log)"
+    },
+    {
+      "definition": {
+        "name": "mcp_accounts__save",
+        "description": "operation",
+        "input_schema": {
+          "properties": {
+            "taxCode": {
+              "type": "string",
+              "description": "税务代码"
+            }
+          }
+        },
+        "risk": "mutating",
+        "source": "mcp:accounts",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": null,
+        "output_limit": null,
+        "external_allowed": false,
+        "search_hint": "",
+        "namespace_summary": "财务核算"
+      },
+      "provenance": "Sanitized protocol fixture (not a production service or user log)"
+    },
+    {
+      "definition": {
+        "name": "mcp_archive__lookup",
+        "description": "lookup",
+        "input_schema": {
+          "properties": {
+            "notebook": {
+              "type": "string",
+              "description": "笔记本"
+            }
+          }
+        },
+        "risk": "read_only",
+        "source": "mcp:archive",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": null,
+        "output_limit": null,
+        "external_allowed": false,
+        "search_hint": "",
+        "namespace_summary": "知识归档"
+      },
+      "provenance": "Sanitized protocol fixture (not a production service or user log)"
+    },
+    {
+      "definition": {
+        "name": "message_push",
+        "description": "向当前角色自己的桌面对话推送文本、图片或文件；不发送到外部渠道。媒体使用已归属此角色的附件ID。",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "channel": {
+              "type": "string",
+              "enum": [
+                "desktop"
+              ]
+            },
+            "chat_id": {
+              "type": "string",
+              "enum": [
+                "owner",
+                "user"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 4000
+            },
+            "image": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$"
+            },
+            "file": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$"
+            },
+            "attachments": {
+              "type": "array",
+              "maxItems": 4,
+              "items": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$"
+              }
+            }
+          },
+          "required": [
+            "channel",
+            "chat_id"
+          ],
+          "additionalProperties": false
+        },
+        "risk": "mutating",
+        "source": "builtin",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": null,
+        "output_limit": null,
+        "external_allowed": false,
+        "search_hint": "",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/desktop_push.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "read_attachment",
+        "description": "分段读取当前 QQ 消息及引用消息的 TXT/MD 附件。只能使用本回合列出的附件 ID。超长字节行自动按字符分页，按结果中的 character_offset 继续。",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "attachment_id": {
+              "type": "string"
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 400
+            },
+            "character_offset": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "attachment_id"
+          ],
+          "additionalProperties": false
+        },
+        "risk": "read_only",
+        "source": "builtin",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": null,
+        "output_limit": null,
+        "external_allowed": true,
+        "search_hint": "QQ 附件 txt md 文件正文 引用文件 read_attachment",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/channels/attachment_tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "read_file",
+        "description": "Read role-workspace text with 1-based line numbers, offset (0-based), and optional limit. Pages are bounded to 400 lines / 10 KB. Images are returned to vision models; binary files are rejected.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        "risk": "read_only",
+        "source": "role",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 15,
+        "output_limit": null,
+        "external_allowed": false,
+        "search_hint": "",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/agent_runtime/file_tools.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "recall_memory",
+        "description": "检索当前角色的相关记忆；只能读取当前角色，不能写入或删除记忆。",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "要检索的事实、事件或偏好",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "intent": {
+              "type": "string",
+              "enum": [
+                "context",
+                "answer",
+                "timeline",
+                "interest",
+                "procedure"
+              ],
+              "description": "检索目的，默认使用 answer"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "description": "最多返回的记忆条数"
+            },
+            "memory_kind": {
+              "type": "string",
+              "enum": [
+                "",
+                "fact",
+                "profile",
+                "preference",
+                "event",
+                "procedure"
+              ]
+            },
+            "memory_domain": {
+              "type": "string",
+              "enum": [
+                "",
+                "role_self",
+                "relationship",
+                "shared"
+              ]
+            },
+            "time_filter": {
+              "type": "string",
+              "maxLength": 100,
+              "description": "today / yesterday / recent_3d / recent_7d / recent_30d / YYYY-MM-DD / YYYY-MM-DD~YYYY-MM-DD"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "additionalProperties": false
+        },
+        "risk": "read_only",
+        "source": "builtin:memory",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": 15.0,
+        "output_limit": 12000,
+        "external_allowed": false,
+        "search_hint": "记得 以前 历史 做过什么 有没有 重构 记忆查询",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/agent_runtime/memory_tool.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "schedule",
+        "description": "Create a role-owned time task. instant sends fixed text; soft runs an independent bounded task at its time. after uses the actual host message reception time. every accepts duration or cron; explicit cron is also supported. Only use on the owner request.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "tier": {
+              "type": "string",
+              "enum": [
+                "instant",
+                "soft"
+              ]
+            },
+            "trigger": {
+              "type": "string",
+              "enum": [
+                "at",
+                "after",
+                "every",
+                "cron"
+              ]
+            },
+            "when": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "timezone": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000
+            },
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20000
+            },
+            "name": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "channel": {
+              "type": "string",
+              "maxLength": 50
+            },
+            "chat_id": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "tier",
+            "trigger",
+            "when"
+          ],
+          "additionalProperties": false
+        },
+        "risk": "mutating",
+        "source": "role",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": null,
+        "output_limit": null,
+        "external_allowed": false,
+        "search_hint": "cron timer 延时执行",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/schedules/tools.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "set_group_listening",
+        "description": "打开或关闭 NapCat QQ 指定群的旁听。群友回合不能调用此工具；主人群回合只能设置当前群。",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "channel": {
+              "type": "string"
+            },
+            "chat_id": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled"
+          ],
+          "additionalProperties": false
+        },
+        "risk": "mutating",
+        "source": "builtin",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": null,
+        "output_limit": null,
+        "external_allowed": false,
+        "search_hint": "旁听 看群 群消息",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/channels/group_tools.py @8a2d27d"
+    },
+    {
+      "definition": {
+        "name": "update_group_context",
+        "description": "更新当前角色的群笔记或摘要：至少提供 group_note/summary 之一，整篇替换；省略保留、空串清空；不修改聊天或旁听原文。",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "group_thread_id": {
+              "type": "string"
+            },
+            "group_note": {
+              "type": "string"
+            },
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "group_thread_id"
+          ],
+          "additionalProperties": false
+        },
+        "risk": "mutating",
+        "source": "builtin",
+        "version": "1.0.0",
+        "exposure": "deferred",
+        "approval": "auto",
+        "timeout_seconds": null,
+        "output_limit": null,
+        "external_allowed": false,
+        "search_hint": "改群笔记 改群摘要 更新群记忆 修正群动态 清空群笔记",
+        "namespace_summary": ""
+      },
+      "provenance": "backend/app/channels/group_tools.py @8a2d27d"
+    }
+  ],
+  "cases": [
+    {
+      "id": "zh-01",
+      "language": "zh",
+      "split": "dev",
+      "query": "查群笔记",
+      "relevant": [
+        "lookup_group_context"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-02",
+      "language": "zh",
+      "split": "dev",
+      "query": "查群摘要",
+      "relevant": [
+        "lookup_group_context"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-03",
+      "language": "zh",
+      "split": "holdout",
+      "query": "群友是谁",
+      "relevant": [
+        "lookup_group_member"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-04",
+      "language": "zh",
+      "split": "dev",
+      "query": "按旧昵称找成员",
+      "relevant": [
+        "lookup_group_member"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-05",
+      "language": "zh",
+      "split": "dev",
+      "query": "更新群笔记",
+      "relevant": [
+        "update_group_context"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-06",
+      "language": "zh",
+      "split": "holdout",
+      "query": "开启群旁听",
+      "relevant": [
+        "set_group_listening"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-07",
+      "language": "zh",
+      "split": "dev",
+      "query": "关闭群旁听",
+      "relevant": [
+        "set_group_listening"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-08",
+      "language": "zh",
+      "split": "dev",
+      "query": "外部聊天账号",
+      "relevant": [
+        "account_list"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-09",
+      "language": "zh",
+      "split": "dev",
+      "query": "账号目录",
+      "relevant": [
+        "account_targets"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-10",
+      "language": "zh",
+      "split": "holdout",
+      "query": "读取附件",
+      "relevant": [
+        "read_attachment"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-11",
+      "language": "zh",
+      "split": "dev",
+      "query": "引用文件正文",
+      "relevant": [
+        "read_attachment"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-12",
+      "language": "zh",
+      "split": "dev",
+      "query": "桌面对话推送",
+      "relevant": [
+        "message_push"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-13",
+      "language": "zh",
+      "split": "holdout",
+      "query": "记忆查询",
+      "relevant": [
+        "recall_memory"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-14",
+      "language": "zh",
+      "split": "dev",
+      "query": "事件偏好",
+      "relevant": [
+        "recall_memory"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-15",
+      "language": "zh",
+      "split": "holdout",
+      "query": "检索目的",
+      "relevant": [
+        "recall_memory"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-16",
+      "language": "zh",
+      "split": "dev",
+      "query": "延时执行",
+      "relevant": [
+        "schedule"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-17",
+      "language": "zh",
+      "split": "dev",
+      "query": "群摘要",
+      "relevant": [
+        "lookup_group_context",
+        "update_group_context"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-18",
+      "language": "zh",
+      "split": "holdout",
+      "query": "财务核算",
+      "relevant": [
+        "mcp_accounts__lookup",
+        "mcp_accounts__save"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "zh-19",
+      "language": "zh",
+      "split": "dev",
+      "query": "发票编号",
+      "relevant": [
+        "mcp_accounts__lookup"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden",
+        "mcp_accounts__save"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ],
+      "allowed_risk": [
+        "read-only"
+      ]
+    },
+    {
+      "id": "zh-20",
+      "language": "zh",
+      "split": "holdout",
+      "query": "税务代码",
+      "relevant": [
+        "mcp_accounts__save"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "mixed-01",
+      "language": "mixed",
+      "split": "dev",
+      "query": "QQ附件",
+      "relevant": [
+        "read_attachment"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "mixed-02",
+      "language": "mixed",
+      "split": "holdout",
+      "query": "TXT附件",
+      "relevant": [
+        "read_attachment"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "mixed-03",
+      "language": "mixed",
+      "split": "dev",
+      "query": "member_id档案",
+      "relevant": [
+        "lookup_group_member"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "mixed-04",
+      "language": "mixed",
+      "split": "dev",
+      "query": "group_thread_id笔记",
+      "relevant": [
+        "lookup_group_context",
+        "update_group_context"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "mixed-05",
+      "language": "mixed",
+      "split": "holdout",
+      "query": "account_id目标",
+      "relevant": [
+        "account_targets",
+        "account_send"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "mixed-06",
+      "language": "mixed",
+      "split": "dev",
+      "query": "source_page档案",
+      "relevant": [
+        "lookup_group_member"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "mixed-07",
+      "language": "mixed",
+      "split": "dev",
+      "query": "path目录",
+      "relevant": [
+        "list_dir"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "mixed-08",
+      "language": "mixed",
+      "split": "dev",
+      "query": "offset文件",
+      "relevant": [
+        "read_file",
+        "read_attachment"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "mixed-09",
+      "language": "mixed",
+      "split": "holdout",
+      "query": "snapshot观察",
+      "relevant": [
+        "agent_browser_snapshot"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "mixed-10",
+      "language": "mixed",
+      "split": "dev",
+      "query": "fill表单",
+      "relevant": [
+        "agent_browser_fill"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "mixed-11",
+      "language": "mixed",
+      "split": "holdout",
+      "query": "delayMs打字",
+      "relevant": [
+        "agent_browser_type"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "mixed-12",
+      "language": "mixed",
+      "split": "dev",
+      "query": "newTab点击",
+      "relevant": [
+        "agent_browser_click"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "mixed-13",
+      "language": "mixed",
+      "split": "dev",
+      "query": "invoiceNumber发票",
+      "relevant": [
+        "mcp_accounts__lookup"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "mixed-14",
+      "language": "mixed",
+      "split": "holdout",
+      "query": "财务invoice查询",
+      "relevant": [
+        "mcp_accounts__lookup"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden",
+        "mcp_accounts__save"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ],
+      "allowed_risk": [
+        "read-only"
+      ]
+    },
+    {
+      "id": "mixed-15",
+      "language": "mixed",
+      "split": "dev",
+      "query": "recall_memory记忆",
+      "relevant": [
+        "recall_memory"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "en-01",
+      "language": "en",
+      "split": "dev",
+      "query": "read_file",
+      "relevant": [
+        "read_file"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "en-02",
+      "language": "en",
+      "split": "holdout",
+      "query": "agent_browser_get_url",
+      "relevant": [
+        "agent_browser_get_url"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "en-03",
+      "language": "en",
+      "split": "dev",
+      "query": "agent_browser_fill",
+      "relevant": [
+        "agent_browser_fill"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "en-04",
+      "language": "en",
+      "split": "dev",
+      "query": "snapshot",
+      "relevant": [
+        "agent_browser_snapshot"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "en-05",
+      "language": "en",
+      "split": "holdout",
+      "query": "accessibility tree",
+      "relevant": [
+        "agent_browser_snapshot"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "en-06",
+      "language": "en",
+      "split": "dev",
+      "query": "keystrokes",
+      "relevant": [
+        "agent_browser_type"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "en-07",
+      "language": "en",
+      "split": "holdout",
+      "query": "seeded curved movement",
+      "relevant": [
+        "agent_browser_click"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "en-08",
+      "language": "en",
+      "split": "dev",
+      "query": "fullPage",
+      "relevant": [
+        "agent_browser_screenshot"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "en-09",
+      "language": "en",
+      "split": "holdout",
+      "query": "waitTimeoutMs",
+      "relevant": [
+        "agent_browser_wait_for_selector",
+        "agent_browser_wait_for_text",
+        "agent_browser_wait_for_load"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "en-10",
+      "language": "en",
+      "split": "dev",
+      "query": "invoiceNumber",
+      "relevant": [
+        "mcp_accounts__lookup"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "en-11",
+      "language": "en",
+      "split": "dev",
+      "query": "account_targets",
+      "relevant": [
+        "account_targets"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "en-12",
+      "language": "en",
+      "split": "dev",
+      "query": "list_dir",
+      "relevant": [
+        "list_dir"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "en-13",
+      "language": "en",
+      "split": "dev",
+      "query": "read attachment",
+      "relevant": [
+        "read_attachment"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "en-14",
+      "language": "en",
+      "split": "dev",
+      "query": "browser tab switch",
+      "relevant": [
+        "agent_browser_tab_switch"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "en-15",
+      "language": "en",
+      "split": "holdout",
+      "query": "remind",
+      "relevant": [
+        "schedule"
+      ],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "irrelevant-01",
+      "language": "irrelevant",
+      "split": "dev",
+      "query": "",
+      "relevant": [],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "irrelevant-02",
+      "language": "irrelevant",
+      "split": "dev",
+      "query": "   ",
+      "relevant": [],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "irrelevant-03",
+      "language": "irrelevant",
+      "split": "holdout",
+      "query": "qzxwv987",
+      "relevant": [],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "irrelevant-04",
+      "language": "irrelevant",
+      "split": "dev",
+      "query": "quasar nebula",
+      "relevant": [],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "irrelevant-05",
+      "language": "irrelevant",
+      "split": "dev",
+      "query": "量子纠缠",
+      "relevant": [],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "irrelevant-06",
+      "language": "irrelevant",
+      "split": "holdout",
+      "query": "恐龙化石",
+      "relevant": [],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "irrelevant-07",
+      "language": "irrelevant",
+      "split": "dev",
+      "query": "sourdough yeast",
+      "relevant": [],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "irrelevant-08",
+      "language": "irrelevant",
+      "split": "dev",
+      "query": "蜂蜜琥珀",
+      "relevant": [],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "irrelevant-09",
+      "language": "irrelevant",
+      "split": "holdout",
+      "query": "zzzz不存在",
+      "relevant": [],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    },
+    {
+      "id": "irrelevant-10",
+      "language": "irrelevant",
+      "split": "dev",
+      "query": "quantum烽燧",
+      "relevant": [],
+      "forbidden": [
+        "forbidden_private",
+        "forbidden_hidden"
+      ],
+      "forbidden_namespaces": [
+        "mcp:private",
+        "mcp:hidden"
+      ]
+    }
+  ]
+}

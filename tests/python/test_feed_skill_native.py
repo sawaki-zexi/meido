@@ -22,7 +22,7 @@ import httpx
 import pytest
 
 from backend.app import main
-from backend.app.ai.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.ai.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.mcp_config import McpConfigStore, minimal_environment
 from backend.app.mcp_runtime import McpHost
 from test_feed_skill import isolated_owner_components
@@ -167,18 +167,22 @@ def test_real_feed_http_seven_actions_dynamic_schemas_fresh_list_and_restart(tmp
                 if self.turn == 1:
                     assert not any(name.startswith("mcp_reading_room__") for name in names)
                     yield ModelToolCall("load-management", "tool_search", {"query": "select:mcp_list,mcp_add"})
+                    yield ModelResponseDone("tool_use")
                 elif self.turn == 2:
                     yield ModelToolCall("list-services", "mcp_list", {})
+                    yield ModelResponseDone("tool_use")
                 elif self.turn == 3:
                     available = json.loads(provider_tool(messages, "list-services"))["servers"]
                     assert [(item["serverId"], item["name"]) for item in available] == [(server_id, "我的本机阅读源")]
                     yield ModelToolCall("connect-feed", "mcp_add", {"server_id": available[0]["serverId"]})
+                    yield ModelResponseDone("tool_use")
                 elif self.turn == 4:
                     actual_names = json.loads(provider_tool(messages, "connect-feed"))["tools"]
                     manage = next(name for name in actual_names if name.endswith("__feed_manage"))
                     query = next(name for name in actual_names if name.endswith("__feed_query"))
                     assert manage not in names and query not in names
                     yield ModelToolCall("load-remote", "tool_search", {"query": f"select:{manage},{query}"})
+                    yield ModelResponseDone("tool_use")
                 elif self.turn == 5:
                     assert manage in names and query in names
                     schemas = {item["function"]["name"]: item["function"]["parameters"] for item in tools}
@@ -188,6 +192,7 @@ def test_real_feed_http_seven_actions_dynamic_schemas_fresh_list_and_restart(tmp
                     yield ModelToolCall("subscribe-rss", manage, {"action": "subscribe", "name": "本机RSS唯一源", "url": base+"/rss"})
                     yield ModelToolCall("subscribe-atom", manage, {"action": "subscribe", "name": "本机Atom唯一源", "url": base+"/atom"})
                     yield ModelToolCall("fresh-list", manage, {"action": "list"})
+                    yield ModelResponseDone("tool_use")
                 elif self.turn == 6:
                     listed = provider_tool(messages, "fresh-list")
                     assert base+"/rss" in listed and base+"/atom" in listed
@@ -197,6 +202,7 @@ def test_real_feed_http_seven_actions_dynamic_schemas_fresh_list_and_restart(tmp
                     yield ModelToolCall("search", query, {"action": "search", "keyword": "RSS中文独有1"})
                     yield ModelToolCall("catalog-1", query, {"action": "catalog", "page": 1, "page_size": 2})
                     yield ModelToolCall("catalog-2", query, {"action": "catalog", "page": 2, "page_size": 2})
+                    yield ModelResponseDone("tool_use")
                 elif self.turn == 7:
                     latest = provider_tool(messages, "latest")
                     assert all(value in latest for value in ("RSS中文独有1", "Atom中文独有1", base+"/article/rss-1", base+"/article/atom-1"))
@@ -210,6 +216,7 @@ def test_real_feed_http_seven_actions_dynamic_schemas_fresh_list_and_restart(tmp
                     yield ModelToolCall("unsubscribe", manage, {"action": "unsubscribe", "name": "本机RSS唯一源"})
                     yield ModelToolCall("after-remove-list", manage, {"action": "list"})
                     yield ModelToolCall("after-remove-query", query, {"action": "latest", "limit": 10})
+                    yield ModelResponseDone("tool_use")
                 else:
                     assert self.turn == 8
                     assert "已取消订阅" in provider_tool(messages, "unsubscribe")
@@ -240,12 +247,14 @@ def test_real_feed_http_seven_actions_dynamic_schemas_fresh_list_and_restart(tmp
                     if self.turn == 1:
                         yield ModelToolCall("restart-fresh-list", manage, {"action": "list"})
                         yield ModelToolCall("restart-query", query, {"action": "latest", "limit": 10})
+                        yield ModelResponseDone("tool_use")
                     elif self.turn == 2:
                         listed = provider_tool(messages, "restart-fresh-list")
                         assert "本机Atom唯一源" in listed and "本机RSS唯一源" not in listed
                         assert "Atom中文独有1" in provider_tool(messages, "restart-query")
                         yield ModelToolCall("last-unsubscribe", manage, {"action": "unsubscribe", "name": "本机Atom唯一源"})
                         yield ModelToolCall("last-list", manage, {"action": "list"})
+                        yield ModelResponseDone("tool_use")
                     else:
                         assert "没有订阅" in provider_tool(messages, "last-list")
                         yield ModelTextDelta("FEED_HTTP_RESTART_VERIFIED 本轮已重新查询来源并清空本机测试订阅。")
@@ -294,23 +303,29 @@ def test_real_feed_http_stale_cache_is_not_refresh_proof_and_revocation_denies_w
                     system = json.dumps([item for item in messages if item["role"] == "system"], ensure_ascii=False)
                     assert "没有 stale 标记" in system and "不能据此声称已刷新" in system
                     yield ModelToolCall("find", "tool_search", {"query": "select:mcp_add"})
+                    yield ModelResponseDone("tool_use")
                 elif self.turn == 2:
                     yield ModelToolCall("connect", "mcp_add", {"server_id": "actual_rss"})
+                    yield ModelResponseDone("tool_use")
                 elif self.turn == 3:
                     yield ModelToolCall("discover", "tool_search", {"query": "select:mcp_actual_rss__feed_manage,mcp_actual_rss__feed_query"})
+                    yield ModelResponseDone("tool_use")
                 elif self.turn == 4:
                     yield ModelToolCall("subscribe", "mcp_actual_rss__feed_manage", {"action": "subscribe", "name": "本机缓存源", "url": base+"/rss"})
                     yield ModelToolCall("populated", "mcp_actual_rss__feed_query", {"action": "latest"})
+                    yield ModelResponseDone("tool_use")
                 elif self.turn == 5:
                     assert "RSS中文独有1" in provider_tool(messages, "populated")
                     state["fail"] = True
                     yield ModelToolCall("failed-refresh", "mcp_actual_rss__feed_query", {"action": "latest"})
+                    yield ModelResponseDone("tool_use")
                 elif self.turn == 6:
                     assert "RSS中文独有1" in provider_tool(messages, "failed-refresh")
                     assert any(request["failed"] for request in state["requests"])
                     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://meido.test") as owner:
                         assert (await asyncio.wait_for(owner.delete("/api/mcp/servers/actual_rss"), 5)).status_code == 204
                     yield ModelToolCall("revoked-write", "mcp_actual_rss__feed_manage", {"action": "subscribe", "name": "不应新增", "url": base+"/atom"})
+                    yield ModelResponseDone("tool_use")
                 else:
                     yield ModelTextDelta("FEED_FAILURE_VERIFIED 服务返回了缓存，无法确认刷新成功；授权已撤销，后续写入被拒绝。")
 

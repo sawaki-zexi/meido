@@ -101,7 +101,11 @@ def test_search_hint_is_frozen_persisted_and_invalidates_changed_restoration():
     tool.definition = replace(definition, search_hint="comet")
     context = ToolContext("r", "role:r", "frozen", CancellationToken(), "find")
     result = json.loads(asyncio.run(frozen.get("tool_search").execute({"query": "meteor"}, context)).content)
-    assert result["unlocked"] == [definition.name]
+    assert frozen.snapshot.to_dict()["candidates"][0]["searchHint"] == "meteor"
+    # Frozen metadata is not permission to stage an implementation whose
+    # declaration has since changed, including its searchable metadata.
+    assert result["unlocked"] == [] and result["matched"] == []
+    assert frozen.pending_revision("find") is None
     changed = registry.resolve(run_id="changed", restored_activation=saved, **options)
     assert definition.name not in {item["function"]["name"] for item in changed.provider_schemas()}
     assert changed.snapshot.candidate_catalog_id != frozen.snapshot.candidate_catalog_id
