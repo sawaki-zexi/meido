@@ -404,3 +404,38 @@ def test_concurrent_manage_cancel_waits_for_provider_tcp_cleanup(tmp_path):
         stop.set()
         listener.close()
         server.join(1)
+
+
+@pytest.mark.parametrize('mode,expected', [('host_timeout', 'timed_out'), ('provider_error', 'failed')])
+def test_provider_local_deadline_is_distinct_from_provider_error_text(tmp_path, monkeypatch, mode, expected):
+    from backend.app.agent_runtime import spawn_tool
+    from backend.app.agent_runtime.provider import ProviderErrorEvent
+    original_loop = spawn_tool.run_agent_loop
+    async def shorter_provider_deadline(**kwargs):
+        # Make the local model deadline unambiguously precede the overall task
+        # deadline, instead of relying on the two equal timers racing.
+        kwargs['provider_timeout'] = .01
+        async for event in original_loop(**kwargs):
+            yield event
+    monkeypatch.setattr(spawn_tool, 'run_agent_loop', shorter_provider_deadline)
+    class Provider:
+        cancelled = False
+        async def stream_response(self, **kwargs):
+            if mode == 'provider_error':
+                yield ProviderErrorEvent('provider timed out')
+                return
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.cancelled = True
+    async def exercise():
+        provider = Provider()
+        tasks, context, _, _, result = await delegate(tmp_path, provider, config=SpawnToolConfig(enabled=True, timeoutSeconds=3))
+        try:
+            snapshot = await completed(tasks, context, result.details['taskId'])
+            assert snapshot.status == expected
+            if mode == 'host_timeout':
+                assert provider.cancelled
+        finally:
+            tasks.close()
+    asyncio.run(exercise())

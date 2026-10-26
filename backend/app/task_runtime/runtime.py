@@ -8,9 +8,10 @@ import sqlite3
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Callable, Protocol
+from collections.abc import Mapping
 
 
 TERMINAL = frozenset({"succeeded", "failed", "cancelled", "timed_out", "interrupted"})
@@ -27,6 +28,90 @@ class TaskOrigin:
     source_account_id: str = ""
     source_scope_id: str = ""
     source_authority_json: str = ""
+    # Kept after the legacy positional fields. Catalog identifiers are history,
+    # never a grant revision; autonomous domains name their own revision.
+    grant_domain: str = ""
+    grant_revision: int | None = None
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object], *, require_source_authority: bool = False) -> TaskOrigin:
+        """Read the two historical wire shapes without hydrating authority.
+
+        Management may read an incomplete legacy source to query/stop its owned
+        work. Effect consumers require its original frozen source evidence.
+        Neither mode consults current accounts or turns a catalog ID into a grant.
+        """
+        if not isinstance(value, Mapping):
+            raise ValueError("invalid task origin format")
+        aliases = {
+            "roleId": "role_id", "sessionKey": "session_key", "parentRunId": "parent_run_id",
+            "toolCallId": "tool_call_id", "capabilityVersion": "capability_version",
+            "sourceThreadId": "source_thread_id", "sourceAccountId": "source_account_id",
+            "sourceScopeId": "source_scope_id", "sourceAuthority": "source_authority_json",
+            "grantDomain": "grant_domain", "grantRevision": "grant_revision",
+        }
+        names = {item.name for item in fields(cls)}
+        public = "roleId" in value or "sessionKey" in value
+        if set(value) - (set(aliases) if public else names):
+            raise ValueError("unknown or mixed task origin format")
+        data = {aliases[key] if public else key: item for key, item in value.items()}
+        if public and "source_authority_json" in data:
+            authority = data["source_authority_json"]
+            if authority is not None and not isinstance(authority, dict):
+                raise ValueError("invalid task source authority")
+            data["source_authority_json"] = json.dumps(authority, sort_keys=True, separators=(",", ":")) if authority is not None else ""
+        if not all(isinstance(data.get(key), str) and data[key] for key in ("role_id", "session_key")):
+            raise ValueError("task owner and original context are required")
+        for key, item in data.items():
+            if key == "grant_revision":
+                if item is not None and (type(item) is not int or item < 0):
+                    raise ValueError("invalid task grant revision")
+            elif key == "tool_call_id":
+                if item is not None and not isinstance(item, str):
+                    raise ValueError("invalid task call identity")
+            elif not isinstance(item, str):
+                raise ValueError("invalid task origin field")
+        authority = json.loads(data.get("source_authority_json", "") or "{}")
+        if not isinstance(authority, dict):
+            raise ValueError("invalid task source authority")
+        domain, revision = data.get("grant_domain", ""), data.get("grant_revision")
+        session, role, parent = data["session_key"], data["role_id"], data.get("parent_run_id", "")
+        # The old field was overloaded only in these two host-owned domains.
+        legacy = data.get("capability_version", "")
+        if not domain and revision is None and legacy and session in {f"autonomy:{role}", f"source-verification:{role}"}:
+            if not legacy.isdecimal():
+                raise ValueError("invalid legacy task grant revision")
+            domain, revision = session.split(":", 1)[0], int(legacy)
+            data.update(grant_domain=domain, grant_revision=revision)
+        if domain not in {"", "autonomy", "source-verification"} or bool(domain) != (revision is not None):
+            raise ValueError("invalid task grant domain")
+        if domain:
+            if session != f"{domain}:{role}" or not parent:
+                raise ValueError("task grant does not match its source")
+            if domain == "autonomy":
+                valid = ((authority.get("role_id"), authority.get("tick_id"), authority.get("grant_revision"))
+                    == (role, parent, revision) and type(authority.get("grant_revision")) is int
+                    and type(authority.get("generation")) is int
+                    and data.get("source_scope_id") == f"autonomy:{role}:{revision}:{parent}")
+            else:
+                valid = (data.get("source_scope_id") == f"owner-source-verification:{parent}"
+                    and authority.get("source") == "desktop_owner_action"
+                    and isinstance(authority.get("requestNonce"), str) and bool(authority["requestNonce"])
+                    and isinstance(authority.get("sourceId"), str) and bool(authority["sourceId"])
+                    and type(authority.get("generation")) is int and type(authority.get("sourceRevision")) is int)
+            if not valid:
+                raise ValueError("task grant is missing its original source evidence")
+        origin = cls(**data)
+        if require_source_authority and (origin.session_key.startswith("thread:") or origin.source_account_id):
+            from ..channels.source_authority import FrozenChannelSource
+            try:
+                source = FrozenChannelSource.from_dict(authority)
+            except (TypeError, ValueError, KeyError) as error:
+                raise ValueError("task source is missing its frozen authority") from error
+            if (not origin.source_scope_id or (source.role_id, source.session_key, source.thread_id, source.account_id)
+                    != (origin.role_id, origin.session_key, origin.source_thread_id, origin.source_account_id)):
+                raise ValueError("task source authority does not match its original scope")
+        return origin
 
     def scope(self) -> tuple[str, ...]:
         return self.role_id, self.session_key, self.source_thread_id, self.source_account_id, self.source_scope_id
@@ -36,6 +121,7 @@ class TaskOrigin:
             "roleId": self.role_id, "sessionKey": self.session_key,
             "parentRunId": self.parent_run_id, "toolCallId": self.tool_call_id,
             "capabilityVersion": self.capability_version,
+            **({"grantDomain": self.grant_domain, "grantRevision": self.grant_revision} if self.grant_domain else {}),
             "sourceThreadId": self.source_thread_id, "sourceAccountId": self.source_account_id,
             "sourceScopeId": self.source_scope_id,
             "sourceAuthority": json.loads(self.source_authority_json) if self.source_authority_json else None,
@@ -456,7 +542,7 @@ class TaskRuntime:
 
     def _authorize(self, task_id: str, origin: TaskOrigin) -> None:
         row = self._db.execute("SELECT origin FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-        if row is None or TaskOrigin(**json.loads(row[0])).scope() != origin.scope() or origin.role_id in self._disabled_roles:
+        if row is None or TaskOrigin.from_dict(json.loads(row[0])).scope() != origin.scope() or origin.role_id in self._disabled_roles:
             raise KeyError("task not found in this role and original context")
 
     def _snapshot(self, task_id: str) -> TaskSnapshot:
@@ -464,7 +550,7 @@ class TaskRuntime:
         if row is None:
             raise KeyError(task_id)
         return TaskSnapshot(
-            task_id, TaskOrigin(**json.loads(row["origin"])), row["kind"], row["description"], row["status"],
+            task_id, TaskOrigin.from_dict(json.loads(row["origin"])), row["kind"], row["description"], row["status"],
             TaskBudget(**json.loads(row["budget"])), row["started_at"], row["ended_at"], row["exit_code"],
             row["output"], row["output_chars"], row["log_path"], row["log_bytes"], bool(row["log_truncated"]), row["progress"], row["log_error"],
         )

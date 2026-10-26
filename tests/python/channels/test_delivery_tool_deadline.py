@@ -19,7 +19,8 @@ def test_tool_receives_original_earliest_deadline_before_it_can_dispatch():
         original = time.monotonic() + 10
         registry = ToolRegistry([Tool()])
         context = ToolContext('r', 'role:r', 'run', signal, deadline=original)
-        await _execute_tool(ToolCall('call', 'deadline_probe', {}), registry, context, signal, timeout=30)
+        await _execute_tool(ToolCall('call', 'deadline_probe', {}), registry, context, signal,
+                            timeout=30, on_progress=lambda result: None)
         assert len(observed) == 1 and observed[0] <= original
         assert original - observed[0] < .1
     asyncio.run(scenario())

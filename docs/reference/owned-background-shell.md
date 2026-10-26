@@ -51,3 +51,9 @@ Shell 是此边界的首个完整执行器。#157 的[独立子任务](owned-sub
 [固定上游 Shell 实现](https://github.com/YinFengWindy/Shiori-Agent/tree/4f266aeaf42fcd611362e2456417b91f659341cf/apps/backend/agent/tools/shell) 使用 pwsh/系统 shell，显式后台未传 timeout 时可无硬截止，终态日志采用短暂内存注册表。本实现按 ADR-0021 默认使用平台 Shell，保留有限宿主截止、最小环境和固定目录，以 SQLite 保留真实终态，停止任务后保留受预算约束的日志供原来源查询。参数使用上游名称；结果沿用 Meido `AgentToolResult` 的 camelCase 元数据，没有伪造上游 JSON 字段兼容性。
 
 这仍以宿主操作系统身份运行，普通 Shell 可执行本机命令；固定目录和日志归属不是操作系统沙箱。
+
+## TaskOrigin 历史兼容（2026-10-26）
+
+统一 `TaskOrigin.from_dict` 接受明确的旧 snake_case 存储与 camelCase 公共格式，拒绝未知/混合字段及格式错误；保留旧位置参数入口。capability_version/capabilityVersion 是非授权历史 request/catalog 元信息，新调用不再通过目录链取权限。真正的自主/来源验证版本使用 grant_domain/grant_revision（公开 grantDomain/grantRevision）；只从已知旧来源自身字段解释旧重载，不读取最新配置补权。
+
+旧不完整渠道来源可以按原 scope 查询、停止与清理，但新增执行/投递须校验原 FrozenChannelSource 与 live 许可；缺失来源不会被修复成主人。NovelAI 旧 canonical origin 不添加空字段，保持原请求/receipt 身份。Coding、schedule、source verification 共同使用该 codec。旧行无需全量重写，任务/回执不因工具目录迁移重放。见 [ADR-0026](../adr/0026-request-bound-lightweight-tool-loading.md)。

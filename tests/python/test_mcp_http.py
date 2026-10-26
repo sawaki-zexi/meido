@@ -13,7 +13,7 @@ from backend.app import main
 from backend.app.mcp_config import McpConfigStore
 from backend.app.mcp_runtime import McpHost
 from backend.app.memory_config import MemorySettingsStore
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
@@ -72,9 +72,11 @@ def test_direct_schema_mode_connects_and_calls_mcp_without_public_tool_search(tm
                 assert 'mcp_add' in names
                 assert 'mcp_notes__echo' not in names
                 yield ModelToolCall('connect', 'mcp_add', {'server_id': 'notes'})
+                yield ModelResponseDone("tool_use")
             elif self.count == (1 if self.connected else 2):
                 assert 'mcp_notes__echo' in names
                 yield ModelToolCall('echo-direct', 'mcp_notes__echo', {'text': 'evidence direct'})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('direct done')
     for connected in (False, True):
@@ -110,8 +112,10 @@ def test_owner_http_configuration_does_not_launch_and_rejects_model_launch_argum
             self.count += 1
             if self.count == 1:
                 yield ModelToolCall("load", "tool_search", {"query": "select:mcp_add"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 2:
                 yield ModelToolCall("injected", "mcp_add", {"server_id": "notes", "command": [sys.executable], "env": {"TOKEN": "x"}})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("配置只由主人管理")
 
@@ -214,6 +218,7 @@ def test_http_stop_or_disconnect_reaps_peer_and_descendant_when_stdin_is_backpre
             if self.count in calls:
                 name, arguments = calls[self.count]
                 yield ModelToolCall(f"backpressure-{self.count}", name, arguments)
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("工具已结束")
 
@@ -223,7 +228,10 @@ def test_http_stop_or_disconnect_reaps_peer_and_descendant_when_stdin_is_backpre
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://meido.test") as http:
             request = asyncio.create_task(http.post(f"/api/roles/{role['id']}/messages", json={"content": "处理长笔记"}))
             try:
-                async with asyncio.timeout(5):
+                # This is setup, including several SQLite/provider turns; it
+                # is not the blocked-I/O or cleanup deadline below. Parallel
+                # test shards can take longer than five seconds to reach it.
+                async with asyncio.timeout(15):
                     while True:
                         active = sessions.active_run(role["id"])
                         if active and any(item["callId"] == "backpressure-4" for item in sessions.list_tool_audits(active.runId)):
@@ -271,15 +279,19 @@ def test_public_http_real_stdio_same_run_revision_remove_and_restart_intent(tmp_
             if self.count == 1:
                 assert remote not in names
                 yield ModelToolCall("load-management", "tool_search", {"query": "select:mcp_add,mcp_list,mcp_remove"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 2:
                 yield ModelToolCall("connect", "mcp_add", {"server_id": "notes"})
                 yield ModelToolCall("same-reply", remote, {"text": "evidence too early"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 3:
                 assert remote not in names
                 yield ModelToolCall("discover", "tool_search", {"query": f"select:{remote}"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 4:
                 assert remote in names
                 yield ModelToolCall("actual", remote, {"text": "evidence actual"})
+                yield ModelResponseDone("tool_use")
             else:
                 assert "evidence actual" in messages[-1]["content"]
                 assert "vault-sensitive-token" not in json.dumps(messages, ensure_ascii=False)
@@ -295,12 +307,17 @@ def test_public_http_real_stdio_same_run_revision_remove_and_restart_intent(tmp_
     messages = sessions.list_messages(f"role:{role['id']}")
     run_id = next(item.runId for item in messages if item.toolCallId == "actual")
     audits = {item["callId"]: item for item in sessions.list_tool_audits(run_id)}
-    revisions = sessions.get_run(run_id).modelSnapshot["capabilityRevisions"]
-    assert [item["visibilityVersion"] for item in revisions] == [0, 1, 2, 3]
-    assert revisions[2]["parentSnapshotId"] == revisions[1]["snapshotId"]
+    assert "capabilityRevisions" not in sessions.get_run(run_id).modelSnapshot
+    binding = sessions.call_binding(run_id, "actual")
+    premature = sessions.call_binding(run_id, "same-reply")
+    assert binding["format"] == "tool-call-v1" and binding["active"]
+    assert binding["definitionFingerprint"] and len(binding["tools"]) == 1
+    assert premature["active"] is False and premature["tools"] == []
+    assert binding["snapshotId"] != premature["snapshotId"]
     assert audits["same-reply"]["resultCategory"] in {"unknown", "denied"}
     assert audits["actual"]["toolSource"] == "mcp:notes"
-    definition = next(item for item in revisions[-1]["tools"] if item["name"] == remote)
+    definition = binding["tools"][0]
+    assert definition["name"] == remote
     assert definition["risk"] == "external", "remote readOnlyHint must not lower the owner grant"
     assert "vault-sensitive-token" not in json.dumps(sessions.get_run(run_id).model_dump(), default=str)
     assert client.get("/api/mcp/servers").json()["servers"][0]["connectionCount"] == 1
@@ -317,6 +334,7 @@ def test_public_http_real_stdio_same_run_revision_remove_and_restart_intent(tmp_
                 assert remote in names, "same authorized source should reconnect and restore exact schema activation"
                 yield ModelToolCall("remove", "mcp_remove", {"server_id": "notes"})
                 yield ModelToolCall("after-remove", remote, {"text": "evidence revoked"})
+                yield ModelResponseDone("tool_use")
             else:
                 assert remote not in names
                 yield ModelTextDelta("连接意愿已移除")
@@ -360,12 +378,16 @@ def test_http_revocation_or_stop_cancels_remote_work_and_owned_descendant(tmp_pa
             self.count += 1
             if self.count == 1:
                 yield ModelToolCall("load-management", "tool_search", {"query": "select:mcp_add"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 2:
                 yield ModelToolCall("connect", "mcp_add", {"server_id": "notes"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 3:
                 yield ModelToolCall("discover", "tool_search", {"query": "select:mcp_notes__slow"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 4:
                 yield ModelToolCall("slow", "mcp_notes__slow", {})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("远端任务已清理")
 
@@ -454,10 +476,12 @@ def test_new_server_grant_cannot_expand_an_already_running_frozen_directory(tmp_
             self.count += 1
             if self.count == 1:
                 yield ModelToolCall("load", "tool_search", {"query": "select:mcp_add"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 2:
                 response = save_server(client, role, tmp_path, serverId="new_server")
                 assert response.status_code == 201
                 yield ModelToolCall("not-frozen", "mcp_add", {"server_id": "new_server"})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("新授权下轮生效")
 
@@ -481,16 +505,22 @@ def test_remove_then_readd_in_same_run_uses_new_immutable_versions_and_same_froz
             names = {item["function"]["name"] for item in tools}
             if self.count == 1:
                 yield ModelToolCall("load", "tool_search", {"query": "select:mcp_add,mcp_remove"})
+                yield ModelResponseDone("tool_use")
             elif self.count in {2, 5}:
+                assert "mcp_notes__echo" not in names
                 yield ModelToolCall(f"connect-{self.count}", "mcp_add", {"server_id": "notes"})
+                yield ModelResponseDone("tool_use")
             elif self.count in {3, 6}:
                 yield ModelToolCall(f"find-{self.count}", "tool_search", {"query": "select:mcp_notes__echo"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 4:
                 assert "mcp_notes__echo" in names
                 yield ModelToolCall("remove", "mcp_remove", {"server_id": "notes"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 7:
                 assert "mcp_notes__echo" in names
                 yield ModelToolCall("actual", "mcp_notes__echo", {"text": "evidence readded"})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("同一授权已重新连接")
 
@@ -498,12 +528,16 @@ def test_remove_then_readd_in_same_run_uses_new_immutable_versions_and_same_froz
     response = client.post(f"/api/roles/{role['id']}/messages", json={"content": "连接、移除、再连接"})
     assert "同一授权已重新连接" in response.text, response.text
     result = next(item for item in sessions.list_messages(f"role:{role['id']}") if item.toolCallId == "actual")
-    versions = sessions.get_run(result.runId).modelSnapshot["capabilityRevisions"]
-    assert [item["visibilityVersion"] for item in versions] == list(range(7))
-    assert "mcp_notes__echo" in {item["name"] for item in versions[3]["tools"]}
-    assert "mcp_notes__echo" not in {item["name"] for item in versions[4]["candidates"]}
-    assert versions[4]["candidateCatalogId"] != versions[3]["candidateCatalogId"]
-    assert all(item["serviceGrants"] == versions[0]["serviceGrants"] for item in versions)
+    assert "capabilityRevisions" not in sessions.get_run(result.runId).modelSnapshot
+    first = sessions.call_binding(result.runId, "connect-2")
+    second = sessions.call_binding(result.runId, "connect-5")
+    actual = sessions.call_binding(result.runId, "actual")
+    assert first["tools"] == second["tools"] and first["sourceScope"] == second["sourceScope"]
+    assert first["snapshotId"] != second["snapshotId"] != actual["snapshotId"]
+    assert actual["active"] and actual["definitionFingerprint"]
+    assert len(actual["tools"]) == 1 and actual["tools"][0]["name"] == "mcp_notes__echo"
+    assert actual["tools"][0]["source"] == "mcp:notes"
+    assert actual["tools"][0]["risk"] == "external"
 
 
 def test_full_remote_input_schema_blocks_calls_and_failure_does_not_expose_secrets(tmp_path, monkeypatch):
@@ -519,6 +553,7 @@ def test_full_remote_input_schema_blocks_calls_and_failure_does_not_expose_secre
             if self.count in calls:
                 name, arguments = calls[self.count]
                 yield ModelToolCall(f"step-{self.count}", name, arguments)
+                yield ModelResponseDone("tool_use")
             else:
                 assert "frozen input schema" in messages[-1]["content"]
                 assert "vault-sensitive-token" not in json.dumps(messages)
@@ -561,12 +596,16 @@ def test_escaped_environment_credentials_never_reach_model_or_persisted_results(
             check({"messages": messages, "tools": tools})
             if self.count == 1:
                 yield ModelToolCall("load", "tool_search", {"query": "select:mcp_add"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 2:
                 yield ModelToolCall("connect", "mcp_add", {"server_id": "notes"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 3 and mode == "secret_result":
                 yield ModelToolCall("find", "tool_search", {"query": "select:mcp_notes__echo"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 4 and mode == "secret_result":
                 yield ModelToolCall("actual", "mcp_notes__echo", {"text": "evidence safe"})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("凭据已隔离")
 
@@ -598,14 +637,18 @@ def test_exited_peer_is_reported_unhealthy_and_add_reconnects_without_replaying_
             self.count += 1
             if self.count == 1:
                 yield ModelToolCall("load", "tool_search", {"query": "select:mcp_add,mcp_list"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 2:
                 yield ModelToolCall("connect", "mcp_add", {"server_id": "notes"})
+                yield ModelResponseDone("tool_use")
             elif self.count == 3:
                 await asyncio.sleep(.3)
                 yield ModelToolCall("health", "mcp_list", {})
+                yield ModelResponseDone("tool_use")
             elif self.count == 4:
                 assert json.loads(messages[-1]["content"])["servers"][0]["status"] == "failed"
                 yield ModelToolCall("reconnect", "mcp_add", {"server_id": "notes"})
+                yield ModelResponseDone("tool_use")
             else:
                 assert json.loads(messages[-1]["content"])["status"] == "connected"
                 yield ModelTextDelta("进程已重新握手")
@@ -643,6 +686,7 @@ def test_real_remote_results_preserve_bounded_content_and_safe_actionable_failur
             if self.count in calls:
                 name, arguments = calls[self.count]
                 yield ModelToolCall(f"result-{self.count}", name, arguments)
+                yield ModelResponseDone("tool_use")
             else:
                 assert expected in messages[-1]["content"]
                 assert "vault-sensitive-token" not in json.dumps(messages)

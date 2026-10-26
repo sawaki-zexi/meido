@@ -145,10 +145,15 @@ def test_browser_failed_close_retries_original_owner_before_reenable(client, mon
     assert not owner.alive and owner.closes == 2
 
 
-def test_off_on_rejects_frozen_browser_call_in_real_http_turn(client, monkeypatch, tmp_path):
+def test_off_on_rejects_frozen_browser_call_in_real_http_turn(client, monkeypatch, tmp_path, local_platform_only):
     import httpx
     from backend.app.browser_use import BrowserSessions, BrowserUseConfig
-    from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+    from backend.app.memory_config import MemorySettingsStore
+    from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
+    # This test exercises browser revocation, not automatic model-backed memory.
+    memory = MemorySettingsStore(tmp_path / 'memory-settings.json')
+    memory.update(enabled=False)
+    monkeypatch.setattr(main, 'memory_settings_store', memory)
     class Transport:
         calls = []
         async def call(self, name, arguments, **kwargs):
@@ -165,6 +170,7 @@ def test_off_on_rejects_frozen_browser_call_in_real_http_turn(client, monkeypatc
             self.count += 1
             if self.count == 1:
                 yield ModelToolCall('search', 'tool_search', {'query': 'select:agent_browser_open'})
+                yield ModelResponseDone("tool_use")
             elif self.count == 2:
                 assert 'agent_browser_open' in {item['function']['name'] for item in tools}
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url='http://local') as settings:
@@ -174,6 +180,7 @@ def test_off_on_rejects_frozen_browser_call_in_real_http_turn(client, monkeypatc
                             'enabled': enabled, 'expectedRevision': current['revision']})
                         assert changed.status_code == 200
                 yield ModelToolCall('old-open', 'agent_browser_open', {'url': 'http://127.0.0.1/'})
+                yield ModelResponseDone("tool_use")
             else:
                 results = [item for item in messages if item['role'] == 'tool']
                 assert 'revoked' in results[-1]['content'] or 'changed' in results[-1]['content']

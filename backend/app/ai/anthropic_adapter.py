@@ -339,7 +339,8 @@ class _Accumulator:
         elif event_type == "message_delta":
             delta = payload.get("delta")
             if isinstance(delta, Mapping) and isinstance(delta.get("stop_reason"), str):
-                self.stop_reason = delta["stop_reason"]
+                if self.stop_reason in {None, "end_turn", "stop_sequence", "pause_turn", "tool_use"}:
+                    self.stop_reason = delta["stop_reason"]
             self.usage = ModelUsage(
                 input_tokens=self.usage.input_tokens,
                 output_tokens=_int(payload.get("usage", {}).get("output_tokens")) if isinstance(payload.get("usage"), Mapping) else self.usage.output_tokens,
@@ -348,6 +349,7 @@ class _Accumulator:
             )
         elif event_type == "content_block_stop":
             index = _int(payload.get("index"))
+            self.tool_open.discard(index)
             if index in self.text_open:
                 self.text_open.remove(index)
                 events.append(ModelTextEnd())
@@ -363,7 +365,7 @@ class _Accumulator:
             return [], None, "模型流式响应未正常结束"
         blocks: list[ModelContentBlock] = []
         events: list[ModelStreamEvent] = []
-        for block in self.blocks.values():
+        for index, block in self.blocks.items():
             if block.kind == "text":
                 blocks.append(ModelTextBlock(block.text))
             elif block.kind in {"thinking", "redacted_thinking"}:
@@ -373,7 +375,8 @@ class _Accumulator:
                     arguments = json_object(block.arguments)
                 except ValueError as error:
                     return events, None, str(error)
-                call = ModelToolCallBlock(block.id or f"call-{len(blocks)}", self.name_aliases.get(block.name, block.name), arguments)
+                call = ModelToolCallBlock(block.id or f"call-{len(blocks)}", self.name_aliases.get(block.name, block.name), arguments,
+                    arguments_complete=index not in self.tool_open and bool(block.arguments.strip()))
                 blocks.append(call)
                 events.append(ModelToolCallEnd(call))
         try:
@@ -467,12 +470,12 @@ class AnthropicMessagesAdapter:
                         if cancel_check:
                             cancel_check()
                         if raw == "[DONE]":
-                            accumulator.completed = True
+                            # Transport EOF does not replace the protocol terminal event.
                             break
                         try:
                             data = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
+                        except json.JSONDecodeError as error:
+                            raise RuntimeError("模型流包含无效 JSON") from error
                         if not isinstance(data, Mapping):
                             continue
                         if event_type == "error" or data.get("type") == "error":

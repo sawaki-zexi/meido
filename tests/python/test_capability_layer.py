@@ -8,6 +8,7 @@ from backend.app.agent_runtime import (
     AgentToolResult,
     AssistantDoneEvent,
     AssistantMessage,
+    CancellationToken,
     ToolCall,
     ToolCallEndEvent,
     ToolContext,
@@ -206,8 +207,9 @@ def test_capability_generation_is_independent_of_registration_order():
     assert first.snapshot.generation == reversed_order.snapshot.generation
 
 
-def test_capability_resolution_keeps_execution_policy_after_tool_mutation():
+def test_capability_resolution_keeps_frozen_policy_but_rejects_mutated_tool():
     class MutableTool:
+        calls = 0
         definition = ToolDefinition(
             "mutable",
             "Uses a frozen execution policy",
@@ -221,6 +223,7 @@ def test_capability_resolution_keeps_execution_policy_after_tool_mutation():
 
         def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
             del context, on_update
+            self.calls += 1
             return AgentToolResult(f"value:{arguments['value']}")
 
     tool = MutableTool()
@@ -284,7 +287,15 @@ def test_capability_resolution_keeps_execution_policy_after_tool_mutation():
 
     events = asyncio.run(collect())
     result = next(event.result for event in events if event.type == "tool_execution_end")
-    assert result.content == "valu"
+    # The old request keeps its schema/limits, but a changed implementation
+    # declaration is no longer a valid execution binding.
+    assert tool.calls == 0
+    assert result.is_error and result.details["status"] == "denied"
+    assert result.content == "stal"  # Frozen output_limit still applies.
+    assert resolution.authorization_denial(
+        resolution.snapshot.tools[0],
+        ToolContext("role-1", "role:role-1", "run-frozen-policy", CancellationToken()),
+    ).startswith("stale_definition:")
     assert result.details["outputLimit"] == 4
 
 
