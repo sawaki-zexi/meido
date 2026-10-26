@@ -162,6 +162,7 @@ class MeidoProvider:
         memory_context: str = "",
         capability_prompt: str = "",
         *, structured_without_tools: bool = False, max_response_tokens: int | None = None,
+        context_blocks=None, context_safety_margin: int = 0,
     ) -> None:
         self.adapter = adapter
         self.role = role
@@ -171,6 +172,9 @@ class MeidoProvider:
         self._tool_prompt = ""
         self.structured_without_tools = structured_without_tools
         self.max_response_tokens = max_response_tokens
+        self.context_blocks = context_blocks
+        self.context_safety_margin = context_safety_margin
+        self._request_context = ""
 
     def stream_response(
         self,
@@ -184,6 +188,7 @@ class MeidoProvider:
     ) -> AsyncIterator[ProviderEvent]:
         del model, session_id
         self._set_tool_prompt(tools)
+        self._refresh_request_context(system, messages, tools)
         rich = getattr(self.adapter, "stream_rich_messages", None)
         if rich is not None:
             return self._stream_rich_structured(system, messages, tools, signal, rich)
@@ -214,8 +219,24 @@ class MeidoProvider:
         ))
 
     def estimate_request_tokens(self, system, messages, tools):
-        from .context_provider import estimate_tokens
         self._set_tool_prompt(tools)
+        self._refresh_request_context(system, messages, tools)
+        return self._estimate_rendered(system, messages, tools)
+
+    def _refresh_request_context(self, system, messages, tools):
+        self._request_context = ""
+        if self.context_blocks is None:
+            return
+        capacity = (self.configuration.contextWindowTokens if self.configuration else None) or 32768
+        available = capacity - (self.max_response_tokens or 2048) - self.context_safety_margin
+        for block in self.context_blocks():
+            previous = self._request_context
+            self._request_context = "\n\n".join(filter(None, (previous, block)))
+            if self._estimate_rendered(system, messages, tools) >= available:
+                self._request_context = previous
+
+    def _estimate_rendered(self, system, messages, tools):
+        from .context_provider import estimate_tokens
         # Use the same rendered system/memory/capability/messages as the actual rich request.
         rendered = []
         image_tokens = 0
@@ -486,7 +507,7 @@ class MeidoProvider:
     def _structured_system_prompt(self, system: str) -> str:
         if not system:
             return self.role_system_prompt()
-        return "\n\n".join(part for part in (system, self.capability_prompt, self._tool_prompt) if part)
+        return "\n\n".join(part for part in (system, self.capability_prompt, self._tool_prompt, self._request_context) if part)
 
     def role_system_prompt(self) -> str:
         profile = self.role.profile
@@ -499,17 +520,18 @@ class MeidoProvider:
             f"回复约束：{profile.responseConstraints}" if profile.responseConstraints else "",
             f"称呼用户：{profile.nickname}" if profile.nickname else "",
             self.memory_context,
+            self._request_context,
             self.capability_prompt,
             self._tool_prompt,
         ] if part)
 
     def _combined_memory_context(self) -> str:
-        return "\n\n".join(part for part in (self.memory_context, self.capability_prompt) if part)
+        return "\n\n".join(part for part in (self.memory_context, self.capability_prompt, self._request_context) if part)
 
     def _role_with_context(self) -> Role:
         profile = self.role.profile.model_copy(deep=True)
         profile.profile = "\n\n".join(
-            part for part in (profile.profile, self.capability_prompt) if part
+            part for part in (profile.profile, self._combined_memory_context()) if part
         )
         return self.role.model_copy(deep=True, update={"profile": profile})
 

@@ -37,7 +37,7 @@ def test_listening_consolidation_keeps_owner_and_external_layers_separate(tmp_pa
     store.listening.hear(thread, "主人喜欢红茶", "owner", {"senderId": "owner", "senderIsOwner": True}, timestamp=yesterday)
     store.listening.hear(thread, "访客喜欢绿茶", "visitor", {"senderId": "visitor", "senderIsOwner": False}, timestamp=yesterday)
     assert asyncio.run(worker.consolidate(thread.thread_id, listening=True))
-    assert observed == ["访客喜欢绿茶"]
+    assert observed == ["主人喜欢红茶", "访客喜欢绿茶"]
     assert owners == ["主人喜欢红茶"]
     assert owner_turns == []
     assert groups.read_context("role", thread.thread_id)["summary"] == "群最近动态"

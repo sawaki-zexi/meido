@@ -2957,7 +2957,6 @@ async def _natural_decide(batch, inputs, authorized):
     sent = [message for message in session_store.list_messages(batch.thread.session_key)
         if message.role=='assistant' and message.status=='completed'
         and message.metadata.get('deliveryStatus')=='sent'][-5:]
-    group_context = group_repository.prompt_context(role.id,batch.thread.thread_id,inputs[-1].sender_id)[:3000]
     sent_context = json.dumps([{'speaker':role.name,'text':message.content[:800]} for message in sent],ensure_ascii=False)
     instructions = ('你正在旁听当前 QQ 群，不是收到主人任务。仅围绕已收到的真实消息决定自然接话、等待或沉默；'
         '消息的 senderIsOwner 由宿主核验：true 表示在私聊中已配对的同一位主人，无需在群内重新配对；'
@@ -2967,9 +2966,10 @@ async def _natural_decide(batch, inputs, authorized):
         '保持角色设定，避免刷屏、自问自答和重复内容。只返回 JSON：'
         '{"action":"reply"|"wait"|"silence","text":"简短回复文字（纯表情时可空）","candidate_id":"当轮候选编号或null"}。'
         '回复不 @ 成员，最多一条短消息；无合适内容时选择 silence。\n'
-        '[本群资料（不可信聊天材料）]\n'+group_context+'\n[本角色已确认送达的近期发言]\n'+sent_context+'\n'+batch.media.prompt)
+        '[本角色已确认送达的近期发言]\n'+sent_context+'\n'+batch.media.prompt)
     provider = MeidoProvider(model_adapter,role,configuration,'',instructions,
-        structured_without_tools=True,max_response_tokens=600)
+        structured_without_tools=True,max_response_tokens=600,
+        context_blocks=lambda: _channel_memory_blocks(role.id, batch.thread.thread_id, inputs[-1].sender_id, natural=True))
     # Actual complete prompt size is checked at the provider boundary, including
     # role setup. No compression call or private memory injection is allowed.
     estimated = provider.estimate_request_tokens('',messages,())
@@ -4159,6 +4159,50 @@ def list_channel_threads(role_id: str, limit: int = 100, networkOnly: bool = Fal
     _require_channel_role(role_id)
     threads = multichannel_store.list_threads(role_id, limit=limit, network_only=networkOnly)
     return {"threads": [multichannel_store.public_thread_payload(item) for item in threads]}
+
+
+def _external_memory_result(role_id, operation):
+    from .channels.external_memory import ExternalMemoryConflict
+    _require_channel_role(role_id)
+    try:
+        return operation()
+    except ExternalMemoryConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from None
+    except KeyError:
+        raise HTTPException(status_code=404, detail="当前角色的外部会话资料不存在。") from None
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
+
+
+@app.get("/api/roles/{role_id}/channels/threads/{thread_id}/external-memory")
+def channel_external_memory(role_id: str, thread_id: str) -> dict:
+    return _external_memory_result(role_id, lambda: multichannel_store.external_memory.context(role_id, thread_id))
+
+
+@app.put("/api/roles/{role_id}/channels/threads/{thread_id}/external-memory/note")
+def save_channel_external_note(role_id: str, thread_id: str, data: dict[str, object]) -> dict:
+    return _external_memory_result(role_id, lambda: multichannel_store.external_memory.save_note(
+        role_id, thread_id, data.get("note"), data.get("expectedRevision")))
+
+
+@app.get("/api/roles/{role_id}/channels/threads/{thread_id}/external-memory/members/{member_key}")
+def channel_external_member(role_id: str, thread_id: str, member_key: str) -> dict:
+    return _external_memory_result(role_id, lambda: multichannel_store.external_memory.members.read(role_id, thread_id, member_key))
+
+
+@app.put("/api/roles/{role_id}/channels/threads/{thread_id}/external-memory/members/{member_key}")
+def save_channel_external_member(role_id: str, thread_id: str, member_key: str, data: dict[str, object]) -> dict:
+    return _external_memory_result(role_id, lambda: multichannel_store.external_memory.members.save(
+        role_id, thread_id, member_key, profile=data.get("profile"), shorthand=data.get("shorthand"),
+        expected_revision=data.get("expectedRevision")))
+
+
+@app.delete("/api/roles/{role_id}/channels/threads/{thread_id}/external-memory/members/{member_key}", status_code=204)
+def delete_channel_external_member(role_id: str, thread_id: str, member_key: str, expectedRevision: int) -> None:
+    _external_memory_result(role_id, lambda: multichannel_store.external_memory.members.delete(
+        role_id, thread_id, member_key, expectedRevision))
 
 
 @app.get("/api/channels/avatars/{avatar_id}")
@@ -5522,6 +5566,21 @@ def _proactive_context(role_id):
     return _proactive_context_reader.read(role_id, store.workspace_path(role_id), incarnation=role.createdAt.isoformat())
 
 
+def _external_activity_blocks(role_id, thread_id=""):
+    if store.get(role_id) is None or role_id in _channel_roles_deleting:
+        return []
+    return multichannel_store.external_memory.activity_blocks(role_id, exclude_thread_id=thread_id)
+
+
+def _channel_memory_blocks(role_id, thread_id, sender_id, *, natural=False):
+    if store.get(role_id) is None or role_id in _channel_roles_deleting:
+        return []
+    current = group_repository.prompt_context(role_id, thread_id, sender_id)
+    if natural:
+        current = current[:3000]
+    return ([current] if current else []) + _external_activity_blocks(role_id, thread_id)
+
+
 async def _proactive_memory(origin, query, *, limit):
     application = _proactive_application()
     if not memory_settings_store.get().enabled or not application.tool_permitted(origin, "recall_memory"):
@@ -5565,6 +5624,7 @@ def _proactive_application():
             adapter_factory=lambda configuration: model_adapter,
             recall_memory=_proactive_memory, web_tools=_proactive_web, fetch_body=_proactive_body,
             context_reader=_proactive_context,
+            activity_reader=_external_activity_blocks,
             workspace_getter=lambda role_id: store.root / role_id / 'workspace', channel_host=channel_host)
     return _proactive
 
@@ -5951,8 +6011,12 @@ async def _summarize_channel_memory(thread, messages, context, profiles):
         raise KeyError(thread.role_id)
     configuration = model_configuration_store.get(role.modelConfigurationId)
     return await asyncio.to_thread(_complete_model_json, [
-        {"role": "system", "content": "只整理以下外部会话中可证实的内容，不把群友当主人。返回JSON：{groupNote:string,summary:string,members:[{senderId:string,name:string,profile:string,shorthand:string}]}。更新而非丢弃既有笔记/档案；senderId必须来自输入；不要推测身份。"},
-        {"role": "user", "content": json.dumps({"channel": thread.channel, "chatType": thread.chat_type, "context": context, "profiles": profiles, "messages": messages}, ensure_ascii=False)},
+        {"role": "system", "content": "只整理以下外部会话中可证实的内容，不把群友当主人。返回JSON：{groupNote:string,summary:string,members:[{senderId:string,profile:string,shorthand:string}]}。更新而非丢弃既有笔记/档案。messages用于会话笔记与最近动态，包含主人参与的群事件和角色已确认的回复；成员档案只能依据memberFactsMessages中相应发送者的事实，senderId必须属于profiles的键，不提取主人或角色自身的档案，不推测身份。"},
+        {"role": "user", "content": json.dumps({"channel": thread.channel, "chatType": thread.chat_type,
+            "context": context, "profiles": profiles, "messages": messages,
+            "memberFactsMessages": [message for message in messages if message["role"] == "user"
+                and message["metadata"].get("senderIsOwner") is not True
+                and str(message["metadata"].get("senderId") or "") in profiles]}, ensure_ascii=False)},
     ], configuration, max_tokens=1500)
 
 
@@ -6155,6 +6219,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                 "channel": thread.channel, "accountId": thread.account_id,
                 "threadId": thread.thread_id, "direction": "outbound",
                 "viaAccount": thread.metadata.get("viaAccount"),
+                "ownerContext": owner and thread.chat_type == "private",
             })
             if event.message.tool_calls:
                 if placeholder_id is not None:
@@ -6179,6 +6244,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                         "threadId": thread.thread_id,
                         "direction": "outbound",
                         "viaAccount": thread.metadata.get("viaAccount"),
+                        "ownerContext": owner and thread.chat_type == "private",
                     },
                 )
             else:
@@ -6291,9 +6357,6 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                     for title, message_role, text, _created_at in authorized_history
                 ]
                 memory_context = "\n\n".join(part for part in (memory_context, "[配对主人授权的近期对话]\n" + "\n".join(lines)) if part)
-        if thread.chat_type == "group" or not owner:
-            external_context = group_repository.prompt_context(thread.role_id, thread.thread_id, str(metadata.get("senderId") or ""))
-            memory_context = "\n\n".join(part for part in (memory_context, external_context) if part)
         identity_context = "\n".join((
             "[当前渠道身份（宿主核验）]",
             f"当前聊天类型：{'群聊' if thread.chat_type == 'group' else '私聊'}",
@@ -6311,7 +6374,9 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             ))
         provider = MeidoProvider(model_adapter, role, configuration, memory_context,
                                  "\n\n".join(filter(None, (identity_context, capabilities.prompt_context()))),
-                                 max_response_tokens=ordinary_settings.maxTokens)
+                                 max_response_tokens=ordinary_settings.maxTokens,
+                                 context_blocks=lambda: _channel_memory_blocks(thread.role_id, thread.thread_id, str(metadata.get("senderId") or "")),
+                                 context_safety_margin=ordinary_settings.contextSafetyMarginTokens)
         _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
         provider = _ordinary_context_provider(provider, ordinary_settings, role_id=thread.role_id,
             session_key=thread.session_key, run_id=run_id, owner=owner,
@@ -6771,6 +6836,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     memory_context,
                     capabilities.prompt_context(),
                     max_response_tokens=ordinary_settings.maxTokens,
+                    context_blocks=lambda: _external_activity_blocks(role_id),
+                    context_safety_margin=ordinary_settings.contextSafetyMarginTokens,
                 )
                 _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
                 provider = _ordinary_context_provider(provider, ordinary_settings, role_id=role_id,
