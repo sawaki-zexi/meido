@@ -2699,13 +2699,18 @@ async def _reject_channel_payload(adapter, payload) -> None:
         logger.warning("渠道拒收提示失败 account=%s error=%s", adapter.account_id, type(error).__name__)
 
 
-async def _persist_channel_attachments(event, role_id: str) -> list[dict[str, object]]:
+async def _persist_channel_attachments(event, role_id: str, *, failures: list[dict] | None = None,
+                                       authorized=None) -> list[dict[str, object]]:
     if not event.attachments or (event.chat_type is ChatType.GROUP and not event.triggered):
         return []
     adapter = channel_adapters.get(event.account_id)
     download_media = getattr(adapter, "download_media", None)
     if not callable(download_media):
         return []
+    if authorized is not None:
+        if not authorized():
+            return []
+        event = replace(event, authorize_media=authorized)
     try:
         downloaded = await download_media(event)
     except Exception as error:
@@ -2713,20 +2718,35 @@ async def _persist_channel_attachments(event, role_id: str) -> list[dict[str, ob
         return []
 
     attachments: list[dict[str, object]] = []
-    for item in downloaded[:4]:
+    for item in downloaded:
+        if authorized is not None and not authorized():
+            return []
+        if getattr(item, "error", None):
+            if failures is not None:
+                failures.append({"name": item.file_name or "未命名文件", "reason": item.error,
+                    "fileId": item.file_id, "size": item.source_size})
+            continue
+        if len(attachments) >= 4:
+            break
         data = getattr(item, "data", None)
         if not isinstance(data, bytes) or len(data) > MAX_CHANNEL_MEDIA_BYTES:
             logger.warning("渠道附件超过大小限制 account=%s kind=%s", event.account_id, getattr(item, "kind", "unknown"))
             continue
         try:
-            attachments.append(_save_channel_attachment(
+            saved = _save_channel_attachment(
                 role_id,
                 media_filename(getattr(item, "file_name", None), getattr(item, "mime_type", None)),
                 str(getattr(item, "mime_type", None) or "application/octet-stream"),
                 data,
-            ))
+            )
+            if getattr(item, "file_id", None):
+                saved.update({"platformFileId": item.file_id, "platformSize": item.source_size})
+            attachments.append(saved)
         except Exception as error:
             logger.warning("渠道附件保存失败 account=%s kind=%s error=%s", event.account_id, getattr(item, "kind", "unknown"), type(error).__name__)
+            if item.kind == "file" and failures is not None:
+                failures.append({"name": item.file_name or "未命名文件", "reason": "附件存储空间不足或保存失败",
+                    "fileId": item.file_id, "size": item.source_size})
     return attachments
 
 
@@ -3113,13 +3133,19 @@ async def _handle_channel_event_locked(event):
     from .channels.source_authority import channel_owner_binding
     accepted_generation = event.metadata.get("hostConnectionGeneration", channel_host.connection_generation(event.account_id)) if event.channel == "qq" else None
     accepted_binding = channel_owner_binding(multichannel_store, event.channel, event.account_id, event.sender_id) if owner else None
+    attachment_authorized = channel_host.media_authorization(account.role_id, event)
     enrich_reply = getattr(channel_adapters.get(event.account_id), "enrich_reply", None)
     if event.triggered and callable(enrich_reply):
         event = await enrich_reply(event)
-    attachments = await _persist_channel_attachments(event, account.role_id)
+    attachment_failures, quote_failures = [], []
+    attachments = await _persist_channel_attachments(event, account.role_id, failures=attachment_failures, authorized=attachment_authorized)
     quoted_attachments = event.metadata.get("quotedAttachments", ())
-    saved_quote = await _persist_channel_attachments(replace(event, attachments=tuple(quoted_attachments)), account.role_id) if quoted_attachments else []
+    saved_quote = await _persist_channel_attachments(replace(event, attachments=tuple(quoted_attachments)), account.role_id, failures=quote_failures, authorized=attachment_authorized) if quoted_attachments else []
+    if not attachment_authorized():
+        return
     content = event.content.strip() or ("[收到附件]" if event.attachments else "")
+    from .channels.qq_files import describe_failures
+    content = describe_failures(content, attachment_failures)
     metadata: dict[str, object] = {
         "hostReceivedAt": event.received_at,
         "platformMessageId": event.external_message_id,
@@ -3131,7 +3157,9 @@ async def _handle_channel_event_locked(event):
         "mentionedIds": list(event.mentioned_ids),
         "replyTo": event.reply_to_message_id,
         "replyToSenderId": event.reply_to_sender_id,
-        "replyToContent": str(event.metadata.get("replyToContent") or ""),
+        "replyToContent": describe_failures(str(event.metadata.get("replyToContent") or ""), quote_failures),
+        "attachmentFailures": attachment_failures,
+        "quotedAttachmentFailures": quote_failures,
         "replyToSenderName": str(event.metadata.get("replyToSenderName") or ""),
         "quotedAttachments": saved_quote,
         "quotedGroupVerified": event.metadata.get("quotedGroupVerified") is True,

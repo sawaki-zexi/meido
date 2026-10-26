@@ -6,7 +6,7 @@ import asyncio
 import base64
 import json
 from dataclasses import replace
-from urllib.parse import unquote
+from html import unescape
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +14,7 @@ from typing import Any, Mapping
 
 from .base import ChannelAdapter, ChannelAdapterError, PlatformRejectedError, SendTransport, UnsupportedTargetError, delivery_status_for_error, is_blocked_identity
 from .directory import DirectoryError, DirectoryObservation, DirectoryQuery, MAX_RECORDS, MAX_RESPONSE_BYTES
+from .qq_files import file_attachment, file_description, download_file, check_media_authorization
 from .models import (
     Attachment,
     ChannelCapabilities,
@@ -85,17 +86,17 @@ class NapCatAdapter(ChannelAdapter):
             cursor = 0
             for match in re.finditer(r"\[CQ:([a-z_]+)((?:,[^\]]*)?)\]", payload, re.IGNORECASE):
                 if match.start() > cursor:
-                    segments.append({"type": "text", "data": {"text": payload[cursor:match.start()]}})
+                    segments.append({"type": "text", "data": {"text": unescape(payload[cursor:match.start()])}})
                 values: dict[str, str] = {}
                 for item in match.group(2).lstrip(",").split(","):
                     if "=" in item:
                         key, value = item.split("=", 1)
-                        values[key.strip()] = unquote(value.strip())
+                        values[key.strip()] = unescape(value.strip())
                 kind = match.group(1).lower()
                 segments.append({"type": kind, "data": values})
                 cursor = match.end()
             if cursor < len(payload):
-                segments.append({"type": "text", "data": {"text": payload[cursor:]}})
+                segments.append({"type": "text", "data": {"text": unescape(payload[cursor:])}})
             return segments or [{"type": "text", "data": {"text": payload}}]
         return []
 
@@ -133,7 +134,11 @@ class NapCatAdapter(ChannelAdapter):
                 qq = str(data.get("qq", ""))
                 if qq:
                     mentions.append(qq)
-            elif kind in {"image", "file", "video", "record"}:
+            elif kind == "file":
+                attachment = file_attachment(data)
+                attachments.append(attachment)
+                text_parts.append(file_description(attachment.file_name))
+            elif kind in {"image", "video", "record"}:
                 attachments.append(Attachment(kind=kind, url=str(data.get("url")) if data.get("url") else None, file_name=str(data.get("file")) if data.get("file") else None))
         reply = next((segment for segment in segments if segment.get("type") == "reply"), None)
         reply_data = reply.get("data") if isinstance(reply, dict) and isinstance(reply.get("data"), dict) else {}
@@ -246,7 +251,11 @@ class NapCatAdapter(ChannelAdapter):
             data = segment.get("data") if isinstance(segment.get("data"), Mapping) else {}
             if segment.get("type") == "text":
                 text.append(str(data.get("text") or ""))
-            elif segment.get("type") in {"image", "file"} and data.get("url"):
+            elif segment.get("type") == "file":
+                attachment = file_attachment(data)
+                attachments.append(attachment)
+                text.append(file_description(attachment.file_name))
+            elif segment.get("type") == "image" and data.get("url"):
                 attachments.append(Attachment(str(segment["type"]), str(data["url"]), str(data.get("file") or "") or None))
         return replace(event, metadata={
             **event.metadata,
@@ -397,14 +406,26 @@ class NapCatAdapter(ChannelAdapter):
             raise UnsupportedTargetError("NapCat 不支持该目标类型")
 
     async def download_media(self, event: InboundEvent, *, max_bytes: int = 10 * 1024 * 1024) -> tuple[DownloadedMedia, ...]:
-        from .media import download_qq_media
+        from .media import download_qq_file, download_qq_media
 
         downloaded: list[DownloadedMedia] = []
-        for attachment in event.attachments[:4]:
-            if attachment.kind not in {"image", "file"} or not attachment.url:
+        for index, attachment in enumerate(event.attachments):
+            check_media_authorization(event)
+            if index >= 4:
+                if attachment.kind == "file":
+                    downloaded.append(DownloadedMedia("file", b"", attachment.file_name,
+                        error="每条消息最多接收 4 个附件", file_id=attachment.file_id, source_size=attachment.size))
+                continue
+            if attachment.kind == "file":
+                downloaded.append(await download_file(attachment, event, self._transport, download_qq_file, max_bytes=max_bytes))
+                continue
+            if attachment.kind != "image" or not attachment.url:
                 continue
             try:
                 data, mime_type = await download_qq_media(attachment.url, max_bytes=max_bytes)
+                check_media_authorization(event)
+            except PermissionError:
+                raise
             except Exception as error:
                 logger.warning("NapCat 附件下载失败 account=%s kind=%s error=%s", self.account_id, attachment.kind, type(error).__name__)
                 continue

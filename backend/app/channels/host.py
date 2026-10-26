@@ -369,6 +369,38 @@ class ChannelHost:
         if adapter is not None:
             await adapter.stop()
 
+    def media_authorization(self, role_id: str, event) -> Callable[[], bool]:
+        """Freeze an admitted media source; checks can revoke, never renew it."""
+        from .source_authority import channel_owner_binding
+        account = self.store.get_account(event.account_id)
+        adapter = self._adapters.get(event.account_id)
+        revision = self.store.directory_revision(event.account_id, event.channel)
+        generation = self.connection_generation(event.account_id)
+        binding = channel_owner_binding(self.store, event.channel, event.account_id, event.sender_id)
+        binding_key = (binding["identityId"], binding["pairedAt"]) if binding else None
+        group_policy = getattr(self.store, "group_reply_policy", None)
+        group_revision = (group_policy(role_id, event.account_id, event.chat_id)
+            if event.channel == "qq" and event.is_group and event.triggered and callable(group_policy) else None)
+
+        def authorized() -> bool:
+            current = self.store.get_account(event.account_id)
+            if (account is None or current is None or adapter is None
+                    or (current.role_id, current.channel, current.created_at) != (role_id, event.channel, account.created_at)
+                    or not self.store.account_effectively_enabled(current)
+                    or self._adapters.get(event.account_id) is not adapter
+                    or self.connection_generation(event.account_id) != generation
+                    or self.store.directory_revision(event.account_id, event.channel) != revision
+                    or event.sender_id in current.blocked_senders
+                    or not (current.allow_group if event.is_group else current.allow_private)):
+                return False
+            if group_revision is not None and (not group_revision[0]
+                    or group_policy(role_id, event.account_id, event.chat_id) != group_revision):
+                return False
+            latest = channel_owner_binding(self.store, event.channel, event.account_id, event.sender_id)
+            return ((latest["identityId"], latest["pairedAt"]) if latest else None) == binding_key
+
+        return authorized
+
     async def accept_event(self, account_id: str, payload: Mapping[str, Any]):
         """Normalize, deduplicate, and directory-index one platform event."""
 
