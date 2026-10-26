@@ -14,6 +14,7 @@ import { GeneratedImageAction } from "../novelai/GeneratedImageAction";
 import type { GenerationSelection } from "../../api/novelai";
 import { useChatScroll } from "./useChatScroll";
 import { AttachmentImage } from "../../ui/AttachmentImage";
+import { MessageMarkdown } from "../../ui/MessageMarkdown";
 
 function MessageItem({ message, role, highlighted, onRegenerate }: { message: Message; role: Role; highlighted: boolean; onRegenerate: (selection: GenerationSelection) => void }) {
   const mine = message.role === "user";
@@ -38,7 +39,7 @@ function MessageItem({ message, role, highlighted, onRegenerate }: { message: Me
         {failed && <span className={`message-status ${stopped ? "stopped" : "failed"}`}>{stopped ? "已停止" : "未完成"}</span>}
         {highlighted && <span className="source-marker">记忆来源</span>}
       </div>
-      {message.content && <p className="bubble">{message.content}</p>}
+      {message.content && <div className="bubble"><MessageMarkdown content={message.content} /></div>}
       {attachments.length > 0 && <div className="message-attachments">
         {attachments.map((attachment) => {
           const href = `/api/roles/${encodeURIComponent(role.id)}/attachments/${encodeURIComponent(attachment.id)}`;

@@ -141,8 +141,9 @@
 .channel-group-settings { border-top: 1px solid var(--line); border-bottom: 0; }
 .channel-conversation-settings summary, .channel-listening-panel summary { cursor: pointer; color: var(--ink-soft); }
 .channel-listening-panel ol { max-height: 200px; margin: 12px 0; padding: 0; list-style: none; overflow: auto; }
-.channel-listening-panel li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.channel-listening-panel > ol > li, .channel-listening-panel > details > ul > li { padding: 8px 0; border-bottom: 1px solid var(--line); }
 .channel-listening-panel p { color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
+.channel-listening-panel .message-markdown { color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
 .channel-listening-panel time { color: var(--ink-faint); font-size: 11px; }
 .channel-listening-actions, .channel-listening-caps { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; }
 .channel-listening-actions label, .channel-push-targets label { display: flex; align-items: center; gap: 8px; }
@@ -236,9 +237,9 @@
 .phone-message-owner { padding: 1px 5px; border-radius: 6px; background: #f5e6ef; color: #b36e95; font-size: 9px; }
 .phone-message-listened { color: #a38ca0; font-size: 9px; }
 .phone-image-preview { display: block; max-width: 100%; max-height: 75vh; margin: auto; border-radius: 10px; object-fit: contain; }
-.phone-message-bubble { max-width: 100%; padding: 8px 11px; border: 1px solid #eee6ec; border-radius: 12px; background: #fff; color: var(--ink); box-shadow: 0 2px 6px rgb(102 71 92 / 3%); }
+.phone-message-bubble { min-width: 0; max-width: 100%; padding: 8px 11px; border: 1px solid #eee6ec; border-radius: 12px; background: #fff; color: var(--ink); font-size: 13px; line-height: 1.7; box-shadow: 0 2px 6px rgb(102 71 92 / 3%); }
 .outgoing .phone-message-bubble { border-color: #f0dce7; background: #fbedf4; }
-.dialog-phone .phone-message-bubble p { margin: 0; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-wrap; }
+.dialog-phone .phone-message-bubble > p { margin: 0; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-wrap; }
 .phone-message-mention { color: #b46891; }
 .phone-message-bubble.is-failed { border-color: #efdce2; background: #fff7f8; }
 .phone-message-error, .phone-message-failure { color: #b66c81; }

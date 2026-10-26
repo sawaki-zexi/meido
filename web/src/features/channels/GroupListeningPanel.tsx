@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "../../api/client";
+import { MessageMarkdown } from "../../ui/MessageMarkdown";
 
 type Heard = { id: string; sequence: number; content: string; createdAt: string; metadata: Record<string, unknown> };
 type State = { enabled: boolean; dailyCap: number | null; defaultDailyCap: number; toggles: { enabled: boolean; operator: string; at: string }[] };
@@ -123,7 +124,7 @@ export function GroupListeningPanel({ roleId, threadId, editable, accountId, cha
       <button type="button" disabled={!editable || busy} onClick={() => void save()}>保存旁听上限</button>
     </div>}
     {hasMore && <button type="button" disabled={busy} onClick={() => void older()}>读取更早旁听记录</button>}
-    <ol>{messages.map((message) => <li key={message.id}><strong>{String(message.metadata.senderName || message.metadata.senderId || "成员")}</strong><p>{message.content || "（无内容）"}</p><time>{new Date(message.createdAt).toLocaleString()}</time></li>)}</ol>
+    <ol>{messages.map((message) => <li key={message.id}><strong>{String(message.metadata.senderName || message.metadata.senderId || "成员")}</strong><MessageMarkdown content={message.content || "（无内容）"} /><time>{new Date(message.createdAt).toLocaleString()}</time></li>)}</ol>
     {messages.length === 0 && <p>暂无旁听记录</p>}
     {state && state.toggles.length > 0 && <details><summary>旁听开关记录</summary><ul>{state.toggles.map((toggle, index) => <li key={`${toggle.at}:${index}`}>{toggle.operator === "role" ? "角色" : "主人"}于 {new Date(toggle.at).toLocaleString()} {toggle.enabled ? "开启" : "暂停"}旁听</li>)}</ul></details>}
   </details>;
