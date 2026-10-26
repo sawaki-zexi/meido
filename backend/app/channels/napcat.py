@@ -245,6 +245,15 @@ class NapCatAdapter(ChannelAdapter):
         quoted_group = str(quoted.get("group_id") or "")
         if quoted_group and (event.chat_type is not ChatType.GROUP or quoted_group != event.chat_id):
             return event
+        verified = (
+            event.chat_type is ChatType.GROUP and quoted_group == event.chat_id
+            and quoted.get("message_type") in (None, "group")
+            or event.chat_type is ChatType.PRIVATE and not quoted_group
+            and quoted.get("message_type") == "private"
+            and event.chat_id in {str(quoted.get("user_id") or ""), str(quoted.get("target_id") or "")}
+        )
+        if not verified:
+            return event
         sender = quoted.get("sender") if isinstance(quoted.get("sender"), Mapping) else {}
         attachments, text = [], []
         for segment in self._segments(quoted.get("message")):
@@ -264,6 +273,7 @@ class NapCatAdapter(ChannelAdapter):
             "quotedAttachments": tuple(attachments),
             "quotedGroupVerified": (event.chat_type is ChatType.GROUP and quoted_group == event.chat_id
                 and quoted.get("message_type") in (None, "group")),
+            "replyContextVerified": True,
         }, reply_to_sender_id=str(sender.get("user_id") or quoted.get("user_id") or event.reply_to_sender_id or "") or None)
 
     async def send(self, message: OutboundMessage) -> DeliveryResult:

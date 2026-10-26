@@ -18,7 +18,7 @@ export function PhoneMessage({ message, view, roleId, timeLabel, delivery, sourc
   const [image, setImage] = useState<{ href: string; name: string } | null>(null);
   const openImage = (href: string, name: string) => setImage({ href, name });
   const hasBody = Boolean(message.content || view.attachments.length || view.quotedAttachments.length || view.replyTo || view.mentionedNames.length);
-  const quotedText = view.replyTarget?.content || view.quotedText || (view.quotedAttachments.length ? "附件" : "原文未加载");
+  const quotedText = view.quotedText || view.replyTarget?.content || (view.quotedAttachments.length ? "附件" : "原文未加载");
   const longQuote = quotedText.length > 40 || quotedText.split("\n").length > 2;
   return <>
     {timeLabel && <div className="phone-message-date"><time dateTime={message.createdAt}>{timeLabel}</time></div>}

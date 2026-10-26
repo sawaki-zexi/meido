@@ -81,10 +81,16 @@ def test_file_rejection_is_visible_in_model_and_saved_conversation(
 
 @pytest.mark.parametrize("during", ["lookup", "download"])
 @pytest.mark.parametrize("reopen", [False, True])
-def test_revocation_during_file_url_resolution_stops_download_and_model(meme_turn, monkeypatch, during, reopen):
+@pytest.mark.parametrize("kind", ["account", "group"])
+def test_revocation_during_file_url_resolution_stops_download_and_model(meme_turn, monkeypatch, during, reopen, kind):
     state, requests, downloads = meme_turn, [], []
     original = state.adapter._transport
     def revoke():
+        if kind == "group":
+            state.channels.set_group_replies(state.role.id, state.adapter.account_id, "100", False)
+            if reopen:
+                state.channels.set_group_replies(state.role.id, state.adapter.account_id, "100", True)
+            return
         state.channels.register_channel_account(state.role.id, "qq", account_id=state.adapter.account_id,
             enabled=False, allow_group=True)
         if reopen:
@@ -197,9 +203,11 @@ def test_file_count_limit_is_visible_and_does_not_download_tail(meme_turn, monke
     assert "4.txt；每条消息最多接收 4 个附件" in str(requests[0])
 
 
-def test_listening_retains_file_name_without_lookup_download_or_model(meme_turn, monkeypatch):
+@pytest.mark.parametrize("replies", [True, False])
+def test_listening_retains_file_name_without_lookup_download_or_model(meme_turn, monkeypatch, replies):
     state, requests = meme_turn, []
     state.channels.set_group_listening(state.role.id, state.adapter.account_id, "100", True)
+    state.channels.set_group_replies(state.role.id, state.adapter.account_id, "100", replies)
     class Model:
         async def stream_structured_messages(self, messages, configuration, tools):
             requests.append(messages)
@@ -247,3 +255,75 @@ def test_unpair_and_repair_during_lookup_does_not_reauthorize_old_file(meme_turn
         await main._dispatch_channel_payload(state.adapter.account_id, event, source_adapter=state.adapter)
     asyncio.run(asyncio.wait_for(scenario(), 10))
     assert not downloads and not requests
+
+
+def test_buffered_input_from_retired_connection_cannot_start_file_lookup(meme_turn, monkeypatch):
+    state, resolutions = meme_turn, []
+    async def transport(operation, params):
+        resolutions.append(operation)
+        return {"data": {"url": "https://files.qq.com/file"}}
+    monkeypatch.setattr(state.adapter, "_transport", transport)
+    async def download(*args, **kw):
+        return b"old file", "text/plain"
+    monkeypatch.setattr(media, "download_qq_file", download)
+    async def scenario():
+        event = payload("retired-connection", image=False, sender="22")
+        event["message"].append({"type": "file", "data": {"name": "old.txt", "file_id": "file-id"}})
+        await main._dispatch_channel_payload(state.adapter.account_id, event, source_adapter=state.adapter,
+            source_generation="retired-connection-generation")
+    asyncio.run(asyncio.wait_for(scenario(), 10))
+    assert not resolutions
+
+
+@pytest.mark.parametrize("change", ["account", "platform", "pairing", "connection"])
+def test_source_revoked_while_waiting_for_account_lock_stops_first_lookup(meme_turn, monkeypatch, change):
+    state, operations, requests = meme_turn, [], []
+    accepted = asyncio.Event()
+    original_accept = main.channel_host.accept_event
+    async def observe(*args):
+        event = await original_accept(*args)
+        accepted.set()
+        return event
+    async def transport(operation, params):
+        operations.append(operation)
+        return {"data": {"url": "https://files.qq.com/file"}}
+    transport.connection_generation = "before"
+    async def download(*args, **kw):
+        return b"old file", "text/plain"
+    class Model:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            requests.append(messages)
+            yield ModelTextDelta("must not run")
+    monkeypatch.setattr(main.channel_host, "accept_event", observe)
+    monkeypatch.setattr(state.adapter, "_transport", transport)
+    monkeypatch.setattr(media, "download_qq_file", download)
+    monkeypatch.setattr(main, "model_adapter", Model())
+    async def scenario():
+        lock = asyncio.Lock()
+        main.channel_event_locks[state.adapter.account_id] = lock
+        await lock.acquire()
+        event = payload("queued-file", image=False, sender="11")
+        event["message"].append({"type": "file", "data": {"name": "old.txt", "file_id": "file-id"}})
+        task = asyncio.create_task(main._dispatch_channel_payload(state.adapter.account_id, event, source_adapter=state.adapter))
+        try:
+            await asyncio.wait_for(accepted.wait(), 3)
+            if change == "account":
+                state.channels.set_account_state(state.adapter.account_id, enabled=False)
+                state.channels.set_account_state(state.adapter.account_id, enabled=True)
+            elif change == "platform":
+                state.channels.set_channel_enabled("qq", False)
+                state.channels.set_channel_enabled("qq", True)
+            elif change == "pairing":
+                state.channels.unbind_identity(state.channels.list_identities()[0]["identityId"])
+                code = state.channels.create_pairing_code(state.role.id, "qq")
+                state.channels.consume_pairing_code(code, role_id=state.role.id, channel="qq", scope="platform",
+                    platform_user_id="11", account_id=state.adapter.account_id, chat_id="11")
+            else:
+                transport.connection_generation = "after"
+        finally:
+            lock.release()
+            await task
+            if main._proactive is not None:
+                await main._proactive.close()
+    asyncio.run(asyncio.wait_for(scenario(), 10))
+    assert not operations and not requests

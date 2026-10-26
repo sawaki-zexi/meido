@@ -141,6 +141,30 @@ def qq(tmp_path, monkeypatch, local_platform_only):
     return env
 
 
+def test_group_reply_disable_invalidates_running_and_queued_turns_only_in_that_group(qq):
+    async def scenario():
+        first = asyncio.create_task(qq.dispatch(payload("first")))
+        pending = []
+        try:
+            await asyncio.wait_for(qq.started.wait(), 2)
+            pending.append(asyncio.create_task(qq.dispatch(payload("queued"))))
+            await qq.received("queued")
+            pending.append(asyncio.create_task(qq.dispatch(payload("other-group", group="200"))))
+            await qq.received("other-group")
+            qq.channels.set_group_replies(qq.role.id, qq.account.account_id, "100", False)
+            qq.channels.set_group_replies(qq.role.id, qq.account.account_id, "100", True)
+            qq.release.set()
+            await asyncio.gather(first, *pending)
+            assert [item["group_id"] for item in qq.sent] == [200]
+            assert len(qq.calls) == 2
+            await qq.dispatch(payload("fresh"))
+            assert [item["group_id"] for item in qq.sent] == [200, 100]
+        finally:
+            qq.release.set()
+            await asyncio.gather(first, *pending, return_exceptions=True)
+    asyncio.run(asyncio.wait_for(scenario(), 10))
+
+
 @pytest.mark.parametrize("block", ["model", "send"])
 def test_model_or_send_does_not_block_same_account_inbound_records_or_live_events(qq, block):
     async def scenario():

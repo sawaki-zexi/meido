@@ -7,8 +7,32 @@ import { GroupSettingsPanel } from "./GroupSettingsPanel";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const account: Account = { accountId: "qq-1", channel: "qq", enabled: true, platformEnabled: true, allowPrivate: true, allowGroup: true, blockedSenders: [], displayName: "角色QQ", platformId: "123", lastError: null, tokenConfigured: true, connectionStatus: "connected" };
-const group = { chatId: "42", title: "读书群", threadId: null as string | null, listening: false, naturalEnabled: false, naturalEffective: false };
+const group = { chatId: "42", title: "读书群", threadId: null as string | null, repliesEnabled: true, listening: false, naturalEnabled: false, naturalEffective: false };
 const base = "/api/roles/r1/channels/accounts/qq-1/groups";
+
+it("按群关闭全部回复并保留旁听和自然回复偏好，其他群不受影响", async () => {
+  let state = { ...group, listening: true, naturalEnabled: true, naturalEffective: true };
+  const { calls } = fakeBackend({
+    [`GET ${base}`]: () => ({ body: { groups: [state, { ...group, chatId: "43", title: "另一个群" }] } }),
+    [`GET ${base}/42/settings`]: () => ({ body: state }),
+    [`GET ${base}/43/settings`]: () => ({ body: { ...group, chatId: "43", title: "另一个群" } }),
+    [`PUT ${base}/42/replies`]: () => ({ body: state = { ...state, repliesEnabled: !state.repliesEnabled, naturalEffective: !state.repliesEnabled } }),
+  });
+  const user = userEvent.setup();
+  render(<GroupSettingsPanel roleId="r1" account={account} initialGroup={group} onBack={() => undefined} />);
+  const toggle = await screen.findByRole("checkbox", { name: "允许本群回复" });
+  expect(toggle).toBeChecked();
+  await user.click(toggle);
+  await waitFor(() => expect(toggle).not.toBeChecked());
+  expect(screen.getByText(/已关闭 · @、引用和自然回复均不发送/)).toBeVisible();
+  expect(screen.getByRole("checkbox", { name: "开启本群旁听" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "自然回复（无需 @）" })).toBeChecked();
+  expect(screen.getByText("已保存开启 · 当前未生效")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "选择其他群聊" }));
+  await user.click(await screen.findByRole("button", { name: /另一个群/ }));
+  expect(await screen.findByRole("checkbox", { name: "允许本群回复" })).toBeChecked();
+  expect(calls.filter(call => call.method === "PUT").map(call => [call.path, call.body])).toEqual([[`${base}/42/replies`, { enabled: false }]]);
+});
 
 it("目录中的首次群聊无需制造聊天记录即可开启旁听和自然回复", async () => {
   let state = { ...group };
