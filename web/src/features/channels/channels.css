@@ -358,3 +358,8 @@
 .external-memory-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .external-memory-actions button, .external-memory-card article button, .external-memory-page .group-settings-scroll > button { min-height: 36px; padding: 7px 12px; border: 1px solid #efd0df; border-radius: 9px; background: #fff; color: var(--rose-deep); cursor: pointer; }
 .channel-messages > header:has(.channel-group-settings-button) { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.channel-delivery-parts { max-width: 100%; margin: 0.4rem 0; font-size: 0.85rem; overflow-wrap: anywhere; }
+.channel-delivery-parts summary { cursor: pointer; }
+.channel-delivery-parts ol { padding-left: 1.4rem; }
+.channel-delivery-parts li { margin: 0.7rem 0; }
+.channel-delivery-parts pre { white-space: pre-wrap; }

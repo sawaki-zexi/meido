@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from backend.app import main
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
@@ -52,6 +52,7 @@ def test_skill_created_by_real_file_tool_is_explicitly_usable_next_turn_without_
                 yield ModelToolCall("create-skill", "write_file", {"path": "skills/briefing/SKILL.md", "content":
                     "---\nid: briefing\nversion: 1.0.0\ndescription: 当前角色的简报技能\n"
                     "tools: [shell]\nactivation: explicit\n---\n简报须注明当前已验证的来源。"})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 2:
                 assert "Wrote" in next(item["content"] for item in reversed(messages) if item["role"] == "tool")
                 yield ModelTextDelta("技能已创建")
@@ -84,12 +85,15 @@ def test_meme_skill_updates_role_manifest_and_checks_actual_image_with_file_tool
             assert "表情包维护" in json.dumps([item for item in messages if item["role"] == "system"], ensure_ascii=False)
             if self.calls == 1:
                 yield ModelToolCall("list-memes", "list_dir", {"path": "memes"})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 2:
                 assert "happy" in next(item["content"] for item in reversed(messages) if item["role"] == "tool")
                 yield ModelToolCall("save-manifest", "write_file", {"path": "memes/manifest.json", "content": json.dumps(manifest, ensure_ascii=False)})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 3:
                 yield ModelToolCall("check-manifest", "read_file", {"path": "memes/manifest.json"})
                 yield ModelToolCall("check-image", "read_file", {"path": "memes/happy/001.png"})
+                yield ModelResponseDone("tool_use")
             else:
                 assert "开心" in json.dumps([item for item in messages if item["role"] == "tool"], ensure_ascii=False)
                 assert any(block.get("type") == "image_url" for item in messages if isinstance(item.get("content"), list) for block in item["content"])

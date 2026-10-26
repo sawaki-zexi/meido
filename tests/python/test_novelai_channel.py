@@ -13,7 +13,7 @@ def test_real_onebot_socket_owner_turn_sends_generated_png_once_to_original_sour
     from backend.app.channels.napcat import NapCatAdapter, NapCatConfig
     from backend.app.channels.transports import NapCatWebSocketTransport
     from backend.app.chat_attachments import resolve_attachment
-    from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+    from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
     from websockets.asyncio.server import serve
     _, service = novelai_main
     expected_status = 'uncertain' if receipt_status == 'uncertain' else 'sent'
@@ -40,6 +40,7 @@ def test_real_onebot_socket_owner_turn_sends_generated_png_once_to_original_sour
         async def stream_structured_messages(self, messages, configuration, tools):
             if not any(item['role'] == 'tool' for item in messages):
                 yield ModelToolCall('channel-image', 'generate_image', service.request)
+                yield ModelResponseDone("tool_use")
             else:
                 assert json.loads(messages[-1]['content'])['status'] == 'succeeded'
                 yield ModelTextDelta('原渠道图片已生成。')

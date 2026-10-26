@@ -18,7 +18,7 @@ from backend.app.channels.napcat import NapCatAdapter, NapCatConfig
 from backend.app.channels.directory import DirectoryQuery
 from backend.app.channels.directory import DirectoryError
 from backend.app.memory_config import MemorySettingsStore
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.multichannel import MultichannelStore
 from backend.app.multichannel import TelegramBotApi
@@ -91,6 +91,7 @@ def test_owner_reads_current_connection_and_pages_directory_in_next_provider(dir
             self.count += 1
             if self.count == 1:
                 yield ModelToolCall("accounts", "account_list", {})
+                yield ModelResponseDone("tool_use")
             else:
                 content = next(item["content"] for item in reversed(messages) if item["role"] == "tool")
                 data = json.loads(content)
@@ -99,12 +100,14 @@ def test_owner_reads_current_connection_and_pages_directory_in_next_provider(dir
                     assert data[0]["supportedKinds"] == ["known", "friends", "groups", "members"]
                     yield ModelToolCall("first", "account_targets", {"account_id": account.account_id, "limit": 2,
                         **({"kind": kind} if kind != "known" else {})})
+                    yield ModelResponseDone("tool_use")
                 else:
                     self.seen.extend(item["chatId"] for item in data["targets"])
                     assert data["coverage"] == ("known" if kind == "known" else "platform") and data["complete"] is True
                     if data["nextCursor"]:
                         yield ModelToolCall("next", "account_targets", {"account_id": account.account_id,
                             "limit": 2, "cursor": data["nextCursor"], "kind": kind})
+                        yield ModelResponseDone("tool_use")
                     else:
                         assert set(self.seen) == {"1", "2", "3"} and len(self.seen) == 3
                         yield ModelTextDelta("已读完观察目录")
@@ -213,6 +216,7 @@ def test_role_removed_during_public_tool_call_cannot_import_platform_directory(d
         async def stream_structured_messages(self, messages, configuration, tools):
             if not any(item["role"] == "tool" for item in messages):
                 yield ModelToolCall("friends", "account_targets", {"account_id": account.account_id, "kind": "friends"})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("Stopped")
 
@@ -256,6 +260,7 @@ def test_telegram_member_uses_real_bot_api_and_does_not_create_send_destination(
                 self.count += 1
                 if self.count == 1:
                     yield ModelToolCall("accounts", "account_list", {})
+                    yield ModelResponseDone("tool_use")
                 else:
                     result = json.loads(next(item["content"] for item in reversed(messages) if item["role"] == "tool"))
                     if self.count == 2:
@@ -263,6 +268,7 @@ def test_telegram_member_uses_real_bot_api_and_does_not_create_send_destination(
                         assert observed["online"] is None and observed["supportedKinds"] == ["known", "member"]
                         yield ModelToolCall("member", "account_targets", {"account_id": account.account_id,
                             "kind": "member", "group_id": "-100", "member_id": "22"})
+                        yield ModelResponseDone("tool_use")
                     else:
                         member = result["targets"][0]
                         assert member["memberId"] == "22" and member["groupId"] == "-100" and member["canSend"] is False
@@ -599,6 +605,7 @@ def test_public_provider_distinguishes_empty_from_directory_failures(directory_a
             self.count += 1
             if self.count == 1:
                 yield ModelToolCall("query", "account_targets", {"account_id": account.account_id, "kind": "friends"})
+                yield ModelResponseDone("tool_use")
             else:
                 raw = next(item["content"] for item in reversed(messages) if item["role"] == "tool")
                 assert "NEVER_ECHO_REMOTE_DETAIL" not in raw

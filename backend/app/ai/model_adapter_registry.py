@@ -208,13 +208,15 @@ def _legacy_content_blocks(content: object) -> tuple[ModelContentBlock, ...]:
 
 
 async def _stream_legacy_structured(adapter, messages, configuration, tools, *, max_tokens):
-    from .model_adapter import ModelStreamError, ModelTextDelta, ModelToolCall
-    from .model_types import ModelStreamError as RichError, ModelTextDelta as RichTextDelta, ModelToolCallEnd
+    from .model_adapter import ModelResponseDone, ModelStreamError, ModelTextDelta, ModelToolCall
+    from .model_types import ModelStreamDone, ModelStreamError as RichError, ModelTextDelta as RichTextDelta, ModelToolCallEnd
     async with aclosing(adapter.stream_rich_messages(_convert_legacy_messages(messages), configuration, tools, max_tokens=max_tokens)) as stream:
         async for event in stream:
             if isinstance(event, RichTextDelta):
                 yield ModelTextDelta(event.text)
             elif isinstance(event, ModelToolCallEnd):
-                yield ModelToolCall(event.call.id, event.call.name, event.call.arguments)
+                yield ModelToolCall(event.call.id, event.call.name, event.call.arguments, arguments_complete=event.call.arguments_complete)
+            elif isinstance(event, ModelStreamDone):
+                yield ModelResponseDone(event.message.metadata.stop_reason or "incomplete")
             elif isinstance(event, RichError):
                 yield ModelStreamError(event.error)

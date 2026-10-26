@@ -14,7 +14,7 @@ from backend.app.agent_runtime import RuntimeManager
 from backend.app.agent_runtime import ToolContext, CancellationToken
 from backend.app.agent_runtime.shell_tool import TaskOutputTool
 from backend.app.agent_runtime.types import ToolResultMessage
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.memory_config import MemorySettingsStore
 from backend.app.role_store import RoleStore
@@ -75,10 +75,13 @@ def test_http_background_task_can_be_observed_and_stopped_in_later_turn(api, mon
                     "command": shlex.join([sys.executable.replace("\\", "/"), "-u", "-c", "import time; print('http-ready'); time.sleep(5)"]),
                     "run_in_background": True,
                 })
+                yield ModelResponseDone("tool_use")
             elif step == 3:
                 yield ModelToolCall("read-owned-command", "task_output", {"task_id": self.task_id, "block": True, "timeout_ms": 100})
+                yield ModelResponseDone("tool_use")
             elif step == 5:
                 yield ModelToolCall("stop-owned-command", "task_stop", {"task_id": self.task_id})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("任务状态已返回")
 
@@ -123,6 +126,7 @@ def test_http_shell_accepts_full_supported_role_output_budget(api, monkeypatch):
                 yield ModelToolCall("large-supported-budget", "shell", {
                     "command": shlex.join([sys.executable.replace("\\", "/"), "-c", "print(1)"]),
                 })
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("执行成功")
 
@@ -158,6 +162,7 @@ def test_http_role_revocation_or_deletion_releases_real_background_process(api, 
                     ])
                 )
                 yield ModelToolCall("start", "shell", {"command": command, "run_in_background": True})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("已处理")
 

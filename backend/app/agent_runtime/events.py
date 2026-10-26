@@ -31,6 +31,7 @@ class AgentEndEvent:
     type: Literal["agent_end"] = "agent_end"
     reason: Literal["completed", "failed", "cancelled", "max_turns"] = "completed"
     error: str | None = None
+    failure_kind: Literal["provider_timeout"] | None = None
     run_id: str = ""
     sequence: int = 0
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -92,6 +93,7 @@ class ToolExecutionStartEvent:
     tool_source: str | None = None
     tool_version: str | None = None
     policy_decision: str | None = None
+    capability_binding: dict[str, object] | None = None
     type: Literal["tool_execution_start"] = "tool_execution_start"
     run_id: str = ""
     sequence: int = 0
@@ -103,6 +105,7 @@ class ToolExecutionUpdateEvent:
     tool_call_id: str
     tool_name: str
     result: AgentToolResult
+    dropped_updates: int = 0
     type: Literal["tool_execution_update"] = "tool_execution_update"
     run_id: str = ""
     sequence: int = 0
@@ -114,6 +117,7 @@ class ToolExecutionEndEvent:
     tool_call_id: str
     tool_name: str
     result: AgentToolResult
+    dropped_updates: int = 0
     type: Literal["tool_execution_end"] = "tool_execution_end"
     run_id: str = ""
     sequence: int = 0

@@ -18,7 +18,7 @@ def test_channel_regeneration_uses_only_currently_available_original_source_imag
     from backend.app.channels.napcat import NapCatAdapter, NapCatConfig
     from backend.app.channels.transports import NapCatWebSocketTransport
     from backend.app.chat_attachments import resolve_attachment
-    from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+    from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
     from websockets.asyncio.server import serve
 
     _, service = novelai_main
@@ -38,6 +38,7 @@ def test_channel_regeneration_uses_only_currently_available_original_source_imag
         async def stream_structured_messages(self, messages, configuration, tools):
             if not any(item['role'] == 'tool' for item in messages):
                 yield ModelToolCall('spec172-original', 'generate_image', service.request)
+                yield ModelResponseDone("tool_use")
             else:
                 assert json.loads(messages[-1]['content'])['status'] == 'succeeded'
                 yield ModelTextDelta('group image')

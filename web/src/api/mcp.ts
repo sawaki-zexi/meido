@@ -6,8 +6,13 @@ export type McpServerInput = {
   serverId: string; name: string; command: string[]; cwd: string; env: Record<string, string>;
   roleIds: string[]; enabled: boolean; risk: McpRisk; timeoutSeconds: number; maxOutputChars: number; enableDiscovery: boolean;
 };
+export type McpCleanupOwner = {
+  runId: string; roleId: string; sessionKey: string; scopeId: string; serverId: string;
+  configRevision: string; grantRevision: string; connectionGeneration: number;
+  state: "cleanup_pending" | "cleanup_failed" | "cleanup_unconfirmed";
+};
 export type McpServer = Omit<McpServerInput, "env" | "enableDiscovery"> & {
-  envKeys: string[]; revision: string; connectionCount: number; activeProcesses: number; errors: string[];
+  envKeys: string[]; revision: string; connectionCount: number; activeProcesses: number; errors: string[]; cleanupOwners?: McpCleanupOwner[];
 };
 
 export const listMcpServers = () => api<{ servers: McpServer[] }>("/api/mcp/servers");
@@ -17,3 +22,7 @@ export const saveMcpServer = (data: McpServerInput, editing: boolean) => api<{ s
   { method: editing ? "PUT" : "POST", body: JSON.stringify(data) },
 );
 export const deleteMcpServer = (id: string) => request(`/api/mcp/servers/${encodeURIComponent(id)}`, { method: "DELETE" });
+
+export const retryMcpCleanup = (id: string) => api<{ serverId: string; status: "cleaned" }>(
+  `/api/mcp/servers/${encodeURIComponent(id)}/cleanup`, { method: "POST" },
+);

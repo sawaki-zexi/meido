@@ -91,25 +91,27 @@ class BoundedModelProvider:
 
 
 class _ChildTool:
-    def __init__(self, tool: AgentTool, definition: ToolDefinition, allowed: Callable[[Mapping[str, object]], bool]):
+    def __init__(self, tool: AgentTool, definition: ToolDefinition, allowed: Callable[[Mapping[str, object]], bool], execute=None):
         self.tool, self.definition, self.allowed = tool, definition, allowed
+        self._execute = execute or tool.execute
 
     async def execute(self, arguments, context, on_update=None):
         if not self.allowed(arguments):
             return _error()
-        return await resolve_tool_result(self.tool.execute(arguments, context, on_update))
+        return await resolve_tool_result(self._execute(arguments, context, on_update))
 
 
 class _ChildRead:
-    def __init__(self, parent: AgentTool, task_tool: AgentTool, directory: Path):
+    def __init__(self, parent: AgentTool, task_tool: AgentTool, directory: Path, parent_execute=None):
         self.parent, self.task_tool, self.directory = parent, task_tool, directory
         self.definition = parent.definition
+        self._parent_execute = parent_execute or parent.execute
 
     async def execute(self, arguments, context, on_update=None):
         path = Path(str(arguments.get("path", "")))
         candidate = path if path.is_absolute() else self.directory / path
         own = candidate.resolve().is_relative_to(self.directory.resolve()) and candidate.exists()
-        return await resolve_tool_result((self.task_tool if own else self.parent).execute(arguments, context, on_update))
+        return await resolve_tool_result((self.task_tool.execute if own else self._parent_execute)(arguments, context, on_update))
 
 
 class _ChildShell:
@@ -156,7 +158,10 @@ class SpawnExecutor:
     def __init__(self, *, task: str, profile: str, config: SpawnToolConfig, provider: ModelProvider,
                  frozen: CapabilityResolution, context: ToolContext, authorized: Callable[[], bool]):
         self.task, self.profile, self.config, self.provider = task, profile, config, provider
-        self.frozen, self.context, self.authorized = frozen, context, authorized
+        permitted = _READ | (_WEB if profile != "scripting" else frozenset()) | (_WRITE if profile != "research" else frozenset())
+        self.frozen = frozen.selected_subset({item.name for item in frozen.snapshot.tools
+            if item.name in permitted and item.source in {"builtin", "role"}})
+        self.context, self.authorized = replace(context, capability_binding=None), authorized
         self.signal = CancellationToken()
         self.loop: asyncio.AbstractEventLoop | None = None
         self.running: asyncio.Task | None = None
@@ -164,7 +169,7 @@ class SpawnExecutor:
         self.shell_arguments: Mapping[str, object] | None = None
         self.guard = threading.Lock()
         self._cancel_requested = False
-        shell = frozen.get('shell')
+        shell = self.frozen.get('shell')
         self.restricted_shell = (shell if profile != 'research' and isinstance(shell, ShellTool)
                                  and shell.allows_restricted(context) else None)
 
@@ -227,7 +232,7 @@ class SpawnExecutor:
                 continue
             child = parent
             if name in _READ:
-                child = _ChildRead(parent, task_files[name], directory)
+                child = _ChildRead(parent, task_files[name], directory, self.frozen.executor(name))
             elif name in {"write_file", "edit_file"}:
                 child = task_files[name]
             elif name == "shell" and isinstance(parent, ShellTool):
@@ -239,7 +244,8 @@ class SpawnExecutor:
             def allowed(arguments, declaration=definition):
                 return self.authorized() and self.frozen.authorization_denial(declaration, self.context, arguments) is None
 
-            tools.append(_ChildTool(child, definition, allowed))
+            tools.append(_ChildTool(child, definition, allowed,
+                self.frozen.executor(name) if child is parent else child.execute))
         transcript: list[AgentMessage] = [UserMessage(self.task)]
         system = (f"[独立子任务 / independent delegated task]\nTask ID: {execution.task_id}\nProfile: {self.profile}\n"
                   f"Task directory: {directory}\nOnly write outputs in this task directory. "
@@ -260,7 +266,8 @@ class SpawnExecutor:
                         "toolCallId": message.tool_call_id if isinstance(message, ToolResultMessage) else None}, ensure_ascii=False) + "\n")
             if isinstance(event, AgentEndEvent):
                 final = next((item.content for item in reversed(transcript) if isinstance(item, AssistantMessage)), "")
-                outcome = TaskOutcome("succeeded" if event.reason == "completed" else "cancelled" if event.reason == "cancelled" else "failed",
+                outcome = TaskOutcome("succeeded" if event.reason == "completed" else "cancelled" if event.reason == "cancelled"
+                                      else "timed_out" if event.failure_kind == "provider_timeout" else "failed",
                                       output_tail=final or event.error or event.reason)
         return outcome
 
@@ -294,7 +301,7 @@ class SpawnTool:
             ToolRegistry.validate_definition(self.definition, arguments)
             if not self.authorized(context) or context.signal.is_cancelled() or self.frozen is None or self.provider_factory is None:
                 return _error()
-            frozen = self.frozen.current()
+            frozen = context.capability_binding or self.frozen.current()
             if (context.role_id, context.session_key, context.run_id) != (frozen.snapshot.role_id, frozen.snapshot.session_key, frozen.snapshot.run_id):
                 return _error()
             if context.capability_snapshot_id and frozen.snapshot.snapshot_id != context.capability_snapshot_id:
@@ -314,8 +321,9 @@ class SpawnTool:
                 return AgentToolResult(json.dumps(details, ensure_ascii=False), details)
             if 'repository' in arguments:
                 return _error()
+            owned_context, authorized = replace(context, capability_binding=None), self.authorized
             executor = SpawnExecutor(task=arguments["task"], profile=arguments.get("profile", "research"), config=self.config,
-                provider=self.provider_factory(), frozen=frozen, context=context, authorized=lambda: self.authorized(context))
+                provider=self.provider_factory(), frozen=frozen, context=owned_context, authorized=lambda: authorized(owned_context))
             task_id = self.tasks.submit(origin, executor, budget=TaskBudget(self.config.timeoutSeconds, self.config.maxOutputChars),
                 kind="spawn", description=json.dumps({"label": arguments.get("label", ""), "profile": arguments.get("profile", "research"),
                     "retry_count": arguments.get("retry_count", 0)}, ensure_ascii=False),

@@ -31,7 +31,7 @@ class _ObservedPersistentTransport(NapCatWebSocketTransport):
         super().__init__(*args, **kwargs)
         self.observations = observations
 
-    async def __call__(self, action, params):
+    async def send_authorized(self, action, params, *, authorize=None):
         task, done = asyncio.current_task(), threading.Event()
         assert task is not None
         self.observations.append({'action': action, 'loop': asyncio.get_running_loop(),
@@ -39,7 +39,7 @@ class _ObservedPersistentTransport(NapCatWebSocketTransport):
         # Keep the original Task reference as well as the callback signal. A
         # submitted/concurrent Future is not proof its owned coroutine joined.
         task.add_done_callback(lambda completed: done.set())
-        return await super().__call__(action, params)
+        return await super().send_authorized(action, params, authorize=authorize)
 
 
 def test_real_a01_uses_one_persistent_napcat_transport_on_the_original_host_loop(

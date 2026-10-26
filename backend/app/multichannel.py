@@ -208,36 +208,37 @@ class TelegramBotApi:
     async def get_user_profile_photos(self, token: str, user_id: str) -> Mapping[str, Any]:
         return await self._profile_request(token, "getUserProfilePhotos", {"user_id": user_id, "limit": 1})
 
-    async def send_message(self, token: str, chat_id: str, text: str, *, reply_to: str | None = None, message_thread_id: int | None = None, parse_mode: str | None = None) -> Mapping[str, Any]:
+    async def send_message(self, token: str, chat_id: str, text: str, *, reply_to: str | None = None, message_thread_id: int | None = None, parse_mode: str | None = None, entities=None) -> Mapping[str, Any]:
         body: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        if entities:
+            body['entities'] = entities
         if message_thread_id is not None:
             body["message_thread_id"] = message_thread_id
         if parse_mode is not None:
             body["parse_mode"] = parse_mode
         if reply_to:
             body["reply_parameters"] = {"message_id": int(reply_to) if str(reply_to).isdigit() else reply_to}
+        from .channels.delivery import check_dispatch, telegram_response
+        check_dispatch()
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(f"{self.base_url}/bot{token}/sendMessage", json=body)
-            response.raise_for_status()
-            payload = response.json()
-        if not payload.get("ok"):
-            raise RuntimeError(str(payload.get("description") or "Telegram 消息发送失败"))
-        return payload.get("result") or {}
+            return telegram_response(response)
 
-    async def edit_message_text(self, token: str, chat_id: str, message_id: str, text: str) -> Mapping[str, Any]:
+    async def edit_message_text(self, token: str, chat_id: str, message_id: str, text: str, *, entities=None) -> Mapping[str, Any]:
         body = {"chat_id": chat_id, "message_id": int(message_id) if message_id.isdigit() else message_id, "text": text}
+        if entities is not None:
+            body['entities'] = entities
+        from .channels.delivery import check_dispatch, telegram_response
+        check_dispatch()
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(f"{self.base_url}/bot{token}/editMessageText", json=body)
-            payload = response.json()
-            if not payload.get("ok") and "message is not modified" in str(payload.get("description") or "").lower():
-                return {"message_id": message_id}
-            response.raise_for_status()
-        if not payload.get("ok"):
-            raise RuntimeError("Telegram 消息编辑失败")
-        return payload.get("result") or {}
+            result = telegram_response(response)
+            return {'message_id': message_id} if result.get('not_modified') else result
 
-    async def _send_media(self, method: str, token: str, chat_id: str, data: bytes, file_name: str, *, caption: str = "", reply_to: str | None = None, message_thread_id: int | None = None, parse_mode: str | None = None) -> Mapping[str, Any]:
+    async def _send_media(self, method: str, token: str, chat_id: str, data: bytes, file_name: str, *, caption: str = "", reply_to: str | None = None, message_thread_id: int | None = None, parse_mode: str | None = None, caption_entities=None) -> Mapping[str, Any]:
         body: dict[str, Any] = {"chat_id": chat_id, "caption": caption}
+        if caption_entities:
+            body['caption_entities'] = json.dumps(caption_entities, ensure_ascii=False)
         if message_thread_id is not None:
             body["message_thread_id"] = message_thread_id
         if parse_mode is not None:
@@ -245,23 +246,21 @@ class TelegramBotApi:
         if reply_to:
             body["reply_parameters"] = json.dumps({"message_id": int(reply_to) if str(reply_to).isdigit() else reply_to})
         field = "photo" if method == "sendPhoto" else "document"
+        from .channels.delivery import check_dispatch, telegram_response
+        check_dispatch()
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
                 f"{self.base_url}/bot{token}/{method}",
                 data=body,
                 files={field: (file_name, data)},
             )
-            response.raise_for_status()
-            payload = response.json()
-        if not payload.get("ok"):
-            raise RuntimeError(str(payload.get("description") or "Telegram 媒体发送失败"))
-        return payload.get("result") or {}
+            return telegram_response(response)
 
-    async def send_photo(self, token: str, chat_id: str, data: bytes, file_name: str, *, caption: str = "", reply_to: str | None = None, message_thread_id: int | None = None, parse_mode: str | None = None) -> Mapping[str, Any]:
-        return await self._send_media("sendPhoto", token, chat_id, data, file_name, caption=caption, reply_to=reply_to, message_thread_id=message_thread_id, parse_mode=parse_mode)
+    async def send_photo(self, token: str, chat_id: str, data: bytes, file_name: str, *, caption: str = "", reply_to: str | None = None, message_thread_id: int | None = None, parse_mode: str | None = None, caption_entities=None) -> Mapping[str, Any]:
+        return await self._send_media("sendPhoto", token, chat_id, data, file_name, caption=caption, reply_to=reply_to, message_thread_id=message_thread_id, parse_mode=parse_mode, caption_entities=caption_entities)
 
-    async def send_document(self, token: str, chat_id: str, data: bytes, file_name: str, *, caption: str = "", reply_to: str | None = None, message_thread_id: int | None = None, parse_mode: str | None = None) -> Mapping[str, Any]:
-        return await self._send_media("sendDocument", token, chat_id, data, file_name, caption=caption, reply_to=reply_to, message_thread_id=message_thread_id, parse_mode=parse_mode)
+    async def send_document(self, token: str, chat_id: str, data: bytes, file_name: str, *, caption: str = "", reply_to: str | None = None, message_thread_id: int | None = None, parse_mode: str | None = None, caption_entities=None) -> Mapping[str, Any]:
+        return await self._send_media("sendDocument", token, chat_id, data, file_name, caption=caption, reply_to=reply_to, message_thread_id=message_thread_id, parse_mode=parse_mode, caption_entities=caption_entities)
 
     async def get_updates(self, token: str, *, offset: int | None = None, timeout: int = 25) -> list[Mapping[str, Any]]:
         params: dict[str, Any] = {"timeout": max(0, min(timeout, 50)), "allowed_updates": ["message", "edited_message"]}
@@ -423,7 +422,7 @@ class MultichannelStore:
                 if column not in group_columns:
                     db.execute(f"ALTER TABLE channel_group_settings ADD COLUMN {column} INTEGER NOT NULL DEFAULT {default}")
             delivery_columns = {row[1] for row in db.execute("PRAGMA table_info(channel_delivery_attempts)")}
-            for column in ("source_session_key", "source_run_id", "source_tool_call_id", "source_kind", "account_generation"):
+            for column in ("source_session_key", "source_run_id", "source_tool_call_id", "source_kind", "account_generation", "details_json"):
                 if column not in delivery_columns:
                     db.execute(f"ALTER TABLE channel_delivery_attempts ADD COLUMN {column} TEXT")
             for table in ("channel_account_settings", "channel_platform_settings"):
@@ -1154,10 +1153,11 @@ class MultichannelStore:
 
         with self._connect() as db:
             rows = db.execute(
-                """SELECT t.title,m.role,m.content,m.created_at
+                """SELECT t.title,m.role,CASE WHEN json_extract(m.metadata_json,'$.partialDelivery')=1 THEN json_extract(m.metadata_json,'$.deliveredContent') ELSE m.content END AS content,m.created_at
                    FROM channel_threads t JOIN messages m ON m.session_key=t.session_key
-                   WHERE t.role_id=? AND t.thread_id<>? AND m.message_type='text' AND m.status='completed'
-                     AND (t.channel='desktop' OR m.role<>'assistant' OR json_extract(m.metadata_json,'$.deliveryStatus')='sent')
+                   WHERE t.role_id=? AND t.thread_id<>? AND m.message_type='text'
+                     AND (m.status='completed' OR (m.role='assistant' AND json_extract(m.metadata_json,'$.partialDelivery')=1))
+                     AND (t.channel='desktop' OR m.role<>'assistant' OR json_extract(m.metadata_json,'$.deliveryStatus')='sent' OR json_extract(m.metadata_json,'$.partialDelivery')=1)
                      AND (t.channel='desktop' OR (t.chat_type='private' AND EXISTS (
                        SELECT 1 FROM channel_owner_chats c JOIN channel_identities i
                          ON i.channel=c.channel AND (i.scope='platform' OR i.account_id=c.account_id)
@@ -1187,7 +1187,8 @@ class MultichannelStore:
         with self._connect() as db:
             rows = db.execute(
                 """SELECT m.rowid AS context_sequence,m.message_id,m.session_key FROM messages m
-                   WHERE m.status='completed' AND m.message_type='text'
+                   WHERE (m.status='completed' OR (m.role='assistant' AND json_extract(m.metadata_json,'$.partialDelivery')=1))
+                     AND m.message_type='text'
                      AND (m.session_key=? OR EXISTS (
                        SELECT 1 FROM channel_threads t JOIN channel_owner_chats c
                          ON c.role_id=t.role_id AND c.account_id=t.account_id AND c.chat_id=t.chat_id
@@ -1202,12 +1203,14 @@ class MultichannelStore:
                              AND source.role='user' AND source.message_type='text'
                              AND source.created_at>=c.context_since
                          ))
-                         AND (m.role<>'assistant' OR json_extract(m.metadata_json,'$.deliveryStatus')='sent')
+                         AND (m.role<>'assistant' OR json_extract(m.metadata_json,'$.deliveryStatus')='sent' OR json_extract(m.metadata_json,'$.partialDelivery')=1)
                      )) ORDER BY m.rowid""",
                 (f"role:{role_id}", role_id),
             ).fetchall()
         sessions = {str(row["session_key"]) for row in rows}
-        messages = {message.id: message for key in sessions for message in self.sessions.list_messages(key)}
+        from .channels.delivery_projection import delivered_message
+        messages = {message.id: message for key in sessions for item in self.sessions.list_messages(key)
+                    if (message := delivered_message(item)) is not None}
         return [
             messages[str(row["message_id"])].model_copy(update={
                 "sequence": int(row["context_sequence"]),
@@ -1428,6 +1431,34 @@ class MultichannelStore:
                 (status, platform_message_id, error, content, _now(), attempt_id),
             )
 
+    def record_delivery_parts(self, attempt_id: str, details: dict[str, Any]) -> None:
+        with self._connect() as db:
+            cursor = db.execute('UPDATE channel_delivery_attempts SET details_json=json_patch(COALESCE(details_json,\'{}\'),?),updated_at=? WHERE attempt_id=? AND status=?',
+                (_json(details), _now(), attempt_id, 'pending'))
+            if cursor.rowcount != 1:
+                raise ValueError('original_delivery_is_no_longer_pending')
+            db.execute("""UPDATE messages SET metadata_json=json_patch(metadata_json,?)
+                WHERE json_extract(metadata_json,'$.deliveryAttemptId')=?""", (_json(details), attempt_id))
+
+    def reserve_passive_reply(self, attempt_id: str, message_id: str, count: int) -> tuple[int, ...]:
+        """Reserve QQBot's per-source quota in the original durable ledger."""
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            attempt = db.execute('SELECT account_id,status,details_json FROM channel_delivery_attempts WHERE attempt_id=?', (attempt_id,)).fetchone()
+            if not attempt or attempt['status'] != 'pending' or not 1 <= count <= 5:
+                raise ValueError('qqbot_passive_quota_exhausted')
+            existing = _loads(attempt['details_json'])
+            if existing.get('passiveReplyId') not in {None, message_id}:
+                raise ValueError('qqbot_passive_source_changed')
+            last = db.execute('''SELECT COALESCE(MAX(CAST(json_extract(details_json,'$.passiveReplyLastSeq') AS INTEGER)),0)
+                FROM channel_delivery_attempts WHERE account_id=? AND json_extract(details_json,'$.passiveReplyId')=?''',
+                (attempt['account_id'], message_id)).fetchone()[0]
+            if last + count > 5:
+                raise ValueError('qqbot_passive_quota_exhausted')
+            db.execute('UPDATE channel_delivery_attempts SET details_json=? WHERE attempt_id=?',
+                (_json({**existing, 'passiveReplyId': message_id, 'passiveReplyLastSeq': last + count}), attempt_id))
+            return tuple(range(last + 1, last + count + 1))
+
     def set_channel_turn_state(self, thread: ChannelThread, message_id: str, state: str) -> None:
         """Keep accepted QQ work observable without inventing another user/run."""
         if state not in {"queued", "running", "completed", "failed", "cancelled", "invalidated", "interrupted"}:
@@ -1456,21 +1487,32 @@ class MultichannelStore:
             return cursor.rowcount
 
     def mark_interrupted_deliveries_uncertain(self) -> int:
-        """Make process-local pending sends reviewable after a restart."""
-
+        """Preserve receipts; unfinished work is never an outbound replay queue."""
         with self._connect() as db:
-            cursor = db.execute(
-                "UPDATE channel_delivery_attempts SET status='uncertain', error=COALESCE(error,'process_interrupted'), updated_at=? WHERE status='pending'",
-                (_now(),),
-            )
-            count = cursor.rowcount
-            db.execute("""UPDATE messages SET status='failed', metadata_json=json_set(metadata_json,
-                '$.deliveryStatus','uncertain','$.error','process_interrupted')
-                WHERE json_extract(metadata_json,'$.naturalReply')=1
-                AND json_extract(metadata_json,'$.deliveryStatus')='pending'
-                AND json_extract(metadata_json,'$.deliveryAttemptId') IN
-                    (SELECT attempt_id FROM channel_delivery_attempts WHERE status='uncertain')""")
-            return count
+            db.execute('BEGIN IMMEDIATE')
+            rows = db.execute("SELECT * FROM channel_delivery_attempts WHERE status='pending'").fetchall()
+            for row in rows:
+                details = _loads(row['details_json'])
+                parts = details.get('parts', [])
+                for part in parts:
+                    if part.get('status') == 'sending':
+                        part.update(status='uncertain', error='process_interrupted')
+                from .channels.delivery_projection import confirmed_parts
+                sent = confirmed_parts(details)
+                status = ('uncertain' if not parts or any(part.get('status') == 'uncertain' for part in parts)
+                          else 'sent' if not details.get('streaming') and len(sent) == len(parts) else 'failed')
+                identifier = sent[0]['platformMessageId'] if sent else row['platform_message_id']
+                if parts:
+                    details.update(parts=parts, partialDelivery=bool(sent) and status != 'sent',
+                        deliveredContent=''.join(part.get('content', '') for part in sent if part.get('kind') != 'preview'),
+                        platform_message_ids=[part['platformMessageId'] for part in sent])
+                db.execute('UPDATE channel_delivery_attempts SET status=?,platform_message_id=?,details_json=?,error=?,updated_at=? WHERE attempt_id=?',
+                    (status, identifier, _json(details), None if status == 'sent' else 'process_interrupted', _now(), row['attempt_id']))
+                db.execute("""UPDATE messages SET status=?,metadata_json=json_patch(metadata_json,?)
+                    WHERE json_extract(metadata_json,'$.deliveryAttemptId')=?""",
+                    ('completed' if sent else 'failed', _json({**details, 'deliveryStatus': status,
+                        'platformMessageId': identifier, 'error': 'process_interrupted'}), row['attempt_id']))
+            return len(rows)
 
     def list_deliveries(self, role_id: str, *, limit: int = 100) -> list[dict[str, object]]:
         with self._connect() as db:
@@ -1480,6 +1522,7 @@ class MultichannelStore:
             "targetChatId": str(row["target_chat_id"]), "content": str(row["content"]), "status": str(row["status"]),
             "platformMessageId": row["platform_message_id"], "error": row["error"], "createdAt": str(row["created_at"]), "updatedAt": str(row["updated_at"]),
             "sourceSessionKey": row["source_session_key"], "sourceRunId": row["source_run_id"], "sourceToolCallId": row["source_tool_call_id"], "sourceKind": row["source_kind"], "accountGeneration": row["account_generation"],
+            **_loads(row['details_json']),
         } for row in rows]
 
     def delivery_for_source(self, role_id: str, *, source_kind: str, source_tool_call_id: str) -> tuple[str, str] | None:
@@ -1488,6 +1531,23 @@ class MultichannelStore:
             row = db.execute('SELECT status,attempt_id FROM channel_delivery_attempts WHERE role_id=? AND source_kind=? AND source_tool_call_id=? ORDER BY created_at LIMIT 1',
                              (role_id, source_kind, source_tool_call_id)).fetchone()
         return (str(row[0]), str(row[1])) if row else None
+
+    def runtime_reply_receipt(self, role_id: str, session_key: str, run_id: str) -> dict[str, Any] | None:
+        """Reconcile only the original Runtime reply, including a stopped stream."""
+        with self._connect() as db:
+            rows = db.execute('''SELECT d.*,t.channel FROM channel_delivery_attempts d
+                JOIN channel_threads t ON t.thread_id=d.thread_id AND t.role_id=d.role_id
+                WHERE d.role_id=? AND d.source_session_key=? AND d.source_run_id=?
+                AND d.source_kind IN ('reply','natural') AND t.session_key=? LIMIT 2''',
+                (role_id, session_key, run_id, session_key)).fetchall()
+        if len(rows) != 1 or rows[0]['status'] == 'pending':
+            return None
+        row = rows[0]
+        details = _loads(row['details_json'])
+        return {'channel': row['channel'], 'accountId': row['account_id'], 'threadId': row['thread_id'],
+            'deliveryStatus': row['status'], 'deliveryAttemptId': row['attempt_id'],
+            'platformMessageId': row['platform_message_id'], 'deliveryError': row['error'],
+            **{key: details[key] for key in ('parts', 'partialDelivery', 'deliveredContent', 'receiptKind') if key in details}}
 
     def delivery_receipt_for_source(self, role_id: str, *, source_kind: str, source_tool_call_id: str,
                                     connection: sqlite3.Connection | None = None) -> dict[str, Any] | None:
@@ -1517,7 +1577,9 @@ class MultichannelStore:
         if mode not in {'active_decision', 'drift'}:
             raise ValueError('invalid autonomous delivery mode')
         attempt = self.delivery_receipt_for_source(role_id, source_kind='autonomy', source_tool_call_id=intent_id, connection=db)
-        if (attempt is None or attempt['status'] != 'sent' or attempt['source_run_id'] != tick_id
+        details = _loads(attempt['details_json']) if attempt else {}
+        from .channels.delivery_projection import confirmed_parts
+        if (attempt is None or (attempt['status'] != 'sent' and not confirmed_parts(details)) or attempt['source_run_id'] != tick_id
                 or attempt['account_id'] != target['accountId'] or attempt['target_chat_id'] != target['chatId']
                 or attempt['content'] != draft['message']):
             raise ValueError('autonomous projection has no matching original sent receipt')
@@ -1533,7 +1595,8 @@ class MultichannelStore:
         metadata = {'internalEvent': mode, 'autonomyTickId': tick_id, 'autonomyIntentId': intent_id,
             'channel': thread.channel, 'accountId': thread.account_id, 'threadId': thread.thread_id,
             'direction': 'outbound', 'chatId': thread.chat_id, 'groupName': '',
-            'targetId': target['targetId'], 'targetKind': 'private', 'deliveryStatus': 'sent',
+            'targetId': target['targetId'], 'targetKind': 'private', 'deliveryStatus': attempt['status'],
+            **{key: details[key] for key in ('parts', 'partialDelivery', 'deliveredContent', 'receiptKind') if key in details},
             'deliveryAttemptId': attempt['attempt_id'], 'platformMessageId': attempt['platform_message_id'],
             'mood': draft['mood'], 'thought': draft['thought'], 'attachments': draft.get('attachments', []),
             'viaAccount': target.get('viaAccount', {'platform': target['channel'], 'accountId': target['accountId'],
@@ -1559,7 +1622,8 @@ class MultichannelStore:
         message = Message(id=message_id, sessionKey=thread.session_key, sequence=sequence, role='assistant',
             content=draft['message'], status='completed', createdAt=datetime.fromisoformat(now),
             messageType='internal_completion', metadata=metadata)
-        receipt = {'status': 'sent', 'intentId': intent_id, 'targetRef': target['ref'], 'messageId': message_id,
+        receipt = {'status': attempt['status'],
+            **{key: details[key] for key in ('parts', 'partialDelivery', 'deliveredContent', 'receiptKind') if key in details}, 'intentId': intent_id, 'targetRef': target['ref'], 'messageId': message_id,
             'attemptId': attempt['attempt_id'], 'platformMessageId': attempt['platform_message_id']}
         event: dict[str, object] = {'type': 'message', 'roleId': role_id, 'thread': thread.public_dict(),
             'message': public_message(message).model_dump(mode='json')}

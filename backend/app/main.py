@@ -4715,13 +4715,7 @@ def _runtime_tool_candidates(
     def task_origin(context):
         if context.role_id != role.id:
             raise ValueError("task role does not match host role")
-        run = session_store.get_run(context.run_id)
-        version = context.capability_snapshot_id
-        if not version and context.tool_call_id:
-            revision = session_store.capability_revision_for_call(context.run_id, context.tool_call_id)
-            version = revision.get("snapshotId") if revision is not None else None
-        if not version and run is not None:
-            version = run.modelSnapshot.get("capabilities", {}).get("snapshotId", "")
+        version = context.capability_snapshot_id  # Request token is history, not authority.
         source_scope_id, source_authority_json = "", ""
         if context.session_key.startswith("thread:"):
             payload = task_source(context).to_dict()
@@ -4987,6 +4981,23 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
     return enabled
 
 
+def _runtime_namespace_context(capabilities: CapabilityResolution, signal=None) -> str:
+    """Project admitted, currently permitted metadata without activating services."""
+    from .agent_runtime.search_metadata import render_namespace_map
+    from .agent_runtime.tools import ToolContext
+    current = capabilities.current()
+    snapshot = current.snapshot
+    context = ToolContext(snapshot.role_id, snapshot.session_key, snapshot.run_id,
+                          signal if signal is not None else CancellationToken())
+    search = current.definition("tool_search")
+    if search is None or current.authorization_denial(search, context) is not None:
+        return ""
+    return render_namespace_map(
+        definition for definition in (snapshot.candidates or snapshot.tools)
+        if current.authorization_denial(definition, context) is None
+    )
+
+
 def _runtime_tools(
     role,
     *,
@@ -5103,6 +5114,12 @@ async def _runtime_capabilities(
         multichannel_store, session_store, role_id=role.id, session_key=session_key,
         run_id=run_id, owner_context=not external_only,
     ) if "tool_search" in policy.enabled_tools and session_key.startswith("thread:") else None
+
+    source_scope = ""
+    if source_authority is not None:
+        source_payload = source_authority.to_dict()
+        source_payload.pop("message_created_at", None)
+        source_scope = hashlib.sha256(json.dumps(source_payload, sort_keys=True).encode()).hexdigest()
 
     def mcp_source_denial():
         if external_only:
@@ -5229,7 +5246,8 @@ async def _runtime_capabilities(
             deferred_tool_names=_deferred_discovery_tools(),
             authorize_tool=authorize_tool,
             authorize_call=authorize_call,
-            restored_activation=session_store.latest_capability_revision(role.id, session_key) if "tool_search" in policy.enabled_tools else None,
+            restored_activation=session_store.latest_tool_selection(role.id, session_key, source_scope=source_scope) if "tool_search" in policy.enabled_tools else None,
+            source_scope=source_scope,
             service_grants=mcp_run.grants if mcp_run is not None else (),
             resource_close=mcp_run.close if mcp_run is not None else None,
         )
@@ -5270,7 +5288,7 @@ def _coding_origin_authorized(origin: TaskOrigin) -> bool:
 
 
 async def _deliver_coding_completion(record, content, authorized):
-    origin = TaskOrigin(**record['origin'])
+    origin = TaskOrigin.from_dict(record['origin'], require_source_authority=True)
     if not authorized():
         raise PermissionError('coding original source was revoked')
     source = FrozenChannelSource.from_dict(json.loads(origin.source_authority_json))
@@ -5451,7 +5469,7 @@ def _schedule_target(origin, arguments):
 
 
 def _schedule_authorized(plan):
-    origin = TaskOrigin(**plan['data']['origin'])
+    origin = TaskOrigin.from_dict(plan['data']['origin'])
     if not _schedule_origin_authorized(origin):
         return False
     target = plan['data']['target']
@@ -5469,10 +5487,10 @@ def _schedule_authorized(plan):
 
 async def _schedule_execute(plan):
     from .agent_runtime.spawn_tool import SpawnExecutor
-    from .agent_runtime.tools import ToolContext
+    from .agent_runtime.tools import ToolContext, ToolDefinition
     from .models import Role, SpawnToolConfig
     data = plan['data']
-    origin = TaskOrigin(**data['origin'])
+    origin = TaskOrigin.from_dict(data['origin'], require_source_authority=True)
     role = Role.model_validate(data['frozen']['role'])
     frozen_configuration = data['frozen']['configuration']
     configuration_id = frozen_configuration.get('id') if isinstance(frozen_configuration, dict) else None
@@ -5482,9 +5500,11 @@ async def _schedule_execute(plan):
     if (configuration_id and configuration is None
             or (configuration.model_dump(mode='json', exclude={'apiKey'}) if configuration else None) != frozen_configuration):
         raise PermissionError('original model connection changed or was deleted')
-    definitions = {item['name']: item for item in data['frozen']['tools']}
+    # Decode explicit declaration fields with defaults for additive metadata
+    # (old schedules predate namespace_summary); unknown fields still reject.
+    definitions = {item['name']: ToolDefinition(**item) for item in data['frozen']['tools']}
     candidates = tuple(tool for tool in _runtime_tool_candidates(role, preview=True)
-        if tool.definition.name in SOFT_TOOLS and asdict(tool.definition) == definitions.get(tool.definition.name))
+        if tool.definition.name in SOFT_TOOLS and tool.definition == definitions.get(tool.definition.name))
     current = store.get(role.id)
     if current is None:
         raise PermissionError('original role was deleted')
@@ -5506,7 +5526,7 @@ async def _schedule_execute(plan):
 
 
 async def _schedule_deliver(plan, occurrence, authorized):
-    origin = TaskOrigin(**plan['data']['origin'])
+    origin = TaskOrigin.from_dict(plan['data']['origin'], require_source_authority=True)
     target = plan['data']['target']
     try:
         result = await channel_host.account_send(origin.role_id, target['accountId'], target['targetId'], occurrence['content'],
@@ -6350,7 +6370,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             external_only=not owner,
             advanced_snapshot=ordinary_snapshot,
         )
-        model_snapshot["capabilities"] = capabilities.snapshot.to_dict(include_prompt_sections=False)
+        model_snapshot["capabilities"] = capabilities.run_metadata()
         session_store.update_run(run_id, status="created", model_snapshot=model_snapshot)
         memory_context = _role_memory_context(thread.role_id) if owner and thread.chat_type == "private" else ""
         if owner and thread.chat_type == "private":
@@ -6380,7 +6400,8 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                                  "\n\n".join(filter(None, (identity_context, capabilities.prompt_context()))),
                                  max_response_tokens=ordinary_settings.maxTokens,
                                  context_blocks=lambda: _channel_memory_blocks(thread.role_id, thread.thread_id, str(metadata.get("senderId") or "")),
-                                 context_safety_margin=ordinary_settings.contextSafetyMarginTokens)
+                                 context_safety_margin=ordinary_settings.contextSafetyMarginTokens,
+                                 namespace_context=lambda signal: _runtime_namespace_context(capabilities, signal))
         _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
         provider = _ordinary_context_provider(provider, ordinary_settings, role_id=thread.role_id,
             session_key=thread.session_key, run_id=run_id, owner=owner,
@@ -6392,9 +6413,17 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             display_name=thread.title,
         )
         target_id = target.id
+        stream_done = asyncio.Event()
+        def queue_latest(content):
+            if stream_queue.full():
+                stream_queue.get_nowait()
+            stream_queue.put_nowait(content)
+
         async def stream_updates():
             assert stream_queue is not None
             while True:
+                if stream_done.is_set() and stream_queue.empty():
+                    return
                 update = await stream_queue.get()
                 if update is None:
                     return
@@ -6432,7 +6461,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                     thread.channel != "telegram" or thread.chat_type == "private"
                 ):
                     if stream_queue is None:
-                        stream_queue = asyncio.Queue()
+                        stream_queue = asyncio.Queue(maxsize=1)
                         stream_task = asyncio.create_task(channel_host.account_send(
                             thread.role_id,
                             thread.account_id,
@@ -6446,10 +6475,11 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                             source_session_key=thread.session_key,
                             source_run_id=run_id,
                             source_kind="reply",
+                            authorize_source=lambda: not turn_task.cancelling() and _queued_channel_turn_authorized(thread, metadata),
                             mention_ids=(str(metadata["senderId"]),) if thread.chat_type == "group" and thread.channel == "qq" and metadata.get("senderId") else (),
                             message_thread_id=metadata.get("messageThreadId"),
                         ))
-                    stream_queue.put_nowait(event.message.content)
+                    queue_latest(event.message.content)
             if isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage) and not event.message.tool_calls:
                 final_content = event.message.content
         delivery_metadata: dict[str, object] | None = None
@@ -6458,8 +6488,10 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
         if stream_queue is not None and stream_task is not None:
             terminal_content = final_content if final_content.strip() else streamed_content
             if terminal_content.strip():
-                stream_queue.put_nowait(terminal_content)
-            stream_queue.put_nowait(None)
+                queue_latest(terminal_content)
+            stream_done.set()
+            if stream_queue.empty():
+                stream_queue.put_nowait(None)
             try:
                 result = await stream_task
                 delivery_metadata = {
@@ -6467,6 +6499,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                     "deliveryAttemptId": result.attempt_id,
                     "platformMessageId": result.platform_message_id,
                     "deliveryError": result.error,
+                    **{key: result.raw[key] for key in ('parts', 'partialDelivery', 'deliveredContent', 'receiptKind') if key in result.raw},
                 }
             except Exception as error:
                 logger.warning("渠道回复投递失败 role=%s thread=%s error=%s", thread.role_id, thread.thread_id, type(error).__name__)
@@ -6500,6 +6533,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                     "deliveryAttemptId": result.attempt_id,
                     "platformMessageId": result.platform_message_id,
                     "deliveryError": result.error,
+                    **{key: result.raw[key] for key in ('parts', 'partialDelivery', 'deliveredContent', 'receiptKind') if key in result.raw},
                 }
                 if generation_reply is not None:
                     await _novelai_application().record_channel_receipt(generation_reply, status=result.status.value,
@@ -6515,7 +6549,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                 updated = session_store.update_message(
                     final_message_id,
                     message.content,
-                    message.status if delivery_metadata.get("deliveryStatus") == "sent" else "failed",
+                    message.status if delivery_metadata.get("deliveryStatus") == "sent" or delivery_metadata.get('partialDelivery') else "failed",
                     metadata={**message.metadata, **delivery_metadata},
                 )
                 if generation_reply is not None:
@@ -6544,8 +6578,10 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                 if not stream_task.done():
                     terminal_content = final_content if final_content.strip() else streamed_content
                     if terminal_content.strip():
-                        stream_queue.put_nowait(terminal_content)
-                    stream_queue.put_nowait(None)
+                        queue_latest(terminal_content)
+                    stream_done.set()
+                    if stream_queue.empty():
+                        stream_queue.put_nowait(None)
                 cleanup = asyncio.gather(stream_task, return_exceptions=True)
                 try:
                     await asyncio.shield(cleanup)
@@ -6569,6 +6605,10 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                     )
                 terminal = next((item for item in reversed(session_store.list_messages(thread.session_key)) if item.runId == run_id and item.role == "assistant"), None)
                 if terminal is not None:
+                    receipt = multichannel_store.runtime_reply_receipt(thread.role_id, thread.session_key, run_id)
+                    if receipt is not None and (receipt.get('parts') or 'deliveryAttemptId' not in terminal.metadata):
+                        terminal = session_store.update_message(terminal.id, terminal.content or streamed_content,
+                            terminal.status, metadata={**terminal.metadata, **receipt})
                     current_thread = multichannel_store.get_thread(thread.role_id, thread.thread_id) or thread
                     multichannel_store.publish(thread.role_id, {
                         "type": "message", "roleId": thread.role_id,
@@ -6831,7 +6871,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                 )
                 # Persist capability metadata and hashes, while keeping Skill bodies
                 # in the in-memory provider context only.
-                model_snapshot["capabilities"] = capabilities.snapshot.to_dict(include_prompt_sections=False)
+                model_snapshot["capabilities"] = capabilities.run_metadata()
                 session_store.update_run(run_id, status="created", model_snapshot=model_snapshot)
                 provider = MeidoProvider(
                     model_adapter,
@@ -6842,6 +6882,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     max_response_tokens=ordinary_settings.maxTokens,
                     context_blocks=lambda: _external_activity_blocks(role_id),
                     context_safety_margin=ordinary_settings.contextSafetyMarginTokens,
+                    namespace_context=lambda signal: _runtime_namespace_context(capabilities, signal),
                 )
                 _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
                 provider = _ordinary_context_provider(provider, ordinary_settings, role_id=role_id,
@@ -6902,30 +6943,28 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     elif isinstance(runtime_event, MessageEndEvent) and isinstance(runtime_event.message, AssistantMessage):
                         content = runtime_event.message.content
                     elif isinstance(runtime_event, ToolExecutionStartEvent):
-                        safe_arguments = sanitize_browser_arguments(
-                            runtime_event.tool_name,
-                            runtime_event.arguments,
-                        )
                         yield _event("tool_execution_start", runtime_event_payload({
+                            "roleId": role_id,
+                            "sessionKey": session.session.sessionKey,
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
-                            "arguments": safe_arguments,
                         }, runtime_event.sequence))
-                    elif isinstance(runtime_event, ToolExecutionUpdateEvent):
+                    elif isinstance(runtime_event, (ToolExecutionUpdateEvent, ToolExecutionEndEvent)):
+                        from .agent_runtime.progress import MAX_TEXT_BYTES, utf8_prefix
                         safe_result, _ = sanitize_browser_text(runtime_event.result.content)
-                        yield _event("tool_execution_update", runtime_event_payload({
+                        details = runtime_event.result.details if isinstance(runtime_event.result.details, dict) else {}
+                        updating = isinstance(runtime_event, ToolExecutionUpdateEvent)
+                        if updating:
+                            safe_result = utf8_prefix(safe_result, MAX_TEXT_BYTES)
+                        yield _event(runtime_event.type, runtime_event_payload({
+                            "roleId": role_id,
+                            "sessionKey": session.session.sessionKey,
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
                             "result": safe_result,
                             "isError": runtime_event.result.is_error,
-                        }, runtime_event.sequence))
-                    elif isinstance(runtime_event, ToolExecutionEndEvent):
-                        safe_result, _ = sanitize_browser_text(runtime_event.result.content)
-                        yield _event("tool_execution_end", runtime_event_payload({
-                            "toolCallId": runtime_event.tool_call_id,
-                            "toolName": runtime_event.tool_name,
-                            "result": safe_result,
-                            "isError": runtime_event.result.is_error,
+                            "status": "running" if updating else details.get("status", "failed" if runtime_event.result.is_error else "succeeded"),
+                            "droppedUpdates": runtime_event.dropped_updates,
                         }, runtime_event.sequence))
                     elif isinstance(runtime_event, AgentEndEvent):
                         terminal_reason = runtime_event.reason
@@ -6937,7 +6976,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         if item.runId == run_id and item.role == "assistant" and item.messageType == "text"
                     )
                     reason_text = {
-                        "cancelled": "模型生成已取消",
+                        "cancelled": terminal_error or "模型生成已取消",
                         "max_turns": "模型运行达到最大轮数",
                         "failed": terminal_error or "模型生成失败",
                     }.get(terminal_reason, terminal_error or "模型生成失败")

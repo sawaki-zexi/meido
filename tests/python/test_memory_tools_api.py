@@ -14,7 +14,7 @@ from backend.app.memory_documents import MemoryDocuments
 from backend.app.memory_engine import DefaultMemoryEngine
 from backend.app.memory_service import MemoryService, MemoryWorker
 from backend.app.memory_store import MemoryStore
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.models import AgentToolConfig, MemoryRecallToolConfig, RoleInput, RoleProfile
 from backend.app.role_store import RoleStore
@@ -42,19 +42,23 @@ def test_owner_memory_write_recall_forget_roundtrip_uses_real_engine_and_updates
             if turn == 1:
                 assert {"memorize", "recall_memory", "forget_memory"} <= {item["function"]["name"] for item in tools}
                 yield ModelToolCall("save", "memorize", {"summary": "主人喜欢海边", "memory_kind": "preference"})
+                yield ModelResponseDone("tool_use")
             elif turn == 2:
                 self.item_id = json.loads(next(item["content"] for item in reversed(messages) if item.get("role") == "tool"))["item_id"]
                 assert "主人喜欢海边" in MemoryDocuments(tmp_path / "roles").read_document(role.id, "MEMORY.md")
                 yield ModelToolCall("find", "recall_memory", {"query": "海边"})
+                yield ModelResponseDone("tool_use")
             elif turn == 3:
                 recalled = json.loads(next(item["content"] for item in reversed(messages) if item.get("role") == "tool"))
                 assert recalled["items"][0]["id"] == self.item_id
                 source = sessions.user_message_for_run(sessions.list_messages(f"role:{role.id}")[0].runId)
                 assert recalled["items"][0]["evidence"][0]["refs"] == [source.id]
                 yield ModelToolCall("forget", "forget_memory", {"ids": [self.item_id]})
+                yield ModelResponseDone("tool_use")
             elif turn == 4:
                 assert "主人喜欢海边" not in MemoryDocuments(tmp_path / "roles").read_document(role.id, "MEMORY.md")
                 yield ModelToolCall("find-again", "recall_memory", {"query": "海边"})
+                yield ModelResponseDone("tool_use")
             else:
                 payload = json.loads(next(item["content"] for item in reversed(messages) if item.get("role") == "tool"))
                 assert payload["count"] == 0
@@ -100,10 +104,13 @@ def test_global_memory_switch_hides_all_tools_and_rejects_manual_enabled_tools(t
             assert {"memorize", "recall_memory", "forget_memory"}.isdisjoint({item["function"]["name"] for item in tools})
             if self.calls == 1:
                 yield ModelToolCall("forged-write", "memorize", {"summary": "不应保存"})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 2:
                 yield ModelToolCall("forged-read", "recall_memory", {"query": "test"})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 3:
                 yield ModelToolCall("forged-forget", "forget_memory", {"ids": ["unknown"]})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("全局记忆关闭")
 
@@ -158,6 +165,7 @@ def test_memory_io_deadline_rolls_back_http_sqlite_and_documents_after_embedding
             self.calls += 1
             if self.calls == 1:
                 yield ModelToolCall("write-timeout", "memorize", {"summary": "本次不应写入"})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("操作超时，原记忆已保留")
 
@@ -254,6 +262,7 @@ def test_cancelled_http_receive_actor_finishes_before_client_cleanup(tmp_path, m
             self.calls += 1
             if self.calls == 1:
                 yield ModelToolCall("cancelled-write", "memorize", {"summary": "本次不应写入"})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("原记忆已保留")
 

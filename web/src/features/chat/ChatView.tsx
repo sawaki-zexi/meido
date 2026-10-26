@@ -15,6 +15,13 @@ import type { GenerationSelection } from "../../api/novelai";
 import { useChatScroll } from "./useChatScroll";
 import { AttachmentImage } from "../../ui/AttachmentImage";
 import { MessageMarkdown } from "../../ui/MessageMarkdown";
+import type { ToolStatus } from "../../api/stream";
+import "./tool-progress.css";
+
+const toolStatusLabels: Record<ToolStatus, string> = {
+  running: "运行中", succeeded: "已完成", failed: "失败", unknown: "结果不确定",
+  denied: "未获许可", invalid_arguments: "参数无效", timed_out: "已超时", cancelled: "已取消",
+};
 
 function MessageItem({ message, role, highlighted, onRegenerate }: { message: Message; role: Role; highlighted: boolean; onRegenerate: (selection: GenerationSelection) => void }) {
   const mine = message.role === "user";
@@ -164,6 +171,13 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
         : <Placeholder>发送第一条消息开始对话。</Placeholder>}
     </div>
     <div className="composer-dock">
+      {chat.toolProgress?.roleId === role.id && chat.toolProgress.sessionKey === chat.session?.sessionKey && chat.toolProgress.calls.length > 0 && <div className="chat-tool-progress" role="status" aria-label="工具执行" aria-live="polite">
+        <ol>{chat.toolProgress.calls.map(call => <li key={call.toolCallId}>
+          <div className="chat-tool-heading"><strong>{call.toolName}</strong><span data-state={call.status}>{call.status === "running" && chat.toolProgress?.closing ? (chat.stopping ? "正在停止…" : "等待最终状态") : toolStatusLabels[call.status]}</span></div>
+          {call.result && <p>{call.result}</p>}
+          {call.droppedUpdates > 0 && <small>已合并 {call.droppedUpdates} 次中间更新，仅显示最新摘要</small>}
+        </li>)}</ol>
+      </div>}
       {chat.error && <Notice onDismiss={() => chat.setError("")}>{chat.error}</Notice>}
       <Composer key={role.id} roleId={role.id} placeholder={`对${role.name}说点什么…`} sending={chat.sending} stopping={chat.stopping} disabled={chat.opening} onSend={chat.send} onStop={chat.stop} />
     </div>

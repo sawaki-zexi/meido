@@ -1,5 +1,6 @@
 """Coding exec shares durable handover/ACK duties without replaying the CLI."""
 import asyncio
+import json
 from pathlib import Path
 import sqlite3
 import time
@@ -102,7 +103,12 @@ def test_revoked_delegate_finishes_ack_without_retargeting_desktop(tmp_path):
     app = CodingApplication(tmp_path / 'coding', tasks, sessions,
         role_config=lambda _: CodingRoleConfig(enabled=True), authorized=lambda _: allowed[0],
         config=Configuration(), executor_factory=Executor)
-    origin = TaskOrigin('r', 'thread:original-source', 'parent', 'call', source_thread_id='original-source')
+    from backend.app.channels.source_authority import FrozenChannelSource
+    source = FrozenChannelSource('r', 'thread:original-source', 'original-source', 'account',
+        '2026-01-01T00:00:00+00:00', 'qq', 'chat', 'private', 'sender', True, 'identity',
+        '2026-01-01T01:00:00+00:00', '2026-01-01T02:00:00+00:00', '2026-01-01T01:00:00+00:00')
+    origin = TaskOrigin('r', source.session_key, 'parent', 'call', source_thread_id=source.thread_id,
+        source_account_id=source.account_id, source_scope_id='binding', source_authority_json=json.dumps(source.to_dict()))
     try:
         record = app.start_task(origin, repository=str(tmp_path), requirement='only original source', executor='codex_exec')
         allowed[0] = False

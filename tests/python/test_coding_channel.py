@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from backend.app.coding_tasks.application import CodingApplication
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.task_runtime import TaskOrigin
 from test_background_shell_api import api as shell_api  # noqa: F401
 from test_spawn_api import api  # noqa: F401
@@ -62,10 +62,12 @@ def test_real_onebot_source_receives_one_background_completion_or_suppresses_aft
             results = [item for item in messages if item['role'] == 'tool']
             if not results:
                 yield ModelToolCall('coding-discovery', 'tool_search', {'query': 'select:' + ('spawn' if executor == 'codex_exec' else 'herdr_start_task')})
+                yield ModelResponseDone("tool_use")
             elif len(results) == 1:
                 yield ModelToolCall('coding-start', 'spawn' if executor == 'codex_exec' else 'herdr_start_task',
                     {'repository': 'repo-a', 'task': 'channel original work', 'profile': 'coding', 'run_in_background': True, 'retry_count': 0}
                     if executor == 'codex_exec' else {'repository': 'repo-a', 'requirement': 'channel original work'})
+                yield ModelResponseDone("tool_use")
             else:
                 assert json.loads(results[-1]['content'])['status'] == 'accepted'
                 yield ModelTextDelta('已登记原渠道后台任务。')

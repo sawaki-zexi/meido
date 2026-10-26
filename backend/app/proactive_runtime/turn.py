@@ -387,6 +387,7 @@ async def _request(turn, adapter, configuration, messages, cancelled, *, schemas
 
 async def run_decision(app, origin, execution, cancelled, config, snapshot):
     turn = DecisionTurn(app, origin, config, snapshot)
+    turn.execution = execution
     configuration = app.model_getter(config.decisionModelConfigurationId)
     if configuration is None or app.adapter_factory is None:
         raise ValueError("explicit autonomous model is unavailable")

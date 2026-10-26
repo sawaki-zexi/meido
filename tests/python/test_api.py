@@ -12,9 +12,10 @@ import pytest
 from backend.app import main
 from backend.app.agent_runtime import AgentToolResult, PluginContribution, PluginManifest, PluginRegistry, ToolContext, ToolDefinition
 from backend.app.agent_runtime.types import ToolResultMessage
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall, OpenAICompatibleAdapter
+from backend.app.model_adapter import ModelTextDelta, ModelToolCall, ModelResponseDone, OpenAICompatibleAdapter
 from backend.app.models import AgentRun, AgentToolConfig, MemoryRecallToolConfig, Message, ModelConfigurationInput, RoleInput, RoleProfile, RoleUpdateInput, SendMessageInput, ShellToolConfig
 from backend.app.memory_engine import MemoryQueryResult, MemoryScope
+from backend.app.memory_config import MemorySettingsStore
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.role_store import RoleStore
 from backend.app.owner_knowledge import OwnerKnowledgeStore, SystemCredentialStore
@@ -86,7 +87,16 @@ def model_configuration_payload(model="test-model"):
     )
 
 
-def configure_session_api(tmp_path, monkeypatch, adapter):
+def configure_memory_settings(tmp_path, monkeypatch, *, enabled=False):
+    settings = MemorySettingsStore(tmp_path / "data" / "memory-settings.json")
+    settings.update(enabled=enabled)
+    monkeypatch.setattr(main, "memory_settings_store", settings)
+
+
+def configure_session_api(tmp_path, monkeypatch, adapter, *, automatic_memory=False):
+    # Ordinary role/chat tests do not own an embedding provider. Memory tests
+    # opt in explicitly and supply their own engine instead of ambient services.
+    configure_memory_settings(tmp_path, monkeypatch, enabled=automatic_memory)
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="测试女仆", profile=RoleProfile(profile="核心设定", personality="温柔")))
     initialize_databases(tmp_path / "data")
@@ -477,6 +487,7 @@ def test_role_messages_use_bound_configuration_and_reject_deleted_binding(tmp_pa
 
 
 def test_role_message_keeps_configuration_snapshot_when_binding_changes_during_stream(tmp_path, monkeypatch):
+    configure_memory_settings(tmp_path, monkeypatch)
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="测试角色", profile=RoleProfile(profile="核心设定")))
     initialize_databases(tmp_path / "data")
@@ -514,6 +525,7 @@ def test_unbound_role_uses_active_model_configuration(tmp_path, monkeypatch):
 
 
 def test_role_message_snapshot_does_not_persist_legacy_role_secrets(tmp_path, monkeypatch):
+    configure_memory_settings(tmp_path, monkeypatch)
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(
         name="带旧配置的角色",
@@ -540,7 +552,8 @@ def test_role_message_snapshot_does_not_persist_legacy_role_secrets(tmp_path, mo
     assert "legacy-secret" not in str(run.modelSnapshot)
     assert "modelConfig" not in run.modelSnapshot["role"]
     assert run.modelSnapshot["context"]["toolAllowlist"] == []
-    assert run.modelSnapshot["capabilities"]["tools"]
+    assert run.modelSnapshot["capabilities"]["format"] == "tool-run-v1"
+    assert "tools" not in run.modelSnapshot["capabilities"]
     context_message = run.modelSnapshot["context"]["messages"][0]
     assert context_message["content"] == "你好" and context_message["role"] == "user"
 
@@ -564,7 +577,7 @@ def test_run_snapshot_keeps_recalled_memory_ephemeral(tmp_path, monkeypatch):
             yield "完成"
 
     adapter = CapturingAdapter()
-    role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter)
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter, automatic_memory=True)
     monkeypatch.setattr(main, "_current_memory_engine", lambda: MemoryEngine())
     monkeypatch.setattr(main, "_role_memory_context", lambda role_id: "")
 
@@ -594,6 +607,7 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
     request.addfinalizer(tasks.close)
 
     executable = str(Path(sys.executable)).replace("\\", "/")
+    configure_memory_settings(tmp_path, monkeypatch)
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(
         name="可执行角色",
@@ -614,6 +628,7 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
                 command = ('Write-Output "shell-ok"' if os.name == "nt"
                            else f'{executable} -c "print(\'shell-ok\')"')
                 yield ModelToolCall("call-shell", "shell", {"command": command})
+                yield ModelResponseDone("tool_use")
             else:
                 assert any(
                     message.get("role") == "tool"
@@ -622,6 +637,7 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
                     for message in messages
                 )
                 yield ModelTextDelta("完成")
+                yield ModelResponseDone("stop")
 
     adapter = StructuredAdapter()
     monkeypatch.setattr(main, "store", roles)
@@ -645,13 +661,16 @@ def test_enabled_role_shell_runs_through_http_runtime_and_returns_tool_result(tm
     stored_run = sessions.get_run(run)
     assert stored_run is not None
     assert stored_run.modelSnapshot["context"]["toolAllowlist"] == [executable]
-    shell_snapshot = next(item for item in stored_run.modelSnapshot["capabilities"]["tools"] if item["name"] == "shell")
+    shell_audit = next(item for item in sessions.list_tool_audits(run) if item["toolName"] == "shell")
+    shell_binding = sessions.call_binding(run, shell_audit["callId"])
+    shell_snapshot = shell_binding["tools"][0]
     assert shell_snapshot["source"] == "role"
     # The runner retains a 30s execution budget; its tool envelope allows 2s
     # for owned-process cleanup and persisting the terminal result.
     assert shell_snapshot["timeoutSeconds"] == 32.0
     assert shell_snapshot["outputLimit"] == 20000
-    assert len(stored_run.modelSnapshot["capabilities"]["generation"]) == 24
+    assert len(shell_binding["definitionFingerprint"]) == 64
+    assert "capabilityRevisions" not in stored_run.modelSnapshot
 
 
 def test_deepseek_chat_maps_plugin_tool_names_across_a_tool_round_trip(tmp_path, monkeypatch):
@@ -875,9 +894,11 @@ def test_enabled_role_memory_recall_is_scoped_and_hidden_from_session_api(tmp_pa
             if len(self.requests) == 1:
                 assert any(item["function"]["name"] == "recall_memory" for item in tools)
                 yield ModelToolCall("call-memory", "recall_memory", {"query": "喜欢什么", "limit": 1})
+                yield ModelResponseDone("tool_use")
             else:
                 assert any(item.get("role") == "tool" and "喜欢海边" in str(item.get("content")) for item in messages)
                 yield ModelTextDelta("记得你喜欢海边")
+                yield ModelResponseDone("stop")
 
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(
@@ -912,7 +933,7 @@ def test_enabled_role_memory_recall_is_scoped_and_hidden_from_session_api(tmp_pa
     run_id = sessions.list_messages(f"role:{role.id}")[0].runId
     run = sessions.get_run(run_id)
     assert run is not None
-    recall_snapshot = next(item for item in run.modelSnapshot["capabilities"]["tools"] if item["name"] == "recall_memory")
+    recall_snapshot = sessions.call_binding(run_id, "call-memory")["tools"][0]
     assert recall_snapshot["source"] == "builtin:memory"
     audits = sessions.list_tool_audits(run_id)
     assert len(audits) == 1
@@ -940,8 +961,10 @@ def _configure_memory_tool_failure_api(tmp_path, monkeypatch, engine, arguments)
             self.requests.append(True)
             if len(self.requests) == 1:
                 yield ModelToolCall("call-memory-failure", "recall_memory", arguments)
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("已处理")
+                yield ModelResponseDone("stop")
 
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(
@@ -1222,7 +1245,7 @@ def test_role_store_removes_canonical_directory_when_manifest_delete_precedes_st
 
 
 def test_startup_finishes_interrupted_role_deletion_without_recreating_data(tmp_path, monkeypatch):
-    role, sessions, _ = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    role, sessions, _ = configure_session_api(tmp_path, monkeypatch, RecordingAdapter(), automatic_memory=True)
     roles = main.store
     other = roles.create(RoleInput(name="保留", profile=RoleProfile(profile="设定")))
     memories = MemoryStore(tmp_path / "data" / "memory.db")
@@ -1565,12 +1588,8 @@ def test_capabilities_are_closed_when_provider_setup_fails(tmp_path, monkeypatch
     role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
 
     class FakeCapabilities:
-        class Snapshot:
-            def to_dict(self, **kwargs):
-                assert kwargs == {"include_prompt_sections": False}
-                return {"tools": []}
-
-        snapshot = Snapshot()
+        def run_metadata(self):
+            return {"format": "tool-run-v1"}
 
         def prompt_context(self):
             return ""

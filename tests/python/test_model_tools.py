@@ -7,7 +7,7 @@ import pytest
 
 from backend.app.agent_runtime import AssistantDoneEvent, CancellationToken, MeidoProvider, ToolCallEndEvent
 from backend.app.agent_runtime.types import AssistantMessage, AttachmentContent, ImageContent, ToolResultMessage, UserMessage
-from backend.app.model_adapter import ModelStreamError, ModelToolCall, ModelTextDelta, OpenAICompatibleAdapter
+from backend.app.model_adapter import ModelResponseDone, ModelStreamError, ModelToolCall, ModelTextDelta, OpenAICompatibleAdapter
 from backend.app.models import ModelConfiguration, RoleInput, RoleProfile
 
 
@@ -47,6 +47,8 @@ def test_openai_compatible_adapter_aggregates_streamed_tool_call(monkeypatch):
 
     events = asyncio.run(collect())
     assert events[0] == ModelToolCall("call-1", "shell", {"command": "echo hi"})
+    # Parsed arguments do not supply the missing provider finish reason.
+    assert events[1:] == [ModelResponseDone("incomplete")]
     payload = json.loads(requests[0].content)
     assert payload["tools"][0]["function"]["name"] == "shell"
     assert payload["tool_choice"] == "auto"
@@ -99,7 +101,10 @@ def test_openai_compatible_adapter_normalizes_legacy_function_call_stream(monkey
 
     events = asyncio.run(collect())
 
-    assert events == [ModelToolCall("call-0", "plugin.echo", {"message": "hello"})]
+    assert events == [
+        ModelToolCall("call-0", "plugin.echo", {"message": "hello"}),
+        ModelResponseDone("incomplete"),
+    ]
     assert requests[0]["tools"][0]["function"]["name"] != "plugin.echo"
 
 
@@ -141,6 +146,7 @@ def test_openai_compatible_adapter_accepts_multiple_complete_message_tool_calls(
     assert asyncio.run(collect()) == [
         ModelToolCall("call-complete-1", "shell", {"command": "echo hi"}),
         ModelToolCall("call-complete-2", "shell", {"command": "echo there"}),
+        ModelResponseDone("incomplete"),
     ]
 
 
@@ -181,7 +187,7 @@ def test_openai_compatible_adapter_normalizes_legacy_tool_shape_and_history(monk
             messages, configuration, [tool]
         )]
 
-    assert asyncio.run(collect()) == [ModelTextDelta("完成")]
+    assert asyncio.run(collect()) == [ModelTextDelta("完成"), ModelResponseDone("stop")]
     payload = requests[0]
     wire_name = payload["tools"][0]["function"]["name"]
     assert wire_name != "plugin.echo"
@@ -292,6 +298,7 @@ def test_openai_compatible_adapter_keeps_tool_calls_with_string_indexes_and_dupl
     assert asyncio.run(collect()) == [
         ModelToolCall("call-1", "shell", {"command": "one"}),
         ModelToolCall("call-2", "shell", {"command": "two"}),
+        ModelResponseDone("incomplete"),
     ]
 
 
@@ -356,6 +363,7 @@ def test_openai_compatible_adapter_accepts_complete_message_object_arguments(mon
 
     assert asyncio.run(collect()) == [
         ModelToolCall("call-complete", "shell", {"command": "echo hi"}),
+        ModelResponseDone("incomplete"),
     ]
 
 
@@ -385,7 +393,7 @@ def test_openai_compatible_adapter_normalizes_empty_tool_parameters(monkeypatch)
             [{"function": {"name": "ping", "parameters": {}}}],
         )]
 
-    assert asyncio.run(collect()) == [ModelTextDelta("完成")]
+    assert asyncio.run(collect()) == [ModelTextDelta("完成"), ModelResponseDone("stop")]
     assert requests[0]["tools"][0]["type"] == "function"
     assert requests[0]["tools"][0]["function"]["parameters"] == {"type": "object", "properties": {}}
 
@@ -424,7 +432,7 @@ def test_openai_compatible_adapter_copies_read_only_tool_mappings(monkeypatch):
             [{"role": "user", "content": "run"}], configuration, [tool]
         )]
 
-    assert asyncio.run(collect()) == [ModelTextDelta("完成")]
+    assert asyncio.run(collect()) == [ModelTextDelta("完成"), ModelResponseDone("stop")]
     assert requests[0]["tools"][0]["function"]["parameters"]["properties"] == {
         "value": {"type": "string"},
     }
@@ -490,7 +498,7 @@ def test_deepseek_structured_requests_disable_thinking_without_reasoning_replay(
             [{"type": "function", "function": {"name": "todo.write"}}],
         )]
 
-    assert asyncio.run(collect()) == [ModelTextDelta("完成")]
+    assert asyncio.run(collect()) == [ModelTextDelta("完成"), ModelResponseDone("stop")]
     assert requests[0]["thinking"] == {"type": "disabled"}
 
 
@@ -511,7 +519,7 @@ def test_openai_compatible_adapter_keeps_text_deltas_with_tools(monkeypatch):
     async def collect():
         return [event async for event in OpenAICompatibleAdapter().stream_structured_messages([], configuration, [])]
 
-    assert asyncio.run(collect()) == [ModelTextDelta("完成")]
+    assert asyncio.run(collect()) == [ModelTextDelta("完成"), ModelResponseDone("stop")]
 
 
 def test_openai_compatible_adapter_surfaces_redacted_http_error_detail(monkeypatch):
@@ -615,7 +623,7 @@ def test_structured_adapter_uses_environment_configuration_when_unbound(monkeypa
     async def collect():
         return [event async for event in OpenAICompatibleAdapter().stream_structured_messages([], None, [])]
 
-    assert asyncio.run(collect()) == [ModelTextDelta("完成")]
+    assert asyncio.run(collect()) == [ModelTextDelta("完成"), ModelResponseDone("stop")]
     assert requests[0].url == "https://env.example/v1/chat/completions"
     assert requests[0].headers["Authorization"] == "Bearer env-key"
 
@@ -659,6 +667,7 @@ def test_meido_provider_maps_structured_transcript_and_tool_call():
             seen.append(messages)
             if len(seen) == 1:
                 yield ModelToolCall("call-1", "shell", {"command": "echo hi"})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("完成")
 

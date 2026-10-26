@@ -16,3 +16,4 @@ keyring>=25,<26
 jsonschema>=4.25,<5
 google-auth>=2.35,<3
 pytest>=8,<9
+telegramify-markdown==1.4.1

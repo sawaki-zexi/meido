@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from backend.app import main
 from backend.app.agent_runtime.types import ToolResultMessage
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.models import AgentToolConfig, RoleInput, RoleProfile, ShellToolConfig
 from backend.app.role_store import RoleStore
@@ -16,6 +16,17 @@ from backend.app.session_manager import SessionManager
 from backend.app.session_store import SessionStore
 from backend.app.storage import initialize_databases
 from backend.app.network_tools import NetworkToolsConfig
+
+
+@pytest.fixture(autouse=True)
+def isolate_unrelated_automatic_memory(tmp_path, monkeypatch, local_platform_only):
+    from backend.app.memory_config import MemorySettingsStore
+
+    # Network-tool transports below are synthetic; unrelated automatic memory
+    # must not start its own real embedding request alongside those fixtures.
+    memory = MemorySettingsStore(tmp_path / "memory-settings.json")
+    memory.update(enabled=False)
+    monkeypatch.setattr(main, "memory_settings_store", memory)
 
 
 @pytest.mark.parametrize("tool_name,arguments,response", [
@@ -36,6 +47,7 @@ def test_authorized_role_network_tool_completes_http_conversation_and_persists_s
             self.requests.append((messages, tools))
             if len(self.requests) == 1:
                 yield ModelToolCall("call-network", tool_name, arguments)
+                yield ModelResponseDone("tool_use")
             else:
                 results = [json.loads(item["content"]) for item in messages if item.get("role") == "tool"]
                 assert results and "error" not in results[-1]
@@ -93,6 +105,7 @@ def test_host_disabled_network_tools_are_hidden_for_legacy_empty_and_explicit_li
             self.requests.append((messages, tools))
             if len(self.requests) == 1:
                 yield ModelToolCall("forged-call", "web_fetch", {"url": "https://example.org"})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("当前没有联网许可")
 
