@@ -37,11 +37,13 @@ def select_schema_budget(
     candidates: Sequence[ToolDefinition], *, baseline: Sequence[ToolDefinition],
     loaded: Sequence[ToolDefinition] = (), pending: Sequence[ToolDefinition] = (),
     new_limit: int | None = NEW_SCHEMA_BYTES, total_limit: int = VISIBLE_SCHEMA_BYTES,
+    selection_limit: int | None = None,
 ) -> BudgetSelection:
     """Greedy whole-tool selection in caller order. Existing/pending names cost once.
 
     Restore passes new_limit=None: it is not a new search, but must obey the same
-    current total bound. Required baseline is never silently trimmed.
+    current total bound. Required baseline is never silently trimmed. A result
+    limit counts selected tools, so oversized matches do not consume slots.
     """
     baseline_by_name = {item.name: item for item in baseline}
     loaded_by_name = {item.name: item for item in loaded if item.name not in baseline_by_name}
@@ -58,6 +60,8 @@ def select_schema_budget(
     skipped: list[ToolDefinition] = []
     new_bytes = 0
     for item in candidates:
+        if selection_limit is not None and len(selected) >= selection_limit:
+            break
         if item.name in selected_names:
             continue
         if item.name in seen:

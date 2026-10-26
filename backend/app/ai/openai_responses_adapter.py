@@ -202,6 +202,8 @@ def _messages_to_input(
 def _response_output_blocks(
     output: Sequence[object],
     name_aliases: Mapping[str, str],
+    *,
+    incomplete: bool = False,
 ) -> tuple[ModelContentBlock, ...]:
     blocks: list[ModelContentBlock] = []
     for item in output:
@@ -241,13 +243,22 @@ def _response_output_blocks(
             identifier = f"{call_id}|{item_id}" if call_id and item_id else call_id or item_id
             name = str(item.get("name") or "")
             raw_arguments = item.get("arguments", item.get("input", "{}"))
-            arguments = json_object(raw_arguments)
+            arguments_complete = ("arguments" in item or "input" in item) and (isinstance(raw_arguments, Mapping) or isinstance(raw_arguments, str) and bool(raw_arguments.strip()))
+            try:
+                arguments = json_object(raw_arguments)
+            except ValueError:
+                if not incomplete and item.get("status") != "incomplete":
+                    raise
+                # Keep the rejected call's identity without repairing executable
+                # arguments or losing the response's actual truncation reason.
+                arguments = {}
+                arguments_complete = False
             blocks.append(ModelToolCallBlock(
                 identifier,
                 name_aliases.get(name, name),
                 arguments,
                 namespace=item.get("namespace") if isinstance(item.get("namespace"), str) else None,
-                arguments_complete=("arguments" in item or "input" in item) and (isinstance(raw_arguments, Mapping) or isinstance(raw_arguments, str) and bool(raw_arguments.strip())),
+                arguments_complete=arguments_complete and item.get("status") not in {"in_progress", "incomplete"},
             ))
     return tuple(blocks)
 
@@ -306,6 +317,7 @@ class _Accumulator:
         self.text_started: set[str] = set()
         self.thinking_started: set[str] = set()
         self.tool_started: set[str] = set()
+        self.tool_arguments_done: set[str] = set()
         self.completed_output: list[object] | None = None
         self.completed_items: dict[str, tuple[int | None, tuple[ModelContentBlock, ...]]] = {}
         self.completed_item_order: list[str] = []
@@ -393,6 +405,7 @@ class _Accumulator:
                 events.append(ModelToolCallDelta(call.id or key, fragment))
         elif event_type == "response.function_call_arguments.done":
             key = self._output_key(data, "function_call")
+            self.tool_arguments_done.add(key)
             call = self._get(key, output_index=self._output_index(data.get("output_index")))
             if isinstance(data.get("call_id"), str):
                 call.id = data["call_id"]
@@ -411,9 +424,13 @@ class _Accumulator:
                     output_index,
                     _response_output_blocks((item,), self.name_aliases),
                 )
-        elif event_type == "response.completed":
+        elif event_type in {"response.completed", "response.incomplete"}:
             self.completed = True
             response = data.get("response")
+            if event_type == "response.incomplete":
+                details = response.get("incomplete_details") if isinstance(response, Mapping) else None
+                reason = "length" if isinstance(details, Mapping) and details.get("reason") == "max_output_tokens" else "incomplete"
+                self.stop_reason = preserve_stop_reason(self.stop_reason, reason)
             if isinstance(response, Mapping):
                 status = response.get("status")
                 self.stop_reason = preserve_stop_reason(self.stop_reason, "stop" if status == "completed" else str(status) if status else None)
@@ -433,7 +450,8 @@ class _Accumulator:
         events.extend(ModelThinkingEnd() for _ in self.thinking_started)
         if self.completed_output is not None:
             try:
-                blocks = _response_output_blocks(self.completed_output, self.name_aliases)
+                blocks = _response_output_blocks(self.completed_output, self.name_aliases,
+                    incomplete=self.stop_reason in {"length", "incomplete"})
             except ValueError as error:
                 return events, None, str(error)
             events.extend(ModelToolCallEnd(block) for block in blocks if isinstance(block, ModelToolCallBlock))
@@ -453,31 +471,20 @@ class _Accumulator:
                 ),
             ), None
         blocks: list[ModelContentBlock] = []
-        if self.completed_item_order:
-            fallback_order = {key: index for index, key in enumerate(self.completed_item_order)}
-            keys = sorted(
-                self.completed_item_order,
-                key=lambda key: (
-                    self.completed_items[key][0] is None,
-                    self.completed_items[key][0]
-                    if self.completed_items[key][0] is not None
-                    else fallback_order[key],
-                ),
-            )
-            for key in keys:
-                blocks.extend(self.completed_items[key][1])
-        else:
-            fallback_order = {key: index for index, key in enumerate(self.order)}
-            keys = sorted(
-                self.order,
-                key=lambda key: (
-                    self.outputs[key].output_index is None,
-                    self.outputs[key].output_index
-                    if self.outputs[key].output_index is not None
-                    else fallback_order[key],
-                ),
-            )
-        for key in (() if self.completed_item_order else keys):
+        # A finished item cannot hide a second, unfinished call. Merge both
+        # sources in output order, preferring the authoritative per-item result.
+        indices = {key: self.outputs[key].output_index for key in self.order}
+        indices.update({key: self.completed_items[key][0] for key in self.completed_item_order})
+        fallback_order = {key: index for index, key in enumerate(indices)}
+        keys = sorted(indices, key=lambda key: (
+            indices[key] is None, indices[key] if indices[key] is not None else fallback_order[key],
+        ))
+        for key in keys:
+            if key in self.completed_items:
+                finished = self.completed_items[key][1]
+                blocks.extend(finished)
+                events.extend(ModelToolCallEnd(block) for block in finished if isinstance(block, ModelToolCallBlock))
+                continue
             item = self.outputs[key]
             if item.kind == "text":
                 blocks.append(ModelTextBlock(item.text))
@@ -485,12 +492,15 @@ class _Accumulator:
                 blocks.append(ModelThinkingBlock(item.text, item.signature))
             elif item.kind in {"function_call", "custom_tool_call"}:
                 try:
-                    arguments = json_object(item.arguments)
+                    calls = _response_output_blocks(({
+                        "type": item.kind, "call_id": item.id or key, "name": item.name,
+                        "arguments": item.arguments,
+                        "status": "completed" if key in self.tool_arguments_done else "incomplete",
+                    },), self.name_aliases, incomplete=self.stop_reason in {"length", "incomplete"})
                 except ValueError as error:
                     return events, None, str(error)
-                call = ModelToolCallBlock(item.id or key, self.name_aliases.get(item.name, item.name), arguments, arguments_complete=bool(item.arguments.strip()))
-                blocks.append(call)
-                events.append(ModelToolCallEnd(call))
+                blocks.extend(calls)
+                events.extend(ModelToolCallEnd(call) for call in calls if isinstance(call, ModelToolCallBlock))
         reason = self.stop_reason or ("tool_use" if any(isinstance(block, ModelToolCallBlock) for block in blocks) else "stop")
         return events, ModelAssistantMessage(
             content=tuple(blocks),

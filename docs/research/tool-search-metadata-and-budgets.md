@@ -66,3 +66,11 @@ python scripts/evaluate_tool_search.py --split all --benchmark --output /tmp/too
 ```
 
 开发过程先对缺失元数据/预算接口得到红测，再通过相关测试。没有安装新依赖、连接真实 MCP/模型、读取私人日志、消耗模型 token 或写外部事务。Provider cache、自动 unload、语义向量及更重索引仍为非目标。
+
+## PR #244 正式评审前复核
+
+2026-10-26 再次对照 [Pi `b84d5d1b` 的 tool-search](https://github.com/earendil-works/pi/blob/b84d5d1bc315dac7e2d384190cfad112e63deb9d/packages/coding-agent/src/extensions/tool-search/tool.ts) 和 [Shiori `d149de7f` 的 tool_search](https://github.com/YinFengWindy/Shiori-Agent/blob/d149de7f052f77c5bb88d4d1393d48dce1870875/apps/backend/agent/tools/tool_search.py)、[search_backend](https://github.com/YinFengWindy/Shiori-Agent/blob/d149de7f052f77c5bb88d4d1393d48dce1870875/apps/backend/agent/tools/search_backend.py)。Pi 此文件与原 `d5b3de22` 基线内容相同；Shiori 仍提供中文检索、精确加载及风险过滤。本次保留既有评分和授权边界，没有引入另一套索引或切换 BM25。
+
+公开 `tool_search` 回归确认：原实现先截取排名前 `top_k` 项，再过滤声明预算；当第一名超过 32 KiB、`top_k=1` 时，即使下一名足够小也会返回空。现改为沿原排名扫描完整候选，超大项计入预算跳过列表，直到选满可容纳的 `top_k` 项或候选耗尽。精确名称仍只选择该名称，`select:` 保留既有顺序；当前许可、pending 去重、完整 schema 计量和输出裁剪合同继续生效。
+
+同轮完成性审查补齐 Anthropic 未关闭参数块、Responses 混合完成/未完成项及原生截断原因；以真实适配器和本地假传输验证，详见[完成证据手册](../handbook/tool-response-completion.md)。以上修复不改变本节历史离线基准的评分器、语料或既有实测数字，也不把协议夹具视为真实账号验收。

@@ -43,6 +43,32 @@ def provider_for(adapter):
     return MeidoProvider(adapter, role, None)
 
 
+def protocol_adapter(monkeypatch, api, payloads):
+    """Feed native provider events through the real adapter and runtime bridge."""
+    from backend.app.ai.model_adapter_registry import ModelAdapterRegistry
+
+    body = ''.join('data: ' + json.dumps(payload) + '\n\n' for payload in payloads)
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: original(**kwargs, transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, text=body, request=request))))
+    configuration = ModelConfiguration(providerId='test', provider='test', api=api,
+        baseUrl='https://example.test', model='test', apiKey='test', apiOptions={'accountId': 'offline'})
+    adapter = ModelAdapterRegistry().get(configuration)
+
+    class Routed:
+        requests = 0
+
+        async def stream_rich_messages(self, messages, config, tools):
+            self.requests += 1
+            if self.requests > 1:
+                yield ModelStreamDone(ModelAssistantMessage(metadata=ModelResponseMetadata(stop_reason='stop')))
+                return
+            async for event in adapter.stream_messages(messages, configuration, tools):
+                yield event
+
+    return Routed()
+
+
 async def collect(provider, tool, signal=None):
     return [event async for event in run_agent_loop(provider=provider, model='fake', system='',
         messages=[UserMessage('test')], tools=[tool], signal=signal, run_id='completion-test')]
@@ -146,6 +172,97 @@ def test_legacy_text_only_eof_remains_compatible():
     assert events[-1].messages[-1].content == 'unchanged'
 
 
+@pytest.mark.parametrize('close_last_block', [False, True])
+def test_anthropic_requires_every_tool_block_to_end_even_with_empty_arguments(monkeypatch, close_last_block):
+    payloads = [
+        {'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'tool_use', 'id': 'a', 'name': 'count', 'input': {}}},
+        {'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'input_json_delta', 'partial_json': '{}'}},
+        {'type': 'content_block_stop', 'index': 0},
+        {'type': 'content_block_start', 'index': 1, 'content_block': {'type': 'tool_use', 'id': 'b', 'name': 'count', 'input': {}}},
+    ]
+    if close_last_block:
+        payloads.append({'type': 'content_block_stop', 'index': 1})
+    payloads += [{'type': 'message_delta', 'delta': {'stop_reason': 'tool_use'}}, {'type': 'message_stop'}]
+    adapter = protocol_adapter(monkeypatch, 'anthropic-messages', payloads)
+    tool = CountingTool()
+    events = asyncio.run(collect(provider_for(adapter), tool))
+    assert tool.calls == ([{}, {}] if close_last_block else [])
+    assert events[-1].reason == ('completed' if close_last_block else 'failed')
+    if not close_last_block:
+        assert adapter.requests == 1
+        assert not any(isinstance(event, ToolExecutionStartEvent) for event in events)
+        assert len(events[-1].messages[-1].metadata['rejected_tool_calls']) == 2
+
+
+def responses_incomplete(reason='max_output_tokens', arguments='{}'):
+    return {'type': 'response.incomplete', 'response': {
+        'status': 'incomplete', 'incomplete_details': {'reason': reason},
+        'output': [{'type': 'function_call', 'call_id': 'a', 'name': 'count', 'arguments': arguments}],
+    }}
+
+
+@pytest.mark.parametrize('api', ['openai-responses', 'azure-openai-responses', 'openai-codex-responses'])
+@pytest.mark.parametrize('detail,expected', [('max_output_tokens', 'length'), ('content_filter', 'incomplete'), (None, 'incomplete')])
+def test_responses_native_incomplete_preserves_reason_and_rejects_tools(monkeypatch, api, detail, expected):
+    adapter = protocol_adapter(monkeypatch, api, [responses_incomplete(detail)])
+    tool = CountingTool()
+    events = asyncio.run(collect(provider_for(adapter), tool))
+    assert not tool.calls
+    assert adapter.requests == 1
+    assert events[-1].reason == 'failed'
+    message = events[-1].messages[-1]
+    assert message.stop_reason == expected
+    assert message.metadata['provider_stop_reason'] == expected
+    assert message.metadata['tool_batch_rejected'] is True
+    assert not any(isinstance(event, ToolExecutionStartEvent) for event in events)
+
+
+@pytest.mark.parametrize('later_completed', [False, True])
+@pytest.mark.parametrize('item_done', [False, True])
+def test_responses_truncated_arguments_keep_length_even_after_later_completed(monkeypatch, later_completed, item_done):
+    payloads = [responses_incomplete(arguments='{"value":"partial')]
+    if item_done:
+        payloads.insert(0, {'type': 'response.output_item.done', 'output_index': 0,
+            'item': {**payloads[0]['response']['output'][0], 'status': 'incomplete'}})
+    if later_completed:
+        payloads.append({'type': 'response.completed', 'response': {'status': 'completed', 'output': [
+            {'type': 'function_call', 'call_id': 'a', 'name': 'count', 'arguments': '{}'},
+        ]}})
+    adapter = protocol_adapter(monkeypatch, 'openai-responses', payloads)
+    tool = CountingTool()
+    events = asyncio.run(collect(provider_for(adapter), tool))
+    assert not tool.calls
+    assert adapter.requests == 1
+    assert events[-1].reason == 'failed'
+    assert events[-1].messages[-1].stop_reason == 'length'
+    rejected = events[-1].messages[-1].metadata['rejected_tool_calls']
+    assert rejected[0]['id'] == 'a'
+    if not later_completed:
+        assert rejected[0]['arguments_complete'] is False
+
+
+@pytest.mark.parametrize('last_arguments,last_done', [('{}', False), ('{"value":"partial', False), ('{}', True)])
+def test_responses_fallback_keeps_unfinished_calls_beside_finished_items(monkeypatch, last_arguments, last_done):
+    payloads = [
+        {'type': 'response.output_item.added', 'output_index': 0, 'item': {'type': 'function_call', 'call_id': 'a', 'name': 'count'}},
+        {'type': 'response.output_item.done', 'output_index': 0, 'item': {'type': 'function_call', 'call_id': 'a', 'name': 'count', 'arguments': '{}', 'status': 'completed'}},
+        {'type': 'response.output_item.added', 'output_index': 1, 'item': {'type': 'function_call', 'call_id': 'b', 'name': 'count'}},
+        {'type': 'response.function_call_arguments.delta', 'output_index': 1, 'delta': last_arguments},
+    ]
+    if last_done:
+        payloads.append({'type': 'response.function_call_arguments.done', 'output_index': 1, 'arguments': last_arguments})
+    payloads.append({'type': 'response.completed', 'response': {'status': 'completed'}})
+    adapter = protocol_adapter(monkeypatch, 'openai-responses', payloads)
+    tool = CountingTool()
+    events = asyncio.run(collect(provider_for(adapter), tool))
+    assert tool.calls == ([{}, {}] if last_done else [])
+    assert events[-1].reason == ('completed' if last_done else 'failed')
+    if not last_done:
+        assert adapter.requests == 1
+        assert not any(isinstance(event, ToolExecutionStartEvent) for event in events)
+        assert [call['id'] for call in events[-1].messages[-1].metadata['rejected_tool_calls']] == ['a', 'b']
+
+
 @pytest.mark.parametrize('complete_message,done,reason,expected', [
     (False, True, None, 0), (True, False, None, 0), (True, True, None, 1),
     (True, True, 'length', 0), (True, True, 'tool_calls', 1),
@@ -215,7 +332,9 @@ def test_registered_protocols_require_semantic_and_parameter_evidence(monkeypatc
             choice['finish_reason'] = 'tool_calls' if normal else reason
         body = sse([{'choices': [choice]}, '[DONE]'])
     elif api in {'openai-responses', 'azure-openai-responses', 'openai-codex-responses'}:
-        body = sse([{'type': 'response.completed', 'response': {'status': 'completed' if normal else reason,
+        body = sse([{'type': 'response.incomplete' if ending == 'length' else 'response.completed', 'response': {
+            'status': 'completed' if normal else 'incomplete' if ending == 'length' else reason,
+            'incomplete_details': {'reason': 'max_output_tokens'} if ending == 'length' else None,
             'output': [{'type': 'function_call', 'call_id': 'a', 'name': 'count', 'arguments': args}]}}]) if terminal else sse([
             {'type': 'response.output_item.added', 'item': {'type': 'function_call', 'call_id': 'a', 'name': 'count', 'arguments': args}}])
     elif api == 'anthropic-messages':
@@ -292,7 +411,8 @@ def test_prior_completed_tool_receipt_survives_later_rejected_batch():
     assert results[0].tool_call_id == '1'
 
 
-def test_http_rejected_batch_is_failed_and_persists_reason_without_execution(tmp_path, monkeypatch, local_platform_only):
+@pytest.mark.parametrize('protocol', ['completions', 'responses'])
+def test_http_rejected_batch_is_failed_and_persists_reason_without_execution(tmp_path, monkeypatch, local_platform_only, protocol):
     from fastapi.testclient import TestClient
     from backend.app import main
     from backend.app.memory_config import MemorySettingsStore
@@ -304,7 +424,8 @@ def test_http_rejected_batch_is_failed_and_persists_reason_without_execution(tmp
     role = roles.create(RoleInput(name='test', profile=RoleProfile(profile='test')))
     initialize_databases(tmp_path / 'data')
     sessions = SessionStore(tmp_path / 'data' / 'sessions.db')
-    adapter = RichAdapter(accumulated('{"value":"partial', 'length'))
+    adapter = (RichAdapter(accumulated('{"value":"partial', 'length')) if protocol == 'completions'
+        else protocol_adapter(monkeypatch, 'openai-responses', [responses_incomplete(arguments='{"value":"partial')]))
     monkeypatch.setattr(main, 'store', roles)
     monkeypatch.setattr(main, 'session_store', sessions)
     monkeypatch.setattr(main, 'session_manager', main.SessionManager(roles, sessions))

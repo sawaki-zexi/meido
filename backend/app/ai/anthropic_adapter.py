@@ -349,6 +349,7 @@ class _Accumulator:
             )
         elif event_type == "content_block_stop":
             index = _int(payload.get("index"))
+            self.tool_open.discard(index)
             if index in self.text_open:
                 self.text_open.remove(index)
                 events.append(ModelTextEnd())
@@ -364,7 +365,7 @@ class _Accumulator:
             return [], None, "模型流式响应未正常结束"
         blocks: list[ModelContentBlock] = []
         events: list[ModelStreamEvent] = []
-        for block in self.blocks.values():
+        for index, block in self.blocks.items():
             if block.kind == "text":
                 blocks.append(ModelTextBlock(block.text))
             elif block.kind in {"thinking", "redacted_thinking"}:
@@ -374,7 +375,8 @@ class _Accumulator:
                     arguments = json_object(block.arguments)
                 except ValueError as error:
                     return events, None, str(error)
-                call = ModelToolCallBlock(block.id or f"call-{len(blocks)}", self.name_aliases.get(block.name, block.name), arguments, arguments_complete=bool(block.arguments.strip()))
+                call = ModelToolCallBlock(block.id or f"call-{len(blocks)}", self.name_aliases.get(block.name, block.name), arguments,
+                    arguments_complete=index not in self.tool_open and bool(block.arguments.strip()))
                 blocks.append(call)
                 events.append(ModelToolCallEnd(call))
         try:

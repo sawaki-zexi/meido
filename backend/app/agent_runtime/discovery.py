@@ -409,6 +409,7 @@ class ToolSearchTool:
         }
         explanations: dict[str, list[str]] = {}
         documents: dict[str, SearchDocument] = {}
+        selection_limit: int | None = None
         if query.lower().startswith("select:"):
             names = list(
                 dict.fromkeys(
@@ -420,6 +421,7 @@ class ToolSearchTool:
             found = [name for name in names if name in eligible and name not in visible]
             loaded = [name for name in names if name in eligible and name in visible]
         else:
+            selection_limit = cast(int, arguments.get("top_k", 5))
             terms = _search_terms(query)
             ranked = []
             for name, definition in eligible.items():
@@ -438,7 +440,7 @@ class ToolSearchTool:
                     ranked.append((score, name))
                     explanations[name] = _match_reasons(definition, terms, documents[name])
             ranked.sort(key=lambda item: (-item[0], item[1]))
-            found = [name for _, name in ranked[: cast(int, arguments.get("top_k", 5))]]
+            found = [name for _, name in ranked]
             loaded = []
         # Account against committed current state, not just this request's older
         # execution view. Pending names reserve once across same-reply searches.
@@ -450,7 +452,8 @@ class ToolSearchTool:
         pending = [authorized[name] for call_id, names in self.discovery.pending.items()
                    if call_id != context.tool_call_id for name in names if name in authorized]
         selection = select_schema_budget([eligible[name] for name in found],
-            baseline=baseline, loaded=loaded_definitions, pending=pending)
+            baseline=baseline, loaded=loaded_definitions, pending=pending,
+            selection_limit=selection_limit)
         found = [item.name for item in selection.selected]
         skipped = [item.name for item in selection.skipped]
         rejected_count = len(skipped)
@@ -510,14 +513,15 @@ class ToolSearchTool:
             content = render()
         while len(content) > output_limit and (found or loaded or skipped):
             payload["truncated"] = True
-            if found:
-                found.pop()
-                matched.pop()
-            elif loaded:
-                loaded.pop()
-            else:
+            # Budget diagnostics must not displace tools that actually fit.
+            if skipped:
                 skipped.pop()
                 payload["skipped_names_truncated"] = True
+            elif found:
+                found.pop()
+                matched.pop()
+            else:
+                loaded.pop()
             content = render()
         context.signal.raise_if_cancelled()
         self.discovery.pending[context.tool_call_id] = tuple(found)

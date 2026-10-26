@@ -53,9 +53,9 @@
 
 - 单次搜索新增最多 **32768 bytes（32 KiB）**；累计当前可见声明目标上限 **131072 bytes（128 KiB）**。
 - 必需直接声明的大小为 B，实际上限为 `max(B, 131072)`。B 达到或超过目标时保留全部基础工具，`baseline_over_budget=true`，拒绝新加载。
-- 按排名/`select:` 的确定顺序，整工具放不下就跳过；继续尝试后续更小的候选。`select:` 不绕过预算，不裁剪 schema JSON，不自动卸载已有工具。
+- 按排名/`select:` 的确定顺序，整工具放不下就跳过；继续尝试后续更小的候选。关键词的 `top_k` 限制预算筛选后的可加载匹配数，超大候选不占名额；找到足够结果后停止扫描。`select:` 不绕过预算，不裁剪 schema JSON，不自动卸载已有工具。
 - `budget` 报告 `baseline_bytes`、`loaded_bytes`、`pending_bytes`、`new_bytes`、`total_bytes`、`new_limit_bytes`、`total_limit_bytes`、`effective_limit_bytes`、`remaining_bytes`、`remaining_new_bytes`、`baseline_over_budget`、`rejected_count`。没有伪装为实测的 token 估算。
-- `skipped_due_to_budget` 只含本次已授权命中；结果过长可缩短这份名称列表并标记 `skipped_names_truncated`，拒绝计数仍保留。输出裁剪掉的 `unlocked` 不激活、不占新增预算。
+- `skipped_due_to_budget` 只含本次已授权命中；结果过长时先缩短这份名称列表并标记 `skipped_names_truncated`，保留可加载匹配和拒绝计数。若仍需裁剪 `unlocked`，被裁掉的工具不激活、不占新增预算。
 - 同请求暂存选择共享预留额度，同名定义只计一次；失败/取消释放预留，仅成功持久化的选择影响后续请求。已发给同一来源的声明即使随后撤权，仍占 provider 上下文字节直到移除，但不会再作为搜索结果/解释返回，执行仍重验当前许可。
 - 恢复按历史选择顺序重新计量完整当前定义，仅使用累计限额（不是把恢复误算成一次 32 KiB 搜索）；超限条目不恢复并诊断。普通重复搜索、重启及历史压缩都不重置已可见 schema 字节。
 

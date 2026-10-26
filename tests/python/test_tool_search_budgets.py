@@ -139,6 +139,39 @@ def test_search_pending_reservation_output_and_committed_bytes_agree():
     assert retried["budget"]["total_bytes"] <= 131072
 
 
+def test_keyword_limit_counts_loadable_matches_after_skipping_large_schemas():
+    large = definition("archive_big", input_schema={"description": "z" * 32768})
+    small = definition("archive_small")
+    cap = resolution([large, small, definition("archive_tiny")])
+    result = asyncio.run(cap.get("tool_search").execute(
+        {"query": "archive", "top_k": 1},
+        ToolContext("r", "role:r", "run", CancellationToken(), "search"),
+    ))
+    payload = json.loads(result.content)
+    assert payload["unlocked"] == ["archive_small"]
+    assert payload["skipped_due_to_budget"] == ["archive_big"]
+    assert payload["budget"]["new_bytes"] == declaration_bytes(small)
+    assert payload["budget"]["rejected_count"] == 1
+
+
+def test_budget_diagnostics_do_not_crowd_out_a_loadable_keyword_match():
+    oversized = [definition(f"archive_{index:03}_" + "x" * 45,
+        input_schema={"description": "z" * 32768}) for index in range(300)]
+    small = definition("archive_zzz_small")
+    cap = resolution([*oversized, small])
+    result = asyncio.run(cap.get("tool_search").execute(
+        {"query": "archive", "top_k": 1},
+        ToolContext("r", "role:r", "run", CancellationToken(), "search"),
+    ))
+    payload = json.loads(result.content)
+    assert payload["unlocked"] == [small.name]
+    assert payload["matched"][0]["name"] == small.name
+    assert payload["budget"]["rejected_count"] == 300
+    assert payload["budget"]["new_bytes"] == declaration_bytes(small)
+    assert payload["skipped_names_truncated"] is True
+    assert len(result.content) <= 16000
+
+
 def test_request_bound_search_does_not_reintroduce_a_removed_current_candidate():
     from backend.app.agent_runtime.discovery import ServiceGrant
 
