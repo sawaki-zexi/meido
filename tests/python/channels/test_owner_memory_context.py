@@ -76,17 +76,27 @@ def test_legacy_desktop_cursor_migrates_without_reconsolidating_old_messages(tmp
     assert cursor["sequenceSource"] == "global-rowid"
 
 
-def test_external_prompt_and_member_lookup_use_only_the_current_thread_profiles(tmp_path):
+def test_external_prompt_includes_only_profiles_observed_in_current_thread(tmp_path):
+    from datetime import datetime, timezone
+
     store, _, _, _, _, first = setup(tmp_path)
     second = store.ensure_channel_thread("r1", "qq", "qq-first", "other-group", "group")
     repo = MultichannelGroupRepository(store)
     repo.update_context("r1", first.thread_id, group_note="当前群笔记", summary="当前群摘要")
+    for thread, sender in ((first, "same-user"), (second, "other-user")):
+        store.append_event(thread, direction="inbound", content="实际观察", external_message_id=sender,
+            metadata={"senderId": sender, "senderName": "相同昵称"})
+    # Simulate old data, then exercise the real migration and prompt boundary.
     with store._connect() as db:
-        for thread, profile in ((first, "当前群成员资料"), (second, "其他群机密档案")):
-            db.execute("INSERT INTO channel_member_profiles VALUES(?,?,?,?,?,?,?)", ("r1", thread.thread_id, "same-user", "昵称", profile, "短资料", "2026-10-15T00:00:00+00:00"))
+        db.execute("DROP TABLE channel_external_migrations")
+        for thread, sender, profile in ((first, "same-user", "当前群成员资料"), (second, "other-user", "其他群机密档案")):
+            db.execute("INSERT INTO channel_member_profiles VALUES(?,?,?,?,?,?,?)", ("r1", thread.thread_id, sender, "昵称", profile, "短资料", datetime.now(timezone.utc).isoformat()))
+    store = MultichannelStore(store.database_path, store.sessions, store.credentials)
+    repo = MultichannelGroupRepository(store)
     prompt = repo.prompt_context("r1", first.thread_id, "same-user")
     assert "当前群笔记" in prompt and "当前群成员资料" in prompt
     assert "其他群机密档案" not in prompt
+    assert "其他群机密档案" not in repo.prompt_context("r1", first.thread_id, "other-user")
     assert repo.prompt_context("r2", first.thread_id, "same-user") == ""
 
 
