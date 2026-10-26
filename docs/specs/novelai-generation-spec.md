@@ -1,6 +1,6 @@
 # NovelAI 生图、历史与人类回合场景 CG
 
-配置修订（2026-10-18）：手动生图许可、每角色手动日额度与有限消费确认移至公共设置；场景 CG、辅助连接、标签及卡片写回仍按角色独立许可。插件暂停保留参数，服务修订与任务撤销继续生效。 当前配置以 [全局插件规格](global-plugin-configuration-spec.md) 与 [ADR-0022](../adr/0022-global-plugin-configuration.md) 为准；下文原始批准保留作设计依据。
+配置修订（2026-10-26，#246）：按 [ADR-0027](../adr/0027-novelai-plugin-readiness.md)，插件启用、凭据与模式就绪后即可生成；移除公共及角色的版本消费确认。每角色手动日额度仍在公共设置；场景 CG 开关、辅助连接、标签及卡片写回仍按角色独立选择。插件暂停保留参数，服务修订与任务撤销继续生效。下文历史批准保留作设计依据，冲突处以本次配置修订和当前 Reference 为准。
 
 状态：当前规格，第 3 节 D05/P06/T19 一揽子架构已于 2026-10-16 获主人明确批准，实施进行中；仅覆盖实现、隔离本地构建与无费用 fixture，真实生成和费用另批。所有“采用/必须”仍是验收目标，不表示已实现。决定见 [ADR-0016](../adr/0016-bounded-novelai-generation.md)。
 
@@ -8,7 +8,7 @@
 
 ## 1. 用户结果与完整范围
 
-主人在插件设置中独立配置 NovelAI 服务并批准有限消费额度后，角色可以在主人真实输入的当前回合自行判断是否值得生成一张表情图；模型工具只提交英文情绪、动作和构图 tags，宿主补齐受控参数并以 txt2img 回到原会话。主人仍能从聊天侧或独立图片工作台手动填写完整 txt2img/img2img 参数，浏览持久历史、查看实际参数并明确发起一次新的重生成，替换指定消息图片而不影响其他附件。
+主人在插件设置中启用 NovelAI 并保存独立凭据后，角色可以在主人真实输入的当前回合自行判断是否值得生成一张表情图，受允许模式和有限次数约束；模型工具只提交英文情绪、动作和构图 tags，宿主补齐受控参数并以 txt2img 回到原会话。主人仍能从聊天侧或独立图片工作台手动填写完整 txt2img/img2img 参数，浏览持久历史、查看实际参数并明确发起一次新的重生成，替换指定消息图片而不影响其他附件。
 
 主人另行开启人类回合场景 CG 并选择辅助模型后，宿主从该回合已完成的对话提交场景观察，按场景变化、视觉去重和冷却生成图片。手动生图、CG、历史、重生成和媒体单次消费都属于本票，不能以只有健康检查或只有一个工具名称验收。
 
@@ -31,7 +31,7 @@
 | 决策 | 本草案采用的方案 |
 | --- | --- |
 | 服务与凭据 | 一个应用级 NovelAI 服务，固定 https://image.novelai.net；token 存独立系统 vault 键。生产不开放自定义 endpoint；不读取角色聊天密钥或整进程环境。 |
-| 启用与消费许可 | NovelAI 服务和公共聊天/手动生图许可默认关闭；角色 auto-CG、角色资产写回也默认关闭；`allowTxt2Img` 与 `allowImg2Img` 默认开启且可独立关闭。开启公共生图许可或 CG 时主人必须确认有限消费许可及“次数不是 Anlas 估价”；仅 role enabled 不授予无限消费。 |
+| 启用与消费许可 | NovelAI 插件默认关闭，启用并配置凭据即可使用聊天/手动生图；角色 auto-CG、角色资产写回默认关闭；`allowTxt2Img` 与 `allowImg2Img` 默认开启且可独立关闭。显示会使用账户额度，保留有限次数上限，不再以版本消费确认控制准入。 |
 | 当前来源 | 只接真实主人当前输入或主人明确的 UI 生成/重生成操作；渠道沿用被冻结的 owner_context、账号/配对代际与线程授权，禁止模型自报身份。 |
 | 模型与参数 | allowedModels 默认仅 nai-diffusion-4-5-curated；主人可显式加入 nai-diffusion-4-5-full。默认生成张数由 `defaultSamples` 控制（1–4，默认1），显式批量最多4张、1,048,576像素、28步、k_euler_ancestral；不自动升级版本。NSFW 默认模型模式只有在 `nsfwModel` 已进入 allowlist 后才可开启，只影响未指定模型的默认选择，显式模型仍须通过 allowlist。 |
 | 有限额度 | 默认账户合计20次/UTC日，每角色 manual含重生成10次/日、CG含辅助调用3次/日；同一真实输入回合最多一个生成意图。均为本地尝试上限，不是官方费用或免费额度。 |
@@ -50,9 +50,9 @@ UTC日计数由持久账本记录，时钟回退不清空已用额度；提高/�
 
 ## 4. 配置、工具与应用 API
 
-服务配置公开投影包含 enabled、tokenConfigured、`allowTxt2Img`（默认 true）、`allowImg2Img`（默认 true）、allowedModels、defaultModel、nsfwEnabled（默认 false）、nsfwModel（默认 nai-diffusion-4-5-full）、allowedSamplers、defaultSampler、maxPixels、maxSteps、dailyAttemptLimit、`defaultSamples`（默认1，范围1–4）、addQualityTags（默认 false）、undesiredContentPreset（默认 0，范围 0–2）及 revision；不返回token。关闭模式在严格参数归一化阶段拒绝对应请求，场景 CG 在辅助模型出网前固定检查 `allowTxt2Img`；模式配置变化同样推进 revision 并撤销旧手动许可。NSFW 默认模型模式不能绕过 allowlist，也不自动替角色允许 `explicit` 标签；提示标签扩写只有在服务 `nsfwEnabled=true` 且角色 `allowedPromptTagRatings` 包含 `explicit` 时才加入 `explicit` 标签，`mature` 仍由角色许可单独控制。质量标签和负向预设是主人服务设置，应用于手动生图和场景 CG，在准入时冻结进 attempt 并映射为 NovelAI `qualityToggle` 与 `ucPreset`；工具参数不能覆盖。主人可以从 NovelAI 设置或图片工作台编辑这些全局偏好；任何参数变化都会更新服务版本，旧手动许可需要重新确认，或在工作台保存时对当前有限许可重新确认。历史记录显示 attempt 实际冻结的值；旧历史若缺少相关字段则标记未记录。预设选择器使用已核验的中性名称“不使用/轻度/重度”，同时显示数字 ID。token仅接受明确设置/清空操作，使用严格清理的独立 vault 键；普通保存不读取、回填或重写旧token。已存NovelAI token保持脱敏，不新增reveal/secret读取端点，也不沿用ADR-0010针对模型/embedding密钥的查看例外。
+服务配置公开投影包含 enabled、tokenConfigured、`allowTxt2Img`（默认 true）、`allowImg2Img`（默认 true）、allowedModels、defaultModel、nsfwEnabled（默认 false）、nsfwModel（默认 nai-diffusion-4-5-full）、allowedSamplers、defaultSampler、maxPixels、maxSteps、dailyAttemptLimit、`defaultSamples`（默认1，范围1–4）、addQualityTags（默认 false）、undesiredContentPreset（默认 0，范围 0–2）及 revision；不返回token。关闭模式在严格参数归一化阶段拒绝对应请求，场景 CG 在辅助模型出网前固定检查 `allowTxt2Img`；模式配置变化同样推进 revision 并撤销旧手动许可。NSFW 默认模型模式不能绕过 allowlist，也不自动替角色允许 `explicit` 标签；提示标签扩写只有在服务 `nsfwEnabled=true` 且角色 `allowedPromptTagRatings` 包含 `explicit` 时才加入 `explicit` 标签，`mature` 仍由角色许可单独控制。质量标签和负向预设是主人服务设置，应用于手动生图和场景 CG，在准入时冻结进 attempt 并映射为 NovelAI `qualityToggle` 与 `ucPreset`；工具参数不能覆盖。主人可以从 NovelAI 设置或图片工作台编辑这些全局偏好；任何参数变化都会更新服务版本，旧冻结请求失效，未来的新请求按已保存配置生成，无需重新确认消费。历史记录显示 attempt 实际冻结的值；旧历史若缺少相关字段则标记未记录。预设选择器使用已核验的中性名称“不使用/轻度/重度”，同时显示数字 ID。token仅接受明确设置/清空操作，使用严格清理的独立 vault 键；普通保存不读取、回填或重写旧token。已存NovelAI token保持脱敏，不新增reveal/secret读取端点，也不沿用ADR-0010针对模型/embedding密钥的查看例外。
 
-在 `agentConfig.novelai` 保存 manualEnabled、manualDailyAttempts=10、sceneCgEnabled、sceneCgDailyAttempts=3、scenePromptModelConfigurationId=null、sceneCgPromptInstructions（默认空，最多2000字符）、autoWritebackRoleAssets=false、consentRevision。补充要求按角色隔离，仅作为已授权 CG 辅助模型的主人绘图偏好；它与场景事实分开注入，在候选创建时冻结，手动生图不读取。宿主为 CG 正向 tags 追加 `third-person view`、`cinematic composition`、`character visible in frame`，负向 tags 追加 `first-person view`、`pov`、`selfie`，均按逗号 tag 大小写不敏感去重。任何 NovelAI 角色配置修改都会使旧在途使用资格失效。开启对应用途时记录主人确认的设置版本；CG开启必须有存在的辅助连接ID，绝不回退 active/chat 配置。降低额度立即生效，连接/许可修改使在途使用资格失效。
+在 `agentConfig.novelai` 保存 manualEnabled、manualDailyAttempts=10、sceneCgEnabled、sceneCgDailyAttempts=3、scenePromptModelConfigurationId=null、sceneCgPromptInstructions（默认空，最多2000字符）、autoWritebackRoleAssets=false、consentRevision。补充要求按角色隔离，仅作为已授权 CG 辅助模型的主人绘图偏好；它与场景事实分开注入，在候选创建时冻结，手动生图不读取。宿主为 CG 正向 tags 追加 `third-person view`、`cinematic composition`、`character visible in frame`，负向 tags 追加 `first-person view`、`pov`、`selfie`，均按逗号 tag 大小写不敏感去重。任何 NovelAI 角色配置修改都会使旧在途使用资格失效。旧 consentRevision 只保留兼容；CG开启必须有存在的辅助连接ID，绝不回退 active/chat 配置。降低额度立即生效，连接/许可修改使在途使用资格失效。
 
 工具 definition：name=generate_image、risk=external、source=builtin:novelai、exposure=direct、external_allowed=false、timeout_seconds=330、output_limit=4000。普通聊天只要求必填 `prompt` 与可选 `negative_prompt`，角色自行判断是否调用且不应每回合调用；schema 保留 mode、尺寸、模型等可选高级字段以兼容主人明确要求的历史参数复用。普通聊天省略高级字段时，宿主固定 `txt2img`、一张图默认、默认模型/采样器/尺寸/步数/seed、`intent=chat_expression` 和原回复投递；显式高级字段仍受同一 allowlist 和来源校验。主人手动工作台/API 仍使用完整参数契约。外层余量只用于300秒执行deadline触发后的本地取消收尾，不能延长外部请求期限或先返回后留后台资源。这是主人来源许可，非“禁止所有渠道”；渠道主人仍须通过现有 owner_context 门禁。冻结候选、版本与执行检查沿用ADR-0011，Skill/模型/搜索结果不能增权。目录解释关闭、缺凭据、缺额度、辅助连接失效；目录和配置健康检查只读本地，不试生图或访问账号诊断接口。
 

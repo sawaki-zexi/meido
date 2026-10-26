@@ -1,14 +1,14 @@
 # 验收 NovelAI 生成、重生成与后台原来源交付
 
-当前总集成补充：#172最终源`60860fb`的完整两轴及修正复核均无遗留。规范独立17项后端/13项React通过，关闭原journal P2；规格独立10项后端、原DOM反例1项和history_only确认1项通过，关闭跨来源私图P1与渠道新媒体提示P2。原反例和失败历史保留，各组重叠不相加。源经`d9a71f4`、`0522a00`、`043a775`、`d551de3`从f7be合入总分支；只解决SessionStore与ChatView的两处内容冲突，保留主动提交/最终授权、Coding任务入口以及NovelAI图片CAS。当时私有生成模块与#172最终源完全一致。固定`43fc03a`总组合610 passed/1 Windows符号链接权限skip、前端202项及构建通过，集成两轴无遗留；准确13c两套完整CI已通过：各后端2235 passed/35 skipped/2 warnings、前端202 passed/35文件及TS/Vite，详见[总状态](../reference/shiori-tool-parity-status.md)。
+历史总集成记录：#172最终源`60860fb`的完整两轴及修正复核均无遗留。规范独立17项后端/13项React通过，关闭原journal P2；规格独立10项后端、原DOM反例1项和history_only确认1项通过，关闭跨来源私图P1与渠道新媒体提示P2。原反例和失败历史保留，各组重叠不相加。源经`d9a71f4`、`0522a00`、`043a775`、`d551de3`从f7be合入总分支；只解决SessionStore与ChatView的两处内容冲突，保留主动提交/最终授权、Coding任务入口以及NovelAI图片CAS。当时私有生成模块与#172最终源完全一致。固定`43fc03a`总组合610 passed/1 Windows符号链接权限skip、前端202项及构建通过，集成两轴无遗留；准确13c两套完整CI已通过：各后端2235 passed/35 skipped/2 warnings、前端202 passed/35文件及TS/Vite，详见[总状态](../reference/shiori-tool-parity-status.md)。
 
-状态：当前本地受控验证，真实 NovelAI 未验收。最后核验：2026-10-24。事实来源：[Reference](../reference/novelai-generation.md)、[公开消息用例](../../tests/python/test_novelai_main.py)、[真实渠道用例](../../tests/python/test_novelai_channel.py)、[真实断连](../../tests/python/test_novelai_cancellation.py)、[恢复](../../tests/python/test_novelai_recovery.py)。Parent #137，当前工作树组合了 #209 工作台、#211 角色 CG 提示词要求及既有 #171/#172/#173 行为；下方历史记录保留此前范围和失败事实，各组不相加。当前 NovelAI 与角色能力后端组为 `208 passed`，NovelAI 前端完整组为 `320 passed / 52 files`，类型检查与构建通过；工作树仍未合入 `main`。
+历史验收基线（2026-10-24）：本地受控验证，真实 NovelAI 未验收。最后核验：2026-10-24。事实来源：[Reference](../reference/novelai-generation.md)、[公开消息用例](../../tests/python/test_novelai_main.py)、[真实渠道用例](../../tests/python/test_novelai_channel.py)、[真实断连](../../tests/python/test_novelai_cancellation.py)、[恢复](../../tests/python/test_novelai_recovery.py)。Parent #137，当前工作树组合了 #209 工作台、#211 角色 CG 提示词要求及既有 #171/#172/#173 行为；下方历史记录保留此前范围和失败事实，各组不相加。当前 NovelAI 与角色能力后端组为 `208 passed`，NovelAI 前端完整组为 `320 passed / 52 files`，类型检查与构建通过；工作树仍未合入 `main`。
 
 用户已明确批准完整具体规格第3节的实现及本地无费用夹具；真实 token、账号、模型/生成费用和外部发布另批。其中 #171 从获准的已验证 aggregate `30002a9a8de551a12a44b2c2f5724d5640aca50d` 开始，分支 feat/171-novelai-generation，统一整合总 PR162，不新建堆叠 PR，不合并或关闭 Issue。
 
 ## 运行受控测试
 
-当前网页入口（2026-10-24 核验）：先在设置 → 插件 → NovelAI 生图启用服务、配置公共开关和默认参数，再从角色聊天右上角“更多”进入“生图与历史”，或打开主导航的图片工作台手动填写参数。服务关闭时隐藏聊天侧入口；启用和有限消费确认同时控制聊天自主表情工具与手动工作台。普通聊天中角色可自行决定是否调用一张表情图，工具不要求主人填写参数；查看旧消息图片和当前历史不会自动提交生成。
+当前网页入口（2026-10-26 核验，#246）：在设置 → 插件 → NovelAI 生图启用插件并保存独立 Token，确认状态为“可生图”。这只表示本地配置就绪，Token 有效性与 Anlas 余额在实际生成时验证。无需再勾选消费确认；调整默认参数后保存即可用于下一次生成。可从聊天“更多 → 生图与历史”或主导航图片工作台生成；聊天工具由角色按需调用。自动 CG 另在角色参数中开启并选择辅助模型，卡片写回另行选择。缺凭据、模式全关或今日次数用完时查看具体提示；历史查看不会发起生成。
 
 所有平台/HTTP peer 都必须为 localhost；测试使用 fixture credentials，不读取用户 vault。pytest 收集前设置完整三数据根，PROJECT_ROOT 不能代替 owner knowledge 数据根：
 

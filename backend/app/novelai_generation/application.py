@@ -21,6 +21,7 @@ from ..session_store import AttachmentConflict
 from ..task_runtime import TaskOrigin
 from ..task_runtime.runtime import TaskBudget, TaskOutcome
 from .config import NovelaiRoleConfig, NovelaiSettings, NovelaiSettingsStore
+from .availability import GenerationUnavailable, state
 from .context import GenerationContext
 from .executor import GenerationExecutor
 from .http import GenerationHttpError, NovelaiHttp
@@ -74,8 +75,8 @@ class NovelaiApplication:
             raise ValueError('场景 CG 需要明确且仍存在的辅助模型连接')
         if policy.sceneCgEnabled:
             public = self.settings.public()
-            if not public['enabled'] or not public['tokenConfigured'] or public['credentialCleanupPending'] or policy.consentRevision != public['revision']:
-                raise ValueError('请先配置服务并确认当前版本的有限生图消费许可')
+            if not public['availability']['available'] or not public['allowTxt2Img']:
+                raise ValueError('请先启用 NovelAI、配置凭据并允许文生图')
 
     def create_role(self, data):
         with self._lock:
@@ -126,26 +127,34 @@ class NovelaiApplication:
             policy.pop('sceneCgPromptInstructions')
         return hashlib.sha256(canonical([role.createdAt.isoformat(), row[0] if row else 0, policy]).encode()).hexdigest()
 
-    def unavailable_reason(self, role, *, include_usage=True, scene=False):
+    def tool_enabled(self, role):
+        # A configured capability remains discoverable when its token, modes
+        # or quota need attention; execution still checks current readiness.
+        return bool(not self._closed and role is not None and not self.is_role_deleting(role.id)
+                    and self.settings.public()['enabled'])
+
+    def availability(self, role, *, include_usage=True, scene=False):
         config, _ = self._configuration()
         if self._closed or role is None or self.is_role_deleting(role.id):
-            return '角色生图服务当前不可用'
-        if not config['enabled']:
-            return 'NovelAI 服务已关闭'
-        if not config['tokenConfigured'] or config['credentialCleanupPending']:
-            return '尚未配置独立 NovelAI 凭据，或凭据清理尚未完成'
+            return state('role_unavailable', '角色生图服务当前不可用。')
+        if not config['availability']['available']:
+            return config['availability']
         policy = role.agentConfig.novelai
-        if not (policy.sceneCgEnabled if scene else config['manualEnabled']):
-            return '场景 CG 许可已关闭' if scene else '聊天表情和手动生图许可已关闭'
+        if scene and not policy.sceneCgEnabled:
+            return state('scene_disabled', '本角色的自动场景 CG 已关闭。')
         if scene and (not policy.scenePromptModelConfigurationId or self.model_configuration(policy.scenePromptModelConfigurationId) is None):
-            return '场景辅助模型连接已不可用'
-        if (policy.consentRevision if scene else config['manualConsentRevision']) != config['revision']:
-            return '请主人确认当前服务设置的有限生图消费许可'
+            return state('scene_model_unavailable', '请为本角色选择仍可用的 CG 辅助模型连接。')
+        if scene and not config['allowTxt2Img']:
+            return state('txt2img_disabled', '文生图已关闭，自动场景 CG 暂不可用。')
         usage = self.ledger.usage(role.id)
         if include_usage and (usage['accountAttempts'] >= config['dailyAttemptLimit'] or
                 (usage['cgAttempts'] >= policy.sceneCgDailyAttempts if scene else usage['manualAttempts'] >= config['manualDailyAttempts'])):
-            return '今日生图尝试额度已用完；次数不是 Anlas 估价'
-        return ''
+            return state('daily_limit', '今日生图尝试额度已用完；请明日再试或在设置中调整上限。次数不是 Anlas 估价。')
+        return config['availability']
+
+    def unavailable_reason(self, role, *, include_usage=True, scene=False):
+        availability = self.availability(role, include_usage=include_usage, scene=scene)
+        return '' if availability['available'] else availability['message']
 
     def _authorized(self, source: GenerationContext, service_revision, role_revision, *, allow_sealed=False, receipt=False):
         role = self.roles.get(source.origin.role_id)
@@ -153,8 +162,7 @@ class NovelaiApplication:
         return bool(not self._closed and (allow_sealed or not self._sealed(source)) and role is not None and not self.is_role_deleting(role.id)
             and public['enabled'] and public['tokenConfigured'] and not public['credentialCleanupPending']
             and public['revision'] == service_revision
-            and (role.agentConfig.novelai.sceneCgEnabled if source.scene_revision is not None else public['manualEnabled'])
-            and (role.agentConfig.novelai.consentRevision if source.scene_revision is not None else public['manualConsentRevision']) == public['revision']
+            and (source.scene_revision is None or role.agentConfig.novelai.sceneCgEnabled)
             and self._role_revision(role) == role_revision and source.denial(self.channels) is None
             and (receipt or self.scenes.current(source)))
 
@@ -243,9 +251,9 @@ class NovelaiApplication:
         handover_error = None
         with self._lock:
             role = self.roles.get(source.origin.role_id)
-            reason = self.unavailable_reason(role, include_usage=False, scene=source.scene_revision is not None)
-            if reason:
-                raise PermissionError(reason)
+            availability = self.availability(role, include_usage=False, scene=source.scene_revision is not None)
+            if not availability['available']:
+                raise GenerationUnavailable(availability)
             if expected_role_revision is not None and self._role_revision(role) != expected_role_revision:
                 raise PermissionError('frozen generation role permission changed')
             if source.denial(self.channels):

@@ -3,6 +3,7 @@ import type { AgentToolConfig, ChatAttachment, Role } from '../../api/types';
 import { novelai, type GenerationPage, type GenerationParameters, type GenerationSelection, type GenerationView, type NovelaiConfiguration, type NovelaiRoleConfig } from '../../api/novelai';
 import { uploadChatAttachment } from '../../api/chat';
 import { errorMessage } from '../../api/client';
+import { generationAvailability } from './availability';
 
 export const activeGenerationStatuses = ['prepared', 'dispatching', 'received', 'local_pending'];
 export type GenerationDrawerProps = {
@@ -135,6 +136,8 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!configuration || configurationRefreshing || busy || uploading || (source && !consent && !attempt.current)) return;
+    const readiness = generationAvailability(configuration, page?.usage);
+    if (!attempt.current && !readiness.available) { setError(readiness.message); return; }
     const modeAllowed = parameters.mode === 'txt2img' ? configuration.allowTxt2Img !== false : configuration.allowImg2Img !== false;
     if (!modeAllowed) {
       setError(parameters.mode === 'txt2img' ? '当前服务已关闭文生图，请切换到已启用的模式。' : '当前服务已关闭图生图，请切换到已启用的模式。');
@@ -192,8 +195,10 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     finally { if (isCurrent(owner)) setUploading(false); }
   };
   const policy = (role.agentConfig as AgentToolConfig & { novelai?: Partial<NovelaiRoleConfig> } | undefined)?.novelai;
-  const allowed = !configurationRefreshing && configuration?.enabled && configuration.tokenConfigured && !configuration.credentialCleanupPending
-    && configuration.manualEnabled && configuration.manualConsentRevision === configuration.revision;
+  const availability = configuration ? generationAvailability(configuration, page?.usage) : null;
+  // Rechecking an existing request is safe even after it used the last daily attempt.
+  const allowed = !configurationRefreshing && Boolean(availability?.available || attempt.current);
+  const unavailableMessage = availability?.message ?? '正在读取生图状态…';
   const modeAllowed = configuration ? (parameters.mode === 'txt2img' ? configuration.allowTxt2Img !== false : configuration.allowImg2Img !== false) : false;
   const candidates = [...attachments, ...inputs].filter((item, index, all) => item.kind === 'image' && all.findIndex((other) => other.id === item.id) === index);
   const patch = (changes: Partial<GenerationParameters>) => setParameters({ ...parameters, ...changes });
@@ -239,5 +244,5 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   return { configuration, setConfiguration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
     source, consent, setConsent, accepted, setAccepted, deliveryMode, setDeliveryMode, attempt, controller, scope,
     isCurrent, watched, submit, upload, policy, allowed, modeAllowed, candidates, patch, manage, selectImage, loadParameters, reuseParameters,
-    clearSource, refresh, refreshConfiguration, configurationRefreshing };
+    clearSource, refresh, refreshConfiguration, configurationRefreshing, unavailableMessage };
 }

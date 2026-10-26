@@ -1,3 +1,10 @@
+import type { GenerationView } from '../../api/novelai';
+
+export function generationErrorMessage(generation: GenerationView): string {
+  return generation.errorMessage || errorLabels[generation.errorCode] || (generation.errorCode
+    ? '本次请求未正常完成，请检查当前设置与归属历史。' : '这条记录暂时没有可预览图片。');
+}
+
 export const statusLabels: Record<string, string> = {
   completed_without_image: '观察完成，未生成图片', prepared: '等待生成', dispatching: '生成中', received: '已收图，等待保存',
   succeeded: '已生成', unknown: '消费结果不确定', failed_response: '远端返回错误，可能已计费',

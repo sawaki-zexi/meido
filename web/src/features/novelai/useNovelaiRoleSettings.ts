@@ -32,7 +32,6 @@ export function useNovelaiRoleSettings(draft: RoleDraft, onChange: (draft: RoleD
     preservedAgentConfig: { ...draft.preservedAgentConfig, novelai: { ...config, ...changes } } as AgentToolConfig });
   return { configuration, models, modelLoading, error, modelError, config, patch,
     dismissError: () => setError(''), dismissModelError: () => setModelError(''), refreshModels: () => setRefresh((value) => value + 1),
-    available: Boolean(configuration?.enabled && configuration.tokenConfigured && !configuration.credentialCleanupPending),
-    consent: Boolean(configuration && config.consentRevision === configuration.revision),
+    available: Boolean(configuration?.enabled && configuration.tokenConfigured && !configuration.credentialCleanupPending && configuration.allowTxt2Img !== false),
     selectedModel: modelsReady ? models.find((model) => model.id === config.scenePromptModelConfigurationId) : undefined };
 }

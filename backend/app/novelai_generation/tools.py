@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 
 from ..agent_runtime.tools import AgentToolResult, ToolDefinition
 from ..agent_runtime.provider import CancellationToken
 from ..agent_runtime.tools import ToolContext
 from .context import capture_tool_context
 from .parameters import GenerationRequest
+from .availability import GenerationUnavailable
+from .failures import GenerationBudgetExceeded
 
 _SCHEMA = GenerationRequest.model_json_schema()
 _SCHEMA.pop('title', None)
@@ -39,6 +42,10 @@ class GenerateImageTool:
         self.source_thread_id, self.source_account_id = source_thread_id, source_account_id
         self.service_revision = application.settings.public()['revision']
         role = frozen_role or application.roles.get(role_id)
+        availability = application.availability(role)
+        self.definition = replace(self.definition, description=(self.definition.description
+            + '\n当前 NovelAI 状态：' + availability['message']
+            + ' 已接入不等于当前可以生成；不可用时说明具体原因，不要声称没有生图工具。'))
         self.role_revision = application._role_revision(role) if role is not None else ''
         self.bound_run = None
         self.bound_source = None
@@ -75,13 +82,16 @@ class GenerateImageTool:
             request['intent'] = 'chat_expression'
             result = await self.application.submit(source, request, signal=context.signal,
                 expected_revision=self.service_revision, expected_role_revision=self.role_revision)
-            details = {key: result[key] for key in ('generationId', 'attemptId', 'status', 'attachments', 'taskId', 'errorCode', 'consumption')}
+            details = {key: result[key] for key in ('generationId', 'attemptId', 'status', 'attachments', 'taskId', 'errorCode', 'errorMessage', 'consumption')}
             details['parameters'] = {key: result['parameters'][key] for key in ('model', 'sampler', 'seed', 'samples', 'width', 'height', 'steps')}
             accepted = result['backgroundAccepted']
             if accepted:
                 details['status'] = 'accepted'
             return AgentToolResult(json.dumps(details, ensure_ascii=False), details=details,
                 is_error=not accepted and (result['status'] != 'succeeded' or bool(result['errorCode'])))
+        except (GenerationUnavailable, GenerationBudgetExceeded) as error:
+            return AgentToolResult(str(error),
+                details={'status': 'rejected', 'errorCode': error.code, 'errorMessage': str(error)}, is_error=True)
         except (ValueError, PermissionError, KeyError, OSError, RuntimeError, sqlite3.Error):
-            return AgentToolResult('生图请求未完成；检查当前来源、配置、有限许可、参数与归属历史。已出网的请求可能计费，不会自动重试。',
+            return AgentToolResult('生图请求未完成；请检查当前来源、配置、参数与归属历史。设置改变后需刷新工具，已出网的请求可能计费，不会自动重试。',
                 details={'status': 'rejected', 'errorCode': 'generation_not_available'}, is_error=True)

@@ -6,6 +6,34 @@ import { NovelaiSettings } from './NovelaiSettings';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('shows ready configuration and saves parameter changes without another consumption checkbox', async () => {
+  let config = { enabled: true, manualEnabled: false, manualConsentRevision: 0,
+    tokenConfigured: true, credentialCleanupPending: false, revision: 5,
+    allowTxt2Img: true, allowImg2Img: true, allowedModels: ['nai-diffusion-4-5-curated'],
+    defaultModel: 'nai-diffusion-4-5-curated', allowedSamplers: ['k_euler'], defaultSampler: 'k_euler',
+    maxPixels: 1048576, maxSteps: 28, dailyAttemptLimit: 20, manualDailyAttempts: 5 };
+  const { calls } = fakeBackend({
+    'GET /api/services/novelai': () => ({ body: config }),
+    'PUT /api/services/novelai': init => {
+      const { expectedRevision: _revision, ...values } = JSON.parse(String(init?.body));
+      config = { ...config, ...values, revision: config.revision + 1 };
+      return { body: config };
+    },
+  });
+  const user = userEvent.setup();
+  render(<NovelaiSettings />);
+  expect(await screen.findByText('可生图')).toBeInTheDocument();
+  expect(screen.queryByRole('checkbox', { name: '我确认生图消费' })).not.toBeInTheDocument();
+  await user.clear(screen.getByLabelText('最多采样步数'));
+  await user.type(screen.getByLabelText('最多采样步数'), '12');
+  await user.click(screen.getByRole('button', { name: '保存生图设置' }));
+  expect(await screen.findByText('NovelAI 生图设置已保存。')).toBeInTheDocument();
+  expect(screen.getByText('可生图')).toBeInTheDocument();
+  const save = calls.find(item => item.method === 'PUT')!;
+  expect(save.body).not.toHaveProperty('confirmManualConsumption');
+  expect(save.body).not.toHaveProperty('manualEnabled');
+});
+
 it('saves ordinary settings without reading or resubmitting the existing token', async () => {
   let config = { enabled: false, tokenConfigured: true, credentialCleanupPending: false, revision: 3,
     allowedModels: ['nai-diffusion-4-5-curated'], defaultModel: 'nai-diffusion-4-5-curated',

@@ -9,7 +9,7 @@ import { Notice, Placeholder } from '../../ui/Status';
 import { PromptTagManager } from './PromptTagManager';
 import { undesiredContentPresetLabel } from './promptPreferences';
 import { useGenerationDrawer } from './useGenerationDrawer';
-import { statusLabels, deliveryLabels, errorLabels, writebackLabels } from './generationLabels';
+import { statusLabels, deliveryLabels, generationErrorMessage, writebackLabels } from './generationLabels';
 
 type Props = { roles: Role[]; initialRoleId?: string; selectedRoleId?: string; onRoleChange?: (roleId: string) => void;
   onGenerated?: () => void | Promise<void>; onOpenSettings?: () => void; settingsOpen?: boolean };
@@ -45,7 +45,7 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
     onGenerationAccepted: (generation) => setSelectedAttemptId(generation.attemptId) });
   const { configuration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
     source, consent, setConsent, attempt, submit, upload, allowed, candidates, patch, reuseParameters, selectImage,
-    watched, deliveryMode, setDeliveryMode, refresh, scope, isCurrent, clearSource, setAccepted, refreshConfiguration, configurationRefreshing } = studio;
+    watched, deliveryMode, setDeliveryMode, refresh, scope, isCurrent, clearSource, setAccepted, refreshConfiguration, configurationRefreshing, unavailableMessage } = studio;
   const txt2imgAllowed = configuration?.allowTxt2Img !== false;
   const img2imgAllowed = configuration?.allowImg2Img !== false;
   const modeAllowed = studio.modeAllowed;
@@ -110,11 +110,11 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
     {(error || stageError) && <Notice onDismiss={() => { setError(''); setStageError(''); }}>{error || stageError}</Notice>}
     <div className="novelai-studio-grid">
       <form className="novelai-prompt-panel" aria-label="工作台生成设置" onSubmit={submitForm}>
-        <div className="studio-panel-heading"><div><h2>生成设置</h2><p className="muted">提交仍需满足当前服务、角色许可和有限额度。</p></div><Avatar id={role.id} name={role.name} avatarUrl={role.avatarUrl} /></div>
+        <div className="studio-panel-heading"><div><h2>生成设置</h2><p className="muted">使用插件中的生图配置，受每日次数上限约束。</p></div><Avatar id={role.id} name={role.name} avatarUrl={role.avatarUrl} /></div>
         {!configuration && !error && <Placeholder loading>正在加载生图设置…</Placeholder>}
         {configurationRefreshing && <p role="status">正在同步生图设置…</p>}
         {configuration && <>
-          {!allowed && <div className="studio-policy"><span>手动生图尚未获准，请先完成独立服务、凭据和有限消费确认。</span>
+          {!allowed && <div className="studio-policy"><span>{unavailableMessage}</span>
             {onOpenSettings && <button type="button" onClick={onOpenSettings}>打开 NovelAI 设置</button>}</div>}
           {source && <div className="studio-policy"><span>将基于 {source.image.name} 再次生成；本次会重新消费一次尝试额度。</span>
             {deliveryMode === 'history_only' ? <span>仅保存历史不会向原渠道或会话发送媒体。</span>
@@ -159,7 +159,7 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
       <div className="novelai-stage-column">
         <div className="novelai-stage" aria-label="当前作品">
           {selectedImages.length > 0 && role ? <div className="novelai-stage-gallery" aria-label={`当前作品 ${selectedImages.length} 张图片`}>{selectedImages.map((image) => <a href={imageUrl(role.id, image.id)} target="_blank" rel="noreferrer" key={image.id}><img src={imageUrl(role.id, image.id)} alt={image.name} /></a>)}</div>
-            : selected ? <div className="studio-stage-status"><Icon name="image" size={34} /><strong>{statusLabels[selected.status] ?? selected.status}</strong><span>{errorLabels[selected.errorCode] ?? '这条记录暂时没有可预览图片。'}</span></div>
+            : selected ? <div className="studio-stage-status"><Icon name="image" size={34} /><strong>{statusLabels[selected.status] ?? selected.status}</strong><span>{generationErrorMessage(selected)}</span></div>
             : page ? <div className="studio-stage-status"><Icon name="image" size={34} /><strong>选择一张历史作品</strong><span>生成完成后，图片会出现在这里。</span></div>
             : error ? <div className="studio-stage-status" role="status"><Icon name="image" size={34} /><strong>作品读取失败</strong><span>{error}</span></div>
             : <Placeholder loading>正在加载作品…</Placeholder>}
@@ -170,7 +170,7 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
           <p>消费：{selected.consumption === 'possible' ? '已出网，可能计费；未确认实际扣费。' : selected.consumption === 'not_dispatched' ? '生成请求尚未出网。' : '消费状态尚未确认。'}</p>
           {selected.purpose === 'scene_cg' && <p>{selected.auxiliaryConsumption === 'possible' ? '辅助请求已出网，可能计费；未出图仍计入 CG 与账户尝试。' : selected.auxiliaryConsumption === 'not_dispatched' ? '辅助请求尚未出网。' : '辅助消费状态尚未确认。'}</p>}
           {selected.writebackStatus && writebackLabels[selected.writebackStatus] && <p>{writebackLabels[selected.writebackStatus]}</p>}
-          {selected.errorCode && <p>{errorLabels[selected.errorCode] ?? (selected.errorCode.startsWith('http_') ? '远端服务返回错误，请检查账号配置与原记录。' : '本次请求未正常完成，请检查当前许可与归属历史。')}</p>}
+          {selected.errorCode && <p>{generationErrorMessage(selected)}</p>}
         </div>}
         {selected?.parameters && <section className="studio-stage-meta" aria-label="当前作品参数">
             <div className="studio-stage-summary">

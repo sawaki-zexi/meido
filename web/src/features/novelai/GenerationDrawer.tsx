@@ -5,12 +5,12 @@ import { Notice, Placeholder } from '../../ui/Status';
 import { useGenerationDrawer, activeGenerationStatuses as activeStatuses, type GenerationDrawerProps } from './useGenerationDrawer';
 import { PromptTagManager } from './PromptTagManager';
 import { undesiredContentPresetLabel } from './promptPreferences';
-import { statusLabels as labels, deliveryLabels, errorLabels, writebackLabels } from './generationLabels';
+import { statusLabels as labels, deliveryLabels, generationErrorMessage, writebackLabels } from './generationLabels';
 export function GenerationDrawer(props: GenerationDrawerProps) {
   const { role, onClose } = props;
   const { configuration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
     source, consent, setConsent, accepted, setAccepted, deliveryMode, setDeliveryMode, attempt, controller, scope,
-    isCurrent, watched, submit, upload, policy, allowed, modeAllowed, candidates, patch, manage, selectImage, refresh } = useGenerationDrawer(props);
+    isCurrent, watched, submit, upload, policy, allowed, modeAllowed, candidates, patch, manage, selectImage, refresh, unavailableMessage } = useGenerationDrawer(props);
   const txt2imgAllowed = configuration?.allowTxt2Img !== false;
   const img2imgAllowed = configuration?.allowImg2Img !== false;
   return <Dialog title={`${role.name}的生图与历史`} variant="drawer" onClose={onClose}>
@@ -18,10 +18,10 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
     {accepted && watched.length > 0 && <p role="status">后台生成已受理。关闭此面板后仍会继续，可在历史查询或停止。</p>}
     {!page && !error && <Placeholder loading>正在加载生图历史…</Placeholder>}
     {configuration && <>
-      {!allowed && <p>手动生图尚未获准：请检查独立服务、凭据与公共参数当前版本的有限消费许可。</p>}
+      {!allowed && <p>{unavailableMessage}</p>}
       {!modeAllowed && <p role="status">当前选择的生图模式已被服务设置关闭，请切换到已启用的模式。</p>}
       {!txt2imgAllowed && !img2imgAllowed && <p role="status">文生图和图生图都已关闭，当前不能提交新的生图请求。</p>}
-      <p>场景 CG：{policy?.sceneCgEnabled ? '角色已开启；每次仍需校验当前服务、辅助连接和有限消费许可。' : '角色未开启。'}</p>
+      <p>场景 CG：{policy?.sceneCgEnabled ? '角色已开启；按当前服务、辅助连接和每日次数上限运行。' : '角色未开启。'}</p>
       <p>每次生成计入尝试额度；次数不是 Anlas 估价。未知结果可能已计费，不会自动再次请求。</p>
       {page && <p>今日账户尝试 {page.usage.accountAttempts}/{configuration.dailyAttemptLimit}，本角色手动尝试 {page.usage.manualAttempts}/{configuration.manualDailyAttempts ?? 10}，本角色 CG 尝试 {page.usage.cgAttempts ?? 0}/{policy?.sceneCgDailyAttempts ?? 3}（UTC 日）。</p>}
       <form aria-label="生成图片" onSubmit={(event) => void submit(event)}>
@@ -78,7 +78,7 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
         {item.parameters && <p>质量标签：{item.parameters.qualityToggle === undefined ? '未记录' : item.parameters.qualityToggle ? '开启' : '关闭'} · 负向预设：{undesiredContentPresetLabel(item.parameters.ucPreset)}</p>}
         {item.writebackStatus && writebackLabels[item.writebackStatus] && <p>{writebackLabels[item.writebackStatus]}</p>}
         <p>投递：{deliveryLabels[item.deliveryStatus] ?? '尚未确认'}</p>
-        {item.errorCode && <p>{errorLabels[item.errorCode] ?? (item.errorCode.startsWith('http_') ? '远端服务返回错误，请检查账号配置与原记录。' : '本次请求未正常完成，请检查当前许可与归属历史。')}</p>}
+        {item.errorCode && <p>{generationErrorMessage(item)}</p>}
         <div className="message-attachments">{item.attachments.map((image) => <div key={image.id}><a href={`/api/roles/${encodeURIComponent(role.id)}/attachments/${encodeURIComponent(image.id)}`} target="_blank" rel="noreferrer"><img src={`/api/roles/${encodeURIComponent(role.id)}/attachments/${encodeURIComponent(image.id)}`} alt={image.name} /></a>
           {image.kind === 'image' && item.parameters && <button type="button" disabled={busy || uploading || !allowed} onClick={() => selectImage(item, image)}>重新生成 {image.name}</button>}</div>)}</div>
         <button type="button" onClick={() => void manage(item)}>查询此生成</button>

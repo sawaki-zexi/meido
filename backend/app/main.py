@@ -4911,7 +4911,7 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
         enabled.add('pet_action')
     if computer_use.dependency_status(role)["status"] != "unavailable":
         enabled.update(COMPUTER_USE_TOOL_NAMES)
-    if not _novelai_application().unavailable_reason(role):
+    if _novelai_application().tool_enabled(role):
         enabled.add('generate_image')
     if not _screen_unavailable_reason(role):
         enabled.add("observe_screen")

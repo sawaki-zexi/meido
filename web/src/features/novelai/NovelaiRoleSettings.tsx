@@ -3,20 +3,16 @@ import type { PromptTagRating } from '../../api/novelai';
 import { Notice, Placeholder } from '../../ui/Status';
 import { useNovelaiRoleSettings } from './useNovelaiRoleSettings';
 
-export function NovelaiRoleSettings({ draft, onChange, disabled = false, sceneOnly = false }: {
-  draft: RoleDraft; onChange: (draft: RoleDraft) => void; disabled?: boolean; sceneOnly?: boolean;
+export function NovelaiRoleSettings({ draft, onChange, disabled = false }: {
+  draft: RoleDraft; onChange: (draft: RoleDraft) => void; disabled?: boolean;
 }) {
-  const { configuration, models, modelLoading, error, modelError, config, patch, available, consent,
+  const { configuration, models, modelLoading, error, modelError, config, patch, available,
     selectedModel, dismissError, dismissModelError, refreshModels } = useNovelaiRoleSettings(draft, onChange);
   return <fieldset aria-label="角色生图许可" disabled={disabled}>
     <legend>生图</legend>
     {error && <Notice onDismiss={dismissError}>{error}</Notice>}
     {!configuration ? <Placeholder loading>正在读取独立服务设置…</Placeholder> : !available ? <p>请先在设置中开启 NovelAI 服务并配置独立凭据。</p> : <p>账户每日最多 {configuration.dailyAttemptLimit} 次，每张最多 {configuration.maxPixels.toLocaleString()} 像素、{configuration.maxSteps} 步。</p>}
-    {!sceneOnly && <><label className="field checkbox-field"><input type="checkbox" checked={config.manualEnabled}
-      disabled={disabled || (!available && !config.manualEnabled)}
-      onChange={(event) => patch({ manualEnabled: event.target.checked, consentRevision: 0 })} />允许本角色在聊天中自主生成表情</label>
-    {config.manualEnabled && <label className="field"><span>本角色聊天表情每日最多尝试</span><input aria-label="本角色聊天表情每日最多尝试" type="number" min="1" max="100" step="1" required value={config.manualDailyAttempts}
-      onChange={(event) => patch({ manualDailyAttempts: Number(event.target.value), consentRevision: 0 })} /></label>}</>}
+    <p className="field-hint">聊天和手动生图由插件设置统一启用。自动场景 CG 需在此开启，并选择辅助模型。</p>
     <label className="field checkbox-field"><input type="checkbox" checked={config.sceneCgEnabled}
       disabled={disabled || (!available && !config.sceneCgEnabled)}
       onChange={(event) => patch({ sceneCgEnabled: event.target.checked, ...(!event.target.checked ? { autoWritebackRoleAssets: false } : {}), consentRevision: 0 })} />允许主人回合场景 CG</label>
@@ -47,9 +43,6 @@ export function NovelaiRoleSettings({ draft, onChange, disabled = false, sceneOn
           onChange={(event) => patch({ allowedPromptTagRatings: event.target.checked ? [...config.allowedPromptTagRatings, rating]
             : config.allowedPromptTagRatings.filter((item) => item !== rating), consentRevision: 0 })} />允许 {rating} 标签</label>)}
     </>}
-    {((!sceneOnly && config.manualEnabled) || config.sceneCgEnabled) && <>
-      <label className="field checkbox-field"><input type="checkbox" required checked={consent} disabled={disabled || !available}
-        onChange={(event) => patch({ consentRevision: event.target.checked ? configuration!.revision : 0 })} />我确认当前设置的有限生图消费；次数不是 Anlas 估价，取消或未知结果可能已计费</label>
-    </>}
+    {config.sceneCgEnabled && <p className="field-hint">启用 CG 后会自动观察主人回合并按需生成图片；辅助模型和生图可能计费，受每日次数上限约束。</p>}
   </fieldset>;
 }

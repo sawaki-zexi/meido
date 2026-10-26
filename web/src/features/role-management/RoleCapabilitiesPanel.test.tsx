@@ -139,7 +139,7 @@ it('运行卡片显示未配置状态，开关可重置且保存失败保留更�
   });
 });
 
-it('场景 CG 从当前角色配置模型和额度，消费确认前不保存，保存保留最新角色资料', async () => {
+it('场景 CG 选择辅助模型后即可保存，保存保留最新角色资料', async () => {
   let reads = 0;
   let savedRole = role({ id: 'r1', name: '爱丽丝', agentConfig: { novelai: { ...defaultNovelaiRoleConfig }, enabledTools: ['read_file'] } });
   const onSaved = vi.fn();
@@ -167,14 +167,16 @@ it('场景 CG 从当前角色配置模型和额度，消费确认前不保存，
   await dialog.findByText(/账户每日最多 20 次/);
   expect(dialog.queryByLabelText('角色参数')).not.toBeInTheDocument();
   await user.click(dialog.getByLabelText('允许主人回合场景 CG'));
-  await user.selectOptions(dialog.getByLabelText('CG 辅助模型连接'), 'cg-model');
   await user.click(dialog.getByRole('button', { name: '保存角色参数' }));
   expect(calls.filter(call => call.method === 'PUT')).toHaveLength(0);
-  await user.click(dialog.getByLabelText(/我确认当前设置的有限生图消费/));
+  await user.selectOptions(dialog.getByLabelText('CG 辅助模型连接'), 'cg-model');
+  expect(dialog.queryByLabelText(/我确认当前设置的有限生图消费/)).not.toBeInTheDocument();
   await user.click(dialog.getByRole('button', { name: '保存角色参数' }));
   await dialog.findByText('角色参数已保存');
   expect(calls.find(call => call.method === 'PUT')?.body).toMatchObject({ description: '其他页面刚更新的简介',
-    agentConfig: { novelai: { sceneCgEnabled: true, scenePromptModelConfigurationId: 'cg-model', consentRevision: 4 } } });
+    agentConfig: { novelai: { sceneCgEnabled: true, scenePromptModelConfigurationId: 'cg-model' } } });
+  expect((calls.find(call => call.method === 'PUT')!.body as { agentConfig: { novelai: object } }).agentConfig.novelai)
+    .not.toHaveProperty('consentRevision');
   expect(Object.keys((calls.find(call => call.method === 'PUT')!.body as { agentConfig: object }).agentConfig)).toEqual(['novelai']);
   expect(onSaved).toHaveBeenCalledWith(savedRole);
 });
@@ -203,7 +205,6 @@ it('关闭 CG 配置并切换角色后，迟到的保存结果不会更新当前
   const dialog = within(screen.getByRole('dialog'));
   await dialog.findByText(/账户每日最多/);
   await user.type(dialog.getByLabelText('角色 CG 补充要求'), '柔和的光线');
-  await user.click(dialog.getByLabelText(/我确认当前设置的有限生图消费/));
   await user.click(dialog.getByRole('button', { name: '保存角色参数' }));
   await waitFor(() => expect(calls.some(call => call.method === 'PUT')).toBe(true));
   await user.click(dialog.getByRole('button', { name: '关闭' }));

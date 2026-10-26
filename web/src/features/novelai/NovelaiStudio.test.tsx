@@ -20,6 +20,44 @@ const page = (generations: unknown[]) => ({ generations, nextCursor: null, usage
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('allows a fresh role to generate with configured credentials despite legacy consent fields', async () => {
+  const { calls } = fakeBackend({
+    'GET /api/services/novelai': () => ({ body: { ...configuration, manualEnabled: false, manualConsentRevision: 0 } }),
+    'GET /api/roles/r1/generations': () => ({ body: page([]) }),
+    'POST /api/roles/r1/generations': () => ({ body: { generation: record } }),
+  });
+  const user = userEvent.setup();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '新角色' })]} initialRoleId="r1" />);
+  await screen.findByText('暂无生图历史。');
+  await user.type(screen.getByLabelText('工作台英文正向 tags'), 'blue sky');
+  await user.click(screen.getByRole('button', { name: '生成一张图片' }));
+  await screen.findByAltText('one.png');
+  expect(calls.filter(call => call.method === 'POST')).toHaveLength(1);
+});
+
+it('explains exhausted local attempts while keeping history accessible', async () => {
+  const { calls } = fakeBackend({
+    'GET /api/services/novelai': () => ({ body: { ...configuration, manualDailyAttempts: 1 } }),
+    'GET /api/roles/r1/generations': () => ({ body: page([record]) }),
+  });
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '角色' })]} initialRoleId="r1" />);
+  await screen.findByAltText('one.png');
+  expect(screen.getByText('今日生图尝试次数已达上限，请明日再试或调整次数上限。')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '生成一张图片' })).toBeDisabled();
+  expect(calls.some(call => call.method === 'POST')).toBe(false);
+});
+
+it('shows the sanitized provider explanation on the stage and in history', async () => {
+  const explanation = 'NovelAI 账户的 Anlas 余额或生图额度不足，请检查账户。';
+  fakeBackend({
+    'GET /api/services/novelai': () => ({ body: configuration }),
+    'GET /api/roles/r1/generations': () => ({ body: page([{ ...record, status: 'failed_response', attachments: [],
+      errorCode: 'http_402', errorMessage: explanation }]) }),
+  });
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '角色' })]} initialRoleId="r1" />);
+  expect(await within(screen.getByLabelText('当前作品')).findByText(explanation)).toBeInTheDocument();
+});
+
 it('shows the selected role history on a stage and reuses parameters without consuming a request', async () => {
   const second = { ...record, generationId: 'gen-second', attemptId: 'attempt-second', parameters: { ...record.parameters, width: 1024, height: 1024, seed: 654 },
     attachments: [{ ...image, id: 'image-second', name: 'second.png' }] };
@@ -378,15 +416,15 @@ it('keeps the generation action disabled and explains the current authorization 
   });
   render(<NovelaiStudio roles={[role({ id: 'r1', name: '诗织', agentConfig: ownerConfig })]} initialRoleId="r1" />);
   const form = await screen.findByRole('form', { name: '工作台生成设置' });
-  expect(await within(form).findByText('手动生图尚未获准，请先完成独立服务、凭据和有限消费确认。')).toBeInTheDocument();
+  expect(await within(form).findByText('NovelAI 生图已关闭，请在插件设置中启用。')).toBeInTheDocument();
   expect(within(form).getByRole('button', { name: '生成一张图片' })).toBeDisabled();
   await waitFor(() => expect(screen.getByText('暂无生图历史。')).toBeInTheDocument());
 });
 
 it.each([
-  ['missing token', { tokenConfigured: false }, '手动生图尚未获准，请先完成独立服务、凭据和有限消费确认。'],
-  ['stale consent', { manualConsentRevision: 2 }, '手动生图尚未获准，请先完成独立服务、凭据和有限消费确认。'],
-  ['credential cleanup', { credentialCleanupPending: true }, '手动生图尚未获准，请先完成独立服务、凭据和有限消费确认。'],
+  ['missing token', { tokenConfigured: false }, '尚未配置 NovelAI 凭据，请在插件设置中保存 Token。'],
+  ['disabled modes', { allowTxt2Img: false, allowImg2Img: false }, '文生图和图生图均已关闭，请在 NovelAI 设置中开启所需模式。'],
+  ['credential cleanup', { credentialCleanupPending: true }, 'NovelAI 凭据操作未完成，请重新保存或清空凭据。'],
 ] as const)('keeps generation disabled when authorization gate is %s', async (_name, override, message) => {
   fakeBackend({
     'GET /api/services/novelai': () => ({ body: { ...configuration, ...override } }),

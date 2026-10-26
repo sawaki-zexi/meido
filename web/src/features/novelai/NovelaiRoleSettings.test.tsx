@@ -9,7 +9,7 @@ import { NovelaiRoleSettings } from './NovelaiRoleSettings';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it('requires explicit current-version finite consent and preserves unrelated role policy', async () => {
+it('uses the plugin for chat images and preserves unrelated role policy without another consent gate', async () => {
   fakeBackend({ 'GET /api/services/novelai': () => ({ body: { enabled: true, tokenConfigured: true,
     credentialCleanupPending: false, revision: 3, dailyAttemptLimit: 20, maxPixels: 1048576, maxSteps: 28 } }) });
   let saved: unknown;
@@ -22,20 +22,16 @@ it('requires explicit current-version finite consent and preserves unrelated rol
   }
   const user = userEvent.setup();
   render(<Harness />);
-  expect(await screen.findByRole('checkbox', { name: '允许本角色在聊天中自主生成表情' })).not.toBeChecked();
   await screen.findByText(/账户每日最多 20 次/);
-  await user.click(screen.getByRole('checkbox', { name: '允许本角色在聊天中自主生成表情' }));
+  expect(screen.queryByRole('checkbox', { name: '允许本角色在聊天中自主生成表情' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('checkbox', { name: /我确认当前设置的有限生图消费/ })).not.toBeInTheDocument();
+  await user.click(screen.getByRole('checkbox', { name: '允许匹配本角色提示标签' }));
   await user.click(screen.getByRole('button', { name: '保存角色' }));
-  expect(saved).toBeUndefined();
-  await user.clear(screen.getByLabelText('本角色聊天表情每日最多尝试'));
-  await user.type(screen.getByLabelText('本角色聊天表情每日最多尝试'), '5');
-  await user.click(screen.getByRole('checkbox', { name: /我确认当前设置的有限生图消费/ }));
-  await user.click(screen.getByRole('button', { name: '保存角色' }));
-  expect(saved).toMatchObject({ agentConfig: { enabledTools: ['read_file'], novelai: { manualEnabled: true,
-    manualDailyAttempts: 5, sceneCgEnabled: false, autoWritebackRoleAssets: false, consentRevision: 3 } } });
+  expect(saved).toMatchObject({ agentConfig: { enabledTools: ['read_file'], novelai: { promptTagsEnabled: true,
+    sceneCgEnabled: false, autoWritebackRoleAssets: false, consentRevision: 0 } } });
 });
 
-it('saves a bounded role-specific CG prompt instruction and requires fresh consent', async () => {
+it('saves a bounded role-specific CG prompt instruction without repeated consent', async () => {
   const configuration = { enabled: true, tokenConfigured: true, credentialCleanupPending: false, revision: 3,
     dailyAttemptLimit: 20, maxPixels: 1048576, maxSteps: 28 };
   fakeBackend({
@@ -58,15 +54,13 @@ it('saves a bounded role-specific CG prompt instruction and requires fresh conse
   render(<Harness />);
   const instruction = await screen.findByLabelText('角色 CG 补充要求');
   await user.type(instruction, 'Warm lighting and a wide composition.');
-  expect(screen.getByRole('checkbox', { name: /我确认当前设置的有限生图消费/ })).not.toBeChecked();
-  await user.click(screen.getByRole('checkbox', { name: /我确认当前设置的有限生图消费/ }));
+  expect(screen.queryByRole('checkbox', { name: /我确认当前设置的有限生图消费/ })).not.toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: '保存角色' }));
   expect(saved).toMatchObject({ agentConfig: { novelai: {
-    sceneCgPromptInstructions: 'Warm lighting and a wide composition.', consentRevision: 3,
+    sceneCgPromptInstructions: 'Warm lighting and a wide composition.', consentRevision: 0,
   } } });
   expect(instruction).toHaveAttribute('maxlength', '2000');
   await user.clear(instruction);
-  await user.click(screen.getByRole('checkbox', { name: /我确认当前设置的有限生图消费/ }));
   await user.click(screen.getByRole('button', { name: '保存角色' }));
   expect(saved).toMatchObject({ agentConfig: { novelai: { sceneCgPromptInstructions: '' } } });
 });
