@@ -14,6 +14,7 @@ from typing import Any, Mapping
 
 from .base import ChannelAdapter, ChannelAdapterError, PlatformRejectedError, SendTransport, UnsupportedTargetError, delivery_status_for_error, is_blocked_identity
 from .directory import DirectoryError, DirectoryObservation, DirectoryQuery, MAX_RECORDS, MAX_RESPONSE_BYTES
+from .delivery import DeliveryAttempt, OutboundScheduler
 from .models import (
     Attachment,
     ChannelCapabilities,
@@ -62,6 +63,7 @@ class NapCatAdapter(ChannelAdapter):
         self.config = config
         self.account_id = config.account_id
         self._transport = transport
+        self.scheduler = OutboundScheduler()
         self._targets: dict[str, Target] = {}
         self._group_ids: set[str] = set()
         self._bot_message_ids: set[str] = set()
@@ -311,12 +313,17 @@ class NapCatAdapter(ChannelAdapter):
                     await self._send_receipt(operation, {**params, "message": mentions}, authorize=message.authorize_dispatch)
                     visible_sends += 1
                 forward_operation = "send_group_forward_msg" if message.target.kind is TargetKind.GROUP else "send_private_forward_msg"
-                result, message_id = await self._send_receipt(forward_operation, {**params, "messages": nodes}, authorize=message.authorize_dispatch)
+                operation, body = forward_operation, {**params, "messages": nodes}
             else:
                 segments = [*mentions, *([{"type": "text", "data": {"text": message.content}}] if message.content else []), *images]
                 body = segments if message.target.kind is TargetKind.GROUP or images else message.content
-                result, message_id = await self._send_receipt(operation, {**params, "message": body}, authorize=message.authorize_dispatch)
-            return DeliveryResult(DeliveryStatus.SENT, message.target, message_id, raw=dict(result))
+                body = {**params, 'message': body}
+            attempt = DeliveryAttempt(message, scheduler=self.scheduler)
+            async def send_part(part):
+                result, message_id = await self._send_receipt(operation, body, authorize=message.authorize_dispatch)
+                return {'message_id': message_id}
+            return await attempt.run([{'kind': 'text', 'content': message.content}], send_part,
+                receipt_id=lambda result: result.get('message_id'))
         except Exception as error:
             status = DeliveryStatus.UNCERTAIN if visible_sends else delivery_status_for_error(error)
             return DeliveryResult(status, message.target, error=type(error).__name__)

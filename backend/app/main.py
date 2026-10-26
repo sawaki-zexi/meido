@@ -6323,9 +6323,17 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             display_name=thread.title,
         )
         target_id = target.id
+        stream_done = asyncio.Event()
+        def queue_latest(content):
+            if stream_queue.full():
+                stream_queue.get_nowait()
+            stream_queue.put_nowait(content)
+
         async def stream_updates():
             assert stream_queue is not None
             while True:
+                if stream_done.is_set() and stream_queue.empty():
+                    return
                 update = await stream_queue.get()
                 if update is None:
                     return
@@ -6363,7 +6371,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                     thread.channel != "telegram" or thread.chat_type == "private"
                 ):
                     if stream_queue is None:
-                        stream_queue = asyncio.Queue()
+                        stream_queue = asyncio.Queue(maxsize=1)
                         stream_task = asyncio.create_task(channel_host.account_send(
                             thread.role_id,
                             thread.account_id,
@@ -6377,10 +6385,11 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                             source_session_key=thread.session_key,
                             source_run_id=run_id,
                             source_kind="reply",
+                            authorize_source=lambda: not turn_task.cancelling() and _queued_channel_turn_authorized(thread, metadata),
                             mention_ids=(str(metadata["senderId"]),) if thread.chat_type == "group" and thread.channel == "qq" and metadata.get("senderId") else (),
                             message_thread_id=metadata.get("messageThreadId"),
                         ))
-                    stream_queue.put_nowait(event.message.content)
+                    queue_latest(event.message.content)
             if isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage) and not event.message.tool_calls:
                 final_content = event.message.content
         delivery_metadata: dict[str, object] | None = None
@@ -6389,8 +6398,10 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
         if stream_queue is not None and stream_task is not None:
             terminal_content = final_content if final_content.strip() else streamed_content
             if terminal_content.strip():
-                stream_queue.put_nowait(terminal_content)
-            stream_queue.put_nowait(None)
+                queue_latest(terminal_content)
+            stream_done.set()
+            if stream_queue.empty():
+                stream_queue.put_nowait(None)
             try:
                 result = await stream_task
                 delivery_metadata = {
@@ -6398,6 +6409,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                     "deliveryAttemptId": result.attempt_id,
                     "platformMessageId": result.platform_message_id,
                     "deliveryError": result.error,
+                    **{key: result.raw[key] for key in ('parts', 'partialDelivery', 'deliveredContent', 'receiptKind') if key in result.raw},
                 }
             except Exception as error:
                 logger.warning("渠道回复投递失败 role=%s thread=%s error=%s", thread.role_id, thread.thread_id, type(error).__name__)
@@ -6431,6 +6443,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                     "deliveryAttemptId": result.attempt_id,
                     "platformMessageId": result.platform_message_id,
                     "deliveryError": result.error,
+                    **{key: result.raw[key] for key in ('parts', 'partialDelivery', 'deliveredContent', 'receiptKind') if key in result.raw},
                 }
                 if generation_reply is not None:
                     await _novelai_application().record_channel_receipt(generation_reply, status=result.status.value,
@@ -6446,7 +6459,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                 updated = session_store.update_message(
                     final_message_id,
                     message.content,
-                    message.status if delivery_metadata.get("deliveryStatus") == "sent" else "failed",
+                    message.status if delivery_metadata.get("deliveryStatus") == "sent" or delivery_metadata.get('partialDelivery') else "failed",
                     metadata={**message.metadata, **delivery_metadata},
                 )
                 if generation_reply is not None:
@@ -6475,8 +6488,10 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                 if not stream_task.done():
                     terminal_content = final_content if final_content.strip() else streamed_content
                     if terminal_content.strip():
-                        stream_queue.put_nowait(terminal_content)
-                    stream_queue.put_nowait(None)
+                        queue_latest(terminal_content)
+                    stream_done.set()
+                    if stream_queue.empty():
+                        stream_queue.put_nowait(None)
                 cleanup = asyncio.gather(stream_task, return_exceptions=True)
                 try:
                     await asyncio.shield(cleanup)

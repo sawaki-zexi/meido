@@ -23,6 +23,7 @@ import httpx
 from websockets.exceptions import ConnectionClosed, PayloadTooBig
 
 from .base import ChannelAdapterError, EventHandler, PlatformRejectedError
+from .delivery import DeliveryRejected, check_dispatch
 from .directory import DirectoryError, MAX_RESPONSE_BYTES, observed_now
 from .feishu_connection import FeishuLongConnectionRunner, feishu_sdk_connection_factory, wait_owned
 
@@ -147,6 +148,7 @@ class NapCatWebSocketTransport:
             async with self._send_lock:
                 # The socket gate may have yielded after adapter preparation.
                 # Once ws.send starts, await the real receipt without rechecking.
+                check_dispatch()
                 if authorize is not None and not authorize():
                     from .base import UnsupportedTargetError
                     raise UnsupportedTargetError("原始回复已取消或来源授权已失效")
@@ -368,6 +370,7 @@ class QQBotGatewayTransport:
             raise ChannelTransportError("QQBot 不支持该出站操作")
         self._ensure_http_open()
         token = await self._access_token()
+        check_dispatch()
         openid = quote(str(params.get("openid", "")), safe="")
         if not openid:
             raise ChannelTransportError("QQBot C2C 目标缺失")
@@ -399,9 +402,12 @@ class QQBotGatewayTransport:
                 raise ChannelTransportError("QQBot 图片 file_info 缺失")
             body = {
                 "msg_type": 7,
+                "content": " ",
                 "media": {"file_info": file_info},
                 "msg_seq": int(params.get("msg_seq", 0)),
             }
+            if params.get("msg_id"):
+                body["msg_id"] = str(params["msg_id"])
             path = f"{self.api_endpoint}/v2/users/{openid}/messages"
         elif operation == "stream_c2c":
             raw_body = params.get("body")
@@ -412,7 +418,10 @@ class QQBotGatewayTransport:
                 raise ChannelTransportError("QQBot 流式请求缺少入站消息 ID")
             path = f"{self.api_endpoint}/v2/users/{openid}/stream_messages"
         else:
-            body = {"msg_type": 0, "content": str(params.get("content", ""))}
+            body = ({'msg_type': 2, 'markdown': {'content': str(params.get('content', ''))}} if params.get('markdown')
+                else {"msg_type": 0, "content": str(params.get("content", ""))})
+            if 'msg_seq' in params:
+                body['msg_seq'] = int(params['msg_seq'])
             if params.get("msg_id"):
                 body["msg_id"] = str(params["msg_id"])
             path = f"{self.api_endpoint}/v2/users/{openid}/messages"
@@ -773,6 +782,7 @@ class FeishuWebhookTransport:
     async def __call__(self, operation: str, params: Mapping[str, Any]) -> Mapping[str, Any]:
         self._ensure_http_open()
         token = await self._tenant_access_token()
+        check_dispatch()
         headers = {"Authorization": f"Bearer {token}"}
         if operation == "im.v1.message.resource.get":
             message_id = quote(str(params.get("message_id", "")), safe="")
@@ -842,7 +852,6 @@ class FeishuWebhookTransport:
                 headers=headers,
                 json={**body, "receive_id": receive_id},
             )
-        response.raise_for_status()
         return self._checked_json_response(response)
 
     async def _cardkit_operation(self, operation: str, params: Mapping[str, Any], headers: Mapping[str, str]) -> Mapping[str, Any]:
@@ -869,48 +878,18 @@ class FeishuWebhookTransport:
             )
             return self._checked_json_response(response)
         if operation == "cardkit.finalize":
-            element_id = quote(str(params.get("element_id", "reply_md")), safe="")
-            content = str(params.get("content", ""))
-            stream_response = await self._http.put(
-                f"{self.endpoint}/cardkit/v1/cards/{card_id}/elements/{element_id}/content",
-                headers=headers,
-                json={"content": content, "sequence": int(params.get("sequence", 1)), "uuid": str(params.get("uuid") or uuid.uuid4())},
-            )
-            try:
-                self._checked_json_response(stream_response)
-            except ChannelTransportError:
-                # Feishu automatically closes streaming mode after ten minutes;
-                # a whole-card update can still preserve the final response.
-                fallback = await self._http.put(
-                    f"{self.endpoint}/cardkit/v1/cards/{card_id}",
-                    headers=headers,
-                    json={
-                        "card": {"type": "card_json", "data": json.dumps({
-                            "schema": "2.0",
-                            "config": {"update_multi": True, "summary": {"content": content[:60]}},
-                            "body": {"elements": [{"tag": "markdown", "content": content}]},
-                        }, ensure_ascii=False)},
-                        "sequence": int(params.get("settings_sequence", int(params.get("sequence", 1)) + 1)),
-                        "uuid": str(params.get("settings_uuid") or uuid.uuid4()),
-                    },
-                )
-                return self._checked_json_response(fallback)
-            settings_response = await self._http.patch(
-                f"{self.endpoint}/cardkit/v1/cards/{card_id}/settings",
-                headers=headers,
-                json={
-                    "settings": str(params.get("settings", "{}")),
-                    "sequence": int(params.get("settings_sequence", int(params.get("sequence", 1)) + 1)),
-                    "uuid": str(params.get("settings_uuid") or uuid.uuid4()),
-                },
-            )
-            # The text is already final. Shiori treats settings failure as
-            # non-fatal because Feishu ends streaming mode automatically.
-            try:
-                self._checked_json_response(settings_response)
-            except ChannelTransportError:
-                return {"card_id": card_id}
-            return {"card_id": card_id}
+            element_id = quote(str(params.get('element_id', 'reply_md')), safe='')
+            response = await self._http.put(f'{self.endpoint}/cardkit/v1/cards/{card_id}/elements/{element_id}/content',
+                headers=headers, json={'content': str(params.get('content', '')), 'sequence': int(params.get('sequence', 1)),
+                    'uuid': str(params.get('uuid') or uuid.uuid4())})
+            self._checked_json_response(response)
+            return {'card_id': card_id}
+        if operation == 'cardkit.close':
+            response = await self._http.patch(f'{self.endpoint}/cardkit/v1/cards/{card_id}/settings', headers=headers,
+                json={'settings': str(params.get('settings', '{}')), 'sequence': int(params.get('sequence', 1)),
+                    'uuid': str(params.get('uuid') or uuid.uuid4())})
+            self._checked_json_response(response)
+            return {'card_id': card_id}
         if operation == "cardkit.update_full":
             content = str(params.get("content", ""))
             response = await self._http.put(
@@ -931,10 +910,39 @@ class FeishuWebhookTransport:
 
     @staticmethod
     def _checked_json_response(response: Any) -> dict[str, Any]:
+        # A server failure cannot prove rejection, even when a body mentions
+        # a recoverable code. Do not retry a potentially accepted request.
+        status = getattr(response, 'status_code', 200)
+        if status >= 500 or status == 408:
+            response.raise_for_status()
+        if status in {401, 403}:
+            raise DeliveryRejected('feishu_permission_denied')
+        try:
+            payload = response.json()
+        except (ValueError, TypeError):
+            response.raise_for_status()
+            raise ChannelTransportError('feishu_invalid_response')
+        code = payload.get('code', 0) if isinstance(payload, dict) else None
+        if status == 429 or code in {99991400, 230020}:
+            headers = getattr(response, 'headers', {})
+            try:
+                retry_after = float(headers.get('x-ogw-ratelimit-reset', headers.get('retry-after', 0)))
+            except (ValueError, TypeError):
+                retry_after = 0
+            raise DeliveryRejected('feishu_rate_limit', recovery='rate_limit', retry_after=retry_after)
+        if code == 230011:
+            raise DeliveryRejected('feishu_quote_recalled', recovery='quote_missing')
+        if code == 230099:
+            # Only the documented JSON/component subcodes prove a format
+            # rejection. Other 230099 variants include permission failures.
+            import re
+            if re.search(r'\bcode\s*[:=]\s*(?:200621|200861)\b', str(payload.get('msg', '')), re.I):
+                raise DeliveryRejected('feishu_format_rejected', recovery='format_rejected')
+        if code not in {0, '0', None}:
+            raise DeliveryRejected(f'feishu_rejected_{code}')
         response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, dict) or int(payload.get("code", 0) or 0) != 0:
-            raise PlatformRejectedError("飞书 API 请求失败")
+        if not isinstance(payload, dict):
+            raise ChannelTransportError('feishu_invalid_response')
         return payload
 
     async def _tenant_access_token(self) -> str:

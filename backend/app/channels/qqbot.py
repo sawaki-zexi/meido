@@ -4,12 +4,17 @@ import asyncio
 import base64
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Mapping
 
 from .base import ChannelAdapter, ChannelAdapterError, PartialDeliveryError, SendTransport, UnsupportedTargetError, delivery_status_for_error, is_blocked_identity
 from .models import Attachment, ChannelCapabilities, ChatType, DeliveryResult, DeliveryStatus, DownloadedMedia, InboundEvent, OutboundMessage, Target, TargetKind, target_from_chat
+
+from .delivery import DeliveryAttempt, DeliveryStopped, OutboundScheduler, StreamDelivery
+from .formatting import markdown_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,7 @@ class QQBotStreamSession:
     index: int = 0
     completed: bool = False
     error: Exception | None = None
+    delivery: StreamDelivery | None = None
 
 
 class QQBotAdapter(ChannelAdapter):
@@ -48,6 +54,8 @@ class QQBotAdapter(ChannelAdapter):
         self.account_id = config.account_id
         self._transport = transport
         self._targets: dict[str, Target] = {}
+        self.scheduler = OutboundScheduler()
+        self._passive_sequences = OrderedDict()
 
     def gateway_identify(self, *, access_token: str) -> dict[str, Any]:
         """Return the non-secret Gateway identify payload for the host loop."""
@@ -96,6 +104,7 @@ class QQBotAdapter(ChannelAdapter):
             display_name=event.sender_name,
             external_message_id=message_id,
             event_id=message_id,
+            passiveExpiresAt=_passive_expiry(data.get("timestamp")),
         )
         return event
 
@@ -103,48 +112,49 @@ class QQBotAdapter(ChannelAdapter):
         self._validate_target(message.target)
         if self._transport is None:
             raise ChannelAdapterError("QQBot transport is not configured")
-        visible_sends = 0
-        first_message_id: str | None = None
-        last_result: Mapping[str, Any] = {}
         try:
             images = [await self._read_image(attachment) for attachment in message.attachments]
-            if message.content or not images:
-                params: dict[str, Any] = {"openid": message.target.chat_id, "content": message.content}
-                if message.reply_to_message_id:
-                    params["msg_id"] = message.reply_to_message_id
-                last_result = await self._transport("send_c2c", params)
-                visible_sends += 1
-                first_message_id = _response_message_id(last_result)
-                if first_message_id is None:
-                    raise PartialDeliveryError("QQBot 文本发送没有返回真实消息回执")
-            for data in images:
-                upload = await self._transport("upload_c2c_file", {
-                    "openid": message.target.chat_id,
-                    "body": {
-                        "file_type": 1,
-                        "file_data": base64.b64encode(data).decode("ascii"),
-                        "srv_send_msg": False,
-                    },
-                })
-                file_info = str(upload.get("file_info", "")).strip()
-                if not file_info:
-                    raise ChannelAdapterError("QQBot 图片上传响应缺少 file_info")
-                last_result = await self._transport("send_c2c_image", {
-                    "openid": message.target.chat_id,
-                    "file_info": file_info,
-                    "msg_seq": _next_msg_seq(),
-                })
-                visible_sends += 1
-                image_message_id = _response_message_id(last_result)
-                if image_message_id is None:
-                    raise PartialDeliveryError("QQBot 图片发送没有返回真实消息回执", platform_message_id=first_message_id)
-                first_message_id = first_message_id or image_message_id
-            return DeliveryResult(
-                DeliveryStatus.SENT, message.target, first_message_id, raw=dict(last_result),
-            )
+            parts = [{'kind': 'text', 'content': chunk} for chunk in markdown_chunks(message.content)]
+            parts += [{'kind': 'media', 'content': '', 'attachmentIndex': index,
+                       'fileName': attachment.file_name or 'image'} for index, attachment in enumerate(message.attachments)]
+            if not parts:
+                raise ChannelAdapterError('qqbot_empty_message')
+            msg_id = str(message.reply_to_message_id or message.target.metadata.get('external_message_id') or '')
+            if not msg_id:
+                raise ChannelAdapterError('qqbot_passive_source_required')
+            expires_at = message.target.metadata.get('passiveExpiresAt')
+            def authorized():
+                return (not isinstance(expires_at, (int, float)) or time.time() < expires_at) and (
+                    message.authorize_dispatch is None or message.authorize_dispatch())
+            if not authorized():
+                raise DeliveryStopped('qqbot_passive_source_expired')
+            if message.reserve_reply is not None:
+                sequences = message.reserve_reply(msg_id, len(parts))
+            else:
+                last = self._passive_sequences.get(msg_id, 0)
+                if last + len(parts) > 5:
+                    raise DeliveryStopped('qqbot_passive_quota_exhausted')
+                sequences = tuple(range(last + 1, last + len(parts) + 1))
+                self._passive_sequences[msg_id] = sequences[-1]
+                if len(self._passive_sequences) > 4096:
+                    self._passive_sequences.popitem(last=False)
+            for part, seq in zip(parts, sequences):
+                part.update(msgId=msg_id, msgSeq=seq)
         except Exception as error:
-            status = DeliveryStatus.UNCERTAIN if visible_sends else delivery_status_for_error(error)
-            return DeliveryResult(status, message.target, first_message_id, error=type(error).__name__, raw=dict(last_result))
+            return DeliveryResult(DeliveryStatus.FAILED, message.target, error=str(error) if isinstance(error, (DeliveryStopped, ChannelAdapterError)) else type(error).__name__)
+        async def send_part(part):
+            params = {'openid': message.target.chat_id, 'msg_id': msg_id, 'msg_seq': part['msgSeq']}
+            if part['kind'] == 'text':
+                return await self._transport('send_c2c', {**params, 'content': part['content'], 'markdown': True})
+            upload = await self._transport('upload_c2c_file', {'openid': message.target.chat_id,
+                'body': {'file_type': 1, 'file_data': base64.b64encode(images[part['attachmentIndex']]).decode('ascii'), 'srv_send_msg': False}})
+            file_info = str(upload.get('file_info') or '').strip()
+            if not file_info:
+                raise ChannelAdapterError('qqbot_upload_missing_file_info')
+            attempt.require_current()
+            return await self._transport('send_c2c_image', {**params, 'file_info': file_info})
+        attempt = DeliveryAttempt(replace(message, authorize_dispatch=authorized), scheduler=self.scheduler)
+        return await attempt.run(parts, send_part, receipt_id=_response_message_id)
 
     async def _read_image(self, attachment: Attachment) -> bytes:
         if attachment.kind.lower() != "image" or not attachment.url:
@@ -179,6 +189,7 @@ class QQBotAdapter(ChannelAdapter):
         *,
         title: str = "",
         reply_to_message_id: str | None = None,
+        outbound: OutboundMessage | None = None,
     ) -> QQBotStreamSession:
         """Prepare a C2C stream tied to the inbound message being answered.
 
@@ -196,55 +207,64 @@ class QQBotAdapter(ChannelAdapter):
         )
         if not msg_id:
             raise ChannelAdapterError("QQBot 流式回复缺少关联的入站消息 ID")
-        return QQBotStreamSession(target, msg_id, _next_msg_seq())
+        message = outbound or OutboundMessage(target, '', reply_to_message_id=msg_id)
+        if message.reserve_reply is not None:
+            seq = message.reserve_reply(msg_id, 1)[0]
+        else:
+            seq = self._passive_sequences.get(msg_id, 0) + 1
+            if seq > 5:
+                raise DeliveryStopped('qqbot_passive_quota_exhausted')
+            self._passive_sequences[msg_id] = seq
+        expiry = target.metadata.get('passiveExpiresAt')
+        original_guard = message.authorize_dispatch
+        message = replace(message, authorize_dispatch=lambda: (not isinstance(expiry, (int, float)) or time.time() < expiry)
+            and (original_guard is None or original_guard()))
+        delivery = StreamDelivery(message, self.scheduler, max_attempts=1)
+        delivery.require_current()
+        return QQBotStreamSession(target, msg_id, seq, delivery=delivery)
 
     async def stream_update(self, session: QQBotStreamSession, content: str) -> None:
         if session.completed:
-            raise ChannelAdapterError("QQBot 流式会话已经结束")
-        if session.error is not None:
-            return
-        try:
-            result = await self._send_stream_update(session, content, terminal=False)
-            if not _stream_message_id(result) and not session.stream_msg_id:
-                raise PartialDeliveryError("QQBot 流式响应缺少消息 ID")
-        except Exception as error:
-            session.error = error
+            raise ChannelAdapterError('QQBot 流式会话已经结束')
+        session.delivery.require_current()
+        first = next(iter(markdown_chunks(content)), '')
+        await session.delivery.update(first, lambda part: self._send_stream_update(session, first, terminal=False),
+            receipt_id=_stream_message_id, kind='edit' if session.stream_msg_id else 'send')
 
     async def stream_finalize(self, session: QQBotStreamSession, content: str) -> DeliveryResult:
         if session.completed:
-            return DeliveryResult(DeliveryStatus.SENT, session.target, session.stream_msg_id)
-        if session.error is not None and not _definitely_rejected(session.error):
-            return DeliveryResult(
-                delivery_status_for_error(session.error), session.target, session.stream_msg_id,
-                error=type(session.error).__name__,
-            )
+            return session.delivery.last_result
+        chunks = markdown_chunks(content or '…')
+        message = session.delivery.message
         try:
-            result = await self._send_stream_update(session, content, terminal=True)
-            message_id = _stream_message_id(result) or session.stream_msg_id
-            if not message_id:
-                raise PartialDeliveryError("QQBot 流式响应缺少消息 ID")
-            return DeliveryResult(DeliveryStatus.SENT, session.target, message_id, raw=dict(result))
-        except Exception as error:
-            if not _definitely_rejected(error):
-                return DeliveryResult(
-                    delivery_status_for_error(error), session.target, session.stream_msg_id,
-                    error=type(error).__name__,
-                )
-            if session.stream_msg_id:
-                try:
-                    assert self._transport is not None
-                    await self._transport("delete_c2c", {
-                        "openid": session.target.chat_id,
-                        "message_id": session.stream_msg_id,
-                    })
-                except Exception as cleanup_error:
-                    return DeliveryResult(
-                        delivery_status_for_error(cleanup_error), session.target, session.stream_msg_id,
-                        error=type(cleanup_error).__name__,
-                    )
-            fallback = await self.send(OutboundMessage(session.target, content))
-            session.completed = fallback.status is DeliveryStatus.SENT
-            return fallback
+            if len(chunks) > 1:
+                if message.reserve_reply:
+                    # The first reservation is already in the ledger; append a
+                    # continuation of this same logical message's source quota.
+                    sequences = message.reserve_reply(session.msg_id, len(chunks) - 1)
+                else:
+                    last = self._passive_sequences.get(session.msg_id, session.msg_seq)
+                    if last + len(chunks) - 1 > 5:
+                        raise DeliveryStopped('qqbot_passive_quota_exhausted')
+                    sequences = tuple(range(last + 1, last + len(chunks)))
+                    self._passive_sequences[session.msg_id] = sequences[-1]
+            else:
+                sequences = ()
+        except (ValueError, DeliveryStopped):
+            # No new passive source or active-send fallback is invented.
+            session.delivery.error = 'qqbot_passive_quota_exhausted'
+            previous = session.delivery.last_result
+            return replace(previous, status=DeliveryStatus.FAILED, error=session.delivery.error) if previous else DeliveryResult(
+                DeliveryStatus.FAILED, session.target, error=session.delivery.error)
+        parts = [{'kind': 'text', 'content': chunk, 'msgId': session.msg_id,
+                  'msgSeq': session.msg_seq if index == 0 else sequences[index - 1]}
+                 for index, chunk in enumerate(chunks)]
+        async def send(part):
+            if part['index'] == 0:
+                return await self._send_stream_update(session, part['content'], terminal=True)
+            return await self._transport('send_c2c', {'openid': session.target.chat_id,
+                'content': part['content'], 'markdown': True, 'msg_id': session.msg_id, 'msg_seq': part['msgSeq']})
+        return await session.delivery.finish(parts, send, receipt_id=_stream_message_id)
 
     async def _send_stream_update(
         self, session: QQBotStreamSession, content: str, *, terminal: bool
@@ -335,3 +355,11 @@ def _http_status(error: BaseException) -> int | None:
 def _definitely_rejected(error: BaseException) -> bool:
     status = _http_status(error)
     return status is not None and 400 <= status < 500 and status != 408
+
+
+def _passive_expiry(timestamp):
+    try:
+        observed = datetime.fromisoformat(str(timestamp).replace('Z', '+00:00')).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        observed = time.time()
+    return min(observed, time.time()) + 3600

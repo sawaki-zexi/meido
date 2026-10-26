@@ -346,3 +346,8 @@
 @media (max-width: 560px) { .account-group-entry { gap: 10px; padding: 12px; } .group-settings-scroll { padding: 14px; } }
 .channel-conversation-surface { display: contents; }
 .channel-messages > header:has(.channel-group-settings-button) { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.channel-delivery-parts { max-width: 100%; margin: 0.4rem 0; font-size: 0.85rem; overflow-wrap: anywhere; }
+.channel-delivery-parts summary { cursor: pointer; }
+.channel-delivery-parts ol { padding-left: 1.4rem; }
+.channel-delivery-parts li { margin: 0.7rem 0; }
+.channel-delivery-parts pre { white-space: pre-wrap; }

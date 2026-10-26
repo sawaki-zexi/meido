@@ -130,6 +130,7 @@ class ChannelAutonomyDelivery:
                 actor='push', record_message=False, attachment_ids=tuple(draft.get('attachment_ids', ())),
                 frozen_attachment_bytes=frozen,
                 source_kind=SOURCE_KIND, source_run_id=turn.origin.tick_id, source_tool_call_id=intent_id,
+                delivery_deadline=getattr(getattr(turn, 'execution', None), 'deadline', None),
                 authorize_source=lambda: self._authorized(turn, draft))
         except BaseException as error:
             with app._transaction() as db:
@@ -157,9 +158,12 @@ class ChannelAutonomyDelivery:
             receipt = {'status': status, 'intentId': intent_id, 'targetRef': target['ref'],
                 'attemptId': attempt['attempt_id'] if attempt else None,
                 'platformMessageId': attempt['platform_message_id'] if attempt else None}
-            if status == 'sent':
+            details = json.loads(attempt['details_json'] or '{}') if attempt and 'details_json' in attempt else {}
+            receipt.update({key: details[key] for key in ('parts', 'partialDelivery', 'deliveredContent', 'receiptKind') if key in details})
+            if status == 'sent' or details.get('partialDelivery'):
                 receipt, event = app.targets.host.store.project_autonomy_delivery_once(claim['role_id'], claim['tick_id'], intent_id,
                     claim['mode'], target, draft, connection=db)
+            if status == 'sent':
                 recovery = db.execute('SELECT * FROM autonomy_delivery_recovery WHERE intent_id=?', (intent_id,)).fetchone()
                 if recovery is None or not recovery['disposition_inputs']:
                     raise ValueError('original channel claim has no durable disposition inputs')

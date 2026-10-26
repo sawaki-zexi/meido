@@ -369,8 +369,6 @@ async def _execute_tool(
                 status="invalid_arguments",
             ), updates
         tool_signal = CancellationToken(parent=signal)
-        tool_context = replace(context, signal=tool_signal)
-        pending = resolve_tool_result(tool.execute(arguments, tool_context, on_update))
         definition = (
             registry.definition(call.name)
             if isinstance(registry, CapabilityResolution)
@@ -382,6 +380,13 @@ async def _execute_tool(
             if timeout is not None and tool_timeout is not None
             else tool_timeout if tool_timeout is not None else timeout
         )
+        now = time.monotonic()
+        if context.deadline is not None:
+            remaining = max(0, context.deadline - now)
+            effective_timeout = min(effective_timeout, remaining) if effective_timeout is not None else remaining
+        tool_context = replace(context, signal=tool_signal,
+            deadline=now + effective_timeout if effective_timeout is not None else None)
+        pending = resolve_tool_result(tool.execute(arguments, tool_context, on_update))
         result = await _await_authorized_tool(
             pending, registry=registry, definition=definition, context=context,
             signal=signal, tool_signal=tool_signal, timeout=effective_timeout, arguments=arguments,

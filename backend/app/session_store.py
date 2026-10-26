@@ -789,7 +789,9 @@ class SessionStore:
     def runtime_messages(self, session_key: str, *, max_messages: int | None = None, since: str | None = None, through_message_id: str | None = None) -> list[AgentMessage]:
         """Rebuild a provider transcript from the structured SQLite rows."""
 
-        stored_messages = self.list_messages(session_key)
+        from .channels.delivery_projection import delivered_message
+        stored_messages = [projected for item in self.list_messages(session_key)
+                           if (projected := delivered_message(item)) is not None]
         if through_message_id is not None:
             source = next((item for item in stored_messages if item.id == through_message_id and item.role == "user"), None)
             if source is None:
@@ -924,7 +926,8 @@ class SessionStore:
                         source_message_ids=(stored.id,),
                     ))
                 elif stored.role == "assistant":
-                    if stored.metadata.get("channel") not in {None, "", "desktop"} and stored.metadata.get("deliveryStatus") != "sent":
+                    if (stored.metadata.get("channel") not in {None, "", "desktop"}
+                            and stored.metadata.get("deliveryStatus") != "sent" and not stored.metadata.get('deliveryProjection')):
                         index += 1
                         continue
                     messages.append(_runtime_assistant_message(stored))
