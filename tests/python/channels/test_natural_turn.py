@@ -60,12 +60,17 @@ def test_natural_model_receives_host_verified_sender_identity(natural, sender, o
     asyncio.run(run())
 
 
-def test_natural_quote_names_owner_separately_from_guest(natural, monkeypatch):
+@pytest.mark.parametrize('quote_scope, identity, expected_text', [
+    ({'group_id': 100, 'message_type': 'group'}, '已配对主人', '明天去旅行'),
+    ({'message_type': 'private'}, '未知发送者', ''),
+    ({'message_type': 'group'}, '未知发送者', ''),
+])
+def test_natural_quote_names_owner_separately_from_guest(natural, monkeypatch, quote_scope, identity, expected_text):
     s = natural
     original = s.adapter._transport
     async def transport(operation, params):
         if operation == 'get_msg':
-            return {'data': {'group_id': 100, 'message_type': 'group',
+            return {'data': {**quote_scope,
                 'sender': {'user_id': 11, 'nickname': 'Owner'},
                 'message': [{'type': 'text', 'data': {'text': '明天去旅行'}}]}}
         return await original(operation, params)
@@ -81,8 +86,10 @@ def test_natural_quote_names_owner_separately_from_guest(natural, monkeypatch):
             inputs = [json.loads(item['content']) for item in s.calls[0][0] if item['role'] == 'user']
             message = next(item for item in inputs if item['messageId'] == 'natural-quote')
             assert message['senderIsOwner'] is False
-            assert message['replyToSenderIdentity'] == '已配对主人'
-            assert message['replyToContent'] == '明天去旅行'
+            assert message['replyToSenderIdentity'] == identity
+            assert message['replyToContent'] == expected_text
+            if not expected_text:
+                assert '明天去旅行' not in str(s.calls)
             assert not s.calls[0][1]
         finally:
             await s.scheduler.close()

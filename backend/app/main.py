@@ -2918,7 +2918,8 @@ async def _natural_decide(batch, inputs, authorized):
                     sender_id=str(resolved.reply_to_sender_id or ''),
                     own_id=str(resolved.metadata.get('self_id') or ''),
                     verified=resolved.metadata.get('replyContextVerified') is True),
-                'replyToContent': str(resolved.metadata.get('replyToContent') or '')[:1000],
+                'replyToContent': (str(resolved.metadata.get('replyToContent') or '')[:1000]
+                    if resolved.metadata.get('replyContextVerified') is True else ''),
             }
         return resolved
     resolved_quotes = {}
