@@ -1300,7 +1300,7 @@ def test_recalled_memory_is_injected_only_for_related_current_role(tmp_path, mon
     assert "海边散步" in adapter.contexts[0]
 
 
-def test_fixed_markdown_memory_is_injected_with_recalled_memory(tmp_path, monkeypatch):
+def test_fixed_owner_memory_is_injected_without_dynamic_recent_raw_history(tmp_path, monkeypatch):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
     memory_dir = tmp_path / "roles" / role.id / "memory"
@@ -1316,6 +1316,7 @@ def test_fixed_markdown_memory_is_injected_with_recalled_memory(tmp_path, monkey
     monkeypatch.setattr(main, "roles_root", tmp_path / "roles")
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "multichannel_store", main.MultichannelStore(sessions.database_path, sessions))
     monkeypatch.setattr(main, "session_manager", main.SessionManager(roles, sessions))
     monkeypatch.setattr(main, "memory_store", memory_store)
     monkeypatch.setattr(main, "memory_service", memory_service)
@@ -1325,7 +1326,7 @@ def test_fixed_markdown_memory_is_injected_with_recalled_memory(tmp_path, monkey
     assert response.status_code == 200
     assert "角色认识主人" in adapter.contexts[0]
     assert "主人喜欢清晨散步" in adapter.contexts[0]
-    assert "最近在讨论旅行" in adapter.contexts[0]
+    assert "最近在讨论旅行" not in adapter.contexts[0]
 
 
 def test_context_block_never_exceeds_budget_and_keeps_complete_memory_items(tmp_path):
