@@ -3,6 +3,7 @@ import type { Role } from "../../api/types";
 import { api, errorMessage } from "../../api/client";
 import { Icon, IconButton } from "../../ui/Icon";
 import { Notice } from "../../ui/Status";
+import { MessageMarkdown } from "../../ui/MessageMarkdown";
 import { GroupSettingsPanel, type GroupSummary } from "./GroupSettingsPanel";
 import { GroupListeningPanel } from "./GroupListeningPanel";
 import { RoleAccountsPanel } from "./RoleAccountsPanel";
@@ -711,7 +712,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
                 {replyTo && <div className="channel-message-reply">{replyTarget || quotedText ? `回复 ${replySender}：${quotedText || replyTarget?.content || "（无内容）"}` : `回复 ${replySender || "未知发送者"} 的消息 ${replyTo}（原文未加载）`}</div>}
                 {quotedAttachments.length > 0 && <div className="channel-message-reply" role="group" aria-label="引用消息附件"><ChannelAttachments roleId={role.id} attachments={quotedAttachments} onMediaLoad={keepAtBottomAfterMediaLoad} /></div>}
                 {mentionedNames.length > 0 && <div className="channel-message-mentions">提及：{mentionedNames.map((name) => `@${name}`).join("、")}</div>}
-                {message.content && <p>{message.content}</p>}
+                {message.content && <MessageMarkdown content={message.content} />}
                 <ChannelAttachments roleId={role.id} attachments={attachments} onMediaLoad={keepAtBottomAfterMediaLoad} />
                 {!message.content && attachments.length === 0 && quotedAttachments.length === 0 && <p>（无内容）</p>}
                 {delivery && <span className={`channel-delivery channel-delivery-${message.metadata.deliveryStatus}`}>{delivery}</span>}
@@ -726,7 +727,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
             if (listeningSource) node?.querySelector("details")?.setAttribute("open", "");
           }}>
             {listeningSource && <section className="channel-message source-highlight" style={{ boxShadow: "0 0 0 2px var(--rose)" }} aria-label="旁听记忆来源" ref={(node) => { sourceElement.current = node; }}>
-              <span className="source-marker">记忆来源 · 当前群旁听记录</span><p>{listeningSource.content}</p>
+              <span className="source-marker">记忆来源 · 当前群旁听记录</span><MessageMarkdown content={listeningSource.content} />
               <p>{sourceOnly ? "此来源独立保存在当前群的旁听记录中。" : "此来源独立保存在当前群的旁听记录中，下面已展开旁听面板。"}</p>
             </section>}
             {!sourceOnly && <GroupListeningPanel key={`${role.id}:${selectedThread.threadId}`} roleId={role.id} threadId={selectedThread.threadId} accountId={account?.accountId} chatId={selectedThread.chatId} editable={Boolean(account && !selectedThread.accountRemoved)} />}

@@ -2,7 +2,7 @@
 
 状态：当前
 事实来源：`web/src/`、`web/src/App.test.tsx`
-最后核验：2026-10-25（资料分段编辑、项目能力入口与提醒资格、记忆分类筛选与账号列表）
+最后核验：2026-10-26（补齐桌面与多端消息 Markdown 渲染）
 
 ## 风格原则
 
@@ -55,6 +55,17 @@ web/src/
 - 待办面板参考 Today AI 的分组任务界面，使用 `page` 形态居中展开宽幅工作区：桌面左侧为导航与筛选，右侧为清单，详情使用宽幅表单；窄屏导航移到顶部，手机全屏展示。保留“待办 / 提醒”页签与独立详情编辑；数据加载和写入由 `useTodos` 管理，局部样式位于 `features/todo/todo.css`，复用全局外观变量。日期分组和时间编辑规则见[待办规格](todo-reminder-spec.md#9-前端行为)。
 - 流式事件先由 `api/stream.ts` 解析为类型化事件，再由 `applyStreamEvent` 纯函数更新消息列表。
 - 目录名避免使用 `roles/`：它被 `.gitignore` 用于本地角色数据。
+
+## 消息正文
+
+桌面聊天、手机多端会话、渠道历史与旁听记录共用 `ui/MessageMarkdown.tsx`，对双方消息的原始正文做显示层解析；发送、持久化、线程归属和引用快照不变。历史消息与实时／流式消息使用相同入口，未闭合片段保持可读，后续内容到达后重新解析。
+
+- 支持标题、中文标点旁的加粗、斜体、删除线、层级列表、任务列表、引用、行内代码、代码块及 GFM 表格；保留单行换行。
+- 表格与代码块在气泡内横向滚动，长文本换行；段落和列表样式局限在正文内。
+- HTML 作为原文显示；只允许 HTTP、HTTPS 和邮件链接，网页链接在新标签页打开。Markdown 图片仅显示替代文字，图片与文件继续通过现有附件入口展示。
+- 引用快照和会话列表摘要保持简短预览，提及、身份、失败与投递状态独立显示，不参与正文解析。
+
+事实来源：`features/chat/ChatMarkdown.test.tsx`、`features/channels/ChannelMarkdown.test.tsx` 与 `features/channels/GroupListeningPanel.test.tsx`。参考来源及许可见[第三方声明](../reference/third-party-notices.md)。
 
 ## 测试
 

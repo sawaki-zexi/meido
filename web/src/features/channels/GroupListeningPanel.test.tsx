@@ -11,6 +11,18 @@ const heard = (sequence: number, content: string) => ({
 });
 const settings = { enabled: true, dailyCap: 200, defaultDailyCap: 200, toggles: [] };
 
+it("展开旁听记录时格式化消息正文", async () => {
+  fakeBackend({
+    "GET .*threads/t1/listening": () => ({ body: settings }),
+    "GET .*threads/t1/listening/messages": () => ({ body: { messages: [heard(1, "## 旁听摘要\n\n- **今天**完成")], hasMore: false, nextBefore: null } }),
+  });
+  const user = userEvent.setup();
+  render(<GroupListeningPanel roleId="r1" threadId="t1" editable />);
+  await user.click(screen.getByText(/群旁听记录/));
+  expect(await screen.findByRole("heading", { name: "旁听摘要" })).toBeVisible();
+  expect(screen.getByText("今天", { selector: "strong" })).toBeVisible();
+});
+
 it("当前群内启停与清理旁听，不展示其他群配置", async () => {
   let enabled = false;
   const { calls } = fakeBackend({
