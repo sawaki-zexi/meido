@@ -52,10 +52,14 @@ class FrozenChannelSource:
     paired_at: str
     message_created_at: str
     owner_context_since: str | None
+    group_reply_revision: int = 0
 
     def __post_init__(self) -> None:
         for key, value in asdict(self).items():
-            if key == "owner_context":
+            if key == "group_reply_revision":
+                if type(value) is not int or value < 0:
+                    raise ValueError("invalid group reply generation")
+            elif key == "owner_context":
                 if type(value) is not bool:
                     raise ValueError("owner authority must be a host boolean")
             elif key == "owner_context_since":
@@ -95,7 +99,12 @@ class FrozenChannelSource:
                 raise ValueError("message predates its private owner context")
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        payload = asdict(self)
+        # Default-zero is the original generation. Preserve pre-field source
+        # hashes for existing tasks; nonzero off/on epochs must remain bound.
+        if self.group_reply_revision == 0:
+            payload.pop("group_reply_revision")
+        return payload
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> FrozenChannelSource:
@@ -118,6 +127,10 @@ class FrozenChannelSource:
             and not account.allow_group
         ):
             return "source channel conversation permission was revoked"
+        if self.channel == "qq" and self.chat_type == "group" and channels.group_reply_policy(
+            self.role_id, self.account_id, self.chat_id
+        ) != (True, self.group_reply_revision):
+            return "source group reply permission was revoked"
         thread = channels.get_thread(self.role_id, self.thread_id)
         if thread is None or (
             thread.session_key,
@@ -230,6 +243,7 @@ def capture_channel_message_source(channels, thread, message, *, owner_context: 
             )
             if owner_context and thread.chat_type == "private"
             else None,
+            group_reply_revision=metadata.get("groupReplyRevision", 0),
         )
     except ValueError as error:
         raise PermissionError(str(error)) from error

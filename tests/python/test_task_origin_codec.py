@@ -148,3 +148,58 @@ def test_legacy_novelai_wire_identity_round_trips_without_new_blank_fields():
     value = GenerationContext(TaskOrigin('r', 'role:r'), 'human', 'request', frozenset()).to_dict()
     assert 'grantDomain' not in value['origin']
     assert GenerationContext.from_dict(value).to_dict() == value
+
+
+@pytest.mark.parametrize('channel, chat_type', [('qq', 'private'), ('qq', 'group'), ('telegram', 'private')])
+def test_original_complete_channel_task_remains_manageable_from_same_source_after_epoch_field_added(
+    tmp_path, channel, chat_type,
+):
+    import hashlib
+    import threading
+    from dataclasses import replace
+    from backend.app.task_runtime import TaskBudget, TaskOutcome, TaskRuntime
+
+    def scope(payload):
+        identity = {key: value for key, value in payload.items() if key != 'message_created_at'}
+        return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+
+    original = channel_origin()
+    old_payload = json.loads(original.source_authority_json)
+    old_payload.update(channel=channel, chat_type=chat_type)
+    old_payload.pop('group_reply_revision', None)  # Actual pre-230 persisted shape.
+    old_origin = replace(original, source_scope_id=scope(old_payload),
+        source_authority_json=json.dumps(old_payload, sort_keys=True, separators=(',', ':')))
+    old_origin = TaskOrigin.from_dict(asdict(old_origin), require_source_authority=True)
+    # A later input has the same sender/binding, not the same message timestamp.
+    source = replace(FrozenChannelSource.from_dict(old_payload), message_created_at='2026-01-01T03:00:00+00:00')
+    current_payload = source.to_dict()
+    current = replace(old_origin, tool_call_id='later-call', source_scope_id=scope(current_payload),
+        source_authority_json=json.dumps(current_payload, sort_keys=True, separators=(',', ':')))
+    started, release = threading.Event(), threading.Event()
+
+    class Owned:
+        def run(self, execution):
+            started.set()
+            release.wait(3)
+            return TaskOutcome('cancelled')
+
+        def cancel(self):
+            release.set()
+
+    tasks = TaskRuntime(tmp_path / 'tasks')
+    try:
+        identifier = tasks.submit(old_origin, Owned(), budget=TaskBudget(), kind='legacy')
+        assert started.wait(3)
+        assert tasks.query(identifier, current).origin == old_origin
+        if channel == 'qq' and chat_type == 'group':
+            changed_payload = replace(source, group_reply_revision=1).to_dict()
+            assert changed_payload['group_reply_revision'] == 1
+            changed = replace(current, source_scope_id=scope(changed_payload),
+                source_authority_json=json.dumps(changed_payload))
+            with pytest.raises(KeyError):
+                tasks.query(identifier, changed)
+        tasks.stop(identifier, current)
+        assert tasks.query(identifier, current).status == 'cancelled'
+    finally:
+        release.set()
+        tasks.close()
