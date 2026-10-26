@@ -27,6 +27,39 @@ function feed() {
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it("renders assistant Markdown beside live tool progress without formatting or executing the tool summary", async () => {
+  const events = feed();
+  const content = "**正在处理**，会使用 `mcp_connect`。";
+  const summary = "**连接阶段** [不跳转](https://example.test/status) <img src=x onerror=alert(1)>";
+  fakeBackend({
+    "GET /api/roles": () => ({ body: { roles: [alice] } }),
+    "GET /api/roles/r1/session": () => ({ body: { session, messages: [] } }),
+    "POST /api/roles/r1/messages": () => {
+      events.emit("user_message_accepted", { message: userMessage, runId: "run-1", sequence: 1 });
+      events.emit("assistant_generation_started", { messageId: "a1", runId: "run-1", sequence: 2 });
+      events.emit("assistant_delta", { messageId: "a1", delta: content, runId: "run-1", sequence: 3 });
+      events.emit("tool_execution_start", { ...call, sequence: 4 });
+      events.emit("tool_execution_update", { ...call, sequence: 5, result: summary, status: "running", isError: false });
+      return { stream: events.stream, headers: { "X-Meido-Run-Id": "run-1" } };
+    },
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByRole("heading", { name: "爱丽丝" });
+  await user.type(screen.getByRole("textbox", { name: "消息内容" }), "执行工具{Enter}");
+  const progress = await screen.findByRole("status", { name: "工具执行" });
+  expect(screen.getByText("正在处理", { selector: ".message.assistant strong" })).toBeVisible();
+  expect(screen.getByText("mcp_connect", { selector: ".message.assistant code" })).toBeVisible();
+  expect(within(progress).getByText(summary)).toBeVisible();
+  expect(within(progress).getByText("运行中")).toBeVisible();
+  expect(progress.querySelector("a, img, .message-markdown")).toBeNull();
+  act(() => events.emit("tool_execution_end", { ...call, sequence: 6, result: "派发完成，结果不确定", status: "unknown", isError: true }));
+  await within(progress).findByText("结果不确定");
+  act(() => events.emit("assistant_completed", { message: { ...assistant, content: "**最终回复**保留真实结果。" }, runId: "run-1", sequence: 7 }));
+  expect(await screen.findByText("最终回复", { selector: ".message.assistant strong" })).toBeVisible();
+  await waitFor(() => expect(screen.queryByRole("status", { name: "工具执行" })).toBeNull());
+});
+
 it("shows a safe update before the producer barrier releases, then truthful independent call states (#233)", async () => {
   const events = feed();
   let release!: () => void;
