@@ -18,18 +18,22 @@ const musicVolumeStorageKey = "meido:landing-music-volume";
 const musicEnabledStorageKey = "meido:landing-music-enabled";
 const defaultMusicVolume = 35;
 const backgrounds = [
-  "/landing/night-sky.png",
-  "/landing/sunlit-room.webp",
-  "/landing/coastal-road.webp",
-  "/landing/summer-meadow.webp",
+  "night-sky.png",
+  "sunlit-room.webp",
+  "coastal-road.webp",
+  "summer-meadow.webp",
 ];
+
+function landingAsset(filename: string) {
+  return `${import.meta.env.BASE_URL}landing/${filename}`;
+}
 
 function getTopic(id: TopicId) {
   return topics.find((topic) => topic.id === id)!;
 }
 
 export function LandingPage() {
-  const [background] = useState(() => backgrounds[Math.floor(Math.random() * backgrounds.length)]);
+  const [background] = useState(() => landingAsset(backgrounds[Math.floor(Math.random() * backgrounds.length)]));
   const [musicEnabled, setMusicEnabled] = useState(() => window.localStorage.getItem(musicEnabledStorageKey) !== "false");
   const [musicVolume, setMusicVolume] = useState(() => {
     const stored = window.localStorage.getItem(musicVolumeStorageKey);
@@ -265,7 +269,7 @@ export function LandingPage() {
     className={`landing ${phase === "title" ? "landing-title" : "landing-scene"} ${reducedMotion ? "reduced-motion" : ""}`}
     onClick={handleSceneClick}
   >
-    <audio ref={musicRef} src="/landing/neko-ni-michibikarete.mp3" preload="none" loop aria-hidden="true" />
+    <audio ref={musicRef} src={landingAsset("neko-ni-michibikarete.mp3")} preload="none" loop aria-hidden="true" />
     <button type="button" className="bgm-toggle" title={musicEnabled ? "关闭背景音乐" : "开启背景音乐"} aria-label={musicEnabled ? "关闭背景音乐" : "开启背景音乐"} aria-pressed={musicEnabled} onClick={(event) => { event.stopPropagation(); toggleMusic(); }}>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
@@ -278,7 +282,7 @@ export function LandingPage() {
 
     {phase === "title" || phase === "transition" ? <section className="title-screen" aria-label="Meido 项目介绍标题画面">
       <div className="title-wordmark"><span className="title-kicker">A LOCAL-FIRST CHARACTER COMPANION</span><h1>meido</h1><span className="title-rule" /></div>
-      <img className="title-sprite" src="/landing/elysia-greeting.png" alt="Meido 的女仆讲解角色" />
+      <img className="title-sprite" src={landingAsset("elysia-greeting.png")} alt="Meido 的女仆讲解角色" />
       <button className="start-prompt" onClick={(event) => { event.stopPropagation(); begin(); }} aria-label="按任意键开始游戏">
         <span>按任意键开始游戏</span>
       </button>
@@ -288,7 +292,7 @@ export function LandingPage() {
         <div className="scene-brand"><span className="brand-mark">M</span><span>MEIDO</span><i />项目介绍</div>
       </div>
 
-      <img className={`dialogue-sprite sprite-${sprite}`} src={`/landing/elysia-${sprite}.png`} alt="Meido 的女仆讲解角色" />
+      <img className={`dialogue-sprite sprite-${sprite}`} src={landingAsset(`elysia-${sprite}.png`)} alt="Meido 的女仆讲解角色" />
 
       <section className="dialogue-box" aria-live="polite">
         <div className="speaker-name"><span className="speaker-emblem">✦</span>{speakerName}</div>
