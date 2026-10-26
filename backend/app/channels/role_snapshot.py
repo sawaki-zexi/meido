@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 _CHANNEL_TABLES = (
     "channel_accounts", "channel_account_settings", "channel_threads",
     "channel_identities", "channel_owner_chats", "channel_events",
-    "channel_targets", "channel_delivery_attempts", "channel_group_settings",
+    "channel_targets", "channel_delivery_attempts", "channel_group_settings", "channel_grok_exchanges",
     "channel_group_context", "channel_member_profiles", "channel_member_names", "channel_memory_cursors",
     "channel_listening_records", "channel_listening_config", "channel_listening_toggles",
     "channel_listening_cursors", "channel_natural_settings", "channel_natural_quota", "channel_push_targets", "channel_push_events",
@@ -27,6 +27,7 @@ _SECRET_NAMES = {
     "telegram": ("bot_token",), "qq": ("access_token",),
     "qqbot": ("client_secret",),
     "feishu": ("app_secret", "verification_token", "encrypt_key"),
+    "grok_bot": ("webhook_key", "callback_token"),
 }
 
 

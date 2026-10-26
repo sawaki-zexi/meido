@@ -13,6 +13,8 @@ from backend.app.channels import ChannelHost
 from backend.app.channels.consolidation import ChannelMemoryMaintenance
 from backend.app.channels.credentials import credential_key
 from backend.app.channels.group_tools import MultichannelGroupRepository
+from backend.app.channels.grok.exchange import ExchangeJournal
+from backend.app.channels.grok.protocol import BotMessage
 from backend.app.channels.models import DeliveryResult, DeliveryStatus, TargetKind, target_from_chat
 from backend.app.channels.push import ChannelPushService
 from backend.app.memory_service import MemoryService, MemoryWorker
@@ -75,6 +77,13 @@ def seed(tmp_path, role_id="r1"):
 def test_channel_role_snapshot_restores_history_credentials_profiles_listening_push_and_avatar(tmp_path):
     async def scenario():
         store, sessions, credentials, account, private, group = seed(tmp_path)
+        bot = store.register_channel_account('r1', 'grok_bot', account_id='grok-r1')
+        for name in ('webhook_key', 'callback_token'):
+            credentials.set(credential_key('grok_bot', bot.account_id, name), f'private-{name}')
+        journal = ExchangeJournal(str(tmp_path / 'sessions.db'), 'r1', bot.account_id, 'peer')
+        incoming = BotMessage('bot-input', 'hello', None)
+        assert journal.begin(incoming, 'in', 2)[0]
+        journal.finish(incoming.message_id, 'completed')
         output = io.BytesIO()
         Image.new("RGB", (128, 128), "green").save(output, format="PNG")
 
@@ -91,6 +100,10 @@ def test_channel_role_snapshot_restores_history_credentials_profiles_listening_p
         ChannelPushService(store, ChannelHost(store)).clear_role("r1")
         assert store.get_account(account.account_id) is None
         store.restore_role("r1", snapshot)
+        for name in ('webhook_key', 'callback_token'):
+            assert credentials.get(credential_key('grok_bot', bot.account_id, name)) == f'private-{name}'
+        assert journal.begin(incoming, 'in', 2)[0] is False
+        assert journal.begin(BotMessage('reply', 'hello back', 'bot-input'), 'out', 2)[0]
         assert store.get_account(account.account_id).enabled
         assert credentials.get(credential_key("qq", account.account_id, "access_token")) == "vault-secret"
         assert [message.model_dump() for message in sessions.list_messages(private.session_key)] == before
