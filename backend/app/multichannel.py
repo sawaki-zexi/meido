@@ -1752,7 +1752,13 @@ class TelegramChannelService:
             await self.transport.send_message(self.store.token(account_id), chat_id, str(response), reply_to=external_id, **topic_kwargs)
             return True
         reply = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), Mapping) else {}
+        reply_chat = reply.get("chat") if isinstance(reply.get("chat"), Mapping) else {}
+        if reply_chat.get("id") is not None and str(reply_chat["id"]) != chat_id:
+            reply = {}  # Do not import another conversation through a malformed quote.
         reply_from = reply.get("from") if isinstance(reply.get("from"), Mapping) else {}
+        reply_sender_chat = reply.get("sender_chat") if isinstance(reply.get("sender_chat"), Mapping) else {}
+        reply_sender_id = (f"chat:{reply_sender_chat['id']}" if reply_sender_chat.get("id") is not None
+            else str(reply_from.get("id") or ""))
         bot_id = str(account.platform_id or "")
         bot_username = account.display_name.lstrip("@").lower()
         entities = message.get("entities") if isinstance(message.get("entities"), list) else []
@@ -1778,7 +1784,7 @@ class TelegramChannelService:
                     encoded = raw_content.encode("utf-16-le")
                     value = encoded[offset * 2:(offset + length) * 2].decode("utf-16-le", errors="ignore").lstrip("@").casefold()
                     mentioned = mentioned or value == bot_username.casefold()
-        triggered = chat_type == "private" or bool(mentioned) or str(reply_from.get("id") or "") == bot_id
+        triggered = chat_type == "private" or bool(mentioned) or bool(bot_id and reply_sender_id == bot_id)
         # Telegram has no Shiori-style group listener in the baseline. Group
         # messages without an explicit mention/reply are therefore ignored.
         if chat_type != "private" and not triggered:
@@ -1809,6 +1815,11 @@ class TelegramChannelService:
             self.store.remember_owner_chat(role_id=account.role_id, channel="telegram", scope="platform", platform_user_id=sender_id, account_id=account_id, chat_id=chat_id)
         quoted_attachments = await self._download_attachments(account, reply) if reply else []
         metadata = {"hostReceivedAt": received_at, "platformMessageId": external_id, "senderId": sender_id, "senderName": sender_name, "senderIsOwner": owner, "senderKind": "chat" if sender_chat else "user", "chatType": chat_type, "triggered": triggered, "mentioned": mentioned, "mentionedIds": mentioned_ids, "replyTo": str(reply.get("message_id") or "") if reply else None, "replyToSenderId": str(reply_from.get("id") or "") if reply else None, "replyToContent": str(reply.get("text") or reply.get("caption") or "") if reply else None, "replyToSenderName": str(reply_from.get("first_name") or reply_from.get("username") or "") if reply else None, "quotedAttachments": quoted_attachments, "attachments": attachment_items}
+        from .channels.reply_identity import capture_reply_identity
+        metadata.update(capture_reply_identity(self.store, account,
+            sender_id=reply_sender_id, verified=bool(reply)))
+        if reply_sender_chat:
+            metadata["replyToSenderName"] = str(reply_sender_chat.get("title") or "")
         if topic_id is not None:
             metadata["messageThreadId"] = topic_id
         accepted, stored_message = self.store.append_event(thread, direction="inbound", content=content, external_message_id=external_id, metadata=metadata)

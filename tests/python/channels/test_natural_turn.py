@@ -60,6 +60,35 @@ def test_natural_model_receives_host_verified_sender_identity(natural, sender, o
     asyncio.run(run())
 
 
+def test_natural_quote_names_owner_separately_from_guest(natural, monkeypatch):
+    s = natural
+    original = s.adapter._transport
+    async def transport(operation, params):
+        if operation == 'get_msg':
+            return {'data': {'group_id': 100, 'message_type': 'group',
+                'sender': {'user_id': 11, 'nickname': 'Owner'},
+                'message': [{'type': 'text', 'data': {'text': '明天去旅行'}}]}}
+        return await original(operation, params)
+    monkeypatch.setattr(s.adapter, '_transport', transport)
+    async def run():
+        try:
+            data = payload('natural-quote', sender='22', image=False, triggered=False)
+            data['message'].insert(0, {'type': 'reply', 'data': {'id': 'owner-message'}})
+            event = await main.channel_host.accept_event(s.adapter.account_id, data)
+            await main._handle_channel_event(event)
+            await asyncio.sleep(0)
+            await s.clock.advance(1)
+            inputs = [json.loads(item['content']) for item in s.calls[0][0] if item['role'] == 'user']
+            message = next(item for item in inputs if item['messageId'] == 'natural-quote')
+            assert message['senderIsOwner'] is False
+            assert message['replyToSenderIdentity'] == '已配对主人'
+            assert message['replyToContent'] == '明天去旅行'
+            assert not s.calls[0][1]
+        finally:
+            await s.scheduler.close()
+    asyncio.run(run())
+
+
 def test_disabling_group_invalidates_pending_natural_reply_and_keeps_listening(natural):
     s = natural
     async def run():

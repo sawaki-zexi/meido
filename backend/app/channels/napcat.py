@@ -255,6 +255,13 @@ class NapCatAdapter(ChannelAdapter):
             "quotedAttachments": tuple(attachments),
             "quotedGroupVerified": (event.chat_type is ChatType.GROUP and quoted_group == event.chat_id
                 and quoted.get("message_type") in (None, "group")),
+            "replyContextVerified": (
+                event.chat_type is ChatType.GROUP and quoted_group == event.chat_id
+                and quoted.get("message_type") in (None, "group")
+                or event.chat_type is ChatType.PRIVATE and not quoted_group
+                and quoted.get("message_type") == "private"
+                and event.chat_id in {str(quoted.get("user_id") or ""), str(quoted.get("target_id") or "")}
+            ),
         }, reply_to_sender_id=str(sender.get("user_id") or quoted.get("user_id") or event.reply_to_sender_id or "") or None)
 
     async def send(self, message: OutboundMessage) -> DeliveryResult:

@@ -55,6 +55,28 @@ def update(content, message_id=1, *, reply=None):
     return {"update_id": message_id, "message": message}
 
 
+@pytest.mark.parametrize("anonymous, expected_owner", [(False, True), (True, False)])
+def test_quote_owner_is_host_verified_without_promoting_current_sender(tmp_path, anonymous, expected_owner):
+    store, sessions, account = make_store(tmp_path)
+    calls = []
+    service = TelegramChannelService(store, account.account_id, TelegramTransport(), on_message=lambda *args: calls.append(args))
+    asyncio.run(service.test_account(account.account_id))
+    code = store.create_pairing_code("role-1")
+    assert store.consume_pairing_code(code, role_id="role-1", channel="telegram", scope="platform",
+        platform_user_id="201", account_id=account.account_id, chat_id="201")
+    reply = {"message_id": 15, "chat": {"id": 100, "type": "private"},
+        "from": {"id": 201, "first_name": "Owner"}, "text": "earlier message"}
+    if anonymous:
+        reply["sender_chat"] = {"id": -900, "title": "Anonymous"}
+    assert asyncio.run(service.handle_update(account.account_id, update("current guest", reply=reply)))
+    metadata = calls[0][2]
+    assert calls[0][3] is False
+    assert metadata["replyContextVerified"] is True
+    assert metadata["replyToSenderIsOwner"] is expected_owner
+    assert metadata["replyToSenderId"] == ("chat:-900" if anonymous else "201")
+    assert metadata["receivingPlatformId"] == "42"
+
+
 def test_polling_dispatch_callback_drains_all_admitted_turns_before_exit(tmp_path):
     store, _, account = make_store(tmp_path)
     async def scenario():
