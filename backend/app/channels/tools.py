@@ -174,6 +174,8 @@ class ChannelSendTool:
                 source_run_id=context.run_id,
                 source_tool_call_id=context.tool_call_id,
                 source_kind="account_send",
+                authorize_source=lambda: not context.signal.is_cancelled(),
+                delivery_deadline=context.deadline,
             )
         except (KeyError, ValueError, RuntimeError) as error:
             return AgentToolResult(f"渠道消息未发送：{type(error).__name__}", is_error=True)
@@ -184,6 +186,7 @@ class ChannelSendTool:
                 "platformMessageId": result.platform_message_id,
                 "attemptId": result.attempt_id,
                 "error": result.error,
+                **{key: result.raw[key] for key in ('parts', 'partialDelivery', 'deliveredContent', 'receiptKind') if key in result.raw},
             }, ensure_ascii=False),
             details={"status": result.status.value, "delivery": result.status is DeliveryStatus.SENT, "attemptId": result.attempt_id},
             is_error=result.status is not DeliveryStatus.SENT,

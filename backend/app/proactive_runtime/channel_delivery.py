@@ -102,18 +102,6 @@ class ChannelAutonomyDelivery:
     def __init__(self, app):
         self.app = app
 
-    def _authorized(self, turn, draft):
-        if not self.app._authorized(turn.origin):
-            return False
-        identifiers = tuple(draft.get('attachment_ids', ()))
-        if identifiers:
-            from .drift_attachments import selected
-            try:
-                return selected(turn, identifiers) == tuple(draft['attachments'])
-            except (ValueError, PermissionError, OSError, KeyError):
-                return False
-        return True
-
     async def deliver(self, turn, intent_id, draft):
         app = self.app
         with turn.transaction() as db:
@@ -125,12 +113,19 @@ class ChannelAutonomyDelivery:
             frozen = None
             if draft.get('attachment_ids'):
                 from .drift_attachments import frozen_bytes
-                frozen = frozen_bytes(turn, tuple(draft['attachment_ids']))
+                identifiers = tuple(draft['attachment_ids'])
+                frozen = frozen_bytes(turn, identifiers)
+                if tuple(turn.attachments[item].public for item in identifiers) != tuple(draft['attachments']):
+                    raise PermissionError('frozen attachment metadata does not match the original grant')
             await app.targets.host.account_send(turn.origin.role_id, target['accountId'], target['targetId'], draft['message'],
                 actor='push', record_message=False, attachment_ids=tuple(draft.get('attachment_ids', ())),
                 frozen_attachment_bytes=frozen,
                 source_kind=SOURCE_KIND, source_run_id=turn.origin.tick_id, source_tool_call_id=intent_id,
-                authorize_source=lambda: self._authorized(turn, draft))
+                delivery_deadline=getattr(getattr(turn, 'execution', None), 'deadline', None),
+                # The original role-owned bytes have been validated and copied.
+                # Continue checking the live grant after every wait; a later
+                # source-file edit must not replace or invalidate those bytes.
+                authorize_source=lambda: app._authorized(turn.origin))
         except BaseException as error:
             with app._transaction() as db:
                 db.execute("UPDATE autonomy_deliveries SET status='uncertain',error='original channel attempt has no definitive local receipt' WHERE intent_id=? AND status='dispatching'", (intent_id,))
@@ -157,9 +152,12 @@ class ChannelAutonomyDelivery:
             receipt = {'status': status, 'intentId': intent_id, 'targetRef': target['ref'],
                 'attemptId': attempt['attempt_id'] if attempt else None,
                 'platformMessageId': attempt['platform_message_id'] if attempt else None}
-            if status == 'sent':
+            details = json.loads(attempt['details_json'] or '{}') if attempt and 'details_json' in attempt else {}
+            receipt.update({key: details[key] for key in ('parts', 'partialDelivery', 'deliveredContent', 'receiptKind') if key in details})
+            if status == 'sent' or details.get('partialDelivery'):
                 receipt, event = app.targets.host.store.project_autonomy_delivery_once(claim['role_id'], claim['tick_id'], intent_id,
                     claim['mode'], target, draft, connection=db)
+            if status == 'sent':
                 recovery = db.execute('SELECT * FROM autonomy_delivery_recovery WHERE intent_id=?', (intent_id,)).fetchone()
                 if recovery is None or not recovery['disposition_inputs']:
                     raise ValueError('original channel claim has no durable disposition inputs')

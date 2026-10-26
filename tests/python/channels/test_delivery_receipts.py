@@ -27,7 +27,7 @@ def test_plain_send_without_real_message_receipt_remains_uncertain(channel):
         )
         target = target_from_chat(account_id="account", chat_id="user", kind=TargetKind.PRIVATE)
         adapter.remember_target(target)
-        result = await adapter.send(OutboundMessage(target, "hello"))
+        result = await adapter.send(OutboundMessage(target, "hello", reply_to_message_id="trigger"))
 
         assert result.status is DeliveryStatus.UNCERTAIN
         assert result.platform_message_id is None

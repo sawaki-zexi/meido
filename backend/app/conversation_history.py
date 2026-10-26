@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .context_windows import ContextWindowStore, WindowConflict, _stamp
 from .session_store import load_runtime_attachments
+from .channels.delivery_projection import delivered_message
 
 _COLUMNS = "message_id,session_key,sequence,role,content,status,created_at,message_type,tool_call_id,tool_name,tool_arguments_json,tool_result_json,is_error,run_id,metadata_json"
 
@@ -175,6 +176,9 @@ class ConversationHistoryView:
             if message.role == "user" and message.runId and message.messageType == "text"}
         selected = []
         for order, message in entries:
+            message = delivered_message(message)
+            if message is None:
+                continue
             source = sources.get((message.sessionKey, message.runId))
             anchor = source[0] if source else order
             anchor_date = source[1].createdAt if source else message.createdAt
@@ -203,7 +207,8 @@ class ConversationHistoryView:
                 if message.runId and message.role != "user" and source is None:
                     continue
             if (message.sessionKey.startswith("thread:") and message.role == "assistant"
-                    and message.messageType == "text" and message.metadata.get("deliveryStatus") != "sent"):
+                    and message.messageType == "text" and message.metadata.get("deliveryStatus") != "sent"
+                    and not message.metadata.get('deliveryProjection')):
                 continue
             selected.append((anchor, order, message))
         selected.sort(key=lambda item: (item[0], item[1]))

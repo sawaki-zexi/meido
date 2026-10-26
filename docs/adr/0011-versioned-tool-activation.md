@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳。批准时间：2026-10-15。2026-10-16 的 #148 实现冻结候选、版本激活、持久化和受限服务修订协议；#159 / T12 实现预授权 stdio MCP 连接、按来源恢复及移除生命周期。当前接口与验证见[工具发现契约](../reference/tool-discovery.md)和 [MCP 服务契约](../reference/mcp-services.md)。
+已被部分替代（2026-10-26）：[ADR-0026](0026-request-bound-lightweight-tool-loading.md) 替代持久完整目录版本链；冻结授权、请求绑定、来源和撤权承诺继续有效。以下保留原决定。原批准时间：2026-10-15。2026-10-16 的 #148 实现冻结候选、版本激活、持久化和受限服务修订协议；#159 / T12 实现预授权 stdio MCP 连接、按来源恢复及移除生命周期。当前接口与验证见[工具发现契约](../reference/tool-discovery.md)和 [MCP 服务契约](../reference/mcp-services.md)。
 
 ## 背景
 

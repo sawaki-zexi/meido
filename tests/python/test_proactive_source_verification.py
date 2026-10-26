@@ -107,6 +107,9 @@ def test_busy_recovery_snapshot_defers_original_inflight_owner_action(verificati
             assert final["requestNonce"] == arguments["request_nonce"]
             assert len(submissions) == 1 and submissions[0][0] == final["taskId"]
             assert submissions[0][2] == first["id"]
+            owner = submissions[0][1]
+            assert owner.capability_version == ""
+            assert (owner.grant_domain, owner.grant_revision) == ("source-verification", arguments["expected_revision"])
             assert calls.count("meido_test_seed") == 1
             assert not app.has_owned_work
         finally:

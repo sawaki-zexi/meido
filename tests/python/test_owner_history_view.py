@@ -70,6 +70,26 @@ def test_frozen_grants_do_not_expand_and_repair_revokes_old_view_without_losing_
     assert allowed.id not in {message.id for message in ConversationHistoryView(channels, role_id="r1").read()}
 
 
+def test_owner_view_keeps_only_confirmed_parts_with_source_labels_and_original_records(tmp_path):
+    sessions, channels, _, _ = setup_history(tmp_path)
+    thread = private(channels)
+    pair(channels, thread)
+    sessions.append_message(thread.session_key, 'user', 'question', run_id='partial')
+    original = sessions.append_message(thread.session_key, 'assistant', 'CONFIRMED UNSENT_TAIL', 'failed', run_id='partial', metadata={
+        'channel': 'qq', 'deliveryStatus': 'uncertain', 'partialDelivery': True,
+        'parts': [{'kind': 'text', 'content': 'CONFIRMED', 'status': 'sent', 'platformMessageId': 'real'},
+                  {'kind': 'text', 'content': ' UNSENT_TAIL', 'status': 'uncertain', 'platformMessageId': None}],
+        'content_blocks': [{'type': 'text', 'text': 'CONFIRMED UNSENT_TAIL'}],
+    })
+    view = ConversationHistoryView(channels, role_id='r1')
+    projected = next(item for item in view.read() if item.id == original.id)
+    assert projected.content == 'CONFIRMED' and projected.status == 'completed'
+    runtime = view.runtime_messages()
+    assert '回复来源' in runtime[-1].content and 'CONFIRMED' in runtime[-1].content
+    assert 'UNSENT_TAIL' not in str(runtime)
+    assert sessions.list_messages(thread.session_key)[-1].content == 'CONFIRMED UNSENT_TAIL'
+
+
 def test_history_boundary_survives_rowid_reuse_and_nickname_change(tmp_path):
     sessions, channels, _, _ = setup_history(tmp_path)
     thread = private(channels); pair(channels, thread)

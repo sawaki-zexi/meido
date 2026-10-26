@@ -47,10 +47,7 @@ class GenerationContext:
     @classmethod
     def from_dict(cls, value):
         raw = value['origin']
-        origin = TaskOrigin(raw['roleId'], raw['sessionKey'], raw.get('parentRunId', ''),
-            raw.get('toolCallId'), raw.get('capabilityVersion', ''), raw.get('sourceThreadId', ''),
-            raw.get('sourceAccountId', ''), raw.get('sourceScopeId', ''),
-            canonical(raw['sourceAuthority']) if raw.get('sourceAuthority') is not None else '')
+        origin = TaskOrigin.from_dict(raw, require_source_authority=True)
         source = FrozenChannelSource.from_dict(raw['sourceAuthority']) if raw.get('sourceAuthority') is not None else None
         delivery = value.get('deliveryContext', {})
         return cls(origin, value['humanKey'], value['requestKey'], frozenset(value['attachmentIds']), source,

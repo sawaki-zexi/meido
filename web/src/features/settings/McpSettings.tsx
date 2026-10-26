@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { errorMessage } from "../../api/client";
-import { deleteMcpServer, listMcpRoles, listMcpServers, saveMcpServer, type McpRisk, type McpServer } from "../../api/mcp";
+import { deleteMcpServer, listMcpRoles, listMcpServers, retryMcpCleanup, saveMcpServer, type McpRisk, type McpServer } from "../../api/mcp";
 import type { Role } from "../../api/types";
 import { Notice, Placeholder } from "../../ui/Status";
 import "./mcp-settings.css";
@@ -90,6 +90,16 @@ export function McpSettings() {
     finally { setBusy(false); }
   };
 
+  const retryCleanup = async (server: McpServer) => {
+    setBusy(true); setError(""); setMessage("");
+    try {
+      await retryMcpCleanup(server.serverId);
+      setMessage("MCP 待清理资源已回收；未重新执行工具。");
+      await refresh();
+    } catch (cause) { setError(errorMessage(cause, "MCP 资源清理尚未确认；请重试清理")); }
+    finally { setBusy(false); }
+  };
+
   const savedEnvKeys = servers?.find((server) => server.serverId === editingId)?.envKeys ?? [];
   const missingDiscovery = draft && !draft.enableDiscovery ? roles.filter((role) => draft.roleIds.includes(role.id)).map((role) => ({ role, missing: discoveryTools.filter((name) => !role.agentConfig?.enabledTools?.includes(name)) })).filter((item) => item.missing.length > 0) : [];
   return <section className="mcp-settings" aria-labelledby="mcp-settings-title">
@@ -101,6 +111,11 @@ export function McpSettings() {
     {servers?.map((server) => <section className="mcp-card" aria-label={`服务 ${server.name}`} key={server.serverId}>
       <header className="mcp-heading"><div><h3>{server.name}</h3><small>{server.serverId} · {server.enabled ? "配置已启用" : "已停用"} · {riskLabels[server.risk]}</small></div><button type="button" aria-label={`编辑 ${server.name}`} disabled={busy} onClick={() => edit(server)}>编辑</button></header>
       <div className="mcp-state"><span>运行中连接：{server.activeProcesses}</span><span>已保存连接意愿：{server.connectionCount}</span></div>
+      {!!server.cleanupOwners?.length && <div>
+        <p>待确认清理：{server.cleanupOwners.length}</p>
+        <p>原运行：{server.cleanupOwners.map((owner) => owner.runId).join("、")}</p>
+        <button type="button" aria-label={`重试清理 ${server.name}`} disabled={busy} onClick={() => void retryCleanup(server)}>重试清理</button>
+      </div>}
       <p>授权角色：{server.roleIds.map((id) => roles.find((role) => role.id === id)?.name ?? "已删除角色").join("、") || "无"}</p>
       <p>环境变量：{server.envKeys.join("、") || "无"}</p>
       {server.errors.map((item) => <Notice key={item}>{item}</Notice>)}

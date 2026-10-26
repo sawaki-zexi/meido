@@ -199,7 +199,7 @@ class ScheduleApplication:
                 db.execute("UPDATE schedule_occurrences SET delivery='cancelled',error='plan cancelled' WHERE schedule_id=? AND dispatched=0 AND delivery NOT IN ('sent','failed','expired','revoked','interrupted','uncertain')", (row['id'],))
                 data = json.loads(row['data'])
                 if data['tier'] == 'soft':
-                    cleanup.extend((r[0], TaskOrigin(**data['origin'])) for r in db.execute(
+                    cleanup.extend((r[0], TaskOrigin.from_dict(data['origin'])) for r in db.execute(
                         'SELECT id FROM schedule_occurrences WHERE schedule_id=? AND result_ack_pending=1', (row['id'],)))
         for occurrence_id, task_origin in cleanup:
             self._settle_terminal_task(occurrence_id, task_origin)
@@ -357,7 +357,7 @@ class ScheduleApplication:
 
     async def _advance(self, plan, occurrence):
         data, oid = plan['data'], occurrence['id']
-        origin = TaskOrigin(**data['origin'])
+        origin = TaskOrigin.from_dict(data['origin'])
         if data['tier'] == 'soft' and occurrence['delivery'] in FINAL:
             await _owned_call(self._settle_terminal_task, oid, origin)
         elif occurrence['result_ack_pending'] and occurrence['execution'] == 'ready':
@@ -487,7 +487,7 @@ class ScheduleApplication:
     async def _record_receipt(self, plan, occurrence, status, attempt):
         if status not in {'sent', 'pending', 'failed', 'uncertain'}:
             status = 'uncertain'
-        origin, target = TaskOrigin(**plan['data']['origin']), plan['data']['target']
+        origin, target = TaskOrigin.from_dict(plan['data']['origin']), plan['data']['target']
         with self._transaction() as db:
             before = db.execute('SELECT delivery FROM schedule_occurrences WHERE id=?', (occurrence['id'],)).fetchone()[0]
             db.execute('UPDATE schedule_occurrences SET delivery=?,attempt_id=?,synced=0 WHERE id=?', (status, attempt, occurrence['id']))

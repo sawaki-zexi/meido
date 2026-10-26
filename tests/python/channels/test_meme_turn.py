@@ -20,7 +20,7 @@ from backend.app.channels.group_tools import MultichannelGroupRepository
 from backend.app.channels.napcat import NapCatAdapter, NapCatConfig
 from backend.app.chat_attachments import resolve_attachment
 from backend.app.memory_config import MemorySettingsStore
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.models import RoleInput, RoleProfile
 from backend.app.multichannel import MultichannelStore
@@ -143,17 +143,21 @@ def test_owner_saves_and_reuses_original_sticker_with_drift_off(meme_turn, monke
                 if self.calls == 2:
                     assert json.loads(results['save-1'])['status'] == 'recorded'
                 yield ModelToolCall(f'save-{self.calls}', 'chat_meme_save', {'category': 'happy', 'description': '红蓝测试表情'})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 3:
                 assert json.loads(results['save-2'])['deduplicated'] is True
                 yield ModelToolCall('list', 'chat_meme_list', {'query': '开心'})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 4:
                 candidates = json.loads(results['list'])['candidates']
                 assert len(candidates) == 1
                 self.candidate = candidates[0]['id']
                 yield ModelToolCall('send', 'chat_meme_send', {'candidate_id': self.candidate, 'content': '给你表情'})
+                yield ModelResponseDone("tool_use")
             elif uncertain and self.calls == 5:
                 assert json.loads(results['send'])['status'] == 'uncertain'
                 yield ModelToolCall('repeat-send', 'chat_meme_send', {'candidate_id': self.candidate, 'content': '给你表情'})
+                yield ModelResponseDone("tool_use")
             else:
                 self.finished = True
                 yield ModelTextDelta('已收录；投递结果不确定，不重复发送。' if uncertain else '表情已送达。')
@@ -232,10 +236,12 @@ def test_enabled_legacy_library_image_needs_no_registration_and_reuses_reference
             results = {item['tool_call_id']: item['content'] for item in messages if item['role'] == 'tool'}
             if self.calls == 1:
                 yield ModelToolCall(self.label + '-list', 'chat_meme_list', {'query': '开心'})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 2:
                 candidates = json.loads(results[self.label + '-list'])['candidates']
                 assert len(candidates) == 1
                 yield ModelToolCall(self.label + '-send', 'chat_meme_send', {'candidate_id': candidates[0]['id']})
+                yield ModelResponseDone("tool_use")
             else:
                 assert json.loads(results[self.label + '-send'])['status'] == 'sent'
                 self.finished = True
@@ -292,6 +298,7 @@ def test_invalid_current_sources_never_create_or_confirm_a_sticker(meme_turn, mo
             assert 'chat_meme_save' in {tool['function']['name'] for tool in tools}
             if self.calls == 1:
                 yield ModelToolCall('invalid-save', 'chat_meme_save', arguments)
+                yield ModelResponseDone("tool_use")
             else:
                 result = next(item for item in reversed(messages) if item['role'] == 'tool')
                 assert json.loads(result['content'])['status'] == 'failed'
@@ -327,6 +334,7 @@ def _assert_save_cannot_pick_image(state, monkeypatch, request, *, model_require
                 yield ModelToolCall('unsafe-selection', 'chat_meme_save', {
                     'category': 'happy', 'description': '不得猜测图片来源',
                 })
+                yield ModelResponseDone("tool_use")
             else:
                 result = next(item for item in reversed(messages) if item['role'] == 'tool')
                 assert json.loads(result['content'])['status'] == 'failed'
@@ -400,6 +408,7 @@ def test_current_attachment_replaced_after_turn_freeze_cannot_be_saved(meme_turn
                 yield ModelToolCall('replaced-save', 'chat_meme_save', {
                     'category': 'happy', 'description': '不得收录替换后的同路径图片',
                 })
+                yield ModelResponseDone("tool_use")
             else:
                 result = next(item for item in reversed(messages) if item['role'] == 'tool')
                 assert json.loads(result['content'])['status'] == 'failed'
@@ -433,14 +442,17 @@ def test_rejected_sticker_is_recorded_failed_and_same_candidate_retry_does_not_d
             results = {item['tool_call_id']: item['content'] for item in messages if item['role'] == 'tool'}
             if self.calls == 1:
                 yield ModelToolCall('list-rejected', 'chat_meme_list', {'query': '开心'})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 2:
                 candidates = json.loads(results['list-rejected'])['candidates']
                 assert len(candidates) == 1
                 self.candidate = candidates[0]['id']
                 yield ModelToolCall('send-rejected', 'chat_meme_send', {'candidate_id': self.candidate})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 3:
                 assert json.loads(results['send-rejected'])['status'] == 'failed'
                 yield ModelToolCall('retry-rejected', 'chat_meme_send', {'candidate_id': self.candidate})
+                yield ModelResponseDone("tool_use")
             else:
                 first, repeated = json.loads(results['send-rejected']), json.loads(results['retry-rejected'])
                 assert repeated == first and first['status'] == 'failed'
@@ -488,6 +500,7 @@ def test_running_sticker_tool_cannot_send_after_same_adapter_socket_reconnect(me
             results = {item['tool_call_id']: item['content'] for item in messages if item['role'] == 'tool'}
             if self.calls == 1:
                 yield ModelToolCall('list-before-reconnect', 'chat_meme_list', {'query': '开心'})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 2:
                 candidates = json.loads(results['list-before-reconnect'])['candidates']
                 assert len(candidates) == 1
@@ -496,6 +509,7 @@ def test_running_sticker_tool_cannot_send_after_same_adapter_socket_reconnect(me
                 transport.connection_generation = 'socket-after'
                 assert main.channel_host.adapter(state.adapter.account_id) is state.adapter
                 yield ModelToolCall('send-after-reconnect', 'chat_meme_send', {'candidate_id': candidates[0]['id']})
+                yield ModelResponseDone("tool_use")
             else:
                 assert json.loads(results['send-after-reconnect'])['status'] == 'failed'
                 self.finished = True

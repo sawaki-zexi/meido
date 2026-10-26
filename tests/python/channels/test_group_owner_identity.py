@@ -11,6 +11,17 @@ from test_meme_turn import meme_turn, payload
 def test_paired_private_identity_is_present_in_group_model_context(meme_turn, monkeypatch, sender, unbound, owner):
     state = meme_turn
     requests = []
+    namespace_scopes = []
+    namespace_context = main._runtime_namespace_context
+    namespace_marker = "merge-regression: scoped namespace context"
+
+    def scoped_namespace_context(capabilities, signal=None):
+        snapshot = capabilities.current().snapshot
+        assert snapshot.role_id == state.role.id
+        namespace_scopes.append(snapshot.session_key)
+        return "\n".join(filter(None, (namespace_context(capabilities, signal), namespace_marker)))
+
+    monkeypatch.setattr(main, "_runtime_namespace_context", scoped_namespace_context)
     state.channels.unbind_identity(str(state.channels.list_identities()[0]["identityId"]))
     code = state.channels.create_pairing_code(state.role.id, "qq")
     original_transport = state.adapter._transport
@@ -61,6 +72,10 @@ def test_paired_private_identity_is_present_in_group_model_context(meme_turn, mo
     system = "\n".join(message["content"] for message in requests[0] if message["role"] == "system")
     assert f'当前发送者 ID："{sender}"' in system
     assert "当前发送者身份：" + ("已配对主人" if owner else "未配对成员") in system
+    # The merged channel provider must keep both verified identity and the
+    # request-scoped namespace callback, not choose one side of the merge.
+    assert namespace_marker in system
+    assert namespace_scopes and set(namespace_scopes) == {thread.session_key}
     assert "主人私聊秘密不得进入群聊" not in str(requests)
 
 

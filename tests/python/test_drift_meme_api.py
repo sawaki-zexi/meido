@@ -24,8 +24,8 @@ from PIL import Image
 import pytest
 
 from backend.app import main
-from backend.app.ai.model_types import ModelAssistantMessage, ModelImageBlock, ModelStreamDone, ModelTextBlock, ModelThinkingBlock, ModelToolCallBlock
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.ai.model_types import ModelAssistantMessage, ModelImageBlock, ModelResponseMetadata, ModelStreamDone, ModelTextBlock, ModelThinkingBlock, ModelToolCallBlock
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from test_background_shell_api import api as shell_api  # noqa: F401
 from test_spawn_api import api as spawn_api
 
@@ -233,6 +233,7 @@ def test_managed_owner_file_edit_requires_its_own_read_and_disable_restores_ordi
             self.calls += 1
             if self.calls % 2:
                 yield ModelToolCall('owner-direct-write', 'write_file', {'path': 'memes/manifest.json', 'content': json.dumps(desired)})
+                yield ModelResponseDone("tool_use")
             else:
                 self.results.append(next(item['content'] for item in reversed(messages) if item['role'] == 'tool'))
                 yield ModelTextDelta('已核对真实写入结果')
@@ -372,7 +373,8 @@ def test_disable_allows_owner_edit_while_original_staging_worker_is_still_owned_
             if any('停用后继续编辑，不等待旧文件worker' in getattr(block, 'text', '') for message in messages for block in message.content):
                 self.owner_calls += 1
                 block = ModelToolCallBlock('owner-after-disable', 'write_file', {'path': 'memes/manifest.json', 'content': json.dumps(owner)}) if self.owner_calls == 1 else ModelTextBlock('主人真实编辑已完成')
-                yield ModelStreamDone(ModelAssistantMessage((block,)))
+                yield ModelStreamDone(ModelAssistantMessage((block,), metadata=ModelResponseMetadata(
+                    stop_reason='tool_use' if isinstance(block, ModelToolCallBlock) else 'stop')))
                 return
             self.requests += 1
             final_tool = ('read_file', {'path': '@memes/happy/legacy.png'}) if held_phase.startswith('image_') else (
@@ -385,6 +387,7 @@ def test_disable_allows_owner_edit_while_original_staging_worker_is_still_owned_
             self.owner_calls += 1
             if self.owner_calls == 1:
                 yield ModelToolCall('owner-after-disable', 'write_file', {'path': 'memes/manifest.json', 'content': json.dumps(owner)})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('主人真实编辑已完成')
     adapter = MaintenanceAndOwner()
@@ -625,6 +628,7 @@ def test_owner_library_observation_is_invalidated_by_a_different_managed_file_pu
             if self.calls <= len(steps):
                 name, arguments = steps[self.calls - 1]
                 yield ModelToolCall('owner-revision-' + str(self.calls), name, arguments)
+                yield ModelResponseDone("tool_use")
             else:
                 self.result = next(item['content'] for item in reversed(messages) if item['role'] == 'tool')
                 yield ModelTextDelta('已核验共享库版本')
@@ -720,6 +724,7 @@ def test_recovery_reports_physically_published_copy_and_preserves_later_owner_ma
             self.calls += 1
             if self.calls == 1:
                 yield ModelToolCall('owner-after-fault', 'write_file', {'path': 'memes/manifest.json', 'content': json.dumps(desired)})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('主人新内容已保存')
     monkeypatch.setattr(main, 'model_adapter', Owner())
@@ -758,6 +763,7 @@ def test_managed_owner_write_reserves_actual_combined_library_and_drift_peak_bef
             self.calls += 1
             if self.calls == 1:
                 yield ModelToolCall('quota-owner', 'write_file', {'path': 'memes/new-owner.txt', 'content': 'new bytes'})
+                yield ModelResponseDone("tool_use")
             else:
                 self.result = next(item['content'] for item in reversed(messages) if item['role'] == 'tool')
                 yield ModelTextDelta('已读取有限空间结果')
@@ -823,6 +829,7 @@ def test_global_storage_quota_counts_another_managed_roles_actual_old_library_be
             self.calls += 1
             if self.calls == 1:
                 yield ModelToolCall('global-owner', 'write_file', {'path': 'memes/new-owner.txt', 'content': 'new bytes'})
+                yield ModelResponseDone("tool_use")
             else:
                 self.result = next(item['content'] for item in reversed(messages) if item['role'] == 'tool')
                 yield ModelTextDelta('已核对全局实际存储')
@@ -1027,6 +1034,7 @@ def test_recovery_waits_for_original_ordinary_owner_file_worker_before_classifyi
             self.calls += 1
             if self.calls == 1:
                 yield ModelToolCall('ordinary-stage', 'write_file', {'path': 'memes/new-owner.txt', 'content': 'original owned bytes'})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('原主人文件worker完成')
     monkeypatch.setattr(main, 'model_adapter', Owner())
@@ -1426,6 +1434,7 @@ def test_peak_quota_reserves_the_full_persisted_json_journal_bytes_including_tex
             self.calls += 1
             if self.calls == 1:
                 yield ModelToolCall('json-journal-peak', 'write_file', {'path': 'memes/new-owner.txt', 'content': '"' * (1024 * 1024)})
+                yield ModelResponseDone("tool_use")
             else:
                 self.result = next(item['content'] for item in reversed(messages) if item['role'] == 'tool')
                 yield ModelTextDelta('已核对真实持久计划字节')
@@ -1501,15 +1510,18 @@ def test_owner_admitted_before_disable_cannot_turn_into_an_unlocked_write_and_fr
                 if self.retry_calls == 1:
                     retry_announced.set()
                     yield ModelToolCall('fresh-disabled-write', 'write_file', {'path': 'memes/manifest.json', 'content': desired})
+                    yield ModelResponseDone("tool_use")
                 else:
                     yield ModelTextDelta('新普通owner按原锁完成')
                 return
             self.calls += 1
             if self.calls == 1:
                 yield ModelToolCall('race-owner-read', 'read_file', {'path': 'memes/manifest.json'})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 2:
                 announced.set()
                 yield ModelToolCall('race-owner-write', 'write_file', {'path': 'memes/manifest.json', 'content': desired})
+                yield ModelResponseDone("tool_use")
             else:
                 self.original_result = next(item['content'] for item in reversed(messages) if item['role'] == 'tool')
                 yield ModelTextDelta('已核对原受管准入')
@@ -1580,7 +1592,8 @@ def test_new_owner_input_and_repeated_stop_preserve_the_original_slow_image_prov
                     ('write_file', {'path': 'memes/manifest.json', 'content': desired})]
                 block = (ModelToolCallBlock('owner-live-' + str(self.owner_calls), *steps[self.owner_calls - 1])
                     if self.owner_calls <= 2 else ModelTextBlock('主人编辑已按真实文件完成'))
-                yield ModelStreamDone(ModelAssistantMessage((block,)))
+                yield ModelStreamDone(ModelAssistantMessage((block,), metadata=ModelResponseMetadata(
+                    stop_reason='tool_use' if isinstance(block, ModelToolCallBlock) else 'stop')))
                 return
             self.drift_calls += 1
             if self.drift_calls <= 2:

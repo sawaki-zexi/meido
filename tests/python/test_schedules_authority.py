@@ -11,7 +11,7 @@ from backend.app.channels.models import target_from_chat
 from backend.app.models import AgentRun
 from test_background_shell_api import api as shell_api  # noqa: F401
 from test_spawn_api import api  # noqa: F401
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelTextDelta, ModelToolCall, ModelResponseDone
 
 
 @pytest.mark.parametrize('change', ['unbind', 'rebind', 'recreate', 'sender', 'thread', 'role', 'guest'])
@@ -110,8 +110,10 @@ def test_explicit_owner_target_freezes_its_binding_without_freezing_unrelated_id
             if not any(m['role'] == 'tool' for m in messages):
                 yield ModelToolCall('explicit-target', 'schedule', {'tier': 'instant', 'trigger': 'after',
                     'when': '1s', 'message': 'owner-target-158', 'channel': 'qq', 'chat_id': 'owner'})
+                yield ModelResponseDone('tool_use')
             else:
                 yield ModelTextDelta('已创建')
+                yield ModelResponseDone('stop')
     monkeypatch.setattr(main, 'model_adapter', Model())
     role = client.post('/api/roles', json={'name': '固定目标', 'profile': {'profile': '测试'},
         'agentConfig': {'enabledTools': ['schedule']}}).json()['role']

@@ -14,7 +14,7 @@ from backend.app.channels.napcat import NapCatAdapter, NapCatConfig
 from backend.app.channels.directory import DirectoryQuery
 from test_channel_api import MemoryCredentials
 from backend.app.memory_config import MemorySettingsStore
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.multichannel import MultichannelStore
 from backend.app.role_store import RoleStore
@@ -93,6 +93,7 @@ def test_qq_nickname_observations_are_queryable_from_desktop_when_account_is_off
             assert "lookup_group_member" in {tool["function"]["name"] for tool in tools}
             if self.calls == 1:
                 yield ModelToolCall("find-nickname", "lookup_group_member", {"name": "Alice"})
+                yield ModelResponseDone("tool_use")
             else:
                 result = next(item for item in reversed(messages) if item["role"] == "tool")
                 assert result["content"].startswith("{"), result["content"]
@@ -103,6 +104,7 @@ def test_qq_nickname_observations_are_queryable_from_desktop_when_account_is_off
                         "name": "DirectoryName" if fresh_directory else "艾丽丝",
                         "nicknames": ["DirectoryName", "艾丽丝", "Alice"] if fresh_directory else ["艾丽丝", "Alice"]}]}
                     yield ModelToolCall("read-profile", "lookup_group_member", {"member_id": "22", "member_channel": "qq"})
+                    yield ModelResponseDone("tool_use")
                 else:
                     assert data["found"] and data["member_id"] == "22" and data["name"] == ("DirectoryName" if fresh_directory else "艾丽丝")
                     assert data["sources"][0]["chat_id"] == "100"
