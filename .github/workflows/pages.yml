@@ -1,0 +1,93 @@
+name: Landing Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - web/landing/**
+      - web/src/landing/**
+      - web/src/styles.css
+      - web/src/vite-env.d.ts
+      - web/src/test/setup.ts
+      - web/public/landing/**
+      - package.json
+      - package-lock.json
+      - tsconfig.json
+      - vitest.config.ts
+      - vite.landing.config.ts
+      - .github/workflows/pages.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - web/landing/**
+      - web/src/landing/**
+      - web/src/styles.css
+      - web/src/vite-env.d.ts
+      - web/src/test/setup.ts
+      - web/public/landing/**
+      - package.json
+      - package-lock.json
+      - tsconfig.json
+      - vitest.config.ts
+      - vite.landing.config.ts
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: landing-pages-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'production' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Landing build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: npm ci
+      - name: Test landing page
+        run: npm run test:web -- web/src/landing/LandingPage.test.tsx
+      - name: Read Pages configuration
+        id: pages
+        uses: actions/configure-pages@v5
+      - name: Build standalone landing page
+        env:
+          LANDING_BASE: ${{ steps.pages.outputs.base_path }}/
+        run: npm run build:landing -- --base "$LANDING_BASE"
+      - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: web/dist-landing
+
+  deploy:
+    name: Publish landing page
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
