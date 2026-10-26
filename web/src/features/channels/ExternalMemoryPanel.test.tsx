@@ -12,6 +12,39 @@ const member = { key: "person", channel: "qq", scope: "platform", senderId: "22"
   sources: [{ threadId: "t1", title: "读书群" }, { threadId: "t2", title: "茶友群" }], candidates: [] };
 const data = { threadId: "t1", note: "原笔记", activity: { text: "聊了新书", updatedAt: "2026-10-26T01:00:00Z" }, revision: 1, readOnly: false, members: [member] };
 
+it.each([false, true])("保存期间继续输入不会被旧响应覆盖（成员档案：%s）", async editingMember => {
+  let resolveSave!: (reply: { body: unknown }) => void;
+  let saved = editingMember ? { ...member } : { ...data };
+  const path = editingMember ? base + "/members/person" : base + "/note";
+  const backend = fakeBackend({
+    [`GET ${base}`]: () => ({ body: editingMember ? data : saved }),
+    [`GET ${base}/members/person`]: () => ({ body: saved }),
+    [`PUT ${path}`]: init => {
+      const body = JSON.parse(String(init?.body));
+      saved = { ...saved, ...body, revision: saved.revision + 1 };
+      return new Promise(resolve => { resolveSave = resolve; });
+    },
+  });
+  const user = userEvent.setup();
+  render(<ExternalMemoryPanel roleId="r1" threadId="t1" title="读书群" onBack={() => undefined} />);
+  await screen.findByLabelText("会话笔记");
+  if (editingMember) await user.click(screen.getByRole("button", { name: /阿宁/ }));
+  const input = await screen.findByLabelText(editingMember ? "完整档案" : "会话笔记");
+  fireEvent.change(input, { target: { value: "首次修改" } });
+  const save = screen.getByRole("button", { name: editingMember ? "保存档案" : "保存笔记" });
+  await user.click(save);
+  await waitFor(() => expect(resolveSave).toBeDefined());
+  fireEvent.change(input, { target: { value: "保存时继续输入" } });
+  await act(async () => resolveSave({ body: saved }));
+  expect(input).toHaveValue("保存时继续输入");
+  await waitFor(() => expect(save).toBeEnabled());
+  await user.click(save);
+  expect(backend.calls.filter(call => call.method === "PUT").at(-1)?.body).toMatchObject({
+    expectedRevision: 2, [editingMember ? "profile" : "note"]: "保存时继续输入",
+  });
+  await act(async () => resolveSave({ body: saved }));
+});
+
 it("笔记草稿在成员页往返保留，冲突不会清空草稿，重新读取后可合并保存", async () => {
   let note = "原笔记", revision = 1;
   fakeBackend({

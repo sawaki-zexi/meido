@@ -57,3 +57,30 @@ def test_migration_failure_rolls_back_and_retries_from_verified_backup(channel_a
     monkeypatch.setattr(main, "multichannel_store", restarted)
     members = client.get(memory_url(role.id, thread.thread_id)).json()["members"]
     assert len(members) == 1 and members[0]["profile"] == "旧资料"
+
+
+def test_migration_uses_actual_observation_time_across_offsets(channel_api, monkeypatch):
+    role, channels, _, client = channel_api
+    channels.register_channel_account(role.id, "feishu", account_id="app")
+    thread = channels.ensure_channel_thread(role.id, "feishu", "app", "group", "group")
+    first = channels.append_event(thread, direction="inbound", content="早先应用的观察", external_message_id="first",
+        metadata={"senderId": "22", "senderName": "早先昵称"})[1]
+    channels.set_platform_identity("app", "second-app")
+    thread = channels.ensure_channel_thread(role.id, "feishu", "app", "group", "group")
+    later = channels.append_event(thread, direction="inbound", content="档案生成后的新应用", external_message_id="later",
+        metadata={"senderId": "22", "senderName": "后来昵称"})[1]
+    MultichannelGroupRepository(channels)
+    with channels._connect() as db:
+        db.execute("DROP TABLE channel_external_migrations")
+        for table in ("channel_external_member_sources", "channel_external_members", "channel_external_revisions"):
+            db.execute(f"DELETE FROM {table}")
+        db.execute("UPDATE messages SET created_at=? WHERE message_id=?", ("2026-10-25T09:00:00+08:00", first.id))
+        db.execute("UPDATE messages SET created_at=? WHERE message_id=?", ("2026-10-24T22:00:00-05:00", later.id))
+        db.execute("INSERT INTO channel_member_profiles VALUES(?,?,?,?,?,?,?)",
+            (role.id, thread.thread_id, "22", "", "早先应用的档案", "", "2026-10-25T02:00:00Z"))
+    restarted = MultichannelStore(channels.database_path, channels.sessions, channels.credentials)
+    monkeypatch.setattr(main, "multichannel_store", restarted)
+    member = client.get(memory_url(role.id, thread.thread_id)).json()["members"][0]
+    assert member["scope"] == "legacy:" + thread.thread_id
+    assert member["nicknames"] == ["早先昵称"]
+    assert member["sources"][0]["lastSeen"] == "2026-10-25T01:00:00+00:00"

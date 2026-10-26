@@ -16,6 +16,7 @@ function useDocument<T extends Versioned>(url: string, refresh: number, apply: (
   const [denied, setDenied] = useState(false);
   const [busy, setBusy] = useState(false);
   const dirty = useRef(false), live = useRef(true), request = useRef(0), current = useRef<T | null>(null);
+  const edits = useRef(0);
   const applyRef = useRef(apply); applyRef.current = apply;
   const fail = (cause: unknown) => {
     if (!live.current) return;
@@ -38,17 +39,21 @@ function useDocument<T extends Versioned>(url: string, refresh: number, apply: (
   useEffect(() => { live.current = true; void load(); return () => { live.current = false; request.current += 1; }; }, [load, refresh]);
   const save = async (path: string, body: object, method = "PUT") => {
     if (!current.current || busy) return false;
+    const submittedEdit = edits.current;
     setBusy(true); setError("");
     try {
       const result = await api<T>(path, { method, body: method === "DELETE" ? undefined : JSON.stringify({ ...body, expectedRevision: current.current.revision }) });
       if (!live.current) return false;
-      request.current += 1; dirty.current = false; setRemote(null);
-      if (method !== "DELETE") { setValue(result); current.current = result; applyRef.current(result); }
+      request.current += 1; dirty.current = submittedEdit !== edits.current; setRemote(null);
+      if (method !== "DELETE" && result.revision >= current.current.revision) {
+        setValue(result); current.current = result;
+        if (!dirty.current) applyRef.current(result);
+      }
       return true;
     } catch (cause) { fail(cause); return false; }
     finally { if (live.current) setBusy(false); }
   };
-  return { value, remote, error, denied, busy, dirty, load, save, restore: () => {
+  return { value, remote, error, denied, busy, load, save, edit: () => { dirty.current = true; edits.current += 1; }, restore: () => {
     if (current.current) applyRef.current(current.current);
     dirty.current = false; setRemote(null); void load();
   } };
@@ -80,7 +85,7 @@ function ConversationMemory({ roleId, threadId, title, refresh = 0, onBack }: Pr
           {data.readOnly && <p>账号已移除，历史资料只能查看。</p>}
           <section className="external-memory-card"><h3>最近动态</h3><p>{data.activity.text || "暂无"}</p>{data.activity.updatedAt && <time dateTime={data.activity.updatedAt}>{new Date(data.activity.updatedAt).toLocaleString()}</time>}</section>
           <section className="external-memory-card">
-            <label>会话笔记<textarea aria-label="会话笔记" value={draft} maxLength={12000} readOnly={data.readOnly} onChange={event => { document.dirty.current = true; setDraft(event.target.value); }} /></label>
+            <label>会话笔记<textarea aria-label="会话笔记" value={draft} maxLength={12000} readOnly={data.readOnly} onChange={event => { document.edit(); setDraft(event.target.value); }} /></label>
             {document.remote && <details open><summary>当前已保存的笔记</summary><p>{document.remote.note || "（空）"}</p></details>}
             {!data.readOnly && <div className="external-memory-actions"><button type="button" disabled={document.busy} onClick={async () => {
               if (await document.save(base + "/note", { note: draft })) void document.load();
@@ -114,10 +119,10 @@ function MemberEditor({ base, memberKey, refresh, onBack, onSaved }: { base: str
       {member && !document.denied && <>
         <div><h3>{member.name}</h3><p>{channelName[member.channel] || member.channel} · {member.senderId}</p><p>昵称历史（只读）</p><p>{member.nicknames.join(" · ") || "暂无"}</p></div>
         <section className="external-memory-card"><h3>出现过的会话</h3><ul>{member.sources.map(source => <li key={source.threadId}>{source.title || source.threadId}</li>)}</ul></section>
-        {member.state === "conflict" && <section className="external-memory-card"><h3>需整理</h3><p>旧档案内容不同，确认前不会作为共同事实使用。选择候选或编辑合并后保存。</p>{member.candidates.map(candidate => <article key={candidate.id}><h4>{member.sources.find(source => source.threadId === candidate.threadId)?.title || candidate.threadId}</h4><p>{candidate.profile}</p><p>{candidate.shorthand}</p>{!member.readOnly && <button type="button" onClick={() => { document.dirty.current = true; setProfile(candidate.profile); setShorthand(candidate.shorthand); }}>采用此候选</button>}</article>)}</section>}
+        {member.state === "conflict" && <section className="external-memory-card"><h3>需整理</h3><p>旧档案内容不同，确认前不会作为共同事实使用。选择候选或编辑合并后保存。</p>{member.candidates.map(candidate => <article key={candidate.id}><h4>{member.sources.find(source => source.threadId === candidate.threadId)?.title || candidate.threadId}</h4><p>{candidate.profile}</p><p>{candidate.shorthand}</p>{!member.readOnly && <button type="button" onClick={() => { document.edit(); setProfile(candidate.profile); setShorthand(candidate.shorthand); }}>采用此候选</button>}</article>)}</section>}
         {member.readOnly && <p>账号已移除，历史资料只能查看。</p>}
-        <label>速记<textarea aria-label="速记" maxLength={200} readOnly={member.readOnly} value={shorthand} onChange={event => { document.dirty.current = true; setShorthand(event.target.value); }} /></label>
-        <label>完整档案<textarea aria-label="完整档案" maxLength={8000} readOnly={member.readOnly} value={profile} onChange={event => { document.dirty.current = true; setProfile(event.target.value); }} /></label>
+        <label>速记<textarea aria-label="速记" maxLength={200} readOnly={member.readOnly} value={shorthand} onChange={event => { document.edit(); setShorthand(event.target.value); }} /></label>
+        <label>完整档案<textarea aria-label="完整档案" maxLength={8000} readOnly={member.readOnly} value={profile} onChange={event => { document.edit(); setProfile(event.target.value); }} /></label>
         {document.remote && <details open><summary>当前已保存的档案</summary><p>{document.remote.shorthand}</p><p>{document.remote.profile || "（空）"}</p></details>}
         {!member.readOnly && <><div className="external-memory-actions"><button type="button" disabled={document.busy} onClick={async () => { if (await document.save(url, { profile, shorthand })) onSaved(); }}>保存档案</button><button type="button" disabled={document.busy} onClick={document.restore}>还原档案</button><button type="button" disabled={document.busy} onClick={() => setDeleting(true)}>删除档案</button></div>
           {deleting && <section role="alertdialog" aria-label="确认删除共享档案" className="external-memory-card"><p>多个会话共用这份档案，删除会同时影响这些会话，聊天记录会保留。后续正常整理可能重新形成档案。</p><div className="external-memory-actions"><button type="button" disabled={document.busy} onClick={async () => { if (await document.save(`${url}?expectedRevision=${member.revision}`, {}, "DELETE")) onBack(); }}>确认删除</button><button type="button" onClick={() => setDeleting(false)}>取消</button></div></section>}

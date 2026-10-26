@@ -57,7 +57,10 @@ def migrate(memory, backup_path: str) -> None:
                 "SELECT metadata_json,created_at FROM messages WHERE session_key=? AND role='user' ORDER BY sequence", (thread.session_key,))]
             observations += [dict(row) for row in db.execute(
                 "SELECT metadata_json,created_at FROM channel_listening_records WHERE thread_id=? ORDER BY sequence", (thread.thread_id,))]
-            observations.sort(key=lambda row: row["created_at"])
+            for observed in observations:
+                observed["instant"] = datetime.fromisoformat(observed["created_at"]).astimezone(timezone.utc)
+                observed["metadata"] = json.loads(observed["metadata_json"])
+            observations.sort(key=lambda row: row["instant"])
             for observed in observations:
                 metadata = json.loads(observed["metadata_json"])
                 if metadata.get("channelTurnState") != "invalidated":
@@ -68,17 +71,19 @@ def migrate(memory, backup_path: str) -> None:
                     (thread.role_id, thread.thread_id)).fetchall():
                 if not memory.members.allowed(thread, old["sender_id"]):
                     continue
-                evidence = [json.loads(row["metadata_json"]) for row in observations
-                    if json.loads(row["metadata_json"]).get("senderId") == old["sender_id"]
-                    and row["created_at"] <= old["updated_at"]]
-                if any(item.get("senderIsOwner") is True for item in evidence):
+                updated = datetime.fromisoformat(old["updated_at"]).astimezone(timezone.utc)
+                evidence = [row for row in observations
+                    if row["metadata"].get("senderId") == old["sender_id"]
+                    and row["metadata"].get("channelTurnState") != "invalidated" and row["instant"] <= updated]
+                if any(item["metadata"].get("senderIsOwner") is True for item in evidence):
                     continue
-                scopes = {identity_scope(thread.channel, thread.thread_id, item) for item in evidence}
+                scopes = {identity_scope(thread.channel, thread.thread_id, item["metadata"]) for item in evidence}
                 # The current account or thread snapshot cannot prove the app
                 # that owned an old open_id when its profile was generated.
-                metadata = dict(evidence[-1]) if len(scopes) == 1 and evidence else {}
+                proven = len(scopes) == 1 and bool(evidence)
+                metadata = dict(evidence[-1]["metadata"]) if proven else {}
                 metadata["senderId"] = old["sender_id"]
-                key = memory.members.observe_in(db, thread, metadata, old["updated_at"])
+                key = memory.members.observe_in(db, thread, metadata, evidence[-1]["created_at"] if proven else old["updated_at"])
                 names = db.execute("SELECT name,last_seen FROM channel_member_names WHERE role_id=? AND channel=? "
                     "AND account_id=? AND chat_id=? AND chat_type=? AND sender_id=? ORDER BY last_seen,rowid",
                     (thread.role_id, thread.channel, thread.account_id, thread.chat_id, thread.chat_type, old["sender_id"])).fetchall()

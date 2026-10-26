@@ -4161,11 +4161,15 @@ def list_channel_threads(role_id: str, limit: int = 100, networkOnly: bool = Fal
     return {"threads": [multichannel_store.public_thread_payload(item) for item in threads]}
 
 
-def _external_memory_result(role_id, operation):
+async def _external_memory_result(role_id, operation):
     from .channels.external_memory import ExternalMemoryConflict
     _require_channel_role(role_id)
     try:
-        return operation()
+        # Deletion takes this same lock before its rollback snapshot. Keep an
+        # admitted write inside the barrier even if the HTTP request cancels.
+        async with memory_worker.role_lock_for(role_id):
+            _require_channel_role(role_id)
+            return await finish_io(asyncio.to_thread(operation))
     except ExternalMemoryConflict as error:
         raise HTTPException(status_code=409, detail=str(error)) from None
     except PermissionError as error:
@@ -4177,31 +4181,31 @@ def _external_memory_result(role_id, operation):
 
 
 @app.get("/api/roles/{role_id}/channels/threads/{thread_id}/external-memory")
-def channel_external_memory(role_id: str, thread_id: str) -> dict:
-    return _external_memory_result(role_id, lambda: multichannel_store.external_memory.context(role_id, thread_id))
+async def channel_external_memory(role_id: str, thread_id: str) -> dict:
+    return await _external_memory_result(role_id, lambda: multichannel_store.external_memory.context(role_id, thread_id))
 
 
 @app.put("/api/roles/{role_id}/channels/threads/{thread_id}/external-memory/note")
-def save_channel_external_note(role_id: str, thread_id: str, data: dict[str, object]) -> dict:
-    return _external_memory_result(role_id, lambda: multichannel_store.external_memory.save_note(
+async def save_channel_external_note(role_id: str, thread_id: str, data: dict[str, object]) -> dict:
+    return await _external_memory_result(role_id, lambda: multichannel_store.external_memory.save_note(
         role_id, thread_id, data.get("note"), data.get("expectedRevision")))
 
 
 @app.get("/api/roles/{role_id}/channels/threads/{thread_id}/external-memory/members/{member_key}")
-def channel_external_member(role_id: str, thread_id: str, member_key: str) -> dict:
-    return _external_memory_result(role_id, lambda: multichannel_store.external_memory.members.read(role_id, thread_id, member_key))
+async def channel_external_member(role_id: str, thread_id: str, member_key: str) -> dict:
+    return await _external_memory_result(role_id, lambda: multichannel_store.external_memory.members.read(role_id, thread_id, member_key))
 
 
 @app.put("/api/roles/{role_id}/channels/threads/{thread_id}/external-memory/members/{member_key}")
-def save_channel_external_member(role_id: str, thread_id: str, member_key: str, data: dict[str, object]) -> dict:
-    return _external_memory_result(role_id, lambda: multichannel_store.external_memory.members.save(
+async def save_channel_external_member(role_id: str, thread_id: str, member_key: str, data: dict[str, object]) -> dict:
+    return await _external_memory_result(role_id, lambda: multichannel_store.external_memory.members.save(
         role_id, thread_id, member_key, profile=data.get("profile"), shorthand=data.get("shorthand"),
         expected_revision=data.get("expectedRevision")))
 
 
 @app.delete("/api/roles/{role_id}/channels/threads/{thread_id}/external-memory/members/{member_key}", status_code=204)
-def delete_channel_external_member(role_id: str, thread_id: str, member_key: str, expectedRevision: int) -> None:
-    _external_memory_result(role_id, lambda: multichannel_store.external_memory.members.delete(
+async def delete_channel_external_member(role_id: str, thread_id: str, member_key: str, expectedRevision: int) -> None:
+    await _external_memory_result(role_id, lambda: multichannel_store.external_memory.members.delete(
         role_id, thread_id, member_key, expectedRevision))
 
 

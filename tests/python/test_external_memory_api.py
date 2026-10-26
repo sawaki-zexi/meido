@@ -233,3 +233,38 @@ def test_pairing_revokes_open_member_pages_and_inflight_learning(channel_api):
     assert client.get(memory_url(role.id, private.thread_id)).status_code == 403
     assert client.get(url).json()["members"] == []
     assert "爱读书" not in groups.prompt_context(role.id, thread.thread_id, "22")
+
+
+def test_learning_snapshot_cannot_mix_old_facts_with_a_new_manual_revision(channel_api, monkeypatch):
+    role, channels, _, client = channel_api
+    channels.register_channel_account(role.id, "qq", account_id="qq", allow_group=True)
+    thread = channels.ensure_channel_thread(role.id, "qq", "qq", "100", "group")
+    channels.set_group_listening(role.id, "qq", "100", True)
+    for index in range(100):
+        channels.listening.hear(thread, "读书偏好", str(index), {"senderId": "22" if index % 50 == 49 else "23"})
+    seen = []
+    async def summarize(_thread, _messages, _context, profiles):
+        seen.append(profiles["22"])
+        return {"members": [{"senderId": "22", "profile": profiles["22"]["profile"] + "自动整理"}]}
+    groups = MultichannelGroupRepository(channels)
+    worker = ChannelMemoryMaintenance(lambda: channels, lambda: groups, summarize, lambda *a: None)
+    assert asyncio.run(worker.consolidate(thread.thread_id, listening=True))
+    url = memory_url(role.id, thread.thread_id)
+    before = client.get(url).json()["members"][0]
+    member_url = url + "/members/" + before["key"]
+    original = channels.external_memory.members._row
+    edited = False
+    def edit_after_read(db, *args):
+        nonlocal edited
+        row = original(db, *args)
+        if not edited and row["sender_id"] == "22":
+            edited = True
+            response = client.put(member_url, json={"profile": "人工修正", "shorthand": "", "expectedRevision": before["revision"]})
+            assert response.status_code == 200
+        return row
+    monkeypatch.setattr(channels.external_memory.members, "_row", edit_after_read)
+    assert not asyncio.run(worker.consolidate(thread.thread_id, listening=True))
+    assert seen[-1]["revision"] == before["revision"]
+    assert client.get(member_url).json()["profile"] == "人工修正"
+    assert asyncio.run(worker.consolidate(thread.thread_id, listening=True))
+    assert client.get(member_url).json()["profile"] == "人工修正自动整理"

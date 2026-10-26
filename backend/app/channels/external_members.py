@@ -130,6 +130,8 @@ class ExternalMemberProfiles:
         scope = identity_scope(thread.channel, thread.thread_id, thread.metadata if metadata is None else metadata)
         key = member_key(thread.channel, scope, sender_id)
         with self.store._connect() as db:
+            # The model must see the facts and their version from one snapshot.
+            db.execute("BEGIN")
             row = self._row(db, thread.role_id, thread.thread_id, key)
             revision = self.memory.revision_in(db, thread.role_id, "member", key)
             if row is None or row["state"] != "published" or not self.allowed(thread, sender_id):

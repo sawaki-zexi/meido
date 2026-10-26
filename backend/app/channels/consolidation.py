@@ -146,9 +146,10 @@ class ChannelMemoryMaintenance:
                 batch = [item.model_dump(mode="json") for item in messages[:-12][:self.BATCH_SIZE]] if len(messages) >= 18 else []
         if not batch:
             return False
-        context_revision = store.external_memory.revision(thread.role_id, "context", thread_id)
         with store._connect() as db:
+            db.execute("BEGIN")
             context = store.external_memory.context_in(db, thread)
+        context_revision = context["revision"]
         snapshot = {"groupNote": context["note"], "summary": context["activity"]["text"],
             "summaryUpdatedAt": context["activity"]["updatedAt"]}
         owner_runs = set()
