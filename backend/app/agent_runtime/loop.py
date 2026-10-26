@@ -473,7 +473,23 @@ async def _execute_tool(
                 status="invalid_arguments",
             )
         tool_signal = CancellationToken(parent=signal)
-        tool_context = replace(context, signal=tool_signal)
+        definition = (
+            registry.definition(call.name)
+            if isinstance(registry, CapabilityResolution)
+            else tool.definition
+        ) or tool.definition
+        tool_timeout = definition.timeout_seconds
+        effective_timeout = (
+            min(timeout, tool_timeout)
+            if timeout is not None and tool_timeout is not None
+            else tool_timeout if tool_timeout is not None else timeout
+        )
+        now = time.monotonic()
+        if context.deadline is not None:
+            remaining = max(0, context.deadline - now)
+            effective_timeout = min(effective_timeout, remaining) if effective_timeout is not None else remaining
+        tool_context = replace(context, signal=tool_signal,
+            deadline=now + effective_timeout if effective_timeout is not None else None)
         execute = registry.executor(call.name) if isinstance(registry, CapabilityResolution) else tool.execute
 
         async def invoke() -> AgentToolResult:
@@ -487,17 +503,6 @@ async def _execute_tool(
                 accepting_updates = False
 
         pending = invoke()
-        definition = (
-            registry.definition(call.name)
-            if isinstance(registry, CapabilityResolution)
-            else tool.definition
-        ) or tool.definition
-        tool_timeout = definition.timeout_seconds
-        effective_timeout = (
-            min(timeout, tool_timeout)
-            if timeout is not None and tool_timeout is not None
-            else tool_timeout if tool_timeout is not None else timeout
-        )
         result = await _await_authorized_tool(
             pending, registry=registry, definition=definition, context=context,
             signal=signal, tool_signal=tool_signal, timeout=effective_timeout, arguments=arguments,

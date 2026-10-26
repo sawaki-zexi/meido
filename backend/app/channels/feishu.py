@@ -8,12 +8,14 @@ import logging
 import mimetypes
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
 from .base import ChannelAdapter, ChannelAdapterError, PartialDeliveryError, SendTransport, UnsupportedTargetError, delivery_status_for_error, is_blocked_identity
 from .models import Attachment, ChannelCapabilities, ChatType, DeliveryResult, DeliveryStatus, InboundEvent, OutboundMessage, Target, TargetKind, target_from_chat
+from .formatting import markdown_chunks, markdown_renderings, feishu_card
+from .delivery import DeliveryAttempt, OutboundScheduler, StreamDelivery
 
 logger = logging.getLogger(__name__)
 _LIVE_CARD_ELEMENT_ID = "reply_md"
@@ -63,17 +65,19 @@ class FeishuStreamSession:
     task: asyncio.Task[None] | None = field(default=None, repr=False)
     fallback: bool = False
     reply_to_message_id: str | None = None
+    delivery: StreamDelivery | None = None
 
 
 class FeishuAdapter(ChannelAdapter):
     channel = "feishu"
     capabilities = ChannelCapabilities(private=True, group=False, media=True, replies=True, streaming=True, targets=frozenset({TargetKind.PRIVATE}))
 
-    def __init__(self, config: FeishuConfig, *, transport: SendTransport | None = None) -> None:
+    def __init__(self, config: FeishuConfig, *, transport: SendTransport | None = None, scheduler=None) -> None:
         super().__init__()
         self.config = config
         self.account_id = config.account_id
         self._transport = transport
+        self.scheduler = scheduler or OutboundScheduler(edit_interval=.5)
         self._targets: dict[str, Target] = {}
 
     def webhook_challenge(self, payload: Mapping[str, Any], *, expected_token: str | None = None) -> dict[str, str] | None:
@@ -217,8 +221,7 @@ class FeishuAdapter(ChannelAdapter):
         params: dict[str, Any] = {
             "receive_id_type": "chat_id",
             "receive_id": message.target.chat_id,
-            "msg_type": "text",
-            "content": json.dumps({"text": message.content}, ensure_ascii=False),
+            "msg_type": "interactive",
         }
         if message.reply_to_message_id:
             params["reply_message_id"] = message.reply_to_message_id
@@ -242,54 +245,38 @@ class FeishuAdapter(ChannelAdapter):
             prepared.append((attachment, path, data))
         if not message.content.strip() and not prepared:
             raise ChannelAdapterError("飞书出站消息不能为空")
-        message_id = None
-        result: dict[str, Any] = {}
-        message_ids: list[str] = []
-        visible_sends = 0
-        if message.content.strip():
-            result = await self._transport("im.v1.message.create", params)
-            visible_sends += 1
-            message_id = str(result.get("message_id", result.get("data", {}).get("message_id", ""))) or None
-            if not message_id:
-                raise PartialDeliveryError("飞书消息已接受但未返回消息 ID")
-            message_ids.append(message_id)
-        # Feishu does not allow arbitrary URLs in message content.  Upload
-        # bytes supplied by the host and send one media message per item.
-        try:
-            for attachment, path, data in prepared:
-                kind = "image" if attachment.kind == "image" else "file"
-                upload = await self._transport("im.v1.media.create", {
-                    "kind": kind,
-                    "data": data,
-                    "file_name": attachment.file_name or path.name,
-                    "mime_type": attachment.mime_type,
-                })
-                key = str(upload.get("image_key" if attachment.kind == "image" else "file_key", ""))
-                if not key:
-                    raise ChannelAdapterError("飞书媒体上传未返回资源 key")
-                media_type = kind
-                media_params: dict[str, Any] = {
-                    "receive_id_type": "chat_id",
-                    "receive_id": message.target.chat_id,
-                    "msg_type": media_type,
-                    "content": json.dumps({"image_key" if media_type == "image" else "file_key": key}, ensure_ascii=False),
-                }
-                if message.reply_to_message_id:
-                    media_params["reply_message_id"] = message.reply_to_message_id
-                receipt = await self._transport("im.v1.message.create", media_params)
-                visible_sends += 1
-                media_id = str(receipt.get("message_id", receipt.get("data", {}).get("message_id", ""))) or None
-                if not media_id:
-                    raise PartialDeliveryError("飞书媒体已接受但未返回消息 ID", platform_message_id=message_id)
-                message_id = message_id or media_id
-                message_ids.append(media_id)
-                if not result:
-                    result = dict(receipt)
-        except Exception as error:
-            if visible_sends:
-                raise PartialDeliveryError("飞书部分内容已发送，投递结果不完整", platform_message_id=message_id) from error
-            raise
-        return DeliveryResult(DeliveryStatus.SENT, message.target, message_id, raw={**dict(result), "platform_message_ids": message_ids})
+        chunks = markdown_chunks(message.content)
+        rendered = markdown_renderings(chunks)
+        parts = [{'kind': 'text', 'content': chunk} for chunk in chunks]
+        parts += [{'kind': 'media', 'content': '', 'attachmentIndex': index,
+                   'fileName': attachment.file_name or path.name}
+                  for index, (attachment, path, data) in enumerate(prepared)]
+        uploaded = {}
+        async def send_part(part):
+            body = dict(params)
+            if part['withoutReply']:
+                body.pop('reply_message_id', None)
+            if part['kind'] == 'text':
+                body.update(msg_type='text' if part['plainText'] else 'interactive',
+                    content=json.dumps({'text': part['content']}, ensure_ascii=False) if part['plainText'] else feishu_card(rendered[part['index']]))
+            else:
+                index = part['attachmentIndex']
+                attachment, path, data = prepared[index]
+                kind = 'image' if attachment.kind == 'image' else 'file'
+                if index not in uploaded:
+                    upload = await self._transport('im.v1.media.create', {
+                        'kind': kind, 'data': data, 'file_name': part['fileName'], 'mime_type': attachment.mime_type})
+                    key = upload.get('image_key' if kind == 'image' else 'file_key')
+                    if not key:
+                        raise ChannelAdapterError('feishu_upload_missing_key')
+                    uploaded[index] = str(key)
+                # Upload is not a visible send. Recheck after it as well.
+                attempt.require_current()
+                body.update(msg_type=kind, content=json.dumps({kind + '_key': uploaded[index]}))
+            return await self._transport('im.v1.message.create', body)
+        attempt = DeliveryAttempt(message, scheduler=self.scheduler, max_attempts=4)
+        return await attempt.run(parts, send_part, receipt_id=lambda response:
+            response.get('message_id') or response.get('data', {}).get('message_id'))
 
     async def download_media(self, event: InboundEvent, *, max_bytes: int | None = None) -> tuple[FeishuMedia, ...]:
         """Download message resources with a hard size bound.
@@ -320,149 +307,86 @@ class FeishuAdapter(ChannelAdapter):
             media.append(FeishuMedia(attachment.kind, blob, attachment.file_name, mime, key))
         return tuple(media)
 
-    async def stream_start(
-        self,
-        target: Target,
-        *,
-        title: str = "",
-        reply_to_message_id: str | None = None,
-    ) -> FeishuStreamSession:
-        """Create a CardKit card prepared for incremental ``content`` updates."""
-
+    async def stream_start(self, target: Target, *, title: str = '', reply_to_message_id: str | None = None,
+                           outbound: OutboundMessage | None = None) -> FeishuStreamSession:
         self._validate_target(target)
         if self._transport is None:
-            raise ChannelAdapterError("Feishu transport is not configured")
-        card_json = json.dumps({
-            "schema": "2.0",
-            "config": {
-                "update_multi": True,
-                "streaming_mode": True,
-                "summary": {"content": ""},
-                "streaming_config": {
-                    "print_frequency_ms": {"default": 50},
-                    "print_step": {"default": 2},
-                    "print_strategy": "fast",
-                },
-            },
-            "body": {"elements": [{
-                "tag": "markdown",
-                "content": title or "…",
-                "element_id": _LIVE_CARD_ELEMENT_ID,
-            }]},
-        }, ensure_ascii=False)
-        try:
-            result = await self._transport("cardkit.create", {"card_json": card_json})
-        except Exception as error:
-            if delivery_status_for_error(error) is not DeliveryStatus.FAILED:
-                raise
-            return FeishuStreamSession("", target, fallback=True, reply_to_message_id=reply_to_message_id)
-        card_id = str(result.get("card_id", result.get("data", {}).get("card_id", "")))
-        if not card_id:
-            raise ChannelAdapterError("飞书 CardKit 未返回 card_id")
-        sent_params: dict[str, Any] = {
-            "receive_id_type": "chat_id", "receive_id": target.chat_id,
-            "msg_type": "interactive",
-            "content": json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False),
-        }
-        if reply_to_message_id:
-            sent_params["reply_message_id"] = reply_to_message_id
-        try:
-            sent = await self._transport("im.v1.message.create", sent_params)
-        except Exception as error:
-            if delivery_status_for_error(error) is not DeliveryStatus.FAILED:
-                raise
-            return FeishuStreamSession("", target, fallback=True, reply_to_message_id=reply_to_message_id)
-        message_id = str(sent.get("message_id", sent.get("data", {}).get("message_id", ""))) or None
-        if not message_id:
-            raise PartialDeliveryError("飞书流式卡片已接受但未返回消息 ID")
-        return FeishuStreamSession(card_id, target, message_id, reply_to_message_id=reply_to_message_id)
+            raise ChannelAdapterError('Feishu transport is not configured')
+        message = outbound or OutboundMessage(target, '', reply_to_message_id=reply_to_message_id)
+        delivery = StreamDelivery(message, self.scheduler, max_attempts=4)
+        session = FeishuStreamSession('', target, reply_to_message_id=reply_to_message_id, delivery=delivery)
+        card_json = json.dumps({'schema': '2.0', 'config': {'update_multi': True, 'streaming_mode': True,
+            'summary': {'content': ''}}, 'body': {'elements': [{'tag': 'markdown', 'content': title or '…',
+            'element_id': _LIVE_CARD_ELEMENT_ID}]}}, ensure_ascii=False)
+        async def create(part):
+            if not session.card_id:
+                result = await self._transport('cardkit.create', {'card_json': card_json})
+                session.card_id = str(result.get('card_id') or result.get('data', {}).get('card_id') or '')
+                if not session.card_id:
+                    raise ChannelAdapterError('feishu_cardkit_missing_card_id')
+            delivery.require_current()
+            params = {'receive_id_type': 'chat_id', 'receive_id': target.chat_id, 'msg_type': 'interactive',
+                'content': json.dumps({'type': 'card', 'data': {'card_id': session.card_id}})}
+            if reply_to_message_id and not part['withoutReply']:
+                params['reply_message_id'] = reply_to_message_id
+            return await self._transport('im.v1.message.create', params)
+        result = await delivery.update('', create, kind='send', preview=True, receipt_id=_message_id)
+        session.message_id = result.platform_message_id
+        return session
 
     async def stream_update(self, session: FeishuStreamSession, content: str) -> None:
-        """Coalesce full-text deltas to stay below CardKit's per-card rate limit."""
-
-        if self._transport is None:
-            raise ChannelAdapterError("Feishu transport is not configured")
-        if session.fallback:
-            session.pending = content
-            return
-        if session.failed:
-            return
+        session.delivery.require_current()
         session.pending = content
-        if session.task is None or session.task.done():
+        if session.delivery.error is None and (session.task is None or session.task.done()):
             session.task = asyncio.create_task(self._flush_stream_updates(session))
 
     async def _flush_stream_updates(self, session: FeishuStreamSession) -> None:
-        assert self._transport is not None
-        try:
-            while session.pending != session.shown and not session.failed:
-                delay = session.last_update_at + _LIVE_CARD_UPDATE_INTERVAL - time.monotonic()
-                if delay > 0:
-                    await asyncio.sleep(delay)
-                content = session.pending
-                if content == session.shown:
-                    return
-                session.sequence += 1
-                await self._transport("cardkit.update", {
-                    "card_id": session.card_id,
-                    "element_id": _LIVE_CARD_ELEMENT_ID,
-                    "content": content,
-                    "sequence": session.sequence,
-                    "uuid": uuid.uuid4().hex,
-                })
-                session.shown = content
-                session.last_update_at = time.monotonic()
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            session.failed = True
-            logger.warning("飞书 CardKit 流式更新失败 card=%s error=%s", session.card_id, type(error).__name__)
+        while session.pending != session.shown and session.delivery.error is None:
+            pending = session.pending
+            chunk = next(iter(markdown_chunks(pending)), '')
+            if not chunk:
+                return
+            sequence = session.sequence + 1
+            operation_id = uuid.uuid4().hex
+            async def update(part):
+                await self._transport('cardkit.update', {'card_id': session.card_id,
+                    'element_id': _LIVE_CARD_ELEMENT_ID, 'content': chunk, 'sequence': sequence, 'uuid': operation_id})
+                return {'message_id': session.message_id}
+            result = await session.delivery.update(chunk, update, receipt_id=_message_id)
+            if result.status is DeliveryStatus.SENT:
+                session.sequence = sequence
+                session.shown = pending
 
     async def stream_finalize(self, session: FeishuStreamSession, content: str) -> DeliveryResult:
-        if self._transport is None:
-            raise ChannelAdapterError("Feishu transport is not configured")
-        if session.fallback:
-            params = {"receive_id_type": "chat_id", "receive_id": session.target.chat_id, "msg_type": "interactive", "content": json.dumps({"schema": "2.0", "body": {"elements": [{"tag": "markdown", "content": content or session.pending or "（回复已中断）"}]}}, ensure_ascii=False)}
-            if session.reply_to_message_id:
-                params["reply_message_id"] = session.reply_to_message_id
-            try:
-                sent = await self._transport("im.v1.message.create", params)
-                message_id = str(sent.get("message_id", sent.get("data", {}).get("message_id", ""))) or None
-                if not message_id:
-                    raise PartialDeliveryError("飞书卡片已接受但未返回消息 ID")
-                return DeliveryResult(DeliveryStatus.SENT, session.target, message_id, raw={"fallback": "ordinary_card"})
-            except Exception as error:
-                return DeliveryResult(delivery_status_for_error(error), session.target, error=type(error).__name__)
         if session.task is not None:
             await asyncio.gather(session.task, return_exceptions=True)
-        try:
-            if session.failed:
-                await self._transport("cardkit.update_full", {
-                    "card_id": session.card_id,
-                    "content": content,
-                    "sequence": session.sequence + 1,
-                    "uuid": uuid.uuid4().hex,
-                })
-                session.sequence += 1
-            else:
-                session.sequence += 1
-                await self._transport("cardkit.finalize", {
-                    "card_id": session.card_id,
-                    "element_id": _LIVE_CARD_ELEMENT_ID,
-                    "content": content,
-                    "sequence": session.sequence,
-                    "settings_sequence": session.sequence + 1,
-                    "settings": json.dumps({"config": {
-                        "streaming_mode": False,
-                        "summary": {"content": content[:200]},
-                    }}, ensure_ascii=False),
-                    "uuid": uuid.uuid4().hex,
-                    "settings_uuid": uuid.uuid4().hex,
-                })
-        except Exception as error:
-            # A preview is already visible. Even a definite final edit rejection
-            # cannot prove the conversation received none of the reply.
-            return DeliveryResult(DeliveryStatus.UNCERTAIN, session.target, session.message_id, error=type(error).__name__, raw={"card_id": session.card_id})
-        return DeliveryResult(DeliveryStatus.SENT, session.target, session.message_id, raw={"card_id": session.card_id})
+        chunks = markdown_chunks(content or '…')
+        rendered = markdown_renderings(chunks)
+        parts = [{'kind': 'text', 'content': chunk} for chunk in chunks]
+        sequence, operation_id, settings_id = session.sequence + 1, uuid.uuid4().hex, uuid.uuid4().hex
+        async def send(part):
+            if part['index'] == 0:
+                await self._transport('cardkit.finalize', {'card_id': session.card_id, 'element_id': _LIVE_CARD_ELEMENT_ID,
+                    'content': rendered[part['index']], 'sequence': sequence, 'settings_sequence': sequence + 1,
+                    'settings': json.dumps({'config': {'streaming_mode': False, 'summary': {'content': content[:200]}}}),
+                    'uuid': operation_id, 'settings_uuid': settings_id})
+                return {'message_id': session.message_id}
+            params = {'receive_id_type': 'chat_id', 'receive_id': session.target.chat_id,
+                'msg_type': 'text' if part['plainText'] else 'interactive',
+                'content': json.dumps({'text': part['content']}, ensure_ascii=False) if part['plainText'] else feishu_card(rendered[part['index']])}
+            if session.reply_to_message_id and not part['withoutReply']:
+                params['reply_message_id'] = session.reply_to_message_id
+            return await self._transport('im.v1.message.create', params)
+        result = await session.delivery.finish(parts, send, receipt_id=_message_id)
+        if result.status is DeliveryStatus.SENT:
+            # Final text is already durable before this optional UI setting.
+            async def close(part):
+                await self._transport('cardkit.close', {'card_id': session.card_id, 'sequence': sequence + 1,
+                    'uuid': settings_id, 'settings': json.dumps({'config': {'streaming_mode': False}})})
+                return {'message_id': session.message_id}
+            control = DeliveryAttempt(replace(session.delivery.message, record_delivery=None), scheduler=self.scheduler)
+            await control.run([{'kind': 'preview', 'content': '', 'operation': 'edit'}], close, receipt_id=_message_id)
+        return result
 
     async def list_targets(self) -> list[Target]:
         return list(self._targets.values())
@@ -497,3 +421,7 @@ def _bounded_bytes(value: Any, limit: int) -> bytes | None:
                 return None
             return data if len(data) <= limit else None
     return None
+
+
+def _message_id(response):
+    return response.get('message_id') or response.get('data', {}).get('message_id')

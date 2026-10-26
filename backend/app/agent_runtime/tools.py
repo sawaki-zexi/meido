@@ -93,6 +93,7 @@ class ToolContext:
     capability_snapshot_id: str | None = None
     # Host-only stable request reference; never reconstructed from model arguments.
     capability_binding: CapabilityResolution | None = field(default=None, repr=False, compare=False)
+    deadline: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
