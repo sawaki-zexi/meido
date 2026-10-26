@@ -13,6 +13,10 @@ export function usePromptTags(roleId: string, initiallyOpen = false) {
   const [draft, setDraft] = useState<PromptTagInput>(emptyTag);
   const [keywords, setKeywords] = useState('');
   const [editing, setEditing] = useState<string>();
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [original, setOriginal] = useState<PromptTagInput>(emptyTag);
+  const [pendingDelete, setPendingDelete] = useState<PromptTag | null>(null);
+  const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [text, setText] = useState('');
@@ -48,6 +52,7 @@ export function usePromptTags(roleId: string, initiallyOpen = false) {
   useEffect(() => {
     const owner = { roleId, active: true }; scope.current = owner;
     setOpen(initiallyOpen); setPage(null); setDraft(emptyTag()); setKeywords(''); setEditing(undefined);
+    setEditorOpen(false); setOriginal(emptyTag()); setPendingDelete(null); setSaved(false);
     setBusy(initiallyOpen); setError(''); setText(''); setPrompt(''); setNegativePrompt(''); setPreview(null); setFilters(emptyFilters()); previewVersion.current++;
     if (initiallyOpen) void load(owner).catch((cause) => {
       if (current(owner)) setError(errorMessage(cause, '提示标签操作未完成，请重查标签库'));
@@ -65,17 +70,24 @@ export function usePromptTags(roleId: string, initiallyOpen = false) {
     finally { if (current(owner)) setBusy(false); }
   };
   const invalidatePreview = () => { previewVersion.current++; setPreview(null); };
-  const resetDraft = () => { setDraft(emptyTag()); setKeywords(''); setEditing(undefined); };
+  const resetDraft = () => { setDraft(original); setKeywords(original.keywords.join('\n')); setSaved(false); };
+  const openEditor = (tag?: PromptTag) => {
+    const { id, referenceAttachment: _referenceAttachment, ...input } = tag ?? { ...emptyTag(), id: undefined, referenceAttachment: null };
+    const value = { ...emptyTag(), ...input, category: input.category || 'composition', reference_attachment_id: input.reference_attachment_id ?? null };
+    setOriginal(value); setDraft(value); setEditing(id); setKeywords(value.keywords.join('\n')); setEditorOpen(true); setSaved(false);
+  };
+  const dirty = JSON.stringify(draft) !== JSON.stringify(original) || keywords !== original.keywords.join('\n');
   const save = () => run(async (owner) => {
+    if (!dirty) return;
     const words = keywords.split(/\r?\n/).map((word) => word.trim()).filter(Boolean);
     if (!draft.name.trim() || draft.name.length > 80 || !draft.category.trim() || draft.category.length > 80
       || words.length < 1 || words.length > 16 || words.some((word) => word.length > 80))
       throw new Error('标签名称和分类各最多 80 字符；请填写 1–16 个关键词，每个最多 80 字符。');
     if ([draft.prompt, draft.negative_prompt].some((value) => value.length > 4000 || /[^\x20-\x7e]/.test(value)))
       throw new Error('正负 tags 各最多 4000 字符，只能使用英文 ASCII 且不能包含控制符。');
-    await novelai.savePromptTag(owner.roleId, { ...draft, name: draft.name.trim(), category: draft.category.trim(), keywords: words }, editing);
+    const result = await novelai.savePromptTag(owner.roleId, { ...draft, name: draft.name.trim(), category: draft.category.trim(), keywords: words }, editing);
     if (!current(owner)) return;
-    resetDraft(); invalidatePreview(); await load(owner);
+    openEditor(result.tag); setSaved(true); invalidatePreview(); await load(owner);
   });
   const uploadReference = (file: File) => run(async (owner) => {
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type))
@@ -84,12 +96,14 @@ export function usePromptTags(roleId: string, initiallyOpen = false) {
     if (!current(owner)) return;
     if (uploaded.kind !== 'image') throw new Error('上传的文件不是图片。');
     setDraft((previous) => ({ ...previous, reference_attachment_id: uploaded.id }));
+    setSaved(false);
     invalidatePreview();
   });
   const remove = (tag: PromptTag) => run(async (owner) => {
     await novelai.deletePromptTag(owner.roleId, tag.id);
     if (!current(owner)) return;
-    if (editing === tag.id) resetDraft();
+    setPendingDelete(null);
+    if (editing === tag.id) { openEditor(); setEditorOpen(false); }
     invalidatePreview(); await load(owner);
   });
   const inspect = () => run(async (owner) => {
@@ -108,17 +122,16 @@ export function usePromptTags(roleId: string, initiallyOpen = false) {
   const categoryValues = new Set(page?.tags.map((tag) => tag.category) ?? []);
   if (filters.category) categoryValues.add(filters.category);
   const categories = [...categoryValues].sort((a, b) => a.localeCompare(b));
-  return { open, page, draft, keywords, editing, busy, error, text, prompt, negativePrompt, preview, filters, filteredTags, categories,
+  return { open, page, draft, keywords, editing, editorOpen, dirty, saved, pendingDelete, busy, error, text, prompt, negativePrompt, preview, filters, filteredTags, categories,
+    create: () => openEditor(), back: () => setEditorOpen(false), resume: () => setEditorOpen(true),
+    requestDelete: (tag: PromptTag) => { setError(''); setPendingDelete(tag); }, cancelDelete: () => { if (!busy) setPendingDelete(null); },
     filter: (changes: Partial<TagFilters>) => setFilters((previous) => ({ ...previous, ...changes })),
     clearFilters: () => setFilters(emptyFilters()),
     dismissError: () => setError(''), toggle: () => { if (open) setOpen(false); else { setOpen(true); void run((owner) => load(owner)); } },
     reload: () => run((owner) => load(owner)),
-    patch: (changes: Partial<PromptTagInput>) => setDraft({ ...draft, ...changes }), setKeywords,
-    edit: (tag: PromptTag) => {
-      const { id, referenceAttachment: _referenceAttachment, ...input } = tag;
-      setDraft({ ...emptyTag(), ...input, category: input.category || 'composition', reference_attachment_id: input.reference_attachment_id ?? null });
-      setEditing(id); setKeywords(input.keywords.join('\n'));
-    },
+    patch: (changes: Partial<PromptTagInput>) => { setDraft({ ...draft, ...changes }); setSaved(false); },
+    setKeywords: (value: string) => { setKeywords(value); setSaved(false); },
+    edit: (tag: PromptTag) => { if (tag.id === editing) setEditorOpen(true); else openEditor(tag); },
     uploadReference,
     resetDraft, save, remove, inspect,
     setText: (value: string) => { setText(value); invalidatePreview(); },

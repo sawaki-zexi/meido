@@ -14,6 +14,60 @@ const routes = {
 };
 const drawer = (id: string) => <GenerationDrawer role={role({ id, name: id })} onClose={() => {}} onGenerated={() => {}} />;
 
+it('opens a dedicated editor, restores the saved value and confirms deletion before sending it', async () => {
+  let entries = [first];
+  const { calls } = fakeBackend({
+    'GET /api/roles/r1/novelai/prompt-tags\\?limit=50': () => ({ body: { tags: entries, revision: 1, nextCursor: null } }),
+    ['DELETE /api/roles/r1/novelai/prompt-tags/' + first.id]: () => { entries = []; return { body: { revision: 2 } }; },
+  });
+  const user = userEvent.setup(); render(<PromptTagManager roleId="r1" expanded />);
+  await user.click(await screen.findByRole('button', { name: '编辑标签 雨景' }));
+  expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '保存标签' })).toBeDisabled();
+  await user.type(screen.getByLabelText('标签名称'), '草稿');
+  await user.click(screen.getByRole('button', { name: '恢复已保存内容' }));
+  expect(screen.getByLabelText('标签名称')).toHaveValue('雨景');
+  expect(screen.getByRole('button', { name: '保存标签' })).toBeDisabled();
+  await user.click(screen.getByRole('button', { name: '返回标签库' }));
+  await user.click(screen.getByRole('button', { name: '删除标签 雨景' }));
+  let confirm = screen.getByRole('dialog', { name: '删除提示标签' });
+  expect(calls.some((call) => call.method === 'DELETE')).toBe(false);
+  await user.click(within(confirm).getByRole('button', { name: '取消' }));
+  expect(screen.getByRole('article', { name: '提示标签 雨景' })).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '删除标签 雨景' }));
+  confirm = screen.getByRole('dialog', { name: '删除提示标签' });
+  await user.click(within(confirm).getByRole('button', { name: '确认删除' }));
+  await screen.findByText('暂无提示标签。');
+  expect(calls.filter((call) => call.method === 'DELETE')).toHaveLength(1);
+});
+
+it('keeps a failed deletion reviewable and ignores a late deletion after role A-B-A', async () => {
+  let failed = true;
+  let finish: ((value: { body: unknown }) => void) | undefined;
+  const { calls } = fakeBackend({
+    'GET /api/roles/r[12]/novelai/prompt-tags\\?limit=50': () => ({ body: { tags: [first], revision: 1, nextCursor: null } }),
+    ['DELETE /api/roles/r1/novelai/prompt-tags/' + first.id]: () => failed
+      ? { status: 503, body: { detail: '暂时无法删除，请重试' } } : new Promise((resolve) => { finish = resolve; }),
+  });
+  const user = userEvent.setup(); const view = render(<PromptTagManager roleId="r1" expanded />);
+  await user.click(await screen.findByRole('button', { name: '删除标签 雨景' }));
+  await user.click(screen.getByRole('button', { name: '确认删除' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('暂时无法删除');
+  expect(screen.getByRole('dialog', { name: '删除提示标签' })).toBeInTheDocument();
+  failed = false;
+  await user.click(screen.getByRole('button', { name: '确认删除' }));
+  await waitFor(() => expect(finish).toBeDefined());
+  view.rerender(<PromptTagManager roleId="r2" expanded />);
+  await screen.findByRole('article', { name: '提示标签 雨景' });
+  view.rerender(<PromptTagManager roleId="r1" expanded />);
+  await screen.findByRole('article', { name: '提示标签 雨景' });
+  await act(async () => finish?.({ body: { revision: 2 } }));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(screen.getByRole('article', { name: '提示标签 雨景' })).toBeInTheDocument();
+  expect(calls.filter((call) => call.method === 'DELETE')).toHaveLength(2);
+  expect(calls.some((call) => call.path.includes('generations'))).toBe(false);
+});
+
 it('finds a tag beyond the first page by normalized name, keyword and either prompt without generating', async () => {
   const later = { ...second, name: 'Night Garden', keywords: ['夜晚'], prompt: 'moonlight', negative_prompt: 'daytime' };
   const firstPage = Array.from({ length: 50 }, (_, index) => ({ ...first, id: index.toString(16).padStart(32, '0'), name: `Rain ${index}` }));
@@ -47,6 +101,10 @@ it('combines filters, explains no matches and keeps the editing draft when clear
   const user = userEvent.setup(); render(<PromptTagManager roleId="r1" expanded />);
   await user.click(await screen.findByRole('button', { name: '编辑标签 雨景' }));
   await user.clear(screen.getByLabelText('标签名称')); await user.type(screen.getByLabelText('标签名称'), '未保存修改');
+  await user.click(screen.getByRole('button', { name: '返回标签库' }));
+  await user.click(screen.getByRole('button', { name: '编辑标签 雨景' }));
+  expect(screen.getByLabelText('标签名称')).toHaveValue('未保存修改');
+  await user.click(screen.getByRole('button', { name: '返回标签库' }));
   const search = screen.getByRole('searchbox', { name: '搜索提示标签' });
   await user.type(search, 'Night');
   expect(screen.getAllByRole('article')).toHaveLength(4);
@@ -63,6 +121,7 @@ it('combines filters, explains no matches and keeps the editing draft when clear
   await user.click(screen.getByRole('button', { name: '清空筛选' }));
   expect(screen.getAllByRole('article')).toHaveLength(5);
   expect(search).toHaveValue('');
+  await user.click(screen.getByRole('button', { name: '继续编辑' }));
   expect(screen.getByLabelText('标签名称')).toHaveValue('未保存修改');
   expect(calls.every((call) => call.method === 'GET')).toBe(true);
 });
@@ -81,6 +140,8 @@ it('keeps the selected category visible when editing its last tag into a differe
   await user.click(screen.getByRole('button', { name: '编辑标签 雨景' }));
   await user.clear(screen.getByLabelText('标签分类')); await user.type(screen.getByLabelText('标签分类'), 'composition');
   await user.click(screen.getByRole('button', { name: '保存标签' }));
+  await screen.findByText('标签已保存');
+  await user.click(screen.getByRole('button', { name: '返回标签库' }));
   await screen.findByText('没有符合条件的标签。');
   expect(screen.getByLabelText('筛选标签分类')).toHaveValue('atmosphere');
   await user.click(screen.getByRole('button', { name: '清空筛选' }));
@@ -149,11 +210,13 @@ it('manages the complete role library and previews the exact server expansion wi
   const library = await screen.findByRole('region', { name: '本角色提示标签库' });
   await within(library).findByText('雨景');
   expect(await within(library).findByText('夜景')).toBeInTheDocument();
+  await user.click(screen.getByText('本地匹配预览'));
   await user.type(screen.getByLabelText('预览当前主人输入'), '正在下雨');
   await user.type(screen.getByLabelText('预览基础正向 tags'), '1girl');
   await user.click(screen.getByRole('button', { name: '预览标签扩写' }));
   expect(await screen.findByText('1girl, rain')).toBeInTheDocument();
   expect(screen.getByText(/命中标签：雨景/)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '新建标签' }));
   await user.type(screen.getByLabelText('标签名称'), '新标签');
   await user.type(screen.getByLabelText('匹配关键词（每行一个）'), '海边');
   await user.type(screen.getByLabelText('标签正向 tags'), 'beach');
@@ -163,12 +226,17 @@ it('manages the complete role library and previews the exact server expansion wi
   await user.upload(screen.getByLabelText('上传参考图'), reference);
   await waitFor(() => expect(screen.getByAltText('当前参考图')).toBeInTheDocument());
   await user.click(screen.getByRole('button', { name: '保存标签' }));
+  await screen.findByText('标签已保存');
+  await user.click(screen.getByRole('button', { name: '返回标签库' }));
   expect(await screen.findByText('新标签')).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: '编辑标签 雨景' }));
   await user.clear(screen.getByLabelText('标签名称')); await user.type(screen.getByLabelText('标签名称'), '小雨');
   await user.click(screen.getByRole('button', { name: '保存标签' }));
+  await screen.findByText('标签已保存');
+  await user.click(screen.getByRole('button', { name: '返回标签库' }));
   expect(await screen.findByText('小雨')).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: '删除标签 小雨' }));
+  await user.click(screen.getByRole('button', { name: '确认删除' }));
   await waitFor(() => expect(screen.queryByText('小雨')).not.toBeInTheDocument());
   expect(calls.filter((call) => call.method === 'POST').map((call) => call.path)).toEqual([
     '/api/roles/r1/novelai/prompt-tags/preview', '/api/roles/r1/attachments', '/api/roles/r1/novelai/prompt-tags']);
@@ -186,11 +254,14 @@ it('rejects oversized keyword lists locally and ignores a late preview after A-B
   await screen.findByText('暂无生图历史。');
   await user.click(screen.getByRole('button', { name: '管理提示标签' }));
   await screen.findByText('雨景');
+  await user.click(screen.getByRole('button', { name: '新建标签' }));
   await user.type(screen.getByLabelText('标签名称'), '过多词条');
   fireEvent.change(screen.getByLabelText('匹配关键词（每行一个）'), { target: { value: Array.from({ length: 17 }, (_, index) => `关键词${index}`).join('\n') } });
   await user.click(screen.getByRole('button', { name: '保存标签' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('1–16 个关键词');
   expect(calls.some((call) => call.method === 'POST')).toBe(false);
+  await user.click(screen.getByRole('button', { name: '返回标签库' }));
+  await user.click(screen.getByText('本地匹配预览'));
   await user.type(screen.getByLabelText('预览当前主人输入'), '下雨');
   await user.click(screen.getByRole('button', { name: '预览标签扩写' }));
   await waitFor(() => expect(resolvePreview).toBeDefined());
@@ -222,6 +293,7 @@ it('isolates old library and preview responses through role A-B-A and shows loca
   await screen.findByText('夜景');
   await act(async () => { resolveOld?.({ body: { tags: [first], revision: 1, nextCursor: null } }); });
   await waitFor(() => expect(screen.queryByText('雨景')).not.toBeInTheDocument());
+  await user.click(screen.getByText('本地匹配预览'));
   await user.type(screen.getByLabelText('预览当前主人输入'), '晚上');
   await user.click(screen.getByRole('button', { name: '预览标签扩写' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('扩写结果过长，请缩短 tags');
