@@ -190,6 +190,32 @@ class ChannelHost:
         account = self.store.get_account(account_id)
         return bool(account and self.store.account_effectively_enabled(account) and account_id in self._adapters and account_id not in self._paused_accounts)
 
+    def start_private_progress(self, thread, *, run_id: str, authorize_source: Callable[[], bool]):
+        """Bind temporary feedback to this source and connection; never record a reply."""
+        if thread.channel != 'telegram' or thread.chat_type != 'private':
+            return None
+        adapter = self._adapters.get(thread.account_id)
+        start = getattr(adapter, 'start_progress', None)
+        if not callable(start) or not self.accepts_events(thread.account_id):
+            return None
+        target_id = target_from_chat(account_id=thread.account_id, chat_id=thread.chat_id, kind=TargetKind.PRIVATE).id
+        target = self.store.get_target(thread.role_id, thread.account_id, target_id)
+        if target is None:
+            return None
+        generation = self.connection_generation(thread.account_id)
+        revision = self.store.directory_revision(thread.account_id, thread.channel)
+        def authorized():
+            account = self.store.get_account(thread.account_id)
+            return bool(account and account.role_id == thread.role_id and account.allow_private
+                and self.accepts_events(thread.account_id) and self._adapters.get(thread.account_id) is adapter
+                and self.connection_generation(thread.account_id) == generation
+                and self.store.directory_revision(thread.account_id, thread.channel) == revision
+                and authorize_source())
+        if not authorized():
+            return None
+        adapter.remember_target(target)
+        return start(OutboundMessage(target, '', authorize_dispatch=authorized), run_id=run_id)
+
     def _group_reply_guard(self, account_id: str, target: Target) -> Callable[[], bool] | None:
         account = self.store.get_account(account_id)
         if account is None or account.channel != "qq" or target.kind is not TargetKind.GROUP:

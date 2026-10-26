@@ -56,6 +56,14 @@ class TelegramAccountAdapter(ChannelAdapter):
         del payload
         return None
 
+    def start_progress(self, message: OutboundMessage, *, run_id: str):
+        from .telegram_progress import TelegramProgress
+        self._validate_target(message.target)
+        if message.target.kind is not TargetKind.PRIVATE:
+            raise UnsupportedTargetError('过程反馈仅用于当前 Telegram 私聊')
+        return TelegramProgress(message, run_id=run_id, token_getter=self._token_getter,
+            transport=self._transport, scheduler=self.scheduler)
+
     async def send(self, message: OutboundMessage) -> DeliveryResult:
         self._validate_target(message.target)
         options: dict[str, Any] = {"reply_to": message.reply_to_message_id}

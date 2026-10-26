@@ -6167,6 +6167,8 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
     delivery_cancellations: list[asyncio.CancelledError] = []
     turn_task = asyncio.current_task()
 
+    progress = None
+
     async def persist_runtime_message(event: MessageEndEvent) -> Message | None:
         nonlocal placeholder_id, final_message_id
         if isinstance(event.message, AssistantMessage):
@@ -6218,6 +6220,19 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
         if metadata.get("channelTurnSource") is not None:
             metadata["channelTurnState"] = "running"
             multichannel_store.set_channel_turn_state(thread, message_id, "running")
+        if thread.channel == 'telegram' and thread.chat_type == 'private':
+            try:
+                source = capture_channel_source(multichannel_store, session_store,
+                    role_id=thread.role_id, session_key=thread.session_key, run_id=run_id, owner_context=owner)
+                def progress_authorized():
+                    current = session_store.get_run(run_id)
+                    return bool(not turn_task.cancelling() and current is not None and current.status in {'created', 'running'}
+                        and store.get(thread.role_id) is not None and thread.role_id not in _channel_roles_deleting
+                        and source.authorization_denial(multichannel_store) is None
+                        and _queued_channel_turn_authorized(thread, metadata))
+                progress = channel_host.start_private_progress(thread, run_id=run_id, authorize_source=progress_authorized)
+            except PermissionError:
+                pass
         owner_context_since = (
             multichannel_store.owner_chat_context_since(
                 role_id=thread.role_id,
@@ -6384,6 +6399,8 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                              330.0 if any(tool.name == 'generate_image' for tool in capabilities.snapshot.tools) else 0.0),
             on_message_end=persist_runtime_message,
         ):
+            if progress is not None:
+                progress.feed(event)
             if isinstance(event, MessageUpdateEvent) and isinstance(event.message, AssistantMessage) and event.message.content.strip():
                 streamed_content = event.message.content
                 adapter = channel_adapters.get(thread.account_id)
@@ -6413,6 +6430,8 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                     queue_latest(event.message.content)
             if isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage) and not event.message.tool_calls:
                 final_content = event.message.content
+        if progress is not None:
+            await progress.close()
         delivery_metadata: dict[str, object] | None = None
         generation_reply = await _novelai_application().claim_channel_reply(thread.role_id,
             thread.session_key, run_id, final_message_id) if final_message_id is not None else None
@@ -6505,6 +6524,8 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
         logger.warning("渠道回合失败 role=%s thread=%s error=%s", thread.role_id, thread.thread_id, type(error).__name__)
     finally:
         try:
+            if progress is not None:
+                await progress.close()
             if stream_queue is not None and stream_task is not None:
                 if not stream_task.done():
                     terminal_content = final_content if final_content.strip() else streamed_content
