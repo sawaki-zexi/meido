@@ -86,7 +86,24 @@ def test_owner_view_keeps_only_confirmed_parts_with_source_labels_and_original_r
     assert projected.content == 'CONFIRMED' and projected.status == 'completed'
     runtime = view.runtime_messages()
     assert '回复来源' in runtime[-1].content and 'CONFIRMED' in runtime[-1].content
-    assert 'UNSENT_TAIL' not in str(runtime)
+    from backend.app.agent_runtime.meido_provider import MeidoProvider
+    from backend.app.agent_runtime.provider import CancellationToken
+    from backend.app.ai.model_types import ModelAssistantMessage, ModelStreamDone, ModelTextBlock
+    from backend.app.models import RoleInput, RoleProfile
+    requests = []
+    class Adapter:
+        async def stream_rich_messages(self, messages, configuration, tools=(), **kwargs):
+            requests.extend(messages)
+            yield ModelStreamDone(ModelAssistantMessage((ModelTextBlock('ok'),)))
+    role = RoleInput(name='fixture', profile=RoleProfile(profile='fixture')).model_copy(update={'id': 'r1'})
+    provider = MeidoProvider(Adapter(), role, None)
+    async def render():
+        async for _ in provider.stream_response(model='', system='', messages=runtime, tools=[], signal=CancellationToken()):
+            pass
+    asyncio.run(render())
+    sent = [block.text for message in requests for block in message.content if hasattr(block, 'text')]
+    assert any('回复来源' in text for text in sent) and 'CONFIRMED' in sent
+    assert not any('UNSENT_TAIL' in text for text in sent)
     assert sessions.list_messages(thread.session_key)[-1].content == 'CONFIRMED UNSENT_TAIL'
 
 
