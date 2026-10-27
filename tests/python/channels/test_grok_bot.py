@@ -106,3 +106,39 @@ def test_unknown_grok_submission_is_not_replayed(tmp_path):
         finally:
             await adapter.stop()
     asyncio.run(scenario())
+
+
+def test_cancelled_grok_turn_does_not_kill_callback_receiver(tmp_path):
+    from backend.app.channels.grok.adapter import GrokAdapter
+
+    async def scenario():
+        entered, second = asyncio.Event(), asyncio.Event()
+        received_tasks = []
+        block = asyncio.Event()
+
+        async def inbound(payload):
+            received_tasks.append(asyncio.current_task())
+            if payload['message_id'] == 'first':
+                entered.set()
+                await block.wait()
+            else:
+                second.set()
+
+        adapter = GrokAdapter('grok-test', 'role-test',
+            {'endpoint': 'https://example.invalid/bot', 'peerId': 'a' * 32, 'maxMessages': 12},
+            str(tmp_path / 'channels.db'), webhook_key='private-test', callback_token='private-callback-test')
+        adapter.set_event_handler(inbound)
+        await adapter.start()
+        try:
+            await adapter.receive({'message_id': 'first', 'text': 'first'})
+            await asyncio.wait_for(entered.wait(), 3)
+            received_tasks[0].cancel()
+            await asyncio.gather(received_tasks[0], return_exceptions=True)
+            await adapter.receive({'message_id': 'second', 'text': 'second'})
+            await asyncio.wait_for(second.wait(), 3)
+            assert adapter.active and adapter.worker is not None and not adapter.worker.done()
+        finally:
+            block.set()
+            await adapter.stop()
+
+    asyncio.run(scenario())

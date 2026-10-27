@@ -139,11 +139,20 @@ class GrokAdapter(ChannelAdapter):
                 if not self.can_receive():
                     self.journal.finish(message.message_id, 'failed')
                     continue
+                # A channel turn is cancellable by the runtime's Stop action.
+                # Keep that cancellation below the intake worker so one
+                # stopped turn cannot silently kill the callback receiver.
+                delivery = asyncio.create_task(self._emit_payload(asdict(message)))
                 try:
-                    await self._emit_payload(asdict(message))
-                except BaseException:
+                    await delivery
+                except asyncio.CancelledError:
+                    if not self.active:
+                        raise
                     self.journal.finish(message.message_id, 'failed')
-                    raise
+                    continue
+                except Exception:
+                    self.journal.finish(message.message_id, 'failed')
+                    continue
                 self.journal.finish(message.message_id, 'complete')
 
     async def send(self, message):
