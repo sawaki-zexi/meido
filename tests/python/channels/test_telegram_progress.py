@@ -15,7 +15,7 @@ from backend.app.agent_runtime.tools import AgentToolResult
 from backend.app.channels import ChannelHost
 from backend.app.channels.delivery import OutboundScheduler
 from backend.app.channels.group_tools import MultichannelGroupRepository
-from backend.app.channels.models import TargetKind, target_from_chat
+from backend.app.channels.models import OutboundMessage, TargetKind, target_from_chat
 from backend.app.channels.telegram import TelegramAccountAdapter
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.models import RoleInput, RoleProfile
@@ -185,16 +185,27 @@ def test_progress_accepts_tool_updates_without_mapping_details():
     from backend.app.agent_runtime.tools import AgentToolResult
     from backend.app.channels.telegram_progress import TelegramProgress
 
-    class Scheduler:
-        clock = staticmethod(lambda: 0.0)
-    message = SimpleNamespace(authorize_dispatch=lambda: True)
-    progress = object.__new__(TelegramProgress)
-    progress.run_id = 'run'
-    progress.active = True
-    progress.sequence = 0
-    progress.call_id = 'call'
-    progress.tool_name = 'work'
-    progress.pending = None
-    progress.wake = asyncio.Event()
-    progress.feed(ToolExecutionUpdateEvent('call', 'work', AgentToolResult('phase', details=None), run_id='run', sequence=1))
-    assert progress.pending[1] == '正在执行：work'
+    async def scenario():
+        sent = []
+        shown = asyncio.Event()
+
+        class Transport:
+            async def send_message(self, token, chat_id, text):
+                sent.append((token, chat_id, text))
+                shown.set()
+                return {'message_id': 1}
+
+        target = target_from_chat(account_id='tg', chat_id='99', kind=TargetKind.PRIVATE)
+        message = OutboundMessage(target, 'reply')
+        progress = TelegramProgress(message, run_id='run', token_getter=lambda: 'token',
+            transport=Transport(), scheduler=OutboundScheduler(clock=lambda: 0.0))
+        try:
+            progress.feed(ToolExecutionStartEvent('call', 'work', run_id='run', sequence=1))
+            progress.feed(ToolExecutionUpdateEvent('call', 'work', AgentToolResult('phase', details=None),
+                run_id='run', sequence=2))
+            await asyncio.wait_for(shown.wait(), 1)
+            assert sent == [('token', '99', '正在执行：work')]
+        finally:
+            await progress.close()
+
+    asyncio.run(scenario())
