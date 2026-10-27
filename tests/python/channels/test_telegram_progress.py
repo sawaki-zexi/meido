@@ -179,3 +179,22 @@ def test_pending_status_coalesces_and_rechecks_original_connection_before_http(t
             release.set()
             await progress.close()
     asyncio.run(scenario())
+
+
+def test_progress_accepts_tool_updates_without_mapping_details():
+    from backend.app.agent_runtime.tools import AgentToolResult
+    from backend.app.channels.telegram_progress import TelegramProgress
+
+    class Scheduler:
+        clock = staticmethod(lambda: 0.0)
+    message = SimpleNamespace(authorize_dispatch=lambda: True)
+    progress = object.__new__(TelegramProgress)
+    progress.run_id = 'run'
+    progress.active = True
+    progress.sequence = 0
+    progress.call_id = 'call'
+    progress.tool_name = 'work'
+    progress.pending = None
+    progress.wake = asyncio.Event()
+    progress.feed(ToolExecutionUpdateEvent('call', 'work', AgentToolResult('phase', details=None), run_id='run', sequence=1))
+    assert progress.pending[1] == '正在执行：work'

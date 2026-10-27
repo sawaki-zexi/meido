@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Mapping
 from dataclasses import replace
 
 from ..agent_runtime.events import ToolExecutionStartEvent, ToolExecutionUpdateEvent, ToolExecutionEndEvent
@@ -44,7 +45,8 @@ class TelegramProgress:
             else:
                 # Only the host-defined MCP connection phase is public. Never
                 # forward arguments, raw progress, thinking or result details.
-                phase = '连接服务' if event.result.details.get('phase') == 'connecting' else '正在执行'
+                details = event.result.details
+                phase = '连接服务' if isinstance(details, Mapping) and details.get('phase') == 'connecting' else '正在执行'
                 text = f'{phase}：{self.tool_name}'
         self.pending = (event.sequence, text)
         self.wake.set()
