@@ -44,7 +44,7 @@ it('能力页展示项目共享服务，待办提醒只修改当前角色资格�
   render(<RoleCapabilitiesPanel role={alice} onOpenSettings={onOpenSettings} />);
   const reminder = await screen.findByRole('switch', { name: '待办提醒' });
   await waitFor(() => expect(reminder).toBeEnabled());
-  expect(screen.queryByRole('switch', { name: '自然聊天' })).not.toBeInTheDocument();
+  expect(screen.getByRole('switch', { name: '自然聊天' })).toHaveAttribute('aria-checked', 'false');
   expect(screen.queryByRole('switch', { name: 'NSFW 记忆' })).not.toBeInTheDocument();
   await user.click(reminder);
   expect(reminder).toHaveAccessibleDescription(/启用次日生效，关闭立即生效/);
@@ -56,6 +56,44 @@ it('能力页展示项目共享服务，待办提醒只修改当前角色资格�
   expect(screen.getByRole('heading', { name: '主人资料' })).toBeVisible();
   await user.click(screen.getByRole('button', { name: '主人资料设置' }));
   expect(onOpenSettings).toHaveBeenCalledWith('owner-knowledge');
+});
+
+it('自然聊天独立保存到当前角色，重置和重新打开不影响群聊主动接话或其他能力', async () => {
+  let savedRole = role({ id: 'r1', name: '爱丽丝', agentConfig: { enabledTools: ['web_search'] } });
+  const onSaved = vi.fn();
+  const { calls } = runtimeBackend({
+    'GET /api/roles/r1/autonomy/settings': () => ({ body: push }),
+    'GET /api/roles/r1/desktop-pet': () => ({ body: pet }),
+    'GET /api/roles/r1': () => ({ body: { role: savedRole } }),
+    'PUT /api/roles/r1': init => {
+      const payload = JSON.parse(String(init?.body));
+      savedRole = { ...savedRole, agentConfig: { ...savedRole.agentConfig, ...payload.agentConfig } };
+      return { body: { role: savedRole } };
+    },
+  });
+  const user = userEvent.setup();
+  const page = render(<RoleCapabilitiesPanel role={savedRole} onRoleSaved={onSaved} />);
+  const toggle = screen.getByRole('switch', { name: '自然聊天' });
+  await waitFor(() => expect(toggle).toBeEnabled());
+  expect(toggle).toHaveAccessibleDescription(/分条回复/);
+  await user.click(toggle);
+  await user.click(screen.getByRole('button', { name: '重置' }));
+  expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await user.click(toggle);
+  savedRole = { ...savedRole, description: '刚修改的简介' };
+  await user.click(screen.getByRole('button', { name: '保存' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: '保存' })).toBeDisabled());
+  expect(calls.filter(call => call.method !== 'GET')).toEqual([
+    { method: 'PUT', path: '/api/roles/r1', body: {
+      name: savedRole.name, description: '刚修改的简介', profile: savedRole.profile,
+      agentConfig: { naturalChatEnabled: true },
+    } },
+  ]);
+  expect(onSaved).toHaveBeenCalledWith(savedRole);
+  expect(savedRole.agentConfig?.enabledTools).toEqual(['web_search']);
+  page.unmount();
+  render(<RoleCapabilitiesPanel role={savedRole} />);
+  await waitFor(() => expect(screen.getByRole('switch', { name: '自然聊天' })).toHaveAttribute('aria-checked', 'true'));
 });
 
 it('从全局设置返回刷新服务状态，同时保留未保存的角色开关', async () => {
@@ -72,10 +110,12 @@ it('从全局设置返回刷新服务状态，同时保留未保存的角色开�
   await waitFor(() => expect(pushSwitch).toBeEnabled());
   expect(screen.getByRole('switch', { name: '待办提醒' })).toBeDisabled();
   await user.click(pushSwitch);
+  await user.click(screen.getByRole('switch', { name: '自然聊天' }));
   enabled = true;
   page.rerender(<RoleCapabilitiesPanel role={alice} settingsVersion={1} />);
   await waitFor(() => expect(screen.getByRole('switch', { name: '待办提醒' })).toBeEnabled());
   expect(pushSwitch).toHaveAttribute('aria-checked', 'true');
+  expect(screen.getByRole('switch', { name: '自然聊天' })).toHaveAttribute('aria-checked', 'true');
   expect(screen.getByRole('button', { name: '保存' })).toBeEnabled();
   expect(calls.every(call => call.method === 'GET')).toBe(true);
 });

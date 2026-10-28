@@ -26,7 +26,7 @@ const groups = [
     ['contextSafetyMarginTokens', '输入安全余量', '以 token 计，额外预留输入空间。', 0, 131072],
   ] },
   { title: '开发者', fields: [
-    ['devMode', '开发者模式', '记录运行诊断，不保存原图或密钥。'],
+    ['devMode', '开发者模式', '显示已保存的安全运行诊断，不保存原图或密钥。'],
   ] },
 ] as const;
 
@@ -34,7 +34,8 @@ export function AdvancedSettings({ onRoleSaved }: { onRoleSaved?: (role: Role) =
   const [open, setOpen] = useState(false);
   const [autonomyOpen, setAutonomyOpen] = useState(false);
   const settings = useAdvancedDraft();
-  const [diagnostics, setDiagnostics] = useState<Array<{ runId: string; roleId: string; requests: number; compactions: number; inputEstimate: number; toolCount: number; elapsedMs: number }>>([]);
+  const [diagnostics, setDiagnostics] = useState<Array<{ runId: string; roleId: string; requests: number; compactions: number; inputEstimate: number; toolCount: number; elapsedMs: number;
+    compaction?: { stage?: string; fallback?: string; summaryAttempts?: Array<{ stopReason?: string; outcome?: string; maxTokens?: number; elapsedMs?: number }> } }>>([]);
   const [diagnosticError, setDiagnosticError] = useState('');
   async function refreshDiagnostics() {
     try {
@@ -63,8 +64,13 @@ export function AdvancedSettings({ onRoleSaved }: { onRoleSaved?: (role: Role) =
     {settings.draft.devMode === true && <section className="settings-group"><h3>运行诊断</h3><div className="settings-card">
       <button type="button" onClick={() => void refreshDiagnostics()}>刷新运行诊断</button>
       {diagnosticError && <p role="alert">{diagnosticError}</p>}
-      {diagnostics.length === 0 && <p>暂无诊断。启用并保存后，下一次普通聊天会记录预算信息。</p>}
-      {diagnostics.map(item => <p key={item.runId}>{item.roleId} · 请求 {item.requests} 次 · 压缩 {item.compactions} 次 · 输入估算 {item.inputEstimate} token · 工具 {item.toolCount} 个 · {item.elapsedMs} ms</p>)}
+      {diagnostics.length === 0 && <p>暂无诊断。新普通聊天会保存安全预算信息；启用后可在此查看。</p>}
+      {diagnostics.map(item => <div key={item.runId}><p>{item.roleId} · 请求 {item.requests} 次 · 压缩 {item.compactions} 次 · 输入估算 {item.inputEstimate} token · 工具 {item.toolCount} 个 · {item.elapsedMs} ms</p>
+        {item.compaction && (item.compaction.stage || item.compaction.fallback || !!item.compaction.summaryAttempts?.length) && <details><summary>压缩详情</summary>
+          <p>阶段：{item.compaction.stage ?? '未记录'} · 回退：{item.compaction.fallback === 'original' ? '保留原文继续' : item.compaction.fallback === 'minimal' ? '最小上下文回复' : '未降级'}</p>
+          {item.compaction.summaryAttempts?.map((attempt, index) => <p key={index}>摘要 {index + 1}：{attempt.outcome ?? '未记录'} · 结束原因 {attempt.stopReason ?? '未返回'} · 输出上限 {attempt.maxTokens ?? '未记录'} token · {attempt.elapsedMs ?? 0} ms</p>)}
+        </details>}
+      </div>)}
     </div></section>}
     {settings.draft.devMode === true && <section className="settings-group"><h3>主动推送诊断与授权</h3><div className="settings-card">
       <div className="settings-preference"><span><strong>来源、工具授权与运行记录</strong></span>

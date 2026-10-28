@@ -52,3 +52,16 @@ Meido 使用自身账号生命周期、SQLite 收据和渠道投递账本；未�
 `d3acaed186b172a78a5892e0307e9affd89759f0` 的 `plugins/story/{backend,ui}`。
 来源清单见 [UPSTREAM.md](../../backend/app/story/UPSTREAM.md)，MIT 许可另保留于
 [SHIORI-LICENSE.txt](../../backend/app/story/SHIORI-LICENSE.txt)。模型、NovelAI、角色快照、媒体地址与路由沿用 Meido 原生运行时。
+
+## 普通自然聊天与多消息提交
+
+`backend/app/agent_runtime/natural_reply.py`、`backend/app/channels/reply_sequence.py`
+适配固定提交 `d3acaed186b172a78a5892e0307e9affd89759f0` 的
+`apps/backend/agent/core/passive_turn/natural_reply.py`、
+`apps/backend/agent/turns/reply_sequence.py`、`reply_sequence_commit.py` 以及
+`apps/backend/prompts/natural_chat.py`：`finish_reply(messages)` 输出协议、一次有限格式纠正、
+独立消息提交与发送间隔。角色开关对应 `apps/backend/core/roles/natural_chat.py`。
+Copyright (c) 2026 YinFengWindy，MIT 许可见本目录 [LICENSE](LICENSE)。
+
+Meido 保留自身普通工具循环、角色／来源授权、桌面 SSE、SQLite 消息及真实渠道回执；
+旧有无需 @ 的群聊主动接话为独立保留功能，不作为上述普通自然聊天的实现。

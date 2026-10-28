@@ -217,10 +217,20 @@ class _ReactionProvider:
                     emitted = end
             elif isinstance(event, AssistantDoneEvent):
                 message = event.message
-                content, tag = split_reaction(message.content) if not message.tool_calls else (message.content, None)
+                from ..agent_runtime.natural_reply import reply_messages
+                sequence = reply_messages(message)
+                if sequence:
+                    last, tag = split_reaction(sequence[-1])
+                    # A reaction is optional decoration, never an empty logical message.
+                    sequence = (*sequence[:-1], last) if last.strip() else sequence[:-1]
+                    content = "\n\n".join(sequence)
+                    message = replace(message, metadata={**message.metadata, 'replySequence': list(sequence)})
+                else:
+                    content, tag = split_reaction(message.content) if not message.tool_calls else (message.content, None)
                 if message.stop_reason == 'stop' and tag in self.turn.categories:
                     self.turn.tag = tag
-                if len(content) > emitted:
+                    message = replace(message, metadata={**message.metadata, 'replyReaction': tag})
+                if not sequence and len(content) > emitted:
                     yield TextDeltaEvent(content[emitted:])
                 yield AssistantDoneEvent(replace(message, content=content))
                 text, emitted = '', 0

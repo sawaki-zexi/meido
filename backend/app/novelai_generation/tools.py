@@ -32,14 +32,14 @@ _SCHEMA['properties']['prompt']['description'] = '逗号分隔的完整英文 No
 
 class GenerateImageTool:
     definition = ToolDefinition(name='generate_image',
-        description=('Generate one approved NovelAI expression image during the current owner chat when an image adds value to the reply. '
+        description=('Generate one approved NovelAI expression image during the current conversation when an image adds value to the reply. '
             'Decide yourself whether to call it; do not call it every turn and do not ask the owner to fill image parameters. '
             'Provide complete comma-separated English NovelAI tags, including the subject\'s known appearance, clothing, emotion, pose, scene and framing. '
             'For self-portraits, preserve your appearance from the role profile/SELF and inspect_role_image references; never invent it from an image filename. '
             'The host supplies model, sampler, size, seed, limits, delivery and a one-image default, but does not add appearance tags. '
             'Explicit advanced fields remain accepted for owner-directed parameter reuse within the same allowlist. Uses one finite paid attempt; unknown results are never retried.'),
         input_schema=_SCHEMA, risk='external', source='builtin:novelai', exposure='direct',
-        external_allowed=False, timeout_seconds=330, output_limit=4000, search_hint='生图 生成图片 NovelAI 立绘 场景图')
+        external_allowed=True, timeout_seconds=330, output_limit=4000, search_hint='生图 生成图片 NovelAI 立绘 场景图')
 
     def __init__(self, application, role_id, *, is_owner, source_thread_id=None, source_account_id=None, frozen_role=None):
         self.application, self.role_id, self.is_owner = application, role_id, is_owner

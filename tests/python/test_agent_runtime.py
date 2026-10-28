@@ -1066,3 +1066,33 @@ def test_http_text_run_persists_agent_run_and_keeps_sse_compatibility(tmp_path, 
     assert run is None
     stored = sessions.list_messages(f"role:{role.id}")
     assert stored[-1].content == "完成"
+
+
+def test_empty_reply_retry_exhausts_without_successful_blank_message():
+    provider = FakeProvider([[AssistantDoneEvent(AssistantMessage(''))],
+                             [AssistantDoneEvent(AssistantMessage('  '))]])
+    events = asyncio.run(_collect(run_agent_loop(provider=provider, model='m', system='',
+        messages=[UserMessage('hello')], max_turns=4)))
+    assert len(provider.calls) == 2
+    assert events[-1].reason == 'failed'
+    assert events[-1].messages[-1].metadata['emptyReplyRecovery']['outcome'] == 'empty'
+    assert [message.content for message in events[-1].messages if isinstance(message, UserMessage)] == ['hello']
+
+
+def test_supplement_waits_for_current_tool_receipt_then_stops_the_batch():
+    current, executed = True, []
+    class Tool:
+        definition = ToolDefinition('send', 'send once', {'type': 'object'})
+        async def execute(self, arguments, context, on_update=None):
+            nonlocal current
+            current = False  # A newer input arrived during this already-running I/O.
+            await asyncio.sleep(0)
+            executed.append(context.tool_call_id)
+            return AgentToolResult('sent receipt-1')
+    calls = (ToolCall('one', 'send'), ToolCall('two', 'send'))
+    provider = FakeProvider([[AssistantDoneEvent(AssistantMessage(tool_calls=calls, stop_reason='tool_use'))]])
+    events = asyncio.run(_collect(run_agent_loop(provider=provider, model='m', system='',
+        messages=[UserMessage('send')], tools=[Tool()], can_continue=lambda: current)))
+    assert executed == ['one']
+    assert events[-1].reason == 'cancelled'
+    assert [message.content for message in events[-1].messages if isinstance(message, ToolResultMessage)] == ['sent receipt-1']

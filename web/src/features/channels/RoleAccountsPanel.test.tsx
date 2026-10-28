@@ -416,7 +416,7 @@ it.each(["dialog", "page"] as const)("QQ 账号的 %s 入口可直接进入首�
   const open = screen.getByRole("button", { name: "群聊设置" });
   await user.click(open);
   await user.click(await screen.findByRole("button", { name: /首次设置群/ }));
-  expect(await screen.findByRole("checkbox", { name: "自然回复（无需 @）" })).toBeVisible();
+  expect(await screen.findByRole("checkbox", { name: "群聊主动接话（无需 @）" })).toBeVisible();
   await user.click(screen.getByRole("button", { name: "返回上一页" }));
   expect(screen.getByRole("button", { name: "群聊设置" })).toHaveFocus();
   expect(screen.getByRole("button", { name: "连接" })).toBeVisible();

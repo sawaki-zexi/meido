@@ -303,6 +303,14 @@ class ModelAdapter(Protocol):
     ) -> AsyncIterator[RichModelStreamEvent]: ...
 
 
+def supports_auxiliary_thinking_control(configuration: ModelConfiguration | None) -> bool:
+    """Only known Chat Completions providers have an explicit thinking-off contract."""
+    if configuration is None or configuration.api != "openai-completions":
+        return False
+    identity = f"{configuration.provider} {configuration.baseUrl}".lower()
+    return any(name in identity for name in ("deepseek", "dashscope", "xiaomimimo.com"))
+
+
 class OpenAICompatibleAdapter:
     """Streams chat completions from an OpenAI-compatible endpoint."""
 
@@ -317,6 +325,7 @@ class OpenAICompatibleAdapter:
         *,
         max_tokens: int | None = None,
         cancel_check=None,
+        disable_thinking: bool = False,
     ):
         """Expose the Pi-style stream while retaining legacy adapter methods."""
 
@@ -329,6 +338,8 @@ class OpenAICompatibleAdapter:
             timeout=self.timeout,
             options=OpenAICompletionsOptions(
                 send_reasoning_content=_is_deepseek(effective_configuration),
+                supports_finish_reason=False,
+                disable_thinking=disable_thinking,
             ),
         )
         async with aclosing(adapter.stream_rich_messages(

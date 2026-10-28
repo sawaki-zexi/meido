@@ -29,14 +29,18 @@ def isolate_unrelated_automatic_memory(tmp_path, monkeypatch, local_platform_onl
     monkeypatch.setattr(main, "memory_settings_store", memory)
 
 
-@pytest.mark.parametrize("tool_name,arguments,response", [
+@pytest.mark.parametrize("tool_name,arguments,response,expected", [
     ("web_fetch", {"url": "https://article.example/read", "format": "text", "timeout": 2},
-        httpx.Response(200, text="来源网页正文", headers={"content-type": "text/plain"})),
+        httpx.Response(200, text="来源网页正文", headers={"content-type": "text/plain"}), {"text": "来源网页正文"}),
     ("web_search", {"query": "最近新闻", "num_results": 1},
         httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {"content": [
-            {"type": "text", "text": "最新消息 https://article.example/read"}]}})),
-])
-def test_authorized_role_network_tool_completes_http_conversation_and_persists_sources(tmp_path, monkeypatch, tool_name, arguments, response):
+            {"type": "text", "text": "最新消息 https://article.example/read"}]}}), {"sources": ["https://article.example/read"]}),
+    ("web_search", {"query": "private-empty-fixture"},
+        httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {"content": []}}), {"count": 0, "results": []}),
+    ("web_search", {"query": "private-error-fixture"},
+        httpx.Response(429, text="upstream-secret"), {"error_code": "http_error", "http_status": 429}),
+], ids=["fetch", "search", "search-empty", "search-http-error"])
+def test_authorized_role_network_tool_completes_http_conversation_and_persists_sources(tmp_path, monkeypatch, tool_name, arguments, response, expected):
     requests = []
 
     class Provider:
@@ -50,7 +54,10 @@ def test_authorized_role_network_tool_completes_http_conversation_and_persists_s
                 yield ModelResponseDone("tool_use")
             else:
                 results = [json.loads(item["content"]) for item in messages if item.get("role") == "tool"]
-                assert results and "error" not in results[-1]
+                assert results and all(results[-1].get(key) == value for key, value in expected.items())
+                if "error_code" in expected:
+                    assert "private-error-fixture" not in json.dumps(results[-1])
+                    assert "upstream-secret" not in json.dumps(results[-1])
                 yield ModelTextDelta("已依据实际来源回答")
 
     async def handler(request):
@@ -92,8 +99,9 @@ def test_authorized_role_network_tool_completes_http_conversation_and_persists_s
     assert tool_name in {schema["function"]["name"] for schema in provider.requests[0][1]}
     results = [item for item in sessions.runtime_messages(f"role:{role.id}") if isinstance(item, ToolResultMessage)]
     assert len(results) == 1
-    assert not results[0].is_error
-    assert "来源网页正文" in results[0].content or "https://article.example/read" in results[0].content
+    assert results[0].is_error == ("error_code" in expected)
+    persisted = json.loads(results[0].content)
+    assert all(persisted.get(key) == value for key, value in expected.items())
 
 
 @pytest.mark.parametrize("role_enabled,host_enabled", [(False, False), (True, False)])

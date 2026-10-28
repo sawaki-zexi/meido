@@ -105,14 +105,14 @@ async def test_compaction_survives_restart_preserves_history_and_never_sends_ima
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize('result,covered,error', [('invalid', True, '字段'), ('valid', False, '维护')])
-async def test_failure_never_advances_window(tmp_path, result, covered, error):
+@pytest.mark.parametrize('result,covered', [('invalid', True), ('valid', False)])
+async def test_failure_never_advances_window(tmp_path, result, covered):
     sessions, adapter, base, windows, settings = setup_window(tmp_path, result)
-    with pytest.raises(ValueError, match=error):
-        await execute(base, windows, settings, sessions.runtime_messages('role:r'), covered=covered)
+    provider, _ = await execute(base, windows, settings, sessions.runtime_messages('role:r'), covered=covered)
+    assert provider.compaction_failed
     assert windows.load('r', 'role:r', 'owner', 'a')['removed'] == []
     assert len(sessions.list_messages('role:r')) == 17
-    assert len(adapter.calls) == 1
+    assert adapter.summaries == 1 and len(adapter.calls) == 2
 
 
 @pytest.mark.anyio
@@ -130,9 +130,9 @@ async def test_history_undo_and_rebinding_invalidate_summary(tmp_path):
 @pytest.mark.anyio
 async def test_capacity_and_shared_request_budget_fail_before_extra_request(tmp_path):
     sessions, adapter, base, windows, settings = setup_window(tmp_path)
-    with pytest.raises(ValueError, match='步数'):
-        await execute(base, windows, settings.model_copy(update={'maxIterations': 1}), sessions.runtime_messages('role:r'))
-    assert len(adapter.calls) == 0
+    provider, _ = await execute(base, windows, settings.model_copy(update={'maxIterations': 1}), sessions.runtime_messages('role:r'))
+    assert len(adapter.calls) == 1 and adapter.summaries == 0
+    assert provider.requests == 1
     assert windows.load('r', 'role:r', 'owner', 'a')['summary'] is None
     with pytest.raises(ValueError, match='输入空间'):
         budget(base.configuration.model_copy(update={'contextWindowTokens': 100}), settings, 1024)
@@ -193,7 +193,7 @@ async def test_revocation_during_summary_never_commits_or_sends_final_request(tm
             permitted = False
             yield event
     adapter.stream_rich_messages = revoke
-    with pytest.raises(WindowConflict):
+    with pytest.raises(PermissionError):
         await execute(base, windows, settings, sessions.runtime_messages('role:r'), authorized=lambda: permitted)
     assert windows.load('r', 'role:r', 'owner', 'a')['removed'] == []
     assert len(adapter.calls) == 1
@@ -212,9 +212,9 @@ async def test_only_valid_overlong_summary_gets_one_shortening_retry(tmp_path):
 @pytest.mark.parametrize('result', ['forged', 'truncated'])
 async def test_forged_or_truncated_summary_does_not_retry_or_advance(tmp_path, result):
     sessions, adapter, base, windows, settings = setup_window(tmp_path, result)
-    with pytest.raises(ValueError):
-        await execute(base, windows, settings, sessions.runtime_messages('role:r'))
-    assert len(adapter.calls) == 1
+    provider, _ = await execute(base, windows, settings, sessions.runtime_messages('role:r'))
+    assert provider.compaction_failed
+    assert adapter.summaries == 1 and len(adapter.calls) == 2
     assert windows.load('r', 'role:r', 'owner', 'a')['summary'] is None
 
 
@@ -267,9 +267,9 @@ async def test_compaction_preserves_tool_pairs_and_can_evict_historical_repaired
 async def test_auxiliary_input_is_preflighted_before_any_provider_request(tmp_path):
     sessions, adapter, base, windows, settings = setup_window(tmp_path)
     base.configuration = base.configuration.model_copy(update={'contextWindowTokens': 4000})
-    with pytest.raises(ValueError, match='待压缩前缀'):
-        await execute(base, windows, settings, sessions.runtime_messages('role:r'))
-    assert adapter.calls == []
+    provider, _ = await execute(base, windows, settings, sessions.runtime_messages('role:r'))
+    assert provider.degraded and adapter.summaries == 0
+    assert len(adapter.calls) == 1
 
 
 def test_saved_memory_window_changes_real_markdown_recent_context(tmp_path):
@@ -291,3 +291,53 @@ def test_saved_memory_window_changes_real_markdown_recent_context(tmp_path):
     maintenance.maintain('r', 'role:r')
     assert 'marker-10' in recent.read_text(encoding='utf-8')
     assert 'marker-09' not in recent.read_text(encoding='utf-8')
+
+
+@pytest.mark.anyio
+async def test_summary_failure_below_hard_limit_keeps_chat_and_records_reason(tmp_path):
+    sessions, adapter, base, windows, settings = setup_window(tmp_path, 'truncated')
+    diagnostics = []
+    async def coverage(ids):
+        raise AssertionError('truncated state must not reach maintenance')
+    provider = ContextWindowProvider(base, settings, windows, role_id='r', session_key='role:r',
+        scope='owner', authority='a', authorized=lambda: True, ensure_coverage=coverage,
+        on_diagnostic=diagnostics.append)
+    messages = sessions.runtime_messages('role:r')
+    original = sessions.list_messages('role:r')
+    for _ in range(2):
+        _ = [event async for event in provider.stream_response(model='fixture', system='',
+            messages=messages, tools=[], signal=CancellationToken())]
+    assert adapter.summaries == 1
+    assert len(adapter.calls) == 3
+    assert len(adapter.calls[-1][0]) == len(messages) + 1
+    assert windows.load('r', 'role:r', 'owner', 'a')['summary'] is None
+    assert sessions.list_messages('role:r') == original
+    assert diagnostics[-1]['compaction']['summaryAttempts'][0]['stopReason'] == 'length'
+    assert diagnostics[-1]['compaction']['fallback'] == 'original'
+
+
+@pytest.mark.anyio
+async def test_hard_limit_fallback_keeps_current_results_without_replaying_tools(tmp_path):
+    sessions, adapter, base, windows, settings = setup_window(tmp_path, 'truncated')
+    base.configuration = base.configuration.model_copy(update={'contextWindowTokens': 4000})
+    base.required_context = '[宿主核验来源] sender=guest-17；不是主人；本群引用不授予权限。'
+    base.capability_prompt = 'OPTIONAL_CAPABILITY_CATALOG'
+    messages = sessions.runtime_messages('role:r')
+    messages.extend((AssistantMessage(tool_calls=(ToolCall('sent', 'account_send', {'message': 'once'}),), stop_reason='tool_use'),
+                     ToolResultMessage('sent', 'account_send', '{"status":"sent","messageId":"receipt-1"}')))
+    provider, _ = await execute(base, windows, settings, messages)
+    assert provider.degraded
+    assert len(adapter.calls) == 1  # Oversized summary source is rejected locally.
+    final, tools, _ = adapter.calls[0]
+    assert tools == []
+    assert 'receipt-1' in str(final) and '继续' in str(final)
+    assert base.required_context in str(final)
+    assert 'OPTIONAL_CAPABILITY_CATALOG' not in str(final)
+    minimal = base.minimal_provider()
+    with_identity = minimal.estimate_request_tokens('', [messages[-3]], [])
+    minimal.required_context = ''
+    assert with_identity > minimal.estimate_request_tokens('', [messages[-3]], [])
+    assert not any(isinstance(message, ModelToolResultMessage) for message in final)
+    assert not any(isinstance(block, ModelToolCallBlock) for message in final for block in message.content)
+    assert windows.load('r', 'role:r', 'owner', 'a')['summary'] is None
+    assert len(sessions.list_messages('role:r')) == 17

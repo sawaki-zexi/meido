@@ -71,23 +71,23 @@ def capture_tool_context(sessions, channels, context: ToolContext, *, role_id: s
                          source_thread_id=None, source_account_id=None, _completed=False) -> GenerationContext:
     context.signal.raise_if_cancelled()
     run, user = sessions.get_run(context.run_id), sessions.user_message_for_run(context.run_id)
-    if (not is_owner or context.role_id != role_id or not context.tool_call_id
+    if (context.role_id != role_id or not context.tool_call_id
             or run is None or run.roleId != role_id or run.sessionKey != context.session_key
             or run.status not in ({'completed'} if _completed else {'created', 'running'}) or user is None
             or user.sessionKey != context.session_key or user.messageType != 'text' or user.status != 'completed'
             or user.metadata.get('internalEvent')):
-        raise PermissionError('generation requires the actual current owner input')
+        raise PermissionError('generation requires the actual current conversation input')
     source, revision, scope, authority = None, None, '', ''
     if context.session_key.startswith('thread:'):
         source = capture_channel_source(channels, sessions, role_id=role_id,
-            session_key=context.session_key, run_id=context.run_id, owner_context=True)
+            session_key=context.session_key, run_id=context.run_id, owner_context=is_owner)
         if source_thread_id is not None and source.thread_id != source_thread_id or source_account_id is not None and source.account_id != source_account_id:
             raise PermissionError('generation source does not match its host origin')
         payload = source.to_dict()
         scope = hashlib.sha256(canonical({key: value for key, value in payload.items() if key != 'message_created_at'}).encode()).hexdigest()
         authority = canonical(payload)
         revision = tuple(channels.directory_revision(source.account_id, source.channel))
-    elif (context.session_key != f'role:{role_id}' or source_account_id
+    elif (not is_owner or context.session_key != f'role:{role_id}' or source_account_id
             or source_thread_id not in {None, f'desktop:{role_id}'}
             or run.modelSnapshot.get('humanInputSource') != 'desktop_owner'
             or user.metadata.get('channel', 'desktop') != 'desktop'):

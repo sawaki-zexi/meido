@@ -120,7 +120,7 @@ it("清理事件清空当前群记录并丢弃清理前仍在途的旧分页", a
   expect(screen.queryByRole("button", { name: "读取更早旁听记录" })).not.toBeInTheDocument();
 });
 
-it("旁听记录不再承载自然回复开关，避免与群聊设置混淆", async () => {
+it("旁听记录不再承载主动接话开关，避免与群聊设置混淆", async () => {
   fakeBackend({
     "GET .*threads/t1/listening": () => ({ body: { ...settings, naturalEnabled: true } }),
     "GET .*threads/t1/listening/messages": () => ({ body: { messages: [], hasMore: false, nextBefore: null } }),
@@ -129,7 +129,7 @@ it("旁听记录不再承载自然回复开关，避免与群聊设置混淆", a
   render(<GroupListeningPanel roleId="r1" threadId="t1" editable />);
   await user.click(screen.getByText(/群旁听记录/));
   expect(await screen.findByText("暂无旁听记录")).toBeVisible();
-  expect(screen.queryByRole("checkbox", { name: /自然回复|日常聊天/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("checkbox", { name: /主动接话|日常聊天/ })).not.toBeInTheDocument();
 });
 
 it("旁听上限保存中切换群，不继续旧群的默认设置写入或污染新群", async () => {

@@ -81,6 +81,24 @@ def test_replayed_host_call_returns_original_plan_after_nominal_grace(system):
     assert len(app.list(origin)) == 1
 
 
+def test_role_listing_includes_other_sources_without_granting_cancellation(system):
+    factory, _, now, _, origin = system
+    app = factory()
+    first = create(app, origin, now)
+    other_source = TaskOrigin('role', 'thread:group', 'parent2', 'call2', source_thread_id='group')
+    second = create(app, other_source, now)
+    foreign = create(app, TaskOrigin('other', 'role:other', 'parent3', 'call3'), now)
+    assert {item['id'] for item in app.list_role('role')} == {first['id'], second['id']}
+    assert all(set(item) == {'id', 'name', 'tier', 'trigger', 'when', 'timezone', 'nextAt',
+        'remainingRuns', 'planStatus', 'startedRuns', 'content'} for item in app.list_role('role'))
+    assert all(len(item['content']) <= 40 for item in app.list_role('role'))
+    assert foreign['id'] not in {item['id'] for item in app.list_role('role')}
+    with pytest.raises(ValueError, match='unavailable'):
+        app.cancel(other_source, identifier=first['id'])
+    app.cancel(origin, identifier=first['id'])
+    assert {item['id'] for item in app.list_role('role')} == {second['id']}
+
+
 def test_name_cancellation_is_scoped_and_prefix_ambiguity_is_rejected(system):
     import sqlite3
     factory, sessions, now, _, origin = system

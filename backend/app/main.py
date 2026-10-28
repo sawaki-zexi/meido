@@ -26,6 +26,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 import httpx
 
+from .agent_runtime.natural_reply import (NaturalReplyProvider, NATURAL_CHAT_PROMPT, ReplyPlan,
+    natural_chat_enabled, reply_messages, private_reply, wait_between_messages)
+
 from .ai.model_adapter import ModelAdapter
 from .ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
 from .ai.model_types import ModelTextBlock
@@ -241,15 +244,13 @@ def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_
         return authorized()
 
     def diagnostic(values):
-        if not advanced_settings.values().devMode:
-            return
         run = session_store.get_run(run_id)
         if run is not None:
             session_store.update_run(run_id, status=run.status, model_snapshot={**run.modelSnapshot, 'budgetDiagnostic': values})
 
     return ContextWindowProvider(provider, settings, history.windows() if history is not None else _context_window_store(), role_id=role_id,
         session_key=session_key, scope='shared_owner' if history is not None else 'owner' if owner else 'external', authority=authority,
-        authorized=authorized, ensure_coverage=covered, on_diagnostic=diagnostic if settings.devMode else None)
+        authorized=authorized, ensure_coverage=covered, on_diagnostic=diagnostic)
 session_manager = SessionManager(store, session_store)
 multichannel_store = MultichannelStore(data_root / "sessions.db", session_store)
 channel_host = ChannelHost(
@@ -1834,12 +1835,20 @@ async def test_model_configuration(data: ModelConfigurationInput) -> dict[str, o
     configuration = ModelConfiguration.model_validate(candidate.model_dump())
     started_at = monotonic()
     try:
-        async for event in connection_test_adapter.stream_messages(
-            [{"role": "user", "content": "ping"}], configuration, max_tokens=8
+        from .ai.model_types import ModelUserMessage, ModelTextBlock, ModelStreamDone
+        done = None
+        async for event in connection_test_adapter.stream_rich_messages(
+            [ModelUserMessage((ModelTextBlock("ping"),))], configuration,
+            max_tokens=64, disable_thinking=True,
         ):
             if getattr(event, "type", None) == "error":
                 message = getattr(event, "error", "模型服务请求失败")
                 return {"ok": False, "message": _safe_model_error(RuntimeError(str(message)), configuration.apiKey)}
+            if isinstance(event, ModelStreamDone):
+                done = event.message
+        if (done is None or done.metadata.stop_reason != 'stop'
+                or not any(isinstance(block, ModelTextBlock) and block.text.strip() for block in done.content)):
+            return {"ok": False, "message": "模型没有返回完整正文；请检查模型的推理模式或响应格式。"}
     except Exception as error:
         return {"ok": False, "message": _safe_model_error(error, configuration.apiKey)}
     return {
@@ -2064,7 +2073,7 @@ def get_chat_attachment(role_id: str, attachment_id: str) -> Response:
     except OSError as error:
         raise HTTPException(status_code=404, detail="附件不存在") from error
     filename = quote(str(item.get("name") or "attachment"), safe="")
-    return Response(content, media_type=str(item.get("mediaType") or "application/octet-stream"), headers={"Content-Disposition": f"inline; filename*=UTF-8''{filename}"})
+    return Response(content, media_type=str(item.get("mediaType") or "application/octet-stream"), headers={"Content-Disposition": f"{'inline' if item.get('kind') == 'image' else 'attachment'}; filename*=UTF-8''{filename}", "X-Content-Type-Options": "nosniff"})
 
 
 def _avatar_signature_matches(content: bytes, media_type: str) -> bool:
@@ -2847,6 +2856,13 @@ async def _channel_command_reply(thread, command: str, sender_id: str) -> str:
             command, channel=thread.channel, account_id=thread.account_id,
             chat_id=thread.chat_id, sender_id=sender_id,
         )
+    for key, plan in tuple(_channel_reply_plans.items()):
+        if key[0] == thread.role_id and key[2] == thread.thread_id:
+            plan.invalidate()
+            if plan.task is not None and plan.task is not asyncio.current_task():
+                plan.task.cancel()
+                await asyncio.gather(plan.task, return_exceptions=True)
+            return "已停止当前回复。"
     active = session_store.active_run(thread.role_id)
     if active is not None and active.sessionKey == thread.session_key:
         if runtime_manager.cancel_run(active.runId):
@@ -2892,6 +2908,23 @@ async def _handle_channel_control_command(event) -> bool:
 
 # QQ natural judgments deliberately do not use ordinary chat history/tool setup.
 _natural_scheduler = None
+_channel_reply_plans = {}
+_channel_reply_locks = {}
+_ordinary_reply_runs = {}
+_desktop_reply_plans = {}
+
+def _admit_channel_reply_plan(thread, metadata):
+    if not natural_chat_enabled(store.get(thread.role_id)):
+        return
+    key = (thread.role_id, thread.account_id, thread.thread_id,
+        str(metadata.get('messageThreadId') or ''), str(metadata.get('senderId') or ''))
+    previous = _channel_reply_plans.get(key)
+    if previous is not None:
+        previous.invalidate()
+    plan = ReplyPlan()
+    _channel_reply_plans[key] = plan
+    metadata['replyPlan'], metadata['replyPlanKey'] = plan, key
+
 
 
 def _natural_application():
@@ -2958,9 +2991,13 @@ async def _role_reaction_turn(role, session_key, run_id, authorized):
     if not _has_role_reaction_assets(role):
         return None
     from .channels.natural_media import _owned_worker
-    library = RoleReactionLibrary(_proactive_application().memes, store, authorized=authorized)
-    return await _owned_worker(lambda: RoleReactionTurn(library, role_id=role.id,
-        session_key=session_key, run_id=run_id))
+    try:
+        library = RoleReactionLibrary(_proactive_application().memes, store, authorized=authorized)
+        return await _owned_worker(lambda: RoleReactionTurn(library, role_id=role.id,
+            session_key=session_key, run_id=run_id))
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+        logger.warning("可选表情库不可用 role=%s error=%s", role.id, type(error).__name__)
+        return None
 
 
 def _natural_media_application():
@@ -3363,8 +3400,8 @@ async def _handle_channel_event_locked(event):
             return None
         turn_metadata["channelTurnSource"] = source.to_dict()
         turn_metadata["channelTurnGeneration"] = accepted_generation
-        return thread, content, turn_metadata, owner
-    await _handle_channel_message(thread, content, turn_metadata, owner)
+    _admit_channel_reply_plan(thread, turn_metadata)
+    return thread, content, turn_metadata, owner
 
 
 def _require_channel_role(role_id: str):
@@ -4835,9 +4872,10 @@ def _runtime_tool_candidates(
     shell = role.agentConfig.shell
     task_sources: dict[str, FrozenChannelSource] = {}
 
-    def task_source(context):
+    def conversation_source(context):
+        """Keep source identity separate from owner-only task authority."""
         if not source_thread_id or not source_account_id:
-            raise PermissionError("task channel source is unavailable")
+            raise PermissionError("channel source is unavailable")
         source = task_sources.get(context.run_id)
         if source is None:
             source = capture_channel_source(
@@ -4846,11 +4884,43 @@ def _runtime_tool_candidates(
                 owner_context=is_channel_owner,
             )
             if (source.thread_id, source.account_id) != (source_thread_id, source_account_id):
-                raise PermissionError("task channel source does not match the host origin")
+                raise PermissionError("channel source does not match the host origin")
             task_sources[context.run_id] = source
-        if not source.owner_context or source.authorization_denial(multichannel_store) is not None:
-            raise PermissionError("task source owner permission was revoked")
+        if source.authorization_denial(multichannel_store) is not None:
+            raise PermissionError("channel source permission was revoked")
         return source
+
+    def task_source(context):
+        source = conversation_source(context)
+        if not source.owner_context:
+            raise PermissionError("task source requires the owner")
+        return source
+
+    def conversation_source_authorized(context):
+        if (context.signal.is_cancelled() or context.role_id != role.id
+                or store.get(role.id) is None or role.id in _channel_roles_deleting):
+            return False
+        run = session_store.get_run(context.run_id)
+        user = session_store.user_message_for_run(context.run_id)
+        if (run is None or user is None or run.roleId != role.id or run.sessionKey != context.session_key
+                or user.sessionKey != context.session_key or run.status not in {'created', 'running'}
+                or user.status != 'completed' or user.messageType != 'text' or user.metadata.get('internalEvent')):
+            return False
+        if context.session_key.startswith('thread:'):
+            try:
+                conversation_source(context)
+                return True
+            except PermissionError:
+                return False
+        return bool(is_channel_owner and context.session_key == f'role:{role.id}'
+            and user.metadata.get('channel', 'desktop') == 'desktop')
+
+    def conversation_scope(context):
+        if context.session_key.startswith('thread:'):
+            payload = conversation_source(context).to_dict()
+            payload.pop('message_created_at', None)
+            return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+        return 'desktop'
 
     def task_origin(context):
         if context.role_id != role.id:
@@ -5013,7 +5083,8 @@ def _runtime_tool_candidates(
             source_thread_id=source_thread_id, source_account_id=source_account_id, frozen_role=role),
         ScheduleTool(_schedule_application, session_store, origin_resolver=task_origin,
             authorized=schedule_source_authorized),
-        *(ScheduleManageTool(name, _schedule_application, origin_resolver=task_origin, authorized=schedule_source_authorized)
+        *(ScheduleManageTool(name, _schedule_application, origin_resolver=task_origin,
+            authorized=conversation_source_authorized if name == 'list_schedules' else schedule_source_authorized)
           for name in ('list_schedules', 'cancel_schedule')),
         MessagePushTool(session_store, lambda: store.workspace_path(role.id), role_id=role.id, authorized=desktop_push_authorized),
         SpawnTool(task_runtime, role.agentConfig.spawn, origin_resolver=task_origin, authorized=spawn_authorized,
@@ -5062,16 +5133,18 @@ def _runtime_tool_candidates(
     if mail_service.store.connection().auto_draft_ready:
         tools.append(mail_manage_tool)
     if include_channel:
-        directory_access = ChannelDirectoryAccess(authorized=schedule_source_authorized,
-            source_scope=lambda context: task_origin(context).source_scope_id)
+        directory_access = ChannelDirectoryAccess(authorized=conversation_source_authorized,
+            source_scope=conversation_scope)
         tools.extend((
             ChannelAccountListTool(channel_host, access=directory_access),
             ChannelTargetsTool(channel_host, access=directory_access),
             ChannelSendTool(
                 channel_host,
+                workspace=lambda: store.workspace_path(role.id),
                 is_owner=is_channel_owner,
                 source_thread_id=source_thread_id,
                 source_account_id=source_account_id,
+                access=directory_access,
             ),
             SetGroupListeningTool(
                 group_repository,
@@ -6295,6 +6368,9 @@ def _channel_turn_can_start(thread) -> bool:
 
 
 def _queued_channel_turn_authorized(thread, metadata, *, starting=False) -> bool:
+    plan = metadata.get("replyPlan")
+    if plan is not None and (not plan.current or not natural_chat_enabled(store.get(thread.role_id))):
+        return False
     source_data = metadata.get("channelTurnSource")
     if source_data is None:
         return True  # Existing desktop/other-channel and direct Runtime callers.
@@ -6318,8 +6394,16 @@ async def _handle_channel_message(thread, content: str, metadata: dict[str, obje
     try:
         if thread.channel == "qq" and thread.chat_type == "group" and _natural_scheduler is not None:
             await _natural_scheduler.preempt(thread.thread_id)
-        await _run_channel_message(thread, content, metadata, owner)
+        lane = _channel_reply_locks.setdefault((thread.role_id, thread.account_id, thread.thread_id, str(metadata.get("messageThreadId") or "")), asyncio.Lock())
+        async with lane:
+            await _run_channel_message(thread, content, metadata, owner)
     finally:
+        plan = metadata.get("replyPlan")
+        if plan is not None:
+            if _channel_reply_plans.get(metadata.get("replyPlanKey")) is plan:
+                _channel_reply_plans.pop(metadata["replyPlanKey"], None)
+            if _ordinary_reply_runs.get(plan.run_id) is plan:
+                _ordinary_reply_runs.pop(plan.run_id, None)
         if queued:
             # A cancelled waiter has no AgentRun yet, but still has durable input.
             state = str(metadata.get("channelTurnState") or "queued")
@@ -6343,6 +6427,32 @@ async def _finish_channel_delivery(work, cancellations: list[asyncio.CancelledEr
     return pending.result()
 
 
+async def _deliver_natural_channel_reply(thread, metadata, run_id, first_id, sequence, *,
+        generation_reply, reaction, reaction_attachment, owner, user_message, source_task):
+    from .channels.reply_sequence import deliver_channel_sequence
+    last_sent = await deliver_channel_sequence(thread, metadata, run_id, first_id, sequence,
+        sessions=session_store, channels=multichannel_store, host=channel_host,
+        generation=_novelai_application(), finish_started=_finish_channel_delivery,
+        pause=wait_between_messages, source_current=lambda: (not source_task.cancelling()
+            and _queued_channel_turn_authorized(thread, metadata)),
+        generation_reply=generation_reply, reaction=reaction, reaction_attachment=reaction_attachment)
+    if last_sent is not None:
+        try:
+            if not memory_worker.role_deletion_blocked(thread.role_id):
+                async with memory_worker.role_lock_for(thread.role_id):
+                    # Memory sees only the confirmed prefix, without another durable
+                    # combined assistant row or exposure of an unsent private suffix.
+                    spoken = [item.content for item in session_store.list_messages(thread.session_key)
+                        if item.runId == run_id and item.metadata.get('replySequenceId') == run_id
+                        and item.metadata.get('deliveryStatus') == 'sent']
+                    projection = last_sent.model_copy(update={'content': '\n\n'.join(spoken)})
+                    await channel_memory_maintenance.commit_turn(thread, owner, user_message, projection)
+        except Exception as error:
+            logger.warning('自然聊天记忆维护失败 role=%s error=%s', thread.role_id, type(error).__name__)
+    if last_sent is not None and last_sent.metadata.get('replySequenceIndex') == len(sequence) - 1:
+        _novelai_application().scenes.complete(thread.role_id, thread.session_key, run_id)
+
+
 async def _run_channel_message(thread, content: str, metadata: dict[str, object], owner: bool) -> None:
     """Run one isolated network thread through the shared role runtime."""
     ordinary_snapshot = advanced_settings.get()
@@ -6360,6 +6470,11 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
     if role.modelConfigurationId and configuration is None:
         return
     run_id = f"run-{uuid.uuid4().hex}"
+    plan = metadata.get("replyPlan")
+    natural_reply = plan is not None and natural_chat_enabled(role)
+    if plan is not None:
+        plan.run_id, plan.task = run_id, asyncio.current_task()
+        _ordinary_reply_runs[run_id] = plan
     model_snapshot = {
         "channel": thread.channel,
         "accountId": thread.account_id,
@@ -6414,6 +6529,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
     final_message_id: str | None = None
     capabilities: CapabilityResolution | None = None
     final_content = ""
+    final_sequence = ()
     streamed_content = ""
     stream_queue: asyncio.Queue[str | None] | None = None
     stream_task: asyncio.Task[object] | None = None
@@ -6423,8 +6539,11 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
     progress = None
 
     async def persist_runtime_message(event: MessageEndEvent) -> Message | None:
-        nonlocal placeholder_id, final_message_id
+        nonlocal placeholder_id, final_message_id, final_sequence
         if isinstance(event.message, AssistantMessage):
+            if natural_reply and not event.message.tool_calls:
+                final_sequence = reply_messages(event.message)
+                event = replace(event, message=private_reply(event.message))
             sourced_message = replace(event.message, metadata={
                 **event.message.metadata,
                 "channel": thread.channel, "accountId": thread.account_id,
@@ -6606,8 +6725,9 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             except PermissionError:
                 pass  # A stale media source cannot acquire a new reply capability.
         provider = MeidoProvider(model_adapter, role, configuration, memory_context,
-                                 "\n\n".join(filter(None, (identity_context, capabilities.prompt_context(),
+                                 "\n\n".join(filter(None, (capabilities.prompt_context(),
                                      reaction.prompt if reaction is not None else ''))),
+                                 required_context="\n\n".join(filter(None, (identity_context, NATURAL_CHAT_PROMPT if natural_reply else ''))),
                                  max_response_tokens=ordinary_settings.maxTokens,
                                  context_blocks=lambda: _channel_memory_blocks(thread.role_id, thread.thread_id, str(metadata.get("senderId") or ""), trigger_metadata=metadata),
                                  context_safety_margin=ordinary_settings.contextSafetyMarginTokens,
@@ -6616,6 +6736,8 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
         provider = _ordinary_context_provider(provider, ordinary_settings, role_id=thread.role_id,
             session_key=thread.session_key, run_id=run_id, owner=owner,
             memory_required=owner and thread.chat_type == 'private', history=history)
+        if natural_reply:
+            provider = NaturalReplyProvider(provider, authorized=lambda: _queued_channel_turn_authorized(thread, metadata))
         if reaction is not None:
             provider = reaction.wrap(provider)
         target = target_from_chat(
@@ -6664,13 +6786,15 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                              if any(tool.name in {"web_fetch", "web_search"} for tool in capabilities.snapshot.tools) else 0.0,
                              330.0 if any(tool.name == 'generate_image' for tool in capabilities.snapshot.tools) else 0.0),
             on_message_end=persist_runtime_message,
+            defer_reply=natural_reply,
+            can_continue=lambda: _queued_channel_turn_authorized(thread, metadata),
         ):
             if progress is not None:
                 progress.feed(event)
             if isinstance(event, MessageUpdateEvent) and isinstance(event.message, AssistantMessage) and event.message.content.strip():
                 streamed_content = event.message.content
                 adapter = channel_adapters.get(thread.account_id)
-                if ((reaction is None or not reaction.categories)
+                if (not natural_reply and (reaction is None or not reaction.categories)
                         and not any(tool.name == 'generate_image' for tool in capabilities.snapshot.tools)
                         and adapter is not None and adapter.capabilities.streaming) and (
                     thread.channel != "telegram" or thread.chat_type == "private"
@@ -6707,6 +6831,14 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             message = next(item for item in session_store.list_messages(thread.session_key) if item.id == final_message_id)
             session_store.update_message(message.id, message.content, message.status,
                 metadata={**message.metadata, 'attachments': [reaction_attachment]})
+        if natural_reply and final_sequence and final_message_id is not None:
+            await _finish_channel_delivery(_deliver_natural_channel_reply(
+                thread, metadata, run_id, final_message_id, final_sequence,
+                generation_reply=generation_reply, reaction=reaction, reaction_attachment=reaction_attachment,
+                owner=owner, user_message=user_message, source_task=turn_task), delivery_cancellations)
+            if delivery_cancellations:
+                raise delivery_cancellations[0]
+            return
         if stream_queue is not None and stream_task is not None:
             terminal_content = final_content if final_content.strip() else streamed_content
             if terminal_content.strip():
@@ -6827,13 +6959,13 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                 if metadata.get("channelTurnSource") is not None:
                     finished = session_store.get_run(run_id)
                     metadata["channelTurnState"] = (
-                        "cancelled" if asyncio.current_task().cancelling() else
+                        "cancelled" if asyncio.current_task().cancelling() or plan is not None and not plan.current else
                         "completed" if finished is not None and finished.status == "completed" else
                         "cancelled" if finished is not None and finished.status == "cancelled" else "failed"
                     )
                 terminal = next((item for item in reversed(session_store.list_messages(thread.session_key)) if item.runId == run_id and item.role == "assistant"), None)
                 if terminal is not None:
-                    receipt = multichannel_store.runtime_reply_receipt(thread.role_id, thread.session_key, run_id)
+                    receipt = None if natural_reply else multichannel_store.runtime_reply_receipt(thread.role_id, thread.session_key, run_id)
                     if receipt is not None and (receipt.get('parts') or 'deliveryAttemptId' not in terminal.metadata):
                         terminal = session_store.update_message(terminal.id, terminal.content or streamed_content,
                             terminal.status, metadata={**terminal.metadata, **receipt})
@@ -6852,6 +6984,12 @@ async def stop_role_reply(role_id: str, run_id: str) -> SessionResponse:
     run = session_store.get_run(run_id)
     if run is None or run.roleId != role_id or run.sessionKey != f"role:{role_id}":
         raise HTTPException(status_code=404, detail="桌面回复不存在")
+    plan = _ordinary_reply_runs.get(run_id)
+    if plan is not None:
+        plan.invalidate()
+        if plan.task is not None and plan.task is not asyncio.current_task():
+            plan.task.cancel()
+            await asyncio.gather(plan.task, return_exceptions=True)
     runtime_manager.sessions = session_store
     runtime_manager.role_locks = role_locks
     if not await runtime_manager.stop_run(run_id):
@@ -6883,6 +7021,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
     if store.get(role_id) is None:
         raise HTTPException(status_code=404, detail="角色不存在")
 
+    reply_plan = None
     try:
         run_id = f"run-{uuid.uuid4().hex}"
         configuration_snapshot = configuration.model_dump(mode="json") if configuration else {}
@@ -6917,14 +7056,33 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         )
         runtime_manager.sessions = session_store
         runtime_manager.role_locks = role_locks
-        _, user_message, assistant_message = await runtime_manager.reserve_run(run, data.content, attachments=attachments, received_at=received_at,
-            on_accepting=lambda: _accept_owner_run(role_id, session.session.sessionKey, run_id))
+        if natural_chat_enabled(role):
+            # Accept the supplement durably before invalidating an older plan.
+            # A disconnected or superseded request must not lose the user's input.
+            accepted = session_store.append_message(run.sessionKey, 'user', data.content, 'completed',
+                metadata={'attachments': attachments, 'hostReceivedAt': received_at, 'channel': 'desktop'})
+            reply_plan = ReplyPlan(run_id=run_id)
+            previous = _desktop_reply_plans.get(run.sessionKey)
+            _desktop_reply_plans[run.sessionKey] = reply_plan
+            if previous is not None:
+                previous.invalidate()
+                if previous.task is not None and previous.task is not asyncio.current_task():
+                    # Finish an already-started model/tool/commit, never replay it.
+                    await asyncio.shield(asyncio.gather(previous.task, return_exceptions=True))
+            _, user_message, assistant_message = await runtime_manager.reserve_existing_user_message(
+                run, accepted.id, can_start=lambda: reply_plan.current and natural_chat_enabled(store.get(role_id)),
+                on_accepting=lambda: _accept_owner_run(role_id, run.sessionKey, run_id))
+        else:
+            _, user_message, assistant_message = await runtime_manager.reserve_run(run, data.content, attachments=attachments, received_at=received_at,
+                on_accepting=lambda: _accept_owner_run(role_id, session.session.sessionKey, run_id))
         history.include_current(user_message.id)
-    except sqlite3.IntegrityError as error:
-        raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试") from error
-    except ActiveRunError as error:
-        raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试") from error
-    except Exception:
+    except BaseException as error:
+        if reply_plan is not None:
+            reply_plan.invalidate()
+            if _desktop_reply_plans.get(session.session.sessionKey) is reply_plan:
+                _desktop_reply_plans.pop(session.session.sessionKey, None)
+        if isinstance(error, (sqlite3.IntegrityError, ActiveRunError)):
+            raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试") from error
         raise
     context_limit = max(MemoryMaintenance.RECENT_MESSAGE_LIMIT * 2, ordinary_settings.recent_memory_count)
     async def stream():
@@ -6937,6 +7095,15 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         sse_sequence = 0
         placeholder_id: str | None = assistant_message.id
         final_message: Message | None = None
+        final_sequence = ()
+        natural_reply = natural_chat_enabled(role)
+        if reply_plan is not None:
+            reply_plan.task = asyncio.current_task()
+            _ordinary_reply_runs[run_id] = reply_plan
+
+        def reply_current():
+            return (reply_plan is None or reply_plan.current and natural_chat_enabled(store.get(role_id)))
+
         disconnect_watcher: asyncio.Task[None] | None = None
         disconnect_watcher_stopped = False
         capabilities: CapabilityResolution | None = None
@@ -6964,8 +7131,11 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     return
 
         async def persist_runtime_message(event: MessageEndEvent) -> Message | None:
-            nonlocal content, placeholder_id, final_message
+            nonlocal content, placeholder_id, final_message, final_sequence
             if isinstance(event.message, AssistantMessage):
+                if natural_reply and not event.message.tool_calls:
+                    final_sequence = reply_messages(event.message)
+                    event = replace(event, message=private_reply(event.message))
                 content = event.message.content
                 if event.message.tool_calls:
                     # The streaming placeholder belongs to the final textual
@@ -7106,6 +7276,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     configuration,
                     memory_context,
                     "\n\n".join(filter(None, (capabilities.prompt_context(), reaction.prompt if reaction is not None else ''))),
+                    required_context=NATURAL_CHAT_PROMPT if natural_reply else '',
                     max_response_tokens=ordinary_settings.maxTokens,
                     context_blocks=lambda: _external_activity_blocks(role_id),
                     context_safety_margin=ordinary_settings.contextSafetyMarginTokens,
@@ -7116,6 +7287,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     session_key=session.session.sessionKey, run_id=run_id, history=history)
                 if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools):
                     provider = guard_provider(provider, computer_use, role_id=role_id, run_id=run_id)
+                if natural_reply:
+                    provider = NaturalReplyProvider(provider, authorized=reply_current)
                 if reaction is not None:
                     provider = reaction.wrap(provider)
                 capabilities_owned_by_runtime = True
@@ -7150,6 +7323,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         330.0 if any(tool.name == 'generate_image' for tool in capabilities.snapshot.tools) else 0.0,
                     ),
                     on_message_end=persist_runtime_message,
+                    defer_reply=natural_reply,
+                    can_continue=reply_current if natural_reply else None,
                 ):
                     if isinstance(runtime_event, MessageStartEvent) and isinstance(runtime_event.message, AssistantMessage):
                         content = ""
@@ -7164,6 +7339,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                             )
                             placeholder_id = placeholder.id
                             runtime_manager.set_assistant_message(run_id, placeholder_id)
+                            yield _event('assistant_generation_started', runtime_event_payload({
+                                'messageId': placeholder.id, 'messageSequence': placeholder.sequence}, runtime_event.sequence))
                     elif isinstance(runtime_event, MessageUpdateEvent):
                         content += runtime_event.delta
                         if placeholder_id is not None:
@@ -7195,6 +7372,13 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                             "status": "running" if updating else details.get("status", "failed" if runtime_event.result.is_error else "succeeded"),
                             "droppedUpdates": runtime_event.dropped_updates,
                         }, runtime_event.sequence))
+                        if not updating and runtime_event.tool_name == 'message_push' and not runtime_event.result.is_error:
+                            pushed = next((item for item in session_store.list_messages(session.session.sessionKey)
+                                if item.id == details.get('messageId') and item.messageType == 'desktop_push'
+                                and item.metadata.get('sourceRunId') == run_id), None)
+                            if pushed is not None:
+                                yield _event('assistant_message_committed', runtime_event_payload({
+                                    'message': public_message(pushed).model_dump(mode='json')}))
                     elif isinstance(runtime_event, AgentEndEvent):
                         terminal_reason = runtime_event.reason
                         terminal_error = runtime_event.error
@@ -7229,13 +7413,39 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     if attachment is not None and reaction.authorized():
                         message = session_store.update_message(message.id, message.content, message.status,
                             metadata={**message.metadata, 'attachments': [attachment]})
-                _novelai_application().scenes.complete(role_id, session.session.sessionKey, run_id)
+                spoken = []
+                if natural_reply and final_sequence:
+                    first_message = message
+                    for index, piece in enumerate(final_sequence):
+                        if index:
+                            await wait_between_messages(final_sequence[index - 1])
+                        if not reply_current() or asyncio.current_task().cancelling():
+                            if index == 0:
+                                stopped = session_store.update_message(first_message.id, '', 'failed')
+                                yield _event('assistant_failed', runtime_event_payload({
+                                    'message': public_message(stopped).model_dump(mode='json'), 'error': '回复已被新输入取代'}))
+                                return
+                            break
+                        piece_metadata = {**first_message.metadata, 'replySequenceId': run_id,
+                            'replySequenceIndex': index, 'naturalReply': True}
+                        if index:
+                            for key in ('attachments', 'generationAttemptIds', 'generationId', 'generationAttemptId'):
+                                piece_metadata.pop(key, None)
+                        message = (session_store.update_message(first_message.id, piece, 'completed', metadata=piece_metadata)
+                            if index == 0 else session_store.append_message(session.session.sessionKey, 'assistant', piece,
+                                'completed', run_id=run_id, metadata=piece_metadata))
+                        spoken.append(piece)
+                        if index != len(final_sequence) - 1:
+                            yield _event('assistant_message_committed', runtime_event_payload({'message': public_message(message).model_dump(mode='json')}))
+                if not natural_reply or not final_sequence or len(spoken) == len(final_sequence):
+                    _novelai_application().scenes.complete(role_id, session.session.sessionKey, run_id)
+                memory_message = message.model_copy(update={'content': '\n\n'.join(spoken)}) if spoken else message
                 try:
                     memory_worker.publish(TurnCommitted(
                         role_id,
                         session.session.sessionKey,
                         user_message,
-                        message,
+                        memory_message,
                         tuple(data.toolMemoryIds),
                         {"explicitMemoryIds": list(data.toolMemoryIds)} if data.toolMemoryIds else None,
                     ))
@@ -7259,6 +7469,10 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
             runtime_manager.cancel_unstarted_run(run_id)
             raise
         finally:
+            if reply_plan is not None and _ordinary_reply_runs.get(run_id) is reply_plan:
+                _ordinary_reply_runs.pop(run_id, None)
+            if _desktop_reply_plans.get(run.sessionKey) is reply_plan:
+                _desktop_reply_plans.pop(run.sessionKey, None)
             if terminal_reason != "completed":
                 audit_category = "cancelled" if terminal_reason == "cancelled" else "failed"
                 try:
@@ -7294,9 +7508,15 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                 disconnect_watcher_stopped = True
                 disconnect_watcher.cancel()
                 await asyncio.gather(disconnect_watcher, return_exceptions=True)
+    def finish_stream():
+        runtime_manager.abandon_unstarted_run(run_id)
+        if reply_plan is not None and _desktop_reply_plans.get(run.sessionKey) is reply_plan:
+            reply_plan.invalidate()
+            _desktop_reply_plans.pop(run.sessionKey, None)
+
     return StreamingResponse(
         stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Meido-Run-Id": run_id},
-        background=BackgroundTask(runtime_manager.abandon_unstarted_run, run_id),
+        background=BackgroundTask(finish_stream),
     )

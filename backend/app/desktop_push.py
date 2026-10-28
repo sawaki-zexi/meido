@@ -7,20 +7,23 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
 
+import httpx
+from fastapi import HTTPException
+
 from .agent_runtime.tools import AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
-from .chat_attachments import public_attachment, resolve_attachment
+from .chat_attachments import public_attachment, resolve_attachment, prepare_output_attachment
 from .session_store import SessionStore
 
 
 class MessagePushTool:
-    definition = ToolDefinition('message_push', '向当前角色自己的桌面对话推送文本、图片或文件；不发送到外部渠道。媒体使用已归属此角色的附件ID。', {
+    definition = ToolDefinition('message_push', '向当前角色自己的桌面对话推送文本、图片或文件；不发送到外部渠道。媒体可使用角色工作区文件路径、已有附件ID；image也可使用公共HTTP(S)图片URL。', {
         'type': 'object', 'properties': {
             'channel': {'type': 'string', 'enum': ['desktop']},
             'chat_id': {'type': 'string', 'enum': ['owner', 'user']},
             'message': {'type': 'string', 'maxLength': 4000},
-            'image': {'type': 'string', 'pattern': '^[0-9a-f]{32}$'},
-            'file': {'type': 'string', 'pattern': '^[0-9a-f]{32}$'},
-            'attachments': {'type': 'array', 'maxItems': 4, 'items': {'type': 'string', 'pattern': '^[0-9a-f]{32}$'}},
+            'image': {'type': 'string', 'minLength': 1, 'maxLength': 8192},
+            'file': {'type': 'string', 'minLength': 1, 'maxLength': 8192},
+            'attachments': {'type': 'array', 'maxItems': 4, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 8192}},
         }, 'required': ['channel', 'chat_id'], 'additionalProperties': False,
     }, risk='mutating', external_allowed=False)
 
@@ -40,10 +43,17 @@ class MessagePushTool:
             ids = list(dict.fromkeys(ids))
             if (not message.strip() and not ids) or len(ids) > 4:
                 raise ValueError('provide text or at most four role attachments')
-            attachments = self._attachments(ids, arguments)
+            workspace = self.workspace()
+            prepared = [await prepare_output_attachment(workspace, reference,
+                kind=next((key for key in ('image', 'file') if arguments.get(key) == reference), None),
+                authorized=lambda: self._allowed(context)) for reference in ids]
+            typed_arguments = {key: str(item['id']) for key in ('image', 'file')
+                for reference, item in zip(ids, prepared) if arguments.get(key) == reference}
+            ids = list(dict.fromkeys(str(item['id']) for item in prepared))
+            attachments = self._attachments(ids, typed_arguments, workspace=workspace)
             pending = asyncio.create_task(asyncio.to_thread(self.sessions.append_desktop_push_once,
                 self.role_id, context.run_id, str(context.tool_call_id), message,
-                attachments=attachments, authorized=lambda: self._attachments(ids, arguments) == attachments
+                attachments=attachments, authorized=lambda: self._attachments(ids, typed_arguments) == attachments
                 and self._allowed(context)))
             try:
                 saved = await asyncio.shield(pending)
@@ -63,14 +73,14 @@ class MessagePushTool:
                 raise asyncio.CancelledError
             receipt = {'status': 'sent', 'messageId': saved.id}
             return AgentToolResult(json.dumps(receipt, ensure_ascii=False), receipt)
-        except (KeyError, ValueError, OSError, PermissionError):
+        except (KeyError, ValueError, OSError, PermissionError, TimeoutError, HTTPException, httpx.HTTPError):
             if arguments.get('channel') != 'desktop':
                 return AgentToolResult('message_push 只投递当前角色桌面对话；对外消息请使用 account_send。', {'status': 'denied'}, is_error=True)
             return AgentToolResult('桌面消息未写入：权限或附件不可用，参数不符合要求。', {'status': 'denied'}, is_error=True)
 
-    def _attachments(self, ids: list[str], arguments: Mapping[str, object]) -> list[dict[str, object]]:
+    def _attachments(self, ids: list[str], arguments: Mapping[str, object], *, workspace: Path | None = None) -> list[dict[str, object]]:
         attachments = []
-        workspace = self.workspace()
+        workspace = self.workspace() if workspace is None else workspace
         directory = workspace / 'attachments'
         if ids and (directory.is_symlink() or directory.is_junction()):
             raise ValueError('role attachment directory was redirected')

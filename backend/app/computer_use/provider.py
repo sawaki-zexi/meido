@@ -5,6 +5,8 @@ from ..agent_runtime.types import ToolResultMessage
 
 def guard_provider(inner, host, *, role_id, run_id):
     class GuardedProvider:
+        manages_request_timeout = getattr(inner, 'manages_request_timeout', False)
+
         def stream_response(self, **request):
             async def stream():
                 host.bind_run_signal(role_id, run_id, request["signal"])

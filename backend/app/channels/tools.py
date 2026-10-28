@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from typing import cast
+from pathlib import Path
+from fastapi import HTTPException
 import httpx
 from copy import deepcopy
 from dataclasses import replace
@@ -11,6 +13,7 @@ from .host import ChannelHost
 from .models import DeliveryStatus
 from .directory import DirectoryError, DirectoryQuery, supported_kinds
 from .base import ChannelAdapterError
+from ..chat_attachments import prepare_output_attachment
 from ..agent_runtime.tools import AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
 
 
@@ -35,7 +38,7 @@ class ChannelAccountListTool:
         "account_list",
         "查看当前角色已配置的外部聊天账号及能力。",
         {"type": "object", "properties": {}, "additionalProperties": False},
-        external_allowed=False,
+        external_allowed=True,
     )
 
     def __init__(self, host: ChannelHost, *, access: ChannelDirectoryAccess | None = None) -> None:
@@ -64,7 +67,7 @@ class ChannelTargetsTool:
             "required": ["account_id"],
             "additionalProperties": False,
         },
-        external_allowed=False,
+        external_allowed=True,
     )
 
     def __init__(self, host: ChannelHost, *, access: ChannelDirectoryAccess | None = None) -> None:
@@ -100,7 +103,7 @@ class ChannelTargetsTool:
 class ChannelSendTool:
     definition = ToolDefinition(
         "account_send",
-        "向 account_targets 返回的可达目标发送文本和角色附件。主人回合使用目录 target_id；外部回合只能将 target_id 设为 owner，以联系已配对主人。",
+        "向 account_targets 返回的可达目标发送文本和角色附件。主人回合使用目录 target_id；外部回合只能将 target_id 设为 owner，可选择角色任一渠道账号联系该渠道已配对主人。",
         {
             "type": "object",
             "properties": {
@@ -112,6 +115,9 @@ class ChannelSendTool:
                     "maxItems": 4,
                     "items": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
                 },
+                "media": {"type": "array", "maxItems": 4,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 8192},
+                    "description": "图片工作区路径、已有附件ID或公共HTTP(S) URL；仅外部回合时不能读取角色本地文件。"},
                 "mention_ids": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1}},
                 "message_thread_id": {"type": "integer", "minimum": 1},
             },
@@ -129,14 +135,17 @@ class ChannelSendTool:
         is_owner: bool,
         source_thread_id: str | None,
         source_account_id: str | None = None,
+        workspace: Callable[[], Path] | None = None,
+        access: ChannelDirectoryAccess | None = None,
     ) -> None:
         self.host = host
+        self.workspace = workspace
         self.is_owner = is_owner
         self.source_thread_id = source_thread_id
         self.source_account_id = source_account_id
+        self.access = access or ChannelDirectoryAccess()
         if not is_owner:
             schema = deepcopy(type(self).definition.input_schema)
-            schema["properties"].pop("account_id", None)
             schema["properties"].pop("mention_ids", None)
             schema["properties"].pop("message_thread_id", None)
             schema["properties"]["target_id"] = {"type": "string", "enum": ["owner"]}
@@ -144,28 +153,48 @@ class ChannelSendTool:
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
         del on_update
+        if not self.access.allowed(context):
+            return AgentToolResult("channel_source_revoked", is_error=True)
+        try:
+            ToolRegistry.validate_definition(self.definition, arguments)
+        except ValueError:
+            return AgentToolResult("渠道消息参数无效。", is_error=True)
         content_value = arguments.get("content", "")
         attachment_values = arguments.get("attachments", [])
+        media_values = arguments.get("media", [])
         mention_values = arguments.get("mention_ids", [])
         if not isinstance(mention_values, list) or any(not isinstance(item, str) for item in mention_values):
             return AgentToolResult("群成员提及参数无效。", is_error=True)
         if not isinstance(content_value, str) or not isinstance(attachment_values, list) or any(not isinstance(item, str) for item in attachment_values):
             return AgentToolResult("渠道消息参数无效。", is_error=True)
-        if not content_value.strip() and not attachment_values:
+        if not isinstance(media_values, list) or any(not isinstance(item, str) for item in media_values):
+            return AgentToolResult("图片参数无效。", is_error=True)
+        if not content_value.strip() and not attachment_values and not media_values:
             return AgentToolResult("渠道消息需要文本或附件。", is_error=True)
         try:
-            account_id = str(arguments.get("account_id", "")) if self.is_owner else str(self.source_account_id or "")
+            account_id = str(arguments.get("account_id") or (self.source_account_id if not self.is_owner else "") or "")
             target_id = str(arguments["target_id"])
             if not self.is_owner and target_id != "owner":
                 return AgentToolResult("外部会话只能向已配对主人发送消息。", is_error=True)
             if self.is_owner and not account_id:
                 return AgentToolResult("主人回合必须指定渠道账号。", is_error=True)
+            if media_values and self.workspace is None:
+                raise ValueError('media storage unavailable')
+            prepared = [await prepare_output_attachment(self.workspace(), reference, kind='image',
+                allow_local=self.is_owner, authorized=lambda: self.access.allowed(context))
+                for reference in media_values]
+            attachment_values = list(dict.fromkeys([*attachment_values, *(str(item['id']) for item in prepared)]))
+            if len(attachment_values) > 4:
+                raise ValueError('at most four attachments')
             result = await self.host.account_send(
                 context.role_id,
                 account_id,
                 target_id,
                 content_value,
                 attachment_ids=tuple(attachment_values),
+                **({'_prepared_attachment_ids': frozenset(str(item['id'])
+                    for reference, item in zip(media_values, prepared) if reference.startswith(('http://', 'https://')))}
+                    if not self.is_owner and prepared else {}),
                 mention_ids=tuple(mention_values),
                 message_thread_id=arguments.get("message_thread_id"),
                 actor="owner" if self.is_owner else "external",
@@ -174,10 +203,10 @@ class ChannelSendTool:
                 source_run_id=context.run_id,
                 source_tool_call_id=context.tool_call_id,
                 source_kind="account_send",
-                authorize_source=lambda: not context.signal.is_cancelled(),
+                authorize_source=lambda: self.access.allowed(context),
                 delivery_deadline=context.deadline,
             )
-        except (KeyError, ValueError, RuntimeError) as error:
+        except (KeyError, ValueError, RuntimeError, PermissionError, OSError, TimeoutError, HTTPException, httpx.HTTPError) as error:
             return AgentToolResult(f"渠道消息未发送：{type(error).__name__}", is_error=True)
         return AgentToolResult(
             json.dumps({

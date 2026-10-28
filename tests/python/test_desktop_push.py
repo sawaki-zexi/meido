@@ -219,3 +219,25 @@ def test_stop_after_commit_gate_waits_for_the_authorized_write_and_preserves_it(
     asyncio.run(run())
     messages = sessions.list_messages('role:role')
     assert len(messages) == 1 and messages[0].content == 'gate already won' and messages[0].status == 'completed'
+
+
+def test_explicit_output_does_not_adopt_other_role_files_or_remote_html(tmp_path, monkeypatch):
+    from backend.app import network_tools
+    from backend.app.chat_attachments import prepare_output_attachment
+    root = tmp_path / 'role'
+    root.mkdir()
+    secret = tmp_path / 'other-role.txt'
+    secret.write_text('private', encoding='utf-8')
+    async def html(_url):
+        return b'<html>not an image</html>', {}, 'https://example.com/image.png'
+    monkeypatch.setattr(network_tools, 'download_public_bytes', html)
+    async def run():
+        with pytest.raises(PermissionError):
+            await prepare_output_attachment(root, '../other-role.txt')
+        (root / 'linked.txt').symlink_to(secret)
+        with pytest.raises(PermissionError):
+            await prepare_output_attachment(root, 'linked.txt')
+        with pytest.raises(ValueError, match='supported image'):
+            await prepare_output_attachment(root, 'https://example.com/image.png', kind='image')
+    asyncio.run(run())
+    assert not (root / 'attachments').exists()

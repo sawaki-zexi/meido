@@ -127,6 +127,53 @@ def test_account_targets_are_role_scoped_and_survive_host_restart(tmp_path):
         asyncio.run(host.account_targets("role-b", account.account_id))
 
 
+def test_guest_source_can_contact_owner_on_another_owned_channel_only(tmp_path):
+    store = make_store(tmp_path)
+    source_account = store.register_channel_account('role', 'qq', account_id='source', enabled=True, allow_group=True)
+    source = store.ensure_channel_thread('role', 'qq', source_account.account_id, 'group', 'group')
+    destination = store.save_account('role', account_id='destination', enabled=True)
+    target = make_target(destination.account_id, 'owner-chat')
+    code = store.create_pairing_code('role', 'telegram')
+    assert store.consume_pairing_code(code, role_id='role', channel='telegram', scope='platform',
+        platform_user_id='owner', account_id=destination.account_id, chat_id=target.chat_id)
+    adapter = FakeAdapter(destination.account_id, target)
+    adapter.channel = 'telegram'
+    host = ChannelHost(store)
+    host.register(adapter)
+    store.remember_targets('role', [target])
+    result = asyncio.run(host.account_send('role', destination.account_id, 'owner', '请查看',
+        actor='external', source_thread_id=source.thread_id))
+    assert result.status is DeliveryStatus.SENT
+    assert adapter.sent[0].target.chat_id == 'owner-chat'
+    with pytest.raises(UnsupportedTargetError):
+        asyncio.run(host.account_send('role', destination.account_id, target.id, '不能选择第三方',
+            actor='external', source_thread_id=source.thread_id))
+    store.set_account_state(source_account.account_id, enabled=False)
+    with pytest.raises(UnsupportedTargetError):
+        asyncio.run(host.account_send('role', destination.account_id, 'owner', '原来源已关闭',
+            actor='external', source_thread_id=source.thread_id))
+    assert len(adapter.sent) == 1
+
+
+def test_directory_members_do_not_require_prior_group_chat_or_group_reply_permission(tmp_path):
+    from backend.app.channels.directory import DirectoryQuery
+    from backend.app.channels.napcat import NapCatAdapter, NapCatConfig
+    store = make_store(tmp_path)
+    account = store.register_channel_account('role', 'qq', account_id='qq-directory', enabled=True, allow_group=False)
+    calls = []
+    async def transport(operation, params):
+        calls.append((operation, params))
+        return {'items': [{'user_id': 22, 'nickname': '成员'}]}
+    adapter = NapCatAdapter(NapCatConfig(account.account_id), transport=transport)
+    host = ChannelHost(store)
+    host.register(adapter)
+    result = asyncio.run(host.query_directory('role', account.account_id,
+        DirectoryQuery(kind='members', group_id='100'), scope='actual-source'))
+    assert result['complete'] and result['targets'][0]['chatId'] == '22'
+    assert result['targets'][0]['kind'] == 'group_member'
+    assert calls == [('get_group_member_list', {'group_id': '100', 'no_cache': True})]
+
+
 def test_host_rejects_targets_and_events_from_another_account(tmp_path):
     store = make_store(tmp_path)
     account = store.register_channel_account("role-a", "qq", account_id="qq-a", enabled=True)

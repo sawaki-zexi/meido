@@ -293,6 +293,8 @@ class RuntimeManager:
         provider_timeout: float | None = None,
         tool_timeout: float | None = None,
         on_message_end: MessageEndHandler | None = None,
+        defer_reply: bool = False,
+        can_continue: Callable[[], bool] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Execute a loop and finish run/message state through one idempotent path."""
 
@@ -351,6 +353,7 @@ class RuntimeManager:
                 provider_timeout=provider_timeout,
                 tool_timeout=tool_timeout,
                 on_tool_result=persist_tool_result,
+                **({"can_continue": can_continue} if can_continue is not None else {}),
             )) as loop_stream:
                 async for event in loop_stream:
                     if isinstance(event, MessageUpdateEvent) and isinstance(event.message, AssistantMessage):
@@ -400,7 +403,7 @@ class RuntimeManager:
                         self._finish_run(
                             run.runId,
                             status=event.reason,
-                            assistant_content=assistant_content,
+                            assistant_content="" if defer_reply else assistant_content,
                             turn_count=turn_count,
                             cancel_reason="运行取消" if event.reason == "cancelled" else None,
                             error=event.error or ("Agent 达到 max_turns 上限" if event.reason == "max_turns" else None),
@@ -411,7 +414,7 @@ class RuntimeManager:
             self._finish_run(
                 run.runId,
                 status="cancelled",
-                assistant_content=assistant_content,
+                assistant_content="" if defer_reply else assistant_content,
                 turn_count=turn_count,
                 cancel_reason="客户端断开",
             )
@@ -420,7 +423,7 @@ class RuntimeManager:
             self._finish_run(
                 run.runId,
                 status="failed",
-                assistant_content=assistant_content,
+                assistant_content="" if defer_reply else assistant_content,
                 turn_count=turn_count,
                 error=str(error),
             )
@@ -438,7 +441,7 @@ class RuntimeManager:
                 self._finish_run(
                     run.runId,
                     status="cancelled",
-                    assistant_content=assistant_content,
+                    assistant_content="" if defer_reply else assistant_content,
                     turn_count=turn_count,
                     cancel_reason="Runtime 消费者在运行完成前退出",
                 )
