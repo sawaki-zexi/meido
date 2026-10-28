@@ -117,7 +117,7 @@ def qq(tmp_path, monkeypatch, local_platform_only):
         "_runtime_tool_candidates": lambda *args, **kwargs: (),
         "_accept_owner_run": lambda *args: None,
         "_refresh_channel_avatars": lambda *args: None,
-        "_novelai_application": lambda: SimpleNamespace(claim_channel_reply=no_claim, unavailable_reason=lambda *_args: "disabled"),
+        "_novelai_application": lambda: SimpleNamespace(claim_channel_reply=no_claim, tool_enabled=lambda *_args: False),
         "memory_worker": SimpleNamespace(role_deletion_blocked=lambda *_args: False, role_lock_for=lambda *_args: lock),
         "channel_memory_maintenance": SimpleNamespace(commit_turn=commit, heard=lambda *_args: None),
     }.items():

@@ -16,7 +16,7 @@ const service = { enabled: true, tokenConfigured: true, credentialCleanupPending
   maxPixels: 1048576, maxSteps: 28, dailyAttemptLimit: 20 };
 const models = [{ id: 'helper', provider: 'openai', model: 'scene-observer', api: 'openai-completions' }];
 
-it('enables CG independently with an explicit model and renews consent when asset or rating permission changes', async () => {
+it('enables CG with an explicit model and preserves asset and rating choices without version consent', async () => {
   fakeBackend({ 'GET /api/services/novelai': () => ({ body: service }),
     'GET /api/model/configurations': () => ({ body: { configurations: models, activeId: 'helper' } }) });
   let saved: ReturnType<typeof payloadFromDraft> | undefined;
@@ -31,22 +31,20 @@ it('enables CG independently with an explicit model and renews consent when asse
   await screen.findByText(/账户每日最多 20 次/);
   await user.click(cg);
   expect(screen.getByRole('combobox', { name: 'CG 辅助模型连接' })).toHaveValue('');
-  await user.click(screen.getByRole('checkbox', { name: /我确认当前设置的有限生图消费/ }));
   await user.click(screen.getByRole('button', { name: '保存角色' }));
   expect(saved).toBeUndefined();
   await user.selectOptions(screen.getByRole('combobox', { name: 'CG 辅助模型连接' }), 'helper');
-  expect(screen.getByRole('checkbox', { name: /我确认当前设置的有限生图消费/ })).not.toBeChecked();
+  expect(screen.queryByRole('checkbox', { name: /我确认当前设置的有限生图消费/ })).not.toBeInTheDocument();
   await user.click(screen.getByRole('checkbox', { name: /将本角色最新获准 CG 设为角色卡片图/ }));
   await user.click(screen.getByRole('checkbox', { name: '允许匹配本角色提示标签' }));
   await user.click(screen.getByRole('checkbox', { name: '允许 mature 标签' }));
-  await user.click(screen.getByRole('checkbox', { name: /我确认当前设置的有限生图消费/ }));
   await user.click(screen.getByRole('button', { name: '保存角色' }));
   expect(saved).toMatchObject({ agentConfig: { novelai: { manualEnabled: false, sceneCgEnabled: true,
     scenePromptModelConfigurationId: 'helper', autoWritebackRoleAssets: true, promptTagsEnabled: true,
-    allowedPromptTagRatings: ['general', 'mature'], consentRevision: 3 } } });
+    allowedPromptTagRatings: ['general', 'mature'], consentRevision: 0 } } });
   expect(screen.getByText(/辅助调用也计入额度，未出图可能计费/)).toBeInTheDocument();
   await user.click(screen.getByRole('checkbox', { name: '允许 explicit 标签' }));
-  expect(screen.getByRole('checkbox', { name: /我确认当前设置的有限生图消费/ })).not.toBeChecked();
+  expect(screen.queryByRole('checkbox', { name: /我确认当前设置的有限生图消费/ })).not.toBeInTheDocument();
   await user.click(cg);
   expect(screen.queryByRole('checkbox', { name: /将本角色最新获准 CG 设为角色卡片图/ })).not.toBeInTheDocument();
 });
@@ -134,10 +132,9 @@ it('saves and reopens CG permission in the actual app and refreshes a late CG in
   await editor.findByText(/账户每日最多 20 次/);
   await user.click(editor.getByRole('checkbox', { name: '允许主人回合场景 CG' }));
   await user.selectOptions(editor.getByRole('combobox', { name: 'CG 辅助模型连接' }), 'helper');
-  await user.click(editor.getByRole('checkbox', { name: /我确认当前设置的有限生图消费/ }));
   await user.click(editor.getByRole('button', { name: '保存角色参数' }));
   await waitFor(() => expect((saved.agentConfig as AgentToolConfig & { novelai?: NovelaiRoleConfig }).novelai)
-    .toMatchObject({ manualEnabled: false, sceneCgEnabled: true, scenePromptModelConfigurationId: 'helper', consentRevision: 3 }));
+    .toMatchObject({ manualEnabled: false, sceneCgEnabled: true, scenePromptModelConfigurationId: 'helper', consentRevision: 0 }));
   await user.click(editor.getByRole('button', { name: '关闭' }));
   await user.click(screen.getByRole('button', { name: '设置' }));
   await user.click(screen.getByRole('button', { name: '插件' }));
@@ -153,6 +150,6 @@ it('saves and reopens CG permission in the actual app and refreshes a late CG in
   await user.click(await screen.findByRole('menuitem', { name: '生图与历史' }));
   const record = await screen.findByRole('article', { name: '生成记录 cg-attempt' });
   expect(within(record).getByText('卡片图写回结果尚未确认，生成图已保留历史。')).toBeInTheDocument();
-  expect(within(record).getByRole('button', { name: '重新生成 scene-cg.png' })).toBeDisabled();
+  expect(within(record).getByRole('button', { name: '重新生成 scene-cg.png' })).toBeEnabled();
   expect(calls.filter((call) => call.method !== 'GET').map((call) => call.path)).toEqual(['/api/roles/r1']);
 });

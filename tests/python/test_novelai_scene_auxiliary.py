@@ -35,13 +35,9 @@ def test_auxiliary_failure_keeps_attempt_and_never_dispatches_generation(scene_m
 def test_disabled_txt2img_mode_blocks_scene_before_auxiliary_consumption(scene_main):
     client, service, peer, _ = scene_main
     public = service.application.settings.public()
-    disabled = service.application.settings.save({'allowTxt2Img': False}, expected_revision=public['revision'])
-    role = service.roles.get(service.role.id)
-    updated = client.put(f'/api/roles/{service.role.id}', json={'name': role.name,
-        'profile': role.profile.model_dump(), 'agentConfig': {'novelai': {
-            'sceneCgEnabled': True, 'scenePromptModelConfigurationId': role.agentConfig.novelai.scenePromptModelConfigurationId,
-            'consentRevision': disabled['revision']}}})
-    assert updated.status_code == 200, updated.text
+    disabled = client.put('/api/services/novelai', json={'allowTxt2Img': False, 'expectedRevision': public['revision']})
+    assert disabled.status_code == 200, disabled.text
+    assert service.roles.get(service.role.id).agentConfig.novelai.sceneCgEnabled
 
     response = client.post(f'/api/roles/{service.role.id}/messages', json={'content': 'Do not start a CG while txt2img is disabled.'})
     assert 'assistant_completed' in response.text, response.text

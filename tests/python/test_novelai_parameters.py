@@ -48,8 +48,8 @@ def test_owner_quality_preferences_are_frozen_and_mapped_to_v45_payload():
     assert request['ucPreset'] == 2
     assert payload['parameters']['qualityToggle'] is True
     assert payload['parameters']['ucPreset'] == 2
-    with pytest.raises(ValueError):
-        normalize_request({'prompt': '1girl', 'mode': 'txt2img', 'qualityToggle': False, 'ucPreset': 0}, settings)
+    restored = normalize_request({'prompt': '1girl', 'mode': 'txt2img', 'qualityToggle': False, 'ucPreset': 0}, settings)
+    assert restored['qualityToggle'] is False and restored['ucPreset'] == 0
 
 
 def test_nsfw_mode_selects_only_the_approved_default_model():

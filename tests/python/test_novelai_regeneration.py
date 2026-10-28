@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
-from novelai_fixtures import novelai_environment, novelai_service  # noqa: F401
+from novelai_fixtures import novelai_environment, novelai_main, novelai_service  # noqa: F401
 
 
 def test_owner_regeneration_uses_new_attempt_seed_and_only_replaces_the_selected_image(novelai_service):
@@ -90,3 +90,41 @@ def test_regeneration_keeps_an_explicit_new_seed_and_rejects_reusing_the_old_see
         if expected_status == 200:
             assert response.json()['generation']['parameters']['seed'] == seed
         assert len(service.peer.requests) == (2 if expected_status == 200 else 1)
+
+
+@pytest.mark.parametrize('mode', ['txt2img', 'img2img'])
+def test_regeneration_restores_all_original_image_parameters_after_defaults_change(novelai_main, mode):
+    import io
+    from PIL import Image
+    client, service = novelai_main
+    path = f'/api/roles/{service.role.id}/generations'
+    revision = service.application.settings.public()['revision']
+    parameters = {**service.request, 'negative_prompt': 'rain', 'steps': 18,
+        'sampler': 'k_euler', 'qualityToggle': True, 'ucPreset': 2}
+    if mode == 'img2img':
+        image = io.BytesIO()
+        Image.new('RGB', (64, 64), '#123456').save(image, format='PNG')
+        uploaded = client.post(f'/api/roles/{service.role.id}/attachments', content=image.getvalue(),
+            headers={'Content-Type': 'image/png', 'x-attachment-filename': 'base.png'})
+        assert uploaded.status_code == 200, uploaded.text
+        parameters.update(mode=mode, base_attachment_id=uploaded.json()['id'], strength=.45, noise=.1)
+    created = client.post(path, json={'requestId': '17217217217217217217217217217219',
+        'expectedRevision': revision, 'parameters': parameters})
+    assert created.status_code == 200, created.text
+    original = created.json()['generation']
+    changed = client.put('/api/services/novelai', json={'expectedRevision': revision,
+        'defaultSamples': 3, 'defaultSampler': 'k_euler_ancestral', 'addQualityTags': False,
+        'undesiredContentPreset': 0})
+    assert changed.status_code == 200, changed.text
+    body = {'requestId': '27227227227227227227227227227229', 'expectedRevision': changed.json()['revision'],
+        'sourceAttemptId': original['attemptId'], 'expectedAttachmentId': original['attachments'][0]['id'],
+        'parameters': {}}
+    endpoint = path + '/' + original['generationId'] + '/regenerate'
+    replay = client.post(endpoint, json=body)
+    assert replay.status_code == 200, replay.text
+    before, after = [item['body'] for item in service.peer.requests]
+    assert before['parameters']['seed'] != after['parameters']['seed']
+    after['parameters']['seed'] = before['parameters']['seed']
+    assert after == before  # Includes img2img bytes, strengths, model, samples and preferences.
+    assert client.post(endpoint, json=body).status_code == 200
+    assert len(service.peer.requests) == 2
