@@ -1,7 +1,7 @@
 # NovelAI 工作台与提示词库展示
 
-状态：当前（PR #248、#252 已合入；#261 补齐跨模块工作台保留与角色素材接入）。
-事实来源：Shiori `d149de7f052f77c5bb88d4d1393d48dce1870875` 的 `plugins/novelai/ui/`，Meido NovelaiStudio / PromptTagManager；最后核验：2026-10-26。
+状态：当前（PR #248、#252 已合入；#261 的跨模块工作台保留与角色素材接入由 PR #262 合入）。
+事实来源：Shiori `d149de7f052f77c5bb88d4d1393d48dce1870875` 的 `plugins/novelai/ui/`，Meido NovelaiStudio / PromptTagManager；最后核验：2026-10-28。
 
 主人要求前端也按 Shiori 对齐。本轮沿用现有生图和标签 API，以清晰的图片工作区替换同时展开的长表单，不以外观一致推断功能完全相同。
 

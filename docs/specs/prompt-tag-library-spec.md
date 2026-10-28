@@ -1,7 +1,7 @@
 # 角色提示标签库
 
-状态：当前（#250 / PR #252 已实现，待合入）。
-最后核验：2026-10-26。
+状态：当前（#250 / PR #252 已合入 `f32c8a6ee480875d2e74589bbdcfbf5d69da8095`）。
+最后核验：2026-10-28。
 事实来源：`web/src/features/novelai/PromptTagManager.tsx`、`usePromptTags.ts`、`PromptTags.test.tsx`；Shiori `d149de7f052f77c5bb88d4d1393d48dce1870875` 的 `plugins/novelai/ui/PromptTagLibraryPanel.tsx`、`PromptTagEntryEditor.tsx`。
 
 角色库采用“浏览卡片 → 独立编辑”的流程。搜索覆盖完整的最多 250 个条目，名称、关键词及正负提示词支持大小写和全角兼容查找；分类、内容分级、启用状态组合筛选，显示结果数。加载不完整或读取期间修订变化时提示重查，避免把部分结果当成完整库。

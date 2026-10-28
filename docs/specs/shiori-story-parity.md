@@ -1,6 +1,6 @@
 # Story 剧情模式对齐
 
-状态：当前；Refs #261。最后核验：2026-10-28。
+状态：当前；Refs #261，已由 [PR #262](https://github.com/sawaki-zexi/meido/pull/262) 合入 `b7f5ee420ecf872570a70855b73ab1e3ab1c8389`。最后核验：2026-10-28。
 事实来源：Shiori `d3acaed186b172a78a5892e0307e9affd89759f0` 的 `plugins/story/{backend,ui}`；Meido `backend/app/story`、`web/src/features/story`。
 
 ## 用户可完成的流程
@@ -31,3 +31,5 @@
 同一分支合入角色插画/心情/普通生图写回、工作台导航保留和角色反应投递后：7 个 Python 检查通过（含真实素材快照在移出来源后仍可读取），4 个前端测试文件的 7 个检查通过，完整 `npm run build`（主应用与桌宠）通过。仅既有 Starlette 弃用提示、构建大包与 pet-asset 运行时占位提示。未变化的多渠道反应回执检查复用其实现提交结果，未重跑全套。
 
 最终同步实际 main `fc164abdf5cafbadc4df23f585cc8945af9e53e1` 后，主应用与桌宠 type/build 通过；仅重查 Story 创建/图片账本/存档、Grok 访客回程、生图跨模块保留 3 个 smoke，均通过。中间 #253 历史接线冲突另以桌面表情和主人私聊排队历史 2 个 smoke 核验通过；没有重跑全套。
+
+[CI 40762228465](https://github.com/sawaki-zexi/meido/actions/runs/40762228465) 在准确头提交 `093d09445f1ac0e2f6c27c9752dcab175f68c2ca` 全部成功后，#262 已合入上述主线提交。该交付覆盖本次明确的 Story/素材范围，不等于 Shiori 全部插件、真机平台收发或付费供应商验收。

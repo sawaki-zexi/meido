@@ -1,8 +1,8 @@
 # ADR-0030：固定 Grok Bot 的交流与接收回执
 
-状态：当前实现；随本 PR 集成。
+状态：已采纳；由 PR #257 合入。
 
-最后核验：2026-10-27。
+最后核验：2026-10-28。
 
 事实来源：[#241](https://github.com/sawaki-zexi/meido/issues/241)、已批准 Spec A4/A5/F13、[实现](../../backend/app/channels/grok/adapter.py)、[实际 Runtime 与 HTTP 验证](../../tests/python/test_grok_settings_api.py)。
 
