@@ -29,6 +29,24 @@ function setupBackend(accounts: ReturnType<typeof makeAccount>[] = []) {
 }
 
 describe("手机账号应用导航", () => {
+  it.each([false, true])("原消息已加载时仍显示本次引用文件失败（手机 %s）", async (phoneMode) => {
+    const stamp = "2026-10-26T06:00:00Z";
+    fakeBackend({
+      "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [makeAccount("qq", "qq-1")] } }),
+      "GET /api/roles/r1/channels/threads\\?networkOnly=true": () => ({ body: { threads: [{ threadId: "files", accountId: "qq-1", channel: "qq", chatId: "42", chatType: "private", title: "文件联系人", lastActivity: stamp }] } }),
+      "GET .*threads/files/messages.*": () => ({ body: { messages: [
+        { id: "old", sequence: 1, role: "user", content: "[文件：notes.txt]", createdAt: stamp, metadata: { threadId: "files", platformMessageId: "original" } },
+        { id: "new", sequence: 2, role: "user", content: "请读取文件", createdAt: stamp, metadata: { threadId: "files", replyTo: "original", replyToContent: "[文件：notes.txt；文件接收超时，未读取正文]", quotedAttachmentFailures: [{ name: "notes.txt", reason: "文件接收超时" }] } },
+      ], hasMore: false } }),
+    });
+    const user = userEvent.setup();
+    render(<ChannelView role={role({ id: "r1", name: "诗织" })} phoneMode={phoneMode} onBack={() => undefined} />);
+    if (phoneMode) await user.click(await screen.findByRole("button", { name: "QQ，离线" }));
+    await user.click(await screen.findByRole("button", { name: /文件联系人/ }));
+    expect(await screen.findByText(/文件接收超时/)).toBeVisible();
+    expect(screen.getByText("[文件：notes.txt]")).toBeVisible();
+  });
+
   it.each(["failed", "uncertain"])("投递 %s 不被当成生成失败，缺少投递字段的摘要使用中性提醒", async (deliveryStatus) => {
     const message = { id: "delivery", sequence: 1, role: "assistant", content: "已经生成的回复", status: "failed", createdAt: "2026-10-25T06:00:00Z", metadata: { threadId: "chat", deliveryStatus, error: "NetworkTimeout" } };
     fakeBackend({

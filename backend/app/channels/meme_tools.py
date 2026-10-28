@@ -135,7 +135,7 @@ class ChatMemeTools:
                     frozen_attachment_bytes={attachment['id']: raw}, actor='reply',
                     source_thread_id=self.thread_id, source_session_key=self.session_key,
                     source_run_id=self.run_id, source_tool_call_id=context.tool_call_id,
-                    source_kind='chat_meme', authorize_source=authorized)
+                    source_kind='chat_meme', authorize_source=authorized, delivery_deadline=context.deadline)
             except Exception:
                 return pending
             receipt = {'status': result.status.value, 'candidateId': candidate_id,

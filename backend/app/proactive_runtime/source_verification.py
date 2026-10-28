@@ -214,7 +214,7 @@ class SourceVerificationApplication:
             identifier, now = uuid.uuid4().hex, p._now(db)
             retention.reserve(db, role_id, identifier, "autonomy_verify", now)
             origin = TaskOrigin(role_id, f"source-verification:{role_id}", parent_run_id=identifier,
-                capability_version=str(state["revision"]), source_scope_id=f"owner-source-verification:{identifier}",
+                grant_domain="source-verification", grant_revision=state["revision"], source_scope_id=f"owner-source-verification:{identifier}",
                 source_authority_json=_json({"source": "desktop_owner_action", "requestNonce": request_nonce,
                     "generation": state["generation"], "sourceId": source.sourceId, "sourceRevision": source.revision}))
             db.execute("""INSERT INTO autonomy_source_verifications
@@ -239,7 +239,7 @@ class SourceVerificationApplication:
     def _submit(self, row):
         executor = _VerificationExecutor(self, row)
         self._executors[row["attempt_id"]] = executor
-        origin = TaskOrigin(**json.loads(row["origin"]))
+        origin = TaskOrigin.from_dict(json.loads(row["origin"]))
         identifier = self.proactive.tasks.submit(origin, executor, kind="autonomy_verify",
             budget=TaskBudget(timeout_seconds=120, log_bytes=16384, output_chars=4000),
             description="owner-trusted local source contract test", submission_key=row["attempt_id"],
@@ -285,7 +285,7 @@ class SourceVerificationApplication:
             # duties for the next bounded recovery pass while it holds a lock.
             return
         for row in rows:
-            identifier, origin = row["attempt_id"], TaskOrigin(**json.loads(row["origin"]))
+            identifier, origin = row["attempt_id"], TaskOrigin.from_dict(json.loads(row["origin"]))
             try:
                 executor = self._executors.get(identifier)
                 if not self._authorized(identifier):
@@ -359,7 +359,7 @@ class SourceVerificationApplication:
                 pass
         await self.recover()
         for row in rows:
-            origin = TaskOrigin(**json.loads(row["origin"]))
+            origin = TaskOrigin.from_dict(json.loads(row["origin"]))
             try:
                 identifier = await self.proactive._owned(self.proactive.tasks.find_submission, origin,
                     kind="autonomy_verify", submission_key=row["attempt_id"])

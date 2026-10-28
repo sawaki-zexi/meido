@@ -8,6 +8,7 @@ instead of importing provider implementations directly.
 from .message_transform import transform_messages
 from .model_adapter import (
     ModelAdapter,
+    ModelResponseDone,
     ModelStreamError,
     ModelTextDelta,
     ModelToolCall,
@@ -36,6 +37,7 @@ from .model_types import (
 
 __all__ = [
     "ModelAdapter",
+    "ModelResponseDone",
     "ModelAdapterRegistry",
     "ModelAssistantMessage",
     "ModelCapabilities",

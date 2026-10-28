@@ -139,15 +139,17 @@ def test_feishu_streaming_uses_cardkit_entity_with_sequenced_updates_and_finaliz
         update = next(params for operation, params in calls if operation == "cardkit.update")
         assert update["content"] == "Hello"
         assert update["sequence"] == 1
-        final_operation, final_params = calls[-1]
+        final_operation, final_params = calls[-2]
         assert final_operation == "cardkit.finalize"
         assert final_params["content"] == "Hello, world"
         assert final_params["settings_sequence"] == final_params["sequence"] + 1
+        assert calls[-1][0] == 'cardkit.close'
+        assert calls[-1][1]['sequence'] == final_params['sequence'] + 1
 
     asyncio.run(run())
 
 
-def test_feishu_initial_cardkit_permission_rejection_falls_back_once_to_ordinary_card():
+def test_feishu_initial_cardkit_permission_rejection_stops_without_another_send():
     async def scenario():
         calls = []
         async def transport(operation, params):
@@ -165,9 +167,9 @@ def test_feishu_initial_cardkit_permission_rejection_falls_back_once_to_ordinary
         session = await adapter.stream_start(target, reply_to_message_id="trigger")
         await adapter.stream_update(session, "complete")
         result = await adapter.stream_finalize(session, "complete reply")
-        assert result.status is DeliveryStatus.SENT
-        assert result.platform_message_id == "ordinary-card"
-        assert [operation for operation, _ in calls] == ["cardkit.create", "im.v1.message.create"]
+        assert result.status is DeliveryStatus.FAILED
+        assert result.platform_message_id is None
+        assert [operation for operation, _ in calls] == ["cardkit.create"]
     asyncio.run(scenario())
 
 
@@ -180,13 +182,15 @@ def test_feishu_uncertain_card_creation_never_falls_back_with_another_send():
         adapter = FeishuAdapter(FeishuConfig(account_id="a", app_id="app"), transport=transport)
         adapter.parse_event(_payload("text", {"text": "hello"}))
         target = (await adapter.list_targets())[0]
-        with pytest.raises(TimeoutError):
-            await adapter.stream_start(target)
+        session = await adapter.stream_start(target)
+        result = await adapter.stream_finalize(session, 'final answer')
+        assert result.status is DeliveryStatus.UNCERTAIN
+        assert result.platform_message_id is None
         assert operations == ["cardkit.create"]
     asyncio.run(scenario())
 
 
-def test_feishu_visible_preview_with_failed_finalize_remains_uncertain():
+def test_feishu_visible_preview_with_rejected_finalize_preserves_receipt_without_final_text():
     async def scenario():
         operations = []
         async def transport(operation, params):
@@ -200,8 +204,9 @@ def test_feishu_visible_preview_with_failed_finalize_remains_uncertain():
         adapter.parse_event(_payload("text", {"text": "hello"}))
         session = await adapter.stream_start((await adapter.list_targets())[0])
         result = await adapter.stream_finalize(session, "final answer")
-        assert result.status is DeliveryStatus.UNCERTAIN
+        assert result.status is DeliveryStatus.FAILED
         assert result.platform_message_id == "preview"
+        assert result.raw['deliveredContent'] == ''
         assert operations.count("im.v1.message.create") == 1
     asyncio.run(scenario())
 
@@ -261,6 +266,9 @@ def test_feishu_transport_uses_resource_upload_and_cardkit_endpoints() -> None:
             await transport("cardkit.finalize", {
                 "card_id": "card-id", "element_id": "reply_md", "content": "final", "sequence": 4,
                 "settings_sequence": 5, "settings": "{\"config\":{\"streaming_mode\":false}}",
+            })
+            await transport('cardkit.close', {
+                'card_id': 'card-id', 'sequence': 5, 'settings': '{"config":{"streaming_mode":false}}',
             })
             paths = [request.url.path for request in requests]
             assert paths.count("/open-apis/auth/v3/tenant_access_token/internal") == 1

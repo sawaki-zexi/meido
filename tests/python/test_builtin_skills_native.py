@@ -174,7 +174,7 @@ def local_summary_provider(home, source_marker):
 def test_typed_weather_skill_runs_real_curl_and_returns_both_public_sources(
     tmp_path, monkeypatch, native_environment,
 ):
-    from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+    from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 
     curl = require_program("curl")
     common = [curl, "--fail", "--silent", "--show-error", "--connect-timeout", "8",
@@ -193,10 +193,12 @@ def test_typed_weather_skill_runs_real_curl_and_returns_both_public_sources(
             if self.calls == 1:
                 assert "天气查询" in json.dumps([item for item in messages if item["role"] == "system"], ensure_ascii=False)
                 yield ModelToolCall("native-wttr", "shell", {"command": wttr})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 2:
                 self.primary = latest_tool_output(messages)
                 assert "Shanghai" in self.primary and re.search(r"[+-]?\d+(?:\.\d+)?°C", self.primary), self.primary
                 yield ModelToolCall("native-open-meteo", "shell", {"command": backup})
+                yield ModelResponseDone("tool_use")
             else:
                 assert self.calls == 3
                 self.fallback = json.loads(latest_tool_output(messages))
@@ -223,7 +225,7 @@ def test_typed_weather_skill_runs_real_curl_and_returns_both_public_sources(
 def test_typed_summarize_skill_reads_real_workspace_file_and_returns_native_cli_summary(
     tmp_path, monkeypatch, native_environment, summarize_installation,
 ):
-    from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+    from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 
     node, cli = summarize_installation
     source_marker = "MEIDO_NATIVE_SUMMARIZE_FILE_SOURCE_23_DEGREES"
@@ -239,6 +241,7 @@ def test_typed_summarize_skill_reads_real_workspace_file_and_returns_native_cli_
                 if self.calls == 1:
                     assert "摘要与正文提取" in json.dumps([item for item in messages if item["role"] == "system"], ensure_ascii=False)
                     yield ModelToolCall("native-file-summary", "shell", {"command": command})
+                    yield ModelResponseDone("tool_use")
                 else:
                     assert self.calls == 2
                     result, _ = json.JSONDecoder().raw_decode(latest_tool_output(messages).lstrip())

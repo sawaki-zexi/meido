@@ -274,4 +274,5 @@ def test_rebinding_between_provider_requests_revokes_search_and_loaded_execution
         == audits["old-owner-search"]["resultCategory"]
         == "denied"
     )
-    assert len(sessions.get_run("run").modelSnapshot["capabilityRevisions"]) == 2
+    assert "capabilityRevisions" not in sessions.get_run("run").modelSnapshot
+    assert sessions.call_binding("run", "old-owner-call")["visibilityVersion"] == 1

@@ -11,6 +11,7 @@ from typing import cast
 from ..models import Message
 from ..multichannel import MultichannelStore
 from ..session_store import SessionStore
+from ..channels.delivery_projection import delivered_message
 from .tools import AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
 
 MESSAGE_HISTORY_TOOL_NAMES = frozenset({"search_messages", "fetch_messages"})
@@ -47,9 +48,10 @@ class ConversationHistory:
             ) if self.is_owner and thread.chat_type == "private" else None)
             messages = (_original_sequences(self.channels.owner_context_messages(self.role_id)) if since is not None
                         else self.sessions.list_messages(thread.session_key))
+            messages = [projected for message in messages if (projected := delivered_message(message)) is not None]
             messages = [message for message in messages if message.role != "assistant"
                         or message.sessionKey == f"role:{self.role_id}"
-                        or message.metadata.get("deliveryStatus") == "sent"]
+                        or message.metadata.get("deliveryStatus") == "sent" or message.metadata.get('deliveryProjection')]
         return [message for message in messages
                 if message.status == "completed" and message.messageType == "text"
                 and message.role in {"user", "assistant"}]

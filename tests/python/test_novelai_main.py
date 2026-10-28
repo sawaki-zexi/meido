@@ -12,6 +12,11 @@ def test_real_messages_tool_loop_delivers_one_image_and_next_model_gets_only_saf
     from backend.app.ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
     from backend.app.models import ModelConfigurationInput
     client, service = novelai_main
+    updated = client.put(f'/api/roles/{service.role.id}', json={'name': service.role.name,
+        'profile': service.role.profile.model_dump(),
+        'agentConfig': {'novelai': {'manualEnabled': False, 'consentRevision': 0}}})
+    assert updated.status_code == 200, updated.text
+    assert client.get('/api/services/novelai').json()['manualConsentRevision'] == 0
     arguments = dict(service.request)
     attachment_ids = []
     base_image = None

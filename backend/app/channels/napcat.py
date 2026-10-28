@@ -6,7 +6,7 @@ import asyncio
 import base64
 import json
 from dataclasses import replace
-from urllib.parse import unquote
+from html import unescape
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +14,8 @@ from typing import Any, Mapping
 
 from .base import ChannelAdapter, ChannelAdapterError, PlatformRejectedError, SendTransport, UnsupportedTargetError, delivery_status_for_error, is_blocked_identity
 from .directory import DirectoryError, DirectoryObservation, DirectoryQuery, MAX_RECORDS, MAX_RESPONSE_BYTES
+from .qq_files import file_attachment, file_description, download_file, check_media_authorization
+from .delivery import DeliveryAttempt, OutboundScheduler
 from .models import (
     Attachment,
     ChannelCapabilities,
@@ -62,6 +64,7 @@ class NapCatAdapter(ChannelAdapter):
         self.config = config
         self.account_id = config.account_id
         self._transport = transport
+        self.scheduler = OutboundScheduler()
         self._targets: dict[str, Target] = {}
         self._group_ids: set[str] = set()
         self._bot_message_ids: set[str] = set()
@@ -85,17 +88,17 @@ class NapCatAdapter(ChannelAdapter):
             cursor = 0
             for match in re.finditer(r"\[CQ:([a-z_]+)((?:,[^\]]*)?)\]", payload, re.IGNORECASE):
                 if match.start() > cursor:
-                    segments.append({"type": "text", "data": {"text": payload[cursor:match.start()]}})
+                    segments.append({"type": "text", "data": {"text": unescape(payload[cursor:match.start()])}})
                 values: dict[str, str] = {}
                 for item in match.group(2).lstrip(",").split(","):
                     if "=" in item:
                         key, value = item.split("=", 1)
-                        values[key.strip()] = unquote(value.strip())
+                        values[key.strip()] = unescape(value.strip())
                 kind = match.group(1).lower()
                 segments.append({"type": kind, "data": values})
                 cursor = match.end()
             if cursor < len(payload):
-                segments.append({"type": "text", "data": {"text": payload[cursor:]}})
+                segments.append({"type": "text", "data": {"text": unescape(payload[cursor:])}})
             return segments or [{"type": "text", "data": {"text": payload}}]
         return []
 
@@ -133,7 +136,11 @@ class NapCatAdapter(ChannelAdapter):
                 qq = str(data.get("qq", ""))
                 if qq:
                     mentions.append(qq)
-            elif kind in {"image", "file", "video", "record"}:
+            elif kind == "file":
+                attachment = file_attachment(data)
+                attachments.append(attachment)
+                text_parts.append(file_description(attachment.file_name))
+            elif kind in {"image", "video", "record"}:
                 attachments.append(Attachment(kind=kind, url=str(data.get("url")) if data.get("url") else None, file_name=str(data.get("file")) if data.get("file") else None))
         reply = next((segment for segment in segments if segment.get("type") == "reply"), None)
         reply_data = reply.get("data") if isinstance(reply, dict) and isinstance(reply.get("data"), dict) else {}
@@ -255,7 +262,11 @@ class NapCatAdapter(ChannelAdapter):
             data = segment.get("data") if isinstance(segment.get("data"), Mapping) else {}
             if segment.get("type") == "text":
                 text.append(str(data.get("text") or ""))
-            elif segment.get("type") in {"image", "file"} and data.get("url"):
+            elif segment.get("type") == "file":
+                attachment = file_attachment(data)
+                attachments.append(attachment)
+                text.append(file_description(attachment.file_name))
+            elif segment.get("type") == "image" and data.get("url"):
                 attachments.append(Attachment(str(segment["type"]), str(data["url"]), str(data.get("file") or "") or None))
         return replace(event, metadata={
             **event.metadata,
@@ -271,7 +282,6 @@ class NapCatAdapter(ChannelAdapter):
         self._validate_target(message.target)
         if self._transport is None:
             raise ChannelAdapterError("NapCat transport is not configured")
-        visible_sends = 0
         try:
             # Resolve every image before the first request. NapCat may run in
             # another host/container and cannot read Meido's local paths.
@@ -296,6 +306,7 @@ class NapCatAdapter(ChannelAdapter):
                 for mention_id in message.metadata.get("mentionIds", ()) if isinstance(message.metadata.get("mentionIds"), (list, tuple)) else ():
                     if str(mention_id):
                         mentions.append({"type": "at", "data": {"qq": str(mention_id)}})
+            operations, parts = [], []
             if len(message.content) > FORWARD_MAX_CHARS or len(message.content.splitlines()) > FORWARD_MAX_LINES:
                 identity = await self._transport("get_login_info", {})
                 self._self_id = str(identity.get("user_id") or "")
@@ -308,18 +319,25 @@ class NapCatAdapter(ChannelAdapter):
                     "content": [{"type": "text", "data": {"text": text}}] + (images if index == len(paragraphs) - 1 else []),
                 }} for index, text in enumerate(paragraphs)]
                 if mentions:
-                    await self._send_receipt(operation, {**params, "message": mentions}, authorize=message.authorize_dispatch)
-                    visible_sends += 1
+                    operations.append((operation, {**params, "message": mentions}))
+                    parts.append({'kind': 'preview', 'content': ''})
                 forward_operation = "send_group_forward_msg" if message.target.kind is TargetKind.GROUP else "send_private_forward_msg"
-                result, message_id = await self._send_receipt(forward_operation, {**params, "messages": nodes}, authorize=message.authorize_dispatch)
+                operation, body = forward_operation, {**params, "messages": nodes}
             else:
                 segments = [*mentions, *([{"type": "text", "data": {"text": message.content}}] if message.content else []), *images]
                 body = segments if message.target.kind is TargetKind.GROUP or images else message.content
-                result, message_id = await self._send_receipt(operation, {**params, "message": body}, authorize=message.authorize_dispatch)
-            return DeliveryResult(DeliveryStatus.SENT, message.target, message_id, raw=dict(result))
+                body = {**params, 'message': body}
+            operations.append((operation, body))
+            parts.append({'kind': 'text', 'content': message.content})
+            attempt = DeliveryAttempt(message, scheduler=self.scheduler)
+            async def send_part(part):
+                operation, body = operations[part['index']]
+                result, message_id = await self._send_receipt(operation, body, authorize=message.authorize_dispatch)
+                return {'message_id': message_id}
+            return await attempt.run(parts, send_part,
+                receipt_id=lambda result: result.get('message_id'))
         except Exception as error:
-            status = DeliveryStatus.UNCERTAIN if visible_sends else delivery_status_for_error(error)
-            return DeliveryResult(status, message.target, error=type(error).__name__)
+            return DeliveryResult(delivery_status_for_error(error), message.target, error=type(error).__name__)
 
     async def _send_receipt(self, operation: str, params: Mapping[str, Any], *, authorize=None) -> tuple[Mapping[str, Any], str]:
         from .base import PartialDeliveryError
@@ -407,14 +425,26 @@ class NapCatAdapter(ChannelAdapter):
             raise UnsupportedTargetError("NapCat 不支持该目标类型")
 
     async def download_media(self, event: InboundEvent, *, max_bytes: int = 10 * 1024 * 1024) -> tuple[DownloadedMedia, ...]:
-        from .media import download_qq_media
+        from .media import download_qq_file, download_qq_media
 
         downloaded: list[DownloadedMedia] = []
-        for attachment in event.attachments[:4]:
-            if attachment.kind not in {"image", "file"} or not attachment.url:
+        for index, attachment in enumerate(event.attachments):
+            check_media_authorization(event)
+            if index >= 4:
+                if attachment.kind == "file":
+                    downloaded.append(DownloadedMedia("file", b"", attachment.file_name,
+                        error="每条消息最多接收 4 个附件", file_id=attachment.file_id, source_size=attachment.size))
+                continue
+            if attachment.kind == "file":
+                downloaded.append(await download_file(attachment, event, self._transport, download_qq_file, max_bytes=max_bytes))
+                continue
+            if attachment.kind != "image" or not attachment.url:
                 continue
             try:
                 data, mime_type = await download_qq_media(attachment.url, max_bytes=max_bytes)
+                check_media_authorization(event)
+            except PermissionError:
+                raise
             except Exception as error:
                 logger.warning("NapCat 附件下载失败 account=%s kind=%s error=%s", self.account_id, attachment.kind, type(error).__name__)
                 continue

@@ -2,9 +2,58 @@
 import asyncio
 import threading
 import time
+import pytest
 
 from novelai_scene_fixtures import scene_main
 from novelai_fixtures import novelai_environment, novelai_main, novelai_service  # noqa: F401
+
+
+@pytest.mark.parametrize('change', ['parameters', 'token', 'role_aba'])
+def test_waiting_cg_candidate_cannot_inherit_later_settings_but_new_turn_can(scene_main, change):
+    from test_novelai_scene import owner_turn
+    client, service, peer, _ = scene_main
+    app = service.application
+    key = service.role.id, f'role:{service.role.id}'
+
+    async def hold_cleanup():
+        gate = asyncio.Event()
+        app.scenes.cleanup[key] = {asyncio.create_task(gate.wait())}
+        return gate
+
+    gate = client.portal.call(hold_cleanup)
+    try:
+        response = client.post(f'/api/roles/{service.role.id}/messages', json={'content': 'The old waiting scene.'})
+        assert 'assistant_completed' in response.text, response.text
+        candidate = app.scenes.pending[key]
+        assert not peer.aux_accepted.is_set() and not app.history(service.role.id)['generations']
+        if change == 'parameters':
+            current = client.get('/api/services/novelai').json()
+            changed = client.put('/api/services/novelai', json={'maxSteps': 12, 'expectedRevision': current['revision']})
+            assert changed.status_code == 200, changed.text
+        elif change == 'token':
+            changed = client.put('/api/services/novelai/token', json={'token': 'new-local-fixture-token'})
+            assert changed.status_code == 200, changed.text
+        else:
+            for enabled in (False, True):
+                changed = client.put(f'/api/roles/{service.role.id}', json={'name': service.role.name,
+                    'profile': service.role.profile.model_dump(), 'agentConfig': {'novelai': {'sceneCgEnabled': enabled}}})
+                assert changed.status_code == 200, changed.text
+        client.portal.call(gate.set)
+
+        async def joined_candidate():
+            await asyncio.wait_for(asyncio.gather(candidate, return_exceptions=True), 3)
+
+        client.portal.call(joined_candidate)
+        assert not peer.aux_accepted.is_set(), 'an old candidate acquired a new auxiliary request'
+        assert not service.peer.requests
+        assert not app.history(service.role.id)['generations']
+        generated, _ = owner_turn(client, service, 'A new owner turn after the settings change.')
+        assert generated['status'] == 'succeeded'
+        assert len(service.peer.requests) == 1
+        if change == 'parameters':
+            assert generated['parameters']['steps'] == 12
+    finally:
+        client.portal.call(gate.set)
 
 
 def test_new_human_reply_does_not_wait_for_auxiliary_finally_but_next_cg_does(scene_main, monkeypatch):

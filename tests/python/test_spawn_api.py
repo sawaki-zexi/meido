@@ -1,6 +1,6 @@
 import pytest
 from backend.app.agent_runtime.types import ToolResultMessage
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from test_background_shell_api import MemoryCredentials
 from test_background_shell_api import api as shell_api  # noqa: F401
 
@@ -43,12 +43,14 @@ def test_default_parent_shell_does_not_grant_or_restore_restricted_child_shell(a
                     if change == 'inside_child':
                         revoke()
                     yield ModelToolCall('restricted-shell', 'shell', {'command': f'"{sys.executable}" -c "from pathlib import Path; Path(\'child-marker.txt\').write_text(\'should-not-execute\')"'})
+                    yield ModelResponseDone("tool_use")
                 else:
                     yield ModelTextDelta('child-stopped')
             elif not results:
                 if change == 'before_spawn':
                     revoke()
                 yield ModelToolCall('restricted-spawn', 'spawn', {'task': 'controlled restricted task', 'profile': 'scripting'})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('parent-finished')
 
@@ -77,11 +79,13 @@ def test_http_sync_child_reads_real_file_while_parent_owns_role_lock(api, monkey
                 assert {item['function']['name'] for item in tools} == {'read_file', 'list_dir', 'web_search', 'web_fetch'}
                 if not tool_results:
                     yield ModelToolCall('child-read', 'read_file', {'path': 'evidence.txt'})
+                    yield ModelResponseDone("tool_use")
                 else:
                     assert 'tracer-known-731' in str(tool_results[-1])
                     yield ModelTextDelta('child-confirmed-731')
             elif not tool_results:
                 yield ModelToolCall('delegate', 'spawn', {'task': 'Read evidence.txt and return its marker.'})
+                yield ModelResponseDone("tool_use")
             else:
                 assert 'child-confirmed-731' in str(tool_results[-1])
                 yield ModelTextDelta('parent-completed')
@@ -121,6 +125,7 @@ def test_background_completion_survives_parent_and_is_appended_once(api, monkeyp
                     await asyncio.sleep(.01)
                 if not results:
                     yield ModelToolCall('read-background', 'read_file', {'path': 'background.txt'})
+                    yield ModelResponseDone("tool_use")
                 else:
                     yield ModelTextDelta('actual-background-923')
             elif 'internal spawn completion' in system:
@@ -129,6 +134,7 @@ def test_background_completion_survives_parent_and_is_appended_once(api, monkeyp
                 yield ModelTextDelta('整理完成923')
             elif not results:
                 yield ModelToolCall('background-spawn', 'spawn', {'task': 'Read background.txt', 'run_in_background': True})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('parent-finished-first')
     monkeypatch.setattr(main, 'model_adapter', Adapter())
@@ -398,6 +404,7 @@ def test_background_channel_completion_uses_original_delivery_ledger_without_rep
                 yield ModelTextDelta('channel-proof-881 summary')
             elif not any(item['role'] == 'tool' for item in messages):
                 yield ModelToolCall('channel-read', 'read_file', {'path': 'channel-result.txt'})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('channel-proof-881 result')
     model = Model()
@@ -484,6 +491,7 @@ def test_legacy_spawn_switch_does_not_hide_default_delegation_and_invalid_budget
                 yield ModelTextDelta('default-child-result')
             elif not any(item['role'] == 'tool' for item in messages):
                 yield ModelToolCall('forged-spawn', 'spawn', {'task': 'should be unavailable'})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('permission-result')
     adapter = Adapter()
@@ -519,6 +527,7 @@ def test_restart_preserves_interrupted_child_and_delivers_internal_completion_on
                 yield ModelTextDelta('should never resume')
             elif not any(item['role'] == 'tool' for item in messages):
                 yield ModelToolCall('restart-child', 'spawn', {'task': 'controlled pending child', 'run_in_background': True})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('parent-finished')
     model = Model()
@@ -572,8 +581,10 @@ def test_http_later_turn_can_list_get_and_cancel_the_same_background_child(api, 
                 yield ModelTextDelta('observed-current-task')
             elif action == 'start':
                 yield ModelToolCall('start', 'spawn', {'task': 'wait for cancellation', 'run_in_background': True})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelToolCall('manage', 'spawn_manage', {'action': action, **({'job_id': self.task_id} if action != 'list' else {})})
+                yield ModelResponseDone("tool_use")
     adapter = Adapter()
     monkeypatch.setattr(main, 'model_adapter', adapter)
     role = client.post('/api/roles', json={'name': '跨回合管理', 'profile': {'profile': '测试'},

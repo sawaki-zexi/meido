@@ -156,7 +156,8 @@ class SceneCoordinator:
 
     def complete(self, role_id, session_key, run_id):
         try:
-            self._complete(role_id, session_key, run_id)
+            with self.app._lock:
+                self._complete(role_id, session_key, run_id)
         except (OSError, sqlite3.Error) as error:
             # Optional candidate storage cannot reverse the committed reply.
             # Do not retry observation or acquire any consumption claim here.
@@ -166,6 +167,10 @@ class SceneCoordinator:
         role = self.app.roles.get(role_id)
         if self.app._closed or role is None or not role.agentConfig.novelai.sceneCgEnabled:
             return
+        # A candidate can wait for the previous attempt's cleanup before it
+        # reaches submit. Freeze policy now, not after that asynchronous gap.
+        service_revision = self.app.settings.public()['revision']
+        role_revision = self.app._role_revision(role)
         state = self.state(role_id, session_key)
         if state is None or state['human_run'] != run_id:
             return
@@ -205,14 +210,14 @@ class SceneCoordinator:
                     (role_id, session_key, run_id)).rowcount:
                 return
         key = role_id, session_key
-        task = self._own(self._coordinate(source, contents), name='novelai-scene-candidate')
+        task = self._own(self._coordinate(source, contents, service_revision, role_revision), name='novelai-scene-candidate')
         self.pending[key] = task
         def clear(done):
             if self.pending.get(key) is done:
                 self.pending.pop(key, None)
         task.add_done_callback(clear)
 
-    async def _coordinate(self, source, contents):
+    async def _coordinate(self, source, contents, service_revision, role_revision):
         key = source.origin.role_id, source.origin.session_key
         try:
             for task in tuple(self.cleanup.get(key, ())):
@@ -229,7 +234,8 @@ class SceneCoordinator:
                 if db.execute('SELECT 1 FROM novelai_scene_manual WHERE role_id=? AND human_key=?',
                         (source.origin.role_id, source.human_key)).fetchone():
                     return
-            await self.app.submit(source, {'background': True}, scene_input=contents)
+            await self.app.submit(source, {'background': True}, scene_input=contents,
+                expected_revision=service_revision, expected_role_revision=role_revision)
         except (ValueError, PermissionError, OSError, sqlite3.Error, RuntimeError) as error:
             self.errors.append(type(error).__name__)
             with self.app.ledger.connect() as db:

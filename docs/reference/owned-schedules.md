@@ -41,3 +41,7 @@ ACK前仍占任务/日志额度且不清理对应occurrence；ACK后普通回收
 尚未实际dispatch的离线/预算/SQLite busy在原scheduledAt+300秒内按1/5/30秒退避，不推迟名义时刻。模型已提交或外部attempt已建立后不重新执行/发送。渠道最初本地消息为pending，收据先持久，再同步消息；本地失败只留dirty修复。sent才计送达，pending等待原attempt，uncertain阻塞重复计划且不盲重发。账本按稳定occurrence marker精确查找，不限最近100条。
 
 本次模型与渠道均为本地临时fixture，未发送真实平台消息或使用付费模型。未接入TodoPlugin，不改变当天提醒者、当天暂停和次日资格。
+
+## 工具目录迁移兼容（2026-10-26）
+
+soft 冻结的是创建调用所属请求的有限已选工具，不是随后发布的聊天目录；同回复先搜索不能把未展示工具加入计划。到时严格解析原定义，仅为后来新增的可选元数据使用字段默认值，未知格式拒绝；仍与当前实际定义及权限取交集。同名新实现、后加工具和模型配置变化不会扩权。TaskOrigin 兼容与 bridge 回滚见 [受管任务](owned-background-shell.md#taskorigin-历史兼容2026-10-26)和 [ADR-0026](../adr/0026-request-bound-lightweight-tool-loading.md)。

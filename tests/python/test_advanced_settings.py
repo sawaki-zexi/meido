@@ -38,6 +38,9 @@ def test_direct_exposure_activates_deferred_tools_without_exposing_hidden_or_ext
     class Tool:
         def __init__(self, name, exposure):
             self.definition = ToolDefinition(name, name, {'type': 'object'}, exposure=exposure)
+
+        async def execute(self, arguments, context):
+            raise AssertionError('metadata exposure must not execute tools')
     resolution = CapabilityRegistry([Tool('delayed', 'deferred'), Tool('hidden', 'hidden')]).resolve(
         role_id='r', session_key='role:r', run_id='run', discovery_enabled=True, direct_exposure=True,
         enabled_tools={'delayed', 'hidden'}, external_only=external)

@@ -3,12 +3,12 @@ from __future__ import annotations
 import inspect
 import json
 from dataclasses import asdict
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import cast
 
 from ..models import Message, ModelConfiguration, Role
-from ..ai.model_adapter import ModelAdapter, ModelStreamError, ModelTextDelta, ModelToolCall
+from ..ai.model_adapter import ModelAdapter, ModelResponseDone, ModelStreamError, ModelTextDelta, ModelToolCall
 from ..ai.model_types import (
     ModelAssistantMessage as RichAssistantMessage,
     ModelCost as RichCost,
@@ -124,12 +124,15 @@ def _content_block_from_metadata(value: object) -> RichContentBlock | None:
             safe_arguments,
             thought_signature=thought_signature,
             namespace=namespace,
+            arguments_complete=value.get("arguments_complete", True) is True,
         )
     return None
 
 
 def _content_block_metadata(block: RichContentBlock) -> dict[str, object]:
     value = asdict(block)
+    if isinstance(block, RichToolCallBlock) and block.arguments_complete:
+        value.pop("arguments_complete", None)
     if isinstance(block, RichToolCallBlock) and block.name.startswith("agent_browser_"):
         value["arguments"] = sanitize_browser_arguments(block.name, block.arguments)
     return value
@@ -162,12 +165,14 @@ class MeidoProvider:
         memory_context: str = "",
         capability_prompt: str = "",
         *, structured_without_tools: bool = False, max_response_tokens: int | None = None,
+        namespace_context: Callable[[CancellationToken | None], str] | None = None,
     ) -> None:
         self.adapter = adapter
         self.role = role
         self.configuration = configuration
         self.memory_context = memory_context
         self.capability_prompt = capability_prompt
+        self.namespace_context = namespace_context
         self._tool_prompt = ""
         self.structured_without_tools = structured_without_tools
         self.max_response_tokens = max_response_tokens
@@ -183,7 +188,7 @@ class MeidoProvider:
         session_id: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         del model, session_id
-        self._set_tool_prompt(tools)
+        self._set_tool_prompt(tools, self.namespace_context(signal) if self.namespace_context else "")
         rich = getattr(self.adapter, "stream_rich_messages", None)
         if rich is not None:
             return self._stream_rich_structured(system, messages, tools, signal, rich)
@@ -200,7 +205,7 @@ class MeidoProvider:
             return self._stream_structured(system, messages, tools, signal, structured)
         return self._stream(messages, signal)
 
-    def _set_tool_prompt(self, tools):
+    def _set_tool_prompt(self, tools, namespace_prompt=""):
         names = []
         for tool in tools:
             function = tool.get("function")
@@ -212,10 +217,12 @@ class MeidoProvider:
             "仅以上名称可在本次运行调用。不要根据旧对话或其他角色的工具清单声称具备能力。",
             "工具可见不等于外部依赖已验证；实际执行状态以工具结果为准。",
         ))
+        if namespace_prompt:
+            self._tool_prompt += "\n\n" + namespace_prompt
 
     def estimate_request_tokens(self, system, messages, tools):
         from .context_provider import estimate_tokens
-        self._set_tool_prompt(tools)
+        self._set_tool_prompt(tools, self.namespace_context(None) if self.namespace_context else "")
         # Use the same rendered system/memory/capability/messages as the actual rich request.
         rendered = []
         image_tokens = 0
@@ -253,7 +260,7 @@ class MeidoProvider:
                         content += event.text
                         yield TextDeltaEvent(event.text)
                     elif isinstance(event, RichToolCallEnd):
-                        call = ToolCall(event.call.id, event.call.name, dict(event.call.arguments))
+                        call = ToolCall(event.call.id, event.call.name, dict(event.call.arguments), event.call.arguments_complete)
                         tool_calls.append(call)
                         yield ToolCallEndEvent(call)
                     elif isinstance(event, RichStreamError):
@@ -264,7 +271,7 @@ class MeidoProvider:
                             block.text for block in event.message.content if isinstance(block, RichTextBlock)
                         )
                         final_calls = tuple(
-                            ToolCall(block.id, block.name, dict(block.arguments))
+                            ToolCall(block.id, block.name, dict(block.arguments), block.arguments_complete)
                             for block in event.message.content
                             if isinstance(block, RichToolCallBlock)
                         )
@@ -272,10 +279,7 @@ class MeidoProvider:
                             content = final_content
                         if final_calls:
                             tool_calls = list(final_calls)
-                        stop_reason = event.message.metadata.stop_reason or ("tool_use" if tool_calls else "stop")
-                        if stop_reason == "error":
-                            yield ProviderErrorEvent(event.message.metadata.error_message or "模型调用失败")
-                            return
+                        stop_reason = event.message.metadata.stop_reason or ("incomplete" if tool_calls else "stop")
                         response_metadata = asdict(event.message.metadata)
                         if event.message.timestamp is not None:
                             response_metadata["timestamp"] = event.message.timestamp
@@ -293,7 +297,7 @@ class MeidoProvider:
                         yield AssistantDoneEvent(AssistantMessage(
                             content=content,
                             tool_calls=tuple(tool_calls),
-                            stop_reason="tool_use" if tool_calls else stop_reason,
+                            stop_reason=stop_reason,
                             metadata=response_metadata,
                             timestamp=event.message.timestamp or event.message.metadata.timestamp,
                         ))
@@ -310,6 +314,7 @@ class MeidoProvider:
             yield ProviderStartEvent()
             content = ""
             tool_calls: list[ToolCall] = []
+            stop_reason: str | None = None
             try:
                 options = ({'max_tokens': self.max_response_tokens} if self.max_response_tokens is not None
                            and 'max_tokens' in inspect.signature(structured).parameters else {})
@@ -320,16 +325,19 @@ class MeidoProvider:
                         content += event.text
                         yield TextDeltaEvent(event.text)
                     elif isinstance(event, ModelToolCall):
-                        call = ToolCall(event.id, event.name, event.arguments)
+                        call = ToolCall(event.id, event.name, event.arguments, event.arguments_complete)
                         tool_calls.append(call)
                         yield ToolCallEndEvent(call)
+                    elif isinstance(event, ModelResponseDone):
+                        stop_reason = event.stop_reason
                     elif isinstance(event, ModelStreamError):
                         yield ProviderErrorEvent(event.error)
                         return
                 yield AssistantDoneEvent(AssistantMessage(
                     content=content,
                     tool_calls=tuple(tool_calls),
-                    stop_reason="tool_use" if tool_calls else "stop",
+                    stop_reason=stop_reason or ("incomplete" if tool_calls else "stop"),
+                    metadata={"stop_reason": stop_reason, "completion_contract": "legacy_explicit_done" if stop_reason else "legacy_text_eof"},
                 ))
             except Exception as error:
                 if isinstance(error, RuntimeError) and str(error) == "agent run cancelled":

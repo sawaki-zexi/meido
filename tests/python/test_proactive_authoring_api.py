@@ -14,7 +14,7 @@ import uuid
 import pytest
 
 from backend.app import main
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.mcp_config import McpConfigStore
 from backend.app.mcp_runtime import McpHost
 from backend.app.mcp_stdio import McpStdioClient
@@ -62,6 +62,7 @@ def authored(api, tmp_path, monkeypatch):
                 name, content = self.files[self.step]
                 self.step += 1
                 yield ModelToolCall(f'author-{self.step}', 'write_file', {'path': 'mcp/example/' + name, 'content': content})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('全部六份产物已写入，尚未获得 MCP/自主权限')
 
@@ -79,6 +80,7 @@ def authored(api, tmp_path, monkeypatch):
             if not self.called:
                 self.called = True
                 yield ModelToolCall('owner-correct-manifest', 'write_file', {'path': 'mcp/example/manifest.json', 'content': first['preparedManifest']})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('完整清单已保存')
 
@@ -270,6 +272,7 @@ def refresh_artifact(value, monkeypatch):
             if not self.called:
                 self.called = True
                 yield ModelToolCall('resave-owner-manifest', 'write_file', {'path': 'mcp/example/manifest.json', 'content': corrected})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('修正清单已保存')
     monkeypatch.setattr(main, 'model_adapter', Correct())
@@ -372,6 +375,7 @@ def test_explicit_author_skill_writes_a_real_role_file_without_registration(api,
             if self.calls == 1:
                 yield ModelToolCall('author-source', 'write_file', {'path': 'mcp/example/README.md',
                     'content': 'Synthetic source only; owner MCP trust and source permission are still required.'})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('已写草稿，等待主人检查与许可')
 
@@ -422,6 +426,7 @@ def test_owner_preview_computes_real_hashes_but_only_file_tools_save_the_correct
                 if self.calls == 1:
                     yield ModelToolCall('save-owner-manifest', 'write_file', {'path': 'mcp/example/manifest.json',
                         'content': result['preparedManifest']})
+                    yield ModelResponseDone("tool_use")
                 else:
                     yield ModelTextDelta('已保存主人核对的清单')
 

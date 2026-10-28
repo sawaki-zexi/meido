@@ -17,6 +17,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("落地页背景", () => {
@@ -40,6 +41,23 @@ describe("落地页背景", () => {
     expect(container.querySelector(".landing-background")).toBe(background);
     expect(background?.getAttribute("src")).toBe("/landing/coastal-road.webp");
   });
+});
+
+it("在 GitHub Pages 子路径浏览时从同一站点加载背景、立绘和音乐", () => {
+  vi.stubEnv("BASE_URL", "/meido/");
+  vi.spyOn(Math, "random").mockReturnValue(0.5);
+  vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
+  const { container, getByRole } = render(<LandingPage />);
+  expect(container.querySelector(".landing-background")).toHaveAttribute("src", "/meido/landing/coastal-road.webp");
+  expect(getByRole("img", { name: "Meido 的女仆讲解角色" })).toHaveAttribute("src", "/meido/landing/elysia-greeting.png");
+  expect(container.querySelector("audio")).toHaveAttribute("src", "/meido/landing/neko-ni-michibikarete.mp3");
+  fireEvent.click(getByRole("button", { name: "按任意键开始游戏" }));
+  fireEvent.click(getByRole("button", { name: "跳过当前段落" }));
+  fireEvent.click(getByRole("button", { name: /角色$/ }));
+  expect(getByRole("img", { name: "Meido 的女仆讲解角色" })).toHaveAttribute("src", "/meido/landing/elysia-attentive.png");
+  fireEvent.click(getByRole("button", { name: "跳过当前段落" }));
+  fireEvent.click(getByRole("button", { name: /没什么想问的了/ }));
+  expect(getByRole("img", { name: "Meido 的女仆讲解角色" })).toHaveAttribute("src", "/meido/landing/elysia-smile.png");
 });
 
 it("访客能浏览六个模块并返回选项，结束后下载项目源码", () => {

@@ -3,6 +3,8 @@ import type { AgentToolConfig, ChatAttachment, Role } from '../../api/types';
 import { novelai, type GenerationPage, type GenerationParameters, type GenerationSelection, type GenerationView, type NovelaiConfiguration, type NovelaiRoleConfig } from '../../api/novelai';
 import { uploadChatAttachment } from '../../api/chat';
 import { errorMessage } from '../../api/client';
+import { generationAvailability } from './availability';
+import { generationInputError } from './generationValidation';
 
 export const activeGenerationStatuses = ['prepared', 'dispatching', 'received', 'local_pending'];
 export type GenerationDrawerProps = {
@@ -21,6 +23,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   const [configuration, setConfiguration] = useState<NovelaiConfiguration | null>(null);
   const [configurationRefreshing, setConfigurationRefreshing] = useState(false);
   const configurationQuery = useRef(0);
+  const historicalParameters = useRef(false);
   const [page, setPage] = useState<GenerationPage | null>(null);
   const [parameters, setParameters] = useState<GenerationParameters>({ prompt: '', mode: 'txt2img', negative_prompt: '', samples: 1, size_preset: 'square' });
   const [seed, setSeed] = useState('');
@@ -50,6 +53,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     const query = ++configurationQuery.current;
     scope.current = owner;
     setPage(null); setConfiguration(null); setConfigurationRefreshing(false); setError(''); setBusy(false); setUploading(false); setInputs([]);
+    historicalParameters.current = false;
     attempt.current = null; setSource(null); setConsent(false); setAccepted(false); setDeliveryMode(defaultDeliveryMode);
     recordQueries.current = new Map();
     setParameters({ prompt: '', mode: 'txt2img', negative_prompt: '', size_preset: 'square' }); setSeed('');
@@ -65,26 +69,37 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     }).catch((cause) => { if (isCurrent(owner)) setError(errorMessage(cause, '无法读取生图设置和历史')); });
     return () => { owner.active = false; controller.current?.abort(); };
   }, [role.id, selectedImage?.generation.attemptId, selectedImage?.image.id]);
-  const refreshConfiguration = async () => {
+  const applyConfiguration = (config: NovelaiConfiguration) => {
+    setConfiguration(config);
+    if (!attempt.current && !historicalParameters.current && config.revision !== configuration?.revision) {
+      const previous = configuration && serviceDefaults(configuration);
+      const defaults = serviceDefaults(config);
+      setParameters((value) => ({ ...value,
+        model: value.model === previous?.model || !config.allowedModels.includes(value.model ?? '') ? defaults.model : value.model,
+        sampler: value.sampler === previous?.sampler || !config.allowedSamplers.includes(value.sampler ?? '') ? defaults.sampler : value.sampler,
+        samples: value.samples === previous?.samples || value.samples === undefined ? defaults.samples : value.samples,
+        steps: value.steps === previous?.steps ? defaults.steps : Math.min(value.steps ?? defaults.steps, config.maxSteps),
+      }));
+    }
+  };
+  const refreshConfiguration = async (preferences?: Partial<Pick<NovelaiConfiguration, 'nsfwEnabled' | 'addQualityTags' | 'undesiredContentPreset'>>) => {
+    if (preferences && (busy || uploading || configurationRefreshing || attempt.current || !configuration)) return;
     const owner = scope.current;
     const query = ++configurationQuery.current;
     setConfigurationRefreshing(true);
     try {
-      const config = await novelai.configuration();
+      const config = preferences && configuration
+        ? await novelai.saveConfiguration(preferences, configuration.revision) : await novelai.configuration();
       if (!isCurrent(owner) || configurationQuery.current !== query) return;
-      setConfiguration(config);
-      if (!attempt.current && config.revision !== configuration?.revision) {
-        const previous = configuration && serviceDefaults(configuration);
-        const defaults = serviceDefaults(config);
-        setParameters((value) => ({ ...value,
-          model: value.model === previous?.model || !config.allowedModels.includes(value.model ?? '') ? defaults.model : value.model,
-          sampler: value.sampler === previous?.sampler || !config.allowedSamplers.includes(value.sampler ?? '') ? defaults.sampler : value.sampler,
-          samples: value.samples === previous?.samples || value.samples === undefined ? defaults.samples : value.samples,
-          steps: value.steps === previous?.steps ? defaults.steps : Math.min(value.steps ?? defaults.steps, config.maxSteps),
-        }));
-      }
+      applyConfiguration(config);
     } catch (cause) {
-      if (isCurrent(owner) && configurationQuery.current === query) setError(errorMessage(cause, '无法同步最新生图设置'));
+      if (isCurrent(owner) && configurationQuery.current === query) {
+        setError(errorMessage(cause, preferences ? '绘图偏好未保存，请重开偏好后重试' : '无法同步最新生图设置'));
+        if (preferences) {
+          const latest = await novelai.configuration().catch(() => null);
+          if (latest && isCurrent(owner) && configurationQuery.current === query) applyConfiguration(latest);
+        }
+      }
     } finally {
       if (isCurrent(owner) && configurationQuery.current === query) setConfigurationRefreshing(false);
     }
@@ -135,6 +150,8 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!configuration || configurationRefreshing || busy || uploading || (source && !consent && !attempt.current)) return;
+    const readiness = generationAvailability(configuration, page?.usage);
+    if (!attempt.current && !readiness.available) { setError(readiness.message); return; }
     const modeAllowed = parameters.mode === 'txt2img' ? configuration.allowTxt2Img !== false : configuration.allowImg2Img !== false;
     if (!modeAllowed) {
       setError(parameters.mode === 'txt2img' ? '当前服务已关闭文生图，请切换到已启用的模式。' : '当前服务已关闭图生图，请切换到已启用的模式。');
@@ -143,6 +160,10 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     if (source && deliveryMode === 'replacement' && (parameters.samples ?? 1) !== 1) {
       setError('替换历史中的单张图片时只能生成一张；请选择仅保存历史，或将生成张数改为 1。');
       return;
+    }
+    if (!attempt.current) {
+      const inputError = generationInputError(parameters, seed, configuration);
+      if (inputError) { setError(inputError); return; }
     }
     const identifier = role.id;
     const owner = scope.current;
@@ -187,15 +208,19 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
       const result = await uploadChatAttachment(identifier, file);
       if (!isCurrent(owner)) return;
       setInputs((previous) => [...previous, result]);
-      setParameters((value) => ({ ...value, base_attachment_id: result.id }));
+      setParameters((value) => ({ ...value, mode: 'img2img', base_attachment_id: result.id, strength: value.strength ?? .7, noise: value.noise ?? .2 }));
     } catch (cause) { if (isCurrent(owner)) setError(errorMessage(cause, '底图上传失败')); }
     finally { if (isCurrent(owner)) setUploading(false); }
   };
   const policy = (role.agentConfig as AgentToolConfig & { novelai?: Partial<NovelaiRoleConfig> } | undefined)?.novelai;
-  const allowed = !configurationRefreshing && configuration?.enabled && configuration.tokenConfigured && !configuration.credentialCleanupPending
-    && configuration.manualEnabled && configuration.manualConsentRevision === configuration.revision;
+  const availability = configuration ? generationAvailability(configuration, page?.usage) : null;
+  // Rechecking an existing request is safe even after it used the last daily attempt.
+  const allowed = !configurationRefreshing && Boolean(availability?.available || attempt.current);
+  const unavailableMessage = availability?.message ?? '正在读取生图状态…';
   const modeAllowed = configuration ? (parameters.mode === 'txt2img' ? configuration.allowTxt2Img !== false : configuration.allowImg2Img !== false) : false;
-  const candidates = [...attachments, ...inputs].filter((item, index, all) => item.kind === 'image' && all.findIndex((other) => other.id === item.id) === index);
+  const historicalInput = parameters.mode === 'img2img' && parameters.base_attachment_id
+    ? [{ id: parameters.base_attachment_id, name: '历史底图（需仍可访问）', kind: 'image' as const, mediaType: 'image/*', size: 0 }] : [];
+  const candidates = [...attachments, ...inputs, ...historicalInput].filter((item, index, all) => item.kind === 'image' && all.findIndex((other) => other.id === item.id) === index);
   const patch = (changes: Partial<GenerationParameters>) => setParameters({ ...parameters, ...changes });
   const manage = async (item: GenerationView, cancel = false) => {
     if (recordQueries.current.get(item.attemptId)?.stopping) return;
@@ -219,10 +244,11 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   };
   const loadParameters = (generation: GenerationView, reuseSeed = false) => {
     if (busy || uploading || !generation.parameters) return;
-    const { width, height, prompt, negative_prompt, mode, model, sampler, steps, samples, base_attachment_id, strength, noise, background } = generation.parameters;
+    const { width, height, prompt, negative_prompt, mode, model, sampler, steps, samples, base_attachment_id, strength, noise, background, qualityToggle, ucPreset } = generation.parameters;
+    historicalParameters.current = true;
     const size = width === 1024 && height === 1024 ? 'square' : width === 1216 && height === 832 ? 'landscape'
       : width === 832 && height === 1216 ? 'portrait' : 'custom';
-    setParameters({ prompt, negative_prompt, mode, model, sampler, steps, samples: samples ?? 1, ...(reuseSeed ? { background } : {}), size_preset: size,
+    setParameters({ prompt, negative_prompt, mode, model, sampler, steps, samples: samples ?? 1, qualityToggle: qualityToggle ?? false, ucPreset: ucPreset ?? 0, ...(reuseSeed ? { background } : {}), size_preset: size,
       ...(mode === 'img2img' ? { base_attachment_id, strength, noise } : {}),
       ...(size === 'custom' ? { custom_width: width, custom_height: height } : {}) });
     setSeed(reuseSeed && generation.parameters.seed !== undefined ? String(generation.parameters.seed) : '');
@@ -239,5 +265,5 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   return { configuration, setConfiguration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
     source, consent, setConsent, accepted, setAccepted, deliveryMode, setDeliveryMode, attempt, controller, scope,
     isCurrent, watched, submit, upload, policy, allowed, modeAllowed, candidates, patch, manage, selectImage, loadParameters, reuseParameters,
-    clearSource, refresh, refreshConfiguration, configurationRefreshing };
+    clearSource, refresh, refreshConfiguration, configurationRefreshing, unavailableMessage };
 }
