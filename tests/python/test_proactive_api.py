@@ -29,7 +29,7 @@ def provider():
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append(request)
-            if request["messages"][-1].get("content") == "主人正常输入":
+            if str(request["messages"][-1].get("content")).endswith("\n主人正常输入"):
                 delta, reason = {"role": "assistant", "content": "主人回合正常完成"}, "stop"
             else:
                 step = len(requests)

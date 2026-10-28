@@ -180,6 +180,12 @@ class MeidoProvider:
         self.context_blocks = context_blocks
         self.context_safety_margin = context_safety_margin
         self._request_context = ""
+        self.request_guard = None
+
+    def _check_request(self, signal):
+        signal.raise_if_cancelled()
+        if self.request_guard is not None:
+            self.request_guard()
 
     def stream_response(
         self,
@@ -271,9 +277,10 @@ class MeidoProvider:
                     accepts_cancel_check = "cancel_check" in inspect.signature(rich).parameters
                 except (TypeError, ValueError):
                     accepts_cancel_check = False
-                options: dict[str, object] = {"cancel_check": signal.raise_if_cancelled} if accepts_cancel_check else {}
+                options: dict[str, object] = {"cancel_check": lambda: self._check_request(signal)} if accepts_cancel_check else {}
                 if self.max_response_tokens is not None and "max_tokens" in inspect.signature(rich).parameters:
                     options["max_tokens"] = self.max_response_tokens
+                self._check_request(signal)
                 source = rich(runtime_messages, self.configuration, [dict(tool) for tool in tools], **options)
                 async for event in source:
                     signal.raise_if_cancelled()
@@ -339,6 +346,7 @@ class MeidoProvider:
             try:
                 options = ({'max_tokens': self.max_response_tokens} if self.max_response_tokens is not None
                            and 'max_tokens' in inspect.signature(structured).parameters else {})
+                self._check_request(signal)
                 source = structured(runtime_messages, self.configuration, [dict(tool) for tool in tools], **options)
                 async for event in source:
                     signal.raise_if_cancelled()
@@ -566,6 +574,7 @@ class MeidoProvider:
         options = {'memory_context': self._combined_memory_context()} if accepts_memory else {}
         if self.max_response_tokens is not None and 'max_tokens' in inspect.signature(stream_reply).parameters:
             options['max_tokens'] = self.max_response_tokens
+        self._check_request(signal)
         source: object = stream_reply(role, history, self.configuration, **options)
         content = ""
         async for delta in cast(AsyncIterator[str], source):
@@ -589,6 +598,7 @@ class MeidoProvider:
         try:
             options = ({'max_tokens': self.max_response_tokens} if self.max_response_tokens is not None
                        and 'max_tokens' in inspect.signature(self.adapter.stream_messages).parameters else {})
+            self._check_request(signal)
             source = self.adapter.stream_messages(wire_messages, self.configuration, **options)
             async for delta in source:
                 signal.raise_if_cancelled()

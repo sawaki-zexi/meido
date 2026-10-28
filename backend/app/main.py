@@ -190,7 +190,15 @@ def _context_window_store():
     return ContextWindowStore(session_store.database_path)
 
 
-def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_id, owner=True, memory_required=True):
+def _owner_history(role_id, *, thread_id=None, through_message_id=None, snapshot=None):
+    from .conversation_history import ConversationHistoryView
+    return ConversationHistoryView(multichannel_store, role_id=role_id, thread_id=thread_id,
+        through_message_id=through_message_id, snapshot=snapshot,
+        attachment_resolver=lambda identifier: resolve_attachment(store.workspace_path(role_id), identifier),
+        authorized=lambda: store.get(role_id) is not None and role_id not in _channel_roles_deleting)
+
+
+def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_id, owner=True, memory_required=True, history=None):
     source = (capture_channel_source(multichannel_store, session_store, role_id=role_id,
               session_key=session_key, run_id=run_id, owner_context=owner)
               if session_key.startswith('thread:') else None)
@@ -199,20 +207,33 @@ def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_
     if source is not None and source.chat_type == 'group' and not owner:
         authority_data.pop('sender_id', None)
     authority = json.dumps(authority_data, sort_keys=True)
+    if history is not None:
+        authority += history.authority
+        provider.request_guard = history.require_snapshot_current
 
     def authorized():
         return (store.get(role_id) is not None and role_id not in _channel_roles_deleting
                 and (not session_key.startswith('thread:') or source is not None)
-                and (source is None or source.authorization_denial(multichannel_store) is None))
+                and (source is None or source.authorization_denial(multichannel_store) is None)
+                and (history is None or history.authorized()))
 
     async def covered(ids):
         from .memory_engine import MemoryCoverageRequest
         if not authorized():
             return False
-        request = MemoryCoverageRequest(MemoryScope(role_id, f'role:{role_id}'), session_key, tuple(ids),
-                                       required=memory_required and memory_settings_store.get().enabled)
-        proof = await _current_memory_engine().ensure_coverage(request)
-        return proof.request == request and proof.status in {'covered', 'not_required'}
+        sources = {session_key: ids}
+        if history is not None:
+            sources = {}
+            for message in history.read():
+                if message.id in ids:
+                    sources.setdefault(message.sessionKey, []).append(message.id)
+        for source_session, source_ids in sources.items():
+            request = MemoryCoverageRequest(MemoryScope(role_id, f'role:{role_id}'), source_session, tuple(source_ids),
+                                           required=memory_required and memory_settings_store.get().enabled)
+            proof = await _current_memory_engine().ensure_coverage(request)
+            if proof.request != request or proof.status not in {'covered', 'not_required'}:
+                return False
+        return authorized()
 
     def diagnostic(values):
         if not advanced_settings.values().devMode:
@@ -221,8 +242,8 @@ def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_
         if run is not None:
             session_store.update_run(run_id, status=run.status, model_snapshot={**run.modelSnapshot, 'budgetDiagnostic': values})
 
-    return ContextWindowProvider(provider, settings, _context_window_store(), role_id=role_id,
-        session_key=session_key, scope='owner' if owner else 'external', authority=authority,
+    return ContextWindowProvider(provider, settings, history.windows() if history is not None else _context_window_store(), role_id=role_id,
+        session_key=session_key, scope='shared_owner' if history is not None else 'owner' if owner else 'external', authority=authority,
         authorized=authorized, ensure_coverage=covered, on_diagnostic=diagnostic if settings.devMode else None)
 session_manager = SessionManager(store, session_store)
 multichannel_store = MultichannelStore(data_root / "sessions.db", session_store)
@@ -900,7 +921,7 @@ async def _mutate_and_sync_memory_locked(role_id: str, operation):
     return result
 
 
-def _role_memory_context(role_id: str) -> str:
+def _role_memory_context(role_id: str, *, include_recent=True) -> str:
     if not memory_settings_store.get().enabled:
         return ""
     recent_current = True
@@ -917,7 +938,7 @@ def _role_memory_context(role_id: str) -> str:
         return ""
     sections = []
     for filename in ("SELF.md", "MEMORY.md", "RECENT_CONTEXT.md"):
-        if filename == "RECENT_CONTEXT.md" and not recent_current:
+        if filename == "RECENT_CONTEXT.md" and (not recent_current or not include_recent):
             continue
         try:
             content = documents.read_document(role_id, filename).strip()
@@ -2647,9 +2668,12 @@ def _refresh_channel_avatars(account: ChannelAccount, sender_id: str = "", chat_
             multichannel_store.avatars.refresh(account, "chat", chat_id, lambda: _fetch_channel_avatar(account, kind, subject))
 
 
-async def _dispatch_channel_payload(account_id: str, payload: dict[str, object], *, source_adapter: ChannelAdapter | None = None, received_at: float | None = None, source_generation: str | None = None, source_group_policy: tuple[bool, int] | None = None, source_media_state: dict | None = None) -> None:
+async def _dispatch_channel_payload(account_id: str, payload: dict[str, object], *, source_adapter: ChannelAdapter | None = None, received_at: float | None = None, source_generation: str | None = None, source_group_policy: tuple[bool, int] | None = None, source_media_state: dict | None = None, history_intake=None) -> None:
     received_at = _schedule_clock() if received_at is None else received_at
     account = multichannel_store.get_account(account_id)
+    if account is not None and history_intake is None:
+        from .conversation_history import freeze_channel_history
+        history_intake = freeze_channel_history(multichannel_store, account)
     if source_media_state is None:
         source_media_state = channel_host.capture_media_source(account_id)
     # Freeze before admission, quote resolution, or the account event lock can
@@ -2676,7 +2700,7 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
                 if original is not None and account is not None and account.enabled:
                     if channel_host.intake.defer(
                         account_id,
-                        lambda: _dispatch_channel_payload(account_id, payload, received_at=received_at, source_generation=source_generation, source_group_policy=source_group_policy, source_media_state=source_media_state),
+                        lambda: _dispatch_channel_payload(account_id, payload, received_at=received_at, source_generation=source_generation, source_group_policy=source_group_policy, source_media_state=source_media_state, history_intake=history_intake),
                         lambda: _reject_channel_payload(original, payload),
                     ):
                         return
@@ -2693,7 +2717,7 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
             if event is not None:
                 await _handle_channel_event(replace(event, received_at=received_at,
                     metadata={**event.metadata, "hostConnectionGeneration": source_generation,
-                              "hostGroupReplyPolicy": source_group_policy, "hostMediaSource": source_media_state}))
+                              "hostGroupReplyPolicy": source_group_policy, "hostMediaSource": source_media_state, "hostHistoryIntake": history_intake}))
     except Exception as error:
         logger.warning("渠道入站处理失败 account=%s error=%s", account_id, type(error).__name__)
 
@@ -3075,6 +3099,12 @@ async def _handle_channel_event(event) -> None:
 
     if event.received_at is None:
         event = replace(event, received_at=_schedule_clock())
+    if event.metadata.get("hostHistoryIntake") is None:
+        account = multichannel_store.get_account(event.account_id)
+        if account is None:
+            return
+        from .conversation_history import freeze_channel_history
+        event = replace(event, metadata={**event.metadata, "hostHistoryIntake": freeze_channel_history(multichannel_store, account)})
     if event.channel == "qq" and event.chat_type is ChatType.GROUP:
         account = multichannel_store.get_account(event.account_id)
         if account is None:
@@ -3174,27 +3204,27 @@ async def _handle_channel_event_locked(event):
         platform_user_id=event.sender_id,
         account_id=event.account_id,
     )
-    if owner and event.chat_type is ChatType.PRIVATE:
-        multichannel_store.remember_owner_chat(
-            role_id=account.role_id,
-            channel=event.channel,
-            scope=scope,
-            platform_user_id=event.sender_id,
-            account_id=event.account_id,
-            chat_id=event.chat_id,
-        )
     from .channels.source_authority import channel_owner_binding
     accepted_generation = event.metadata.get("hostConnectionGeneration", channel_host.connection_generation(event.account_id)) if event.channel == "qq" else None
     accepted_binding = channel_owner_binding(multichannel_store, event.channel, event.account_id, event.sender_id) if owner else None
+    from .conversation_history import bind_channel_history
+    history_snapshot = bind_channel_history(multichannel_store, thread, event.sender_id, event.metadata["hostHistoryIntake"])
+    history = _owner_history(account.role_id, thread_id=thread.thread_id, snapshot=history_snapshot) if history_snapshot else None
     attachment_authorized = channel_host.media_authorization(account.role_id, event)
     original_event = event
     enrich_reply = getattr(channel_adapters.get(event.account_id), "enrich_reply", None)
     if attachment_authorized() and event.triggered and callable(enrich_reply):
         event = await enrich_reply(event)
+    if history is not None:
+        history.require_current()
     attachment_failures, quote_failures = [], []
     attachments = await _persist_channel_attachments(event, account.role_id, failures=attachment_failures, authorized=attachment_authorized)
+    if history is not None:
+        history.require_current()
     quoted_attachments = event.metadata.get("quotedAttachments", ())
     saved_quote = await _persist_channel_attachments(replace(event, attachments=tuple(quoted_attachments)), account.role_id, failures=quote_failures, authorized=attachment_authorized) if quoted_attachments else []
+    if history is not None:
+        history.require_current()
     media_invalidated = not attachment_authorized()
     if media_invalidated:
         # Retain the raw invalidated input for audit, without expired reads.
@@ -3259,6 +3289,9 @@ async def _handle_channel_event_locked(event):
     if event.chat_type is ChatType.GROUP and not event.triggered:
         return
     turn_metadata = {**metadata, "messageId": stored.id}
+    if history is not None:
+        history.include_current(stored.id)
+        turn_metadata["ownerHistory"] = history.snapshot()
     if event.channel == "qq":
         from .channels.source_authority import capture_channel_message_source
         current_account = multichannel_store.get_account(event.account_id)
@@ -4726,6 +4759,7 @@ def _runtime_tool_candidates(
     source_account_id: str | None = None,
     include_channel: bool = False,
     preview: bool = False,
+    history=None,
 ) -> tuple[object, ...]:
     """Build every tool available to the host for a role snapshot."""
     role = _effective_plugin_role(role)
@@ -4924,6 +4958,7 @@ def _runtime_tool_candidates(
     tools.extend(build_message_history_tools(
         session_store, multichannel_store, role_id=role.id,
         source_thread_id=source_thread_id, is_owner=is_channel_owner,
+        view=history,
     ))
     tools.extend(McpManagementTool(item) for item in management_definitions())
     if owner_knowledge_plugin.status().enabled:
@@ -5685,6 +5720,7 @@ def _proactive_application():
             adapter_factory=lambda configuration: model_adapter,
             recall_memory=_proactive_memory, web_tools=_proactive_web, fetch_body=_proactive_body,
             context_reader=_proactive_context,
+            history_factory=_owner_history,
             activity_reader=_external_activity_blocks,
             workspace_getter=lambda role_id: store.root / role_id / 'workspace', channel_host=channel_host)
     return _proactive
@@ -5707,11 +5743,14 @@ def _telegram_accepts_update(account_id: str) -> bool:
     return bool(account and account.role_id not in _channel_roles_deleting and channel_host.accepts_events(account_id))
 
 
-def _defer_telegram_update(account_id: str, update, *, received_at: float | None = None) -> bool:
+def _defer_telegram_update(account_id: str, update, *, received_at: float | None = None, history_intake=None) -> bool:
     received_at = _schedule_clock() if received_at is None else received_at
     account = multichannel_store.get_account(account_id)
     if account is None or not multichannel_store.account_effectively_enabled(account) or account.role_id in _channel_roles_deleting:
         return False
+    if history_intake is None:
+        from .conversation_history import freeze_channel_history
+        history_intake = freeze_channel_history(multichannel_store, account)
     service = _telegram_service(account_id)
     token = multichannel_store.token(account_id)
     message = update.get("message") or update.get("edited_message") or {}
@@ -5719,16 +5758,20 @@ def _defer_telegram_update(account_id: str, update, *, received_at: float | None
     async def reject():
         from .channels.host import CHANNEL_INTAKE_RETRY_NOTICE
         await service.transport.send_message(token, chat_id, CHANNEL_INTAKE_RETRY_NOTICE, reply_to=str(message.get("message_id") or "") or None, **({"message_thread_id": message["message_thread_id"]} if message.get("message_thread_id") else {}))
-    return channel_host.intake.defer(account_id, lambda: _dispatch_telegram_update(account_id, update, received_at=received_at), reject)
+    return channel_host.intake.defer(account_id, lambda: _dispatch_telegram_update(account_id, update, received_at=received_at, history_intake=history_intake), reject)
 
 
-async def _dispatch_telegram_update(account_id: str, update, *, received_at: float | None = None) -> None:
+async def _dispatch_telegram_update(account_id: str, update, *, received_at: float | None = None, history_intake=None) -> None:
     received_at = _schedule_clock() if received_at is None else received_at
+    account = multichannel_store.get_account(account_id)
+    if account is not None and history_intake is None:
+        from .conversation_history import freeze_channel_history
+        history_intake = freeze_channel_history(multichannel_store, account)
     try:
         async with channel_host.event_scope(account_id) as admitted:
             service = _telegram_service(account_id)
-            if admitted or not _defer_telegram_update(account_id, update, received_at=received_at):
-                await service.handle_update(account_id, update, received_at=received_at)
+            if admitted or not _defer_telegram_update(account_id, update, received_at=received_at, history_intake=history_intake):
+                await service.handle_update(account_id, update, received_at=received_at, history_intake=history_intake)
     except Exception as error:
         logger.warning("Telegram 入站处理失败 account=%s error=%s", account_id, type(error).__name__)
 
@@ -6222,6 +6265,8 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
         "ownerContext": owner,
         "role": role.model_dump(mode="json", exclude={"modelConfig"}),
     }
+    history = _owner_history(thread.role_id, thread_id=thread.thread_id, through_message_id=message_id,
+        snapshot=metadata.get("ownerHistory")) if owner and thread.chat_type == "private" else None
     run = AgentRun(
         runId=run_id,
         roleId=thread.role_id,
@@ -6235,7 +6280,8 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
         runtime_manager.sessions = session_store
         runtime_manager.role_locks = role_locks
         _, user_message, assistant_message = await runtime_manager.reserve_existing_user_message(
-            run, message_id, can_start=lambda: _channel_turn_can_start(thread) and _queued_channel_turn_authorized(thread, metadata, starting=True),
+            run, message_id, can_start=lambda: _channel_turn_can_start(thread) and _queued_channel_turn_authorized(thread, metadata, starting=True)
+                and (history is None or history.authorized()),
             on_accepting=lambda: (
                 _accept_owner_run(thread.role_id, thread.session_key, run_id)
                 if owner and multichannel_store.identity_is_owner(role_id=thread.role_id, channel=thread.channel,
@@ -6350,13 +6396,14 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             if owner and thread.chat_type == "private"
             else None
         )
-        runtime_messages = session_store.runtime_messages(
+        runtime_messages = await asyncio.to_thread(history.runtime_messages,
+            max_messages=None if configuration and configuration.contextWindowTokens else max(100, ordinary_settings.recent_memory_count)) if history is not None else session_store.runtime_messages(
             thread.session_key,
             max_messages=None if configuration and configuration.contextWindowTokens else max(MemoryMaintenance.RECENT_MESSAGE_LIMIT * 2, ordinary_settings.recent_memory_count),
             since=owner_context_since,
             through_message_id=message_id,
         )
-        if runtime_messages and isinstance(runtime_messages[-1], UserMessage) and metadata.get("replyTo"):
+        if history is None and runtime_messages and isinstance(runtime_messages[-1], UserMessage) and metadata.get("replyTo"):
             quoted_text = str(metadata.get("replyToContent") or "")
             from .channels.reply_identity import reply_sender_identity
             speaker = reply_sender_identity(multichannel_store, thread, metadata)
@@ -6376,6 +6423,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             source_thread_id=thread.thread_id,
             source_account_id=thread.account_id,
             include_channel=True,
+            history=history,
         )
         if thread.channel == "qq":
             available = (*available, ReadChannelAttachmentTool(
@@ -6424,15 +6472,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
         )
         model_snapshot["capabilities"] = capabilities.run_metadata()
         session_store.update_run(run_id, status="created", model_snapshot=model_snapshot)
-        memory_context = _role_memory_context(thread.role_id) if owner and thread.chat_type == "private" else ""
-        if owner and thread.chat_type == "private":
-            authorized_history = multichannel_store.owner_context(thread.role_id, exclude_thread_id=thread.thread_id)
-            if authorized_history:
-                lines = [
-                    f"[{title or '桌面会话'} / {'主人' if message_role == 'user' else role.name}] {text}"
-                    for title, message_role, text, _created_at in authorized_history
-                ]
-                memory_context = "\n\n".join(part for part in (memory_context, "[配对主人授权的近期对话]\n" + "\n".join(lines)) if part)
+        memory_context = _role_memory_context(thread.role_id, include_recent=False) if owner and thread.chat_type == "private" else ""
         identity_context = "\n".join((
             "[当前渠道身份（宿主核验）]",
             f"当前聊天类型：{'群聊' if thread.chat_type == 'group' else '私聊'}",
@@ -6457,7 +6497,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
         _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
         provider = _ordinary_context_provider(provider, ordinary_settings, role_id=thread.role_id,
             session_key=thread.session_key, run_id=run_id, owner=owner,
-            memory_required=owner and thread.chat_type == 'private')
+            memory_required=owner and thread.chat_type == 'private', history=history)
         target = target_from_chat(
             account_id=thread.account_id,
             chat_id=thread.chat_id,
@@ -6719,10 +6759,12 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         if isinstance(configuration_snapshot, dict):
             configuration_snapshot.pop("apiKey", None)
         role_snapshot = role.model_dump(mode="json", exclude={"modelConfig"})
+        history = _owner_history(role_id)
         available_runtime_tools = _runtime_tool_candidates(
             role,
             include_channel=_role_has_usable_channel_account(role_id),
             source_thread_id=f"desktop:{role_id}",
+            history=history,
         )
         runtime_tools = _runtime_tools(role, candidates=available_runtime_tools)
         shell_config = role.agentConfig.shell
@@ -6747,6 +6789,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         runtime_manager.role_locks = role_locks
         _, user_message, assistant_message = await runtime_manager.reserve_run(run, data.content, attachments=attachments, received_at=received_at,
             on_accepting=lambda: _accept_owner_run(role_id, session.session.sessionKey, run_id))
+        history.include_current(user_message.id)
     except sqlite3.IntegrityError as error:
         raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试") from error
     except ActiveRunError as error:
@@ -6861,21 +6904,9 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         intent="context",
                         scope=MemoryScope(role_id, session.session.sessionKey),
                     )) if memory_settings_store.get().enabled else None
-                    memory_context = memory_service.context_block([], _role_memory_context(role_id))
+                    memory_context = memory_service.context_block([], _role_memory_context(role_id, include_recent=False))
                     if query_result is not None and query_result.text_block:
                         memory_context = "\n".join(part for part in (memory_context, query_result.text_block) if part)
-                    owner_history = multichannel_store.owner_context(
-                        role_id,
-                        exclude_thread_id=f"desktop:{role_id}",
-                    )
-                    if owner_history:
-                        owner_lines = [
-                            f"[{title or '主人授权会话'}] {text}"
-                            for title, _message_role, text, _created_at in owner_history
-                        ]
-                        memory_context = "\n\n".join(
-                            part for part in (memory_context, "[配对主人授权的近期对话]\n" + "\n".join(owner_lines)) if part
-                        )
                 except Exception as error:
                     memory_worker.errors.append(f"{role_id}: recall failed: {error}")
                     memory_context = ""
@@ -6906,9 +6937,9 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         memory_context = "\n\n".join(part for part in (memory_context, todo_context) if part)
                 except Exception as error:
                     todo_plugin.errors.append(f"{role_id}: todo context failed: {error}")
-                runtime_messages = session_store.runtime_messages(
-                    session.session.sessionKey,
-                    max_messages=None if configuration and configuration.contextWindowTokens else context_limit,
+                runtime_messages = await asyncio.to_thread(
+                    history.runtime_messages,
+                    max_messages=None if configuration and configuration.contextWindowTokens else max(100, context_limit),
                 )
                 model_snapshot["context"] = {
                     "messages": [_runtime_message_snapshot(message) for message in runtime_messages],
@@ -6944,7 +6975,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                 )
                 _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
                 provider = _ordinary_context_provider(provider, ordinary_settings, role_id=role_id,
-                    session_key=session.session.sessionKey, run_id=run_id)
+                    session_key=session.session.sessionKey, run_id=run_id, history=history)
                 if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools):
                     provider = guard_provider(provider, computer_use, role_id=role_id, run_id=run_id)
                 capabilities_owned_by_runtime = True

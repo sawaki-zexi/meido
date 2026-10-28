@@ -576,7 +576,7 @@ def test_http_later_turn_can_list_get_and_cancel_the_same_background_child(api, 
                 yield ModelTextDelta('child-cancelled')
                 return
             last_user = max(index for index, item in enumerate(messages) if item['role'] == 'user')
-            action = messages[last_user]['content']
+            action = messages[last_user]['content'].rsplit('\n', 1)[-1]
             if any(item['role'] == 'tool' for item in messages[last_user + 1:]):
                 yield ModelTextDelta('observed-current-task')
             elif action == 'start':

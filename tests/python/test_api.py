@@ -21,6 +21,7 @@ from backend.app.role_store import RoleStore
 from backend.app.owner_knowledge import OwnerKnowledgeStore, SystemCredentialStore
 from backend.app.session_manager import SessionManager
 from backend.app.session_store import SessionStore
+from backend.app.multichannel import MultichannelStore
 from backend.app.storage import initialize_databases
 from backend.app.memory_service import MemoryService, MemoryWorker
 from backend.app.memory_store import MemoryStore
@@ -40,7 +41,8 @@ class SuccessAdapter:
 
     async def stream_reply(self, role, history, configuration=None):
         assert role.profile.profile == "核心设定"
-        assert history[-1].content == "你好"
+        assert history[-1].content.endswith("\n你好")
+        assert history[-1].content.startswith("[历史来源：桌面；message_id=")
         self.histories.append(history)
         yield "你好，"
         yield "主人。"
@@ -101,6 +103,7 @@ def configure_session_api(tmp_path, monkeypatch, adapter, *, automatic_memory=Fa
     role = roles.create(RoleInput(name="测试女仆", profile=RoleProfile(profile="核心设定", personality="温柔")))
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    monkeypatch.setattr(main, "multichannel_store", MultichannelStore(sessions.database_path, sessions))
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))
@@ -534,6 +537,7 @@ def test_role_message_snapshot_does_not_persist_legacy_role_secrets(tmp_path, mo
     ))
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
+    monkeypatch.setattr(main, "multichannel_store", MultichannelStore(sessions.database_path, sessions))
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))
@@ -555,7 +559,8 @@ def test_role_message_snapshot_does_not_persist_legacy_role_secrets(tmp_path, mo
     assert run.modelSnapshot["capabilities"]["format"] == "tool-run-v1"
     assert "tools" not in run.modelSnapshot["capabilities"]
     context_message = run.modelSnapshot["context"]["messages"][0]
-    assert context_message["content"] == "你好" and context_message["role"] == "user"
+    assert context_message["content"].endswith("\n你好") and context_message["role"] == "user"
+    assert context_message["content"].startswith("[历史来源：桌面；message_id=")
 
 
 def test_run_snapshot_keeps_recalled_memory_ephemeral(tmp_path, monkeypatch):
@@ -579,7 +584,7 @@ def test_run_snapshot_keeps_recalled_memory_ephemeral(tmp_path, monkeypatch):
     adapter = CapturingAdapter()
     role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter, automatic_memory=True)
     monkeypatch.setattr(main, "_current_memory_engine", lambda: MemoryEngine())
-    monkeypatch.setattr(main, "_role_memory_context", lambda role_id: "")
+    monkeypatch.setattr(main, "_role_memory_context", lambda role_id, **kwargs: "")
 
     response = client.post(f"/api/roles/{role.id}/messages", json={"content": "查询私人记忆"})
 

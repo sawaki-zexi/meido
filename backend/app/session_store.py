@@ -786,12 +786,18 @@ class SessionStore:
             ]
         raise TypeError(f"unsupported runtime message: {type(message)!r}")
 
-    def runtime_messages(self, session_key: str, *, max_messages: int | None = None, since: str | None = None, through_message_id: str | None = None) -> list[AgentMessage]:
+    def runtime_messages(self, session_key: str, *, max_messages: int | None = None, since: str | None = None, through_message_id: str | None = None,
+                         stored_messages: list[Message] | None = None, attachment_loader=load_runtime_attachments) -> list[AgentMessage]:
         """Rebuild a provider transcript from the structured SQLite rows."""
 
+        # A host-authorized projection can supply rows without changing their
+        # persisted session/sequence or duplicating the tool-group decoder.
+        # Those rows already contain confirmed content and resolved media;
+        # projecting them twice would discard source labels and remap attachments.
         from .channels.delivery_projection import delivered_message
-        stored_messages = [projected for item in self.list_messages(session_key)
-                           if (projected := delivered_message(item)) is not None]
+        stored_messages = ([projected for item in self.list_messages(session_key)
+                            if (projected := delivered_message(item)) is not None]
+                           if stored_messages is None else list(stored_messages))
         if through_message_id is not None:
             source = next((item for item in stored_messages if item.id == through_message_id and item.role == "user"), None)
             if source is None:
@@ -921,7 +927,7 @@ class SessionStore:
                 if stored.role == "user":
                     messages.append(UserMessage(
                         _channel_user_content(stored),
-                        attachments=load_runtime_attachments(stored.metadata),
+                        attachments=attachment_loader(stored.metadata),
                         timestamp=_timestamp(stored.metadata),
                         source_message_ids=(stored.id,),
                     ))

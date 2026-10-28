@@ -1205,7 +1205,7 @@ def test_known_image_echo_cannot_be_reassembled_across_separate_responses_before
     monkeypatch.setattr(main, 'model_adapter', provider)
     now[0] += 1800
     state = client.portal.call(settled, main._proactive, role)
-    assert state['runs'][0]['status'] == 'finished_silent', state
+    assert state['runs'][0]['status'] == 'finished_silent', json.dumps(state['runs'], ensure_ascii=False)
     assert provider.actual_image_requests == 1
     assert json.loads((library / 'manifest.json').read_text(encoding='utf-8')) == after
     skill = next(item for item in client.get(path + '/drift-skills').json()['skills'] if item['id'] == 'meme-manage')

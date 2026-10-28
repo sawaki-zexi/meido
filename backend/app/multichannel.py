@@ -1687,7 +1687,7 @@ class MultichannelStore:
 class TelegramChannelService:
     """Normalize Telegram updates and persist isolated private/group threads."""
 
-    def __init__(self, store: MultichannelStore, account_id: str | TelegramTransport = "", transport: TelegramTransport | MessageHandler | None = None, on_message: MessageHandler | None = None, persist_attachment: Callable[[str, str, str, bytes], dict[str, object]] | None = None, on_command: CommandHandler | None = None, on_admit: AdmissionHandler | None = None, on_defer: Callable[[str, Mapping[str, Any]], bool] | None = None, on_update: Callable[[str, Mapping[str, Any]], Awaitable[None]] | None = None) -> None:
+    def __init__(self, store: MultichannelStore, account_id: str | TelegramTransport = "", transport: TelegramTransport | MessageHandler | None = None, on_message: MessageHandler | None = None, persist_attachment: Callable[[str, str, str, bytes], dict[str, object]] | None = None, on_command: CommandHandler | None = None, on_admit: AdmissionHandler | None = None, on_defer: Callable[..., bool] | None = None, on_update: Callable[[str, Mapping[str, Any]], Awaitable[None]] | None = None) -> None:
         self.store = store
         self.on_command = on_command
         self.on_admit = on_admit
@@ -1776,11 +1776,14 @@ class TelegramChannelService:
         self.store.publish(thread.role_id, {"type": "delivery", "roleId": thread.role_id, "attemptId": attempt_id})
         return result
 
-    async def handle_update(self, account_id: str, update: Mapping[str, Any], *, background: bool = False, received_at: float | None = None) -> bool:
+    async def handle_update(self, account_id: str, update: Mapping[str, Any], *, background: bool = False, received_at: float | None = None, history_intake=None) -> bool:
         received_at = datetime.now(timezone.utc).timestamp() if received_at is None else received_at
         account = self.store.get_account(account_id)
         if account is None or not account.enabled:
             return False
+        from .conversation_history import ConversationHistoryView, freeze_channel_history, bind_channel_history
+        if history_intake is None:
+            history_intake = freeze_channel_history(self.store, account)
         message = update.get("message") or update.get("edited_message")
         if not isinstance(message, Mapping):
             return False
@@ -1886,7 +1889,7 @@ class TelegramChannelService:
         if chat_type != "private" and not triggered:
             return False
         if self.on_admit is not None and not self.on_admit(account_id):
-            if self.on_defer is not None and self.on_defer(account_id, update):
+            if self.on_defer is not None and self.on_defer(account_id, update, received_at=received_at, history_intake=history_intake):
                 return False
             from .channels.host import CHANNEL_INTAKE_RETRY_NOTICE
             await self.transport.send_message(
@@ -1896,20 +1899,24 @@ class TelegramChannelService:
             )
             return False
         code = pairing_code(content)
-        attachment_items = [] if code is not None else await self._download_attachments(account, message)
-        if not content and not attachment_items:
-            return False
-        if not content and attachment_items:
-            content = "[收到附件]"
         if code is not None:
             paired = chat_type == "private" and self.store.consume_pairing_code(code, role_id=account.role_id, channel="telegram", scope="platform", platform_user_id=sender_id, account_id=account_id, chat_id=chat_id)
             if paired:
                 await self.transport.send_message(self.store.token(account_id), chat_id, "配对成功。")
             return paired
         owner = self.store.identity_is_owner(role_id=account.role_id, channel="telegram", scope="platform", platform_user_id=sender_id, account_id=account_id)
-        if owner and chat_type == "private":
-            self.store.remember_owner_chat(role_id=account.role_id, channel="telegram", scope="platform", platform_user_id=sender_id, account_id=account_id, chat_id=chat_id)
-        quoted_attachments = await self._download_attachments(account, reply) if reply else []
+        snapshot = bind_channel_history(self.store, thread, sender_id, history_intake)
+        history = ConversationHistoryView(self.store, role_id=account.role_id, thread_id=thread.thread_id, snapshot=snapshot) if snapshot else None
+        attachment_items = await self._download_attachments(account, message, check=history.require_current if history else None)
+        if history is not None:
+            history.require_current()
+        if not content and not attachment_items:
+            return False
+        if not content and attachment_items:
+            content = "[收到附件]"
+        quoted_attachments = await self._download_attachments(account, reply, check=history.require_current if history else None) if reply else []
+        if history is not None:
+            history.require_current()
         metadata = {"hostReceivedAt": received_at, "platformMessageId": external_id, "senderId": sender_id, "senderName": sender_name, "senderIsOwner": owner, "senderKind": "chat" if sender_chat else "user", "chatType": chat_type, "triggered": triggered, "mentioned": mentioned, "mentionedIds": mentioned_ids, "replyTo": str(reply.get("message_id") or "") if reply else None, "replyToSenderId": str(reply_from.get("id") or "") if reply else None, "replyToContent": str(reply.get("text") or reply.get("caption") or "") if reply else None, "replyToSenderName": str(reply_from.get("first_name") or reply_from.get("username") or "") if reply else None, "quotedAttachments": quoted_attachments, "attachments": attachment_items}
         from .channels.reply_identity import capture_reply_identity
         metadata.update(capture_reply_identity(self.store, account,
@@ -1923,6 +1930,9 @@ class TelegramChannelService:
             return False
         if self.on_message is not None:
             metadata = {**metadata, "messageId": getattr(stored_message, "id", None)}
+            if history is not None:
+                history.include_current(stored_message.id)
+                metadata["ownerHistory"] = history.snapshot()
             outcome = self.on_message(thread, content, metadata, owner)
             if hasattr(outcome, "__await__"):
                 if background:
@@ -1942,7 +1952,7 @@ class TelegramChannelService:
             if self.store.get_account(self.account_id) is not None:
                 self.store.set_account_state(self.account_id, last_error=type(error).__name__)
 
-    async def _download_attachments(self, account: ChannelAccount, message: Mapping[str, Any]) -> list[dict[str, object]]:
+    async def _download_attachments(self, account: ChannelAccount, message: Mapping[str, Any], *, check=None) -> list[dict[str, object]]:
         if self.persist_attachment is None or not hasattr(self.transport, "get_file"):
             return []
         candidates: list[tuple[str, str, str, int | None]] = []
@@ -1959,11 +1969,17 @@ class TelegramChannelService:
             if size is not None and (size < 0 or size > MAX_ATTACHMENT_BYTES):
                 continue
             try:
+                if check:
+                    check()
                 remote = await self.transport.get_file(self.store.token(account.account_id), file_id)
+                if check:
+                    check()
                 file_path = remote.get("file_path")
                 if not isinstance(file_path, str) or not file_path:
                     continue
                 data, downloaded_mime = await self.transport.download_file(self.store.token(account.account_id), file_path)
+                if check:
+                    check()
                 if len(data) > MAX_ATTACHMENT_BYTES:
                     continue
                 attachments.append(self.persist_attachment(account.role_id, name, mime if mime != "application/octet-stream" else downloaded_mime, data))
