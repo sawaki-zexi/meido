@@ -28,3 +28,8 @@ export const writebackLabels: Record<string, string> = {
   writing: '正在写回或核对本地卡片图。', uncertain: '卡片图写回结果尚未确认，生成图已保留历史。',
   applied: '已更新本角色卡片图。', failed: '卡片图写回失败，生成图已保留历史；不会重新生成。',
 };
+
+export const libraryWritebackLabels: Record<string, string> = {
+  writing: '正在保存首张图片为角色插画和聊天背景。', uncertain: '角色插画写回尚未确认，生成图已保留历史。',
+  applied: '已保存首张图片为角色插画和聊天背景。', failed: '角色插画写回未完成或背景已被修改，生成图保留历史；不会重新生成。',
+};

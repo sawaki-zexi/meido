@@ -24,6 +24,15 @@ Meido 自行适配 AgentTool、角色授权、宿主搜索配置、DNS 固定连
 
 Meido 自行实现角色授权、受管 stdio/Windows Job、Electron 主进程与 preload、动作回执和配置界面；不包含上游语音、气泡或通用 surface 宿主。Windows 本地发行目录保留本声明与 Electron 自带的 LICENSE、LICENSES.chromium.html。
 
+## 角色表情回复
+
+`backend/app/channels/role_reactions.py` 适配固定提交
+`d3acaed186b172a78a5892e0307e9affd89759f0` 的
+`plugins/meme/backend/runtime.py` 中 `RoleReactionCatalog` / `RoleReactionDecorator`：
+角色分类发送许可、普通聊天的末尾 `<meme:分类ID>` 协议与每次回复最多一张插画。
+Meido 沿用自身的冻结候选、附件引用、原来源撤权与真实渠道投递回执，不复制插件框架。
+MIT 版权与许可见本目录 [LICENSE](LICENSE)。
+
 ## Grok Bot 回程与交流协议
 
 `backend/app/channels/grok/client.ps1` 和 `protocol.py` 改写自 Shiori-Agent 固定提交
@@ -36,3 +45,10 @@ Copyright (c) 2026 YinFengWindy，MIT 许可见本目录 [LICENSE](LICENSE)。
 Meido 使用自身账号生命周期、SQLite 收据和渠道投递账本；未知父消息拒绝、访客权限及
 `transport_acceptance` 的宿主边界见 [ADR-0030](../../docs/adr/0030-fixed-grok-bot-exchanges.md)，
 不引入上游插件宿主或默认授予完整工具权限。
+
+## Story 剧情模式
+
+`backend/app/story/` 与 `web/src/features/story/` 的剧情状态、时间、导演协议和播放辅助逻辑适配同一固定提交
+`d3acaed186b172a78a5892e0307e9affd89759f0` 的 `plugins/story/{backend,ui}`。
+来源清单见 [UPSTREAM.md](../../backend/app/story/UPSTREAM.md)，MIT 许可另保留于
+[SHIORI-LICENSE.txt](../../backend/app/story/SHIORI-LICENSE.txt)。模型、NovelAI、角色快照、媒体地址与路由沿用 Meido 原生运行时。

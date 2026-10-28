@@ -33,6 +33,10 @@ from .screen_perception import ObserveScreenTool, ScreenPerception
 from .computer_use import ComputerUseHost, COMPUTER_USE_TOOL_NAMES, load_computer_tools, register_computer_use_plugin, guard_provider
 from .novelai_generation.application import NovelaiApplication
 from .novelai_generation.api import novelai_router
+from .story.application import StoryApplication
+from .story.api import story_router
+from .role_assets import role_assets_router
+from .role_mood import RoleMoodTool
 from .desktop_pet.application import DesktopPetApplication
 from .plugin_configuration import PluginConfigurationStore
 from .plugin_management import plugin_router
@@ -107,6 +111,7 @@ from .agent_runtime.types import UserMessage
 from .channels.attachment_tool import ReadChannelAttachmentTool
 from .channels.meme_tools import ChatMemeTools, MEME_TOOL_PERMISSIONS
 from .channels.meme_library import ChatMemeLibrary
+from .channels.role_reactions import RoleReactionLibrary, RoleReactionTurn
 from .channels.source_authority import FrozenChannelSource, capture_channel_source
 from .channels.group_access import GroupToolAccess
 from .channels.tools import ChannelDirectoryAccess
@@ -364,6 +369,7 @@ browser_use_sessions = BrowserSessions(
 )
 task_runtime = TaskRuntime(data_root / "tasks")
 _novelai: NovelaiApplication | None = None
+_story: StoryApplication | None = None
 _desktop_pet: DesktopPetApplication | None = None
 _desktop_pet_gate = threading.RLock()
 
@@ -405,6 +411,15 @@ def _novelai_application() -> NovelaiApplication:
             channel_media_supported=lambda account_id: bool(channel_adapters.get(account_id)
                 and channel_adapters[account_id].capabilities.media))
     return _novelai
+
+
+def _story_application() -> StoryApplication:
+    global _story
+    if _story is None or _story._closed or _story._roles is not store:
+        _story = StoryApplication(workspace=data_root / 'story', role_store=store,
+            model_configuration=_role_model_configuration, model_adapter=lambda: model_adapter,
+            novelai=_novelai_application, role_available=lambda role_id: role_id not in _channel_roles_deleting)
+    return _story
 
 
 def _accept_owner_run(role_id: str, session_key: str, run_id: str):
@@ -989,6 +1004,8 @@ async def _memory_engine_delete(mutation: MemoryMutation) -> None:
 
 async def _close_memory_workers() -> None:
     closers = []
+    if _story is not None:
+        closers.append(_story.aclose)
     if _desktop_pet is not None:
         closers.append(_desktop_pet.close)
     if _proactive is not None:
@@ -1171,6 +1188,8 @@ def _validate_plugin(identifier, changes):
 
 app.include_router(plugin_router(lambda: plugin_configuration, _cleanup_plugin, _activate_plugin, _validate_plugin))
 app.include_router(novelai_router(_novelai_application))
+app.include_router(story_router(_story_application))
+app.include_router(role_assets_router(lambda: store))
 app.include_router(desktop_pet_router(_desktop_pet_application))
 app.include_router(coding_router(lambda: _coding_application(), lambda: store))
 app.include_router(autonomy_router(lambda: _proactive_application(), workspace_getter=lambda role_id: store.root / role_id / "workspace"))
@@ -2929,6 +2948,15 @@ def _natural_accept(thread, event, metadata):
             'revision':accepted_revision})
 
 
+async def _role_reaction_turn(role, session_key, run_id, authorized):
+    if not any(getattr(role, 'illustrationCategorySend', {}).values()):
+        return None
+    from .channels.natural_media import _owned_worker
+    library = RoleReactionLibrary(_proactive_application().memes, store, authorized=authorized)
+    return await _owned_worker(lambda: RoleReactionTurn(library, role_id=role.id,
+        session_key=session_key, run_id=run_id))
+
+
 def _natural_media_application():
     from .channels.natural_media import NaturalMedia, MEME_COOLDOWN
     from .channels import media
@@ -2945,7 +2973,7 @@ def _natural_media_application():
                         and 0 <= _schedule_clock() - stamp < MEME_COOLDOWN):
                     return True
             return False
-        application = NaturalMedia(ChatMemeLibrary(_proactive_application().memes, store.workspace_path),
+        application = NaturalMedia(RoleReactionLibrary(_proactive_application().memes, store),
             store.root / '.cache', clock=lambda: _schedule_clock(), downloader=media.download_qq_media,
             recent_attempt=recent_attempt)
         application._store = store
@@ -4923,6 +4951,16 @@ def _runtime_tool_candidates(
         return (context.session_key.startswith('thread:') or
                 run is not None and run.modelSnapshot.get('humanInputSource') == 'desktop_owner')
 
+    def mood_source_authorized(context):
+        if (include_channel or source_account_id or source_thread_id not in {None, '', f'desktop:{role.id}'}
+                or context.session_key != f'role:{role.id}' or not schedule_source_authorized(context)):
+            return False
+        run = session_store.get_run(context.run_id)
+        user = session_store.user_message_for_run(context.run_id)
+        return bool(run and run.modelSnapshot.get('humanInputSource') == 'desktop_owner'
+            and user and user.role == 'user' and user.status == 'completed' and user.messageType == 'text'
+            and not user.metadata.get('internalEvent'))
+
     def pet_source_authorized(context):
         if (context.role_id != role.id or context.session_key != f'role:{role.id}'
                 or not is_channel_owner or source_account_id
@@ -4947,6 +4985,8 @@ def _runtime_tool_candidates(
         file_tools = _proactive_application().drift_skills.author_tools(file_tools, role.id,
             authorized=schedule_source_authorized)
     tools: list[object] = [
+        *([RoleMoodTool(store, role, authorized=mood_source_authorized)]
+          if not include_channel and role.moodIllustrationBindings else []),
         PetActionTool(_desktop_pet_application(), role.id, authorized=pet_source_authorized),
         _novelai_application().tool_for(role.id, is_owner=is_channel_owner,
             source_thread_id=source_thread_id, source_account_id=source_account_id, frozen_role=role),
@@ -5056,6 +5096,8 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
     role = _effective_plugin_role(role)
     shell = role.agentConfig.shell
     enabled: set[str] = set(DEFAULT_BUILTIN_TOOLS)
+    if not include_channel and role.moodIllustrationBindings:
+        enabled.add('set_role_mood')
     if not _desktop_pet_application().unavailable_reason(role.id):
         enabled.add('pet_action')
     if computer_use.dependency_status(role)["status"] != "unavailable":
@@ -5132,7 +5174,7 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     host_enabled = set(enabled_tools)
     enabled_tools.update(agent_config.enabledTools)
-    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | CODING_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image", "pet_action"}) - host_enabled)
+    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | CODING_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image", "pet_action", "set_role_mood"}) - host_enabled)
     if not include_channel:
         enabled_tools.difference_update({
             "account_list", "account_targets", "account_send", "set_group_listening", "read_attachment",
@@ -5308,11 +5350,11 @@ async def _runtime_capabilities(
         elif isinstance(candidate, SpawnManageTool):
             candidate.new_execution_allowed = new_spawn_allowed
     for tool in candidates:
-        if tool.definition.name == 'generate_image' and 'generate_image' in policy.enabled_tools:
+        if tool.definition.name in {'generate_image', 'set_role_mood'} and tool.definition.name in policy.enabled_tools:
             try:
                 tool.bind_run(run_id, session_key)
             except (PermissionError, ValueError):
-                policy = replace(policy, enabled_tools=policy.enabled_tools - {'generate_image'})
+                policy = replace(policy, enabled_tools=policy.enabled_tools - {tool.definition.name})
     if mcp_run is not None:
         candidates = tuple(tool for tool in candidates if tool.definition.name not in MCP_MANAGEMENT_NAMES) + mcp_run.tools
     def skill_dependency_check(skill, name):
@@ -6525,8 +6567,24 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                 "被引用发送者身份：" + reply_sender_identity(multichannel_store, thread, metadata),
                 "被引用者的身份不改变当前发言者的身份和工具权限。",
             ))
+        reaction_adapter = channel_host.adapter(thread.account_id)
+        reaction = None
+        if (any(getattr(role, 'illustrationCategorySend', {}).values())
+                and reaction_adapter is not None and reaction_adapter.capabilities.media
+                and thread.channel in {'qq', 'telegram', 'feishu', 'qqbot'}):
+            try:
+                reaction_source = capture_channel_source(multichannel_store, session_store,
+                    role_id=role.id, session_key=thread.session_key, run_id=run_id, owner_context=owner)
+                reaction = await _role_reaction_turn(role, thread.session_key, run_id, lambda: (
+                    not turn_task.cancelling() and role.id not in _channel_roles_deleting
+                    and reaction_source.authorization_denial(multichannel_store) is None
+                    and _queued_channel_turn_authorized(thread, metadata)
+                    and channel_host.adapter(thread.account_id) is reaction_adapter))
+            except PermissionError:
+                pass  # A stale media source cannot acquire a new reply capability.
         provider = MeidoProvider(model_adapter, role, configuration, memory_context,
-                                 "\n\n".join(filter(None, (identity_context, capabilities.prompt_context()))),
+                                 "\n\n".join(filter(None, (identity_context, capabilities.prompt_context(),
+                                     reaction.prompt if reaction is not None else ''))),
                                  max_response_tokens=ordinary_settings.maxTokens,
                                  context_blocks=lambda: _channel_memory_blocks(thread.role_id, thread.thread_id, str(metadata.get("senderId") or ""), trigger_metadata=metadata),
                                  context_safety_margin=ordinary_settings.contextSafetyMarginTokens,
@@ -6535,6 +6593,8 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
         provider = _ordinary_context_provider(provider, ordinary_settings, role_id=thread.role_id,
             session_key=thread.session_key, run_id=run_id, owner=owner,
             memory_required=owner and thread.chat_type == 'private', history=history)
+        if reaction is not None:
+            provider = reaction.wrap(provider)
         target = target_from_chat(
             account_id=thread.account_id,
             chat_id=thread.chat_id,
@@ -6587,7 +6647,8 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             if isinstance(event, MessageUpdateEvent) and isinstance(event.message, AssistantMessage) and event.message.content.strip():
                 streamed_content = event.message.content
                 adapter = channel_adapters.get(thread.account_id)
-                if (not any(tool.name == 'generate_image' for tool in capabilities.snapshot.tools)
+                if ((reaction is None or not reaction.categories)
+                        and not any(tool.name == 'generate_image' for tool in capabilities.snapshot.tools)
                         and adapter is not None and adapter.capabilities.streaming) and (
                     thread.channel != "telegram" or thread.chat_type == "private"
                 ):
@@ -6618,6 +6679,11 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
         delivery_metadata: dict[str, object] | None = None
         generation_reply = await _novelai_application().claim_channel_reply(thread.role_id,
             thread.session_key, run_id, final_message_id) if final_message_id is not None else None
+        reaction_attachment = await reaction.prepare() if reaction is not None and generation_reply is None else None
+        if reaction_attachment is not None and final_message_id is not None:
+            message = next(item for item in session_store.list_messages(thread.session_key) if item.id == final_message_id)
+            session_store.update_message(message.id, message.content, message.status,
+                metadata={**message.metadata, 'attachments': [reaction_attachment]})
         if stream_queue is not None and stream_task is not None:
             terminal_content = final_content if final_content.strip() else streamed_content
             if terminal_content.strip():
@@ -6637,25 +6703,29 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             except Exception as error:
                 logger.warning("渠道回复投递失败 role=%s thread=%s error=%s", thread.role_id, thread.thread_id, type(error).__name__)
                 delivery_metadata = {"deliveryStatus": "failed", "deliveryError": type(error).__name__}
-        elif final_content.strip() or generation_reply is not None:
+        elif final_content.strip() or generation_reply is not None or reaction_attachment is not None:
             try:
                 delivery = channel_host.account_send(
                     thread.role_id,
                     thread.account_id,
                     target.id,
                     final_content,
-                    attachment_ids=generation_reply.attachment_ids if generation_reply is not None else (),
+                    attachment_ids=(generation_reply.attachment_ids if generation_reply is not None
+                        else (reaction_attachment['id'],) if reaction_attachment is not None else ()),
+                    frozen_attachment_bytes=({reaction_attachment['id']: reaction.raw}
+                        if reaction_attachment is not None else None),
                     authorize_source=lambda: (
                         (metadata.get("channelTurnSource") is None or not turn_task.cancelling())
                         and _queued_channel_turn_authorized(thread, metadata)
-                        and (generation_reply is None or generation_reply.authorized())),
+                        and (generation_reply is None or generation_reply.authorized())
+                        and (reaction_attachment is None or reaction.authorized())),
                     reply_to_message_id=str(metadata.get("platformMessageId")) if metadata.get("platformMessageId") else None,
                     actor="reply",
                     source_thread_id=thread.thread_id,
                     record_message=False,
                     source_session_key=thread.session_key,
                     source_run_id=run_id,
-                    source_kind="reply",
+                    source_kind="role_reaction" if reaction_attachment is not None else "reply",
                     mention_ids=(str(metadata["senderId"]),) if thread.chat_type == "group" and thread.channel == "qq" and metadata.get("senderId") else (),
                     message_thread_id=metadata.get("messageThreadId"),
                 )
@@ -6673,7 +6743,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                         delivery_id=result.attempt_id, platform_message_id=result.platform_message_id)
             except Exception as error:
                 logger.warning("渠道回复投递失败 role=%s thread=%s error=%s", thread.role_id, thread.thread_id, type(error).__name__)
-                delivery_metadata = {"deliveryStatus": "uncertain" if generation_reply is not None else "failed", "deliveryError": type(error).__name__}
+                delivery_metadata = {"deliveryStatus": "uncertain" if generation_reply is not None or reaction_attachment is not None else "failed", "deliveryError": type(error).__name__}
                 if generation_reply is not None:
                     await _novelai_application().record_channel_receipt(generation_reply, status='uncertain')
         if final_message_id is not None and delivery_metadata is not None:
@@ -6999,12 +7069,20 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                 # in the in-memory provider context only.
                 model_snapshot["capabilities"] = capabilities.run_metadata()
                 session_store.update_run(run_id, status="created", model_snapshot=model_snapshot)
+                reaction_task = asyncio.current_task()
+                reaction = await _role_reaction_turn(role, session.session.sessionKey, run_id, lambda: (
+                    not reaction_task.cancelling() and store.get(role_id) is not None
+                    and role_id not in _channel_roles_deleting
+                    and (current := session_store.get_run(run_id)) is not None
+                    and current.status in {'created', 'running', 'completed'}
+                    and next((item.runId for item in reversed(session_store.list_messages(session.session.sessionKey))
+                        if item.role == 'user'), None) == run_id))
                 provider = MeidoProvider(
                     model_adapter,
                     role,
                     configuration,
                     memory_context,
-                    capabilities.prompt_context(),
+                    "\n\n".join(filter(None, (capabilities.prompt_context(), reaction.prompt if reaction is not None else ''))),
                     max_response_tokens=ordinary_settings.maxTokens,
                     context_blocks=lambda: _external_activity_blocks(role_id),
                     context_safety_margin=ordinary_settings.contextSafetyMarginTokens,
@@ -7015,6 +7093,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     session_key=session.session.sessionKey, run_id=run_id, history=history)
                 if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools):
                     provider = guard_provider(provider, computer_use, role_id=role_id, run_id=run_id)
+                if reaction is not None:
+                    provider = reaction.wrap(provider)
                 capabilities_owned_by_runtime = True
                 async for runtime_event in runtime_manager.run(
                     AgentRun(
@@ -7121,6 +7201,11 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     session.session.sessionKey, run_id, final_message.id)
                 if attached is not None:
                     message = attached
+                if reaction is not None and not message.metadata.get('attachments'):
+                    attachment = await reaction.prepare()
+                    if attachment is not None and reaction.authorized():
+                        message = session_store.update_message(message.id, message.content, message.status,
+                            metadata={**message.metadata, 'attachments': [attachment]})
                 _novelai_application().scenes.complete(role_id, session.session.sessionKey, run_id)
                 try:
                     memory_worker.publish(TurnCommitted(

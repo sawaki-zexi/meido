@@ -1568,7 +1568,7 @@ class MultichannelStore:
             rows = db.execute('''SELECT d.*,t.channel FROM channel_delivery_attempts d
                 JOIN channel_threads t ON t.thread_id=d.thread_id AND t.role_id=d.role_id
                 WHERE d.role_id=? AND d.source_session_key=? AND d.source_run_id=?
-                AND d.source_kind IN ('reply','natural') AND t.session_key=? LIMIT 2''',
+                AND d.source_kind IN ('reply','natural','role_reaction') AND t.session_key=? LIMIT 2''',
                 (role_id, session_key, run_id, session_key)).fetchall()
         if len(rows) != 1 or rows[0]['status'] == 'pending':
             return None

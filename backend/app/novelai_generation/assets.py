@@ -1,4 +1,4 @@
-"""Optional role-card CAS. Its local failures never repeat paid generation."""
+"""Optional role assets and background CAS; failures never repeat generation."""
 from __future__ import annotations
 
 import hashlib
@@ -18,18 +18,27 @@ class AssetWriteback:
             db.execute("UPDATE novelai_asset_writes SET status='uncertain' WHERE status='writing'")
 
     def apply(self, row, source):
-        if row['purpose'] != 'scene_cg' or not row['asset_writeback_pending']:
+        if not row['asset_writeback_pending']:
             return
+        scene = row['purpose'] == 'scene_cg'
         with self.app._lock:
             with self.app.ledger.connect() as db:
                 if db.execute('SELECT 1 FROM novelai_asset_writes WHERE attempt_id=?', (row['attempt_id'],)).fetchone():
                     return
             role = self.app.roles.get(row['role_id'])
-            if role is None or not role.agentConfig.novelai.autoWritebackRoleAssets or not self.app._authorized(source, row['service_revision'], row['role_revision']):
+            permitted = (role.agentConfig.novelai.autoWritebackRoleAssets if scene and role is not None
+                else self.app.settings.public()['autoWritebackRoleAssets'])
+            if role is None or not permitted or not self.app._authorized(source, row['service_revision'], row['role_revision']):
                 self._reject(row)
                 return
+            if not scene:
+                with self.app.ledger.connect() as db:
+                    publication = db.execute('SELECT publication_ready FROM novelai_media_outbox WHERE attempt_id=?',
+                        (row['attempt_id'],)).fetchone()
+                if publication is None or not publication['publication_ready']:
+                    return  # The original owner action has not yet released publication.
             attachments = json.loads(row['attachments'])
-            if len(attachments) != 1:
+            if not attachments or (scene and len(attachments) != 1):
                 self._reject(row)
                 return
             image = resolve_attachment(self.app.roles.workspace_path(role.id), attachments[0]['id'])
@@ -51,15 +60,15 @@ class AssetWriteback:
             except ValueError:
                 self._reject(row)
                 return
-            expected = json.loads(row['scene_input'])['cardImageUrl']
+            expected = self._expected(row)
             digest = hashlib.sha256(content).hexdigest()
             with self.app.ledger.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 used = db.execute('SELECT role_id,SUM(media_bytes+reserved_bytes) AS bytes FROM novelai_attempts GROUP BY role_id').fetchall()
                 assets = db.execute('SELECT * FROM novelai_asset_usage').fetchall()
                 busy = any(item['role_id'] == role.id and item['reserved_bytes'] for item in assets)
-                total = sum(item['bytes'] for item in used) + sum(item['bytes'] + item['reserved_bytes'] for item in assets)
-                own = sum(item['bytes'] for item in used if item['role_id'] == role.id) + sum(item['bytes'] + item['reserved_bytes'] for item in assets if item['role_id'] == role.id)
+                total = sum(item['bytes'] for item in used) + sum(item['bytes'] + item['library_bytes'] + item['reserved_bytes'] for item in assets)
+                own = sum(item['bytes'] for item in used if item['role_id'] == role.id) + sum(item['bytes'] + item['library_bytes'] + item['reserved_bytes'] for item in assets if item['role_id'] == role.id)
                 status = 'failed' if busy or total + len(content) > GLOBAL_MEDIA_BYTES or own + len(content) > ROLE_MEDIA_BYTES else 'writing'
                 db.execute('INSERT INTO novelai_asset_writes VALUES(?,?,?,?,?,?)', (row['attempt_id'], role.id, status, len(content), digest, expected))
                 # Transfer the original attempt's duty only with its durable
@@ -70,10 +79,14 @@ class AssetWriteback:
                 db.execute('''INSERT INTO novelai_asset_usage(role_id,reserved_bytes,attempt_id) VALUES(?,?,?)
                     ON CONFLICT(role_id) DO UPDATE SET reserved_bytes=excluded.reserved_bytes,attempt_id=excluded.attempt_id''', (role.id, len(content), row['attempt_id']))
             try:
-                self.app.roles.set_avatar(role.id, content, image['mediaType'], card=True, expected_card_url=expected,
-                    authorized=lambda: self.app._authorized(source, row['service_revision'], row['role_revision']),
-                    operation_id=row['attempt_id'])
-            except PermissionError:
+                authorized = lambda: self.app._authorized(source, row['service_revision'], row['role_revision'])
+                if scene:
+                    self.app.roles.set_avatar(role.id, content, image['mediaType'], card=True, expected_card_url=expected,
+                        authorized=authorized, operation_id=row['attempt_id'])
+                else:
+                    self.app.roles.add_illustration(role.id, content, image['mediaType'], name='NovelAI 生图',
+                        set_background=True, expected_background_id=expected, authorized=authorized, operation_id=row['attempt_id'])
+            except (PermissionError, ValueError):
                 self._settle(row['attempt_id'], role.id, 'failed', 0)
                 return
             except OSError:
@@ -82,21 +95,30 @@ class AssetWriteback:
                 with self.app.ledger.connect() as db:
                     db.execute("UPDATE novelai_asset_writes SET status='uncertain' WHERE attempt_id=?", (row['attempt_id'],))
                 return
-            self._settle(row['attempt_id'], role.id, 'applied', len(content))
+            self._settle(row['attempt_id'], role.id, 'applied', len(content), library=not scene)
+
+    @staticmethod
+    def _expected(row):
+        return (json.loads(row['scene_input'])['cardImageUrl'] if row['purpose'] == 'scene_cg'
+            else json.loads(row['parameters']).get('assetBackgroundId'))
 
     def _reject(self, row):
         with self.app.ledger.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             db.execute('INSERT INTO novelai_asset_writes VALUES(?,?,?,?,?,?)', (row['attempt_id'], row['role_id'],
-                'failed', 0, '', json.loads(row['scene_input'])['cardImageUrl']))
+                'failed', 0, '', self._expected(row)))
             db.execute('UPDATE novelai_attempts SET asset_writeback_pending=0 WHERE attempt_id=?', (row['attempt_id'],))
 
-    def _settle(self, attempt_id, role_id, status, size):
+    def _settle(self, attempt_id, role_id, status, size, *, library=False):
         with self.app.ledger.connect() as db:
             db.execute('BEGIN IMMEDIATE')
+            previous = db.execute('SELECT status FROM novelai_asset_writes WHERE attempt_id=?', (attempt_id,)).fetchone()
+            if previous is not None and previous['status'] == 'applied':
+                return
             db.execute('UPDATE novelai_asset_writes SET status=? WHERE attempt_id=?', (status, attempt_id))
             if status == 'applied':
-                db.execute('UPDATE novelai_asset_usage SET bytes=?,reserved_bytes=0 WHERE role_id=? AND attempt_id=?', (size, role_id, attempt_id))
+                assignment = 'library_bytes=library_bytes+?' if library else 'bytes=?'
+                db.execute(f'UPDATE novelai_asset_usage SET {assignment},reserved_bytes=0 WHERE role_id=? AND attempt_id=?', (size, role_id, attempt_id))
             else:
                 db.execute('UPDATE novelai_asset_usage SET reserved_bytes=0 WHERE role_id=? AND attempt_id=?', (role_id, attempt_id))
 
@@ -115,10 +137,16 @@ class AssetWriteback:
             if role is None:
                 continue
             try:
-                applied = self.app.roles.reconcile_generated_card(role.id, operation_id=row['attempt_id'],
-                    expected_card_url=row['expected_url'], digest=row['digest'], size=row['size'])
+                generation = self.app.ledger.attempt(row['attempt_id'])
+                library = generation['purpose'] != 'scene_cg'
+                if library:
+                    applied = self.app.roles.reconcile_generated_illustration(role.id, operation_id=row['attempt_id'],
+                        digest=row['digest'], size=row['size'])
+                else:
+                    applied = self.app.roles.reconcile_generated_card(role.id, operation_id=row['attempt_id'],
+                        expected_card_url=row['expected_url'], digest=row['digest'], size=row['size'])
                 if applied is None:
                     continue
-                self._settle(row['attempt_id'], role.id, 'applied' if applied else 'failed', row['size'] if applied else 0)
+                self._settle(row['attempt_id'], role.id, 'applied' if applied else 'failed', row['size'] if applied else 0, library=library)
             except (OSError, sqlite3.Error, KeyError, ValueError):
                 continue

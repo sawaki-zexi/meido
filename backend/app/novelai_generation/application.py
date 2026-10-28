@@ -302,6 +302,9 @@ class NovelaiApplication:
                 owned_input = None if scene_input is not None else self._input(source, parameters)
                 if owned_input is not None:
                     parameters['inputSha256'] = hashlib.sha256(owned_input).hexdigest()
+                library_writeback = scene_input is None and regeneration is None and settings.autoWritebackRoleAssets
+                if library_writeback:
+                    parameters['assetBackgroundId'] = role.chatBackgroundId
                 view = self.ledger.prepare(role_id=role.id, source_scope=source.source_scope,
                     human_key=source.human_key, request_key=source.request_key, parameters=parameters,
                     origin=source.to_dict(), service_revision=public['revision'], role_revision=self._role_revision(role),
@@ -311,7 +314,7 @@ class NovelaiApplication:
                         'source_completion' if source.ui_action or parameters['background'] else 'foreground_reply'),
                     publication_ready=publication_ready,
                     scene_input=scene_input,
-                    asset_writeback_requested=scene_input is not None and role.agentConfig.novelai.autoWritebackRoleAssets,
+                    asset_writeback_requested=library_writeback or (scene_input is not None and role.agentConfig.novelai.autoWritebackRoleAssets),
                     **(regeneration or {}))
                 row = self.ledger.attempt(view['attemptId'])
             task = self._find_task(row, source)

@@ -108,3 +108,7 @@ writebackStatus为not_requested/writing/uncertain/applied/failed。manifest或SQ
 工具查询严格留在实际来源；桌面管理接口的跨来源历史权不能被渠道模型借用。状态包括 prepared、dispatching、received、succeeded、local_pending、unknown、failed_response、cancelled_before_dispatch、rejected；generation 与 delivery 状态分开。图片归属文件和历史不随 TaskRuntime日志 prune 消失。
 
 V4.5 请求常数改编自 Shiori-Agent 固定 `4f266aeaf42fcd611362e2456417b91f659341cf`（Copyright 2026 YinFengWindy，MIT）；完整许可随[模块](../../backend/app/novelai_generation/SHIORI-LICENSE.txt)保留。源码许可不替代 NovelAI 服务条款或图片权利。
+
+## 工作台导航生命周期（2026-10-28，#261）
+
+按 Shiori `d3acaed186b172a78a5892e0307e9affd89759f0` 的 `plugins/novelai/ui/novelAiPageStore.ts` / `novelAiGeneration.ts` 对齐：首次打开后，当前工作台在应用内导航到聊天/角色/Story 时保持挂载但隐藏且不可聚焦。返回时保留草稿、提示标签编辑状态、原请求身份和实际生成结果；离开页面不是取消生成，不新增请求或新消费。仍复用原请求和当前角色范围；关闭整个应用、切换工作台角色或明确取消沿用原前台终止机制，不把前台请求升级为永久后台任务。

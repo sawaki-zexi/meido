@@ -319,7 +319,7 @@ class ChatMemeLibrary:
 
     def reference(self, role_id, candidate, context, *, principal='owner'):
         # Host-only provenance, never a model argument or an authority grant.
-        if principal not in {'owner', 'natural'}:
+        if principal not in {'owner', 'natural', 'reaction'}:
             raise ValueError('invalid meme reference principal')
         if context.role_id != role_id or context.signal.is_cancelled() or not self.valid(role_id,candidate):
             raise PermissionError('meme candidate is no longer valid for this role')
@@ -348,7 +348,8 @@ class ChatMemeLibrary:
                     raise PermissionError('existing meme sending reference was replaced')
                 return value,raw
         publication = _OwnerPublication(self.library,role_id,context,files,
-            kind='natural_chat_reference' if principal == 'natural' else 'owner_chat_reference',
+            kind={'owner': 'owner_chat_reference', 'natural': 'natural_chat_reference',
+                  'reaction': 'role_reaction_reference'}[principal],
             principal=principal)
         grant=self.library._grant(role_id)
         claim=(self.library.storage.claim(role_id,publication.operation,

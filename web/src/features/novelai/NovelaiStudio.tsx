@@ -1,3 +1,4 @@
+import { GeneratedAssetActions } from './GeneratedAssetActions';
 import { GenerationPromptOptions } from './GenerationPromptOptions';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { Role } from '../../api/types';
@@ -12,7 +13,7 @@ import { StudioBaseImage } from './StudioBaseImage';
 import { StudioPromptPreferences } from './StudioPromptPreferences';
 import { undesiredContentPresetLabel } from './promptPreferences';
 import { useGenerationDrawer } from './useGenerationDrawer';
-import { statusLabels, deliveryLabels, generationErrorMessage, writebackLabels } from './generationLabels';
+import { statusLabels, deliveryLabels, generationErrorMessage, writebackLabels, libraryWritebackLabels } from './generationLabels';
 import './novelaiStudio.css';
 
 type Props = { roles: Role[]; initialRoleId?: string; selectedRoleId?: string; onRoleChange?: (roleId: string) => void;
@@ -193,6 +194,7 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
                 {selectedImage && <a href={imageUrl(role.id, selectedImage.id)} download={selectedImage.name}>下载</a>}
                 <button type="button" disabled={busy || uploading || Boolean(attempt.current)} onClick={() => handleReuseParameters(selected)}>复用参数</button>
                 {selectedImage && <button type="button" disabled={busy || uploading || Boolean(attempt.current)} onClick={() => selectImage(selected, selectedImage)}>重新生成</button>}
+                {selectedImage && <GeneratedAssetActions key={selectedImage.id} roleId={role.id} attachmentId={selectedImage.id} disabled={busy || uploading} />}
               </div>
             </div>}
         {selected && <details className="studio-image-info">
@@ -202,7 +204,7 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
           <p>投递：{deliveryLabels[selected.deliveryStatus] ?? '尚未确认'}</p>
           <p>消费：{selected.consumption === 'possible' ? '已出网，可能计费；未确认实际扣费。' : selected.consumption === 'not_dispatched' ? '生成请求尚未出网。' : '消费状态尚未确认。'}</p>
           {selected.purpose === 'scene_cg' && <p>{selected.auxiliaryConsumption === 'possible' ? '辅助请求已出网，可能计费；未出图仍计入 CG 与账户尝试。' : selected.auxiliaryConsumption === 'not_dispatched' ? '辅助请求尚未出网。' : '辅助消费状态尚未确认。'}</p>}
-          {selected.writebackStatus && writebackLabels[selected.writebackStatus] && <p>{writebackLabels[selected.writebackStatus]}</p>}
+          {selected.writebackStatus && (selected.purpose === 'scene_cg' ? writebackLabels : libraryWritebackLabels)[selected.writebackStatus] && <p>{(selected.purpose === 'scene_cg' ? writebackLabels : libraryWritebackLabels)[selected.writebackStatus]}</p>}
           {selected.errorCode && <p>{generationErrorMessage(selected)}</p>}
         </div>}
         {selected?.parameters && <section className="studio-stage-meta" aria-label="当前作品参数">

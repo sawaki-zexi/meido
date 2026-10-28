@@ -140,6 +140,15 @@ class RoleUpdateInput(BaseModel):
         return value
 
 
+class RoleIllustration(BaseModel):
+    id: str
+    url: str
+    name: str
+    mediaType: str
+    size: int
+    category: str = '未分类'
+
+
 class Role(RoleInput):
     id: str
     createdAt: datetime
@@ -151,6 +160,15 @@ class Role(RoleInput):
     avatarOriginalMediaType: str | None = None
     cardImageUrl: str | None = None
     cardImageMediaType: str | None = None
+    illustrations: list[RoleIllustration] = Field(default_factory=list)
+    illustrationCategories: list[str] = Field(default_factory=lambda: ['未分类'])
+    illustrationCategorySend: dict[str, bool] = Field(default_factory=dict)
+    moodIllustrationBindings: dict[str, str] = Field(default_factory=dict)
+    defaultMood: str = '平静'
+    currentMood: str | None = None
+    currentMoodUpdatedAt: datetime | None = None
+    chatBackgroundId: str | None = None
+    chatBackgroundUrl: str | None = None
 
 
 class RoleModelConfigurationInput(BaseModel):
