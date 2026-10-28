@@ -142,12 +142,16 @@ def test_real_http_truncated_auxiliary_does_not_block_ordinary_chat(tmp_path):
     diagnostics = []
     settings = AdvancedSettings(maxTokens=1024, summaryTokenLimit=512, contextSafetyMarginTokens=100,
                                 contextTriggerRatio=.5, contextTargetRatio=.2)
+    body_timeout = 3.0
 
     def respond(payload, index):
-        time.sleep(.2)  # Each request fits .35s; their combined duration does not.
         if index == 1:
             assert payload['thinking'] == {'type': 'disabled'}
             assert 'tools' not in payload
+            # The summary alone exceeds the ordinary deadline, so a combined
+            # timeout would fail. Leave the real body HTTP request ample time
+            # for platform-specific connection setup (notably on Windows).
+            time.sleep(body_timeout + .2)
             return response('{"tasks":', finish='length', usage={'prompt_tokens': 4300, 'completion_tokens': 1024})
         assert len(payload['messages']) == 18  # Entire unchanged historical prefix.
         assert payload['messages'][-1]['content'] == '继续'
@@ -161,7 +165,7 @@ def test_real_http_truncated_auxiliary_does_not_block_ordinary_chat(tmp_path):
             ensure_coverage=coverage, on_diagnostic=diagnostics.append)
         async def run():
             return [event async for event in run_agent_loop(provider=guarded, model='m', system='',
-                messages=sessions.runtime_messages('role:r'), max_turns=4, provider_timeout=.35)]
+                messages=sessions.runtime_messages('role:r'), max_turns=4, provider_timeout=body_timeout)]
         events = asyncio.run(run())
     assert not errors
     assert len(requests) == 2 and events[-1].reason == 'completed'
