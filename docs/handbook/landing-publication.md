@@ -3,7 +3,7 @@
 状态：当前
 
 事实来源：`.github/workflows/pages.yml`、`vite.landing.config.ts`、`web/src/landing/`、Issue #254。
-最后核验：2026-10-26。首次线上发布需发布配置合入 `main` 后完成。
+最后核验：2026-10-29。
 
 ## 地址与发布范围
 
@@ -16,8 +16,8 @@ GitHub Pages 只发布静态介绍页。构建入口直接加载 `LandingPage`�
 ## 自动与手动发布
 
 仓库 Settings → Pages 的 Source 选择 **GitHub Actions**。
-落地页相关代码、素材或构建配置合入 `main` 后，`Landing Pages` 工作流先运行落地页测试、
-类型检查和独立构建，再发布 `web/dist-landing/`。PR 只验证；部署权限只给 `main` 的发布任务。
+PR 的前端 CI 统一执行测试和独立落地页构建。落地页相关代码、素材或构建配置合入 `main` 后，
+`Landing Pages` 工作流执行类型检查和独立构建，再发布 `web/dist-landing/`。该工作流不在 PR 上运行，仅发布 `main`。
 
 需要重新发布时，在 Actions → Landing Pages → Run workflow 中选择 `main`。
 工作流成功后，通过发布任务的环境链接访问页面。失败时查看对应任务日志；构建失败不会替换线上页面。
