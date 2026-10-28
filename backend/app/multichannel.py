@@ -133,6 +133,8 @@ class TelegramTransport(Protocol):
 
     async def edit_message_text(self, token: str, chat_id: str, message_id: str, text: str) -> Mapping[str, Any]: ...
 
+    async def send_chat_action(self, token: str, chat_id: str, *, authorize_dispatch=None) -> bool: ...
+
     async def get_updates(self, token: str, *, offset: int | None = None, timeout: int = 25) -> list[Mapping[str, Any]]: ...
 
     async def get_file(self, token: str, file_id: str) -> Mapping[str, Any]: ...
@@ -221,6 +223,7 @@ class TelegramBotApi:
         from .channels.delivery import check_dispatch, telegram_response
         check_dispatch()
         async with httpx.AsyncClient(timeout=20) as client:
+            check_dispatch()
             response = await client.post(f"{self.base_url}/bot{token}/sendMessage", json=body)
             return telegram_response(response)
 
@@ -231,9 +234,19 @@ class TelegramBotApi:
         from .channels.delivery import check_dispatch, telegram_response
         check_dispatch()
         async with httpx.AsyncClient(timeout=20) as client:
+            check_dispatch()
             response = await client.post(f"{self.base_url}/bot{token}/editMessageText", json=body)
             result = telegram_response(response)
             return {'message_id': message_id} if result.get('not_modified') else result
+
+    async def send_chat_action(self, token: str, chat_id: str, *, authorize_dispatch=None) -> bool:
+        from .channels.delivery import telegram_response
+        async with httpx.AsyncClient(timeout=10) as client:
+            if authorize_dispatch is not None:
+                authorize_dispatch()
+            response = await client.post(f"{self.base_url}/bot{token}/sendChatAction",
+                json={'chat_id': chat_id, 'action': 'typing'})
+            return telegram_response(response) is True
 
     async def _send_media(self, method: str, token: str, chat_id: str, data: bytes, file_name: str, *, caption: str = "", reply_to: str | None = None, message_thread_id: int | None = None, parse_mode: str | None = None, caption_entities=None) -> Mapping[str, Any]:
         body: dict[str, Any] = {"chat_id": chat_id, "caption": caption}
@@ -320,6 +333,8 @@ class MultichannelStore:
         self.avatars = ChannelAvatarStore(self)
         from .channels.listening import GroupListeningStore
         self.listening = GroupListeningStore(self)
+        from .channels.external_memory import ExternalMemoryRepository
+        self.external_memory = ExternalMemoryRepository(self)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=15)
@@ -542,6 +557,9 @@ class MultichannelStore:
         with self._connect() as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             db.execute("DELETE FROM channel_member_names WHERE role_id=?", (role_id,))
+            db.execute("DELETE FROM channel_external_revisions WHERE role_id=?", (role_id,))
+            for table in ("channel_external_members", "channel_external_member_sources", "channel_external_member_candidates"):
+                db.execute(f"DELETE FROM {table} WHERE role_id=?", (role_id,))
             if "channel_natural_quota" in tables:
                 db.execute("DELETE FROM channel_natural_quota WHERE role_id=?", (role_id,))
             if "channel_member_profiles" in tables:
@@ -758,11 +776,14 @@ class MultichannelStore:
         if not channel or channel == "telegram" or not account_id:
             raise ValueError("渠道或账号 ID 无效")
         now = _now()
+        policy = (int(enabled), int(allow_private), int(allow_group), _json(sorted(set(blocked_senders or []))), platform_id)
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             existing = db.execute("SELECT role_id,channel FROM channel_accounts WHERE account_id=?", (account_id,)).fetchone()
             if existing is not None and (str(existing["role_id"]) != role_id or str(existing["channel"]) != channel):
                 raise ValueError("渠道账号 ID 已属于其他角色或平台")
             self._check_platform_identity(db, account_id, channel, platform_id)
+            previous = db.execute("SELECT enabled,allow_private,allow_group,blocked_senders_json,platform_id FROM channel_accounts WHERE account_id=?", (account_id,)).fetchone()
             db.execute(
                 """INSERT INTO channel_accounts(account_id,role_id,channel,enabled,allow_private,allow_group,blocked_senders_json,display_name,platform_id,created_at,updated_at)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET enabled=excluded.enabled,
@@ -772,6 +793,8 @@ class MultichannelStore:
                 (account_id, role_id, channel, int(enabled), int(allow_private), int(allow_group),
                  _json(sorted(set(blocked_senders or []))), display_name.strip(), platform_id, now, now),
             )
+            if previous is None or tuple(previous) != policy:
+                self._advance_account_revision(db, account_id)
         return self.get_account(account_id)  # type: ignore[return-value]
 
     @staticmethod
@@ -828,6 +851,10 @@ class MultichannelStore:
         with self._connect() as db:
             self._remember_member_name(db, role_id, event.channel, event.account_id,
                 event.chat_id, event.chat_type.value, event.sender_id, event.sender_name, _now())
+            thread = self.get_thread_by_chat(role_id, event.account_id, event.chat_id, chat_type=event.chat_type.value)
+            if thread is not None:
+                self.external_memory.members.observe_in(db, thread, {"senderId": event.sender_id,
+                    "senderName": event.sender_name, "viaAccount": account.source_snapshot()}, _now())
 
     def remember_targets(self, role_id: str, targets: list[Any], *, authorized: Callable[[], bool] | None = None) -> None:
         """Persist an adapter's observed/reachable target directory."""
@@ -1044,6 +1071,7 @@ class MultichannelStore:
                     "INSERT INTO channel_owner_chats(role_id,channel,account_id,scope,platform_user_id,chat_id,context_since,last_seen) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(role_id,channel,account_id,scope,platform_user_id,chat_id) DO UPDATE SET last_seen=excluded.last_seen",
                     (role_id, channel, account_id, scope, platform_user_id, chat_id, now, now),
                 )
+                self.external_memory.invalidate_identity_in(db, channel, scope, account_id, platform_user_id)
             self._pending_pairing = None
             return True
 
@@ -1087,6 +1115,7 @@ class MultichannelStore:
             identity = db.execute("SELECT * FROM channel_identities WHERE identity_id=?", (identity_id,)).fetchone()
             if identity is None:
                 raise KeyError(identity_id)
+            self.external_memory.invalidate_identity_in(db, identity["channel"], identity["scope"], identity["account_id"], identity["platform_user_id"])
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='channel_push_targets'").fetchone():
                 db.execute(
                     """DELETE FROM channel_push_targets WHERE EXISTS (
@@ -1253,6 +1282,7 @@ class MultichannelStore:
         payload = thread.public_dict()
         payload["avatarUrl"] = self.avatars.url(thread.account_id, "chat", thread.chat_id)
         payload["latestMessage"] = self.latest_message_preview(thread)
+        payload["externalMemoryAvailable"] = thread.channel != "desktop" and not self.external_memory.is_owner_thread(thread)
         return payload
 
     def latest_message_preview(self, thread: ChannelThread) -> dict[str, object] | None:
@@ -1347,6 +1377,8 @@ class MultichannelStore:
                 db.execute("INSERT INTO channel_events(event_id,thread_id,direction,external_message_id,created_at,metadata_json) VALUES(?,?,?,?,?,?)", (event_id, thread.thread_id, direction, external_message_id or None, now, _json(metadata or {})))
             except sqlite3.IntegrityError:
                 return False, None
+            if direction == "inbound" and role == "user" and message_metadata.get("channelTurnState") != "invalidated":
+                self.external_memory.members.observe_in(db, thread, message_metadata, now)
             sequence = int(db.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE session_key=?", (thread.session_key,)).fetchone()[0])
             db.execute(
                 "INSERT INTO messages(message_id,session_key,sequence,role,content,status,created_at,message_type,metadata_json) VALUES(?,?,?,?,?,?,?,'text',?)",

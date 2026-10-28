@@ -11,6 +11,14 @@ MAX_CHANNEL_MEDIA_BYTES = 10 * 1024 * 1024
 _ALLOWED_MEDIA_SUFFIXES = (".qpic.cn", ".qq.com", ".qq.com.cn", ".gtimg.cn", ".myqcloud.com")
 
 
+class MediaTooLargeError(ChannelAdapterError):
+    pass
+
+
+class UntrustedMediaUrlError(ChannelAdapterError):
+    pass
+
+
 async def download_qq_media(url: str, *, max_bytes: int = MAX_CHANNEL_MEDIA_BYTES) -> tuple[bytes, str]:
     """Download QQ-hosted media without allowing redirects or private URLs."""
 
@@ -29,17 +37,47 @@ async def download_qq_media(url: str, *, max_bytes: int = MAX_CHANNEL_MEDIA_BYTE
         or address is not None
         or not any(host.endswith(suffix) and host != suffix[1:] for suffix in _ALLOWED_MEDIA_SUFFIXES)
     ):
-        raise ChannelAdapterError("渠道附件地址不在可信 QQ 媒体域名内")
+        raise UntrustedMediaUrlError("渠道附件地址不在可信 QQ 媒体域名内")
+    return await _download_bounded(url, max_bytes=max_bytes)
+
+
+async def download_qq_file(url: str, *, max_bytes: int, resolved: bool = False) -> tuple[bytes, str]:
+    """NapCat private files use HTTP servers; only a resolved ID may name a public IP.
+
+    Direct segments remain confined to QQ hosts. Neither source may redirect,
+    read local paths, or address loopback/private networks.
+    """
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            address = None
+        official_host = any(host.endswith(suffix) and host != suffix[1:] for suffix in _ALLOWED_MEDIA_SUFFIXES)
+        public_server = resolved and address is not None and address.is_global
+        if (parsed.scheme not in {"http", "https"} or parsed.username is not None
+                or parsed.password is not None or parsed.fragment or not host
+                or not (official_host or public_server)
+                or port is not None and not (1 <= port <= 65535 and (resolved or port in {80, 443}))):
+            raise ValueError
+    except ValueError:
+        raise UntrustedMediaUrlError("文件下载地址不可信") from None
+    return await _download_bounded(url, max_bytes=max_bytes)
+
+
+async def _download_bounded(url: str, *, max_bytes: int) -> tuple[bytes, str]:
     content = bytearray()
     async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
         async with client.stream("GET", url) as response:
             response.raise_for_status()
             declared = response.headers.get("content-length")
-            if declared and int(declared) > max_bytes:
-                raise ChannelAdapterError("渠道附件超过大小限制")
+            if declared and declared.isdecimal() and int(declared) > max_bytes:
+                raise MediaTooLargeError("渠道附件超过大小限制")
             async for chunk in response.aiter_bytes():
                 if len(content) + len(chunk) > max_bytes:
-                    raise ChannelAdapterError("渠道附件超过大小限制")
+                    raise MediaTooLargeError("渠道附件超过大小限制")
                 content.extend(chunk)
             return bytes(content), response.headers.get("content-type", "application/octet-stream").split(";", 1)[0]
 

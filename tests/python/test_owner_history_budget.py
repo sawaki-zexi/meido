@@ -81,6 +81,27 @@ def test_repair_while_summarizing_cannot_commit_or_dispatch_next_request(tmp_pat
     assert fresh.windows().load('r1', 'role:r1', 'shared_owner', fresh.authority)['summary'] is None
 
 
+def test_revocation_during_summary_transport_wait_blocks_original_history_request(tmp_path):
+    _, channels, thread, view, adapter, _, provider = scenario(tmp_path)
+    original = adapter.stream_rich_messages
+    dispatched = []
+
+    async def delayed_transport(messages, configuration, tools, *, max_tokens=None, cancel_check=None):
+        # Model adapters can await connection setup before sending the body.
+        await asyncio.sleep(0)
+        pair(channels, thread)
+        if cancel_check is not None:
+            cancel_check()
+        dispatched.append(messages)
+        async for event in original(messages, configuration, tools, max_tokens=max_tokens, cancel_check=cancel_check):
+            yield event
+
+    adapter.stream_rich_messages = delayed_transport
+    with pytest.raises((ValueError, PermissionError)):
+        run(provider, view.runtime_messages())
+    assert not dispatched
+
+
 def test_revocation_between_provider_start_and_request_blocks_adapter(tmp_path):
     _, channels, thread, view, adapter, base, _ = scenario(tmp_path)
     async def collect():

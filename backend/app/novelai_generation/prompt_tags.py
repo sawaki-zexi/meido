@@ -64,12 +64,18 @@ def _fold(value):
 
 
 def _append(first, additions):
-    parts = [item.strip() for item in first.split(',') if item.strip()]
-    seen = {item.casefold() for item in parts}
-    for addition in additions:
-        for part in addition.split(','):
+    parts = []
+    seen = set()
+    for index, fragment in enumerate([first, *additions]):
+        if '::' in fragment or any(char in fragment for char in '{}[]'):
+            # NovelAI weights span commas; removing even a repeated word can
+            # remove a closing marker or change the weight of following tags.
+            # Preserve the entire fragment without interpreting its syntax.
+            parts.append(fragment.strip())
+            continue
+        for part in fragment.split(','):
             clean = part.strip()
-            if clean and clean.casefold() not in seen:
+            if clean and (index == 0 or clean.casefold() not in seen):
                 parts.append(clean)
                 seen.add(clean.casefold())
     result = ', '.join(parts)

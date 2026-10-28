@@ -5,6 +5,7 @@ import { plugins, type PluginId, type PluginState } from '../../api/plugins';
 import { novelai, type NovelaiConfiguration } from '../../api/novelai';
 import { getCodingConfiguration, type CodingConfiguration } from '../../api/coding';
 import { NovelaiSettings } from '../novelai/NovelaiSettings';
+import { availabilityLabel, generationAvailability } from '../novelai/availability';
 import { CodingSettings } from '../coding/CodingSettings';
 import { TodoSettings } from '../todo/TodoSettings';
 import { PluginRow } from './PluginRow';
@@ -13,7 +14,7 @@ import { RolePurposeSettings, type RolePurpose } from './RolePurposeSettings';
 import { Icon } from '../../ui/Icon';
 import { pluginServices, type SettingsServiceId } from './navigation';
 
-type Row = { id: PluginId; name: string; description: string; enabled?: boolean; state?: PluginState; problem?: string };
+type Row = { id: PluginId; name: string; description: string; enabled?: boolean; state?: PluginState; problem?: string; status?: string };
 const services: Row[] = [
   { id: 'novelai', name: 'NovelAI 生图', description: '在聊天中生成角色表情，或使用图片工作台；统一管理生图参数与额度。' },
   { id: 'coding', name: '编程委托', description: '将任务委托给已授权的可信仓库和专用 CLI。' },
@@ -49,6 +50,7 @@ export function PluginSettings({ onRoleSaved, onOpenService, serviceVersion = 0 
         external.forEach((result, index) => {
           const service = services[index];
           configured.push({ ...service, enabled: result.status === 'fulfilled' && 'enabled' in result.value ? result.value.enabled : undefined,
+            status: service.id === 'novelai' && result.status === 'fulfilled' ? availabilityLabel(generationAvailability(result.value as NovelaiConfiguration)) : undefined,
             problem: result.status === 'rejected' ? '状态读取失败' : undefined });
         });
         setRows(configured.sort((a, b) => displayOrder.indexOf(a.id) - displayOrder.indexOf(b.id)));
@@ -63,14 +65,16 @@ export function PluginSettings({ onRoleSaved, onOpenService, serviceVersion = 0 
     try {
       if (row.state) configured(await plugins.enabled(row.state, row.state.cleanupPending ? false : !row.enabled));
       else {
+        let status = row.status;
         if (row.id === 'novelai') {
           const fresh = await novelai.configuration();
-          await api<NovelaiConfiguration>('/api/services/novelai', { method: 'PUT', body: JSON.stringify({ enabled: !row.enabled, expectedRevision: fresh.revision }) });
+          const saved = await api<NovelaiConfiguration>('/api/services/novelai', { method: 'PUT', body: JSON.stringify({ enabled: !row.enabled, expectedRevision: fresh.revision }) });
+          status = availabilityLabel(generationAvailability(saved));
         } else if (row.id === 'coding') await api<CodingConfiguration>('/api/coding/configuration', { method: 'PUT', body: JSON.stringify({ enabled: !row.enabled }) });
         else {
           await api<TodoConfiguration>('/api/todos/settings', { method: 'PUT', body: JSON.stringify({ enabled: !row.enabled }) });
         }
-        setRows(items => items.map(item => item.id === row.id ? { ...item, enabled: !row.enabled } : item));
+        setRows(items => items.map(item => item.id === row.id ? { ...item, enabled: !row.enabled, status } : item));
       }
       setNotice('全局插件状态已保存');
     } catch (cause) { setError(errorMessage(cause, '插件操作失败')); setRefresh(value => value + 1); }
@@ -91,7 +95,7 @@ export function PluginSettings({ onRoleSaved, onOpenService, serviceVersion = 0 
         {rows.some(row => row.problem || row.state?.cleanupPending) && <span className="plugin-problem-count">{rows.filter(row => row.problem || row.state?.cleanupPending).length} 项异常</span>}</div>
         <div className="plugin-list" aria-label="可选插件">{rows.map(row =>
         <PluginRow key={row.id} name={row.name} description={row.description} enabled={row.enabled}
-          status={row.state?.cleanupPending ? '等待资源收尾' : row.problem ?? (row.enabled === undefined ? '正在读取' : row.enabled ? '已启用' : '已关闭')}
+          status={row.state?.cleanupPending ? '等待资源收尾' : row.problem ?? row.status ?? (row.enabled === undefined ? '正在读取' : row.enabled ? '已启用' : '已关闭')}
           busy={busy} onConfigure={publicParameters.has(row.id) || rolePurposes.has(row.id) || services.some(service => service.id === row.id) ? () => open(row.id) : undefined} onToggle={() => void toggle(row)}
           startLabel={row.state?.cleanupPending ? '重试关闭' : undefined} />)}</div></section>
         <div className="plugin-services">{['连接', '资料'].map(group => <section className="settings-group" key={group} aria-label={group}>

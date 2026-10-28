@@ -1111,7 +1111,10 @@ def test_role_update_preserves_session_messages_and_changes_future_prompt(tmp_pa
 
     second = client.post(f"/api/roles/{role.id}/messages", json={"content": "第二条"})
     assert "event: assistant_completed" in second.text
-    assert adapter.profiles == ["核心设定", "新设定"]
+    # Legacy text adapters receive the persona followed by host context.
+    # Updating a persona must replace it without discarding that context.
+    assert [profile.split("\n\n", 1)[0] for profile in adapter.profiles] == ["核心设定", "新设定"]
+    assert "核心设定" not in adapter.profiles[1]
     assert client.get(f"/api/roles/{role.id}/session").json()["session"]["sessionKey"] == session_key
 
 
