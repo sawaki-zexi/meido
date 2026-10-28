@@ -2948,9 +2948,14 @@ def _natural_accept(thread, event, metadata):
             'revision':accepted_revision})
 
 
+def _has_role_reaction_assets(role):
+    """Keep empty libraries out of optional media/source setup entirely."""
+    return bool(any(getattr(role, 'illustrationCategorySend', {}).values())
+        or (store.root / role.id / 'workspace' / 'memes' / 'manifest.json').is_file())
+
+
 async def _role_reaction_turn(role, session_key, run_id, authorized):
-    if (not any(getattr(role, 'illustrationCategorySend', {}).values())
-            and not (store.root / role.id / 'workspace' / 'memes' / 'manifest.json').is_file()):
+    if not _has_role_reaction_assets(role):
         return None
     from .channels.natural_media import _owned_worker
     library = RoleReactionLibrary(_proactive_application().memes, store, authorized=authorized)
@@ -6587,7 +6592,8 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             ))
         reaction_adapter = channel_host.adapter(thread.account_id)
         reaction = None
-        if (reaction_adapter is not None and reaction_adapter.capabilities.media
+        if (_has_role_reaction_assets(role) and reaction_adapter is not None
+                and getattr(getattr(reaction_adapter, 'capabilities', None), 'media', False)
                 and thread.channel in {'qq', 'telegram', 'feishu', 'qqbot'}):
             try:
                 reaction_source = capture_channel_source(multichannel_store, session_store,
