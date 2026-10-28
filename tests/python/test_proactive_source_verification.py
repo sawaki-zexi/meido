@@ -291,6 +291,12 @@ def test_cleanup_failure_keeps_original_loop_and_reservation_until_close_can_joi
     from backend.app.proactive_runtime import source_validation
     app, value = verification
     roots = []
+    cleanup_noted = threading.Event()
+    note_cleanup = app._note_cleanup
+
+    def record_cleanup(identifier):
+        note_cleanup(identifier)
+        cleanup_noted.set()
 
     def disk_failure(path):
         roots.append(path)
@@ -301,13 +307,14 @@ def test_cleanup_failure_keeps_original_loop_and_reservation_until_close_can_joi
         try:
             with monkeypatch.context() as patch:
                 patch.setattr(source_validation.shutil, "rmtree", disk_failure)
+                patch.setattr(app, "_note_cleanup", record_cleanup)
                 first = await app.submit_owner("role", **request(value))
-                async with asyncio.timeout(8):
-                    while app.query("role", first["id"])["status"] != "cleanup_pending":
-                        await app.recover()
-                        await asyncio.sleep(.01)
+                # Observe the original cleanup without competing for its
+                # SQLite write lock on every recovery/query polling pass.
+                assert await asyncio.to_thread(cleanup_noted.wait, 8)
                 assert roots and roots[0].exists()
                 view = app.query("role", first["id"])
+                assert view["status"] == "cleanup_pending"
                 assert view["cleanupPending"] and not view["runtimeAcknowledged"]
                 with sqlite3.connect(value.sessions.database_path) as db:
                     assert db.execute("SELECT COUNT(*) FROM autonomy_source_contracts").fetchone()[0] == 0
@@ -376,6 +383,11 @@ def test_completed_role_deletion_erases_trust_details_but_keeps_nonce_tombstone(
 
     async def exercise():
         first = await app.submit_owner("role", **arguments)
+        # Proof publication uses an independent SQLite writer. Wait for its
+        # owned execution before polling the separate result-copy/ACK phase.
+        executor = app._executors.get(first["id"])
+        if executor is not None:
+            assert await asyncio.to_thread(executor.finished.wait, 8)
         final = await settled(app, first["id"])
         proof = final["proof"]["proofId"]
         app.delete_role("role")
@@ -417,6 +429,9 @@ def test_owner_handover_fault_recovers_original_task_without_revalidating(verifi
                 if failure == "task_id_sqlite":
                     with sqlite3.connect(value.sessions.database_path) as db:
                         db.execute("DROP TRIGGER verification_task_id_failure")
+            executor = app._executors.get(first["id"])
+            if executor is not None:
+                assert await asyncio.to_thread(executor.finished.wait, 8)
             final = await settled(app, first["id"])
             for _ in range(3):
                 await app.recover()

@@ -413,6 +413,46 @@ class ChannelHost:
         if adapter is not None:
             await adapter.stop()
 
+    def capture_media_source(self, account_id: str) -> dict:
+        """Capture before ingress can wait; a later check may only revoke it."""
+        account = self.store.get_account(account_id)
+        if account is None:
+            return {}
+        bindings = sorted((str(item["identityId"]), str(item["pairedAt"]))
+            for item in self.store.list_identities() if item["channel"] == account.channel
+            and (item["scope"] == "platform" or item["accountId"] == account_id))
+        return {"roleId": account.role_id, "channel": account.channel, "createdAt": account.created_at,
+            "revision": self.store.directory_revision(account_id, account.channel),
+            "generation": self.connection_generation(account_id), "bindings": bindings}
+
+    def media_authorization(self, role_id: str, event) -> Callable[[], bool]:
+        """Freeze an admitted media source; checks can revoke, never renew it."""
+        account = self.store.get_account(event.account_id)
+        adapter = self._adapters.get(event.account_id)
+        source = event.metadata.get("hostMediaSource", self.capture_media_source(event.account_id))
+        generation = (event.metadata.get("hostConnectionGeneration", source.get("generation"))
+            if event.channel == "qq" else source.get("generation"))
+        group_revision = (self.store.group_reply_policy(role_id, event.account_id, event.chat_id)
+            if event.channel == "qq" and event.is_group and event.triggered else None)
+
+        def authorized() -> bool:
+            current = self.store.get_account(event.account_id)
+            if (account is None or current is None or adapter is None
+                    or (current.role_id, current.channel, current.created_at) != (role_id, event.channel, account.created_at)
+                    or not self.store.account_effectively_enabled(current)
+                    or self._adapters.get(event.account_id) is not adapter
+                    or self.connection_generation(event.account_id) != generation
+                    or self.capture_media_source(event.account_id) != source
+                    or event.sender_id in current.blocked_senders
+                    or not (current.allow_group if event.is_group else current.allow_private)):
+                return False
+            if group_revision is not None and (not group_revision[0]
+                    or self.store.group_reply_policy(role_id, event.account_id, event.chat_id) != group_revision):
+                return False
+            return True
+
+        return authorized
+
     async def accept_event(self, account_id: str, payload: Mapping[str, Any]):
         """Normalize, deduplicate, and directory-index one platform event."""
 

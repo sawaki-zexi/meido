@@ -2647,9 +2647,11 @@ def _refresh_channel_avatars(account: ChannelAccount, sender_id: str = "", chat_
             multichannel_store.avatars.refresh(account, "chat", chat_id, lambda: _fetch_channel_avatar(account, kind, subject))
 
 
-async def _dispatch_channel_payload(account_id: str, payload: dict[str, object], *, source_adapter: ChannelAdapter | None = None, received_at: float | None = None, source_generation: str | None = None, source_group_policy: tuple[bool, int] | None = None) -> None:
+async def _dispatch_channel_payload(account_id: str, payload: dict[str, object], *, source_adapter: ChannelAdapter | None = None, received_at: float | None = None, source_generation: str | None = None, source_group_policy: tuple[bool, int] | None = None, source_media_state: dict | None = None) -> None:
     received_at = _schedule_clock() if received_at is None else received_at
     account = multichannel_store.get_account(account_id)
+    if source_media_state is None:
+        source_media_state = channel_host.capture_media_source(account_id)
     # Freeze before admission, quote resolution, or the account event lock can
     # suspend this input. A close/open cycle must not admit old buffered input.
     if (source_group_policy is None and account is not None and account.channel == "qq"
@@ -2674,7 +2676,7 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
                 if original is not None and account is not None and account.enabled:
                     if channel_host.intake.defer(
                         account_id,
-                        lambda: _dispatch_channel_payload(account_id, payload, received_at=received_at, source_generation=source_generation, source_group_policy=source_group_policy),
+                        lambda: _dispatch_channel_payload(account_id, payload, received_at=received_at, source_generation=source_generation, source_group_policy=source_group_policy, source_media_state=source_media_state),
                         lambda: _reject_channel_payload(original, payload),
                     ):
                         return
@@ -2691,7 +2693,7 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
             if event is not None:
                 await _handle_channel_event(replace(event, received_at=received_at,
                     metadata={**event.metadata, "hostConnectionGeneration": source_generation,
-                              "hostGroupReplyPolicy": source_group_policy}))
+                              "hostGroupReplyPolicy": source_group_policy, "hostMediaSource": source_media_state}))
     except Exception as error:
         logger.warning("渠道入站处理失败 account=%s error=%s", account_id, type(error).__name__)
 
@@ -2705,13 +2707,18 @@ async def _reject_channel_payload(adapter, payload) -> None:
         logger.warning("渠道拒收提示失败 account=%s error=%s", adapter.account_id, type(error).__name__)
 
 
-async def _persist_channel_attachments(event, role_id: str) -> list[dict[str, object]]:
+async def _persist_channel_attachments(event, role_id: str, *, failures: list[dict] | None = None,
+                                       authorized=None) -> list[dict[str, object]]:
     if not event.attachments or (event.chat_type is ChatType.GROUP and not event.triggered):
         return []
     adapter = channel_adapters.get(event.account_id)
     download_media = getattr(adapter, "download_media", None)
     if not callable(download_media):
         return []
+    if authorized is not None:
+        if not authorized():
+            return []
+        event = replace(event, authorize_media=authorized)
     try:
         downloaded = await download_media(event)
     except Exception as error:
@@ -2719,20 +2726,35 @@ async def _persist_channel_attachments(event, role_id: str) -> list[dict[str, ob
         return []
 
     attachments: list[dict[str, object]] = []
-    for item in downloaded[:4]:
+    for item in downloaded:
+        if authorized is not None and not authorized():
+            return []
+        if getattr(item, "error", None):
+            if failures is not None:
+                failures.append({"name": item.file_name or "未命名文件", "reason": item.error,
+                    "fileId": item.file_id, "size": item.source_size})
+            continue
+        if len(attachments) >= 4:
+            break
         data = getattr(item, "data", None)
         if not isinstance(data, bytes) or len(data) > MAX_CHANNEL_MEDIA_BYTES:
             logger.warning("渠道附件超过大小限制 account=%s kind=%s", event.account_id, getattr(item, "kind", "unknown"))
             continue
         try:
-            attachments.append(_save_channel_attachment(
+            saved = _save_channel_attachment(
                 role_id,
                 media_filename(getattr(item, "file_name", None), getattr(item, "mime_type", None)),
                 str(getattr(item, "mime_type", None) or "application/octet-stream"),
                 data,
-            ))
+            )
+            if getattr(item, "file_id", None):
+                saved.update({"platformFileId": item.file_id, "platformSize": item.source_size})
+            attachments.append(saved)
         except Exception as error:
             logger.warning("渠道附件保存失败 account=%s kind=%s error=%s", event.account_id, getattr(item, "kind", "unknown"), type(error).__name__)
+            if item.kind == "file" and failures is not None:
+                failures.append({"name": item.file_name or "未命名文件", "reason": "附件存储空间不足或保存失败",
+                    "fileId": item.file_id, "size": item.source_size})
     return attachments
 
 
@@ -3163,13 +3185,23 @@ async def _handle_channel_event_locked(event):
     from .channels.source_authority import channel_owner_binding
     accepted_generation = event.metadata.get("hostConnectionGeneration", channel_host.connection_generation(event.account_id)) if event.channel == "qq" else None
     accepted_binding = channel_owner_binding(multichannel_store, event.channel, event.account_id, event.sender_id) if owner else None
+    attachment_authorized = channel_host.media_authorization(account.role_id, event)
+    original_event = event
     enrich_reply = getattr(channel_adapters.get(event.account_id), "enrich_reply", None)
-    if event.triggered and callable(enrich_reply):
+    if attachment_authorized() and event.triggered and callable(enrich_reply):
         event = await enrich_reply(event)
-    attachments = await _persist_channel_attachments(event, account.role_id)
+    attachment_failures, quote_failures = [], []
+    attachments = await _persist_channel_attachments(event, account.role_id, failures=attachment_failures, authorized=attachment_authorized)
     quoted_attachments = event.metadata.get("quotedAttachments", ())
-    saved_quote = await _persist_channel_attachments(replace(event, attachments=tuple(quoted_attachments)), account.role_id) if quoted_attachments else []
+    saved_quote = await _persist_channel_attachments(replace(event, attachments=tuple(quoted_attachments)), account.role_id, failures=quote_failures, authorized=attachment_authorized) if quoted_attachments else []
+    media_invalidated = not attachment_authorized()
+    if media_invalidated:
+        # Retain the raw invalidated input for audit, without expired reads.
+        event, attachments, saved_quote = original_event, [], []
+        attachment_failures, quote_failures = [], []
     content = event.content.strip() or ("[收到附件]" if event.attachments else "")
+    from .channels.qq_files import describe_failures
+    content = describe_failures(content, attachment_failures)
     from .channels.reply_identity import capture_reply_identity
     metadata: dict[str, object] = {
         "hostReceivedAt": event.received_at,
@@ -3182,7 +3214,9 @@ async def _handle_channel_event_locked(event):
         "mentionedIds": list(event.mentioned_ids),
         "replyTo": event.reply_to_message_id,
         "replyToSenderId": event.reply_to_sender_id,
-        "replyToContent": str(event.metadata.get("replyToContent") or ""),
+        "replyToContent": describe_failures(str(event.metadata.get("replyToContent") or ""), quote_failures),
+        "attachmentFailures": attachment_failures,
+        "quotedAttachmentFailures": quote_failures,
         "replyToSenderName": str(event.metadata.get("replyToSenderName") or ""),
         **capture_reply_identity(multichannel_store, account,
             sender_id=str(event.reply_to_sender_id or ""), own_id=str(event.metadata.get("self_id") or ""),
@@ -3196,6 +3230,8 @@ async def _handle_channel_event_locked(event):
         "groupReplyRevision": group_reply_revision,
     }
     if event.chat_type is ChatType.GROUP and not event.triggered:
+        if media_invalidated:
+            return
         if event.channel == "qq" and (
                 event.received_at is not None and event.received_at < multichannel_store.listening.invalidated_at(thread.thread_id)
                 or event.metadata.get("naturalListeningRevision",multichannel_store.listening.revision(thread.thread_id))
@@ -3209,7 +3245,7 @@ async def _handle_channel_event_locked(event):
             _natural_accept(thread, event, metadata)
         return
     if event.channel == "qq":
-        metadata["channelTurnState"] = "queued"
+        metadata["channelTurnState"] = "invalidated" if media_invalidated else "queued"
     accepted, stored = multichannel_store.append_event(
         thread,
         direction="inbound",
@@ -3217,7 +3253,7 @@ async def _handle_channel_event_locked(event):
         external_message_id=event.external_message_id,
         metadata=metadata,
     )
-    if not accepted:
+    if not accepted or media_invalidated:
         return
     if event.chat_type is ChatType.GROUP and not event.triggered:
         return

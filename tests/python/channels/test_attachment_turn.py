@@ -2,6 +2,7 @@
 import asyncio
 import json
 import re
+import pytest
 
 from backend.app import main
 from backend.app.agent_runtime.runtime import RuntimeManager
@@ -18,7 +19,8 @@ from backend.app.role_store import RoleStore
 from backend.app.session_store import SessionStore
 
 
-def test_qq_current_and_quoted_attachment_ids_roundtrip_but_old_ids_are_rejected(tmp_path, monkeypatch):
+@pytest.mark.parametrize("file_ids_only", [False, True])
+def test_qq_current_and_quoted_attachment_ids_roundtrip_but_old_ids_are_rejected(tmp_path, monkeypatch, file_ids_only):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="附件角色", profile=RoleProfile(profile="设定")))
     sessions = SessionStore(tmp_path / "sessions.db")
@@ -31,18 +33,25 @@ def test_qq_current_and_quoted_attachment_ids_roundtrip_but_old_ids_are_rejected
 
     async def transport(operation, params):
         operations.append((operation, params))
+        if operation == "get_group_file_url":
+            # NapCat v4.18.28 requires group_id/file_id strings, not the old guide's `group`.
+            assert params == {"group_id": "100", "file_id": params["file_id"]}
+            assert params["file_id"] in {"current-id", "quoted-id"}
+            return {"data": {"url": "https://qq.test/" + params["file_id"].removesuffix("-id")}}
         if operation == "get_msg":
             assert params == {"message_id": "quoted-message"}
             return {"data": {"group_id": 100, "sender": {"user_id": 22, "nickname": "引用者"}, "message": [
-                {"type": "file", "data": {"file": "quoted.md", "url": "https://qq.test/quoted"}},
+                {"type": "file", "data": ({"name": "quoted.md", "file_id": "quoted-id", "size": "17"}
+                    if file_ids_only else {"file": "quoted.md", "url": "https://qq.test/quoted"})},
             ]}}
         if operation in {"get_friend_list", "get_group_list", "get_group_member_list"}:
             return {"data": []}
         assert operation == "send_group_msg"
         return {"data": {"message_id": "outbound-fixture"}}
 
-    async def download(url, *, max_bytes):
+    async def download(url, *, max_bytes, resolved):
         downloads.append(url)
+        assert resolved is file_ids_only
         data = {"https://qq.test/current": ("中" * 4000).encode(), "https://qq.test/quoted": b"quoted attachment"}[url]
         assert len(data) <= max_bytes
         return data, "text/plain" if url.endswith("current") else "text/markdown"
@@ -63,7 +72,7 @@ def test_qq_current_and_quoted_attachment_ids_roundtrip_but_old_ids_are_rejected
         "_channel_attachment_usage": {}, "_fetch_channel_avatar": avatar,
     }.items():
         monkeypatch.setattr(main, name, value)
-    monkeypatch.setattr(media, "download_qq_media", download)
+    monkeypatch.setattr(media, "download_qq_file", download)
 
     class Model:
         calls = 0
@@ -120,7 +129,8 @@ def test_qq_current_and_quoted_attachment_ids_roundtrip_but_old_ids_are_rejected
         segments = [{"type": "at", "data": {"qq": "99"}}, {"type": "text", "data": {"text": "读取附件"}}]
         if files:
             segments.extend([
-                {"type": "file", "data": {"file": "current.txt", "url": "https://qq.test/current"}},
+                {"type": "file", "data": ({"name": "current.txt", "file_id": "current-id", "size": "12000"}
+                    if file_ids_only else {"file": "current.txt", "url": "https://qq.test/current"})},
                 {"type": "reply", "data": {"id": "quoted-message"}},
             ])
         return {"post_type": "message", "message_type": "group", "self_id": 99, "group_id": group,

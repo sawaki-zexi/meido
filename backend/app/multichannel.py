@@ -771,11 +771,14 @@ class MultichannelStore:
         if not channel or channel == "telegram" or not account_id:
             raise ValueError("渠道或账号 ID 无效")
         now = _now()
+        policy = (int(enabled), int(allow_private), int(allow_group), _json(sorted(set(blocked_senders or []))), platform_id)
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             existing = db.execute("SELECT role_id,channel FROM channel_accounts WHERE account_id=?", (account_id,)).fetchone()
             if existing is not None and (str(existing["role_id"]) != role_id or str(existing["channel"]) != channel):
                 raise ValueError("渠道账号 ID 已属于其他角色或平台")
             self._check_platform_identity(db, account_id, channel, platform_id)
+            previous = db.execute("SELECT enabled,allow_private,allow_group,blocked_senders_json,platform_id FROM channel_accounts WHERE account_id=?", (account_id,)).fetchone()
             db.execute(
                 """INSERT INTO channel_accounts(account_id,role_id,channel,enabled,allow_private,allow_group,blocked_senders_json,display_name,platform_id,created_at,updated_at)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET enabled=excluded.enabled,
@@ -785,6 +788,8 @@ class MultichannelStore:
                 (account_id, role_id, channel, int(enabled), int(allow_private), int(allow_group),
                  _json(sorted(set(blocked_senders or []))), display_name.strip(), platform_id, now, now),
             )
+            if previous is None or tuple(previous) != policy:
+                self._advance_account_revision(db, account_id)
         return self.get_account(account_id)  # type: ignore[return-value]
 
     @staticmethod
