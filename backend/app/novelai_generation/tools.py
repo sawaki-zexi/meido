@@ -27,15 +27,16 @@ _SCHEMA['required'] = ['prompt']
 # image below, so a static Pydantic default would be misleading to a model.
 _SCHEMA['properties']['samples'].pop('default', None)
 _SCHEMA['properties']['samples']['description'] = '生成张数（1–4）；普通聊天省略时由宿主固定为一张。'
-_SCHEMA['properties']['prompt']['description'] = '英文 NovelAI tags；普通聊天只描述角色此刻值得展示的表情、动作或构图。'
+_SCHEMA['properties']['prompt']['description'] = '逗号分隔的完整英文 NovelAI tags：主体外貌（发色、发型、眼睛、服饰等已知特征）以及此刻的表情、动作、场景与构图。宿主不会自动补入角色外观。'
 
 
 class GenerateImageTool:
     definition = ToolDefinition(name='generate_image',
         description=('Generate one approved NovelAI expression image during the current owner chat when an image adds value to the reply. '
             'Decide yourself whether to call it; do not call it every turn and do not ask the owner to fill image parameters. '
-            'For an ordinary expression call, provide only English tags for the character\'s current emotion, pose, and framing; '
-            'the host supplies model, sampler, size, seed, limits, delivery, and a one-image default. '
+            'Provide complete comma-separated English NovelAI tags, including the subject\'s known appearance, clothing, emotion, pose, scene and framing. '
+            'For self-portraits, preserve your appearance from the role profile/SELF and inspect_role_image references; never invent it from an image filename. '
+            'The host supplies model, sampler, size, seed, limits, delivery and a one-image default, but does not add appearance tags. '
             'Explicit advanced fields remain accepted for owner-directed parameter reuse within the same allowlist. Uses one finite paid attempt; unknown results are never retried.'),
         input_schema=_SCHEMA, risk='external', source='builtin:novelai', exposure='direct',
         external_allowed=False, timeout_seconds=330, output_limit=4000, search_hint='生图 生成图片 NovelAI 立绘 场景图')

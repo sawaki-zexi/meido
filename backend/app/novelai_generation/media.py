@@ -50,14 +50,20 @@ def _images(spool: Path, media_type: str) -> Iterator[bytes]:
             raise ValueError('invalid image response')
         seen, total = set(), 0
         for image in images:
-            if (not isinstance(image, dict) or set(image) != {'image', 'index', 'seed'}
-                    or not isinstance(image['image'], str)
-                    or type(image['index']) is not int or not 0 <= image['index'] < MAX_ITEMS
-                    or image['index'] in seen or type(image['seed']) is not int or not 0 <= image['seed'] <= 2**32-1):
+            if isinstance(image, str):
+                # Shiori's deployed JSON contract uses base64 strings; the
+                # current official schema instead wraps each image in metadata.
+                encoded = image
+            elif (isinstance(image, dict) and set(image) == {'image', 'index', 'seed'}
+                    and isinstance(image['image'], str)
+                    and type(image['index']) is int and 0 <= image['index'] < MAX_ITEMS
+                    and image['index'] not in seen and type(image['seed']) is int and 0 <= image['seed'] <= 2**32-1):
+                seen.add(image['index'])
+                encoded = image['image']
+            else:
                 raise ValueError('invalid image response')
-            seen.add(image['index'])
             try:
-                decoded = base64.b64decode(image['image'], validate=True)
+                decoded = base64.b64decode(encoded, validate=True)
             except (ValueError, binascii.Error):
                 raise ValueError('invalid image encoding') from None
             total += len(decoded)

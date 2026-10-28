@@ -270,7 +270,12 @@ class OwnerMaterialLibrary:
         with self.library.app._gate:
             observed = self._observations.get((role_id, identifier))
         if observed is None:
-            raise MaterialGone(identifier)
+            # Browser image URLs outlive this advisory process cache. Rebuild a
+            # bounded current observation on a miss, then apply the same original
+            # identity/hash checks; never accept a path supplied by the browser.
+            snapshot = self._snapshot(role_id)
+            entry = self._entry(snapshot, identifier)
+            observed = (entry, self.chat._root_identity(role_id))
         entry, root_identity = observed
         with self._locks(role_id, (entry.path, root / 'manifest.json'), self._context(role_id)):
             self._check_role(role_id)

@@ -2949,7 +2949,8 @@ def _natural_accept(thread, event, metadata):
 
 
 async def _role_reaction_turn(role, session_key, run_id, authorized):
-    if not any(getattr(role, 'illustrationCategorySend', {}).values()):
+    if (not any(getattr(role, 'illustrationCategorySend', {}).values())
+            and not (store.root / role.id / 'workspace' / 'memes' / 'manifest.json').is_file()):
         return None
     from .channels.natural_media import _owned_worker
     library = RoleReactionLibrary(_proactive_application().memes, store, authorized=authorized)
@@ -4951,6 +4952,16 @@ def _runtime_tool_candidates(
         return (context.session_key.startswith('thread:') or
                 run is not None and run.modelSnapshot.get('humanInputSource') == 'desktop_owner')
 
+    def role_image_source_authorized(context):
+        if not schedule_source_authorized(context):
+            return False
+        user = session_store.user_message_for_run(context.run_id)
+        run = session_store.get_run(context.run_id)
+        return bool(user and user.status == 'completed' and user.messageType == 'text'
+            and not user.metadata.get('internalEvent')
+            and (context.session_key.startswith('thread:')
+                or run and run.modelSnapshot.get('humanInputSource') == 'desktop_owner'))
+
     def mood_source_authorized(context):
         if (include_channel or source_account_id or source_thread_id not in {None, '', f'desktop:{role.id}'}
                 or context.session_key != f'role:{role.id}' or not schedule_source_authorized(context)):
@@ -4976,6 +4987,8 @@ def _runtime_tool_candidates(
             and user.sessionKey == context.session_key and not user.metadata.get('internalEvent')
             and user.metadata.get('channel', 'desktop') == 'desktop')
 
+    from .agent_runtime.role_image_tool import InspectRoleImageTool, role_image_catalog
+    image_configuration = model_configuration_store.get(role.modelConfigurationId)
     memory_access = _memory_runtime_access(role, is_channel_owner=is_channel_owner, source_thread_id=source_thread_id)
     group_access = GroupToolAccess(multichannel_store, role_id=role.id,
         source_thread_id=source_thread_id, is_owner=is_channel_owner,
@@ -4985,6 +4998,9 @@ def _runtime_tool_candidates(
         file_tools = _proactive_application().drift_skills.author_tools(file_tools, role.id,
             authorized=schedule_source_authorized)
     tools: list[object] = [
+        *([InspectRoleImageTool(store, role, authorized=role_image_source_authorized,
+            multimodal=image_configuration is None or model_adapter_registry.supports_images(image_configuration))]
+          if role_image_catalog(role) else []),
         *([RoleMoodTool(store, role, authorized=mood_source_authorized)]
           if not include_channel and role.moodIllustrationBindings else []),
         PetActionTool(_desktop_pet_application(), role.id, authorized=pet_source_authorized),
@@ -5096,6 +5112,8 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
     role = _effective_plugin_role(role)
     shell = role.agentConfig.shell
     enabled: set[str] = set(DEFAULT_BUILTIN_TOOLS)
+    if role.avatarUrl or role.cardImageUrl or role.illustrations:
+        enabled.add('inspect_role_image')
     if not include_channel and role.moodIllustrationBindings:
         enabled.add('set_role_mood')
     if not _desktop_pet_application().unavailable_reason(role.id):
@@ -5174,7 +5192,7 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     host_enabled = set(enabled_tools)
     enabled_tools.update(agent_config.enabledTools)
-    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | CODING_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image", "pet_action", "set_role_mood"}) - host_enabled)
+    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | CODING_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image", "pet_action", "set_role_mood", "inspect_role_image"}) - host_enabled)
     if not include_channel:
         enabled_tools.difference_update({
             "account_list", "account_targets", "account_send", "set_group_listening", "read_attachment",
@@ -6569,8 +6587,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             ))
         reaction_adapter = channel_host.adapter(thread.account_id)
         reaction = None
-        if (any(getattr(role, 'illustrationCategorySend', {}).values())
-                and reaction_adapter is not None and reaction_adapter.capabilities.media
+        if (reaction_adapter is not None and reaction_adapter.capabilities.media
                 and thread.channel in {'qq', 'telegram', 'feishu', 'qqbot'}):
             try:
                 reaction_source = capture_channel_source(multichannel_store, session_store,

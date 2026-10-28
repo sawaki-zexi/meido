@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { fakeBackend, role } from '../../test/fakeBackend';
@@ -53,10 +53,14 @@ it('binds mood and separately grants category sending without granting other cat
   await user.click(screen.getByRole('button', { name: '保存心情绑定' }));
   await screen.findByText('心情插画绑定已保存。');
   expect(current.illustrationCategorySend).toEqual({});
+  // Sending is reachable from the image itself, even with "all categories"
+  // selected; merely uploading or binding a mood still does not opt it in.
+  await user.click(screen.getByRole('checkbox', { name: /允许角色发送此分类插画/ }));
+  await waitFor(() => expect(current.illustrationCategorySend).toEqual({ 未分类: true }));
   await user.keyboard('{Escape}');
   expect(screen.getByRole('combobox', { name: '默认心情' })).toHaveValue('开心');
   await user.selectOptions(screen.getByRole('combobox', { name: '插画分类' }), '未分类');
-  await user.click(screen.getByRole('checkbox', { name: /允许角色发送此分类插画/ }));
+  expect(screen.getByRole('checkbox', { name: /允许角色发送此分类插画/ })).toBeChecked();
   await screen.findByText('角色可以在获准会话中发送此分类插画。');
   expect(calls.filter(call => call.method === 'PATCH')).toMatchObject([
     { body: { moodBindings: { 开心: 'i1' } } }, { body: { categorySend: { 未分类: true } } },
@@ -110,4 +114,47 @@ it('uploads every selected file and confirms category removal through recoverabl
     '/api/roles/r1/illustrations/upload-1', '/api/roles/r1/illustrations/upload-2',
   ]);
   expect(screen.getByRole('button', { name: '查看插画 garden.png' })).toBeInTheDocument();
+});
+
+it('waits for the initial library read before allowing uploads and accepts files without browser MIME metadata', async () => {
+  const current = role({ id: 'r1', name: '诗织', illustrations: [], illustrationCategories: ['未分类'] });
+  let finish: (reply: { body: unknown }) => void = () => {};
+  const { calls } = fakeBackend({
+    'GET /api/roles/r1/illustrations': () => new Promise(resolve => { finish = resolve; }),
+    'POST /api/roles/r1/illustrations\\?.*': init => {
+      expect(init?.headers).toMatchObject({ 'content-type': 'image/png' });
+      return { body: { role: { ...current, illustrations: [illustration] } } };
+    },
+  });
+  render(<RoleIllustrationLibrary role={current} onRoleSaved={() => {}} />);
+  expect(screen.getByRole('button', { name: '上传插画' })).toBeDisabled();
+  await act(async () => finish({ body: { role: current } }));
+  await waitFor(() => expect(screen.getByRole('button', { name: '上传插画' })).toBeEnabled());
+  fireEvent.change(screen.getByLabelText('上传角色插画'), { target: { files: [new File(['png'], 'empty-mime.PNG')] } });
+  await screen.findByText('1 张插画已保存。');
+  expect(calls.filter(call => call.method === 'POST')).toHaveLength(1);
+  expect(screen.getByRole('button', { name: '查看插画 garden.png' })).toBeVisible();
+});
+
+it('requires a successful fresh read after an uncertain upload and does not duplicate it', async () => {
+  let reads = 0;
+  const current = role({ id: 'r1', name: '诗织', illustrations: [], illustrationCategories: ['未分类'] });
+  const { calls } = fakeBackend({
+    'GET /api/roles/r1/illustrations': () => ++reads === 2 ? { status: 503, body: { detail: '读取暂不可用' } }
+      : { body: { role: { ...current, illustrations: reads > 1 ? [illustration] : [] } } },
+    'POST /api/roles/r1/illustrations\\?.*': () => ({ status: 503, body: { detail: '响应未确认' } }),
+  });
+  const user = userEvent.setup();
+  render(<RoleIllustrationLibrary role={current} onRoleSaved={() => {}} />);
+  await waitFor(() => expect(screen.getByRole('button', { name: '上传插画' })).toBeEnabled());
+  await user.upload(screen.getByLabelText('上传角色插画'), new File(['png'], 'one.png', { type: 'image/png' }));
+  await screen.findByRole('alert');
+  expect(screen.getByRole('button', { name: '上传插画' })).toBeDisabled();
+  await user.click(screen.getByRole('button', { name: '刷新插画库' }));
+  await screen.findByText('读取暂不可用');
+  expect(screen.getByRole('button', { name: '上传插画' })).toBeDisabled();
+  await user.click(screen.getByRole('button', { name: '刷新插画库' }));
+  await screen.findByRole('button', { name: '查看插画 garden.png' });
+  expect(screen.getByRole('button', { name: '上传插画' })).toBeEnabled();
+  expect(calls.filter(call => call.method === 'POST')).toHaveLength(1);
 });

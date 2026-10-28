@@ -22,11 +22,19 @@
 
 角色 `agentConfig.novelai` 默认保留 `manualEnabled=false`、`manualDailyAttempts=10` 以兼容旧角色文件；当前运行时的聊天表情和主人手动工作台由插件公共设置 `enabled` 与 `manualDailyAttempts` 统一控制。角色侧实际生图配置为 `sceneCgEnabled=false`、`sceneCgDailyAttempts=3`、`scenePromptModelConfigurationId=null`、`sceneCgPromptInstructions=""`（最多2000字符）、`autoWritebackRoleAssets=false`、`promptTagsEnabled=false`、`allowedPromptTagRatings=[general]`、`consentRevision=0`。角色 `consentRevision` 保留兼容但不再影响新请求。CG 须开启角色开关、服务就绪、允许文生图，并明确选中存在的模型配置 ID，null/已删除 ID 不回退全局模型；补充要求只作为该角色的主人绘图偏好加入 CG 辅助模型 system prompt，不进入场景事实消息，也不影响聊天表情或手动工作台。宿主会在 CG 提交前追加并大小写去重第三人称、电影构图、角色入镜 tags 及第一人称/POV/自拍负向 tags。写回须同时启用 CG。降低额度不清除计数。旧客户端省略整个字段或只提交部分字段时保留既有许可；新增标签默认值不改变旧 #172 请求的权限指纹。实际许可变化在角色文件写入前推进私有持久 epoch，关闭再开启也不能复活旧冻结工具。手工写 enabledTools 不能绕过许可。
 
-工具 `generate_image` 为 direct / risk external / source builtin:novelai / external_allowed=false，外层330秒、输出4000字符。普通聊天只需要必填英文 `prompt` 和可选 `negative_prompt`：角色自己判断这一回合是否值得展示表情，决定调用时只描述当前情绪、动作和构图，不要求主人填写参数，也不应每回合调用。工具 schema 仍保留 mode、尺寸、模型等可选字段，以兼容主人明确要求的历史参数复用；普通聊天省略这些字段时，宿主固定 `txt2img`、一张图默认、默认模型/采样器/尺寸/步数/seed、`intent=chat_expression` 和原回复投递，显式高级字段仍受同一 allowlist 和来源校验。完整参数仍由主人手动工作台/API 使用。只接受宿主真实主人当前输入：桌面 SQLite run 必须由真实 `/messages` 写入 humanInputSource=desktop_owner；渠道须真实当前主人 owner context、账号/配对/目录代际及原线程。访客、定时、内部完成、主动或伪造 source 不能获得消费权。执行前、外部投递前和本地发布前均重新检查；冻结版本只能收权。
+工具 `generate_image` 为 direct / risk external / source builtin:novelai / external_allowed=false，外层330秒、输出4000字符。普通聊天只需要必填英文 `prompt` 和可选 `negative_prompt`：角色自己判断这一回合是否值得展示表情，决定调用时须把已知主体外貌、服饰与当前情绪、动作、场景、构图一并转成完整英文 tags；宿主不自动补入角色外观，不要求主人填写参数，也不应每回合调用。工具 schema 仍保留 mode、尺寸、模型等可选字段，以兼容主人明确要求的历史参数复用；普通聊天省略这些字段时，宿主固定 `txt2img`、一张图默认、默认模型/采样器/尺寸/步数/seed、`intent=chat_expression` 和原回复投递，显式高级字段仍受同一 allowlist 和来源校验。完整参数仍由主人手动工作台/API 使用。只接受宿主真实主人当前输入：桌面 SQLite run 必须由真实 `/messages` 写入 humanInputSource=desktop_owner；渠道须真实当前主人 owner context、账号/配对/目录代际及原线程。访客、定时、内部完成、主动或伪造 source 不能获得消费权。执行前、外部投递前和本地发布前均重新检查；冻结版本只能收权。
 
 公开配置新增 `availability={available,code,message}`，仅判断本地配置，不读取凭据、不请求供应商。code 为 `ready`、`service_disabled`、`credential_missing`、`credential_cleanup_pending` 或 `generation_modes_disabled`。启用插件即注册 direct 工具；工具描述再结合角色和日额度解释暂不可用原因，缺凭据或额度不足不隐藏能力。执行时仍重查来源、修订、模式和额度，不能由描述授予权限。设置、插件列表与工作台显示对应状态；工作台还检查历史中的今日用量。参数/凭据变更允许未来的新请求，旧冻结任务仍被撤销。
 
-历史、单条查询和工具结果新增 `errorMessage`，由受控 `errorCode` 生成：401/403 提示凭据或权限，402 提示 Anlas/额度，429 提示请求频繁，5xx 提示供应商暂不可用，网络异常说明结果无法确认。保留原 status/consumption；不展示原始错误正文，也不据此重试。未出网的本地次数耗尽返回 HTTP 429 和明确提示，原 requestId 仍可按既有规则重查。
+历史、单条查询和工具结果新增 `errorMessage`，由受控 `errorCode` 生成：401/403 提示凭据或权限，402 提示 Anlas/额度，429 提示请求频繁，5xx 提示供应商暂不可用，网络异常说明结果无法确认；响应类型、压缩、空内容及大小超限有独立说明，工作台和聊天历史显示稳定错误代码与尝试编号。没有实际附件时不声称“图片保留在历史”。保留原 status/consumption；不展示原始错误正文，也不据此重试。未出网的本地次数耗尽返回 HTTP 429 和明确提示，原 requestId 仍可按既有规则重查。
+
+## 角色形象与模型工具（2026-10-28，#263）
+
+对照 Shiori `d3acaed186b172a78a5892e0307e9affd89759f0`：角色身份来自 `role_profile` 和 `SELF.md`；`generate_image` 要求模型转换完整英文 tags，服务不会自动从角色图片提取外观。Meido 保留相同文字身份来源，并修正旧工具描述中「只描述情绪/动作」的遗漏。
+
+Meido 的头像、卡片图、插画位于角色 `workspace` 之外，不能靠现有 `read_file` 直接查看。当前角色有图片时，首轮直接提供只读 `inspect_role_image`：目录只含当前角色的资产 ID；省略 ID 分页列出，指定 ID 才把图片送入当前视觉模型。它不接受路径、URL 或其他角色身份，不把图片加入聊天附件、不改变分类发送许可、不调用辅助模型或 NovelAI。普通主人回合可在设定缺少视觉细节时先看参考图，再组织完整生图 tags；图片名称不是外貌事实。非主人来源、已撤销来源、变更或移除的冻结资产、路径链接和明确不支持视觉的模型均不能读取图片；未知模型的实际视觉能力仍由当前服务决定。
+
+验证通过本机 HTTP 模型/NovelAI 替身：首轮看见工具 → 读取当前角色头像 → 下一次实际模型请求含头像像素 → 完整外貌 tags 进入 NovelAI `input` 与 V4 caption → 原回复只收到生成图。此检查证明装配、图像传递和提示词传输，不证明任何真实模型必然遵循说明或真实账号已出图。
 
 ## 参数与身份
 
@@ -42,9 +50,9 @@
 
 执行由现有 TaskRuntime 拥有，kind=novelai_image、300秒、日志64KiB、尾部4000字符、completion=false、submission_key=attempt_id、retain_until_ack=true，受既有全局8/角色3并发约束。已准入但 taskId 回写失败时，前台和后台都必须 stop/join，后台不得假报 accepted；恢复按同一 Runtime handover 找回结果，复制业务事实后本地 ACK。ACK/标记失败不会重新提交或 POST。Runtime cancelled/timed_out 与业务 unknown/已收图可以不同。
 
-每 attempt 最多一次生成 POST。HTTP200/201 接收固定 ZIP/对象JSON/原始受支持图片，显式禁重试、重定向、环境代理/证书隐式配置；HTTP期限沿同一原始 deadline。已知400/401/402/403/422可为 failed_response；408/429/5xx、断线、超时、取消及坏包为 unknown，均不承诺未扣费或退款。
+每 attempt 最多一次生成 POST。HTTP200/201 接收 ZIP、JSON 图片对象或 Shiori 兼容的 base64 字符串数组、原始受支持图片；二进制或缺失 MIME 仅按 ZIP/PNG/JPEG/WebP 签名识别后进入完整校验，显式禁重试、重定向、环境代理/证书隐式配置；HTTP期限沿同一原始 deadline。已知400/401/402/403/422可为 failed_response；408/429/5xx、断线、超时、取消及坏包为 unknown，均不承诺未扣费或退款。
 
-响应 raw spool≤32MiB、总解压≤64MiB、最多16项、每图像素≤本次批准面积。按实际读取计数，不信任长度声明或 ZIP 路径。Pillow 完整验证与加载；每图直接写角色附件的 staging 再 rename，不另存完整解压副本。staged 附件引用先持久，再删除完整 spool，最后结算 succeeded；本地故障 local_pending 仅重做本地步骤，复用已写二进制。坏包中已验证图片保留历史，按真实 raw spool/图片/孤立二进制结算，不丢历史、不用重新生成补偿。
+HTTP 支持 identity/gzip/deflate，压缩传输与 HTTP 解码后的 spool 分别≤32MiB；解码本身受限，损坏、截断或未知编码拒绝。ZIP 总解压≤64MiB、最多16项、每图像素≤本次批准面积。按实际读取计数，不信任长度声明或 ZIP 路径。Pillow 完整验证与加载；每图直接写角色附件的 staging 再 rename，不另存完整解压副本。staged 附件引用先持久，再删除完整 spool，最后结算 succeeded；本地故障 local_pending 仅重做本地步骤，复用已写二进制。坏包中已验证图片保留历史，按真实 raw spool/图片/孤立二进制结算，不丢历史、不用重新生成补偿。
 
 正常完成附件为公共 id/name/mediaType/size/kind，无路径/base64。意外多图完整保存，记录 unexpected_multiple_images；工具报协议异常，canonical outbox 仅留历史，不作为正常原回复自动展示或发送。
 
