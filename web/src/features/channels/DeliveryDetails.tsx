@@ -12,7 +12,7 @@ export function DeliveryDetails({ metadata }: { metadata: Record<string, unknown
   const parts = Array.isArray(metadata.parts) ? metadata.parts.filter((part): part is Part => part && typeof part === "object" && typeof part.status === "string") : [];
   if (!parts.length) return null;
   const pending = metadata.deliveryStatus === "pending";
-  const statuses: Record<string, string> = { sent: "已发送", failed: "发送失败", uncertain: "结果不确定", sending: "等待确认", pending: pending ? "等待发送" : "未发送" };
+  const statuses: Record<string, string> = { sent: metadata.receiptKind === "transport_acceptance" ? "已提交 Bot" : "已发送", failed: "发送失败", uncertain: "结果不确定", sending: "等待确认", pending: pending ? "等待发送" : "未发送" };
   return <details className="channel-delivery-parts"><summary>分段送达详情</summary>
     <ol>{parts.map((part, index) => <li key={index}>
       <strong>第 {index + 1} 段 · {statuses[part.status] ?? "结果不确定"}</strong>

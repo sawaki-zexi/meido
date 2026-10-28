@@ -138,6 +138,9 @@ class ChannelHost:
         async with self._send_state_lock:
             self._paused_accounts.discard(account_id)
         self.intake.resume(account_id)
+        resume = getattr(self._adapters.get(account_id), 'resume_intake', None)
+        if callable(resume):
+            resume()
 
     @asynccontextmanager
     async def event_scope(self, account_id: str) -> AsyncIterator[bool]:
@@ -710,6 +713,9 @@ class ChannelHost:
             dispatch_cancelled = False
             latest_details = {}
             def record_parts(details):
+                if details.get('receiptKind') == 'transport_acceptance' and account.channel != 'grok_bot':
+                    raise ChannelAdapterError('transport_acceptance_requires_grok')
+                details['channel'] = account.channel
                 latest_details.clear()
                 latest_details.update(details)
                 self.store.record_delivery_parts(attempt_id, details)
@@ -761,6 +767,9 @@ class ChannelHost:
             except Exception as error:
                 status = DeliveryStatus.UNCERTAIN if is_delivery_uncertain(error) else DeliveryStatus.FAILED
                 result = DeliveryResult(status, target, error=type(error).__name__)
+            if result.raw.get('receiptKind') == 'transport_acceptance' and account.channel != 'grok_bot':
+                result = DeliveryResult(DeliveryStatus.UNCERTAIN, target, error='invalid_transport_receipt')
+            result.raw['channel'] = account.channel
             if latest_details and not result.raw.get('parts'):
                 for part in latest_details.get('parts', []):
                     if part['status'] == 'sending':

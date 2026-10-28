@@ -18,6 +18,8 @@ type ConnectionForm = {
   appSecret: string;
   verificationToken: string;
   encryptKey: string;
+  webhookKey: string;
+  maxMessages: number;
   allowPrivate: boolean;
   allowGroup: boolean;
   blockedSenders: string;
@@ -36,6 +38,7 @@ export function AccountDetail({ roleId, channel, account, platformEnabled, onAcc
   const [form, setForm] = useState<ConnectionForm>(() => ({
     displayName: account?.displayName ?? "", endpoint: account?.endpoint ?? "", appId: account?.appId ?? account?.platformId ?? "",
     token: "", accessToken: "", clientSecret: "", appSecret: "", verificationToken: "", encryptKey: "",
+    webhookKey: "", maxMessages: account?.maxMessages ?? 12,
     allowPrivate: account?.allowPrivate ?? true, allowGroup: account?.allowGroup ?? Boolean(defaultCapabilities[channel].group),
     blockedSenders: account?.blockedSenders.join("\n") ?? "",
   }));
@@ -81,6 +84,7 @@ export function AccountDetail({ roleId, channel, account, platformEnabled, onAcc
     blockedSenders: form.blockedSenders.split(/[\n,]/).map((item) => item.trim()).filter(Boolean),
   });
   const valid = channel === "telegram" ? Boolean(form.token.trim() || account?.tokenConfigured)
+    : channel === "grok_bot" ? Boolean(form.endpoint.trim() && (form.webhookKey.trim() || account?.credentialsConfigured) && Number.isInteger(form.maxMessages) && form.maxMessages >= 2 && form.maxMessages <= 100)
     : channel === "qq" ? Boolean(form.endpoint.trim())
       : Boolean(form.appId.trim() && (account?.tokenConfigured || (channel === "qqbot" ? form.clientSecret.trim() : form.appSecret.trim())));
 
@@ -93,14 +97,15 @@ export function AccountDetail({ roleId, channel, account, platformEnabled, onAcc
 
   const saveConnection = () => action(async () => {
     const body: Record<string, unknown> = { ...rules(), enabled: account?.enabled ?? false, ...(account ? { accountId: account.accountId } : {}) };
-    const keys: (keyof Pick<ConnectionForm, "token" | "endpoint" | "appId" | "accessToken" | "clientSecret" | "appSecret" | "verificationToken" | "encryptKey">)[] = channel === "telegram" ? ["token"] : channel === "qq" ? ["endpoint", "accessToken"] : channel === "qqbot" ? ["endpoint", "appId", "clientSecret"] : ["endpoint", "appId", "appSecret", "verificationToken", "encryptKey"];
+    const keys: (keyof Pick<ConnectionForm, "token" | "endpoint" | "appId" | "accessToken" | "clientSecret" | "appSecret" | "verificationToken" | "encryptKey" | "webhookKey">)[] = channel === "telegram" ? ["token"] : channel === "qq" ? ["endpoint", "accessToken"] : channel === "qqbot" ? ["endpoint", "appId", "clientSecret"] : channel === "grok_bot" ? ["endpoint", "webhookKey"] : ["endpoint", "appId", "appSecret", "verificationToken", "encryptKey"];
+    if (channel === "grok_bot") body.maxMessages = form.maxMessages;
     for (const key of keys) {
       if (form[key].trim()) body[key] = form[key].trim();
     }
     const result = await api<{ account: Account }>(`${base}/${channel}`, { method: "PUT", body: JSON.stringify(body) });
     if (!live.current) return;
     onAccountChange(result.account);
-    setForm((current) => ({ ...current, token: "", accessToken: "", clientSecret: "", appSecret: "", verificationToken: "", encryptKey: "" }));
+    setForm((current) => ({ ...current, token: "", accessToken: "", clientSecret: "", appSecret: "", verificationToken: "", encryptKey: "", webhookKey: "" }));
     if (credentialsDetails.current) credentialsDetails.current.open = false;
     if (!account && !result.account.enabled) {
       const enabled = await api<{ account: Account }>(`${base}/accounts/${encodeURIComponent(result.account.accountId)}/state`, { method: "POST", body: JSON.stringify({ enabled: true }) });
@@ -122,7 +127,7 @@ export function AccountDetail({ roleId, channel, account, platformEnabled, onAcc
 
   const test = () => account && action(async () => {
     const result = await api<{ account: Account }>(`${base}/${channel}/${encodeURIComponent(account.accountId)}/test`, { method: "POST" });
-    if (live.current) { onAccountChange(result.account); setNotice("连接测试通过"); }
+    if (live.current) { onAccountChange(result.account); setNotice(channel === "grok_bot" ? "本机入口已启用；尚未验证远端收发。" : "连接测试通过"); }
   }, "连接测试失败");
 
   const remove = () => account && window.confirm(`移除${channelName[channel]}账号？历史会话会保留。`) && action(async () => {
@@ -131,7 +136,8 @@ export function AccountDetail({ roleId, channel, account, platformEnabled, onAcc
   }, "移除账号失败");
 
   const fields = <fieldset disabled={busy || !canConnect} className="account-connection-fields">
-    {channel !== "telegram" && account?.mode !== "managed" && <label className="field">{channel === "qq" ? "NapCat WebSocket 地址" : "平台 API 地址"}<input type="url" value={form.endpoint} onChange={(event) => update("endpoint", event.target.value)} placeholder={channel === "qq" ? "ws://127.0.0.1:6700" : channel === "qqbot" ? "https://api.sgroup.qq.com" : "https://open.feishu.cn/open-apis"} /></label>}
+    {channel !== "telegram" && account?.mode !== "managed" && <label className="field">{channel === "qq" ? "NapCat WebSocket 地址" : channel === "grok_bot" ? "Grok Webhook 地址" : "平台 API 地址"}<input type="url" value={form.endpoint} onChange={(event) => update("endpoint", event.target.value)} placeholder={channel === "qq" ? "ws://127.0.0.1:6700" : channel === "qqbot" ? "https://api.sgroup.qq.com" : channel === "grok_bot" ? "https://…" : "https://open.feishu.cn/open-apis"} /></label>}
+    {channel === "grok_bot" && <><label className="field">Webhook 密钥<input type="password" autoComplete="new-password" value={form.webhookKey} onChange={(event) => update("webhookKey", event.target.value)} placeholder={account?.credentialsConfigured ? "已保存；留空则不更换" : "填写 Bot 的 Webhook 密钥"} /></label><label className="field">单次交流消息上限<input type="number" min={2} max={100} step={1} value={form.maxMessages} onChange={(event) => update("maxMessages", Number(event.target.value))} /></label><p>双方消息合计，默认 12 条。更换 Webhook 会建立新会话，旧历史保留。</p></>}
     {(channel === "qqbot" || channel === "feishu") && <label className="field">{channel === "qqbot" ? "QQ Bot App ID" : "飞书 App ID"}<input autoComplete="off" value={form.appId} onChange={(event) => update("appId", event.target.value)} /></label>}
     {channel === "telegram" && <label className="field">Telegram Bot Token<input type="password" autoComplete="new-password" value={form.token} onChange={(event) => update("token", event.target.value)} placeholder={account?.tokenConfigured ? "已保存；留空则不更换" : "从 BotFather 获取"} /></label>}
     {channel === "qq" && account?.mode !== "managed" && <label className="field">NapCat Access Token<input type="password" autoComplete="new-password" value={form.accessToken} onChange={(event) => update("accessToken", event.target.value)} placeholder={account?.tokenConfigured ? "已保存；留空则不更换" : "如 NapCat 配置了访问令牌"} /></label>}
@@ -147,7 +153,8 @@ export function AccountDetail({ roleId, channel, account, platformEnabled, onAcc
       {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
       {notice && <p className="account-feedback" role="status">{notice}</p>}
       {account?.lastError && <p role="status" className="account-error">连接错误：{account.lastError}</p>}
-      {account ? <><div className="account-actions"><button ref={connectionButton} type="button" disabled={busy || !canConnect} onClick={() => void setConnection(!account.enabled)}>{account.enabled ? "断开连接" : "连接"}</button>{(account.lastError || account.connectionStatus === "error") && <button type="button" disabled={busy || !canConnect} onClick={() => void setConnection(true)}>重试连接</button>}<button type="button" disabled={busy || !canConnect} onClick={() => void test()}>测试连接</button></div><details className="account-disclosure" ref={credentialsDetails}><summary>更改连接配置</summary>{fields}</details></>
+      {channel === "grok_bot" && <section className="account-response-rules" aria-label="Grok 回程配置"><h3>同机回程</h3><p>启用仅开放本机入口。需让 Grok 在已授权的同一台电脑执行回程客户端；不会自动向 Bot 发送测试任务。</p>{account?.routine && <><label className="field">Routine 配置<textarea readOnly rows={9} value={account.routine} /></label><button type="button" onClick={() => void action(async () => { await navigator.clipboard.writeText(account.routine!); if (live.current) setNotice("Routine 配置已复制"); }, "复制失败，可手动选择并复制")}>复制 Routine 配置</button></>}</section>}
+      {account ? <><div className="account-actions"><button ref={connectionButton} type="button" disabled={busy || !canConnect} onClick={() => void setConnection(!account.enabled)}>{account.enabled ? "断开连接" : "连接"}</button>{(account.lastError || account.connectionStatus === "error") && <button type="button" disabled={busy || !canConnect} onClick={() => void setConnection(true)}>重试连接</button>}<button type="button" disabled={busy || !canConnect} onClick={() => void test()}>{channel === "grok_bot" ? "检查本机入口" : "测试连接"}</button></div><details className="account-disclosure" ref={credentialsDetails}><summary>更改连接配置</summary>{fields}</details></>
         : channel === "qq" ? <><ManagedQQLogin roleId={roleId} canConnect={canConnect} getRules={rules} onConnected={onAccountChange} /><details className="account-disclosure" onToggle={(event) => setManualQQ(event.currentTarget.open)}><summary>高级：手动连接已有 NapCat</summary>{manualQQ && fields}</details></> : fields}
       {channel === "qq" && account?.mode === "managed" && account.managedRef && !connected && (account.enabled ? <ManagedQQLogin roleId={roleId} existingAccount={{ managedRef: account.managedRef, accountId: account.accountId }} canConnect={canConnect} getRules={rules} onConnected={onAccountChange} /> : <p className="role-accounts-hint">点击连接以启动 QQ 扫码登录。</p>)}
       {account && channel === "qq" && <section className="account-group-entry"><div><h3>群聊</h3><p>按群设置自然回复（无需 @）与旁听记录。</p></div><button ref={groupSettingsButton} type="button" onClick={() => setGroupSettingsOpen(true)}>群聊设置</button></section>}

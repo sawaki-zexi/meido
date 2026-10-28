@@ -2459,6 +2459,10 @@ def _channel_account_payload(account: ChannelAccount) -> dict[str, object]:
     payload["avatarUrl"] = multichannel_store.avatars.url(account.account_id, "account", account.platform_id or account.account_id)
     config = multichannel_store.channel_config(account.account_id)
     payload["mode"] = "managed" if config.get("managedRef") else "external"
+    if account.channel == 'grok_bot':
+        from .channels.grok.config import routine_config
+        payload['maxMessages'] = config.get('maxMessages', 12)
+        payload['routine'] = routine_config(multichannel_store.database_path, account.account_id, str(config.get('peerId', '')))
     if config.get("managedRef"):
         payload["managedRef"] = config["managedRef"]
     if config.get("endpoint") and not config.get("managedRef"):
@@ -2523,7 +2527,8 @@ def _channel_credentials_configured(account: ChannelAccount) -> bool:
             return False
     if account.channel == "telegram":
         return bool(multichannel_store.token(account.account_id))
-    required = {"qq": (), "qqbot": ("client_secret",), "feishu": ("app_secret",)}.get(account.channel, ())
+    required = {"qq": (), "qqbot": ("client_secret",), "feishu": ("app_secret",),
+                "grok_bot": ("webhook_key", "callback_token")}.get(account.channel, ())
     if account.channel in {"qqbot", "feishu"} and not multichannel_store.channel_config(account.account_id).get("appId"):
         return False
     return all(bool(_channel_secret(account, key)) for key in required)
@@ -2534,6 +2539,7 @@ def _channel_credential_names(channel: str) -> tuple[str, ...]:
         "qq": ("access_token",),
         "qqbot": ("client_secret",),
         "feishu": ("app_secret", "verification_token", "encrypt_key"),
+        "grok_bot": ("webhook_key", "callback_token"),
     }.get(channel, ())
 
 
@@ -2597,6 +2603,18 @@ def _build_channel_adapter(account: ChannelAccount, *, register: bool = True) ->
             private_enabled=account.allow_private,
             blocked_sender_ids=set(account.blocked_senders),
         ), transport=transport)
+    elif account.channel == 'grok_bot':
+        from .channels.grok.adapter import GrokAdapter
+        def can_receive():
+            current = multichannel_store.get_account(account.account_id)
+            return (current is not None and multichannel_store.account_effectively_enabled(current)
+                    and current.allow_private and config['peerId'] not in current.blocked_senders
+                    and 'Grok Bot' not in current.blocked_senders
+                    and channel_host.accepts_events(account.account_id)
+                    and channel_adapters.get(account.account_id) is adapter)
+        adapter = GrokAdapter(account.account_id, account.role_id, config, multichannel_store.database_path,
+            webhook_key=_channel_secret(account, 'webhook_key'),
+            callback_token=_channel_secret(account, 'callback_token'), can_receive=can_receive)
     else:
         raise ValueError("不支持的渠道类型")
     if register:
@@ -2723,6 +2741,8 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
 
 
 async def _reject_channel_payload(adapter, payload) -> None:
+    if adapter.channel == 'grok_bot':
+        return  # A transport-control notice must not wake the external Bot.
     try:
         event = await adapter.accept_event(payload)
         if event is not None and event.triggered:
@@ -3166,7 +3186,7 @@ async def _handle_channel_event_locked(event):
         _natural_scheduler.invalidate(thread.thread_id)
     scope = _channel_identity_scope(event.channel)
     from .channels.commands import pairing_code
-    code = pairing_code(event.content) if event.chat_type is ChatType.PRIVATE else None
+    code = pairing_code(event.content) if event.chat_type is ChatType.PRIVATE and event.channel != 'grok_bot' else None
     if code is not None:
         paired = multichannel_store.consume_pairing_code(
             code,
@@ -3197,7 +3217,7 @@ async def _handle_channel_event_locked(event):
             except Exception as error:
                 logger.warning("渠道配对确认发送失败 account=%s error=%s", event.account_id, type(error).__name__)
         return
-    owner = multichannel_store.identity_is_owner(
+    owner = event.channel != 'grok_bot' and multichannel_store.identity_is_owner(
         role_id=account.role_id,
         channel=event.channel,
         scope=scope,
@@ -3336,7 +3356,7 @@ def _channel_settings_payload() -> dict[str, object]:
             "enabled": multichannel_store.channel_enabled(channel),
             "configuredAccounts": sum(account.channel == channel for account in accounts),
             "connectedAccounts": sum(account.channel == channel and _channel_connection_status(account) == "connected" for account in accounts),
-        } for channel, name in (("telegram", "Telegram"), ("qq", "NapCat QQ"), ("qqbot", "官方 QQBot"), ("feishu", "飞书"))],
+        } for channel, name in (("telegram", "Telegram"), ("qq", "NapCat QQ"), ("qqbot", "官方 QQBot"), ("feishu", "飞书"), ("grok_bot", "Grok Bot"))],
         "identities": multichannel_store.list_identities(),
     }
 
@@ -3358,7 +3378,7 @@ def create_global_pairing_code() -> dict[str, object]:
 @app.post("/api/channels/settings")
 async def set_channel_settings(data: dict[str, object]) -> dict[str, object]:
     channel, enabled = data.get("channel"), data.get("enabled")
-    if not isinstance(channel, str) or channel not in {"telegram", "qq", "qqbot", "feishu"}:
+    if not isinstance(channel, str) or channel not in {"telegram", "qq", "qqbot", "feishu", "grok_bot"}:
         raise HTTPException(status_code=422, detail="渠道类型不存在")
     if not isinstance(enabled, bool):
         raise HTTPException(status_code=422, detail="enabled 必须是布尔值")
@@ -3627,7 +3647,7 @@ async def _save_telegram_account_unlocked(role_id: str, data: dict[str, object])
 @app.put("/api/roles/{role_id}/channels/{channel}")
 async def save_platform_channel_account(role_id: str, channel: str, data: dict[str, object]) -> dict[str, object]:
     _require_channel_role(role_id)
-    if channel not in {"qq", "qqbot", "feishu"}:
+    if channel not in {"qq", "qqbot", "feishu", "grok_bot"}:
         raise HTTPException(status_code=404, detail="渠道类型不存在")
     existing = multichannel_store.get_role_account(role_id, channel)
     account_id = str(data.get("accountId") or (existing.account_id if existing else f"{channel}-{uuid.uuid4().hex}"))
@@ -3643,7 +3663,7 @@ async def save_platform_channel_account(role_id: str, channel: str, data: dict[s
 
 async def _save_platform_channel_account_unlocked(role_id: str, channel: str, data: dict[str, object]) -> dict[str, object]:
     _require_channel_role(role_id)
-    if channel not in {"qq", "qqbot", "feishu"}:
+    if channel not in {"qq", "qqbot", "feishu", "grok_bot"}:
         raise HTTPException(status_code=404, detail="渠道类型不存在")
     existing = multichannel_store.get_role_account(role_id, channel)
     account_id = str(data.get("accountId") or (existing.account_id if existing else f"{channel}-{uuid.uuid4().hex}"))
@@ -3663,6 +3683,7 @@ async def _save_platform_channel_account_unlocked(role_id: str, channel: str, da
         "qq": "ws://127.0.0.1:6700",
         "qqbot": "https://api.sgroup.qq.com",
         "feishu": "https://open.feishu.cn/open-apis",
+        "grok_bot": "",
     }[channel]
     endpoint = data.get("endpoint", (multichannel_store.channel_config(account_id).get("endpoint") if existing else None) or default_endpoint)
     if not isinstance(endpoint, str) or not endpoint.strip():
@@ -3674,10 +3695,17 @@ async def _save_platform_channel_account_unlocked(role_id: str, channel: str, da
         raise HTTPException(status_code=422, detail="平台 API 地址必须使用 HTTPS")
     if not config.get("managedRef"):
         config["endpoint"] = endpoint
+    if channel == 'grok_bot':
+        from .channels.grok.config import connection_settings
+        try:
+            config = connection_settings(endpoint, data.get('maxMessages', old_config.get('maxMessages', 12)), old_config)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
     secrets_by_name = {
         "qq": {"accessToken": "access_token"},
         "qqbot": {"clientSecret": "client_secret"},
         "feishu": {"appSecret": "app_secret", "verificationToken": "verification_token", "encryptKey": "encrypt_key"},
+        "grok_bot": {"webhookKey": "webhook_key"},
     }[channel]
     if channel in {"qqbot", "feishu"}:
         app_id = data.get("appId", old_config.get("appId") if existing else "")
@@ -3723,8 +3751,8 @@ async def _save_platform_channel_account_unlocked(role_id: str, channel: str, da
 
     async def rollback() -> None:
         cleanup_error: Exception | None = None
-        if channel == "feishu" and account_id in channel_transports:
-            candidate = channel_transports[account_id]
+        if channel in {"feishu", "grok_bot"} and account_id in channel_adapters:
+            candidate = channel_transports.get(account_id)
             if isinstance(candidate, FeishuWebhookTransport):
                 candidate.retire()
             try:
@@ -3779,6 +3807,9 @@ async def _save_platform_channel_account_unlocked(role_id: str, channel: str, da
             secret = data.get(input_name)
             if isinstance(secret, str) and secret.strip():
                 multichannel_store.credentials.set(credential_key(channel, account_id, credential_name), secret.strip())
+        if channel == 'grok_bot' and (config['peerId'] != old_config.get('peerId') or not old_credentials.get('callback_token')):
+            import secrets
+            multichannel_store.credentials.set(credential_key(channel, account_id, 'callback_token'), secrets.token_urlsafe(32))
         account = multichannel_store.register_channel_account(
             role_id,
             channel,
@@ -3818,6 +3849,10 @@ async def test_platform_channel_account(role_id: str, channel: str, account_id: 
     account = multichannel_store.get_account(account_id)
     if account is None or account.role_id != role_id or account.channel != channel:
         raise HTTPException(status_code=404, detail="渠道账号不存在")
+    if channel == 'grok_bot':
+        if _channel_connection_status(account) != 'connected':
+            raise HTTPException(status_code=409, detail='本机入口尚未启用')
+        return {'ok': True, 'account': _channel_account_payload(account), 'detail': '本机入口已启用'}
     adapter: ChannelAdapter | None = None
     try:
         # A connection test must not replace or start the account's live
@@ -5934,6 +5969,8 @@ async def _start_channel_account_unlocked(account_id: str) -> None:
                 account_id, platform_id, display_name=str(identity.get("nickname") or ""),
             )
     await channel_host.resume(account_id)
+    if account.channel == 'grok_bot':
+        await channel_host.refresh_targets(account_id)
     multichannel_store.set_account_state(account_id, last_error=None)
     current = multichannel_store.get_account(account_id)
     if current:

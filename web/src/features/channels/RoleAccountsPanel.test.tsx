@@ -26,7 +26,7 @@ describe("角色账号", () => {
     render(<RoleAccountsPanel roleId="r1" workspace />);
     const rows = await screen.findAllByRole('button', { name: /未添加/ });
     expect(rows.map(row => row.getAttribute('aria-label'))).toEqual([
-      '飞书 / Lark 未添加', 'QQ 未添加', 'QQ 官方机器人 未添加', 'Telegram 未添加',
+      '飞书 / Lark 未添加', 'QQ 未添加', 'QQ 官方机器人 未添加', 'Telegram 未添加', 'Grok Bot 未添加',
     ]);
     await user.click(rows[3]);
     const detail = await screen.findByRole('dialog', { name: 'Telegram 账号' });

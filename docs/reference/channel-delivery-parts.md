@@ -15,13 +15,15 @@
 | `parts` | 固定顺序的物理段；普通文本/媒体或流式最终段 |
 | `partialDelivery` | 已有确认回执，但本条尚未全部确认 |
 | `deliveredContent` | 目前确认的正文，不含未确认尾部或临时占位 |
-| `receiptKind` | 当前平台为 `platform_message`，必须有真实消息 ID |
+| `receiptKind` | 普通平台为 `platform_message`，必须有真实消息 ID；仅 Grok 可用 `transport_acceptance`，以 HTTP 200 表示任务接收 |
 | `deliveryDeadlineAt` | 本次有限期限对应的墙钟秒数，仅用于展示；执行用单调时钟 |
 | `requestedReplyTo` | 原请求引用；后备不会擦掉该关系 |
 | `messageThreadId` | Telegram 原话题；去引用不删除它 |
 | `streaming` | 当前保存的是尚未最终定稿的流式状态 |
 
 每段有 `index/kind/content/status/attempts/platformMessageId/error/withoutReply/plainText`。媒体还有 `attachmentIndex/fileName`；QQBot 有 `msgId/msgSeq`。对已有流式消息的编辑可以附 `confirmedContent`，表示更新失败或未知时仍可证明曾经显示的内容。
+
+Grok 接收段保存 `httpStatus=200`，不填写平台消息 ID；手机和模型历史以此作为当前线程的已提交证据，显示“已提交 Bot”。这不是 Bot 的回复或任务完成证据。配置及回程见 [Grok 手册](../handbook/grok-bot.md)。
 
 段状态 `pending` 表示尚未派发；终态逻辑消息中的 pending 是“未发送”，不是待自动补发。`sending` 是请求已进入发送边界且等待结果；重启将它转为 `uncertain`。`sent` 必须有回执。明确拒绝为 `failed`，未知为 `uncertain`。存在确认段时，失败与未知都不抹除前段。
 

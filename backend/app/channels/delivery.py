@@ -102,8 +102,9 @@ class OutboundScheduler:
 
 
 class DeliveryAttempt:
-    def __init__(self, message, *, scheduler=None, max_attempts=1, retry_base=.5):
+    def __init__(self, message, *, scheduler=None, max_attempts=1, retry_base=.5, transport_acceptance=False):
         self.message = message
+        self.transport_acceptance = transport_acceptance
         self.scheduler = scheduler or OutboundScheduler()
         self.max_attempts, self.retry_base = max_attempts, retry_base
         self.deadline = min(self.scheduler.clock() + 120,
@@ -118,7 +119,8 @@ class DeliveryAttempt:
             raise DeliveryStopped('source_revoked')
 
     def details(self):
-        sent = [part for part in self.parts if part.get('platformMessageId') and (
+        sent = [part for part in self.parts if (part.get('platformMessageId') or
+                self.transport_acceptance and part.get('httpStatus') == 200) and (
             part['status'] == 'sent' or part.get('confirmedContent') is not None)]
         return {'parts': deepcopy(self.parts), 'deliveryDeadlineAt': self.deadline_at,
             'streaming': self.message.metadata.get('streamingDelivery') is True,
@@ -127,8 +129,8 @@ class DeliveryAttempt:
             'partialDelivery': bool(sent) and any(part['status'] != 'sent' for part in self.parts),
             'deliveredContent': ''.join(part['content'] if part['status'] == 'sent' else part['confirmedContent']
                 for part in sent if part['kind'] != 'preview'),
-            'receiptKind': 'platform_message',
-            'platform_message_ids': [part['platformMessageId'] for part in sent]}
+            'receiptKind': 'transport_acceptance' if self.transport_acceptance else 'platform_message',
+            'platform_message_ids': [part['platformMessageId'] for part in sent if part.get('platformMessageId')]}
 
     def publish(self):
         if self.message.record_delivery is not None:
@@ -168,9 +170,12 @@ class DeliveryAttempt:
                         finally:
                             _dispatch_guard.reset(token)
                         identifier = receipt_id(response)
-                        if not identifier:
+                        accepted = self.transport_acceptance and response.get('httpStatus') == 200
+                        if not identifier and not accepted:
                             raise PartialDeliveryError('missing_platform_receipt')
-                        part.update(status='sent', platformMessageId=str(identifier))
+                        part.update(status='sent', platformMessageId=str(identifier) if identifier else None)
+                        if accepted:
+                            part['httpStatus'] = 200
                         self.publish()
                         break
                     except ReceiptPersistenceError:
