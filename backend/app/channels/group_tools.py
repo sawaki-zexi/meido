@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from ..agent_runtime.tools import AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
@@ -97,20 +97,10 @@ class MultichannelGroupRepository:
                 authorize()
             if self.get_group(role_id, thread_id) is None:
                 raise ValueError("群不存在或不属于当前角色。")
-            current = db.execute(
-                "SELECT group_note,summary,summary_updated_at FROM channel_group_context WHERE role_id=? AND thread_id=?",
-                (role_id, thread_id),
-            ).fetchone()
-            note = changes.get("group_note", str(current[0]) if current else "")
-            summary = changes.get("summary", str(current[1]) if current else "")
-            now = datetime.now(timezone.utc).isoformat()
-            stamp = now if "summary" in changes else str(current[2]) if current else ""
-            db.execute(
-                "INSERT INTO channel_group_context(role_id,thread_id,group_note,summary,summary_updated_at,updated_at) VALUES(?,?,?,?,?,?) "
-                "ON CONFLICT(role_id,thread_id) DO UPDATE SET group_note=excluded.group_note,summary=excluded.summary,summary_updated_at=excluded.summary_updated_at,updated_at=excluded.updated_at",
-                (role_id, thread_id, note, summary, stamp, now),
-            )
-        return {"groupNote": note, "summary": summary, "summaryUpdatedAt": stamp}
+            thread = self.store.external_memory.external_thread(role_id, thread_id, write=True)
+            saved = self.store.external_memory.write_context_in(db, thread,
+                note=changes.get("group_note"), summary=changes.get("summary"))
+        return {"groupNote": saved["note"], "summary": saved["activity"]["text"], "summaryUpdatedAt": saved["activity"]["updatedAt"]}
 
     def set_listening(self, role_id: str, account_id: str, chat_id: str, enabled: bool,
                       *, authorize: Callable[[], None]) -> bool:
@@ -128,8 +118,7 @@ class MultichannelGroupRepository:
         group = self.get_group(role_id, thread_id)
         if group is None:
             return []
-        with self.store._connect() as db:
-            profiles = {str(row["sender_id"]): dict(row) for row in db.execute("SELECT sender_id,name,profile,shorthand FROM channel_member_profiles WHERE role_id=? AND thread_id=?", (role_id, thread_id))}
+        thread = self.store.get_thread(role_id, thread_id)
         result: list[Mapping[str, Any]] = []
         for target in self.store.list_targets(role_id, group.account_id):
             if getattr(getattr(target, "kind", None), "value", "") != "group_member":
@@ -137,7 +126,7 @@ class MultichannelGroupRepository:
             if str((getattr(target, "metadata", {}) or {}).get("group_id", "")) != group.chat_id:
                 continue
             sender_id = str(getattr(target, "chat_id", ""))
-            profile = profiles.get(sender_id, {})
+            profile = self.store.external_memory.members.profile(thread, sender_id)
             display = str(getattr(target, "display_name", "")) or str(profile.get("name") or "")
             if name and name.casefold() not in display.casefold() and name not in str(getattr(target, "chat_id", "")):
                 continue
@@ -147,57 +136,81 @@ class MultichannelGroupRepository:
     def find_members(self, role_id: str, *, name: str, channel: str = "", thread_id: str | None = None) -> list[dict[str, Any]]:
         with self.store._connect() as db:
             rows = db.execute(
-                "SELECT n.channel,n.sender_id,n.name FROM channel_member_names n "
+                "SELECT n.channel,n.sender_id,n.name,n.account_id,t.thread_id FROM channel_member_names n "
                 "LEFT JOIN channel_threads t ON t.role_id=n.role_id AND t.channel=n.channel AND t.account_id=n.account_id "
                 "AND t.chat_id=n.chat_id AND t.chat_type=n.chat_type WHERE n.role_id=? "
                 + ("AND t.thread_id=? " if thread_id is not None else "")
                 + "ORDER BY n.last_seen DESC,n.rowid DESC", (role_id, thread_id) if thread_id is not None else (role_id,),
             ).fetchall()
-        members: dict[tuple[str, str], dict[str, Any]] = {}
+            scopes = {}
+            for row in rows:
+                if row["channel"] not in {"qq", "telegram"}:
+                    scopes[(row["thread_id"], row["sender_id"], row["name"], row["account_id"])] = [str(item[0]) for item in db.execute(
+                        "SELECT DISTINCT m.scope FROM channel_external_members m JOIN channel_external_member_sources s "
+                        "ON s.role_id=m.role_id AND s.member_key=m.member_key WHERE m.role_id=? AND m.channel=? AND m.sender_id=? "
+                        "AND s.thread_id=? AND EXISTS(SELECT 1 FROM json_each(s.names_json) n WHERE json_extract(n.value,'$.name')=?)",
+                        (role_id, row["channel"], row["sender_id"], row["thread_id"], row["name"]))] or ["legacy-account:" + row["account_id"]]
+        members: dict[tuple[str, str, str], dict[str, Any]] = {}
         for row in rows:
-            key = (str(row["channel"]), str(row["sender_id"]))
-            if channel and key[0] != channel:
+            if channel and row["channel"] != channel:
                 continue
-            item = members.setdefault(key, {"channel": key[0], "member_id": key[1], "name": str(row["name"]), "nicknames": []})
-            if row["name"] not in item["nicknames"]:
-                item["nicknames"].append(str(row["name"]))
+            identities = scopes.get((row["thread_id"], row["sender_id"], row["name"], row["account_id"]), ["platform"])
+            for scope in identities:
+                key = (str(row["channel"]), str(row["sender_id"]), scope)
+                item = members.setdefault(key, {"channel": key[0], "member_id": key[1], "name": str(row["name"]), "nicknames": [],
+                    **({"member_scope": scope} if scope != "platform" else {})})
+                if row["name"] not in item["nicknames"]:
+                    item["nicknames"].append(str(row["name"]))
         return [item for item in members.values() if any(name.casefold() in nickname.casefold() for nickname in item["nicknames"])]
 
     def has_member_data(self, role_id: str) -> bool:
         with self.store._connect() as db:
             return bool(db.execute(
                 "SELECT EXISTS(SELECT 1 FROM channel_member_names WHERE role_id=?) "
-                "OR EXISTS(SELECT 1 FROM channel_member_profiles WHERE role_id=?)",
+                "OR EXISTS(SELECT 1 FROM channel_external_members WHERE role_id=?)",
                 (role_id, role_id),
             ).fetchone()[0])
 
     def member_profile(self, role_id: str, channel: str, member_id: str, *, thread_id: str | None = None,
-                       source_page: int = 1) -> dict[str, Any]:
+                       source_page: int = 1, member_scope: str = "") -> dict[str, Any]:
         member = next((item for item in self.find_members(role_id, name="", channel=channel, thread_id=thread_id)
-                       if item["member_id"] == member_id), None)
+                       if item["member_id"] == member_id and (not member_scope or item.get("member_scope", "platform") == member_scope)), None)
         with self.store._connect() as db:
             observed = db.execute(
-                "SELECT DISTINCT t.thread_id,n.account_id,n.chat_id,n.chat_type,"
-                "COALESCE(p.profile,'') AS profile,COALESCE(p.shorthand,'') AS shorthand "
+                "SELECT DISTINCT t.thread_id,n.account_id,n.chat_id,n.chat_type "
                 "FROM channel_member_names n LEFT JOIN channel_threads t ON t.role_id=n.role_id AND t.channel=n.channel "
                 "AND t.account_id=n.account_id AND t.chat_id=n.chat_id AND t.chat_type=n.chat_type "
-                "LEFT JOIN channel_member_profiles p ON p.role_id=t.role_id AND p.thread_id=t.thread_id AND p.sender_id=n.sender_id "
                 "WHERE n.role_id=? AND n.channel=? AND n.sender_id=?"
                 + (" AND t.thread_id=?" if thread_id is not None else ""),
                 (role_id, channel, member_id, thread_id) if thread_id is not None else (role_id, channel, member_id),
             ).fetchall()
-            legacy = db.execute(
-                "SELECT t.thread_id,t.account_id,t.chat_id,t.chat_type,p.profile,p.shorthand "
-                "FROM channel_member_profiles p JOIN channel_threads t ON t.role_id=p.role_id AND t.thread_id=p.thread_id "
-                "WHERE p.role_id=? AND t.channel=? AND p.sender_id=?"
+            canonical = db.execute(
+                "SELECT t.thread_id,t.account_id,t.chat_id,t.chat_type,m.* "
+                "FROM channel_external_members m JOIN channel_external_member_sources s ON s.role_id=m.role_id AND s.member_key=m.member_key "
+                "JOIN channel_threads t ON t.role_id=s.role_id AND t.thread_id=s.thread_id "
+                "WHERE m.role_id=? AND t.channel=? AND m.sender_id=?"
                 + (" AND t.thread_id=?" if thread_id is not None else ""),
                 (role_id, channel, member_id, thread_id) if thread_id is not None else (role_id, channel, member_id),
             ).fetchall()
+        scopes = sorted({str(row["scope"]) for row in canonical})
+        if len(scopes) > 1 and not member_scope:
+            return {"channel": channel, "member_id": member_id, "found": True, "ambiguous": True,
+                "scopes": scopes, "message": "相同平台编号来自不同应用或历史作用域，请指定 member_scope。", "sources": []}
         sources = {(str(row["account_id"]), str(row["chat_id"]), str(row["chat_type"])): {
             "thread_id": str(row["thread_id"] or ""), "account_id": str(row["account_id"]),
             "chat_id": str(row["chat_id"]), "chat_type": str(row["chat_type"]),
-            "profile": str(row["profile"]), "shorthand": str(row["shorthand"]),
-        } for row in (*observed, *legacy)}
+            "profile": "", "shorthand": "",
+        } for row in observed if not member_scope or member_scope == "legacy-account:" + row["account_id"]}
+        for row in canonical:
+            if member_scope and row["scope"] != member_scope:
+                continue
+            thread = self.store.get_thread(role_id, row["thread_id"])
+            if not self.store.external_memory.members.allowed(thread, member_id):
+                continue
+            sources[(row["account_id"], row["chat_id"], row["chat_type"])] = {
+                "thread_id": row["thread_id"], "account_id": row["account_id"], "chat_id": row["chat_id"], "chat_type": row["chat_type"],
+                "scope": row["scope"], "state": row["state"], "profile": row["profile"] if row["state"] == "published" else "",
+                "shorthand": row["shorthand"] if row["state"] == "published" else ""}
         ordered = [sources[key] for key in sorted(sources)]
         start = (source_page - 1) * _MEMBER_SOURCE_PAGE_SIZE
         end = start + _MEMBER_SOURCE_PAGE_SIZE
@@ -205,36 +218,59 @@ class MultichannelGroupRepository:
                 "found": bool(member or sources), "sources": ordered[start:end], "sources_total": len(ordered),
                 "source_page": source_page, "next_source_page": source_page + 1 if end < len(ordered) else None}
 
-    def prompt_context(self, role_id: str, thread_id: str, sender_id: str = "") -> str:
+    def prompt_context(self, role_id: str, thread_id: str, sender_id: str = "", *, trigger_metadata: Mapping[str, Any] | None = None) -> str:
         """Read only the current thread's notes and relevant member profiles."""
 
         thread = self.store.get_thread(role_id, thread_id)
-        if thread is None or thread.channel == "desktop":
+        if thread is None or thread.channel == "desktop" or self.store.external_memory.is_owner_thread(thread):
             return ""
         parts = []
+        group_context = self.read_context(role_id, thread_id)
+        label = "群" if thread.chat_type == "group" else "会话"
+        if group_context.get("groupNote"):
+            parts.append(f"[当前{label}笔记]\n" + str(group_context["groupNote"])[:12000])
+        if group_context.get("summary"):
+            parts.append(f"[当前{label}近期摘要]\n" + str(group_context["summary"])[:12000])
+        trigger = trigger_metadata or {}
+        # Match Shiori's relevance order: the speaker, mentions and quoted
+        # speaker need full profiles; other recent participants need briefs.
+        full_senders = list(dict.fromkeys([sender_id,
+            *(item for item in trigger.get("mentionedIds", []) if isinstance(item, str)),
+            str(trigger.get("replyToSenderId") or "") if trigger.get("replyContextVerified") is True else ""]))
+        recent = []
         if thread.chat_type == "group":
-            group_context = self.read_context(role_id, thread_id)
-            if group_context.get("groupNote"):
-                parts.append("[当前群笔记]\n" + str(group_context["groupNote"])[:12000])
-            if group_context.get("summary"):
-                parts.append("[当前群近期摘要]\n" + str(group_context["summary"])[:12000])
-        visible_senders = {sender_id} if sender_id else set()
-        if thread.chat_type == "group":
-            for message in self.store.sessions.list_messages(thread.session_key)[-30:]:
-                visible_senders.add(str(message.metadata.get("senderId") or ""))
-                visible_senders.update(str(item) for item in message.metadata.get("mentionedIds", []) if isinstance(item, str))
-            for message in self.store.listening.recent(role_id, thread_id)[-30:]:
-                visible_senders.add(str(message["metadata"].get("senderId") or ""))
-        with self.store._connect() as db:
-            rows = db.execute("SELECT sender_id,name,profile,shorthand FROM channel_member_profiles WHERE role_id=? AND thread_id=? ORDER BY updated_at DESC", (role_id, thread_id)).fetchall()
+            recent = [(message.createdAt, message.metadata)
+                for message in self.store.sessions.list_messages(thread.session_key)[-30:]
+                if message.role == "user" and message.metadata.get("channelTurnState") != "invalidated"]
+            if thread.channel == "qq":
+                recent.extend((datetime.fromisoformat(message["createdAt"]), message["metadata"])
+                    for message in self.store.listening.recent(role_id, thread_id)[-30:])
+        brief_senders = []
+        for _, metadata in sorted(recent, key=lambda item: item[0], reverse=True):
+            brief_senders.extend([str(metadata.get("senderId") or ""),
+                *(item for item in metadata.get("mentionedIds", []) if isinstance(item, str))])
         members = []
-        for row in rows:
-            if str(row["sender_id"]) in visible_senders and (row["profile"] or row["shorthand"]):
-                members.append({"senderId": str(row["sender_id"]), "name": str(row["name"]), "profile": str(row["profile"])[:4000], "shorthand": str(row["shorthand"])[:200]})
-                if len(members) >= 10:
-                    break
+        brief_chars = 1500
+        for current_sender in dict.fromkeys([*full_senders, *brief_senders]):
+            if not current_sender:
+                continue
+            row = self.store.external_memory.members.profile(thread, current_sender)
+            full = current_sender in full_senders
+            if not ((row["profile"] or row["shorthand"]) if full else row["shorthand"]):
+                continue
+            member = {"senderId": current_sender, "name": row.get("name", current_sender),
+                "shorthand": str(row["shorthand"])[:200],
+                "sources": [source["threadId"] for source in row.get("sources", [])]}
+            if full:
+                member["profile"] = str(row["profile"])[:4000]
+                member["nicknames"] = row.get("nicknames", [])
+            size = len(json.dumps(member, ensure_ascii=False))
+            if not full and size > brief_chars:
+                break
+            members.append(member)
+            brief_chars -= size
         if members:
-            parts.append("[当前会话成员资料；来源是此前在此会话观察到的信息]\n" + json.dumps(members, ensure_ascii=False))
+            parts.append("[当前会话成员资料；同一平台身份在所列会话中观察所得]\n" + json.dumps(members, ensure_ascii=False))
         return "\n\n".join(parts)[:20000]
 
 
@@ -354,9 +390,9 @@ class SetGroupListeningTool:
 
 class LookupGroupMemberTool:
     definition = ToolDefinition(
-        "lookup_group_member", "按 name（含旧昵称）找成员，或按 member_id 与 member_channel 读档案；二选一。主人桌面/有效私聊可跨渠道，群聊和访客只限当前线程。档案来源每页5条，用 source_page 继续。对应 Shiori lookup_member。",
+        "lookup_group_member", "按 name（含旧昵称）找成员，或按 member_id 与 member_channel 读档案；二选一。若返回多个 scopes，指定 member_scope，不能合并不同应用的同号成员。主人桌面/有效私聊可跨渠道，群聊和访客只限当前线程。档案来源每页5条，用 source_page 继续。对应 Shiori lookup_member。",
         {"type": "object", "properties": {"name": {"type": "string"}, "member_id": {"type": "string"}, "member_channel": {"type": "string"},
-            "source_page": {"type": "integer", "minimum": 1}}, "additionalProperties": False},
+            "source_page": {"type": "integer", "minimum": 1}, "member_scope": {"type": "string"}}, "additionalProperties": False},
         search_hint="群友 昵称 是谁",
         external_allowed=True,
     )
@@ -392,7 +428,8 @@ class LookupGroupMemberTool:
                     raise PermissionError("当前回合只能查询当前线程的成员。")
                 channel = source.channel
             if member_id:
-                data = self.repository.member_profile(context.role_id, channel, member_id, thread_id=thread_id, source_page=source_page)
+                data = self.repository.member_profile(context.role_id, channel, member_id, thread_id=thread_id, source_page=source_page,
+                    member_scope=str(arguments.get("member_scope") or ""))
             else:
                 members = self.repository.find_members(context.role_id, name=name, channel=channel, thread_id=thread_id)
                 data = {"total": len(members), "candidates": members[:10]}

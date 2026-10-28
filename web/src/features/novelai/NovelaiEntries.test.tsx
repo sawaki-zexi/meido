@@ -7,7 +7,7 @@ import { fakeBackend, role } from '../../test/fakeBackend';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); sessionStorage.clear(); localStorage.clear(); });
 
 it('refreshes studio permission and defaults after saving plugin settings without losing the prompt', async () => {
-  let configuration = { enabled: true, manualEnabled: false, manualDailyAttempts: 10, manualConsentRevision: 0,
+  let configuration = { enabled: false, manualEnabled: false, manualDailyAttempts: 10, manualConsentRevision: 0,
     tokenConfigured: true, credentialCleanupPending: false, revision: 3, defaultSamples: 1,
     allowedModels: ['nai-diffusion-4-5-curated'], defaultModel: 'nai-diffusion-4-5-curated',
     allowedSamplers: ['k_euler_ancestral'], defaultSampler: 'k_euler_ancestral', maxPixels: 1048576, maxSteps: 28, dailyAttemptLimit: 20 };
@@ -31,9 +31,10 @@ it('refreshes studio permission and defaults after saving plugin settings withou
   expect(screen.getByRole('button', { name: '生成一张图片' })).toBeDisabled();
   await user.click(screen.getByRole('button', { name: 'NovelAI 设置' }));
   const settings = await screen.findByRole('dialog', { name: '设置' });
-  await user.click(await within(settings).findByLabelText('允许聊天表情与手动生图'));
+  await user.click(await within(settings).findByRole('button', { name: '启动 NovelAI' }));
+  await within(settings).findByText('可生图');
   await user.selectOptions(within(settings).getByLabelText('默认生成张数'), '3');
-  await user.click(within(settings).getByLabelText('我确认生图消费'));
+  expect(within(settings).queryByLabelText('我确认生图消费')).not.toBeInTheDocument();
   await user.click(within(settings).getByRole('button', { name: '保存生图设置' }));
   await within(settings).findByText('NovelAI 生图设置已保存。');
   await user.click(within(settings).getByRole('button', { name: '关闭' }));

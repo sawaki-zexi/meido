@@ -16,7 +16,7 @@ from ..agent_runtime.provider import CancellationToken
 from ..agent_runtime.tools import AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
 from ..ai.model_types import ModelSystemMessage, ModelUserMessage, ModelTextBlock, ModelImageBlock, ModelToolCallBlock, ModelToolResultMessage
 from ..task_runtime import TaskOutcome
-from .bindings import persona
+from .bindings import persona, history_view
 from .source_authoring import _directory_identity
 from .turn import _request
 from . import retention
@@ -65,6 +65,7 @@ SPECIAL = (
 class DriftTurn:
     def __init__(self, app, origin, config, snapshot, execution, bundle=None):
         self.app, self.origin, self.config, self.snapshot, self.execution = app, origin, config, snapshot, execution
+        self.history = history_view(app, origin)
         self.root = app.drift_skills.workspace(origin.role_id) / 'drift'
         self.skill = self.manifest = None
         self.bundle = bundle
@@ -154,6 +155,8 @@ class DriftTurn:
                 (max_tokens, payload_bytes, self.origin.tick_id))
 
     def check_model_request(self):
+        if self.history is not None:
+            self.history.require_snapshot_current()
         if self.meme_scope is not None:
             context = ToolContext(self.origin.role_id, self.origin.task_origin().session_key, self.origin.tick_id, self.signal)
             self.app.memes.validate_scope(self, context)

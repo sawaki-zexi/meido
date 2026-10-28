@@ -193,6 +193,32 @@ class ChannelHost:
         account = self.store.get_account(account_id)
         return bool(account and self.store.account_effectively_enabled(account) and account_id in self._adapters and account_id not in self._paused_accounts)
 
+    def start_private_progress(self, thread, *, run_id: str, authorize_source: Callable[[], bool]):
+        """Bind temporary feedback to this source and connection; never record a reply."""
+        if thread.channel != 'telegram' or thread.chat_type != 'private':
+            return None
+        adapter = self._adapters.get(thread.account_id)
+        start = getattr(adapter, 'start_progress', None)
+        if not callable(start) or not self.accepts_events(thread.account_id):
+            return None
+        target_id = target_from_chat(account_id=thread.account_id, chat_id=thread.chat_id, kind=TargetKind.PRIVATE).id
+        target = self.store.get_target(thread.role_id, thread.account_id, target_id)
+        if target is None:
+            return None
+        generation = self.connection_generation(thread.account_id)
+        revision = self.store.directory_revision(thread.account_id, thread.channel)
+        def authorized():
+            account = self.store.get_account(thread.account_id)
+            return bool(account and account.role_id == thread.role_id and account.allow_private
+                and self.accepts_events(thread.account_id) and self._adapters.get(thread.account_id) is adapter
+                and self.connection_generation(thread.account_id) == generation
+                and self.store.directory_revision(thread.account_id, thread.channel) == revision
+                and authorize_source())
+        if not authorized():
+            return None
+        adapter.remember_target(target)
+        return start(OutboundMessage(target, '', authorize_dispatch=authorized), run_id=run_id)
+
     def _group_reply_guard(self, account_id: str, target: Target) -> Callable[[], bool] | None:
         account = self.store.get_account(account_id)
         if account is None or account.channel != "qq" or target.kind is not TargetKind.GROUP:
@@ -389,6 +415,46 @@ class ChannelHost:
         adapter = self._adapters.get(account_id)
         if adapter is not None:
             await adapter.stop()
+
+    def capture_media_source(self, account_id: str) -> dict:
+        """Capture before ingress can wait; a later check may only revoke it."""
+        account = self.store.get_account(account_id)
+        if account is None:
+            return {}
+        bindings = sorted((str(item["identityId"]), str(item["pairedAt"]))
+            for item in self.store.list_identities() if item["channel"] == account.channel
+            and (item["scope"] == "platform" or item["accountId"] == account_id))
+        return {"roleId": account.role_id, "channel": account.channel, "createdAt": account.created_at,
+            "revision": self.store.directory_revision(account_id, account.channel),
+            "generation": self.connection_generation(account_id), "bindings": bindings}
+
+    def media_authorization(self, role_id: str, event) -> Callable[[], bool]:
+        """Freeze an admitted media source; checks can revoke, never renew it."""
+        account = self.store.get_account(event.account_id)
+        adapter = self._adapters.get(event.account_id)
+        source = event.metadata.get("hostMediaSource", self.capture_media_source(event.account_id))
+        generation = (event.metadata.get("hostConnectionGeneration", source.get("generation"))
+            if event.channel == "qq" else source.get("generation"))
+        group_revision = (self.store.group_reply_policy(role_id, event.account_id, event.chat_id)
+            if event.channel == "qq" and event.is_group and event.triggered else None)
+
+        def authorized() -> bool:
+            current = self.store.get_account(event.account_id)
+            if (account is None or current is None or adapter is None
+                    or (current.role_id, current.channel, current.created_at) != (role_id, event.channel, account.created_at)
+                    or not self.store.account_effectively_enabled(current)
+                    or self._adapters.get(event.account_id) is not adapter
+                    or self.connection_generation(event.account_id) != generation
+                    or self.capture_media_source(event.account_id) != source
+                    or event.sender_id in current.blocked_senders
+                    or not (current.allow_group if event.is_group else current.allow_private)):
+                return False
+            if group_revision is not None and (not group_revision[0]
+                    or self.store.group_reply_policy(role_id, event.account_id, event.chat_id) != group_revision):
+                return False
+            return True
+
+        return authorized
 
     async def accept_event(self, account_id: str, payload: Mapping[str, Any]):
         """Normalize, deduplicate, and directory-index one platform event."""

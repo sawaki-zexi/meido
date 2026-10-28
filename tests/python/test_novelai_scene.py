@@ -30,11 +30,17 @@ def test_completed_owner_turn_observes_once_and_delivers_one_original_image(scen
     saved = client.put(f"/api/roles/{service.role.id}", json={
         'name': current['name'], 'profile': current['profile'], 'agentConfig': current['agentConfig']})
     assert saved.status_code == 200, saved.text
+    # A parameter change must preserve the role's CG opt-in for future turns.
+    config = client.get('/api/services/novelai').json()
+    configured = client.put('/api/services/novelai', json={'maxSteps': 12,
+        'expectedRevision': config['revision']})
+    assert configured.status_code == 200, configured.text
     service.peer.block = True
     response = client.post(f'/api/roles/{service.role.id}/messages', json={'content': 'Let us enter the sunny garden.'})
     assert 'assistant_completed' in response.text, response.text
     assert peer.aux_accepted.wait(2), 'completed owner turn never reached its explicit auxiliary model'
     assert service.peer.accepted.wait(2)
+    assert service.peer.requests[0]['body']['parameters']['steps'] == 12
     rows = service.sessions.list_messages(f'role:{service.role.id}')
     final = rows[-1]
     assert service.sessions.get_run(final.runId).status == 'completed'

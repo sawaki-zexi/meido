@@ -111,8 +111,14 @@ class ContextWindowProvider:
         self._reserve(signal, auxiliary=True)
         rich = self.provider.adapter.stream_rich_messages
         options = {'max_tokens': output}
+        def check_request():
+            signal.raise_if_cancelled()
+            if not self.authorized():
+                raise PermissionError('对话来源许可已变化，请重新开始回复')
         if 'cancel_check' in inspect.signature(rich).parameters:
-            options['cancel_check'] = signal.raise_if_cancelled
+            # Compaction sends the same authorized originals as an ordinary
+            # request, including after an adapter awaits connection setup.
+            options['cancel_check'] = check_request
         result = ''
         done = False
         max_characters = max(4096, output * 32)

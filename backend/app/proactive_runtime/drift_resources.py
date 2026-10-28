@@ -26,9 +26,18 @@ class ScopedHistory(ConversationHistory):
     def __init__(self, turn):
         self.turn = turn
 
-    def read(self, context):
+    def validate(self, context):
+        context.signal.raise_if_cancelled()
         if not self.turn.file_authorized(context):
             raise PermissionError('Drift history scope was sealed')
+        if self.turn.history is not None:
+            self.turn.history.require_snapshot_current()
+
+    def read(self, context):
+        self.validate(context)
+        if self.turn.history is not None:
+            return [message for message in self.turn.history.read()
+                if message.role in {'user', 'assistant'} and message.messageType == 'text']
         with self.turn.app._transaction() as db:
             rows = db.execute("""SELECT message_id,session_key,sequence,role,content,status,created_at,message_type,
                 tool_call_id,tool_name,tool_arguments_json,tool_result_json,is_error,run_id,metadata_json

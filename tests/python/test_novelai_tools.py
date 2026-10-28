@@ -4,6 +4,34 @@ from datetime import datetime, timezone
 from novelai_fixtures import novelai_environment, novelai_main, novelai_service  # noqa: F401
 
 
+def test_tool_explains_missing_credentials_and_new_tool_works_after_token_save(novelai_main):
+    from backend.app.agent_runtime.provider import CancellationToken
+    from backend.app.agent_runtime.tools import ToolContext
+    from backend.app.models import AgentRun
+    client, service = novelai_main
+    app, role = service.application, service.role
+    key = f'role:{role.id}'
+    service.sessions.create_run_with_messages(AgentRun(runId='missing-token-run', roleId=role.id, sessionKey=key,
+        status='running', startedAt=datetime.now(timezone.utc), modelSnapshot={'humanInputSource': 'desktop_owner'}), 'Draw a sky')
+    client.delete('/api/services/novelai/token')
+    tool = app.tool_for(role.id, is_owner=True)
+    assert '尚未配置 NovelAI 凭据' in tool.definition.description
+    context = ToolContext(role.id, key, 'missing-token-run', CancellationToken(), 'missing-token-call')
+    denied = asyncio.run(tool.execute(service.request, context))
+    assert denied.is_error and denied.details['errorCode'] == 'credential_missing'
+    assert not service.peer.requests
+    saved = client.put('/api/services/novelai/token', json={'token': 'new-fixture-only-secret'})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()['availability']['available']
+    # New credentials do not grant an old tool the new configuration revision.
+    assert asyncio.run(tool.execute(service.request, context)).is_error
+    assert not service.peer.requests
+    fresh = app.tool_for(role.id, is_owner=True)
+    result = asyncio.run(fresh.execute(service.request, context))
+    assert not result.is_error
+    assert len(service.peer.requests) == 1
+
+
 def test_chat_tool_schema_explains_host_defaults_for_expression_calls():
     from backend.app.novelai_generation.tools import GenerateImageTool
     schema = GenerateImageTool.definition.input_schema
