@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable
 
-from .models import Role, RoleInput, RoleUpdateInput
+from .models import Role, RoleInput, RoleUpdateInput, RoleIllustration
 
 
 def utc_now() -> datetime:
@@ -115,6 +115,203 @@ class RoleStore:
             self._save(candidate)
             self._roles = candidate
             return updated.model_copy(deep=True)
+
+    def _save_asset_role(self, role: Role) -> Role:
+        """Caller holds the role lock; manifest commit is the visibility boundary."""
+        candidate = [role if current.id == role.id else current for current in self._roles]
+        self._save(candidate)
+        self._roles = candidate
+        return role.model_copy(deep=True)
+
+    def illustration_path(self, role_id: str, identifier: str) -> Path:
+        role = self.get(role_id)
+        if role is None or not any(item.id == identifier for item in role.illustrations):
+            raise KeyError('角色插画不存在')
+        root = self.root / role_id / 'illustrations'
+        path = root / identifier
+        if root.is_symlink() or root.resolve().parent != self.root / role_id or path.is_symlink() or path.resolve().parent != root.resolve():
+            raise ValueError('角色插画路径无效')
+        return path
+
+    def add_illustration(self, role_id: str, content: bytes, media_type: str, name: str = '插画', *,
+                         category: str | None = None, set_background: bool = False,
+                         operation_id: str | None = None, authorized: Callable[[], bool] | None = None,
+                         expected_background_id: str | None = None) -> Role:
+        from .novelai_generation.media import validate_image
+        if not content or len(content) > 10 * 1024 * 1024:
+            raise ValueError('插画不能超过 10 MiB')
+        detected, _ = validate_image(content, max_pixels=16 * 1024 * 1024)
+        if media_type not in {'image/png', 'image/jpeg', 'image/webp'} or detected != media_type:
+            raise ValueError('插画必须为 PNG、JPEG 或 WebP 图片')
+        if operation_id is not None and (len(operation_id) > 80 or not operation_id.isascii()):
+            raise ValueError('插画操作标识无效')
+        identifier = hashlib.sha256(operation_id.encode() if operation_id else content).hexdigest()[:32]
+        with self._lock:
+            self._require_writable(role_id)
+            role = self.get(role_id)
+            if role is None:
+                raise KeyError(role_id)
+            existing = next((item for item in role.illustrations if item.id == identifier), None)
+            # A lost local acknowledgement only observes the prior operation;
+            # it must never restore its background over a later owner edit.
+            if existing and operation_id is not None:
+                return role
+            if authorized is not None and (not authorized() or (set_background and role.chatBackgroundId != expected_background_id)):
+                raise PermissionError('插画写回许可或聊天背景已改变')
+            category = category or role.illustrationCategories[0]
+            if category not in role.illustrationCategories:
+                raise ValueError('插画分类不存在')
+            if existing:
+                if set_background:
+                    return self.set_chat_background(role_id, identifier)
+                return role
+            if len(role.illustrations) >= 250 or sum(item.size for item in role.illustrations) + len(content) > 1024 * 1024 * 1024:
+                raise ValueError('角色插画库已达到 250 张或 1 GiB 上限')
+            root = self.root / role_id / 'illustrations'
+            root.mkdir(exist_ok=True)
+            if root.is_symlink() or root.resolve().parent != self.root / role_id:
+                raise ValueError('插画目录路径无效')
+            target = root / identifier
+            if target.is_symlink():
+                raise ValueError('插画目标路径无效')
+            temporary = root / ('.' + uuid.uuid4().hex + '.tmp')
+            try:
+                temporary.write_bytes(content)
+                os.replace(temporary, target)
+                item = RoleIllustration(id=identifier, url=f'/api/roles/{role_id}/illustrations/{identifier}',
+                    name=Path(name).name[:160] or '插画', mediaType=media_type, size=len(content), category=category)
+                updated = role.model_copy(update={'illustrations': [*role.illustrations, item], 'updatedAt': utc_now(),
+                    **({'chatBackgroundId': identifier, 'chatBackgroundUrl': item.url} if set_background else {})})
+                if authorized is not None and not authorized():
+                    raise PermissionError('插画写回许可已撤销')
+                return self._save_asset_role(updated)
+            except BaseException:
+                temporary.unlink(missing_ok=True)
+                # An unsuccessful manifest write never removes an already visible image.
+                if not any(item.id == identifier for item in (self.get(role_id) or role).illustrations):
+                    target.unlink(missing_ok=True)
+                raise
+
+    def reconcile_generated_illustration(self, role_id: str, *, operation_id: str, digest: str, size: int) -> bool | None:
+        """Read-only acknowledgement; never restores a later changed background."""
+        if (not operation_id or len(operation_id) > 80 or not operation_id.isascii()
+                or len(digest) != 64 or any(char not in '0123456789abcdef' for char in digest)
+                or type(size) is not int or not 1 <= size <= 10 * 1024 * 1024):
+            raise ValueError('插画恢复标识无效')
+        identifier = hashlib.sha256(operation_id.encode()).hexdigest()[:32]
+        with self._lock:
+            role = self.get(role_id)
+            if role is None:
+                raise KeyError(role_id)
+            item = next((item for item in role.illustrations if item.id == identifier), None)
+            if item:
+                path = self.illustration_path(role_id, identifier)
+                if not path.is_file():
+                    return None
+                with path.open('rb') as handle:
+                    content = handle.read(size + 1)
+                return len(content) == size and hashlib.sha256(content).hexdigest() == digest
+            # An explicitly removed file proves the earlier write completed,
+            # but is not permission to make it visible again.
+            recovery = self.root / role_id / 'illustrations-removed'
+            for path in recovery.glob(identifier + '-*'):
+                if path.is_symlink() or path.resolve().parent != recovery.resolve():
+                    continue
+                with path.open('rb') as handle:
+                    content = handle.read(size + 1)
+                if len(content) == size and hashlib.sha256(content).hexdigest() == digest:
+                    return True
+            return False
+
+    def set_chat_background(self, role_id: str, identifier: str | None) -> Role:
+        with self._lock:
+            self._require_writable(role_id)
+            role = self.get(role_id)
+            if role is None:
+                raise KeyError(role_id)
+            item = next((item for item in role.illustrations if item.id == identifier), None)
+            if identifier is not None and (item is None or not self.illustration_path(role_id, identifier).is_file()):
+                raise KeyError('角色插画不存在')
+            return self._save_asset_role(role.model_copy(update={'chatBackgroundId': identifier,
+                'chatBackgroundUrl': item.url if item else None, 'updatedAt': utc_now()}))
+
+    def remove_illustration(self, role_id: str, identifier: str) -> Role:
+        with self._lock:
+            self._require_writable(role_id)
+            role = self.get(role_id)
+            if role is None:
+                raise KeyError(role_id)
+            path = self.illustration_path(role_id, identifier)
+            recovery = self.root / role_id / 'illustrations-removed'
+            recovery.mkdir(exist_ok=True)
+            if recovery.is_symlink() or recovery.resolve().parent != self.root / role_id:
+                raise ValueError('插画恢复目录路径无效')
+            backup = recovery / (identifier + '-' + uuid.uuid4().hex)
+            moved = path.exists()
+            if moved:
+                os.replace(path, backup)
+            try:
+                moods = {mood: image for mood, image in role.moodIllustrationBindings.items() if image != identifier}
+                return self._save_asset_role(role.model_copy(update={
+                    'illustrations': [item for item in role.illustrations if item.id != identifier],
+                    'moodIllustrationBindings': moods,
+                    'defaultMood': role.defaultMood if role.defaultMood in moods else next(iter(moods), '平静'),
+                    **({'currentMood': None, 'currentMoodUpdatedAt': None} if role.currentMood not in moods else {}),
+                    **({'chatBackgroundId': None, 'chatBackgroundUrl': None} if role.chatBackgroundId == identifier else {}),
+                    'updatedAt': utc_now()}))
+            except BaseException:
+                if moved:
+                    os.replace(backup, path)
+                raise
+
+    def update_illustrations(self, role_id: str, *, categories: list[str] | None = None,
+                             bindings: dict[str, str] | None = None, category_send: dict[str, bool] | None = None,
+                             mood_bindings: dict[str, str] | None = None, default_mood: str | None = None) -> Role:
+        with self._lock:
+            self._require_writable(role_id)
+            role = self.get(role_id)
+            if role is None:
+                raise KeyError(role_id)
+            names = categories if categories is not None else role.illustrationCategories
+            if (not 1 <= len(names) <= 32 or any(not isinstance(name, str) or not name.strip() or len(name) > 80 for name in names)
+                    or len({name.strip().casefold() for name in names}) != len(names)):
+                raise ValueError('需要 1–32 个不重复的插画分类，每个最多 80 字符')
+            names = [name.strip() for name in names]
+            changes = bindings or {}
+            if not set(changes) <= {item.id for item in role.illustrations}:
+                raise ValueError('不能修改其他角色的插画分类')
+            items = [item.model_copy(update={'category': changes.get(item.id, item.category)}) for item in role.illustrations]
+            if any(item.category not in names for item in items):
+                raise ValueError('分类仍被插画使用，请先移动插画')
+            permissions = {name: role.illustrationCategorySend.get(name, False) for name in names}
+            if category_send is not None:
+                if not set(category_send) <= set(names) or any(type(value) is not bool for value in category_send.values()):
+                    raise ValueError('插画分类发送许可无效')
+                permissions.update(category_send)
+            moods = mood_bindings if mood_bindings is not None else role.moodIllustrationBindings
+            if (len(moods) > 32 or any(not isinstance(mood, str) or not mood.strip() or mood != mood.strip() or len(mood) > 40 for mood in moods)
+                    or not set(moods.values()) <= {item.id for item in items} or len(set(moods.values())) != len(moods)):
+                raise ValueError('最多绑定 32 种心情，每张本角色插画只能绑定一种心情')
+            default = (default_mood if default_mood is not None else role.defaultMood).strip()
+            if not default or len(default) > 40 or (moods and default not in moods):
+                default = next(iter(moods), '平静')
+            return self._save_asset_role(role.model_copy(update={'illustrationCategories': names,
+                'illustrationCategorySend': permissions, 'moodIllustrationBindings': moods, 'defaultMood': default,
+                **({'currentMood': None, 'currentMoodUpdatedAt': None} if role.currentMood not in moods else {}),
+                'illustrations': items, 'updatedAt': utc_now()}))
+
+    def set_current_mood(self, role_id: str, mood: str, *, authorized: Callable[[], bool]) -> Role:
+        with self._lock:
+            self._require_writable(role_id)
+            role = self.get(role_id)
+            if role is None:
+                raise KeyError(role_id)
+            if not authorized():
+                raise PermissionError('当前角色心情回合已失效')
+            if mood not in role.moodIllustrationBindings:
+                raise ValueError('只能选择主人已绑定的角色心情')
+            return self._save_asset_role(role.model_copy(update={'currentMood': mood,
+                'currentMoodUpdatedAt': utc_now(), 'updatedAt': utc_now()}))
 
     def set_avatar(self, role_id: str, content: bytes, media_type: str, *, original: bool = False, card: bool = False,
                    expected_card_url: str | None = None, authorized: Callable[[], bool] | None = None,
@@ -453,6 +650,15 @@ class RoleStore:
             "avatarOriginalMediaType": item.get("avatarOriginalMediaType"),
             "cardImageUrl": item.get("cardImageUrl"),
             "cardImageMediaType": item.get("cardImageMediaType"),
+            "illustrations": item.get("illustrations") or [],
+            "illustrationCategories": item.get("illustrationCategories") or ['未分类'],
+            "illustrationCategorySend": item.get("illustrationCategorySend") or {},
+            "moodIllustrationBindings": item.get("moodIllustrationBindings") or {},
+            "defaultMood": item.get("defaultMood") or '平静',
+            "currentMood": item.get("currentMood"),
+            "currentMoodUpdatedAt": item.get("currentMoodUpdatedAt"),
+            "chatBackgroundId": item.get("chatBackgroundId"),
+            "chatBackgroundUrl": item.get("chatBackgroundUrl"),
             "proactiveConfig": item.get("proactiveConfig") or {},
             "agentConfig": item.get("agentConfig") or {},
             "createdAt": item.get("createdAt") or utc_now(),

@@ -1,0 +1,19 @@
+.role-illustrations { margin-bottom: 32px; padding-bottom: 24px; border-bottom: 1px solid var(--line); }
+.role-illustrations > header, .illustration-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.role-illustrations > header { justify-content: space-between; }
+.role-illustrations p, .illustration-card small { color: var(--ink-faint); }
+.illustration-toolbar { margin: 14px 0; }
+.illustration-toolbar label { display: grid; gap: 5px; }
+.illustration-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(150px,1fr)); gap: 12px; margin-top: 16px; }
+.illustration-card { min-width: 0; padding: 0 0 10px; overflow: hidden; display: flex; flex-direction: column; gap: 6px; }
+.illustration-card img { width: 100%; height: 190px; object-fit: cover; }
+.illustration-card span, .illustration-card small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 8px; }
+.illustration-preview { display: block; width: 100%; max-height: 65vh; object-fit: contain; margin-bottom: 16px; }
+.chat-scroll.has-role-background { background-size: cover; background-position: center; background-attachment: local; }
+.chat-scroll.has-role-background .bubble { background: color-mix(in srgb, var(--surface-card) 91%, transparent); }
+.generated-asset-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+.illustration-send-permission { display: flex; gap: .5rem; align-items: center; margin: .75rem 0; font-size: .85rem; }
+.role-mood-label { color: var(--ink-faint); }
+.role-mood-portrait { margin: .75rem auto; display: flex; justify-content: center; max-width: 24rem; }
+.role-mood-portrait img { max-width: 100%; height: 12rem; object-fit: contain; border-radius: .8rem; }

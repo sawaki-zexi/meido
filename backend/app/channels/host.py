@@ -552,7 +552,7 @@ class ChannelHost:
             if not isinstance(frozen_attachment_bytes, Mapping) or not 1 <= len(frozen_attachment_bytes) <= 4:
                 raise UnsupportedTargetError("冻结附件必须引用原始附件 ID")
             frozen_payloads = dict(frozen_attachment_bytes)
-            if (not (actor == "push" or actor == "reply" and source_kind in {"chat_meme", "natural"})
+            if (not (actor == "push" or actor == "reply" and source_kind in {"chat_meme", "natural", "role_reaction"})
                     or not callable(authorize_source) or attachments
                     or not 1 <= len(attachment_ids) <= 4
                     or len(set(attachment_ids)) != len(attachment_ids)

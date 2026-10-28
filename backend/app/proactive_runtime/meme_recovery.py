@@ -112,7 +112,7 @@ def reconcile(library, role_id):
             from ..material_library import reconcile_removal
             reconcile_removal(library, row)
             continue
-        if planned.get('kind') in {'owner_chat_copy','owner_chat_reference','natural_chat_reference'}:
+        if planned.get('kind') in {'owner_chat_copy','owner_chat_reference','natural_chat_reference','role_reaction_reference'}:
             reconcile_owner(library,row)
             continue
         phase, status = actual.get('physicalPhase', 'reserved'), 'cleanup_pending'

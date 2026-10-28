@@ -1,3 +1,4 @@
+import { GeneratedAssetActions } from './GeneratedAssetActions';
 import { GenerationPromptOptions } from './GenerationPromptOptions';
 import type { GenerationParameters } from '../../api/novelai';
 import { errorMessage } from '../../api/client';
@@ -6,7 +7,7 @@ import { Notice, Placeholder } from '../../ui/Status';
 import { useGenerationDrawer, activeGenerationStatuses as activeStatuses, type GenerationDrawerProps } from './useGenerationDrawer';
 import { PromptTagManager } from './PromptTagManager';
 import { undesiredContentPresetLabel } from './promptPreferences';
-import { statusLabels as labels, deliveryLabels, generationErrorMessage, writebackLabels } from './generationLabels';
+import { statusLabels as labels, deliveryLabels, generationErrorMessage, writebackLabels, libraryWritebackLabels } from './generationLabels';
 export function GenerationDrawer(props: GenerationDrawerProps) {
   const { role, onClose } = props;
   const { configuration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
@@ -78,11 +79,11 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
         {item.purpose === 'scene_cg' && <p>{item.auxiliaryConsumption === 'possible' ? '辅助请求已出网，可能计费；未出图仍计入 CG 与账户尝试。' : item.auxiliaryConsumption === 'not_dispatched' ? '辅助请求尚未出网。' : '辅助消费状态尚未确认。'}</p>}
         {item.parameters ? <p>{item.parameters.model} · Seed {item.parameters.seed} · {item.parameters.width}×{item.parameters.height} · {item.parameters.steps} 步</p> : <p>尚无生图参数，本次可能仅进行场景观察。</p>}
         {item.parameters && <p>质量标签：{item.parameters.qualityToggle === undefined ? '未记录' : item.parameters.qualityToggle ? '开启' : '关闭'} · 负向预设：{undesiredContentPresetLabel(item.parameters.ucPreset)}</p>}
-        {item.writebackStatus && writebackLabels[item.writebackStatus] && <p>{writebackLabels[item.writebackStatus]}</p>}
+        {item.writebackStatus && (item.purpose === 'scene_cg' ? writebackLabels : libraryWritebackLabels)[item.writebackStatus] && <p>{(item.purpose === 'scene_cg' ? writebackLabels : libraryWritebackLabels)[item.writebackStatus]}</p>}
         <p>投递：{deliveryLabels[item.deliveryStatus] ?? '尚未确认'}</p>
         {item.errorCode && <p>{generationErrorMessage(item)}</p>}
         <div className="message-attachments">{item.attachments.map((image) => <div key={image.id}><a href={`/api/roles/${encodeURIComponent(role.id)}/attachments/${encodeURIComponent(image.id)}`} target="_blank" rel="noreferrer"><img src={`/api/roles/${encodeURIComponent(role.id)}/attachments/${encodeURIComponent(image.id)}`} alt={image.name} /></a>
-          {image.kind === 'image' && item.parameters && <button type="button" disabled={busy || uploading || !allowed} onClick={() => selectImage(item, image)}>重新生成 {image.name}</button>}</div>)}</div>
+          {image.kind === 'image' && item.parameters && <button type="button" disabled={busy || uploading || !allowed} onClick={() => selectImage(item, image)}>重新生成 {image.name}</button>}{image.kind === 'image' && <GeneratedAssetActions key={image.id} roleId={role.id} attachmentId={image.id} disabled={busy || uploading} />}</div>)}</div>
         <button type="button" onClick={() => void manage(item)}>查询此生成</button>
         {(activeStatuses.includes(item.status) || (item.status === 'succeeded' && item.deliveryStatus === 'pending'))
           && <button type="button" onClick={() => void manage(item, true)}>停止此生成</button>}

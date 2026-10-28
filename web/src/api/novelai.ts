@@ -18,7 +18,7 @@ export type NovelaiConfiguration = {
   enabled: boolean; tokenConfigured: boolean; credentialCleanupPending: boolean; revision: number;
   allowTxt2Img: boolean; allowImg2Img: boolean;
   allowedModels: string[]; defaultModel: string; nsfwEnabled: boolean; nsfwModel: string; allowedSamplers: string[]; defaultSampler: string;
-  maxPixels: number; maxSteps: number; dailyAttemptLimit: number; defaultSamples: number; addQualityTags: boolean; undesiredContentPreset: number;
+  maxPixels: number; maxSteps: number; dailyAttemptLimit: number; defaultSamples: number; addQualityTags: boolean; undesiredContentPreset: number; autoWritebackRoleAssets?: boolean;
   manualEnabled?: boolean; manualDailyAttempts?: number; manualConsentRevision?: number;
 };
 export type GenerationParameters = {

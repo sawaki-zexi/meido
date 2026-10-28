@@ -53,6 +53,7 @@ class NovelaiSettings(BaseModel):
     defaultSamples: StrictInt = Field(default=1, ge=1, le=4)
     addQualityTags: StrictBool = False
     undesiredContentPreset: StrictInt = Field(default=0, ge=0, le=2)
+    autoWritebackRoleAssets: StrictBool = False
 
     @field_validator('allowedModels', 'allowedSamplers')
     @classmethod

@@ -77,6 +77,7 @@ export function NovelaiSettings({ showTitle = true }: { showTitle?: boolean }) {
         <div className="novelai-card-heading"><h3 id="novelai-generation-title">公共生成参数</h3></div>
         <fieldset className="novelai-parameter-group" disabled={pending}>
           <legend>允许的生成模式</legend>
+          <label className="field checkbox-field novelai-option-row"><input type="checkbox" checked={configuration.autoWritebackRoleAssets ?? false} onChange={event => patch({ autoWritebackRoleAssets: event.target.checked })} /><span>普通生图自动保存首张图片为角色插画并设为聊天背景</span></label>
           <div className="novelai-mode-options">
             <label className="field checkbox-field novelai-option-row"><input type="checkbox" aria-label="允许文生图" checked={configuration.allowTxt2Img ?? true}
               onChange={event => patch({ allowTxt2Img: event.target.checked })} /><span>允许文生图</span></label>
