@@ -23,6 +23,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   const [configuration, setConfiguration] = useState<NovelaiConfiguration | null>(null);
   const [configurationRefreshing, setConfigurationRefreshing] = useState(false);
   const configurationQuery = useRef(0);
+  const historicalParameters = useRef(false);
   const [page, setPage] = useState<GenerationPage | null>(null);
   const [parameters, setParameters] = useState<GenerationParameters>({ prompt: '', mode: 'txt2img', negative_prompt: '', samples: 1, size_preset: 'square' });
   const [seed, setSeed] = useState('');
@@ -52,6 +53,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     const query = ++configurationQuery.current;
     scope.current = owner;
     setPage(null); setConfiguration(null); setConfigurationRefreshing(false); setError(''); setBusy(false); setUploading(false); setInputs([]);
+    historicalParameters.current = false;
     attempt.current = null; setSource(null); setConsent(false); setAccepted(false); setDeliveryMode(defaultDeliveryMode);
     recordQueries.current = new Map();
     setParameters({ prompt: '', mode: 'txt2img', negative_prompt: '', size_preset: 'square' }); setSeed('');
@@ -69,7 +71,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   }, [role.id, selectedImage?.generation.attemptId, selectedImage?.image.id]);
   const applyConfiguration = (config: NovelaiConfiguration) => {
     setConfiguration(config);
-    if (!attempt.current && config.revision !== configuration?.revision) {
+    if (!attempt.current && !historicalParameters.current && config.revision !== configuration?.revision) {
       const previous = configuration && serviceDefaults(configuration);
       const defaults = serviceDefaults(config);
       setParameters((value) => ({ ...value,
@@ -216,7 +218,9 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   const allowed = !configurationRefreshing && Boolean(availability?.available || attempt.current);
   const unavailableMessage = availability?.message ?? '正在读取生图状态…';
   const modeAllowed = configuration ? (parameters.mode === 'txt2img' ? configuration.allowTxt2Img !== false : configuration.allowImg2Img !== false) : false;
-  const candidates = [...attachments, ...inputs].filter((item, index, all) => item.kind === 'image' && all.findIndex((other) => other.id === item.id) === index);
+  const historicalInput = parameters.mode === 'img2img' && parameters.base_attachment_id
+    ? [{ id: parameters.base_attachment_id, name: '历史底图（需仍可访问）', kind: 'image' as const, mediaType: 'image/*', size: 0 }] : [];
+  const candidates = [...attachments, ...inputs, ...historicalInput].filter((item, index, all) => item.kind === 'image' && all.findIndex((other) => other.id === item.id) === index);
   const patch = (changes: Partial<GenerationParameters>) => setParameters({ ...parameters, ...changes });
   const manage = async (item: GenerationView, cancel = false) => {
     if (recordQueries.current.get(item.attemptId)?.stopping) return;
@@ -240,10 +244,11 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   };
   const loadParameters = (generation: GenerationView, reuseSeed = false) => {
     if (busy || uploading || !generation.parameters) return;
-    const { width, height, prompt, negative_prompt, mode, model, sampler, steps, samples, base_attachment_id, strength, noise, background } = generation.parameters;
+    const { width, height, prompt, negative_prompt, mode, model, sampler, steps, samples, base_attachment_id, strength, noise, background, qualityToggle, ucPreset } = generation.parameters;
+    historicalParameters.current = true;
     const size = width === 1024 && height === 1024 ? 'square' : width === 1216 && height === 832 ? 'landscape'
       : width === 832 && height === 1216 ? 'portrait' : 'custom';
-    setParameters({ prompt, negative_prompt, mode, model, sampler, steps, samples: samples ?? 1, ...(reuseSeed ? { background } : {}), size_preset: size,
+    setParameters({ prompt, negative_prompt, mode, model, sampler, steps, samples: samples ?? 1, qualityToggle: qualityToggle ?? false, ucPreset: ucPreset ?? 0, ...(reuseSeed ? { background } : {}), size_preset: size,
       ...(mode === 'img2img' ? { base_attachment_id, strength, noise } : {}),
       ...(size === 'custom' ? { custom_width: width, custom_height: height } : {}) });
     setSeed(reuseSeed && generation.parameters.seed !== undefined ? String(generation.parameters.seed) : '');

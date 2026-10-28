@@ -17,6 +17,10 @@ from .mcp_config import McpConfigStore, McpServer, MCP_MANAGEMENT_NAMES
 from .mcp_stdio import McpProtocolError, McpStdioClient, finish_cleanup, schema_validator, validate_instance
 
 
+CLEANUP_FAILED = "MCP process cleanup failed; resources remain owned; retry cleanup"
+CLEANUP_UNCONFIRMED = "MCP cleanup is unconfirmed and still belongs to its original loop"
+
+
 def management_definitions() -> tuple[ToolDefinition, ...]:
     identity = {"type": "object", "properties": {"server_id": {"type": "string", "maxLength": 24}}, "required": ["server_id"], "additionalProperties": False}
     return tuple(ToolDefinition(name, description, schema, risk=risk, source="builtin:mcp", exposure="deferred", timeout_seconds=120, output_limit=16000) for name, description, schema, risk in (
@@ -43,7 +47,7 @@ class McpManagementTool:
             server_id = str(arguments["server_id"])
             if self.definition.name == "mcp_add":
                 try:
-                    data = await self.bundle.add(server_id, context)
+                    data = await self.bundle.add(server_id, context, on_update=on_update)
                 except McpProtocolError as error:
                     return AgentToolResult(str(error), details={"serverId": server_id}, is_error=True)
             else:
@@ -52,9 +56,11 @@ class McpManagementTool:
 
 
 class McpRemoteTool:
-    def __init__(self, bundle: McpRun, config: McpServer, declaration: dict[str, Any], secrets: tuple[str, ...]) -> None:
+    def __init__(self, bundle: McpRun, config: McpServer, declaration: dict[str, Any], secrets: tuple[str, ...], client: McpStdioClient) -> None:
         self.bundle = bundle
         self.config = config
+        self._client = client
+        self._generation = bundle._generations[config.server_id]
         self.remote_name = declaration["name"]
         self._input = schema_validator(declaration["inputSchema"])
         self._output = schema_validator(declaration["outputSchema"]) if "outputSchema" in declaration else None
@@ -65,13 +71,21 @@ class McpRemoteTool:
         version = hashlib.sha256((config.revision + encoded).encode()).hexdigest()[:24]
         self.definition = ToolDefinition(f"mcp_{config.server_id}__{self.remote_name}", declaration.get("description") or self.remote_name,
             declaration["inputSchema"], risk=config.risk, source=f"mcp:{config.server_id}", version=version,
-            exposure="deferred", timeout_seconds=config.timeout_seconds, output_limit=config.max_output_chars)
+            exposure="deferred", timeout_seconds=config.timeout_seconds, output_limit=config.max_output_chars,
+            namespace_summary=_redact_value(config.name, secrets))
 
-    async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
+    def _require_binding(self, context: ToolContext) -> McpStdioClient:
         self.bundle.require_context(context)
         denial = self.bundle.authorization_denial(self.definition)
         if denial is not None:
             raise PermissionError(denial)
+        if (self.bundle.clients.get(self.config.server_id) is not self._client
+                or self.bundle._generations.get(self.config.server_id) != self._generation):
+            raise PermissionError("MCP connection changed; use tools from the next request")
+        return self._client
+
+    async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
+        self._require_binding(context)
         if len(json.dumps(dict(arguments), ensure_ascii=False)) > 65536:
             raise ValueError("MCP arguments exceed budget")
         # Full JSON Schema validation is offline; no peer-selected URL is fetched.
@@ -81,20 +95,20 @@ class McpRemoteTool:
             return AgentToolResult(str(error), is_error=True)
         if not valid_input:
             return AgentToolResult("MCP arguments do not match the frozen input schema", is_error=True)
-        client = self.bundle.clients.get(self.config.server_id)
-        if client is None or client.closed:
-            raise McpProtocolError("MCP service is disconnected; use mcp_add")
+        # Schema validation awaits a separate worker; recheck both current
+        # authority and the issued request's exact peer immediately before call.
+        client = self._require_binding(context)
         try:
             response = await client.call(self.remote_name, arguments)
             context.signal.raise_if_cancelled()
-            self.bundle.require_context(context)
-            denial = self.bundle.authorization_denial(self.definition)
-            if denial is not None:
-                raise PermissionError(denial)
+            self._require_binding(context)
             return await self._result(response)
         except BaseException as error:
-            self.bundle.errors[self.config.server_id] = str(error) if isinstance(error, McpProtocolError) else "MCP call failed or was cancelled; reconnect before another call"
-            await client.close()
+            # A stale response belongs to its already-retired peer, not the
+            # replacement. Never revoke/dispose the latter on the old call's behalf.
+            if self.bundle.clients.get(self.config.server_id) is client:
+                self.bundle.errors[self.config.server_id] = str(error) if isinstance(error, McpProtocolError) else "MCP call failed or was cancelled; reconnect before another call"
+                await self.bundle.close_server(self.config.server_id)
             if isinstance(error, McpProtocolError):
                 return AgentToolResult(str(error), is_error=True)
             raise
@@ -262,14 +276,37 @@ class McpHost:
             if self.store.cleanup_pending(config.server_id):
                 errors.add("MCP credential cleanup is pending; retry saving or deleting")
             active = 0
+            cleanup_owners = []
             for run in runs:
                 client = run.clients.get(config.server_id)
                 error = run.errors.get(config.server_id) or (client.failure if client is not None else None)
                 if error is not None:
                     errors.add(error)
                 active += int(client is not None and not client.closed and client.failure is None)
-            result.append({**config.public(), "connectionCount": counts.get(config.server_id, 0), "activeProcesses": active, "errors": sorted(errors)})
+                if isinstance(run, McpRun):
+                    diagnostic = run.cleanup_diagnostic(config.server_id)
+                    if diagnostic is not None:
+                        cleanup_owners.append(diagnostic)
+                        errors.add(CLEANUP_UNCONFIRMED if diagnostic["state"] == "cleanup_unconfirmed" else CLEANUP_FAILED if diagnostic["state"] == "cleanup_failed" else "MCP process cleanup is pending")
+            result.append({**config.public(), "connectionCount": counts.get(config.server_id, 0), "activeProcesses": active, "errors": sorted(errors), "cleanupOwners": cleanup_owners})
         return result
+
+    def require_available(self, owner: McpRun, server_id: str) -> None:
+        # Call under _lock together with publication of the new child owner.
+        # Display names and new configuration revisions never identify resources.
+        for run in self._runs.values():
+            if run is owner or (run.role_id, run.scope_id) != (owner.role_id, owner.scope_id):
+                continue
+            client = run.clients.get(server_id)
+            if server_id in run._opening or client is not None and not client.exit_confirmed:
+                raise McpProtocolError("Prior MCP connection or cleanup is pending for this source")
+
+    async def retry_cleanup(self, server_id: str) -> None:
+        """Only reap retained ordinary owners; no grant/intent/business changes."""
+        with self._lock:
+            runs = tuple(run for run in self._runs.values() if run.cleanup_diagnostic(server_id) is not None)
+        await self._join_cleanup([run.close_from_any_loop() if run.closed else
+            run.close_server_from_any_loop(server_id) for run in runs])
 
     async def revoke(self, server_id: str) -> None:
         with self._lock:
@@ -289,7 +326,7 @@ class McpHost:
             runs = tuple(self._runs.values())
             autonomous = tuple(self._autonomy_runs.values())
         await self._join_cleanup([
-            *(run.close_server_from_any_loop(server_id) for run in runs for server_id in run.configs),
+            *(run.close_from_any_loop() for run in runs),
             *(run.close_from_any_loop() for run in autonomous),
         ])
 
@@ -321,7 +358,13 @@ class McpRun:
         self.direct_exposure = False
         self.loop = asyncio.get_running_loop()
         self._closing: asyncio.Task | None = None
-        self.closed = False
+        self._opening: dict[str, asyncio.Task] = {}
+        self._server_closing: dict[str, asyncio.Task] = {}
+        self._add_locks = {server_id: asyncio.Lock() for server_id in self.configs}
+        self._epochs: dict[str, int] = {}
+        self._generations: dict[str, int] = {}
+        self._cleanup_errors: dict[str, str] = {}
+        self.closed = self.exit_confirmed = self.cleanup_failed = False
         self._watchdog = asyncio.create_task(self._watch_authority())
 
     @property
@@ -343,7 +386,11 @@ class McpRun:
         # not revive its old capability directory. A fresh inbound run can
         # independently recheck the current binding and saved connection intent.
         if self._source_revocation is None:
-            self._source_revocation = self.source_denial()
+            try:
+                self._source_revocation = self.source_denial()
+            except Exception:
+                self._source_revocation = "MCP source authority is unavailable"
+                self._begin_close()
         return self._source_revocation
 
     def require_context(self, context: ToolContext, management_name: str | None = None) -> None:
@@ -368,10 +415,15 @@ class McpRun:
             return None if self.tool_enabled(definition.name) else "MCP management permission was revoked"
         server_id = definition.source.removeprefix("mcp:")
         config = self.configs.get(server_id)
-        if config is None or self.host.store.get(server_id) != config:
+        try:
+            unchanged = config is not None and self.host.store.get(server_id) == config
+        except Exception:
+            self._begin_close()
+            return "MCP service authority is unavailable"
+        if not unchanged:
             return "MCP service grant was revoked or changed"
         if server_id in self.disconnected:
-            return "MCP service connection was removed"
+            return self.errors.get(server_id) or "MCP service connection was removed"
         client = self.clients.get(server_id)
         if client is None or client.closed:
             return self.errors.get(server_id) or (client.failure if client is not None else None) or "MCP service is disconnected; use mcp_add"
@@ -390,50 +442,108 @@ class McpRun:
             raise
 
     async def _watch_authority(self) -> None:
-        while not self.closed:
-            await asyncio.sleep(.05)
-            source_denied = self._source_authorization_denial() is not None
-            for server_id, config in self.configs.items():
-                if source_denied or self.host.store.get(server_id) != config:
-                    self.errors[server_id] = "MCP grant or original source was revoked"
-                    await self.close_server(server_id)
+        try:
+            while not self.closed:
+                await asyncio.sleep(.05)
+                if self._source_authorization_denial() is not None:
+                    self._begin_close()
+                    return
+                for server_id, config in self.configs.items():
+                    if self.host.store.get(server_id) != config and server_id not in self.disconnected:
+                        self.errors[server_id] = "MCP grant or original source was revoked"
+                        self._begin_server_close(server_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Like autonomy, seal synchronously and leave cleanup to its owned
+            # task. Awaiting close here would make it join its own watcher.
+            self._source_revocation = "MCP service authority is unavailable"
+            self._begin_close()
 
-    async def _connect(self, config: McpServer) -> tuple[McpRemoteTool, ...]:
-        if self._source_authorization_denial() is not None or self.host.store.get(config.server_id) != config:
+    def _require_connection(self, config: McpServer) -> None:
+        try:
+            allowed = not self.closed and self._source_authorization_denial() is None and self.host.store.get(config.server_id) == config
+        except Exception:
+            self._begin_close()
+            allowed = False
+        if not allowed:
             raise PermissionError("MCP grant or original source was revoked")
-        previous = self.clients.get(config.server_id)
-        if previous is not None:
-            await previous.close()
+
+    async def _connect(self, config: McpServer, on_update=None) -> tuple[McpRemoteTool, ...]:
+        self._require_connection(config)
+        server_id = config.server_id
+        closing = self._server_closing.get(server_id)
+        if closing is not None and not closing.done():
+            raise McpProtocolError("MCP process cleanup is pending; retry after cleanup")
+        operation = self._opening.get(server_id)
+        if operation is None:
+            operation = asyncio.create_task(self._connect_owned(config, self._epochs.get(server_id, 0), on_update))
+            self._opening[server_id] = operation
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            if not asyncio.current_task().cancelling():
+                raise McpProtocolError("MCP connection was closed while opening") from None
+            # Own the child, not this caller (whose finally can itself close).
+            await self.close_server(server_id)
+            raise
+        finally:
+            if operation.done() and self._opening.get(server_id) is operation:
+                del self._opening[server_id]
+
+    async def _connect_owned(self, config: McpServer, epoch: int, on_update=None) -> tuple[McpRemoteTool, ...]:
+        server_id = config.server_id
+        previous = self.clients.get(server_id)
+        if previous is not None and not previous.exit_confirmed:
+            await self._dispose_client(server_id, previous)
+        self._require_connection(config)
         try:
             environment = self.host.store.environment(config)
         except Exception:
             raise McpProtocolError("MCP environment credential is unavailable") from None
         secrets = tuple(environment[key] for key in config.env_keys)
-        client = McpStdioClient(config, environment)
-        self.clients[config.server_id] = client
+        with self.host._lock:
+            self.host.require_available(self, server_id)
+            client = McpStdioClient(config, environment)
+            self.clients[server_id] = client
+            self._generations[server_id] = self._generations.get(server_id, 0) + 1
         try:
+            if on_update is not None:
+                # Host phase only, after grant checks and when an owned attempt
+                # actually starts. Never stream configuration or peer output.
+                on_update(AgentToolResult("正在连接 MCP 服务并准备工具目录。", details={"phase": "connecting"}))
             declarations = await client.connect()
-            tools = tuple(McpRemoteTool(self, config, declaration, secrets) for declaration in declarations)
-            if self._source_authorization_denial() is not None or self.host.store.get(config.server_id) != config:
-                raise PermissionError("MCP grant or original source was revoked")
-            self.remote_tools[config.server_id] = tools
+            tools = tuple(McpRemoteTool(self, config, declaration, secrets, client) for declaration in declarations)
+            self._require_connection(config)
+            if epoch != self._epochs.get(server_id, 0):
+                raise McpProtocolError("MCP connection was removed while opening")
             self.host.observe_catalog(config, declarations)
-            self.disconnected.discard(config.server_id)
-            self.errors.pop(config.server_id, None)
+            self.remote_tools[server_id] = tools
+            self.disconnected.discard(server_id)
+            self.errors.pop(server_id, None)
             return tools
         except BaseException:
-            await client.close()
+            await self._dispose_client(server_id, client)
             raise
 
-    async def add(self, server_id: str, context: ToolContext) -> dict[str, object]:
+    async def add(self, server_id: str, context: ToolContext, on_update=None) -> dict[str, object]:
+        self.require_context(context, "mcp_add")
+        if server_id not in self._add_locks:
+            raise PermissionError("MCP server was not authorized at run start")
+        async with self._add_locks[server_id]:
+            return await self._add(server_id, context, on_update)
+
+    async def _add(self, server_id: str, context: ToolContext, on_update=None) -> dict[str, object]:
+        self.require_context(context, "mcp_add")
         config = self.configs.get(server_id)
-        if config is None or self.host.store.get(server_id) != config or self.capabilities is None:
+        if config is None or self.capabilities is None:
             raise PermissionError("MCP server was not authorized at run start or was revoked")
+        self._require_connection(config)
         existing = self.clients.get(server_id)
-        if existing is not None and not existing.closed and server_id not in self.disconnected:
+        if existing is not None and not existing.closed and server_id not in self.disconnected and server_id not in self._opening:
             return {"serverId": server_id, "status": "connected", "tools": [item.definition.name for item in self.remote_tools.get(server_id, ())]}
         try:
-            tools = await self._connect(config)
+            tools = await self._connect(config, on_update)
             self.require_context(context, "mcp_add")
             # A reconnect can restore the exact already-admitted directory; it
             # cannot silently change schemas inside an issued run snapshot.
@@ -444,6 +554,10 @@ class McpRun:
                 # owner configuration; frozen schemas normalize arrays to tuples.
                 if {item.definition.name: item.definition.version for item in tools} != {name: item.version for name, item in admitted.items()}:
                     raise McpProtocolError("MCP tool directory changed; start a new run")
+                # Identical declarations do not make a replacement connection
+                # the executor of an already-issued provider request.
+                current.stage_service_tools(context, grant_id=config.grant_id,
+                    parent_snapshot_id=current.snapshot.snapshot_id, tools=tools, rebind=True)
             elif tools:
                 current.stage_service_tools(context, grant_id=config.grant_id, parent_snapshot_id=current.snapshot.snapshot_id, tools=tools, activate=self.direct_exposure)
             self.host.store.set_intent(self.scope_id, self.role_id, self.session_key, config)
@@ -451,15 +565,19 @@ class McpRun:
                     "tip": "结果持久化后可直接使用远端工具。" if self.direct_exposure else "结果持久化后用 tool_search 加载远端工具。"}
         except BaseException as error:
             self.errors[server_id] = str(error) if isinstance(error, McpProtocolError) else "MCP connection failed or was revoked"
-            await self.close_server(server_id)
+            # An opening child already disposes itself. Do not immediately
+            # turn one failed cleanup into an implicit second attempt.
+            if server_id not in self._cleanup_errors:
+                await self.close_server(server_id)
             raise
 
     async def remove(self, server_id: str, context: ToolContext) -> dict[str, object]:
         config = self.configs.get(server_id)
         if config is None or self.capabilities is None:
             raise PermissionError("MCP server was not authorized at run start")
+        cleanup = self._begin_server_close(server_id)
         self.host.store.remove_intent(self.scope_id, server_id)
-        await self.close_server(server_id)
+        await finish_cleanup(cleanup)
         current = self.capabilities.current()
         current.stage_service_removal(context, grant_id=config.grant_id, parent_snapshot_id=current.snapshot.snapshot_id)
         return {"serverId": server_id, "status": "disconnected"}
@@ -471,33 +589,137 @@ class McpRun:
         return [{"serverId": item.server_id, "name": item.name, "risk": item.risk,
                  "connectionDesired": self.host.store.has_intent(self.scope_id, item),
                  "status": "revoked" if self.host.store.get(item.server_id) != item else "connected" if item.server_id in self.clients and not self.clients[item.server_id].closed and item.server_id not in errors else "failed" if item.server_id in errors else "disconnected",
-                 "error": errors.get(item.server_id),
+                 "error": self._cleanup_errors.get(item.server_id) or errors.get(item.server_id),
+                 "cleanup": self.cleanup_diagnostic(item.server_id),
                  "tools": [{"name": tool.definition.name, "loaded": tool.definition.name in visible} for tool in self.remote_tools.get(item.server_id, ())]} for item in self.configs.values()]
 
-    async def close_server_from_any_loop(self, server_id: str) -> None:
+    def cleanup_diagnostic(self, server_id: str) -> dict[str, object] | None:
+        client = self.clients.get(server_id)
+        if (client is None or client.exit_confirmed) and server_id not in self._opening:
+            return None
+        if not (self.closed or server_id in self.disconnected or client is not None and client.closed or server_id in self._cleanup_errors):
+            return None
+        config = self.configs.get(server_id)
+        return {"runId": self.run_id, "roleId": self.role_id, "sessionKey": self.session_key,
+                "scopeId": self.scope_id, "serverId": server_id,
+                "configRevision": config.revision if config else None,
+                "grantRevision": config.grant_id if config else None,
+                "connectionGeneration": self._generations.get(server_id, 0),
+                "state": "cleanup_unconfirmed" if self._cleanup_errors.get(server_id) == CLEANUP_UNCONFIRMED else
+                    "cleanup_failed" if server_id in self._cleanup_errors else "cleanup_pending"}
+
+    async def _from_any_loop(self, server_id: str | None) -> None:
+        if self.exit_confirmed:
+            return
+        if server_id is None:
+            self.closed = True
+        else:
+            # Seal even if the original loop is stopped: when it resumes an
+            # old opening must not publish or restore intent before retry.
+            with self.host._lock:
+                self.disconnected.add(server_id)
+                self._epochs[server_id] = self._epochs.get(server_id, 0) + 1
         if self.loop is asyncio.get_running_loop():
-            await self.close_server(server_id)
-        elif not self.loop.is_closed():
-            future = asyncio.run_coroutine_threadsafe(self.close_server(server_id), self.loop)
-            await asyncio.wrap_future(future)
+            await (self.close() if server_id is None else self.close_server(server_id))
+        elif self.loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(self.close() if server_id is None else self.close_server(server_id), self.loop)
+            async def join():
+                await asyncio.wrap_future(future)
+            await finish_cleanup(asyncio.create_task(join()))
+        else:
+            keys = self.clients.keys() | self._opening.keys() if server_id is None else {server_id}
+            if all(key not in self._opening and (key not in self.clients or self.clients[key].exit_confirmed) for key in keys):
+                if server_id is None:
+                    self.exit_confirmed = True
+                    self.cleanup_failed = False
+                    with self.host._lock:
+                        if self.host._runs.get(self.run_id) is self:
+                            del self.host._runs[self.run_id]
+                return
+            self.cleanup_failed = True
+            for key, client in self.clients.items():
+                if (server_id is None or server_id == key) and not client.exit_confirmed:
+                    self._cleanup_errors[key] = CLEANUP_UNCONFIRMED
+            raise McpProtocolError(CLEANUP_UNCONFIRMED)
+
+    async def close_from_any_loop(self) -> None:
+        await self._from_any_loop(None)
+
+    async def close_server_from_any_loop(self, server_id: str) -> None:
+        await self._from_any_loop(None if self.closed else server_id)
+
+    @staticmethod
+    def _observe_cleanup(task: asyncio.Task) -> None:
+        if not task.cancelled():
+            task.exception()
+
+    async def _dispose_client(self, server_id: str, client: McpStdioClient) -> None:
+        try:
+            if not client.exit_confirmed:
+                await client.close()
+            if not client.exit_confirmed:
+                raise McpProtocolError(CLEANUP_FAILED)
+        except BaseException:
+            self.cleanup_failed = True
+            self._cleanup_errors[server_id] = CLEANUP_FAILED
+            raise McpProtocolError(CLEANUP_FAILED) from None
+        self._cleanup_errors.pop(server_id, None)
+        self.cleanup_failed = bool(self._cleanup_errors)
+
+    def _begin_server_close(self, server_id: str) -> asyncio.Task:
+        self.disconnected.add(server_id)
+        task = self._server_closing.get(server_id)
+        client = self.clients.get(server_id)
+        if task is None or task.done() and (server_id in self._opening or client is not None and not client.exit_confirmed):
+            self._epochs[server_id] = self._epochs.get(server_id, 0) + 1
+            task = asyncio.create_task(self._close_server(server_id))
+            task.add_done_callback(self._observe_cleanup)
+            self._server_closing[server_id] = task
+        return task
 
     async def close_server(self, server_id: str) -> None:
-        self.disconnected.add(server_id)
+        await finish_cleanup(self._begin_server_close(server_id))
+
+    async def _close_server(self, server_id: str) -> None:
+        opening = self._opening.get(server_id)
+        if opening is not None:
+            was_opening = not opening.done()
+            opening.cancel()
+            await asyncio.gather(opening, return_exceptions=True)
+            if self._opening.get(server_id) is opening:
+                del self._opening[server_id]
+            if was_opening and server_id in self._cleanup_errors:
+                # The child just attempted disposal. Preserve that failure;
+                # a second explicit close may retry the same retained peer.
+                raise McpProtocolError(CLEANUP_FAILED)
         client = self.clients.get(server_id)
         if client is not None:
-            await client.close()
+            await self._dispose_client(server_id, client)
+
+    def _begin_close(self) -> asyncio.Task:
+        self.closed = True
+        if self._closing is None or self._closing.done() and not self.exit_confirmed:
+            self._closing = asyncio.create_task(self._close())
+            self._closing.add_done_callback(self._observe_cleanup)
+        return self._closing
 
     async def close(self) -> None:
-        if self._closing is None:
-            self._closing = asyncio.create_task(self._close())
-        await finish_cleanup(self._closing)
+        if not self.exit_confirmed:
+            await finish_cleanup(self._begin_close())
 
     async def _close(self) -> None:
-        self.closed = True
         try:
             self._watchdog.cancel()
             await asyncio.gather(self._watchdog, return_exceptions=True)
-            await asyncio.gather(*(client.close() for client in self.clients.values()))
-        finally:
+            servers = self.clients.keys() | self._opening.keys()
+            results = await asyncio.gather(*(self.close_server(server_id) for server_id in servers), return_exceptions=True)
+            if any(isinstance(result, BaseException) for result in results) or any(not client.exit_confirmed for client in self.clients.values()):
+                raise McpProtocolError(CLEANUP_FAILED)
+            self.exit_confirmed = True
+            self.cleanup_failed = False
             with self.host._lock:
-                self.host._runs.pop(self.run_id, None)
+                if self.host._runs.get(self.run_id) is self:
+                    del self.host._runs[self.run_id]
+        except BaseException:
+            self.cleanup_failed = True
+            raise

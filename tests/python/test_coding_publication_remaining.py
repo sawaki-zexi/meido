@@ -13,8 +13,9 @@ from backend.app.coding_tasks.github_publication import GithubPlatform, GitTrans
 from backend.app.coding_tasks.git_repository import git
 from backend.app.coding_tasks.ledger import _json
 from backend.app.multichannel import MultichannelStore
-from backend.app.task_runtime import TaskOrigin, TaskRuntime
+from backend.app.task_runtime import TaskRuntime
 from test_coding_publication import owned_application, platform, settle
+from test_coding_delivery import frozen_channel_origin
 
 pytestmark = pytest.mark.usefixtures('local_platform_only')
 
@@ -24,8 +25,7 @@ def test_remaining_pr_lost_receipt_recovers_approved_chain_after_ack_prune_and_r
     channels = MultichannelStore(sessions.database_path, sessions)
     account = channels.register_channel_account('role-a', 'qq', account_id='original', enabled=True)
     thread = channels.ensure_channel_thread('role-a', 'qq', account.account_id, 'original-owner', 'private')
-    origin = TaskOrigin('role-a', thread.session_key, 'original-parent', 'original-call',
-        source_account_id=account.account_id, source_thread_id=thread.thread_id, source_scope_id='original-scope')
+    origin = frozen_channel_origin(channels, thread, 'original-parent', 'original-call')
     sends = []
     def identity(record):
         return record.get('completionKind', 'coding_completion'), record.get('completionId', record['attemptId'])

@@ -240,7 +240,7 @@ def test_account_send_records_platform_result_and_uncertain_timeout(tmp_path):
     assert "secret request details" not in str(store.list_deliveries("role-a"))
 
 
-def test_pause_drains_admitted_turn_and_allows_its_reply_but_rejects_new_work(tmp_path):
+def test_pause_drains_admitted_turn_but_disabled_account_revokes_unsent_reply(tmp_path):
     async def scenario() -> None:
         store = make_store(tmp_path)
         account = store.register_channel_account("role-a", "qq", account_id="qq-a", enabled=True)
@@ -257,9 +257,8 @@ def test_pause_drains_admitted_turn_and_allows_its_reply_but_rejects_new_work(tm
                 assert admitted
                 entered.set()
                 await finish_turn.wait()
-                await host.account_send(
-                    "role-a", account.account_id, target.id, "final reply", actor="owner"
-                )
+                with pytest.raises(ChannelAdapterError, match='授权已失效'):
+                    await host.account_send("role-a", account.account_id, target.id, "final reply", actor="owner")
 
         turn = asyncio.create_task(admitted_turn())
         await entered.wait()
@@ -279,6 +278,6 @@ def test_pause_drains_admitted_turn_and_allows_its_reply_but_rejects_new_work(tm
         finish_turn.set()
         await turn
         await asyncio.wait_for(drain, timeout=1)
-        assert [message.content for message in adapter.sent] == ["final reply"]
+        assert adapter.sent == []
 
     asyncio.run(scenario())

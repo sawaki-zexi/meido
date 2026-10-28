@@ -1,4 +1,4 @@
-# ADR-0027：NovelAI 由插件启用，按实际就绪状态执行
+# ADR-0031：NovelAI 由插件启用，按实际就绪状态执行
 
 状态：已采纳。2026-10-26 主人要求按 Shiori 改进生图模块；关联 [#246](https://github.com/sawaki-zexi/meido/issues/246)。部分替代 ADR-0016、ADR-0022 的生图配置门槛。
 

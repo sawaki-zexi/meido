@@ -52,7 +52,10 @@ def mcp_router(host: Callable[[], McpHost], roles: Callable[[], RoleStore]) -> A
         except Exception:
             raise HTTPException(503, "MCP 配置或系统凭据库暂不可写") from None
         finally:
-            await current.revoke(data.serverId)
+            try:
+                await current.revoke(data.serverId)
+            except Exception:
+                raise HTTPException(503, "MCP 连接准入已关闭，但资源清理尚未确认；请重试清理") from None
         # This checkbox is an explicit owner action. Preserve unrelated role
         # policy and give the owner a usable discovery path after granting.
         if data.enableDiscovery:
@@ -72,6 +75,14 @@ def mcp_router(host: Callable[[], McpHost], roles: Callable[[], RoleStore]) -> A
     async def update(server_id: str, request: Request) -> dict[str, object]:
         return await save(request, server_id)
 
+    @router.post("/servers/{server_id}/cleanup")
+    async def retry_cleanup(server_id: str) -> dict[str, object]:
+        try:
+            await host().retry_cleanup(server_id)
+        except Exception:
+            raise HTTPException(503, "MCP 资源清理尚未确认，仍由原运行持有；请重试清理") from None
+        return {"serverId": server_id, "status": "cleaned"}
+
     @router.delete("/servers/{server_id}", status_code=204)
     async def delete(server_id: str) -> Response:
         current = host()
@@ -82,7 +93,7 @@ def mcp_router(host: Callable[[], McpHost], roles: Callable[[], RoleStore]) -> A
         except McpCredentialCleanupError:
             raise HTTPException(503, "MCP 服务已停用并断连，凭据清理未完成；请重试删除") from None
         except Exception:
-            raise HTTPException(503, "MCP 配置或系统凭据库暂不可写，请重试删除") from None
+            raise HTTPException(503, "MCP 配置、进程或凭据清理尚未确认，请重试删除") from None
         return Response(status_code=204)
 
     return router

@@ -14,6 +14,9 @@ from .failures import GenerationBudgetExceeded
 
 _SCHEMA = GenerationRequest.model_json_schema()
 _SCHEMA.pop('title', None)
+# Per-image preference overrides are explicit local-owner actions, not model grants.
+for _field in ('qualityToggle', 'ucPreset'):
+    _SCHEMA['properties'].pop(_field, None)
 # Manual/API requests keep ``mode`` strict, but ordinary chat expression
 # calls intentionally omit it so the host can select the safe txt2img path.
 # Keep the complete property set for backwards-compatible owner-directed

@@ -228,7 +228,7 @@ def test_feishu_attachment_failure_after_text_acceptance_is_uncertain(tmp_path) 
     asyncio.run(run())
 
 
-def test_qqbot_stream_rejection_cleans_preview_before_plain_send_fallback() -> None:
+def test_qqbot_stream_rejection_preserves_preview_without_active_fallback() -> None:
     class RejectedRequest(Exception):
         response = type("Response", (), {"status_code": 400})()
 
@@ -255,9 +255,10 @@ def test_qqbot_stream_rejection_cleans_preview_before_plain_send_fallback() -> N
         await adapter.stream_update(session, "Preview")
         result = await adapter.stream_finalize(session, "Final")
 
-        assert result.status is DeliveryStatus.SENT
-        assert result.platform_message_id == "plain-1"
-        assert operations == ["stream_c2c", "stream_c2c", "delete_c2c", "send_c2c"]
+        assert result.status is DeliveryStatus.FAILED
+        assert result.platform_message_id == "stream-1"
+        assert operations == ["stream_c2c", "stream_c2c"]
+        assert result.raw['partialDelivery'] and result.raw['deliveredContent'] == 'Preview'
 
     asyncio.run(run())
 

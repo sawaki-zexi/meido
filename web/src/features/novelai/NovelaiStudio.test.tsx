@@ -86,6 +86,8 @@ it('shows the selected role history on a stage and reuses parameters without con
   await user.click(screen.getByRole('button', { name: '复用参数' }));
   expect(screen.getByLabelText('工作台英文正向 tags')).toHaveValue('blue sky');
   expect(screen.getByLabelText('工作台 Seed')).toHaveValue(654);
+  expect(screen.getByLabelText('本次自动质量标签')).toBeChecked();
+  expect(screen.getByLabelText('本次负面内容预设')).toHaveValue('2');
   expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
 });
 

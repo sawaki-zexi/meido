@@ -21,6 +21,7 @@ from .request_budget import image_budget_client_kwargs, budgeted_model_stream, b
 
 from .message_transform import transform_messages
 from .model_adapter import _payload_error_detail, _raise_for_status_with_details, _response_error_detail
+from .model_protocol import preserve_stop_reason
 from .model_protocol import compatible_tool_names, effective_tools, json_object, model_cost, normalize_tools, remap_message_tool_names, safe_tool_id, tool_result_text
 from .model_types import (
     ModelAssistantMessage, ModelCapabilities, ModelContentBlock, ModelImageBlock,
@@ -239,8 +240,8 @@ class MistralConversationsAdapter:
                             break
                         try:
                             chunk = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
+                        except json.JSONDecodeError as error:
+                            raise RuntimeError("模型流包含无效 JSON") from error
                         if not isinstance(chunk, Mapping):
                             continue
                         if chunk.get("error"):
@@ -260,7 +261,7 @@ class MistralConversationsAdapter:
                         finish = choice.get("finish_reason")
                         if isinstance(finish, str) and finish:
                             finish_seen = True
-                            stop_reason = _stop_reason(finish)
+                            stop_reason = preserve_stop_reason(stop_reason, _stop_reason(finish))
                         delta = choice.get("delta") if isinstance(choice, Mapping) else {}
                         if not isinstance(delta, Mapping):
                             continue
@@ -334,7 +335,7 @@ class MistralConversationsAdapter:
                         yield ModelStreamError(str(error))
                         return
                     name = aliases.get(call["name"], call["name"])
-                    block = ModelToolCallBlock(safe_tool_id(call["id"] or f"call-{key}", max_length=9), name, arguments)
+                    block = ModelToolCallBlock(safe_tool_id(call["id"] or f"call-{key}", max_length=9), name, arguments, arguments_complete=bool(call["arguments"].strip()))
                     blocks.append(block)
                     yield ModelToolCallEnd(block)
             yield ModelStreamDone(ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(

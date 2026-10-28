@@ -7,7 +7,7 @@ import time
 import pytest
 
 from backend.app import main
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelTextDelta, ModelToolCall, ModelResponseDone
 from backend.app.ai.model_types import ModelAssistantMessage, ModelStreamDone, ModelToolCallBlock
 from test_background_shell_api import api as shell_api  # noqa: F401
 from test_spawn_api import api  # noqa: F401
@@ -30,8 +30,10 @@ class NotesAuthor:
             path, content = self.files[self.step]
             self.step += 1
             yield ModelToolCall(f's06-write-{self.step}', 'write_file', {'path': path, 'content': content})
+            yield ModelResponseDone('tool_use')
         else:
             yield ModelTextDelta('角色长期技能与工作文件已经实际保存；运行仍需独立许可。')
+            yield ModelResponseDone('stop')
 
 
 @pytest.mark.parametrize('with_scope', [False, True])

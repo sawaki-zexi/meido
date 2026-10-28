@@ -33,8 +33,13 @@ def recovery_fixture(tmp_path, *, channel=False):
     if channel:
         account = channels.register_channel_account('role-a', 'qq', account_id='fixture-account', enabled=True)
         thread = channels.ensure_channel_thread('role-a', 'qq', account.account_id, 'original-owner', 'private')
+        from backend.app.channels.source_authority import FrozenChannelSource
+        source = FrozenChannelSource('role-a', thread.session_key, thread.thread_id, account.account_id,
+            account.created_at, 'qq', 'original-owner', 'private', 'original-owner', True,
+            'fixture-identity', account.created_at, account.created_at, account.created_at)
         origin = TaskOrigin('role-a', thread.session_key, 'parent', 'call', source_account_id=account.account_id,
-            source_thread_id=thread.thread_id, source_scope_id='immutable-source')
+            source_thread_id=thread.thread_id, source_scope_id='immutable-source',
+            source_authority_json=json.dumps(source.to_dict()))
     else:
         thread = None
         origin = TaskOrigin('role-a', 'role:role-a', 'parent', 'call')

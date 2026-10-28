@@ -9,7 +9,7 @@ from backend.app.channels.group_tools import MultichannelGroupRepository
 from backend.app.channels.host import ChannelHost
 from backend.app.memory_config import MemorySettingsStore
 from backend.app.model_config import ModelConfigurationStore
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.multichannel import MultichannelStore
 from backend.app.session_manager import SessionManager
 from backend.app.session_store import SessionStore
@@ -67,6 +67,7 @@ def test_offline_group_notes_match_catalog_schema_and_reach_the_next_provider_re
             assert schemas["update_group_context"] == main.UpdateGroupContextTool.definition.input_schema
             if self.calls == 1:
                 yield ModelToolCall("find", "lookup_group_context", {"name": "old group"})
+                yield ModelResponseDone("tool_use")
                 return
             result = next(item for item in reversed(messages) if item["role"] == "tool")
             assert "RAW_GROUP" not in result["content"] and "RAW_LISTENING" not in result["content"]
@@ -74,9 +75,11 @@ def test_offline_group_notes_match_catalog_schema_and_reach_the_next_provider_re
             if self.calls == 2:
                 assert data["total"] == 1 and data["candidates"][0]["groupThreadId"] == thread.thread_id
                 yield ModelToolCall("read", "lookup_group_context", {"group_thread_id": thread.thread_id})
+                yield ModelResponseDone("tool_use")
             elif self.calls == 3:
                 assert data["groupNote"] == "离线笔记" and data["summary"] == "已有摘要"
                 yield ModelToolCall("patch", "update_group_context", {"group_thread_id": thread.thread_id, "summary": ""})
+                yield ModelResponseDone("tool_use")
             else:
                 assert data["groupNote"] == "离线笔记" and data["summary"] == "" and data["summaryUpdatedAt"]
                 yield ModelTextDelta("离线群资料已更新")

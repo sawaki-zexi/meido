@@ -1,0 +1,971 @@
+{
+  "seed": 235,
+  "provenance": "Curated real-tool task intents, not production user logs. Production definitions frozen at 8a2d27d; five explicitly marked sanitized MCP adversarial fixtures. No services or models.",
+  "definitions": 46,
+  "authorized_definitions": 44,
+  "languages": {
+    "zh": 20,
+    "mixed": 15,
+    "en": 15,
+    "irrelevant": 10
+  },
+  "quality": {
+    "dev": {
+      "baseline": {
+        "queries": 40,
+        "positive_queries": 33,
+        "recall_at_3": 0.7727272727272727,
+        "recall_at_5": 0.7727272727272727,
+        "mrr": 0.7922077922077922,
+        "mrr_at_5": 0.7878787878787878,
+        "irrelevant_false_load_rate": 0,
+        "forbidden_hits": 0,
+        "wrong_namespace_or_risk_hits": 0,
+        "miss_ids": [
+          "zh-14",
+          "zh-19",
+          "mixed-08",
+          "mixed-12",
+          "mixed-13",
+          "en-06",
+          "en-08",
+          "en-10"
+        ]
+      },
+      "metadata": {
+        "queries": 40,
+        "positive_queries": 33,
+        "recall_at_3": 0.9545454545454546,
+        "recall_at_5": 1.0,
+        "mrr": 0.9757575757575757,
+        "mrr_at_5": 0.9757575757575757,
+        "irrelevant_false_load_rate": 0,
+        "forbidden_hits": 0,
+        "wrong_namespace_or_risk_hits": 0,
+        "miss_ids": []
+      },
+      "no_parameters": {
+        "queries": 40,
+        "positive_queries": 33,
+        "recall_at_3": 0.7727272727272727,
+        "recall_at_5": 0.7727272727272727,
+        "mrr": 0.7922077922077922,
+        "mrr_at_5": 0.7878787878787878,
+        "irrelevant_false_load_rate": 0,
+        "forbidden_hits": 0,
+        "wrong_namespace_or_risk_hits": 0,
+        "miss_ids": [
+          "zh-14",
+          "zh-19",
+          "mixed-08",
+          "mixed-12",
+          "mixed-13",
+          "en-06",
+          "en-08",
+          "en-10"
+        ]
+      },
+      "no_namespace": {
+        "queries": 40,
+        "positive_queries": 33,
+        "recall_at_3": 0.9545454545454546,
+        "recall_at_5": 1.0,
+        "mrr": 0.9757575757575757,
+        "mrr_at_5": 0.9757575757575757,
+        "irrelevant_false_load_rate": 0,
+        "forbidden_hits": 0,
+        "wrong_namespace_or_risk_hits": 0,
+        "miss_ids": []
+      },
+      "no_hint": {
+        "queries": 40,
+        "positive_queries": 33,
+        "recall_at_3": 0.9242424242424242,
+        "recall_at_5": 0.9696969696969697,
+        "mrr": 0.8797979797979798,
+        "mrr_at_5": 0.8797979797979798,
+        "irrelevant_false_load_rate": 0,
+        "forbidden_hits": 0,
+        "wrong_namespace_or_risk_hits": 0,
+        "miss_ids": [
+          "zh-16"
+        ]
+      },
+      "no_description": {
+        "queries": 40,
+        "positive_queries": 33,
+        "recall_at_3": 0.8787878787878788,
+        "recall_at_5": 0.9090909090909091,
+        "mrr": 0.8848484848484849,
+        "mrr_at_5": 0.8848484848484849,
+        "irrelevant_false_load_rate": 0,
+        "forbidden_hits": 0,
+        "wrong_namespace_or_risk_hits": 0,
+        "miss_ids": [
+          "zh-08",
+          "zh-09",
+          "zh-12"
+        ]
+      },
+      "release_gate_passed": true
+    },
+    "holdout": {
+      "baseline": {
+        "queries": 20,
+        "positive_queries": 17,
+        "recall_at_3": 0.6470588235294118,
+        "recall_at_5": 0.6470588235294118,
+        "mrr": 0.6470588235294118,
+        "mrr_at_5": 0.6470588235294118,
+        "irrelevant_false_load_rate": 0.3333333333333333,
+        "forbidden_hits": 0,
+        "wrong_namespace_or_risk_hits": 0,
+        "miss_ids": [
+          "zh-18",
+          "zh-20",
+          "mixed-11",
+          "mixed-14",
+          "en-07",
+          "en-15"
+        ]
+      },
+      "metadata": {
+        "queries": 20,
+        "positive_queries": 17,
+        "recall_at_3": 0.8823529411764706,
+        "recall_at_5": 0.9411764705882353,
+        "mrr": 0.8676470588235294,
+        "mrr_at_5": 0.8676470588235294,
+        "irrelevant_false_load_rate": 0.3333333333333333,
+        "forbidden_hits": 0,
+        "wrong_namespace_or_risk_hits": 0,
+        "miss_ids": [
+          "en-15"
+        ]
+      },
+      "no_parameters": {
+        "queries": 20,
+        "positive_queries": 17,
+        "recall_at_3": 0.7647058823529411,
+        "recall_at_5": 0.7647058823529411,
+        "mrr": 0.7450980392156863,
+        "mrr_at_5": 0.7352941176470589,
+        "irrelevant_false_load_rate": 0.3333333333333333,
+        "forbidden_hits": 0,
+        "wrong_namespace_or_risk_hits": 0,
+        "miss_ids": [
+          "mixed-11",
+          "mixed-14",
+          "en-07",
+          "en-15"
+        ]
+      },
+      "no_namespace": {
+        "queries": 20,
+        "positive_queries": 17,
+        "recall_at_3": 0.8529411764705882,
+        "recall_at_5": 0.9117647058823529,
+        "mrr": 0.8647058823529412,
+        "mrr_at_5": 0.8647058823529412,
+        "irrelevant_false_load_rate": 0.3333333333333333,
+        "forbidden_hits": 0,
+        "wrong_namespace_or_risk_hits": 0,
+        "miss_ids": [
+          "zh-18",
+          "en-15"
+        ]
+      },
+      "no_hint": {
+        "queries": 20,
+        "positive_queries": 17,
+        "recall_at_3": 0.8823529411764706,
+        "recall_at_5": 0.9411764705882353,
+        "mrr": 0.8088235294117647,
+        "mrr_at_5": 0.8088235294117647,
+        "irrelevant_false_load_rate": 0.3333333333333333,
+        "forbidden_hits": 0,
+        "wrong_namespace_or_risk_hits": 0,
+        "miss_ids": [
+          "en-15"
+        ]
+      },
+      "no_description": {
+        "queries": 20,
+        "positive_queries": 17,
+        "recall_at_3": 0.9411764705882353,
+        "recall_at_5": 0.9411764705882353,
+        "mrr": 0.8823529411764706,
+        "mrr_at_5": 0.8823529411764706,
+        "irrelevant_false_load_rate": 0,
+        "forbidden_hits": 0,
+        "wrong_namespace_or_risk_hits": 0,
+        "miss_ids": [
+          "en-15"
+        ]
+      },
+      "release_gate_passed": true
+    }
+  },
+  "performance_and_growth": {
+    "matrix": [
+      {
+        "definitions": 50,
+        "rebuild": {
+          "p50_ms": 1.408,
+          "p95_ms": 1.539
+        },
+        "rank_existing_documents": {
+          "p50_ms": 0.198,
+          "p95_ms": 0.36
+        },
+        "rebuild_and_rank": {
+          "p50_ms": 1.545,
+          "p95_ms": 2.045
+        },
+        "derived_document_bytes": 15730
+      },
+      {
+        "definitions": 500,
+        "rebuild": {
+          "p50_ms": 14.773,
+          "p95_ms": 16.906
+        },
+        "rank_existing_documents": {
+          "p50_ms": 1.499,
+          "p95_ms": 3.43
+        },
+        "rebuild_and_rank": {
+          "p50_ms": 17.398,
+          "p95_ms": 28.131
+        },
+        "derived_document_bytes": 150988
+      },
+      {
+        "definitions": 2000,
+        "rebuild": {
+          "p50_ms": 57.265,
+          "p95_ms": 80.872
+        },
+        "rank_existing_documents": {
+          "p50_ms": 5.523,
+          "p95_ms": 10.6
+        },
+        "rebuild_and_rank": {
+          "p50_ms": 67.228,
+          "p95_ms": 78.974
+        },
+        "derived_document_bytes": 591091
+      }
+    ],
+    "growth": [
+      {
+        "search": 1,
+        "baseline_bytes": 0,
+        "loaded_bytes": 0,
+        "pending_bytes": 0,
+        "new_bytes": 30411,
+        "total_bytes": 30411,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 100661,
+        "remaining_new_bytes": 2357,
+        "baseline_over_budget": false,
+        "rejected_count": 2,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02"
+        ],
+        "skipped_names": [
+          "archive_03",
+          "archive_04"
+        ]
+      },
+      {
+        "search": 2,
+        "baseline_bytes": 0,
+        "loaded_bytes": 30411,
+        "pending_bytes": 0,
+        "new_bytes": 30411,
+        "total_bytes": 60822,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 70250,
+        "remaining_new_bytes": 2357,
+        "baseline_over_budget": false,
+        "rejected_count": 2,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05"
+        ],
+        "skipped_names": [
+          "archive_06",
+          "archive_07"
+        ]
+      },
+      {
+        "search": 3,
+        "baseline_bytes": 0,
+        "loaded_bytes": 60822,
+        "pending_bytes": 0,
+        "new_bytes": 30411,
+        "total_bytes": 91233,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 39839,
+        "remaining_new_bytes": 2357,
+        "baseline_over_budget": false,
+        "rejected_count": 2,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08"
+        ],
+        "skipped_names": [
+          "archive_09",
+          "archive_10"
+        ]
+      },
+      {
+        "search": 4,
+        "baseline_bytes": 0,
+        "loaded_bytes": 91233,
+        "pending_bytes": 0,
+        "new_bytes": 30411,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 2357,
+        "baseline_over_budget": false,
+        "rejected_count": 2,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13"
+        ]
+      },
+      {
+        "search": 5,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      },
+      {
+        "search": 6,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      },
+      {
+        "search": 7,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      },
+      {
+        "search": 8,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      },
+      {
+        "search": 9,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      },
+      {
+        "search": 10,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      },
+      {
+        "search": 11,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      },
+      {
+        "search": 12,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      },
+      {
+        "search": 13,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      },
+      {
+        "search": 14,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      },
+      {
+        "search": 15,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      },
+      {
+        "search": 16,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      },
+      {
+        "search": 17,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      },
+      {
+        "search": 18,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      },
+      {
+        "search": 19,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      },
+      {
+        "search": 20,
+        "baseline_bytes": 0,
+        "loaded_bytes": 121644,
+        "pending_bytes": 0,
+        "new_bytes": 0,
+        "total_bytes": 121644,
+        "new_limit_bytes": 32768,
+        "total_limit_bytes": 131072,
+        "effective_limit_bytes": 131072,
+        "remaining_bytes": 9428,
+        "remaining_new_bytes": 32768,
+        "baseline_over_budget": false,
+        "rejected_count": 5,
+        "active_names": [
+          "archive_00",
+          "archive_01",
+          "archive_02",
+          "archive_03",
+          "archive_04",
+          "archive_05",
+          "archive_06",
+          "archive_07",
+          "archive_08",
+          "archive_09",
+          "archive_10",
+          "archive_11"
+        ],
+        "skipped_names": [
+          "archive_12",
+          "archive_13",
+          "archive_14",
+          "archive_15",
+          "archive_16"
+        ]
+      }
+    ],
+    "repeat_exact_new_bytes": 0,
+    "all_loaded_keyword_results": [],
+    "huge_schema": {
+      "declaration_bytes": 1000070,
+      "build_ms": 0.104,
+      "diagnostics": [
+        "search_text_truncated"
+      ],
+      "skipped_count": 1
+    },
+    "fixture_schema_sizes": {
+      "min": 138,
+      "p50": 407.0,
+      "p95": 1055,
+      "max": 1115,
+      "total": 20604,
+      "over_32k": 0
+    }
+  }
+}

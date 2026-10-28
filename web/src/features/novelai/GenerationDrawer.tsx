@@ -1,3 +1,4 @@
+import { GenerationPromptOptions } from './GenerationPromptOptions';
 import type { GenerationParameters } from '../../api/novelai';
 import { errorMessage } from '../../api/client';
 import { Dialog } from '../../ui/Dialog';
@@ -57,6 +58,7 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
             {[1, 2, 3, 4].map((count) => <option value={count} key={count}>{count} 张</option>)}
           </select></label>
           {source && deliveryMode === 'replacement' && (parameters.samples ?? 1) > 1 && <p role="status">替换单张历史图片时只能生成一张；多张结果请选择仅保存历史。</p>}
+            <GenerationPromptOptions parameters={parameters} configuration={configuration} onPatch={patch} />
           <label className="field"><span>Seed（留空生成并保存）</span><input aria-label="生图 Seed" type="number" min="0" max="4294967295" step="1" value={seed} onChange={(event) => setSeed(event.target.value)} /></label>
           <label><input type="checkbox" checked={parameters.background ?? false} onChange={(event) => patch({ background: event.target.checked })} />{deliveryMode === 'history_only' ? '在后台生成，结果仅保存在历史' : '在后台生成，完成后交付原来源'}</label>
         </fieldset>

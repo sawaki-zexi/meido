@@ -423,13 +423,13 @@ class PublicationOperations:
             kind = self._kind(operation)
             self._update(identifier, launchClaimed=True)
             try:
-                runtime = self.application.tasks.submit(TaskOrigin(**operation['origin']), executor, kind=kind,
+                runtime = self.application.tasks.submit(TaskOrigin.from_dict(operation['origin']), executor, kind=kind,
                     description=identifier, submission_key=identifier, retain_until_ack=True, completion=False,
                     budget=TaskBudget(timeout_seconds=timeout, log_bytes=1024 * 1024, output_chars=8000),
                     authorized=lambda: self._allowed(self._record(identifier)))
                 self._update(identifier, runtimeTaskId=runtime)
             except Exception:
-                runtime = self.application.tasks.find_submission(TaskOrigin(**operation['origin']), kind=kind, submission_key=identifier)
+                runtime = self.application.tasks.find_submission(TaskOrigin.from_dict(operation['origin']), kind=kind, submission_key=identifier)
                 if runtime:
                     self._update(identifier, runtimeTaskId=runtime)
                 else:
@@ -460,9 +460,9 @@ class PublicationOperations:
             if owner is not None:
                 owner.cancel()
             runtime = record.get('runtimeTaskId') or self.application.tasks.find_submission(
-                TaskOrigin(**record['origin']), kind=self._kind(record), submission_key=identifier)
+                TaskOrigin.from_dict(record['origin']), kind=self._kind(record), submission_key=identifier)
             if runtime:
-                self.application.tasks.stop(runtime, TaskOrigin(**record['origin']))
+                self.application.tasks.stop(runtime, TaskOrigin.from_dict(record['origin']))
             return self.inspect(role_id, identifier)
 
     async def tick(self):
@@ -492,7 +492,7 @@ class PublicationOperations:
     async def _advance(self, record):
         identifier = record['id']
         runtime = record.get('runtimeTaskId')
-        origin = TaskOrigin(**record['origin'])
+        origin = TaskOrigin.from_dict(record['origin'])
         if not runtime:
             runtime = await asyncio.to_thread(self.application.tasks.find_submission, origin,
                 kind=self._kind(record), submission_key=identifier)

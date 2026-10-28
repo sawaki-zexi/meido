@@ -18,6 +18,7 @@ from .request_budget import image_budget_client_kwargs, budgeted_model_stream, b
 
 from .message_transform import transform_messages
 from .model_adapter import _payload_error_detail, _raise_for_status_with_details, _response_error_detail
+from .model_protocol import preserve_stop_reason
 from .model_protocol import compatible_tool_names, effective_tools, model_cost, normalize_tools, remap_message_tool_names, safe_tool_id, tool_result_text
 from .model_types import (
     ModelAssistantMessage, ModelCapabilities, ModelContentBlock, ModelImageBlock,
@@ -253,8 +254,8 @@ class GoogleGenerativeAdapter:
                             continue
                         try:
                             data = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
+                        except json.JSONDecodeError as error:
+                            raise RuntimeError("模型流包含无效 JSON") from error
                         if not isinstance(data, Mapping):
                             continue
                         error = _payload_error_detail(data, redaction_key)
@@ -266,7 +267,7 @@ class GoogleGenerativeAdapter:
                         candidate = candidates[0] if isinstance(candidates, list) and candidates and isinstance(candidates[0], Mapping) else {}
                         finish = candidate.get("finishReason")
                         if isinstance(finish, str):
-                            stop_reason = _stop_reason(finish)
+                            stop_reason = preserve_stop_reason(stop_reason, _stop_reason(finish))
                             completed = True
                         content = candidate.get("content") if isinstance(candidate, Mapping) else None
                         parts = content.get("parts") if isinstance(content, Mapping) else None
@@ -326,6 +327,7 @@ class GoogleGenerativeAdapter:
                                     name,
                                     dict(arguments),
                                     thought_signature=signature if isinstance(signature, str) else None,
+                                    arguments_complete=isinstance(function.get("args"), Mapping),
                                 )
                                 blocks.append(call)
                                 encoded = json.dumps(dict(arguments), ensure_ascii=False, separators=(",", ":"))
@@ -394,6 +396,7 @@ class GoogleGenerativeAdapter:
                     name_aliases.get(wire_name, wire_name),
                     dict(args),
                     thought_signature=signature if isinstance(signature, str) else None,
+                    arguments_complete=isinstance(function.get("args"), Mapping),
                 ))
         reason = _stop_reason(candidate.get("finishReason"))
         return ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(provider=configuration.provider, api=self.api, model=configuration.model, usage=_usage(data.get("usageMetadata")), stop_reason=reason, timestamp=int(time.time() * 1000)))

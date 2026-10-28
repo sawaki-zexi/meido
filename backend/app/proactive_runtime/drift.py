@@ -116,6 +116,9 @@ class DriftTurn:
                 tick_id TEXT NOT NULL,role_id TEXT NOT NULL,call_id TEXT NOT NULL,tool_name TEXT NOT NULL,
                 arguments_hash TEXT NOT NULL,snapshot_id TEXT NOT NULL,result TEXT,is_error INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(tick_id,call_id))''')
+            columns = {row[1] for row in db.execute('PRAGMA table_info(autonomy_drift_tool_calls)')}
+            if 'binding_json' not in columns:
+                db.execute("ALTER TABLE autonomy_drift_tool_calls ADD COLUMN binding_json TEXT")
         self.root_identity = app.drift_files.admit(origin.role_id)
         grants = tuple(ServiceGrant(grant.grantRevision, grant.serverId, origin.role_id,
             frozenset({'read_only'} if grant.risk == 'read_only' else {'read_only', 'mutating'} if grant.risk == 'mutating'
@@ -126,7 +129,6 @@ class DriftTurn:
                 | ({'meme_copy_image'} if config.driftMeme.enabled and config.driftMeme.copyEnabled else set()),
             allowed_risks={'read_only', 'mutating', 'external'}, discovery_enabled=True, service_grants=grants,
             authorize_tool=lambda definition, context: self.file_authorized(context))
-        self.persist_revision(self.capabilities.snapshot)
 
     @contextmanager
     def transaction(self):
@@ -223,13 +225,6 @@ class DriftTurn:
             return tuple(item for item in schemas if cast(dict[str, object], item['function'])['name'] in {'write_file', 'edit_file', 'finish_drift'})
         return schemas
 
-    def persist_revision(self, snapshot):
-        with self.transaction() as db:
-            db.execute('INSERT INTO autonomy_capability_revisions VALUES(?,?,?,?)',
-                (self.origin.tick_id, self.origin.role_id, snapshot.visibility_version,
-                 _json(snapshot.to_dict(include_prompt_sections=False))))
-            retention.check_capacity(db, self.origin.role_id)
-
     async def activate(self, identifier):
         skill, manifest, digest = self.app.drift_skills.activate(self.origin.role_id, identifier)
         expected = next((item for item in self.catalog if item['id'] == identifier), None)
@@ -265,7 +260,7 @@ class DriftTurn:
                 return self.finish(arguments)
             raise PermissionError('Drift already finalized')
         context = ToolContext(self.origin.role_id, self.origin.task_origin().session_key, self.origin.tick_id,
-            self.signal, tool_call_id=call_id, capability_snapshot_id=resolution.snapshot.snapshot_id)
+            self.signal, tool_call_id=call_id, capability_snapshot_id=resolution.snapshot.snapshot_id, capability_binding=resolution)
         if resolution.authorization_denial(definition, context, arguments) is not None:
             raise PermissionError('Drift tool authority was revoked')
         if not isinstance(call_id, str) or not call_id or len(call_id) > 256:
@@ -277,8 +272,10 @@ class DriftTurn:
                 if (prior['tool_name'], prior['arguments_hash']) != (name, arguments_hash) or prior['result'] is None or prior['is_error']:
                     raise ValueError('Drift call identity conflicts or its original result is unresolved')
                 return json.loads(prior['result'])
-            db.execute('INSERT INTO autonomy_drift_tool_calls(tick_id,role_id,call_id,tool_name,arguments_hash,snapshot_id) VALUES(?,?,?,?,?,?)',
-                (self.origin.tick_id, self.origin.role_id, call_id, name, arguments_hash, resolution.snapshot.snapshot_id))
+            binding = {**resolution.call_record(name), 'activeSkill': self.skill.skill_id if self.skill else None,
+                'bundleHash': self.bundle_hash, 'authorHash': self.skill.content_hash if self.skill else None}
+            db.execute('INSERT INTO autonomy_drift_tool_calls(tick_id,role_id,call_id,tool_name,arguments_hash,snapshot_id,binding_json) VALUES(?,?,?,?,?,?,?)',
+                (self.origin.tick_id, self.origin.role_id, call_id, name, arguments_hash, resolution.snapshot.snapshot_id, _json(binding)))
             retention.check_capacity(db, self.origin.role_id)
         try:
             result = await self._dispatch(name, arguments, context, resolution)
@@ -322,7 +319,6 @@ class DriftTurn:
             revision = self.capabilities.pending_revision(context.tool_call_id)
             if revision is None:
                 raise RuntimeError('Drift mount did not produce an immutable revision')
-            self.persist_revision(revision.snapshot)
             if not self.app._authorized(self.origin):
                 raise PermissionError('Drift grant was sealed before capability publication')
             self.capabilities.publish_revision(revision)

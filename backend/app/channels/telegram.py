@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -11,6 +10,8 @@ from typing import Any
 from .base import ChannelAdapter, ChannelAdapterError, PartialDeliveryError, UnsupportedTargetError, is_delivery_uncertain
 from .models import ChannelCapabilities, DeliveryResult, DeliveryStatus, InboundEvent, OutboundMessage, Target, TargetKind
 from .directory import DirectoryError, DirectoryObservation, DirectoryQuery
+from .formatting import telegram_text, telegram_chunks, utf16_length
+from .delivery import DeliveryAttempt, OutboundScheduler, StreamDelivery
 
 
 @dataclass(slots=True)
@@ -22,6 +23,7 @@ class TelegramStreamSession:
     last_update_at: float = 0.0
     task: asyncio.Task[None] | None = None
     error: BaseException | None = None
+    delivery: StreamDelivery | None = None
 
 
 class TelegramAccountAdapter(ChannelAdapter):
@@ -38,13 +40,14 @@ class TelegramAccountAdapter(ChannelAdapter):
         targets=frozenset({TargetKind.PRIVATE, TargetKind.GROUP}),
     )
 
-    def __init__(self, account_id: str, token_getter, transport, *, connection_snapshot=None) -> None:
+    def __init__(self, account_id: str, token_getter, transport, *, connection_snapshot=None, scheduler=None) -> None:
         super().__init__()
         self.account_id = account_id
         self._token_getter = token_getter
         self._transport = transport
         self._targets: dict[str, Any] = {}
         self._connection_snapshot = connection_snapshot
+        self.scheduler = scheduler or OutboundScheduler(send_interval=2, edit_interval=5, typing_interval=8, account_interval=.25)
 
     def connection_snapshot(self) -> dict[str, object]:
         return self._connection_snapshot() if self._connection_snapshot is not None else super().connection_snapshot()
@@ -52,6 +55,14 @@ class TelegramAccountAdapter(ChannelAdapter):
     def parse_event(self, payload: Mapping[str, Any]) -> InboundEvent | None:
         del payload
         return None
+
+    def start_progress(self, message: OutboundMessage, *, run_id: str):
+        from .telegram_progress import TelegramProgress
+        self._validate_target(message.target)
+        if message.target.kind is not TargetKind.PRIVATE:
+            raise UnsupportedTargetError('过程反馈仅用于当前 Telegram 私聊')
+        return TelegramProgress(message, run_id=run_id, token_getter=self._token_getter,
+            transport=self._transport, scheduler=self.scheduler)
 
     async def send(self, message: OutboundMessage) -> DeliveryResult:
         self._validate_target(message.target)
@@ -64,18 +75,9 @@ class TelegramAccountAdapter(ChannelAdapter):
         if mentions and any(not item.isdigit() for item in mentions):
             raise UnsupportedTargetError("Telegram 提及成员必须使用数字平台 ID")
         mention_text = " ".join(f"@{item}" for item in mentions)
-        mention_html = " ".join(f'<a href="tg://user?id={item}">@{item}</a>' for item in mentions)
         if len(mention_text) >= 4096:
             raise UnsupportedTargetError("Telegram 提及文本超过消息长度限制")
 
-        def render(content: str, *, include_mentions: bool) -> tuple[str, dict[str, Any]]:
-            chunk_options = dict(options)
-            if include_mentions and mentions:
-                chunk_options["parse_mode"] = "HTML"
-                return mention_html + (" " + html.escape(content) if content else ""), chunk_options
-            return content, chunk_options
-
-        visible_sends = 0
         try:
             token = self._token_getter()
             media = []
@@ -97,7 +99,8 @@ class TelegramAccountAdapter(ChannelAdapter):
                     raise ChannelAdapterError("Telegram 传输不支持媒体发送")
                 media.append((sender, data, attachment.file_name or path.name or "attachment"))
 
-            caption_fits = bool(media) and len(message.content) + len(mention_text) + bool(mentions) <= 1024
+            rendered, entities = telegram_text(message.content, mentions=mentions)
+            caption_fits = bool(media) and utf16_length(rendered) <= 1024
             needs_text = not caption_fits and bool(message.content or mentions)
             text_sender = getattr(self._transport, "send_message", None)
             if needs_text and not callable(text_sender):
@@ -105,42 +108,32 @@ class TelegramAccountAdapter(ChannelAdapter):
             if not media and not needs_text:
                 raise ChannelAdapterError("Telegram 出站消息不能为空")
 
-            result = None
+            operations = []
             if needs_text:
-                remaining = message.content
-                first = True
-                while remaining or (first and mentions):
-                    limit = 4096 - (len(mention_text) + bool(mentions) if first else 0)
-                    chunk, remaining = remaining[:limit], remaining[limit:]
-                    content, chunk_options = render(chunk, include_mentions=first)
-                    result = await text_sender(token, message.target.chat_id, content, **chunk_options)
-                    visible_sends += 1
-                    if not isinstance(result, Mapping) or not result.get("message_id"):
-                        raise PartialDeliveryError("Telegram 已接受文本消息，但未返回消息 ID")
-                    first = False
+                for content, chunk_entities in telegram_chunks(rendered, entities):
+                    chunk_options = {**options, **({'entities': chunk_entities} if chunk_entities else {})}
+                    operations.append((text_sender, (token, message.target.chat_id, content), chunk_options,
+                        {'kind': 'text', 'content': content}))
             for index, (sender, data, file_name) in enumerate(media):
-                caption, chunk_options = render(
-                    message.content if caption_fits and index == 0 else "",
-                    include_mentions=caption_fits and index == 0,
-                )
-                result = await sender(token, message.target.chat_id, data, file_name, caption=caption, **chunk_options)
-                visible_sends += 1
-                if not isinstance(result, Mapping) or not result.get("message_id"):
-                    raise PartialDeliveryError("Telegram 已接受附件消息，但未返回消息 ID")
-            assert result is not None
-            message_id = result.get("message_id")
-            return DeliveryResult(
-                DeliveryStatus.SENT,
-                message.target,
-                str(message_id) if message_id is not None else None,
-                raw={"message_id": message_id} if message_id is not None else {},
-            )
+                caption = rendered if caption_fits and index == 0 else ''
+                chunk_options = {**options, **({'caption_entities': [entity.to_dict() for entity in entities]}
+                    if caption and entities else {})}
+                operations.append((sender, (token, message.target.chat_id, data, file_name),
+                    {**chunk_options, 'caption': caption}, {'kind': 'media', 'content': caption, 'fileName': file_name, 'attachmentIndex': index}))
         except Exception as error:
-            return DeliveryResult(
-                DeliveryStatus.UNCERTAIN if visible_sends or is_delivery_uncertain(error) else DeliveryStatus.FAILED,
-                message.target,
-                error=type(error).__name__,
-            )
+            return DeliveryResult(DeliveryStatus.FAILED, message.target, error=type(error).__name__)
+        async def send_part(part):
+            method, args, kwargs, _ = operations[part['index']]
+            kwargs = dict(kwargs)
+            if part['withoutReply']:
+                kwargs['reply_to'] = None
+            if part['plainText']:
+                kwargs.pop('entities', None)
+                kwargs.pop('caption_entities', None)
+            return await method(*args, **kwargs)
+        attempt = DeliveryAttempt(message, scheduler=self.scheduler, max_attempts=5)
+        return await attempt.run([item[3] for item in operations], send_part,
+            receipt_id=lambda response: response.get('message_id') if isinstance(response, Mapping) else None)
 
     async def list_targets(self):
         return list(self._targets.values())
@@ -165,37 +158,44 @@ class TelegramAccountAdapter(ChannelAdapter):
             "isMember": status not in {"left", "kicked"} and (status != "restricted" or result.get("is_member") is True),
             "canSend": False, "sendTargetId": None}])
 
-    async def stream_start(self, target: Target, *, reply_to_message_id: str | None = None) -> TelegramStreamSession:
+    async def stream_start(self, target: Target, *, reply_to_message_id: str | None = None,
+                           outbound: OutboundMessage | None = None) -> TelegramStreamSession:
         self._validate_target(target)
         if target.kind is not TargetKind.PRIVATE:
-            raise UnsupportedTargetError("Telegram 群聊只投递完整回复")
-        result = await self._transport.send_message(
-            self._token_getter(), target.chat_id, "…", reply_to=reply_to_message_id,
-        )
-        message_id = str(result.get("message_id") or "")
-        if not message_id:
-            raise PartialDeliveryError("Telegram 已接受预览消息，但未返回消息 ID")
-        return TelegramStreamSession(target, message_id)
+            raise UnsupportedTargetError('Telegram 群聊只投递完整回复')
+        message = outbound or OutboundMessage(target, '', reply_to_message_id=reply_to_message_id)
+        delivery = StreamDelivery(message, self.scheduler, max_attempts=5)
+        async def create(part):
+            return await self._transport.send_message(self._token_getter(), target.chat_id, '…',
+                reply_to=None if part['withoutReply'] else reply_to_message_id)
+        result = await delivery.update('', create, receipt_id=lambda response: response.get('message_id'), kind='send', preview=True)
+        session = TelegramStreamSession(target, result.platform_message_id or '', delivery=delivery)
+        return session
 
     async def stream_update(self, session: TelegramStreamSession, content: str) -> None:
-        session.pending = content[:4096]
-        if session.error is None and (session.task is None or session.task.done()):
+        session.delivery.require_current()
+        session.pending = content
+        if session.delivery.error is None and (session.task is None or session.task.done()):
             session.task = asyncio.create_task(self._flush_stream_updates(session))
+
+    async def _edit_stream(self, session, text, entities, part):
+        options = {'entities': [] if part['plainText'] else entities} if entities else {}
+        return await self._transport.edit_message_text(self._token_getter(), session.target.chat_id,
+            session.message_id, text, **options)
 
     async def _flush_stream_updates(self, session: TelegramStreamSession) -> None:
         try:
-            while session.pending != session.shown:
-                delay = session.last_update_at + 0.8 - time.monotonic()
-                if delay > 0:
-                    await asyncio.sleep(delay)
-                content = session.pending
-                if not content or content == session.shown:
+            while session.pending != session.shown and session.delivery.error is None:
+                pending = session.pending
+                text, entities = telegram_text(pending)
+                chunks = telegram_chunks(text, entities)
+                if not chunks:
                     return
-                await self._transport.edit_message_text(
-                    self._token_getter(), session.target.chat_id, session.message_id, content,
-                )
-                session.shown = content
-                session.last_update_at = time.monotonic()
+                first, chunk_entities = chunks[0]
+                await session.delivery.update(first,
+                    lambda part: self._edit_stream(session, first, chunk_entities, part),
+                    receipt_id=lambda response: response.get('message_id'))
+                session.shown = pending
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -204,24 +204,17 @@ class TelegramAccountAdapter(ChannelAdapter):
     async def stream_finalize(self, session: TelegramStreamSession, content: str) -> DeliveryResult:
         if session.task is not None:
             await asyncio.gather(session.task, return_exceptions=True)
-        try:
-            first_chunk = content[:4096] or "…"
-            if first_chunk != session.shown:
-                await self._transport.edit_message_text(
-                    self._token_getter(), session.target.chat_id, session.message_id, first_chunk,
-                )
-                session.shown = first_chunk
-            for offset in range(4096, len(content), 4096):
-                await self._transport.send_message(
-                    self._token_getter(), session.target.chat_id, content[offset:offset + 4096],
-                    reply_to=session.message_id,
-                )
-        except Exception as error:
-            return DeliveryResult(
-                DeliveryStatus.UNCERTAIN,
-                session.target, session.message_id, error=type(error).__name__,
-            )
-        return DeliveryResult(DeliveryStatus.SENT, session.target, session.message_id)
+        text, entities = telegram_text(content or '…')
+        chunks = telegram_chunks(text, entities)
+        parts = [{'kind': 'text', 'content': chunk} for chunk, _ in chunks]
+        async def send(part):
+            chunk, chunk_entities = chunks[part['index']]
+            if part['index'] == 0:
+                return await self._edit_stream(session, chunk, chunk_entities, part)
+            options = {'entities': chunk_entities} if chunk_entities and not part['plainText'] else {}
+            return await self._transport.send_message(self._token_getter(), session.target.chat_id, chunk,
+                reply_to=None if part['withoutReply'] else session.delivery.message.reply_to_message_id, **options)
+        return await session.delivery.finish(parts, send, receipt_id=lambda response: response.get('message_id'))
 
     def _validate_target(self, target) -> None:
         if target.account_id != self.account_id or target.id not in {item.id for item in self._targets.values()}:

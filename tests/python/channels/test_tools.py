@@ -38,6 +38,11 @@ def test_account_send_passes_attachment_ids_to_role_scoped_host() -> None:
         "attachments": [attachment_id],
     }, context))
 
+    authorize = host.call.pop('authorize_source')
+    assert authorize()
+    context.signal.cancel()
+    assert not authorize()
+    assert host.call.pop('delivery_deadline') is None
     assert host.call == {
         "role_id": "role-1",
         "account_id": "qq-1",

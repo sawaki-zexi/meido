@@ -1,3 +1,4 @@
+import { GenerationPromptOptions } from './GenerationPromptOptions';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { Role } from '../../api/types';
 import type { GenerationParameters, GenerationView } from '../../api/novelai';
@@ -159,6 +160,7 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
             <label className="field"><span>生成张数</span><select aria-label="工作台生成张数" value={parameters.samples ?? 1} onChange={(event) => patch({ samples: Number(event.target.value) })}>
               {[1, 2, 3, 4].map((count) => <option value={count} key={count}>{count} 张</option>)}
             </select></label>
+            <GenerationPromptOptions parameters={parameters} configuration={configuration} onPatch={patch} />
             <label className="field"><span>Seed</span><input aria-label="工作台 Seed" type="number" min="0" max="4294967295" step="1" value={seed} onChange={(event) => setSeed(event.target.value)} /></label>
             <label className="field"><span>结果交付</span><select aria-label="工作台结果交付" value={deliveryMode} onChange={(event) => { setDeliveryMode(event.target.value as typeof deliveryMode); setConsent(false); }}><option value="history_only">仅保存在工作台历史</option><option value="replacement">{replacementLabel}</option></select></label>
             {source && deliveryMode === 'replacement' && (parameters.samples ?? 1) > 1 && <p role="status" className="field-hint">替换单张历史图片时只能生成一张；多张结果请选择仅保存历史。</p>}

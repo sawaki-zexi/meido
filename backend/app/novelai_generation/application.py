@@ -27,7 +27,7 @@ from .executor import GenerationExecutor
 from .http import GenerationHttpError, NovelaiHttp
 from .ledger import GenerationLedger, canonical
 from .media import import_response, owned_outputs, validate_image
-from .parameters import generation_payload, normalize_request
+from .parameters import generation_payload, normalize_request, replay_request
 from .scene import SceneCoordinator
 from .prompt_tags import PromptTags
 from .assets import AssetWriteback
@@ -250,6 +250,8 @@ class NovelaiApplication:
                      delivery_mode=None, scene_input=None):
         handover_error = None
         with self._lock:
+            if not source.ui_action and {'qualityToggle', 'ucPreset'} & arguments.keys():
+                raise PermissionError('per-image preference overrides require a local owner action')
             role = self.roles.get(source.origin.role_id)
             availability = self.availability(role, include_usage=False, scene=source.scene_revision is not None)
             if not availability['available']:
@@ -513,7 +515,7 @@ class NovelaiApplication:
         view = self.owner_generation(role_id, generation_id, attempt_id=source_attempt_id)
         original = GenerationContext.from_dict(json.loads(self.ledger.attempt(view['attemptId'])['origin']))
         origin = original.origin
-        identifier = parameters.get('base_attachment_id')
+        identifier = replay_request(view['parameters'], parameters).get('base_attachment_id')
         # A desktop owner may choose a current owned image, but managing channel
         # history cannot expand the original host-captured channel input grant.
         attachment_ids = (original.attachment_ids if original.channel_source is not None
@@ -537,7 +539,7 @@ class NovelaiApplication:
         fingerprint = hashlib.sha256(canonical({'parameters': arguments, 'regeneration': operation,
             'deliveryMode': delivery_mode}).encode()).hexdigest()
         previous = self.ledger.request(source.origin.role_id, source.source_scope, source.request_key)
-        parameters = dict(arguments)
+        parameters = replay_request(parent['parameters'], arguments)
         if previous is None:
             if delivery_mode != 'history_only':
                 try:

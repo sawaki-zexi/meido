@@ -7,7 +7,7 @@ from PIL import Image
 
 from backend.app import main
 from backend.app.agent_runtime.file_tools import FILE_TOOL_NAMES
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
 from backend.app.role_store import RoleStore
 from backend.app.session_manager import SessionManager
@@ -64,6 +64,7 @@ def test_http_file_tools_are_default_and_survive_legacy_empty_selection(tmp_path
                 yield ModelToolCall("file-read", "read_file", {"path": "work/notes.txt"})
                 yield ModelToolCall("file-edit", "edit_file", {"path": "work/notes.txt", "old_text": "hello", "new_text": "world"})
                 yield ModelToolCall("file-list", "list_dir", {"path": "work"})
+                yield ModelResponseDone("tool_use")
             elif self.phase == "execute":
                 assert len(current_results) == 4
                 assert "Wrote 6 UTF-8 bytes" in current_results[0]["content"]
@@ -109,6 +110,7 @@ def test_http_read_image_reaches_next_provider_without_persisting_base64(tmp_pat
             self.requests.append(messages)
             if len(self.requests) == 1:
                 yield ModelToolCall("file-image", "read_file", {"path": "image.png"})
+                yield ModelResponseDone("tool_use")
             else:
                 assert any(
                     block.get("type") == "image_url" and block["image_url"]["url"] == f"data:image/png;base64,{encoded}"

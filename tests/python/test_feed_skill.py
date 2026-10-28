@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from backend.app import main
-from backend.app.ai.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.ai.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.credentials import SystemCredentialStore
 from backend.app.owner_knowledge import OwnerKnowledgePlugin, OwnerKnowledgeStore
 from test_mcp_http import Credentials, save_server, setup_host
@@ -71,12 +71,15 @@ def test_feed_skill_cannot_connect_an_ungranted_service(tmp_path, monkeypatch, c
             self.turn += 1
             if self.turn == 1:
                 yield ModelToolCall("find", "tool_search", {"query": "select:mcp_list,mcp_add"})
+                yield ModelResponseDone("tool_use")
             elif self.turn == 2:
                 yield ModelToolCall("list", "mcp_list", {})
+                yield ModelResponseDone("tool_use")
             elif self.turn == 3:
                 assert json.loads(messages[-1]["content"])["servers"] == []
                 # A model guessing a familiar ID still cannot grant itself access.
                 yield ModelToolCall("guess", "mcp_add", {"server_id": "notes"})
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta("当前角色没有获准的 Feed 服务，不能连接")
 
@@ -128,8 +131,10 @@ def test_feed_skill_exposes_multiple_choices_without_connecting_them(tmp_path, m
                 system = json.dumps([item for item in messages if item["role"] == "system"], ensure_ascii=False)
                 assert "多个服务" in system and "不批量连接" in system
                 yield ModelToolCall("find", "tool_search", {"query": "select:mcp_list"})
+                yield ModelResponseDone("tool_use")
             elif self.turn == 2:
                 yield ModelToolCall("choices", "mcp_list", {})
+                yield ModelResponseDone("tool_use")
             else:
                 servers = json.loads(messages[-1]["content"])["servers"]
                 assert {(item["serverId"], item["name"]) for item in servers} == {("work", "工作订阅"), ("personal", "个人订阅")}
@@ -157,8 +162,10 @@ def test_feed_skill_keeps_connection_failure_as_error_without_remote_calls(tmp_p
             self.turn += 1
             if self.turn == 1:
                 yield ModelToolCall("load", "tool_search", {"query": "select:mcp_add"})
+                yield ModelResponseDone("tool_use")
             elif self.turn == 2:
                 yield ModelToolCall("connection-failed", "mcp_add", {"server_id": "notes"})
+                yield ModelResponseDone("tool_use")
             else:
                 assert not any(item["function"]["name"].startswith("mcp_notes__") for item in tools)
                 yield ModelTextDelta("Feed 连接失败，尚未读取或修改订阅")

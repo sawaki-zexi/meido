@@ -99,7 +99,12 @@ class FrozenChannelSource:
                 raise ValueError("message predates its private owner context")
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        payload = asdict(self)
+        # Default-zero is the original generation. Preserve pre-field source
+        # hashes for existing tasks; nonzero off/on epochs must remain bound.
+        if self.group_reply_revision == 0:
+            payload.pop("group_reply_revision")
+        return payload
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> FrozenChannelSource:

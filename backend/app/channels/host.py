@@ -10,6 +10,7 @@ import asyncio
 import contextvars
 import uuid
 import hashlib
+import time
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import replace
@@ -41,6 +42,8 @@ _SendResult = TypeVar('_SendResult')
 def _runtime_send(method: Callable[Concatenate[ChannelHost, _SendArgs], Awaitable[_SendResult]]) -> Callable[Concatenate[ChannelHost, _SendArgs], Coroutine[Any, Any, _SendResult]]:
     @wraps(method)
     async def owned(host: ChannelHost, *args: _SendArgs.args, **kwargs: _SendArgs.kwargs) -> _SendResult:
+        kwargs['delivery_deadline'] = min(time.monotonic() + 120,
+            kwargs.get('delivery_deadline') if kwargs.get('delivery_deadline') is not None else float('inf'))
         # Freeze the only mutable byte mapping before crossing an await/loop.
         # The original body still validates its actor, IDs, bytes and metadata
         # on the actual channel loop, including authorization after its lease.
@@ -49,6 +52,10 @@ def _runtime_send(method: Callable[Concatenate[ChannelHost, _SendArgs], Awaitabl
             if not isinstance(frozen, Mapping) or not 1 <= len(frozen) <= 4:
                 raise UnsupportedTargetError('冻结附件必须引用原始附件 ID')
             kwargs['frozen_attachment_bytes'] = dict(frozen)
+        account_id = args[1] if len(args) > 1 else kwargs.get('account_id')
+        account = host.store.get_account(account_id)
+        kwargs['_delivery_generation'] = (host.connection_generation(account_id),
+            host.store.directory_revision(account_id, account.channel)) if account is not None else None
         return await host._runtime_owner.run(lambda: method(host, *args, **kwargs))
     return owned
 
@@ -182,6 +189,32 @@ class ChannelHost:
     def accepts_events(self, account_id: str) -> bool:
         account = self.store.get_account(account_id)
         return bool(account and self.store.account_effectively_enabled(account) and account_id in self._adapters and account_id not in self._paused_accounts)
+
+    def start_private_progress(self, thread, *, run_id: str, authorize_source: Callable[[], bool]):
+        """Bind temporary feedback to this source and connection; never record a reply."""
+        if thread.channel != 'telegram' or thread.chat_type != 'private':
+            return None
+        adapter = self._adapters.get(thread.account_id)
+        start = getattr(adapter, 'start_progress', None)
+        if not callable(start) or not self.accepts_events(thread.account_id):
+            return None
+        target_id = target_from_chat(account_id=thread.account_id, chat_id=thread.chat_id, kind=TargetKind.PRIVATE).id
+        target = self.store.get_target(thread.role_id, thread.account_id, target_id)
+        if target is None:
+            return None
+        generation = self.connection_generation(thread.account_id)
+        revision = self.store.directory_revision(thread.account_id, thread.channel)
+        def authorized():
+            account = self.store.get_account(thread.account_id)
+            return bool(account and account.role_id == thread.role_id and account.allow_private
+                and self.accepts_events(thread.account_id) and self._adapters.get(thread.account_id) is adapter
+                and self.connection_generation(thread.account_id) == generation
+                and self.store.directory_revision(thread.account_id, thread.channel) == revision
+                and authorize_source())
+        if not authorized():
+            return None
+        adapter.remember_target(target)
+        return start(OutboundMessage(target, '', authorize_dispatch=authorized), run_id=run_id)
 
     def _group_reply_guard(self, account_id: str, target: Target) -> Callable[[], bool] | None:
         account = self.store.get_account(account_id)
@@ -380,6 +413,46 @@ class ChannelHost:
         if adapter is not None:
             await adapter.stop()
 
+    def capture_media_source(self, account_id: str) -> dict:
+        """Capture before ingress can wait; a later check may only revoke it."""
+        account = self.store.get_account(account_id)
+        if account is None:
+            return {}
+        bindings = sorted((str(item["identityId"]), str(item["pairedAt"]))
+            for item in self.store.list_identities() if item["channel"] == account.channel
+            and (item["scope"] == "platform" or item["accountId"] == account_id))
+        return {"roleId": account.role_id, "channel": account.channel, "createdAt": account.created_at,
+            "revision": self.store.directory_revision(account_id, account.channel),
+            "generation": self.connection_generation(account_id), "bindings": bindings}
+
+    def media_authorization(self, role_id: str, event) -> Callable[[], bool]:
+        """Freeze an admitted media source; checks can revoke, never renew it."""
+        account = self.store.get_account(event.account_id)
+        adapter = self._adapters.get(event.account_id)
+        source = event.metadata.get("hostMediaSource", self.capture_media_source(event.account_id))
+        generation = (event.metadata.get("hostConnectionGeneration", source.get("generation"))
+            if event.channel == "qq" else source.get("generation"))
+        group_revision = (self.store.group_reply_policy(role_id, event.account_id, event.chat_id)
+            if event.channel == "qq" and event.is_group and event.triggered else None)
+
+        def authorized() -> bool:
+            current = self.store.get_account(event.account_id)
+            if (account is None or current is None or adapter is None
+                    or (current.role_id, current.channel, current.created_at) != (role_id, event.channel, account.created_at)
+                    or not self.store.account_effectively_enabled(current)
+                    or self._adapters.get(event.account_id) is not adapter
+                    or self.connection_generation(event.account_id) != generation
+                    or self.capture_media_source(event.account_id) != source
+                    or event.sender_id in current.blocked_senders
+                    or not (current.allow_group if event.is_group else current.allow_private)):
+                return False
+            if group_revision is not None and (not group_revision[0]
+                    or self.store.group_reply_policy(role_id, event.account_id, event.chat_id) != group_revision):
+                return False
+            return True
+
+        return authorized
+
     async def accept_event(self, account_id: str, payload: Mapping[str, Any]):
         """Normalize, deduplicate, and directory-index one platform event."""
 
@@ -459,6 +532,8 @@ class ChannelHost:
         record_message: bool = True,
         authorize_source: Callable[[], bool] | None = None,
         message_metadata: Mapping[str, object] | None = None,
+        delivery_deadline: float | None = None,
+        _delivery_generation=None,
     ) -> DeliveryResult:
         """Send to an observed target and persist the resulting delivery state.
 
@@ -468,6 +543,7 @@ class ChannelHost:
         or current-source reply authorization; they never replace attachment ownership or metadata.
         """
 
+        delivery_deadline = min(time.monotonic() + 120, delivery_deadline or float('inf'))
         frozen_payloads: dict[str, bytes] | None = None
         if frozen_attachment_bytes is not None:
             if not isinstance(frozen_attachment_bytes, Mapping) or not 1 <= len(frozen_attachment_bytes) <= 4:
@@ -522,7 +598,16 @@ class ChannelHost:
             raise UnsupportedTargetError("本群回复已关闭")
 
         def dispatch_authorized():
-            return (group_guard is None or group_guard()) and (authorize_source is None or authorize_source())
+            current = self.store.get_account(account_id)
+            return bool(current and current.role_id == role_id and self.store.account_effectively_enabled(current)
+                and _delivery_generation == (self.connection_generation(account_id),
+                    self.store.directory_revision(account_id, current.channel))
+                and (group_guard is None or group_guard())
+                and (authorize_source is None or authorize_source())
+                and (actor not in {'external', 'push'} or owner_binding is not None
+                    and self.store.owner_target_binding(role_id, account_id, target.chat_id) == owner_binding))
+
+        owner_binding = self.store.owner_target_binding(role_id, account_id, target.chat_id) if actor in {'external', 'push'} else None
 
         if mention_ids:
             if target.kind is not TargetKind.GROUP or account.channel not in {"qq", "telegram"}:
@@ -617,12 +702,18 @@ class ChannelHost:
                 account_generation=self._adapter_generations.get(id(adapter)),
             )
             pending_message = None
-            if source_kind == "natural" and record_message:
+            if record_message:
                 _, pending_message = self.store.append_event(thread, direction="outbound", content=content,
                     external_message_id=None, role="assistant", status="pending",
-                    metadata={**dict(message_metadata or {}), "naturalReply": True,
+                    metadata={**dict(message_metadata or {}), "naturalReply": source_kind == 'natural',
                         "deliveryAttemptId": attempt_id, "deliveryStatus": "pending", "attachments": attachment_metadata})
             dispatch_cancelled = False
+            latest_details = {}
+            def record_parts(details):
+                latest_details.clear()
+                latest_details.update(details)
+                self.store.record_delivery_parts(attempt_id, details)
+                self.store.publish(role_id, {'type': 'delivery', 'roleId': role_id, 'attemptId': attempt_id})
             try:
                 outbound = OutboundMessage(
                     target=target,
@@ -632,37 +723,60 @@ class ChannelHost:
                     metadata={"deliveryAttemptId": attempt_id, "mentionIds": list(mention_ids)},
                     # Ordinary replies and current-source stickers share the
                     # last-safe-point guard; proactive frozen leases are unchanged.
-                    authorize_dispatch=dispatch_authorized if group_guard is not None or actor == "reply" and source_kind in {"reply", "chat_meme", "natural"} else None,
+                    authorize_dispatch=dispatch_authorized,
+                    record_delivery=record_parts,
+                    delivery_deadline=delivery_deadline,
+                    reserve_reply=lambda message_id, count: self.store.reserve_passive_reply(attempt_id, message_id, count),
                 )
                 stream_start = getattr(adapter, "stream_start", None)
                 stream_update = getattr(adapter, "stream_update", None)
                 stream_finalize = getattr(adapter, "stream_finalize", None)
                 if stream_updates is not None and callable(stream_start) and callable(stream_update) and callable(stream_finalize) and not attachments:
-                    try:
-                        session = await stream_start(target, reply_to_message_id=reply_to_message_id)
+                    async with asyncio.timeout(max(0, delivery_deadline - time.monotonic())):
+                        if not dispatch_authorized():
+                            raise UnsupportedTargetError('original_stream_source_revoked')
+                        session = await stream_start(target, reply_to_message_id=reply_to_message_id, outbound=outbound)
                         stream_content = content
-                        async for update in stream_updates:
-                            stream_content = update
-                            await stream_update(session, update)
-                        content = stream_content
-                        result = await stream_finalize(session, stream_content)
-                    except Exception:
-                        # A stream adapter must report uncertain outcomes itself;
-                        # do not issue a duplicate plain message after a partial send.
-                        raise
+                        try:
+                            async for update in stream_updates:
+                                content = stream_content = update
+                                if not dispatch_authorized():
+                                    raise UnsupportedTargetError('original_stream_source_revoked')
+                                await stream_update(session, update)
+                            content = stream_content
+                            result = await stream_finalize(session, stream_content)
+                        finally:
+                            task = getattr(session, 'task', None)
+                            if task is not None and not task.done():
+                                task.cancel()
+                                await asyncio.gather(task, return_exceptions=True)
                 else:
                     if stream_updates is not None:
                         async for _ in stream_updates:
                             pass
                     result = await adapter.send(outbound)
             except asyncio.CancelledError:
-                if source_kind != "natural":
-                    raise
                 dispatch_cancelled = True
                 result = DeliveryResult(DeliveryStatus.UNCERTAIN, target, error="dispatch_cancelled")
             except Exception as error:
                 status = DeliveryStatus.UNCERTAIN if is_delivery_uncertain(error) else DeliveryStatus.FAILED
                 result = DeliveryResult(status, target, error=type(error).__name__)
+            if latest_details and not result.raw.get('parts'):
+                for part in latest_details.get('parts', []):
+                    if part['status'] == 'sending':
+                        part.update(status='uncertain', error=result.error or 'dispatch_interrupted')
+                result = replace(result, raw=latest_details,
+                    platform_message_id=next(iter(latest_details.get('platform_message_ids', [])), result.platform_message_id))
+                parts = latest_details.get('parts', [])
+                if parts and not any(part.get('status') == 'uncertain' for part in parts):
+                    complete = not latest_details.get('streaming') and all(
+                        part.get('status') == 'sent' and part.get('kind') != 'preview' for part in parts)
+                    result = replace(result, status=DeliveryStatus.SENT if complete else DeliveryStatus.FAILED,
+                        error=None if complete else result.error)
+                from .delivery_projection import confirmed_parts
+                result.raw['partialDelivery'] = bool(confirmed_parts(result.raw)) and result.status is not DeliveryStatus.SENT
+            if result.raw.get('parts'):
+                self.store.record_delivery_parts(attempt_id, result.raw)
             self.store.finish_delivery(
                 attempt_id,
                 status=result.status.value,
@@ -682,10 +796,11 @@ class ChannelHost:
                 "error": result.error,
                 "attachments": attachment_metadata,
                 "platformMessageIds": result.raw.get("platform_message_ids", []),
+                **{key: result.raw[key] for key in ('parts', 'partialDelivery', 'deliveredContent', 'receiptKind', 'deliveryDeadlineAt') if key in result.raw},
             }
             if pending_message is not None:
                 updated = self.store.sessions.update_message(pending_message.id, content,
-                    "completed" if result.status is DeliveryStatus.SENT else "failed",
+                    "completed" if result.status is DeliveryStatus.SENT or result.raw.get('partialDelivery') else "failed",
                     metadata={**pending_message.metadata, **metadata})
                 self.store.publish(thread.role_id, {"type": "message", "roleId": thread.role_id,
                     "thread": self.store.public_thread_payload(thread),

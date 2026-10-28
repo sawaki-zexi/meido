@@ -9,6 +9,7 @@ import { GroupListeningPanel } from "./GroupListeningPanel";
 import { RoleAccountsPanel } from "./RoleAccountsPanel";
 import { PhoneHome, type PhoneApp } from "./PhoneHome";
 import { PhoneMessage } from "./PhoneMessage";
+import { DeliveryDetails, deliveryLabel } from "./DeliveryDetails";
 import { ChannelAttachments } from "./ChannelAttachments";
 import { conversationPreview, conversationTime, messagePresentation, messageTimeSeparators, type ConversationMessage, type ViaAccount } from "./channelMessagePresentation";
 import { channelName, type Account, type Channel } from "./channelAccounts";
@@ -98,10 +99,6 @@ function sourceLabel(source: ViaAccount | null | undefined): string | null {
   const name = source.displayName || "渠道账号";
   const platform = channelName[source.platform ?? ""] ?? source.platform ?? "渠道";
   return `来源：${name} · ${platform}`;
-}
-
-function deliveryLabel(status: unknown): string | null {
-  return ({ pending: "发送中", sent: "已发送", failed: "发送失败", uncertain: "发送结果不确定" } as Record<string, string>)[String(status)] ?? null;
 }
 
 export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialSource, sourceOnly = false, phoneMode = false }: { role: Role; onBack: () => void; onAccounts?: () => void; onOpenSettings?: () => void; initialSource?: ChannelMemorySource | null; sourceOnly?: boolean; phoneMode?: boolean }) {
@@ -697,7 +694,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
             {timelineMessages.map((message, index) => {
               const view = messagePresentation(message, timelineMessages, role, account);
               const { attachments, quotedAttachments, replyTo, replyTarget, replySender, quotedText, mentionedNames, source } = view;
-              const delivery = deliveryLabel(message.metadata.deliveryStatus);
+              const delivery = deliveryLabel(message.metadata);
               const sourceMessage = message.id === sourceHighlightedId;
               return <li key={message.id} ref={sourceMessage ? (node) => { sourceElement.current = node; } : undefined} className={`channel-message ${message.role}${phoneMode && !sourceOnly ? " phone-message" : ""}${message.metadata.listening === true ? " listened" : ""}${sourceMessage ? " source-highlight" : ""}`} style={sourceMessage ? { boxShadow: "0 0 0 2px var(--rose)" } : undefined}>
                 {sourceMessage && <span className="source-marker">记忆来源</span>}
@@ -709,13 +706,14 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
                 </span>
                 {source?.avatarUrl && <img src={source.avatarUrl} alt="经由账号头像" className="channel-source-avatar" />}
                 {sourceLabel(source) && <small className="channel-message-source">{sourceLabel(source)}</small>}
-                {replyTo && <div className="channel-message-reply">{replyTarget || quotedText ? `回复 ${replySender}：${replyTarget?.content || quotedText || "（无内容）"}` : `回复 ${replySender || "未知发送者"} 的消息 ${replyTo}（原文未加载）`}</div>}
+                {replyTo && <div className="channel-message-reply">{replyTarget || quotedText ? `回复 ${replySender}：${quotedText || replyTarget?.content || "（无内容）"}` : `回复 ${replySender || "未知发送者"} 的消息 ${replyTo}（原文未加载）`}</div>}
                 {quotedAttachments.length > 0 && <div className="channel-message-reply" role="group" aria-label="引用消息附件"><ChannelAttachments roleId={role.id} attachments={quotedAttachments} onMediaLoad={keepAtBottomAfterMediaLoad} /></div>}
                 {mentionedNames.length > 0 && <div className="channel-message-mentions">提及：{mentionedNames.map((name) => `@${name}`).join("、")}</div>}
                 {message.content && <MessageMarkdown content={message.content} />}
                 <ChannelAttachments roleId={role.id} attachments={attachments} onMediaLoad={keepAtBottomAfterMediaLoad} />
                 {!message.content && attachments.length === 0 && quotedAttachments.length === 0 && <p>（无内容）</p>}
                 {delivery && <span className={`channel-delivery channel-delivery-${message.metadata.deliveryStatus}`}>{delivery}</span>}
+                <DeliveryDetails metadata={message.metadata} />
                 {Boolean(message.metadata.platformMessageId) && <details className="channel-receipt"><summary>{delivery ? "平台回执" : "平台消息"}</summary><span>消息编号：{String(message.metadata.platformMessageId)}</span></details>}
                 <time>{new Date(message.createdAt).toLocaleString()}</time>
                 </>}

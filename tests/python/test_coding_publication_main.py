@@ -12,7 +12,7 @@ from backend.app.coding_tasks.codex_exec import CodexExecutor
 from backend.app.coding_tasks.config import CodingConfigStore
 from backend.app.coding_tasks.git_repository import git
 from backend.app.coding_tasks.github_publication import GithubPlatform, GitTransport
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from test_background_shell_api import MemoryCredentials, api as shell_api  # noqa: F401
 from test_spawn_api import api  # noqa: F401
 from test_codex_executor import fixture_process
@@ -53,6 +53,7 @@ def test_actual_owner_skill_to_reviewed_commit_publish_and_exact_continue(api, t
             if not results:
                 assert self.action in {item['function']['name'] for item in tools}
                 yield ModelToolCall('explicit-action-' + str(self.calls), self.action, self.arguments)
+                yield ModelResponseDone("tool_use")
             else:
                 yield ModelTextDelta('原来源后台任务已登记。')
     model = Model()

@@ -95,10 +95,9 @@ def test_discovery_is_durable_before_next_request_and_cannot_authorize_same_repl
                     if getattr(item, "tool_call_id", None) == "premature"
                 )
                 assert rejected.is_error and "tool_search" in rejected.content
-                versions = sessions.get_run(run.runId).modelSnapshot[
-                    "capabilityRevisions"
-                ]
-                assert [item["visibilityVersion"] for item in versions] == [0, 1]
+                assert "capabilityRevisions" not in sessions.get_run(run.runId).modelSnapshot
+                assert sessions.call_binding(run.runId, "search")["active"] is True
+                assert sessions.call_binding(run.runId, "premature")["active"] is False
                 yield AssistantDoneEvent(
                     AssistantMessage(
                         tool_calls=(
@@ -310,9 +309,8 @@ def test_live_revocation_blocks_execution_without_mutating_issued_schema_version
             )
         ]
         assert events[-1].reason == "completed", events[-1].error
-        assert (
-            len(sessions.get_run(run.runId).modelSnapshot["capabilityRevisions"]) == 2
-        )
+        assert "capabilityRevisions" not in sessions.get_run(run.runId).modelSnapshot
+        assert sessions.call_binding(run.runId, "revoked")["visibilityVersion"] == 1
 
     asyncio.run(execute())
 
@@ -719,9 +717,9 @@ def test_cancelling_after_discovery_persistence_does_not_activate_or_send_anothe
         ]
         assert events[-1].reason == "cancelled"
         assert capabilities.current().snapshot.visibility_version == 0
-        assert (
-            len(sessions.get_run(run.runId).modelSnapshot["capabilityRevisions"]) == 1
-        )
+        assert not capabilities._discovery.pending
+        assert "capabilityRevisions" not in sessions.get_run(run.runId).modelSnapshot
+        assert sessions.latest_tool_selection("r", "role:r") is None
 
     asyncio.run(execute())
 
@@ -775,10 +773,10 @@ def test_failed_message_persistence_never_publishes_the_staged_version(tmp_path)
             ):
                 pass
         assert capabilities.current().snapshot.visibility_version == 0
+        assert not capabilities._discovery.pending
         assert sessions.get_run(run.runId).status == "failed"
-        assert (
-            len(sessions.get_run(run.runId).modelSnapshot["capabilityRevisions"]) == 1
-        )
+        assert "capabilityRevisions" not in sessions.get_run(run.runId).modelSnapshot
+        assert sessions.latest_tool_selection("r", "role:r") is None
 
     asyncio.run(execute())
 
@@ -867,5 +865,8 @@ def test_discovery_keeps_result_json_bounded_before_staging_activation():
     )
     assert len(result.content) <= search.definition.output_limit
     payload = json.loads(result.content)
-    assert len(payload["unlocked"]) == 30
+    assert len(payload["unlocked"]) == 29
+    assert payload["skipped_due_to_budget"] == ["notes.29"]
+    assert payload["budget"]["new_bytes"] <= 32768
+    assert search.discovery.pending["load"] == tuple(payload["unlocked"])
     assert payload["truncated"]

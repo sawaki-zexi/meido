@@ -24,7 +24,7 @@ export type NovelaiConfiguration = {
 export type GenerationParameters = {
   prompt: string; mode: 'txt2img' | 'img2img'; negative_prompt?: string; base_attachment_id?: string;
   size_preset?: 'square' | 'landscape' | 'portrait' | 'custom'; custom_width?: number; custom_height?: number;
-  model?: string; sampler?: string; steps?: number; seed?: number; samples?: number; strength?: number; noise?: number; background?: boolean;
+  model?: string; sampler?: string; steps?: number; seed?: number; samples?: number; strength?: number; noise?: number; background?: boolean; qualityToggle?: boolean; ucPreset?: number;
 };
 export type GenerationView = {
   generationId: string; attemptId: string; roleId: string; status: string; parameters: (GenerationParameters & {

@@ -123,12 +123,13 @@ def test_real_messages_background_finishes_parent_while_http_generation_is_owned
 
 def test_received_foreground_image_uses_one_original_completion_when_final_model_reply_fails(novelai_main, monkeypatch):
     from backend.app import main
-    from backend.app.model_adapter import ModelToolCall
+    from backend.app.model_adapter import ModelResponseDone, ModelToolCall
     client, service = novelai_main
     class FailedFinalModel:
         async def stream_structured_messages(self, messages, configuration, tools):
             if not any(item['role'] == 'tool' for item in messages):
                 yield ModelToolCall('foreground-final-fails', 'generate_image', service.request)
+                yield ModelResponseDone("tool_use")
             else:
                 raise RuntimeError('controlled final reply failure after paid image received')
     monkeypatch.setattr(main, 'model_adapter', FailedFinalModel())
