@@ -82,6 +82,8 @@ none/closed、冷却和重复视觉仍是已发生辅助调用的 CG 尝试，�
 - PUT/DELETE `.../{tagId}`：仅当前角色既有32位十六进制 ID，更新或删除并推进 revision，跨角色404。
 - POST `.../preview`：text最多12000字符，prompt/negative_prompt各最多4000 ASCII，返回扩写、matchedIds、revision；不调用模型或生图。
 
+扩写仅对普通无权重片段按逗号和大小写不敏感去重。基础提示词或单条标签的正负提示词包含 `::`、`{}`、`[]` 任一权重符号时，该完整片段按原文字保留，不拆分或去重其中的词，也不自动补闭合符或改写权重；因此加权片段可能保留重复词。预览、聊天工具和场景 CG 共用此规则，最终各 4000 字符上限不变。依据：[NovelAI 权重语法](https://docs.novelai.net/en/image/strengthening-weakening/)。
+
 [资产写回](../../backend/app/novelai_generation/assets.py)仅在 autoWritebackRoleAssets 明确开启、当前 CG 获准且单图时，设置本角色 cardImage；不改头像。以候选完成时捕获的 cardImageUrl 做 RoleStore 版本 CAS，主人后来手选卡片图优先。生成附件之外的卡片实际字节副本，在写入前另预留角色和全局空间，包含替换时旧副本与新副本的峰值。正常历史及原来源交付不因写回失败重生成。
 
 writebackStatus为not_requested/writing/uncertain/applied/failed。manifest或SQLite故障保留本地义务，维护只核对 owned 临时/备份、manifest及摘要后结算或回滚；崩溃在文件替换后但manifest提交前时恢复旧卡片，不再生成、复制或覆盖后来的主人编辑。恢复每批最多100条并有持久轮转游标。无法确认旧文件事实时保留预占及 uncertain。
