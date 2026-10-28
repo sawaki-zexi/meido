@@ -1,8 +1,8 @@
 # Shiori 多端会话功能对齐 Spec
 
-状态：当前目标规格，实施中。用户于 2026-10-26 要求按本规格开始实现并提交 PR，采用本文推荐的范围与架构方案；未通过各项验收并合入的功能不能标为已交付。
+状态：当前规格，F01–F13 实现已合入主线。用户于 2026-10-26 要求按本规格开始实现并提交 PR，采用本文推荐的范围与架构方案；代码合入不代表正式实例已更新或真实平台验收完成。
 
-最后核验：2026-10-27。交付跟踪见第 2 节；研究基线保留用于复查原始差距。
+最后核验：2026-10-28。交付跟踪见第 2 节；研究基线保留用于复查原始差距。最新固定源码复核见[差距报告的 2026-10-28 补充](../research/shiori-multichannel-parity-2026-10-26.md)。
 
 关联：[多端规格 #116](https://github.com/sawaki-zexi/meido/issues/116)、[#118 QQ](https://github.com/sawaki-zexi/meido/issues/118)、[#202 会话浏览](https://github.com/sawaki-zexi/meido/issues/202)、[#134 配置体验](https://github.com/sawaki-zexi/meido/issues/134)、[#117 Telegram](https://github.com/sawaki-zexi/meido/issues/117)、[#119 QQBot](https://github.com/sawaki-zexi/meido/issues/119)、[#120 飞书](https://github.com/sawaki-zexi/meido/issues/120)、[#121 投递](https://github.com/sawaki-zexi/meido/issues/121)。
 
@@ -15,16 +15,19 @@
 | 对象 | 核验基线 | 本规格中的地位 |
 | --- | --- | --- |
 | Meido 原研究基线 | `8a2d27d4e0bcab11bb1d7dfd6c788997d90ca750` | 原始差距与迁移起点 |
-| Meido 本次集成主线 | `6e431008ce15f0ac2d1d2e72df9d0e8ed89293fb` | 已包含 #230、#244 和 #256；其他实现以各自 PR 为准 |
-| Shiori 主线 | `d149de7f052f77c5bb88d4d1393d48dce1870875` | 功能行为参照，不直接复制存储和全部权限模型 |
+| Meido 已确认集成主线 | `b7f5ee420ecf872570a70855b73ab1e3ab1c8389` | 原七个开放功能 PR 已合入；独立 #261 扩展已由 #262 合入，详见研究中的实际合并表 |
+| Shiori 原研究主线 | `d149de7f052f77c5bb88d4d1393d48dce1870875` | 保留原始逐行依据，不直接复制存储和全部权限模型 |
+| Shiori 最新核验主线 | `d3acaed186b172a78a5892e0307e9affd89759f0` | 2026-10-28 固定快照；本批相关核心用户流程未变化，差异见研究补充 |
 | [PR #230](https://github.com/sawaki-zexi/meido/pull/230) | 已合入，`b005967` | 发送者与引用身份、每群回复开关已补齐 |
-| [Issue #233](https://github.com/sawaki-zexi/meido/issues/233) | 运行时事件实现已由 [PR #244](https://github.com/sawaki-zexi/meido/pull/244) 合入 | Telegram 实时工具进度复用该底座，渠道呈现由 #258 提交 |
+| [Issue #233](https://github.com/sawaki-zexi/meido/issues/233) | 运行时事件实现已由 [PR #244](https://github.com/sawaki-zexi/meido/pull/244) 合入 | Telegram 实时工具进度复用该底座，渠道呈现由 [PR #258](https://github.com/sawaki-zexi/meido/pull/258) 合入 |
 
 原研究阶段 Git 拉取遇到网络错误，随后通过 GitHub API 确认两边基线 SHA，采用与该 SHA 一致的本地源码；实施阶段已获取最新 Meido 主线。未读取或改变正式实例的数据、账号及运行版本，未进行真实平台收发。
 
 本规格覆盖上轮 12 项差距及用户额外要求的每群彻底禁回。保留 Meido 已有的 QQ 自然接话、表情包和旁听能力。此次不新增 QQBot/飞书群聊、Telegram 旁听、通用语音/视频理解、手机代发输入框、动态插件加载体系或对外部 Bot 的完整工具授权开关。
 
-旧规格继续描述当前实现；本规格逐项实施后，再同步当前规格、领域词汇与 ADR。未合入的功能不提前写成当前领域事实。实现按独立 Ticket 提交 PR；合并 PR、关闭 Issue 和发布服务仍须维护者另行授权。
+2026-10-28 用户另行确认的 Story、角色插画/聊天背景、心情绑定与允许分类自动图片反应，以及工作台跨模块状态保留，由 [Issue #261](https://github.com/sawaki-zexi/meido/issues/261) 独立跟踪，并由 [PR #262](https://github.com/sawaki-zexi/meido/pull/262) 合入 `b7f5ee42`。它复用 NovelAI 等现有基础，不并入本文 F01–F13，也不改变以下原始渠道交付计数。具体契约见 [Story](shiori-story-parity.md)、[角色素材](../reference/role-illustrations.md)及[图片反应](../reference/role-reactions.md)。
+
+相关当前规格、领域词汇与 ADR 随功能实现维护。未合入的功能不提前写成当前领域事实。实现按独立 Ticket 提交 PR；本次用户已授权实现及合并，正式实例发布仍按运行管理流程另行执行。
 
 ## 2. 功能范围与追踪
 
@@ -44,17 +47,17 @@
 | F12 | 引用失效后仍可在原聊天回复 | D11 | 明确拒绝时取消引用，保持原聊天/话题 |
 | F13 | 角色与固定 Grok Bot 双向文字交流 | D12 | 新增第五类内置渠道及本机回程客户端 |
 
-截至本次核验，13 项均已有实现。以下区分主线与提交状态；PR 已提交不代表正式实例已更新。
+截至本次核验，13 项对应实现均已合入主线。以下记录真实交付提交；不表示所有行为与上游毫无差异，也不表示正式实例已更新或真实平台验收完成。
 
 | 范围 | 实现 PR | 状态 |
 | --- | --- | --- |
 | F01/F02 身份与每群禁回 | [#230](https://github.com/sawaki-zexi/meido/pull/230) | 已合入 |
-| F03 主人连续历史 | [#253](https://github.com/sawaki-zexi/meido/pull/253) | 已提交，待合入 |
-| F04–F07 成员资料、笔记与动态 | [#247](https://github.com/sawaki-zexi/meido/pull/247) | 已提交，待合入 |
-| F08 QQ 文件 | [#245](https://github.com/sawaki-zexi/meido/pull/245) | 已提交，待合入 |
+| F03 主人连续历史 | [#253](https://github.com/sawaki-zexi/meido/pull/253) | 已合入，`6c7745bd`（2026-10-28） |
+| F04–F07 成员资料、笔记与动态 | [#247](https://github.com/sawaki-zexi/meido/pull/247) | 已合入，`aacb49ce`（2026-10-28） |
+| F08 QQ 文件 | [#245](https://github.com/sawaki-zexi/meido/pull/245) | 已合入，`65aedfbc`（2026-10-28） |
 | F09/F11/F12 富文本、限流与引用恢复 | [#256](https://github.com/sawaki-zexi/meido/pull/256) | 已合入 |
-| F10 Telegram 过程反馈 | [#258](https://github.com/sawaki-zexi/meido/pull/258) | 已提交，待合入 |
-| F13 Grok Bot | [#257](https://github.com/sawaki-zexi/meido/pull/257) | 已提交，待合入 |
+| F10 Telegram 过程反馈 | [#258](https://github.com/sawaki-zexi/meido/pull/258) | 已合入，`45003831`（2026-10-27） |
+| F13 Grok Bot | [#257](https://github.com/sawaki-zexi/meido/pull/257) | 已合入，`fc164abd`（2026-10-28） |
 
 每项的最新检查与审查结果以 PR 为事实来源。各功能分支均从主线独立开发，后续集成保留分段确认内容与原始历史授权；没有用其他未合入功能分支作前置基线。
 
@@ -100,7 +103,7 @@
 - 旁听开关与每日上限独立；关闭回复保留旁听和自然接话偏好。重新允许回复恢复偏好，但不补发关闭前或关闭期间积压的回复。
 - 许可在入站首次等待前固定，并在缓冲、引用解析、附件读取、排队、生成及实际发送前复验；关闭再开启不能让旧许可重新有效。
 - 页面说明当前状态和自然接话暂停原因。保存失败保留可重试状态，不把未确认保存显示为已关闭。
-- 对已提交平台的请求保留实际回执或不确定状态；关闭开关不声称撤回了已发送消息。实现复用 #230，等待其合入后从最新 main 扩展相关路径。
+- 对已提交平台的请求保留实际回执或不确定状态；关闭开关不声称撤回了已发送消息。实现复用已合入的 #230，并在后续渠道路径中保留该边界。
 
 ### F03 主人跨端历史连续性
 
@@ -284,7 +287,7 @@ flowchart LR
 
 ## 8. 实施顺序与已有工作的关系
 
-按可演示的用户结果拆后续 Ticket，每张使用 `Parent / What to build / Acceptance criteria / Blocked by`，关联 #116。以下为拆分建议，不是已经创建的 Issue；共享文件的协调顺序与真正功能依赖分别记录。
+以下保留原研究阶段的拆分与协调建议；真实实施及交付结果以第 2 节为准，不再表示尚待创建的 Ticket。各 Ticket 使用 `Parent / What to build / Acceptance criteria / Blocked by`，关联 #116；共享文件的协调顺序与真正功能依赖分别记录。
 
 | 交付结果 | 范围 | 真正前置及协调事项 |
 | --- | --- | --- |

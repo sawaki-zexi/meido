@@ -1,3 +1,4 @@
+import { roleMood } from './roleMood';
 import { useEffect, useId, useState, type ComponentProps } from "react";
 import type { Role } from "../../api/types";
 import { Avatar } from "../../ui/Avatar";
@@ -5,6 +6,7 @@ import { Icon, IconButton } from "../../ui/Icon";
 import { MemoryPanel } from "../memory/MemoryPanel";
 import { RoleAccountsPanel } from "../channels/RoleAccountsPanel";
 import { RoleMaterialLibrary } from "../materials/RoleMaterialLibrary";
+import { RoleIllustrationLibrary } from './RoleIllustrationLibrary';
 import { RoleEditor } from "./RoleEditor";
 import { RoleCapabilitiesPanel } from "./RoleCapabilitiesPanel";
 import type { RolesState } from "./useRoles";
@@ -56,7 +58,7 @@ export function RoleWorkspace({ role, state, tab, onTabChange, onBack, backLabel
     <header className="role-workspace-hero">
       <Avatar id={role.id} name={writable ? state.draft.name : role.name} avatarUrl={state.avatarPreviewUrl ?? (state.avatarRemoved ? null : role.avatarUrl)} size="lg" />
       <div className="role-workspace-identity">{writable || tab === 'profile' ? <><input aria-label="名称（角色名称）" disabled={state.busy} value={state.draft.name} placeholder="未命名角色" onChange={event => changeIdentity('name', event.target.value)} /><input aria-label="角色简介" disabled={state.busy} value={state.draft.description} placeholder="添加一行角色简介" onChange={event => changeIdentity('description', event.target.value)} /></> : <><h1>{role.name}</h1><p>{role.description || "还没有简介"}</p></>}
-        <div className="role-workspace-actions"><span className="role-state"><Icon name="profile" size={15} />平静</span>
+        <div className="role-workspace-actions"><span className="role-state"><Icon name="profile" size={15} />{roleMood(role).mood}</span>
           <button type="button" className="ghost" disabled={state.busy} aria-expanded={mediaOpen && tab === 'profile'} onClick={() => { onEdit(); setMediaOpen(value => tab !== 'profile' || !value); }}><Icon name="image" size={16} />更换形象</button>
         </div>
       </div>
@@ -84,7 +86,7 @@ export function RoleWorkspace({ role, state, tab, onTabChange, onBack, backLabel
       {tab === "profile" && <div className="role-workspace-profile" role="tabpanel" aria-label="资料">
         <RoleEditor state={state} onSubmit={onSubmit} onCancel={onCancel} onDelete={onDelete} hideHeaderFields workspace formId={profileFormId} mediaOpen={mediaOpen} />
       </div>}
-      {tab === "materials" && <div role="tabpanel" aria-label="素材库"><RoleMaterialLibrary roleId={role.id} roleName={role.name} /></div>}
+      {tab === "materials" && <div role="tabpanel" aria-label="素材库"><RoleIllustrationLibrary role={role} onRoleSaved={state.receiveRole} /><RoleMaterialLibrary roleId={role.id} roleName={role.name} /></div>}
       {tab === "memory" && <div className="role-workspace-memory" role="tabpanel" aria-label="记忆"><MemoryPanel role={role} embedded onBack={onBack} onOpenSource={onOpenMemorySource} /></div>}
       {(tab === 'capabilities' || capabilitiesOpened) && <div hidden={tab !== 'capabilities'} role="tabpanel" aria-label="能力">
         <RoleCapabilitiesPanel role={role} onRoleSaved={state.receiveRole} actionTarget={tab === 'capabilities' ? actionTarget : null} onOpenSettings={onOpenSettings} settingsVersion={settingsVersion} />

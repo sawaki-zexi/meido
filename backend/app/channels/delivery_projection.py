@@ -7,7 +7,9 @@ def confirmed_parts(metadata):
     if not isinstance(parts, list):
         return []
     return [{**part, 'content': part['content'] if part.get('status') == 'sent' else part['confirmedContent']}
-            for part in parts if isinstance(part, dict) and part.get('platformMessageId') and part.get('kind') != 'preview'
+            for part in parts if isinstance(part, dict) and (part.get('platformMessageId') or
+                metadata.get('channel') == 'grok_bot' and metadata.get('receiptKind') == 'transport_acceptance'
+                and part.get('httpStatus') == 200) and part.get('kind') != 'preview'
             and (part.get('status') == 'sent' or part.get('confirmedContent') is not None)]
 
 

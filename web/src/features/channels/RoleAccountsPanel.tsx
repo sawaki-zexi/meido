@@ -18,6 +18,7 @@ export function RoleAccountsPanel(props: RoleAccountsProps) {
 const workspaceChannels: { id: Channel; name: string; icon: IconName; summary?: string }[] = [
   { id: 'feishu', name: '飞书 / Lark', icon: 'building' }, { id: 'qq', name: 'QQ', icon: 'chat' },
   { id: 'qqbot', name: 'QQ 官方机器人', icon: 'bot' }, { id: 'telegram', name: 'Telegram', icon: 'send' },
+  { id: 'grok_bot', name: 'Grok Bot', icon: 'bot' },
 ];
 
 function RoleAccountsForRole({ roleId, onOpenSettings, presentation = "dialog", onBack, workspace = false, initialChannel }: RoleAccountsProps) {

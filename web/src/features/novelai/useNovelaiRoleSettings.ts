@@ -3,6 +3,7 @@ import { api, errorMessage } from '../../api/client';
 import { defaultNovelaiRoleConfig, novelai, type NovelaiConfiguration, type NovelaiRoleConfig } from '../../api/novelai';
 import type { AgentToolConfig, ModelConfiguration } from '../../api/types';
 import type { RoleDraft } from '../role-management/draft';
+import { generationAvailability } from './availability';
 
 export function useNovelaiRoleSettings(draft: RoleDraft, onChange: (draft: RoleDraft) => void) {
   const [configuration, setConfiguration] = useState<NovelaiConfiguration | null>(null);
@@ -30,9 +31,11 @@ export function useNovelaiRoleSettings(draft: RoleDraft, onChange: (draft: RoleD
   }, [refresh]);
   const patch = (changes: Partial<NovelaiRoleConfig>) => onChange({ ...draft,
     preservedAgentConfig: { ...draft.preservedAgentConfig, novelai: { ...config, ...changes } } as AgentToolConfig });
+  const availability = configuration ? generationAvailability(configuration) : null;
+  const sceneModeDisabled = availability?.available && configuration?.allowTxt2Img === false;
   return { configuration, models, modelLoading, error, modelError, config, patch,
     dismissError: () => setError(''), dismissModelError: () => setModelError(''), refreshModels: () => setRefresh((value) => value + 1),
-    available: Boolean(configuration?.enabled && configuration.tokenConfigured && !configuration.credentialCleanupPending),
-    consent: Boolean(configuration && config.consentRevision === configuration.revision),
+    available: Boolean(availability?.available && !sceneModeDisabled),
+    unavailableMessage: sceneModeDisabled ? '文生图已关闭，请在 NovelAI 设置中开启文生图后使用自动场景 CG。' : availability?.message,
     selectedModel: modelsReady ? models.find((model) => model.id === config.scenePromptModelConfigurationId) : undefined };
 }

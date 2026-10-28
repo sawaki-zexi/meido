@@ -1,14 +1,84 @@
 # Shiori 多端会话差距复核（2026-10-26）
 
-状态：当前（固定源码基线的静态核验，不代表真实平台验收完成）
+状态：当前研究记录；2026-10-28 补充之后的原始矩阵仍描述 2026-10-26 固定基线，不代表当前主线或真实平台验收完成。
 
 事实来源：下文链接到两边固定提交的实现、现有行为测试和 UI 调用链；旧调研仅用于定位，不作为功能完成的证据。
 
-最后核验：2026-10-26。
+最后核验：2026-10-28；本次仅复核开放 PR 涉及的功能，不重新扩展整个产品的功能清单。
 
 本文保留差距核验基线；用户随后已选择按 Shiori 对齐，共享边界及交付目标见[对齐 Spec](../specs/shiori-multichannel-alignment-spec.md)。[最后一轮深核](shiori-multichannel-spec-deep-dive-2026-10-26.md)进一步明确：24 条限制针对自动附加片段而非已有历史查询工具；Shiori 的成员“渠道键”实际可能包含账号标识，不能一概当作全平台身份键。
 
-## 结论与计数口径
+## 2026-10-28：开放 PR 的功能复核
+
+**已提取：** GitHub 的 PR 元数据、各 PR 固定头提交及上游源码共同作为证据；PR 正文的“通过”或测试数量不作为功能已实现的替代。此时八个 PR 仍开放，#248/#251/#252 为 Draft。下表是本轮修改前的快照，后续修复与合并状态以[对齐 Spec](../specs/shiori-multichannel-alignment-spec.md)及对应 PR 为准。
+
+| 对象 | 固定版本与核验范围 |
+| --- | --- |
+| Meido main | `45003831ac108c4c25e37cf388e85ccbfd9ee82d`；#258 已于 2026-10-27 合入，不能再列为缺失或待合入 |
+| Shiori 原研究 → 本次主线 | `d149de7f052f77c5bb88d4d1393d48dce1870875` → [`d3acaed186b172a78a5892e0307e9affd89759f0`](https://github.com/YinFengWindy/Shiori-Agent/commit/d3acaed186b172a78a5892e0307e9affd89759f0)，前进 13 个提交 |
+| Pi 原参考 → 本次主线 | `d5b3de22d0e24a3e9c38a9410d3329b099717283` → [`97553d10f2cb8be11a4d0fda331fe06967139643`](https://github.com/earendil-works/pi/commit/97553d10f2cb8be11a4d0fda331fe06967139643)，前进 96 个提交 |
+
+Shiori 两个固定版本的 215 个相关文件逐 blob 比较后，QQ 文件接收、授权历史视图、成员档案/动态、NovelAI 工作台/service 和 Grok 收发核心内容未变；变化集中在插件注册、账号装配和 memory runtime。因此仍可复用下文的核心行为证据，但不能把整个上游仓库说成未变化。Pi 的 [`buildSessionProjection` / `buildSessionContext`](https://github.com/earendil-works/pi/blob/97553d10f2cb8be11a4d0fda331fe06967139643/packages/coding-agent/src/core/session-manager.ts#L542-L583)保留来源并处理压缩/上下文编辑；本批具体用户流程直接参照 Shiori，不因 Pi 前进而引入其无关 CLI、provider 或 Chord 功能。
+
+| PR / 已读取头提交 | 上游用户流程与 Meido 实际代码 | 复核判断 |
+| --- | --- | --- |
+| [#243](https://github.com/sawaki-zexi/meido/pull/243) / `90f2b6ec9464f9b2375e5486d3af4f99bedc130e` | F01–F13 规格与研究；没有运行代码 | 纠正 #258 状态，保留原研究基线；不得把规格本身算作功能交付 |
+| [#245](https://github.com/sawaki-zexi/meido/pull/245) / `0c2c1dc9c6b8c168e1dae7c92d7b3b267393abc0` | QQ 直接/引用文件 ID → NapCat 地址查询 → 有界 TXT/MD 下载 → 角色附件读取；`napcat.py`、`qq_files.py`、`main.py`、`multichannel.py` 和聊天页面已有接线 | 主链路已有。使用受管 NapCat v4.18.28 参数，不复制旧的 group/busid 参数；拒绝本机路径、私网/任意域和重定向是有意收紧 |
+| [#247](https://github.com/sawaki-zexi/meido/pull/247) / `5bfd5d2388d195ff46e33c45d4aadf79552fb28c` | `external_members.py` 共享身份档案，`external_memory.py` 笔记/3 天最多 5 条动态，HTTP CRUD、`ExternalMemoryPanel.tsx` 及普通/主动上下文都有实际调用 | 管理与共享主链路已有；`group_tools.py::prompt_context` 仍按 ID 排序取最多 10 个成员，需核对当前发言者、结构化 @ 和被引用者的优先注入，不能让更相关成员被字典序挤掉 |
+| [#248](https://github.com/sawaki-zexi/meido/pull/248) / `b6adde5a570b79167de352d4d960a312067066a2` | `availability.py`、`application.py::tool_enabled`、`tools.py` 已接通就绪/工具发现；`NovelaiStudio.tsx`、`useGenerationDrawer.ts` 提供提示词页签、底图、大图/缩略图、历史与错误修正 | 不再缺基础生成/历史/下载；完整参数重生成和普通作品的角色素材写回仍有真实差异，见下文 |
+| [#251](https://github.com/sawaki-zexi/meido/pull/251) / `963dc764468efd187f91c7540cbef778703eda12` | `prompt_tags.py::_append` 对 `::`、花括号、方括号保留整段，普通标签继续去重；预览、聊天和 CG 共用 | 修复两边共同的闭合符丢失问题，不应为复刻而恢复上游错误 |
+| [#252](https://github.com/sawaki-zexi/meido/pull/252) / `e62f3839c61201a651689584b977bf33530ef268` | `PromptTagManager.tsx` 卡片/独立编辑/删除确认；`usePromptTags.ts` 完整有界分页、NFKC 搜索及组合筛选 | 卡片流程已有；搜索是 Meido 增强，Shiori 无对应搜索。两边标签参考图均仅供识别，不是供应商条件参考输入 |
+| [#253](https://github.com/sawaki-zexi/meido/pull/253) / `d0956bfbf6e7b77e223c86069e9c0d87619e4f3c` | `ConversationHistoryView` 从原 transcript 投影授权历史，重建角色/来源/引用/媒体；历史工具、普通/主动/Drift 共用 | 已不是固定 24 条文本补充。保留独立时间线、冻结来源与预算裁剪是实现边界，不是跨端连续性缺失 |
+| [#257](https://github.com/sawaki-zexi/meido/pull/257) / `6b717b1035173446a94f25d2b3633db9be0c5a28` | `grok/adapter.py`、`callback.py`、`client.ps1`、`exchange.py` 与真实 Runtime、宿主恢复和投递账本接通 | 固定双向文字流程已有。未知父消息拒绝为已确认 A5；本机回程、外部访客身份、HTTP 接受不等于 Bot 回复均应保留 |
+
+### 已提取：需要补齐与不应照搬的行为
+
+- **成员选择：** Shiori [`member_profiles.py` L269–352](https://github.com/YinFengWindy/Shiori-Agent/blob/d3acaed186b172a78a5892e0307e9affd89759f0/apps/backend/core/memory/member_profiles.py#L269-L352)先取触发者、结构化 @ 和被引用者的完整档案，再按可见窗口的近远放其他成员速记。Meido 应保持真实身份/会话来源和总模型预算，不照搬“完整档案不截断”的无界部分。
+- **自动档案合并：** Shiori [`merge_member_profile`](https://github.com/YinFengWindy/Shiori-Agent/blob/d3acaed186b172a78a5892e0307e9affd89759f0/apps/backend/core/memory/member_profiles.py#L132-L146)只用非空自动结果替换旧档案/速记；#247 固定头提交的 `consolidation.py` 将缺失或空字段转换为空串后写回，会丢失已有认识。补齐时应只改变自动整理的合并，保留主人手动清空的能力及已有版本冲突保护。
+- **完整重生成：** Shiori [`service.py` L164–211](https://github.com/YinFengWindy/Shiori-Agent/blob/d3acaed186b172a78a5892e0307e9affd89759f0/plugins/novelai/backend/service.py#L164-L211)深拷贝可信旧 request，仅换 seed。#248 的 `loadParameters` 不带回 `qualityToggle`/`ucPreset`，`parameters.py` 使用当前服务偏好；改变偏好后重新生成不等于原条件只换 seed。若补齐，应由宿主恢复可信历史条件，并重新校验当前模型、模式、附件、来源和次数许可，不接收模型任意旧 payload。
+- **角色素材：** Shiori [`service.py` L254–270](https://github.com/YinFengWindy/Shiori-Agent/blob/d3acaed186b172a78a5892e0307e9affd89759f0/plugins/novelai/backend/service.py#L254-L270)在开关允许时把普通生成加入 illustration 并设聊天背景。Meido 有 CG 的受限角色卡片写回，但该固定 #248 工作台没有普通历史作品的对应动作。此差异不是图片保存失败，应复用既有角色素材和并发覆盖保护。
+- **保留的适配：** 成员的平台/应用身份作用域、旧身份隔离、迁移冲突与持久编辑版本；QQ 有界附件与 URL 限制；主人历史授权/已送达筛选；Grok 未知父消息拒绝；不确定付费请求不自动重试。它们提供同类用户结果而不复制上游较弱的边界。
+- **区分原票与新增范围：** Story 独立叙事/视觉资源域不是这些原有开放 PR 的缺失按钮。用户随后于 2026-10-28 明确追加 Story 与角色插画/聊天背景能力，已另建 [#261](https://github.com/sawaki-zexi/meido/issues/261)，在 #248 基础上独立交付，不回填为 F01–F13 的原范围。动态插件加载、公共回程服务器、真正的参考条件生成仍不能据此自动扩入。
+
+**集成建议（不是已合并事实）：** NovelAI 可按 #251 → #248 → #252 集成；渠道 PR 没有未合并分支硬依赖，但 `main.py`、`multichannel.py` 及 provider/主动上下文重叠，应逐个整合并保留双方行为。#243 在真实合并后最后刷新交付表。#247 与 #248 同时使用 ADR-0027，编号需协调，不能依赖 Git 自动发现该语义冲突。
+
+**许可事实：** Shiori、Pi、Meido 根许可证均为 MIT。Meido 已带 `third_party/shiori-agent/LICENSE` 和 `backend/app/novelai_generation/SHIORI-LICENSE.txt`；新增实质代码改写时保留相应版权/许可并记录固定来源路径。功能参考不自动证明复制了 Pi 代码，不补虚构来源。该复核未运行真实平台账号或付费模型，也未更新正式实例。
+
+### 2026-10-28 后续补齐：代码结果，不代替合并状态
+
+上述修改前快照发现的成员相关性及自动空值覆盖问题，在 `e0e9d2aeef79d9ee1adbeed2cf6c0fbc8f33e5ad` 补齐：当前发送者、结构化 @、可信引用成员优先，其他成员按近期可见记录提供有界速记；自动整理不再用空结果清掉旧认识。完整历史参数重生成在 `4b457774c58b77c345e47fea63011fc4d253907b` 补齐，同提交将 NovelAI ADR 改为 `0031-novelai-plugin-readiness.md`，消除与成员资料 ADR-0027 的重号。两项仍保留当前来源、授权和人工编辑边界。
+
+另行批准的 [#261](https://github.com/sawaki-zexi/meido/issues/261) 按相同 Shiori 固定版本复核；以下是 `8e247cf0c55fd4f05179c8ab66127ac8edb4c751` 加 `69a00707a543b2e9c09d815d1b1043e85a7ff976` 的源码结果，不混入原 F01–F13：
+
+| Shiori 实际用户流程 | Meido 实现与结果 |
+| --- | --- |
+| `RoleAssetsPage.tsx`、`RoleAssetCategoryGroups.tsx`、`useRoleManagement.ts`：多图导入、分类增改移动/整组删除、原图查看、头像/背景选择与清除 | `RoleIllustrationLibrary.tsx` → `roleAssets.ts` → `role_assets.py` / `role_store.py` 已接通；最后两项差距（批量上传、分类连同图片移除）由 `69a00707` 补齐。保留“仅移除分类、保留图片”选项；移图进入本地恢复区，未声称有应用内恢复入口 |
+| 角色 mood 绑定与默认/当前立绘；`plugins/meme/backend/runtime.py` 的允许分类自动图片反应 | `RoleMoodBindingEditor.tsx`、`roleMood.ts`、`role_mood.py` 连接绑定、展示和 `set_current_mood`；`role_reactions.py` 接入普通桌面及支持媒体的渠道回合，依分类许可选择图片并复用真实投递回执，不增加新目标或工具权限 |
+| `plugins/story`：创建角色故事、生成/播放/玩家输入、保存载入、记录、CG 查看与失败重试/重生成 | `features/story/` → `api/story.ts` → `backend/app/story/` 已接通角色模型、持久故事与独立视觉资源；角色/图片快照冻结，默认 mood 立绘参与展示，故事不混入普通聊天记忆。另提供明确的继续、归档/恢复与纯文字选择 |
+| NovelAI 普通作品成为角色素材、跨模块保留工作台状态 | 普通生成及历史作品可进入角色插画/背景；`App.tsx` 保持已访问的 Studio 挂载，离开模块不丢草稿或在途生成 |
+
+本次终核未发现该明确范围内的其他缺失用户操作。Shiori 的音频、手动存档槽、分支选择没有相应完整链路，主动/Drift 也未接普通回复的图片装饰器，故不制造占位按钮或额外能力来充数。Story 改写保留 `backend/app/story/SHIORI-LICENSE.txt`，角色图片反应来源记录在 `third_party/shiori-agent/README.md`。以上是调用链核验，不是像素一致、真实平台收发或付费生图的验收声明；最终交付状态仍以实际合并记录为准。
+
+### 2026-10-28 已确认合并记录
+
+以下为实际主线合并，不改写上文修改前的固定快照。最终已确认代码基线为 `b7f5ee420ecf872570a70855b73ab1e3ab1c8389`：原七个功能 PR 及用户另行批准的 #261 扩展均已合入。已确认的本轮功能范围完成对齐；不声称两个项目的所有无关插件、供应商或 CLI 均已复刻。
+
+| PR | 实际合并提交 |
+| --- | --- |
+| [#245 QQ 文件](https://github.com/sawaki-zexi/meido/pull/245) | `65aedfbcea8191f6fcaff1eb9c913591c4cdcf44` |
+| [#248 NovelAI 工作台](https://github.com/sawaki-zexi/meido/pull/248) | `31bf8c37ad6cd2574b9a0e6b72bf403ba3ea72fc` |
+| [#252 标签库](https://github.com/sawaki-zexi/meido/pull/252) | `f32c8a6ee480875d2e74589bbdcfbf5d69da8095` |
+| [#251 加权片段](https://github.com/sawaki-zexi/meido/pull/251) | `1bd3c21f58a06d1329b9a52fea8bb717ad6d1597` |
+| [#247 成员资料与笔记](https://github.com/sawaki-zexi/meido/pull/247) | `aacb49ced8c6acf1ccae9c02c36a65d91b2be42a` |
+| [#253 主人连续历史](https://github.com/sawaki-zexi/meido/pull/253) | `6c7745bda8b49bbe3d7e7c0017b72a27ecaf748d` |
+| [#257 Grok Bot](https://github.com/sawaki-zexi/meido/pull/257) | `fc164abdf5cafbadc4df23f585cc8945af9e53e1` |
+| [#262 Story、角色素材/心情/图片反应及工作台状态（Refs #261）](https://github.com/sawaki-zexi/meido/pull/262) | `b7f5ee420ecf872570a70855b73ab1e3ab1c8389` |
+
+#262 的合并前头提交为 `093d09445f1ac0e2f6c27c9752dcab175f68c2ca`，[CI 40762228465](https://github.com/sawaki-zexi/meido/actions/runs/40762228465) 全部成功；其主应用/桌宠构建与三项定向集成检查记录见 [Story 规格](../specs/shiori-story-parity.md)。文档最终整合只检查差异、链接和来源事实，没有重复运行已通过且未变化的功能检查；真实账号、供应商消费及正式实例更新仍未执行。
+
+合并前另补 Grok 来源声明：`client.ps1`、`protocol.py` 的实质改写和连接/预算行为适配均在 `third_party/shiori-agent/README.md` 映射到上述 Shiori 固定版本；版权及 MIT 全文保留。Story 与角色素材的来源记录也已核对，不把独立功能参考误记为 Pi 代码复制。
+
+## 原始结论与计数口径（2026-10-26）
 
 **本轮按 27 个不重复的用户能力核对：Meido main 有 15 项主链路已具备、8 项部分对齐、4 项对应行为缺失，共 12 项未完全对齐。** 这不是完成率，也不是两个项目全部功能的穷尽清单。没有把一个页面的按钮、接口和存储分成三个功能计数；平台表、差距明细和待合入改动也不重复计数。
 

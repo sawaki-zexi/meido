@@ -76,7 +76,7 @@ def test_name_candidates_are_bounded_with_accurate_total_and_channel_identity(tm
     assert empty == {"total": 0, "candidates": []}
 
 
-def test_id_lookup_keeps_conflicting_thread_profiles_and_ignores_model_names(tmp_path):
+def test_id_lookup_uses_shared_profile_and_ignores_model_names(tmp_path):
     database = tmp_path / "sessions.db"
     channels = MultichannelStore(database, SessionStore(database))
     channels.register_channel_account("r", "qq", account_id="a", enabled=True, allow_group=True)
@@ -84,8 +84,10 @@ def test_id_lookup_keeps_conflicting_thread_profiles_and_ignores_model_names(tmp
 
     async def summarize(thread, messages, context, profiles):
         assert messages and all(item["metadata"]["senderId"] == "22" for item in messages)
+        if thread.chat_id == "200":
+            assert profiles["22"]["profile"] == "喜欢猫"
         return {"members": [{"senderId": "22", "name": "ModelInventedName",
-                             "profile": "喜欢猫" if thread.chat_id == "100" else "讨厌猫",
+                             "profile": "喜欢猫" if thread.chat_id == "100" else "喜欢猫，也养狗",
                              "shorthand": f"本群速记 {thread.chat_id}"}]}
 
     worker = ChannelMemoryMaintenance(lambda: channels, lambda: groups, summarize, lambda *args: None)
@@ -105,8 +107,8 @@ def test_id_lookup_keeps_conflicting_thread_profiles_and_ignores_model_names(tmp
     assert data["member_id"] == "22" and data["channel"] == "qq"
     assert data["name"] == "艾丽丝" and data["nicknames"] == ["艾丽丝", "Alice"]
     assert {(item["thread_id"], item["chat_id"], item["profile"], item["shorthand"]) for item in data["sources"]} == {
-        (threads[0].thread_id, "100", "喜欢猫", "本群速记 100"),
-        (threads[1].thread_id, "200", "讨厌猫", "本群速记 200"),
+        (threads[0].thread_id, "100", "喜欢猫，也养狗", "本群速记 200"),
+        (threads[1].thread_id, "200", "喜欢猫，也养狗", "本群速记 200"),
     }
     assert "RAW_CHAT_MUST_NOT_LEAK" not in result.content
     fake = json.loads(asyncio.run(tool.execute({"name": "ModelInventedName"}, context)).content)
@@ -333,6 +335,8 @@ def test_reused_account_id_keeps_channels_and_profile_sources_separate(tmp_path)
     database = tmp_path / "sessions.db"
     channels = MultichannelStore(database, SessionStore(database), Credentials())
     repository = MultichannelGroupRepository(channels)
+    with channels._connect() as db:
+        db.execute("DROP TABLE channel_external_migrations")
     for channel in ("qq", "feishu"):
         channels.register_channel_account("r", channel, account_id="reused", enabled=True, allow_group=True)
         # Archived threads can retain a removed account ID across platforms.
@@ -347,8 +351,10 @@ def test_reused_account_id_keeps_channels_and_profile_sources_separate(tmp_path)
             external_message_id=channel, metadata={"senderId": "22", "senderName": "Alice"})
         with channels._connect() as db:
             db.execute("INSERT INTO channel_member_profiles VALUES(?,?,?,?,?,?,?)",
-                ("r", thread.thread_id, "22", "Alice", f"{channel} profile", "", "old"))
+                ("r", thread.thread_id, "22", "Alice", f"{channel} profile", "", datetime.now(timezone.utc).isoformat()))
         channels.delete_account("reused")
+    channels = MultichannelStore(database, SessionStore(database), Credentials())
+    repository = MultichannelGroupRepository(channels)
     tool = LookupGroupMemberTool(repository, role_id="r")
     context = ToolContext("r", "role:r", "run", CancellationToken())
     found = json.loads(asyncio.run(tool.execute({"name": "Alice"}, context)).content)

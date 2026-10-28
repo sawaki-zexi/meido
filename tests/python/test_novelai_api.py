@@ -24,10 +24,11 @@ def test_global_manual_permission_applies_to_new_role_without_enabling_its_scene
         'expectedRevision': saved.json()['revision']})
     assert changed.status_code == 200
     assert changed.json()['manualConsentRevision'] == 0
-    denied = client.post(path, json={'requestId': '11811811811811811811811811811812',
+    next_image = client.post(path, json={'requestId': '11811811811811811811811811811812',
         'expectedRevision': changed.json()['revision'], 'parameters': service.request})
-    assert denied.status_code != 200
-    assert len(service.peer.requests) == 1
+    assert next_image.status_code == 200, next_image.text
+    assert next_image.json()['generation']['parameters']['steps'] == 12
+    assert len(service.peer.requests) == 2
 
 
 def test_explicit_owner_ui_generates_once_in_original_session_without_fake_human_run(novelai_service):
@@ -245,7 +246,8 @@ def test_unknown_consumes_persistent_finite_allowance_and_same_request_can_still
     assert first['status'] == 'unknown'
     assert client.post(path, json=request).json()['generation']['attemptId'] == first['attemptId']
     rejected = client.post(path, json={**request, 'requestId': '17117117117117117117117117117124'})
-    assert rejected.status_code == 422
+    assert rejected.status_code == 429
+    assert '次数' in rejected.json()['detail']
     assert service.application.history(service.role.id)['usage']['accountAttempts'] == 1
     assert len(service.peer.requests) == 1
 

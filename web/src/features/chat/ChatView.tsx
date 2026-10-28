@@ -11,6 +11,9 @@ import { GenerationDrawer } from "../novelai/GenerationDrawer";
 import { CodingTasks } from "../coding/CodingTasks";
 import { Dialog } from "../../ui/Dialog";
 import { GeneratedImageAction } from "../novelai/GeneratedImageAction";
+import { roleMood } from '../role-management/roleMood';
+import { roleAssets } from '../../api/roleAssets';
+import '../role-management/roleIllustrations.css';
 import type { GenerationSelection } from "../../api/novelai";
 import { useChatScroll } from "./useChatScroll";
 import { AttachmentImage } from "../../ui/AttachmentImage";
@@ -132,22 +135,38 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
   const [generationRoleId, setGenerationRoleId] = useState<string | null>(null);
   const [selectedGenerationImage, setSelectedGenerationImage] = useState<GenerationSelection | undefined>();
   useEffect(() => { setGenerationRoleId(null); setSelectedGenerationImage(undefined); }, [role.id]);
+  const [presentationRole, setPresentationRole] = useState(role);
+  const activePresentation = presentationRole.id === role.id ? presentationRole : role;
+  const background = activePresentation.chatBackgroundUrl;
+  const presentation = roleMood(activePresentation, chat.messages);
+  useEffect(() => {
+    let active = true;
+    setPresentationRole(role);
+    void roleAssets.list(role.id).then(({ role: fresh }) => { if (active) setPresentationRole(fresh); }).catch(() => {});
+    return () => { active = false; };
+  }, [role, chat.sending, generationRoleId]);
   const [codingOpen, setCodingOpen] = useState(false);
   useEffect(() => { setCodingOpen(false); }, [role.id]);
   useEffect(() => {
     if (!chat.session || chat.sending) return;
-    const timer = window.setInterval(() => void chat.refresh(), 10000);
+    let active = true;
+    const refresh = () => {
+      void chat.refresh();
+      void roleAssets.list(role.id).then(({ role: fresh }) => { if (active) setPresentationRole(fresh); }).catch(() => {});
+    };
+    const timer = window.setInterval(refresh, 10000);
     const refreshWhenVisible = () => {
-      if (document.visibilityState === "visible") void chat.refresh();
+      if (document.visibilityState === "visible") refresh();
     };
     window.addEventListener("focus", refreshWhenVisible);
     document.addEventListener("visibilitychange", refreshWhenVisible);
     return () => {
+      active = false;
       window.clearInterval(timer);
       window.removeEventListener("focus", refreshWhenVisible);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, [chat.session?.sessionKey, chat.sending, chat.refresh]);
+  }, [role.id, chat.session?.sessionKey, chat.sending, chat.refresh]);
 
   return <section className="chat" style={roleStyle(role.id)} aria-label={`与${role.name}的会话`}>
     <header className="chat-header">
@@ -155,7 +174,7 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
       <button type="button" className="chat-profile" aria-label="角色资料" title="查看角色资料" onClick={onShowProfile}>
         <Avatar id={role.id} name={role.name} size="sm" avatarUrl={role.avatarUrl} />
         <span className="chat-title">
-        <h1>{role.name}</h1>
+        <h1>{role.name}</h1><small className="role-mood-label">{presentation.mood}</small>
         {chat.sending ? <small className="reply-state" role="status">{chat.stopping ? "正在停止…" : "正在输入…"}</small> : role.description && <small>{role.description}</small>}
         </span>
       </button>
@@ -164,7 +183,8 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
       <ChatActions key={role.id} codingEnabled={Boolean(role.agentConfig?.coding?.enabled)}
         onGenerate={() => { setSelectedGenerationImage(undefined); setGenerationRoleId(role.id); }} onCoding={() => setCodingOpen(true)} />
     </header>
-    <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
+    <div className={`chat-scroll${background ? " has-role-background" : ""}`} style={background ? { backgroundImage: `linear-gradient(rgba(255,255,255,.2),rgba(255,255,255,.2)), url(${JSON.stringify(background)})` } : undefined} ref={scrollRef} onScroll={onScroll}>
+      {presentation.illustration && <figure className="role-mood-portrait" aria-label={`当前心情：${presentation.mood}`}><img src={presentation.illustration.url} alt={`${role.name} · ${presentation.mood}`} /></figure>}
       {chat.messages.length
         ? <ol ref={listRef} className="message-list" aria-live="polite">{chat.messages.map((message) => <MessageItem key={message.id} message={message} role={role} highlighted={message.id === highlightedId}
           onRegenerate={(selection) => { setSelectedGenerationImage(selection); setGenerationRoleId(role.id); }} />)}</ol>

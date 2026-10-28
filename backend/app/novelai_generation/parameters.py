@@ -33,6 +33,8 @@ class GenerationRequest(BaseModel):
     intent: Literal['user_requested', 'chat_expression', 'scene_cg'] = 'user_requested'
     scene_key: str | None = Field(default=None, max_length=80)
     background: StrictBool = False
+    qualityToggle: StrictBool | None = None
+    ucPreset: StrictInt | None = Field(default=None, ge=0, le=2)
 
     @field_validator('prompt', 'negative_prompt')
     @classmethod
@@ -78,7 +80,8 @@ def normalize_request(arguments: dict[str, object], settings: NovelaiSettings) -
     value = request.model_dump(exclude_none=True)
     value.update(width=width, height=height, steps=steps, model=model, sampler=sampler,
                  seed=request.seed if request.seed is not None else secrets.randbelow(2**32),
-                 qualityToggle=settings.addQualityTags, ucPreset=settings.undesiredContentPreset)
+                 qualityToggle=request.qualityToggle if request.qualityToggle is not None else settings.addQualityTags,
+                 ucPreset=request.ucPreset if request.ucPreset is not None else settings.undesiredContentPreset)
     if request.mode == 'img2img':
         value.update(strength=request.strength if request.strength is not None else .7,
                      noise=request.noise if request.noise is not None else .2)
@@ -100,3 +103,26 @@ def generation_payload(request: dict[str, object], *, base_image: bytes | None =
         parameters.update(image=base64.b64encode(base_image).decode('ascii'), strength=request['strength'], noise=request['noise'])
     return {'input': request['prompt'], 'model': request['model'],
             'action': 'img2img' if request['mode'] == 'img2img' else 'generate', 'parameters': parameters}
+
+
+def replay_request(saved: dict[str, object], changes: dict[str, object]) -> dict[str, object]:
+    """Restore image parameters, not the old request's authority or delivery.
+
+    Defaults may have changed since the image was created. An unedited replay
+    must change only the seed on the wire; editable fields remain subject to
+    today's mode/model/size limits in ``normalize_request``.
+    """
+    parameters = {key: value for key, value in saved.items()
+        if key in GenerationRequest.model_fields and key not in {'seed', 'intent', 'scene_key', 'background'}}
+    parameters.setdefault('qualityToggle', False)
+    parameters.setdefault('ucPreset', 0)
+    parameters.update(changes)
+    if parameters.get('mode') == 'txt2img':
+        for key in ('base_attachment_id', 'strength', 'noise'):
+            if key not in changes:
+                parameters.pop(key, None)
+    if parameters.get('size_preset') != 'custom':
+        for key in ('custom_width', 'custom_height'):
+            if key not in changes:
+                parameters.pop(key, None)
+    return parameters

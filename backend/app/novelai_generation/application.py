@@ -21,12 +21,13 @@ from ..session_store import AttachmentConflict
 from ..task_runtime import TaskOrigin
 from ..task_runtime.runtime import TaskBudget, TaskOutcome
 from .config import NovelaiRoleConfig, NovelaiSettings, NovelaiSettingsStore
+from .availability import GenerationUnavailable, state
 from .context import GenerationContext
 from .executor import GenerationExecutor
 from .http import GenerationHttpError, NovelaiHttp
 from .ledger import GenerationLedger, canonical
 from .media import import_response, owned_outputs, validate_image
-from .parameters import generation_payload, normalize_request
+from .parameters import generation_payload, normalize_request, replay_request
 from .scene import SceneCoordinator
 from .prompt_tags import PromptTags
 from .assets import AssetWriteback
@@ -74,8 +75,8 @@ class NovelaiApplication:
             raise ValueError('场景 CG 需要明确且仍存在的辅助模型连接')
         if policy.sceneCgEnabled:
             public = self.settings.public()
-            if not public['enabled'] or not public['tokenConfigured'] or public['credentialCleanupPending'] or policy.consentRevision != public['revision']:
-                raise ValueError('请先配置服务并确认当前版本的有限生图消费许可')
+            if not public['availability']['available'] or not public['allowTxt2Img']:
+                raise ValueError('请先启用 NovelAI、配置凭据并允许文生图')
 
     def create_role(self, data):
         with self._lock:
@@ -126,26 +127,34 @@ class NovelaiApplication:
             policy.pop('sceneCgPromptInstructions')
         return hashlib.sha256(canonical([role.createdAt.isoformat(), row[0] if row else 0, policy]).encode()).hexdigest()
 
-    def unavailable_reason(self, role, *, include_usage=True, scene=False):
+    def tool_enabled(self, role):
+        # A configured capability remains discoverable when its token, modes
+        # or quota need attention; execution still checks current readiness.
+        return bool(not self._closed and role is not None and not self.is_role_deleting(role.id)
+                    and self.settings.public()['enabled'])
+
+    def availability(self, role, *, include_usage=True, scene=False):
         config, _ = self._configuration()
         if self._closed or role is None or self.is_role_deleting(role.id):
-            return '角色生图服务当前不可用'
-        if not config['enabled']:
-            return 'NovelAI 服务已关闭'
-        if not config['tokenConfigured'] or config['credentialCleanupPending']:
-            return '尚未配置独立 NovelAI 凭据，或凭据清理尚未完成'
+            return state('role_unavailable', '角色生图服务当前不可用。')
+        if not config['availability']['available']:
+            return config['availability']
         policy = role.agentConfig.novelai
-        if not (policy.sceneCgEnabled if scene else config['manualEnabled']):
-            return '场景 CG 许可已关闭' if scene else '聊天表情和手动生图许可已关闭'
+        if scene and not policy.sceneCgEnabled:
+            return state('scene_disabled', '本角色的自动场景 CG 已关闭。')
         if scene and (not policy.scenePromptModelConfigurationId or self.model_configuration(policy.scenePromptModelConfigurationId) is None):
-            return '场景辅助模型连接已不可用'
-        if (policy.consentRevision if scene else config['manualConsentRevision']) != config['revision']:
-            return '请主人确认当前服务设置的有限生图消费许可'
+            return state('scene_model_unavailable', '请为本角色选择仍可用的 CG 辅助模型连接。')
+        if scene and not config['allowTxt2Img']:
+            return state('txt2img_disabled', '文生图已关闭，自动场景 CG 暂不可用。')
         usage = self.ledger.usage(role.id)
         if include_usage and (usage['accountAttempts'] >= config['dailyAttemptLimit'] or
                 (usage['cgAttempts'] >= policy.sceneCgDailyAttempts if scene else usage['manualAttempts'] >= config['manualDailyAttempts'])):
-            return '今日生图尝试额度已用完；次数不是 Anlas 估价'
-        return ''
+            return state('daily_limit', '今日生图尝试额度已用完；请明日再试或在设置中调整上限。次数不是 Anlas 估价。')
+        return config['availability']
+
+    def unavailable_reason(self, role, *, include_usage=True, scene=False):
+        availability = self.availability(role, include_usage=include_usage, scene=scene)
+        return '' if availability['available'] else availability['message']
 
     def _authorized(self, source: GenerationContext, service_revision, role_revision, *, allow_sealed=False, receipt=False):
         role = self.roles.get(source.origin.role_id)
@@ -153,8 +162,7 @@ class NovelaiApplication:
         return bool(not self._closed and (allow_sealed or not self._sealed(source)) and role is not None and not self.is_role_deleting(role.id)
             and public['enabled'] and public['tokenConfigured'] and not public['credentialCleanupPending']
             and public['revision'] == service_revision
-            and (role.agentConfig.novelai.sceneCgEnabled if source.scene_revision is not None else public['manualEnabled'])
-            and (role.agentConfig.novelai.consentRevision if source.scene_revision is not None else public['manualConsentRevision']) == public['revision']
+            and (source.scene_revision is None or role.agentConfig.novelai.sceneCgEnabled)
             and self._role_revision(role) == role_revision and source.denial(self.channels) is None
             and (receipt or self.scenes.current(source)))
 
@@ -242,10 +250,12 @@ class NovelaiApplication:
                      delivery_mode=None, scene_input=None):
         handover_error = None
         with self._lock:
+            if not source.ui_action and {'qualityToggle', 'ucPreset'} & arguments.keys():
+                raise PermissionError('per-image preference overrides require a local owner action')
             role = self.roles.get(source.origin.role_id)
-            reason = self.unavailable_reason(role, include_usage=False, scene=source.scene_revision is not None)
-            if reason:
-                raise PermissionError(reason)
+            availability = self.availability(role, include_usage=False, scene=source.scene_revision is not None)
+            if not availability['available']:
+                raise GenerationUnavailable(availability)
             if expected_role_revision is not None and self._role_revision(role) != expected_role_revision:
                 raise PermissionError('frozen generation role permission changed')
             if source.denial(self.channels):
@@ -292,6 +302,9 @@ class NovelaiApplication:
                 owned_input = None if scene_input is not None else self._input(source, parameters)
                 if owned_input is not None:
                     parameters['inputSha256'] = hashlib.sha256(owned_input).hexdigest()
+                library_writeback = scene_input is None and regeneration is None and settings.autoWritebackRoleAssets
+                if library_writeback:
+                    parameters['assetBackgroundId'] = role.chatBackgroundId
                 view = self.ledger.prepare(role_id=role.id, source_scope=source.source_scope,
                     human_key=source.human_key, request_key=source.request_key, parameters=parameters,
                     origin=source.to_dict(), service_revision=public['revision'], role_revision=self._role_revision(role),
@@ -301,7 +314,7 @@ class NovelaiApplication:
                         'source_completion' if source.ui_action or parameters['background'] else 'foreground_reply'),
                     publication_ready=publication_ready,
                     scene_input=scene_input,
-                    asset_writeback_requested=scene_input is not None and role.agentConfig.novelai.autoWritebackRoleAssets,
+                    asset_writeback_requested=library_writeback or (scene_input is not None and role.agentConfig.novelai.autoWritebackRoleAssets),
                     **(regeneration or {}))
                 row = self.ledger.attempt(view['attemptId'])
             task = self._find_task(row, source)
@@ -505,7 +518,7 @@ class NovelaiApplication:
         view = self.owner_generation(role_id, generation_id, attempt_id=source_attempt_id)
         original = GenerationContext.from_dict(json.loads(self.ledger.attempt(view['attemptId'])['origin']))
         origin = original.origin
-        identifier = parameters.get('base_attachment_id')
+        identifier = replay_request(view['parameters'], parameters).get('base_attachment_id')
         # A desktop owner may choose a current owned image, but managing channel
         # history cannot expand the original host-captured channel input grant.
         attachment_ids = (original.attachment_ids if original.channel_source is not None
@@ -529,7 +542,7 @@ class NovelaiApplication:
         fingerprint = hashlib.sha256(canonical({'parameters': arguments, 'regeneration': operation,
             'deliveryMode': delivery_mode}).encode()).hexdigest()
         previous = self.ledger.request(source.origin.role_id, source.source_scope, source.request_key)
-        parameters = dict(arguments)
+        parameters = replay_request(parent['parameters'], arguments)
         if previous is None:
             if delivery_mode != 'history_only':
                 try:

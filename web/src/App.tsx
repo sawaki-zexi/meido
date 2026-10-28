@@ -17,9 +17,10 @@ import { Notice } from "./ui/Status";
 import { TodoDrawer } from './features/todo/TodoDrawer';
 import { useTodoNavigation } from './features/todo/useTodoNavigation';
 import { NovelaiStudio } from './features/novelai/NovelaiStudio';
+import { StoryWorkspace } from './features/story/StoryWorkspace';
 
-/** What the main pane shows: a conversation, the role tavern/workspace, memories, or the NovelAI studio. */
-type View = "chat" | "tavern" | "role" | "create" | "memories" | "novelai";
+/** What the main pane shows: a conversation, the role tavern/workspace, memories, the NovelAI studio, or Story. */
+type View = "chat" | "tavern" | "role" | "create" | "memories" | "novelai" | "story";
 type Panel = null | "settings";
 
 const LAST_ROLE_KEY = "meido:last-role";
@@ -38,6 +39,7 @@ export function App() {
   const [view, setView] = useState<View>(() => roles.creating ? "create" : "chat");
   const [roleReturnView, setRoleReturnView] = useState<Exclude<View, "role" | "create">>("chat");
   const [studioRoleId, setStudioRoleId] = useState<string | null>(null);
+  const [studioVisited, setStudioVisited] = useState(false);
   const [todoOpen, setTodoOpen] = useState(false);
   const todoNavigation = useTodoNavigation(panel === 'settings' || todoOpen);
   // Narrow screens show one pane at a time; home is the conversation.
@@ -100,7 +102,7 @@ export function App() {
   const openTavern = () => { setView("tavern"); setShowList(false); if (panel === 'settings') setPanel(null); };
   const backToChat = () => { setChannelsOpen(false); setView("chat"); setShowList(false); setHighlightedId(null); if (panel === 'settings') setPanel(null); };
   const openChannels = () => { setChannelsOpen(true); setView("chat"); setShowList(false); setHighlightedId(null); if (panel === 'settings') setPanel(null); };
-  const openNovelai = (roleId = studioRoleId ?? chat.roleId ?? roles.roles[0]?.id) => { if (roleId) setStudioRoleId(roleId); setView("novelai"); setShowList(false); if (panel === 'settings') setPanel(null); };
+  const openNovelai = (roleId = studioRoleId ?? chat.roleId ?? roles.roles[0]?.id) => { setStudioVisited(true); if (roleId) setStudioRoleId(roleId); setView("novelai"); setShowList(false); if (panel === 'settings') setPanel(null); };
 
   const openMemorySource = async (role: Role, origin: MemoryOrigin, messageId?: string) => {
     chat.setError("");
@@ -173,6 +175,7 @@ export function App() {
         <button type="button" aria-label="对话" title="对话" disabled={roles.busy} aria-current={view === "chat" || view === "memories" ? "page" : undefined} onClick={backToChat}><Icon name="chat" size={22} /></button>
         <button type="button" aria-label="角色" title="角色" disabled={roles.busy} aria-current={view === "tavern" || rolePage ? "page" : undefined} onClick={openTavern}><Icon name="people" size={22} /></button>
         <button type="button" aria-label="NovelAI 图片工作台" title="NovelAI 图片工作台" disabled={roles.busy} aria-current={view === "novelai" ? "page" : undefined} onClick={() => openNovelai()}><Icon name="image" size={22} /></button>
+        <button type="button" aria-label="故事模式" title="故事模式" disabled={roles.busy} aria-current={view === "story" ? "page" : undefined} onClick={() => { setView("story"); setShowList(false); setPanel(null); }}><Icon name="knowledge" size={22} /></button>
         {todoNavigation.enabled && <button type="button" className="todo-entry" disabled={roles.busy} aria-label={todoNavigation.unread ? `待办提醒 ${todoNavigation.unread}` : '待办'} title="待办"
           aria-haspopup="dialog" aria-expanded={todoOpen} onClick={() => { if (panel === 'settings') setPanel(null); setTodoOpen(true); }}>
           <Icon name="todo" size={22} />{todoNavigation.unread > 0 && <span>{todoNavigation.unread > 99 ? '99+' : todoNavigation.unread}</span>}
@@ -211,13 +214,20 @@ export function App() {
         : view === "role" && roles.selected
         ? <RoleWorkspace key={roles.selected.id} role={roles.selected} state={roles} tab={profileTab} onTabChange={setProfileTab} onBack={backFromRole} backLabel={backLabel} onChat={() => chatWith(roles.selected!)} chatDisabled={lockSwitch} onEdit={() => { setProfileTab("profile"); roles.startEdit(); }} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} onOpenSettings={(section = 'plugins') => { setSettingsSection(section); setPanel("settings"); }} onOpenChannelSettings={() => { setSettingsSection("channels"); setPanel("settings"); }} onOpenMemorySource={(origin, messageId) => void openMemorySource(roles.selected!, origin, messageId)} settingsVersion={roleSettingsVersion} />
         : view === "novelai"
-        ? <NovelaiStudio roles={roles.roles} selectedRoleId={studioRoleId ?? chat.roleId ?? roles.roles[0]?.id} onRoleChange={setStudioRoleId}
-          onGenerated={chat.refresh} settingsOpen={panel === 'settings'} onOpenSettings={() => { setSettingsSection('novelai'); setPanel('settings'); }} />
+        ? null
+        : view === "story"
+        ? <StoryWorkspace roles={roles.roles} onExit={backToChat} onOpenModelSettings={() => { setSettingsSection('model'); setPanel('settings'); }} onOpenImageSettings={() => { setSettingsSection('novelai'); setPanel('settings'); }} />
         : view === "memories" && chatRole
         ? <MemoryPanel key={chatRole.id} role={chatRole} onBack={backToChat} onOpenSource={(origin, messageId) => void openMemorySource(chatRole, origin, messageId)} />
         : chatRole
         ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showChatProfile(chatRole)} onShowMemories={() => setView("memories")} onShowChannels={openChannels} />
         : <WelcomeView loading={roles.loading || openingId !== null} hasRoles={roles.roles.length > 0} error={chat.error} onDismissError={() => chat.setError("")} onCreate={startCreate} onBack={() => setShowList(true)} />}
+      {studioVisited && <div hidden={view !== 'novelai'} aria-hidden={view !== 'novelai' || undefined}
+        style={{ display: view === 'novelai' ? 'flex' : 'none', flex: 1, minWidth: 0, minHeight: 0 }}
+        ref={element => { if (element) element.inert = view !== 'novelai'; }}>
+        <NovelaiStudio roles={roles.roles} selectedRoleId={studioRoleId ?? chat.roleId ?? roles.roles[0]?.id} onRoleChange={setStudioRoleId}
+          onGenerated={chat.refresh} settingsOpen={panel === 'settings'} onOpenSettings={() => { setSettingsSection('novelai'); setPanel('settings'); }} />
+      </div>}
     </main>
 
     {todoOpen && <TodoDrawer onClose={() => setTodoOpen(false)} onOpenSource={(roleId, sessionKey, messageId) => { setTodoOpen(false); void openTodoSource(roleId, sessionKey, messageId); }} />}

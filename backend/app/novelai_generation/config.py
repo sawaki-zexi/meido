@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 
 from ..credentials import CredentialStore
+from .availability import configuration_availability
 
 MODELS = ('nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full')
 SAMPLERS = ('k_euler_ancestral', 'k_euler')
@@ -52,6 +53,7 @@ class NovelaiSettings(BaseModel):
     defaultSamples: StrictInt = Field(default=1, ge=1, le=4)
     addQualityTags: StrictBool = False
     undesiredContentPreset: StrictInt = Field(default=0, ge=0, le=2)
+    autoWritebackRoleAssets: StrictBool = False
 
     @field_validator('allowedModels', 'allowedSamplers')
     @classmethod
@@ -86,8 +88,10 @@ class NovelaiSettingsStore:
     def public(self) -> dict[str, object]:
         with self.lock, sqlite3.connect(self.database_path) as connection:
             row = connection.execute('SELECT settings,revision,token_configured,cleanup_pending,manual_consent_revision FROM novelai_settings WHERE singleton=1').fetchone()
-        return {**NovelaiSettings.model_validate_json(row[0]).model_dump(), 'revision': row[1],
+        settings = NovelaiSettings.model_validate_json(row[0])
+        public = {**settings.model_dump(), 'manualEnabled': settings.enabled, 'revision': row[1],
                 'tokenConfigured': bool(row[2]), 'credentialCleanupPending': bool(row[3]), 'manualConsentRevision': row[4]}
+        return {**public, 'availability': configuration_availability(public)}
 
     def save(self, changes: dict[str, object], *, expected_revision: int) -> dict[str, object]:
         with self.lock, sqlite3.connect(self.database_path) as connection:
@@ -96,26 +100,27 @@ class NovelaiSettingsStore:
             if type(expected_revision) is not int or row[1] != expected_revision:
                 raise ValueError('service revision changed')
             values = dict(changes)
-            confirmation = values.pop('confirmManualConsumption', None)
-            if confirmation is not None and type(confirmation) is not bool:
-                raise ValueError('explicit consumption confirmation required')
+            if 'confirmManualConsumption' in values and type(values.pop('confirmManualConsumption')) is not bool:
+                raise ValueError('legacy consumption confirmation must be a boolean')
+            # Compatibility for older settings clients: their manual switch
+            # controls the plugin unless they explicitly supplied enabled.
+            if 'manualEnabled' in values:
+                legacy_enabled = values.pop('manualEnabled')
+                if type(legacy_enabled) is not bool:
+                    raise ValueError('enabled must be a boolean')
+                values.setdefault('enabled', legacy_enabled)
             previous = NovelaiSettings.model_validate_json(row[0])
             settings = NovelaiSettings.model_validate({**previous.model_dump(), **values})
+            settings = settings.model_copy(update={'manualEnabled': settings.enabled})
             if settings.defaultModel not in settings.allowedModels or settings.defaultSampler not in settings.allowedSamplers:
                 raise ValueError('default must be in allowlist')
             if settings.nsfwEnabled and settings.nsfwModel not in settings.allowedModels:
                 raise ValueError('NSFW default model must be in allowlist')
             next_revision = row[1] + 1
-            parameters_changed = settings.model_dump(exclude={'enabled'}) != previous.model_dump(exclude={'enabled'})
-            consent = next_revision if not parameters_changed and row[2] == row[1] else 0
-            if confirmation is False or not settings.manualEnabled:
-                consent = 0
-            elif confirmation is True:
-                if not settings.enabled or not row[3] or row[4]:
-                    raise ValueError('configure the service and credential before approving consumption')
-                consent = next_revision
+            # Keep the old column for rollback/read compatibility, without
+            # fabricating a confirmation. New admission uses the plugin switch.
             connection.execute('UPDATE novelai_settings SET settings=?, revision=?,manual_consent_revision=? WHERE singleton=1',
-                               (settings.model_dump_json(), next_revision, consent))
+                               (settings.model_dump_json(), next_revision, 0))
         return self.public()
 
     def set_token(self, token: str) -> dict[str, object]:

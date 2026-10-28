@@ -1,6 +1,6 @@
 # Shiori 多端会话 Spec 深核补充（2026-10-26）
 
-状态：当前。下文“计划”是供 Spec 采用的推荐方案，不表示实现完成或架构迁移已获批准。
+状态：当前研究记录，保留 2026-10-26 的固定基线及当时的计划/PR 状态；不是当前交付状态。最新功能复核见[差距报告的 2026-10-28 补充](shiori-multichannel-parity-2026-10-26.md)，已确认范围与交付跟踪见[对齐 Spec](../specs/shiori-multichannel-alignment-spec.md)。下文“计划”描述原研究阶段的推荐方案，不单独证明实现完成或架构迁移获批。
 事实来源：两仓固定提交源码、现有行为测试、平台官方 API；本轮不运行真实账号、不发送渠道消息、不运行全量测试。
 最后核验：2026-10-26。Shiori main 为 d149de7f052f77c5bb88d4d1393d48dce1870875；Meido main 为 8a2d27d4e0bcab11bb1d7dfd6c788997d90ca750。
 GitHub API 本轮确认 HEAD 未变；本轮 git fetch 失败，不能作为已同步的证据。PR #230 仍未合入，待合入版本为 25de6e2e94d9c375587138bcc2aa163152bbbbf0。

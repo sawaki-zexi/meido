@@ -13,6 +13,8 @@ from backend.app.channels import ChannelHost
 from backend.app.channels.consolidation import ChannelMemoryMaintenance
 from backend.app.channels.credentials import credential_key
 from backend.app.channels.group_tools import MultichannelGroupRepository
+from backend.app.channels.grok.exchange import ExchangeJournal
+from backend.app.channels.grok.protocol import BotMessage
 from backend.app.channels.models import DeliveryResult, DeliveryStatus, TargetKind, target_from_chat
 from backend.app.channels.push import ChannelPushService
 from backend.app.memory_service import MemoryService, MemoryWorker
@@ -75,6 +77,13 @@ def seed(tmp_path, role_id="r1"):
 def test_channel_role_snapshot_restores_history_credentials_profiles_listening_push_and_avatar(tmp_path):
     async def scenario():
         store, sessions, credentials, account, private, group = seed(tmp_path)
+        bot = store.register_channel_account('r1', 'grok_bot', account_id='grok-r1')
+        for name in ('webhook_key', 'callback_token'):
+            credentials.set(credential_key('grok_bot', bot.account_id, name), f'private-{name}')
+        journal = ExchangeJournal(str(tmp_path / 'sessions.db'), 'r1', bot.account_id, 'peer')
+        incoming = BotMessage('bot-input', 'hello', None)
+        assert journal.begin(incoming, 'in', 2)[0]
+        journal.finish(incoming.message_id, 'completed')
         output = io.BytesIO()
         Image.new("RGB", (128, 128), "green").save(output, format="PNG")
 
@@ -91,6 +100,10 @@ def test_channel_role_snapshot_restores_history_credentials_profiles_listening_p
         ChannelPushService(store, ChannelHost(store)).clear_role("r1")
         assert store.get_account(account.account_id) is None
         store.restore_role("r1", snapshot)
+        for name in ('webhook_key', 'callback_token'):
+            assert credentials.get(credential_key('grok_bot', bot.account_id, name)) == f'private-{name}'
+        assert journal.begin(incoming, 'in', 2)[0] is False
+        assert journal.begin(BotMessage('reply', 'hello back', 'bot-input'), 'out', 2)[0]
         assert store.get_account(account.account_id).enabled
         assert credentials.get(credential_key("qq", account.account_id, "access_token")) == "vault-secret"
         assert [message.model_dump() for message in sessions.list_messages(private.session_key)] == before
@@ -160,6 +173,55 @@ def test_late_role_file_purge_failure_restores_channel_history_secrets_and_enabl
     assert stopped == restarted == [account.account_id]
     assert [message.model_dump() for message in sessions.list_messages(private.session_key)] == before
     assert credentials.get(credential_key("qq", account.account_id, "access_token")) == "vault-secret"
+
+
+def test_role_deletion_drains_external_note_save_before_snapshot_and_rollback(deletion_api, monkeypatch):
+    import threading
+    import httpx
+
+    role, roles, channels, _, _, _, _, _ = deletion_api
+    group = next(thread for thread in channels.list_threads(role.id) if thread.chat_type == "group")
+    url = f"/api/roles/{role.id}/channels/threads/{group.thread_id}/external-memory"
+    entered, release, snapshot_taken = threading.Event(), threading.Event(), threading.Event()
+    deletion_entered = asyncio.Event()
+    original = channels.external_memory.save_note
+    before = channels.external_memory.context(role.id, group.thread_id)
+    def delayed_save(*args):
+        entered.set()
+        assert release.wait(5)
+        return original(*args)
+    async def deletion_preflight(*_args):
+        deletion_entered.set()
+    def fail_purge(_path):
+        raise OSError("controlled deletion rollback")
+    original_snapshot = channels.snapshot_role
+    def snapshot(*args):
+        result = original_snapshot(*args)
+        snapshot_taken.set()
+        return result
+    monkeypatch.setattr(channels.external_memory, "save_note", delayed_save)
+    monkeypatch.setattr(main.owner_knowledge_plugin, "begin_role_deletion", deletion_preflight)
+    monkeypatch.setattr(channels, "snapshot_role", snapshot)
+    monkeypatch.setattr(roles, "purge_staged_role_files", fail_purge)
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+            saving = asyncio.create_task(client.put(url + "/note", json={"note": "删除之前已提交的笔记", "expectedRevision": before["revision"]}))
+            assert await asyncio.to_thread(entered.wait, 5)
+            deleting = asyncio.create_task(client.delete(f"/api/roles/{role.id}"))
+            try:
+                await asyncio.wait_for(deletion_entered.wait(), 5)
+                assert not snapshot_taken.is_set()
+                late = await client.put(url + "/note", json={"note": "删除中晚到", "expectedRevision": before["revision"]})
+                assert late.status_code == 409
+            finally:
+                release.set()
+            saved, deleted = await asyncio.gather(saving, deleting)
+            assert saved.status_code == 200
+            assert deleted.status_code == 500
+            restored = (await client.get(url)).json()
+            assert restored["note"] == "删除之前已提交的笔记"
+            assert restored["revision"] == saved.json()["revision"]
+    asyncio.run(scenario())
 
 
 def test_delete_role_rejects_channel_turn_before_starting_runtime_during_preflight(deletion_api, monkeypatch):

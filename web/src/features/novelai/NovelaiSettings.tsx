@@ -1,20 +1,19 @@
-import { useEffect, useId, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { novelai, type NovelaiConfiguration } from '../../api/novelai';
 import { errorMessage } from '../../api/client';
 import { Notice, Placeholder } from '../../ui/Status';
 import { undesiredContentPresetOptions } from './promptPreferences';
+import { availabilityLabel, generationAvailability } from './availability';
 
 export function NovelaiSettings({ showTitle = true }: { showTitle?: boolean }) {
-  const consumptionNoteId = useId();
   const [configuration, setConfiguration] = useState<NovelaiConfiguration | null>(null);
   const [token, setToken] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
-  const [consent, setConsent] = useState(false);
   useEffect(() => {
     let active = true;
-    void novelai.configuration().then((value) => { if (active) { setConfiguration(value); setConsent(value.manualConsentRevision === value.revision); } })
+    void novelai.configuration().then((value) => { if (active) setConfiguration(value); })
       .catch((cause) => { if (active) setError(errorMessage(cause, '无法读取生图设置')); });
     return () => { active = false; };
   }, []);
@@ -23,9 +22,10 @@ export function NovelaiSettings({ showTitle = true }: { showTitle?: boolean }) {
     if (!configuration || pending) return;
     setPending(true); setError(''); setMessage('');
     try {
-      const { revision, enabled: _enabled, tokenConfigured: _configured, credentialCleanupPending: _cleanup, manualConsentRevision: _consent, ...values } = configuration;
-      const saved = await novelai.saveConfiguration({ ...values, confirmManualConsumption: consent }, revision);
-      setConfiguration(saved); setConsent(saved.manualConsentRevision === saved.revision);
+      const { revision, enabled: _enabled, tokenConfigured: _configured, credentialCleanupPending: _cleanup,
+        manualConsentRevision: _consent, manualEnabled: _legacyEnabled, availability: _availability, ...values } = configuration;
+      const saved = await novelai.saveConfiguration(values, revision);
+      setConfiguration(saved);
       setMessage('NovelAI 生图设置已保存。');
     } catch (cause) { setError(errorMessage(cause, '生图设置保存失败')); }
     finally { setPending(false); }
@@ -36,8 +36,8 @@ export function NovelaiSettings({ showTitle = true }: { showTitle?: boolean }) {
     const newToken = token;
     setToken('');
     try {
-      setConfiguration(await (clear ? novelai.clearToken() : novelai.setToken(newToken))); setConsent(false);
-      setMessage(clear ? '独立凭据已清空。' : '独立凭据已保存；请重新确认有限消费许可。');
+      setConfiguration(await (clear ? novelai.clearToken() : novelai.setToken(newToken)));
+      setMessage(clear ? '独立凭据已清空。' : '独立凭据已保存。生成时将验证 Token 和账户额度。');
     } catch (cause) { setError(errorMessage(cause, '独立凭据操作未完成')); }
     finally { setPending(false); }
   };
@@ -45,18 +45,19 @@ export function NovelaiSettings({ showTitle = true }: { showTitle?: boolean }) {
     if (!configuration || pending) return;
     setPending(true); setError(''); setMessage('');
     try { const saved = await novelai.saveConfiguration({ enabled: !configuration.enabled }, configuration.revision);
-      setConfiguration(saved); setConsent(saved.manualConsentRevision === saved.revision); }
+      setConfiguration(saved); }
     catch (cause) { setError(errorMessage(cause, '无法改变生图插件状态')); }
     finally { setPending(false); }
   }
   if (!configuration) return error ? <Notice>{error}</Notice> : <Placeholder loading>正在加载生图设置…</Placeholder>;
-  const patch = (value: Partial<NovelaiConfiguration>) => { setConfiguration({ ...configuration, ...value }); setConsent(false); };
+  const patch = (value: Partial<NovelaiConfiguration>) => setConfiguration({ ...configuration, ...value });
+  const availability = generationAvailability(configuration);
   const credentialState = configuration.credentialCleanupPending ? '独立凭据清理未完成' : configuration.tokenConfigured ? '独立凭据已配置' : '缺少独立凭据';
   return <section className="page-narrow novelai-settings-page" aria-label="NovelAI 生图设置">
     <header className="novelai-page-heading">
       {showTitle && <h2>NovelAI 生图</h2>}
       <div className="novelai-head-actions">
-        <span className={`novelai-status-badge${configuration.enabled ? ' is-enabled' : ''}`}><span aria-hidden="true" />{configuration.enabled ? '已启用' : '已关闭'}</span>
+        <span className={`novelai-status-badge${availability.available ? ' is-enabled' : ''}`}><span aria-hidden="true" />{availabilityLabel(availability)}</span>
         <button type="button" className={configuration.enabled ? 'ghost' : 'primary'} disabled={pending} onClick={() => void toggle()}>{configuration.enabled ? '关闭 NovelAI' : '启动 NovelAI'}</button>
       </div>
     </header>
@@ -65,20 +66,18 @@ export function NovelaiSettings({ showTitle = true }: { showTitle?: boolean }) {
       <section className="novelai-settings-card novelai-access-card" aria-labelledby="novelai-access-title">
         <div className="novelai-card-heading"><h3 id="novelai-access-title">聊天与手动生图</h3>
           <span className={`novelai-credential-badge${configuration.tokenConfigured && !configuration.credentialCleanupPending ? ' is-ready' : ''}${configuration.credentialCleanupPending ? ' is-warning' : ''}`}>{credentialState}</span></div>
-        <label className="field checkbox-field novelai-option-row"><input type="checkbox" aria-label="允许聊天表情与手动生图" checked={configuration.manualEnabled ?? false} disabled={pending}
-          onChange={event => patch({ manualEnabled: event.target.checked })} /><span>允许聊天表情与手动生图</span></label>
-        {configuration.manualEnabled && <div className="novelai-consent-block">
+        <p className="field-hint" role="status">{availability.message}</p>
+        <div className="novelai-consent-block">
           <label className="field novelai-budget-field"><span>每个角色每日最多尝试</span><input aria-label="每个角色每日最多尝试（聊天表情与手动生图）" type="number" min={1} max={100} required
             value={configuration.manualDailyAttempts ?? 10} disabled={pending} onChange={event => patch({ manualDailyAttempts: Number(event.target.value) })} /><small>聊天表情与手动生图共用此上限。</small></label>
-          <label className="field checkbox-field novelai-consent-row"><input type="checkbox" aria-label="我确认生图消费" aria-describedby={consumptionNoteId} checked={consent} disabled={pending || !configuration.enabled || !configuration.tokenConfigured || configuration.credentialCleanupPending}
-            onChange={event => setConsent(event.target.checked)} /><span>我确认生图消费</span></label>
-          <p className="field-hint" id={consumptionNoteId}>次数不代表 Anlas 费用；取消或结果不明也可能计费。参数变更后需重新确认。</p>
-        </div>}
+          <p className="field-hint">启用后可在聊天或生图工作室生成图片，消耗 NovelAI 账户的 Anlas。次数不代表费用；取消或结果不明也可能计费。</p>
+        </div>
       </section>
       <section className="novelai-settings-card novelai-generation-card" aria-labelledby="novelai-generation-title">
         <div className="novelai-card-heading"><h3 id="novelai-generation-title">公共生成参数</h3></div>
         <fieldset className="novelai-parameter-group" disabled={pending}>
           <legend>允许的生成模式</legend>
+          <label className="field checkbox-field novelai-option-row"><input type="checkbox" checked={configuration.autoWritebackRoleAssets ?? false} onChange={event => patch({ autoWritebackRoleAssets: event.target.checked })} /><span>普通生图自动保存首张图片为角色插画并设为聊天背景</span></label>
           <div className="novelai-mode-options">
             <label className="field checkbox-field novelai-option-row"><input type="checkbox" aria-label="允许文生图" checked={configuration.allowTxt2Img ?? true}
               onChange={event => patch({ allowTxt2Img: event.target.checked })} /><span>允许文生图</span></label>

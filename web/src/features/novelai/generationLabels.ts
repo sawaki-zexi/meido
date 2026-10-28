@@ -1,3 +1,10 @@
+import type { GenerationView } from '../../api/novelai';
+
+export function generationErrorMessage(generation: GenerationView): string {
+  return generation.errorMessage || errorLabels[generation.errorCode] || (generation.errorCode
+    ? '本次请求未正常完成，请检查当前设置与归属历史。' : '这条记录暂时没有可预览图片。');
+}
+
 export const statusLabels: Record<string, string> = {
   completed_without_image: '观察完成，未生成图片', prepared: '等待生成', dispatching: '生成中', received: '已收图，等待保存',
   succeeded: '已生成', unknown: '消费结果不确定', failed_response: '远端返回错误，可能已计费',
@@ -20,4 +27,9 @@ export const errorLabels: Record<string, string> = {
 export const writebackLabels: Record<string, string> = {
   writing: '正在写回或核对本地卡片图。', uncertain: '卡片图写回结果尚未确认，生成图已保留历史。',
   applied: '已更新本角色卡片图。', failed: '卡片图写回失败，生成图已保留历史；不会重新生成。',
+};
+
+export const libraryWritebackLabels: Record<string, string> = {
+  writing: '正在保存首张图片为角色插画和聊天背景。', uncertain: '角色插画写回尚未确认，生成图已保留历史。',
+  applied: '已保存首张图片为角色插画和聊天背景。', failed: '角色插画写回未完成或背景已被修改，生成图保留历史；不会重新生成。',
 };

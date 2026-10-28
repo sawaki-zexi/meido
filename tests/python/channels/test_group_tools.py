@@ -274,7 +274,8 @@ def test_private_or_foreign_group_ids_cannot_be_read_or_changed_and_deleted_acco
     assert not asyncio.run(update.execute({"group_thread_id": thread_id, "group_note": "saved"}, _context())).is_error
     store.delete_account("qq-1")
     assert json.loads(asyncio.run(lookup.execute({"group_thread_id": thread_id}, _context())).content)["groupNote"] == "saved"
-    assert not asyncio.run(update.execute({"group_thread_id": thread_id, "group_note": "after deletion"}, _context())).is_error
+    assert asyncio.run(update.execute({"group_thread_id": thread_id, "group_note": "after deletion"}, _context())).is_error
+    assert repository.read_context("role", thread_id)["groupNote"] == "saved"
 
 
 @pytest.mark.parametrize("kind", ["update", "listening"])

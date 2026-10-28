@@ -2,6 +2,7 @@
 import io
 import json
 
+import pytest
 from PIL import Image
 
 from novelai_fixtures import novelai_environment, novelai_main, novelai_service  # noqa: F401
@@ -115,6 +116,54 @@ def test_prompt_tag_expansion_deduplicates_case_insensitively(novelai_main):
     assert preview.status_code == 200, preview.text
     assert preview.json()['prompt'] == 'flowers, sunlight'
     assert preview.json()['negative_prompt'] == 'night'
+
+
+@pytest.mark.parametrize(('base', 'addition', 'expected'), [
+    ('1.2::red hair, blue eyes::', '1.8::green dress, blue eyes::, smile',
+     '1.2::red hair, blue eyes::, 1.8::green dress, blue eyes::, smile'),
+    ('-1::rain, night::', '-2.5::clouds, night::, blur',
+     '-1::rain, night::, -2.5::clouds, night::, blur'),
+    ('{red hair, blue eyes}', '{green dress, blue eyes}, smile',
+     '{red hair, blue eyes}, {green dress, blue eyes}, smile'),
+    ('[[rain, night]]', '[[clouds, night]], blur',
+     '[[rain, night]], [[clouds, night]], blur'),
+    ('sunlight', '1.5::flowers, sunlight, sunlight::, smile',
+     'sunlight, 1.5::flowers, sunlight, sunlight::, smile'),
+    ('{{rain, night::', '{{clouds, night::, blur',
+     '{{rain, night::, {{clouds, night::, blur'),
+])
+def test_preview_preserves_complete_weighted_fragments_in_both_prompts(novelai_main, base, addition, expected):
+    client, service = novelai_main
+    path = f'/api/roles/{service.role.id}/novelai/prompt-tags'
+    saved = client.post(path, json={'name': 'Weighted', 'keywords': ['garden'],
+        'prompt': addition, 'negative_prompt': addition, 'rating': 'general', 'enabled': True})
+    assert saved.status_code == 200, saved.text
+    enabled = client.put(f'/api/roles/{service.role.id}', json={'name': service.role.name,
+        'profile': service.role.profile.model_dump(), 'agentConfig': {'novelai': {'promptTagsEnabled': True}}})
+    assert enabled.status_code == 200, enabled.text
+
+    preview = client.post(path + '/preview', json={'text': 'garden', 'prompt': base, 'negative_prompt': base})
+
+    assert preview.status_code == 200, preview.text
+    assert preview.json()['prompt'] == expected
+    assert preview.json()['negative_prompt'] == expected
+    assert not service.peer.requests
+
+
+def test_weighted_expansion_still_rejects_prompts_over_the_combined_bound(novelai_main):
+    client, service = novelai_main
+    path = f'/api/roles/{service.role.id}/novelai/prompt-tags'
+    saved = client.post(path, json={'name': 'Long weighted tag', 'keywords': ['garden'],
+        'prompt': '{' + 'x' * 1500 + '}', 'negative_prompt': '', 'rating': 'general', 'enabled': True})
+    assert saved.status_code == 200, saved.text
+    enabled = client.put(f'/api/roles/{service.role.id}', json={'name': service.role.name,
+        'profile': service.role.profile.model_dump(), 'agentConfig': {'novelai': {'promptTagsEnabled': True}}})
+    assert enabled.status_code == 200, enabled.text
+
+    preview = client.post(path + '/preview', json={'text': 'garden', 'prompt': '1.2::' + 'y' * 2990 + '::'})
+
+    assert preview.status_code == 422
+    assert not service.peer.requests
 
 
 def _png_bytes():

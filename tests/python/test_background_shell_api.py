@@ -50,6 +50,7 @@ def api(tmp_path, monkeypatch, local_platform_only):
     monkeypatch.setattr(main, "memory_settings_store", memory)
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
+    monkeypatch.setattr(main, "multichannel_store", MultichannelStore(sessions.database_path, sessions, MemoryCredentials()))
     monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))
     monkeypatch.setattr(main, "runtime_manager", RuntimeManager(sessions))
     monkeypatch.setattr(main, "model_configuration_store", ModelConfigurationStore(tmp_path / "data" / "models.json"))

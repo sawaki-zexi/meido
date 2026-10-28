@@ -8,6 +8,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from .failures import GenerationBudgetExceeded, generation_error_message
 
 RESERVATION_BYTES = 96 * 1024 * 1024
 ROLE_MEDIA_BYTES = 1024 * 1024 * 1024
@@ -59,6 +60,7 @@ class GenerationLedger:
                         'phase': "TEXT NOT NULL DEFAULT 'generation'", 'aux_dispatched': 'INTEGER NOT NULL DEFAULT 0',
                         'aux_status': "TEXT NOT NULL DEFAULT 'not_dispatched'", 'scene_input': 'TEXT',
                         'asset_writeback_pending': 'INTEGER NOT NULL DEFAULT 0'}),
+                    ('novelai_asset_usage', {'library_bytes': 'INTEGER NOT NULL DEFAULT 0'}),
                     ('novelai_media_outbox', {'delivery_mode': "TEXT NOT NULL DEFAULT 'foreground_reply'",
                         'expected_attachment_id': 'TEXT', 'publication_ready': 'INTEGER NOT NULL DEFAULT 1',
                         'background_accepted': 'INTEGER NOT NULL DEFAULT 0',
@@ -118,9 +120,9 @@ class GenerationLedger:
             cg_used = connection.execute('SELECT attempts FROM novelai_cg_daily WHERE day=? AND role_id=?', (day, role_id)).fetchone()
             role_used = (cg_used[0] if cg_used else 0) if scene_input is not None else used.get(role_id, 0)
             if used.get('*', 0) >= account_limit or role_used >= role_limit:
-                raise ValueError('daily generation attempt budget exhausted')
+                raise GenerationBudgetExceeded()
             rows = connection.execute('SELECT role_id,SUM(reserved_bytes+media_bytes) AS bytes FROM novelai_attempts GROUP BY role_id').fetchall()
-            assets = connection.execute('SELECT role_id,bytes+reserved_bytes AS bytes FROM novelai_asset_usage').fetchall()
+            assets = connection.execute('SELECT role_id,bytes+library_bytes+reserved_bytes AS bytes FROM novelai_asset_usage').fetchall()
             if (sum(row['bytes'] for row in [*rows, *assets]) + RESERVATION_BYTES > GLOBAL_MEDIA_BYTES or
                     sum(row['bytes'] for row in [*rows, *assets] if row['role_id'] == role_id) + RESERVATION_BYTES > ROLE_MEDIA_BYTES):
                 raise ValueError('generation media storage budget exhausted')
@@ -135,7 +137,8 @@ class GenerationLedger:
                 raise PermissionError('regeneration does not belong to the original role and source')
             connection.execute('''INSERT INTO novelai_attempts(attempt_id,generation_id,role_id,source_scope,human_key,request_key,fingerprint,parameters,origin,service_revision,role_revision,day,status,reserved_bytes,created_at,updated_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'prepared',?,?,?)''', (attempt_id, generation_id, role_id, source_scope, human_key, request_key, fingerprint, canonical(parameters), canonical(origin), service_revision, role_revision, day, RESERVATION_BYTES, now, now))
-            connection.execute('UPDATE novelai_attempts SET parent_attempt_id=? WHERE attempt_id=?', (parent_attempt_id, attempt_id))
+            connection.execute('UPDATE novelai_attempts SET parent_attempt_id=?,asset_writeback_pending=? WHERE attempt_id=?',
+                (parent_attempt_id, int(asset_writeback_requested), attempt_id))
             if scene_input is not None:
                 connection.execute("UPDATE novelai_attempts SET purpose='scene_cg',phase='auxiliary',scene_input=?,asset_writeback_pending=? WHERE attempt_id=?",
                     (canonical(scene_input), int(asset_writeback_requested), attempt_id))
@@ -294,7 +297,7 @@ class GenerationLedger:
             used = {row['role_id']: row['attempts'] for row in connection.execute('SELECT * FROM novelai_daily WHERE day=? AND role_id IN (?,?)', (day, '*', role_id))}
             cg = connection.execute('SELECT attempts FROM novelai_cg_daily WHERE day=? AND role_id=?', (day, role_id)).fetchone()
             sizes = connection.execute('SELECT role_id,SUM(media_bytes+reserved_bytes) AS total,SUM(reserved_bytes) AS reserved FROM novelai_attempts GROUP BY role_id').fetchall()
-            assets = connection.execute('SELECT role_id,bytes+reserved_bytes AS total,reserved_bytes AS reserved,bytes FROM novelai_asset_usage').fetchall()
+            assets = connection.execute('SELECT role_id,bytes+library_bytes+reserved_bytes AS total,reserved_bytes AS reserved,bytes+library_bytes AS bytes FROM novelai_asset_usage').fetchall()
         return {'day': day, 'accountAttempts': used.get('*', 0), 'manualAttempts': used.get(role_id, 0), 'cgAttempts': cg[0] if cg else 0,
             'roleAssetBytes': sum(row['bytes'] for row in assets if row['role_id'] == role_id),
             'roleMediaBytes': sum(row['total'] for row in [*sizes, *assets] if row['role_id'] == role_id),
@@ -312,7 +315,8 @@ class GenerationLedger:
                     ('writing' if row['asset_writeback_pending'] and row['status'] == 'succeeded' else 'not_requested'),
                 'attachments': json.loads(row['attachments']), 'taskId': row['task_id'],
                 'createdAt': datetime.fromtimestamp(row['created_at'], timezone.utc).isoformat(),
-                'errorCode': row['error_code'], 'consumption': 'possible' if row['dispatched'] else 'not_dispatched',
+                'errorCode': row['error_code'], 'errorMessage': generation_error_message(row['error_code']),
+                'consumption': 'possible' if row['dispatched'] else 'not_dispatched',
                 'deliveryStatus': row['delivery_status'] if 'delivery_status' in row.keys() else 'pending',
                 'parentAttemptId': row['parent_attempt_id'] if 'parent_attempt_id' in row.keys() else None,
                 'deliveryMode': row['delivery_mode'] if 'delivery_mode' in row.keys() else 'foreground_reply',

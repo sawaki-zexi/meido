@@ -12,17 +12,19 @@ export const defaultNovelaiRoleConfig: NovelaiRoleConfig = {
   scenePromptModelConfigurationId: null, sceneCgPromptInstructions: '', autoWritebackRoleAssets: false, consentRevision: 0,
   promptTagsEnabled: false, allowedPromptTagRatings: ['general'],
 };
+export type NovelaiAvailability = { available: boolean; code: string; message: string };
 export type NovelaiConfiguration = {
+  availability?: NovelaiAvailability;
   enabled: boolean; tokenConfigured: boolean; credentialCleanupPending: boolean; revision: number;
   allowTxt2Img: boolean; allowImg2Img: boolean;
   allowedModels: string[]; defaultModel: string; nsfwEnabled: boolean; nsfwModel: string; allowedSamplers: string[]; defaultSampler: string;
-  maxPixels: number; maxSteps: number; dailyAttemptLimit: number; defaultSamples: number; addQualityTags: boolean; undesiredContentPreset: number;
+  maxPixels: number; maxSteps: number; dailyAttemptLimit: number; defaultSamples: number; addQualityTags: boolean; undesiredContentPreset: number; autoWritebackRoleAssets?: boolean;
   manualEnabled?: boolean; manualDailyAttempts?: number; manualConsentRevision?: number;
 };
 export type GenerationParameters = {
   prompt: string; mode: 'txt2img' | 'img2img'; negative_prompt?: string; base_attachment_id?: string;
   size_preset?: 'square' | 'landscape' | 'portrait' | 'custom'; custom_width?: number; custom_height?: number;
-  model?: string; sampler?: string; steps?: number; seed?: number; samples?: number; strength?: number; noise?: number; background?: boolean;
+  model?: string; sampler?: string; steps?: number; seed?: number; samples?: number; strength?: number; noise?: number; background?: boolean; qualityToggle?: boolean; ucPreset?: number;
 };
 export type GenerationView = {
   generationId: string; attemptId: string; roleId: string; status: string; parameters: (GenerationParameters & {
@@ -31,7 +33,7 @@ export type GenerationView = {
   purpose?: 'manual' | 'chat_expression' | 'scene_cg'; phase?: 'auxiliary' | 'generation' | 'completed';
   auxiliaryConsumption?: 'possible' | 'not_dispatched'; auxiliaryStatus?: 'not_dispatched' | 'dispatching' | 'succeeded' | 'failed';
   writebackStatus?: 'not_requested' | 'writing' | 'uncertain' | 'applied' | 'failed';
-  attachments: ChatAttachment[]; taskId: string | null; createdAt: string; errorCode: string; consumption: string; deliveryStatus: string;
+  attachments: ChatAttachment[]; taskId: string | null; createdAt: string; errorCode: string; errorMessage?: string; consumption: string; deliveryStatus: string;
   parentAttemptId: string | null; deliveryMode: 'foreground_reply' | 'source_completion' | 'replacement' | 'history_only';
   deliveryMessageId: string | null; expectedAttachmentId: string | null;
 };
@@ -51,7 +53,7 @@ export const novelai = {
   previewPromptTags: (roleId: string, text: string, prompt: string, negative_prompt: string) => api<PromptTagPreview>(`${tagsPath(roleId)}/preview`,
     { method: 'POST', body: JSON.stringify({ text, prompt, negative_prompt }) }),
   configuration: () => api<NovelaiConfiguration>('/api/services/novelai'),
-  saveConfiguration: (configuration: Partial<Omit<NovelaiConfiguration, 'revision' | 'tokenConfigured' | 'credentialCleanupPending' | 'manualConsentRevision'>> & { confirmManualConsumption?: boolean }, expectedRevision: number) =>
+  saveConfiguration: (configuration: Partial<Omit<NovelaiConfiguration, 'revision' | 'tokenConfigured' | 'credentialCleanupPending' | 'manualConsentRevision' | 'availability'>> & { confirmManualConsumption?: boolean }, expectedRevision: number) =>
     api<NovelaiConfiguration>('/api/services/novelai', { method: 'PUT', body: JSON.stringify({ ...configuration, expectedRevision }) }),
   setToken: (token: string) => api<NovelaiConfiguration>('/api/services/novelai/token', { method: 'PUT', body: JSON.stringify({ token }) }),
   clearToken: () => api<NovelaiConfiguration>('/api/services/novelai/token', { method: 'DELETE' }),

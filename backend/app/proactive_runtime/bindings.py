@@ -37,10 +37,14 @@ def freeze(app, role_id, config):
     return {"role": shape(app.role_getter(role_id), role=True),
             'inheritedModelId': config.decisionModelConfigurationId if config.inheritRoleModel else None,
             "context": freeze_context(app.context_reader, role_id),
+            "history": app.history_factory(role_id).snapshot() if app.history_factory else None,
             "models": {identifier: model_digest(app.model_getter(identifier)) for identifier in sorted(identifiers)}}
 
 
 def current(app, role_id, frozen):
+    if app.history_factory and (frozen.get('history') is None
+            or not app.history_factory(role_id, snapshot=frozen['history']).authorized()):
+        return False
     if frozen.get('inheritedModelId'):
         model = shape(app.role_model_getter(role_id))
         if model is None or model.get('id') != frozen['inheritedModelId']:
@@ -55,3 +59,12 @@ def persona(frozen):
     profile = role.get("profile", {})
     payload = {"name": role.get("name", ""), "profile": profile if isinstance(profile, dict) else {}}
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:12000]
+
+
+def history_view(app, origin):
+    if app.history_factory is None:
+        return None
+    frozen = app.frozen_bindings(origin).get('history')
+    if frozen is None:
+        raise PermissionError('autonomous history was not authorized at admission')
+    return app.history_factory(origin.role_id, snapshot=frozen)

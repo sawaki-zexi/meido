@@ -29,6 +29,8 @@ def chat_server(tmp_path, monkeypatch, local_platform_only):
     sessions = SessionStore(tmp_path / "data/sessions.db")
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
+    from backend.app.multichannel import MultichannelStore
+    monkeypatch.setattr(main, "multichannel_store", MultichannelStore(sessions.database_path, sessions))
     monkeypatch.setattr(main, "session_manager", SessionManager(roles, sessions))
     monkeypatch.setattr(main, "runtime_manager", RuntimeManager(sessions))
     monkeypatch.setattr(main, "role_locks", {})
@@ -68,7 +70,7 @@ def test_stop_desktop_reply_before_or_after_first_token(chat_server, monkeypatch
 
     class Adapter:
         async def stream_reply(self, role, history, configuration=None):
-            if history[-1].content == "下一句":
+            if history[-1].content.endswith("\n下一句"):
                 yield "后续回复"
                 return
             try:

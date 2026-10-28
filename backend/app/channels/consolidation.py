@@ -1,7 +1,7 @@
 """Maintain owner memory and isolated external profiles from channel activity.
 
-Owner statements enter the existing role memory engine. Other speakers only
-update the current thread's environment and member profiles. Listening uses
+Owner statements enter the existing role memory engine. External conversations
+maintain thread notes and verified, role-owned member profiles. Listening uses
 its own cursor and never advances the conversation maintenance cursor.
 """
 from __future__ import annotations
@@ -57,13 +57,12 @@ class ChannelMemoryMaintenance:
             """)
         return store
 
-    def profile(self, role_id: str, thread_id: str, sender_id: str) -> dict[str, str]:
+    def profile(self, role_id: str, thread_id: str, sender_id: str) -> dict:
         store = self._initialize()
-        if store.get_thread(role_id, thread_id) is None:
+        thread = store.get_thread(role_id, thread_id)
+        if thread is None:
             raise KeyError(thread_id)
-        with store._connect() as db:
-            row = db.execute("SELECT name,profile,shorthand,updated_at FROM channel_member_profiles WHERE role_id=? AND thread_id=? AND sender_id=?", (role_id, thread_id, sender_id)).fetchone()
-        return {"name": row[0], "profile": row[1], "shorthand": row[2], "updatedAt": row[3]} if row else {"profile": "", "shorthand": ""}
+        return store.external_memory.members.profile(thread, sender_id)
 
     def heard(self, thread) -> None:
         self.request(thread.thread_id)
@@ -123,6 +122,13 @@ class ChannelMemoryMaintenance:
             return False
         if thread.role_id in self._deleting:
             return False
+        try:
+            store.external_memory.external_thread(thread.role_id, thread_id, write=True)
+        except (KeyError, PermissionError):
+            return False
+        bindings = store.list_identities()
+        account = store.get_account(thread.account_id)
+        account_identity = (account.created_at, account.platform_id)
         cursor_table = "channel_listening_cursors" if listening else "channel_memory_cursors"
         with store._connect() as db:
             row = db.execute(f"SELECT sequence FROM {cursor_table} WHERE thread_id=?", (thread_id,)).fetchone()
@@ -140,18 +146,38 @@ class ChannelMemoryMaintenance:
                 batch = [item.model_dump(mode="json") for item in messages[:-12][:self.BATCH_SIZE]] if len(messages) >= 18 else []
         if not batch:
             return False
-        groups = self.group_provider()
-        snapshot = dict(groups.read_context(thread.role_id, thread_id)) if thread.chat_type == "group" else {}
+        with store._connect() as db:
+            db.execute("BEGIN")
+            context = store.external_memory.context_in(db, thread)
+        context_revision = context["revision"]
+        snapshot = {"groupNote": context["note"], "summary": context["activity"]["text"],
+            "summaryUpdatedAt": context["activity"]["updatedAt"]}
+        owner_runs = set()
+        if thread.chat_type == "private":
+            owner_runs = {item.runId for item in store.sessions.list_messages(thread.session_key)
+                if item.role == "user" and item.metadata.get("senderIsOwner") is True and item.runId}
+        conversation = [message for message in batch
+            if message["metadata"].get("channelTurnState") != "invalidated"
+            and (message["role"] == "user" or (message["role"] == "assistant"
+                and message["metadata"].get("deliveryStatus") == "sent"))
+            and (thread.chat_type == "group" or (message["metadata"].get("senderIsOwner") is not True
+                and not message["metadata"].get("ownerContext") and message.get("runId") not in owner_runs))]
+        external = [message for message in conversation if message["role"] == "user"
+            and store.external_memory.members.allowed(thread, str(message["metadata"].get("senderId") or ""), message["metadata"])]
         profiles = {}
-        for message in batch:
+        ambiguous = set()
+        for message in external:
             sender_id = str(message["metadata"].get("senderId") or "")
-            if sender_id:
-                profiles[sender_id] = self.profile(thread.role_id, thread_id, sender_id)
-        external = [message for message in batch if not message["metadata"].get("senderIsOwner") and message["role"] == "user"]
-        result = await self.summarize(thread, external, snapshot, profiles) if external else {"members": []}
+            profile = store.external_memory.members.profile(thread, sender_id, message["metadata"])
+            if sender_id in profiles and profiles[sender_id]["key"] != profile["key"]:
+                ambiguous.add(sender_id)
+            profiles[sender_id] = profile
+        for sender_id in ambiguous:
+            del profiles[sender_id]
+        result = await self.summarize(thread, conversation, snapshot, profiles) if conversation else {"members": []}
         if not isinstance(result, dict) or not isinstance(result.get("members", []), list):
             raise ValueError("渠道记忆整理结果无效")
-        valid_senders = {str(message["metadata"].get("senderId")) for message in external}
+        valid_senders = set(profiles)
         members = [item for item in result.get("members", []) if isinstance(item, dict) and str(item.get("senderId")) in valid_senders]
         owner_messages = [message for message in batch if message["metadata"].get("senderIsOwner") is True and message["role"] == "user"]
         if listening and owner_messages and self.owner_statements is not None:
@@ -163,26 +189,41 @@ class ChannelMemoryMaintenance:
                 return False
             if thread.role_id in self._deleting:
                 return False
+            try:
+                store.external_memory.external_thread(thread.role_id, thread_id, write=True)
+            except (KeyError, PermissionError):
+                return False
+            if store.list_identities() != bindings:
+                return False
+            account = store.get_account(thread.account_id)
+            if account is None or (account.created_at, account.platform_id) != account_identity:
+                return False
             row = db.execute(f"SELECT sequence FROM {cursor_table} WHERE thread_id=?", (thread_id,)).fetchone()
             if (int(row[0]) if row else 0) != cursor:
                 return False
-            if thread.chat_type == "group":
-                current = db.execute("SELECT group_note,summary,summary_updated_at FROM channel_group_context WHERE role_id=? AND thread_id=?", (thread.role_id, thread_id)).fetchone()
-                actual = {"groupNote": str(current[0]), "summary": str(current[1]), "summaryUpdatedAt": str(current[2])} if current else {"groupNote": "", "summary": "", "summaryUpdatedAt": ""}
-                if actual != snapshot:
+            if store.external_memory.revision_in(db, thread.role_id, "context", thread_id) != context_revision:
+                return False
+            for sender_id in valid_senders:
+                expected = profiles[sender_id]
+                if (not store.external_memory.members.allowed(thread, sender_id)
+                        or store.external_memory.revision_in(db, thread.role_id, "member", expected["key"]) != expected["revision"]):
                     return False
-            for sender_id, expected in profiles.items():
-                row = db.execute("SELECT profile,shorthand,updated_at FROM channel_member_profiles WHERE role_id=? AND thread_id=? AND sender_id=?", (thread.role_id, thread_id, sender_id)).fetchone()
-                if row and row[2] != expected.get("updatedAt"):
-                    return False
-            now = datetime.now().astimezone().isoformat()
-            if thread.chat_type == "group" and external:
+            if conversation:
                 note = str(result.get("groupNote", snapshot.get("groupNote", "")))[:12000]
                 summary = str(result.get("summary", snapshot.get("summary", "")))[:12000]
-                db.execute("INSERT INTO channel_group_context VALUES(?,?,?,?,?,?) ON CONFLICT(role_id,thread_id) DO UPDATE SET group_note=excluded.group_note,summary=excluded.summary,summary_updated_at=excluded.summary_updated_at,updated_at=excluded.updated_at", (thread.role_id, thread_id, note, summary, now, now))
+                store.external_memory.write_context_in(db, thread, note=note, summary=summary)
             for item in members:
-                observed = db.execute("SELECT name FROM channel_member_names WHERE role_id=? AND channel=? AND account_id=? AND chat_id=? AND chat_type=? AND sender_id=? ORDER BY last_seen DESC,rowid DESC LIMIT 1", (thread.role_id, thread.channel, thread.account_id, thread.chat_id, thread.chat_type, str(item["senderId"]))).fetchone()
-                db.execute("INSERT INTO channel_member_profiles VALUES(?,?,?,?,?,?,?) ON CONFLICT(role_id,thread_id,sender_id) DO UPDATE SET name=excluded.name,profile=excluded.profile,shorthand=excluded.shorthand,updated_at=excluded.updated_at", (thread.role_id, thread_id, str(item["senderId"]), str(observed[0]) if observed else "", str(item.get("profile") or "")[:8000], str(item.get("shorthand") or "")[:200], now))
+                expected = profiles[str(item["senderId"])]
+                # Empty automatic updates mean no new fact, as in Shiori's
+                # merge_member_profile. Explicit owner edits may still clear.
+                fields = {"profile": str(item.get("profile") or expected["profile"])[:8000],
+                    "shorthand": str(item.get("shorthand") or expected["shorthand"])[:200]}
+                if expected.get("state") == "conflict":
+                    store.external_memory.members.add_candidate_in(db, thread, expected["key"], **fields,
+                        updated_at=datetime.now().astimezone().isoformat(), origin="learning")
+                    store.external_memory.advance_revision(db, thread.role_id, "member", expected["key"])
+                else:
+                    store.external_memory.members.write_in(db, thread, expected["key"], **fields)
             db.execute(f"INSERT INTO {cursor_table} VALUES(?,?) ON CONFLICT(thread_id) DO UPDATE SET sequence=excluded.sequence", (thread_id, up_to))
         store.publish(thread.role_id, {"type": "group_memory", "roleId": thread.role_id, "threadId": thread_id})
         return True
