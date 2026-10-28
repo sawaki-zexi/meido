@@ -327,6 +327,20 @@ async def _request(turn, adapter, configuration, messages, cancelled, *, schemas
     method = getattr(adapter, "stream_rich_messages", None)
     if method is None or "max_tokens" not in inspect.signature(method).parameters:
         raise ValueError("autonomous model adapter does not support a token budget")
+    reader = getattr(turn.app, 'activity_reader', None)
+    if reader is not None:
+        from ..agent_runtime.context_provider import estimate_tokens
+        # Read afresh after tool waits; never put these candidates into the
+        # persisted/frozen conversation or replay them on the next request.
+        original = list(messages)
+        selected = []
+        available = (getattr(configuration, 'contextWindowTokens', None) or 32768) - max_tokens
+        for block in reader(turn.origin.role_id):
+            candidate = [replace(original[0], content=(*original[0].content, ModelTextBlock('\n\n'.join([*selected, block])))), *original[1:]]
+            payload = {"messages": [asdict(message) for message in candidate], "tools": schemas}
+            if estimate_tokens(payload) + 32 < available and len(_text(_audit_projection(payload, ())).encode("utf-8")) < 48 * 1024:
+                selected.append(block)
+                messages = candidate
     payload = {"messages": [asdict(message) for message in messages], "tools": schemas}
     images = [block for message in payload['messages'] for block in message.get('content', ()) if block.get('type') == 'image']
     protected = tuple(dict.fromkeys((*getattr(turn, '_image_audit_secrets', ()), *(image['data_base64'] for image in images))))

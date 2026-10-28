@@ -162,6 +162,55 @@ def test_late_role_file_purge_failure_restores_channel_history_secrets_and_enabl
     assert credentials.get(credential_key("qq", account.account_id, "access_token")) == "vault-secret"
 
 
+def test_role_deletion_drains_external_note_save_before_snapshot_and_rollback(deletion_api, monkeypatch):
+    import threading
+    import httpx
+
+    role, roles, channels, _, _, _, _, _ = deletion_api
+    group = next(thread for thread in channels.list_threads(role.id) if thread.chat_type == "group")
+    url = f"/api/roles/{role.id}/channels/threads/{group.thread_id}/external-memory"
+    entered, release, snapshot_taken = threading.Event(), threading.Event(), threading.Event()
+    deletion_entered = asyncio.Event()
+    original = channels.external_memory.save_note
+    before = channels.external_memory.context(role.id, group.thread_id)
+    def delayed_save(*args):
+        entered.set()
+        assert release.wait(5)
+        return original(*args)
+    async def deletion_preflight(*_args):
+        deletion_entered.set()
+    def fail_purge(_path):
+        raise OSError("controlled deletion rollback")
+    original_snapshot = channels.snapshot_role
+    def snapshot(*args):
+        result = original_snapshot(*args)
+        snapshot_taken.set()
+        return result
+    monkeypatch.setattr(channels.external_memory, "save_note", delayed_save)
+    monkeypatch.setattr(main.owner_knowledge_plugin, "begin_role_deletion", deletion_preflight)
+    monkeypatch.setattr(channels, "snapshot_role", snapshot)
+    monkeypatch.setattr(roles, "purge_staged_role_files", fail_purge)
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+            saving = asyncio.create_task(client.put(url + "/note", json={"note": "删除之前已提交的笔记", "expectedRevision": before["revision"]}))
+            assert await asyncio.to_thread(entered.wait, 5)
+            deleting = asyncio.create_task(client.delete(f"/api/roles/{role.id}"))
+            try:
+                await asyncio.wait_for(deletion_entered.wait(), 5)
+                assert not snapshot_taken.is_set()
+                late = await client.put(url + "/note", json={"note": "删除中晚到", "expectedRevision": before["revision"]})
+                assert late.status_code == 409
+            finally:
+                release.set()
+            saved, deleted = await asyncio.gather(saving, deleting)
+            assert saved.status_code == 200
+            assert deleted.status_code == 500
+            restored = (await client.get(url)).json()
+            assert restored["note"] == "删除之前已提交的笔记"
+            assert restored["revision"] == saved.json()["revision"]
+    asyncio.run(scenario())
+
+
 def test_delete_role_rejects_channel_turn_before_starting_runtime_during_preflight(deletion_api, monkeypatch):
     role, _, store, sessions, _, account, private, _ = deletion_api
     before = sessions.list_messages(private.session_key)[0]

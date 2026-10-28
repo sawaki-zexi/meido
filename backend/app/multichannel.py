@@ -333,6 +333,8 @@ class MultichannelStore:
         self.avatars = ChannelAvatarStore(self)
         from .channels.listening import GroupListeningStore
         self.listening = GroupListeningStore(self)
+        from .channels.external_memory import ExternalMemoryRepository
+        self.external_memory = ExternalMemoryRepository(self)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=15)
@@ -555,6 +557,9 @@ class MultichannelStore:
         with self._connect() as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             db.execute("DELETE FROM channel_member_names WHERE role_id=?", (role_id,))
+            db.execute("DELETE FROM channel_external_revisions WHERE role_id=?", (role_id,))
+            for table in ("channel_external_members", "channel_external_member_sources", "channel_external_member_candidates"):
+                db.execute(f"DELETE FROM {table} WHERE role_id=?", (role_id,))
             if "channel_natural_quota" in tables:
                 db.execute("DELETE FROM channel_natural_quota WHERE role_id=?", (role_id,))
             if "channel_member_profiles" in tables:
@@ -846,6 +851,10 @@ class MultichannelStore:
         with self._connect() as db:
             self._remember_member_name(db, role_id, event.channel, event.account_id,
                 event.chat_id, event.chat_type.value, event.sender_id, event.sender_name, _now())
+            thread = self.get_thread_by_chat(role_id, event.account_id, event.chat_id, chat_type=event.chat_type.value)
+            if thread is not None:
+                self.external_memory.members.observe_in(db, thread, {"senderId": event.sender_id,
+                    "senderName": event.sender_name, "viaAccount": account.source_snapshot()}, _now())
 
     def remember_targets(self, role_id: str, targets: list[Any], *, authorized: Callable[[], bool] | None = None) -> None:
         """Persist an adapter's observed/reachable target directory."""
@@ -1062,6 +1071,7 @@ class MultichannelStore:
                     "INSERT INTO channel_owner_chats(role_id,channel,account_id,scope,platform_user_id,chat_id,context_since,last_seen) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(role_id,channel,account_id,scope,platform_user_id,chat_id) DO UPDATE SET last_seen=excluded.last_seen",
                     (role_id, channel, account_id, scope, platform_user_id, chat_id, now, now),
                 )
+                self.external_memory.invalidate_identity_in(db, channel, scope, account_id, platform_user_id)
             self._pending_pairing = None
             return True
 
@@ -1105,6 +1115,7 @@ class MultichannelStore:
             identity = db.execute("SELECT * FROM channel_identities WHERE identity_id=?", (identity_id,)).fetchone()
             if identity is None:
                 raise KeyError(identity_id)
+            self.external_memory.invalidate_identity_in(db, identity["channel"], identity["scope"], identity["account_id"], identity["platform_user_id"])
             if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='channel_push_targets'").fetchone():
                 db.execute(
                     """DELETE FROM channel_push_targets WHERE EXISTS (
@@ -1271,6 +1282,7 @@ class MultichannelStore:
         payload = thread.public_dict()
         payload["avatarUrl"] = self.avatars.url(thread.account_id, "chat", thread.chat_id)
         payload["latestMessage"] = self.latest_message_preview(thread)
+        payload["externalMemoryAvailable"] = thread.channel != "desktop" and not self.external_memory.is_owner_thread(thread)
         return payload
 
     def latest_message_preview(self, thread: ChannelThread) -> dict[str, object] | None:
@@ -1365,6 +1377,8 @@ class MultichannelStore:
                 db.execute("INSERT INTO channel_events(event_id,thread_id,direction,external_message_id,created_at,metadata_json) VALUES(?,?,?,?,?,?)", (event_id, thread.thread_id, direction, external_message_id or None, now, _json(metadata or {})))
             except sqlite3.IntegrityError:
                 return False, None
+            if direction == "inbound" and role == "user" and message_metadata.get("channelTurnState") != "invalidated":
+                self.external_memory.members.observe_in(db, thread, message_metadata, now)
             sequence = int(db.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE session_key=?", (thread.session_key,)).fetchone()[0])
             db.execute(
                 "INSERT INTO messages(message_id,session_key,sequence,role,content,status,created_at,message_type,metadata_json) VALUES(?,?,?,?,?,?,?,'text',?)",

@@ -6,6 +6,7 @@ import { Notice } from "../../ui/Status";
 import { MessageMarkdown } from "../../ui/MessageMarkdown";
 import { GroupSettingsPanel, type GroupSummary } from "./GroupSettingsPanel";
 import { GroupListeningPanel } from "./GroupListeningPanel";
+import { ExternalMemoryPanel } from "./ExternalMemoryPanel";
 import { RoleAccountsPanel } from "./RoleAccountsPanel";
 import { PhoneHome, type PhoneApp } from "./PhoneHome";
 import { PhoneMessage } from "./PhoneMessage";
@@ -31,6 +32,7 @@ type Thread = {
   accountRemoved?: boolean;
   latestMessage?: LatestMessage | null;
   avatarUrl?: string | null;
+  externalMemoryAvailable?: boolean;
 };
 type LatestMessage = { content: string; role: string; status?: string; createdAt: string };
 
@@ -127,6 +129,9 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
   const [phoneSettingsOpen, setPhoneSettingsOpen] = useState(false);
   const [phoneAccountChannel, setPhoneAccountChannel] = useState<Channel | undefined>();
   const [groupSettingsTarget, setGroupSettingsTarget] = useState<{ roleId: string; accountId?: string; group?: GroupSummary } | null>(null);
+  const [memoryTarget, setMemoryTarget] = useState<{ roleId: string; threadId: string } | null>(null);
+  const [memoryRefresh, setMemoryRefresh] = useState(0);
+  const memoryButton = useRef<HTMLButtonElement>(null);
   const groupSettingsButton = useRef<HTMLButtonElement>(null);
   const returnFromGroupSettings = useRef(false);
   useLayoutEffect(() => {
@@ -153,7 +158,8 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
   const phoneChatVisible = phoneMode && !sourceOnly && phoneView.kind === "app" && phoneView.chat
     && Boolean(openPhoneApp && selectedThread && phoneThreadAppId(selectedThread, accounts) === openPhoneApp.id);
   const groupSettingsVisible = !sourceOnly && groupSettingsTarget?.roleId === role.id;
-  const phoneMessagesHidden = groupSettingsVisible || phoneSettingsOpen || (phoneMode && !sourceOnly && !phoneChatVisible);
+  const memoryVisible = !sourceOnly && memoryTarget?.roleId === role.id && memoryTarget?.threadId === selectedThread?.threadId && selectedThread?.externalMemoryAvailable === true;
+  const phoneMessagesHidden = groupSettingsVisible || memoryVisible || phoneSettingsOpen || (phoneMode && !sourceOnly && !phoneChatVisible);
   const visibleThreads = phoneMode && !sourceOnly
     ? threads.filter((thread) => openPhoneApp && phoneThreadAppId(thread, accounts) === openPhoneApp.id) : threads;
   const openAccounts = () => { if (phoneMode) { setPhoneAccountChannel(undefined); setPhoneSettingsOpen(true); } else onAccounts?.(); };
@@ -481,6 +487,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
       // bounded authoritative refresh repairs those projections without
       // disturbing the currently loaded message pages.
       if (payload.type === "account" || payload.type === "avatars_updated" || payload.type === "delivery" || payload.type === "identities_updated") void load();
+      if (["external_memory", "group_memory", "identities_updated", "account"].includes(payload.type ?? "")) setMemoryRefresh(value => value + 1);
     });
     source.onerror = () => { /* EventSource reconnects while the local API is available. */ };
     return () => { active = false; source.close(); };
@@ -647,19 +654,21 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
   const openGroupSettings = () => setGroupSettingsTarget({ roleId: role.id, accountId: phoneMode && !phoneChatVisible ? activeAppAccount?.accountId : selectedThread?.accountId,
     group: selectedThread && (!phoneMode || phoneChatVisible) ? { chatId: selectedThread.chatId, title: selectedThread.title, threadId: selectedThread.threadId } : undefined });
   const groupSettingsAction = <button ref={groupSettingsButton} type="button" className="channel-group-settings-button" onClick={openGroupSettings}><Icon name="settings" size={15} /><span>群聊设置</span></button>;
+  const memoryAction = selectedThread?.externalMemoryAvailable && !sourceOnly ? <button ref={memoryButton} type="button" className="channel-group-settings-button" onClick={() => setMemoryTarget({ roleId: role.id, threadId: selectedThread.threadId })}>聊天信息</button> : null;
   const groupSettingsPage = groupSettingsVisible && groupSettingsTarget ? <GroupSettingsPanel roleId={role.id} account={accounts.find(item => item.accountId === groupSettingsTarget.accountId) ?? null} initialGroup={groupSettingsTarget.group}
       onBack={() => { returnFromGroupSettings.current = true; setGroupSettingsTarget(null); }}
       onAccountSettings={phoneMode || onAccounts ? () => { setGroupSettingsTarget(null); if (phoneMode) { setPhoneAccountChannel("qq"); setPhoneSettingsOpen(true); } else onAccounts?.(); } : undefined}
       onOpenSettings={onOpenSettings ? () => { setGroupSettingsTarget(null); onOpenSettings(); } : undefined} /> : null;
 
-  return <section className={`channel-view${sourceOnly ? " channel-source-view" : ""}`} aria-label={sourceOnly ? "渠道记忆来源" : groupSettingsVisible ? "群聊设置页面" : phoneSettingsOpen ? "渠道设置" : undefined} aria-labelledby={sourceOnly || phoneSettingsOpen || groupSettingsVisible ? undefined : "channel-view-title"}>
+  return <section className={`channel-view${sourceOnly ? " channel-source-view" : ""}`} aria-label={sourceOnly ? "渠道记忆来源" : memoryVisible ? "聊天信息页面" : groupSettingsVisible ? "群聊设置页面" : phoneSettingsOpen ? "渠道设置" : undefined} aria-labelledby={sourceOnly || phoneSettingsOpen || groupSettingsVisible || memoryVisible ? undefined : "channel-view-title"}>
     {groupSettingsPage}
-    <div className="channel-conversation-surface" hidden={groupSettingsVisible}>
+    {memoryVisible && selectedThread && <ExternalMemoryPanel roleId={role.id} threadId={selectedThread.threadId} title={selectedThread.title || selectedThread.chatId} refresh={memoryRefresh} onBack={() => { setMemoryTarget(null); requestAnimationFrame(() => memoryButton.current?.focus()); }} />}
+    <div className="channel-conversation-surface" hidden={groupSettingsVisible || memoryVisible}>
     {!sourceOnly && !phoneSettingsOpen && <header className={`channel-view-header${phoneMode ? " channel-phone-header" : ""}${phoneChatVisible ? " channel-phone-chat-header" : ""}`}>
       <IconButton icon="back" label={phoneMode && openPhoneApp ? phoneChatVisible ? "返回会话列表" : "返回手机主页" : "返回聊天"} onClick={goBack} />
       {phoneChatVisible && phoneAvatar && <img className="phone-chat-avatar" src={phoneAvatar} alt="" />}
       <div><h1 id="channel-view-title" title={phoneMode ? phoneTitle : role.name}>{phoneMode ? phoneTitle : `${role.name} · 手机会话`}</h1>{phoneMode ? phoneSubtitle && <p className="phone-header-subtitle" title={phoneSubtitle}>{phoneSubtitle}</p> : <p>{threads.length} 个会话</p>}</div>
-      <div className="channel-view-actions">{phoneMode && ((phoneChatVisible && selectedThread?.channel === "qq" && selectedThread.chatType === "group") || (!phoneChatVisible && activeAppAccount?.channel === "qq")) && groupSettingsAction}{onAccounts && !phoneMode && <button type="button" className="channel-accounts-button" aria-label="角色账号" title="角色账号" onClick={openAccounts}><Icon name="settings" size={16} /><span>角色账号</span></button>}{!phoneMode && <IconButton icon="refresh" label="刷新会话" onClick={() => void load()} />}</div>
+      <div className="channel-view-actions">{phoneChatVisible && memoryAction}{phoneMode && ((phoneChatVisible && selectedThread?.channel === "qq" && selectedThread.chatType === "group") || (!phoneChatVisible && activeAppAccount?.channel === "qq")) && groupSettingsAction}{onAccounts && !phoneMode && <button type="button" className="channel-accounts-button" aria-label="角色账号" title="角色账号" onClick={openAccounts}><Icon name="settings" size={16} /><span>角色账号</span></button>}{!phoneMode && <IconButton icon="refresh" label="刷新会话" onClick={() => void load()} />}</div>
     </header>}
     {error && <Notice onDismiss={() => setError("")}>{error}</Notice>}
     {sourceError && <Notice onDismiss={() => setSourceError("")}>{sourceError}</Notice>}
@@ -684,7 +693,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
       </aside>}
       <section className="channel-messages" aria-label="会话消息" hidden={phoneMode && !sourceOnly && !phoneChatVisible}>
         {selectedThread ? <>
-          {(!phoneMode || sourceOnly) && <header><div><h2>{selectedThread.title || selectedThread.chatId}</h2><p>{channelName[selectedThread.channel] ?? selectedThread.channel} · {selectedThread.chatType === "group" ? "群聊" : "私聊"}</p>{sourceLabel(selectedThread.viaAccount) && <p>{sourceLabel(selectedThread.viaAccount)}{selectedThread.accountRemoved ? " · 账号已移除" : ""}</p>}</div>{!sourceOnly && selectedThread.channel === "qq" && selectedThread.chatType === "group" && groupSettingsAction}</header>}
+          {(!phoneMode || sourceOnly) && <header><div><h2>{selectedThread.title || selectedThread.chatId}</h2><p>{channelName[selectedThread.channel] ?? selectedThread.channel} · {selectedThread.chatType === "group" ? "群聊" : "私聊"}</p>{sourceLabel(selectedThread.viaAccount) && <p>{sourceLabel(selectedThread.viaAccount)}{selectedThread.accountRemoved ? " · 账号已移除" : ""}</p>}</div><div className="channel-view-actions">{memoryAction}{!sourceOnly && selectedThread.channel === "qq" && selectedThread.chatType === "group" && groupSettingsAction}</div></header>}
           <ol ref={messageList} onScroll={() => {
             const list = messageList.current;
             if (!list || phoneMessagesHidden) return;

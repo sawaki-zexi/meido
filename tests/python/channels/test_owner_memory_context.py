@@ -76,17 +76,27 @@ def test_legacy_desktop_cursor_migrates_without_reconsolidating_old_messages(tmp
     assert cursor["sequenceSource"] == "global-rowid"
 
 
-def test_external_prompt_and_member_lookup_use_only_the_current_thread_profiles(tmp_path):
+def test_external_prompt_includes_only_profiles_observed_in_current_thread(tmp_path):
+    from datetime import datetime, timezone
+
     store, _, _, _, _, first = setup(tmp_path)
     second = store.ensure_channel_thread("r1", "qq", "qq-first", "other-group", "group")
     repo = MultichannelGroupRepository(store)
     repo.update_context("r1", first.thread_id, group_note="当前群笔记", summary="当前群摘要")
+    for thread, sender in ((first, "same-user"), (second, "other-user")):
+        store.append_event(thread, direction="inbound", content="实际观察", external_message_id=sender,
+            metadata={"senderId": sender, "senderName": "相同昵称"})
+    # Simulate old data, then exercise the real migration and prompt boundary.
     with store._connect() as db:
-        for thread, profile in ((first, "当前群成员资料"), (second, "其他群机密档案")):
-            db.execute("INSERT INTO channel_member_profiles VALUES(?,?,?,?,?,?,?)", ("r1", thread.thread_id, "same-user", "昵称", profile, "短资料", "2026-10-15T00:00:00+00:00"))
+        db.execute("DROP TABLE channel_external_migrations")
+        for thread, sender, profile in ((first, "same-user", "当前群成员资料"), (second, "other-user", "其他群机密档案")):
+            db.execute("INSERT INTO channel_member_profiles VALUES(?,?,?,?,?,?,?)", ("r1", thread.thread_id, sender, "昵称", profile, "短资料", datetime.now(timezone.utc).isoformat()))
+    store = MultichannelStore(store.database_path, store.sessions, store.credentials)
+    repo = MultichannelGroupRepository(store)
     prompt = repo.prompt_context("r1", first.thread_id, "same-user")
     assert "当前群笔记" in prompt and "当前群成员资料" in prompt
     assert "其他群机密档案" not in prompt
+    assert "其他群机密档案" not in repo.prompt_context("r1", first.thread_id, "other-user")
     assert repo.prompt_context("r2", first.thread_id, "same-user") == ""
 
 
@@ -171,3 +181,24 @@ def test_completed_memory_turns_do_not_pair_across_sessions_or_run_ids(tmp_path)
 
     committed = maintenance._committed_messages([source, other_session, other_run, legacy_user, legacy_reply])
     assert {message.id for message in committed} == {legacy_user.id, legacy_reply.id}
+
+
+def test_external_profiles_prioritize_trigger_mentions_and_quote_over_busy_group(tmp_path):
+    store, _, _, _, _, thread = setup(tmp_path)
+    groups = MultichannelGroupRepository(store)
+    senders = ["z-quoted", "z-mentioned", *(f"a-{index:02}" for index in range(12)), "z-trigger"]
+    for sender in senders:
+        _, message = store.append_event(thread, direction="inbound", content="观察到的群友",
+            external_message_id=sender, metadata={"senderId": sender, "senderName": sender})
+        with store._connect() as db:
+            store.external_memory.members.write_in(db, thread, message.metadata["externalMemberKey"],
+                profile=f"完整档案-{sender}", shorthand=f"速记-{sender}")
+    prompt = groups.prompt_context("r1", thread.thread_id, "z-trigger",
+        trigger_metadata={"mentionedIds": ["z-mentioned", "not-observed", "owner"], "replyToSenderId": "z-quoted", "replyContextVerified": True})
+    assert all(f"完整档案-{sender}" in prompt for sender in ("z-trigger", "z-mentioned", "z-quoted"))
+    assert "完整档案-a-11" not in prompt and "速记-a-11" in prompt
+    assert prompt.index("速记-a-11") < prompt.index("速记-a-10")
+    assert "not-observed" not in prompt and '"senderId": "owner"' not in prompt
+    unverified = groups.prompt_context("r1", thread.thread_id, "z-trigger",
+        trigger_metadata={"replyToSenderId": "z-quoted", "replyContextVerified": False})
+    assert "完整档案-z-quoted" not in unverified

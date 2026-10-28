@@ -19,6 +19,7 @@ _CHANNEL_TABLES = (
     "channel_identities", "channel_owner_chats", "channel_events",
     "channel_targets", "channel_delivery_attempts", "channel_group_settings",
     "channel_group_context", "channel_member_profiles", "channel_member_names", "channel_memory_cursors",
+    "channel_external_revisions", "channel_external_members", "channel_external_member_sources", "channel_external_member_candidates",
     "channel_listening_records", "channel_listening_config", "channel_listening_toggles",
     "channel_listening_cursors", "channel_natural_settings", "channel_natural_quota", "channel_push_targets", "channel_push_events",
     "channel_avatars", "sessions", "messages", "agent_runs", "tool_audits", "proactive_messages",

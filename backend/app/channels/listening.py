@@ -175,6 +175,7 @@ class GroupListeningStore:
             if external_message_id and db.execute("SELECT 1 FROM channel_listening_records WHERE thread_id=? AND external_message_id=?", (thread.thread_id, external_message_id)).fetchone():
                 return None
             count = db.execute("SELECT COUNT(*) FROM channel_listening_records WHERE thread_id=? AND day=?", (thread.thread_id, moment.date().isoformat())).fetchone()[0]
+            self.store.external_memory.members.observe_in(db, thread, source, moment.isoformat())
             if count >= cap:
                 window.append(message)
                 return message
