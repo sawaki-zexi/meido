@@ -13,6 +13,8 @@ from ..channels.consolidation import finish_io
 from ..task_runtime import TaskOrigin
 from ..session_store import AttachmentConflict
 from .context import GenerationContext
+from .availability import GenerationUnavailable
+from .failures import GenerationBudgetExceeded
 
 
 async def _body(request: Request, *, allow_empty=False):
@@ -79,8 +81,12 @@ async def _run_owner_action(request, application, source, action):
     except asyncio.CancelledError:
         cancel_unaccepted()
         raise
+    except GenerationUnavailable as error:
+        raise HTTPException(403, str(error)) from None
+    except GenerationBudgetExceeded as error:
+        raise HTTPException(429, str(error)) from None
     except PermissionError:
-        raise HTTPException(403, '当前来源、所选图片或有限生图许可不可用，请检查归属历史') from None
+        raise HTTPException(403, '生图设置、来源或所选图片已改变，请刷新设置并检查归属历史') from None
     except AttachmentConflict:
         raise HTTPException(409, '原消息中的图片已改变；尚未新生成。请重新选图或明确选择仅保存历史') from None
     except ValueError:

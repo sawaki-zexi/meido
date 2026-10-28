@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from ..agent_runtime.tools import AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
@@ -217,7 +218,7 @@ class MultichannelGroupRepository:
                 "found": bool(member or sources), "sources": ordered[start:end], "sources_total": len(ordered),
                 "source_page": source_page, "next_source_page": source_page + 1 if end < len(ordered) else None}
 
-    def prompt_context(self, role_id: str, thread_id: str, sender_id: str = "") -> str:
+    def prompt_context(self, role_id: str, thread_id: str, sender_id: str = "", *, trigger_metadata: Mapping[str, Any] | None = None) -> str:
         """Read only the current thread's notes and relevant member profiles."""
 
         thread = self.store.get_thread(role_id, thread_id)
@@ -230,23 +231,44 @@ class MultichannelGroupRepository:
             parts.append(f"[当前{label}笔记]\n" + str(group_context["groupNote"])[:12000])
         if group_context.get("summary"):
             parts.append(f"[当前{label}近期摘要]\n" + str(group_context["summary"])[:12000])
-        visible_senders = {sender_id} if sender_id else set()
+        trigger = trigger_metadata or {}
+        # Match Shiori's relevance order: the speaker, mentions and quoted
+        # speaker need full profiles; other recent participants need briefs.
+        full_senders = list(dict.fromkeys([sender_id,
+            *(item for item in trigger.get("mentionedIds", []) if isinstance(item, str)),
+            str(trigger.get("replyToSenderId") or "") if trigger.get("replyContextVerified") is True else ""]))
+        recent = []
         if thread.chat_type == "group":
-            for message in self.store.sessions.list_messages(thread.session_key)[-30:]:
-                visible_senders.add(str(message.metadata.get("senderId") or ""))
-                visible_senders.update(str(item) for item in message.metadata.get("mentionedIds", []) if isinstance(item, str))
+            recent = [(message.createdAt, message.metadata)
+                for message in self.store.sessions.list_messages(thread.session_key)[-30:]
+                if message.role == "user" and message.metadata.get("channelTurnState") != "invalidated"]
             if thread.channel == "qq":
-                for message in self.store.listening.recent(role_id, thread_id)[-30:]:
-                    visible_senders.add(str(message["metadata"].get("senderId") or ""))
+                recent.extend((datetime.fromisoformat(message["createdAt"]), message["metadata"])
+                    for message in self.store.listening.recent(role_id, thread_id)[-30:])
+        brief_senders = []
+        for _, metadata in sorted(recent, key=lambda item: item[0], reverse=True):
+            brief_senders.extend([str(metadata.get("senderId") or ""),
+                *(item for item in metadata.get("mentionedIds", []) if isinstance(item, str))])
         members = []
-        for current_sender in sorted(visible_senders):
+        brief_chars = 1500
+        for current_sender in dict.fromkeys([*full_senders, *brief_senders]):
+            if not current_sender:
+                continue
             row = self.store.external_memory.members.profile(thread, current_sender)
-            if row["profile"] or row["shorthand"]:
-                members.append({"senderId": current_sender, "name": row.get("name", current_sender),
-                    "profile": str(row["profile"])[:4000], "shorthand": str(row["shorthand"])[:200],
-                    "sources": [source["threadId"] for source in row.get("sources", [])]})
-                if len(members) >= 10:
-                    break
+            full = current_sender in full_senders
+            if not ((row["profile"] or row["shorthand"]) if full else row["shorthand"]):
+                continue
+            member = {"senderId": current_sender, "name": row.get("name", current_sender),
+                "shorthand": str(row["shorthand"])[:200],
+                "sources": [source["threadId"] for source in row.get("sources", [])]}
+            if full:
+                member["profile"] = str(row["profile"])[:4000]
+                member["nicknames"] = row.get("nicknames", [])
+            size = len(json.dumps(member, ensure_ascii=False))
+            if not full and size > brief_chars:
+                break
+            members.append(member)
+            brief_chars -= size
         if members:
             parts.append("[当前会话成员资料；同一平台身份在所列会话中观察所得]\n" + json.dumps(members, ensure_ascii=False))
         return "\n\n".join(parts)[:20000]

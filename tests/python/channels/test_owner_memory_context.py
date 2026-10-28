@@ -181,3 +181,24 @@ def test_completed_memory_turns_do_not_pair_across_sessions_or_run_ids(tmp_path)
 
     committed = maintenance._committed_messages([source, other_session, other_run, legacy_user, legacy_reply])
     assert {message.id for message in committed} == {legacy_user.id, legacy_reply.id}
+
+
+def test_external_profiles_prioritize_trigger_mentions_and_quote_over_busy_group(tmp_path):
+    store, _, _, _, _, thread = setup(tmp_path)
+    groups = MultichannelGroupRepository(store)
+    senders = ["z-quoted", "z-mentioned", *(f"a-{index:02}" for index in range(12)), "z-trigger"]
+    for sender in senders:
+        _, message = store.append_event(thread, direction="inbound", content="观察到的群友",
+            external_message_id=sender, metadata={"senderId": sender, "senderName": sender})
+        with store._connect() as db:
+            store.external_memory.members.write_in(db, thread, message.metadata["externalMemberKey"],
+                profile=f"完整档案-{sender}", shorthand=f"速记-{sender}")
+    prompt = groups.prompt_context("r1", thread.thread_id, "z-trigger",
+        trigger_metadata={"mentionedIds": ["z-mentioned", "not-observed", "owner"], "replyToSenderId": "z-quoted", "replyContextVerified": True})
+    assert all(f"完整档案-{sender}" in prompt for sender in ("z-trigger", "z-mentioned", "z-quoted"))
+    assert "完整档案-a-11" not in prompt and "速记-a-11" in prompt
+    assert prompt.index("速记-a-11") < prompt.index("速记-a-10")
+    assert "not-observed" not in prompt and '"senderId": "owner"' not in prompt
+    unverified = groups.prompt_context("r1", thread.thread_id, "z-trigger",
+        trigger_metadata={"replyToSenderId": "z-quoted", "replyContextVerified": False})
+    assert "完整档案-z-quoted" not in unverified

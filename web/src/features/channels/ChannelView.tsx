@@ -715,7 +715,7 @@ export function ChannelView({ role, onBack, onAccounts, onOpenSettings, initialS
                 </span>
                 {source?.avatarUrl && <img src={source.avatarUrl} alt="经由账号头像" className="channel-source-avatar" />}
                 {sourceLabel(source) && <small className="channel-message-source">{sourceLabel(source)}</small>}
-                {replyTo && <div className="channel-message-reply">{replyTarget || quotedText ? `回复 ${replySender}：${replyTarget?.content || quotedText || "（无内容）"}` : `回复 ${replySender || "未知发送者"} 的消息 ${replyTo}（原文未加载）`}</div>}
+                {replyTo && <div className="channel-message-reply">{replyTarget || quotedText ? `回复 ${replySender}：${quotedText || replyTarget?.content || "（无内容）"}` : `回复 ${replySender || "未知发送者"} 的消息 ${replyTo}（原文未加载）`}</div>}
                 {quotedAttachments.length > 0 && <div className="channel-message-reply" role="group" aria-label="引用消息附件"><ChannelAttachments roleId={role.id} attachments={quotedAttachments} onMediaLoad={keepAtBottomAfterMediaLoad} /></div>}
                 {mentionedNames.length > 0 && <div className="channel-message-mentions">提及：{mentionedNames.map((name) => `@${name}`).join("、")}</div>}
                 {message.content && <MessageMarkdown content={message.content} />}

@@ -88,3 +88,21 @@ def test_visitor_turn_never_enters_owner_memory_and_deleted_role_is_quiesced(tmp
         await worker.close()
 
     asyncio.run(scenario())
+
+
+def test_empty_automatic_profile_fields_keep_facts_but_owner_can_clear(tmp_path):
+    calls = []
+    async def summarize(_thread, _messages, _context, profiles):
+        calls.append(profiles)
+        return {"members": [{"senderId": "visitor", **(
+            {"profile": "喜欢红茶", "shorthand": "茶友"} if len(calls) == 1 else {"profile": ""})}]}
+    store, thread, _, worker, _ = _maintenance(tmp_path, summarize)
+    for index in range(100):
+        store.listening.hear(thread, "今天打招呼", str(index), {"senderId": "visitor"})
+    assert asyncio.run(worker.consolidate(thread.thread_id, listening=True))
+    assert asyncio.run(worker.consolidate(thread.thread_id, listening=True))
+    profile = worker.profile("role", thread.thread_id, "visitor")
+    assert profile["profile"] == "喜欢红茶" and profile["shorthand"] == "茶友"
+    saved = store.external_memory.members.save("role", thread.thread_id, profile["key"],
+        profile="", shorthand="", expected_revision=profile["revision"])
+    assert saved["profile"] == "" and saved["shorthand"] == ""

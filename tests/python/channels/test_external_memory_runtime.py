@@ -45,6 +45,13 @@ def test_ordinary_group_runtime_injects_current_note_and_other_activity_without_
     groups.update_context(s.role.id, current.thread_id, group_note="当前笔记-723")
     groups.update_context(s.role.id, other.thread_id, summary="其他群摘要-724")
     s.channels.append_event(other, direction="inbound", content="其他群原文-725", external_message_id="other", metadata={"senderId": "22"})
+    for sender in [*(f"0{index}" for index in range(12)), "22"]:
+        _, observed = s.channels.append_event(current, direction="inbound", content="已观察的群友",
+            external_message_id="profile-" + sender, metadata={"senderId": sender})
+        with s.channels._connect() as db:
+            s.channels.external_memory.members.write_in(db, current, observed.metadata["externalMemberKey"],
+                profile="当前发送者完整档案-726" if sender == "22" else "旁观成员不应注入完整档案-727",
+                shorthand="群友速记-728")
     requests = []
     class Model:
         async def stream_structured_messages(self, messages, configuration, tools):
@@ -58,3 +65,5 @@ def test_ordinary_group_runtime_injects_current_note_and_other_activity_without_
     assert len(requests) == 1
     prompt = json.dumps(requests[0], ensure_ascii=False)
     assert "当前笔记-723" in prompt and "其他群摘要-724" in prompt and "其他群原文-725" not in prompt
+    assert "当前发送者完整档案-726" in prompt and "群友速记-728" in prompt
+    assert "旁观成员不应注入完整档案-727" not in prompt

@@ -1,6 +1,6 @@
 # 全局插件配置
 
-状态：已实施，本地相关验收与两轴独立审查通过；PR #196 仍为草稿，原有后端 CI 问题继续跟踪。最后核验：2026-10-19。事实来源：[配置存储](../../backend/app/plugin_configuration.py)、[接口](../../backend/app/plugin_management.py)、[全局设置](../../web/src/features/settings/PluginSettings.tsx)、[HTTP 回归](../../tests/python/test_global_plugin_configuration.py)。
+状态：当前规格；2026-10-26 按 #246 更新 NovelAI 启用与就绪行为，其他插件沿用既有全局配置。事实来源：[配置存储](../../backend/app/plugin_configuration.py)、[接口](../../backend/app/plugin_management.py)、[全局设置](../../web/src/features/settings/PluginSettings.tsx)、[HTTP 回归](../../tests/python/test_global_plugin_configuration.py)、[NovelAI 就绪回归](../../tests/python/test_novelai_readiness.py)。
 
 依据：主人在确认 Shiori 的“全局插件开关 + 插件自己的角色参数”后要求“按照 shiori 的来，复刻它的配置实现”。关联 #137、PR #196。参考固定 Shiori 4f266ae 的 PluginManagementSection、plugin_management.py 和 plugin_config.py。
 
@@ -12,7 +12,7 @@
 
 只有确实需要角色差异的用途保留角色配置：CG 辅助模型和有限许可、提示标签、桌宠动作包、主动策略及来源/发送目标、编程的可信仓库和 CLI 授权。它们放在相应插件的设置中，不再给所有插件套一个“配置角色”选择器。编程的角色 enabled 和浏览器/屏幕/桌面控制的角色 enabled 退为兼容字段，不再控制普通聊天插件启停。
 
-手动生图许可与每角色日额度移到 NovelAI 公共参数；全局消费确认不能授予角色 CG 许可。凭据和参数变化撤销旧消费确认。插件的启动不自动确认费用、授可信仓库、启用自主模式或选择桌宠动作包。
+NovelAI 的 `enabled` 统一控制聊天与手动生图，每角色日额度在公共参数中设置。启用并保存独立凭据后即可按允许模式和额度生成，不再要求额外消费确认；保存参数后未来请求仍可生成，旧任务按修订撤销。角色 CG 仍需独立开关和辅助模型。启用不授可信仓库、启用自主模式或选择桌宠动作包。详见 [ADR-0031](../adr/0031-novelai-plugin-readiness.md)。
 
 ## 数据流与兼容
 
@@ -24,7 +24,7 @@
 
 ## 验证
 
-沿用现有本地 HTTP、工具实际调用和 React 界面边界进行红绿验证：两个角色共享插件开关；参数与开关互不覆盖；重启/过期编辑/收尾失败可恢复；旧角色 opt-in 不绕过全局关闭；关闭再启用拒绝原冻结调用；保留浏览器和角色数据；消费确认与 CG 独立。浏览器夹具覆盖全局列表、插件专属角色设置、失败反馈与窄屏；不进行实际账号、模型消费或外部平台事务。
+沿用现有本地 HTTP、工具实际调用和 React 界面边界进行红绿验证：两个角色共享插件开关；参数与开关互不覆盖；重启/过期编辑/收尾失败可恢复；旧角色 opt-in 不绕过全局关闭；关闭再启用拒绝原冻结调用；保留浏览器和角色数据；NovelAI 就绪后直接生成，CG 独立启用。浏览器夹具覆盖全局列表、插件专属角色设置、失败反馈与窄屏；不进行实际账号、模型消费或外部平台事务。
 
 ## 2026-10-19：设置页面展示
 

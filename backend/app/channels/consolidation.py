@@ -214,7 +214,10 @@ class ChannelMemoryMaintenance:
                 store.external_memory.write_context_in(db, thread, note=note, summary=summary)
             for item in members:
                 expected = profiles[str(item["senderId"])]
-                fields = {"profile": str(item.get("profile") or "")[:8000], "shorthand": str(item.get("shorthand") or "")[:200]}
+                # Empty automatic updates mean no new fact, as in Shiori's
+                # merge_member_profile. Explicit owner edits may still clear.
+                fields = {"profile": str(item.get("profile") or expected["profile"])[:8000],
+                    "shorthand": str(item.get("shorthand") or expected["shorthand"])[:200]}
                 if expected.get("state") == "conflict":
                     store.external_memory.members.add_candidate_in(db, thread, expected["key"], **fields,
                         updated_at=datetime.now().astimezone().isoformat(), origin="learning")
