@@ -133,6 +133,8 @@ class TelegramTransport(Protocol):
 
     async def edit_message_text(self, token: str, chat_id: str, message_id: str, text: str) -> Mapping[str, Any]: ...
 
+    async def send_chat_action(self, token: str, chat_id: str, *, authorize_dispatch=None) -> bool: ...
+
     async def get_updates(self, token: str, *, offset: int | None = None, timeout: int = 25) -> list[Mapping[str, Any]]: ...
 
     async def get_file(self, token: str, file_id: str) -> Mapping[str, Any]: ...
@@ -221,6 +223,7 @@ class TelegramBotApi:
         from .channels.delivery import check_dispatch, telegram_response
         check_dispatch()
         async with httpx.AsyncClient(timeout=20) as client:
+            check_dispatch()
             response = await client.post(f"{self.base_url}/bot{token}/sendMessage", json=body)
             return telegram_response(response)
 
@@ -231,9 +234,19 @@ class TelegramBotApi:
         from .channels.delivery import check_dispatch, telegram_response
         check_dispatch()
         async with httpx.AsyncClient(timeout=20) as client:
+            check_dispatch()
             response = await client.post(f"{self.base_url}/bot{token}/editMessageText", json=body)
             result = telegram_response(response)
             return {'message_id': message_id} if result.get('not_modified') else result
+
+    async def send_chat_action(self, token: str, chat_id: str, *, authorize_dispatch=None) -> bool:
+        from .channels.delivery import telegram_response
+        async with httpx.AsyncClient(timeout=10) as client:
+            if authorize_dispatch is not None:
+                authorize_dispatch()
+            response = await client.post(f"{self.base_url}/bot{token}/sendChatAction",
+                json={'chat_id': chat_id, 'action': 'typing'})
+            return telegram_response(response) is True
 
     async def _send_media(self, method: str, token: str, chat_id: str, data: bytes, file_name: str, *, caption: str = "", reply_to: str | None = None, message_thread_id: int | None = None, parse_mode: str | None = None, caption_entities=None) -> Mapping[str, Any]:
         body: dict[str, Any] = {"chat_id": chat_id, "caption": caption}
