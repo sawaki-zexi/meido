@@ -11,7 +11,7 @@ const configuration = { enabled: true, manualEnabled: true, manualDailyAttempts:
 const owner = role({ id: 'r1', name: '诗织', agentConfig: { novelai: { manualEnabled: true, manualDailyAttempts: 10, consentRevision: 3 } } as AgentToolConfig });
 const old = { generationId: 'gen-172', attemptId: 'attempt-old', parentAttemptId: null, roleId: 'r1', status: 'succeeded',
   parameters: { prompt: 'blue sky', negative_prompt: 'rain', mode: 'txt2img', width: 1216, height: 832, seed: 172,
-    model: 'nai-diffusion-4-5-curated', sampler: 'k_euler_ancestral', steps: 20 },
+    model: 'nai-diffusion-4-5-curated', sampler: 'k_euler_ancestral', steps: 20, qualityToggle: true, ucPreset: 2 },
   attachments: [{ id: 'image-one', name: 'first.png', kind: 'image', mediaType: 'image/png', size: 100 },
     { id: 'image-two', name: 'selected.png', kind: 'image', mediaType: 'image/png', size: 100 }],
   taskId: 'task-old', createdAt: '2026-10-16T04:00:00Z', errorCode: '', consumption: 'possible', deliveryStatus: 'sent',
@@ -85,7 +85,7 @@ it('regenerates only the selected historical image after new-consumption consent
   expect(posts).toHaveLength(2);
   expect(posts[0].body).toEqual(posts[1].body);
   expect(posts[0].body).toMatchObject({ sourceAttemptId: 'attempt-old', expectedAttachmentId: 'image-two', expectedRevision: 3,
-    parameters: { prompt: 'blue sky', size_preset: 'landscape', steps: 20 } });
+    parameters: { prompt: 'blue sky', size_preset: 'landscape', steps: 20, qualityToggle: true, ucPreset: 2 } });
   expect((posts[0].body as { parameters: object }).parameters).not.toHaveProperty('seed');
   await waitFor(() => expect(screen.getByText('Seed 173', { exact: false })).toBeInTheDocument());
 });

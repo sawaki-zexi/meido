@@ -6,7 +6,7 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from test_background_shell_api import api as shell_api  # noqa: F401
 from test_spawn_api import api  # noqa: F401
 
@@ -22,6 +22,7 @@ def test_desktop_only_http_push_reaches_saved_role_session_and_next_model_reques
                 assert 'message_push' in {tool['function']['name'] for tool in tools}
                 yield ModelToolCall('desktop-push-call', 'message_push', {
                     'channel': 'desktop', 'chat_id': 'owner', 'message': '桌面独立推送证据-167'})
+                yield ModelResponseDone("tool_use")
             else:
                 receipt = json.loads(messages[-1]['content'])
                 assert receipt['status'] == 'sent' and receipt['messageId']
@@ -57,6 +58,7 @@ def desktop_peer(api, monkeypatch):  # noqa: F811
         async def stream_structured_messages(self, messages, configuration, tools):
             if not any(item['role'] == 'tool' for item in messages):
                 yield ModelToolCall('desktop-media', 'message_push', dict(arguments))
+                yield ModelResponseDone("tool_use")
             else:
                 replies.append(messages[-1]['content'])
                 yield ModelTextDelta('已处理桌面推送请求')
@@ -138,6 +140,7 @@ def test_committed_push_survives_a_later_parent_failure_or_real_http_stop(api, m
             if not any(item['role'] == 'tool' for item in messages):
                 yield ModelToolCall('committed-push', 'message_push', {
                     'channel': 'desktop', 'chat_id': 'owner', 'message': 'durable-before-parent-terminal'})
+                yield ModelResponseDone("tool_use")
             else:
                 assert json.loads(messages[-1]['content'])['status'] == 'sent'
                 ready.set()
@@ -191,6 +194,7 @@ def test_next_owner_turn_and_reopened_store_preserve_real_push_receipts(api, mon
                 for index in range(call_count):
                     yield ModelToolCall(f'push-{index}', 'message_push', {
                         'channel': 'desktop', 'chat_id': 'owner', 'message': f'confirmed-push-{index}'})
+                yield ModelResponseDone("tool_use")
             else:
                 assert len(receipts) == call_count
                 assert all(json.loads(item['content'])['status'] == 'sent' for item in receipts)

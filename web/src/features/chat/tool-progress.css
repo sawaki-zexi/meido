@@ -1,0 +1,18 @@
+.chat-tool-progress {
+  max-height: min(12rem, 25vh);
+  overflow: auto;
+  margin-bottom: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-card);
+  font-size: 12px;
+}
+.chat-tool-progress ol { list-style: none; margin: 0; padding: 0; }
+.chat-tool-progress li + li { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }
+.chat-tool-progress .chat-tool-heading { display: flex; gap: 12px; justify-content: space-between; align-items: baseline; }
+.chat-tool-progress strong { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.chat-tool-progress .chat-tool-heading span { flex-shrink: 0; color: var(--ink-faint); }
+.chat-tool-progress .chat-tool-heading [data-state="running"] { color: var(--role); }
+.chat-tool-progress p { margin: 5px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-tool-progress small { display: block; margin-top: 5px; color: var(--ink-faint); }

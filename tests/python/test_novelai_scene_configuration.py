@@ -1,13 +1,11 @@
-"""CG consent is a separate, explicitly bound owner permission."""
+"""CG keeps an explicit role switch and auxiliary model, without version consent."""
 from novelai_fixtures import novelai_environment, novelai_main, novelai_service  # noqa: F401
 import hashlib
 import json
 
 
-def test_owner_can_enable_cg_with_explicit_auxiliary_connection_without_manual_permission(novelai_main):
+def test_owner_can_enable_cg_with_auxiliary_connection_without_version_confirmation(novelai_main):
     client, service = novelai_main
-    public = service.application.settings.public()
-    service.application.settings.save({'manualEnabled': False}, expected_revision=public['revision'])
     connection = client.post('/api/model/configurations', json={'providerId': 'custom', 'provider': 'fixture',
         'baseUrl': 'http://127.0.0.1:9/v1', 'model': 'scene-fixture', 'api': 'openai-completions'})
     assert connection.status_code == 200, connection.text
@@ -15,7 +13,7 @@ def test_owner_can_enable_cg_with_explicit_auxiliary_connection_without_manual_p
     body = {'name': service.role.name, 'profile': service.role.profile.model_dump(), 'agentConfig': {'novelai': {
         'manualEnabled': False, 'sceneCgEnabled': True,
         'scenePromptModelConfigurationId': identifier,
-        'consentRevision': service.application.settings.public()['revision']}}}
+        'consentRevision': 0}}}
     accepted = client.put(f'/api/roles/{service.role.id}', json=body)
     assert accepted.status_code == 200, accepted.text
     assert accepted.json()['role']['agentConfig']['novelai']['sceneCgEnabled'] is True

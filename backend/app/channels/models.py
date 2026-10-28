@@ -45,6 +45,8 @@ class Attachment:
     size: int | None = None
     # Owned outgoing bytes stay in memory; message metadata retains the ID.
     frozen_data: bytes | None = field(default=None, repr=False)
+    # An opaque platform identifier, never a local path or authority to another chat.
+    file_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +55,9 @@ class DownloadedMedia:
     data: bytes
     file_name: str | None = None
     mime_type: str | None = None
+    error: str | None = None
+    file_id: str | None = None
+    source_size: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +86,8 @@ class InboundEvent:
     triggered: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
     received_at: float | None = None
+    # Host-owned, in-process read permission; never persisted or read from platform metadata.
+    authorize_media: Callable[[], bool] | None = field(default=None, repr=False, compare=False)
 
     @property
     def thread_id(self) -> str:
@@ -111,6 +118,9 @@ class OutboundMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
     # Host-only last-safe-point check; never derived from platform/model input.
     authorize_dispatch: Callable[[], bool] | None = field(default=None, repr=False, compare=False)
+    record_delivery: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False, compare=False)
+    delivery_deadline: float | None = None
+    reserve_reply: Callable[[str, int], tuple[int, ...]] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)

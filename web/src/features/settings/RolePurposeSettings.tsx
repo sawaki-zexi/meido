@@ -81,7 +81,7 @@ export function RolePurposeSettings({ purpose, onRoleSaved, serviceVersion = 0, 
         : purpose === 'autonomy-management' ? <AutonomyManagement roleId={selected.id} disabled={busy} />
         : purpose === 'pet' ? <DesktopPetSettings roleId={selected.id} disabled={busy} />
         : <form className="settings-section" onSubmit={event => { event.preventDefault(); void save(); }}>
-          {purpose === 'novelai' ? <NovelaiRoleSettings key={serviceVersion} draft={draft} onChange={setDraft} disabled={busy} sceneOnly />
+          {purpose === 'novelai' ? <NovelaiRoleSettings key={serviceVersion} draft={draft} onChange={setDraft} disabled={busy} />
             : purpose === 'coding' ? <CodingRoleSettings key={serviceVersion} roleId={selected.id} draft={draft} onChange={setDraft} disabled={busy} showEnabledToggle={false} />
             : <><ShellSettings draft={draft} onChange={setDraft} disabled={busy} /><SpawnSettings draft={draft} onChange={setDraft} disabled={busy} /></>}
           <div className="form-actions settings-save-actions"><button type="submit" className="primary" disabled={busy}>{busy ? '保存中…' : '保存角色参数'}</button></div>

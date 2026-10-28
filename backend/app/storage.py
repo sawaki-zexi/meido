@@ -129,6 +129,7 @@ def initialize_databases(data_dir: str | Path) -> None:
             "tool_source": "TEXT",
             "tool_version": "TEXT",
             "policy_decision": "TEXT",
+            "capability_binding_json": "TEXT",
         }
         for column, definition in audit_additions.items():
             if column not in audit_columns:

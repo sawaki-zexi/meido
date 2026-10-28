@@ -285,7 +285,7 @@ def test_cross_loop_repeated_cancel_joins_original_task_finally_and_send_lease(t
                 assert not adapter.interrupted_cleanup
                 assert adapter.calls == 1
                 deliveries = host.store.list_deliveries("role")
-                assert len(deliveries) == 1 and deliveries[0]["status"] == "pending"
+                assert len(deliveries) == 1 and deliveries[0]["status"] == "uncertain"
             finally:
                 owner.call_soon_threadsafe(adapter.release.set)
                 if not caller.done():

@@ -105,12 +105,63 @@ class CapabilityResolution:
     _authorize_call: Callable[[ToolDefinition, ToolContext, Mapping[str, object]], bool | str] | None = field(default=None, repr=False, compare=False)
     _candidate_tools: MappingProxyType = field(default_factory=lambda: MappingProxyType({}), repr=False, compare=False)
     _resource_close: Callable[[], Awaitable[None]] | None = field(default=None, repr=False, compare=False)
+    _executors_by_name: MappingProxyType = field(default_factory=lambda: MappingProxyType({}), repr=False, compare=False)
+    _definition_fingerprints: MappingProxyType = field(default_factory=lambda: MappingProxyType({}), repr=False, compare=False)
+    source_scope: str = ""
+    restoration_diagnostics: tuple[dict[str, str], ...] = ()
+
+    def selection_cache(self) -> dict[str, object]:
+        """A restoration hint, not authority; no candidate catalog or schemas."""
+        return {"format": "tool-selection-v1", "roleId": self.snapshot.role_id,
+                "sessionKey": self.snapshot.session_key, "sourceScope": self.source_scope,
+                "selected": [{"name": item.name, "source": item.source,
+                    "fingerprint": definition_fingerprint(item)}
+                    for item in self.snapshot.tools if item.exposure == "deferred"]}
+
+    def call_record(self, name: str) -> dict[str, object]:
+        """Used declaration and minimal author evidence, never unused candidates."""
+        definition = self.candidate_definition(name)
+        return {"format": "tool-call-v1", "snapshotId": self.snapshot.snapshot_id,
+                "runId": self.snapshot.run_id, "roleId": self.snapshot.role_id,
+                "sessionKey": self.snapshot.session_key, "sourceScope": self.source_scope,
+                "visibilityVersion": self.snapshot.visibility_version,
+                "tools": [_definition_payload(definition)] if definition is not None else [],
+                "active": self.definition(name) is not None,
+                "definitionFingerprint": definition_fingerprint(definition) if definition is not None else None,
+                "skills": [{"id": item.skill_id, "source": item.source, "contentHash": item.content_hash}
+                    for item in self.snapshot.skills if item.skill_id == "create-drift-skill"]}
+
+    def selected_subset(self, names: frozenset[str] | set[str]) -> CapabilityResolution:
+        """A delegation holds only its selected bindings, not the parent's catalog."""
+        definitions = tuple(item for item in self.snapshot.tools if item.name in names)
+        selected = {item.name for item in definitions}
+        return replace(self, snapshot=replace(self.snapshot, tools=definitions, candidates=(),
+            skills=(), prompt_sections=(), plugins=(), service_grants=(),
+            policy_decisions=MappingProxyType({name: "allowed" for name in selected})),
+            tools=tuple(self._tools_by_name[name] for name in selected), plugin_resolution=None,
+            _discovery=None, _resource_close=None, denied_tools=MappingProxyType({}),
+            _tools_by_name=MappingProxyType({name: self._tools_by_name[name] for name in selected}),
+            _definitions_by_name=MappingProxyType({name: self._definitions_by_name[name] for name in selected}),
+            _candidate_tools=MappingProxyType({}), restoration_diagnostics=(),
+            _executors_by_name=MappingProxyType({name: self._executors_by_name[name] for name in selected}),
+            _definition_fingerprints=MappingProxyType({name: value for name, value in self._definition_fingerprints.items() if name in selected}))
+
+    def run_metadata(self) -> dict[str, object]:
+        """Compact run diagnostics; actual declarations live on their call rows."""
+        return {"format": "tool-run-v1", "snapshotId": self.snapshot.snapshot_id,
+                "runId": self.snapshot.run_id, "roleId": self.snapshot.role_id,
+                "sessionKey": self.snapshot.session_key, "sourceScope": self.source_scope,
+                "skills": [item.to_dict() for item in self.snapshot.skills],
+                "skillDiagnostics": [_thaw_json(item) for item in self.snapshot.skill_diagnostics],
+                "plugins": [item.to_dict() for item in self.snapshot.plugins],
+                "pluginDiagnostics": [dict(item) for item in self.snapshot.plugin_diagnostics],
+                "restorationDiagnostics": list(self.restoration_diagnostics)}
 
     def stage_service_tools(self, context: ToolContext, *, grant_id: str, parent_snapshot_id: str,
-                            tools: tuple[AgentTool, ...], activate: bool = False) -> tuple[str, ...]:
+                            tools: tuple[AgentTool, ...], activate: bool = False, rebind: bool = False) -> tuple[str, ...]:
         if self._discovery is None:
             raise PermissionError("service revisions require a frozen discovery directory")
-        return self._discovery.stage_service_tools(context, grant_id=grant_id, parent_snapshot_id=parent_snapshot_id, tools=tools, activate=activate)
+        return self._discovery.stage_service_tools(context, grant_id=grant_id, parent_snapshot_id=parent_snapshot_id, tools=tools, activate=activate, rebind=rebind)
 
     def stage_service_removal(self, context: ToolContext, *, grant_id: str, parent_snapshot_id: str) -> None:
         if self._discovery is None:
@@ -123,6 +174,10 @@ class CapabilityResolution:
             return "tool has no frozen definition"
         if (context.role_id, context.session_key, context.run_id) != (self.snapshot.role_id, self.snapshot.session_key, self.snapshot.run_id):
             return "tool context does not match the frozen run scope"
+        original = self._candidate_tools.get(definition.name) or self._tools_by_name.get(definition.name)
+        fingerprint = self._definition_fingerprints.get(definition.name)
+        if original is not None and fingerprint is not None and definition_fingerprint(original.definition) != fingerprint:
+            return "stale_definition: the request's tool implementation declaration changed"
         if self._authorize_tool is not None:
             decision = self._authorize_tool(definition, context)
             if decision is not True:
@@ -139,6 +194,10 @@ class CapabilityResolution:
     def pending_revision(self, call_id: str) -> CapabilityResolution | None:
         return self._discovery.propose(call_id) if self._discovery is not None else None
 
+    def discard_pending(self, call_id: str | None = None) -> None:
+        if self._discovery is not None:
+            self._discovery.discard_pending(call_id)
+
     def publish_revision(self, revision: CapabilityResolution) -> None:
         if self._discovery is None:
             raise ValueError("tool discovery is not enabled")
@@ -151,6 +210,10 @@ class CapabilityResolution:
 
     def get(self, name: str) -> AgentTool | None:
         return self._tools_by_name.get(name)
+
+    def executor(self, name: str):
+        """The callable captured with this declaration, not a latest-name lookup."""
+        return self._executors_by_name[name]
 
     def definition(self, name: str) -> ToolDefinition | None:
         """Return the immutable-at-resolution policy used by this run."""
@@ -254,6 +317,7 @@ class CapabilityResolution:
         return current, None
 
     async def close(self) -> None:
+        self.discard_pending()
         try:
             if self.plugin_resolution is not None:
                 await self.plugin_resolution.close()
@@ -322,6 +386,7 @@ def _definition_payload(definition: ToolDefinition) -> dict[str, object]:
         "approval": definition.approval, "timeoutSeconds": definition.timeout_seconds,
         "outputLimit": definition.output_limit, "externalAllowed": definition.external_allowed,
         **({"searchHint": definition.search_hint} if definition.search_hint else {}),
+        **({"namespaceSummary": definition.namespace_summary} if getattr(definition, "namespace_summary", "") else {}),
     }
 
 
@@ -367,6 +432,7 @@ class CapabilityRegistry:
         authorize_call: Callable[[ToolDefinition, ToolContext, Mapping[str, object]], bool | str] | None = None,
         deferred_tool_names: frozenset[str] = frozenset(),
         restored_activation: Mapping[str, object] | None = None,
+        source_scope: str = "",
         service_grants: tuple[ServiceGrant, ...] = (),
         resource_close: Callable[[], Awaitable[None]] | None = None,
         skill_dependency_check=None,
@@ -391,11 +457,21 @@ class CapabilityRegistry:
         decisions: dict[str, str] = {}
         denied: dict[str, str] = {}
         restored_definitions = {}
+        restored_order: list[str] = []
+        diagnostics: list[dict[str, str]] = []
         if (discovery_enabled and restored_activation is not None and restored_activation.get("roleId") == role_id
-                and restored_activation.get("sessionKey") == session_key):
-            restored_tools = restored_activation.get("tools", [])
+                and restored_activation.get("sessionKey") == session_key
+                and restored_activation.get("sourceScope", "") == source_scope):
+            if restored_activation.get("format") == "tool-selection-v1":
+                restored_tools = restored_activation.get("selected", [])
+            elif not restored_activation.get("format"):
+                restored_tools = restored_activation.get("tools", [])
+            else:
+                restored_tools = []
             if isinstance(restored_tools, list):
-                restored_definitions = {item["name"]: item for item in restored_tools if isinstance(item, dict) and isinstance(item.get("name"), str)}
+                restored_definitions = {item["name"]: item for item in restored_tools
+                    if isinstance(item, dict) and isinstance(item.get("name"), str)}
+                restored_order = list(restored_definitions)
         for tool in registered_tools:
             definition = tool.definition
             if direct_exposure and definition.exposure == 'deferred':
@@ -428,7 +504,17 @@ class CapabilityRegistry:
                 continue
             candidates.append(tool)
             admitted_definitions[definition.name] = definition
-            restored = restored_definitions.get(definition.name) == _definition_payload(definition)
+            saved = restored_definitions.get(definition.name)
+            restored = saved == _definition_payload(definition) or (
+                saved is not None and saved == {"name": definition.name, "source": definition.source,
+                                               "fingerprint": definition_fingerprint(definition)})
+            if saved is not None and not restored:
+                diagnostics.append({"name": definition.name, "reason": "definition_changed"})
+            if restored and authorize_tool is not None:
+                from .provider import CancellationToken
+                if authorize_tool(definition, ToolContext(role_id, session_key, run_id, CancellationToken())) is not True:
+                    restored = False
+                    diagnostics.append({"name": definition.name, "reason": "revoked"})
             if definition.exposure == "deferred" and definition.name not in activated_tools and not restored:
                 denied[definition.name] = "tool is deferred and not activated" + (
                     f"; use tool_search(query='select:{definition.name}') and call it in the next provider request" if discovery_enabled else "")
@@ -442,6 +528,29 @@ class CapabilityRegistry:
             for name in sorted(unknown_tools):
                 denied[name] = "tool is not registered"
                 decisions[name] = "denied:unknown"
+
+        for name in restored_order:
+            if name not in admitted_definitions:
+                diagnostics.append({"name": name, "reason": "absent" if name not in names else "revoked"})
+        # Baseline first, then previous load order, then explicitly activated tools.
+        if restored_order:
+            order = {name: index for index, name in enumerate(restored_order)}
+            selected.sort(key=lambda tool: (admitted_definitions[tool.definition.name].exposure == "deferred",
+                order.get(tool.definition.name, len(order))))
+
+        if discovery is not None and restored_order:
+            from .search_budget import select_schema_budget
+            baseline = [admitted_definitions[tool.definition.name] for tool in selected
+                        if admitted_definitions[tool.definition.name].exposure != "deferred"]
+            deferred = [admitted_definitions[tool.definition.name] for tool in selected
+                        if admitted_definitions[tool.definition.name].exposure == "deferred"]
+            budget = select_schema_budget(deferred, baseline=baseline, new_limit=None)
+            skipped = {item.name for item in budget.skipped}
+            selected = [tool for tool in selected if tool.definition.name not in skipped]
+            for name in skipped:
+                denied[name] = "tool restoration exceeded the current declaration budget"
+                decisions[name] = "denied:budget"
+                diagnostics.append({"name": name, "reason": "budget"})
 
         execution_definitions = tuple(replace(admitted_definitions[tool.definition.name], input_schema=deepcopy(admitted_definitions[tool.definition.name].input_schema)) for tool in selected)
         snapshot_definitions = tuple(
@@ -499,7 +608,11 @@ class CapabilityRegistry:
             _authorize_tool=authorize_tool,
             _authorize_call=authorize_call,
             _candidate_tools=MappingProxyType({tool.definition.name: tool for tool in candidates}),
+            _executors_by_name=MappingProxyType({tool.definition.name: tool.execute for tool in candidates}),
+            _definition_fingerprints=MappingProxyType({tool.definition.name: definition_fingerprint(tool.definition) for tool in candidates}),
             _resource_close=resource_close,
+            source_scope=source_scope,
+            restoration_diagnostics=tuple(diagnostics[:128]),
         )
         if discovery is not None:
             snapshot = replace(snapshot, candidate_catalog_id=_candidate_catalog_id(snapshot))
@@ -530,6 +643,7 @@ class CapabilityRegistry:
         authorize_call: Callable[[ToolDefinition, ToolContext, Mapping[str, object]], bool | str] | None = None,
         deferred_tool_names: frozenset[str] = frozenset(),
         restored_activation: Mapping[str, object] | None = None,
+        source_scope: str = "",
         service_grants: tuple[ServiceGrant, ...] = (),
         resource_close: Callable[[], Awaitable[None]] | None = None,
         skill_dependency_check=None,
@@ -561,6 +675,7 @@ class CapabilityRegistry:
                 authorize_call=authorize_call,
                 deferred_tool_names=deferred_tool_names,
                 restored_activation=restored_activation,
+                source_scope=source_scope,
                 service_grants=service_grants,
                 resource_close=resource_close,
                 skill_dependency_check=skill_dependency_check,
@@ -571,6 +686,12 @@ class CapabilityRegistry:
             except Exception:
                 pass
             raise
+
+
+def definition_fingerprint(definition: ToolDefinition) -> str:
+    """Full safety declaration, not merely the provider-visible schema."""
+    return hashlib.sha256(json.dumps(_definition_payload(definition), ensure_ascii=False,
+        sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
 def _snapshot_generation(

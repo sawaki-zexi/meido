@@ -1,0 +1,65 @@
+name: Landing Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - web/landing/**
+      - web/src/landing/**
+      - web/src/styles.css
+      - web/src/vite-env.d.ts
+      - web/public/landing/**
+      - package.json
+      - package-lock.json
+      - tsconfig.json
+      - vite.landing.config.ts
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: landing-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      - uses: actions/configure-pages@v5
+        id: pages
+      - run: npm run build:landing -- --base "$LANDING_BASE"
+        env:
+          LANDING_BASE: ${{ steps.pages.outputs.base_path }}/
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: web/dist-landing
+
+  deploy:
+    name: Publish landing page
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment

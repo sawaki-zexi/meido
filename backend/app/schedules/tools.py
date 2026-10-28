@@ -34,11 +34,15 @@ class ScheduleTool:
     def bind(self, capabilities, role, configuration):
         self._bound = (capabilities, role, configuration)
 
-    def _freeze(self):
+    def _freeze(self, context):
         if self._bound is None:
             raise PermissionError('frozen execution capabilities are unavailable')
         capabilities, role, configuration = self._bound
-        current = capabilities.current()
+        current = context.capability_binding or capabilities.current()
+        if ((context.role_id, context.session_key, context.run_id) !=
+                (current.snapshot.role_id, current.snapshot.session_key, current.snapshot.run_id)
+                or context.capability_snapshot_id and context.capability_snapshot_id != current.snapshot.snapshot_id):
+            raise PermissionError('schedule request binding is stale')
         frozen = {'role': role.model_dump(mode='json', exclude={'modelConfig'}),
             'configuration': configuration.model_dump(mode='json', exclude={'apiKey'}) if configuration else None,
             'tools': [asdict(definition) for tool in current.tools
@@ -63,7 +67,7 @@ class ScheduleTool:
             received_source = 'hostReceivedAt' if type(received) in {int, float} else 'createdAt_fallback'
             received = float(received) if received_source == 'hostReceivedAt' else user.createdAt.timestamp()
             result = self.application().create(origin, dict(arguments), received_at=received,
-                received_source=received_source, frozen=self._freeze() if arguments['tier'] == 'soft' else {},
+                received_source=received_source, frozen=self._freeze(context) if arguments['tier'] == 'soft' else {},
                 admitted=lambda: not context.signal.is_cancelled() and self.authorized(context))
             return AgentToolResult(json.dumps(result, ensure_ascii=False), result)
         except (ValueError, KeyError, PermissionError) as error:

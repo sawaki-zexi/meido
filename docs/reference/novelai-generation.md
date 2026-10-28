@@ -1,20 +1,32 @@
 # NovelAI 生成、指定图片重生成与原来源交付契约
 
-状态：当前本地实现，#171/#172 受控验收，#173/#211 作者验证；独立审查与准确集成以固定提交记录为准，真实账号与生成费用未验收。最后核验：2026-10-24。事实来源：[应用](../../backend/app/novelai_generation/application.py)、[参数与请求](../../backend/app/novelai_generation/parameters.py)、[API](../../backend/app/novelai_generation/api.py)、[账本](../../backend/app/novelai_generation/ledger.py)、[SessionStore](../../backend/app/session_store.py)、[真实消息与渠道测试](../../tests/python/test_novelai_main.py)。完整目标见[NovelAI 规格](../specs/novelai-generation-spec.md)，验收命令与范围见[手册](../handbook/novelai-generation-acceptance.md)。
+状态：当前本地实现，#171/#172 受控验收，#173/#211 作者验证；独立审查与准确集成以固定提交记录为准，真实账号与生成费用未验收。最后核验：2026-10-26（#246 生图启用与就绪状态）。事实来源：[应用](../../backend/app/novelai_generation/application.py)、[参数与请求](../../backend/app/novelai_generation/parameters.py)、[API](../../backend/app/novelai_generation/api.py)、[账本](../../backend/app/novelai_generation/ledger.py)、[SessionStore](../../backend/app/session_store.py)、[真实消息与渠道测试](../../tests/python/test_novelai_main.py)。完整目标见[NovelAI 规格](../specs/novelai-generation-spec.md)，验收命令与范围见[手册](../handbook/novelai-generation-acceptance.md)。
 
 此实现覆盖独立服务、当前主人 txt2img/img2img、聊天中的自主表情生图、指定槽重生成、受管后台、角色附件、唯一原来源交付及持久历史。#173 增加完成主人回合后的场景 CG、受限标签库与独立许可的卡片图写回；普通聊天工具调用默认请求当前回合的一张 `chat_expression`，显式高级参数仍受同一 allowlist 校验，`scene_cg` 仍只能由宿主观察路径提交。
+
+## 历史参数复用与重生成（2026-10-28）
+
+对照 Shiori `d3acaed186b172a78a5892e0307e9affd89759f0` 的 `plugins/novelai/backend/service.py::regenerate` 与 `ui/useImageStudio.ts`：工作台和聊天抽屉恢复原图所有可变图像参数，包括 `qualityToggle` / `ucPreset`。公共偏好刷新不再静默改写已载入历史的模型、步数或其他参数；本次偏好可显式编辑或复制当前公共值。复用保留 seed；重新生成默认换 seed。
+
+服务端重生成先从角色归属的原 attempt 读取规范化图像快照，再应用本次明确编辑；`parameters: {}` 可重放原图而无需客户端重建参数。未编辑时出网内容仅 seed 改变，包括图生图底图、强度、噪声、采样、尺寸、模型、张数及质量/负向预设。当前模式、模型白名单、尺寸/步数、来源、底图归属、有限次数和新请求身份仍重新校验，旧记录不会授予新权限。图像参数不继承旧 scene 身份、投递或后台许可；替换单图仍只支持一张。
+
+本次 `qualityToggle` / `ucPreset` 覆盖只允许明确的本地主人 API 操作，不提供给聊天模型工具。旧记录未存偏好时使用当时协议的 `false` / `0`，不伪称未知历史包含新设置。
 
 ## 配置与权限
 
 应用服务固定 `https://image.novelai.net`；生产配置和工具不接受自定义 endpoint。独立系统 vault service 为 `meido.novelai`，键为 `token`。普通设置读取/保存、目录健康信息不读取旧 token，不访问账号诊断或试生成；只有明确设置、清空和实际单次 dispatch 使用凭据。设置/清空失败保留 cleanup pending 和不可用状态，不显示为已成功保存。
 
-`GET/PUT /api/services/novelai` 的公开字段是 enabled=false、tokenConfigured、credentialCleanupPending、revision、manualEnabled、allowTxt2Img=true、allowImg2Img=true、allowedModels、defaultModel、nsfwEnabled=false、nsfwModel=nai-diffusion-4-5-full、allowedSamplers、defaultSampler、maxPixels、maxSteps、dailyAttemptLimit、defaultSamples=1。`manualEnabled` 是插件级生图许可，同时控制聊天表情工具和主人手动工作台；工作台仍保留完整参数输入。PUT 另须 expectedRevision；变更推进版本并撤销在途资格。关闭某个模式会阻止对应手动请求和聊天表情请求；场景 CG 固定使用 txt2img，并在辅助调用前检查该开关。默认 curated v4.5、Euler ancestral、1,048,576像素、28步、账户20次/UTC日；full 模型只能由主人明确加入 allowlist。NSFW 默认模型模式也必须先满足 allowlist，只影响未指定模型时的默认选择，不改变角色标签 rating 许可。各值有有限上限；次数不是 Anlas 估价。
+`GET/PUT /api/services/novelai` 的公开字段是 enabled=false、tokenConfigured、credentialCleanupPending、revision、manualEnabled、allowTxt2Img=true、allowImg2Img=true、allowedModels、defaultModel、nsfwEnabled=false、nsfwModel=nai-diffusion-4-5-full、allowedSamplers、defaultSampler、maxPixels、maxSteps、dailyAttemptLimit、defaultSamples=1。`enabled` 是聊天表情工具和主人手动工作台的唯一全局开关；工作台仍保留完整参数输入。旧 `manualEnabled` 读取返回有效 `enabled`，写入时仅在未提交 `enabled` 时作为其别名。`manualDailyAttempts` 仍控制每个角色的手动/聊天尝试上限。`confirmManualConsumption` 继续兼容接收但不再准入，`manualConsentRevision` 仅为兼容字段，新保存不伪造确认。PUT 另须 expectedRevision；变更推进版本并撤销在途资格。关闭某个模式会阻止对应手动请求和聊天表情请求；场景 CG 固定使用 txt2img，并在辅助调用前检查该开关。默认 curated v4.5、Euler ancestral、1,048,576像素、28步、账户20次/UTC日；full 模型只能由主人明确加入 allowlist。NSFW 默认模型模式也必须先满足 allowlist，只影响未指定模型时的默认选择，不改变角色标签 rating 许可。各值有有限上限；次数不是 Anlas 估价。
 
 独立 token 操作是 `PUT /api/services/novelai/token`（严格仅 token 字段）及 DELETE 同路径。不存在 token 查看接口。请求和错误不回显秘密、原始响应正文或输入图片。
 
-角色 `agentConfig.novelai` 默认保留 `manualEnabled=false`、`manualDailyAttempts=10` 以兼容旧角色文件；当前运行时的聊天表情和主人手动工作台许可由插件公共设置 `manualEnabled` 与 `manualDailyAttempts` 统一控制。角色侧实际生图配置为 `sceneCgEnabled=false`、`sceneCgDailyAttempts=3`、`scenePromptModelConfigurationId=null`、`sceneCgPromptInstructions=""`（最多2000字符）、`autoWritebackRoleAssets=false`、`promptTagsEnabled=false`、`allowedPromptTagRatings=[general]`、`consentRevision=0`。启用消费能力须服务已配好且明确同意当前 revision。CG 还须明确选中存在的模型配置 ID，null/已删除 ID 不回退全局模型；补充要求只作为该角色的主人绘图偏好加入 CG 辅助模型 system prompt，不进入场景事实消息，也不影响聊天表情或手动工作台。宿主会在 CG 提交前追加并大小写去重第三人称、电影构图、角色入镜 tags 及第一人称/POV/自拍负向 tags。写回须同时启用 CG。降低额度不清除计数。旧客户端省略整个字段或只提交部分字段时保留既有许可；新增标签默认值不改变旧 #172 请求的权限指纹。实际许可变化在角色文件写入前推进私有持久 epoch，关闭再开启也不能复活旧冻结工具。手工写 enabledTools 不能绕过许可。
+角色 `agentConfig.novelai` 默认保留 `manualEnabled=false`、`manualDailyAttempts=10` 以兼容旧角色文件；当前运行时的聊天表情和主人手动工作台由插件公共设置 `enabled` 与 `manualDailyAttempts` 统一控制。角色侧实际生图配置为 `sceneCgEnabled=false`、`sceneCgDailyAttempts=3`、`scenePromptModelConfigurationId=null`、`sceneCgPromptInstructions=""`（最多2000字符）、`autoWritebackRoleAssets=false`、`promptTagsEnabled=false`、`allowedPromptTagRatings=[general]`、`consentRevision=0`。角色 `consentRevision` 保留兼容但不再影响新请求。CG 须开启角色开关、服务就绪、允许文生图，并明确选中存在的模型配置 ID，null/已删除 ID 不回退全局模型；补充要求只作为该角色的主人绘图偏好加入 CG 辅助模型 system prompt，不进入场景事实消息，也不影响聊天表情或手动工作台。宿主会在 CG 提交前追加并大小写去重第三人称、电影构图、角色入镜 tags 及第一人称/POV/自拍负向 tags。写回须同时启用 CG。降低额度不清除计数。旧客户端省略整个字段或只提交部分字段时保留既有许可；新增标签默认值不改变旧 #172 请求的权限指纹。实际许可变化在角色文件写入前推进私有持久 epoch，关闭再开启也不能复活旧冻结工具。手工写 enabledTools 不能绕过许可。
 
 工具 `generate_image` 为 direct / risk external / source builtin:novelai / external_allowed=false，外层330秒、输出4000字符。普通聊天只需要必填英文 `prompt` 和可选 `negative_prompt`：角色自己判断这一回合是否值得展示表情，决定调用时只描述当前情绪、动作和构图，不要求主人填写参数，也不应每回合调用。工具 schema 仍保留 mode、尺寸、模型等可选字段，以兼容主人明确要求的历史参数复用；普通聊天省略这些字段时，宿主固定 `txt2img`、一张图默认、默认模型/采样器/尺寸/步数/seed、`intent=chat_expression` 和原回复投递，显式高级字段仍受同一 allowlist 和来源校验。完整参数仍由主人手动工作台/API 使用。只接受宿主真实主人当前输入：桌面 SQLite run 必须由真实 `/messages` 写入 humanInputSource=desktop_owner；渠道须真实当前主人 owner context、账号/配对/目录代际及原线程。访客、定时、内部完成、主动或伪造 source 不能获得消费权。执行前、外部投递前和本地发布前均重新检查；冻结版本只能收权。
+
+公开配置新增 `availability={available,code,message}`，仅判断本地配置，不读取凭据、不请求供应商。code 为 `ready`、`service_disabled`、`credential_missing`、`credential_cleanup_pending` 或 `generation_modes_disabled`。启用插件即注册 direct 工具；工具描述再结合角色和日额度解释暂不可用原因，缺凭据或额度不足不隐藏能力。执行时仍重查来源、修订、模式和额度，不能由描述授予权限。设置、插件列表与工作台显示对应状态；工作台还检查历史中的今日用量。参数/凭据变更允许未来的新请求，旧冻结任务仍被撤销。
+
+历史、单条查询和工具结果新增 `errorMessage`，由受控 `errorCode` 生成：401/403 提示凭据或权限，402 提示 Anlas/额度，429 提示请求频繁，5xx 提示供应商暂不可用，网络异常说明结果无法确认。保留原 status/consumption；不展示原始错误正文，也不据此重试。未出网的本地次数耗尽返回 HTTP 429 和明确提示，原 requestId 仍可按既有规则重查。
 
 ## 参数与身份
 
@@ -56,7 +68,7 @@
 
 完成后的可选候选登记遇到本地I/O或SQLite写锁时，保留已完成聊天及原渠道正常发布，不触发辅助/生成或自动重放。该错误边界不吞接受主人时的同步seal或已拥有任务的取消收尾责任。
 
-辅助调用与生图属于同一 attempt、同一个 300 秒 TaskRuntime deadline。明确 ID 的 rich adapter 只请求一次，tools=()、max_tokens=600，辅助阶段至多30秒；没有单独模型守护进程、重试或第二次生成 POST。输入仅当前 user、完成 assistant、角色描述及本来源最小前态，不含其他会话；角色补充要求作为独立主人偏好放入 system prompt。输出严格 JSON、总16KiB，拒绝重复/额外字段、工具调用、无效枚举或越界文本。返回时以 humanRun、scene revision、模型 epoch、角色/来源许可和标签版本再次校验；配置修改/删除、关闭再开及迟到结果不能获得新资格。宿主在标签扩写后追加 CG 构图约束，并在提交前大小写不敏感去重。
+辅助调用与生图属于同一 attempt、同一个 300 秒 TaskRuntime deadline。候选创建时即冻结服务修订和角色修订；即使正在等待上一任务清理，后续参数、凭据及角色开关变化也不能让旧候选使用新配置。明确 ID 的 rich adapter 只请求一次，tools=()、max_tokens=600，辅助阶段至多30秒；没有单独模型守护进程、重试或第二次生成 POST。输入仅当前 user、完成 assistant、角色描述及本来源最小前态，不含其他会话；角色补充要求作为独立主人偏好放入 system prompt。输出严格 JSON、总16KiB，拒绝重复/额外字段、工具调用、无效枚举或越界文本。返回时以 humanRun、scene revision、模型 epoch、角色/来源许可和标签版本再次校验；配置修改/删除、关闭再开及迟到结果不能获得新资格。宿主在标签扩写后追加 CG 构图约束，并在提交前大小写不敏感去重。
 
 none/closed、冷却和重复视觉仍是已发生辅助调用的 CG 尝试，账户与 CG 日额度不退；只有辅助和生成均未出网才释放次数。same 必须匹配当前场景，需距上次生成 dispatch 至少5个真实主人回合；started/changed可越过冷却，但不能越过已 dispatch 的 visual_key 墓碑、预算或许可。visual 墓碑最多每角色10,000条，满时拒绝新的生成；不删除旧墓碑以放行重复。重启不继续未确认候选，也不发布旧迟到 CG；已有 sent receipt 仍仅修复原消息事实。
 

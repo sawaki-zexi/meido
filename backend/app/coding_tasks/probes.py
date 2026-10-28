@@ -144,7 +144,7 @@ class NativeProfileProbes:
                     jobs = record.get('resourceJobs')
                     if jobs is not None and not any(named_job_active(name) for name in jobs):
                         record = self.update(record['id'], cleanupState='complete', resourceJobs=[])
-                origin = TaskOrigin(**record['origin'])
+                origin = TaskOrigin.from_dict(record['origin'])
                 identifier = record.get('runtimeTaskId')
                 if not identifier:
                     matches = [item for item in self.tasks.list(origin, kind='coding_qualification') if item.description == record['id']]

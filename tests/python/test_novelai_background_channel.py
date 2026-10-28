@@ -16,7 +16,7 @@ def test_background_owner_channel_returns_text_then_one_original_media_receipt(n
     from backend.app.channels.napcat import NapCatAdapter, NapCatConfig
     from backend.app.channels.transports import NapCatWebSocketTransport
     from backend.app.chat_attachments import resolve_attachment
-    from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+    from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
     from websockets.asyncio.server import serve
     _, service = novelai_main
     lose_media_receipt = receipt_case == 'lost'
@@ -58,6 +58,7 @@ def test_background_owner_channel_returns_text_then_one_original_media_receipt(n
         async def stream_structured_messages(self, messages, configuration, tools):
             if not any(item['role'] == 'tool' for item in messages):
                 yield ModelToolCall('channel-background', 'generate_image', {**service.request, 'background': not foreground_fallback})
+                yield ModelResponseDone("tool_use")
             else:
                 if foreground_fallback:
                     raise RuntimeError('controlled final model failure after received image')

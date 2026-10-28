@@ -4,6 +4,7 @@ import { AttachmentImage } from "../../ui/AttachmentImage";
 import { MessageMarkdown } from "../../ui/MessageMarkdown";
 import { ChannelAttachments } from "./ChannelAttachments";
 import type { ConversationMessage, MessagePresentation } from "./channelMessagePresentation";
+import { DeliveryDetails } from "./DeliveryDetails";
 
 export function PhoneMessage({ message, view, roleId, timeLabel, delivery, source, onMediaLoad }: {
   message: ConversationMessage;
@@ -19,7 +20,7 @@ export function PhoneMessage({ message, view, roleId, timeLabel, delivery, sourc
   const [image, setImage] = useState<{ href: string; name: string } | null>(null);
   const openImage = (href: string, name: string) => setImage({ href, name });
   const hasBody = Boolean(message.content || view.attachments.length || view.quotedAttachments.length || view.replyTo || view.mentionedNames.length);
-  const quotedText = view.replyTarget?.content || view.quotedText || (view.quotedAttachments.length ? "附件" : "原文未加载");
+  const quotedText = view.quotedText || view.replyTarget?.content || (view.quotedAttachments.length ? "附件" : "原文未加载");
   const longQuote = quotedText.length > 40 || quotedText.split("\n").length > 2;
   return <>
     {timeLabel && <div className="phone-message-date"><time dateTime={message.createdAt}>{timeLabel}</time></div>}
@@ -36,6 +37,7 @@ export function PhoneMessage({ message, view, roleId, timeLabel, delivery, sourc
           {!hasBody && !view.failed && <p className="phone-message-placeholder">{message.status === "streaming" ? "正在回复…" : "[非文本消息]"}</p>}
         </div>}
         {view.attachments.length > 0 && <div className="phone-message-media"><ChannelAttachments roleId={roleId} attachments={view.attachments} onMediaLoad={onMediaLoad} onOpenImage={openImage} /></div>}
+        <DeliveryDetails metadata={message.metadata} />
         <div className="phone-message-meta">
           {view.failed && <span className="phone-message-failure">回复失败</span>}
           {delivery && <span className={`phone-message-delivery ${message.metadata.deliveryStatus}`}>{delivery}</span>}
