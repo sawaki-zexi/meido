@@ -509,3 +509,19 @@ it('shows loading states while settings and history are still pending', async ()
   releaseHistory?.({ body: page([]) });
   await screen.findByText('暂无生图历史。');
 });
+
+it('exposes the response failure code and does not claim nonexistent images were saved', async () => {
+  const failed = { ...record, status: 'unknown', deliveryStatus: 'suppressed', attachments: [],
+    errorCode: 'invalid_response_type', errorMessage: 'NovelAI 返回的内容不是可识别的图片或图片包。' };
+  fakeBackend({
+    'GET /api/services/novelai': () => ({ body: configuration }),
+    'GET /api/roles/r1/generations': () => ({ body: page([failed]) }),
+  });
+  const user = userEvent.setup();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '角色' })]} initialRoleId="r1" />);
+  expect(await within(screen.getByLabelText('当前作品')).findByText('invalid_response_type')).toBeVisible();
+  await user.click(screen.getByText('图片信息'));
+  expect(screen.getByText('投递：已停止投递；尚未保存可用图片')).toBeVisible();
+  expect(screen.getByText(record.attemptId)).toBeVisible();
+  expect(screen.queryByText(/图片保留在历史/)).not.toBeInTheDocument();
+});

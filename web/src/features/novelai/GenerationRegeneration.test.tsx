@@ -114,7 +114,7 @@ it('accepts explicit background work and queries or stops its exact attempt with
   await user.click(within(record).getByRole('button', { name: '停止此生成' }));
   expect(await within(record).findByText('消费结果不确定', { exact: false })).toBeInTheDocument();
   expect(within(record).getByText('消费：已出网，可能计费；未确认实际扣费。')).toBeInTheDocument();
-  expect(within(record).getByText('投递：已取消展示，图片保留在历史')).toBeInTheDocument();
+  expect(within(record).getByText('投递：已停止投递；尚未保存可用图片')).toBeInTheDocument();
   const posts = calls.filter((call) => call.method === 'POST');
   expect(posts).toHaveLength(2);
   expect(posts[0].body).toMatchObject({ parameters: { background: true } });
@@ -245,9 +245,9 @@ it('keeps an explicit stop visible when an earlier exact-attempt query returns l
   await user.click(await screen.findByRole('button', { name: '查询此生成' }));
   await waitFor(() => expect(finishQuery).toBeDefined());
   await user.click(screen.getByRole('button', { name: '停止此生成' }));
-  await screen.findByText('投递：已取消展示，图片保留在历史');
+  await screen.findByText('投递：已停止投递；尚未保存可用图片');
   await act(async () => { finishQuery?.({ body: { generation: running } }); });
-  expect(screen.getByText('投递：已取消展示，图片保留在历史')).toBeInTheDocument();
+  expect(screen.getByText('投递：已停止投递；尚未保存可用图片')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: '停止此生成' })).not.toBeInTheDocument();
 });
 

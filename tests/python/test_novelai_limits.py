@@ -10,11 +10,15 @@ import pytest
 from novelai_fixtures import novelai_environment, novelai_service  # noqa: F401
 
 
-@pytest.mark.parametrize('failure', ['compressed_response', 'raw_over_32mib', 'archive_17_entries', 'inflate_over_64mib', 'actual_pixels_over_request', 'invalid_object_base64'])
+@pytest.mark.parametrize('failure', ['compressed_response', 'http_inflate_over_32mib', 'raw_over_32mib', 'archive_17_entries', 'inflate_over_64mib', 'actual_pixels_over_request', 'invalid_object_base64'])
 def test_real_http_untrusted_media_limits_reject_once_without_secret_or_late_display(novelai_service, failure):
     service = novelai_service
     if failure == 'compressed_response':
         service.peer.headers['Content-Encoding'] = 'gzip'
+    elif failure == 'http_inflate_over_32mib':
+        import gzip
+        service.peer.headers['Content-Encoding'] = 'gzip'
+        service.peer.body = gzip.compress(b'x' * (32 * 1024 * 1024 + 1))
     elif failure == 'raw_over_32mib':
         service.peer.body = b'x' * (32 * 1024 * 1024 + 1)
     elif failure == 'invalid_object_base64':

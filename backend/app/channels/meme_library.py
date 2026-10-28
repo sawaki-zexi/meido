@@ -145,7 +145,7 @@ class ChatMemeLibrary:
                         # One invalid entry must not make other genuine images invisible.
                         continue
 
-    def candidates(self, role_id, query='', context=None):
+    def candidates(self, role_id, query='', context=None, *, limit=12):
         del context
         if not isinstance(query, str) or len(query) > 2000:
             raise ValueError('invalid finite meme query')
@@ -153,12 +153,13 @@ class ChatMemeLibrary:
         for category, entry, path, raw, media in self._items(role_id):
             digest = _hash(raw)
             desc = entry.get('desc', '')
-            aliases = tuple(value for value in entry.get('aliases', []) if isinstance(value, str))
+            aliases = entry.get('aliases', [])
+            aliases = tuple(value for value in aliases if isinstance(value, str)) if isinstance(aliases, list) else ()
             private = self.library.root(role_id).parent / '.meido-memes' / 'chat' / (digest + '.json')
             if private.exists():
                 try:
                     metadata = json.loads(_read(private, 16 * 1024))
-                    if metadata.get('roleId') == role_id and metadata.get('sha256') == digest:
+                    if isinstance(metadata, dict) and metadata.get('roleId') == role_id and metadata.get('sha256') == digest:
                         desc = metadata.get('description') or desc
                 except (OSError, ValueError, PermissionError):
                     pass
@@ -173,7 +174,7 @@ class ChatMemeLibrary:
             if not query.strip() or score:
                 result.append((score, path.name, candidate))
         result.sort(key=lambda item: (-item[0], item[1]))
-        return tuple(item[2] for item in result[:12])
+        return tuple(item[2] for item in result[:max(0, min(limit, MAX_SCAN))])
 
     def valid(self, role_id, candidate):
         try:

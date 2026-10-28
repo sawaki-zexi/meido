@@ -202,6 +202,18 @@ def test_preview_cache_is_shared_but_never_authority_for_replaced_root(api):
     assert current(client)['materials'][0]['id'] != item['id']
 
 
+def test_preview_revalidates_original_after_process_observations_are_lost(api):
+    client, service, _ = api
+    item = put(client).json()['material']
+    # An already open gallery retains its URL across a backend restart or cache
+    # eviction. Retrying that original must not require an unrelated list call.
+    service._observations.clear()
+    preview = client.get(item['imageUrl'])
+    assert preview.status_code == 200 and preview.content == picture()
+    service._observations.clear()
+    assert client.get('/api/roles/bob/materials/' + item['id'] + '/image').status_code == 404
+
+
 def test_delete_rechecks_replaced_file_under_shared_lock(api, monkeypatch):
     from contextlib import contextmanager
     client, service, chat = api

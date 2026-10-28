@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Role, RoleIllustration } from '../../api/types';
 import { roleAssets } from '../../api/roleAssets';
-import { errorMessage } from '../../api/client';
+import { ApiError, errorMessage } from '../../api/client';
 import { Dialog } from '../../ui/Dialog';
 import './roleIllustrations.css';
 import { RoleMoodBindingEditor } from './RoleMoodBindingEditor';
@@ -15,6 +15,8 @@ function Illustrations({ role, onRoleSaved }: { role: Role; onRoleSaved: (role: 
   const [query, setQuery] = useState('');
   const [categoryName, setCategoryName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [needsRead, setNeedsRead] = useState(false);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<RoleIllustration | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -23,26 +25,51 @@ function Illustrations({ role, onRoleSaved }: { role: Role; onRoleSaved: (role: 
   const input = useRef<HTMLInputElement>(null);
   const alive = useRef(true);
   const pending = useRef(false);
+  const readVersion = useRef(0);
+  const controller = useRef<AbortController | null>(null);
   useEffect(() => { setCurrent(role); }, [role]);
-  useEffect(() => { alive.current = true; void roleAssets.list(role.id).then(({ role: fresh }) => {
-    if (alive.current) { setCurrent(fresh); onRoleSaved(fresh); }
-  }).catch(cause => { if (alive.current) setError(errorMessage(cause, '无法读取角色插画')); });
-  return () => { alive.current = false; }; }, [role.id]);
+  useEffect(() => {
+    alive.current = true; void load();
+    return () => { alive.current = false; readVersion.current++; controller.current?.abort(); };
+  }, [role.id]);
   const accept = (saved: Role) => {
     if (!alive.current) return;
     setCurrent(saved); onRoleSaved(saved);
     setSelected(item => saved.illustrations?.find(value => item?.id === value.id) ?? null);
   };
-  const run = async (action: () => Promise<{ role: Role }>, success: string) => {
+  async function load() {
     if (pending.current) return;
+    const version = ++readVersion.current;
+    controller.current?.abort();
+    controller.current = new AbortController();
+    setLoading(true); setError(''); setMessage('');
+    try {
+      const { role: saved } = await roleAssets.list(role.id, controller.current.signal);
+      if (!alive.current || version !== readVersion.current) return;
+      accept(saved); setNeedsRead(false); setRemoving(false); setCategoryRemoval(null);
+    } catch (cause) {
+      if (alive.current && version === readVersion.current) { setError(errorMessage(cause, '无法读取角色插画')); setNeedsRead(true); }
+    } finally {
+      if (alive.current && version === readVersion.current) setLoading(false);
+    }
+  }
+  const blocked = busy || loading || needsRead;
+  const run = async (action: () => Promise<{ role: Role }>, success: string) => {
+    if (pending.current || loading || needsRead) return;
     pending.current = true; setBusy(true); setError(''); setMessage('');
     try { const { role: saved } = await action(); if (!alive.current) return;
       accept(saved); setMessage(success); setRemoving(false); return true;
-    } catch (cause) { if (alive.current) setError(errorMessage(cause, '操作未确认，请刷新后检查')); }
+    } catch (cause) { if (alive.current) {
+      setError(errorMessage(cause, '操作未确认，请刷新后检查'));
+      if (!(cause instanceof ApiError) || cause.status === 404 || cause.status === 409 || cause.status >= 500) setNeedsRead(true);
+    } }
     finally { pending.current = false; if (alive.current) setBusy(false); }
   };
   const categories = current.illustrationCategories ?? ['未分类'];
   const images = current.illustrations ?? [];
+  const setCategorySending = (category: string, enabled: boolean) => void run(
+    () => roleAssets.update(role.id, { categorySend: { [category]: enabled } }),
+    enabled ? '角色可以在获准会话中发送此分类插画。' : '已禁止角色发送此分类插画。');
   const shown = images.filter(item => (!filter || item.category === filter) && item.name.normalize('NFKC').toLowerCase().includes(query.normalize('NFKC').toLowerCase()));
   const renameCategory = async () => {
     const name = categoryName.trim(); if (!filter || !name) return;
@@ -83,34 +110,34 @@ function Illustrations({ role, onRoleSaved }: { role: Role; onRoleSaved: (role: 
   };
   return <section className="role-illustrations" aria-label={`${role.name}的角色插画`}>
     <header><div><h2>角色插画与聊天背景</h2><p>原尺寸保存插画；聊天背景独立于头像、卡片图和表情素材。</p></div>
-      <button type="button" disabled={busy} onClick={() => input.current?.click()}>上传插画</button>
-      <input ref={input} hidden type="file" multiple aria-label="上传角色插画" accept="image/png,image/jpeg,image/webp" onChange={event => {
+      <button type="button" disabled={blocked} onClick={() => input.current?.click()}>上传插画</button>
+      <input ref={input} hidden type="file" multiple disabled={blocked} aria-label="上传角色插画" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" onChange={event => {
         const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = '';
         if (files.length) uploadFiles(files);
       }} />
     </header>
     {error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}
+    {loading && <p role="status">正在读取角色插画…</p>}
+    {needsRead && <p>请先刷新插画库核对操作结果，不会自动重复提交。</p>}
     <div className="illustration-toolbar"><label>搜索插画<input aria-label="搜索插画" value={query} onChange={event => setQuery(event.target.value)} /></label>
       <label>插画分类<select aria-label="插画分类" value={filter} onChange={event => setFilter(event.target.value)}><option value="">全部分类</option>{categories.map(name => <option key={name}>{name}</option>)}</select></label>
-      <button type="button" disabled={busy || !current.chatBackgroundId} onClick={() => void run(() => roleAssets.background(role.id, null), '已恢复默认聊天背景，插画仍保留。')}>恢复默认聊天背景</button>
-      <button type="button" disabled={busy} onClick={() => void run(() => roleAssets.list(role.id), '插画库已刷新。')}>刷新插画库</button>
+      <button type="button" disabled={blocked || !current.chatBackgroundId} onClick={() => void run(() => roleAssets.background(role.id, null), '已恢复默认聊天背景，插画仍保留。')}>恢复默认聊天背景</button>
+      <button type="button" disabled={busy || loading} onClick={() => void load()}>刷新插画库</button>
     </div>
-    {filter && <label className="illustration-send-permission"><input type="checkbox" checked={Boolean(current.illustrationCategorySend?.[filter])} disabled={busy} onChange={event => {
-      const enabled = event.target.checked;
-      void run(() => roleAssets.update(role.id, { categorySend: { [filter]: enabled } }), enabled ? '角色可以在获准会话中发送此分类插画。' : '已禁止角色发送此分类插画。');
-    }} />允许角色发送此分类插画（仍遵循会话及渠道权限）</label>}
-    {Object.keys(current.moodIllustrationBindings ?? {}).length > 0 && <label className="field">默认心情<select aria-label="默认心情" value={current.defaultMood} disabled={busy} onChange={event => {
+    {filter && <label className="illustration-send-permission"><input type="checkbox" checked={Boolean(current.illustrationCategorySend?.[filter])} disabled={blocked}
+      onChange={event => setCategorySending(filter, event.target.checked)} />允许角色发送此分类插画（仍遵循会话及渠道权限）</label>}
+    {Object.keys(current.moodIllustrationBindings ?? {}).length > 0 && <label className="field">默认心情<select aria-label="默认心情" value={current.defaultMood} disabled={blocked} onChange={event => {
       const mood = event.target.value;
       void run(() => roleAssets.update(role.id, { defaultMood: mood }), '默认心情已保存。');
     }}>{Object.keys(current.moodIllustrationBindings ?? {}).map(mood => <option key={mood}>{mood}</option>)}</select></label>}
     <details><summary>管理插画分类</summary><div className="illustration-toolbar"><label>分类名称<input maxLength={80} aria-label="插画分类名称" value={categoryName} onChange={event => setCategoryName(event.target.value)} /></label>
-      <button type="button" disabled={busy || !categoryName.trim()} onClick={() => { void run(() => roleAssets.update(role.id, { categories: [...categories, categoryName.trim()] }), '插画分类已添加。'); setCategoryName(''); }}>添加分类</button>
-      <button type="button" disabled={busy || !filter || !categoryName.trim()} onClick={renameCategory}>重命名所选分类</button>
-      <button type="button" disabled={busy || !filter || categories.length < 2} onClick={() => {
+      <button type="button" disabled={blocked || !categoryName.trim()} onClick={() => { void run(() => roleAssets.update(role.id, { categories: [...categories, categoryName.trim()] }), '插画分类已添加。'); setCategoryName(''); }}>添加分类</button>
+      <button type="button" disabled={blocked || !filter || !categoryName.trim()} onClick={renameCategory}>重命名所选分类</button>
+      <button type="button" disabled={blocked || !filter || categories.length < 2} onClick={() => {
         const remaining = categories.filter(name => name !== filter);
         void run(() => roleAssets.update(role.id, { categories: remaining, bindings: Object.fromEntries(images.filter(item => item.category === filter).map(item => [item.id, remaining[0]])) }), '分类已移除，其中插画已移入其他分类。'); setFilter('');
       }}>移除所选分类并保留插画</button>
-      <button type="button" className="danger" disabled={busy || !filter} onClick={() => setCategoryRemoval({ name: filter, images: images.filter(item => item.category === filter) })}>移除所选分类及其中插画</button>
+      <button type="button" className="danger" disabled={blocked || !filter} onClick={() => setCategoryRemoval({ name: filter, images: images.filter(item => item.category === filter) })}>移除所选分类及其中插画</button>
     </div></details>
     {shown.length === 0 && <p>{images.length ? '没有符合条件的插画。' : '暂无角色插画。'}</p>}
     <div className="illustration-grid">{shown.map(item => <button type="button" key={item.id} className="illustration-card" aria-label={`查看插画 ${item.name}`} onClick={() => { setSelected(item); setRemoving(false); }}>
@@ -119,17 +146,20 @@ function Illustrations({ role, onRoleSaved }: { role: Role; onRoleSaved: (role: 
     {categoryRemoval && <Dialog title="移除分类及插画" modalFocus onClose={() => { if (!busy) setCategoryRemoval(null); }}>
       <p>确认移除「{categoryRemoval.name}」分类及其中 {categoryRemoval.images.length} 张插画？背景和心情绑定会同时清理；原文件保留在本地恢复区，仅支持手动恢复。最后一个分类移除后会保留空的「未分类」。</p>
       <div className="form-actions"><button type="button" disabled={busy} onClick={() => setCategoryRemoval(null)}>取消</button>
-        <button type="button" className="danger" disabled={busy} onClick={() => void removeCategoryImages()}>确认移除分类及插画</button></div>
+        <button type="button" className="danger" disabled={blocked} onClick={() => void removeCategoryImages()}>确认移除分类及插画</button></div>
     </Dialog>}
     {selected && <Dialog title={selected.name} modalFocus onClose={() => { if (!busy) { setSelected(null); setRemoving(false); } }}>
       <img className="illustration-preview" src={selected.url} alt={`${selected.name} 原图`} />
       {error && <p role="alert">{error}</p>}
-      <label className="field">所属分类<select value={selected.category} disabled={busy} onChange={event => void run(() => roleAssets.update(role.id, { bindings: { [selected.id]: event.target.value } }), '插画已移动。')}>{categories.map(name => <option key={name}>{name}</option>)}</select></label>
-      <RoleMoodBindingEditor key={`${selected.id}:${JSON.stringify(current.moodIllustrationBindings)}`} role={current} illustrationId={selected.id} busy={busy}
+      {needsRead && <button type="button" disabled={busy || loading} onClick={() => void load()}>刷新插画库</button>}
+      <label className="field">所属分类<select value={selected.category} disabled={blocked} onChange={event => void run(() => roleAssets.update(role.id, { bindings: { [selected.id]: event.target.value } }), '插画已移动。')}>{categories.map(name => <option key={name}>{name}</option>)}</select></label>
+      <label className="illustration-send-permission"><input type="checkbox" checked={Boolean(current.illustrationCategorySend?.[selected.category])} disabled={blocked}
+        onChange={event => setCategorySending(selected.category, event.target.checked)} />允许角色发送此分类插画（仍遵循会话及渠道权限）</label>
+      <RoleMoodBindingEditor key={`${selected.id}:${JSON.stringify(current.moodIllustrationBindings)}`} role={current} illustrationId={selected.id} busy={blocked}
         onSave={bindings => void run(() => roleAssets.update(role.id, { moodBindings: bindings }), '心情插画绑定已保存。')} />
-      <div className="form-actions"><a href={selected.url} download={selected.name}>下载原图</a><button type="button" disabled={busy} onClick={() => void run(() => roleAssets.background(role.id, selected.id), '已设为聊天背景。')}>设为聊天背景</button>
-        <button type="button" disabled={busy} onClick={() => void run(() => roleAssets.avatar(role.id, selected.id), '已设为角色头像。')}>设为角色头像</button><button type="button" className="danger" disabled={busy} onClick={() => setRemoving(true)}>移出插画库</button></div>
-      {removing && <div role="alert"><p>确认移出这张插画？若为聊天背景将恢复默认；原文件保留在本地恢复区。</p><button type="button" disabled={busy} onClick={() => setRemoving(false)}>取消</button><button type="button" className="danger" disabled={busy} onClick={() => void run(() => roleAssets.remove(role.id, selected.id), '插画已移出，原文件保留在本地恢复区。')}>确认移出插画</button></div>}
+      <div className="form-actions"><a href={selected.url} download={selected.name}>下载原图</a><button type="button" disabled={blocked} onClick={() => void run(() => roleAssets.background(role.id, selected.id), '已设为聊天背景。')}>设为聊天背景</button>
+        <button type="button" disabled={blocked} onClick={() => void run(() => roleAssets.avatar(role.id, selected.id), '已设为角色头像。')}>设为角色头像</button><button type="button" className="danger" disabled={blocked} onClick={() => setRemoving(true)}>移出插画库</button></div>
+      {removing && <div role="alert"><p>确认移出这张插画？若为聊天背景将恢复默认；原文件保留在本地恢复区。</p><button type="button" disabled={busy} onClick={() => setRemoving(false)}>取消</button><button type="button" className="danger" disabled={blocked} onClick={() => void run(() => roleAssets.remove(role.id, selected.id), '插画已移出，原文件保留在本地恢复区。')}>确认移出插画</button></div>}
     </Dialog>}
   </section>;
 }

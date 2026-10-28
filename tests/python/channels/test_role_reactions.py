@@ -126,6 +126,86 @@ def test_desktop_stream_hides_protocol_and_persists_reaction_attachment(meme_tur
             asyncio.run(main._proactive.close())
 
 
+@pytest.mark.parametrize('revoke', [False, True])
+@pytest.mark.parametrize('surface', ['desktop', 'qq'])
+def test_owner_imported_meme_is_available_in_ordinary_reply_and_rechecks_category(meme_turn, monkeypatch, revoke, surface):
+    state = meme_turn
+    raw = image_bytes('GIF')
+    monkeypatch.setattr(main, 'session_manager', SessionManager(state.roles, state.sessions))
+    client = TestClient(main.app)
+    path = f'/api/roles/{state.role.id}'
+    before = client.get(path + '/materials').json()
+    uploaded = client.post(path + '/materials', content=raw,
+        params={'category': 'happy', 'description': '开心挥手', 'expectedRevision': before['revision']},
+        headers={'content-type': 'image/gif', 'x-material-filename': 'wave.gif'})
+    assert uploaded.status_code == 200, uploaded.text
+    assert client.get(uploaded.json()['material']['imageUrl']).content == raw
+    assert not state.roles.get(state.role.id).illustrations
+
+    class MemeReply:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            match = re.search(r'meme-[a-f0-9]{16}:', messages[0]['content'])
+            assert match, 'An owner-imported meme must be selectable without an illustration or file tool grant'
+            if revoke:
+                manifest = state.root / 'manifest.json'
+                value = json.loads(manifest.read_text(encoding='utf-8'))
+                value['categories']['happy']['enabled'] = False
+                manifest.write_text(json.dumps(value), encoding='utf-8')
+            yield ModelTextDelta('给你表情！<meme:' + match.group()[:-1] + '>')
+            yield ModelResponseDone('stop')
+
+    monkeypatch.setattr(main, 'model_adapter', MemeReply())
+    try:
+        if surface == 'desktop':
+            response = client.post(path + '/messages', json={'content': '发个开心表情'})
+            assert response.status_code == 200 and 'event: assistant_completed' in response.text
+            events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
+            reply = next(event['message'] for event in reversed(events) if 'message' in event)
+            assert not state.operations
+        else:
+            asyncio.run(main._dispatch_channel_payload(state.adapter.account_id,
+                payload('meme-reply', sender='22', image=False), source_adapter=state.adapter))
+            thread = state.channels.get_thread_by_chat(state.role.id, state.adapter.account_id, '100', chat_type='group')
+            reply = state.sessions.list_messages(thread.session_key)[-1].model_dump()
+            sends = [params for op, params in state.operations if op == 'send_group_msg']
+            assert len(sends) == 1 and reply['metadata']['deliveryStatus'] == 'sent'
+            sent_images = [segment for segment in sends[0]['message'] if segment['type'] == 'image']
+            assert len(sent_images) == (0 if revoke else 1)
+            if sent_images:
+                assert base64.b64decode(sent_images[0]['data']['file'].removeprefix('base64://')) == raw
+        assert reply['content'] == '给你表情！'
+        attachments = reply.get('metadata', {}).get('attachments', [])
+        assert len(attachments) == (0 if revoke else 1)
+        if attachments:
+            assert client.get(path + '/attachments/' + attachments[0]['id']).content == raw
+    finally:
+        if main._proactive is not None:
+            asyncio.run(main._proactive.close())
+
+
+def test_unsafe_optional_meme_manifest_does_not_break_desktop_text_reply(meme_turn, monkeypatch):
+    state = meme_turn
+    manifest = state.root / 'manifest.json'
+    original = state.root.parent / 'original-manifest.json'
+    manifest.rename(original)
+    manifest.symlink_to(original)
+    monkeypatch.setattr(main, 'session_manager', SessionManager(state.roles, state.sessions))
+    class TextReply:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            yield ModelTextDelta('文字回复仍然可用。')
+            yield ModelResponseDone('stop')
+    monkeypatch.setattr(main, 'model_adapter', TextReply())
+    try:
+        response = TestClient(main.app).post(f'/api/roles/{state.role.id}/messages', json={'content': '你好'})
+        assert 'event: assistant_completed' in response.text
+        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
+        reply = next(event['message'] for event in reversed(events) if 'message' in event)
+        assert reply['content'] == '文字回复仍然可用。' and not reply.get('metadata', {}).get('attachments')
+    finally:
+        if main._proactive is not None:
+            asyncio.run(main._proactive.close())
+
+
 def test_natural_qq_uses_enabled_role_illustrations_without_tools(natural, monkeypatch):
     state = natural
     _, raw = illustration(state)

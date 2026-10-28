@@ -6,7 +6,7 @@ import pytest
 from novelai_fixtures import novelai_environment, novelai_main, novelai_service  # noqa: F401
 
 
-@pytest.mark.parametrize('mode', ['txt2img', 'img2img'])
+@pytest.mark.parametrize('mode', ['txt2img', 'img2img', 'self_portrait'])
 def test_real_messages_tool_loop_delivers_one_image_and_next_model_gets_only_safe_reference(novelai_main, monkeypatch, mode):
     from backend.app import main
     from backend.app.ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
@@ -20,6 +20,15 @@ def test_real_messages_tool_loop_delivers_one_image_and_next_model_gets_only_saf
     arguments = dict(service.request)
     attachment_ids = []
     base_image = None
+    portrait = None
+    if mode == 'self_portrait':
+        import io
+        from PIL import Image
+        image = io.BytesIO()
+        Image.new('RGB', (64, 64), '#aabbcc').save(image, format='PNG')
+        portrait = image.getvalue()
+        service.roles.set_avatar(service.role.id, portrait, 'image/png')
+        arguments['prompt'] = '1girl, silver hair, blue eyes, maid dress, smile, portrait'
     if mode == 'img2img':
         import io
         from PIL import Image
@@ -42,7 +51,18 @@ def test_real_messages_tool_loop_delivers_one_image_and_next_model_gets_only_saf
             results = [item for item in messages if item['role'] == 'tool']
             if not results:
                 assert 'generate_image' in {item['function']['name'] for item in tools}
+                call_name = 'inspect_role_image' if portrait else 'generate_image'
+                call_args = {'asset_id': 'avatar'} if portrait else arguments
+                if portrait:
+                    assert call_name in {item['function']['name'] for item in tools}
                 delta = {'tool_calls': [{'index': 0, 'id': 'novelai-main-call', 'type': 'function',
+                    'function': {'name': call_name, 'arguments': json.dumps(call_args)}}]}
+            elif portrait and len(results) == 1:
+                import base64
+                images = [block['image_url']['url'] for message in messages if isinstance(message.get('content'), list)
+                    for block in message['content'] if block.get('type') == 'image_url']
+                assert images == ['data:image/png;base64,' + base64.b64encode(portrait).decode()]
+                delta = {'tool_calls': [{'index': 0, 'id': 'novelai-portrait-call', 'type': 'function',
                     'function': {'name': 'generate_image', 'arguments': json.dumps(arguments)}}]}
             else:
                 result = json.loads(results[-1]['content'])
@@ -54,7 +74,7 @@ def test_real_messages_tool_loop_delivers_one_image_and_next_model_gets_only_saf
             self.send_header('Content-Type', 'text/event-stream')
             self.end_headers()
             self.wfile.write(('data: ' + json.dumps({'choices': [{'delta': delta, 'finish_reason': None}]})
-                + '\n\ndata: ' + json.dumps({'choices': [{'delta': {}, 'finish_reason': 'tool_calls' if not results else 'stop'}]})
+                + '\n\ndata: ' + json.dumps({'choices': [{'delta': {}, 'finish_reason': 'tool_calls' if 'tool_calls' in delta else 'stop'}]})
                 + '\n\ndata: [DONE]\n\n').encode())
     server = ThreadingHTTPServer(('127.0.0.1', 0), Provider)
     thread = threading.Thread(target=server.serve_forever)
@@ -74,8 +94,11 @@ def test_real_messages_tool_loop_delivers_one_image_and_next_model_gets_only_saf
         server.server_close()
         thread.join()
     assert 'assistant_completed' in response.text, response.text
-    assert len(service.peer.requests) == 1 and len(provider_requests) == 2
+    assert len(service.peer.requests) == 1 and len(provider_requests) == (3 if portrait else 2)
     dispatched = service.peer.requests[0]['body']
+    if portrait:
+        assert dispatched['input'] == arguments['prompt']
+        assert dispatched['parameters']['v4_prompt']['caption']['base_caption'] == arguments['prompt']
     assert service.peer.requests[0]['authorization'] == 'Bearer fixture-secret-171'
     if mode == 'img2img':
         import base64
