@@ -7,6 +7,7 @@ that boundary intact, and does not grant permission to send an illustration.
 from __future__ import annotations
 
 from dataclasses import replace
+import base64
 import json
 
 from .file_tools import ReadFileTool
@@ -29,6 +30,29 @@ class _RoleImageReader(ReadFileTool):
     def _execute(self, path, arguments, context):
         # Never return arbitrary text if a corrupt/mislabelled asset is present.
         return self._image(path, context, '当前角色的形象参考')
+
+
+def read_role_image_bytes(roles, role, asset_id, *, authorized):
+    """Resolve a catalog ID for image generation using the same bounded reader.
+
+    No model vision support is needed to send pixels to an image model. The
+    caller owns generation authorization; this reader owns role/file isolation.
+    """
+    from .provider import CancellationToken
+    from .tools import ToolContext
+    selected = next((item for item in role_image_catalog(role) if item['asset_id'] == asset_id), None)
+    if selected is None:
+        raise PermissionError('role image is not in the current catalog')
+    root = roles.root / role.id
+    path = root / ('avatar' if asset_id == 'avatar' else 'card-image') if asset_id in {'avatar', 'card'} else roles.illustration_path(role.id, asset_id)
+    def current(context):
+        latest = roles.get(role.id)
+        return authorized() and latest is not None and selected in role_image_catalog(latest)
+    reader = _RoleImageReader(role.id, root, multimodal=True, authorized=current)
+    result = reader._run({'path': str(path)}, ToolContext(role.id, f'role:{role.id}', '', CancellationToken()))
+    if result.is_error or not result.images:
+        raise PermissionError('role image is unavailable')
+    return base64.b64decode(result.images[0].data_base64), result.images[0].media_type
 
 
 class InspectRoleImageTool:

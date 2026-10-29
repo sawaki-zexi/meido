@@ -16,7 +16,8 @@ from pathlib import Path
 
 from ..channels.consolidation import finish_io
 from ..channels.models import TargetKind, target_from_chat
-from ..chat_attachments import resolve_attachment
+from ..chat_attachments import resolve_attachment, save_attachment
+from ..agent_runtime.role_image_tool import read_role_image_bytes, role_image_catalog
 from ..session_store import AttachmentConflict
 from ..task_runtime import TaskOrigin
 from ..task_runtime.runtime import TaskBudget, TaskOutcome
@@ -204,6 +205,25 @@ class NovelaiApplication:
     def _input(self, source: GenerationContext, request):
         if request['mode'] != 'img2img':
             return None
+        if request.get('base_role_image_id'):
+            if source.channel_source is not None and source.ui_action:
+                raise PermissionError('channel regeneration cannot add a new role image')
+            role = self.roles.get(source.origin.role_id)
+            asset_id = request['base_role_image_id']
+            content, media_type = read_role_image_bytes(self.roles, role, asset_id,
+                authorized=lambda: not self._sealed(source) and source.denial(self.channels) is None)
+            validate_image(content, max_pixels=16 * 1024 * 1024)
+            extension = {'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp',
+                'image/gif': 'gif', 'image/bmp': 'bmp'}.get(media_type)
+            if extension is None:
+                raise ValueError('unsupported role image format')
+            # Persist the actual input: later regeneration must use these pixels,
+            # even if the owner replaces the role's avatar or illustration.
+            snapshot = save_attachment(self.roles.workspace_path(role.id), 'role-reference.' + extension,
+                media_type, content, output=True)
+            request['base_attachment_id'] = snapshot['id']
+            request['baseRoleImageId'] = request.pop('base_role_image_id')
+            return content
         identifier = request['base_attachment_id']
         if identifier not in source.attachment_ids:
             raise PermissionError('img2img input is not an allowed current-source attachment')
@@ -247,7 +267,7 @@ class NovelaiApplication:
 
     async def submit(self, source: GenerationContext, arguments: dict[str, object], *, signal=None, expected_revision=None,
                      expected_role_revision=None, fingerprint=None, regeneration=None, publication_ready=True,
-                     delivery_mode=None, scene_input=None):
+                     delivery_mode=None, scene_input=None, expected_role_image=None):
         handover_error = None
         with self._lock:
             if not source.ui_action and {'qualityToggle', 'ucPreset'} & arguments.keys():
@@ -258,6 +278,8 @@ class NovelaiApplication:
                 raise GenerationUnavailable(availability)
             if expected_role_revision is not None and self._role_revision(role) != expected_role_revision:
                 raise PermissionError('frozen generation role permission changed')
+            if expected_role_image is not None and expected_role_image not in role_image_catalog(role):
+                raise PermissionError('frozen role image changed')
             if source.denial(self.channels):
                 raise PermissionError('original generation source was revoked')
             if source.channel_source is not None and delivery_mode != 'history_only' and (self.channel_media_supported is None
@@ -521,7 +543,10 @@ class NovelaiApplication:
         identifier = replay_request(view['parameters'], parameters).get('base_attachment_id')
         # A desktop owner may choose a current owned image, but managing channel
         # history cannot expand the original host-captured channel input grant.
-        attachment_ids = (original.attachment_ids if original.channel_source is not None
+        saved_role_input = (identifier == view['parameters'].get('base_attachment_id')
+            and view['parameters'].get('baseRoleImageId'))
+        attachment_ids = (original.attachment_ids | frozenset([identifier]) if saved_role_input
+            else original.attachment_ids if original.channel_source is not None
             else frozenset([identifier]) if isinstance(identifier, str) else frozenset())
         return GenerationContext(type(origin)(role_id, origin.session_key,
             source_thread_id=origin.source_thread_id, source_account_id=origin.source_account_id,

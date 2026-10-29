@@ -20,6 +20,8 @@ class GenerationRequest(BaseModel):
     mode: Literal['txt2img', 'img2img']
     negative_prompt: str = Field(default='', max_length=4000)
     base_attachment_id: str | None = Field(default=None, pattern=r'^[0-9a-f]{32}$')
+    base_role_image_id: str | None = Field(default=None, min_length=1, max_length=80,
+        description='图生图底图：inspect_role_image 目录里的 avatar、card 或本角色插画 ID；与 base_attachment_id 二选一，不接受路径或 URL。')
     size_preset: Literal['square', 'landscape', 'portrait', 'custom'] = 'square'
     custom_width: StrictInt | None = Field(default=None, ge=64, le=1024)
     custom_height: StrictInt | None = Field(default=None, ge=64, le=1024)
@@ -58,9 +60,9 @@ def normalize_request(arguments: dict[str, object], settings: NovelaiSettings) -
     if request.mode == 'img2img' and not settings.allowImg2Img:
         raise ValueError('img2img mode is disabled')
     if request.mode == 'img2img':
-        if request.base_attachment_id is None:
-            raise ValueError('img2img requires an owned current-source attachment')
-    elif {'base_attachment_id', 'strength', 'noise'} & request.model_fields_set:
+        if (request.base_attachment_id is None) == (request.base_role_image_id is None):
+            raise ValueError('img2img requires exactly one current attachment or role image')
+    elif {'base_attachment_id', 'base_role_image_id', 'strength', 'noise'} & request.model_fields_set:
         raise ValueError('txt2img does not accept image input settings')
     if request.size_preset == 'custom':
         width, height = request.custom_width, request.custom_height
@@ -118,7 +120,7 @@ def replay_request(saved: dict[str, object], changes: dict[str, object]) -> dict
     parameters.setdefault('ucPreset', 0)
     parameters.update(changes)
     if parameters.get('mode') == 'txt2img':
-        for key in ('base_attachment_id', 'strength', 'noise'):
+        for key in ('base_attachment_id', 'base_role_image_id', 'strength', 'noise'):
             if key not in changes:
                 parameters.pop(key, None)
     if parameters.get('size_preset') != 'custom':

@@ -93,7 +93,7 @@ def test_asset_admission_failure_retains_its_own_duty_after_media_and_runtime_ac
         else:
             assert client.get(f'/api/roles/{service.role.id}/card-image').content == chosen
     assert len(service.peer.requests) == 1
-    assert len([request for request in model.requests if request['model'] == 'fixture-scene']) == 1
+    assert len([request for request in model.requests if request['model'] == 'fixture-scene']) == 2
     assert len([message for message in service.sessions.list_messages(origin.session_key) if message.messageType == 'internal_completion']) == 1
 
 
@@ -131,7 +131,7 @@ def test_cg_without_a_permitted_card_result_has_no_pending_writeback_duty(scene_
     assert app.ledger.usage(service.role.id)['reservedMediaBytes'] == 0
     assert service.roles.get(service.role.id).cardImageUrl is None
     assert len(service.peer.requests) == (1 if result == 'not_permitted' else 0)
-    assert len([request for request in model.requests if request['model'] == 'fixture-scene']) == 1
+    assert len([request for request in model.requests if request['model'] == 'fixture-scene']) == (2 if result == 'not_permitted' else 1)
 
 
 def test_explicit_asset_consent_sets_only_current_card_and_accounts_for_its_extra_copy(scene_main):
@@ -296,4 +296,4 @@ def test_asset_receipt_sqlite_failure_recovers_after_host_rebuild_without_copy_o
     assert page['usage']['roleAssetBytes'] == generation['attachments'][0]['size']
     assert page['usage']['reservedMediaBytes'] == 0
     assert len(service.peer.requests) == 1
-    assert len([request for request in peer.requests if request['model'] == 'fixture-scene']) == 1
+    assert len([request for request in peer.requests if request['model'] == 'fixture-scene']) == 2

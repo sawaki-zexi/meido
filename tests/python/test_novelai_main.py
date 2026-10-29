@@ -6,7 +6,7 @@ import pytest
 from novelai_fixtures import novelai_environment, novelai_main, novelai_service  # noqa: F401
 
 
-@pytest.mark.parametrize('mode', ['txt2img', 'img2img', 'self_portrait'])
+@pytest.mark.parametrize('mode', ['txt2img', 'img2img', 'self_portrait', 'role_img2img', 'card_img2img', 'illustration_img2img'])
 def test_real_messages_tool_loop_delivers_one_image_and_next_model_gets_only_safe_reference(novelai_main, monkeypatch, mode):
     from backend.app import main
     from backend.app.ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
@@ -21,14 +21,23 @@ def test_real_messages_tool_loop_delivers_one_image_and_next_model_gets_only_saf
     attachment_ids = []
     base_image = None
     portrait = None
-    if mode == 'self_portrait':
+    asset_id = 'avatar'
+    role_input = mode in {'role_img2img', 'card_img2img', 'illustration_img2img'}
+    if mode == 'self_portrait' or role_input:
         import io
         from PIL import Image
         image = io.BytesIO()
         Image.new('RGB', (64, 64), '#aabbcc').save(image, format='PNG')
         portrait = image.getvalue()
-        service.roles.set_avatar(service.role.id, portrait, 'image/png')
+        if mode == 'illustration_img2img':
+            role = service.roles.add_illustration(service.role.id, portrait, 'image/png', '日常立绘')
+            asset_id = role.illustrations[-1].id
+        else:
+            service.roles.set_avatar(service.role.id, portrait, 'image/png', card=mode == 'card_img2img')
+            asset_id = 'card' if mode == 'card_img2img' else 'avatar'
         arguments['prompt'] = '1girl, silver hair, blue eyes, maid dress, smile, portrait'
+        if role_input:
+            arguments.update(mode='img2img', base_role_image_id=asset_id, strength=.45, noise=.1)
     if mode == 'img2img':
         import io
         from PIL import Image
@@ -52,7 +61,7 @@ def test_real_messages_tool_loop_delivers_one_image_and_next_model_gets_only_saf
             if not results:
                 assert 'generate_image' in {item['function']['name'] for item in tools}
                 call_name = 'inspect_role_image' if portrait else 'generate_image'
-                call_args = {'asset_id': 'avatar'} if portrait else arguments
+                call_args = {'asset_id': asset_id} if portrait else arguments
                 if portrait:
                     assert call_name in {item['function']['name'] for item in tools}
                 delta = {'tool_calls': [{'index': 0, 'id': 'novelai-main-call', 'type': 'function',
@@ -108,6 +117,11 @@ def test_real_messages_tool_loop_delivers_one_image_and_next_model_gets_only_saf
             images = [block['image_url']['url'] for message in messages if isinstance(message.get('content'), list)
                 for block in message['content'] if block.get('type') == 'image_url']
             assert images == ['data:image/png;base64,' + base64.b64encode(base_image).decode()]
+    elif role_input:
+        import base64
+        assert dispatched['action'] == 'img2img'
+        assert base64.b64decode(dispatched['parameters']['image']) == portrait
+        assert dispatched['parameters']['strength'] == .45
     else:
         assert dispatched['action'] == 'generate' and 'image' not in dispatched['parameters']
     messages = client.get(f'/api/roles/{service.role.id}/session').json()['messages']

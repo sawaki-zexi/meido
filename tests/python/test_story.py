@@ -29,8 +29,12 @@ class Director:
             current_scene=StoryScene('room', '客厅', (context.role_snapshot['id'], 'player')))
 
 
-def test_story_create_play_save_gallery_retry_and_reopen(novelai_service, tmp_path):
+@pytest.mark.parametrize('allow_full', [False, True])
+def test_story_create_play_save_gallery_retry_and_reopen(novelai_service, tmp_path, allow_full):
     service = novelai_service
+    if allow_full:
+        service.application.settings.save({'allowedModels': ['nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full']},
+            expected_revision=service.application.settings.public()['revision'])
     director = Director()
     # Integrate the real shared role library: mood-bound portrait must beat the
     # older card image, and the chosen background must not become a character.
@@ -82,6 +86,7 @@ def test_story_create_play_save_gallery_retry_and_reopen(novelai_service, tmp_pa
             assert story['backgroundResource']['status'] == 'ready'
             assert (await client.get(story['backgroundResource']['path'])).headers['content-type'] == 'image/png'
             assert len(service.peer.requests) == 1
+            assert service.peer.requests[0]['body']['model'] == ('nai-diffusion-4-5-full' if allow_full else 'nai-diffusion-4-5-curated')
             await command('stories.create', payload)  # Exact replay is read-only after commit.
             await story_app.drain()
             assert len(service.peer.requests) == 1

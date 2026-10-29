@@ -36,7 +36,8 @@ def scene_main(novelai_main, monkeypatch, request):
         'visual_key': 'garden-day', 'visual_description': 'A sunny garden', 'prompt': 'blue sky, garden',
         'negative_prompt': 'rain', 'size_preset': 'square'}, aux_accepted=threading.Event(),
         aux_release=threading.Event(), aux_second=threading.Event(), aux_block=False, manual=False,
-        aux_text=None, aux_status=200, aux_tool=False)
+        aux_text=None, aux_status=200, aux_tool=False, prompt_text=None, prompt_block=False,
+        prompt_accepted=threading.Event(), finish_reason='stop')
     class Provider(BaseHTTPRequestHandler):
         # A cancelled HTTP client can connect without sending a request. Keep
         # the original non-daemon reader join finite during fixture shutdown.
@@ -46,12 +47,20 @@ def scene_main(novelai_main, monkeypatch, request):
             request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             peer.requests.append(request)
             if request['model'] == 'fixture-scene':
-                peer.aux_accepted.set()
-                if len([item for item in peer.requests if item['model'] == 'fixture-scene']) == 2:
+                converting = 'visual_description' in json.loads(request['messages'][1]['content'])
+                (peer.prompt_accepted if converting else peer.aux_accepted).set()
+                if len([item for item in peer.requests if item['model'] == 'fixture-scene'
+                        and 'visual_description' not in json.loads(item['messages'][1]['content'])]) == 2:
                     peer.aux_second.set()
-                if peer.aux_block:
+                if peer.aux_block or converting and peer.prompt_block:
                     peer.aux_release.wait(8)
-                content = peer.aux_text if peer.aux_text is not None else json.dumps(peer.observation)
+                prompt_fields = {'prompt', 'negative_prompt', 'size_preset'}
+                content = json.dumps({key: value for key, value in peer.observation.items()
+                    if (key in prompt_fields) == converting})
+                if peer.aux_text is not None:
+                    content = peer.aux_text
+                if converting and peer.prompt_text is not None:
+                    content = peer.prompt_text
                 if peer.aux_status != 200:
                     self.send_response(peer.aux_status)
                     self.send_header('Content-Type', 'application/json')
@@ -71,7 +80,7 @@ def scene_main(novelai_main, monkeypatch, request):
             self.end_headers()
             try:
                 self.wfile.write(('data: ' + json.dumps({'choices': [{'delta': delta, 'finish_reason': None}]})
-                    + '\n\ndata: ' + json.dumps({'choices': [{'delta': {}, 'finish_reason': 'tool_calls' if manual else 'stop'}]})
+                    + '\n\ndata: ' + json.dumps({'choices': [{'delta': {}, 'finish_reason': 'tool_calls' if manual else peer.finish_reason if request['model'] == 'fixture-scene' else 'stop'}]})
                     + '\n\ndata: [DONE]\n\n').encode())
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass

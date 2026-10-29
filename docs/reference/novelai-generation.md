@@ -40,7 +40,7 @@ Meido 的头像、卡片图、插画位于角色 `workspace` 之外，不能靠�
 
 所有手动/API 参数对象额外字段拒绝；角色、来源、token、endpoint、path 等不能由模型传入。手动/API 参数包括英文 ASCII prompt/negative_prompt（各最多4000字符）、mode、img2img 当前附件ID、尺寸、1–28整数 steps、uint32 seed、allowlist model/sampler，以及仅 img2img 的有限 strength/noise。聊天 `generate_image` 的普通调用只使用 prompt/negative_prompt，宿主在同一归一化入口补齐上述受控字段并设置 `intent=chat_expression`；schema 中的高级字段只作为兼容输入，仍受同一 allowlist、附件归属和来源校验，不能改变场景或服务许可。真实主人聊天工具在参数归一化前会读取本次宿主确认的当前主人消息，按角色标签库扩写正负 tags；扩写后的 prompt/negative_prompt 才会写入 attempt/history。工作台 UI 请求和指定图片重生成不读取当前主人消息做隐式手动扩写；场景 CG 使用候选中冻结的主人消息走独立 CG 扩写路径。bool/字符串不代替数字，NaN/Infinity 拒绝。省略 seed 时宿主先生成并持久再发送。
 
-尺寸为 square=1024×1024、landscape=1216×832、portrait=832×1216，或每边64–1024且64倍数的 custom；面积受当前服务上限约束。`samples` 默认使用服务级 `defaultSamples`（1–4，默认1）、手动聊天/工作台最多4，CG与单槽 replacement 固定1；账本按一次 attempt 保存和展示全部返回图片，v4.5 完整请求常数保留在 parameters.py。当前消息/宿主核验引用图片ID才可成为工具底图；桌面来源的显式 UI 可选择本角色当前可解析的 owned 附件。渠道重生成仅继承宿主冻结的原来源图片 allowlist，并重新校验当前来源许可与角色附件文件；桌面管理历史不能将未获原渠道授权的私有图片加入该 allowlist。输入最多10MiB并完整解码，拒绝 raw path/URL、跨角色或普通工具调用选择任意历史附件。
+尺寸为 square=1024×1024、landscape=1216×832、portrait=832×1216，或每边64–1024且64倍数的 custom；面积受当前服务上限约束。`samples` 默认使用服务级 `defaultSamples`（1–4，默认1）、手动聊天/工作台最多4，CG与单槽 replacement 固定1；账本按一次 attempt 保存和展示全部返回图片，v4.5 完整请求常数保留在 parameters.py。工具底图可用当前消息/宿主核验引用的 `base_attachment_id`，或 `inspect_role_image` 目录中的 `base_role_image_id`（avatar、card、本角色插画 ID）；图生图必须二选一。角色底图使用与看图工具相同的有界读取和链接检查，冻结为本角色附件后再提交实际像素；较大的图片沿用看图读取器的压缩。重生成保留该底图副本，不跟随之后的头像或立绘变化。普通文生图不自动读取参考像素。桌面来源的显式 UI 可选择本角色当前可解析的 owned 附件。渠道重生成仅继承原来源图片 allowlist 及该次已冻结的角色底图副本，并重新校验当前来源许可与角色附件文件；桌面管理历史不能加入其他私有附件。输入最多10MiB并完整解码，拒绝 raw path/URL、跨角色或普通工具调用选择任意历史附件。
 
 一次实际 human run 只有一个持久消费意图 claim，换 call/intent 也不能再消费。同调用/同 UI requestId 参数一致返回原记录，冲突拒绝；当前授权仍须成立。重查先找保存的 snapshot，不重新随机 seed，不因原底图随后删除而重新消费。新的明确 UI 操作才创建新的请求键。
 
@@ -76,7 +76,9 @@ HTTP 支持 identity/gzip/deflate，压缩传输与 HTTP 解码后的 spool 分�
 
 完成后的可选候选登记遇到本地I/O或SQLite写锁时，保留已完成聊天及原渠道正常发布，不触发辅助/生成或自动重放。该错误边界不吞接受主人时的同步seal或已拥有任务的取消收尾责任。
 
-辅助调用与生图属于同一 attempt、同一个 300 秒 TaskRuntime deadline。候选创建时即冻结服务修订和角色修订；即使正在等待上一任务清理，后续参数、凭据及角色开关变化也不能让旧候选使用新配置。明确 ID 的 rich adapter 只请求一次，tools=()、max_tokens=600，辅助阶段至多30秒；没有单独模型守护进程、重试或第二次生成 POST。输入仅当前 user、完成 assistant、角色描述及本来源最小前态，不含其他会话；角色补充要求作为独立主人偏好放入 system prompt。输出严格 JSON、总16KiB，拒绝重复/额外字段、工具调用、无效枚举或越界文本。返回时以 humanRun、scene revision、模型 epoch、角色/来源许可和标签版本再次校验；配置修改/删除、关闭再开及迟到结果不能获得新资格。宿主在标签扩写后追加 CG 构图约束，并在提交前大小写不敏感去重。
+辅助调用与生图属于同一 attempt、同一个 300 秒 TaskRuntime deadline。候选创建时冻结服务修订、角色许可、完整角色设定（简介、背景、性格、行为规则和回复约束）及本会话最近六条已完成对话。明确 ID 的 rich adapter 分两步执行：先观察场景、保留角色可见外观与动作（max_tokens=600），只有通过冷却和去重判定的场景再转换英文正负 tags 与画幅（max_tokens=1000）。转换阶段再次收到完整角色设定、近期对话及视觉描述，角色绘图补充要求作为独立主人偏好放入 system prompt。每步 tools=()、至多30秒、输出至多16KiB；没有重试，图片 POST 仍至多一次。拒绝截断响应、重复/额外 JSON 字段、工具调用、无效枚举或越界文本。两步开始、接收及提交时均校验 humanRun、scene revision、模型 epoch、角色/来源许可和标签版本；配置修改/删除、关闭再开及迟到结果不能获得新资格。宿主在标签扩写后追加 CG 构图约束，并在提交前大小写不敏感去重。
+
+Story 使用建立故事时冻结的角色设定；Director 明确将角色已知外观及标志配饰转换为英文 tags，只有剧情明确变化才覆盖。图片适配器对齐 Shiori，优先使用已在服务允许列表中的 `nai-diffusion-4-5-full`；未允许时沿用当前服务模型，不扩大允许列表。同场景已有成功人物 CG 的复用行为保持。以上机制传递角色身份信息，不构成生成后的相似度评分或效果保证。
 
 none/closed、冷却和重复视觉仍是已发生辅助调用的 CG 尝试，账户与 CG 日额度不退；只有辅助和生成均未出网才释放次数。same 必须匹配当前场景，需距上次生成 dispatch 至少5个真实主人回合；started/changed可越过冷却，但不能越过已 dispatch 的 visual_key 墓碑、预算或许可。visual 墓碑最多每角色10,000条，满时拒绝新的生成；不删除旧墓碑以放行重复。重启不继续未确认候选，也不发布旧迟到 CG；已有 sent receipt 仍仅修复原消息事实。
 

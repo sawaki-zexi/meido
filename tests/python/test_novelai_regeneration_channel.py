@@ -11,7 +11,7 @@ from PIL import Image
 from novelai_fixtures import novelai_environment, novelai_main, novelai_service  # noqa: F401
 
 
-@pytest.mark.parametrize('base_source', ['desktop_private', 'original_input', 'deleted_original_input'])
+@pytest.mark.parametrize('base_source', ['desktop_private', 'original_input', 'deleted_original_input', 'role_private', 'role_snapshot'])
 def test_channel_regeneration_uses_only_currently_available_original_source_images(novelai_main, monkeypatch, base_source):
     from backend.app import main
     from backend.app.channels.host import ChannelHost
@@ -34,10 +34,11 @@ def test_channel_regeneration_uses_only_currently_available_original_source_imag
     service.application.lock_for = main._runtime_role_lock
     async def no_avatar(*args): return None
     monkeypatch.setattr(main, '_fetch_channel_avatar', no_avatar)
+    original_arguments = dict(service.request)
     class Model:
         async def stream_structured_messages(self, messages, configuration, tools):
             if not any(item['role'] == 'tool' for item in messages):
-                yield ModelToolCall('spec172-original', 'generate_image', service.request)
+                yield ModelToolCall('spec172-original', 'generate_image', original_arguments)
                 yield ModelResponseDone("tool_use")
             else:
                 assert json.loads(messages[-1]['content'])['status'] == 'succeeded'
@@ -46,6 +47,10 @@ def test_channel_regeneration_uses_only_currently_available_original_source_imag
     sends = []
     original_input = io.BytesIO()
     Image.new('RGB', (64, 64), '#aabbcc').save(original_input, format='PNG')
+    if base_source == 'role_snapshot':
+        service.roles.set_avatar(service.role.id, original_input.getvalue(), 'image/png')
+        original_arguments.update(mode='img2img', base_role_image_id='avatar')
+    channel_upload = base_source in {'original_input', 'deleted_original_input'}
 
     async def scenario():
         parent_done = asyncio.Event()
@@ -57,7 +62,7 @@ def test_channel_regeneration_uses_only_currently_available_original_source_imag
                 'user_id': 123, 'group_id': 456, 'message_id': 71, 'raw_message': 'draw',
                 'message': [{'type': 'at', 'data': {'qq': '999'}}, {'type': 'text', 'data': {'text': 'draw'}},
                     *([{'type': 'image', 'data': {'url': 'https://fixture.qpic.cn/source.png', 'file': 'source.png'}}]
-                        if base_source != 'desktop_private' else [])],
+                        if channel_upload else [])],
                 'sender': {'nickname': 'owner'}}))
             async for raw in socket:
                 request = json.loads(raw)
@@ -66,7 +71,7 @@ def test_channel_regeneration_uses_only_currently_available_original_source_imag
         async with serve(peer, '127.0.0.1', 0) as server:
             transport = NapCatWebSocketTransport(f'ws://127.0.0.1:{server.sockets[0].getsockname()[1]}', request_timeout=1)
             adapter = NapCatAdapter(NapCatConfig(account.account_id), transport=transport)
-            if base_source != 'desktop_private':
+            if channel_upload:
                 from backend.app.channels.models import DownloadedMedia
                 async def download_source_media(event, **kwargs):
                     assert len(event.attachments) == 1
@@ -85,7 +90,7 @@ def test_channel_regeneration_uses_only_currently_available_original_source_imag
                 original_messages = service.sessions.list_messages(thread.session_key)
                 assert len([m for m in original_messages if m.role == 'user']) == 1
                 user = next(m for m in original_messages if m.role == 'user')
-                if base_source == 'desktop_private':
+                if not channel_upload:
                     assert not user.metadata.get('attachments')
                 image = io.BytesIO()
                 Image.new('RGB', (64, 64), '#cc1234').save(image, format='PNG')
@@ -95,7 +100,10 @@ def test_channel_regeneration_uses_only_currently_available_original_source_imag
                     assert upload.status_code == 200, upload.text
                     private_identifier = upload.json()['id']
                     assert all(private_identifier not in str(m.metadata) for m in original_messages)
-                    identifier = private_identifier if base_source == 'desktop_private' else user.metadata['attachments'][0]['id']
+                    identifier = user.metadata['attachments'][0]['id'] if channel_upload else private_identifier
+                    if base_source == 'role_snapshot':
+                        identifier = original['parameters']['base_attachment_id']
+                        service.roles.set_avatar(service.role.id, image.getvalue(), 'image/png')
                     if base_source == 'deleted_original_input':
                         from pathlib import Path
                         Path(resolve_attachment(service.roles.workspace_path(service.role.id), identifier)['path']).unlink()
@@ -105,10 +113,14 @@ def test_channel_regeneration_uses_only_currently_available_original_source_imag
                         'sourceAttemptId': original['attemptId'], 'expectedAttachmentId': original['attachments'][0]['id'],
                         'parameters': {**service.request, 'seed': 172, 'mode': 'img2img',
                             'base_attachment_id': identifier, 'strength': .7, 'noise': .2}}
+                    if base_source == 'role_private':
+                        role = service.roles.add_illustration(service.role.id, image.getvalue(), 'image/png')
+                        body['parameters'].pop('base_attachment_id')
+                        body['parameters']['base_role_image_id'] = role.illustrations[-1].id
                     response = await client.post(endpoint, json=body)
                     history = await client.get(f'/api/roles/{service.role.id}/generations')
                     assert history.status_code == 200, history.text
-                    if base_source != 'original_input':
+                    if base_source not in {'original_input', 'role_snapshot'}:
                         assert response.status_code == 403, response.text
                         assert len(service.peer.requests) == 1 and len(sends) == 1
                         assert len(history.json()['generations']) == 1

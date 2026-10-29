@@ -92,7 +92,7 @@ def test_regeneration_keeps_an_explicit_new_seed_and_rejects_reusing_the_old_see
         assert len(service.peer.requests) == (2 if expected_status == 200 else 1)
 
 
-@pytest.mark.parametrize('mode', ['txt2img', 'img2img'])
+@pytest.mark.parametrize('mode', ['txt2img', 'img2img', 'role_img2img'])
 def test_regeneration_restores_all_original_image_parameters_after_defaults_change(novelai_main, mode):
     import io
     from PIL import Image
@@ -108,10 +108,19 @@ def test_regeneration_restores_all_original_image_parameters_after_defaults_chan
             headers={'Content-Type': 'image/png', 'x-attachment-filename': 'base.png'})
         assert uploaded.status_code == 200, uploaded.text
         parameters.update(mode=mode, base_attachment_id=uploaded.json()['id'], strength=.45, noise=.1)
+    if mode == 'role_img2img':
+        image = io.BytesIO()
+        Image.new('RGB', (64, 64), '#ff0000').save(image, format='PNG')
+        service.roles.set_avatar(service.role.id, image.getvalue(), 'image/png')
+        parameters.update(mode='img2img', base_role_image_id='avatar', strength=.45, noise=.1)
     created = client.post(path, json={'requestId': '17217217217217217217217217217219',
         'expectedRevision': revision, 'parameters': parameters})
     assert created.status_code == 200, created.text
     original = created.json()['generation']
+    if mode == 'role_img2img':
+        image = io.BytesIO()
+        Image.new('RGB', (64, 64), '#0000ff').save(image, format='PNG')
+        service.roles.set_avatar(service.role.id, image.getvalue(), 'image/png')
     changed = client.put('/api/services/novelai', json={'expectedRevision': revision,
         'defaultSamples': 3, 'defaultSampler': 'k_euler_ancestral', 'addQualityTags': False,
         'undesiredContentPreset': 0})
