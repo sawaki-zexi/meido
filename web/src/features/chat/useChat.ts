@@ -12,10 +12,18 @@ export function applyStreamEvent(messages: Message[], event: StreamEvent, sessio
   switch (event.type) {
     case "user_message_accepted":
       return [...messages, event.message];
-    case "assistant_generation_started":
-      return [...messages.filter(message => message.status !== "streaming"), { id: event.messageId, sessionKey, sequence: event.messageSequence ?? messages.length + 1, role: "assistant", content: "", status: "streaming", createdAt: new Date().toISOString() }];
+    case "assistant_generation_started": {
+      const previous = messages.find(message => message.status === 'streaming' && message.runId === event.runId);
+      return [...messages.filter(message => message.status !== "streaming"), { id: event.messageId, sessionKey, sequence: event.messageSequence ?? messages.length + 1, role: "assistant", content: "", status: "streaming", createdAt: new Date().toISOString(), runId: event.runId, metadata: previous?.metadata }];
+    }
     case "assistant_delta":
       return messages.map((message) => message.id === event.messageId ? { ...message, content: message.content + event.delta } : message);
+    case 'assistant_thinking_delta':
+      return messages.map(message => message.id === event.messageId ? { ...message, metadata: { ...message.metadata,
+        streamThinking: `${typeof message.metadata?.streamThinking === 'string' ? message.metadata.streamThinking : ''}${event.delta}`.slice(0, 16384) } } : message);
+    case 'assistant_presentation':
+      return messages.map(message => message.status === 'streaming' && message.runId === event.runId ? { ...message,
+        metadata: { ...message.metadata, process: event.process, streamThinking: '', contextUsage: event.contextUsage } } : message);
     case "assistant_message_committed":
     case "assistant_completed":
     case "assistant_failed":

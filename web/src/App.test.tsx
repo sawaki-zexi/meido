@@ -219,7 +219,7 @@ describe("首页", () => {
     await chatHeading("爱丽丝");
     await user.click(within(await roleList()).getByRole("button", { name: /贝拉/ }));
     expect(await chatHeading("贝拉")).toBeTruthy();
-    expect(screen.getByText("贝拉的话")).toBeTruthy();
+    expect(screen.getByText("贝拉的话", { selector: ".bubble p" })).toBeTruthy();
     expect(localStorage.getItem("meido:last-role")).toBe("r2");
   });
 });
@@ -743,7 +743,7 @@ describe("角色管理", () => {
     await user.click(within(panel).getByRole("button", { name: "重置" }));
     await user.click(within(panel).getByRole("button", { name: "返回对话" }));
     expect(await chatHeading("爱丽丝")).toBeInTheDocument();
-    expect(screen.getByText("原有聊天")).toBeInTheDocument();
+    expect(screen.getByText("原有聊天", { selector: ".bubble p" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "角色" }));
     await user.click(screen.getByRole("button", { name: "编辑贝拉" }));
     expect(within(await profilePage()).getByLabelText(/名称/)).toHaveValue("贝拉");
@@ -850,14 +850,14 @@ describe("唯一会话", () => {
 
     const input = screen.getByLabelText("消息内容");
     await user.type(input, "第1句{Enter}");
-    expect(await screen.findByText("您好，主人")).toBeTruthy();
+    expect(await screen.findByText("您好，主人", { selector: ".bubble p" })).toBeTruthy();
     expect(input).toHaveValue("");
     await waitFor(() => expect(input).not.toBeDisabled());
     expect(screen.queryByText("生成中")).toBeNull();
 
     await user.type(input, "第2句");
     await user.click(screen.getByRole("button", { name: "发送" }));
-    await waitFor(() => expect(screen.getAllByText("您好，主人")).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByText("您好，主人", { selector: ".bubble p" })).toHaveLength(2));
     expect(calls.filter((call) => call.method === "POST").map((call) => call.body)).toEqual([{ content: "第1句" }, { content: "第2句" }]);
   });
 

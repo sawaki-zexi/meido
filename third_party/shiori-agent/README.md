@@ -2,6 +2,18 @@
 
 状态：当前。最后核验：2026-10-16。
 
+## 聊天思考与工具展示（2026-10-29）
+
+`web/src/features/chat/ChatThinkingBlock.tsx`、`ChatToolCalls.tsx`、`ChatReplyMetrics.tsx`
+及 `chat-presentation.css` 移植、适配固定提交
+`d149de7f052f77c5bb88d4d1393d48dce1870875` 的
+`apps/desktop/renderer/src/chat/ChatThinkingBlock.tsx`、`ChatToolCalls.tsx`、
+`ChatReplyMetrics.tsx`、`ChatMessageRow.tsx` 和 `apps/desktop/renderer/src/styles.css`。
+保留布局、折叠、动画和 Phosphor 图标；Tailwind 样式转换为普通 CSS，数据接入 Meido
+原生 runtime/SSE 与公开历史投影，另加凭据过滤与键盘可访问性。
+Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。
+Phosphor 图标由 `@phosphor-icons/react` 包提供，遵循其随包 MIT 许可。
+
 本项目的 `backend/app/network_tools.py`、`backend/app/network_extract.py` 改写了
 [Shiori-Agent](https://github.com/YinFengWindy/Shiori-Agent) 提交
 `4f266aeaf42fcd611362e2456417b91f659341cf` 中的

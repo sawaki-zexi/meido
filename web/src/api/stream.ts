@@ -4,7 +4,7 @@ import { request } from "./client";
 export type ToolStatus = "running" | "succeeded" | "failed" | "unknown" | "denied" | "invalid_arguments" | "timed_out" | "cancelled";
 type ToolIdentity = { runId: string; sequence: number; roleId?: string; sessionKey?: string; toolCallId: string; toolName: string };
 export type ToolStreamEvent = ToolIdentity & (
-  | { type: "tool_execution_start" }
+  | { type: "tool_execution_start"; argumentsPreview?: string }
   | { type: "tool_execution_update"; result: string; isError: boolean; status: "running"; droppedUpdates: number }
   | { type: "tool_execution_end"; result: string; isError: boolean; status: Exclude<ToolStatus, "running">; droppedUpdates: number }
 );
@@ -13,6 +13,8 @@ export type StreamEvent = ToolStreamEvent | ((
   | { type: "user_message_accepted"; message: Message }
   | { type: "assistant_generation_started"; messageId: string; messageSequence?: number }
   | { type: "assistant_delta"; messageId: string; delta: string }
+  | { type: "assistant_thinking_delta"; messageId: string; delta: string }
+  | { type: "assistant_presentation"; process: unknown[]; contextUsage?: unknown }
   | { type: "assistant_message_committed"; message: Message }
   | { type: "assistant_completed"; message: Message }
   | { type: "assistant_failed"; message: Message; error?: string }
@@ -46,7 +48,7 @@ export function parseStreamEvent(raw: string): StreamEvent | null {
     if (data.roleId !== undefined && typeof data.roleId !== "string" || data.sessionKey !== undefined && typeof data.sessionKey !== "string") return null;
     const identity: ToolIdentity = { runId, sequence, toolCallId: data.toolCallId, toolName: data.toolName,
       ...(typeof data.roleId === "string" ? { roleId: data.roleId } : {}), ...(typeof data.sessionKey === "string" ? { sessionKey: data.sessionKey } : {}) };
-    if (type === "tool_execution_start") return { type, ...identity };
+    if (type === "tool_execution_start") return { type, ...identity, ...(typeof data.argumentsPreview === 'string' ? { argumentsPreview: data.argumentsPreview.slice(0, 120) } : {}) };
     if (typeof data.result !== "string") return null;
     const result = boundedSummary(data.result);
     const isError = data.isError === true;
@@ -62,6 +64,8 @@ export function parseStreamEvent(raw: string): StreamEvent | null {
     case "user_message_accepted": return message ? { type, message, runId, sequence } : null;
     case "assistant_generation_started": return messageId ? { type, messageId, runId, sequence, messageSequence: typeof data.messageSequence === "number" && Number.isSafeInteger(data.messageSequence) && data.messageSequence > 0 ? data.messageSequence : undefined } : null;
     case "assistant_delta": return messageId ? { type, messageId, delta: typeof data.delta === "string" ? data.delta : "", runId, sequence } : null;
+    case "assistant_thinking_delta": return messageId && typeof data.delta === 'string' ? { type, messageId, delta: boundedSummary(data.delta), runId, sequence } : null;
+    case "assistant_presentation": return runId && Array.isArray(data.process) ? { type, process: data.process, contextUsage: data.contextUsage, runId, sequence } : null;
     case "assistant_message_committed":
     case "assistant_completed": return message ? { type, message, runId, sequence } : null;
     case "assistant_failed": return message ? { type, message, error: typeof data.error === "string" ? data.error : undefined, runId, sequence } : null;
