@@ -73,6 +73,7 @@ class MessageUpdateEvent:
     run_id: str = ""
     sequence: int = 0
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    thinking_delta: str = ""
 
 
 @dataclass(frozen=True, slots=True)

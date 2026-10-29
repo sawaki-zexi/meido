@@ -1863,6 +1863,12 @@ def list_roles() -> RoleList:
     return RoleList(roles=store.list())
 
 
+@app.get('/api/chat/previews')
+def chat_previews():
+    roles = {role.id for role in store.list()}
+    return {'previews': {key: value for key, value in session_store.chat_previews().items() if key in roles}}
+
+
 @app.post("/api/roles", response_model=RoleResponse, status_code=201)
 def create_role(data: RoleInput) -> RoleResponse:
     _validate_screen_configuration(data.agentConfig.screenPerception)
@@ -7093,6 +7099,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         terminal_reason = "failed"
         terminal_error: str | None = None
         sse_sequence = 0
+        thinking = ""
         placeholder_id: str | None = assistant_message.id
         final_message: Message | None = None
         final_sequence = ()
@@ -7328,6 +7335,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                 ):
                     if isinstance(runtime_event, MessageStartEvent) and isinstance(runtime_event.message, AssistantMessage):
                         content = ""
+                        thinking = ""
                         if placeholder_id is None:
                             placeholder = session_store.append_message(
                                 session.session.sessionKey,
@@ -7342,12 +7350,25 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                             yield _event('assistant_generation_started', runtime_event_payload({
                                 'messageId': placeholder.id, 'messageSequence': placeholder.sequence}, runtime_event.sequence))
                     elif isinstance(runtime_event, MessageUpdateEvent):
+                        if runtime_event.thinking_delta:
+                            from .chat_presentation import display_text
+                            if placeholder_id is not None:
+                                thinking = display_text(thinking + runtime_event.thinking_delta)
+                                session_store.update_message(placeholder_id, content, 'streaming', metadata={'runtimePlaceholder': True, 'streamThinking': thinking})
+                            yield _event('assistant_thinking_delta', runtime_event_payload({
+                                'messageId': placeholder_id or assistant_message.id,
+                                'delta': display_text(runtime_event.thinking_delta)}, runtime_event.sequence))
+                            continue
                         content += runtime_event.delta
                         if placeholder_id is not None:
                             session_store.update_message(placeholder_id, content, "streaming")
                         yield _event("assistant_delta", runtime_event_payload({"messageId": placeholder_id or assistant_message.id, "delta": runtime_event.delta}, runtime_event.sequence))
                     elif isinstance(runtime_event, MessageEndEvent) and isinstance(runtime_event.message, AssistantMessage):
                         content = runtime_event.message.content
+                        from .chat_presentation import run_process
+                        yield _event('assistant_presentation', runtime_event_payload({
+                            'process': run_process(session_store.list_messages(session.session.sessionKey), run_id),
+                            'contextUsage': runtime_event.message.metadata.get('contextUsage')}, runtime_event.sequence))
                     elif isinstance(runtime_event, ToolExecutionStartEvent):
                         yield _event("tool_execution_start", runtime_event_payload({
                             "roleId": role_id,
@@ -7394,7 +7415,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                         "failed": terminal_error or "模型生成失败",
                     }.get(terminal_reason, terminal_error or "模型生成失败")
                     yield _event("assistant_failed", runtime_event_payload({
-                        "message": public_message(message).model_dump(mode="json"),
+                        "message": session_manager.present_message(message).model_dump(mode="json"),
                         "error": reason_text,
                     }))
                     return
@@ -7423,7 +7444,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                             if index == 0:
                                 stopped = session_store.update_message(first_message.id, '', 'failed')
                                 yield _event('assistant_failed', runtime_event_payload({
-                                    'message': public_message(stopped).model_dump(mode='json'), 'error': '回复已被新输入取代'}))
+                                    'message': session_manager.present_message(stopped).model_dump(mode='json'), 'error': '回复已被新输入取代'}))
                                 return
                             break
                         piece_metadata = {**first_message.metadata, 'replySequenceId': run_id,
@@ -7436,7 +7457,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                                 'completed', run_id=run_id, metadata=piece_metadata))
                         spoken.append(piece)
                         if index != len(final_sequence) - 1:
-                            yield _event('assistant_message_committed', runtime_event_payload({'message': public_message(message).model_dump(mode='json')}))
+                            yield _event('assistant_message_committed', runtime_event_payload({'message': session_manager.present_message(message).model_dump(mode='json')}))
                 if not natural_reply or not final_sequence or len(spoken) == len(final_sequence):
                     _novelai_application().scenes.complete(role_id, session.session.sessionKey, run_id)
                 memory_message = message.model_copy(update={'content': '\n\n'.join(spoken)}) if spoken else message
@@ -7451,7 +7472,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     ))
                 except Exception as error:
                     memory_worker.errors.append(f"{role_id}: TurnCommitted publish failed: {error}")
-                yield _event("assistant_completed", runtime_event_payload({"message": public_message(message).model_dump(mode="json")}))
+                yield _event("assistant_completed", runtime_event_payload({"message": session_manager.present_message(message).model_dump(mode="json")}))
             except Exception as error:
                 runtime_manager.abandon_unstarted_run(run_id, str(error))
                 message = next(
@@ -7460,7 +7481,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     if item.runId == run_id and item.role == "assistant" and item.messageType == "text"
                 )
                 yield _event("assistant_failed", runtime_event_payload({
-                    "message": public_message(message).model_dump(mode="json"),
+                    "message": session_manager.present_message(message).model_dump(mode="json"),
                     "error": _safe_model_error(error, configuration.apiKey if configuration else ""),
                 }))
         except asyncio.CancelledError:

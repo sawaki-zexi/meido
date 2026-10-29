@@ -13,6 +13,8 @@ export type StreamEvent = ToolStreamEvent | ((
   | { type: "user_message_accepted"; message: Message }
   | { type: "assistant_generation_started"; messageId: string; messageSequence?: number }
   | { type: "assistant_delta"; messageId: string; delta: string }
+  | { type: "assistant_thinking_delta"; messageId: string; delta: string }
+  | { type: "assistant_presentation"; process: unknown[]; contextUsage?: unknown }
   | { type: "assistant_message_committed"; message: Message }
   | { type: "assistant_completed"; message: Message }
   | { type: "assistant_failed"; message: Message; error?: string }
@@ -62,6 +64,8 @@ export function parseStreamEvent(raw: string): StreamEvent | null {
     case "user_message_accepted": return message ? { type, message, runId, sequence } : null;
     case "assistant_generation_started": return messageId ? { type, messageId, runId, sequence, messageSequence: typeof data.messageSequence === "number" && Number.isSafeInteger(data.messageSequence) && data.messageSequence > 0 ? data.messageSequence : undefined } : null;
     case "assistant_delta": return messageId ? { type, messageId, delta: typeof data.delta === "string" ? data.delta : "", runId, sequence } : null;
+    case "assistant_thinking_delta": return messageId && typeof data.delta === 'string' ? { type, messageId, delta: boundedSummary(data.delta), runId, sequence } : null;
+    case "assistant_presentation": return runId && Array.isArray(data.process) ? { type, process: data.process, contextUsage: data.contextUsage, runId, sequence } : null;
     case "assistant_message_committed":
     case "assistant_completed": return message ? { type, message, runId, sequence } : null;
     case "assistant_failed": return message ? { type, message, error: typeof data.error === "string" ? data.error : undefined, runId, sequence } : null;

@@ -111,7 +111,7 @@ it("shows a safe update before the producer barrier releases, then truthful inde
     events.emit("tool_execution_end", { ...call, toolCallId: "call-2", sequence: 9, result: "已完成", status: "succeeded" });
     events.emit("assistant_completed", { message: assistant, runId: "run-1", sequence: 10 });
   });
-  expect(await screen.findByText("真实最终回复")).toBeVisible();
+  expect(await screen.findByText("真实最终回复", { selector: ".bubble p" })).toBeVisible();
   await waitFor(() => expect(screen.queryByRole("status", { name: "工具执行" })).toBeNull());
   expect(events.cancel).toHaveBeenCalledOnce();
 });
@@ -176,5 +176,5 @@ it("a failed stop does not reopen the progress window or claim that cleanup comp
   expect(within(progress).getAllByText("mcp_connect")).toHaveLength(1);
   expect(progress).not.toHaveTextContent("late-after-stop-error");
   act(() => events.emit("assistant_completed", { message: assistant, runId: "run-1", sequence: 7 }));
-  await screen.findByText("真实最终回复");
+  await screen.findByText("真实最终回复", { selector: ".bubble p" });
 });

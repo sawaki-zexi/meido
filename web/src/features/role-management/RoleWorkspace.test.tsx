@@ -65,7 +65,7 @@ it("资料页不显示昵称，保存设定兼容旧称呼，重置保留已保�
   await user.click(within(workspace).getByRole("button", { name: "重置" }));
   expect(within(workspace).getByRole("textbox", { name: "角色设定" })).toHaveValue("新的角色设定");
   await user.click(within(workspace).getByRole("button", { name: "返回对话" }));
-  expect(await screen.findByText("原来的对话")).toBeVisible();
+  expect(await screen.findByText("原来的对话", { selector: ".bubble p" })).toBeVisible();
 });
 
 it('角色设定折叠后仍校验必填，定位到空白设定并保留其他草稿', async () => {
@@ -199,12 +199,12 @@ it.each(["去聊天", "记忆来源"])("回复期间不能通过工作区%s切�
     controller.enqueue(encoder.encode(sse("assistant_generation_started", { messageId: "a1" })));
     controller.enqueue(encoder.encode(sse("assistant_completed", { message: message({ id: "a1", role: "assistant", content: "爱丽丝的回复" }) })));
   });
-  expect(await screen.findByText("爱丽丝的回复")).toBeInTheDocument();
+  expect(await screen.findByText("爱丽丝的回复", { selector: ".bubble p" })).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "角色" }));
   await user.click(screen.getByRole("button", { name: "查看贝拉工作区" }));
   await user.click(screen.getByRole("button", { name: "去聊天" }));
-  expect(await screen.findByText("贝拉的历史")).toBeInTheDocument();
-  expect(screen.queryByText("爱丽丝的回复")).not.toBeInTheDocument();
+  expect(await screen.findByText("贝拉的历史", { selector: ".bubble p" })).toBeInTheDocument();
+  expect(screen.queryByText("爱丽丝的回复", { selector: ".bubble p" })).not.toBeInTheDocument();
 });
 
 it.each([

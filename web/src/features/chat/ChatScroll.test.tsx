@@ -51,7 +51,7 @@ describe("聊天滚动", () => {
     backend();
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText("旧回复");
+    await screen.findByText("旧回复", { selector: ".bubble p" });
     const viewport = conversationViewport();
     viewport.scrollTop = 100;
     fireEvent.scroll(viewport);
@@ -64,7 +64,7 @@ describe("聊天滚动", () => {
     const emit = backend();
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText("旧回复");
+    await screen.findByText("旧回复", { selector: ".bubble p" });
     const viewport = conversationViewport();
     await user.type(screen.getByRole("textbox", { name: "消息内容" }), "继续{Enter}");
     emit("user_message_accepted", { message: message({ id: "new-u", role: "user", content: "继续", sequence: 3 }) });
@@ -93,7 +93,7 @@ describe("聊天滚动", () => {
   it("图片和窗口尺寸改变时保持底部，历史阅读位置不被尺寸回调覆盖", async () => {
     backend();
     render(<App />);
-    await screen.findByText("旧回复");
+    await screen.findByText("旧回复", { selector: ".bubble p" });
     const viewport = conversationViewport();
     expect(viewport.scrollTop).toBe(1500);
     height = 2800;
@@ -113,7 +113,7 @@ describe("聊天滚动", () => {
   it("窗口重排先触发滚动事件时，仍继续跟随而不误判成向上阅读", async () => {
     backend();
     render(<App />);
-    await screen.findByText("旧回复");
+    await screen.findByText("旧回复", { selector: ".bubble p" });
     const viewport = conversationViewport();
     expect(viewport.scrollTop).toBe(1500);
     height = 3600;
@@ -128,14 +128,14 @@ describe("聊天滚动", () => {
     let stored = history;
     backend({ "GET /api/roles/r1/session": () => ({ body: { session, messages: stored } }) });
     render(<App />);
-    await screen.findByText("旧回复");
+    await screen.findByText("旧回复", { selector: ".bubble p" });
     const viewport = conversationViewport();
     viewport.scrollTop = 100;
     fireEvent.scroll(viewport);
     height = 2800;
     stored = [...history, message({ id: "refreshed", role: "assistant", content: "刷新后的回复", sequence: 3 })];
     fireEvent(window, new Event("focus"));
-    await screen.findByText("刷新后的回复");
+    await screen.findByText("刷新后的回复", { selector: ".bubble p" });
     expect(viewport.scrollTop).toBe(100);
   });
 
@@ -147,7 +147,7 @@ describe("聊天滚动", () => {
     });
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText("旧回复");
+    await screen.findByText("旧回复", { selector: ".bubble p" });
     await user.click(screen.getByRole("button", { name: "角色记忆" }));
     await screen.findByText("一条记忆");
     await user.click(screen.getByRole('button', { name: '查看记忆：一条记忆' }));

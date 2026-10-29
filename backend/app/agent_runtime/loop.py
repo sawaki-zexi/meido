@@ -32,6 +32,7 @@ from .provider import (
     ModelProvider,
     ProviderErrorEvent,
     TextDeltaEvent,
+    ThinkingDeltaEvent,
     ToolCallEndEvent,
 )
 from .tools import AgentTool, AgentToolResult, ToolContext, ToolDefinition, ToolRegistry, resolve_tool_result
@@ -141,6 +142,13 @@ async def run_agent_loop(
                         content += provider_event.delta
                         current = AssistantMessage(content=content, tool_calls=tuple(tool_calls))
                         async for event in emit(MessageUpdateEvent(current, provider_event.delta)):
+                            yield event
+                    elif isinstance(provider_event, ThinkingDeltaEvent):
+                        if not started:
+                            started = True
+                            async for event in emit(MessageStartEvent(AssistantMessage())):
+                                yield event
+                        async for event in emit(MessageUpdateEvent(AssistantMessage(content=content), '', thinking_delta=provider_event.delta)):
                             yield event
                     elif isinstance(provider_event, ToolCallEndEvent):
                         if not started:
