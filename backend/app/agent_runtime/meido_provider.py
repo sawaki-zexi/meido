@@ -21,6 +21,7 @@ from ..ai.model_types import (
     ModelTextBlock as RichTextBlock,
     ModelTextDelta as RichTextDelta,
     ModelThinkingBlock as RichThinkingBlock,
+    ModelThinkingDelta,
     ModelToolCallBlock as RichToolCallBlock,
     ModelToolCallEnd as RichToolCallEnd,
     ModelToolResultMessage as RichToolResultMessage,
@@ -30,6 +31,7 @@ from ..ai.model_types import (
 )
 from ..browser_use.safety import sanitize_browser_arguments, sanitize_browser_text
 from .provider import AssistantDoneEvent, CancellationToken, ProviderErrorEvent, ProviderEvent, ProviderStartEvent, TextDeltaEvent, ToolCallEndEvent
+from .provider import ThinkingDeltaEvent
 from .types import AssistantMessage, ToolCall, UserMessage, ToolResultMessage
 
 
@@ -298,6 +300,8 @@ class MeidoProvider:
                     if isinstance(event, RichTextDelta):
                         content += event.text
                         yield TextDeltaEvent(event.text)
+                    elif isinstance(event, ModelThinkingDelta):
+                        yield ThinkingDeltaEvent(event.text)
                     elif isinstance(event, RichToolCallEnd):
                         call = ToolCall(event.call.id, event.call.name, dict(event.call.arguments), event.call.arguments_complete)
                         tool_calls.append(call)
@@ -320,12 +324,26 @@ class MeidoProvider:
                             tool_calls = list(final_calls)
                         stop_reason = event.message.metadata.stop_reason or ("incomplete" if tool_calls else "stop")
                         response_metadata = asdict(event.message.metadata)
+                        usage = event.message.metadata.usage
+                        input_tokens = usage.input_tokens
+                        # Anthropic reports uncached input separately; OpenAI
+                        # and Google already include cache reads in input.
+                        if self.configuration and self.configuration.api in {'anthropic-messages', 'bedrock-converse'}:
+                            input_tokens += usage.cache_read_tokens + usage.cache_write_tokens
+                        response_metadata['contextUsage'] = {
+                            'inputTokens': input_tokens if input_tokens > 0 else self._estimate_rendered(system, messages, tools),
+                            'source': 'actual' if input_tokens > 0 else 'local',
+                            'capacity': self.configuration.contextWindowTokens if self.configuration else None,
+                            'configurationId': self.configuration.id if self.configuration else None,
+                            'model': self.configuration.model if self.configuration else event.message.metadata.model,
+                        }
                         if event.message.timestamp is not None:
                             response_metadata["timestamp"] = event.message.timestamp
                         response_metadata["thinking"] = [
                             {
                                 "text": block.text,
                                 "signature": block.signature,
+                                "redacted": block.redacted,
                             }
                             for block in event.message.content
                             if isinstance(block, RichThinkingBlock)

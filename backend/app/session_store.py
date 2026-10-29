@@ -816,6 +816,29 @@ class SessionStore:
             ]
         raise TypeError(f"unsupported runtime message: {type(message)!r}")
 
+    def chat_previews(self) -> dict[str, dict]:
+        """Latest completed desktop message, without loading full role histories."""
+        with sqlite3.connect(self.database_path) as connection:
+            rows = connection.execute("""
+                WITH ranked AS (
+                    SELECT s.role_id, m.role, m.content, m.created_at, m.metadata_json,
+                        ROW_NUMBER() OVER (PARTITION BY s.role_id ORDER BY m.sequence DESC) AS rank
+                    FROM messages m JOIN sessions s ON s.session_key=m.session_key
+                    WHERE m.session_key='role:' || s.role_id AND m.status='completed'
+                        AND m.role IN ('user', 'assistant')
+                        AND m.message_type IN ('text', 'proactive_reminder', 'internal_completion', 'desktop_push')
+                        AND (TRIM(m.content) != '' OR json_array_length(json_extract(m.metadata_json, '$.attachments')) > 0)
+                ) SELECT role_id, role, content, created_at, metadata_json FROM ranked WHERE rank=1
+            """).fetchall()
+        previews = {}
+        for role_id, role, content, created_at, metadata_json in rows:
+            attachments = json.loads(metadata_json).get('attachments', [])
+            attachments = attachments if isinstance(attachments, list) else []
+            previews[role_id] = {'content': content[:500], 'role': role, 'createdAt': created_at,
+                'hasImages': any(isinstance(item, dict) and item.get('kind') == 'image' for item in attachments),
+                'hasFiles': any(isinstance(item, dict) and item.get('kind') == 'file' for item in attachments)}
+        return previews
+
     def runtime_messages(self, session_key: str, *, max_messages: int | None = None, since: str | None = None, through_message_id: str | None = None,
                          stored_messages: list[Message] | None = None, attachment_loader=load_runtime_attachments) -> list[AgentMessage]:
         """Rebuild a provider transcript from the structured SQLite rows."""

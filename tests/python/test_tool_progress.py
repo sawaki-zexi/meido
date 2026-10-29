@@ -347,6 +347,7 @@ def test_http_sse_client_receives_progress_before_tool_finishes(chat_server, mon
         assert release.is_set() and finished.is_set()
         tool_events = [(kind, value) for kind, value in events if kind.startswith('tool_execution')]
         assert [kind for kind, _ in tool_events] == ['tool_execution_start', 'tool_execution_update', 'tool_execution_end']
+        assert tool_events[0][1]['argumentsPreview'] == '{"secret":"[redacted]"}'
         assert 'arguments' not in tool_events[0][1]
         assert tool_events[-1][1]['status'] == 'succeeded'
         assert len({value['runId'] for _, value in tool_events}) == 1

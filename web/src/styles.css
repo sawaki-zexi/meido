@@ -1305,7 +1305,8 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
 .dialog-settings .mail-section h3, .dialog-settings .owner-plugin-section h3 { font-size: 1rem; }
 .dialog-settings .mail-section > button { justify-self: end; }
 .dialog-settings .mail-section-heading .muted, .dialog-settings .mail-section > .muted { font-size: .867rem; line-height: 1.65; }
-:root[data-stream-replies="false"] .message.assistant[aria-busy="true"] .bubble { display: none; }
+:root[data-stream-replies="false"] .message.assistant[aria-busy="true"] .reply-content,
+:root[data-stream-replies="false"] .message.assistant[aria-busy="true"] .bubble:not(:has(.message-process)) { display: none; }
 @keyframes ambient-breathe { 50% { background-position: 100% 100%; } }
 :root[data-backdrop-motion="true"] .shell, :root[data-backdrop-motion="true"] .dialog-settings { background-size: 160% 160%; animation: ambient-breathe 24s ease-in-out infinite; }
 @media (min-width: 1200px) {

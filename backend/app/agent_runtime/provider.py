@@ -41,6 +41,12 @@ class TextDeltaEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class ThinkingDeltaEvent:
+    delta: str
+    type: str = "thinking_delta"
+
+
+@dataclass(frozen=True, slots=True)
 class ToolCallEndEvent:
     tool_call: ToolCall
     type: str = "tool_call_end"
@@ -58,7 +64,7 @@ class ProviderErrorEvent:
     type: str = "provider_error"
 
 
-ProviderEvent = ProviderStartEvent | TextDeltaEvent | ToolCallEndEvent | AssistantDoneEvent | ProviderErrorEvent
+ProviderEvent = ProviderStartEvent | TextDeltaEvent | ThinkingDeltaEvent | ToolCallEndEvent | AssistantDoneEvent | ProviderErrorEvent
 
 
 class ModelProvider(Protocol):

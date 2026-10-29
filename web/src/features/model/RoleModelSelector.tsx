@@ -7,10 +7,11 @@ type Binding = { configurationId: string | null; effectiveConfigurationId: strin
 type RoleModelSelectorProps = {
   roleId: string;
   disabled?: boolean;
+  onChange?: (configuration: Configuration | null) => void;
 };
 
 /** Loads and persists one role's model binding from the chat header. */
-export function RoleModelSelector({ roleId, disabled = false }: RoleModelSelectorProps) {
+export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleModelSelectorProps) {
   const [configurations, setConfigurations] = useState<Configuration[]>([]);
   const [binding, setBinding] = useState<Binding | null>(null);
   const [open, setOpen] = useState(false);
@@ -59,6 +60,7 @@ export function RoleModelSelector({ roleId, disabled = false }: RoleModelSelecto
     [configurations, effectiveId],
   );
   const selectedId = binding?.configurationId ?? null;
+  useEffect(() => { if (!loading) onChange?.(current); }, [current, loading, onChange]);
   const busy = loading || savingId !== null;
 
   const select = async (configurationId: string | null) => {
