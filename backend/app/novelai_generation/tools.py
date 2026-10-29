@@ -7,6 +7,7 @@ from dataclasses import replace
 from ..agent_runtime.tools import AgentToolResult, ToolDefinition
 from ..agent_runtime.provider import CancellationToken
 from ..agent_runtime.tools import ToolContext
+from ..agent_runtime.role_image_tool import role_image_catalog
 from .context import capture_tool_context
 from .parameters import GenerationRequest
 from .availability import GenerationUnavailable
@@ -36,6 +37,8 @@ class GenerateImageTool:
             'Decide yourself whether to call it; do not call it every turn and do not ask the owner to fill image parameters. '
             'Provide complete comma-separated English NovelAI tags, including the subject\'s known appearance, clothing, emotion, pose, scene and framing. '
             'For self-portraits, preserve your appearance from the role profile/SELF and inspect_role_image references; never invent it from an image filename. '
+            'When asked to draw from your existing portrait, use mode=img2img and base_role_image_id from inspect_role_image (avatar, card, or an illustration ID). '
+            'This sends the actual reference pixels; vision support is not required. Choose the relevant portrait, not an unrelated scene. '
             'The host supplies model, sampler, size, seed, limits, delivery and a one-image default, but does not add appearance tags. '
             'Explicit advanced fields remain accepted for owner-directed parameter reuse within the same allowlist. Uses one finite paid attempt; unknown results are never retried.'),
         input_schema=_SCHEMA, risk='external', source='builtin:novelai', exposure='direct',
@@ -46,6 +49,7 @@ class GenerateImageTool:
         self.source_thread_id, self.source_account_id = source_thread_id, source_account_id
         self.service_revision = application.settings.public()['revision']
         role = frozen_role or application.roles.get(role_id)
+        self.role_images = role_image_catalog(role) if role is not None else []
         availability = application.availability(role)
         self.definition = replace(self.definition, description=(self.definition.description
             + '\n当前 NovelAI 状态：' + availability['message']
@@ -77,6 +81,12 @@ class GenerateImageTool:
             # owner-directed advanced contract for compatibility, while
             # applying safe host defaults when the model omits those fields.
             request = dict(arguments)
+            selected = None
+            if request.get('base_role_image_id'):
+                selected = next((item for item in self.role_images if item['asset_id'] == request['base_role_image_id']), None)
+                current_role = self.application.roles.get(self.role_id)
+                if selected is None or current_role is None or selected not in role_image_catalog(current_role):
+                    raise PermissionError('frozen role image changed or is unavailable')
             request.setdefault('mode', 'txt2img')
             request.setdefault('samples', 1)
             request.setdefault('background', False)
@@ -85,7 +95,8 @@ class GenerateImageTool:
             # optional compatibility field.
             request['intent'] = 'chat_expression'
             result = await self.application.submit(source, request, signal=context.signal,
-                expected_revision=self.service_revision, expected_role_revision=self.role_revision)
+                expected_revision=self.service_revision, expected_role_revision=self.role_revision,
+                expected_role_image=selected)
             details = {key: result[key] for key in ('generationId', 'attemptId', 'status', 'attachments', 'taskId', 'errorCode', 'errorMessage', 'consumption')}
             details['parameters'] = {key: result['parameters'][key] for key in ('model', 'sampler', 'seed', 'samples', 'width', 'height', 'steps')}
             accepted = result['backgroundAccepted']

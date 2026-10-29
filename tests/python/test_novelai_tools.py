@@ -1,7 +1,48 @@
 import asyncio
+import io
+import os
+import pytest
 from datetime import datetime, timezone
 
 from novelai_fixtures import novelai_environment, novelai_main, novelai_service  # noqa: F401
+
+
+@pytest.mark.parametrize('fault', ['foreign', 'path', 'changed', 'hardlink', 'two_inputs'])
+def test_role_image_generation_rejects_unowned_or_changed_references(novelai_service, fault):
+    from PIL import Image
+    from backend.app.agent_runtime.provider import CancellationToken
+    from backend.app.agent_runtime.tools import ToolContext
+    from backend.app.models import AgentRun, RoleInput
+    service = novelai_service
+    def picture(color):
+        output = io.BytesIO()
+        Image.new('RGB', (32, 32), color).save(output, format='PNG')
+        return output.getvalue()
+    role = service.roles.set_avatar(service.role.id, picture('red'), 'image/png')
+    session = f'role:{role.id}'
+    service.sessions.create_run_with_messages(AgentRun(runId='portrait-run', roleId=role.id,
+        sessionKey=session, status='running', startedAt=datetime.now(timezone.utc),
+        modelSnapshot={'humanInputSource': 'desktop_owner'}), '照着自己的立绘画个表情。')
+    tool = service.application.tool_for(role.id, is_owner=True)
+    arguments = {**service.request, 'mode': 'img2img', 'base_role_image_id': 'avatar'}
+    if fault == 'foreign':
+        other = service.roles.create(RoleInput(name='Other', profile={'profile': 'other'}))
+        other = service.roles.add_illustration(other.id, picture('blue'), 'image/png')
+        arguments['base_role_image_id'] = other.illustrations[0].id
+    elif fault == 'path':
+        arguments['base_role_image_id'] = '../avatar'
+    elif fault == 'changed':
+        service.roles.set_avatar(role.id, picture('blue'), 'image/png')
+    elif fault == 'hardlink':
+        other = service.roles.add_illustration(role.id, picture('blue'), 'image/png')
+        path = service.roles.avatar_path(role.id)
+        path.unlink()
+        os.link(service.roles.illustration_path(role.id, other.illustrations[0].id), path)
+    else:
+        arguments['base_attachment_id'] = 'a' * 32
+    result = asyncio.run(tool.execute(arguments,
+        ToolContext(role.id, session, 'portrait-run', CancellationToken(), 'portrait-call')))
+    assert result.is_error and not service.peer.requests
 
 
 def test_tool_explains_missing_credentials_and_new_tool_works_after_token_save(novelai_main):

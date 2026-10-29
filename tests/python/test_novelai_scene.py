@@ -26,6 +26,9 @@ def test_completed_owner_turn_observes_once_and_delivers_one_original_image(scen
     client, service, peer, _ = scene_main
     peer.observation.update(prompt='blue sky, CINEMATIC COMPOSITION', negative_prompt='rain, selfie')
     current = client.get(f'/api/roles/{service.role.id}').json()['role']
+    current['profile'].update(profile='A maid from another world.', personality='Reserved but affectionate.',
+        behaviorRules='Short black hair, purple eyes, white stockings, yellow chick hair clip.',
+        responseConstraints='Keep the chick hair clip in portraits.')
     current['agentConfig']['novelai']['sceneCgPromptInstructions'] = 'Use warm evening light and a distant composition.'
     saved = client.put(f"/api/roles/{service.role.id}", json={
         'name': current['name'], 'profile': current['profile'], 'agentConfig': current['agentConfig']})
@@ -46,10 +49,14 @@ def test_completed_owner_turn_observes_once_and_delivers_one_original_image(scen
     assert service.sessions.get_run(final.runId).status == 'completed'
     assert final.content == 'We enter the sunny garden.'
     aux = [request for request in peer.requests if request['model'] == 'fixture-scene']
-    assert len(aux) == 1 and aux[0]['max_tokens'] == 600
-    assert 'Use warm evening light and a distant composition.' in aux[0]['messages'][0]['content']
-    assert 'Use warm evening light and a distant composition.' not in aux[0]['messages'][1]['content']
-    assert not aux[0].get('tools')
+    assert len(aux) == 2
+    observed, drawing = [json.loads(request['messages'][1]['content']) for request in aux]
+    assert 'Short black hair, purple eyes, white stockings, yellow chick hair clip.' in observed['role']
+    assert drawing['role'] == observed['role']
+    assert drawing['visual_description'] == 'A sunny garden'
+    assert drawing['history'][-1]['content'] == 'We enter the sunny garden.'
+    assert 'Use warm evening light and a distant composition.' in aux[1]['messages'][0]['content']
+    assert not any(request.get('tools') for request in aux)
     service.peer.release.set()
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -89,9 +96,9 @@ def test_completed_owner_turn_observes_once_and_delivers_one_original_image(scen
     next_generation, _ = owner_turn(client, service, 'We have moved to the park.')
     assert next_generation['status'] == 'succeeded'
     auxiliary = [request for request in peer.requests if request['model'] == 'fixture-scene']
-    assert len(auxiliary) == 2
-    assert 'A later preference for future CG only.' in auxiliary[1]['messages'][0]['content']
-    assert 'A later preference for future CG only.' not in auxiliary[1]['messages'][1]['content']
+    assert len(auxiliary) == 4
+    assert 'A later preference for future CG only.' in auxiliary[3]['messages'][0]['content']
+    assert len(json.loads(auxiliary[3]['messages'][1]['content'])['history']) == 4
 
 
 def test_scene_candidate_freezes_quality_preferences_before_auxiliary_model_returns(scene_main):

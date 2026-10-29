@@ -40,9 +40,13 @@ class StoryImageGenerator:
         source = GenerationContext(
             TaskOrigin(role_id, f'role:{role_id}', source_thread_id=f'desktop:{role_id}', source_scope_id=f"story:{story['id']}"),
             key, key, frozenset(), ui_action=True)
+        settings = app.settings.public()
+        # Shiori Story uses V4.5 full; retain the owner's model allowlist.
+        model = 'nai-diffusion-4-5-full' if 'nai-diffusion-4-5-full' in settings['allowedModels'] else (
+            settings['nsfwModel'] if settings['nsfwEnabled'] else settings['defaultModel'])
         try:
             result = await app.submit(source, {'prompt': prompt, 'mode': 'txt2img', 'size_preset': 'landscape',
-                                              'samples': 1, 'background': False, 'intent': 'user_requested'},
+                                              'samples': 1, 'background': False, 'intent': 'user_requested', 'model': model},
                                       expected_revision=grant['expected_revision'], delivery_mode='history_only')
         finally:
             # Cancellation/revocation after dispatch can still leave a genuine
