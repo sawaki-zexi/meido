@@ -59,8 +59,8 @@ TUN/Fake-IP 环境正常访问公共 Exa 服务。该边界只适用于宿主选
 | error_code | 含义与下一步 |
 | --- | --- |
 | `http_error` | 401/403 检查凭据或访问权限，429 等待并检查配额，5xx 稍后重试；以 `http_status` 为准 |
-| `dns_error` | 解析实际失败或没有地址；检查本机 DNS/网络 |
-| `connect_error` / `transport_error` | 建连或后续传输失败；检查网络、证书与目标可达性，不据此断言某供应商宕机 |
+| `dns_error` | 网页预解析失败、没有地址或传输直接报告 DNS 错误；检查本机 DNS/网络 |
+| `connect_error` / `transport_error` | 建连或后续传输失败；固定搜索的 DNS 错误也可能由 HTTPX 包装为 `connect_error`。检查 DNS、代理、网络、证书与目标可达性，不据此断言某供应商宕机 |
 | `timeout` / `cancelled` | 整体时限到达或主动停止；保留旧 `status=timed_out/cancelled` |
 | `provider_error` | 有效 JSON-RPC/MCP 明确返回执行错误；检查服务、配额与配置 |
 | `invalid_response` / `missing_sources` | JSON/协议/正文编码无效，或结果缺少可核验 URL；不能当作空结果 |
