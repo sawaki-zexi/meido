@@ -2,6 +2,8 @@
 
 2026-10-29 增量（#263，当前分支，尚未发布）：聊天可明确选择自己的头像、卡片图或插画作为图生图底图；自动 CG 改为观察场景后转换 tags，完整角色设定贯穿两步；Story 加强角色外观标签并优先选择允许列表内的 V4.5 full。验证应核对真实 HTTP 请求中的底图字节、角色上下文和 tags，以及重生成保留原底图、转换失败或撤权不发起图片 POST。自动 CG 在需要出图时增加一次辅助模型请求；无图、冷却及重复场景不进入转换。参见[当前契约](../reference/novelai-generation.md)和[Shiori 来源核查](../research/shiori-character-image-consistency.md)。受控测试证明数据链路，不代表真实账号生成效果验收。
 
+本轮本地验证：CG、角色工具、重生成、Story 相关组 76 passed；最新聊天 HTTP/工具组 16 passed；审查新增的原渠道重生成组 5 passed，分组含重叠，不相加。最后一组先复现桌面重生成可引入新私有立绘，再验证拒绝该路径、允许继承原请求底图及连续重生成。compileall 与 diff 检查通过。七个修改源文件的 mypy 仍报告两处基线已有的 `object` 索引错误（角色看图结果、NovelAI availability），已在未修改对应文件的基线复现；没有新增类型错误。前端未改，构建及通用检查由 PR CI 承接。
+
 历史总集成记录：#172最终源`60860fb`的完整两轴及修正复核均无遗留。规范独立17项后端/13项React通过，关闭原journal P2；规格独立10项后端、原DOM反例1项和history_only确认1项通过，关闭跨来源私图P1与渠道新媒体提示P2。原反例和失败历史保留，各组重叠不相加。源经`d9a71f4`、`0522a00`、`043a775`、`d551de3`从f7be合入总分支；只解决SessionStore与ChatView的两处内容冲突，保留主动提交/最终授权、Coding任务入口以及NovelAI图片CAS。当时私有生成模块与#172最终源完全一致。固定`43fc03a`总组合610 passed/1 Windows符号链接权限skip、前端202项及构建通过，集成两轴无遗留；准确13c两套完整CI已通过：各后端2235 passed/35 skipped/2 warnings、前端202 passed/35文件及TS/Vite，详见[总状态](../reference/shiori-tool-parity-status.md)。
 
 历史验收基线（2026-10-24）：本地受控验证，真实 NovelAI 未验收。最后核验：2026-10-24。事实来源：[Reference](../reference/novelai-generation.md)、[公开消息用例](../../tests/python/test_novelai_main.py)、[真实渠道用例](../../tests/python/test_novelai_channel.py)、[真实断连](../../tests/python/test_novelai_cancellation.py)、[恢复](../../tests/python/test_novelai_recovery.py)。Parent #137，当前工作树组合了 #209 工作台、#211 角色 CG 提示词要求及既有 #171/#172/#173 行为；下方历史记录保留此前范围和失败事实，各组不相加。当前 NovelAI 与角色能力后端组为 `208 passed`，NovelAI 前端完整组为 `320 passed / 52 files`，类型检查与构建通过；工作树仍未合入 `main`。

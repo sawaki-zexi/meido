@@ -206,6 +206,8 @@ class NovelaiApplication:
         if request['mode'] != 'img2img':
             return None
         if request.get('base_role_image_id'):
+            if source.channel_source is not None and source.ui_action:
+                raise PermissionError('channel regeneration cannot add a new role image')
             role = self.roles.get(source.origin.role_id)
             asset_id = request['base_role_image_id']
             content, media_type = read_role_image_bytes(self.roles, role, asset_id,
