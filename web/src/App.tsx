@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Role } from "./api/types";
 import { ChatView, WelcomeView } from "./features/chat/ChatView";
 import { useChat } from "./features/chat/useChat";
+import { useChatPreviews } from "./features/role-management/chatPreviews";
 import { MemoryPanel, type MemoryOrigin } from "./features/memory/MemoryPanel";
 import { ChannelView, type ChannelMemorySource } from "./features/channels/ChannelView";
 import { RoleList } from "./features/role-management/RoleList";
@@ -31,6 +32,7 @@ export function App() {
   useEffect(() => { applyAppearance(readAppearance()); }, []);
   const roles = useRoles();
   const chat = useChat();
+  const chatPreviews = useChatPreviews(chat.roleId, chat.messages);
   const [returnedFromOwnerKnowledgeAuthorization] = useState(
     () => new URLSearchParams(window.location.search).get("ownerKnowledge") === "connected",
   );
@@ -202,7 +204,7 @@ export function App() {
       </div>
       <div className="sidebar-body">
         {roles.error && panel === null && view !== "tavern" && <Notice onDismiss={() => roles.setError("")}>{roles.error}</Notice>}
-        <RoleList roles={filteredRoles} loading={roles.loading} loadFailed={roles.loadFailed} searching={Boolean(searchTerm)} activeId={view === "tavern" ? null : rolePage ? roles.selected?.id ?? null : view === "novelai" ? studioRoleId : chat.roleId} disabled={roles.busy || (view !== "novelai" && lockSwitch)} onOpen={rolePage ? (role) => showProfile(role) : view === "novelai" ? (role) => openNovelai(role.id) : chatWith} />
+        <RoleList previews={chatPreviews} roles={filteredRoles} loading={roles.loading} loadFailed={roles.loadFailed} searching={Boolean(searchTerm)} activeId={view === "tavern" ? null : rolePage ? roles.selected?.id ?? null : view === "novelai" ? studioRoleId : chat.roleId} disabled={roles.busy || (view !== "novelai" && lockSwitch)} onOpen={rolePage ? (role) => showProfile(role) : view === "novelai" ? (role) => openNovelai(role.id) : chatWith} />
       </div>
     </aside>
 

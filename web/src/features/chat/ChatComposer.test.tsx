@@ -31,7 +31,7 @@ describe("聊天输入与停止", () => {
     await screen.findByRole("heading", { name: "爱丽丝" });
     const input = screen.getByRole("textbox", { name: "消息内容" });
     await user.type(input, "第一句{Enter}");
-    await screen.findByText("回复已经完成");
+    await screen.findByText("回复已经完成", { selector: ".bubble p" });
     await waitFor(() => expect(screen.queryByRole("button", { name: "停止回复" })).not.toBeInTheDocument());
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     expect(screen.queryByText("正在输入…")).not.toBeInTheDocument();
@@ -88,7 +88,7 @@ describe("聊天输入与停止", () => {
       expect(screen.getByText("未完成")).toBeInTheDocument();
     } else expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "发送" }));
-    expect(await screen.findByText("第二轮回复")).toBeInTheDocument();
+    expect(await screen.findByText("第二轮回复", { selector: ".bubble p" })).toBeInTheDocument();
     expect(input).toHaveValue("");
     expect(calls.filter((call) => call.path.endsWith("/messages")).map((call) => call.body)).toEqual([{ content: "第一句" }, { content: "下一句草稿" }]);
     expect(calls.some((call) => call.path.endsWith("/stop"))).toBe(false);
@@ -275,7 +275,7 @@ describe("聊天输入与停止", () => {
     expect(input).toHaveValue("下一条");
     expect(screen.queryByRole("alert")).toBeNull();
     await user.click(screen.getByRole("button", { name: "发送" }));
-    expect(await screen.findByText("新的回复")).toBeTruthy();
+    expect(await screen.findByText("新的回复", { selector: ".bubble p" })).toBeTruthy();
     expect(input).toHaveValue("");
   });
 

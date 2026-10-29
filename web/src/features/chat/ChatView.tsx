@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from "react";
-import type { ChatAttachment, Message, Role } from "../../api/types";
+import type { ChatAttachment, Message, Role, ModelConfiguration } from "../../api/types";
 import type { ChatState } from "./useChat";
 import { Avatar, roleStyle } from "../../ui/Avatar";
 import { Icon, IconButton } from "../../ui/Icon";
@@ -18,15 +18,13 @@ import type { GenerationSelection } from "../../api/novelai";
 import { useChatScroll } from "./useChatScroll";
 import { AttachmentImage } from "../../ui/AttachmentImage";
 import { MessageMarkdown } from "../../ui/MessageMarkdown";
-import type { ToolStatus } from "../../api/stream";
-import "./tool-progress.css";
+import { MessageProcess, readProcess } from './MessageProcess';
+import { ChatReplyMetrics } from './ChatReplyMetrics';
+import { ComposerTools, readContextUsage, type ContextUsage } from './ComposerTools';
+import type { ToolProgressState } from './toolProgress';
+import "./chat-presentation.css";
 
-const toolStatusLabels: Record<ToolStatus, string> = {
-  running: "运行中", succeeded: "已完成", failed: "失败", unknown: "结果不确定",
-  denied: "未获许可", invalid_arguments: "参数无效", timed_out: "已超时", cancelled: "已取消",
-};
-
-function MessageItem({ message, role, highlighted, onRegenerate }: { message: Message; role: Role; highlighted: boolean; onRegenerate: (selection: GenerationSelection) => void }) {
+function MessageItem({ message, role, highlighted, onRegenerate, progress, stopping }: { message: Message; role: Role; highlighted: boolean; stopping?: boolean; progress?: ToolProgressState | null; onRegenerate: (selection: GenerationSelection) => void }) {
   const mine = message.role === "user";
   const streaming = message.status === "streaming";
   const failed = message.status === "failed";
@@ -39,17 +37,24 @@ function MessageItem({ message, role, highlighted, onRegenerate }: { message: Me
     : [];
   const generationAttempts = Array.isArray(message.metadata?.generationAttemptIds)
     ? message.metadata.generationAttemptIds.filter((item): item is string => typeof item === 'string' && Boolean(item)) : [];
+  const hasProcess = !mine && (readProcess(message.metadata?.process).length > 0 || Boolean(message.metadata?.streamThinking) || Boolean(progress?.calls.length));
   return <li ref={ref} className={`message ${message.role}${failed ? " failed" : ""}${highlighted ? " source-highlight" : ""}`} aria-busy={streaming || undefined}>
     {!mine && <Avatar id={role.id} name={role.name} size="sm" avatarUrl={role.avatarUrl} />}
     <div className="message-body">
       <div className="message-heading">
         <strong>{mine ? "我" : role.name}</strong>
-        <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString()}</time>
         {streaming && <span className="message-status streaming">生成中</span>}
         {failed && <span className={`message-status ${stopped ? "stopped" : "failed"}`}>{stopped ? "已停止" : "未完成"}</span>}
         {highlighted && <span className="source-marker">记忆来源</span>}
       </div>
-      {message.content && <div className="bubble"><MessageMarkdown content={message.content} /></div>}
+      {(message.content || hasProcess || attachments.length === 0) && <div className="bubble">
+        {!mine && <MessageProcess message={message} progress={progress} stopping={stopping} />}
+        <div className="reply-content">
+          {message.content && <MessageMarkdown content={message.content} />}
+          {!message.content && attachments.length === 0 && <p>{streaming ? <span className="typing" aria-label="正在回复">正在回复…</span> : stopped ? "已停止回复" : "（无内容）"}</p>}
+        </div>
+        {!mine && !streaming && <ChatReplyMetrics value={message.metadata?.turnMetrics} />}
+      </div>}
       {attachments.length > 0 && <div className="message-attachments">
         {attachments.map((attachment) => {
           const href = `/api/roles/${encodeURIComponent(role.id)}/attachments/${encodeURIComponent(attachment.id)}`;
@@ -59,13 +64,14 @@ function MessageItem({ message, role, highlighted, onRegenerate }: { message: Me
             : <a className="message-file" href={href} target="_blank" rel="noreferrer" key={attachment.id}>{attachment.name}</a>;
         })}
       </div>}
-      {!message.content && attachments.length === 0 && <p className="bubble">{streaming ? <span className="typing" aria-label="正在回复">正在回复…</span> : stopped ? "已停止回复" : "（无内容）"}</p>}
+      <time className="message-time" dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString()}</time>
     </div>
   </li>;
 }
 
 /** Message box shared by the conversation and the welcome screen, so home always looks like a chat. */
-function Composer({ roleId, placeholder, disabled, sending, stopping, onSend, onStop }: { roleId?: string; placeholder: string; disabled?: boolean; sending?: boolean; stopping?: boolean; onSend: (text: string, attachmentIds: string[]) => Promise<boolean>; onStop?: () => void }) {
+function Composer({ roleId, usage = null, placeholder, disabled, sending, stopping, onSend, onStop }: { roleId?: string; usage?: ContextUsage | null; placeholder: string; disabled?: boolean; sending?: boolean; stopping?: boolean; onSend: (text: string, attachmentIds: string[]) => Promise<boolean>; onStop?: () => void }) {
+  const [configuration, setConfiguration] = useState<ModelConfiguration | null>(null);
   const [draft, setDraft] = useState("");
   const [unsentText, setUnsentText] = useState("");
   const { attachments, uploading, dragging, setDragging, error, setError, upload, remove, clear, restore } = useChatAttachments(roleId, Boolean(disabled), Boolean(sending));
@@ -74,6 +80,15 @@ function Composer({ roleId, placeholder, disabled, sending, stopping, onSend, on
   const draftRevision = useRef(0);
   const submitting = useRef(false);
   useEffect(() => { if (!sending && !disabled) inputRef.current?.focus(); }, [sending, disabled]);
+
+  const insertEmoji = (emoji: string) => {
+    const input = inputRef.current;
+    const start = input?.selectionStart ?? draft.length;
+    const end = input?.selectionEnd ?? start;
+    draftRevision.current += 1;
+    setDraft(draft.slice(0, start) + emoji + draft.slice(end));
+    requestAnimationFrame(() => { input?.focus(); input?.setSelectionRange(start + emoji.length, start + emoji.length); });
+  };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -120,7 +135,8 @@ function Composer({ roleId, placeholder, disabled, sending, stopping, onSend, on
       <input ref={fileRef} type="file" aria-label="附件文件" multiple accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.json,.pdf,.docx" hidden onChange={(event) => { const input = event.currentTarget; const files = [...input.files ?? []]; void upload(files).finally(() => { input.value = ""; }); }} />
       <button type="button" className="composer-attach" aria-label="添加附件" title="添加附件" disabled={disabled || sending || uploading} onClick={() => fileRef.current?.click()}><Icon name="attachment" size={18} /></button>
       <textarea ref={inputRef} aria-label="消息内容" placeholder={placeholder} rows={1} value={draft} disabled={disabled} onChange={(event) => { draftRevision.current += 1; setDraft(event.target.value); }} onKeyDown={onKeyDown} />
-      {roleId && <RoleModelSelector roleId={roleId} disabled={disabled || sending || uploading} />}
+      {roleId && <RoleModelSelector roleId={roleId} disabled={disabled || sending || uploading} onChange={setConfiguration} />}
+      <ComposerTools disabled={disabled} onEmoji={insertEmoji} usage={usage && (!configuration || usage.configurationId === configuration.id && (!usage.model || usage.model === configuration.model)) ? usage : null} />
       {sending
         ? <button type="button" className="send stop" aria-label="停止回复" title={stopping ? "正在停止…" : "停止回复"} disabled={stopping} onClick={onStop}>{stopping ? <span className="spinner" aria-hidden="true" /> : <Icon name="stop" size={18} />}</button>
         : <button type="submit" className="send" aria-label="发送" title="发送（Enter）" disabled={disabled || uploading || (!draft.trim() && attachments.length === 0)}><Icon name="send" size={18} /></button>}
@@ -174,8 +190,7 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
       <button type="button" className="chat-profile" aria-label="角色资料" title="查看角色资料" onClick={onShowProfile}>
         <Avatar id={role.id} name={role.name} size="sm" avatarUrl={role.avatarUrl} />
         <span className="chat-title">
-        <h1>{role.name}</h1><small className="role-mood-label">{presentation.mood}</small>
-        {chat.sending ? <small className="reply-state" role="status">{chat.stopping ? "正在停止…" : "正在输入…"}</small> : role.description && <small>{role.description}</small>}
+        <h1>{role.name}</h1>
         </span>
       </button>
       <IconButton icon="phone" label="多端会话" onClick={onShowChannels} />
@@ -186,20 +201,13 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
     <div className={`chat-scroll${background ? " has-role-background" : ""}`} style={background ? { backgroundImage: `linear-gradient(rgba(255,255,255,.2),rgba(255,255,255,.2)), url(${JSON.stringify(background)})` } : undefined} ref={scrollRef} onScroll={onScroll}>
       {presentation.illustration && <figure className="role-mood-portrait" aria-label={`当前心情：${presentation.mood}`}><img src={presentation.illustration.url} alt={`${role.name} · ${presentation.mood}`} /></figure>}
       {chat.messages.length
-        ? <ol ref={listRef} className="message-list" aria-live="polite">{chat.messages.map((message) => <MessageItem key={message.id} message={message} role={role} highlighted={message.id === highlightedId}
+        ? <ol ref={listRef} className="message-list" aria-live="polite">{chat.messages.map((message) => <MessageItem key={message.id} message={message} role={role} highlighted={message.id === highlightedId} stopping={chat.stopping} progress={message.status === "streaming" && chat.toolProgress?.roleId === role.id && chat.toolProgress.sessionKey === chat.session?.sessionKey ? chat.toolProgress : null}
           onRegenerate={(selection) => { setSelectedGenerationImage(selection); setGenerationRoleId(role.id); }} />)}</ol>
         : <Placeholder>发送第一条消息开始对话。</Placeholder>}
     </div>
     <div className="composer-dock">
-      {chat.toolProgress?.roleId === role.id && chat.toolProgress.sessionKey === chat.session?.sessionKey && chat.toolProgress.calls.length > 0 && <div className="chat-tool-progress" role="status" aria-label="工具执行" aria-live="polite">
-        <ol>{chat.toolProgress.calls.map(call => <li key={call.toolCallId}>
-          <div className="chat-tool-heading"><strong>{call.toolName}</strong><span data-state={call.status}>{call.status === "running" && chat.toolProgress?.closing ? (chat.stopping ? "正在停止…" : "等待最终状态") : toolStatusLabels[call.status]}</span></div>
-          {call.result && <p>{call.result}</p>}
-          {call.droppedUpdates > 0 && <small>已合并 {call.droppedUpdates} 次中间更新，仅显示最新摘要</small>}
-        </li>)}</ol>
-      </div>}
       {chat.error && <Notice onDismiss={() => chat.setError("")}>{chat.error}</Notice>}
-      <Composer key={role.id} roleId={role.id} placeholder={`对${role.name}说点什么…`} sending={chat.sending} stopping={chat.stopping} disabled={chat.opening} onSend={chat.send} onStop={chat.stop} />
+      <Composer key={role.id} roleId={role.id} usage={[...chat.messages].reverse().map(message => readContextUsage(message.metadata?.contextUsage)).find(Boolean) ?? null} placeholder={`对${role.name}说点什么…`} sending={chat.sending} stopping={chat.stopping} disabled={chat.opening} onSend={chat.send} onStop={chat.stop} />
     </div>
     {generationRoleId === role.id && <GenerationDrawer key={role.id} role={role} onClose={() => setGenerationRoleId(null)} onGenerated={chat.refresh} selectedImage={selectedGenerationImage}
       attachments={chat.messages.flatMap((message) => Array.isArray(message.metadata?.attachments)
