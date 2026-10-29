@@ -1,12 +1,17 @@
 # Shiori 内置 Skill 契约
 
 状态：当前
-最后核验：2026-10-25（QQ 表情衔接；其他契约保留原验收范围）
+最后核验：2026-10-29（聊天技能适配；其他契约保留原验收范围）
 事实来源：[SkillRegistry](../../backend/app/agent_runtime/skills.py)、[宿主装配](../../backend/app/main.py)、[公开行为测试](../../tests/python/test_builtin_skills.py)、[HTTP 测试](../../tests/python/test_builtin_skills_api.py)。
 
 当前内置 `weather`、`summarize`、`feed-manage`、`meme-manage`、`skill-creater`、`create-drift-skill`、`codex-delegate`、`create-proactive-source`，均显式激活。普通聊天输入 `$weather` 等名称即可选择；HTTP 的 `skillIds` 保持兼容。Skill 是指导与资源，不是执行工具或权限授予。
 
-本页列普通聊天的八份内置 Skill。Drift 表情维护已有独立适配与许可，见[维护契约](drift-meme-maintenance.md)；不能从普通目录或 QQ 收录入口推导其自主权限。
+另提供 `conversation-recall` 与 `conversation-continuity` 两份聊天技能，参考维护者提供的角色和技能材料改写。
+使用现有 `keyword` 激活，也支持 `$conversation-recall` / `$conversation-continuity` 显式选择。
+关键词只筛选规则，不强制检索或判断情绪；是否需要这些步骤仍由当前语境决定，不是新的语义路由模型。
+两份技能的 `tools` 均为空，不加载或授予额外能力，详见[聊天行为契约](chat-behavior.md)。
+
+本页列普通聊天的内置 Skill。Drift 表情维护已有独立适配与许可，见[维护契约](drift-meme-maintenance.md)；不能从普通目录或 QQ 收录入口推导其自主权限。
 
 ## 发现与覆盖
 

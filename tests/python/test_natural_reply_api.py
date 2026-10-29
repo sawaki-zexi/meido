@@ -1,10 +1,61 @@
 """Desktop natural messages traverse the real API and durable session path."""
 import json
+import pytest
 
 from backend.app import main
-from backend.app.model_adapter import ModelResponseDone, ModelToolCall
+from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.models import RoleUpdateInput
 from test_api import configure_session_api
+
+
+def test_text_only_adapter_receives_chat_rules_without_claiming_callable_tools(tmp_path, monkeypatch, local_platform_only):
+    received = []
+
+    class TextOnly:
+        async def stream_reply(self, role, history, configuration=None):
+            received.append(role.profile.profile)
+            yield '夹具回复'
+
+    role, _, client = configure_session_api(tmp_path, monkeypatch, TextOnly())
+    response = client.post(f'/api/roles/{role.id}/messages', json={'content': '你好'})
+    assert 'event: assistant_completed' in response.text
+    assert '[对话方式]' in received[0]
+    assert '本次请求没有业务工具可用' in received[0]
+    assert '当前提供给模型的工具：无' in received[0]
+    assert main.store.get(role.id).profile.profile == '核心设定'
+
+
+@pytest.mark.parametrize('split', [False, True])
+def test_chat_behavior_reaches_model_before_and_after_tools_without_requiring_split_messages(tmp_path, monkeypatch, local_platform_only, split):
+    requests = []
+
+    class Model:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            requests.append((messages, tools))
+            if len(requests) == 1:
+                yield ModelToolCall('files', 'list_dir', {'path': '.'})
+                yield ModelResponseDone('tool_use')
+            elif split:
+                yield ModelToolCall('finish', 'finish_reply', {'messages': ['夹具回复']})
+                yield ModelResponseDone('tool_use')
+            else:
+                yield ModelTextDelta('夹具回复')
+                yield ModelResponseDone('stop')
+
+    role, _, client = configure_session_api(tmp_path, monkeypatch, Model())
+    main.store.update(role.id, RoleUpdateInput(name=role.name, profile=role.profile,
+        agentConfig=role.agentConfig.model_copy(update={'naturalChatEnabled': split})))
+    response = client.post(f'/api/roles/{role.id}/messages', json={'content': '看看工作区有什么'})
+    assert 'event: assistant_completed' in response.text
+    assert len(requests) == 2
+    for messages, tools in requests:
+        system = '\n'.join(item['content'] for item in messages if item['role'] == 'system')
+        assert '[对话方式]' in system
+        assert '[查证与工具使用]' in system
+        assert '核心设定' in system
+        assert ('finish_reply' in {tool['function']['name'] for tool in tools}) is split
+    assert any(item['role'] == 'tool' for item in requests[1][0])
+    assert client.get(f'/api/roles/{role.id}').json()['role']['profile']['profile'] == '核心设定'
 
 
 def test_desktop_natural_reply_commits_each_message_without_persisting_suffix(tmp_path, monkeypatch, local_platform_only):

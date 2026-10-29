@@ -55,6 +55,10 @@ def test_natural_model_receives_host_verified_sender_identity(natural, sender, o
             message = next(item for item in inputs if item['messageId'] == 'identity')
             assert message['senderIsOwner'] is owner
             assert not s.calls[0][1]
+            system = '\n'.join(item['content'] for item in s.calls[0][0] if item['role'] == 'system')
+            assert '[对话方式]' in system
+            assert '本次请求没有业务工具可用' in system
+            assert 'query="select:' not in system
         finally:
             await s.scheduler.close()
     asyncio.run(run())

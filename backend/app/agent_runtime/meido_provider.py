@@ -33,6 +33,7 @@ from ..browser_use.safety import sanitize_browser_arguments, sanitize_browser_te
 from .provider import AssistantDoneEvent, CancellationToken, ProviderErrorEvent, ProviderEvent, ProviderStartEvent, TextDeltaEvent, ToolCallEndEvent
 from .provider import ThinkingDeltaEvent
 from .types import AssistantMessage, ToolCall, UserMessage, ToolResultMessage
+from .conversation_prompt import CHAT_BEHAVIOR_PROMPT, tool_use_prompt
 
 
 def _metadata_count(value: object) -> int:
@@ -185,6 +186,7 @@ class MeidoProvider:
         self.context_blocks = context_blocks
         self.context_safety_margin = context_safety_margin
         self._request_context = ""
+        self._request_time = datetime.now().astimezone().isoformat(timespec="seconds")
         self.request_guard = None
 
     def _check_request(self, signal):
@@ -198,6 +200,7 @@ class MeidoProvider:
             structured_without_tools=True, max_response_tokens=self.max_response_tokens,
             context_safety_margin=self.context_safety_margin, required_context=self.required_context)
         provider.request_guard = self.request_guard
+        provider._request_time = self._request_time
         return provider
 
     def stream_response(
@@ -243,6 +246,7 @@ class MeidoProvider:
         ))
         if namespace_prompt:
             self._tool_prompt += "\n\n" + namespace_prompt
+        self._tool_prompt += "\n\n" + tool_use_prompt(names, self._request_time)
 
     def estimate_request_tokens(self, system, messages, tools):
         self._set_tool_prompt(tools, self.namespace_context(None) if self.namespace_context else "")
@@ -564,6 +568,7 @@ class MeidoProvider:
             f"行为规则：{profile.behaviorRules}" if profile.behaviorRules else "",
             f"回复约束：{profile.responseConstraints}" if profile.responseConstraints else "",
             f"称呼用户：{profile.nickname}" if profile.nickname else "",
+            CHAT_BEHAVIOR_PROMPT,
             self.required_context,
             self.memory_context,
             self._request_context,
@@ -572,7 +577,8 @@ class MeidoProvider:
         ] if part)
 
     def _combined_memory_context(self) -> str:
-        return "\n\n".join(part for part in (self.required_context, self.memory_context, self.capability_prompt, self._request_context) if part)
+        return "\n\n".join(part for part in (CHAT_BEHAVIOR_PROMPT, self.required_context, self.memory_context,
+            self.capability_prompt, self._request_context, self._tool_prompt) if part)
 
     def _role_with_context(self) -> Role:
         profile = self.role.profile.model_copy(deep=True)
@@ -582,6 +588,9 @@ class MeidoProvider:
         return self.role.model_copy(deep=True, update={"profile": profile})
 
     async def _stream(self, messages: Sequence[object], signal: CancellationToken) -> AsyncIterator[ProviderEvent]:
+        # Legacy text adapters receive no executable tool schemas. Reflect the
+        # actual wire capability instead of promising the runtime's catalog.
+        self._set_tool_prompt(())
         if any(isinstance(message, UserMessage) and message.attachments for message in messages):
             async for event in self._stream_multimodal(messages, signal):
                 yield event
@@ -600,7 +609,7 @@ class MeidoProvider:
         except (TypeError, ValueError):
             accepts_memory = False
         yield ProviderStartEvent()
-        role = self.role if accepts_memory or not (self.required_context or self.memory_context or self.capability_prompt) else self._role_with_context()
+        role = self.role if accepts_memory else self._role_with_context()
         options = {'memory_context': self._combined_memory_context()} if accepts_memory else {}
         if self.max_response_tokens is not None and 'max_tokens' in inspect.signature(stream_reply).parameters:
             options['max_tokens'] = self.max_response_tokens
