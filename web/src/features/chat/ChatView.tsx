@@ -19,9 +19,9 @@ import { useChatScroll } from "./useChatScroll";
 import { AttachmentImage } from "../../ui/AttachmentImage";
 import { MessageMarkdown } from "../../ui/MessageMarkdown";
 import { MessageProcess, readProcess } from './MessageProcess';
+import { ChatReplyMetrics } from './ChatReplyMetrics';
 import { ComposerTools, readContextUsage, type ContextUsage } from './ComposerTools';
 import type { ToolProgressState } from './toolProgress';
-import "./tool-progress.css";
 import "./chat-presentation.css";
 
 function MessageItem({ message, role, highlighted, onRegenerate, progress, stopping }: { message: Message; role: Role; highlighted: boolean; stopping?: boolean; progress?: ToolProgressState | null; onRegenerate: (selection: GenerationSelection) => void }) {
@@ -43,7 +43,6 @@ function MessageItem({ message, role, highlighted, onRegenerate, progress, stopp
     <div className="message-body">
       <div className="message-heading">
         <strong>{mine ? "我" : role.name}</strong>
-        <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString()}</time>
         {streaming && <span className="message-status streaming">生成中</span>}
         {failed && <span className={`message-status ${stopped ? "stopped" : "failed"}`}>{stopped ? "已停止" : "未完成"}</span>}
         {highlighted && <span className="source-marker">记忆来源</span>}
@@ -54,6 +53,7 @@ function MessageItem({ message, role, highlighted, onRegenerate, progress, stopp
           {message.content && <MessageMarkdown content={message.content} />}
           {!message.content && attachments.length === 0 && <p>{streaming ? <span className="typing" aria-label="正在回复">正在回复…</span> : stopped ? "已停止回复" : "（无内容）"}</p>}
         </div>
+        {!mine && !streaming && <ChatReplyMetrics value={message.metadata?.turnMetrics} />}
       </div>}
       {attachments.length > 0 && <div className="message-attachments">
         {attachments.map((attachment) => {
@@ -64,7 +64,7 @@ function MessageItem({ message, role, highlighted, onRegenerate, progress, stopp
             : <a className="message-file" href={href} target="_blank" rel="noreferrer" key={attachment.id}>{attachment.name}</a>;
         })}
       </div>}
-
+      <time className="message-time" dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString()}</time>
     </div>
   </li>;
 }

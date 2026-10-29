@@ -7100,6 +7100,9 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         terminal_error: str | None = None
         sse_sequence = 0
         thinking = ""
+        turn_started_at = monotonic()
+        first_content_at: float | None = None
+        presentation_context_provider: ContextWindowProvider | None = None
         placeholder_id: str | None = assistant_message.id
         final_message: Message | None = None
         final_sequence = ()
@@ -7140,6 +7143,12 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
         async def persist_runtime_message(event: MessageEndEvent) -> Message | None:
             nonlocal content, placeholder_id, final_message, final_sequence
             if isinstance(event.message, AssistantMessage):
+                if not event.message.tool_calls:
+                    event = replace(event, message=replace(event.message, metadata={
+                        **event.message.metadata,
+                        'thinkingDurationMs': round(((first_content_at if first_content_at is not None else monotonic()) - turn_started_at) * 1000),
+                        'auxiliaryUsageIncomplete': bool(presentation_context_provider and presentation_context_provider.summary_attempts),
+                    }))
                 if natural_reply and not event.message.tool_calls:
                     final_sequence = reply_messages(event.message)
                     event = replace(event, message=private_reply(event.message))
@@ -7292,6 +7301,7 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                 _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
                 provider = _ordinary_context_provider(provider, ordinary_settings, role_id=role_id,
                     session_key=session.session.sessionKey, run_id=run_id, history=history)
+                presentation_context_provider = provider
                 if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools):
                     provider = guard_provider(provider, computer_use, role_id=role_id, run_id=run_id)
                 if natural_reply:
@@ -7359,6 +7369,8 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                                 'messageId': placeholder_id or assistant_message.id,
                                 'delta': display_text(runtime_event.thinking_delta)}, runtime_event.sequence))
                             continue
+                        if runtime_event.delta and first_content_at is None:
+                            first_content_at = monotonic()
                         content += runtime_event.delta
                         if placeholder_id is not None:
                             session_store.update_message(placeholder_id, content, "streaming")
@@ -7370,11 +7382,13 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                             'process': run_process(session_store.list_messages(session.session.sessionKey), run_id),
                             'contextUsage': runtime_event.message.metadata.get('contextUsage')}, runtime_event.sequence))
                     elif isinstance(runtime_event, ToolExecutionStartEvent):
+                        from .chat_presentation import arguments_preview
                         yield _event("tool_execution_start", runtime_event_payload({
                             "roleId": role_id,
                             "sessionKey": session.session.sessionKey,
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
+                            "argumentsPreview": arguments_preview(runtime_event.tool_name, runtime_event.arguments),
                         }, runtime_event.sequence))
                     elif isinstance(runtime_event, (ToolExecutionUpdateEvent, ToolExecutionEndEvent)):
                         from .agent_runtime.progress import MAX_TEXT_BYTES, utf8_prefix

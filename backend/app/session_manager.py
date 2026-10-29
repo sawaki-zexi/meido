@@ -2,7 +2,7 @@ from .chat_attachments import public_attachment
 from .models import Message, Role, SessionResponse
 from .role_store import RoleStore
 from .session_store import SessionStore
-from .chat_presentation import run_process, process_target
+from .chat_presentation import run_process, run_metrics, process_target
 
 
 class SessionManager:
@@ -33,6 +33,7 @@ class SessionManager:
             messages = messages if messages is not None else self.sessions.list_messages(message.sessionKey)
             if message.id == process_target(messages, message.runId):
                 result.metadata['process'] = run_process(messages, message.runId)
+                result.metadata['turnMetrics'] = run_metrics(messages, message.runId)
         return result
 
     def role_and_history(self, role_id: str) -> tuple[Role, SessionResponse]:

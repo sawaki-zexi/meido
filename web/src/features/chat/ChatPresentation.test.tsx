@@ -37,17 +37,25 @@ it('renders a persisted process in the reply and explains last request input usa
   fakeBackend({
     'GET /api/roles': () => ({ body: { roles: [role({ id: 'r1', name: '爱丽丝' })] } }),
     'GET /api/roles/r1/session': () => ({ body: { session: { roleId: 'r1', sessionKey: 'role:r1' }, messages: [message({ id: 'a1', role: 'assistant', content: '回复正文', metadata: {
-      process: [{ type: 'thinking', id: 't1', text: '整理公开资料' }, { type: 'tool', id: 'c1', name: 'web_search', status: 'failed', result: '搜索服务不可用' }],
+      process: [{ type: 'thinking', id: 't1', text: '整理公开资料' }, { type: 'tool', id: 'c1', name: 'web_search', status: 'failed', result: '搜索服务不可用', argumentsPreview: '{"query":"公开资料"}' }],
+      turnMetrics: { totalTokens: 1230, thinkingDurationMs: 11100 },
       contextUsage: { inputTokens: 1200, capacity: 8000, source: 'actual', configurationId: null },
     } })] } }),
   });
   const user = userEvent.setup();
   render(<App />);
   await screen.findByText('回复正文', { selector: '.bubble p' });
-  await user.click(screen.getByText('思考过程'));
+  expect(screen.getByRole('button', { name: '思考中' })).toHaveAttribute('aria-expanded', 'true');
   expect(screen.getByText('整理公开资料')).toBeVisible();
+  expect(screen.getByRole('button', { name: '1 次工具调用' })).toHaveAttribute('aria-expanded', 'false');
   await user.click(screen.getByText(/1 次工具调用/));
+  expect(screen.getByText('{"query":"公开资料"}')).toBeVisible();
+  const tool = screen.getByRole('button', { name: /web_search/ });
+  expect(tool).toHaveAttribute('aria-expanded', 'false');
+  await user.click(tool);
   expect(screen.getByText('搜索服务不可用')).toBeVisible();
+  expect(screen.getByText('思考 11.1 秒')).toBeVisible();
+  expect(screen.getByText('1,230 tokens')).toBeVisible();
   await user.click(screen.getByRole('button', { name: /上下文用量/ }));
   expect(screen.getByText(/最近一次请求/)).toBeVisible();
   expect(screen.getByText(/1,200 \/ 8,000/)).toBeVisible();
@@ -82,11 +90,17 @@ it('streams thinking into the active reply and retains its process across tool t
   });
   expect(await screen.findByText('整理回复')).toBeVisible();
   expect(screen.queryByText('迟到的内容')).toBeNull();
-  await user.click(screen.getByText('思考过程'));
   expect(screen.getByText('查看资料')).toBeVisible();
+  const group = screen.getByRole('button', { name: '1 次工具调用' });
+  if (group.getAttribute('aria-expanded') === 'false') await user.click(group);
+  await user.click(screen.getByRole('button', { name: /lookup/ }));
+  expect(screen.getByRole('button', { name: /lookup/ })).toHaveAttribute('aria-expanded', 'true');
   act(() => emit('assistant_completed', { message: message({ id: 'a2', role: 'assistant', content: '最终回复', metadata: { process } }) }));
   await screen.findByText('最终回复', { selector: '.bubble p' });
+  expect(screen.getByRole('button', { name: '1 次工具调用' })).toHaveAttribute('aria-expanded', 'false');
   await user.click(screen.getByText('1 次工具调用'));
+  expect(screen.getByRole('button', { name: /lookup/ })).toHaveAttribute('aria-expanded', 'false');
+  await user.click(screen.getByRole('button', { name: /lookup/ }));
   expect(screen.getByText('已找到')).toBeVisible();
   expect(screen.queryByRole('button', { name: '停止回复' })).toBeNull();
 });

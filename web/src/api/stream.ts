@@ -4,7 +4,7 @@ import { request } from "./client";
 export type ToolStatus = "running" | "succeeded" | "failed" | "unknown" | "denied" | "invalid_arguments" | "timed_out" | "cancelled";
 type ToolIdentity = { runId: string; sequence: number; roleId?: string; sessionKey?: string; toolCallId: string; toolName: string };
 export type ToolStreamEvent = ToolIdentity & (
-  | { type: "tool_execution_start" }
+  | { type: "tool_execution_start"; argumentsPreview?: string }
   | { type: "tool_execution_update"; result: string; isError: boolean; status: "running"; droppedUpdates: number }
   | { type: "tool_execution_end"; result: string; isError: boolean; status: Exclude<ToolStatus, "running">; droppedUpdates: number }
 );
@@ -48,7 +48,7 @@ export function parseStreamEvent(raw: string): StreamEvent | null {
     if (data.roleId !== undefined && typeof data.roleId !== "string" || data.sessionKey !== undefined && typeof data.sessionKey !== "string") return null;
     const identity: ToolIdentity = { runId, sequence, toolCallId: data.toolCallId, toolName: data.toolName,
       ...(typeof data.roleId === "string" ? { roleId: data.roleId } : {}), ...(typeof data.sessionKey === "string" ? { sessionKey: data.sessionKey } : {}) };
-    if (type === "tool_execution_start") return { type, ...identity };
+    if (type === "tool_execution_start") return { type, ...identity, ...(typeof data.argumentsPreview === 'string' ? { argumentsPreview: data.argumentsPreview.slice(0, 120) } : {}) };
     if (typeof data.result !== "string") return null;
     const result = boundedSummary(data.result);
     const isError = data.isError === true;
