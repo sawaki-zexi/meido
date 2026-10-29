@@ -476,9 +476,11 @@ def test_meido_provider_appends_skill_prompt_without_dropping_role_prompt():
     class Adapter:
         def __init__(self):
             self.memory_contexts = []
+            self.profiles = []
 
         async def stream_reply(self, role, history, configuration=None, *, memory_context=""):
-            del role, history, configuration
+            del history, configuration
+            self.profiles.append(role.profile.profile)
             self.memory_contexts.append(memory_context)
             yield "完成"
 
@@ -499,14 +501,21 @@ def test_meido_provider_appends_skill_prompt_without_dropping_role_prompt():
         ]
 
     asyncio.run(collect())
-    assert adapter.memory_contexts == ["Skill 规则"]
+    assert adapter.profiles == ["核心设定"]
+    assert len(adapter.memory_contexts) == 1
+    assert "Skill 规则" in adapter.memory_contexts[0]
+    assert "[对话方式]" in adapter.memory_contexts[0]
+    assert "本次请求没有业务工具可用" in adapter.memory_contexts[0]
 
 
 def test_meido_provider_appends_skill_prompt_to_explicit_structured_system():
     class Adapter:
         async def stream_structured_messages(self, messages, configuration, tools):
             del configuration, tools
-            assert messages[0]["content"] == "调用方系统\n\nSkill 规则"
+            prompt = messages[0]["content"]
+            assert prompt.startswith("调用方系统\n\nSkill 规则")
+            assert "[对话方式]" not in prompt
+            assert "当前提供给模型的工具：tool" in prompt
             yield ModelTextDelta("完成")
 
     from backend.app.model_adapter import ModelTextDelta
@@ -530,7 +539,8 @@ def test_meido_provider_appends_skill_prompt_to_explicit_structured_system():
             )
         ]
 
-    asyncio.run(collect())
+    events = asyncio.run(collect())
+    assert any(getattr(event, "delta", None) == "完成" for event in events)
 
 
 def test_meido_provider_injects_skill_prompt_for_legacy_adapter():
@@ -560,5 +570,9 @@ def test_meido_provider_injects_skill_prompt_for_legacy_adapter():
         ]
 
     asyncio.run(collect())
-    assert adapter.profiles == ["核心设定\n\nSkill 规则"]
+    assert len(adapter.profiles) == 1
+    assert adapter.profiles[0].split("\n\n", 1)[0] == "核心设定"
+    assert "Skill 规则" in adapter.profiles[0]
+    assert "[对话方式]" in adapter.profiles[0]
+    assert "本次请求没有业务工具可用" in adapter.profiles[0]
     assert role.profile.profile == "核心设定"

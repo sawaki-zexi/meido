@@ -172,12 +172,34 @@ def _public_address(address: str) -> bool:
     return ip.is_global and not ip.is_multicast and not ip.is_unspecified
 
 
-async def _pinned_url(url: httpx.URL, resolver: Resolver) -> httpx.URL:
+def _validate_url(url: httpx.URL) -> str:
     if url.scheme not in {"http", "https"} or not url.host or url.username or url.password:
         raise NetworkToolError("unsafe_url", "仅支持无凭据的 HTTP/HTTPS URL", "提供不含用户名和密码的完整 HTTP/HTTPS 地址")
     host = url.host.rstrip(".").lower()
     if host == "localhost" or host.endswith((".local", ".localhost", ".internal")) or "%" in host:
         raise NetworkToolError("unsafe_url", "禁止访问本地域名", "请使用公开网页来源")
+    return host
+
+
+def _search_service_url(url: httpx.URL) -> httpx.URL:
+    """The host, not the model, owns this fixed service destination.
+
+    Keep the hostname for the host's proxy/TUN DNS, as Shiori does. This is
+    never used for URLs supplied by a model or returned by a search service.
+    """
+    host = _validate_url(url)
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        if not _public_address(str(address)):
+            raise NetworkToolError("unsafe_url", "搜索端点不能使用非公共 IP 地址", "请检查宿主搜索端点配置")
+    return url.copy_with(fragment=None)
+
+
+async def _pinned_url(url: httpx.URL, resolver: Resolver) -> httpx.URL:
+    host = _validate_url(url)
     try:
         literal = ipaddress.ip_address(host)
     except ValueError:
@@ -191,16 +213,19 @@ async def _pinned_url(url: httpx.URL, resolver: Resolver) -> httpx.URL:
     return url.copy_with(host=addresses[0], fragment=None)
 
 
-async def _download(config: NetworkToolsConfig, resolver: Resolver, transport, url: httpx.URL,
+async def _download(config: NetworkToolsConfig, resolver: Resolver | None, transport, url: httpx.URL,
                     *, method="GET", headers=None, payload=None):
-    # Disable ambient proxy/cookies/auth. Each hop validates DNS then connects to
-    # that exact numeric address; HTTPS still verifies the original hostname.
-    async with httpx.AsyncClient(transport=transport, trust_env=False, follow_redirects=False, timeout=None) as client:
+    # Only a host-owned search POST may use service DNS/proxy routing. Arbitrary
+    # fetch URLs still validate and pin public DNS on every hop, without proxies.
+    service = resolver is None and method == "POST"
+    if resolver is None and not service:
+        raise ValueError("public downloads require a resolver")
+    async with httpx.AsyncClient(transport=transport, trust_env=service, follow_redirects=False, timeout=None) as client:
         for redirect in range(6):
-            pinned = await _pinned_url(url, resolver)
+            target = _search_service_url(url) if service else await _pinned_url(url, resolver)
             request_headers = {"User-Agent": "meido/1.0", "Accept-Encoding": "gzip, deflate, identity", **(headers or {}),
                                "Host": url.netloc.decode()}
-            async with client.stream(method, pinned, headers=request_headers, json=payload,
+            async with client.stream(method, target, headers=request_headers, json=payload,
                                      extensions={"sni_hostname": url.host}) as response:
                 if response.status_code in {301, 302, 303, 307, 308}:
                     if redirect == 5 or "location" not in response.headers:
@@ -368,10 +393,9 @@ class WebFetchTool:
 
 
 class WebSearchTool:
-    def __init__(self, config: NetworkToolsConfig | None = None, *, resolver: Resolver = _resolve,
+    def __init__(self, config: NetworkToolsConfig | None = None, *,
                  transport: httpx.AsyncBaseTransport | None = None):
         self.config = config or NetworkToolsConfig()
-        self.resolver = resolver
         self.transport = transport
         self.definition = ToolDefinition(
             name="web_search", description="搜索互联网的标题、摘要和来源 URL；拿到来源后可用 web_fetch 阅读。",
@@ -407,7 +431,7 @@ class WebSearchTool:
             payload = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
                 "name": "web_search_exa", "arguments": options}} if mcp else options
             endpoint = self.config.search_endpoint or ("https://mcp.exa.ai/mcp" if mcp else "https://api.exa.ai/search")
-            body, headers, _, status = await _download(self.config, self.resolver, self.transport,
+            body, headers, _, status = await _download(self.config, None, self.transport,
                 httpx.URL(endpoint), method="POST", payload=payload,
                 headers={"Accept": "application/json, text/event-stream", **self.config.search_headers})
             parsed = await _worker({"kind": "search", "text": body.decode("utf-8-sig"), "mcp": mcp,

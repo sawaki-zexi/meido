@@ -1,8 +1,8 @@
 # 角色联网工具
 
-状态：当前实现；最后核验：2026-10-28。
+状态：当前实现；最后核验：2026-10-29。
 事实来源：`backend/app/network_tools.py`、`backend/app/network_extract.py`、
-`tests/python/test_network_tools.py`、`tests/python/test_network_api.py`；Refs #140、#265、#269。
+`tests/python/test_network_tools.py`、`tests/python/test_network_api.py`；Refs #140、#265、#269、#275。
 上游对照：[Shiori web_search](https://github.com/YinFengWindy/Shiori-Agent/blob/d3acaed186b172a78a5892e0307e9affd89759f0/apps/backend/agent/tools/web_search.py)、
 [web_fetch](https://github.com/YinFengWindy/Shiori-Agent/blob/d3acaed186b172a78a5892e0307e9affd89759f0/apps/backend/agent/tools/web_fetch.py)。
 
@@ -37,6 +37,13 @@
 成功响应若包含已配置凭据也会替换为 `[REDACTED]`。搜索 POST 不跟随重定向，避免转发凭据；
 端点变更应由宿主更新配置。HTTP 错误、错误协议和内容解析失败返回错误工具结果；
 正常空结果不失败，含文本却没有可核验来源仍明确拒绝。
+
+搜索访问的是宿主配置的固定服务，保留域名交给 HTTP 客户端和系统网络处理，遵循
+`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY` 等 HTTPX 网络环境配置。
+HTTPS 仍校验证书，服务地址仍禁止 URL 凭据、本地域名与非公共 IP 字面量。
+服务域名的解析由宿主 DNS/代理负责，不进行网页抓取的预解析和 IP 固定；这允许
+TUN/Fake-IP 环境正常访问公共 Exa 服务。该边界只适用于宿主选择的搜索服务，不适用于
+模型传入的 URL、搜索结果链接或重定向；不能把不可信地址填入宿主搜索端点配置。
 
 高级设置 `searchEnabled` 只控制按需工具发现（tool_search），不是网页搜索开关；
 联网工具的宿主开关是 `MEIDO_NETWORK_ENABLED`。Shiori 同样默认调用无密钥 Exa 公共 MCP；
@@ -75,18 +82,25 @@
 使用短命进程，整体时限和取消会终止工作进程；默认搜索整体 25 秒，网页整体按 timeout。
 `html2text>=2025.4.0`、`lxml>=6.0.0` 与固定上游一致，用于保留 Markdown 和 HTML 提取语义。
 
-网络仅允许 HTTP/HTTPS，禁止 URL 凭据、本地域名、私有/回环/保留/非公共目标。
+网页抓取仅允许 HTTP/HTTPS，禁止 URL 凭据、本地域名、私有/回环/保留/非公共目标。
 每次 DNS 解析的所有地址都必须通过检查，每次跳转重新检查，最多 5 次；连接固定到已校验 IP，
 Host 和 TLS SNI/证书校验保留原始主机名，禁用环境代理、netrc 和自动携带 cookie。
 外部回合允许这两个只读网络工具，但继续要求角色 enabledTools 和宿主许可。
 
+因此浏览器或搜索成功不代表 `web_fetch` 一定成功。网页域名若被本机 DNS 映射到
+`198.18.0.0/15`，仍按非公共地址拒绝；需要在网络软件中为相应来源使用真实 DNS，
+或在已有授权范围使用浏览器能力。不要关闭公共地址校验，也不要把错误当成网页正文。
+
 验证命令（选与改动相关的用例，不要求重复全套）：
 `python -m pytest tests/python/test_network_tools.py tests/python/test_network_api.py`。
+2026-10-29 在隔离分支上以无凭据公开查询 `Shiori-Agent GitHub` 实测：原版在解析到
+`198.18.1.3` 后返回 `unsafe_url`；修复版返回 HTTP 200 和真实来源。另以本地 HTTP 代理
+夹具验证配置服务访问与重定向拒绝。没有修改正式实例、调用真实聊天模型或付费凭据。
 2026-10-28 本地真实 HTTP 夹具验证分块 SSE/持续连接、成功空结果、429 与无效 JSON；
 会话 API 夹具验证空结果和安全错误经工具回传后仍可继续正文，并保存在原会话。
 已复现并修复：CR-only SSE 的完整 RPC 原先无法提前结束，持续连接最终超时。
 这不证明用户当天两次旧搜索失败由同一缺陷引起；旧记录只有泛化错误，无法定位 DNS、HTTP
-或协议阶段。本轮没有使用用户密钥或真实搜索查询，也没有声称验证当前线上服务可用性。
+或协议阶段。10 月 28 日这轮没有使用用户密钥或真实搜索查询，也没有声称验证当时线上服务可用性。
 
 历史记录：
 2026-10-15 真实无凭据 smoke：HTTPS example.com 返回 200 和正文；匿名 Exa MCP 搜索

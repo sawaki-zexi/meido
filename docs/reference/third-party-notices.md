@@ -2,7 +2,13 @@
 
 状态：当前
 
-最后核验：2026-10-26
+最后核验：2026-10-29
+
+聊天表达与查证提示 `backend/app/agent_runtime/conversation_prompt.py` 参考并改编
+Shiori-Agent `d3acaed186b172a78a5892e0307e9affd89759f0` 的 `apps/backend/prompts/agent.py`
+与 Tulpa `6753a28a9757c93c0ad34ed54064965df2cb081c` 的
+`chatlocal/prompts/mcp_chat/behavior.md`。适配范围见[聊天行为契约](chat-behavior.md)；
+分别保留 [Shiori MIT 声明](../../third_party/shiori-agent/LICENSE)和 [Tulpa MIT 声明](../../third_party/tulpa/LICENSE)。
 
 多端会话模块参考并改编 [Shiori-Agent](https://github.com/YinFengWindy/Shiori-Agent)，固定基线为 `1c241a2627bbcc99124aef71abaee237ac057499`。引用范围包括渠道账号和身份、入站暂停缓冲、聊天上下文隔离、群旁听以及平台传输行为；具体来源见[源码研究](../research/shiori-multichannel-integration.md)。上游采用 MIT 许可证，保留其版权及许可声明如下。
 

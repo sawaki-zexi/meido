@@ -332,6 +332,8 @@ async def test_hard_limit_fallback_keeps_current_results_without_replaying_tools
     assert tools == []
     assert 'receipt-1' in str(final) and '继续' in str(final)
     assert base.required_context in str(final)
+    assert '[对话方式]' in str(final)
+    assert '本次请求没有业务工具可用' in str(final)
     assert 'OPTIONAL_CAPABILITY_CATALOG' not in str(final)
     minimal = base.minimal_provider()
     with_identity = minimal.estimate_request_tokens('', [messages[-3]], [])

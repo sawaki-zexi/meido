@@ -38,6 +38,32 @@ def skill_client(tmp_path, monkeypatch, adapter, enabled_tools=()):
     return client, response.json()["role"]["id"], roles, sessions
 
 
+@pytest.mark.parametrize('message,skill_id,section', [
+    ('上次提到的事情你还记得吗', 'conversation-recall', '[按需回忆]'),
+    ('别这样叫我，刚才那个称呼我不喜欢', 'conversation-continuity', '[互动连续性与分寸]'),
+])
+def test_conversation_skills_activate_for_relevant_input_without_granting_tools(tmp_path, monkeypatch, message, skill_id, section):
+    requests = []
+
+    class Adapter:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            requests.append((messages, tools))
+            yield ModelTextDelta('夹具回复')
+            yield ModelResponseDone('stop')
+
+    client, role_id, _, sessions = skill_client(tmp_path, monkeypatch, Adapter())
+    first = client.post(f'/api/roles/{role_id}/messages', json={'content': '你好'})
+    second = client.post(f'/api/roles/{role_id}/messages', json={'content': message})
+    assert all('event: assistant_completed' in reply.text for reply in (first, second))
+    assert len(requests) == 2
+    assert section not in requests[0][0][0]['content']
+    assert section in requests[1][0][0]['content']
+    assert {tool['function']['name'] for tool in requests[0][1]} == {tool['function']['name'] for tool in requests[1][1]}
+    run_id = sessions.list_messages(f'role:{role_id}')[-1].runId
+    selected = sessions.get_run(run_id).modelSnapshot['capabilities']['skills']
+    assert any(item['id'] == skill_id and item['tools'] == [] for item in selected)
+
+
 def test_skill_created_by_real_file_tool_is_explicitly_usable_next_turn_without_granting_tools(tmp_path, monkeypatch):
     class Adapter:
         calls = 0

@@ -97,6 +97,9 @@ def test_authorized_role_network_tool_completes_http_conversation_and_persists_s
     assert "event: assistant_completed" in reply.text
     assert len(requests) == 1
     assert tool_name in {schema["function"]["name"] for schema in provider.requests[0][1]}
+    for messages, _ in provider.requests:
+        assert '[查证与工具使用]' in messages[0]['content']
+        assert '[对话方式]' in messages[0]['content']
     results = [item for item in sessions.runtime_messages(f"role:{role.id}") if isinstance(item, ToolResultMessage)]
     assert len(results) == 1
     assert results[0].is_error == ("error_code" in expected)
@@ -145,5 +148,7 @@ def test_host_disabled_network_tools_are_hidden_for_legacy_empty_and_explicit_li
     response = client.post(f"/api/roles/{role.id}/messages", json={"content": "联网"})
     assert "event: assistant_completed" in response.text
     assert {"web_fetch", "web_search"}.isdisjoint({item["function"]["name"] for item in provider.requests[0][1]})
+    assert 'web_search 用于' not in provider.requests[0][0][0]['content']
+    assert 'web_fetch 用于' not in provider.requests[0][0][0]['content']
     results = [item for item in sessions.runtime_messages(f"role:{role.id}") if isinstance(item, ToolResultMessage)]
     assert len(results) == 1 and results[0].is_error

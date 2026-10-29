@@ -17,6 +17,84 @@ async def public_dns(host, port):
     return ["93.184.215.14"]
 
 
+def test_search_reaches_host_configured_service_on_fake_ip_network(monkeypatch):
+    requests = []
+
+    def fake_dns(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.1.3", port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_dns)
+
+    def service(request):
+        requests.append(request)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {"content": [
+            {"type": "text", "text": "Article https://example.org/source"}]}})
+
+    result = asyncio.run(WebSearchTool(transport=httpx.MockTransport(service))
+                         .execute({"query": "public source"}, context()))
+    assert not result.is_error, result.content
+    assert result.details["sources"] == ["https://example.org/source"]
+    assert str(requests[0].url) == "https://mcp.exa.ai/mcp"
+
+    # The same DNS answer is still denied for a URL chosen by the model.
+    requests.clear()
+    fetched = asyncio.run(WebFetchTool(transport=httpx.MockTransport(service))
+                          .execute({"url": "https://example.org/source"}, context()))
+    assert fetched.is_error and fetched.details["error_code"] == "unsafe_url"
+    assert requests == []
+
+
+@pytest.mark.parametrize("status", [200, 307])
+def test_search_uses_host_proxy_and_never_forwards_redirect_credentials(status, monkeypatch, local_platform_only):
+    async def run():
+        requests = []
+
+        async def proxy(reader, writer):
+            try:
+                head = await reader.readuntil(b"\r\n\r\n")
+                size = next(int(line.split(b":", 1)[1]) for line in head.splitlines()
+                            if line.lower().startswith(b"content-length:"))
+                requests.append((head, json.loads(await reader.readexactly(size))))
+                body = b'{"results":[{"title":"Article","url":"https://example.org/source","text":"Evidence"}]}'
+                writer.write((f"HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\n"
+                              f"Location: http://127.0.0.1/forbidden\r\nContent-Length: {len(body)}\r\n\r\n").encode() + body)
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_server(proxy, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{port}")
+        monkeypatch.setenv("NO_PROXY", "")
+        config = NetworkToolsConfig(search_provider="exa_api", search_endpoint="http://search.example/search",
+                                    search_headers={"x-api-key": "fixture-secret"}, timeout_seconds=3)
+        async with server:
+            result = await WebSearchTool(config).execute({"query": "public fixture"}, context())
+        assert len(requests) == 1
+        assert requests[0][0].startswith(b"POST http://search.example/search HTTP/1.1")
+        assert requests[0][1]["query"] == "public fixture"
+        if status == 200:
+            assert not result.is_error, result.content
+            assert result.details["sources"] == ["https://example.org/source"]
+        else:
+            assert result.is_error and result.details["error_code"] == "redirect_error"
+        assert "fixture-secret" not in result.content
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("endpoint", ["http://localhost/", "http://127.0.0.1/", "http://198.18.1.3/",
+                                      "http://user:password@example.org/", "file:///etc/passwd"])
+def test_search_rejects_invalid_host_service_addresses_before_sending(endpoint):
+    def unexpected(request):
+        raise AssertionError("invalid search endpoint reached network")
+
+    result = asyncio.run(WebSearchTool(NetworkToolsConfig(search_endpoint=endpoint),
+        transport=httpx.MockTransport(unexpected)).execute({"query": "public fixture"}, context()))
+    assert result.is_error and result.details["error_code"] == "unsafe_url"
+
+
 def test_role_fetches_text_with_verified_source_and_status():
     requests = []
 
@@ -194,7 +272,7 @@ def test_role_search_preserves_shiori_options_and_parses_all_results(media_type)
             return httpx.Response(200, text="event: message\ndata: " + json.dumps(data) + "\n\n", headers={"content-type": media_type})
         return httpx.Response(200, json=data, headers={"content-type": media_type})
 
-    tool = WebSearchTool(resolver=public_dns, transport=httpx.MockTransport(handler))
+    tool = WebSearchTool(transport=httpx.MockTransport(handler))
     result = asyncio.run(tool.execute({"query": "今日发布", "num_results": 2, "livecrawl": "preferred", "type": "deep"}, context()))
     assert not result.is_error
     assert "摘要一" in result.details["result"] and "摘要二" in result.details["result"]
@@ -212,7 +290,7 @@ def test_host_can_select_authenticated_search_provider_without_exposing_credenti
 
     config = NetworkToolsConfig(search_provider="exa_api", search_endpoint="https://search.example/search",
         search_headers={"x-api-key": "secret-key"}, search_parameters={"category": "news"})
-    tool = WebSearchTool(config, resolver=public_dns, transport=httpx.MockTransport(handler))
+    tool = WebSearchTool(config, transport=httpx.MockTransport(handler))
     result = asyncio.run(tool.execute({"query": "today"}, context()))
     assert not result.is_error
     assert result.details["sources"] == ["https://example.org/news"]
@@ -229,7 +307,7 @@ def test_host_can_select_authenticated_search_provider_without_exposing_credenti
     {"jsonrpc": "2.0", "id": 1, "result": {"content": None}},
 ])
 def test_search_provider_errors_and_invalid_payload_are_explicit(reply):
-    result = asyncio.run(WebSearchTool(resolver=public_dns, transport=httpx.MockTransport(
+    result = asyncio.run(WebSearchTool(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, json=reply))).execute({"query": "q"}, context()))
     assert result.is_error
     assert "secret-key" not in result.content
@@ -245,7 +323,7 @@ def test_network_tools_reject_forged_identity_or_host_parameters_without_io(tool
     def unexpected(request):
         raise AssertionError("forged parameters must not reach network")
 
-    result = asyncio.run(tool_type(resolver=public_dns, transport=httpx.MockTransport(unexpected)).execute(arguments, context()))
+    result = asyncio.run(tool_type(transport=httpx.MockTransport(unexpected)).execute(arguments, context()))
     assert result.is_error
 
 
@@ -257,7 +335,7 @@ def test_search_accepts_completed_sse_result_without_waiting_for_connection_clos
             yield b'data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Article https://example.org/one"}]}}\n\n'
             await asyncio.sleep(10)
 
-    tool = WebSearchTool(NetworkToolsConfig(timeout_seconds=3), resolver=public_dns, transport=httpx.MockTransport(
+    tool = WebSearchTool(NetworkToolsConfig(timeout_seconds=3), transport=httpx.MockTransport(
         lambda request: httpx.Response(200, stream=Events(), headers={"content-type": media_type})))
     result = asyncio.run(tool.execute({"query": "article"}, context()))
     assert not result.is_error
@@ -267,7 +345,7 @@ def test_search_accepts_completed_sse_result_without_waiting_for_connection_clos
 def test_search_document_parsing_obeys_whole_operation_deadline():
     payload = {"jsonrpc": "2.0", "id": 1, "result": {"content": [
         {"type": "text", "text": "x" * 3_000_000 + " https://example.org/source"}]}}
-    tool = WebSearchTool(NetworkToolsConfig(timeout_seconds=.001), resolver=public_dns,
+    tool = WebSearchTool(NetworkToolsConfig(timeout_seconds=.001),
         transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload)))
     result = asyncio.run(tool.execute({"query": "q"}, context()))
     assert result.is_error
@@ -304,7 +382,7 @@ def test_search_redacts_configured_credentials_even_if_provider_echoes_them():
     config = NetworkToolsConfig(search_headers={"Authorization": "Bearer host-secret"})
     payload = {"jsonrpc": "2.0", "id": 1, "result": {"content": [
         {"type": "text", "text": "Debug echoed host-secret. Source https://example.org/article"}]}}
-    result = asyncio.run(WebSearchTool(config, resolver=public_dns, transport=httpx.MockTransport(
+    result = asyncio.run(WebSearchTool(config, transport=httpx.MockTransport(
         lambda request: httpx.Response(200, json=payload))).execute({"query": "article"}, context()))
     assert not result.is_error
     assert "host-secret" not in result.content
@@ -329,7 +407,7 @@ def test_fetch_negotiates_requested_format_and_recognizes_case_insensitive_html(
     ("exa_api", {"results": []}),
 ])
 def test_search_empty_results_are_successful_zero_results_not_network_failures(provider, reply):
-    result = asyncio.run(WebSearchTool(NetworkToolsConfig(search_provider=provider), resolver=public_dns,
+    result = asyncio.run(WebSearchTool(NetworkToolsConfig(search_provider=provider),
         transport=httpx.MockTransport(lambda request: httpx.Response(200, json=reply)))
         .execute({"query": "unmatched fixture"}, context()))
     assert not result.is_error
@@ -344,7 +422,8 @@ def test_search_empty_results_are_successful_zero_results_not_network_failures(p
     (WebFetchTool, {"url": "https://example.org"}),
 ])
 def test_network_http_error_preserves_status_and_safe_action_without_response_body(tool_type, arguments):
-    result = asyncio.run(tool_type(resolver=public_dns, transport=httpx.MockTransport(
+    options = {"resolver": public_dns} if tool_type is WebFetchTool else {}
+    result = asyncio.run(tool_type(**options, transport=httpx.MockTransport(
         lambda request: httpx.Response(429, text="secret-key upstream diagnostic")))
         .execute(arguments, context()))
     assert result.is_error
@@ -361,15 +440,10 @@ def test_network_http_error_preserves_status_and_safe_action_without_response_bo
     (httpx.ReadTimeout("secret-key"), "timeout"),
 ])
 def test_search_transport_failures_are_distinguishable_without_raw_exception(failure, code):
-    async def resolver(host, port):
-        if isinstance(failure, socket.gaierror):
-            raise failure
-        return await public_dns(host, port)
-
     def handler(request):
         raise failure
 
-    result = asyncio.run(WebSearchTool(resolver=resolver, transport=httpx.MockTransport(handler))
+    result = asyncio.run(WebSearchTool(transport=httpx.MockTransport(handler))
         .execute({"query": "fixture"}, context()))
     assert result.is_error
     assert result.details["error_code"] == code
@@ -384,7 +458,7 @@ def test_search_transport_failures_are_distinguishable_without_raw_exception(fai
     ({"jsonrpc": "2.0", "id": 1, "result": {"content": None}}, "invalid_response"),
 ])
 def test_search_protocol_errors_do_not_masquerade_as_empty_results(reply, code):
-    result = asyncio.run(WebSearchTool(resolver=public_dns, transport=httpx.MockTransport(
+    result = asyncio.run(WebSearchTool(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, json=reply))).execute({"query": "fixture"}, context()))
     assert result.is_error
     assert result.details["error_code"] == code
@@ -393,7 +467,7 @@ def test_search_protocol_errors_do_not_masquerade_as_empty_results(reply, code):
 
 
 def test_search_invalid_json_is_diagnosed_without_echoing_upstream_html():
-    result = asyncio.run(WebSearchTool(resolver=public_dns, transport=httpx.MockTransport(
+    result = asyncio.run(WebSearchTool(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, text="<html>secret-key</html>")))
         .execute({"query": "fixture"}, context()))
     assert result.is_error
@@ -441,9 +515,9 @@ def test_search_real_http_result_and_diagnostics(scenario, local_platform_only):
 
         class LocalTransport(httpx.AsyncHTTPTransport):
             async def handle_async_request(self, request):
-                # Exercise real HTTP only after the product has validated and
-                # pinned a public target; production SSRF checks stay intact.
-                assert request.url.host == "93.184.215.14"
+                # The configured search service retains its hostname for proxy
+                # routing. Redirect the test transport only to our local peer.
+                assert request.url.host == "mcp.exa.ai"
                 assert request.headers["host"] == "mcp.exa.ai"
                 local = httpx.Request(request.method,
                     request.url.copy_with(scheme="http", host="127.0.0.1", port=port),
@@ -451,7 +525,7 @@ def test_search_real_http_result_and_diagnostics(scenario, local_platform_only):
                 return await super().handle_async_request(local)
 
         async with server:
-            result = await WebSearchTool(NetworkToolsConfig(timeout_seconds=2), resolver=public_dns,
+            result = await WebSearchTool(NetworkToolsConfig(timeout_seconds=2),
                 transport=LocalTransport()).execute({"query": "synthetic fixture"}, context())
             await asyncio.wait_for(peer_closed.wait(), 1)
         assert requests[0]["params"]["arguments"]["query"] == "synthetic fixture"
@@ -476,7 +550,8 @@ def test_search_real_http_result_and_diagnostics(scenario, local_platform_only):
     (WebFetchTool, {"url": "https://example.org?token=private-query-context"}),
 ])
 def test_network_errors_do_not_echo_private_request_context(tool_type, arguments):
-    result = asyncio.run(tool_type(resolver=public_dns, transport=httpx.MockTransport(
+    options = {"resolver": public_dns} if tool_type is WebFetchTool else {}
+    result = asyncio.run(tool_type(**options, transport=httpx.MockTransport(
         lambda request: httpx.Response(403, text="upstream secret"))).execute(arguments, context()))
     assert result.is_error
     assert "private-query-context" not in result.content

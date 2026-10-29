@@ -40,7 +40,8 @@ class SuccessAdapter:
         self.histories = []
 
     async def stream_reply(self, role, history, configuration=None):
-        assert role.profile.profile == "核心设定"
+        assert role.profile.profile.split("\n\n", 1)[0] == "核心设定"
+        assert "[对话方式]" in role.profile.profile
         assert history[-1].content.endswith("\n你好")
         assert history[-1].content.startswith("[历史来源：桌面；message_id=")
         self.histories.append(history)
@@ -597,7 +598,7 @@ def test_run_snapshot_keeps_recalled_memory_ephemeral(tmp_path, monkeypatch):
     assert "private-memory-snippet" not in json.dumps(run.modelSnapshot, ensure_ascii=False)
     assert run.modelSnapshot["context"]["memoryContextMetadata"] == {
         "included": True,
-        "characterCount": len(adapter.memory_contexts[0]),
+        "characterCount": len(MemoryResult.text_block),
     }
 
 
@@ -829,7 +830,9 @@ activation: role_default
 
     assert response.status_code == 200
     assert "event: assistant_completed" in response.text
-    assert adapter.memory_contexts == ["请先参考已有记忆，再给出分阶段学习计划。"]
+    assert len(adapter.memory_contexts) == 1
+    assert "请先参考已有记忆，再给出分阶段学习计划。" in adapter.memory_contexts[0]
+    assert "[对话方式]" in adapter.memory_contexts[0]
     run_id = sessions.list_messages(f"role:{role.id}")[0].runId
     assert run_id is not None
     run = sessions.get_run(run_id)
