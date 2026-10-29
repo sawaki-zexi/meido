@@ -6,6 +6,21 @@
 .chat .message.assistant .bubble { padding: 10px 14px; border: 1px solid rgb(255 255 255 / 70%); border-radius: 16px; background: rgb(255 255 255 / 80%); box-shadow: 0 4px 16px rgb(56 27 43 / 6%); font-size: 14px; line-height: 24px; }
 .chat .message.assistant .message-heading strong { font-size: 12px; font-weight: 500; color: var(--ink-faint); }
 .message-time { margin-top: 4px; font-size: 12px; color: var(--ink-faint); }
+/* Shiori ChatHeader / ChatTypingSparkles: three staggered pastel sparkles. */
+.chat-header-typing { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 400; color: var(--ink-faint); line-height: 18px; }
+.chat-typing-sparkles { display: inline-flex; align-items: flex-end; gap: 1px; height: 11px; }
+.chat-typing-sparkles > span { display: block; width: 9px; height: 9px; opacity: .45; transform: scale(.72); animation: chat-typing-hop 1.4s ease-in-out infinite; }
+.chat-typing-sparkles > span:nth-child(1) { color: #8ec5e8; }
+.chat-typing-sparkles > span:nth-child(2) { color: #eab0cc; animation-delay: .16s; }
+.chat-typing-sparkles > span:nth-child(3) { color: #baace4; animation-delay: .32s; }
+.chat-typing-sparkles svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.chat-pending { display: inline-flex; align-items: center; min-height: 24px; min-width: 8px; }
+.chat-stream-cursor { display: inline-block; width: 2px; height: 1em; background: currentColor; vertical-align: text-bottom; animation: chat-thinking-blink 900ms ease-in-out infinite; }
+@keyframes chat-typing-hop {
+  0%, 56%, 100% { transform: translateY(0) scale(.72) rotate(0); opacity: .45; }
+  20% { transform: translateY(-3px) scale(1.12) rotate(18deg); opacity: 1; }
+  38% { transform: translateY(0) scale(.9) rotate(30deg); opacity: .8; }
+}
 .message-process { --process-muted: #817980; --process-faint: #978e96; display: grid; gap: 8px; margin-bottom: 8px; min-width: 0; color: var(--process-muted); white-space: normal; }
 .message-process button { min-height: 0; border: 0; background: transparent; color: inherit; cursor: pointer; font-family: inherit; line-height: 20px; box-shadow: none; }
 .message-process button:hover:not(:disabled) { background: rgb(0 0 0 / 4%); color: inherit; }
@@ -44,6 +59,7 @@
 @keyframes chat-thinking-shimmer { to { background-position: -200% 0; } }
 @keyframes chat-thinking-blink { to { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
+  .chat-typing-sparkles > span, .chat-stream-cursor { animation: none; }
   .message-process *, .message-process *::before { animation: none !important; transition: none !important; }
   .chat-thinking-label-streaming { background: none; color: inherit; }
 }

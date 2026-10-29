@@ -1,6 +1,21 @@
 # Shiori-Agent attribution
 
-状态：当前。最后核验：2026-10-16。
+状态：当前。最后核验：2026-10-30。
+
+## 回复中反馈与摘要协议（2026-10-30）
+
+`web/src/features/chat/ChatTypingSparkles.tsx`、`ChatView.tsx` 及相关 CSS 适配固定提交
+`d149de7f052f77c5bb88d4d1393d48dce1870875` 的
+`apps/desktop/renderer/src/chat/ChatTypingSparkles.tsx`、`ChatHeader.tsx`、`ChatMessageRow.tsx` 及星形路径 `packages/sdk/src/icons/brand.tsx`：
+发送状态驱动头部星光、输入提示与首段正文前的光标。`backend/app/agent_runtime/natural_reply.py`
+按同版 `apps/backend/agent/core/passive_turn/reasoner.py` 保留正文缓冲同时透传公开思考；
+`context_provider.py` 与 OpenAI adapter 按 `apps/backend/core/compaction_summary_request.py`、
+`compaction_summary_validation.py` 适配摘要 JSON 格式、规范化投影和输出长度口径。
+Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。
+
+Meido 沿用 SSE、取消与授权边界；硬预算最小请求保留能够装入预算的已授权工具，
+这是区别于上游清除业务工具的行为。没有复制上游摘要批处理、token 校准或插件宿主。
+精确源码链接与证据限制见[本轮研究](../../docs/research/shiori-live-reply-tool-loading-2026-10-30.md)。
 
 ## 聊天思考与工具展示（2026-10-29）
 

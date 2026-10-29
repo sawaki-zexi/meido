@@ -12,7 +12,6 @@ from dataclasses import asdict
 
 from ..ai.model_types import ModelStreamDone, ModelStreamError, ModelSystemMessage, ModelTextBlock, ModelTextDelta, ModelUserMessage
 from .types import UserMessage, AssistantMessage, ToolResultMessage, AttachmentContent
-from .provider import AssistantDoneEvent, ToolCallEndEvent
 from ..ai.model_adapter import supports_auxiliary_thinking_control
 
 logger = logging.getLogger(__name__)
@@ -21,9 +20,9 @@ logger = logging.getLogger(__name__)
 SUMMARY_TIMEOUT_SECONDS = 90.0
 MINIMAL_PROMPT = (
     "本次上下文过长且工作摘要未能完成，较早原文暂未放入本次请求，原始记录仍保留。"
-    "本次仅依据当前用户输入、已有合法摘要、附件和已执行工具结果直接回复。"
-    "业务工具本次不可用；不要重做已执行操作、声称取得没有的结果或编造缺失历史。"
-    "如证据不足请明确说明；若提供 finish_reply，它只是本次回复格式，不是业务工具。"
+    "本次依据当前用户输入、已有合法摘要、附件和已执行工具结果继续处理。"
+    "工具能力以本次提供的列表为准；不要重做已执行操作、声称取得没有的结果或编造缺失历史。"
+    "如证据不足请明确说明；需要其他能力时，可通过本次提供的 tool_search 发现并加载。"
 )
 
 SUMMARY_FIELDS = ('tasks', 'constraints', 'decisions', 'unfinished', 'tool_state', 'entities')
@@ -58,15 +57,14 @@ def budget(configuration, settings, output):
 
 def validate_summary(text, allowed):
     result = json.loads(text)
-    if not isinstance(result, dict) or set(result) != {*SUMMARY_FIELDS, 'source_message_ids'}:
+    if not isinstance(result, dict) or not {*SUMMARY_FIELDS, 'source_message_ids'}.issubset(result):
         raise ValueError('压缩摘要字段不完整')
     if any(not isinstance(result[key], str) for key in SUMMARY_FIELDS):
         raise ValueError('压缩摘要字段必须为字符串')
     ids = result['source_message_ids']
     if not isinstance(ids, list) or not ids or any(not isinstance(item, str) or item not in allowed for item in ids):
         raise ValueError('压缩摘要包含无效来源')
-    result['source_message_ids'] = list(dict.fromkeys(ids))
-    return result
+    return {**{key: result[key] for key in SUMMARY_FIELDS}, 'source_message_ids': list(dict.fromkeys(ids))}
 
 
 class ContextWindowProvider:
@@ -149,6 +147,8 @@ class ContextWindowProvider:
         options = {'max_tokens': output}
         if auxiliary:
             options['disable_thinking'] = True
+        if 'json_mode' in parameters and configuration.api == 'openai-completions':
+            options['json_mode'] = True
         def check_request():
             signal.raise_if_cancelled()
             if not self.authorized():
@@ -200,6 +200,7 @@ class ContextWindowProvider:
             self._diagnose()
 
     async def _compact(self, system, raw, tools, state, signal, available, target):
+        self.compaction_diagnostic['step'] = 'select_prefix'
         starts = [index for index, message in enumerate(raw) if isinstance(message, UserMessage)]
         protected = max(1, self.settings.compactionRetainedTurns)
         choices = starts[1:max(1, len(starts) - protected + 1)]
@@ -233,21 +234,39 @@ class ContextWindowProvider:
         allowed = set(identifier for message in prefix for identifier in message.source_message_ids)
         if state['summary']:
             allowed.update(state['summary']['source_message_ids'])
-        summary = validate_summary(await self._summarize({'previous_summary': state['summary'], 'messages': records}, signal), allowed)
-        if estimate_tokens(summary) > self.settings.summaryTokenLimit:
-            summary = validate_summary(await self._summarize({'summary': summary}, signal, shorten=True), allowed)
-        if estimate_tokens(summary) > self.settings.summaryTokenLimit:
+        self.compaction_diagnostic['step'] = 'request_summary'
+        response = await self._summarize({'previous_summary': state['summary'], 'messages': records}, signal)
+        self.compaction_diagnostic['step'] = 'validate_summary'
+        summary = validate_summary(response, allowed)
+        if self._summary_tokens(summary, response) > self.settings.summaryTokenLimit:
+            self.compaction_diagnostic['step'] = 'shorten_summary'
+            response = await self._summarize({'summary': summary}, signal, shorten=True)
+            self.compaction_diagnostic['step'] = 'validate_shortened_summary'
+            summary = validate_summary(response, allowed)
+        if self._summary_tokens(summary, response) > self.settings.summaryTokenLimit:
             raise ValueError('工作摘要超过长度上限')
         visible = [self._summary_message(summary), *retained]
         estimated = self._estimate(system, visible, tools)
         if estimated >= available or estimated >= self.last_input_estimate:
             raise ValueError('压缩后仍超出输入容量或未减少输入，原文已保留')
+        self.compaction_diagnostic['step'] = 'commit_summary'
         covered = await self.ensure_coverage(ids)
         signal.raise_if_cancelled()
         self.windows.commit(prepared, summary, authorized=lambda: not signal.is_cancelled() and self.authorized(), covered=covered)
         self.last_input_estimate = estimated
         self.compactions += 1
         return visible
+
+    def _summary_tokens(self, summary, response):
+        # Shiori uses reported output as an upper bound for the normalized
+        # projection. Fall back to local counting when usage is unavailable.
+        reported = self.summary_attempts[-1].get('usage', {}).get('output_tokens', 0)
+        original = json.loads(response)
+        projected = len(original) != len(summary) or len(original['source_message_ids']) != len(summary['source_message_ids'])
+        local = estimate_tokens(json.dumps(summary, ensure_ascii=False, separators=(',', ':')))
+        if type(reported) is int and reported > 0:
+            return local if projected and reported > self.settings.summaryTokenLimit else reported
+        return local
 
     def _minimal_messages(self, raw, state):
         current = self.current_input
@@ -319,10 +338,13 @@ class ContextWindowProvider:
                 # history or publish the failed summary. Preserve current receipts.
                 request_provider = self.provider.minimal_provider()
                 visible = self._minimal_messages(raw, state)
-                request_tools = tuple(tool for tool in tools if tool.get('function', {}).get('name') == 'finish_reply')
+                # Shorten context, not authorization: discovery and actual work
+                # must still be possible when the supplied schemas fit. If they
+                # do not fit, fail explicitly instead of silently claiming no tools.
+                request_tools = tools
                 self.last_input_estimate = self._estimate(system, visible, request_tools, provider=request_provider)
                 self.degraded = True
-                self.compaction_diagnostic.update(fallback='minimal', toolsDisabled=True,
+                self.compaction_diagnostic.update(fallback='minimal', toolsDisabled=False,
                                                   afterTokens=self.last_input_estimate)
                 self._diagnose()
                 if self.last_input_estimate >= available:
@@ -333,9 +355,4 @@ class ContextWindowProvider:
         async with timeout, aclosing(request_provider.stream_response(model=model, system=system, messages=visible, tools=request_tools,
                                                           signal=signal, session_id=session_id)) as stream:
             async for event in stream:
-                if self.degraded:
-                    calls = (event.tool_call,) if isinstance(event, ToolCallEndEvent) else (
-                        event.message.tool_calls if isinstance(event, AssistantDoneEvent) else ())
-                    if any(call.name != 'finish_reply' for call in calls):
-                        raise ValueError('最小回复已禁用业务工具，模型仍请求调用；未执行任何新动作')
                 yield event

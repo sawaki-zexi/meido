@@ -9,7 +9,7 @@ from backend.app.agent_runtime.context_provider import ContextWindowProvider, SU
 from backend.app.agent_runtime.meido_provider import MeidoProvider
 from backend.app.agent_runtime.provider import CancellationToken
 from backend.app.agent_runtime.types import AttachmentContent, ImageContent, AssistantMessage, ToolCall, ToolResultMessage
-from backend.app.ai.model_types import ModelAssistantMessage, ModelResponseMetadata, ModelStreamDone, ModelTextBlock, ModelTextDelta, ModelToolCallBlock, ModelToolResultMessage
+from backend.app.ai.model_types import ModelAssistantMessage, ModelResponseMetadata, ModelStreamDone, ModelTextBlock, ModelTextDelta, ModelToolCallBlock, ModelToolResultMessage, ModelUsage
 from backend.app.context_windows import ContextWindowStore, WindowConflict
 from backend.app.models import ModelConfiguration, Role
 from backend.app.session_store import SessionStore
@@ -42,10 +42,16 @@ class Adapter:
                 fields = {key: '记住原任务' for key in SUMMARY_FIELDS}
                 if self.result == 'long' and self.summaries == 1:
                     fields['tasks'] = 'x' * 2000
+                if self.result == 'extra':
+                    fields['tasks'] = '公开资料' * 80
+                    fields['notes'] = '额外模型备注不应进入工作摘要'
                 text = json.dumps({**fields, 'source_message_ids': ['other-role:id' if self.result == 'forged' else identifier]}, ensure_ascii=False)
         else:
             text = '回答'
-        yield ModelStreamDone(ModelAssistantMessage((ModelTextBlock(text),), ModelResponseMetadata(stop_reason='length' if self.result == 'truncated' else 'stop')))
+        yield ModelStreamDone(ModelAssistantMessage((ModelTextBlock(text),), ModelResponseMetadata(
+            stop_reason='length' if self.result == 'truncated' else 'stop',
+            usage=ModelUsage(output_tokens=(300 if self.result == 'extra' else
+                (900 if self.summaries == 1 else 100) if self.result == 'reported_long' else 0)))))
 
 
 def setup_window(tmp_path, result='valid'):
@@ -314,6 +320,42 @@ async def test_summary_failure_below_hard_limit_keeps_chat_and_records_reason(tm
     assert sessions.list_messages('role:r') == original
     assert diagnostics[-1]['compaction']['summaryAttempts'][0]['stopReason'] == 'length'
     assert diagnostics[-1]['compaction']['fallback'] == 'original'
+
+
+@pytest.mark.anyio
+async def test_valid_summary_uses_reported_output_budget_and_discards_extra_fields(tmp_path):
+    sessions, adapter, base, windows, settings = setup_window(tmp_path, 'extra')
+    provider, _ = await execute(base, windows, settings, sessions.runtime_messages('role:r'))
+    assert provider.compactions == 1
+    assert adapter.summaries == 1
+    summary = windows.load('r', 'role:r', 'owner', 'a')['summary']
+    assert summary['tasks'] == '公开资料' * 80
+    assert 'notes' not in summary
+
+
+@pytest.mark.anyio
+async def test_reported_oversized_summary_is_shortened_even_when_local_count_is_smaller(tmp_path):
+    sessions, adapter, base, windows, settings = setup_window(tmp_path, 'reported_long')
+    provider, _ = await execute(base, windows, settings, sessions.runtime_messages('role:r'))
+    assert adapter.summaries == 2
+    assert provider.compactions == 1
+    assert windows.load('r', 'role:r', 'owner', 'a')['summary'] is not None
+
+
+@pytest.mark.anyio
+async def test_history_overflow_does_not_remove_authorized_tool_discovery(tmp_path):
+    sessions, adapter, base, windows, settings = setup_window(tmp_path, 'truncated')
+    base.configuration = base.configuration.model_copy(update={'contextWindowTokens': 4000})
+    discovery = {'type': 'function', 'function': {'name': 'tool_search', 'description': '发现和加载已授权工具',
+        'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}}}}}
+    async def coverage(ids):
+        return True
+    provider = ContextWindowProvider(base, settings, windows, role_id='r', session_key='role:r',
+        scope='owner', authority='a', authorized=lambda: True, ensure_coverage=coverage)
+    _ = [event async for event in provider.stream_response(model='fixture', system='',
+        messages=sessions.runtime_messages('role:r'), tools=[discovery], signal=CancellationToken())]
+    assert adapter.calls[-1][1] == [discovery]
+    assert '当前运行工具：无' not in str(adapter.calls[-1][0])
 
 
 @pytest.mark.anyio

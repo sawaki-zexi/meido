@@ -6,6 +6,28 @@ from backend.app.agent_runtime.provider import AssistantDoneEvent, CancellationT
 from backend.app.agent_runtime.types import AssistantMessage, ToolCall, UserMessage
 from backend.app.agent_runtime.loop import run_agent_loop
 from backend.app.agent_runtime.tools import AgentToolResult, ToolDefinition
+from backend.app.agent_runtime.provider import ThinkingDeltaEvent
+from contextlib import aclosing
+
+
+def test_natural_reply_streams_thinking_before_finish_without_publishing_draft():
+    async def scenario():
+        release = asyncio.Event()
+        class Provider:
+            async def stream_response(self, **kwargs):
+                yield TextDeltaEvent('未提交的草稿')
+                yield ThinkingDeltaEvent('查阅公开资料')
+                await release.wait()
+                yield AssistantDoneEvent(completed('最终回复'))
+        wrapped = NaturalReplyProvider(Provider())
+        async with aclosing(wrapped.stream_response(model='fake', system='', messages=(UserMessage('你好'),),
+                tools=(), signal=CancellationToken())) as stream:
+            first = await asyncio.wait_for(anext(stream), .5)
+            assert isinstance(first, ThinkingDeltaEvent) and first.delta == '查阅公开资料'
+            release.set()
+            rest = [event async for event in stream]
+            assert len(rest) == 1 and rest[0].message.content == '最终回复'
+    asyncio.run(scenario())
 
 
 def completed(*texts):
@@ -87,6 +109,7 @@ def test_invalidated_plan_finishes_model_step_but_never_returns_draft():
             nonlocal active, finished
             active = False
             yield TextDeltaEvent('draft')
+            yield ThinkingDeltaEvent('superseded thinking')
             finished = True
             yield AssistantDoneEvent(completed('not sent'))
     async def scenario():
@@ -95,6 +118,34 @@ def test_invalidated_plan_finishes_model_step_but_never_returns_draft():
             _ = [item async for item in provider.stream_response(model='', system='', messages=(), tools=(), signal=CancellationToken())]
     asyncio.run(scenario())
     assert finished
+
+
+def test_cancel_during_format_correction_closes_stream_without_draft_or_final_reply():
+    async def scenario():
+        signal = CancellationToken()
+        closed = []
+        class Provider:
+            count = 0
+            async def stream_response(self, **request):
+                self.count += 1
+                try:
+                    yield TextDeltaEvent('private protocol draft')
+                    if self.count == 1:
+                        yield AssistantDoneEvent(AssistantMessage('invalid draft'))
+                    else:
+                        yield ThinkingDeltaEvent('整理回复格式')
+                        signal.cancel()
+                        yield AssistantDoneEvent(completed('must not appear'))
+                finally:
+                    closed.append(self.count)
+        observed = []
+        with pytest.raises(asyncio.CancelledError):
+            async for event in NaturalReplyProvider(Provider()).stream_response(
+                    model='', system='', messages=(), tools=(), signal=signal):
+                observed.append(event)
+        assert [event.delta for event in observed] == ['整理回复格式']
+        assert closed == [1, 2]
+    asyncio.run(scenario())
 
 
 def test_business_call_replay_preserves_provider_signatures_without_draft_text():
