@@ -18,7 +18,7 @@ import type { GenerationSelection } from "../../api/novelai";
 import { useChatScroll } from "./useChatScroll";
 import { AttachmentImage } from "../../ui/AttachmentImage";
 import { MessageMarkdown } from "../../ui/MessageMarkdown";
-import { MessageProcess } from './MessageProcess';
+import { MessageProcess, readProcess } from './MessageProcess';
 import { ComposerTools, readContextUsage, type ContextUsage } from './ComposerTools';
 import type { ToolProgressState } from './toolProgress';
 import "./tool-progress.css";
@@ -37,6 +37,7 @@ function MessageItem({ message, role, highlighted, onRegenerate, progress, stopp
     : [];
   const generationAttempts = Array.isArray(message.metadata?.generationAttemptIds)
     ? message.metadata.generationAttemptIds.filter((item): item is string => typeof item === 'string' && Boolean(item)) : [];
+  const hasProcess = !mine && (readProcess(message.metadata?.process).length > 0 || Boolean(message.metadata?.streamThinking) || Boolean(progress?.calls.length));
   return <li ref={ref} className={`message ${message.role}${failed ? " failed" : ""}${highlighted ? " source-highlight" : ""}`} aria-busy={streaming || undefined}>
     {!mine && <Avatar id={role.id} name={role.name} size="sm" avatarUrl={role.avatarUrl} />}
     <div className="message-body">
@@ -47,10 +48,12 @@ function MessageItem({ message, role, highlighted, onRegenerate, progress, stopp
         {failed && <span className={`message-status ${stopped ? "stopped" : "failed"}`}>{stopped ? "已停止" : "未完成"}</span>}
         {highlighted && <span className="source-marker">记忆来源</span>}
       </div>
-      {(!mine || message.content) && <div className="bubble">
+      {(message.content || hasProcess || attachments.length === 0) && <div className="bubble">
         {!mine && <MessageProcess message={message} progress={progress} stopping={stopping} />}
-        {message.content && <MessageMarkdown content={message.content} />}
-        {!message.content && attachments.length === 0 && <p>{streaming ? <span className="typing" aria-label="正在回复">正在回复…</span> : stopped ? "已停止回复" : "（无内容）"}</p>}
+        <div className="reply-content">
+          {message.content && <MessageMarkdown content={message.content} />}
+          {!message.content && attachments.length === 0 && <p>{streaming ? <span className="typing" aria-label="正在回复">正在回复…</span> : stopped ? "已停止回复" : "（无内容）"}</p>}
+        </div>
       </div>}
       {attachments.length > 0 && <div className="message-attachments">
         {attachments.map((attachment) => {
