@@ -118,3 +118,11 @@
 | 静态源码与文档 | browser 28 项说明/schema 相同；computer 8 项说明相同、仅上述4项 schema 有界差异；变更 Python 语法、相对文档链接和 git diff --check 通过 |
 
 未重复浏览器截图：本轮没有 UI 改动，沿用上一轮已验收截图；尚未把本地检查表述为新 PR HEAD 的 CI 或独立审查结果。
+
+### 规格审查修复：纠正请求不得携带运行级搜索目录
+
+审查发现原 ordinary/empty/finish-only 测试使用静态目录标记，未覆盖真实目录中的搜索路由。补入真实 CapabilityRegistry 候选与 `_runtime_namespace_context` 后，空工具和 finish-only 估算红例均额外计入目录；NaturalReplyProvider → ContextWindowProvider → 本地 HTTP 的纠正请求红例证实：schema 仅 `finish_reply`，system 却仍含 `tool_search` 和未加载电脑工具名称。
+
+修复统一由 MeidoProvider 的同一提示入口按**本次 schema**判断：只有存在 `tool_search` 才读取/附加目录及发现说明，实际请求与 token 估算共用此规则。回归同时验证首请求仍有搜索及目录，纠正请求仅有回复协议且不再附带目录，最终回复正常提交；空请求/协议请求的估算与无目录 provider 一致。没有改变冻结授权、执行器绑定或 computer guard；关于后者的审查推测已撤回。
+
+红例：目录估算两项失败，真实 HTTP 纠正链路一项失败。修复后运行 `pytest tests/python/test_tool_exposure_contract.py tests/python/test_natural_reply_protocol.py tests/python/test_natural_reply_api.py tests/python/test_model_tools.py tests/python/test_context_windows.py -q --tb=short`，**63 passed，27.52 秒**。`git diff --check` 通过；其他已通过的大组、构建和 UI 检查沿用前述证据，未重复执行。

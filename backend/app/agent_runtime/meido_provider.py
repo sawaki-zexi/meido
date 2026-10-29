@@ -214,7 +214,7 @@ class MeidoProvider:
         session_id: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         del model, session_id
-        self._set_tool_prompt(tools, self.namespace_context(signal) if self.namespace_context else "")
+        self._set_tool_prompt(tools, signal=signal)
         self._refresh_request_context(system, messages, tools)
         rich = getattr(self.adapter, "stream_rich_messages", None)
         if rich is not None:
@@ -232,7 +232,7 @@ class MeidoProvider:
             return self._stream_structured(system, messages, tools, signal, structured)
         return self._stream(messages, signal)
 
-    def _set_tool_prompt(self, tools, namespace_prompt=""):
+    def _set_tool_prompt(self, tools, *, signal=None):
         names = []
         for tool in tools:
             function = tool.get("function")
@@ -241,15 +241,20 @@ class MeidoProvider:
         self._tool_prompt = "\n".join((
             "[本次请求工具]",
             "当前提供给模型的工具：" + ("、".join(names) if names else "无"),
-            "本次请求只能调用以上可见名称；工具发现结果生效后，后续请求的可见列表会更新。不要根据旧对话或其他角色的工具清单声称具备能力。",
+            "本次请求只能调用以上可见名称。不要根据旧对话或其他角色的工具清单声称具备能力。",
             "工具可见不等于外部依赖已验证；实际执行状态以工具结果为准。",
         ))
-        if namespace_prompt:
-            self._tool_prompt += "\n\n" + namespace_prompt
+        # A run may retain discovery while this request only accepts finish_reply.
+        # Render and estimate the same request-visible catalog, not the run's scope.
+        if "tool_search" in names:
+            self._tool_prompt += "\n工具发现结果生效后，后续请求的可见列表会更新。"
+            namespace_prompt = self.namespace_context(signal) if self.namespace_context else ""
+            if namespace_prompt:
+                self._tool_prompt += "\n\n" + namespace_prompt
         self._tool_prompt += "\n\n" + tool_use_prompt(names, self._request_time)
 
     def estimate_request_tokens(self, system, messages, tools):
-        self._set_tool_prompt(tools, self.namespace_context(None) if self.namespace_context else "")
+        self._set_tool_prompt(tools)
         self._refresh_request_context(system, messages, tools)
         return self._estimate_rendered(system, messages, tools)
 

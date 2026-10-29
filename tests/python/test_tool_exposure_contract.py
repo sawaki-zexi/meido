@@ -139,32 +139,94 @@ def test_actual_wire_guidance_is_conditional_and_minimal_keeps_search_route(mode
         definitions = []
     if mode == 'protocol':
         definitions = [ToolDefinition('finish_reply', '自然回复输出协议', {'type': 'object'})]
+    caps = CapabilityRegistry(fixtures([])).resolve(role_id='r', session_key='role:r', run_id='guidance',
+        discovery_enabled=True, deferred_tool_names=main._deferred_discovery_tools())
     def respond(payload, index):
         prompt = payload['messages'][0]['content']
         assert '仅以上名称可在本次运行调用' not in prompt
         if mode in {'empty', 'protocol'}:
             assert '没有业务工具' in prompt
             assert '[独立任务判断]' not in prompt and '[记忆纠错]' not in prompt
-            assert 'tool_search(query=' not in prompt
+            assert 'tool_search' not in prompt and '尚未加载的工具' not in prompt
         else:
             assert '[独立任务判断]' in prompt and '1–3次调用' in prompt
             assert '[记忆纠错]' in prompt and 'superseded_ids' in prompt
             assert '[历史回溯]' in prompt and 'fetch_messages' in prompt
             assert '未搜索前' in prompt and '下一次请求' in prompt
             assert 'PROACTIVE_CONTEXT.md' not in prompt
-        assert 'PRIVATE_DIRECTORY_FIXTURE' not in prompt if mode == 'minimal' else True
+        assert ('尚未加载的工具' in prompt) is (mode == 'business')
         return response('依据当前可见工具处理。')
     with model_server(respond) as (url, requests, errors):
         model = provider(url)
-        model.namespace_context = lambda signal: 'PRIVATE_DIRECTORY_FIXTURE'
+        model.namespace_context = lambda signal: main._runtime_namespace_context(caps, signal)
         if mode == 'minimal':
             model = model.minimal_provider()
+        schemas = [item.as_provider_schema() for item in definitions]
+        messages = [UserMessage('当前问题')]
+        estimate_with_directory = model.estimate_request_tokens('', messages, schemas)
+        catalog = model.namespace_context
+        model.namespace_context = None
+        estimate_without_directory = model.estimate_request_tokens('', messages, schemas)
+        model.namespace_context = catalog
+        if mode == 'business':
+            assert estimate_with_directory > estimate_without_directory
+        else:
+            assert estimate_with_directory == estimate_without_directory
         async def run():
-            return [event async for event in model.stream_response(model='m', system='', messages=[UserMessage('当前问题')],
-                tools=[item.as_provider_schema() for item in definitions], signal=CancellationToken())]
+            return [event async for event in model.stream_response(model='m', system='', messages=messages,
+                tools=schemas, signal=CancellationToken())]
         asyncio.run(run())
     assert not errors, errors
     assert len(requests) == 1
+
+
+def test_natural_reply_correction_omits_live_discovery_catalog_from_actual_http_request(tmp_path):
+    from backend.app.advanced_settings import AdvancedSettings
+    from backend.app.agent_runtime.context_provider import ContextWindowProvider
+    from backend.app.agent_runtime.natural_reply import NaturalReplyProvider, reply_messages
+    from backend.app.context_windows import ContextWindowStore
+    from backend.app.session_store import SessionStore
+    from backend.app.storage import initialize_databases
+
+    initialize_databases(tmp_path)
+    sessions = SessionStore(tmp_path / 'sessions.db')
+    sessions.open_role_session('r')
+    executed = []
+    caps = CapabilityRegistry(fixtures(executed)).resolve(role_id='r', session_key='role:r', run_id='correction',
+        discovery_enabled=True, deferred_tool_names=main._deferred_discovery_tools())
+
+    def respond(payload, index):
+        names = {item['function']['name'] for item in payload['tools']}
+        prompt = payload['messages'][0]['content']
+        if index == 1:
+            assert {'tool_search', 'finish_reply', 'pet_action'} <= names
+            assert '尚未加载的工具' in prompt and 'computer_list_windows' in prompt
+            assert 'tool_search(query=' in prompt
+            return response('原意保留，等待格式纠正。')
+        assert index == 2 and names == {'finish_reply'}
+        assert 'tool_search' not in prompt and '尚未加载的工具' not in prompt
+        assert 'computer_list_windows' not in prompt and '没有业务工具' in prompt
+        assert '回复格式纠正' in payload['messages'][-1]['content']
+        return response(calls=[('finish', 'finish_reply')],
+            arguments={'finish': {'messages': ['保留原意的正式回复。']}}, finish='tool_calls')
+
+    with model_server(respond) as (url, requests, errors):
+        model = provider(url, context=32768)
+        model.namespace_context = lambda signal: main._runtime_namespace_context(caps, signal)
+        async def coverage(ids):
+            raise AssertionError('short correction must not compact history')
+        budgeted = ContextWindowProvider(model, AdvancedSettings(maxTokens=1024, summaryTokenLimit=512),
+            ContextWindowStore(sessions.database_path), role_id='r', session_key='role:r', scope='owner',
+            authority='a', authorized=lambda: True, ensure_coverage=coverage)
+        async def run():
+            return [event async for event in run_agent_loop(provider=NaturalReplyProvider(budgeted),
+                model='m', system='', messages=[UserMessage('正常回复即可')], capabilities=caps, max_turns=4)]
+        events = asyncio.run(run())
+    assert not errors, errors
+    assert len(requests) == 2 and budgeted.requests == 2
+    assert events[-1].reason == 'completed', events[-1].error
+    assert reply_messages(events[-1].messages[-1]) == ('保留原意的正式回复。',)
+    assert executed == []
 
 
 def test_combined_directory_is_bounded_json_metadata_and_excludes_non_business_protocols():
