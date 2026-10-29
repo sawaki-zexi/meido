@@ -10,6 +10,24 @@ const values = { maxTokens: 8192, maxIterations: 40, searchEnabled: true, spawnE
   contextSafetyMarginTokens: 4096, devMode: false };
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('显示摘要失败后保留原文继续及实际结束原因', async () => {
+  fakeBackend({
+    'GET /api/settings/advanced': () => ({ body: { revision: 0, values: { ...values, devMode: true } } }),
+    'GET /api/settings/advanced/diagnostics': () => ({ body: { diagnostics: [{ runId: 'run', roleId: 'role',
+      requests: 2, compactions: 0, inputEstimate: 1000, toolCount: 3, elapsedMs: 25,
+      compaction: { stage: 'failed', fallback: 'original', summaryAttempts: [{ stopReason: 'length', outcome: 'incomplete', maxTokens: 4000, elapsedMs: 20 }] },
+    }, { runId: 'local-budget', roleId: 'role', requests: 1, compactions: 0, inputEstimate: 9000, toolCount: 0, elapsedMs: 5,
+      compaction: { stage: 'failed', fallback: 'minimal', summaryAttempts: [] },
+    }] } }),
+  });
+  render(<AdvancedSettings />);
+  await userEvent.click(await screen.findByRole('button', { name: '刷新运行诊断' }));
+  for (const summary of await screen.findAllByText('压缩详情')) await userEvent.click(summary);
+  expect(screen.getByText(/保留原文继续/)).toBeVisible();
+  expect(screen.getByText(/最小上下文回复/)).toBeVisible();
+  expect(screen.getByText(/结束原因 length/)).toBeVisible();
+});
+
 it('展示十三项并串行保存，旧响应不覆盖保存期间的新编辑', async () => {
   const user = userEvent.setup();
   let finish!: () => void;

@@ -369,9 +369,12 @@ class ChannelHost:
         else:
             if adapter is None:
                 raise DirectoryError("disconnected")
-            if query.kind in {"members", "member"}:
-                if not account.allow_group or not self.store.known_group(role_id, account_id, query.group_id):
-                    raise DirectoryError("group_not_authorized")
+            # Response rules govern incoming conversations, not read-only
+            # platform directory queries. Telegram only offers known-chat
+            # member lookup; QQ can query its real platform group directory.
+            if account.channel == 'telegram' and query.kind == 'member' and not self.store.known_group(
+                    role_id, account_id, query.group_id):
+                raise DirectoryError('group_not_authorized')
             pending = asyncio.create_task(adapter.query_directory(query))
             try:
                 observation = await asyncio.wait_for(asyncio.shield(pending), timeout=directory.QUERY_TIMEOUT)
@@ -537,11 +540,12 @@ class ChannelHost:
         message_metadata: Mapping[str, object] | None = None,
         delivery_deadline: float | None = None,
         _delivery_generation=None,
+        _prepared_attachment_ids: frozenset[str] = frozenset(),
     ) -> DeliveryResult:
         """Send to an observed target and persist the resulting delivery state.
 
         ``actor='external'`` can only contact the paired owner through the
-        originating account. Guest turns cannot choose third-party targets.
+        selected role-owned account. Guest turns cannot choose third-party targets.
         Frozen bytes require the original role-owned IDs and a continuing push
         or current-source reply authorization; they never replace attachment ownership or metadata.
         """
@@ -567,6 +571,7 @@ class ChannelHost:
             raise KeyError(account_id)
         if not self.store.account_effectively_enabled(account) and not self._has_active_event(account_id):
             raise ChannelAdapterError("渠道账号未启用")
+        external_source = None
         if actor == "owner":
             target = self.store.get_target(role_id, account_id, target_id)
             if target is None:
@@ -578,8 +583,11 @@ class ChannelHost:
             target = next((item for item in self.store.owner_targets(role_id, account_id) if item.id == target_id), None)
         elif actor == "external" and target_id == "owner":
             source = self.store.get_thread(role_id, source_thread_id or "")
-            if source is None or source.account_id != account_id or source.channel != account.channel:
-                raise UnsupportedTargetError("外部会话只能使用当前账号联系已配对主人")
+            source_account = self.store.get_account(source.account_id) if source is not None else None
+            if (source is None or source_account is None or source_account.role_id != role_id
+                    or not self.store.account_effectively_enabled(source_account)):
+                raise UnsupportedTargetError("外部会话来源无效，不能联系已配对主人")
+            external_source = (source, source_account.created_at)
             target = self.store.owner_target(role_id, account_id)
             if target is None:
                 raise UnsupportedTargetError("当前渠道账号没有已配对的主人私聊")
@@ -602,11 +610,23 @@ class ChannelHost:
 
         def dispatch_authorized():
             current = self.store.get_account(account_id)
+            source_current = (self.store.get_account(external_source[0].account_id)
+                              if external_source is not None else None)
+            source_thread = (self.store.get_thread(role_id, external_source[0].thread_id)
+                             if external_source is not None else None)
             return bool(current and current.role_id == role_id and self.store.account_effectively_enabled(current)
                 and _delivery_generation == (self.connection_generation(account_id),
                     self.store.directory_revision(account_id, current.channel))
                 and (group_guard is None or group_guard())
                 and (authorize_source is None or authorize_source())
+                and (external_source is None or source_current is not None
+                    and source_current.role_id == role_id
+                    and source_current.created_at == external_source[1]
+                    and self.store.account_effectively_enabled(source_current)
+                    and source_thread is not None
+                    and (source_thread.account_id, source_thread.channel, source_thread.chat_id, source_thread.chat_type)
+                        == (external_source[0].account_id, external_source[0].channel,
+                            external_source[0].chat_id, external_source[0].chat_type))
                 and (actor not in {'external', 'push'} or owner_binding is not None
                     and self.store.owner_target_binding(role_id, account_id, target.chat_id) == owner_binding))
 
@@ -640,6 +660,12 @@ class ChannelHost:
                 **({"message_thread_id": message_thread_id} if message_thread_id is not None else {}),
             })
 
+        # Only the explicit send adapter can nominate images it just fetched.
+        # Model-supplied IDs still need the original conversation's visibility.
+        if _prepared_attachment_ids and (source_kind != 'account_send' or not callable(authorize_source)
+                or not isinstance(_prepared_attachment_ids, frozenset)
+                or not _prepared_attachment_ids <= set(attachment_ids)):
+            raise UnsupportedTargetError('invalid prepared media source')
         attachment_metadata: list[dict[str, object]] = []
         if attachment_ids:
             if len(attachment_ids) > 4 or self.attachment_resolver is None:
@@ -654,7 +680,7 @@ class ChannelHost:
                     for item in (message.metadata.get("attachments", []) if isinstance(message.metadata, dict) else [])
                     if isinstance(item, dict) and item.get("id")
                 }
-                if any(item not in visible_ids for item in attachment_ids):
+                if any(item not in visible_ids and item not in _prepared_attachment_ids for item in attachment_ids):
                     raise UnsupportedTargetError("外部会话只能发送当前会话收到的附件")
             resolved: list[Attachment] = []
             for attachment_id in attachment_ids:

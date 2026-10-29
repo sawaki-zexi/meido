@@ -216,3 +216,36 @@ def test_next_owner_turn_and_reopened_store_preserve_real_push_receipts(api, mon
     assert 'assistant_completed' in following.text, following.text
     assert len(requests) == 3
     assert len([item for item in sessions.list_messages(f"role:{role['id']}") if item.messageType == 'desktop_push']) == call_count
+
+
+def test_workspace_file_tool_output_is_sent_without_attachment_id_and_streamed_immediately(api, monkeypatch):  # noqa: F811
+    from backend.app import main
+    client, _roles, sessions, _tasks = api
+    class Adapter:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            results = [item for item in messages if item['role'] == 'tool']
+            if not results:
+                assert f"attachment_id={uploaded['id']}" in str(messages[-1]['content'])
+                yield ModelToolCall('write', 'write_file', {'path': 'report.html', 'content': '<h1>owned-report</h1>'})
+                yield ModelResponseDone('tool_use')
+            elif len(results) == 1:
+                yield ModelToolCall('send', 'message_push', {'channel': 'desktop', 'chat_id': 'owner', 'file': 'report.html'})
+                yield ModelResponseDone('tool_use')
+            else:
+                assert json.loads(results[-1]['content'])['status'] == 'sent'
+                yield ModelTextDelta('报告已附上')
+    monkeypatch.setattr(main, 'model_adapter', Adapter())
+    role = client.post('/api/roles', json={'name': '文件输出', 'profile': {'profile': '测试'}}).json()['role']
+    uploaded = client.post(f"/api/roles/{role['id']}/attachments", content=b'input notes',
+        headers={'content-type': 'text/plain', 'x-attachment-filename': 'input.txt'}).json()
+    response = client.post(f"/api/roles/{role['id']}/messages", json={'content': '创建并发送报告', 'attachments': [uploaded['id']]})
+    assert 'event: assistant_message_committed' in response.text, response.text
+    assert response.text.index('event: assistant_message_committed') < response.text.index('报告已附上')
+    saved = next(item for item in sessions.list_messages(f"role:{role['id']}") if item.messageType == 'desktop_push')
+    attachment = saved.metadata['attachments'][0]
+    (_roles.workspace_path(role['id']) / 'report.html').unlink()
+    download = client.get(f"/api/roles/{role['id']}/attachments/{attachment['id']}")
+    assert download.content == b'<h1>owned-report</h1>'
+    assert download.headers['content-disposition'].startswith('attachment;')
+    assert download.headers['x-content-type-options'] == 'nosniff'
+    assert '"path"' not in json.dumps(attachment)

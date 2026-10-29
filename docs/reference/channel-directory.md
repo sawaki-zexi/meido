@@ -1,6 +1,6 @@
 # 渠道连接事实与分类目录
 
-状态：当前。最后核验：2026-10-16。对应 #170、完整规格 C06。
+状态：当前。最后核验：2026-10-28。对应 #170、#265、完整规格 C06。
 
 事实来源：[查询与分页](../../backend/app/channels/directory.py)、[宿主管理](../../backend/app/channels/host.py)、[模型工具](../../backend/app/channels/tools.py)、[实际传输](../../backend/app/channels/transports.py)、[Telegram API 与目录存储](../../backend/app/multichannel.py)、[公开 HTTP/模型往返](../../tests/python/test_channel_directory_api.py)、[本地协议边界](../../tests/python/channels/test_directory_transport.py)。
 
@@ -27,10 +27,12 @@ Telegram 轮询和观测绑定账号创建身份及实际配置/权限代际。�
 
 `account_targets` 保留必填 `account_id`；可选 `kind/group_id/member_id/limit/cursor`。省略 `kind` 使用 `known`，`limit` 默认 25、范围 1–50。`members/member` 必须指定 `group_id`，只有 `member` 指定 `member_id`。账号参数不改为平台名称。
 
+按 Shiori 的实际工具边界，已准入访客也可查询当前角色的账号与目录；来源仍绑定实际回合，不能读取另一角色的账号。目录读取不等于发送许可：访客 `account_send` 只允许所选角色账号上的已配对主人目标。账号的群回复开关控制入站回合，不额外限制平台目录读取。
+
 | 平台 | `supportedKinds` | 平台读取 |
 | --- | --- | --- |
-| QQ / NapCat | `known/friends/groups/members` | `friends/groups/members` 分别只调用一次 `get_friend_list/get_group_list/get_group_member_list`。`members` 必须是已知群且账号允许群聊。 |
-| Telegram | `known/member` | `member` 只对已知且获准的群调用一次 `getChatMember`；不提供全群成员目录。 |
+| QQ / NapCat | `known/friends/groups/members` | `friends/groups/members` 分别只调用一次 `get_friend_list/get_group_list/get_group_member_list`。群成员目录由平台核验，不要求本地已有群会话。 |
+| Telegram | `known/member` | `member` 只对已知群调用一次 `getChatMember`；不提供全群成员目录。 |
 | QQBot、飞书 | `known` | 只读本地已观察目录，其他种类明确 `unsupported`。 |
 
 `known` 是当前角色、当前账号的持久观察缓存，不声称覆盖平台全部联系人。平台查询成功后只持久化真实可达 `Target`。Telegram 单成员结果是资料：`kind=member`，包含 `memberId/groupId/displayName/username/status/isMember`，并固定 `canSend=false/sendTargetId=null`；它不创建私聊或 `GROUP_MEMBER` 发送目标。既有可发送目标仍用不透明 `id` 交给 `account_send`，发送的授权与交付账本没有改变。
@@ -50,7 +52,7 @@ Telegram 轮询和观测绑定账号创建身份及实际配置/权限代际。�
 | 原因 | 含义 |
 | --- | --- |
 | `unsupported` | 此 adapter 不支持该种类。 |
-| `group_not_authorized` | 群未被观察或账号未允许群聊。 |
+| `group_not_authorized` | Telegram 单成员查询的群未被观察。 |
 | `permission_denied` | 平台 HTTP 401/403 的明确权限拒绝。 |
 | `platform_rejected` | 平台明确拒绝；QQ retcode 不猜测为权限不足或空目录。 |
 | `disconnected/platform_error/timeout` | 没有连接、连接/协议失败或查询超时。 |

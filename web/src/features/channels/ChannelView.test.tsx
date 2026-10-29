@@ -1125,7 +1125,7 @@ it.each([false, true])("群聊标题提供独立群聊设置入口，返回不�
   timeline.scrollTop = 520;
   fireEvent.scroll(timeline);
   await user.click(screen.getByRole("button", { name: "群聊设置" }));
-  expect(await screen.findByRole("checkbox", { name: "自然回复（无需 @）" })).toBeVisible();
+  expect(await screen.findByRole("checkbox", { name: "群聊主动接话（无需 @）" })).toBeVisible();
   await user.click(screen.getByRole("button", { name: "返回上一页" }));
   expect(await within(screen.getByRole("region", { name: "会话消息" })).findByText("群聊现有消息")).toBeVisible();
   expect(screen.getByRole("button", { name: "群聊设置" })).toHaveFocus();

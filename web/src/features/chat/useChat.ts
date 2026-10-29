@@ -13,12 +13,16 @@ export function applyStreamEvent(messages: Message[], event: StreamEvent, sessio
     case "user_message_accepted":
       return [...messages, event.message];
     case "assistant_generation_started":
-      return [...messages, { id: event.messageId, sessionKey, sequence: messages.length + 1, role: "assistant", content: "", status: "streaming", createdAt: new Date().toISOString() }];
+      return [...messages.filter(message => message.status !== "streaming"), { id: event.messageId, sessionKey, sequence: event.messageSequence ?? messages.length + 1, role: "assistant", content: "", status: "streaming", createdAt: new Date().toISOString() }];
     case "assistant_delta":
       return messages.map((message) => message.id === event.messageId ? { ...message, content: message.content + event.delta } : message);
+    case "assistant_message_committed":
     case "assistant_completed":
     case "assistant_failed":
-      return messages.map((message) => message.id === event.message.id ? event.message : message);
+      // Tool pushes and later natural-chat segments may have no placeholder.
+      // Upsert by durable ID; only terminal events close the active run below.
+      return [...messages.filter(message => message.id !== event.message.id), event.message]
+        .sort((first, second) => first.sequence - second.sequence);
     default:
       return messages;
   }

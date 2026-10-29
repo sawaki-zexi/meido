@@ -35,7 +35,7 @@ from .provider import (
     ToolCallEndEvent,
 )
 from .tools import AgentTool, AgentToolResult, ToolContext, ToolDefinition, ToolRegistry, resolve_tool_result
-from .types import AgentMessage, AssistantMessage, ToolCall, ToolResultMessage
+from .types import AgentMessage, AssistantMessage, ToolCall, ToolResultMessage, UserMessage
 
 
 async def run_agent_loop(
@@ -56,6 +56,7 @@ async def run_agent_loop(
     tool_timeout: float | None = None,
     on_capability_revision: Callable[[CapabilitySnapshot], Awaitable[None] | None] | None = None,
     on_tool_result: Callable[[ToolResultMessage], Awaitable[None] | None] | None = None,
+    can_continue: Callable[[], bool] | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run the provider/tool loop while keeping the transcript mutable.
 
@@ -77,8 +78,12 @@ async def run_agent_loop(
     async for event in emit(AgentStartEvent()):
         yield event
     turn = 0
+    recovery_messages: tuple[AgentMessage, ...] = ()
+    empty_reply_usage = None
 
     while True:
+        if can_continue is not None and not can_continue():
+            token.cancel()
         if capabilities is not None:
             registry = capabilities.current()
         if token.is_cancelled():
@@ -113,15 +118,17 @@ async def run_agent_loop(
         started = False
 
         try:
+            managed_timeout = getattr(provider, 'manages_request_timeout', False)
             source = provider.stream_response(
                 model=model,
                 system=system,
-                messages=tuple(messages),
+                messages=(*messages, *recovery_messages),
                 tools=tuple(registry.provider_schemas()),
                 signal=token,
                 session_id=session_id,
+                **({'provider_timeout': provider_timeout} if managed_timeout else {}),
             )
-            timeout_context = asyncio.timeout(provider_timeout) if provider_timeout is not None else nullcontext()
+            timeout_context = asyncio.timeout(provider_timeout) if provider_timeout is not None and not managed_timeout else nullcontext()
             async with timeout_context:
                 async for provider_event in source:
                     if token.is_cancelled():
@@ -164,6 +171,9 @@ async def run_agent_loop(
             # request that follows that tool call. Keep text/details in the
             # transcript while dropping the potentially large image bytes.
             _expire_ephemeral_images(messages)
+
+        if can_continue is not None and not can_continue():
+            token.cancel()
 
         if token.is_cancelled():
             assistant = AssistantMessage(content=content, tool_calls=tuple(tool_calls), stop_reason="aborted", metadata={"completion_origin": "host_cancel"})
@@ -210,6 +220,27 @@ async def run_agent_loop(
                 metadata=dict(assistant.metadata),
             )
 
+        if (assistant.stop_reason == "stop" and not assistant.tool_calls and not assistant.content.strip()
+                and not assistant.metadata.get('replyReaction')):
+            if not recovery_messages:
+                # Retry this empty request once with the same tool visibility.
+                # The transient instruction is never a durable user message.
+                empty_reply_usage = assistant.metadata.get("usage")
+                recovery_messages = (assistant, UserMessage("你刚才没有给出回复或工具调用。请继续处理当前任务；直接给出正式回复或需要的工具调用。"))
+                async for event in emit(TurnEndEvent(assistant)):
+                    yield event
+                continue
+            terminal_error = "模型未返回正文或工具调用（已重试一次）"
+            assistant = replace(assistant, stop_reason="error", metadata={
+                **assistant.metadata, "error_message": terminal_error,
+                "emptyReplyRecovery": {"attempts": 2, "outcome": "empty", "initialUsage": empty_reply_usage},
+            })
+        elif recovery_messages:
+            assistant = replace(assistant, metadata={**assistant.metadata,
+                "emptyReplyRecovery": {"attempts": 2, "outcome": "recovered", "initialUsage": empty_reply_usage}})
+        recovery_messages = ()
+        empty_reply_usage = None
+
         assistant = _assign_call_identities(assistant, used_call_ids, run_id=run_id, turn=turn)
         messages.append(assistant)
         if not started:
@@ -228,6 +259,9 @@ async def run_agent_loop(
 
         results: list[ToolResultMessage] = []
         for call in assistant.tool_calls:
+            if can_continue is not None and not can_continue():
+                token.cancel()
+                break
             definition = registry.candidate_definition(call.name) if isinstance(registry, CapabilityResolution) else None
             async for event in emit(ToolExecutionStartEvent(
                 call.id, call.name, dict(call.arguments),
@@ -290,6 +324,8 @@ async def run_agent_loop(
                         capabilities.publish_revision(revision)
             elif capabilities is not None:
                 capabilities.discard_pending(call.id)
+            if can_continue is not None and not can_continue():
+                token.cancel()
             if token.is_cancelled():
                 break
         async for event in emit(TurnEndEvent(assistant, tuple(results))):

@@ -227,7 +227,7 @@ def test_role_removed_during_public_tool_call_cannot_import_platform_directory(d
 
 def test_telegram_member_uses_real_bot_api_and_does_not_create_send_destination(directory_api, monkeypatch):
     client, role, _, host, channels, sessions = directory_api
-    account = channels.save_account(role["id"], account_id="directory-telegram", token="fixture-token", enabled=True, allow_group=True)
+    account = channels.save_account(role["id"], account_id="directory-telegram", token="fixture-token", enabled=True, allow_group=False)
     group = target_from_chat(account_id=account.account_id, chat_id="-100", kind=TargetKind.GROUP)
     channels.remember_targets(role["id"], [group])
     requests = []
@@ -252,6 +252,10 @@ def test_telegram_member_uses_real_bot_api_and_does_not_create_send_destination(
     try:
         api = TelegramBotApi(f"http://127.0.0.1:{server.server_port}")
         host.register(TelegramAccountAdapter(account.account_id, lambda: "fixture-token", api))
+        with pytest.raises(DirectoryError, match="group_not_authorized"):
+            asyncio.run(host.query_directory(role["id"], account.account_id,
+                DirectoryQuery(kind="member", group_id="-200", member_id="22"), scope="desktop"))
+        assert requests == []
 
         class Model:
             count = 0

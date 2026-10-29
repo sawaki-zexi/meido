@@ -1,5 +1,6 @@
 import asyncio
 import json
+import socket
 
 import httpx
 import pytest
@@ -225,12 +226,9 @@ def test_host_can_select_authenticated_search_provider_without_exposing_credenti
 @pytest.mark.parametrize("reply", [
     {"jsonrpc": "2.0", "id": 1, "error": {"message": "secret-key"}},
     {"jsonrpc": "2.0", "id": 1, "result": {"isError": True, "content": [{"type": "text", "text": "secret-key"}]}},
-    {"jsonrpc": "2.0", "id": 1, "result": {"content": []}},
     {"jsonrpc": "2.0", "id": 1, "result": {"content": None}},
-    {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "No results found"}]}},
-    {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "No results found. Please try again."}]}},
 ])
-def test_search_provider_errors_invalid_payload_and_empty_results_are_explicit(reply):
+def test_search_provider_errors_and_invalid_payload_are_explicit(reply):
     result = asyncio.run(WebSearchTool(resolver=public_dns, transport=httpx.MockTransport(
         lambda request: httpx.Response(200, json=reply))).execute({"query": "q"}, context()))
     assert result.is_error
@@ -322,3 +320,172 @@ def test_fetch_negotiates_requested_format_and_recognizes_case_insensitive_html(
         .execute({"url": "https://example.org", "format": "markdown"}, context()))
     assert not result.is_error
     assert result.details["text"] == "# Article"
+
+
+@pytest.mark.parametrize("provider,reply", [
+    ("exa_mcp", {"jsonrpc": "2.0", "id": 1, "result": {"content": []}}),
+    ("exa_mcp", {"jsonrpc": "2.0", "id": 1, "result": {"content": [
+        {"type": "text", "text": "No results found. Please try again."}]}}),
+    ("exa_api", {"results": []}),
+])
+def test_search_empty_results_are_successful_zero_results_not_network_failures(provider, reply):
+    result = asyncio.run(WebSearchTool(NetworkToolsConfig(search_provider=provider), resolver=public_dns,
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=reply)))
+        .execute({"query": "unmatched fixture"}, context()))
+    assert not result.is_error
+    assert result.details["count"] == 0
+    assert result.details["results"] == []
+    assert result.details["sources"] == []
+    assert "error" not in result.details
+
+
+@pytest.mark.parametrize("tool_type,arguments", [
+    (WebSearchTool, {"query": "fixture"}),
+    (WebFetchTool, {"url": "https://example.org"}),
+])
+def test_network_http_error_preserves_status_and_safe_action_without_response_body(tool_type, arguments):
+    result = asyncio.run(tool_type(resolver=public_dns, transport=httpx.MockTransport(
+        lambda request: httpx.Response(429, text="secret-key upstream diagnostic")))
+        .execute(arguments, context()))
+    assert result.is_error
+    assert result.details["error_code"] == "http_error"
+    assert result.details["http_status"] == 429
+    assert result.details["retryable"] is True
+    assert result.details["hint"]
+    assert "secret-key" not in result.content
+
+
+@pytest.mark.parametrize("failure,code", [
+    (socket.gaierror("secret-key"), "dns_error"),
+    (httpx.ConnectError("secret-key"), "connect_error"),
+    (httpx.ReadTimeout("secret-key"), "timeout"),
+])
+def test_search_transport_failures_are_distinguishable_without_raw_exception(failure, code):
+    async def resolver(host, port):
+        if isinstance(failure, socket.gaierror):
+            raise failure
+        return await public_dns(host, port)
+
+    def handler(request):
+        raise failure
+
+    result = asyncio.run(WebSearchTool(resolver=resolver, transport=httpx.MockTransport(handler))
+        .execute({"query": "fixture"}, context()))
+    assert result.is_error
+    assert result.details["error_code"] == code
+    assert result.details["hint"]
+    assert "secret-key" not in result.content
+
+
+@pytest.mark.parametrize("reply,code", [
+    ({"jsonrpc": "2.0", "id": 1, "error": {"message": "secret-key"}}, "provider_error"),
+    ({"jsonrpc": "2.0", "id": 1, "result": {"isError": True, "content": []}}, "provider_error"),
+    ({"jsonrpc": "2.0", "id": 2, "result": {"content": []}}, "invalid_response"),
+    ({"jsonrpc": "2.0", "id": 1, "result": {"content": None}}, "invalid_response"),
+])
+def test_search_protocol_errors_do_not_masquerade_as_empty_results(reply, code):
+    result = asyncio.run(WebSearchTool(resolver=public_dns, transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=reply))).execute({"query": "fixture"}, context()))
+    assert result.is_error
+    assert result.details["error_code"] == code
+    assert result.details["provider"] == "exa_mcp"
+    assert "secret-key" not in result.content
+
+
+def test_search_invalid_json_is_diagnosed_without_echoing_upstream_html():
+    result = asyncio.run(WebSearchTool(resolver=public_dns, transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, text="<html>secret-key</html>")))
+        .execute({"query": "fixture"}, context()))
+    assert result.is_error
+    assert result.details["error_code"] == "invalid_response"
+    assert "secret-key" not in result.content
+
+
+@pytest.mark.parametrize("scenario", ["sse_cr", "empty", "http_error", "invalid_json"])
+def test_search_real_http_result_and_diagnostics(scenario, local_platform_only):
+    async def run():
+        requests, peer_closed = [], asyncio.Event()
+
+        async def peer(reader, writer):
+            try:
+                head = await reader.readuntil(b"\r\n\r\n")
+                length = next(int(line.split(b":", 1)[1]) for line in head.splitlines()
+                              if line.lower().startswith(b"content-length:"))
+                requests.append(json.loads(await reader.readexactly(length)))
+                if scenario != "sse_cr":
+                    body = (b'{"jsonrpc":"2.0","id":1,"result":{"content":[]}}' if scenario == "empty"
+                            else b"<html>upstream secret-key</html>")
+                    status = "429 Too Many Requests" if scenario == "http_error" else "200 OK"
+                    writer.write((f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n"
+                                  f"Content-Length: {len(body)}\r\n\r\n").encode() + body)
+                    await writer.drain()
+                    return
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                             b"Transfer-Encoding: chunked\r\n\r\n")
+                # CR-only is valid SSE framing; keep the connection open after
+                # the result, so a whole-body parser would hit its deadline.
+                notification = b'data: {"jsonrpc":"2.0","method":"notifications/progress"}\r\r'
+                result = b'data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Fixture https://example.org/source"}]}}\r\r'
+                for payload in (notification, result[:40], result[40:]):
+                    writer.write(f"{len(payload):x}\r\n".encode() + payload + b"\r\n")
+                    await writer.drain()
+                    await asyncio.sleep(.01)
+                await reader.read()
+            finally:
+                peer_closed.set()
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_server(peer, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+
+        class LocalTransport(httpx.AsyncHTTPTransport):
+            async def handle_async_request(self, request):
+                # Exercise real HTTP only after the product has validated and
+                # pinned a public target; production SSRF checks stay intact.
+                assert request.url.host == "93.184.215.14"
+                assert request.headers["host"] == "mcp.exa.ai"
+                local = httpx.Request(request.method,
+                    request.url.copy_with(scheme="http", host="127.0.0.1", port=port),
+                    headers=request.headers, stream=request.stream, extensions=request.extensions)
+                return await super().handle_async_request(local)
+
+        async with server:
+            result = await WebSearchTool(NetworkToolsConfig(timeout_seconds=2), resolver=public_dns,
+                transport=LocalTransport()).execute({"query": "synthetic fixture"}, context())
+            await asyncio.wait_for(peer_closed.wait(), 1)
+        assert requests[0]["params"]["arguments"]["query"] == "synthetic fixture"
+        if scenario in {"http_error", "invalid_json"}:
+            assert result.is_error
+            assert result.details["error_code"] == ("http_error" if scenario == "http_error" else "invalid_response")
+            assert "secret-key" not in result.content
+            assert "synthetic fixture" not in result.content
+            if scenario == "http_error":
+                assert result.details["http_status"] == 429
+        else:
+            assert not result.is_error, result.content
+            assert result.details["sources"] == (["https://example.org/source"] if scenario == "sse_cr" else [])
+            if scenario == "empty":
+                assert result.details["count"] == 0
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("tool_type,arguments", [
+    (WebSearchTool, {"query": "private-query-context"}),
+    (WebFetchTool, {"url": "https://example.org?token=private-query-context"}),
+])
+def test_network_errors_do_not_echo_private_request_context(tool_type, arguments):
+    result = asyncio.run(tool_type(resolver=public_dns, transport=httpx.MockTransport(
+        lambda request: httpx.Response(403, text="upstream secret"))).execute(arguments, context()))
+    assert result.is_error
+    assert "private-query-context" not in result.content
+    assert "upstream secret" not in result.content
+
+
+def test_invalid_search_endpoint_returns_diagnostic_instead_of_redaction_exception():
+    result = asyncio.run(WebSearchTool(NetworkToolsConfig(search_endpoint="https://example.org:invalid"))
+                         .execute({"query": "private-query-context"}, context()))
+    assert result.is_error
+    assert result.details["error_code"] == "invalid_url"
+    assert "private-query-context" not in result.content

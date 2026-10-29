@@ -11,8 +11,9 @@ export type ToolStreamEvent = ToolIdentity & (
 
 export type StreamEvent = ToolStreamEvent | ((
   | { type: "user_message_accepted"; message: Message }
-  | { type: "assistant_generation_started"; messageId: string }
+  | { type: "assistant_generation_started"; messageId: string; messageSequence?: number }
   | { type: "assistant_delta"; messageId: string; delta: string }
+  | { type: "assistant_message_committed"; message: Message }
   | { type: "assistant_completed"; message: Message }
   | { type: "assistant_failed"; message: Message; error?: string }
 ) & { runId?: string; sequence?: number });
@@ -59,8 +60,9 @@ export function parseStreamEvent(raw: string): StreamEvent | null {
   const messageId = typeof data.messageId === "string" ? data.messageId : undefined;
   switch (type) {
     case "user_message_accepted": return message ? { type, message, runId, sequence } : null;
-    case "assistant_generation_started": return messageId ? { type, messageId, runId, sequence } : null;
+    case "assistant_generation_started": return messageId ? { type, messageId, runId, sequence, messageSequence: typeof data.messageSequence === "number" && Number.isSafeInteger(data.messageSequence) && data.messageSequence > 0 ? data.messageSequence : undefined } : null;
     case "assistant_delta": return messageId ? { type, messageId, delta: typeof data.delta === "string" ? data.delta : "", runId, sequence } : null;
+    case "assistant_message_committed":
     case "assistant_completed": return message ? { type, message, runId, sequence } : null;
     case "assistant_failed": return message ? { type, message, error: typeof data.error === "string" ? data.error : undefined, runId, sequence } : null;
     default: return null;

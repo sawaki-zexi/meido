@@ -13,12 +13,13 @@ describe("tool SSE parsing (#233)", () => {
     expect(parseStreamEvent(sse("tool_execution_end", { ...call, status: "unknown", result: "已派发，结果不确定", isError: true, droppedUpdates: 12 }))).toMatchObject({ type: "tool_execution_end", status: "unknown", result: "已派发，结果不确定" });
   });
 
-  it("supports old tool envelopes and all five ordinary chat events", () => {
+  it("supports old tool envelopes and ordinary chat events", () => {
     expect(parseStreamEvent(sse("tool_execution_end", { ...call, result: "完成", isError: false }))).toMatchObject({ status: "succeeded", droppedUpdates: 0 });
     const saved = message({ id: "m1", role: "assistant", content: "回复" });
     for (const [type, payload] of [
       ["user_message_accepted", { message: saved }], ["assistant_generation_started", { messageId: "m1" }],
       ["assistant_delta", { messageId: "m1", delta: "回复" }], ["assistant_completed", { message: saved }], ["assistant_failed", { message: saved, error: "失败" }],
+      ["assistant_message_committed", { message: saved }],
     ] as const) expect(parseStreamEvent(sse(type, payload))).toMatchObject({ type, ...payload });
   });
 
@@ -48,5 +49,15 @@ describe("tool SSE parsing (#233)", () => {
     const seen: string[] = [];
     await streamRoleMessage("r1", "go", [], (event) => { if (event.runId === "old") return false; seen.push(event.type); });
     expect(seen).toEqual(["tool_execution_start", "assistant_completed"]);
+  });
+
+  it("continues after committed natural-chat messages until the final completion", async () => {
+    fakeBackend({ "POST /api/roles/r1/messages": () => ({ stream: [
+      sse("assistant_message_committed", { runId: "run-1", sequence: 1, message: message({ id: "one", role: "assistant", content: "第一条" }) }),
+      sse("assistant_completed", { runId: "run-1", sequence: 2, message: message({ id: "two", role: "assistant", content: "第二条" }) }),
+    ] }) });
+    const seen: string[] = [];
+    await streamRoleMessage("r1", "go", [], event => { if ("message" in event) seen.push(event.message.content); });
+    expect(seen).toEqual(["第一条", "第二条"]);
   });
 });

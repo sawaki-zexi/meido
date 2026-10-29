@@ -8,36 +8,64 @@ import json
 import re
 import sys
 
+# CR, LF and CRLF are all SSE line endings. Do not split one CRLF into
+# two newlines through regex backtracking.
+SSE_BOUNDARY = r"(?:\r\n|\r(?!\n)|(?<!\r)\n){2}"
+
+
+def diagnostic(code, message, hint, *, retryable=False):
+    """Only fixed, host-authored diagnostics may cross the tool boundary."""
+    return {"error_code": code, "error": message, "hint": hint, "retryable": retryable}
+
+
 def search(request):
-    text = request["text"]
-    if request["sse"]:
-        messages = []
-        for event in re.split(r"\r?\n\r?\n", text):
-            data = "\n".join(line[5:].lstrip(" ") for line in event.splitlines() if line.startswith("data:"))
-            if data and data != "[DONE]":
-                messages.append(json.loads(data))
-    else:
-        messages = [json.loads(text)]
+    invalid = diagnostic("invalid_response", "搜索服务返回的协议内容无效",
+                         "检查搜索服务端点与 provider 是否匹配；稍后重试或更换宿主搜索配置")
+    try:
+        text = request["text"].lstrip("\ufeff")
+        if request["sse"]:
+            messages = []
+            for event in re.split(SSE_BOUNDARY, text):
+                data = "\n".join(line[5:].lstrip(" ") for line in event.splitlines() if line.startswith("data:"))
+                if data and data != "[DONE]":
+                    messages.append(json.loads(data))
+        else:
+            messages = [json.loads(text)]
+    except (ValueError, RecursionError):
+        return invalid
     mcp = request["mcp"]
-    reply = next((message for message in messages if isinstance(message, dict) and (message.get("id") == 1 or not mcp)), None)
-    if reply is None or "error" in reply:
-        return {"error": "搜索服务协议错误或返回错误"}
-    value = reply.get("result", {}) if mcp else reply
-    if not isinstance(value, dict) or value.get("isError"):
-        return {"error": "搜索服务返回错误"}
-    content = value.get("content", []) if mcp else [{"type": "text", "text":
-        f"{item.get('title', '')}\nURL: {item.get('url', '')}\n{item.get('text', '')}"}
-        for item in value.get("results", []) if isinstance(item, dict)]
-    if not isinstance(content, list):
-        return {"error": "搜索服务协议错误"}
-    combined = "\n\n".join(item["text"] for item in content if isinstance(item, dict)
-        and item.get("type") == "text" and isinstance(item.get("text"), str)).strip()
-    if not combined or combined.lower().rstrip(".!。") in {"no results", "no results found", "未找到结果", "没有结果"}:
-        return {"error": "搜索结果为空"}
-    sources = list(dict.fromkeys(match.group().rstrip(".,;") for match in re.finditer(r"https?://[^\s<>\]\)\"]+", combined)
+    reply = next((message for message in messages if isinstance(message, dict)
+        and (not mcp or (message.get("jsonrpc") == "2.0" and type(message.get("id")) is int
+                        and message["id"] == 1 and ("result" in message or "error" in message)))), None)
+    if reply is None:
+        return invalid
+    value = reply.get("result") if mcp else reply
+    if "error" in reply or isinstance(value, dict) and value.get("isError"):
+        return diagnostic("provider_error", "搜索服务返回执行错误",
+                          "稍后重试；若持续失败，请检查服务可用性、配额和宿主搜索配置", retryable=True)
+    if not isinstance(value, dict):
+        return invalid
+    if mcp:
+        content = value.get("content")
+        if not isinstance(content, list) or any(not isinstance(item, dict)
+                or item.get("type") != "text" or not isinstance(item.get("text"), str) for item in content):
+            return invalid
+    else:
+        results = value.get("results")
+        if not isinstance(results, list) or any(not isinstance(item, dict) for item in results):
+            return invalid
+        content = [{"text": f"{item.get('title', '')}\nURL: {item.get('url', '')}\n{item.get('text', '')}"}
+                   for item in results]
+    combined = "\n\n".join(item["text"] for item in content).strip()
+    sources = list(dict.fromkeys(match.group().rstrip(".,;") for match in re.finditer(r'https?://[^\s<>\]\)\"]+', combined)
         if len(match.group()) <= 4096))[:20]
+    if not combined or (not sources and re.match(
+            r"^(?:no (?:search )?results(?: found)?|未找到结果|没有结果)(?:[.!。]|$)", combined, re.I)):
+        return {"result": "", "results": [], "sources": [], "count": 0, "truncated": False,
+                "hint": "未找到结果；可调整关键词后重新搜索"}
     if not sources:
-        return {"error": "搜索结果为空或未包含可核验来源"}
+        return diagnostic("missing_sources", "搜索结果未包含可核验来源",
+                          "调整关键词后重试；不要把无来源的响应当作已核实事实")
     return {"result": combined[:request["limit"]], "sources": sources, "truncated": len(combined) > request["limit"]}
 
 

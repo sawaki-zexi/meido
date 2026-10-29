@@ -77,20 +77,24 @@ class ScheduleTool:
 class ScheduleManageTool:
     def __init__(self, name, application, *, origin_resolver, authorized):
         self.application, self.origin_resolver, self.authorized = application, origin_resolver, authorized
-        self.definition = ToolDefinition(name=name, description='List time tasks in this exact role and original source.' if name == 'list_schedules' else 'Cancel owned time tasks by unique id prefix (at least 8 characters) or exact name; repeated cancellation is safe.',
+        self.definition = ToolDefinition(name=name, description='List pending time tasks belonging to this role, including tasks from its other conversations.' if name == 'list_schedules' else 'Cancel owned time tasks by unique id prefix (at least 8 characters) or exact name; repeated cancellation is safe.',
             input_schema={'type': 'object', 'properties': {} if name == 'list_schedules' else {
                 'id': {'type': 'string', 'minLength': 8, 'maxLength': 32}, 'name': {'type': 'string', 'minLength': 1, 'maxLength': 100}},
-                'additionalProperties': False}, source='role', risk='read_only' if name == 'list_schedules' else 'mutating', search_hint='提醒列表 已有计划' if name == 'list_schedules' else '删除提醒 取消任务')
+                'additionalProperties': False}, source='role', risk='read_only' if name == 'list_schedules' else 'mutating',
+            external_allowed=name == 'list_schedules', search_hint='提醒列表 已有计划' if name == 'list_schedules' else '删除提醒 取消任务')
 
     async def execute(self, arguments, context, on_update=None):
         del on_update
         try:
             ToolRegistry.validate_definition(self.definition, arguments)
             if not self.authorized(context):
-                raise PermissionError('schedule management requires the actual owner source')
-            origin = self.origin_resolver(context)
-            result = {'schedules': self.application().list(origin)} if self.definition.name == 'list_schedules' else await _owned_call(self.application().cancel,
-                origin, identifier=str(arguments.get('id', '')), name=str(arguments.get('name', '')))
+                raise PermissionError('schedule management source is unavailable or unauthorized')
+            if self.definition.name == 'list_schedules':
+                result = {'schedules': self.application().list_role(context.role_id)}
+            else:
+                origin = self.origin_resolver(context)
+                result = await _owned_call(self.application().cancel,
+                    origin, identifier=str(arguments.get('id', '')), name=str(arguments.get('name', '')))
             return AgentToolResult(json.dumps(result, ensure_ascii=False), result)
         except (ValueError, KeyError, PermissionError) as error:
             return AgentToolResult(str(error), {'status': 'rejected', 'error': str(error)}, True)

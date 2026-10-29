@@ -10,7 +10,7 @@ const account: Account = { accountId: "qq-1", channel: "qq", enabled: true, plat
 const group = { chatId: "42", title: "读书群", threadId: null as string | null, repliesEnabled: true, listening: false, naturalEnabled: false, naturalEffective: false };
 const base = "/api/roles/r1/channels/accounts/qq-1/groups";
 
-it("按群关闭全部回复并保留旁听和自然回复偏好，其他群不受影响", async () => {
+it("按群关闭全部回复并保留旁听和主动接话偏好，其他群不受影响", async () => {
   let state = { ...group, listening: true, naturalEnabled: true, naturalEffective: true };
   const { calls } = fakeBackend({
     [`GET ${base}`]: () => ({ body: { groups: [state, { ...group, chatId: "43", title: "另一个群" }] } }),
@@ -24,9 +24,9 @@ it("按群关闭全部回复并保留旁听和自然回复偏好，其他群不�
   expect(toggle).toBeChecked();
   await user.click(toggle);
   await waitFor(() => expect(toggle).not.toBeChecked());
-  expect(screen.getByText(/已关闭 · @、引用和自然回复均不发送/)).toBeVisible();
+  expect(screen.getByText(/已关闭 · @、引用和主动接话均不发送/)).toBeVisible();
   expect(screen.getByRole("checkbox", { name: "开启本群旁听" })).toBeChecked();
-  expect(screen.getByRole("checkbox", { name: "自然回复（无需 @）" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "群聊主动接话（无需 @）" })).toBeChecked();
   expect(screen.getByText("已保存开启 · 当前未生效")).toBeVisible();
   await user.click(screen.getByRole("button", { name: "选择其他群聊" }));
   await user.click(await screen.findByRole("button", { name: /另一个群/ }));
@@ -34,7 +34,7 @@ it("按群关闭全部回复并保留旁听和自然回复偏好，其他群不�
   expect(calls.filter(call => call.method === "PUT").map(call => [call.path, call.body])).toEqual([[`${base}/42/replies`, { enabled: false }]]);
 });
 
-it("目录中的首次群聊无需制造聊天记录即可开启旁听和自然回复", async () => {
+it("目录中的首次群聊无需制造聊天记录即可开启旁听和主动接话", async () => {
   let state = { ...group };
   const { calls } = fakeBackend({
     [`GET ${base}`]: () => ({ body: { groups: [state] } }),
@@ -47,10 +47,10 @@ it("目录中的首次群聊无需制造聊天记录即可开启旁听和自然�
   const user = userEvent.setup();
   render(<GroupSettingsPanel roleId="r1" account={account} onBack={() => undefined} />);
   await user.click(await screen.findByRole("button", { name: /读书群.*42/ }));
-  expect(await screen.findByRole("checkbox", { name: "自然回复（无需 @）" })).toBeDisabled();
+  expect(await screen.findByRole("checkbox", { name: "群聊主动接话（无需 @）" })).toBeDisabled();
   await user.click(screen.getByRole("checkbox", { name: "开启本群旁听" }));
-  await user.click(await screen.findByRole("checkbox", { name: "自然回复（无需 @）" }));
-  expect(await screen.findByText("已开启 · 当前可自然回复")).toBeVisible();
+  await user.click(await screen.findByRole("checkbox", { name: "群聊主动接话（无需 @）" }));
+  expect(await screen.findByText("已开启 · 当前可主动接话")).toBeVisible();
   expect(calls.filter(call => call.method === "PUT").map(call => call.path)).toEqual([`${base}/42/listening`, `${base}/42/natural`]);
   expect(calls.some(call => call.path.endsWith("/messages") && call.method !== "GET")).toBe(false);
 });
@@ -65,7 +65,7 @@ it("空目录提供手动群号入口且读取不写入任何开关", async () =
   expect(await screen.findByText(/暂无已知群聊/)).toBeVisible();
   await user.type(screen.getByRole("textbox", { name: "群号" }), "999");
   await user.click(screen.getByRole("button", { name: "打开群聊设置" }));
-  expect(await screen.findByRole("checkbox", { name: "自然回复（无需 @）" })).not.toBeChecked();
+  expect(await screen.findByRole("checkbox", { name: "群聊主动接话（无需 @）" })).not.toBeChecked();
   expect(calls.every(call => call.method === "GET")).toBe(true);
 });
 
@@ -83,7 +83,7 @@ it.each([
   });
   const user = userEvent.setup();
   render(<GroupSettingsPanel roleId="r1" account={{ ...account, ...overrides } as Account} initialGroup={group} onBack={() => undefined} onAccountSettings={onAccount} onOpenSettings={onPlatform} />);
-  const toggle = await screen.findByRole("checkbox", { name: "自然回复（无需 @）" });
+  const toggle = await screen.findByRole("checkbox", { name: "群聊主动接话（无需 @）" });
   expect(toggle).toBeChecked(); expect(toggle).toBeEnabled();
   expect(screen.getByText(new RegExp(reason))).toBeVisible();
   await user.click(screen.getByRole("button", { name: repair }));
@@ -99,9 +99,9 @@ it("未允许响应群聊时禁止开启但说明如何修复；离线不是权�
     [`GET ${base}/42/settings`]: () => ({ body: { ...group, listening: true } }),
   });
   const view = render(<GroupSettingsPanel roleId="r1" account={{ ...account, allowGroup: false }} initialGroup={group} onBack={() => undefined} />);
-  expect(await screen.findByRole("checkbox", { name: "自然回复（无需 @）" })).toBeDisabled();
+  expect(await screen.findByRole("checkbox", { name: "群聊主动接话（无需 @）" })).toBeDisabled();
   view.rerender(<GroupSettingsPanel roleId="r1" account={{ ...account, connectionStatus: "disconnected" }} initialGroup={group} onBack={() => undefined} />);
-  expect(screen.getByRole("checkbox", { name: "自然回复（无需 @）" })).toBeEnabled();
+  expect(screen.getByRole("checkbox", { name: "群聊主动接话（无需 @）" })).toBeEnabled();
 });
 
 it("保存失败保留已确认状态，连点只发出一次写请求", async () => {
@@ -113,7 +113,7 @@ it("保存失败保留已确认状态，连点只发出一次写请求", async (
     [`PUT ${base}/42/natural`]: () => pending,
   });
   render(<GroupSettingsPanel roleId="r1" account={account} initialGroup={group} onBack={() => undefined} />);
-  const toggle = await screen.findByRole("checkbox", { name: "自然回复（无需 @）" });
+  const toggle = await screen.findByRole("checkbox", { name: "群聊主动接话（无需 @）" });
   fireEvent.click(toggle); fireEvent.click(toggle);
   expect(calls.filter(call => call.method === "PUT")).toHaveLength(1);
   await act(async () => { resolve({ status: 500, body: { detail: "保存失败，请稍后重试" } }); await pending; });
@@ -133,15 +133,15 @@ it("切换群聊或角色丢弃旧保存结果与错误", async () => {
   });
   const user = userEvent.setup();
   const view = render(<GroupSettingsPanel roleId="r1" account={account} initialGroup={group} onBack={() => undefined} />);
-  await user.click(await screen.findByRole("checkbox", { name: "自然回复（无需 @）" }));
+  await user.click(await screen.findByRole("checkbox", { name: "群聊主动接话（无需 @）" }));
   await user.click(screen.getByRole("button", { name: "选择其他群聊" }));
   await user.click(await screen.findByRole("button", { name: /另一个群/ }));
-  expect(await screen.findByRole("checkbox", { name: "自然回复（无需 @）" })).not.toBeChecked();
+  expect(await screen.findByRole("checkbox", { name: "群聊主动接话（无需 @）" })).not.toBeChecked();
   await act(async () => { resolve({ body: { ...group, listening: true, naturalEnabled: true } }); await pending; });
-  expect(screen.getByRole("checkbox", { name: "自然回复（无需 @）" })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "群聊主动接话（无需 @）" })).not.toBeChecked();
   view.rerender(<GroupSettingsPanel roleId="r2" account={{ ...account, accountId: "qq-2" }} onBack={() => undefined} />);
   expect(await screen.findByText(/暂无已知群聊/)).toBeVisible();
-  expect(screen.queryByRole("checkbox", { name: "自然回复（无需 @）" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("checkbox", { name: "群聊主动接话（无需 @）" })).not.toBeInTheDocument();
 });
 
 it.each([
@@ -154,7 +154,7 @@ it.each([
   const view = render(<GroupSettingsPanel roleId="r1" account={{ ...account, ...overrides } as Account} initialGroup={group} onBack={() => undefined} />);
   expect(await screen.findByText("已保存开启 · 当前未生效")).toBeVisible();
   view.rerender(<GroupSettingsPanel roleId="r1" account={account} initialGroup={group} onBack={() => undefined} />);
-  expect(screen.getByText("已开启 · 当前可自然回复")).toBeVisible();
+  expect(screen.getByText("已开启 · 当前可主动接话")).toBeVisible();
 });
 
 it("无效手动群号不能请求设置，已移除账号只能查看历史开关", async () => {
@@ -170,7 +170,7 @@ it("无效手动群号不能请求设置，已移除账号只能查看历史开�
   expect(calls.filter(call => call.path.endsWith("/settings"))).toHaveLength(0);
   view.rerender(<GroupSettingsPanel roleId="r1" account={null} initialGroup={{ ...group, threadId: "old" }} onBack={() => undefined} />);
   expect(await screen.findByText(/账号已移除，历史设置仅供查看/)).toBeVisible();
-  expect(screen.getByRole("checkbox", { name: "自然回复（无需 @）" })).toBeChecked();
-  expect(screen.getByRole("checkbox", { name: "自然回复（无需 @）" })).toBeDisabled();
+  expect(screen.getByRole("checkbox", { name: "群聊主动接话（无需 @）" })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "群聊主动接话（无需 @）" })).toBeDisabled();
   expect(calls.every(call => call.method === "GET")).toBe(true);
 });

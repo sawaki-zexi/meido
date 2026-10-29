@@ -167,12 +167,15 @@ class MeidoProvider:
         *, structured_without_tools: bool = False, max_response_tokens: int | None = None,
         context_blocks=None, context_safety_margin: int = 0,
         namespace_context: Callable[[CancellationToken | None], str] | None = None,
+        required_context: str = "",
     ) -> None:
         self.adapter = adapter
         self.role = role
         self.configuration = configuration
         self.memory_context = memory_context
         self.capability_prompt = capability_prompt
+        # Host-verified sender/scope facts survive optional-context degradation.
+        self.required_context = required_context
         self.namespace_context = namespace_context
         self._tool_prompt = ""
         self.structured_without_tools = structured_without_tools
@@ -186,6 +189,14 @@ class MeidoProvider:
         signal.raise_if_cancelled()
         if self.request_guard is not None:
             self.request_guard()
+
+    def minimal_provider(self):
+        """Keep identity/source checks but omit optional memory, skills and catalogs."""
+        provider = MeidoProvider(self.adapter, self.role, self.configuration,
+            structured_without_tools=True, max_response_tokens=self.max_response_tokens,
+            context_safety_margin=self.context_safety_margin, required_context=self.required_context)
+        provider.request_guard = self.request_guard
+        return provider
 
     def stream_response(
         self,
@@ -523,7 +534,7 @@ class MeidoProvider:
     def _structured_system_prompt(self, system: str) -> str:
         if not system:
             return self.role_system_prompt()
-        return "\n\n".join(part for part in (system, self.capability_prompt, self._tool_prompt, self._request_context) if part)
+        return "\n\n".join(part for part in (system, self.required_context, self.capability_prompt, self._tool_prompt, self._request_context) if part)
 
     def role_system_prompt(self) -> str:
         profile = self.role.profile
@@ -535,6 +546,7 @@ class MeidoProvider:
             f"行为规则：{profile.behaviorRules}" if profile.behaviorRules else "",
             f"回复约束：{profile.responseConstraints}" if profile.responseConstraints else "",
             f"称呼用户：{profile.nickname}" if profile.nickname else "",
+            self.required_context,
             self.memory_context,
             self._request_context,
             self.capability_prompt,
@@ -542,7 +554,7 @@ class MeidoProvider:
         ] if part)
 
     def _combined_memory_context(self) -> str:
-        return "\n\n".join(part for part in (self.memory_context, self.capability_prompt, self._request_context) if part)
+        return "\n\n".join(part for part in (self.required_context, self.memory_context, self.capability_prompt, self._request_context) if part)
 
     def _role_with_context(self) -> Role:
         profile = self.role.profile.model_copy(deep=True)
@@ -570,7 +582,7 @@ class MeidoProvider:
         except (TypeError, ValueError):
             accepts_memory = False
         yield ProviderStartEvent()
-        role = self.role if accepts_memory or not (self.memory_context or self.capability_prompt) else self._role_with_context()
+        role = self.role if accepts_memory or not (self.required_context or self.memory_context or self.capability_prompt) else self._role_with_context()
         options = {'memory_context': self._combined_memory_context()} if accepts_memory else {}
         if self.max_response_tokens is not None and 'max_tokens' in inspect.signature(stream_reply).parameters:
             options['max_tokens'] = self.max_response_tokens

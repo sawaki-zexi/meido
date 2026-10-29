@@ -54,7 +54,7 @@ function GroupSettingsForAccount({ roleId, account, initialGroup, onBack, onAcco
         {account && <button type="button" className="group-settings-choose" onClick={() => setSelected(null)}>选择其他群聊</button>}
         <SelectedGroupSettings key={selected.chatId} roleId={roleId} account={account} group={selected} base={base} onAccountSettings={onAccountSettings} onOpenSettings={onOpenSettings} />
       </> : <>
-        <div className="group-settings-intro"><h3>选择要设置的 QQ 群</h3><p>按群控制回复、自然接话与旁听，不需要先在群里 @ 角色。</p></div>
+        <div className="group-settings-intro"><h3>选择要设置的 QQ 群</h3><p>按群控制回复、主动接话与旁听，不需要先在群里 @ 角色。</p></div>
         {warning && <p className="group-settings-hint" role="status">{warning}</p>}
         {error && <p className="group-settings-error" role="alert">{error}</p>}
         <div className="group-settings-directory-heading"><span>已知群聊</span><IconButton icon="refresh" label="刷新群聊" disabled={loading} onClick={() => setReload(value => value + 1)} /></div>
@@ -117,8 +117,8 @@ function SelectedGroupSettings({ roleId, account, group, base, onAccountSettings
     if (!account.enabled) blockers.push({ text: "账号已暂停，连接后才会接收和回复消息。", action: onAccountSettings ? () => onAccountSettings("connection") : undefined, label: "打开账号设置" });
     else if (account.platformEnabled !== false && account.connectionStatus !== "connected") blockers.push({ text: account.connectionStatus === "connecting" ? "账号正在连接，连接成功后生效。" : account.connectionStatus === "error" ? "账号连接异常，请检查连接设置。" : account.connectionStatus === "unknown" || !account.connectionStatus ? "尚未确认账号连接状态，连接成功后生效。" : "账号离线，重新连接后生效。", action: onAccountSettings ? () => onAccountSettings("connection") : undefined, label: "打开账号设置" });
   }
-  if (state && !state.listening) blockers.push({ text: "请先开启下方“本群旁听”，自然回复需要当前群的近期上下文。" });
-  if (state?.repliesEnabled === false) blockers.push({ text: "本群回复已关闭，开启上方“允许本群回复”后才能自然接话。" });
+  if (state && !state.listening) blockers.push({ text: "请先开启下方“本群旁听”，主动接话需要当前群的近期上下文。" });
+  if (state?.repliesEnabled === false) blockers.push({ text: "本群回复已关闭，开启上方“允许本群回复”后才能主动接话。" });
   const effective = state?.naturalEnabled && blockers.length === 0;
 
   return <>
@@ -127,18 +127,18 @@ function SelectedGroupSettings({ roleId, account, group, base, onAccountSettings
     {loading ? <p role="status">正在读取群聊设置…</p> : !state ? <button type="button" onClick={() => setReload(value => value + 1)}>重试读取群聊设置</button> : <>
       <section className="group-natural-card" aria-label="本群回复设置">
         <label className="group-settings-toggle"><span><strong>允许本群回复</strong><small>只控制当前群，不影响私聊和其他群。</small></span><input type="checkbox" aria-label="允许本群回复" checked={state.repliesEnabled !== false} disabled={!account || busy} onChange={event => void change("replies", event.target.checked)} /></label>
-        <p className="group-settings-state" role="status">{state.repliesEnabled === false ? "已关闭 · @、引用和自然回复均不发送" : "已允许 · 回复仍遵守账号响应规则"}</p>
-        <p className="group-settings-hint">关闭后，尚未发出的回复不再发送；重新开启不会补发旧回复。旁听与自然回复偏好会保留。</p>
+        <p className="group-settings-state" role="status">{state.repliesEnabled === false ? "已关闭 · @、引用和主动接话均不发送" : "已允许 · 回复仍遵守账号响应规则"}</p>
+        <p className="group-settings-hint">关闭后，尚未发出的回复不再发送；重新开启不会补发旧回复。旁听与主动接话偏好会保留。</p>
       </section>
-      <section className="group-natural-card" aria-label="自然回复设置">
-        <label className="group-settings-toggle"><span><strong>自然回复（无需 @）</strong><small>角色可根据群聊内容自然接话，不保证每条都回复。</small></span><input type="checkbox" aria-label="自然回复（无需 @）" checked={state.naturalEnabled} disabled={!account || busy || (!state.naturalEnabled && (!state.listening || !account.allowGroup || state.repliesEnabled === false))} onChange={event => void change("natural", event.target.checked)} /></label>
-        <p className={`group-settings-state${effective ? " is-effective" : ""}`} role="status">{state.naturalEnabled ? effective ? "已开启 · 当前可自然回复" : "已保存开启 · 当前未生效" : "已关闭 · 不会主动接话"}</p>
+      <section className="group-natural-card" aria-label="群聊主动接话设置">
+        <label className="group-settings-toggle"><span><strong>群聊主动接话（无需 @）</strong><small>角色可根据群聊内容主动接话，不保证每条都回复。</small></span><input type="checkbox" aria-label="群聊主动接话（无需 @）" checked={state.naturalEnabled} disabled={!account || busy || (!state.naturalEnabled && (!state.listening || !account.allowGroup || state.repliesEnabled === false))} onChange={event => void change("natural", event.target.checked)} /></label>
+        <p className={`group-settings-state${effective ? " is-effective" : ""}`} role="status">{state.naturalEnabled ? effective ? "已开启 · 当前可主动接话" : "已保存开启 · 当前未生效" : "已关闭 · 不会主动接话"}</p>
         {blockers.length > 0 && <ul className="group-settings-blockers">{blockers.map(({ text, action, label }) => <li key={text}>{text}{action && <button type="button" onClick={action}>{label}</button>}</li>)}</ul>}
-        <p className="group-settings-hint">自然回复不改变主人工具权限。仅关闭自然回复时，账号与本群都允许回复才能通过 @ 或引用角色消息聊天。</p>
+        <p className="group-settings-hint">主动接话不改变主人工具权限。仅关闭主动接话时，账号与本群都允许回复才能通过 @ 或引用角色消息聊天。</p>
       </section>
       <section className="group-listening-card" aria-label="旁听设置">
         <label className="group-settings-toggle"><span><strong>本群旁听</strong><small>保存群内未触发回复的消息；本群回复关闭时仍可旁听。</small></span><input type="checkbox" aria-label="开启本群旁听" checked={state.listening} disabled={!account || busy} onChange={event => void change("listening", event.target.checked)} /></label>
-        <p className="group-settings-hint">关闭旁听会暂停自然回复，但保留自然回复的开关偏好。</p>
+        <p className="group-settings-hint">关闭旁听会暂停主动接话，但保留主动接话的开关偏好。</p>
       </section>
       {state.threadId ? <GroupListeningPanel key={state.threadId} roleId={roleId} threadId={state.threadId} accountId={account?.accountId} chatId={group.chatId} editable={Boolean(account)} settingsManaged /> : <p className="group-settings-hint">暂无旁听记录。开启旁听后，新收到的群消息才会记录。</p>}
     </>}

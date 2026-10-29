@@ -1,4 +1,6 @@
 import json
+import pytest
+from pydantic import ValidationError
 
 from backend.app.role_store import RoleStore
 from backend.app.models import AgentToolConfig, RoleInput, RoleProfile, RoleUpdateInput, ShellToolConfig
@@ -81,6 +83,29 @@ def test_role_store_persists_capability_enablement_and_grants(tmp_path):
     assert reloaded.agentConfig.enabledTools == ["plugin.echo"]
     assert reloaded.agentConfig.enabledPlugins == ["demo"]
     assert reloaded.agentConfig.grantedCapabilities == ["runtime.tool"]
+
+
+def test_natural_chat_is_role_owned_defaults_off_and_survives_other_settings(tmp_path):
+    store = RoleStore(tmp_path / "roles")
+    role = store.create(role_input())
+    assert role.agentConfig.naturalChatEnabled is False
+    store.update(role.id, RoleUpdateInput(name=role.name, profile=role.profile,
+        agentConfig={"naturalChatEnabled": True}))
+    updated = store.update(role.id, RoleUpdateInput(name="新名字", profile=role.profile,
+        agentConfig={"enabledTools": ["web_search"]}))
+    assert updated.agentConfig.naturalChatEnabled is True
+    reloaded = RoleStore(store.root).get(role.id)
+    assert reloaded.agentConfig.naturalChatEnabled is True
+    assert reloaded.agentConfig.enabledTools == ["web_search"]
+    store.update(role.id, RoleUpdateInput(name=updated.name, profile=updated.profile,
+        agentConfig={"naturalChatEnabled": False}))
+    assert RoleStore(store.root).get(role.id).agentConfig.naturalChatEnabled is False
+
+
+@pytest.mark.parametrize("value", [1, "true", None])
+def test_natural_chat_switch_requires_an_explicit_boolean(value):
+    with pytest.raises(ValidationError):
+        AgentToolConfig(naturalChatEnabled=value)
 
 
 def test_role_model_configuration_binding_persists_and_is_independent(tmp_path):

@@ -174,20 +174,21 @@ def test_connection_test_uses_draft_stream_and_does_not_save_it(tmp_path, monkey
     store.save(ModelConfigurationInput(**payload()))
     calls = []
 
-    async def stream_messages(messages, configuration, *, max_tokens=None):
+    async def stream_messages(messages, configuration, *, max_tokens=None, disable_thinking=False):
         calls.append((messages, configuration, max_tokens))
-        yield "ok"
+        from backend.app.ai.model_types import ModelStreamDone, ModelAssistantMessage, ModelTextBlock, ModelResponseMetadata
+        yield ModelStreamDone(ModelAssistantMessage((ModelTextBlock("ok"),), ModelResponseMetadata(stop_reason="stop")))
 
-    monkeypatch.setattr(main.connection_test_adapter, "stream_messages", stream_messages)
+    monkeypatch.setattr(main.connection_test_adapter, "stream_rich_messages", stream_messages)
     draft = payload(providerId="custom", provider="local-test", baseUrl="http://127.0.0.1:11434/v1", apiKey="draft-secret", model="test-model")
 
     response = client.post("/api/model/configuration/test", json=draft)
 
     assert response.status_code == 200
     assert response.json()["ok"] is True
-    assert calls[0][0] == [{"role": "user", "content": "ping"}]
+    assert calls[0][0][0].content[0].text == "ping"
     assert calls[0][1].apiKey == "draft-secret"
-    assert calls[0][2] == 8
+    assert calls[0][2] == 64
     assert store.get().providerId == "deepseek"
     assert store.get().apiKey == "secret-token"
 
@@ -197,10 +198,11 @@ def test_connection_test_returns_elapsed_latency(tmp_path, monkeypatch):
     clock = iter((10.000, 10.688))
     monkeypatch.setattr(main, "monotonic", lambda: next(clock))
 
-    async def stream_messages(messages, configuration, *, max_tokens=None):
-        yield "ok"
+    async def stream_messages(messages, configuration, *, max_tokens=None, disable_thinking=False):
+        from backend.app.ai.model_types import ModelStreamDone, ModelAssistantMessage, ModelTextBlock, ModelResponseMetadata
+        yield ModelStreamDone(ModelAssistantMessage((ModelTextBlock("ok"),), ModelResponseMetadata(stop_reason="stop")))
 
-    monkeypatch.setattr(main.connection_test_adapter, "stream_messages", stream_messages)
+    monkeypatch.setattr(main.connection_test_adapter, "stream_rich_messages", stream_messages)
 
     result = client.post("/api/model/configuration/test", json=payload()).json()
 
@@ -211,11 +213,11 @@ def test_connection_test_reports_stream_error_event(tmp_path, monkeypatch):
     _, client = configure_api(tmp_path, monkeypatch)
     from backend.app.model_types import ModelStreamError
 
-    async def stream_messages(messages, configuration, *, max_tokens=None):
+    async def stream_messages(messages, configuration, *, max_tokens=None, disable_thinking=False):
         del messages, configuration, max_tokens
         yield ModelStreamError("provider rejected the request")
 
-    monkeypatch.setattr(main.connection_test_adapter, "stream_messages", stream_messages)
+    monkeypatch.setattr(main.connection_test_adapter, "stream_rich_messages", stream_messages)
 
     result = client.post("/api/model/configuration/test", json=payload()).json()
 
@@ -226,11 +228,11 @@ def test_connection_test_scrubs_secret_from_failure_and_keeps_active_config(tmp_
     store, client = configure_api(tmp_path, monkeypatch)
     store.save(ModelConfigurationInput(**payload()))
 
-    async def fail(messages, configuration):
+    async def fail(messages, configuration, **kwargs):
         raise RuntimeError(f"provider echoed {configuration.apiKey}")
         yield "unreachable"
 
-    monkeypatch.setattr(main.connection_test_adapter, "stream_messages", fail)
+    monkeypatch.setattr(main.connection_test_adapter, "stream_rich_messages", fail)
     response = client.post("/api/model/configuration/test", json=payload(apiKey="draft-secret"))
 
     assert response.status_code == 200
@@ -244,11 +246,11 @@ def test_connection_test_turns_unauthorized_into_actionable_auth_error(tmp_path,
     request = httpx.Request("POST", "https://api.deepseek.com/chat/completions")
     response = httpx.Response(401, request=request)
 
-    async def unauthorized(messages, configuration, *, max_tokens=None):
+    async def unauthorized(messages, configuration, *, max_tokens=None, disable_thinking=False):
         raise httpx.HTTPStatusError("Unauthorized", request=request, response=response)
         yield "unreachable"
 
-    monkeypatch.setattr(main.connection_test_adapter, "stream_messages", unauthorized)
+    monkeypatch.setattr(main.connection_test_adapter, "stream_rich_messages", unauthorized)
 
     result = client.post("/api/model/configuration/test", json=payload()).json()
 
@@ -261,7 +263,7 @@ def test_connection_test_keeps_bad_request_detail_and_redacts_api_key(tmp_path, 
     request = httpx.Request("POST", "https://api.deepseek.com/chat/completions")
     response = httpx.Response(400, request=request)
 
-    async def invalid_request(messages, configuration, *, max_tokens=None):
+    async def invalid_request(messages, configuration, *, max_tokens=None, disable_thinking=False):
         raise httpx.HTTPStatusError(
             "HTTP 400 Bad Request: Invalid function name; secret-token",
             request=request,
@@ -269,7 +271,7 @@ def test_connection_test_keeps_bad_request_detail_and_redacts_api_key(tmp_path, 
         )
         yield "unreachable"
 
-    monkeypatch.setattr(main.connection_test_adapter, "stream_messages", invalid_request)
+    monkeypatch.setattr(main.connection_test_adapter, "stream_rich_messages", invalid_request)
 
     result = client.post("/api/model/configuration/test", json=payload()).json()
 

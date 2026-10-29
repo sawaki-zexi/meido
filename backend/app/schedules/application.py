@@ -183,6 +183,28 @@ class ScheduleApplication:
             return [self._public(db, row) for row in db.execute('SELECT * FROM schedules WHERE role_id=? AND scope=? ORDER BY created_at DESC',
                     (origin.role_id, self._scope(origin))).fetchall()]
 
+    def list_role(self, role_id: str) -> list[dict]:
+        """Read the role's pending plans, independent of their mutation source.
+
+        Shiori exposes list_schedules to external callers at role scope. This
+        projection does not return frozen credentials or grant cancellation.
+        """
+        with self._transaction() as db:
+            rows = db.execute(
+                "SELECT * FROM schedules WHERE role_id=? AND status IN ('active','blocked_uncertain','blocked_time_range') ORDER BY created_at DESC",
+                (role_id,)).fetchall()
+            result = []
+            for row in rows:
+                data = json.loads(row['data'])
+                key = 'message' if data.get('tier') == 'instant' else 'prompt'
+                # Cross-source discovery must not include private task/attempt
+                # identifiers or diagnostics from the owner management view.
+                result.append({'id': row['id'], 'name': data.get('name', ''), 'tier': data.get('tier'),
+                    'trigger': data.get('originalTrigger'), 'when': data.get('when'), 'timezone': data.get('timezone'),
+                    'nextAt': row['next_at'], 'remainingRuns': row['remaining'], 'planStatus': row['status'],
+                    'startedRuns': row['started'], 'content': str(data.get(key, ''))[:40]})
+            return result
+
     def cancel(self, origin: TaskOrigin, *, identifier: str = '', name: str = '') -> dict:
         if not identifier and not name or identifier and len(identifier) < 8:
             raise ValueError('provide an unambiguous id prefix of at least 8 characters or exact name')

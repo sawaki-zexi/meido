@@ -76,6 +76,7 @@ class ScreenPerceptionConfig(BaseModel):
 
 
 class AgentToolConfig(BaseModel):
+    naturalChatEnabled: bool = Field(default=False, strict=True)
     novelai: NovelaiRoleConfig = Field(default_factory=NovelaiRoleConfig)
     shell: ShellToolConfig = Field(default_factory=ShellToolConfig)
     memoryRecall: MemoryRecallToolConfig = Field(default_factory=MemoryRecallToolConfig)

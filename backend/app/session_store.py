@@ -45,7 +45,9 @@ def load_runtime_attachments(metadata: dict[str, Any]) -> tuple[AttachmentConten
 def _channel_user_content(stored: Message) -> str:
     metadata = stored.metadata
     if not metadata.get("channel") or metadata.get("channel") == "desktop":
-        return stored.content
+        labels = [f"{item.get('name', '附件')}（attachment_id={item['id']}）"
+                  for item in metadata.get('attachments', []) if isinstance(item, dict) and item.get('id')]
+        return "\n".join(filter(None, (stored.content, '本消息附件：' + '；'.join(labels) if labels else '')))
     kind = "群友" if metadata.get("chatType") == "group" else "访客"
     sender = "主人" if metadata.get("senderIsOwner") is True else kind
     name = str(metadata.get("senderName") or metadata.get("senderId") or "")
@@ -143,7 +145,35 @@ class SessionStore:
         for run_id, role_id, payload in rows:
             data = json.loads(payload or '{}').get('budgetDiagnostic')
             if isinstance(data, dict):
-                result.append({'runId': run_id, 'roleId': role_id, **{key: data[key] for key in allowed if key in data}})
+                item = {'runId': run_id, 'roleId': role_id, **{key: data[key] for key in allowed if key in data}}
+                raw = data.get('compaction')
+                if isinstance(raw, dict):
+                    compact = {}
+                    for key, choices in {'stage': {'summary', 'committed', 'failed'},
+                                         'fallback': {'original', 'minimal'}}.items():
+                        if isinstance(raw.get(key), str) and raw[key] in choices:
+                            compact[key] = raw[key]
+                    attempts = raw.get('summaryAttempts')
+                    compact['summaryAttempts'] = []
+                    for attempt in attempts[:100] if isinstance(attempts, list) else []:
+                        if not isinstance(attempt, dict):
+                            continue
+                        safe = {}
+                        for key in ('maxTokens', 'elapsedMs'):
+                            if type(attempt.get(key)) is int and attempt[key] >= 0:
+                                safe[key] = attempt[key]
+                        for key, choices in {'stopReason': {'stop', 'end_turn', 'completed', 'length', 'max_tokens', 'tool_calls', 'tool_use', 'error', 'aborted'},
+                                             'outcome': {'started', 'returned', 'incomplete', 'timeout', 'failed'}}.items():
+                            value = attempt.get(key)
+                            if isinstance(value, str):
+                                safe[key] = value if value in choices else 'other'
+                        usage = attempt.get('usage')
+                        if isinstance(usage, dict):
+                            safe['usage'] = {key: usage[key] for key in ('input_tokens', 'output_tokens', 'reasoning_tokens')
+                                             if type(usage.get(key)) is int and usage[key] >= 0}
+                        compact['summaryAttempts'].append(safe)
+                    item['compaction'] = compact
+                result.append(item)
         return result
 
     def user_message_for_run(self, run_id: str) -> Message | None:

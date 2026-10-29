@@ -10,8 +10,8 @@ import { RoleServiceCard, useRoleServices } from './RoleServiceCapabilities';
 import type { SettingsSectionId } from '../settings/navigation';
 
 type Props = { role: Role; onRoleSaved?: (role: Role) => void; onOpenSettings?: (section?: SettingsSectionId) => void; actionTarget?: HTMLElement | null; settingsVersion?: number };
-type Configurable = Exclude<RuntimeCapability, 'reminders'>;
-const names = { autonomy: '主动推送', pet: '桌宠', novelai: '自动场景 CG', reminders: '待办提醒' };
+type Configurable = Exclude<RuntimeCapability, 'reminders' | 'natural'>;
+const names = { natural: '自然聊天', autonomy: '主动推送', pet: '桌宠', novelai: '自动场景 CG', reminders: '待办提醒' };
 
 export function RoleCapabilitiesPanel(props: Props) {
   return <RuntimeCapabilities key={props.role.id} {...props} />;
@@ -40,15 +40,16 @@ function RuntimeCapabilities({ role, onRoleSaved, onOpenSettings, actionTarget, 
     <button type="button" className="ghost" disabled={state.busy || !state.dirty} onClick={state.reset}><Icon name="undo" size={17} />重置</button>
     <button type="button" className="primary" disabled={state.busy || !state.dirty} onClick={() => void state.save()}><Icon name="save" size={17} />{state.busy && state.dirty ? '保存中…' : '保存'}</button>
   </div>;
-  const card = (title: string, icon: IconName, label: string, checked: boolean, disabled: boolean, toggle: () => void, settings?: RuntimeCapability) =>
+  const card = (title: string, icon: IconName, label: string, checked: boolean, disabled: boolean, toggle: () => void, settings?: Exclude<RuntimeCapability, 'natural'>, description?: string) =>
     <div className="role-runtime-card" key={title}>
       <span className="role-runtime-icon"><Icon name={icon} size={23} /></span>
       <div className="role-runtime-copy"><h3>{title}</h3><span className={`role-runtime-status${checked && label === '已启用' ? ' is-enabled' : ''}`}>{label}</span>
         {settings === 'autonomy' && checked && <small className="role-runtime-usage" id={usageId}>使用角色聊天模型，开启后会产生模型用量。</small>}
         {settings === 'reminders' && <small className="role-runtime-usage" id={`${usageId}-reminders`}>启用次日生效，关闭立即生效。每天选一位角色提醒。</small>}
+        {description && <small className="role-runtime-usage" id={`${usageId}-${icon}`}>{description}</small>}
       </div>
       <button type="button" role="switch" aria-label={title} aria-checked={checked} title={label} className="settings-switch"
-        aria-describedby={settings === 'reminders' ? `${usageId}-reminders` : settings === 'autonomy' && checked ? usageId : undefined} disabled={state.busy || disabled} onClick={toggle}><span /></button>
+        aria-describedby={description ? `${usageId}-${icon}` : settings === 'reminders' ? `${usageId}-reminders` : settings === 'autonomy' && checked ? usageId : undefined} disabled={state.busy || disabled} onClick={toggle}><span /></button>
       {settings && <IconButton icon="settings" label={`${title}设置`} disabled={state.busy || (settings === 'reminders' && !onOpenSettings)} onClick={() => settings === 'reminders' ? onOpenSettings?.('todo') : setConfigure(settings)} />}
     </div>;
   return <section className="role-capabilities" aria-label="角色能力">
@@ -59,6 +60,8 @@ function RuntimeCapabilities({ role, onRoleSaved, onOpenSettings, actionTarget, 
       <span>{names[key as RuntimeCapability]}：{message}</span><button type="button" className="ghost" disabled={state.busy} onClick={() => void state.load(key as RuntimeCapability)}>重试</button>
     </div>)}
     <div className="role-runtime-grid">
+      {card('自然聊天', 'chat', status('natural', !!state.sceneRole), state.draft.natural, !state.sceneRole || !!state.loadErrors.natural,
+        () => state.change('natural', !state.draft.natural), undefined, '普通对话中由角色决定分条回复；不会开启群聊主动接话。')}
       <RoleServiceCard service={services.owner} onOpenSettings={onOpenSettings} disabled={state.busy} />
       {card('待办提醒', 'todo', reminderStatus, state.draft.reminders, !state.reminders || !!state.loadErrors.reminders || (!reminderReady && !state.draft.reminders), () => state.change('reminders', !state.draft.reminders), 'reminders')}
       {card('主动推送', 'bell', state.push && !state.push.modelReady && !state.draft.autonomy ? '未配置模型' : status('autonomy', !!state.push),

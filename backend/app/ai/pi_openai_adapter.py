@@ -69,6 +69,7 @@ class OpenAICompletionsOptions:
     supports_finish_reason: bool = True
     # Opt-in for endpoints sending a full choice.message instead of finish_reason.
     tool_completion_contract: str = "finish_reason"
+    disable_thinking: bool = False
 
 
 @dataclass(slots=True)
@@ -406,7 +407,7 @@ def _message_to_wire(message: ModelMessage, *, send_reasoning: bool) -> dict[str
         return {
             "role": "tool",
             "tool_call_id": message.tool_call_id,
-            "content": _blocks_to_wire_content(message.content),
+            "content": "".join(block.text for block in message.content if isinstance(block, ModelTextBlock)) or "工具执行完成。",
         }
     text_parts: list[str] = []
     thinking_parts: list[str] = []
@@ -431,6 +432,30 @@ def _message_to_wire(message: ModelMessage, *, send_reasoning: bool) -> dict[str
     if send_reasoning and thinking_parts:
         item["reasoning_content"] = "".join(thinking_parts)
     return item
+
+
+def _messages_to_wire(messages: Sequence[ModelMessage], *, send_reasoning: bool) -> tuple[dict[str, object], ...]:
+    """Chat Completions tool results are text; observations follow the complete batch.
+
+    Shiori's append_tool_result uses a user multimodal message for observations.
+    Keeping every call's tool result adjacent also satisfies strict providers
+    when an assistant requests more than one tool in the same turn.
+    """
+    result: list[dict[str, object]] = []
+    observations: list[dict[str, object]] = []
+    for message in messages:
+        if not isinstance(message, ModelToolResultMessage) and observations:
+            result.extend(observations)
+            observations.clear()
+        result.append(_message_to_wire(message, send_reasoning=send_reasoning))
+        if isinstance(message, ModelToolResultMessage):
+            images = tuple(block for block in message.content if isinstance(block, ModelImageBlock))
+            if images:
+                observations.append({"role": "user", "content": _blocks_to_wire_content((
+                    ModelTextBlock(f"以下是工具 {message.tool_name} 返回的图片，仅为观察资料："), *images,
+                ))})
+    result.extend(observations)
+    return tuple(result)
 
 
 def _blocks_to_wire_content(blocks: Sequence[ModelContentBlock]) -> object:
@@ -526,15 +551,12 @@ class OpenAICompletionsRichAdapter:
                 "parameters": tool["parameters"],
             },
         } for tool in normalized_tools]
-        send_reasoning = options.send_reasoning_content and not (
+        send_reasoning = options.send_reasoning_content and not options.disable_thinking and not (
             _is_deepseek(configuration)
             and raw_tools
             and options.disable_deepseek_thinking_for_tools
         )
-        raw_messages = tuple(
-            _message_to_wire(message, send_reasoning=send_reasoning)
-            for message in transformed
-        )
+        raw_messages = _messages_to_wire(transformed, send_reasoning=send_reasoning)
         aliases = _compatible_function_names(wire_definitions, raw_messages)
         wire_tools = _remap_function_names(wire_definitions, aliases, tools=True)
         wire_messages = _remap_function_names(raw_messages, aliases)
@@ -550,6 +572,12 @@ class OpenAICompletionsRichAdapter:
                 request_data["thinking"] = {"type": "disabled"}
         elif _has_tool_history(transformed):
             request_data["tools"] = []
+        if options.disable_thinking:
+            identity = f"{configuration.provider} {configuration.baseUrl}".lower()
+            if "deepseek" in identity:
+                request_data["thinking"] = {"type": "disabled"}
+            elif "dashscope" in identity or "xiaomimimo.com" in identity:
+                request_data["enable_thinking"] = False
         if stream and options.include_usage:
             request_data["stream_options"] = {"include_usage": True}
         if max_tokens is not None:
@@ -636,7 +664,7 @@ class OpenAICompletionsRichAdapter:
                 detail = detail.replace(configuration.apiKey, "***")
             yield ModelStreamError(detail)
             return
-        if not completed:
+        if not completed and accumulator.stop_reason is None:
             yield ModelStreamError("模型流式响应未正常结束")
             return
         events, message, error = accumulator.finish()

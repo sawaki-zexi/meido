@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import base64
 import io
+import hashlib
+import mimetypes
+import os
+import stat
 import json
 import re
 import uuid
@@ -15,7 +19,7 @@ from fastapi import HTTPException, Request
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_ATTACHMENT_TEXT = 32_000
 MAX_GIF_DECODED_PIXELS = 40_000_000
-IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"}
 TEXT_SUFFIXES = {".txt", ".md", ".csv", ".json"}
 DOCUMENT_SUFFIXES = {".pdf", ".docx"}
 PUBLIC_FIELDS = ("id", "name", "mediaType", "size", "kind")
@@ -25,6 +29,7 @@ MEDIA_TYPES_BY_SUFFIX = {
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
     ".gif": "image/gif",
+    ".bmp": "image/bmp",
     ".txt": "text/plain",
     ".md": "text/markdown",
     ".csv": "text/csv",
@@ -48,7 +53,7 @@ def _image_signature(data: bytes, media_type: str) -> bool:
         media_type == "image/gif" and data[:6] in {b"GIF87a", b"GIF89a"}
     ) or (
         media_type == "image/webp" and len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
-    )
+    ) or (media_type == "image/bmp" and data.startswith(b"BM"))
 
 
 def _extract_text(name: str, data: bytes) -> str:
@@ -102,14 +107,16 @@ async def read_request_bytes(request: Request) -> bytes:
     return bytes(content)
 
 
-def save_attachment(root: Path, filename: str, media_type: str, data: bytes) -> dict[str, object]:
+def save_attachment(root: Path, filename: str, media_type: str, data: bytes, *, output: bool = False) -> dict[str, object]:
     if len(data) > MAX_ATTACHMENT_BYTES:
         raise HTTPException(status_code=413, detail="附件不能超过 10 MB")
     name = _safe_name(filename)
     suffix = Path(name).suffix.lower()
     normalized_type = MEDIA_TYPES_BY_SUFFIX.get(suffix)
+    if normalized_type is None and output:
+        normalized_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
     if normalized_type is None:
-        raise HTTPException(status_code=415, detail="仅支持 PNG、JPEG、WebP、GIF、TXT、MD、CSV、JSON、PDF 或 DOCX")
+        raise HTTPException(status_code=415, detail="仅支持 PNG、JPEG、WebP、GIF、BMP、TXT、MD、CSV、JSON、PDF 或 DOCX")
     claimed_type = media_type.split(";", 1)[0].strip().lower()
     accepted_claims = {normalized_type, "application/octet-stream"}
     if normalized_type == "image/jpeg":
@@ -139,14 +146,21 @@ def save_attachment(root: Path, filename: str, media_type: str, data: bytes) -> 
                         break
         except (OSError, ValueError, Image.DecompressionBombError) as error:
             raise HTTPException(status_code=415, detail="GIF 附件损坏或解码总量超过 4000 万像素") from error
-    if suffix == ".pdf" and not data.startswith(b"%PDF-"):
+    if not output and suffix == ".pdf" and not data.startswith(b"%PDF-"):
         raise HTTPException(status_code=415, detail="PDF 附件无法读取")
-    if suffix == ".docx" and not zipfile.is_zipfile(io.BytesIO(data)):
+    if not output and suffix == ".docx" and not zipfile.is_zipfile(io.BytesIO(data)):
         raise HTTPException(status_code=415, detail="DOCX 附件无法读取")
-    attachment_id = uuid.uuid4().hex
+    # Stable output references make repeated send preparation reuse the same owned bytes.
+    attachment_id = (hashlib.sha256(name.encode("utf-8") + b"\0" + data).hexdigest()[:32]
+                     if output else uuid.uuid4().hex)
     directory = root / "attachments"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{attachment_id}-{name}"
+    metadata_path = directory / f"{attachment_id}.json"
+    if output:
+        for target in (directory, path, metadata_path):
+            if target.is_symlink() or target.is_junction() or (target.is_file() and target.stat().st_nlink > 1):
+                raise ValueError('output attachment storage was redirected')
     path.write_bytes(data)
     result = {
         "id": attachment_id,
@@ -155,7 +169,8 @@ def save_attachment(root: Path, filename: str, media_type: str, data: bytes) -> 
         "size": len(data),
         "path": str(path.resolve()),
         "kind": "image" if normalized_type in IMAGE_TYPES else "file",
-        "text": _extract_text(name, data),
+        # Sending a file does not request document extraction or model ingestion.
+        "text": "" if output else _extract_text(name, data),
     }
     (directory / f"{attachment_id}.json").write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
     return result
@@ -193,3 +208,73 @@ def resolve_attachment(root: Path, attachment_id: str) -> dict[str, object] | No
 def load_image(path: str, media_type: str) -> tuple[str, str]:
     data = Path(path).read_bytes()
     return media_type, base64.b64encode(data).decode("ascii")
+
+
+async def prepare_output_attachment(root: Path, reference: str, *, kind: str | None = None,
+                                    allow_local: bool = True, authorized=lambda: True) -> dict[str, object]:
+    """Adopt an explicit send's ID, workspace file, or public image URL.
+
+    Inspection results are not deliveries. Local paths obey the existing role
+    file-tool boundary; remote images use the same DNS-pinned HTTP reader as web_fetch.
+    """
+    if not authorized():
+        raise PermissionError('media source unavailable')
+    root = Path(os.path.abspath(root))
+    directory = root / 'attachments'
+    if directory.is_symlink() or directory.is_junction():
+        raise ValueError('attachment directory was redirected')
+    source = reference.removeprefix('attachment:')
+    if re.fullmatch(r'[0-9a-f]{32}', source):
+        item = resolve_attachment(root, source)
+        if item is None or item.get('id') != source or not Path(str(item['path'])).is_file():
+            raise ValueError('attachment unavailable')
+    elif source.startswith(('http://', 'https://')):
+        if kind == 'file':
+            raise ValueError('remote sources must be images')
+        from .network_tools import download_public_bytes
+        data, _headers, final_url = await download_public_bytes(source)
+        image_type = next((value for value in IMAGE_TYPES if _image_signature(data, value)), None)
+        if image_type is None:
+            raise ValueError('URL did not return a supported image')
+        from urllib.parse import unquote, urlsplit
+        suffix = next(key for key, value in MEDIA_TYPES_BY_SUFFIX.items() if value == image_type)
+        name = Path(unquote(urlsplit(final_url).path)).stem or 'image'
+        if not authorized():
+            raise PermissionError('media source unavailable')
+        item = save_attachment(root, name + suffix, image_type, data, output=True)
+    else:
+        if not allow_local:
+            raise PermissionError('external turns cannot read role workspace files')
+        path = Path(source)
+        if not path.is_absolute():
+            path = root / path
+        if os.name == 'nt':
+            # Windows normalization can erase trailing-dot aliases; use the
+            # same lexical rejection as the existing role file tools first.
+            reserved = {'CON', 'PRN', 'AUX', 'NUL',
+                *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}
+            for name in path.parts:
+                if name not in {path.anchor, '.', '..'} and (':' in name or name.rstrip(' .') != name
+                        or name.split('.')[0].upper() in reserved):
+                    raise PermissionError('unsupported Windows output path')
+        path = Path(os.path.abspath(path))
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            raise PermissionError('file is outside this role workspace') from None
+        for part in (root, *(root / Path(*relative.parts[:i]) for i in range(1, len(relative.parts) + 1))):
+            info = part.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400 or (stat.S_ISREG(info.st_mode) and info.st_nlink > 1):
+                raise PermissionError('linked files are not role-owned output')
+        if not path.resolve().is_relative_to(root.resolve()) or not path.is_file():
+            raise PermissionError('file is not a role workspace file')
+        with path.open('rb') as stream:
+            data = stream.read(MAX_ATTACHMENT_BYTES + 1)
+        if not authorized():
+            raise PermissionError('media source unavailable')
+        item = save_attachment(root, path.name, '', data, output=True)
+    if kind is not None and item.get('kind') != kind:
+        raise ValueError('attachment kind does not match')
+    if not authorized():
+        raise PermissionError('media source unavailable')
+    return item
