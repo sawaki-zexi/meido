@@ -319,7 +319,7 @@ class LookupGroupContextTool:
 
 class UpdateGroupContextTool:
     definition = ToolDefinition(
-        "update_group_context", "更新当前角色的群笔记或摘要：至少提供 group_note/summary 之一，整篇替换；省略保留、空串清空；不修改聊天或旁听原文。",
+        "update_group_context", "更新当前角色的群笔记或摘要：先用 lookup_group_context 读取现有内容，再合并后整篇替换；至少提供 group_note/summary 之一；省略保留、空串清空；不修改聊天或旁听原文。",
         {"type": "object", "properties": {"group_thread_id": {"type": "string"}, "group_note": {"type": "string"}, "summary": {"type": "string"}}, "required": ["group_thread_id"], "additionalProperties": False},
         risk="mutating", external_allowed=False, search_hint='改群笔记 改群摘要 更新群记忆 修正群动态 清空群笔记',
     )

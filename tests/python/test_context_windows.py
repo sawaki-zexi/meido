@@ -302,6 +302,9 @@ def test_saved_memory_window_changes_real_markdown_recent_context(tmp_path):
 @pytest.mark.anyio
 async def test_summary_failure_below_hard_limit_keeps_chat_and_records_reason(tmp_path):
     sessions, adapter, base, windows, settings = setup_window(tmp_path, 'truncated')
+    # Leave headroom for the actual system prompt while still crossing the
+    # optional summary trigger; this case exercises original-history fallback.
+    base.configuration = base.configuration.model_copy(update={'contextWindowTokens': 10000})
     diagnostics = []
     async def coverage(ids):
         raise AssertionError('truncated state must not reach maintenance')
@@ -320,6 +323,8 @@ async def test_summary_failure_below_hard_limit_keeps_chat_and_records_reason(tm
     assert sessions.list_messages('role:r') == original
     assert diagnostics[-1]['compaction']['summaryAttempts'][0]['stopReason'] == 'length'
     assert diagnostics[-1]['compaction']['fallback'] == 'original'
+    diagnostic = diagnostics[-1]['compaction']
+    assert diagnostic['trigger'] <= diagnostic['beforeTokens'] < diagnostic['inputLimit']
 
 
 @pytest.mark.anyio

@@ -1896,8 +1896,6 @@ def get_role_tools(role_id: str) -> dict[str, object]:
     include_channel = _role_has_usable_channel_account(role_id)
     policy = _runtime_capability_policy(role, include_channel=include_channel)
     advanced = advanced_settings.values()
-    if not advanced.searchEnabled:
-        policy = replace(policy, enabled_tools=policy.enabled_tools - {'tool_search'})
     if not advanced.spawnEnabled:
         policy = replace(policy, enabled_tools=policy.enabled_tools - {'spawn'})
     # Attachment tools exist only in an actual QQ turn with host-bound files.
@@ -1910,13 +1908,13 @@ def get_role_tools(role_id: str) -> dict[str, object]:
         *(tool.definition for tool in load_browser_tools(browser_use_sessions)),
     ):
         definitions.setdefault(definition.name, definition)
-    if "tool_search" in policy.enabled_tools:
+    if advanced.searchEnabled and "tool_search" in policy.enabled_tools:
         definitions = {name: replace(definition, exposure="deferred") if name in _deferred_discovery_tools() else definition for name, definition in definitions.items()}
     else:
         definitions = {name: replace(definition, exposure='direct') if definition.exposure == 'deferred' else definition for name, definition in definitions.items()}
     reasons: dict[str, str] = {"read_attachment": "仅在当前 QQ 回合存在可读取附件时提供"}
     if not advanced.searchEnabled:
-        reasons['tool_search'] = '已关闭按需工具发现；新运行直接提供已授权工具'
+        reasons['tool_search'] = '已关闭按需加载；已授权工具直接可见，搜索仍可核对已加载状态'
     if not advanced.spawnEnabled:
         reasons['spawn'] = '创建子任务已暂停'
         reasons['spawn_manage'] = '仍可查询或取消已有任务，接续执行已暂停'
@@ -5234,7 +5232,7 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
 
 def _runtime_namespace_context(capabilities: CapabilityResolution, signal=None) -> str:
     """Project admitted, currently permitted metadata without activating services."""
-    from .agent_runtime.search_metadata import render_namespace_map
+    from .agent_runtime.search_metadata import NAMESPACE_MAP_BYTES, render_namespace_map, render_deferred_tools_hint
     from .agent_runtime.tools import ToolContext
     current = capabilities.current()
     snapshot = current.snapshot
@@ -5243,10 +5241,13 @@ def _runtime_namespace_context(capabilities: CapabilityResolution, signal=None) 
     search = current.definition("tool_search")
     if search is None or current.authorization_denial(search, context) is not None:
         return ""
-    return render_namespace_map(
+    authorized = tuple(
         definition for definition in (snapshot.candidates or snapshot.tools)
         if current.authorization_denial(definition, context) is None
     )
+    deferred = render_deferred_tools_hint(authorized, visible_names={item.name for item in snapshot.tools})
+    namespaces = render_namespace_map(authorized, byte_limit=NAMESPACE_MAP_BYTES - len(deferred.encode('utf-8')) - 2)
+    return '\n\n'.join(filter(None, (namespaces, deferred)))
 
 
 def _runtime_tools(
@@ -5264,9 +5265,11 @@ def _runtime_tools(
 
 
 def _deferred_discovery_tools() -> frozenset[str]:
-    # Fixed Shiori always_on metadata: these existing tools are deferred.
+    # Shiori 21e68d9 registrations: pet/image/screen/spawn stay always-on;
+    # schedule and computer tools use discovery along with browser/account/MCP.
     # Meido-specific todo/mail retain their own declarations.
-    return frozenset({*BROWSER_USE_TOOL_NAMES, "pet_action", "account_list", "account_targets", "account_send",
+    return frozenset({*BROWSER_USE_TOOL_NAMES, *COMPUTER_USE_TOOL_NAMES, *SCHEDULE_NAMES,
+        "account_list", "account_targets", "account_send",
         "lookup_group_context", "update_group_context", "set_group_listening", "lookup_group_member", *MCP_MANAGEMENT_NAMES, *CODING_TOOL_NAMES})
 
 
@@ -5465,7 +5468,7 @@ async def _runtime_capabilities(
             return None if status['status'] == 'available' else status['reason']
         import shutil
         return None if shutil.which(name) is not None else 'command is unavailable'
-    registry_enabled_tools = policy.enabled_tools - ({'tool_search'} if direct_exposure else set())
+    registry_enabled_tools = policy.enabled_tools
     if mcp_run is not None:
         registry_enabled_tools = registry_enabled_tools | {tool.definition.name for items in mcp_run.remote_tools.values() for tool in items}
     try:
@@ -5654,7 +5657,7 @@ def _bind_spawn_runtime(capabilities: CapabilityResolution, provider: MeidoProvi
     # a later role edit must never swap a running child's connection or tools.
     frozen_role = provider.role.model_copy(deep=True)
     frozen_config = provider.configuration.model_copy(deep=True) if provider.configuration is not None else None
-    for tool in capabilities.tools:
+    for tool in capabilities.tools_for_binding():
         if isinstance(tool, ScheduleTool):
             tool.bind(capabilities, frozen_role, frozen_config)
         if isinstance(tool, SpawnTool):

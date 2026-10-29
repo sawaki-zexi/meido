@@ -164,7 +164,7 @@ def test_real_http_truncated_auxiliary_does_not_block_ordinary_chat(tmp_path):
     with model_server(respond) as (url, requests, errors):
         async def coverage(ids):
             raise AssertionError('incomplete summary must not publish a window')
-        guarded = ContextWindowProvider(provider(url, context=8000), settings, windows, role_id='r',
+        guarded = ContextWindowProvider(provider(url, context=10000), settings, windows, role_id='r',
             session_key='role:r', scope='owner', authority='a', authorized=lambda: True,
             ensure_coverage=coverage, on_diagnostic=diagnostics.append)
         async def run():
@@ -178,6 +178,8 @@ def test_real_http_truncated_auxiliary_does_not_block_ordinary_chat(tmp_path):
     assert attempt['stopReason'] == 'length'
     assert attempt['usage']['output_tokens'] == 1024
     assert diagnostics[-1]['compaction']['fallback'] == 'original'
+    diagnostic = diagnostics[-1]['compaction']
+    assert diagnostic['trigger'] <= diagnostic['beforeTokens'] < diagnostic['inputLimit']
 
 
 def test_real_http_empty_reply_recovers_once_with_same_tools():

@@ -12,18 +12,18 @@ SOFT_TOOLS = frozenset({'read_file', 'list_dir', 'web_search', 'web_fetch', 'wri
 
 
 class ScheduleTool:
-    definition = ToolDefinition(name='schedule', description='Create a role-owned time task. instant sends fixed text; soft runs an independent bounded task at its time. after uses the actual host message reception time. every accepts duration or cron; explicit cron is also supported. Only use on the owner request.',
+    definition = ToolDefinition(name='schedule', description='按主人明确请求创建当前角色的定时任务或提醒。at指定绝对时间，after相对延迟（宿主按当前消息实际接收时间计算），every循环间隔或cron表达式，cron为显式cron扩展。instant到时推送固定文本；soft到时运行独立任务生成实时内容。创建成功不等于已经执行，不修改主人待办。',
         input_schema={'type': 'object', 'properties': {
-            'tier': {'type': 'string', 'enum': ['instant', 'soft']},
-            'trigger': {'type': 'string', 'enum': ['at', 'after', 'every', 'cron']},
-            'when': {'type': 'string', 'minLength': 1, 'maxLength': 200},
-            'timezone': {'type': 'string', 'maxLength': 100},
-            'message': {'type': 'string', 'minLength': 1, 'maxLength': 4000},
-            'prompt': {'type': 'string', 'minLength': 1, 'maxLength': 20000},
-            'name': {'type': 'string', 'maxLength': 100},
-            'count': {'type': 'integer', 'minimum': 1, 'maximum': 1000},
-            'channel': {'type': 'string', 'maxLength': 50},
-            'chat_id': {'type': 'string', 'maxLength': 200}},
+            'tier': {'type': 'string', 'enum': ['instant', 'soft'], 'description': 'instant固定消息；soft到时运行AI任务'},
+            'trigger': {'type': 'string', 'enum': ['at', 'after', 'every', 'cron'], 'description': '绝对时间、相对延迟、循环或显式cron'},
+            'when': {'type': 'string', 'minLength': 1, 'maxLength': 200, 'description': 'at如14:30或2026-11-01T09:00；after如30s/5m/2h；every如1h或0 9 * * *；cron用5字段表达式'},
+            'timezone': {'type': 'string', 'maxLength': 100, 'description': 'IANA时区，例如Asia/Shanghai；省略用Asia/Shanghai'},
+            'message': {'type': 'string', 'minLength': 1, 'maxLength': 4000, 'description': 'instant必填，到时发送的固定文本'},
+            'prompt': {'type': 'string', 'minLength': 1, 'maxLength': 20000, 'description': 'soft必填，到时执行的完整任务及所需上下文'},
+            'name': {'type': 'string', 'maxLength': 100, 'description': '计划名称，便于查询或按精确名称取消'},
+            'count': {'type': 'integer', 'minimum': 1, 'maximum': 1000, 'description': '循环计划执行次数上限，可选'},
+            'channel': {'type': 'string', 'maxLength': 50, 'description': '目标渠道原名；省略用当前来源，desktop为当前角色桌面对话。只能用宿主已知且允许的渠道'},
+            'chat_id': {'type': 'string', 'maxLength': 200, 'description': '宿主目录中的明确目标或owner；省略沿当前来源。桌面只接受owner/user，不猜其他ID；来源权限仍由宿主核验'}},
             'required': ['tier', 'trigger', 'when'], 'additionalProperties': False}, risk='mutating', source='role', search_hint='cron timer 延时执行')
 
     def __init__(self, application, sessions, *, origin_resolver, authorized):
@@ -77,9 +77,9 @@ class ScheduleTool:
 class ScheduleManageTool:
     def __init__(self, name, application, *, origin_resolver, authorized):
         self.application, self.origin_resolver, self.authorized = application, origin_resolver, authorized
-        self.definition = ToolDefinition(name=name, description='List pending time tasks belonging to this role, including tasks from its other conversations.' if name == 'list_schedules' else 'Cancel owned time tasks by unique id prefix (at least 8 characters) or exact name; repeated cancellation is safe.',
+        self.definition = ToolDefinition(name=name, description='查看当前角色已有的定时提醒和计划，包括本角色其他会话的计划；只读，不代表任务已执行或消息已送达。' if name == 'list_schedules' else '按真实计划ID唯一前缀（至少8字符）或精确名称取消本来源有权取消的定时任务；先查询，不猜ID，重取消保留真实状态。',
             input_schema={'type': 'object', 'properties': {} if name == 'list_schedules' else {
-                'id': {'type': 'string', 'minLength': 8, 'maxLength': 32}, 'name': {'type': 'string', 'minLength': 1, 'maxLength': 100}},
+                'id': {'type': 'string', 'minLength': 8, 'maxLength': 32, 'description': 'list_schedules返回的ID或唯一前缀；与name二选一'}, 'name': {'type': 'string', 'minLength': 1, 'maxLength': 100, 'description': '精确计划名称；与id二选一'}},
                 'additionalProperties': False}, source='role', risk='read_only' if name == 'list_schedules' else 'mutating',
             external_allowed=name == 'list_schedules', search_hint='提醒列表 已有计划' if name == 'list_schedules' else '删除提醒 取消任务')
 

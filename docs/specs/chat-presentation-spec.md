@@ -35,6 +35,14 @@ SQLite 仍是权威 transcript，读取时按 runId 和 toolCallGroupId 生成�
 
 来源与证据见 [2026-10-30 核验](../research/shiori-live-reply-tool-loading-2026-10-30.md)。正式日志只证实摘要 TimeoutError/ValueError 后工具被清空；没有足够证据把 ValueError 归为某个 JSON 错误。通过本地 HTTP 模拟验证长历史回退、发现、执行和最终回复，不据此保证真实服务耗时或所有摘要失败均已消除。
 
+## #277 后续：工具可见性与调用契约
+
+工具分类与调用说明以 Shiori `21e68d99` 为新核验基线，完整已接入工具、risk/external_allowed 和适配清单见[工具核验报告](../research/shiori-tool-exposure-and-guidance-2026-10-30.md)。已通过权限准入时，桌宠、生图、屏幕观察、委托、记忆及共用基础工具常驻；电脑、定时任务、浏览器、账号/群管理、MCP、Herdr 按需。关闭按需开关则全量提供已授权 schema，同时保留核心 tool_search；已加载搜索返回 already_loaded，不增加许可。
+
+实际请求加入有界未加载工具名目录及条件化的搜索、委托、记忆纠错和历史回溯指引。目录与命名空间总计不超过4096 UTF-8字节，每请求更新授权与已加载状态；最小预算请求可省略目录但保留搜索方法。空业务工具/仅 finish_reply 请求不注入某个业务工具存在的指令。已注入技能直接遵循，未载入技能仅在路径可读时读取，不增加文件根权限。
+
+pet_action/task_stop/spawn_manage/herdr_cancel_task 按上游标记外部副作用；保留本地 spawn 更保守的 external 和仅桌面 message_push 的 mutating 差异。generate_image 的 external_allowed 声明不取代原来源和 owner/服务准入。所有现有冻结授权、请求绑定、搜索后下一请求加载和及时撤权行为沿用 ADR-0026；不注册未实现的上游业务工具，也不引入通用进度 description 参数协议。
+
 ## 验证边界
 
 沿用已有聊天 HTTP/SSE 和 React 用户操作边界：历史投影、签名与 redacted 内容过滤、实时思考/工具、回复终态、停止/角色切换、最近消息、Emoji 插入发送、上下文来源。另做隔离数据桌面/窄屏浏览器检查、TypeScript 和网页/桌宠/落地页构建。全部验证使用合成数据，不调用真实模型、渠道或付费服务；不修改常驻实例。

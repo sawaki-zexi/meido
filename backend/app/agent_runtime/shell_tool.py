@@ -56,9 +56,9 @@ class ShellTool:
             "properties": {
                 "command": {"type": "string", "minLength": 1},
                 "description": {"type": "string", "maxLength": 500},
-                "timeout": {"type": "number", "minimum": 0.001},
-                "run_in_background": {"type": "boolean"},
-                "auto_promote": {"type": "boolean"},
+                "timeout": {"type": "number", "minimum": 0.001, "description": "Seconds within the advertised host budget; background mode does not remove this limit."},
+                "run_in_background": {"type": "boolean", "description": "Return an owned task ID immediately; inspect it with task_output."},
+                "auto_promote": {"type": "boolean", "description": "Default true: return a background task ID after the advertised promotion interval."},
             },
             "required": ["command"], "additionalProperties": False,
         }, risk="external", search_hint='终端 脚本 shell sh bash pwsh PowerShell 命令',
@@ -90,6 +90,11 @@ class ShellTool:
                 'Execute a command in PowerShell 7 on Windows or /bin/sh on POSIX. '
                 'The working directory is this role workspace. Long commands may become owned '
                 'background tasks; inspect or stop them with task_output/task_stop.'))
+        self.definition = replace(self.definition, description=self.definition.description + (
+            f' Host limits: timeout at most {timeout_seconds:g}s, output {max_output_chars} characters, '
+            f'background promotion after {promote_after_seconds:g}s. Prefer dedicated file/network tools '
+            'when applicable; poll existing tasks rather than restarting them and stop abandoned tasks. '
+            + ('On Windows use PowerShell syntax, not CMD or bash syntax.' if platform_shell and os.name == 'nt' else '')))
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
         del on_update
@@ -206,7 +211,7 @@ class ShellTool:
 
 class TaskOutputTool:
     definition = ToolDefinition(
-        name="task_output", description="Read an owned task's status, bounded output tail and retained log location. Waiting observes the same task and never restarts it.",
+        name="task_output", description="Read an owned task's status, bounded output tail and retained log location. Waiting observes the same task and never restarts it. Set block=true to wait up to timeout_ms (maximum 30000); if still running, inspect the same task again later.",
         input_schema={"type": "object", "properties": {
             "task_id": {"type": "string"}, "block": {"type": "boolean"},
             "timeout_ms": {"type": "integer", "minimum": 0, "maximum": 30_000},
@@ -244,7 +249,7 @@ class TaskStopTool(TaskOutputTool):
         name="task_stop", description="Stop the complete owned task process tree; repeated stops preserve its terminal result.",
         input_schema={"type": "object", "properties": {"task_id": {"type": "string"}},
                       "required": ["task_id"], "additionalProperties": False},
-        risk="mutating", source="role", timeout_seconds=15, search_hint='停止后台任务 task_stop 杀进程',
+        risk="external", source="role", timeout_seconds=15, search_hint='停止后台任务 task_stop 杀进程',
     )
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:

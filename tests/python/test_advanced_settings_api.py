@@ -116,11 +116,11 @@ def test_real_local_http_provider_observes_reply_and_iteration_limits(client, to
         assert len(requests) == (2 if tool_loop else 1), response.text
         assert all(request['max_tokens'] == 2048 for request in requests)
         names = {tool['function']['name'] for tool in requests[0]['tools']}
-        assert 'tool_search' not in names
+        assert 'tool_search' in names
         assert {'web_fetch', 'list_dir'} <= names
         assert 'spawn' not in names and 'spawn_manage' in names
         catalog = {tool['name']: tool for tool in client.get(f"/api/roles/{role['id']}/tools").json()['tools']}
-        assert catalog['tool_search']['modelVisible'] is False
+        assert catalog['tool_search']['modelVisible'] is True
         assert catalog['spawn']['enabled'] is False
         assert catalog['spawn_manage']['modelVisible'] is True
         assert catalog['herdr_start_task']['exposure'] == 'direct'
@@ -252,6 +252,7 @@ def test_channel_uses_budget_and_durable_summary_without_crossing_revoked_source
         platform_user_id='owner', account_id=account.account_id, chat_id='owner')
     thread = channels.ensure_channel_thread(role_id, 'qq', account.account_id, 'owner', 'private')
     host = ChannelHost(channels)
+    host.register(SimpleNamespace(account_id=account.account_id, channel='qq', capabilities=SimpleNamespace(media=False)))
     sent = []
     async def deliver(*args, **kwargs):
         sent.append(args)

@@ -398,12 +398,12 @@ class WebSearchTool:
         self.config = config or NetworkToolsConfig()
         self.transport = transport
         self.definition = ToolDefinition(
-            name="web_search", description="搜索互联网的标题、摘要和来源 URL；拿到来源后可用 web_fetch 阅读。",
+            name="web_search", description="搜索互联网的标题、摘要和来源 URL，用于新闻、现况或已有知识不足的问题。结果不是完整网页；需要核对细节时用 web_fetch 阅读来源正文。",
             input_schema={"type": "object", "properties": {
-                "query": {"type": "string", "minLength": 1, "maxLength": 10000},
-                "num_results": {"type": "integer", "minimum": 1, "maximum": 20},
-                "livecrawl": {"type": "string", "enum": ["fallback", "preferred"]},
-                "type": {"type": "string", "enum": ["auto", "fast", "deep"]},
+                "query": {"type": "string", "minLength": 1, "maxLength": 10000, "description": "具体问题或关键词；时间敏感问题写明需要的时间范围。"},
+                "num_results": {"type": "integer", "minimum": 1, "maximum": 20, "default": 8},
+                "livecrawl": {"type": "string", "enum": ["fallback", "preferred"], "description": "fallback 默认按需实时抓取；preferred 优先实时抓取。"},
+                "type": {"type": "string", "enum": ["auto", "fast", "deep"], "description": "auto 自动选择；fast 快速检索；deep 深入检索。"},
             }, "required": ["query"], "additionalProperties": False},
             external_allowed=True, approval="auto" if self.config.enabled else "deny",
             timeout_seconds=min(25, self.config.timeout_seconds) + 1, search_hint='谷歌 Bing 查资料',

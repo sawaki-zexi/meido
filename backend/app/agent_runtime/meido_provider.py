@@ -239,9 +239,9 @@ class MeidoProvider:
             if isinstance(function, Mapping) and isinstance(function.get("name"), str):
                 names.append(function["name"])
         self._tool_prompt = "\n".join((
-            "[本次运行工具]",
+            "[本次请求工具]",
             "当前提供给模型的工具：" + ("、".join(names) if names else "无"),
-            "仅以上名称可在本次运行调用。不要根据旧对话或其他角色的工具清单声称具备能力。",
+            "本次请求只能调用以上可见名称；工具发现结果生效后，后续请求的可见列表会更新。不要根据旧对话或其他角色的工具清单声称具备能力。",
             "工具可见不等于外部依赖已验证；实际执行状态以工具结果为准。",
         ))
         if namespace_prompt:

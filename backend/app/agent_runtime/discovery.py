@@ -352,14 +352,23 @@ class DiscoveryState:
 class ToolSearchTool:
     definition = ToolDefinition(
         "tool_search",
-        "搜索已授权工具；select:A,B 精确加载。持久化后下一次模型请求可调用。",
+        # Shiori 21e68d9 tool_search.py; Meido publishes only after persistence.
+        "搜索已授权工具目录。需要某类功能但不知道名称时搜索；知道名称且已可见时直接调用，不要先搜索。"
+        "知道名称但不可见时用 select: 精确加载；收到工具不存在错误时按建议关键词搜索。"
+        "纯对话或推理不需要工具时不调用。未搜索前不要仅因当前 schema 未列出就声称没有该能力。"
+        "查询形式：关键词描述功能，或 select:工具名（逗号分隔多个，如 select:schedule,list_schedules）。"
+        "成功结果持久化后，下一次模型请求加载 unlocked 工具，可直接调用，无需二次搜索。"
+        "发现不授予新权限；无匹配、失败或超出声明预算时按真实结果处理。",
         {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "maxLength": 2000},
-                "top_k": {"type": "integer", "minimum": 1, "maximum": 10},
+                "query": {"type": "string", "maxLength": 2000,
+                          "description": "功能关键词（如定时提醒、桌面窗口），或 select:名称 精确加载，支持逗号分隔多个名称。"},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5,
+                          "description": "关键词搜索返回的最大工具数，默认5，最大10；精确加载不受此数量限制。"},
                 "allowed_risk": {
                     "type": "array",
+                    "description": "风险过滤；省略或空数组不过滤。read-only只读，write写操作，external-side-effect外部副作用；不改变授权。",
                     "maxItems": 3,
                     "items": {
                         "type": "string",

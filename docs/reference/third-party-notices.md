@@ -2,7 +2,7 @@
 
 状态：当前
 
-最后核验：2026-10-29
+最后核验：2026-10-30
 
 聊天表达与查证提示 `backend/app/agent_runtime/conversation_prompt.py` 参考并改编
 Shiori-Agent `d3acaed186b172a78a5892e0307e9affd89759f0` 的 `apps/backend/prompts/agent.py`
@@ -164,6 +164,13 @@ Copyright © 2024 Mlikiowa
 5. Disclaimer:
    - This code is provided "as is," without any express or implied warranties, including but not limited to the implied warranties of merchantability and fitness for a particular purpose. In no event shall the author be liable for any damages or other liability arising from, out of, or in connection with the use or distribution of this code.
 ```
+
+## 工具可见性与调用指引后续核验
+
+2026-10-30 后续工具可见性、调用指引与说明适配固定 Shiori 提交
+`21e68d99d88f421e798fabc4c5d9f8c1b4ad454f`，同样适用本页 Shiori MIT 声明。
+逐文件来源与必要差异见 [attribution](../../third_party/shiori-agent/README.md) 和
+[完整工具核验](../research/shiori-tool-exposure-and-guidance-2026-10-30.md)。
 
 ## NovelAI V4.5 请求适配
 

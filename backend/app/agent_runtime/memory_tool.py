@@ -59,20 +59,20 @@ class MemoryRecallTool:
 
     definition = ToolDefinition(
         name="recall_memory",
-        description="检索当前角色的相关记忆；只能读取当前角色，不能写入或删除记忆。",
+        description="检索当前角色长期记忆中的事实、偏好、流程与历史事件线索。query 推荐写成陈述句；intent=answer 做主题检索，timeline 做时间线回顾。返回记忆摘要与来源线索，具体原话须经 fetch_messages 回源核验；本工具不写入或删除记忆。",
         input_schema={
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "要检索的事实、事件或偏好",
+                    "description": "要查找的事实、事件或偏好，推荐写成陈述句；不要只写‘还记得吗’",
                     "minLength": 1,
                     "maxLength": _MAX_QUERY_LENGTH,
                 },
                 "intent": {
                     "type": "string",
                     "enum": list(_MEMORY_INTENTS),
-                    "description": "检索目的，默认使用 answer",
+                    "description": "answer=主题检索；timeline=按 time_filter 列出历史事件；默认 answer",
                 },
                 "limit": {
                     "type": "integer",
