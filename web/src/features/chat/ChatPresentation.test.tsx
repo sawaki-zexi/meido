@@ -19,7 +19,7 @@ it('shows only identity in the header, a recent message in the list, and inserts
   render(<App />);
   await screen.findByRole('heading', { name: '爱丽丝' });
   expect(screen.getByRole('button', { name: '角色资料' }).querySelector('.chat-title')).toHaveTextContent(/^爱丽丝$/);
-  expect(within(screen.getByRole('list', { name: '角色列表' })).getByText('晚安，明天见')).toBeVisible();
+  expect(await within(screen.getByRole('list', { name: '角色列表' })).findByText('晚安，明天见')).toBeVisible();
   expect(screen.queryByText('这是角色介绍')).toBeNull();
   const input = screen.getByRole('textbox', { name: '消息内容' }) as HTMLTextAreaElement;
   await user.type(input, '你好呀');
