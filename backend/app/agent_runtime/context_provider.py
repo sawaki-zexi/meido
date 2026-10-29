@@ -16,7 +16,9 @@ from .provider import AssistantDoneEvent, ToolCallEndEvent
 from ..ai.model_adapter import supports_auxiliary_thinking_control
 
 logger = logging.getLogger(__name__)
-SUMMARY_TIMEOUT_SECONDS = 30.0
+# Match Shiori's default provider request allowance for auxiliary summaries.
+# This remains independent of the subsequent ordinary-response deadline.
+SUMMARY_TIMEOUT_SECONDS = 90.0
 MINIMAL_PROMPT = (
     "本次上下文过长且工作摘要未能完成，较早原文暂未放入本次请求，原始记录仍保留。"
     "本次仅依据当前用户输入、已有合法摘要、附件和已执行工具结果直接回复。"
