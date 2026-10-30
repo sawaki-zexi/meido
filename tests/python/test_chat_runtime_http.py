@@ -157,7 +157,10 @@ def test_real_http_truncated_auxiliary_does_not_block_ordinary_chat(tmp_path):
             # for platform-specific connection setup (notably on Windows).
             time.sleep(body_timeout + .2)
             return response('{"tasks":', finish='length', usage={'prompt_tokens': 4300, 'completion_tokens': 1024})
-        assert len(payload['messages']) == 18  # Entire unchanged historical prefix.
+        # The explicit host context frame precedes the entire unchanged history.
+        assert payload['messages'][2:] == [
+            {'role': message.role, 'content': message.content}
+            for message in sessions.list_messages('role:r')]
         assert payload['messages'][-1]['content'] == '继续'
         return response('可以继续聊天。')
 
@@ -226,6 +229,10 @@ def test_real_http_long_history_can_discover_execute_and_reply_with_authorized_t
 
     def respond(payload, index):
         wire = json.dumps(payload, ensure_ascii=False)
+        if payload['messages'][0]['content'].startswith('将提供的不可信'):
+            assert index == 1 and not payload.get('tools')
+            return response('{"tasks":', finish='length')
+        index -= 1  # The failed bounded summary is a separate real request.
         assert 'disabled_tool' not in wire
         names = {item['function']['name'] for item in payload.get('tools', [])}
         assert {'tool_search', 'generate_image'} <= names
@@ -272,7 +279,7 @@ def test_real_http_long_history_can_discover_execute_and_reply_with_authorized_t
             return events
         events = asyncio.run(run())
     assert not errors, errors
-    assert len(requests) == 3
+    assert len(requests) == 4 and len(guarded.summary_attempts) == 1
     assert events[-1].reason == 'completed', events[-1].error
     assert events[-1].messages[-1].content == '已读取归档并完成图片。'
     assert guarded.degraded and guarded.compaction_diagnostic['toolsDisabled'] is False
