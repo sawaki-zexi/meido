@@ -21,9 +21,9 @@ const services: Row[] = [
   { id: 'todo', name: '待办', description: '查询、管理主人的待办和提醒。' },
 ];
 const rolePurposes = new Set<PluginId>(['novelai', 'coding', 'pet', 'autonomy']);
-const publicParameters = new Set<PluginId>(['browser', 'screen']);
+const publicParameters = new Set<PluginId>(['browser', 'screen', 'herdr']);
 const displayNames = { browser: 'Browser Use', computer: 'Computer Use', autonomy: '主动推送' };
-const displayOrder: PluginId[] = ['browser', 'computer', 'pet', 'coding', 'novelai', 'autonomy', 'screen', 'todo'];
+const displayOrder: PluginId[] = ['browser', 'computer', 'pet', 'herdr', 'coding', 'novelai', 'autonomy', 'screen', 'todo'];
 type TodoConfiguration = { enabled: boolean; remindersEnabled: boolean; timezone: string };
 
 export function PluginSettings({ onRoleSaved, onOpenService, serviceVersion = 0 }: {

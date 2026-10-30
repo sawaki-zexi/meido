@@ -170,6 +170,10 @@ from .mcp_api import mcp_router
 from .coding_tasks.application import CodingApplication
 from .coding_tasks.api import coding_router
 from .coding_tasks.tools import build_coding_tools, CODING_TOOL_NAMES
+from .herdr_control.config import HerdrConfig
+from .herdr_control.commands import ReportTarget
+from .herdr_control.service import HerdrControl
+from .herdr_control.tools import build_agent_tools, HERDR_AGENT_TOOL_NAMES
 from .proactive_runtime import ProactiveApplication
 from .proactive_runtime.api import autonomy_router
 from .material_api import material_router
@@ -211,8 +215,8 @@ from .agent_runtime.usage_anchor import UsageAnchors
 _ordinary_usage_anchors = UsageAnchors()
 
 
-def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_id, owner=True, memory_required=True, history=None):
-    source = (capture_channel_source(multichannel_store, session_store, role_id=role_id,
+def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_id, owner=True, memory_required=True, history=None, source_authority=None):
+    source = source_authority or (capture_channel_source(multichannel_store, session_store, role_id=role_id,
               session_key=session_key, run_id=run_id, owner_context=owner)
               if session_key.startswith('thread:') else None)
     authority_data = source.to_dict() if source is not None else {'role': role_id}
@@ -1025,6 +1029,8 @@ async def _close_memory_workers() -> None:
         closers.append(_proactive.close)
     if _coding is not None:
         closers.append(_coding.close)
+    if _herdr is not None:
+        closers.append(_herdr.close)
     if _schedules is not None:
         closers.append(_schedules.close)
     if _spawn_completion_worker is not None:
@@ -1059,7 +1065,7 @@ async def _start_memory_workers() -> None:
     task_runtime.start()
     # A crash during settings hot apply leaves a durable denied transition.
     # Recover it as disabled before starting any autonomous/native owners.
-    for identifier in ('browser', 'screen', 'computer', 'pet', 'autonomy'):
+    for identifier in ('browser', 'screen', 'computer', 'pet', 'autonomy', 'herdr'):
         state = plugin_configuration.get(identifier)
         if state.cleanupPending:
             state = plugin_configuration.prepare(identifier, expected_revision=state.revision, enabled=False)
@@ -1171,7 +1177,13 @@ async def put_advanced_settings(data: AdvancedSettingsUpdate):
 
 
 async def _cleanup_plugin(identifier, values):
-    if identifier == 'browser':
+    if identifier == 'herdr':
+        if _herdr is not None:
+            if plugin_configuration.get('herdr').enabled:
+                _herdr.reconfigure(HerdrConfig.model_validate(values))
+            else:
+                await _herdr.close()
+    elif identifier == 'browser':
         await browser_use_sessions.reconfigure(BrowserUseConfig.model_validate(values))
     elif identifier == 'screen':
         for role in store.list():
@@ -4882,6 +4894,7 @@ def _runtime_tool_candidates(
     include_channel: bool = False,
     preview: bool = False,
     history=None,
+    herdr_report_target: ReportTarget | None = None,
 ) -> tuple[object, ...]:
     """Build every tool available to the host for a role snapshot."""
     role = _effective_plugin_role(role)
@@ -4894,11 +4907,12 @@ def _runtime_tool_candidates(
             raise PermissionError("channel source is unavailable")
         source = task_sources.get(context.run_id)
         if source is None:
-            source = capture_channel_source(
+            source = (FrozenChannelSource.from_dict(json.loads(herdr_report_target.origin.source_authority_json))
+                if herdr_report_target is not None else capture_channel_source(
                 multichannel_store, session_store, role_id=role.id,
                 session_key=context.session_key, run_id=context.run_id,
                 owner_context=is_channel_owner,
-            )
+            ))
             if (source.thread_id, source.account_id) != (source_thread_id, source_account_id):
                 raise PermissionError("channel source does not match the host origin")
             task_sources[context.run_id] = source
@@ -4953,6 +4967,14 @@ def _runtime_tool_candidates(
         return TaskOrigin(role.id, context.session_key, context.run_id, context.tool_call_id, version or "",
                           source_thread_id or f"desktop:{role.id}", source_account_id or "",
                           source_scope_id, source_authority_json)
+
+    def herdr_capture(context):
+        if not is_channel_owner or not conversation_source_authorized(context):
+            raise PermissionError('操控 agent 需要用户发起的当前回合或原接手角色的回报回合')
+        origin = task_origin(context)
+        if not _herdr_origin_authorized(origin):
+            raise PermissionError('Herdr 原聊天来源已失效')
+        return _herdr_report_target(origin)
 
     def shell_authorized(context):
         current = store.get(role.id)
@@ -5112,6 +5134,11 @@ def _runtime_tool_candidates(
         *build_coding_tools(_coding_application, role_id=role.id, origin_resolver=task_origin,
             authorized=coding_source_authorized,
             access=_coding_application().freeze_access(role.id, role.agentConfig.coding)),
+        *build_agent_tools(_herdr_control, role_id=role.id, role_name=role.name,
+            enabled=lambda: plugin_configuration.enabled('herdr') and store.get(role.id) is not None
+                and role.id not in _channel_roles_deleting
+                and (herdr_report_target is None or _herdr_origin_authorized(herdr_report_target.origin)),
+            capture=herdr_capture, report_target=herdr_report_target),
         ObserveScreenTool(screen_perception, role.agentConfig.screenPerception.visionModelConfigurationId, role_id=role.id),
         *load_computer_tools(computer_use, role_id=role.id),
         ShellTool(
@@ -5224,6 +5251,8 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
         enabled.update({"lookup_group_context", "update_group_context"})
     if role.agentConfig.coding.enabled and _coding_application().config.public()['enabled']:
         enabled.update(CODING_TOOL_NAMES)
+    if plugin_configuration.enabled('herdr'):
+        enabled.update(HERDR_AGENT_TOOL_NAMES)
     if memory_settings_store.get().enabled:
         enabled.add("recall_memory")
     if owner_knowledge_plugin.status().enabled:
@@ -5291,7 +5320,7 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     host_enabled = set(enabled_tools)
     enabled_tools.update(agent_config.enabledTools)
-    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | CODING_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image", "pet_action", "set_role_mood", "inspect_role_image"}) - host_enabled)
+    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | CODING_TOOL_NAMES | HERDR_AGENT_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image", "pet_action", "set_role_mood", "inspect_role_image"}) - host_enabled)
     if not include_channel:
         enabled_tools.difference_update({
             "account_list", "account_targets", "account_send", "set_group_listening", "read_attachment",
@@ -5350,6 +5379,7 @@ async def _runtime_capabilities(
     explicit_skill_ids: list[str] | None = None,
     external_only: bool = False,
     advanced_snapshot: dict | None = None,
+    source_authority: FrozenChannelSource | None = None,
 ) -> CapabilityResolution:
     role = _effective_plugin_role(role)
     include_channel = session_key.startswith("thread:") or (
@@ -5373,10 +5403,10 @@ async def _runtime_capabilities(
             or source_run.modelSnapshot.get("computerUseSource") != "desktop_owner"):
         policy = replace(policy, enabled_tools=policy.enabled_tools - COMPUTER_USE_TOOL_NAMES,
                          enabled_plugins=policy.enabled_plugins - {"computer_use"})
-    source_authority = capture_channel_source(
+    source_authority = source_authority or (capture_channel_source(
         multichannel_store, session_store, role_id=role.id, session_key=session_key,
         run_id=run_id, owner_context=not external_only,
-    ) if "tool_search" in policy.enabled_tools and session_key.startswith("thread:") else None
+    ) if "tool_search" in policy.enabled_tools and session_key.startswith("thread:") else None)
 
     source_scope = ""
     if source_authority is not None:
@@ -5406,6 +5436,7 @@ async def _runtime_capabilities(
 
     def authorize_tool(definition, context):
         plugin_id = ('browser' if definition.name in BROWSER_USE_TOOL_NAMES
+                     else 'herdr' if definition.name in HERDR_AGENT_TOOL_NAMES
                      else 'computer' if definition.name in COMPUTER_USE_TOOL_NAMES
                      else 'screen' if definition.name == 'observe_screen'
                      else 'pet' if definition.name == 'pet_action' else None)
@@ -5523,6 +5554,61 @@ async def _runtime_capabilities(
 
 _spawn_completion_worker: TaskCompletionWorker | None = None
 _coding: CodingApplication | None = None
+_herdr: HerdrControl | None = None
+
+
+def _herdr_control():
+    global _herdr
+    config = HerdrConfig.model_validate(plugin_configuration.get('herdr').values)
+    if _herdr is None:
+        _herdr = HerdrControl(config, project_root, task_for=lambda session, pane:
+            _coding_application().session_agent_task(session, pane))
+    elif _herdr.closed or _herdr.config != config:
+        _herdr.reconfigure(config)
+    return _herdr
+
+
+def _herdr_origin_authorized(origin: TaskOrigin) -> bool:
+    role = store.get(origin.role_id)
+    run = session_store.get_run(origin.parent_run_id)
+    user = session_store.user_message_for_run(origin.parent_run_id)
+    if (not plugin_configuration.enabled('herdr') or role is None or role.id in _channel_roles_deleting
+            or run is None or run.roleId != role.id or run.sessionKey != origin.session_key
+            or user is None or user.status != 'completed' or user.messageType != 'text'
+            or user.metadata.get('internalEvent') or user.sessionKey != origin.session_key):
+        return False
+    if origin.source_authority_json:
+        try:
+            source = FrozenChannelSource.from_dict(json.loads(origin.source_authority_json))
+            return ((source.role_id, source.session_key, source.thread_id, source.account_id)
+                == (origin.role_id, origin.session_key, origin.source_thread_id, origin.source_account_id)
+                and source.owner_context and source.authorization_denial(multichannel_store) is None)
+        except (ValueError, KeyError, TypeError):
+            return False
+    return (origin.session_key == f'role:{origin.role_id}' and not origin.source_account_id
+        and origin.source_thread_id == f'desktop:{origin.role_id}'
+        and run.modelSnapshot.get('humanInputSource') == 'desktop_owner'
+        and user.metadata.get('channel', 'desktop') == 'desktop')
+
+
+def _herdr_report_target(origin: TaskOrigin) -> ReportTarget:
+    async def report(identifier: str, text: str) -> bool:
+        from .herdr_control.reporting import report_to_chat
+        return await report_to_chat(sys.modules[__name__], target, identifier, text)
+    target = ReportTarget(origin, report)
+    return target
+
+
+@app.get('/api/plugin-management/herdr/status')
+async def herdr_session_status():
+    from .herdr_control.cli import CommandError
+    if not plugin_configuration.enabled('herdr'):
+        return {'ok': False, 'error': {'code': 'disabled', 'message': 'Herdr 代理插件已关闭'}}
+    try:
+        return {'ok': True, **await _herdr_control().list_agents()}
+    except (CommandError, OSError, ValueError, KeyError, TypeError) as error:
+        return {'ok': False, 'error': {'code': error.code if isinstance(error, CommandError) else 'unavailable',
+                                     'message': str(error)}}
 
 
 def _coding_origin_authorized(origin: TaskOrigin) -> bool:

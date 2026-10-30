@@ -8,6 +8,38 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const browser = { id: 'browser', name: '浏览器', description: '会话分别归属角色', enabled: false,
   revision: 0, cleanupPending: false, values: { headed: false, timeout_seconds: 45 } };
 
+it('Herdr 现有 session 参数与启用独立，状态显示手动代理和真实错误', async () => {
+  const saved = { id: 'herdr', name: 'Herdr 代理', description: '操作已有代理', enabled: false,
+    revision: 0, cleanupPending: false,
+    values: { executable: 'herdr', session: 'default', cli_timeout_seconds: 45, task_timeout_seconds: 7200 } };
+  let checks = 0;
+  const { calls } = fakeBackend({
+    'GET /api/plugin-management': () => ({ body: { plugins: [saved] } }),
+    'PUT /api/plugin-management/herdr/configuration': init => ({ body: { ...saved, revision: 1,
+      values: JSON.parse(String(init?.body)).values } }),
+    'GET /api/plugin-management/herdr/status': () => ({ body: ++checks === 1
+      ? { ok: true, session: 'manual', workspaces: [{ workspace_id: 'w', label: '工作区', agents: [
+        { pane_id: 'pane-1', title: '手动 Codex', status: 'blocked', cwd: 'D:/work', handler: { role_id: 'r', role_name: '诗织' } }] }] }
+      : { ok: false, error: { code: 'server_unavailable', message: 'Herdr session 未运行' } } }),
+  });
+  const user = userEvent.setup(); render(<SettingsDialog onClose={() => {}} initialSection="plugins" />);
+  await user.click(await screen.findByRole('button', { name: 'Herdr 代理 设置' }));
+  expect(screen.getByLabelText('Herdr Session')).toHaveValue('default');
+  expect(screen.getByLabelText('CLI 超时（秒）')).toHaveValue(45);
+  expect(screen.getByLabelText('代理追踪超时（秒）')).toHaveValue(7200);
+  await user.clear(screen.getByLabelText('Herdr Session')); await user.type(screen.getByLabelText('Herdr Session'), 'manual');
+  await user.click(screen.getByRole('button', { name: '保存参数' }));
+  await screen.findByText('公共参数已保存');
+  expect(calls.find(call => call.method === 'PUT')?.body).toEqual({ expectedRevision: 0, values: { ...saved.values, session: 'manual' } });
+  expect(calls.some(call => call.path.endsWith('/enabled'))).toBe(false);
+  await user.click(screen.getByRole('button', { name: '检查已保存的 session' }));
+  expect(await screen.findByText(/手动 Codex/)).toHaveTextContent('blocked');
+  expect(screen.getByText(/接手角色：诗织/)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '检查已保存的 session' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Herdr session 未运行');
+  expect(screen.queryByText(/手动 Codex/)).not.toBeInTheDocument();
+});
+
 it('已启用但缺少凭据的 NovelAI 在插件列表显示待配置', async () => {
   const { calls } = fakeBackend({
     'GET /api/services/novelai': () => ({ body: { enabled: true, tokenConfigured: false,
