@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sys
 import subprocess
 import threading
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
+from ..browser_use.process import WindowsJob
 from .config import HerdrConfig
 
 # Batch files cross cmd.exe parsing even with create_subprocess_exec. Reject
@@ -90,7 +92,7 @@ class HerdrCli:
     async def command(
         self, argv: list[str], *, cwd: Path | None = None, timeout: float | None = None
     ) -> str:
-        """Run one validated argv command; terminate only this child on timeout."""
+        """Run one validated argv command; own only this CLI's process tree."""
         executable = argv[0]
         if sys.platform == "win32":
             # CreateProcess does not resolve bare npm commands through PATHEXT.
@@ -111,7 +113,7 @@ class HerdrCli:
                     code="unsafe_windows_batch_argument",
                 )
         # Uvicorn reload uses a Windows SelectorEventLoop, which cannot spawn
-        # asyncio subprocesses. The worker owns exactly this CLI child; cancelling
+        # asyncio subprocesses. The worker owns this CLI launch tree; cancelling
         # its caller joins cleanup before returning, without touching the server.
         stopped = threading.Event()
         worker = asyncio.create_task(asyncio.to_thread(
@@ -137,12 +139,18 @@ class HerdrCli:
         try:
             process = subprocess.Popen(argv, cwd=str(cwd), env=dict(os.environ),
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+                start_new_session=sys.platform != "win32",
+                creationflags=(subprocess.CREATE_NO_WINDOW | 0x00000004) if sys.platform == "win32" else 0)
         except OSError as error:
             raise CommandError(str(error), code="executable_not_found" if isinstance(error, FileNotFoundError)
                                else "command_failed") from error
-        deadline = time.monotonic() + timeout
+        owner = None
         try:
+            if sys.platform == "win32":
+                # Assign before resuming so even a short-lived npm/.cmd wrapper
+                # cannot leave a descendant outside this invocation's Job.
+                owner = WindowsJob(process.pid, resume=True)
+            deadline = time.monotonic() + timeout
             while True:
                 remaining = deadline - time.monotonic()
                 if stopped.is_set() or remaining <= 0:
@@ -167,9 +175,26 @@ class HerdrCli:
                                    code=code, exit_code=process.returncode)
             return output
         finally:
-            if process.poll() is None:
-                process.kill()
-            process.communicate()
+            try:
+                try:
+                    # The wrapper may already have exited while its child still
+                    # owns our pipes. Reap the launch tree before joining readers.
+                    if owner is not None:
+                        owner.close()
+                    elif sys.platform != "win32":
+                        try:
+                            getattr(os, "killpg")(process.pid, getattr(signal, "SIGKILL"))
+                        except ProcessLookupError:
+                            pass
+                    elif process.poll() is None:
+                        # A failed Job assignment leaves the root suspended.
+                        process.kill()
+                finally:
+                    process.communicate(timeout=5)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                raise CommandError(
+                    "CLI 进程回收未确认；输入可能已送达，未重发请求。", code="invalid_response"
+                ) from error
 
     async def call(self, *args: str, timeout: float | None = None) -> dict[str, Any]:
         """Decode a structured Herdr response, including server-side failures.
