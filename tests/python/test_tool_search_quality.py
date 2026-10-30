@@ -41,7 +41,7 @@ def test_twenty_broad_searches_plateau_without_unloading_or_repeat_charge():
         selection = select_schema_budget([item for item in corpus if item.name not in names][:5], baseline=[], loaded=loaded)
         loaded.extend(selection.selected)
         assert selection.report["total_bytes"] <= 131072
-    assert len(loaded) == 13
+    assert len(loaded) == 12  # The intent declaration counts towards 128 KiB too.
     assert selection.skipped and not selection.selected
     repeat = select_schema_budget(loaded[:1], baseline=[], loaded=loaded)
     assert repeat.report["new_bytes"] == 0

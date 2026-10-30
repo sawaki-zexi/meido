@@ -3,6 +3,7 @@ import asyncio
 from types import SimpleNamespace
 
 from backend.app.agent_runtime import CancellationToken, MeidoProvider, ToolDefinition, UserMessage
+from backend.app.agent_runtime.discovery import ToolSearchTool
 from backend.app.ai.model_types import ModelAssistantMessage, ModelResponseMetadata, ModelStreamDone, ModelTextBlock
 from backend.app.models import RoleInput, RoleProfile
 
@@ -49,10 +50,11 @@ def test_namespace_projection_uses_current_request_and_is_counted_in_prompt():
     provider = MeidoProvider(adapter, role, None, namespace_context=namespace_context)
     plain = MeidoProvider(Adapter(), role, None)
     messages = [UserMessage('你好')]
-    assert provider.estimate_request_tokens('', messages, []) > plain.estimate_request_tokens('', messages, [])
+    tools = [ToolSearchTool.definition.as_provider_schema()]
+    assert provider.estimate_request_tokens('', messages, tools) > plain.estimate_request_tokens('', messages, tools)
     signal = CancellationToken()
     async def read():
-        return [event async for event in provider.stream_response(model='fake', system='', messages=messages, tools=[], signal=signal)]
+        return [event async for event in provider.stream_response(model='fake', system='', messages=messages, tools=tools, signal=signal)]
     asyncio.run(read())
     assert '角色设定必须保留' in adapter.prompts[-1] and current[0] in adapter.prompts[-1]
     assert signals[-1] is signal

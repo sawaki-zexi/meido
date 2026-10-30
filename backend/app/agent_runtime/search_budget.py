@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .tools import ToolDefinition
@@ -11,18 +11,9 @@ NEW_SCHEMA_BYTES = 32 * 1024
 VISIBLE_SCHEMA_BYTES = 128 * 1024
 
 
-def _json_value(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {key: _json_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_value(item) for item in value]
-    return value
-
-
 def declaration_bytes(definition: ToolDefinition) -> int:
     """UTF-8 bytes of full stable neutral declaration, not tokens or result text."""
-    return len(json.dumps({"name": definition.name, "description": definition.description,
-        "parameters": _json_value(definition.input_schema)}, ensure_ascii=False,
+    return len(json.dumps(definition.as_provider_schema()["function"], ensure_ascii=False,
         sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"))
 
 

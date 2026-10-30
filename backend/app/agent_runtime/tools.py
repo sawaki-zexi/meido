@@ -5,7 +5,7 @@ import inspect
 import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol, TYPE_CHECKING
+from typing import Protocol, TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from .capabilities import CapabilityResolution
@@ -16,6 +16,24 @@ from .types import ImageContent
 _RISKS = frozenset({"read_only", "mutating", "external"})
 _EXPOSURES = frozenset({"direct", "model_only", "deferred", "hidden"})
 _APPROVALS = frozenset({"auto", "prompt", "writes", "deny"})
+# Shiori-Agent 71c8b0e, tools/registry.py (MIT; see third_party/shiori-agent).
+_PROGRESS_DESCRIPTION_SCHEMA = {
+    "type": "string",
+    "description": (
+        "用 5-12 个字说明这次工具调用的意图，只写给用户看的短语。"
+        "不要复述工具名，不要粘贴长参数。例如：查看目录、读取配置、搜索健康数据。"
+    ),
+}
+
+
+def _mutable_schema(value: object) -> object:
+    # Capability snapshots freeze mappings and arrays; provider declarations
+    # must be fresh JSON objects, including for snapshot/budget consumers.
+    if isinstance(value, Mapping):
+        return {key: _mutable_schema(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_mutable_schema(item) for item in value]
+    return deepcopy(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,14 +82,37 @@ class ToolDefinition:
                 raise ValueError(f"tool output limit must be positive integer: {self.name}")
 
     def as_provider_schema(self) -> dict[str, object]:
+        parameters = cast(dict[str, object], _mutable_schema(self.input_schema))
+        if not self._defines_description():
+            properties = parameters.get("properties")
+            if not isinstance(properties, dict):
+                properties = {}
+                parameters["properties"] = properties
+            properties["description"] = dict(_PROGRESS_DESCRIPTION_SCHEMA)
+            required = parameters.get("required")
+            if not isinstance(required, list):
+                parameters["required"] = ["description"]
+            elif "description" not in required:
+                required.append("description")
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": deepcopy(self.input_schema),
+                "parameters": parameters,
             },
         }
+
+    def _defines_description(self) -> bool:
+        properties = self.input_schema.get("properties")
+        return isinstance(properties, Mapping) and "description" in properties
+
+    def execution_arguments(self, arguments: Mapping[str, object]) -> dict[str, object]:
+        """Remove only host-added intent, leaving the recorded call untouched."""
+        business = dict(arguments)
+        if not self._defines_description():
+            business.pop("description", None)
+        return business
 
 
 def _is_finite_number(value: object) -> bool:

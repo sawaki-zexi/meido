@@ -47,9 +47,10 @@ export function ChatToolCalls({ calls, streaming, closing }: { calls: ToolEntry[
         const StatusIcon = runningCall ? CircleNotch : failed ? Warning : toolIcon(call.name);
         const status = labels[call.status] ?? labels.unknown;
         const detailId = `${id}-${index}`;
+        const argumentsPreview = call.argumentsPreview || '参数未记录';
         return <div className="chat-tool-call" key={call.id}>
           <button type="button" className="chat-tool-row" tabIndex={expanded ? 0 : -1} aria-expanded={opened} aria-controls={detailId}
-            aria-label={`${call.name} · ${status}`} onClick={() => setExpandedCalls(previous => {
+            aria-label={`${call.name} · ${status}`} aria-describedby={`${detailId}-arguments`} onClick={() => setExpandedCalls(previous => {
               const next = new Set(previous);
               if (next.has(call.id)) next.delete(call.id); else next.add(call.id);
               return next;
@@ -59,7 +60,7 @@ export function ChatToolCalls({ calls, streaming, closing }: { calls: ToolEntry[
               {!runningCall && <CaretDown size={12} className={`chat-tool-hover-caret${opened ? ' is-expanded' : ''}`} aria-hidden />}
             </span>
             <span className="chat-tool-name">{call.name}</span>
-            <span className="chat-tool-arguments">{call.argumentsPreview || '参数未记录'}</span>
+            <span id={`${detailId}-arguments`} className="chat-tool-arguments" title={argumentsPreview}>{argumentsPreview}</span>
           </button>
           <div id={detailId} className={`chat-tool-call-detail${opened ? ' is-expanded' : ''}`} aria-hidden={!expanded || !opened}>
             <div><div className="chat-tool-result" data-state={failed ? 'failed' : undefined}>

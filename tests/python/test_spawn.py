@@ -67,16 +67,23 @@ def test_profiles_execute_only_the_frozen_parent_intersection(tmp_path, profile,
 def test_scripting_writes_only_host_directory_and_shell_cannot_detach(tmp_path):
     class Provider:
         async def stream_response(self, *, messages, tools, **kwargs):
+            for tool in tools:
+                parameters = tool['function']['parameters']
+                if tool['function']['name'] == 'shell':
+                    assert parameters['properties']['description'] == {'type': 'string', 'maxLength': 500}
+                    assert 'description' not in parameters['required']
+                else:
+                    assert 'description' in parameters['required']
             results = [item for item in messages if isinstance(item, ToolResultMessage)]
             if not results:
-                yield AssistantDoneEvent(AssistantMessage(tool_calls=(ToolCall('write', 'write_file', {'path': 'artifact.txt', 'content': 'isolated-452'}),)))
+                yield AssistantDoneEvent(AssistantMessage(tool_calls=(ToolCall('write', 'write_file', {'path': 'artifact.txt', 'content': 'isolated-452', 'description': '写入任务文件'}),)))
             elif len(results) == 1:
                 assert not results[-1].is_error
-                yield AssistantDoneEvent(AssistantMessage(tool_calls=(ToolCall('escape', 'write_file', {'path': '../escape.txt', 'content': 'forbidden'}),)))
+                yield AssistantDoneEvent(AssistantMessage(tool_calls=(ToolCall('escape', 'write_file', {'path': '../escape.txt', 'content': 'forbidden', 'description': '验证目录边界'}),)))
             elif len(results) == 2:
                 assert results[-1].is_error
                 command = shlex.join([sys.executable.replace('\\', '/'), '-c', "from pathlib import Path; print(Path('artifact.txt').read_text())"])
-                yield AssistantDoneEvent(AssistantMessage(tool_calls=(ToolCall('shell', 'shell', {'command': command}),)))
+                yield AssistantDoneEvent(AssistantMessage(tool_calls=(ToolCall('shell', 'shell', {'command': command, 'description': '读取任务产物'}),)))
             elif len(results) == 3:
                 assert 'isolated-452' in results[-1].content
                 yield AssistantDoneEvent(AssistantMessage(tool_calls=(ToolCall('detach', 'shell', {'command': 'anything', 'run_in_background': True}),)))

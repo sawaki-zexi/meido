@@ -110,6 +110,30 @@ def test_history_argument_previews_hide_browser_inputs_and_mail_and_keep_unknown
     assert 'totalTokens' not in metadata['turnMetrics']
 
 
+def test_history_intents_stay_in_the_parameter_chip_without_exposing_hidden_business_arguments(tmp_path, monkeypatch):
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, SuccessAdapter())
+    key = sessions.open_role_session(role.id).sessionKey
+    calls = (
+        ToolCall('long', 'lookup', {**{f'p{i}': '很长的参数' * 100 for i in range(40)}, 'description': '搜索相关配置资料'}),
+        ToolCall('mail', 'mail.manage', {'body': 'private-mail', 'description': '查询邮件处理状态'}),
+        ToolCall('browser', 'agent_browser_fill', {'text': 'private-password', 'description': '填写页面表单内容'}),
+        ToolCall('secret', 'lookup', {'description': '读取配置 access_token=private-token'}),
+        ToolCall('old', 'lookup', {'query': '旧消息'}),
+    )
+    sessions.append_agent_message(key, AssistantMessage(tool_calls=calls), run_id='intent-history')
+    sessions.append_agent_message(key, AssistantMessage('完成'), run_id='intent-history')
+    with client:
+        data = client.get(f'/api/roles/{role.id}/session').json()
+    serialized = json.dumps(data, ensure_ascii=False)
+    assert all(secret not in serialized for secret in ('private-mail', 'private-password', 'private-token'))
+    process = data['messages'][-1]['metadata']['process']
+    for call, item in zip(calls[:3], process):
+        assert call.arguments['description'] in item['argumentsPreview']
+        assert len(item['argumentsPreview']) <= 120
+    assert process[-1]['argumentsPreview'] == '{"query":"旧消息"}'
+    assert all(item['status'] == 'unknown' for item in process)
+
+
 def test_previews_skip_tools_and_unfinished_messages_and_support_attachments(tmp_path, monkeypatch):
     role, sessions, client = configure_session_api(tmp_path, monkeypatch, SuccessAdapter())
     key = sessions.open_role_session(role.id).sessionKey

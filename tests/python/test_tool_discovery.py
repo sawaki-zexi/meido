@@ -81,7 +81,7 @@ def test_discovery_is_durable_before_next_request_and_cannot_authorize_same_repl
                     )
                 )
             elif self.requests == 2:
-                assert schemas["archive.read"]["required"] == ["topic"]
+                assert schemas["archive.read"]["required"] == ["topic", "description"]
                 persisted = sessions.list_messages("role:r")
                 found = next(
                     item
@@ -865,8 +865,9 @@ def test_discovery_keeps_result_json_bounded_before_staging_activation():
     )
     assert len(result.content) <= search.definition.output_limit
     payload = json.loads(result.content)
-    assert len(payload["unlocked"]) == 29
-    assert payload["skipped_due_to_budget"] == ["notes.29"]
+    # Whole declarations include the host call-intent schema in their byte cost.
+    assert len(payload["unlocked"]) == 23
+    assert payload["skipped_due_to_budget"] == [f"notes.{index}" for index in range(23, 30)]
     assert payload["budget"]["new_bytes"] <= 32768
     assert search.discovery.pending["load"] == tuple(payload["unlocked"])
     assert payload["truncated"]
