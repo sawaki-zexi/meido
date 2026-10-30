@@ -429,6 +429,41 @@ class McpRun:
             return self.errors.get(server_id) or (client.failure if client is not None else None) or "MCP service is disconnected; use mcp_add"
         return None
 
+    def preparation_denials(self, definitions) -> dict[str, str]:
+        """Read metadata availability without closing clients or changing grants.
+
+        This runs at the host preparation boundary. Actual dispatch continues
+        through authorization_denial, including its revocation lifecycle.
+        """
+        try:
+            origin = self._source_revocation or self.source_denial()
+        except Exception:
+            origin = 'MCP source authority is unavailable'
+        denial = ('MCP is not allowed for external context' if not self.owner else
+                  origin or ('MCP run is closed' if self.closed else None))
+        services = {}
+        denied = {}
+        for definition in definitions:
+            reason = denial
+            if reason is None and definition.source == 'builtin:mcp':
+                reason = None if self.tool_enabled(definition.name) else 'MCP management permission was revoked'
+            elif reason is None:
+                server_id = definition.source.removeprefix('mcp:')
+                if server_id not in services:
+                    config = self.configs.get(server_id)
+                    try:
+                        unchanged = config is not None and self.host.store.get(server_id) == config
+                    except Exception:
+                        unchanged = False
+                    client = self.clients.get(server_id)
+                    services[server_id] = ('MCP service grant was revoked or changed' if not unchanged else
+                        self.errors.get(server_id) or 'MCP service connection was removed' if server_id in self.disconnected else
+                        self.errors.get(server_id) or 'MCP service is disconnected; use mcp_add' if client is None or client.closed else None)
+                reason = services[server_id]
+            if reason is not None:
+                denied[definition.name] = reason
+        return denied
+
     async def prepare(self) -> None:
         try:
             for config in self.configs.values():

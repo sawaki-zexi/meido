@@ -5271,24 +5271,9 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
     return enabled
 
 
-def _runtime_namespace_context(capabilities: CapabilityResolution, signal=None) -> str:
-    """Project admitted, currently permitted metadata without activating services."""
-    from .agent_runtime.search_metadata import NAMESPACE_MAP_BYTES, render_namespace_map, render_deferred_tools_hint
-    from .agent_runtime.tools import ToolContext
-    current = capabilities.current()
-    snapshot = current.snapshot
-    context = ToolContext(snapshot.role_id, snapshot.session_key, snapshot.run_id,
-                          signal if signal is not None else CancellationToken())
-    search = current.definition("tool_search")
-    if search is None or current.authorization_denial(search, context) is not None:
-        return ""
-    authorized = tuple(
-        definition for definition in (snapshot.candidates or snapshot.tools)
-        if current.authorization_denial(definition, context) is None
-    )
-    deferred = render_deferred_tools_hint(authorized, visible_names={item.name for item in snapshot.tools})
-    namespaces = render_namespace_map(authorized, byte_limit=NAMESPACE_MAP_BYTES - len(deferred.encode('utf-8')) - 2)
-    return '\n\n'.join(filter(None, (namespaces, deferred)))
+def _runtime_namespace_context(preparation, visible_names=()) -> str:
+    """Pure projection; preparation has already read current host facts."""
+    return preparation.namespace_context(visible_names)
 
 
 def _runtime_tools(
@@ -5381,16 +5366,22 @@ async def _runtime_capabilities(
     advanced_snapshot: dict | None = None,
     source_authority: FrozenChannelSource | None = None,
 ) -> CapabilityResolution:
-    role = _effective_plugin_role(role)
+    role = await asyncio.to_thread(_effective_plugin_role, role)
     include_channel = session_key.startswith("thread:") or (
-        session_key.startswith("role:") and _role_has_usable_channel_account(role.id)
+        session_key.startswith("role:") and await asyncio.to_thread(_role_has_usable_channel_account, role.id)
     )
-    policy = _runtime_capability_policy(role, include_channel=include_channel)
-    frozen_advanced = advanced_snapshot if advanced_snapshot is not None else advanced_settings.get()
+    # Service ownership stays on the runtime loop. The following worker only
+    # reads their availability/configuration, and never registers executors.
+    _desktop_pet_application()
+    _novelai_application()
+    if role.agentConfig.coding.enabled:
+        _coding_application()
+    policy = await asyncio.to_thread(_runtime_capability_policy, role, include_channel=include_channel)
+    frozen_advanced = advanced_snapshot if advanced_snapshot is not None else await asyncio.to_thread(advanced_settings.get)
     direct_exposure = not frozen_advanced['values']['searchEnabled']
     if not frozen_advanced['values']['spawnEnabled']:
         policy = replace(policy, enabled_tools=policy.enabled_tools - {'spawn'})
-    source_run = session_store.get_run(run_id)
+    source_run = await asyncio.to_thread(session_store.get_run, run_id)
     if (session_key != f'role:{role.id}' or source_run is None
             or source_run.modelSnapshot.get('humanInputSource') != 'desktop_owner'
             or source_run.modelSnapshot.get('desktopPetGeneration') != _desktop_pet_application().store.binding(role.id)[0]['generation']):
@@ -5434,33 +5425,50 @@ async def _runtime_capabilities(
     if mcp_run is not None:
         await mcp_run.prepare()
 
-    def authorize_tool(definition, context):
-        plugin_id = ('browser' if definition.name in BROWSER_USE_TOOL_NAMES
-                     else 'herdr' if definition.name in HERDR_AGENT_TOOL_NAMES
-                     else 'computer' if definition.name in COMPUTER_USE_TOOL_NAMES
-                     else 'screen' if definition.name == 'observe_screen'
-                     else 'pet' if definition.name == 'pet_action' else None)
-        if plugin_id is not None and not plugin_configuration.enabled(plugin_id):
-            return 'plugin permission was revoked'
-        if source_authority is not None:
-            origin_denial = source_authority.authorization_denial(multichannel_store)
-            if origin_denial is not None:
-                return origin_denial
+    def read_tool_permissions(definitions, context, *, preparing=False):
+        # A preparation loads the host once, then projects every candidate.
+        # Dispatch calls this afresh for its one current declaration.
+        origin_denial = source_authority.authorization_denial(multichannel_store) if source_authority is not None else None
         current_role = store.get(role.id)
-        if current_role is None:
-            return "role permission was revoked"
+        if origin_denial is not None or current_role is None:
+            return {item.name: origin_denial or 'role permission was revoked' for item in definitions}
         current = _runtime_capability_policy(current_role, include_channel=include_channel)
-        if definition.source.startswith("mcp:") or definition.source == "builtin:mcp":
-            return (mcp_run.authorization_denial(definition) or True) if mcp_run is not None else "MCP has no frozen service grant"
-        if definition.name not in current.enabled_tools:
-            return "tool permission was revoked"
-        if definition.source.startswith("plugin:"):
-            plugin_id = definition.source.removeprefix("plugin:")
-            manifest = next((item for item in plugin_registry.manifests() if item.plugin_id == plugin_id), None)
-            if (plugin_id not in current.enabled_plugins or manifest is None
-                    or set(manifest.requested_capabilities) - current.granted_capabilities):
-                return "plugin permission was revoked"
-        return True
+        manifests = {item.plugin_id: item for item in plugin_registry.manifests()}
+        switches = {}
+        mcp_definitions = tuple(item for item in definitions if item.source.startswith('mcp:') or item.source == 'builtin:mcp')
+        mcp_denials = (mcp_run.preparation_denials(mcp_definitions) if preparing and mcp_run is not None and mcp_definitions else {})
+        denied = {}
+        for definition in definitions:
+            plugin_id = ('browser' if definition.name in BROWSER_USE_TOOL_NAMES
+                         else 'herdr' if definition.name in HERDR_AGENT_TOOL_NAMES
+                         else 'computer' if definition.name in COMPUTER_USE_TOOL_NAMES
+                         else 'screen' if definition.name == 'observe_screen'
+                         else 'pet' if definition.name == 'pet_action' else None)
+            if plugin_id is not None:
+                if plugin_id not in switches:
+                    switches[plugin_id] = plugin_configuration.enabled(plugin_id)
+                if not switches[plugin_id]:
+                    denied[definition.name] = 'plugin permission was revoked'
+                    continue
+            if definition in mcp_definitions:
+                reason = (mcp_denials.get(definition.name) if preparing else mcp_run.authorization_denial(definition)) if mcp_run is not None else 'MCP has no frozen service grant'
+                if reason is not None:
+                    denied[definition.name] = reason
+            elif definition.name not in current.enabled_tools:
+                denied[definition.name] = 'tool permission was revoked'
+            elif definition.source.startswith('plugin:'):
+                plugin_id = definition.source.removeprefix('plugin:')
+                manifest = manifests.get(plugin_id)
+                if (plugin_id not in current.enabled_plugins or manifest is None
+                        or set(manifest.requested_capabilities) - current.granted_capabilities):
+                    denied[definition.name] = 'plugin permission was revoked'
+        return denied
+
+    def authorize_tool(definition, context):
+        return read_tool_permissions((definition,), context).get(definition.name, True)
+
+    def prepare_tools(definitions, context):
+        return read_tool_permissions(definitions, context, preparing=True)
 
     def authorize_call(definition, context, arguments):
         if definition.name == 'spawn' or (definition.name == 'spawn_manage' and arguments.get('action') == 'continue'):
@@ -5511,14 +5519,15 @@ async def _runtime_capabilities(
     if mcp_run is not None:
         registry_enabled_tools = registry_enabled_tools | {tool.definition.name for items in mcp_run.remote_tools.values() for tool in items}
     try:
+        skills = await asyncio.to_thread(SkillRegistry.discover_many, (
+            (store.root / role.id / "workspace" / "skills", "role"),
+            (roles_root / role.id / "skills", "role"),
+            (project_root / ".agents" / "skills", "project"),
+            (Path(__file__).parent / "builtin_skills", "builtin"),
+        ))
         resolution = await CapabilityRegistry(
             candidates,
-            skills=SkillRegistry.discover_many((
-                (store.root / role.id / "workspace" / "skills", "role"),
-                (roles_root / role.id / "skills", "role"),
-                (project_root / ".agents" / "skills", "project"),
-                (Path(__file__).parent / "builtin_skills", "builtin"),
-            )),
+            skills=skills,
             plugins=plugin_registry,
         ).resolve_async(
             role_id=role.id,
@@ -5538,6 +5547,7 @@ async def _runtime_capabilities(
             direct_exposure=direct_exposure,
             deferred_tool_names=_deferred_discovery_tools(),
             authorize_tool=authorize_tool,
+            prepare_tools=prepare_tools,
             authorize_call=authorize_call,
             source_scope=source_scope,
             service_grants=mcp_run.grants if mcp_run is not None else (),
@@ -6833,7 +6843,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                                  max_response_tokens=ordinary_settings.maxTokens,
                                  context_blocks=lambda: _channel_memory_blocks(thread.role_id, thread.thread_id, str(metadata.get("senderId") or ""), trigger_metadata=metadata),
                                  context_safety_margin=ordinary_settings.contextSafetyMarginTokens,
-                                 namespace_context=lambda signal: _runtime_namespace_context(capabilities, signal))
+                                 )
         _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
         provider = _ordinary_context_provider(provider, ordinary_settings, role_id=thread.role_id,
             session_key=thread.session_key, run_id=run_id, owner=owner,
@@ -7392,7 +7402,6 @@ async def send_role_message(role_id: str, data: SendMessageInput, request: Reque
                     max_response_tokens=ordinary_settings.maxTokens,
                     context_blocks=lambda: _external_activity_blocks(role_id),
                     context_safety_margin=ordinary_settings.contextSafetyMarginTokens,
-                    namespace_context=lambda signal: _runtime_namespace_context(capabilities, signal),
                 )
                 _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
                 provider = _ordinary_context_provider(provider, ordinary_settings, role_id=role_id,

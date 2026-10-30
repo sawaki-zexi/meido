@@ -45,14 +45,18 @@ class ContextWindowStore:
 
     @staticmethod
     def fingerprint(db, session, ids):
-        rows = []
-        for identifier in ids:
-            row = db.execute('SELECT message_id, role, content, status, message_type, tool_call_id, tool_name, tool_arguments_json, tool_result_json, metadata_json FROM messages WHERE session_key=? AND message_id=?',
-                             (session, identifier)).fetchone()
-            if row is None:
-                raise WindowConflict('工作摘要来源已变化')
-            rows.append(row)
-        return _stamp(rows)
+        # Bound parameters for older SQLite builds; preserve original ordering
+        # and duplicate IDs so existing persisted fingerprints remain valid.
+        identifiers = list(dict.fromkeys(ids))
+        found = {}
+        for start in range(0, len(identifiers), 500):
+            batch = identifiers[start:start + 500]
+            rows = db.execute('SELECT message_id, role, content, status, message_type, tool_call_id, tool_name, tool_arguments_json, tool_result_json, metadata_json FROM messages WHERE session_key=? AND message_id IN (' + ','.join('?' for _ in batch) + ')',
+                              (session, *batch)).fetchall()
+            found.update((row[0], row) for row in rows)
+        if len(found) != len(identifiers):
+            raise WindowConflict('工作摘要来源已变化')
+        return _stamp([found[identifier] for identifier in ids])
 
     def load(self, role, session, scope, authority):
         with self.connect() as db:
@@ -88,7 +92,8 @@ class ContextWindowStore:
             row = db.execute('SELECT version FROM context_windows WHERE role_id=? AND session_key=? AND scope=?',
                              (prepared['role'], prepared['session'], prepared['scope'])).fetchone()
             if (not authorized() or (row[0] if row else 0) != prepared['version']
-                    or self.fingerprint(db, prepared['session'], prepared['ids']) != prepared['fingerprint']):
+                    or self.fingerprint(db, prepared['session'], prepared['ids']) != prepared['fingerprint']
+                    or not authorized()):
                 raise WindowConflict('工作窗口或来源许可已变化，请重新开始回复')
             db.execute('INSERT OR REPLACE INTO context_windows VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                        (prepared['role'], prepared['session'], prepared['scope'], prepared['version'] + 1,
