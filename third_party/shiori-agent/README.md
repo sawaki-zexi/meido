@@ -2,6 +2,16 @@
 
 状态：当前。最后核验：2026-10-30。
 
+## 分批工作摘要（2026-10-30）
+
+`backend/app/agent_runtime/{summary_batches,context_provider}.py` 适配固定提交
+`71c8b0e460530683cd28aad6bb62e873c7167c89` 的
+`apps/backend/core/compaction_summary{,_sources,_request}.py` 与
+`apps/backend/session/manager/helpers.py`：最长连续前缀、合法状态逐批归纳、单条长文本逐次减半、
+工具结果首尾截断及每批一次缩短。Meido 保留原来源 ID、原窗口事务、请求步数与工具恢复规则，
+不复制上游会话存储。合同和验证见[分批工作摘要](../../docs/reference/working-summary-batches.md)。
+Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。
+
 ## 单次输入用量校准（2026-10-30）
 
 `backend/app/agent_runtime/{usage_anchor,meido_provider,context_provider}.py` 与
@@ -44,7 +54,7 @@ Meido 保留 4096字节目录、原来源/owner/file-root/服务许可；此前 
 Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。
 
 Meido 沿用 SSE、取消与授权边界；硬预算最小请求保留能够装入预算的已授权工具，
-这是区别于上游清除业务工具的行为。没有复制上游摘要批处理、token 校准或插件宿主。
+这是区别于上游清除业务工具的行为。该阶段尚未复制摘要批处理或 token 校准，后续交付见上文对应条目；未复制插件宿主。
 精确源码链接与证据限制见[本轮研究](../../docs/research/shiori-live-reply-tool-loading-2026-10-30.md)。
 
 ## 工具调用意图（2026-10-30）

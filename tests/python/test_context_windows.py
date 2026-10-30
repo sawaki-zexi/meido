@@ -363,7 +363,12 @@ async def test_compaction_preserves_tool_pairs_and_can_evict_historical_repaired
 async def test_auxiliary_input_is_preflighted_before_any_provider_request(tmp_path):
     sessions, adapter, base, windows, settings = setup_window(tmp_path)
     base.configuration = base.configuration.model_copy(update={'contextWindowTokens': 4000})
-    provider, _ = await execute(base, windows, settings, sessions.runtime_messages('role:r'))
+    messages = sessions.runtime_messages('role:r')
+    # Even the minimum per-field text is too large in aggregate. It cannot
+    # become a successful batch by silently dropping fields or this source.
+    messages[0] = replace(messages[0], attachments=tuple(
+        AttachmentContent(f'part-{index}', 'text/plain', text='x' * 180) for index in range(100)))
+    provider, _ = await execute(base, windows, settings, messages)
     assert provider.degraded and adapter.summaries == 0
     assert len(adapter.calls) == 1
 
@@ -465,8 +470,8 @@ async def test_hard_limit_fallback_keeps_current_results_without_replaying_tools
                      ToolResultMessage('sent', 'account_send', '{"status":"sent","messageId":"receipt-1"}')))
     provider, _ = await execute(base, windows, settings, messages)
     assert provider.degraded
-    assert len(adapter.calls) == 1  # Oversized summary source is rejected locally.
-    final, tools, _ = adapter.calls[0]
+    assert len(adapter.calls) == 2 and adapter.summaries == 1  # The first bounded batch is truncated.
+    final, tools, _ = adapter.calls[-1]
     assert tools == []
     assert 'receipt-1' in str(final) and '继续' in str(final)
     assert base.required_context in str(final)
