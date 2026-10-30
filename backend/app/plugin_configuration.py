@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
+from .herdr_control.config import HerdrConfig
 
 
 class BrowserParameters(BaseModel):
@@ -24,7 +25,7 @@ class EmptyParameters(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
 
 
-PARAMETERS = {'browser': BrowserParameters, 'screen': ScreenParameters,
+PARAMETERS = {'browser': BrowserParameters, 'screen': ScreenParameters, 'herdr': HerdrConfig,
               'computer': EmptyParameters, 'pet': EmptyParameters, 'autonomy': EmptyParameters}
 
 

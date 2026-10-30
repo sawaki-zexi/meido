@@ -130,6 +130,16 @@ class CodingApplication:
                    request_id: str | None = None, admitted=lambda: True, frozen_access=None, executor='herdr') -> dict:
         return self._admit(origin, repository, requirement, kind=agent, request_id=request_id, admitted=admitted, frozen_access=frozen_access, executor=executor)
 
+    def session_agent_task(self, session: str, pane_id: str) -> tuple[str, bool] | None:
+        """Read the owned runtime's actual binding for direct-input refusal."""
+        for role_id in self.ledger.role_ids():
+            for record in reversed(self.ledger.role_records(role_id)):
+                if (record['executor'] == 'herdr' and session == 'meido-' + record['id'][7:39]
+                        and record.get('binding', {}).get('pane_id') == pane_id):
+                    return record['id'], (record['status'] in {'accepted', 'running'}
+                        or record['cleanupState'] in {'running', 'cleanup_failed'})
+        return None
+
     def continue_task(self, task_id: str, origin: TaskOrigin, *, requirement: str, request_id: str | None = None, admitted=lambda: True, frozen_access=None, executor='herdr') -> dict:
         task = self.ledger.inspect(task_id, origin)
         if task['executor'] != executor:

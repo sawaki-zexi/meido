@@ -145,7 +145,8 @@ def test_browser_failed_close_retries_original_owner_before_reenable(client, mon
     assert not owner.alive and owner.closes == 2
 
 
-def test_off_on_rejects_frozen_browser_call_in_real_http_turn(client, monkeypatch, tmp_path, local_platform_only):
+@pytest.mark.parametrize('reenable', [False, True])
+def test_browser_call_uses_current_plugin_state_in_real_http_turn(client, monkeypatch, tmp_path, local_platform_only, reenable):
     import httpx
     from backend.app.browser_use import BrowserSessions, BrowserUseConfig
     from backend.app.memory_config import MemorySettingsStore
@@ -158,7 +159,7 @@ def test_off_on_rejects_frozen_browser_call_in_real_http_turn(client, monkeypatc
         calls = []
         async def call(self, name, arguments, **kwargs):
             self.calls.append(name)
-            return {'text': 'should not dispatch'}
+            return {'text': 'current browser result'}
         async def close(self):
             pass
     transport = Transport()
@@ -174,25 +175,31 @@ def test_off_on_rejects_frozen_browser_call_in_real_http_turn(client, monkeypatc
             elif self.count == 2:
                 assert 'agent_browser_open' in {item['function']['name'] for item in tools}
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url='http://local') as settings:
-                    for enabled in (False, True):
+                    for enabled in ((False, True) if reenable else (False,)):
                         current = (await settings.get('/api/plugin-management/browser')).json()
                         changed = await settings.put('/api/plugin-management/browser/enabled', json={
                             'enabled': enabled, 'expectedRevision': current['revision']})
                         assert changed.status_code == 200
-                yield ModelToolCall('old-open', 'agent_browser_open', {'url': 'http://127.0.0.1/'})
+                yield ModelToolCall('current-open', 'agent_browser_open', {'url': 'http://127.0.0.1/'})
                 yield ModelResponseDone("tool_use")
             else:
                 results = [item for item in messages if item['role'] == 'tool']
-                assert 'revoked' in results[-1]['content'] or 'changed' in results[-1]['content']
-                yield ModelTextDelta('旧调用已撤销')
+                if reenable:
+                    assert 'current browser result' in results[-1]['content']
+                    yield ModelTextDelta('当前浏览器结果已返回')
+                else:
+                    assert 'revoked' in results[-1]['content'] or 'changed' in results[-1]['content']
+                    yield ModelTextDelta('插件关闭，调用已撤销')
     adapter = Adapter()
     monkeypatch.setattr(main, 'model_adapter', adapter)
     on = client.put('/api/plugin-management/browser/enabled', json={'enabled': True, 'expectedRevision': 0})
     assert on.status_code == 200
     role = client.post('/api/roles', json={'name': 'browser turn', 'profile': {'profile': 'role'}}).json()['role']
     response = client.post(f"/api/roles/{role['id']}/messages", json={'content': '看网页'})
-    assert response.status_code == 200 and '旧调用已撤销' in response.text
-    assert adapter.count == 3 and not transport.calls
+    assert response.status_code == 200
+    assert ('当前浏览器结果已返回' if reenable else '插件关闭，调用已撤销') in response.text
+    assert adapter.count == 3
+    assert transport.calls == (['agent_browser_open'] if reenable else [])
 
 
 def test_activation_failure_leaves_plugin_denied_until_explicit_cleanup(client, monkeypatch):

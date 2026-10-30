@@ -189,7 +189,8 @@ class ConversationHistoryView:
             if message.metadata.get("channelTurnState") == "invalidated":
                 continue
             if message.metadata.get("internalEvent") and not (
-                    message.role == "assistant" and message.messageType in {"internal_completion", "desktop_push"}
+                    message.id == self.current_id and message.metadata['internalEvent'] == 'herdr_agent_report'
+                    or message.role == "assistant" and message.messageType in {"internal_completion", "desktop_push"}
                     and message.metadata.get("deliveryStatus") == "sent"):
                 continue
             grant = self.grants.get(message.sessionKey) if self.shared else None
@@ -260,7 +261,9 @@ class ConversationHistoryView:
                                 "data_base64": item.image.data_base64, "detail": item.image.detail})
                         elif item.text:
                             blocks.append({"type": "text", "text": f"[{item.name}]\n{item.text}"})
-            prepared.append(message.model_copy(update={"content": content, "metadata": metadata}))
+            prepared.append(message.model_copy(update={"content": content, "metadata": metadata,
+                **({'messageType': 'text'} if message.id == self.current_id
+                    and message.messageType == 'herdr_agent_report' else {})}))
         result = self.sessions.runtime_messages(self.session_key, stored_messages=prepared,
             attachment_loader=self._attachments, max_messages=max_messages)
         self.require_current()

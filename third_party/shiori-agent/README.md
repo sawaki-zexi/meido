@@ -2,6 +2,18 @@
 
 状态：当前。最后核验：2026-10-30。
 
+## Herdr 现有 session 代理控制（2026-10-30）
+
+`backend/app/herdr_control/` 适配固定提交
+`71c8b0e460530683cd28aad6bb62e873c7167c89` 的
+`plugins/herdr/backend/{agent_tools,agent_control,agent_watch,agent_commands,agents,cli,config,sessions}.py`
+及 `plugin.py` 注册说明：四工具、CLI envelope/argv、接手指令记录和进程内终态回报。
+Meido 沿用自身全局设置、当前工具注册表、实际来源与普通回合/渠道投递；
+Windows CLI worker 适配 Uvicorn SelectorEventLoop，配置不复制上游启动新代理或 Full Access 参数。
+受管编程五工具继续保持本地编辑与验证的原合同，发布另需主人批准。
+Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。
+行为和区别见[Herdr session 代理控制](../../docs/reference/herdr-session-agents.md)。
+
 ## 分批工作摘要（2026-10-30）
 
 `backend/app/agent_runtime/{summary_batches,context_provider}.py` 适配固定提交

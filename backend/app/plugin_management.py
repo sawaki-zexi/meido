@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt
 from .plugin_configuration import PARAMETERS, PluginConflict
 
 PLUGIN_METADATA = {
+    'herdr': ('Herdr 代理', '操作指定 session 中已有的代理，停下或等待处理时回报原聊天。'),
     'browser': ('浏览器', '访问网页和交互；会话分别归属角色。'),
     'screen': ('屏幕感知', '使用指定视觉连接观察主屏并返回摘要。'),
     'computer': ('桌面控制', '窗口截图发送到当前聊天模型，操作键盘和鼠标。'),
