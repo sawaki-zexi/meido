@@ -108,6 +108,8 @@ def test_explicit_owner_target_freezes_its_binding_without_freezing_unrelated_id
     class Model:
         async def stream_structured_messages(self, messages, configuration, tools):
             if not any(m['role'] == 'tool' for m in messages):
+                if 'schedule' not in {tool['function']['name'] for tool in tools}:
+                    yield ModelToolCall('discover-target', 'tool_search', {'query': 'select:schedule'})
                 yield ModelToolCall('explicit-target', 'schedule', {'tier': 'instant', 'trigger': 'after',
                     'when': '1s', 'message': 'owner-target-158', 'channel': 'qq', 'chat_id': 'owner'})
                 yield ModelResponseDone('tool_use')
@@ -144,6 +146,10 @@ def test_explicit_owner_target_freezes_its_binding_without_freezing_unrelated_id
     monkeypatch.setattr(main, 'channel_host', host)
     response = client.post(f'/api/roles/{rid}/messages', json={'content': '一秒后联系已配对主人'})
     assert 'assistant_completed' in response.text
+    from backend.app.agent_runtime.types import ToolResultMessage
+    receipt = next(item for item in sessions.runtime_messages(f'role:{rid}')
+                   if isinstance(item, ToolResultMessage) and item.tool_name == 'schedule')
+    assert not receipt.is_error, receipt.content
     if change == 'target_rebind':
         channels.unbind_identity(str(channels.list_identities()[0]['identityId']))
         pair(account.account_id)

@@ -71,6 +71,7 @@ class ContextWindowProvider:
     # The auxiliary request has its own deadline; only the final model stream
     # consumes the ordinary provider timeout supplied by the loop.
     manages_request_timeout = True
+    supports_protocol_tools = True
     def __init__(self, provider, settings, windows, *, role_id, session_key, scope, authority, authorized, ensure_coverage, on_diagnostic=None):
         self.provider, self.settings, self.windows = provider, settings, windows
         self.role_id, self.session_key, self.scope, self.authority = role_id, session_key, scope, authority
@@ -86,6 +87,21 @@ class ContextWindowProvider:
         self.compaction_diagnostic = {}
         self.summary_attempts = []
         self.current_input = None
+        self.capabilities = None
+
+    def bind_capabilities(self, capabilities):
+        self.capabilities = capabilities
+
+    def _window_tools(self, raw, fallback, *, commit=False, protocol_tools=(), restore=True):
+        if not restore or self.capabilities is None:
+            return fallback
+        current = self.capabilities.current()
+        view = (current._select(item.name for item in current.snapshot.tools) if current._discovery is None
+                else self.capabilities.select_window(raw) if commit
+                else self.capabilities.window_view(raw))
+        if commit:
+            self.capabilities = view
+        return (*view.provider_schemas(), *protocol_tools)
 
     def _reserve(self, signal, *, auxiliary=False):
         signal.raise_if_cancelled()
@@ -199,7 +215,7 @@ class ContextWindowProvider:
             attempt['elapsedMs'] = int((time.monotonic() - started) * 1000)
             self._diagnose()
 
-    async def _compact(self, system, raw, tools, state, signal, available, target):
+    async def _compact(self, system, raw, tools, state, signal, available, target, *, protocol_tools=(), restore=True):
         self.compaction_diagnostic['step'] = 'select_prefix'
         starts = [index for index, message in enumerate(raw) if isinstance(message, UserMessage)]
         protected = max(1, self.settings.compactionRetainedTurns)
@@ -210,9 +226,9 @@ class ContextWindowProvider:
             if any(not message.source_message_ids for message in prefix):
                 break  # Never evict an unfinished, in-memory tool chain.
             selected = cut
-            if self._estimate(system, raw[cut:], tools) + self.settings.summaryTokenLimit <= target:
+            if self._estimate(system, raw[cut:], self._window_tools(raw[cut:], tools, protocol_tools=protocol_tools, restore=restore)) + self.settings.summaryTokenLimit <= target:
                 break
-        if selected is None or self._estimate(system, raw[selected:], tools) >= available:
+        if selected is None or self._estimate(system, raw[selected:], self._window_tools(raw[selected:], tools, protocol_tools=protocol_tools, restore=restore)) >= available:
             raise ValueError('完整保留轮或当前工具链超出输入预算，无法安全压缩')
         prefix, retained = raw[:selected], raw[selected:]
         ids = list(dict.fromkeys([*state['removed'], *(identifier for message in prefix for identifier in message.source_message_ids)]))
@@ -246,7 +262,7 @@ class ContextWindowProvider:
         if self._summary_tokens(summary, response) > self.settings.summaryTokenLimit:
             raise ValueError('工作摘要超过长度上限')
         visible = [self._summary_message(summary), *retained]
-        estimated = self._estimate(system, visible, tools)
+        estimated = self._estimate(system, visible, self._window_tools(retained, tools, protocol_tools=protocol_tools, restore=restore))
         if estimated >= available or estimated >= self.last_input_estimate:
             raise ValueError('压缩后仍超出输入容量或未减少输入，原文已保留')
         self.compaction_diagnostic['step'] = 'commit_summary'
@@ -296,7 +312,8 @@ class ContextWindowProvider:
             raise ValueError('工具调用尚未完成，不能构造最小回复')
         return result
 
-    async def stream_response(self, *, model, system, messages, tools, signal, session_id=None, provider_timeout=None):
+    async def stream_response(self, *, model, system, messages, tools, signal, session_id=None, provider_timeout=None,
+                              protocol_tools=(), only_protocol_tools=False):
         configuration = self.provider.configuration
         self.tool_count = len(tools)
         signal.raise_if_cancelled()
@@ -307,6 +324,8 @@ class ContextWindowProvider:
         state = self.windows.load(self.role_id, self.session_key, self.scope, self.authority)
         removed = set(state['removed'])
         raw = [message for message in messages if not (set(message.source_message_ids) & removed)]
+        window_options = {'protocol_tools': protocol_tools, 'restore': not only_protocol_tools}
+        tools = self._window_tools(raw, tools, commit=True, **window_options)
         visible = ([self._summary_message(state['summary'])] if state['summary'] else []) + raw
         self.last_input_estimate = self._estimate(system, visible, tools)
         request_provider = self.provider
@@ -317,7 +336,10 @@ class ContextWindowProvider:
                 self.compaction_diagnostic = {'stage': 'summary', 'beforeTokens': self.last_input_estimate,
                     'inputLimit': available, 'trigger': trigger, 'fallback': None}
                 try:
-                    visible = await self._compact(system, raw, tools, state, signal, available, target)
+                    visible = await self._compact(system, raw, tools, state, signal, available, target, **window_options)
+                    # The summary is not raw history and contains no unlocks.
+                    raw = visible[1:]
+                    request_tools = self._window_tools(raw, tools, **window_options)
                     self.compaction_diagnostic.update(stage='committed', afterTokens=self.last_input_estimate)
                 except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
                     # A failed optional summary is never a new historical fact.
@@ -341,7 +363,7 @@ class ContextWindowProvider:
                 # Shorten context, not authorization: discovery and actual work
                 # must still be possible when the supplied schemas fit. If they
                 # do not fit, fail explicitly instead of silently claiming no tools.
-                request_tools = tools
+                request_tools = self._window_tools(raw, tools, **window_options)
                 self.last_input_estimate = self._estimate(system, visible, request_tools, provider=request_provider)
                 self.degraded = True
                 self.compaction_diagnostic.update(fallback='minimal', toolsDisabled=False,
@@ -349,6 +371,12 @@ class ContextWindowProvider:
                 self._diagnose()
                 if self.last_input_estimate >= available:
                     raise ValueError('当前输入、必要约束或已执行工具结果仍超出输入容量；原历史已保留')
+        if self.compaction_diagnostic:
+            request_tools = self._window_tools(raw, request_tools, commit=True, **window_options)
+        # Registration may have changed while an auxiliary request was awaited.
+        self.last_input_estimate = self._estimate(system, visible, request_tools, provider=request_provider)
+        if configuration is not None and configuration.contextWindowTokens is not None and self.last_input_estimate >= available:
+            raise ValueError('当前输入与工具声明仍超出输入容量；原历史已保留')
         self.tool_count = len(request_tools)
         self._reserve(signal)
         timeout = asyncio.timeout(provider_timeout) if provider_timeout is not None else nullcontext()

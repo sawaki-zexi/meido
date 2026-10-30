@@ -321,6 +321,11 @@ class RuntimeManager:
             self.sessions.update_run(run.runId, status="running")
             persisted_tool_calls: set[str] = set()
 
+            def bind_tool_dispatch(event: ToolExecutionStartEvent) -> None:
+                self.sessions.bind_tool_audit(run_id=run.runId, role_id=run.roleId, call_id=event.tool_call_id,
+                    snapshot_id=event.snapshot_id, tool_source=event.tool_source, tool_version=event.tool_version,
+                    policy_decision=event.policy_decision, capability_binding=event.capability_binding)
+
             async def persist_tool_result(message: ToolResultMessage) -> None:
                 details = message.details if isinstance(message.details, dict) else {}
                 self.sessions.finish_tool_audit(
@@ -353,6 +358,7 @@ class RuntimeManager:
                 provider_timeout=provider_timeout,
                 tool_timeout=tool_timeout,
                 on_tool_result=persist_tool_result,
+                on_tool_dispatch=bind_tool_dispatch,
                 **({"can_continue": can_continue} if can_continue is not None else {}),
             )) as loop_stream:
                 async for event in loop_stream:
@@ -392,8 +398,6 @@ class RuntimeManager:
                                 isinstance(event.message, ToolResultMessage) or isinstance(event.message, AssistantMessage) and event.message.tool_calls):
                             self.sessions.append_agent_message(run.sessionKey, event.message, run_id=run.runId)
                     if isinstance(event, AgentEndEvent):
-                        if event.reason == "completed" and capabilities is not None and capabilities.snapshot.candidates:
-                            self.sessions.save_tool_selection(run.runId, capabilities.current().selection_cache())
                         assistant = next(
                             (message for message in reversed(event.messages) if isinstance(message, AssistantMessage)),
                             None,

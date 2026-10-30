@@ -152,7 +152,7 @@ def test_actual_wire_guidance_is_conditional_and_minimal_keeps_search_route(mode
             assert '[独立任务判断]' in prompt and '1–3次调用' in prompt
             assert '[记忆纠错]' in prompt and 'superseded_ids' in prompt
             assert '[历史回溯]' in prompt and 'fetch_messages' in prompt
-            assert '未搜索前' in prompt and '下一次请求' in prompt
+            assert '未搜索前' in prompt and '搜索成功解锁后' in prompt
             assert 'PROACTIVE_CONTEXT.md' not in prompt
         assert ('尚未加载的工具' in prompt) is (mode == 'business')
         return response('依据当前可见工具处理。')

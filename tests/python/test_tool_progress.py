@@ -152,14 +152,18 @@ def test_ended_call_callback_cannot_update_while_next_call_runs():
 
 
 @pytest.mark.parametrize('ending', ['cancel', 'timeout', 'error', 'close', 'revoked'])
-def test_callback_window_closes_before_cleanup_and_cleanup_is_joined(ending):
+def test_callback_window_follows_settlement_and_cleanup_is_joined(ending):
     async def exercise():
         entered = asyncio.Event()
         cleaning = asyncio.Event()
+        release_work = asyncio.Event()
         release_cleanup = asyncio.Event()
         token = CancellationToken()
         callbacks = []
-        provider = Provider((ToolCall('one', 'work', {'description': '读取当前运行状态'}),))
+        calls = [ToolCall('one', 'work', {'description': '读取当前运行状态'})]
+        if ending == 'revoked':
+            calls.append(ToolCall('two', 'work', {'description': '再次读取运行状态'}))
+        provider = Provider(tuple(calls))
         class Tool:
             definition = ToolDefinition('work', 'Work')
             async def execute(self, arguments, context, on_update=None):
@@ -170,11 +174,12 @@ def test_callback_window_closes_before_cleanup_and_cleanup_is_joined(ending):
                 if ending == 'error':
                     raise ValueError('secret should not escape')
                 try:
-                    await asyncio.Event().wait()
+                    await release_work.wait()
                 finally:
                     cleaning.set()
                     on_update(AgentToolResult('during cleanup'))
                     await release_cleanup.wait()
+                return AgentToolResult('naturally completed')
         allowed = True
         if ending == 'revoked':
             from backend.app.agent_runtime import CapabilityRegistry
@@ -196,6 +201,9 @@ def test_callback_window_closes_before_cleanup_and_cleanup_is_joined(ending):
                         break
                     elif ending == 'revoked':
                         allowed = False
+                        # ADR0032: an entered function finishes naturally;
+                        # current permission is checked before the next call.
+                        release_work.set()
         task = asyncio.create_task(consume())
         try:
             await asyncio.wait_for(entered.wait(), 1)
@@ -209,11 +217,14 @@ def test_callback_window_closes_before_cleanup_and_cleanup_is_joined(ending):
             await asyncio.wait_for(task, 1)
             callbacks[0](AgentToolResult('after settlement'))
             assert next(event.arguments for event in events if isinstance(event, ToolExecutionStartEvent)) == {'description': '读取当前运行状态'}
-            assert not any(isinstance(event, ToolExecutionUpdateEvent) and event.result.content in {'during cleanup', 'after settlement'} for event in events)
+            assert not any(isinstance(event, ToolExecutionUpdateEvent) and event.result.content == 'after settlement' for event in events)
+            if ending != 'revoked':
+                assert not any(isinstance(event, ToolExecutionUpdateEvent) and event.result.content == 'during cleanup' for event in events)
             if ending != 'close':
                 ends = [event for event in events if isinstance(event, ToolExecutionEndEvent)]
-                assert len(ends) == 1
-                assert ends[0].result.details['status'] == {'cancel': 'cancelled', 'timeout': 'timed_out', 'error': 'failed', 'revoked': 'denied'}[ending]
+                assert [event.result.details['status'] for event in ends] == (
+                    ['succeeded', 'denied'] if ending == 'revoked' else [{'cancel': 'cancelled', 'timeout': 'timed_out', 'error': 'failed'}[ending]])
+                assert len(callbacks) == 1
         finally:
             release_cleanup.set()
             if not task.done():

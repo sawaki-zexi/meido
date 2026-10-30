@@ -11,6 +11,7 @@ from backend.app.agent_runtime import (
 from backend.app.agent_runtime.plugins import (
     HookDefinition, HookOutcome, PluginContribution, PluginManifest, PluginRegistry,
 )
+from backend.app.agent_runtime.types import ToolResultMessage
 
 
 INTENT_SCHEMA = {
@@ -64,10 +65,11 @@ def test_provider_requests_call_intent_and_strict_business_function_receives_onl
         capabilities = None if route == 'plain' else CapabilityRegistry([tool]).resolve(
             role_id='r', session_key='role:r', run_id='intent',
             discovery_enabled=route in {'deferred', 'loaded'},
-            activated_tools={'read_config'} if route == 'loaded' else set(),
         )
+        history = [AssistantMessage(tool_calls=(ToolCall('prior-search', 'tool_search', {'query': 'select:read_config'}),)),
+                   ToolResultMessage('prior-search', 'tool_search', '{}', unlocked_tools=('read_config',))] if route == 'loaded' else []
         events = [event async for event in run_agent_loop(provider=Provider(), model='fake', system='',
-            messages=[], tools=[tool], capabilities=capabilities, max_turns=3)]
+            messages=history, tools=[tool], capabilities=capabilities, max_turns=3)]
         assert events[-1].reason == 'completed', events[-1]
         assert seen == ['config.json']
         assert tool.definition.input_schema == original

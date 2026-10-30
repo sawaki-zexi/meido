@@ -175,7 +175,7 @@ def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions
                 assert json.loads(results[-2]["content"])["unlocked"] == [
                     "agent_browser_get_title"
                 ]
-                assert "tool_search" in results[-1]["content"]
+                assert results[-1]["content"] == "Actual driver title"
                 yield ModelToolCall("title-browser", "agent_browser_get_title", {})
                 yield ModelResponseDone("tool_use")
             else:
@@ -243,18 +243,20 @@ def test_http_search_loads_browser_schema_in_same_run_and_audits_actual_versions
     bindings = {call_id: sessions.call_binding(run_id, call_id) for call_id in audits}
     assert (
         audits["search-browser"]["snapshotId"]
-        == audits["premature-browser"]["snapshotId"]
         == bindings["search-browser"]["snapshotId"]
     )
     assert audits["title-browser"]["snapshotId"] == bindings["title-browser"]["snapshotId"]
-    assert bindings["search-browser"]["visibilityVersion"] == bindings["premature-browser"]["visibilityVersion"] == 0
+    assert bindings["search-browser"]["visibilityVersion"] == 0
+    assert bindings["premature-browser"]["visibilityVersion"] == 1
     assert bindings["title-browser"]["visibilityVersion"] == 1
-    assert bindings["premature-browser"]["active"] is False
+    assert bindings["premature-browser"]["active"] is True
     assert bindings["title-browser"]["active"] is True
     assert [item["name"] for item in bindings["title-browser"]["tools"]] == ["agent_browser_get_title"]
     assert all("candidates" not in binding for binding in bindings.values())
-    assert [item["name"] for item in snapshot["toolSelection"]["selected"]] == ["agent_browser_get_title"]
-    assert audits["premature-browser"]["resultCategory"] == "denied"
+    assert "toolSelection" not in snapshot
+    search_receipt = next(item for item in messages if item.toolCallId == "search-browser" and item.messageType == "tool_result")
+    assert search_receipt.metadata["unlockedTools"] == ["agent_browser_get_title"]
+    assert audits["premature-browser"]["resultCategory"] == "succeeded"
     assert audits["premature-browser"]["toolSource"] == "plugin:browser_use"
     # Reopen the persistent store after revocation; old activation evidence must
     # never restore browser authority into the new run.
@@ -489,7 +491,8 @@ def test_http_stop_after_discovery_keeps_call_fact_without_restoring_cancelled_s
                 binding = sessions.call_binding(run.runId, "load-before-stop")
                 assert binding["active"] is True
                 assert [item["name"] for item in binding["tools"]] == ["tool_search"]
-                assert sessions.latest_tool_selection(role["id"], f"role:{role['id']}") is None
+                assert any(item.metadata.get("unlockedTools") == ["agent_browser_get_title"]
+                        for item in sessions.list_messages(f"role:{role['id']}"))
             finally:
                 if not request.done():
                     request.cancel()

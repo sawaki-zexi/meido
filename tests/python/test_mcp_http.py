@@ -555,7 +555,7 @@ def test_full_remote_input_schema_blocks_calls_and_failure_does_not_expose_secre
                 yield ModelToolCall(f"step-{self.count}", name, arguments)
                 yield ModelResponseDone("tool_use")
             else:
-                assert "frozen input schema" in messages[-1]["content"]
+                assert "current input schema" in messages[-1]["content"]
                 assert "vault-sensitive-token" not in json.dumps(messages)
                 yield ModelTextDelta("参数被本地 schema 阻止")
 

@@ -5348,8 +5348,6 @@ async def _runtime_capabilities(
     direct_exposure = not frozen_advanced['values']['searchEnabled']
     if not frozen_advanced['values']['spawnEnabled']:
         policy = replace(policy, enabled_tools=policy.enabled_tools - {'spawn'})
-    frozen_plugin_revisions = {identifier: plugin_configuration.get(identifier).revision
-                               for identifier in ('browser', 'computer', 'screen', 'pet')}
     source_run = session_store.get_run(run_id)
     if (session_key != f'role:{role.id}' or source_run is None
             or source_run.modelSnapshot.get('humanInputSource') != 'desktop_owner'
@@ -5363,7 +5361,6 @@ async def _runtime_capabilities(
             or source_run.modelSnapshot.get("computerUseSource") != "desktop_owner"):
         policy = replace(policy, enabled_tools=policy.enabled_tools - COMPUTER_USE_TOOL_NAMES,
                          enabled_plugins=policy.enabled_plugins - {"computer_use"})
-    frozen_manifests = {item.plugin_id: item for item in plugin_registry.manifests()}
     source_authority = capture_channel_source(
         multichannel_store, session_store, role_id=role.id, session_key=session_key,
         run_id=run_id, owner_context=not external_only,
@@ -5400,9 +5397,8 @@ async def _runtime_capabilities(
                      else 'computer' if definition.name in COMPUTER_USE_TOOL_NAMES
                      else 'screen' if definition.name == 'observe_screen'
                      else 'pet' if definition.name == 'pet_action' else None)
-        if plugin_id is not None and (not plugin_configuration.enabled(plugin_id)
-                or plugin_configuration.get(plugin_id).revision != frozen_plugin_revisions[plugin_id]):
-            return 'plugin permission was revoked or its configuration changed'
+        if plugin_id is not None and not plugin_configuration.enabled(plugin_id):
+            return 'plugin permission was revoked'
         if source_authority is not None:
             origin_denial = source_authority.authorization_denial(multichannel_store)
             if origin_denial is not None:
@@ -5418,9 +5414,9 @@ async def _runtime_capabilities(
         if definition.source.startswith("plugin:"):
             plugin_id = definition.source.removeprefix("plugin:")
             manifest = next((item for item in plugin_registry.manifests() if item.plugin_id == plugin_id), None)
-            if (plugin_id not in current.enabled_plugins or manifest is None or manifest != frozen_manifests.get(plugin_id)
+            if (plugin_id not in current.enabled_plugins or manifest is None
                     or set(manifest.requested_capabilities) - current.granted_capabilities):
-                return "plugin permission was revoked or its definition changed"
+                return "plugin permission was revoked"
         return True
 
     def authorize_call(definition, context, arguments):
@@ -5500,7 +5496,6 @@ async def _runtime_capabilities(
             deferred_tool_names=_deferred_discovery_tools(),
             authorize_tool=authorize_tool,
             authorize_call=authorize_call,
-            restored_activation=session_store.latest_tool_selection(role.id, session_key, source_scope=source_scope) if "tool_search" in policy.enabled_tools else None,
             source_scope=source_scope,
             service_grants=mcp_run.grants if mcp_run is not None else (),
             resource_close=mcp_run.close if mcp_run is not None else None,
@@ -5657,7 +5652,7 @@ def _bind_spawn_runtime(capabilities: CapabilityResolution, provider: MeidoProvi
     # a later role edit must never swap a running child's connection or tools.
     frozen_role = provider.role.model_copy(deep=True)
     frozen_config = provider.configuration.model_copy(deep=True) if provider.configuration is not None else None
-    for tool in capabilities.tools_for_binding():
+    for tool in capabilities.registered_tools():
         if isinstance(tool, ScheduleTool):
             tool.bind(capabilities, frozen_role, frozen_config)
         if isinstance(tool, SpawnTool):
@@ -5741,7 +5736,7 @@ def _schedule_authorized(plan):
 
 async def _schedule_execute(plan):
     from .agent_runtime.spawn_tool import SpawnExecutor
-    from .agent_runtime.tools import ToolContext, ToolDefinition
+    from .agent_runtime.tools import ToolContext
     from .models import Role, SpawnToolConfig
     data = plan['data']
     origin = TaskOrigin.from_dict(data['origin'], require_source_authority=True)
@@ -5754,15 +5749,15 @@ async def _schedule_execute(plan):
     if (configuration_id and configuration is None
             or (configuration.model_dump(mode='json', exclude={'apiKey'}) if configuration else None) != frozen_configuration):
         raise PermissionError('original model connection changed or was deleted')
-    # Decode explicit declaration fields with defaults for additive metadata
-    # (old schedules predate namespace_summary); unknown fields still reject.
-    definitions = {item['name']: ToolDefinition(**item) for item in data['frozen']['tools']}
-    candidates = tuple(tool for tool in _runtime_tool_candidates(role, preview=True)
-        if tool.definition.name in SOFT_TOOLS and tool.definition == definitions.get(tool.definition.name))
+    # Saved tool names are the task's requested scope, not execution snapshots.
+    # Legacy definitions remain readable as historical facts without equality gates.
+    names = set(data['frozen'].get('toolNames', ())) or {item['name'] for item in data['frozen'].get('tools', ())}
     current = store.get(role.id)
     if current is None:
         raise PermissionError('original role was deleted')
-    enabled = _enabled_runtime_tool_names(current) & set(definitions)
+    candidates = tuple(tool for tool in _runtime_tool_candidates(current, preview=True)
+        if tool.definition.name in SOFT_TOOLS and tool.definition.name in names)
+    enabled = _enabled_runtime_tool_names(current) & names
     def authorize(definition, context):
         current = store.get(role.id)
         return bool(_schedule_authorized(plan) and current is not None and definition.name in _enabled_runtime_tool_names(current))
@@ -5770,13 +5765,13 @@ async def _schedule_execute(plan):
         current = store.get(role.id)
         return bool(current is not None and (definition.name != 'shell' or (
             current.agentConfig.shell.enabled and ShellTool.command_is_allowed(str(arguments.get('command', '')), current.agentConfig.shell.allowedCommands))))
-    frozen = await CapabilityRegistry(candidates).resolve_async(role_id=role.id, session_key=origin.session_key,
+    capabilities = await CapabilityRegistry(candidates).resolve_async(role_id=role.id, session_key=origin.session_key,
         run_id=plan['id'], enabled_tools=enabled, allowed_risks={'read_only', 'mutating', 'external'},
         authorize_tool=authorize, authorize_call=authorize_call)
     context = ToolContext(role.id, origin.session_key, plan['id'], CancellationToken())
     provider = MeidoProvider(model_adapter, role, configuration, structured_without_tools=True, max_response_tokens=4096)
     return SpawnExecutor(task=data['prompt'], profile='general', config=SpawnToolConfig(), provider=provider,
-        frozen=frozen, context=context, authorized=lambda: _schedule_authorized(plan))
+        capabilities=capabilities, context=context, authorized=lambda: _schedule_authorized(plan))
 
 
 async def _schedule_deliver(plan, occurrence, authorized):

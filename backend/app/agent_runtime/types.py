@@ -63,6 +63,7 @@ class ToolResultMessage:
     role: Literal["tool"] = "tool"
     usage: object | None = None
     nested_calls: tuple[ToolCall, ...] = ()
+    unlocked_tools: tuple[str, ...] = ()
     timestamp: int | None = None
     source_message_ids: tuple[str, ...] = field(default=(), compare=False)
 

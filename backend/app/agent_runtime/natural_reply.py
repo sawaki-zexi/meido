@@ -91,6 +91,12 @@ class NaturalReplyProvider:
 
     async def _response(self, kwargs):
         self._check(kwargs['signal'])
+        if getattr(self.provider, 'supports_protocol_tools', False):
+            # Window loading owns business schemas. This wrapper owns its
+            # finish protocol and the explicitly restricted correction step.
+            protocol = tuple(item for item in kwargs['tools'] if item.get('function', {}).get('name') == FINISH_REPLY)
+            kwargs = {**kwargs, 'protocol_tools': protocol,
+                      'only_protocol_tools': len(protocol) == len(kwargs['tools'])}
         done, text, calls = None, '', []
         async with aclosing(self.provider.stream_response(**kwargs)) as stream:
             async for event in stream:

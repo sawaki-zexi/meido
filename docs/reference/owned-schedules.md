@@ -28,9 +28,9 @@ every 也接受五/六字段 cron，cron 是显式同义入口；六字段秒在
 
 ## 执行、恢复和投递
 
-instant 原样投递冻结文本。soft 使用独立 TaskRuntime(kind=schedule, completion=False)，120秒/12轮/最终20000字符/累计60000字符及既有宿主任务日志配额。复用 general SpawnExecutor，只运行创建时冻结且当前仍许可的 read/list/web、任务目录write/edit和argv白名单Shell。禁屏幕、browser/computer、MCP、发现、递归委托、schedule、记忆/Todo写及渠道发送。独立工作集只接收prompt，不创建普通run、主人消息或第二会话。
+instant 原样投递冻结文本。soft 使用独立 TaskRuntime(kind=schedule, completion=False)，120秒/12轮/最终20000字符/累计60000字符及既有宿主任务日志配额。复用 general SpawnExecutor，只运行创建时选定名称且当前仍许可的 read/list/web、任务目录write/edit和argv白名单Shell。禁屏幕、browser/computer、MCP、发现、递归委托、schedule、记忆/Todo写及渠道发送。独立工作集只接收prompt，不创建普通run、主人消息或第二会话。
 
-模型非秘密配置、角色与工具定义创建时冻结，使用当时实际解析的连接ID（包括应用默认连接），到时按该ID精确恢复；切换默认连接不改投，原连接消失/改变则失败。当前许可持续复核，新增许可不扩权。soft使用宿主submission_key原子交接；崩溃窗口可找回同一task，重启queued/running为interrupted而不重跑。
+模型非秘密配置与角色事实创建时冻结，工具保存选定名称范围，使用当时实际解析的连接ID（包括应用默认连接），到时按该ID精确恢复；切换默认连接不改投，原连接消失/改变则失败。当前许可持续复核，新增许可不扩权。soft使用宿主submission_key原子交接；崩溃窗口可找回同一task，重启queued/running为interrupted而不重跑。
 
 soft从claim起持久保存任务清理责任，taskId关联与ACK待确认标记同事务写入。过期、撤权、取消和异常终态均保留该责任；找回原任务、停止和ACK由同一恢复路径处理，SQLite busy或重启不会使其丢失。结果复制后ready/sent均可独立重试本地ACK，不重跑执行或投递。无taskId时按原来源和occurrence marker查找，受TaskRuntime既有每角色100条保留额度约束；终态同时关闭提交的最终授权门，经过同一Runtime锁确认无任务后才标记not_submitted并解除责任。任务管理暂时禁用时list明确抛PermissionError，不能把不可管理误认为空列表；角色删除失败恢复enable后继续清理，实际删除仍全量清除任务和调度。该错误不放宽ACK或跨来源访问权限。
 
@@ -42,6 +42,6 @@ ACK前仍占任务/日志额度且不清理对应occurrence；ACK后普通回收
 
 本次模型与渠道均为本地临时fixture，未发送真实平台消息或使用付费模型。未接入TodoPlugin，不改变当天提醒者、当天暂停和次日资格。
 
-## 工具目录迁移兼容（2026-10-26）
+## 当前工具与历史兼容（2026-10-30）
 
-soft 冻结的是创建调用所属请求的有限已选工具，不是随后发布的聊天目录；同回复先搜索不能把未展示工具加入计划。到时严格解析原定义，仅为后来新增的可选元数据使用字段默认值，未知格式拒绝；仍与当前实际定义及权限取交集。同名新实现、后加工具和模型配置变化不会扩权。TaskOrigin 兼容与 bridge 回滚见 [受管任务](owned-background-shell.md#taskorigin-历史兼容2026-10-26)和 [ADR-0026](../adr/0026-request-bound-lightweight-tool-loading.md)。
+soft 保存创建时已可见的有限工具名称（`toolNames`）；同回复中先成功搜索的名称可进入该范围。到时查询当前实现与参数定义，旧计划的 `tools` 完整声明只用于读取名称，不做定义相等门槛。新增名称不扩大任务范围，原模型配置、角色/来源与目标投递事实仍保留。历史 TaskOrigin 兼容见 [受管任务](owned-background-shell.md#taskorigin-历史兼容2026-10-26)，当前执行选择见 [ADR-0032](../adr/0032-current-tool-registry-and-raw-window.md)。

@@ -2,7 +2,7 @@
 
 状态：当前
 
-最后核验：2026-10-08
+最后核验：2026-10-30
 
 事实来源：
 
@@ -12,9 +12,9 @@
 - [`backend/app/agent_runtime/capabilities.py`](../../backend/app/agent_runtime/capabilities.py)
 - [`agent-runtime-tool-result.md`](../reference/agent-runtime-tool-result.md)
 
-能力在运行开始时解析为一份冻结的 `CapabilitySnapshot`。新增能力应接入 Registry 和宿主服务端口，不修改 FastAPI 路由、Agent Loop、MemoryWorker 或 SQLite 的核心流程。
+工具在调用时查询当前注册表；`CapabilitySnapshot` 记录当时的声明和审计事实。新增能力应接入 Registry 和宿主服务端口，不修改 FastAPI 路由、Agent Loop、MemoryWorker 或 SQLite 的核心流程。
 
-解析完成后，Tool 的实现对象会和本次运行的 Tool 定义绑定。不要在运行期间修改 Tool 的名称、Schema、超时或输出上限；需要改变契约时注册新版本，让下一次运行生成新的 generation。
+更新工具时按同名注册替换当前实现；下一调用使用当前 schema、超时和输出限制，已经进入的函数自然结束。请求构造从实际原文窗口恢复用过或解锁过的名称，详见 [ADR-0032](../adr/0032-current-tool-registry-and-raw-window.md)。
 
 ## 准备条件
 
@@ -72,7 +72,7 @@ Plugin Tool 抛出的异常文本不会原样传给模型或写入工具 transcr
 ## 验收清单
 
 - Tool schema 只暴露当前快照允许的能力。
-- 运行期间修改注册表、角色配置或 Skill 文件不会改变已经冻结的快照。
+- 工具更新、注销和当前来源撤权影响后续调用；旧审计事实保持原样。Skill 内容校验继续遵守自身契约。
 - ToolContext 的角色、会话和运行 ID 来自宿主，模型参数不能覆盖。
 - 失败、超时和取消返回结构化错误，不能伪装成成功结果。
 - 能力来源、版本、策略和 generation 可在运行快照中诊断，且不包含 API Key 或插件配置密钥。

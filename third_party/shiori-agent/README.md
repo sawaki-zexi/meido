@@ -15,8 +15,8 @@
 按该提交对应工具源码适配 `function.description` 与已有参数说明；浏览器28项和电脑8项
 JSON 声明逐项核对。Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。
 
-Meido 保留 ADR-0026 绑定/冻结授权、4096字节目录、原来源/owner/file-root/服务许可，
-不复制上游通用进度 `description` 参数协议，不注册未实现工具。
+Meido 保留 4096字节目录、原来源/owner/file-root/服务许可；此前 ADR-0026 的执行冻结与恢复缓存已由下述 ADR-0032 替代，
+通用进度 `description` 参数协议按下述工具调用意图条目适配，不注册未实现工具。
 完整名称、源码链接、风险和执行差异见[本轮报告](../../docs/research/shiori-tool-exposure-and-guidance-2026-10-30.md)。
 此前条目中的固定 SHA 继续表示各自历史来源，不被本次核验覆盖。
 
@@ -66,7 +66,7 @@ Exa MCP 请求结构和 HTML 转换选项。上游版权和 MIT 许可见 [LICEN
 Meido 自行适配 AgentTool、角色授权、宿主搜索配置、DNS 固定连接、逐跳校验、
 流式容量控制、可终止解析进程和取消协议；不引入上游工具宿主、数据库或身份系统。
 `backend/app/agent_runtime/discovery.py` 另遵循同版 `tool_search.py` 的查询、精确选择、
-风险筛选和下一次请求加载行为；冻结目录、不可变版本、来源撤权及持久化协议由 Meido 实现。
+风险筛选行为；当前执行与原文恢复按下述较新基线对齐，真实来源及持久化协议由 Meido 实现。
 更新以人工核对固定上游版本和公开行为测试为准，不自动同步。
 
 ## Skill 指令适配
@@ -120,3 +120,14 @@ Copyright (c) 2026 YinFengWindy，MIT 许可见本目录 [LICENSE](LICENSE)。
 
 Meido 保留自身普通工具循环、角色／来源授权、桌面 SSE、SQLite 消息及真实渠道回执；
 旧有无需 @ 的群聊主动接话为独立保留功能，不作为上述普通自然聊天的实现。
+
+## 当前工具注册表与原文窗口恢复
+
+`backend/app/agent_runtime/{capabilities,discovery,loop,tool_window,context_provider}.py`
+适配固定提交 `71c8b0e460530683cd28aad6bb62e873c7167c89` 的
+`apps/backend/agent/tools/{registry,execution}.py`、
+`apps/backend/agent/core/passive_turn/{helpers,tool_visibility,compaction_render,reasoning_loop}.py`：
+按当前名称查实现、最终参数检查、原文窗口 used/unlocked 名称恢复及同回复顺序解锁。
+Meido 保留自身工具协议、真实角色/来源、原消息回执与任务归属；不整体移植上游 SDK。
+决定与验证见 [ADR-0032](../../docs/adr/0032-current-tool-registry-and-raw-window.md)。
+Copyright (c) 2026 YinFengWindy，MIT 许可见本目录 [LICENSE](LICENSE)。

@@ -103,11 +103,101 @@ async def test_compaction_survives_restart_preserves_history_and_never_sends_ima
     assert next_provider.compactions == 0
     assert len(adapter.calls) == 3
     assert '此前对话的工作摘要' in str(adapter.calls[-1][0])
+
     # Unknown capacity disables new compaction, not consumption of an existing lawful summary.
     base.configuration = base.configuration.model_copy(update={'contextWindowTokens': None})
     unknown, _ = await execute(base, restored, settings, sessions.runtime_messages('role:r', max_messages=24))
     assert unknown.compactions == 0
     assert '此前对话的工作摘要' in str(adapter.calls[-1][0])
+
+
+@pytest.mark.anyio
+async def test_compaction_uses_retained_raw_window_for_schemas_and_execution_after_restart(tmp_path):
+    from backend.app.agent_runtime import CapabilityRegistry, ToolDefinition, AgentToolResult
+    from backend.app.agent_runtime.loop import run_agent_loop
+
+    sessions, adapter, base, windows, settings = setup_window(tmp_path)
+    base.configuration = base.configuration.model_copy(update={'contextWindowTokens': 16000, 'modelAutoCompactTokenLimit': 3000})
+    settings = settings.model_copy(update={'contextTargetRatio': .15})
+    sessions.append_agent_message('role:r', AssistantMessage(tool_calls=(ToolCall('unlock', 'tool_search', {'query': 'select:archive.read'}),)))
+    sessions.append_agent_message('role:r', ToolResultMessage('unlock', 'tool_search', '{}', unlocked_tools=('archive.read',)))
+    for _ in range(6):
+        sessions.append_message('role:r', 'user', 'more context ' * 100)
+        sessions.append_message('role:r', 'assistant', 'response ' * 100)
+    sessions.append_message('role:r', 'user', 'continue')
+
+    class Archive:
+        definition = ToolDefinition('archive.read', 'old archive', {'type': 'object'}, exposure='deferred')
+        calls = 0
+        async def execute(self, arguments, context, on_update=None):
+            self.calls += 1
+            return AgentToolResult('archive')
+
+    archive = Archive()
+    capabilities = CapabilityRegistry([archive]).resolve(role_id='r', session_key='role:r', run_id='run', discovery_enabled=True)
+    async def coverage(ids):
+        return True
+    provider = ContextWindowProvider(base, settings, windows, role_id='r', session_key='role:r', scope='owner', authority='a',
+        authorized=lambda: True, ensure_coverage=coverage)
+    # Bind via the public loop seam, exactly as ordinary chat does.
+    events = [event async for event in run_agent_loop(provider=provider, model='fixture', system='',
+        messages=sessions.runtime_messages('role:r', max_messages=None), capabilities=capabilities)]
+    assert events[-1].reason == 'completed'
+    assert provider.compactions == 1
+    assert [tool['function']['name'] for tool in adapter.calls[-1][1]] == ['tool_search']
+    assert capabilities.current().get('archive.read') is None
+    original = sessions.list_messages('role:r')
+    assert any(message.metadata.get('unlockedTools') == ['archive.read'] for message in original)
+
+    # A fresh provider/registry consumes the committed cut, even though the
+    # original unlock receipt is still physically present in SQLite.
+    provider = ContextWindowProvider(base, settings, ContextWindowStore(sessions.database_path), role_id='r', session_key='role:r',
+        scope='owner', authority='a', authorized=lambda: True, ensure_coverage=coverage)
+    restarted = CapabilityRegistry([archive]).resolve(role_id='r', session_key='role:r', run_id='restart', discovery_enabled=True)
+    [event async for event in run_agent_loop(provider=provider, model='fixture', system='',
+        messages=SessionStore(sessions.database_path).runtime_messages('role:r', max_messages=None), capabilities=restarted)]
+    assert [tool['function']['name'] for tool in adapter.calls[-1][1]] == ['tool_search']
+    assert restarted.current().get('archive.read') is None
+    assert sessions.list_messages('role:r') == original
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('needs_correction', [False, True])
+async def test_natural_reply_preserves_finish_protocol_and_correction_tool_boundary(tmp_path, needs_correction):
+    from backend.app.agent_runtime import CapabilityRegistry, ToolDefinition, AgentToolResult
+    from backend.app.agent_runtime.loop import run_agent_loop
+    from backend.app.agent_runtime.natural_reply import NaturalReplyProvider
+    from backend.app.agent_runtime.types import UserMessage
+
+    sessions, _, base, windows, settings = setup_window(tmp_path)
+    class Business:
+        definition = ToolDefinition('read_archive', 'archive', {'type': 'object'}, exposure='deferred')
+        async def execute(self, arguments, context, on_update=None):
+            return AgentToolResult('archive')
+    class NaturalAdapter:
+        calls = []
+        async def stream_rich_messages(self, messages, configuration, tools, **kwargs):
+            self.calls.append([item['function']['name'] for item in tools])
+            if needs_correction and len(self.calls) == 1:
+                yield ModelStreamDone(ModelAssistantMessage((ModelTextBlock('unformatted reply'),), ModelResponseMetadata(stop_reason='stop')))
+            else:
+                yield ModelStreamDone(ModelAssistantMessage((ModelToolCallBlock('finish', 'finish_reply', {'messages': ['done']}),),
+                    ModelResponseMetadata(stop_reason='tool_use')))
+    adapter = NaturalAdapter()
+    base.adapter = adapter
+    async def coverage(ids):
+        return True
+    window = ContextWindowProvider(base, settings, windows, role_id='r', session_key='role:r', scope='owner', authority='a',
+        authorized=lambda: True, ensure_coverage=coverage)
+    capabilities = CapabilityRegistry([Business()]).resolve(role_id='r', session_key='role:r', run_id='natural', discovery_enabled=True)
+    transcript = [UserMessage('old'), AssistantMessage(tool_calls=(ToolCall('search', 'tool_search', {'query': 'archive'}),)),
+        ToolResultMessage('search', 'tool_search', '{}', unlocked_tools=('read_archive',)), UserMessage('continue')]
+    events = [event async for event in run_agent_loop(provider=NaturalReplyProvider(window), model='fixture', system='',
+        messages=transcript, capabilities=capabilities)]
+    assert events[-1].reason == 'completed', events[-1]
+    assert transcript[-1].metadata['replySequence'] == ['done']
+    assert adapter.calls == ([['tool_search', 'read_archive', 'finish_reply'], ['finish_reply']] if needs_correction
+                             else [['tool_search', 'read_archive', 'finish_reply']])
 
 
 @pytest.mark.anyio

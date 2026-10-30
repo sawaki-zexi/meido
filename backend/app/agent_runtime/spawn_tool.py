@@ -15,7 +15,7 @@ from ..models import SpawnToolConfig
 from ..task_runtime import TaskBudget, TaskOrigin, TaskOutcome, TaskRuntime, TaskSnapshot
 from ..task_runtime.process import ProcessExecutor
 from ..task_runtime.runtime import TaskExecution
-from .capabilities import CapabilityResolution
+from .capabilities import CapabilityRegistry, CapabilityResolution
 from .events import AgentEndEvent, MessageEndEvent
 from .file_tools import build_file_tools
 from .loop import run_agent_loop
@@ -91,27 +91,54 @@ class BoundedModelProvider:
 
 
 class _ChildTool:
-    def __init__(self, tool: AgentTool, definition: ToolDefinition, allowed: Callable[[Mapping[str, object]], bool], execute=None):
-        self.tool, self.definition, self.allowed = tool, definition, allowed
-        self._execute = execute or tool.execute
+    def __init__(self, tool: AgentTool, definition: ToolDefinition, allowed: Callable[[Mapping[str, object]], bool], current_tool=None):
+        self.tool, self._definition, self.allowed = tool, definition, allowed
+        self.current_tool = current_tool
+
+    @property
+    def definition(self):
+        tool = self.current_tool() if self.current_tool is not None else self.tool
+        return tool.definition if tool is not None else self._definition
+
+    @definition.setter
+    def definition(self, definition: ToolDefinition):
+        self._definition = definition
 
     async def execute(self, arguments, context, on_update=None):
         if not self.allowed(arguments):
             return _error()
-        return await resolve_tool_result(self._execute(arguments, context, on_update))
+        tool = self.current_tool() if self.current_tool is not None else self.tool
+        if tool is None:
+            return _error()
+        ToolRegistry.validate_definition(tool.definition, arguments)
+        return await resolve_tool_result(tool.execute(arguments, context, on_update))
 
 
 class _ChildRead:
-    def __init__(self, parent: AgentTool, task_tool: AgentTool, directory: Path, parent_execute=None):
+    def __init__(self, parent: AgentTool, task_tool: AgentTool, directory: Path, current_parent=None):
         self.parent, self.task_tool, self.directory = parent, task_tool, directory
-        self.definition = parent.definition
-        self._parent_execute = parent_execute or parent.execute
+        self.current_parent = current_parent
+        self._definition = parent.definition
+
+    @property
+    def definition(self):
+        parent = self.current_parent() if self.current_parent is not None else self.parent
+        return parent.definition if parent is not None else self._definition
+
+    @definition.setter
+    def definition(self, definition: ToolDefinition):
+        self._definition = definition
 
     async def execute(self, arguments, context, on_update=None):
         path = Path(str(arguments.get("path", "")))
         candidate = path if path.is_absolute() else self.directory / path
         own = candidate.resolve().is_relative_to(self.directory.resolve()) and candidate.exists()
-        return await resolve_tool_result((self.task_tool.execute if own else self._parent_execute)(arguments, context, on_update))
+        parent = self.current_parent() if self.current_parent is not None else self.parent
+        tool = self.task_tool if own else parent
+        if tool is None:
+            return _error()
+        ToolRegistry.validate_definition(tool.definition, arguments)
+        return await resolve_tool_result(tool.execute(arguments, context, on_update))
 
 
 class _ChildShell:
@@ -125,6 +152,10 @@ class _ChildShell:
     async def execute(self, arguments, context, on_update=None):
         del on_update
         command = str(arguments["command"])
+        current = self.owner.capabilities.get("shell")
+        if not isinstance(current, ShellTool):
+            return _error()
+        self.parent = current
         if context.signal.is_cancelled() or not self.parent.allows_restricted(self.owner.context, command):
             return _error()
         env = {key: value for key, value in os.environ.items()
@@ -141,7 +172,7 @@ class _ChildShell:
             except TimeoutError:
                 process.cancel()
                 await _finish_owned_cleanup(running)
-                return AgentToolResult("Child Shell exceeded the frozen parent command timeout.", {"status": "timed_out"}, True)
+                return AgentToolResult("Child Shell exceeded the current command timeout.", {"status": "timed_out"}, True)
             except asyncio.CancelledError:
                 process.cancel()
                 await _finish_owned_cleanup(running)
@@ -156,10 +187,10 @@ class _ChildShell:
 
 class SpawnExecutor:
     def __init__(self, *, task: str, profile: str, config: SpawnToolConfig, provider: ModelProvider,
-                 frozen: CapabilityResolution, context: ToolContext, authorized: Callable[[], bool]):
+                 capabilities: CapabilityResolution, context: ToolContext, authorized: Callable[[], bool]):
         self.task, self.profile, self.config, self.provider = task, profile, config, provider
         permitted = _READ | (_WEB if profile != "scripting" else frozenset()) | (_WRITE if profile != "research" else frozenset())
-        self.frozen = frozen.selected_subset({item.name for item in frozen.snapshot.tools
+        self.capabilities = capabilities.selected_subset({item.name for item in capabilities.current().snapshot.tools
             if item.name in permitted and item.source in {"builtin", "role"}})
         self.context, self.authorized = replace(context, capability_binding=None), authorized
         self.signal = CancellationToken()
@@ -169,23 +200,25 @@ class SpawnExecutor:
         self.shell_arguments: Mapping[str, object] | None = None
         self.guard = threading.Lock()
         self._cancel_requested = False
-        shell = self.frozen.get('shell')
-        self.restricted_shell = (shell if profile != 'research' and isinstance(shell, ShellTool)
-                                 and shell.allows_restricted(context) else None)
+        shell = self.capabilities.get('shell')
+        self.restricted_shell_allowed = (profile != 'research' and isinstance(shell, ShellTool)
+                                         and shell.allows_restricted(context))
 
     def is_authorized(self) -> bool:
         if not self.authorized():
             return False
         command = self.shell_arguments.get('command') if self.shell_arguments else None
-        if self.restricted_shell is not None and not self.restricted_shell.allows_restricted(
-                self.context, str(command) if command is not None else None):
-            return False
+        if self.restricted_shell_allowed:
+            shell = self.capabilities.get('shell')
+            if not isinstance(shell, ShellTool) or not shell.allows_restricted(
+                    self.context, str(command) if command is not None else None):
+                return False
         permitted = _READ | (_WEB if self.profile != "scripting" else frozenset()) | (_WRITE if self.profile != "research" else frozenset())
-        return all(self.frozen.authorization_denial(definition, self.context,
+        return all(self.capabilities.authorization_denial(definition, self.context,
             self.shell_arguments if definition.name == "shell" else None) is None
-            for declaration in self.frozen.snapshot.tools
+            for declaration in self.capabilities.snapshot.tools
             if declaration.name in permitted and declaration.source in {"builtin", "role"}
-            if (definition := self.frozen.definition(declaration.name)) is not None)
+            if (definition := self.capabilities.definition(declaration.name)) is not None)
 
     def cancel(self) -> None:
         with self.guard:
@@ -222,30 +255,38 @@ class SpawnExecutor:
         permitted = _READ | (_WEB if self.profile != "scripting" else frozenset()) | (_WRITE if self.profile != "research" else frozenset())
         task_files = {tool.definition.name: tool for tool in build_file_tools(self.context.role_id, directory)}
         tools: list[AgentTool] = []
-        for declaration in self.frozen.snapshot.tools:
+        for declaration in self.capabilities.snapshot.tools:
             name = declaration.name
-            parent = self.frozen.get(name)
+            parent = self.capabilities.get(name)
             if name not in permitted or parent is None or declaration.source not in {"builtin", "role"}:
                 continue
-            definition = self.frozen.definition(name)
+            definition = self.capabilities.definition(name)
             if definition is None:
                 continue
             child = parent
             if name in _READ:
-                child = _ChildRead(parent, task_files[name], directory, self.frozen.executor(name))
+                child = _ChildRead(parent, task_files[name], directory, lambda name=name: self.capabilities.get(name))
             elif name in {"write_file", "edit_file"}:
                 child = task_files[name]
             elif name == "shell" and isinstance(parent, ShellTool):
-                if self.restricted_shell is None:
+                if not self.restricted_shell_allowed:
                     continue
                 child = _ChildShell(parent, directory, execution, self)
                 definition = child.definition
 
-            def allowed(arguments, declaration=definition):
-                return self.authorized() and self.frozen.authorization_denial(declaration, self.context, arguments) is None
+            def allowed(arguments, name=name):
+                current = self.capabilities.definition(name)
+                return (self.authorized() and current is not None and current.source in {"builtin", "role"}
+                        and self.capabilities.authorization_denial(current, self.context, arguments) is None)
 
             tools.append(_ChildTool(child, definition, allowed,
-                self.frozen.executor(name) if child is parent else child.execute))
+                (lambda name=name: self.capabilities.get(name)) if child is parent else None))
+        def current_tool_allowed(definition, context):
+            current = self.capabilities.definition(definition.name)
+            return (self.authorized() and current is not None and current.source in {'builtin', 'role'}
+                    and self.capabilities.authorization_denial(current, self.context) is None)
+        child_capabilities = CapabilityRegistry(tools).resolve(role_id=self.context.role_id,
+            session_key=self.context.session_key, run_id=execution.task_id, authorize_tool=current_tool_allowed)
         transcript: list[AgentMessage] = [UserMessage(self.task)]
         system = (f"[独立子任务 / independent delegated task]\nTask ID: {execution.task_id}\nProfile: {self.profile}\n"
                   f"Task directory: {directory}\nOnly write outputs in this task directory. "
@@ -254,7 +295,7 @@ class SpawnExecutor:
                   "Shell uses an argv allowlist; it is not an operating system or network sandbox.")
         outcome = TaskOutcome("failed")
         async for event in run_agent_loop(provider=BoundedModelProvider(self.provider, self.config), model="frozen-parent-model",
-                system=system, messages=transcript, tools=tools, max_turns=self.config.maxTurns, signal=self.signal,
+                system=system, messages=transcript, capabilities=child_capabilities, max_turns=self.config.maxTurns, signal=self.signal,
                 session_id=execution.task_id, role_id=self.context.role_id, session_key=self.context.session_key,
                 run_id=execution.task_id, provider_timeout=min(60, self.config.timeoutSeconds), tool_timeout=min(60, self.config.timeoutSeconds)):
             if isinstance(event, MessageEndEvent):
@@ -288,23 +329,21 @@ class SpawnTool:
         self.tasks, self.config, self.origin_resolver, self.authorized = tasks, deepcopy(config), origin_resolver, authorized
         self.coding_application, self.coding_access = coding_application, coding_access
         self.coding_authorized = coding_authorized or authorized
-        self.frozen: CapabilityResolution | None = None
+        self.capabilities: CapabilityResolution | None = None
         self.provider_factory: Callable[[], ModelProvider] | None = None
         self.definition = replace(self.definition, timeout_seconds=config.timeoutSeconds + 5, output_limit=config.maxOutputChars)
 
     def bind(self, capabilities: CapabilityResolution, provider_factory: Callable[[], ModelProvider]) -> None:
-        self.frozen, self.provider_factory = capabilities, provider_factory
+        self.capabilities, self.provider_factory = capabilities, provider_factory
 
     async def execute(self, arguments, context, on_update=None):
         del on_update
         try:
             ToolRegistry.validate_definition(self.definition, arguments)
-            if not self.authorized(context) or context.signal.is_cancelled() or self.frozen is None or self.provider_factory is None:
+            if not self.authorized(context) or context.signal.is_cancelled() or self.capabilities is None or self.provider_factory is None:
                 return _error()
-            frozen = context.capability_binding or self.frozen.current()
-            if (context.role_id, context.session_key, context.run_id) != (frozen.snapshot.role_id, frozen.snapshot.session_key, frozen.snapshot.run_id):
-                return _error()
-            if context.capability_snapshot_id and frozen.snapshot.snapshot_id != context.capability_snapshot_id:
+            current = self.capabilities.current()
+            if (context.role_id, context.session_key, context.run_id) != (current.snapshot.role_id, current.snapshot.session_key, current.snapshot.run_id):
                 return _error()
             origin = self.origin_resolver(context)
             background = arguments.get("run_in_background", False) is True
@@ -323,7 +362,7 @@ class SpawnTool:
                 return _error()
             owned_context, authorized = replace(context, capability_binding=None), self.authorized
             executor = SpawnExecutor(task=arguments["task"], profile=arguments.get("profile", "research"), config=self.config,
-                provider=self.provider_factory(), frozen=frozen, context=owned_context, authorized=lambda: authorized(owned_context))
+                provider=self.provider_factory(), capabilities=current, context=owned_context, authorized=lambda: authorized(owned_context))
             task_id = self.tasks.submit(origin, executor, budget=TaskBudget(self.config.timeoutSeconds, self.config.maxOutputChars),
                 kind="spawn", description=json.dumps({"label": arguments.get("label", ""), "profile": arguments.get("profile", "research"),
                     "retry_count": arguments.get("retry_count", 0)}, ensure_ascii=False),
