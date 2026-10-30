@@ -211,6 +211,14 @@ class CapabilityResolution:
     def get(self, name: str) -> AgentTool | None:
         return self._tools_by_name.get(name)
 
+    def tools_for_binding(self) -> tuple[AgentTool, ...]:
+        """Host initialization of admitted candidates, including deferred tools.
+
+        This does not publish schemas or permit execution; callers must still
+        use the request's selected definition and captured executor at dispatch.
+        """
+        return tuple(self._candidate_tools.values()) or self.tools
+
     def executor(self, name: str):
         """The callable captured with this declaration, not a latest-name lookup."""
         return self._executors_by_name[name]
@@ -444,8 +452,9 @@ class CapabilityRegistry:
         if discovery_enabled:
             from .discovery import DiscoveryState, ToolSearchTool
             discovery = DiscoveryState(service_grants=service_grants, external_only=external_only)
-            if not direct_exposure:
-                registered_tools.append(ToolSearchTool(discovery))
+            # Shiori's search switch controls schema loading, not permission to
+            # use the core discovery tool. Direct mode can report already_loaded.
+            registered_tools.append(ToolSearchTool(discovery))
         names: set[str] = set()
         for tool in registered_tools:
             if tool.definition.name in names:

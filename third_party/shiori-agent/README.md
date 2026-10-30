@@ -1,6 +1,39 @@
 # Shiori-Agent attribution
 
-状态：当前。最后核验：2026-10-16。
+状态：当前。最后核验：2026-10-30。
+
+## 工具可见性与调用指引（2026-10-30，后续核验）
+
+`backend/app/main.py` 与 `agent_runtime/{capabilities,discovery,search_metadata,conversation_prompt,meido_provider}.py`
+适配固定提交 `21e68d99d88f421e798fabc4c5d9f8c1b4ad454f` 的
+`apps/backend/agent/tools/{registry,tool_search}.py`、`tools/meta/register.py`、
+`core/passive_turn/{helpers,reasoning_loop}.py`、`apps/backend/prompts/agent.py`、
+`bootstrap/toolsets/` 及各插件 `backend/plugin.py`：常驻/按需、风险声明、未加载名称目录、
+关闭按需时保留核心搜索、按功能发现与委托/记忆/历史调用决策。
+
+文件、shell、记忆、spawn、schedule、group、network、pet/screen/computer/coding 工具定义
+按该提交对应工具源码适配 `function.description` 与已有参数说明；浏览器28项和电脑8项
+JSON 声明逐项核对。Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。
+
+Meido 保留 ADR-0026 绑定/冻结授权、4096字节目录、原来源/owner/file-root/服务许可，
+不复制上游通用进度 `description` 参数协议，不注册未实现工具。
+完整名称、源码链接、风险和执行差异见[本轮报告](../../docs/research/shiori-tool-exposure-and-guidance-2026-10-30.md)。
+此前条目中的固定 SHA 继续表示各自历史来源，不被本次核验覆盖。
+
+## 回复中反馈与摘要协议（2026-10-30）
+
+`web/src/features/chat/ChatTypingSparkles.tsx`、`ChatView.tsx` 及相关 CSS 适配固定提交
+`d149de7f052f77c5bb88d4d1393d48dce1870875` 的
+`apps/desktop/renderer/src/chat/ChatTypingSparkles.tsx`、`ChatHeader.tsx`、`ChatMessageRow.tsx` 及星形路径 `packages/sdk/src/icons/brand.tsx`：
+发送状态驱动头部星光、输入提示与首段正文前的光标。`backend/app/agent_runtime/natural_reply.py`
+按同版 `apps/backend/agent/core/passive_turn/reasoner.py` 保留正文缓冲同时透传公开思考；
+`context_provider.py` 与 OpenAI adapter 按 `apps/backend/core/compaction_summary_request.py`、
+`compaction_summary_validation.py` 适配摘要 JSON 格式、规范化投影和输出长度口径。
+Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。
+
+Meido 沿用 SSE、取消与授权边界；硬预算最小请求保留能够装入预算的已授权工具，
+这是区别于上游清除业务工具的行为。没有复制上游摘要批处理、token 校准或插件宿主。
+精确源码链接与证据限制见[本轮研究](../../docs/research/shiori-live-reply-tool-loading-2026-10-30.md)。
 
 ## 聊天思考与工具展示（2026-10-29）
 

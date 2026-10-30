@@ -20,6 +20,7 @@ import { AttachmentImage } from "../../ui/AttachmentImage";
 import { MessageMarkdown } from "../../ui/MessageMarkdown";
 import { MessageProcess, readProcess } from './MessageProcess';
 import { ChatReplyMetrics } from './ChatReplyMetrics';
+import { ChatTypingSparkles } from './ChatTypingSparkles';
 import { ComposerTools, readContextUsage, type ContextUsage } from './ComposerTools';
 import type { ToolProgressState } from './toolProgress';
 import "./chat-presentation.css";
@@ -49,9 +50,11 @@ function MessageItem({ message, role, highlighted, onRegenerate, progress, stopp
       </div>
       {(message.content || hasProcess || attachments.length === 0) && <div className="bubble">
         {!mine && <MessageProcess message={message} progress={progress} stopping={stopping} />}
+        {streaming && !message.content && !hasProcess && <span className="chat-pending" role="status" aria-label="正在回复"><span className="chat-stream-cursor" aria-hidden="true" /></span>}
         <div className="reply-content">
           {message.content && <MessageMarkdown content={message.content} />}
-          {!message.content && attachments.length === 0 && <p>{streaming ? <span className="typing" aria-label="正在回复">正在回复…</span> : stopped ? "已停止回复" : "（无内容）"}</p>}
+          {streaming && message.content && <span className="chat-stream-cursor" aria-hidden="true" />}
+          {!streaming && !message.content && attachments.length === 0 && <p>{stopped ? "已停止回复" : "（无内容）"}</p>}
         </div>
         {!mine && !streaming && <ChatReplyMetrics value={message.metadata?.turnMetrics} />}
       </div>}
@@ -191,6 +194,7 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
         <Avatar id={role.id} name={role.name} size="sm" avatarUrl={role.avatarUrl} />
         <span className="chat-title">
         <h1>{role.name}</h1>
+        {chat.sending && <span className="chat-header-typing" role="status" aria-label="回复状态"><ChatTypingSparkles />{chat.stopping ? '正在停止…' : '正在输入…'}</span>}
         </span>
       </button>
       <IconButton icon="phone" label="多端会话" onClick={onShowChannels} />

@@ -27,3 +27,13 @@
 将上节的摘要独立期限由 30 秒调整为 90 秒，与 Shiori `LLMProvider` 的 `request_timeout_s=90.0` 默认额度一致；上游 `SummaryRequest.rewrite` 通过该 provider 调用摘要，没有额外的 30 秒期限。源码基线为 Shiori `d149de7f052f77c5bb88d4d1393d48dce1870875` 的 [provider](https://github.com/YinFengWindy/Shiori-Agent/blob/d149de7f052f77c5bb88d4d1393d48dce1870875/apps/backend/agent/provider.py#L360) 与 [摘要请求](https://github.com/YinFengWindy/Shiori-Agent/blob/d149de7f052f77c5bb88d4d1393d48dce1870875/apps/backend/core/compaction_summary_request.py#L87)，2026-10-29 同时核验上游 main 相应默认值。
 
 此处只对齐时间额度，不声称复制上游 provider 的重试及流空闲超时语义。摘要仍独立计时、可取消、计入请求步数，正文期限及失败回退不变；慢摘要可能让正文开始前多等待最多 60 秒。没有运行中配置迁移，也不据此宣称长历史工具续接或角色参考生图已修复。
+
+## 2026-10-30：#277 保留预算内的授权工具与摘要协议
+
+两次桌面运行约 201/146 秒，完整输入本地估计 97,236/98,587，硬输入上限 87,712；摘要失败记录为 TimeoutError/ValueError，随后 minimal 的 `toolsDisabled=true`、`toolCount=0`。角色自然分条关闭，因此自然模式的事件缓冲不是这两次慢回复的解释。辅助摘要约 29.9k、最小正文约 1,413 实际输入来自不同请求，不能直接替换完整请求的输入估计。日志未提供 ValueError 的结构化具体原因，JSON 协议差异只是源码证实的缺口。
+
+本次覆盖 #265 的“硬预算回退禁用业务工具”：保留本次已授权声明并重新计量最小请求；必需块、工具结果及声明仍无法装入硬预算时明确失败，不提交失败摘要或删除原历史。发现工具继续按原授权冻结目录工作，下一请求载入新声明，既有撤权与执行检查不变。固定 Shiori `d149de7` 的 minimal 仍清空业务 schemas，本改动是为满足长历史工具连续性而保留的明确差异，不称为上游原样行为。每个后续请求重新检查预算，不建立跳过预算的工具特例。
+
+摘要请求对 OpenAI completions 链传递 `response_format: json_object`；其他协议不添加该参数。验证要求必需六字符串字段与合法来源 ID，允许额外字段后规范化投影和去重。长度优先使用有效的供应商输出 token；缺失用量，或移除额外字段/重复 ID 且原用量超额，才用规范化文本本地计量。结构合法但超长最多缩短一次，截断或结构非法不提交。诊断增加失败阶段以便后续区分前缀装不下、请求失败与校验失败，不记录完整正文或凭据。
+
+来源：[固定上游及数据流核验](../research/shiori-live-reply-tool-loading-2026-10-30.md)。本地 HTTP 验证覆盖硬预算回退后发现 deferred 工具、下一请求真实执行、always-on 生图模拟工具可见、禁用候选不出现以及最终回复。没有引入 Shiori 的摘要分批或 actual/anchor_delta 输入校准；本地估计保守导致反复压缩的可能性仍存在，不能宣称本次消除了全部长历史等待。

@@ -326,6 +326,7 @@ class OpenAICompatibleAdapter:
         max_tokens: int | None = None,
         cancel_check=None,
         disable_thinking: bool = False,
+        json_mode: bool = False,
     ):
         """Expose the Pi-style stream while retaining legacy adapter methods."""
 
@@ -340,6 +341,7 @@ class OpenAICompatibleAdapter:
                 send_reasoning_content=_is_deepseek(effective_configuration),
                 supports_finish_reason=False,
                 disable_thinking=disable_thinking,
+                json_mode=json_mode,
             ),
         )
         async with aclosing(adapter.stream_rich_messages(

@@ -99,8 +99,10 @@ def test_legacy_empty_config_has_default_tools_without_enabling_special_plugins(
     visible = {item['name'] for item in catalog['tools'] if item['modelVisible']}
     assert {'read_file', 'list_dir', 'write_file', 'edit_file', 'web_search', 'web_fetch',
             'search_messages', 'fetch_messages', 'tool_search',
-            'shell', 'task_output', 'task_stop', 'message_push', 'spawn', 'spawn_manage',
-            'schedule', 'list_schedules', 'cancel_schedule'} <= visible
+            'shell', 'task_output', 'task_stop', 'message_push', 'spawn', 'spawn_manage'} <= visible
+    for name in ('schedule', 'list_schedules', 'cancel_schedule'):
+        item = next(item for item in catalog['tools'] if item['name'] == name)
+        assert item['enabled'] and item['exposure'] == 'deferred' and not item['modelVisible']
     assert not {'agent_browser_open', 'computer_click', 'generate_image', 'pet_action', 'observe_screen'} & visible
     for name in ('memorize', 'forget_memory'):
         item = next(item for item in catalog['tools'] if item['name'] == name)
@@ -243,12 +245,13 @@ def test_model_capability_description_matches_actual_schemas_and_preserves_role_
     assert role_api.post(f"/api/roles/{role['id']}/messages", json={"content": "你能调用什么工具"}).status_code == 200
     messages, schemas = adapter.request
     prompt = messages[0]["content"]
-    assert "[本次运行工具]" in prompt
+    assert "[本次请求工具]" in prompt
     assert "shell" in prompt
     assert "todo.write" in prompt
     assert "agent_browser_open" not in prompt
     schema_names = {item["function"]["name"] for item in schemas}
-    assert {"read_file", "write_file", "shell", "tool_search", "spawn", "schedule", "todo.write"} <= schema_names
+    assert {"read_file", "write_file", "shell", "tool_search", "spawn", "todo.write"} <= schema_names
+    assert 'schedule' not in schema_names and 'schedule' in prompt
     assert schema_names == {item["name"] for item in catalog["tools"] if item["modelVisible"]}
     assert role_api.get(f"/api/roles/{role['id']}").json()["role"]["profile"]["profile"] == "核心身份设定"
 
@@ -267,7 +270,7 @@ def test_saved_shell_and_capability_settings_survive_role_store_restart(role_api
     reopened = role_api.get(f"/api/roles/{created['id']}").json()["role"]
     assert reopened["name"] == "新名"
     assert reopened["agentConfig"] == {**config, "screenPerception": {"enabled": False, "visionModelConfigurationId": None},
-        "computerUse": {"enabled": False},
+        "computerUse": {"enabled": False}, "naturalChatEnabled": False,
         "novelai": {"manualEnabled": False, "manualDailyAttempts": 10, "sceneCgEnabled": False,
             "sceneCgDailyAttempts": 3, "scenePromptModelConfigurationId": None,
             "sceneCgPromptInstructions": "",

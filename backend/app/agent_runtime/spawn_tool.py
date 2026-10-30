@@ -273,13 +273,13 @@ class SpawnExecutor:
 
 
 class SpawnTool:
-    definition = ToolDefinition(name="spawn", description="Delegate a bounded independent task. Profiles: research (read file/list/web), scripting (task-directory writes and allowlisted Shell), general (union), coding (owned Codex exec in a granted repository). Coding requires repository, explicit run_in_background=true and retry_count=0; no chat child provider or Shell. Other profiles are synchronous by default. Results return only to the original source; unknown submissions are never automatically replayed.",
+    definition = ToolDefinition(name="spawn", description="Delegate a bounded independent task only when it needs at least 4 tool steps, needs no intermediate user confirmation, and produces a report, file or conclusion. Do not delegate 1–3 calls, direct answers, session-memory changes or immediate send/tell/execute actions. Profiles: research (read file/list/web), scripting (task-directory writes and allowlisted Shell), general (union), coding (owned Codex exec in a granted repository). Use synchronous mode by default; background is for independent long work expected over 60 seconds or 15 calls. Coding requires repository, explicit run_in_background=true and retry_count=0; no chat child provider or Shell. Results return only to the original source; unknown submissions are never automatically replayed.",
         input_schema={"type": "object", "properties": {
-            "task": {"type": "string", "minLength": 1, "maxLength": 20000},
+            "task": {"type": "string", "minLength": 1, "maxLength": 20000, "description": "完整交接：任务目标、关键约束、必要上下文（含已尝试内容）和期望输出格式；子任务没有看过当前会话"},
             "label": {"type": "string", "maxLength": 100},
-            "profile": {"type": "string", "enum": ["research", "scripting", "general", "coding"]},
+            "profile": {"type": "string", "enum": ["research", "scripting", "general", "coding"], "description": "默认 research 只读；命令/写文件用 scripting；两者都需用 general；coding 须有单独仓库许可"},
             "repository": {"type": "string", "minLength": 1, "maxLength": 2000},
-            "run_in_background": {"type": "boolean"},
+            "run_in_background": {"type": "boolean", "description": "默认 false 同步等结果；独立长任务可 true，确认提交后等系统带回结果，不重复提交"},
             "retry_count": {"type": "integer", "minimum": 0, "maximum": 1}},
             "required": ["task"], "additionalProperties": False}, risk="external", source="role", search_hint='后台执行 子任务 多步调研 独立任务')
 
@@ -352,7 +352,7 @@ class SpawnManageTool:
         input_schema={"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "get", "cancel", "continue"]},
             "task": {"type": "string", "minLength": 1, "maxLength": 20000},
             "job_id": {"type": "string", "minLength": 1}}, "required": ["action"], "additionalProperties": False},
-        risk="mutating", source="role", timeout_seconds=15, search_hint='查看 取消 后台任务 subagent job_id spawn_manage')
+        risk="external", source="role", timeout_seconds=15, search_hint='查看 取消 后台任务 subagent job_id spawn_manage')
 
     def __init__(self, tasks: TaskRuntime, *, origin_resolver: Callable[[ToolContext], TaskOrigin], authorized: Callable[[ToolContext], bool], coding_application=None, coding_access=None, coding_authorized=None):
         self.tasks, self.origin_resolver, self.authorized = tasks, origin_resolver, authorized

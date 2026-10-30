@@ -119,10 +119,10 @@ class RoutedModelAdapter:
             return adapter.stream_structured_messages(messages, configuration, tools, max_tokens=max_tokens)
         return _stream_legacy_structured(adapter, messages, configuration, tools, max_tokens=max_tokens)
 
-    def stream_rich_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check=None, disable_thinking=False):
+    def stream_rich_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check=None, disable_thinking=False, json_mode=False):
         adapter = self.registry.get(configuration)
         stream = getattr(adapter, "stream_rich_messages", adapter.stream_messages)
-        options = ({"disable_thinking": disable_thinking}
+        options = ({"disable_thinking": disable_thinking, "json_mode": json_mode}
                    if configuration is None or configuration.api == OPENAI_COMPLETIONS_API else {})
         return stream(
             messages, configuration, tools, max_tokens=max_tokens, cancel_check=cancel_check, **options,

@@ -54,7 +54,7 @@ def save_server(client, role, tmp_path, **changes):
     return client.post("/api/mcp/servers", json=values)
 
 
-def test_direct_schema_mode_connects_and_calls_mcp_without_public_tool_search(tmp_path, monkeypatch):
+def test_direct_schema_mode_keeps_core_search_and_calls_mcp_without_discovery(tmp_path, monkeypatch):
     from backend.app.advanced_settings import AdvancedSettingsStore
     settings = AdvancedSettingsStore(tmp_path / 'advanced.db')
     settings.update(expected_revision=0, operation_id='direct', values={'searchEnabled': False})
@@ -67,7 +67,7 @@ def test_direct_schema_mode_connects_and_calls_mcp_without_public_tool_search(tm
         async def stream_structured_messages(self, messages, configuration, tools, *, max_tokens=None):
             self.count += 1
             names = {tool['function']['name'] for tool in tools}
-            assert 'tool_search' not in names
+            assert 'tool_search' in names
             if not self.connected and self.count == 1:
                 assert 'mcp_add' in names
                 assert 'mcp_notes__echo' not in names

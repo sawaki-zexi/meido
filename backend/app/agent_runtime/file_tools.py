@@ -260,7 +260,7 @@ class _FileTool:
 
 class ReadFileTool(_FileTool):
     definition = ToolDefinition(
-        "read_file", "Read role-workspace text with 1-based line numbers, offset (0-based), and optional limit. Pages are bounded to 400 lines / 10 KB. Images are returned to vision models; binary files are rejected.",
+        "read_file", "Read role-workspace text with 1-based line numbers, offset (0-based), and optional limit. Use limit=50 for a preview, then paginate relevant sections; independent files may be read together. Pages are bounded to 400 lines / 10 KB. Images are returned to vision models; binary files are rejected. Paths outside this role workspace are not accessible.",
         {"type": "object", "properties": {
             "path": {"type": "string", "minLength": 1, "maxLength": 4096},
             "offset": {"type": "integer", "minimum": 0},
@@ -404,7 +404,7 @@ class ReadFileTool(_FileTool):
 
 class WriteFileTool(_FileTool):
     definition = ToolDefinition(
-        "write_file", "Create or fully overwrite a UTF-8 file in this role workspace, creating missing parent directories. Prefer edit_file for precise changes and read existing files before overwriting. Maximum 4 MiB.",
+        "write_file", "Create or fully overwrite a UTF-8 file in this role workspace, creating missing parent directories. Prefer edit_file for precise changes and read existing files before overwriting. Do not proactively create documentation or README files unless requested. Maximum 4 MiB.",
         {"type": "object", "properties": {
             "path": {"type": "string", "minLength": 1, "maxLength": 4096},
             "content": {"type": "string", "maxLength": MAX_FILE_BYTES},

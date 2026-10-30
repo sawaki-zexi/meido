@@ -7,6 +7,24 @@ import { fakeBackend, message, role, sse } from '../../test/fakeBackend';
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('shows Shiori typing feedback before the server accepts a message and clears it at completion', async () => {
+  let accept!: (value: { stream: string[] }) => void;
+  const pending = new Promise<{ stream: string[] }>(resolve => { accept = resolve; });
+  fakeBackend({
+    'GET /api/roles': () => ({ body: { roles: [role({ id: 'r1', name: '爱丽丝' })] } }),
+    'GET /api/roles/r1/session': () => ({ body: { session: { roleId: 'r1', sessionKey: 'role:r1' }, messages: [] } }),
+    'POST /api/roles/r1/messages': () => pending,
+  });
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByRole('heading', { name: '爱丽丝' });
+  await user.type(screen.getByRole('textbox', { name: '消息内容' }), '你好{Enter}');
+  expect(screen.getByRole('status', { name: '回复状态' })).toHaveTextContent('正在输入…');
+  await act(async () => accept({ stream: [sse('assistant_completed', { message: message({ id: 'a1', role: 'assistant', content: '你好' }) })] }));
+  await screen.findByText('你好', { selector: '.bubble p' });
+  expect(screen.queryByRole('status', { name: '回复状态' })).toBeNull();
+});
+
 it('shows only identity in the header, a recent message in the list, and inserts emoji at the caret before sending', async () => {
   const alice = role({ id: 'r1', name: '爱丽丝', description: '这是角色介绍' });
   const reply = message({ id: 'a1', role: 'assistant', content: '晚安，明天见' });

@@ -23,7 +23,7 @@ Shiori 的高级页有五组十三项。Meido 在 6035dfd 基点的高级页只�
 | 记忆整理 | 记忆整理消息基数 `memoryWindow` | 40 | 按 Shiori 向上对齐 4、至少为 4 后取一半作为 Markdown 最近保留数（默认 20），用于记忆维护及逐出前覆盖；12–2000，不能直接当 token 容量或截断工具链 |
 | 记忆整理 | 后台整理记忆 `memoryOptimizerEnabled` | true | 既有 MemoryOptimizerWorker/Loop 的准入；暂停不删除记忆、不放弃已提交收尾 |
 | 记忆整理 | 整理间隔 `memoryOptimizerIntervalSeconds` | 64800 | 既有调度器下次计时；60–604800 秒；保存不立即调用模型，不重复启动调度器 |
-| 上下文压缩 | 工作摘要长度上限 `summaryTokenLimit` | 2000 | 可提交摘要 JSON 的估算硬限；辅助生成最多预留两倍，正整数且不超过 maxTokens |
+| 上下文压缩 | 工作摘要长度上限 `summaryTokenLimit` | 2000 | 可提交摘要输出长度上限，优先供应商有效输出用量，缺失时估算；辅助生成最多预留两倍，正整数且不超过 maxTokens |
 | 上下文压缩 | 压缩后保留原文轮数 `compactionRetainedTurns` | 2 | 按完整用户轮保留最近原文与当前未完成工具链；0–100，不能保留孤立 tool result |
 | 上下文压缩 | 触发比例 `contextTriggerRatio` | 0.75 | 含 system、memory、工具 schema、消息和输出预留的输入预算触发值 |
 | 上下文压缩 | 目标比例 `contextTargetRatio` | 0.4 | 压缩后的目标预算；必须满足 0 < target < trigger < 1 |
@@ -44,7 +44,7 @@ Shiori 的高级页有五组十三项。Meido 在 6035dfd 基点的高级页只�
 
 能力开关关闭对当前运行的新调用生效，关闭再打开不能复活原运行的 spawn 准入；停止和清理原任务始终保留。spawn_manage 的查询与取消保留，`continue` 会开始新 Coding 执行，必须与 spawn 一样检查新执行准入、原角色/仓库/CLI/费用许可及冻结代，不能借管理入口绕过暂停。按需发现只是 schema 展示策略，关闭不授予新能力，运行开始时冻结的候选仍是上界。
 
-关闭按需发现时仍保留内部版本目录，以便已冻结许可的 MCP 服务在连接成功、工具结果提交后发布下一版直接可见 schema；模型不再看到 tool_search。原候选、隐藏工具、来源和风险检查保持有效，保存连接意愿后的新运行也直接展示已获准远程工具。
+关闭按需发现时仍保留内部版本目录，以便已冻结许可的 MCP 服务在连接成功、工具结果提交后发布下一版直接可见 schema；按 #277 对当前 Shiori `21e68d9` 的核验，`tool_search` 仍作为常驻工具保留，精确选择已可见工具只返回 `already_loaded`，不重复加载或扩权。原候选、隐藏工具、来源和风险检查保持有效，保存连接意愿后的新运行也直接展示已获准远程工具。
 
 ### B. 工作摘要压缩
 

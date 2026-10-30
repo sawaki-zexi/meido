@@ -28,3 +28,9 @@ Pi 基线 `d5b3de22` 的启发是缩小状态与稳定请求引用，不移植�
 [能力绑定](../../backend/app/agent_runtime/capabilities.py)、[发现](../../backend/app/agent_runtime/discovery.py)、[存储](../../backend/app/session_store.py)、[作者证明](../../backend/app/proactive_runtime/drift_skills.py)、[兼容 codec](../../backend/app/task_runtime/runtime.py)、[迁移回归](../../tests/python/test_lightweight_tool_loading.py)、[codec 回归](../../tests/python/test_task_origin_codec.py)。
 
 离线存储与延迟范围见[固定夹具测量](../research/tool-loading-benchmark-2026-10-26.md)，不作真实模型性能承诺。
+
+## 2026-10-30：工具可见性对齐的兼容说明
+
+#277 按 Shiori `21e68d99` 对齐已有工具的常驻/按需分类、风险元数据和调用说明，详细清单及必要差异见[核验报告](../research/shiori-tool-exposure-and-guidance-2026-10-30.md)。这只改变模型的可见声明与指引，不替代本 ADR 的准入、请求绑定或撤权检查。关闭按需加载时保留核心搜索，搜索已可见工具不能增加授权。未加载名称目录每请求检查当前许可，与命名空间共享有限字节预算。
+
+宿主绑定初始化遍历本次已准入候选，使按需 soft schedule 在稍后加载后仍取得原 provider；它不发布工具、不授予执行权限。更新后的描述/risk 会改变完整安全声明指纹，旧选择失配可丢弃并重新搜索；既有请求的执行器绑定不随同名最新定义变化。没有新增能力目录、授权服务或缓存链。

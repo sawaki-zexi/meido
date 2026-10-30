@@ -45,9 +45,13 @@ def test_http_owner_run_passes_window_image_to_current_chat_only(tmp_path, monke
             def do_POST(self):
                 payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 requests.append(payload)
-                phase = len(requests)
+                phase = len(requests) - 1  # First load the deferred window tools.
                 calls = []
-                if phase == 1:
+                if phase == 0:
+                    assert not (COMPUTER_USE_TOOL_NAMES & {item['function']['name'] for item in payload['tools']})
+                    calls = [('tool_search', {'query': 'select:' + ','.join(sorted(COMPUTER_USE_TOOL_NAMES))})]
+                elif phase == 1:
+                    assert COMPUTER_USE_TOOL_NAMES <= {item['function']['name'] for item in payload['tools']}
                     calls = [("computer_list_windows", {"pid":fixture_pid})]
                 elif phase in range(2,19,2):
                     if native: time.sleep(.15)
@@ -122,13 +126,13 @@ def test_http_owner_run_passes_window_image_to_current_chat_only(tmp_path, monke
         assert response.status_code==200 and "assistant_completed" in response.text,response.text
         assert "Fixture checked and released" in response.text,response.text
         assert '"isError": true' not in response.text,response.text
-        assert len(requests)==20
-        for request in requests[3:19:2]:
+        assert len(requests)==21
+        for request in requests[4:20:2]:
             action_result = next(message for message in reversed(request["messages"]) if message["role"] == "tool")
             assert json.loads(action_result["content"])["input_receipt"]["status"] == "available"
-        assert "data:image/png;base64," in json.dumps(requests[2])
-        assert "data:image" not in json.dumps(requests[3])
-        assert "data:image/png;base64," in json.dumps(requests[4])
+        assert "data:image/png;base64," in json.dumps(requests[3])
+        assert "data:image" not in json.dumps(requests[4])
+        assert "data:image/png;base64," in json.dumps(requests[5])
         assert "data:image" not in json.dumps(requests[-1])
         history=client.get(f"/api/roles/{role.id}/session").json()
         assert "data:image" not in json.dumps(history)+response.text

@@ -12,7 +12,7 @@ class ComputerTool:
     def __init__(self, host, spec, role_id=""):
         self.host, self.spec, self.role_id = host, spec, role_id
         self.generation = host.generation(role_id) if role_id else None
-        self.definition = ToolDefinition("computer_" + spec["name"], spec["description"], spec["inputSchema"],
+        self.definition = ToolDefinition("computer_" + spec["name"], "[Computer Use] " + spec["description"], spec["inputSchema"],
             risk="external", source="plugin:computer_use", version="0.28.2-meido.1", timeout_seconds=35, output_limit=65536, search_hint='电脑 桌面 窗口 控件 截图 点击 输入 快捷键 computer')
 
     async def execute(self, arguments, context, on_update=None):

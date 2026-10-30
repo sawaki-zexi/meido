@@ -20,12 +20,12 @@ class PetActionTool:
         role, package, _ = application.store.binding(role_id)
         self.generation = role['generation']
         actions = sorted(package['actions']) if package else []
-        self.definition = ToolDefinition('pet_action', '移动当前角色桌宠或播放动作包声明的动作。每回合最多一次，间隔至少3秒。',
-            {'type': 'object', 'properties': {'action': {'type': 'string', 'enum': ['move', 'play']},
-                'target': {'type': 'string', 'enum': ['top_left', 'top_right', 'center', 'bottom_left', 'bottom_right']},
-                'animation': {'type': 'string', 'enum': ['', 'idle', 'run']},
-                'name': {'type': 'string', 'enum': actions}}, 'required': ['action'], 'additionalProperties': False},
-            risk='mutating', source='plugin:desktop_pet', version='1.0.0.' + (self.generation or 'off'), timeout_seconds=20, output_limit=4096,
+        self.definition = ToolDefinition('pet_action', '操控当前绑定桌宠：移动到受限语义位置或播放动作包声明的动作。仅桌面主人会话可用。每回合最多一次，间隔至少3秒；成功以真实执行回执为准。',
+            {'type': 'object', 'properties': {'action': {'type': 'string', 'enum': ['move', 'play'], 'description': 'move移动位置；play播放当前包动作'},
+                'target': {'type': 'string', 'enum': ['top_left', 'top_right', 'center', 'bottom_left', 'bottom_right'], 'description': 'move的语义位置目标'},
+                'animation': {'type': 'string', 'enum': ['', 'idle', 'run'], 'description': 'move的移动表现，可省略'},
+                'name': {'type': 'string', 'enum': actions, 'description': 'play的动作名，只能使用当前包枚举值'}}, 'required': ['action'], 'additionalProperties': False},
+            risk='external', source='plugin:desktop_pet', version='1.0.0.' + (self.generation or 'off'), timeout_seconds=20, output_limit=4096,
             search_hint='桌宠 动作 移动 动画 pet move play')
 
     async def execute(self, arguments, context, on_update=None):

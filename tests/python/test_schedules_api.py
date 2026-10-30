@@ -5,10 +5,23 @@ import pytest
 
 from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from test_background_shell_api import api as shell_api  # noqa: F401
-from test_spawn_api import api  # noqa: F401
+from test_spawn_api import api as spawn_api  # noqa: F401
 
 
-def test_http_create_list_due_delivery_next_history_and_cancel(api, monkeypatch):  # noqa: F811
+@pytest.fixture
+def api(spawn_api, tmp_path, monkeypatch):
+    # Scheduling semantics below use direct exposure unless explicitly testing
+    # discovery. They still exercise the ordinary host/provider execution path.
+    from backend.app import main
+    from backend.app.advanced_settings import AdvancedSettingsStore
+    settings = AdvancedSettingsStore(tmp_path / 'schedule-advanced.json')
+    settings.update(expected_revision=0, operation_id='direct', values={'searchEnabled': False})
+    monkeypatch.setattr(main, 'advanced_settings', settings)
+    return spawn_api
+
+
+@pytest.mark.parametrize('search', [False, True])
+def test_http_create_list_due_delivery_next_history_and_cancel(api, monkeypatch, search):  # noqa: F811
     from backend.app import main
     client, _roles, sessions, _tasks = api
     now = [1780000000.0]
@@ -16,13 +29,19 @@ def test_http_create_list_due_delivery_next_history_and_cancel(api, monkeypatch)
     monkeypatch.setattr(main, '_schedules', None)
     receipts = []
     action = ['schedule']
+    if search:
+        main.advanced_settings.update(expected_revision=1, operation_id='discovery', values={'searchEnabled': True})
     class Adapter:
         async def stream_structured_messages(self, messages, configuration, tools):
             last_user = max(i for i, item in enumerate(messages) if item['role'] == 'user')
-            results = [item for item in messages[last_user + 1:] if item['role'] == 'tool']
+            results = [item for item in messages[last_user + 1:] if item['role'] == 'tool' and item.get('tool_call_id') != 'discover-time']
             if action[0] == 'history':
                 assert 'due-known-158' in str(messages)
                 yield ModelTextDelta('看到到时消息')
+            elif action[0] not in {item['function']['name'] for item in tools}:
+                assert search
+                yield ModelToolCall('discover-time', 'tool_search', {'query': '定时提醒' if action[0] == 'schedule' else 'select:' + action[0]})
+                yield ModelResponseDone('tool_use')
             elif not results:
                 assert action[0] in {item['function']['name'] for item in tools}
                 arguments = {'tier': 'instant', 'trigger': 'after', 'when': '10s', 'message': 'due-known-158'} if action[0] == 'schedule' else {} if action[0] == 'list_schedules' else {'id': receipts[0]['id']}
@@ -63,10 +82,11 @@ def test_soft_outlives_parent_with_spawn_disabled_and_reads_a_real_file_once(api
     monkeypatch.setattr(main, '_schedule_clock', lambda: now[0])
     monkeypatch.setattr(main, '_schedules', None)
     child_requests = []
+    main.advanced_settings.update(expected_revision=1, operation_id='discover-soft', values={'searchEnabled': True})
     class Adapter:
         async def stream_structured_messages(self, messages, configuration, tools):
             child = 'independent delegated task' in str(messages[0])
-            results = [item for item in messages if item['role'] == 'tool']
+            results = [item for item in messages if item['role'] == 'tool' and item.get('tool_call_id') != 'discover-soft']
             if child:
                 child_requests.append(messages)
                 assert 'parent-secret-158' not in str(messages)
@@ -77,6 +97,9 @@ def test_soft_outlives_parent_with_spawn_disabled_and_reads_a_real_file_once(api
                 else:
                     assert 'file-proof-158' in str(results[-1])
                     yield ModelTextDelta('soft-delivered-158')
+            elif 'schedule' not in {item['function']['name'] for item in tools}:
+                yield ModelToolCall('discover-soft', 'tool_search', {'query': 'select:schedule'})
+                yield ModelResponseDone('tool_use')
             elif not results:
                 yield ModelToolCall('schedule-soft', 'schedule', {'tier': 'soft', 'trigger': 'after',
                     'when': '1s', 'prompt': 'Read time-evidence.txt and return its proof.'})

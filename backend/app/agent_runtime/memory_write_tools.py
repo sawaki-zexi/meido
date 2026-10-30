@@ -108,13 +108,13 @@ def _result(data, *, error=False, limit=None):
 class MemorizeTool:
     def __init__(self, memory: RoleMemoryAccess):
         self.memory = memory
-        self.definition = ToolDefinition(name="memorize", description="把主人明确要求当前角色记住的信息保存为长期记忆。",
+        self.definition = ToolDefinition(name="memorize", description="把主人本轮明确要求当前角色长期记住的信息写入当前角色记忆；不要重复保存注入的旧记忆。procedure 表示主人明确教给角色的长期做事方式，不能替代实时工具能力与授权检查。来源由宿主绑定当前用户消息，只有返回成功 item_id 才能声称已记住。",
             input_schema={"type": "object", "properties": {
-                "summary": {"type": "string", "minLength": 1, "maxLength": 2000},
+                "summary": {"type": "string", "minLength": 1, "maxLength": 2000, "description": "一句话描述要长期记住的稳定事实或偏好，不写推测"},
                 "memory_kind": {"type": "string", "enum": ["", "fact", "profile", "preference", "event", "procedure"]},
                 "memory_domain": {"type": "string", "enum": ["", "role_self", "relationship", "shared"]},
-                "tool_requirement": {"type": "string", "maxLength": 200},
-                "steps": {"type": "array", "maxItems": 50, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
+                "tool_requirement": {"type": "string", "maxLength": 200, "description": "主人教给的规则要求调用的工具名，可选；保存名称不授予工具权限"},
+                "steps": {"type": "array", "maxItems": 50, "description": "主人明确教授的执行步骤，可选", "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
             }, "required": ["summary"], "additionalProperties": False}, risk="mutating", source="builtin:memory",
             approval="auto" if memory.enabled() else "deny", timeout_seconds=15, output_limit=12000)
 
@@ -140,9 +140,9 @@ class MemorizeTool:
 class ForgetMemoryTool:
     def __init__(self, memory: RoleMemoryAccess):
         self.memory = memory
-        self.definition = ToolDefinition(name="forget_memory", description="将当前角色的错误记忆按ID标记失效；保留来源，不能撤销其他角色记忆。",
+        self.definition = ToolDefinition(name="forget_memory", description="将当前角色内已经定位的错误记忆按 item_id 标记失效。有可回源 source_ref 时先用 fetch_messages 核实；不要猜ID，也不要只口头认错。保留来源，不能撤销其他角色记忆；以真实 superseded_ids 判断是否清除成功。",
             input_schema={"type": "object", "properties": {
-                "ids": {"type": "array", "maxItems": 200, "items": {"type": "string", "maxLength": 200}},
+                "ids": {"type": "array", "maxItems": 200, "description": "已从注入条目或 recall_memory 定位并核对的 memory item_id，不能填消息 source_ref", "items": {"type": "string", "maxLength": 200}},
             }, "required": ["ids"], "additionalProperties": False}, risk="mutating", source="builtin:memory",
             approval="auto" if memory.enabled() else "deny", timeout_seconds=15, output_limit=16000, search_hint='记错了 删除记忆 撤销错误记忆 失效记忆')
 

@@ -70,6 +70,7 @@ class OpenAICompletionsOptions:
     # Opt-in for endpoints sending a full choice.message instead of finish_reason.
     tool_completion_contract: str = "finish_reason"
     disable_thinking: bool = False
+    json_mode: bool = False
 
 
 @dataclass(slots=True)
@@ -578,6 +579,8 @@ class OpenAICompletionsRichAdapter:
                 request_data["thinking"] = {"type": "disabled"}
             elif "dashscope" in identity or "xiaomimimo.com" in identity:
                 request_data["enable_thinking"] = False
+        if options.json_mode:
+            request_data['response_format'] = {'type': 'json_object'}
         if stream and options.include_usage:
             request_data["stream_options"] = {"include_usage": True}
         if max_tokens is not None:

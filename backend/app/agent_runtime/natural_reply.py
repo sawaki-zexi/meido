@@ -10,7 +10,7 @@ import asyncio
 from contextlib import aclosing
 from dataclasses import dataclass, replace
 
-from .provider import AssistantDoneEvent, ProviderErrorEvent, TextDeltaEvent, ToolCallEndEvent
+from .provider import AssistantDoneEvent, ProviderErrorEvent, ProviderStartEvent, ThinkingDeltaEvent, TextDeltaEvent, ToolCallEndEvent
 from .types import AssistantMessage, ToolResultMessage, UserMessage
 
 FINISH_REPLY = "finish_reply"
@@ -106,10 +106,19 @@ class NaturalReplyProvider:
                     if done is not None:
                         raise ValueError('自然聊天模型返回了多个完成事件')
                     done = event.message
+                elif isinstance(event, (ThinkingDeltaEvent, ProviderStartEvent)):
+                    # Shiori buffers only reply prose. Public provider thinking
+                    # must reach the UI while this model step is still running.
+                    if kwargs['signal'].is_cancelled():
+                        raise asyncio.CancelledError
+                    # A newer user input invalidates this plan, but the in-flight
+                    # model step must settle before its role ownership is released.
+                    if self.authorized():
+                        yield event
         self._check(kwargs['signal'])
         if done is None:
             raise ValueError('自然聊天模型未完整返回')
-        return replace(done, content=done.content or text, tool_calls=done.tool_calls or tuple(calls))
+        yield AssistantDoneEvent(replace(done, content=done.content or text, tool_calls=done.tool_calls or tuple(calls)))
 
     @staticmethod
     def _validate(message):
@@ -130,7 +139,12 @@ class NaturalReplyProvider:
         if any(item.get('function', {}).get('name') == FINISH_REPLY for item in kwargs['tools']):
             raise ValueError('finish_reply 是保留的回复协议，不能注册为业务工具')
         request = {**kwargs, 'tools': (*kwargs['tools'], schema)}
-        message = await self._response(request)
+        async with aclosing(self._response(request)) as stream:
+            async for event in stream:
+                if isinstance(event, AssistantDoneEvent):
+                    message = event.message
+                else:
+                    yield event
         business = tuple(call for call in message.tool_calls if call.name != FINISH_REPLY)
         if business:
             # The loop still validates completion/JSON before executing any
@@ -157,7 +171,12 @@ class NaturalReplyProvider:
             correction.append(UserMessage(f'[回复格式纠正] {error}。刚才的回复尚未发送。'
                 '请基于已有结果通过 finish_reply 提交 messages 列表，保留原本的意思。'
                 '不要执行业务工具，不要解释发送格式。'))
-            message = await self._response({**kwargs, 'messages': tuple(correction), 'tools': (schema,)})
+            async with aclosing(self._response({**kwargs, 'messages': tuple(correction), 'tools': (schema,)})) as stream:
+                async for event in stream:
+                    if isinstance(event, AssistantDoneEvent):
+                        message = event.message
+                    else:
+                        yield event
             sequence = self._validate(message)
         metadata = {key: value for key, value in message.metadata.items() if key != 'content_blocks'}
         yield AssistantDoneEvent(AssistantMessage('\n\n'.join(sequence), metadata={

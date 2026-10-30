@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from backend.app import main
 from backend.app.agent_runtime import RuntimeManager
 from backend.app.ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
-from backend.app.computer_use import ComputerUseHost
+from backend.app.computer_use import ComputerUseHost, COMPUTER_USE_TOOL_NAMES
 from backend.app.plugin_configuration import PluginConfigurationStore
 from backend.app.memory_config import MemorySettingsStore
 from backend.app.model_config import ModelConfigurationStore
@@ -114,7 +114,7 @@ def test_http_receipt_reaches_next_provider_sse_and_persisted_tool_history(tmp_p
         def respond(self):
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append(payload)
-            phase = len(requests)
+            phase = len(requests) - 1
             previous = f"call-{phase - 1}-0"
             if previous in expected:
                 message = next(item for item in reversed(payload["messages"])
@@ -123,7 +123,11 @@ def test_http_receipt_reaches_next_provider_sse_and_persisted_tool_history(tmp_p
                 assert receipt == expected[previous]
                 consumed[previous] = receipt
             calls = []
-            if phase == 1:
+            if phase == 0:
+                assert not (COMPUTER_USE_TOOL_NAMES & {item['function']['name'] for item in payload['tools']})
+                calls = [('tool_search', {'query': 'select:' + ','.join(sorted(COMPUTER_USE_TOOL_NAMES))})]
+            elif phase == 1:
+                assert COMPUTER_USE_TOOL_NAMES <= {item['function']['name'] for item in payload['tools']}
                 calls = [("computer_list_windows", {"pid": 42})]
             elif phase in range(2, 19, 2):
                 calls = [("computer_get_window_state", {"pid": 42, "window_id": 81})]
@@ -213,8 +217,8 @@ def test_http_receipt_reaches_next_provider_sse_and_persisted_tool_history(tmp_p
         assert response.status_code == 200
         assert not provider_errors, provider_errors
         assert "assistant_completed" in response.text and "Fixture receipt checked and released" in response.text
-        assert len(requests) == 20 and consumed == expected
-        for phase, payload in enumerate(requests, 1):
+        assert len(requests) == 21 and consumed == expected
+        for phase, payload in enumerate(requests[1:], 1):
             image_count = json.dumps(payload).count("data:image/png;base64,")
             assert image_count == int(phase in range(3, 20, 2)), phase
         ended = {payload["toolCallId"]: payload for kind, payload in _sse(response.text)
