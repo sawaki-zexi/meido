@@ -17,20 +17,22 @@ def test_namespace_hint_filters_before_render_and_obeys_search_revocation():
     seen = []
     def authorize(definition, context):
         seen.append((context.role_id, context.session_key, context.run_id))
-        return 'denied' if definition.name in revoked or definition is denied else None
-    current = SimpleNamespace(snapshot=SimpleNamespace(role_id='r1', session_key='thread:t1', run_id='run1',
-        candidates=(search, allowed, denied), tools=(search,)),
-        definition=lambda name: search if name == 'tool_search' else None,
-        authorization_denial=authorize)
-    capabilities = SimpleNamespace(current=lambda: current)
-    text = _runtime_namespace_context(capabilities, CancellationToken())
+        return 'denied' if definition.name in revoked or definition.name == denied.name else None
+    from backend.app.agent_runtime import CapabilityRegistry
+    tools = [SimpleNamespace(definition=definition) for definition in (search, allowed, denied)]
+    capabilities = CapabilityRegistry(tools).resolve(role_id='r1', session_key='thread:t1', run_id='run1',
+        authorize_tool=lambda definition, context: authorize(definition, context) or True)
+    def render():
+        preparation = asyncio.run(capabilities.prepare_metadata(CancellationToken()))
+        return _runtime_namespace_context(preparation, ('tool_search',))
+    text = render()
     assert '发票服务' in text and 'mcp:finance' in text
     assert 'private-service' not in text and '不得泄露' not in text and 'omitted' not in text
     assert set(seen) == {('r1', 'thread:t1', 'run1')}
     revoked.add('invoice')
-    assert _runtime_namespace_context(capabilities) == ''
+    assert render() == ''
     revoked.add('tool_search')
-    assert _runtime_namespace_context(capabilities) == ''
+    assert render() == ''
 
 
 def test_namespace_projection_uses_current_request_and_is_counted_in_prompt():
@@ -51,8 +53,10 @@ def test_namespace_projection_uses_current_request_and_is_counted_in_prompt():
     plain = MeidoProvider(Adapter(), role, None)
     messages = [UserMessage('你好')]
     tools = [ToolSearchTool.definition.as_provider_schema()]
-    assert provider.estimate_request_tokens('', messages, tools) > plain.estimate_request_tokens('', messages, tools)
     signal = CancellationToken()
+    context = asyncio.run(provider.prepare_context(signal))
+    prepared = provider.prepare_request('', messages, tools, context=context)
+    assert provider.estimate_prepared(prepared).tokens > plain.estimate_request_tokens('', messages, tools)
     async def read():
         return [event async for event in provider.stream_response(model='fake', system='', messages=messages, tools=tools, signal=signal)]
     asyncio.run(read())

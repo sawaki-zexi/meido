@@ -55,6 +55,17 @@ jobs:
               tests/python/channels/test_runtime_delivery.py::test_real_channel_runtime_commits_reply_only_after_confirmed_delivery
           - group: drift
             args: tests/python/test_drift_meme_api.py::test_owner_can_explicitly_enable_builtin_meme_maintenance_without_shell
+          - group: context-preparation
+            args: >-
+              tests/python/test_context_preparation.py
+              tests/python/test_context_windows.py
+              tests/python/test_current_tool_registry.py
+              tests/python/test_tool_namespace_context.py
+              tests/python/test_role_capabilities.py
+              tests/python/test_input_usage_calibration.py
+              tests/python/test_batched_summary.py
+              tests/python/test_tool_discovery.py
+              tests/python/test_tool_search_budgets.py
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6

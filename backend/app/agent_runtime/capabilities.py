@@ -72,6 +72,24 @@ class CapabilitySnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class CapabilityPreparation:
+    """Metadata for one preparation, never authority to execute a tool."""
+
+    definitions: tuple[ToolDefinition, ...]
+    denied: Mapping[str, str]
+
+    def namespace_context(self, visible_names) -> str:
+        from .search_metadata import NAMESPACE_MAP_BYTES, render_namespace_map, render_deferred_tools_hint
+        visible = set(visible_names)
+        if 'tool_search' not in visible or 'tool_search' in self.denied:
+            return ''
+        admitted = tuple(item for item in self.definitions if item.name not in self.denied)
+        deferred = render_deferred_tools_hint(admitted, visible_names=visible)
+        namespaces = render_namespace_map(admitted, byte_limit=NAMESPACE_MAP_BYTES - len(deferred.encode('utf-8')) - 2)
+        return '\n\n'.join(filter(None, (namespaces, deferred)))
+
+
+@dataclass(frozen=True, slots=True)
 class CapabilityResolution:
     """Host scope and visible names over the current tool registry.
 
@@ -91,6 +109,7 @@ class CapabilityResolution:
     _discovery: DiscoveryState | None = field(default=None, repr=False, compare=False)
     _authorize_tool: Callable[[ToolDefinition, ToolContext], bool | str] | None = field(default=None, repr=False, compare=False)
     _authorize_call: Callable[[ToolDefinition, ToolContext, Mapping[str, object]], bool | str] | None = field(default=None, repr=False, compare=False)
+    _prepare_tools: Callable | None = field(default=None, repr=False, compare=False)
     _resource_close: Callable[[], Awaitable[None]] | None = field(default=None, repr=False, compare=False)
     source_scope: str = ""
 
@@ -195,15 +214,51 @@ class CapabilityResolution:
                 if (definition := self.candidate_definition(name)) is not None
                 and (self._policy_denial is None or self._policy_denial(definition) is None)}
 
-    def _select(self, names) -> CapabilityResolution:
+    async def prepare_metadata(self, signal) -> CapabilityPreparation:
+        """Read host availability off-loop once; registry ownership stays here."""
+        current = self.current()
+        def registered_definitions():
+            return tuple(replace(definition, input_schema=cast(dict[str, object], _freeze_json(definition.input_schema)))
+                         for name in current._registered()
+                         if (definition := current.candidate_definition(name)) is not None)
+        definitions = registered_definitions()
+        context = ToolContext(self.snapshot.role_id, self.snapshot.session_key, self.snapshot.run_id, signal)
+        def read():
+            if self._prepare_tools is not None:
+                return self._prepare_tools(definitions, context)
+            if self._authorize_tool is None:
+                return {}
+            return {item.name: str(decision) if isinstance(decision, str) else 'tool permission was revoked'
+                    for item in definitions if (decision := self._authorize_tool(item, context)) is not True}
+        while True:
+            denied = await asyncio.to_thread(read)
+            signal.raise_if_cancelled()
+            latest = registered_definitions()
+            if latest == definitions:
+                break
+            # A plugin/registry edit during host I/O needs a new projection,
+            # never an executor or permission frozen before that await.
+            definitions = latest
+        denied = dict(denied)
+        for definition in definitions:
+            reason = current._policy_denial(definition) if current._policy_denial is not None else None
+            if reason is not None:
+                denied[definition.name] = reason
+        return CapabilityPreparation(definitions, MappingProxyType(denied))
+
+    def _select(self, names, *, preparation: CapabilityPreparation | None = None) -> CapabilityResolution:
         from .provider import CancellationToken
         from .search_budget import select_schema_budget
         context = ToolContext(self.snapshot.role_id, self.snapshot.session_key, self.snapshot.run_id, CancellationToken())
         candidates = {}
         denied = {name: reason for name, reason in self.denied_tools.items() if self._lookup(name) is None}
-        for name in self._registered():
-            definition = self.candidate_definition(name)
-            denial = self._policy_denial(definition) if definition is not None and self._policy_denial is not None else None
+        candidate_definitions = ({item.name: item for item in preparation.definitions} if preparation is not None
+                                 else {name: self.candidate_definition(name) for name in self._registered()})
+        for name, definition in candidate_definitions.items():
+            if self._lookup(name) is None:
+                continue
+            denial = (preparation.denied.get(name) if preparation is not None else
+                      self._policy_denial(definition) if definition is not None and self._policy_denial is not None else None)
             if denial is not None:
                 denied[name] = denial
             elif definition is not None:
@@ -212,7 +267,7 @@ class CapabilityResolution:
         deferred = [candidates[name] for name in dict.fromkeys(names)
                     if name in candidates and candidates[name].exposure == "deferred"]
         for definition in (*baseline, *deferred):
-            denial = self.authorization_denial(definition, context)
+            denial = preparation.denied.get(definition.name) if preparation is not None else self.authorization_denial(definition, context)
             if denial is not None:
                 denied[definition.name] = denial
         baseline = [item for item in baseline if item.name not in denied]
@@ -244,19 +299,22 @@ class CapabilityResolution:
             denied_tools=MappingProxyType(denied),
             tools=tuple(self._registered()[item.name] for item in definitions))
 
-    def window_view(self, messages) -> CapabilityResolution:
+    def window_view(self, messages, *, preparation=None) -> CapabilityResolution:
         from .tool_window import window_tool_names
         unloaded = self._discovery.unloaded_calls if self._discovery is not None else frozenset()
-        return self.current()._select(window_tool_names(messages, unloaded_calls=unloaded))
+        return self.current()._select(window_tool_names(messages, unloaded_calls=unloaded), preparation=preparation)
 
-    def select_window(self, messages) -> CapabilityResolution:
-        view = self.window_view(messages)
+    def select_window(self, messages, *, preparation=None) -> CapabilityResolution:
+        view = self.window_view(messages, preparation=preparation)
         if self._discovery is not None:
             self._discovery._current = view
         return view
 
     def pending_revision(self, call_id: str) -> CapabilityResolution | None:
         return self._discovery.propose(call_id) if self._discovery is not None else None
+
+    async def prepare_revision(self, call_id, signal):
+        return await self._discovery.prepare_revision(call_id, signal) if self._discovery is not None else None
 
     def discard_pending(self, call_id: str | None = None) -> None:
         if self._discovery is not None:
@@ -512,6 +570,7 @@ class CapabilityRegistry:
         direct_exposure: bool = False,
         authorize_tool: Callable[[ToolDefinition, ToolContext], bool | str] | None = None,
         authorize_call: Callable[[ToolDefinition, ToolContext, Mapping[str, object]], bool | str] | None = None,
+        prepare_tools: Callable | None = None,
         deferred_tool_names: frozenset[str] = frozenset(),
         source_scope: str = "",
         service_grants: tuple[ServiceGrant, ...] = (),
@@ -668,6 +727,7 @@ class CapabilityRegistry:
             _discovery=discovery,
             _authorize_tool=authorize_tool,
             _authorize_call=authorize_call,
+            _prepare_tools=prepare_tools,
             _resource_close=resource_close,
             source_scope=source_scope,
         )
@@ -698,6 +758,7 @@ class CapabilityRegistry:
         direct_exposure: bool = False,
         authorize_tool: Callable[[ToolDefinition, ToolContext], bool | str] | None = None,
         authorize_call: Callable[[ToolDefinition, ToolContext, Mapping[str, object]], bool | str] | None = None,
+        prepare_tools: Callable | None = None,
         deferred_tool_names: frozenset[str] = frozenset(),
         source_scope: str = "",
         service_grants: tuple[ServiceGrant, ...] = (),
@@ -729,6 +790,7 @@ class CapabilityRegistry:
                 direct_exposure=direct_exposure,
                 authorize_tool=authorize_tool,
                 authorize_call=authorize_call,
+                prepare_tools=prepare_tools,
                 deferred_tool_names=deferred_tool_names,
                 source_scope=source_scope,
                 service_grants=service_grants,
