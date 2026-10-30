@@ -41,17 +41,7 @@ class CapabilitySnapshot:
     service_grants: tuple[ServiceGrant, ...] = ()
 
     def provider_schemas(self) -> list[dict[str, object]]:
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": definition.name,
-                    "description": definition.description,
-                    "parameters": _thaw_json(definition.input_schema),
-                },
-            }
-            for definition in self.tools
-        ]
+        return [definition.as_provider_schema() for definition in self.tools]
 
     def to_dict(self, *, include_prompt_sections: bool = True) -> dict[str, object]:
         snapshot: dict[str, object] = {

@@ -505,8 +505,16 @@ async def _execute_tool(
             denial = registry.authorization_denial(registry.definition(call.name), context, arguments)
             if denial is not None:
                 return finish(AgentToolResult(denial, details={"reason": denial}, is_error=True), status="denied")
+        definition = (
+            registry.definition(call.name)
+            if isinstance(registry, CapabilityResolution)
+            else tool.definition
+        ) or tool.definition
+        # Hooks and admission see the call as submitted. Only the business
+        # validator/function receive stripped host intent, as in Shiori.
+        execution_arguments = definition.execution_arguments(arguments)
         try:
-            registry.validate_arguments(call.name, arguments)
+            registry.validate_arguments(call.name, execution_arguments)
         except ValueError as error:
             return finish(
                 AgentToolResult(
@@ -517,11 +525,6 @@ async def _execute_tool(
                 status="invalid_arguments",
             )
         tool_signal = CancellationToken(parent=signal)
-        definition = (
-            registry.definition(call.name)
-            if isinstance(registry, CapabilityResolution)
-            else tool.definition
-        ) or tool.definition
         tool_timeout = definition.timeout_seconds
         effective_timeout = (
             min(timeout, tool_timeout)
@@ -540,7 +543,7 @@ async def _execute_tool(
             nonlocal accepting_updates
             try:
                 tool_signal.raise_if_cancelled()
-                return await resolve_tool_result(execute(arguments, tool_context, on_update))
+                return await resolve_tool_result(execute(execution_arguments, tool_context, on_update))
             finally:
                 # Close at execute settlement, not when the monitoring task
                 # happens to resume (call_soon callbacks may race that resume).

@@ -16,10 +16,10 @@ function feed() {
   const cancel = vi.fn();
   const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; }, cancel });
   const emit = (type: string, data: unknown) => controller.enqueue(new TextEncoder().encode(sse(type, data)));
-  const begin = () => {
+  const begin = (argumentsPreview?: string) => {
     emit("user_message_accepted", { message: userMessage, runId: "run-1", sequence: 1 });
     emit("assistant_generation_started", { messageId: "a1", runId: "run-1", sequence: 2 });
-    emit("tool_execution_start", { ...call, arguments: { token: "never-show-secret" } });
+    emit("tool_execution_start", { ...call, argumentsPreview, arguments: { token: "never-show-secret" } });
   };
   return { stream, emit, begin, cancel };
 }
@@ -123,13 +123,16 @@ it("does not accept progress after stop, waits for cleanup, and never resurrects
   const events = feed();
   let finishStop!: (value: { body: unknown }) => void;
   const stopped = new Promise<{ body: unknown }>(resolve => { finishStop = resolve; });
-  const saved = message({ ...assistant, status: "failed", content: "已派发的动作结果不确定", metadata: { runtimeReason: "cancelled" } });
+  const argumentsPreview = '{"description":"连接工具服务"}';
+  const saved = message({ ...assistant, status: "failed", content: "已派发的动作结果不确定", metadata: { runtimeReason: "cancelled",
+    process: [{ type: 'tool', id: call.toolCallId, name: call.toolName, argumentsPreview, status: 'unknown', result: '尚无最终结果' }],
+  } });
   let history: typeof userMessage[] = [];
   fakeBackend({
     "GET /api/roles": () => ({ body: { roles: [alice, bella] } }),
     "GET /api/roles/r1/session": () => ({ body: { session, messages: history } }),
     "GET /api/roles/r2/session": () => ({ body: { session: { roleId: "r2", sessionKey: "role:r2" }, messages: [] } }),
-    "POST /api/roles/r1/messages": () => { history = []; events.begin(); return { stream: events.stream, headers: { "X-Meido-Run-Id": "run-1" } }; },
+    "POST /api/roles/r1/messages": () => { history = []; events.begin(argumentsPreview); return { stream: events.stream, headers: { "X-Meido-Run-Id": "run-1" } }; },
     "POST /api/roles/r1/runs/run-1/stop": () => stopped,
   });
   const user = userEvent.setup();
@@ -137,6 +140,7 @@ it("does not accept progress after stop, waits for cleanup, and never resurrects
   await screen.findByRole("heading", { name: "爱丽丝" });
   await user.type(screen.getByRole("textbox", { name: "消息内容" }), "执行工具{Enter}");
   const progress = await screen.findByRole("status", { name: "工具执行" });
+  expect(within(progress).getByText(argumentsPreview)).toBeVisible();
   await user.click(screen.getByRole("button", { name: "停止回复" }));
   expect(within(progress).getByText("正在停止…")).toBeVisible();
   expect(screen.getByRole("button", { name: /贝拉/ })).toBeDisabled();
@@ -151,6 +155,8 @@ it("does not accept progress after stop, waits for cleanup, and never resurrects
   await screen.findByRole("heading", { name: "爱丽丝" });
   expect(screen.getByText("已派发的动作结果不确定")).toBeVisible();
   expect(screen.queryByRole("status", { name: "工具执行" })).toBeNull();
+  await user.click(screen.getByRole('button', { name: '1 次工具调用' }));
+  expect(within(screen.getByRole('button', { name: 'mcp_connect · 结果不确定' })).getByText(argumentsPreview)).toBeVisible();
 });
 
 it("a failed stop does not reopen the progress window or claim that cleanup completed", async () => {

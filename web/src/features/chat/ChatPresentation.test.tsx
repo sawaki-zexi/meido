@@ -122,3 +122,72 @@ it('streams thinking into the active reply and retains its process across tool t
   expect(screen.getByText('已找到')).toBeVisible();
   expect(screen.queryByRole('button', { name: '停止回复' })).toBeNull();
 });
+
+it.each(['failed', 'cancelled'])('keeps each same-name call intent in its live and reopened parameter chip after %s', async terminal => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
+  let sequence = 0;
+  const emit = (type: string, data: object) => controller.enqueue(new TextEncoder().encode(sse(type, {
+    roleId: 'r1', sessionKey: 'role:r1', runId: 'run-intent', sequence: ++sequence, ...data,
+  })));
+  const previews = ['{"description":"读取运行配置","path":"config.json"}', '{"description":"检查配置结果","path":"result.json"}'];
+  const calls = previews.map((argumentsPreview, index) => ({ type: 'tool', id: `c${index}`, name: 'read_config',
+    argumentsPreview, status: index === 0 ? 'succeeded' : terminal, result: index === 0 ? '配置已读取' : '配置不可用' }));
+  const saved = message({ id: 'a1', role: 'assistant', content: '处理结束', metadata: { process: calls } });
+  let history: ReturnType<typeof message>[] = [];
+  fakeBackend({
+    'GET /api/roles': () => ({ body: { roles: [role({ id: 'r1', name: '爱丽丝' })] } }),
+    'GET /api/roles/r1/session': () => ({ body: { session: { roleId: 'r1', sessionKey: 'role:r1' }, messages: history } }),
+    'POST /api/roles/r1/messages': () => {
+      emit('user_message_accepted', { message: message({ id: 'u1', role: 'user', content: '检查配置' }) });
+      emit('assistant_generation_started', { messageId: 'a1' });
+      emit('tool_execution_start', { toolCallId: 'c0', toolName: 'read_config', argumentsPreview: previews[0] });
+      return { stream };
+    },
+  });
+  const user = userEvent.setup();
+  const view = render(<App />);
+  await screen.findByRole('heading', { name: '爱丽丝' });
+  await user.type(screen.getByRole('textbox', { name: '消息内容' }), '检查配置{Enter}');
+  const firstRunning = await screen.findByRole('button', { name: 'read_config · 运行中' });
+  expect(within(firstRunning).getByText(previews[0])).toBeVisible();
+  expect(firstRunning).toHaveAccessibleDescription(previews[0]);
+  expect(within(firstRunning).getByText(previews[0])).toHaveAttribute('title', previews[0]);
+  expect(screen.queryByText('处理结束')).toBeNull();
+  act(() => {
+    emit('tool_execution_end', { toolCallId: 'c0', toolName: 'read_config', status: 'succeeded', result: '配置已读取', isError: false });
+    emit('tool_execution_start', { toolCallId: 'c1', toolName: 'read_config', argumentsPreview: previews[1] });
+  });
+  await screen.findByText(previews[1]);
+  const secondRunning = screen.getByRole('button', { name: 'read_config · 运行中' });
+  expect(within(secondRunning).getByText(previews[1])).toBeVisible();
+  expect(within(screen.getByRole('button', { name: 'read_config · 已完成' })).getByText(previews[0])).toBeVisible();
+  act(() => {
+    emit('tool_execution_end', { toolCallId: 'c1', toolName: 'read_config', status: terminal, result: '配置不可用', isError: true });
+    emit('tool_execution_update', { toolCallId: 'c0', toolName: 'read_config', status: 'running', result: '迟到进度' });
+    emit('tool_execution_start', { toolCallId: 'c1', toolName: 'read_config', argumentsPreview: '{"description":"迟到意图"}' });
+  });
+  const terminalLabel = terminal === 'failed' ? '失败' : '已取消';
+  const secondEnded = await screen.findByRole('button', { name: `read_config · ${terminalLabel}` });
+  expect(within(secondEnded).getByText(previews[1])).toBeVisible();
+  expect(screen.queryByText(/迟到/)).toBeNull();
+  act(() => {
+    history = [saved];
+    emit('assistant_completed', { message: saved });
+    controller.close();
+  });
+  await screen.findByText('处理结束', { selector: '.bubble p' });
+  expect(screen.getByRole('button', { name: '2 次工具调用' })).toHaveAttribute('aria-expanded', 'false');
+  view.unmount();
+  render(<App />);
+  await screen.findByText('处理结束', { selector: '.bubble p' });
+  await user.click(screen.getByRole('button', { name: '2 次工具调用' }));
+  const first = screen.getByRole('button', { name: 'read_config · 已完成' });
+  const second = screen.getByRole('button', { name: `read_config · ${terminalLabel}` });
+  expect(within(first).getByText(previews[0])).toBeVisible();
+  expect(within(second).getByText(previews[1])).toBeVisible();
+  await user.click(first);
+  expect(screen.getByText('配置已读取')).toBeVisible();
+  await user.click(second);
+  expect(screen.getByText('配置不可用')).toBeVisible();
+});

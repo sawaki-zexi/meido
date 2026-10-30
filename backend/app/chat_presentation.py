@@ -27,8 +27,14 @@ def arguments_preview(name, arguments):
     """A bounded diagnostic preview, never the raw invocation payload."""
     if not isinstance(arguments, dict):
         return ''
+    # Keep the actual intent in Shiori's existing JSON chip even when long
+    # business arguments would consume its 120-character/30-field preview.
+    if isinstance(arguments.get('description'), str):
+        arguments = {'description': arguments['description'], **arguments}
     if name == 'mail.manage':
-        return '邮件参数已隐藏'
+        if not isinstance(arguments.get('description'), str):
+            return '邮件参数已隐藏'
+        arguments = {'description': arguments['description']}
 
     def scrub(value, depth=0):
         if depth > 6:

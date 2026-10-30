@@ -62,8 +62,13 @@ def test_namespace_map_uses_source_identity_and_complete_render_budget():
 
 def test_declaration_bytes_measure_full_neutral_schema_not_search_text():
     tool = definition(input_schema={"properties": {"内容": {"type": "string"}}})
-    expected = json.dumps({"name": tool.name, "description": tool.description, "parameters": tool.input_schema}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    actual_schema = tool.as_provider_schema()['function']
+    assert 'description' in actual_schema['parameters']['properties']
+    expected = json.dumps(actual_schema, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     assert declaration_bytes(tool) == len(expected)
+    raw_bytes = len(json.dumps({'name': tool.name, 'description': tool.description, 'parameters': tool.input_schema},
+                              ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode())
+    assert not select_schema_budget([tool], baseline=[], new_limit=raw_bytes).selected
 
 
 def test_budget_counts_pending_deduplicates_and_keeps_whole_schemas():

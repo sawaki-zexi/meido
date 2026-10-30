@@ -49,6 +49,12 @@ def test_google_discovery_with_repeated_adapter_ids_keeps_independent_audit_vers
             for group in payload.get("tools", [])
             for declaration in group.get("functionDeclarations", [])
         }
+        for group in payload.get('tools', []):
+            for declaration in group.get('functionDeclarations', []):
+                parameters = declaration['parameters']
+                assert parameters['properties']['description']['type'] == 'string'
+                assert '5-12' in parameters['properties']['description']['description']
+                assert 'description' in parameters['required']
         parts = [part for item in payload["contents"] for part in item["parts"]]
         calls = [part["functionCall"] for part in parts if "functionCall" in part]
         responses = [
@@ -60,7 +66,7 @@ def test_google_discovery_with_repeated_adapter_ids_keeps_independent_audit_vers
                 {
                     "functionCall": {
                         "name": "tool_search",
-                        "args": {"query": "select:read_file"},
+                        "args": {"query": "select:read_file", "description": "查找文件读取工具"},
                     },
                     "thoughtSignature": "search-signature",
                 }
@@ -76,7 +82,7 @@ def test_google_discovery_with_repeated_adapter_ids_keeps_independent_audit_vers
                 {
                     "functionCall": {
                         "name": "read_file",
-                        "args": {"path": "evidence.txt"},
+                        "args": {"path": "evidence.txt", "description": "读取真实文件证据"},
                     },
                     "thoughtSignature": "read-signature",
                 }
@@ -84,6 +90,7 @@ def test_google_discovery_with_repeated_adapter_ids_keeps_independent_audit_vers
         else:
             assert len(requests) == 3
             assert [call["name"] for call in calls] == ["tool_search", "read_file"]
+            assert [call['args']['description'] for call in calls] == ['查找文件读取工具', '读取真实文件证据']
             assert [call["id"] for call in calls] == [remote_id or "call-0"] * 2
             previous_calls = [
                 part["functionCall"]

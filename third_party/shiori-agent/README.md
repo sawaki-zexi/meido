@@ -35,6 +35,16 @@ Meido 沿用 SSE、取消与授权边界；硬预算最小请求保留能够装�
 这是区别于上游清除业务工具的行为。没有复制上游摘要批处理、token 校准或插件宿主。
 精确源码链接与证据限制见[本轮研究](../../docs/research/shiori-live-reply-tool-loading-2026-10-30.md)。
 
+## 工具调用意图（2026-10-30）
+
+`backend/app/agent_runtime/tools.py` 适配固定提交
+`71c8b0e460530683cd28aad6bb62e873c7167c89` 的
+`apps/backend/agent/tools/registry.py`：模型 schema 仅在工具没有业务 `description`
+参数时注入必填短意图，实际执行业务参数前移除宿主字段。
+保留原有同名业务参数和上游 5–12 字提示，不额外强制拒绝缺少意图的调用。
+Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。
+调用链核验与 Meido 适配见[研究记录](../../docs/research/shiori-tool-call-intent-2026-10-30.md)。
+
 ## 聊天思考与工具展示（2026-10-29）
 
 `web/src/features/chat/ChatThinkingBlock.tsx`、`ChatToolCalls.tsx`、`ChatReplyMetrics.tsx`

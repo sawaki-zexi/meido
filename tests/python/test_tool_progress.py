@@ -159,9 +159,11 @@ def test_callback_window_closes_before_cleanup_and_cleanup_is_joined(ending):
         release_cleanup = asyncio.Event()
         token = CancellationToken()
         callbacks = []
+        provider = Provider((ToolCall('one', 'work', {'description': '读取当前运行状态'}),))
         class Tool:
             definition = ToolDefinition('work', 'Work')
             async def execute(self, arguments, context, on_update=None):
+                assert arguments == {}
                 callbacks.append(on_update)
                 on_update(AgentToolResult('entered'))
                 entered.set()
@@ -178,10 +180,10 @@ def test_callback_window_closes_before_cleanup_and_cleanup_is_joined(ending):
             from backend.app.agent_runtime import CapabilityRegistry
             capabilities = CapabilityRegistry([Tool()]).resolve(role_id='r', session_key='s', run_id='run',
                 enabled_tools={'work'}, authorize_tool=lambda *args: True if allowed else 'source revoked')
-            stream = run_agent_loop(provider=Provider(), model='fake', system='', messages=[],
+            stream = run_agent_loop(provider=provider, model='fake', system='', messages=[],
                 capabilities=capabilities, signal=token)
         else:
-            stream = loop(Tool(), signal=token, timeout=.01 if ending == 'timeout' else None)
+            stream = loop(Tool(), provider=provider, signal=token, timeout=.01 if ending == 'timeout' else None)
         events = []
         async def consume():
             nonlocal allowed
@@ -206,6 +208,7 @@ def test_callback_window_closes_before_cleanup_and_cleanup_is_joined(ending):
                 release_cleanup.set()
             await asyncio.wait_for(task, 1)
             callbacks[0](AgentToolResult('after settlement'))
+            assert next(event.arguments for event in events if isinstance(event, ToolExecutionStartEvent)) == {'description': '读取当前运行状态'}
             assert not any(isinstance(event, ToolExecutionUpdateEvent) and event.result.content in {'during cleanup', 'after settlement'} for event in events)
             if ending != 'close':
                 ends = [event for event in events if isinstance(event, ToolExecutionEndEvent)]
@@ -296,7 +299,8 @@ def test_settled_receipt_does_not_grant_permission_for_later_revoked_call():
 from test_chat_stop import chat_server
 
 
-def test_http_sse_client_receives_progress_before_tool_finishes(chat_server, monkeypatch):
+@pytest.mark.parametrize('terminal_status', ['succeeded', 'failed', 'cancelled'])
+def test_http_sse_client_receives_progress_before_tool_finishes(chat_server, monkeypatch, terminal_status):
     import threading
     from backend.app import main
     from backend.app.agent_runtime import CapabilityRegistry
@@ -304,19 +308,30 @@ def test_http_sse_client_receives_progress_before_tool_finishes(chat_server, mon
     client, role, _ = chat_server
     release = threading.Event()
     finished = threading.Event()
+    intent = '读取本次运行配置'
+    arguments = {'secret': 'never expose raw arguments', 'query': '很长的业务参数' * 100, 'description': intent}
+    received = []
     class Tool:
-        definition = ToolDefinition('work', 'Work', {'type': 'object', 'properties': {'secret': {'type': 'string'}}})
+        definition = ToolDefinition('work', 'Work', {'type': 'object', 'properties': {
+            'secret': {'type': 'string'}, 'query': {'type': 'string'}}, 'additionalProperties': False})
         async def execute(self, arguments, context, on_update=None):
+            received.append(dict(arguments))
             on_update(AgentToolResult('连接阶段 access_token=secret-value', details={'phase': 'connecting'}))
-            await asyncio.to_thread(release.wait, 3)
-            finished.set()
-            return AgentToolResult('receipt')
+            try:
+                await asyncio.to_thread(release.wait, 3)
+                return AgentToolResult('receipt', is_error=terminal_status == 'failed')
+            finally:
+                finished.set()
     class Adapter:
         requests = 0
-        async def stream_rich_messages(self, *args, **kwargs):
+        async def stream_rich_messages(self, messages, configuration, tools, **kwargs):
             self.requests += 1
+            schema = next(item['function']['parameters'] for item in tools if item['function']['name'] == 'work')
+            assert schema['properties']['description']['type'] == 'string'
+            assert '5-12' in schema['properties']['description']['description']
+            assert 'description' in schema['required']
             yield ModelStreamDone(ModelAssistantMessage(
-                (ModelToolCallBlock('http-call', 'work', {'secret': 'never expose raw arguments'}),),
+                (ModelToolCallBlock('http-call', 'work', arguments),),
                 ModelResponseMetadata(stop_reason='tool_use')) if self.requests == 1 else ModelAssistantMessage(
                 (ModelTextBlock('finished'),), ModelResponseMetadata(stop_reason='stop')))
     async def capabilities(owner, *, session_key, run_id, **kwargs):
@@ -324,6 +339,7 @@ def test_http_sse_client_receives_progress_before_tool_finishes(chat_server, mon
     monkeypatch.setattr(main, 'model_adapter', Adapter())
     monkeypatch.setattr(main, '_runtime_capabilities', capabilities)
     events = []
+    stopped = None
     try:
         with client.stream('POST', f'/api/roles/{role.id}/messages', json={'content': 'test progress'}) as stream:
             assert stream.status_code == 200
@@ -335,6 +351,11 @@ def test_http_sse_client_receives_progress_before_tool_finishes(chat_server, mon
                     continue
                 payload = json.loads(line[6:])
                 events.append((kind, payload))
+                if kind == 'tool_execution_start':
+                    assert not finished.is_set()
+                    assert intent in payload['argumentsPreview']
+                    assert len(payload['argumentsPreview']) <= 120
+                    assert 'never expose raw arguments' not in payload['argumentsPreview']
                 if kind == 'tool_execution_update':
                     assert not finished.is_set()
                     assert payload['result'] == '连接阶段 access_token=[redacted]'
@@ -343,19 +364,52 @@ def test_http_sse_client_receives_progress_before_tool_finishes(chat_server, mon
                     assert payload['roleId'] == role.id
                     assert payload['sessionKey'] == f'role:{role.id}'
                     assert payload['toolCallId'] == 'http-call'
+                    if terminal_status == 'cancelled':
+                        response = client.post(f'/api/roles/{role.id}/runs/{payload["runId"]}/stop')
+                        assert response.status_code == 200
+                        stopped = response.json()
+                        release.set()
+                        # Stop closes this transport; the stop receipt and
+                        # persisted history carry the authoritative terminal.
+                        break
                     release.set()
         assert release.is_set() and finished.is_set()
         tool_events = [(kind, value) for kind, value in events if kind.startswith('tool_execution')]
-        assert [kind for kind, _ in tool_events] == ['tool_execution_start', 'tool_execution_update', 'tool_execution_end']
-        assert tool_events[0][1]['argumentsPreview'] == '{"secret":"[redacted]"}'
+        expected_events = ['tool_execution_start', 'tool_execution_update']
+        if terminal_status != 'cancelled':
+            expected_events.append('tool_execution_end')
+        assert [kind for kind, _ in tool_events] == expected_events
+        preview = tool_events[0][1]['argumentsPreview']
+        assert intent in preview and '[redacted]' in preview
         assert 'arguments' not in tool_events[0][1]
-        assert tool_events[-1][1]['status'] == 'succeeded'
+        if stopped is None:
+            assert tool_events[-1][1]['status'] == terminal_status
+        else:
+            stopped_process = stopped['messages'][-1]['metadata']['process']
+            assert next(item['status'] for item in stopped_process if item['type'] == 'tool') == 'unknown'
+            assert stopped['messages'][-1]['metadata']['runtimeReason'] == 'cancelled'
         assert len({value['runId'] for _, value in tool_events}) == 1
         assert [value['sequence'] for _, value in events] == sorted({value['sequence'] for _, value in events})
         saved = main.session_store.list_messages(f'role:{role.id}')
         results = [item for item in saved if item.messageType == 'tool_result']
-        assert len(results) == 1 and results[0].content == 'receipt'
+        if terminal_status == 'cancelled':
+            assert results == []  # No fabricated final receipt on forced close.
+        else:
+            assert len(results) == 1
+            assert results[0].toolResult['status'] == terminal_status
+        assert received == [{key: value for key, value in arguments.items() if key != 'description'}]
         assert '连接阶段' not in ''.join(item.content for item in saved)
+        # Reopen the durable store and then fetch the same public projection a
+        # refreshed chat uses. Progress is not needed to reconstruct its intent.
+        from backend.app.session_store import SessionStore
+        reopened = SessionStore(main.session_store.database_path)
+        call = next(item for item in reopened.list_messages(f'role:{role.id}') if item.messageType == 'tool_call')
+        assert call.toolArguments['description'] == intent
+        history = client.get(f'/api/roles/{role.id}/session').json()['messages']
+        process = next(item['metadata']['process'] for item in reversed(history) if item['role'] == 'assistant')
+        projected = next(item for item in process if item['type'] == 'tool')
+        assert projected['argumentsPreview'] == preview
+        assert projected['status'] == ('unknown' if terminal_status == 'cancelled' else terminal_status)
     finally:
         release.set()
 
