@@ -27,8 +27,9 @@ def estimate_tokens(value: Any) -> int:
         if (value.get('type') in ('image_url', 'input_image', 'image')
             or isinstance(value.get('inlineData'), dict) and 'mimeType' in value['inlineData']
             or isinstance(value.get('image'), dict) and 'source' in value['image']):
-            image = value.get('image_url', value)
-            return 85 if isinstance(image, dict) and image.get('detail') == 'low' else 4096
+            image = value.get('image_url')
+            detail = image.get('detail') if isinstance(image, dict) else value.get('detail')
+            return 85 if detail == 'low' else 4096
         return 2 + sum(estimate_tokens(str(key)) + estimate_tokens(item) + 2 for key, item in value.items())
     if isinstance(value, (list, tuple)):
         return 2 + sum(estimate_tokens(item) + 2 for item in value)

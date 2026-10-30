@@ -221,6 +221,29 @@ def test_every_protocol_prepares_real_images_schema_and_repaired_history_without
     assert request.get('_context_frames') == (1,)
 
 
+@pytest.mark.parametrize('api', ['openai-completions', 'openai-responses', 'azure-openai-responses', 'openai-codex-responses'])
+def test_provider_image_estimate_honors_native_low_detail(api):
+    from backend.app.agent_runtime.types import AttachmentContent, ImageContent
+    provider = make_provider()
+    provider.configuration = provider.configuration.model_copy(update={'api': api, 'apiOptions': {'accountId': 'fixture'}})
+    estimates = {}
+    for detail in ('low', 'high', 'auto'):
+        messages = [UserMessage('picture', attachments=(AttachmentContent('img', 'image/png',
+            image=ImageContent('image/png', 'eA==', detail)),))]
+        estimates[detail] = provider.estimate_request_tokens('', messages, [])
+    assert estimates['high'] - estimates['low'] == 4096 - 85
+    assert estimates['auto'] == estimates['high']
+
+
+@pytest.mark.parametrize('image', [
+    {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,eA=='}},
+    {'type': 'input_image', 'image_url': 'data:image/png;base64,eA=='},
+])
+def test_images_without_explicit_detail_keep_conservative_allowance(image):
+    from backend.app.agent_runtime.usage_anchor import estimate_tokens
+    assert estimate_tokens(image) == 4096
+
+
 def test_http_wire_uses_same_aliased_tools_and_multimodal_projection(monkeypatch):
     from backend.app.agent_runtime.types import AttachmentContent, ImageContent, ToolCall
     requests = patch_openai(monkeypatch)
@@ -251,6 +274,38 @@ def make_window(provider, tmp_path, *, settings=None):
         contextSafetyMarginTokens=100, contextTriggerRatio=.5, contextTargetRatio=.2),
         ContextWindowStore(sessions.database_path), role_id='r', session_key='role:r', scope='owner',
         authority='a', authorized=lambda: True, ensure_coverage=coverage)
+
+
+@pytest.mark.parametrize('api', ['openai-responses', 'azure-openai-responses', 'openai-codex-responses'])
+def test_responses_low_detail_images_fit_initial_and_appended_request_budget(monkeypatch, tmp_path, api):
+    from backend.app.agent_runtime.types import AttachmentContent, ImageContent
+    requests = []
+    def handler(request):
+        requests.append(json.loads(request.content))
+        payload = {'response': {'id': 'response', 'status': 'completed',
+            'usage': {'input_tokens': 200, 'output_tokens': 3},
+            'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'reply'}]}]}}
+        return httpx.Response(200, text=f'event: response.completed\ndata: {json.dumps(payload)}\n\n')
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: original(**kwargs, transport=httpx.MockTransport(handler)))
+    provider = make_provider(context_safety_margin=100)
+    provider.configuration = provider.configuration.model_copy(update={'api': api, 'contextWindowTokens': 4000,
+        'apiOptions': {'accountId': 'fixture'}})
+    window = make_window(provider, tmp_path)
+    image = AttachmentContent('img', 'image/png', image=ImageContent('image/png', 'eA==', 'low'))
+    messages = [UserMessage('picture', attachments=(image,))]
+    asyncio.run(respond(window, messages))
+    assert window.last_input_source == 'local'
+    messages += [AssistantMessage('reply'), UserMessage('second picture', attachments=(image,))]
+    asyncio.run(respond(window, messages))
+    assert window.last_input_source == 'anchor_delta'
+    assert window.last_input_estimate < 1000
+    assert not window.compaction_failed and not window.degraded and window.compactions == 0
+    assert len(requests) == 2
+    images = [part for message in requests[-1]['input'] for part in message.get('content', [])
+        if isinstance(part, dict) and part.get('type') == 'input_image']
+    assert len(images) == 2
+    assert all(part['detail'] == 'low' and isinstance(part['image_url'], str) for part in images)
 
 
 def test_actual_usage_avoids_unnecessary_compaction_and_counts_optional_context(monkeypatch, tmp_path):
