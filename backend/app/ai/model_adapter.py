@@ -317,6 +317,17 @@ class OpenAICompatibleAdapter:
     def __init__(self, timeout: float | None = None) -> None:
         self.timeout = timeout
 
+    def _rich_adapter(self, configuration, *, disable_thinking=False, json_mode=False):
+        from .pi_openai_adapter import OpenAICompletionsRichAdapter, OpenAICompletionsOptions
+        return OpenAICompletionsRichAdapter(timeout=self.timeout, options=OpenAICompletionsOptions(
+            send_reasoning_content=_is_deepseek(configuration), supports_finish_reason=False,
+            disable_thinking=disable_thinking, json_mode=json_mode))
+
+    def prepare_input(self, messages, configuration, tools=(), *, max_tokens=None, disable_thinking=False, json_mode=False):
+        configuration = self._effective_configuration(configuration)
+        return self._rich_adapter(configuration, disable_thinking=disable_thinking, json_mode=json_mode).prepare_input(
+            messages, configuration, tools, max_tokens=max_tokens)
+
     async def stream_rich_messages(
         self,
         messages,
@@ -330,20 +341,8 @@ class OpenAICompatibleAdapter:
     ):
         """Expose the Pi-style stream while retaining legacy adapter methods."""
 
-        from .pi_openai_adapter import OpenAICompletionsRichAdapter
-
         effective_configuration = self._effective_configuration(configuration)
-        from .pi_openai_adapter import OpenAICompletionsOptions
-
-        adapter = OpenAICompletionsRichAdapter(
-            timeout=self.timeout,
-            options=OpenAICompletionsOptions(
-                send_reasoning_content=_is_deepseek(effective_configuration),
-                supports_finish_reason=False,
-                disable_thinking=disable_thinking,
-                json_mode=json_mode,
-            ),
-        )
+        adapter = self._rich_adapter(effective_configuration, disable_thinking=disable_thinking, json_mode=json_mode)
         async with aclosing(adapter.stream_rich_messages(
             messages,
             effective_configuration,

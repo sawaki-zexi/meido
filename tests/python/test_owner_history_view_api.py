@@ -30,7 +30,7 @@ def test_desktop_model_gets_more_than_24_private_messages_as_dialogue(api, monke
     monkeypatch.setattr(main, "model_adapter", Adapter())
     role = client.post("/api/roles", json={"name": "跨端历史", "profile": {"profile": "测试角色"}}).json()["role"]
     configuration = client.post("/api/model/configurations", json={"providerId": "custom", "provider": "local",
-        "baseUrl": "http://127.0.0.1:9999/v1", "model": "fixture", "apiKey": "fixture", "contextWindowTokens": 24000}).json()["configuration"]
+        "baseUrl": "http://127.0.0.1:9999/v1", "model": "fixture", "apiKey": "fixture", "contextWindowTokens": 131072}).json()["configuration"]
     client.put(f"/api/roles/{role['id']}/model-configuration", json={"configurationId": configuration["id"]})
     thread = paired_thread(main.multichannel_store, role["id"])
     for index in range(18):
@@ -39,6 +39,7 @@ def test_desktop_model_gets_more_than_24_private_messages_as_dialogue(api, monke
             metadata={"channel": "qq", "deliveryStatus": "sent"})
     response = client.post(f"/api/roles/{role['id']}/messages", json={"content": "继续最开始那个话题"})
     assert "assistant_completed" in response.text
+    assert len(requests) == 1  # This case covers history projection, not compaction.
     actual = [(message.role, block.text) for message in requests[0] for block in message.content if isinstance(block, ModelTextBlock)]
     assert any(role == "user" and "手机第0个问题" in text for role, text in actual)
     assert any(role == "assistant" and "手机第0个回答" in text for role, text in actual)

@@ -742,7 +742,7 @@ def test_meido_provider_restores_model_metadata_for_transcript_replay():
         },
     )
 
-    restored = provider._rich_messages("system", [runtime_message])[1]
+    restored = next(message for message in provider._rich_messages("system", [runtime_message]) if isinstance(message, ModelAssistantMessage))
     assert restored.metadata.model == "deepseek-reasoner"
     assert restored.metadata.response_id == "response-1"
     assert restored.metadata.usage.input_tokens == 12
@@ -754,11 +754,11 @@ def test_meido_provider_restores_model_metadata_for_transcript_replay():
     )
     assert replayed[0].content == (ModelTextBlock("private thought"), ModelTextBlock("answer"))
 
-    failed = provider._rich_messages("system", [AssistantMessage(
+    failed = next(message for message in provider._rich_messages("system", [AssistantMessage(
         content="partial",
         stop_reason="error",
         metadata={"model": "deepseek-reasoner", "stop_reason": "error"},
-    )])[1]
+    )]) if isinstance(message, ModelAssistantMessage))
     assert transform_messages((failed,), target_model="deepseek-reasoner") == ()
 
 

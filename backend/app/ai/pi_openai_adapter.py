@@ -524,6 +524,11 @@ class OpenAICompletionsRichAdapter:
         self.timeout = timeout
         self.options = options or OpenAICompletionsOptions()
 
+    def prepare_input(self, messages, configuration, tools=(), *, max_tokens=None):
+        from .input_projection import project_input
+        payload, _, _ = self._prepare_request(messages, configuration, tools, max_tokens=max_tokens, stream=True)
+        return project_input(payload, configuration)
+
     def _prepare_request(
         self,
         messages: Sequence[ModelMessage],

@@ -2,11 +2,11 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Icon } from '../../ui/Icon';
 
 const emojis = ['😊', '🥰', '😍', '😘', '😆', '😂', '🥺', '😭', '😮', '😴', '🤔', '😤', '😳', '🙃', '😎', '🤗', '👋', '👍', '🙏', '💪', '❤️', '💕', '💖', '✨', '🎉', '🌸', '☀️', '🌙', '☕', '🍰', '🐱', '🐾'];
-export type ContextUsage = { inputTokens: number; capacity: number | null; source: 'actual' | 'local'; configurationId: string | null; model?: string | null };
+export type ContextUsage = { inputTokens: number; capacity: number | null; source: 'actual' | 'anchor_delta' | 'local'; configurationId: string | null; model?: string | null };
 export function readContextUsage(value: unknown): ContextUsage | null {
   if (!value || typeof value !== 'object') return null;
   const item = value as ContextUsage;
-  return Number.isFinite(item.inputTokens) && item.inputTokens >= 0 && (item.source === 'actual' || item.source === 'local')
+  return Number.isFinite(item.inputTokens) && item.inputTokens >= 0 && (item.source === 'actual' || item.source === 'anchor_delta' || item.source === 'local')
     ? { ...item, capacity: typeof item.capacity === 'number' && Number.isFinite(item.capacity) && item.capacity > 0 ? item.capacity : null } : null;
 }
 
@@ -39,7 +39,7 @@ export function ComposerTools({ disabled, onEmoji, usage }: { disabled?: boolean
     {panel === 'context' && <div className="composer-popover context-details" role="dialog" aria-label="上下文详情">
       <strong>最近一次请求的输入上下文</strong>
       <p>{usage ? `${usage.inputTokens.toLocaleString()} / ${usage.capacity?.toLocaleString() ?? '未知'} tokens${percent === null ? '' : ` · ${percent}%`}` : '暂无用量统计'}</p>
-      <small>{usage ? usage.source === 'actual' ? '供应商实测输入量' : '本地估算输入量' : '发送消息后更新'}；不含待发送草稿，非累计消耗。{usage && !usage.capacity && '模型尚未配置上下文容量。'}</small>
+      <small>{usage ? { actual: '供应商实测输入量', anchor_delta: '锚点估算输入量', local: '本地估算输入量' }[usage.source] : '发送消息后更新'}；不含待发送草稿，非累计消耗。{usage && !usage.capacity && '模型尚未配置上下文容量。'}</small>
     </div>}
   </div>;
 }

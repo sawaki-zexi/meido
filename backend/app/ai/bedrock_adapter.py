@@ -146,6 +146,11 @@ class BedrockConverseAdapter:
     def __init__(self, timeout: float | None = None) -> None:
         self.timeout = timeout
 
+    def prepare_input(self, messages, configuration, tools=(), *, max_tokens=None):
+        from .input_projection import project_input
+        _, _, payload, _ = self._prepare(messages, configuration, tools, max_tokens)
+        return project_input(payload, configuration)
+
     def _prepare(self, messages: Sequence[ModelMessage], configuration: ModelConfiguration, tools: Sequence[Mapping[str, object]], max_tokens: int | None):
         messages = transform_messages(
             messages,
@@ -256,34 +261,9 @@ class BedrockConverseAdapter:
             yield ModelStreamStart()
             yield ModelStreamError("Bedrock Converse 需要 AWS Bedrock API Key")
             return
-        messages = transform_messages(
-            messages,
-            capabilities=_capabilities(),
-            target_provider=configuration.provider,
-            target_api="bedrock-converse",
-            target_model=configuration.model,
-        )
-        normalized = normalize_tools(effective_tools(messages, tools))
-        tool_aliases, name_aliases = compatible_tool_names(normalized, messages)
-        messages = remap_message_tool_names(messages, tool_aliases)
-        system, wire = _wire_messages(
-            messages,
-            supports_thinking_signature=_supports_thinking_signature(configuration.model),
-        )
-        payload: dict[str, object] = {"messages": wire}
-        if system:
-            payload["system"] = system
-        if max_tokens is not None:
-            payload["inferenceConfig"] = {"maxTokens": max_tokens}
-        tool_config = _wire_tools(normalized, tool_aliases)
-        if tool_config:
-            payload["toolConfig"] = {"tools": tool_config}
-        url = f"{configuration.baseUrl.rstrip('/')}/model/{quote(configuration.model, safe='')}/converse-stream"
-        headers = {
-            "authorization": f"Bearer {configuration.apiKey}",
-            "accept": "application/vnd.amazon.eventstream",
-            "content-type": "application/json",
-        }
+        url, headers, payload, name_aliases = self._prepare(messages, configuration, tools, max_tokens)
+        url += '-stream'
+        headers['accept'] = 'application/vnd.amazon.eventstream'
         text_parts: dict[int, str] = {}
         thinking_parts: dict[int, dict[str, str]] = {}
         tool_parts: dict[int, dict[str, str]] = {}

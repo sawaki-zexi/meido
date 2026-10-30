@@ -138,7 +138,7 @@ class SessionStore:
         return [self._message(row) for row in rows]
 
     def budget_diagnostics(self):
-        allowed = {'requests', 'compactions', 'inputEstimate', 'maxTokens', 'maxIterations', 'toolCount', 'elapsedMs', 'modelId'}
+        allowed = {'requests', 'compactions', 'inputEstimate', 'inputSource', 'maxTokens', 'maxIterations', 'toolCount', 'elapsedMs', 'modelId'}
         with sqlite3.connect(self.database_path) as db:
             rows = db.execute('SELECT run_id, role_id, model_snapshot_json FROM agent_runs ORDER BY started_at DESC LIMIT 20').fetchall()
         result = []

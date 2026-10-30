@@ -171,6 +171,11 @@ def _tools(tools: Sequence[Mapping[str, object]], aliases: Mapping[str, str]) ->
 
 
 class GoogleGenerativeAdapter:
+    def prepare_input(self, messages, configuration, tools=(), *, max_tokens=None):
+        from .input_projection import project_input
+        _, _, payload, _ = self._prepare(messages, configuration, tools, max_tokens=max_tokens, stream=True)
+        return project_input(payload, configuration)
+
     def __init__(
         self,
         timeout: float | None = None,
