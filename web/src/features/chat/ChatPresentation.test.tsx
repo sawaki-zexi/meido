@@ -3,9 +3,23 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { App } from '../../App';
 import { fakeBackend, message, role, sse } from '../../test/fakeBackend';
+import { ComposerTools, readContextUsage } from './ComposerTools';
 
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+it.each([
+  ['actual', '供应商实测输入量'], ['anchor_delta', '锚点估算输入量'], ['local', '本地估算输入量'],
+] as const)('shows %s context provenance without inventing unknown capacity', async (source, label) => {
+  const usage = readContextUsage({ inputTokens: 1234, capacity: null, source, configurationId: 'model' });
+  render(<ComposerTools usage={usage} onEmoji={() => {}} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: '上下文用量：未知' }));
+  const panel = screen.getByRole('dialog', { name: '上下文详情' });
+  expect(panel).toHaveTextContent('1,234 / 未知 tokens');
+  expect(panel).toHaveTextContent(label);
+  expect(panel).not.toHaveTextContent('%');
+});
 
 it('shows Shiori typing feedback before the server accepts a message and clears it at completion', async () => {
   let accept!: (value: { stream: string[] }) => void;

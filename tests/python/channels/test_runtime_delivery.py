@@ -99,7 +99,9 @@ def test_real_channel_runtime_commits_reply_only_after_confirmed_delivery(tmp_pa
     assert reply.content == "actual runtime reply"
     assert reply.status == ("completed" if delivery_status is DeliveryStatus.SENT else "failed")
     assert reply.metadata["deliveryStatus"] == delivery_status.value
-    assert sessions.get_run(reply.runId).status == "completed"
+    run = sessions.get_run(reply.runId)
+    assert run.status == "completed"
+    assert run.modelSnapshot['budgetDiagnostic']['inputSource'] == 'local'
     history = sessions.runtime_messages(thread.session_key)
     owner_history = channels.owner_context(role.id, exclude_thread_id="desktop")
     if delivery_status is DeliveryStatus.SENT:

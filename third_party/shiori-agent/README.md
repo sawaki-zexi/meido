@@ -2,6 +2,18 @@
 
 状态：当前。最后核验：2026-10-30。
 
+## 单次输入用量校准（2026-10-30）
+
+`backend/app/agent_runtime/{usage_anchor,meido_provider,context_provider}.py` 与
+`ai/input_projection.py` 适配固定提交 `71c8b0e460530683cd28aad6bb62e873c7167c89` 的
+`apps/backend/agent/prompting/{usage_anchor,input_budget,token_estimate,assembler}.py`、
+`apps/backend/agent/provider.py` 和 `apps/backend/core/roles/model_runtime.py`：
+actual / anchor_delta / local、有界 64 上下文 LRU、最新请求响应归属、显式宿主帧与辅助请求隔离。
+`ComposerTools.tsx` 沿已有上下文详情增加同版 `chatContextState.ts` 的锚点估算来源。
+Meido 使用原生协议 preparation、显式 Provider 所有权和既有冻结授权视图，不复制上游宿主或持久累计账单。
+合同与差异见[输入用量校准](../../docs/reference/input-usage-calibration.md)。
+Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。
+
 ## 工具可见性与调用指引（2026-10-30，后续核验）
 
 `backend/app/main.py` 与 `agent_runtime/{capabilities,discovery,search_metadata,conversation_prompt,meido_provider}.py`

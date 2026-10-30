@@ -126,7 +126,7 @@ def test_tool_schema_and_output_limits_are_enforced_by_runtime():
         registry.validate_arguments("bounded", {"mode": "safe", "count": 3})
 
 
-def test_tool_registry_rejects_duplicates_and_validates_nested_schema():
+def test_tool_registry_replaces_same_name_and_validates_nested_schema():
     class NestedTool:
         definition = ToolDefinition(
             "nested",
@@ -156,8 +156,8 @@ def test_tool_registry_rejects_duplicates_and_validates_nested_schema():
             return AgentToolResult("ok")
 
     registry = ToolRegistry([NestedTool()])
-    with pytest.raises(ValueError, match="duplicate tool"):
-        ToolRegistry([NestedTool(), NestedTool()])
+    replacement = NestedTool()
+    assert ToolRegistry([NestedTool(), replacement]).get('nested') is replacement
     with pytest.raises(ValueError, match="missing required arguments at options"):
         registry.validate_arguments("nested", {"options": {}, "items": [1]})
     with pytest.raises(ValueError, match="unsupported value"):
@@ -693,7 +693,7 @@ def test_runtime_round_trips_ordered_rich_assistant_blocks_through_sqlite(tmp_pa
     )
 
     restored = store.runtime_messages(session.sessionKey)[0]
-    model_message = provider._rich_messages("system", [restored])[1]
+    model_message = next(message for message in provider._rich_messages("system", [restored]) if isinstance(message, ModelAssistantMessage))
 
     assert restored.metadata["content_blocks"] == [
         {"text": "before", "type": "text", "text_signature": "text-signature"},

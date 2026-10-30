@@ -67,6 +67,12 @@ class RoutedModelAdapter:
     def __init__(self, registry: ModelAdapterRegistry) -> None:
         self.registry = registry
 
+    def prepare_input(self, messages, configuration, tools=(), *, max_tokens=None, disable_thinking=False, json_mode=False):
+        adapter = self.registry.get(configuration)
+        options = ({'disable_thinking': disable_thinking, 'json_mode': json_mode}
+                   if configuration is None or configuration.api == OPENAI_COMPLETIONS_API else {})
+        return adapter.prepare_input(messages, configuration, tools, max_tokens=max_tokens, **options)
+
     def stream_reply(self, role, history, configuration=None, memory_context=""):
         configuration = OpenAICompatibleAdapter._effective_configuration(configuration)
 

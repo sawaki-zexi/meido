@@ -408,7 +408,8 @@ async def test_summary_failure_below_hard_limit_keeps_chat_and_records_reason(tm
             messages=messages, tools=[], signal=CancellationToken())]
     assert adapter.summaries == 1
     assert len(adapter.calls) == 3
-    assert len(adapter.calls[-1][0]) == len(messages) + 1
+    # The host context frame is ephemeral; every ordinary history item remains.
+    assert len(adapter.calls[-1][0]) == len(messages) + 2
     assert windows.load('r', 'role:r', 'owner', 'a')['summary'] is None
     assert sessions.list_messages('role:r') == original
     assert diagnostics[-1]['compaction']['summaryAttempts'][0]['stopReason'] == 'length'

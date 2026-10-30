@@ -206,6 +206,11 @@ def _owner_history(role_id, *, thread_id=None, through_message_id=None, snapshot
         authorized=lambda: store.get(role_id) is not None and role_id not in _channel_roles_deleting)
 
 
+from .agent_runtime.usage_anchor import UsageAnchors
+
+_ordinary_usage_anchors = UsageAnchors()
+
+
 def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_id, owner=True, memory_required=True, history=None):
     source = (capture_channel_source(multichannel_store, session_store, role_id=role_id,
               session_key=session_key, run_id=run_id, owner_context=owner)
@@ -218,7 +223,6 @@ def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_
     if history is not None:
         authority += history.authority
         provider.request_guard = history.require_snapshot_current
-
     def authorized():
         return (store.get(role_id) is not None and role_id not in _channel_roles_deleting
                 and (not session_key.startswith('thread:') or source is not None)
@@ -248,9 +252,17 @@ def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_
         if run is not None:
             session_store.update_run(run_id, status=run.status, model_snapshot={**run.modelSnapshot, 'budgetDiagnostic': values})
 
-    return ContextWindowProvider(provider, settings, history.windows() if history is not None else _context_window_store(), role_id=role_id,
+    window = ContextWindowProvider(provider, settings, history.windows() if history is not None else _context_window_store(), role_id=role_id,
         session_key=session_key, scope='shared_owner' if history is not None else 'owner' if owner else 'external', authority=authority,
         authorized=authorized, ensure_coverage=covered, on_diagnostic=diagnostic)
+    # Calibration is an optional provider capability. Legacy ModelProviders
+    # keep the window's local estimate without acquiring anchor state.
+    bind_usage = getattr(provider, 'bind_usage_context', None)
+    if callable(bind_usage):
+        bind_usage((role_id, session_key, window.scope, authority,
+                    str(session_store.database_path), provider.role.createdAt.isoformat()),
+                   anchors=_ordinary_usage_anchors)
+    return window
 session_manager = SessionManager(store, session_store)
 multichannel_store = MultichannelStore(data_root / "sessions.db", session_store)
 channel_host = ChannelHost(
