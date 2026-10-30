@@ -1,10 +1,10 @@
-# 请求固定的工具发现与轻量恢复
+# 当前注册表执行与原文窗口工具恢复
 
 状态：当前
 
-最后核验：2026-10-26
+最后核验：2026-10-30
 
-事实来源：[发现协议](../../backend/app/agent_runtime/discovery.py)、[能力解析](../../backend/app/agent_runtime/capabilities.py)、[运行循环](../../backend/app/agent_runtime/loop.py)、[持久化宿主](../../backend/app/agent_runtime/runtime.py)、[公开工具/版本测试](../../tests/python/test_tool_discovery.py)、[搜索行为测试](../../tests/python/test_tool_search_relevance.py)、[HTTP 行为测试](../../tests/python/test_tool_discovery_api.py)。对应 [Issue #148](https://github.com/sawaki-zexi/meido/issues/148)、[ADR-0011](../adr/0011-versioned-tool-activation.md)。
+事实来源：[发现协议](../../backend/app/agent_runtime/discovery.py)、[能力解析](../../backend/app/agent_runtime/capabilities.py)、[运行循环](../../backend/app/agent_runtime/loop.py)、[持久化宿主](../../backend/app/agent_runtime/runtime.py)、[公开工具/版本测试](../../tests/python/test_tool_discovery.py)、[搜索行为测试](../../tests/python/test_tool_search_relevance.py)、[HTTP 行为测试](../../tests/python/test_tool_discovery_api.py)。当前运行契约对应 [Issue #280](https://github.com/sawaki-zexi/meido/issues/280)、[ADR-0032](../adr/0032-current-tool-registry-and-raw-window.md)。
 
 ## 角色配置与兼容
 
@@ -43,9 +43,9 @@
 
 搜索文档只派生允许字段：工具名称、`search_hint`、描述、JSON Schema 的 property 名称和 `description`，以及 namespace 身份/短简介。schema 仅遍历 `properties`、`items`、`anyOf`、`oneOf`、`allOf`，不跟随 `$ref`，不索引 default/example/enum 值，不连接服务或执行 instructions。每工具派生文本最多 8192 UTF-8 bytes；遍历最多深度 8、256 节点，循环引用安全停止。命中行的 `metadata_diagnostics` 可包含 `search_text_truncated`、`schema_depth_limit`、`schema_node_limit`、`schema_cycle`。`why_matched` 使用 `名称`、`提示`、`描述`、`参数`、`namespace` 区分证据，不回显整段 schema。
 
-`ToolDefinition.namespace_summary` 是宿主提供的短元信息，不进入 provider 函数 schema；非空值参与定义身份/恢复比较。namespace 直接使用已核验来源 `mcp:<server_id>` 或 `plugin:<id>`，不会因显示别名相同而合并。缺少简介时保留来源身份及空摘要，不采用远端 instructions 作为系统政策。
+`ToolDefinition.namespace_summary` 是宿主提供的短元信息，不进入 provider 函数 schema；非空值随当前定义参与搜索；历史恢复只取原文中的名称。namespace 直接使用已核验来源 `mcp:<server_id>` 或 `plugin:<id>`，不会因显示别名相同而合并。缺少简介时保留来源身份及空摘要，不采用远端 instructions 作为系统政策。
 
-小地图先按当前许可过滤，再按 namespace 排序输出 `{namespace, summary, discovery_route}`。摘要最多 256 UTF-8 bytes，完整渲染最多 4096 UTF-8 bytes（包含标题、JSON 分隔符、路由和遗漏提示），超限整项省略。遗漏数仅计算已授权来源。读取地图不连接服务、不加载 schema。索引每次从当前不可变定义重新生成，无持久索引或第二套授权目录，也没有 provider prefix/cache 收益承诺。
+小地图先按当前许可过滤，再按 namespace 排序输出 `{namespace, summary, discovery_route}`。摘要最多 256 UTF-8 bytes，完整渲染最多 4096 UTF-8 bytes（包含标题、JSON 分隔符、路由和遗漏提示），超限整项省略。遗漏数仅计算已授权来源。读取地图不连接服务、不加载 schema。索引每次从当前定义重新生成，无持久索引或第二套授权目录，也没有 provider prefix/cache 收益承诺。
 
 ### 完整声明预算
 
@@ -56,36 +56,26 @@
 - 按排名/`select:` 的确定顺序，整工具放不下就跳过；继续尝试后续更小的候选。关键词的 `top_k` 限制预算筛选后的可加载匹配数，超大候选不占名额；找到足够结果后停止扫描。`select:` 不绕过预算，不裁剪 schema JSON，不自动卸载已有工具。
 - `budget` 报告 `baseline_bytes`、`loaded_bytes`、`pending_bytes`、`new_bytes`、`total_bytes`、`new_limit_bytes`、`total_limit_bytes`、`effective_limit_bytes`、`remaining_bytes`、`remaining_new_bytes`、`baseline_over_budget`、`rejected_count`。没有伪装为实测的 token 估算。
 - `skipped_due_to_budget` 只含本次已授权命中；结果过长时先缩短这份名称列表并标记 `skipped_names_truncated`，保留可加载匹配和拒绝计数。若仍需裁剪 `unlocked`，被裁掉的工具不激活、不占新增预算。
-- 同请求暂存选择共享预留额度，同名定义只计一次；失败/取消释放预留，仅成功持久化的选择影响后续请求。已发给同一来源的声明即使随后撤权，仍占 provider 上下文字节直到移除，但不会再作为搜索结果/解释返回，执行仍重验当前许可。
-- 恢复按历史选择顺序重新计量完整当前定义，仅使用累计限额（不是把恢复误算成一次 32 KiB 搜索）；超限条目不恢复并诊断。普通重复搜索、重启及历史压缩都不重置已可见 schema 字节。
+- 同请求暂存选择共享预留额度，同名定义只计一次；失败/取消释放预留，仅成功持久化的选择影响后续调用。已发给同一来源的声明即使随后撤权，仍占 provider 上下文字节直到移除，但不会再作为搜索结果/解释返回，执行仍重验当前许可。
+- 恢复按当前原文窗口的首次出现顺序重新计量完整当前定义，仅使用累计限额（不是把恢复误算成一次 32 KiB 搜索）；超限条目不恢复。普通重复搜索不重置声明预算；压缩和重启按实际保留原文重新构造工具集合。
 
 固定中英评测、字段消融、体积与增长实测见[检索元数据与预算评测](../research/tool-search-metadata-and-budgets.md)。
 
-`unlocked` 是待持久化的激活结果。同一 provider 回复中的其他调用继续使用该回复原有的版本；即使排在搜索后面，也不能抢先调用新工具。搜索结果的普通消息持久化完成后发布内存选择，下一次 provider 请求携带完整 schema；不再额外提交整份目录版本。
+`unlocked` 是本次搜索实际解锁的名称。普通调用结果持久化后更新可见集合，同一 provider 回复按工具调用顺序执行：先成功搜索再调用可使用新工具；反向、失败或未解锁调用仍返回拒绝。下一模型请求携带对应的完整 schema。
 
-## 请求绑定、调用事实与恢复
+## 当前执行、调用事实与原文恢复
 
-运行开始冻结候选定义、来源、风险、审批、角色、session 与宿主准入上界。每次请求持有不可变 CapabilityResolution、定义及捕获的执行方法；同名注册改变不能替换该请求的实现，原对象声明改变则拒绝 `stale_definition`。`capabilities.current()` 只给下一请求提供新值；DiscoveryState 不保留历史 resolution 列表。
+每次调用按名称取得当前实现。执行钩子可以拒绝或改写参数；钩子结束后按当前工具、真实宿主来源和最终参数复验，再进入实现。同名注册替换、MCP 重连后下一调用采用当前定义；注销、禁用或来源不可用不能继续执行旧对象。已进入函数的调用自然结束，宿主停止/超时及工具自身的领域取消规则继续生效，不撤回或自动重放已经发生的动作。
 
-普通结果/消息保存成功后发布内存选择；同回复的其他调用仍使用原 request binding。保存失败、取消和失败工具释放待提交选择，不提前激活。未提供自定义消息处理器时，启用发现的 Runtime 仍保存普通结构化调用与工具结果。
+常驻工具按注册顺序排列，再加入实际原文窗口中用过或解锁过的名称并稳定去重。`tool_window.window_tool_names` 消费同一份 Runtime transcript；`ContextWindowProvider` 应用真实 source view 与持久 cut 后重建声明，在压缩候选计量、最终请求和重启中使用相同规则。工作摘要不会授予工具可见性。自然回复保留宿主 `finish_reply`，格式纠正只提供该协议。
 
-正常完成时在该 run 的 `modelSnapshot.toolSelection` 保存一次 `tool-selection-v1`：roleId/sessionKey/sourceScope 与有序 selected（name/source/fingerprint）。指纹包括完整声明、来源、风险、审批、版本、暴露方式、超时、输出限制、外部许可及非空 searchHint/namespaceSummary，不仅是 provider schema。缓存没有候选目录和 schema，不授予权限；失败/取消不替换原有效选择。恢复必须存在原 run 的用户消息，清空历史不能从 detached cache 复活选择。
+成功解锁写入原工具结果的 `metadata.unlockedTools`。旧搜索记录中的 `details.unlocked` 或原 JSON 仍可读取；其他工具结果不因自称 unlocked 而授予可见性。停止新增和依赖 `modelSnapshot.toolSelection`，旧 JSON 和历史列原样保留。已被压缩移出的原文、清空的历史或另一实际线程不会从选择缓存补回名称。
 
-渠道 sourceScope 是实际 FrozenChannelSource（去除单条消息时间）的摘要，包含账号/配对代际、真实 sender 和线程。后续同来源可恢复，其他 sender、访客、重建账号或重新配对不命中。恢复逐项重新验证注册、授权、完整定义与当前累计 schema 预算，保留选择顺序；缺失、变化、撤权、超预算分别产生有界 absent/definition_changed/revoked/budget 诊断，只存当前来源 run。缺失项本次丢弃，不无限等待晚注册自动激活。
+既有 tool_audits 的 `capability_binding_json` 保存 `tool-call-v1`：一个实际调用定义、指纹、可见事实、run/role/session/source 标识和必要 builtin 作者摘要。指纹仅供历史审计，不是当前执行门槛。`SessionStore.call_binding` 兼容读取旧链；snapshotId/visibilityVersion 是诊断与来源事实标识，不是独立授权凭证。重复 provider call ID 仍映射唯一宿主 ID；重复宿主审计拒绝，不覆盖 uncertain 事实，不重放工具。
 
-既有 tool_audits 的 capability_binding_json 保存 `tool-call-v1`：一个实际所用定义与 definitionFingerprint、是否已激活、request/run/role/session/source 标识和必要 builtin 作者摘要。未使用候选不会扩大每次调用记录。`SessionStore.call_binding(run_id, host_call_id)` 读新事实，旧链只读 fallback；旧 `capability_revision_for_call` 名称兼容，但新返回值不再是全目录。snapshotId/visibilityVersion 是请求诊断标识，不是授权凭证。
+spawn 保留选定名称范围与原宿主身份，执行查当前注册表；soft schedule 保存名称范围，旧完整定义只读取名称，执行仍受当前许可限制。Drift 作者使用实际活动 write/edit 调用、真实用户/来源、当前作者许可与 builtin 内容证明，保持原产物和历史事实，不以旧执行器或选择指纹授予新调用。
 
-Runtime 为重复 provider call ID 分配唯一宿主 ID。消息、审计、TaskOrigin 使用宿主 ID；assistant metadata 保留 provider_tool_call_ids 以正确回放远端 ID/签名。重复宿主 audit ID 拒绝，不能覆盖已确认或 uncertain 事实；没有自动工具重放。
-
-普通 Drift 作者使用仍活动的 write/edit audit 与真实用户、当前 author scope、builtin 内容 hash；自主作者使用现有 turn/call/bundle。authored_files 的新 writer_snapshot 内容是有限 drift-author-v1 proof，旧行保留。spawn 持有有限已选绑定，schedule 保留自己的有限跨重启定义，不依赖普通聊天目录链。meme provenance 的 capabilitySnapshotId 只关联原 run/call，不作为独立权限。
-
-旧 capabilityRevisions/capabilityCalls、autonomy_capability_revisions 不再由生产运行新增；旧历史不删除、不全量改写。旧桌面激活仍按完整定义和当前权限恢复；旧渠道只有 session、缺少可信来源范围的缓存不会升级为当前 sender 权限。迁移/bridge 回滚边界见 [ADR-0026](../adr/0026-request-bound-lightweight-tool-loading.md)。
-
-执行前与 pre hook 后重新检查当前许可并按请求固定 schema 验证最终参数。新增工具/风险/白名单不扩大旧运行，撤销及时收窄。
-
-异步工具执行期间按 50ms 间隔复核授权及运行取消信号；撤权会取消尚未完成的工具任务、传递工具取消信号并等待清理，再记录拒绝结果；已经 settle 的真实回执优先保存，不因同时观察到撤权而改写。超时和父运行取消同样等待清理，局部工具拒绝不会取消父运行，也不会被记为成功。该机制依赖工具遵守异步取消或合作信号，不能撤回已经提交的外部事务，也不能抢占阻塞事件循环的同步代码。
-
-停止与断开造成的连续父任务取消也不会中断已开始的工具清理；Runtime 保持等待实际工具终止，完成后再传播记住的取消。运行终态和角色运行锁的释放等待本次工具执行 task 及其结果持久化完成；这不等于所有 MCP 资源都已确认退出。未确认退出的 MCP owner 继续保留，独立显示 cleanup_failed 并允许重试，不改写已完成的业务终态，见 [MCP 服务契约](mcp-services.md)。
+停止与连续取消仍等待本次工具 task 及结果保存、资源清理后释放运行锁。MCP 未确认退出的 owner 保留原 cleanup 状态并支持重试；业务终态与资源退出分开，见 [MCP 服务契约](mcp-services.md)。
 
 启用发现的渠道运行额外冻结真实来源：[FrozenChannelSource](../../backend/app/channels/source_authority.py) 从实际 run 的入站消息及线程读取账号、平台发言者和主人绑定代际，不接收模型自报身份。每次搜索与执行复核平台总开关及账号启用、私聊/群范围、屏蔽名单、线程归属及原 `identity_id`/`paired_at`/私聊授权起点。解绑后重新配对或删除后重建同 ID 账号不能复活旧运行。原外部回合即使随后配对也不提升权限。JSON 接口 `to_dict`/`from_dict` 供后续后台任务保存相同来源事实，日期使用带时区的 ISO 字符串。
 
@@ -97,11 +87,11 @@ Runtime 为重复 provider call ID 分配唯一宿主 ID。消息、审计、Tas
 
 - grant 必须来自运行开始的授权，角色和父版本必须匹配；
 - 工具来源必须是该服务的 `mcp:<service_id>`，风险和外部范围不能超出 grant；
-- 不能覆盖原目录中的名称，也不能引入额外审批或宿主服务权限；
-- 新定义先冻结为延迟候选，宿主普通调用结果持久化后才发布带父 request 标识的内存目录；之后可在当前运行搜索并调用。
+- 不能占用其他来源的名称，也不能引入额外审批或宿主服务权限；
+- 新定义作为当前延迟候选，宿主普通调用结果持久化后才发布带父 request 标识的内存目录；之后可在当前运行搜索并调用。
 
-该接口不接收模型 command/env。T12 的 MCP 宿主通过独立管理工具使用该接口，真实连接、调用、按来源恢复及整树清理见 [MCP 服务契约](mcp-services.md)。服务移除通过 `stage_service_removal(context, grant_id, parent_snapshot_id)` 暂存带父版本的注销修订；结果持久化后移除可见定义及候选，旧请求绑定保持不变但连接已失效。相同服务 grant 的重新添加可以恢复自己此前移除的名称，不能占用其他来源名称。
+该接口不接收模型 command/env。T12 的 MCP 宿主通过独立管理工具使用该接口，真实连接、调用、按来源恢复及整树清理见 [MCP 服务契约](mcp-services.md)。服务移除通过 `stage_service_removal(context, grant_id, parent_snapshot_id)` 暂存带父版本的注销修订；结果持久化后移除可见定义及候选，后续调用无法查到已移除实现。相同服务 grant 的重新添加可以恢复自己此前移除的名称，不能占用其他来源名称。
 
-上游行为依据：[Shiori-Agent 固定版本 tool_search.py](https://github.com/YinFengWindy/Shiori-Agent/blob/4f266aeaf42fcd611362e2456417b91f659341cf/apps/backend/agent/tools/tool_search.py)、[search_backend.py](https://github.com/YinFengWindy/Shiori-Agent/blob/4f266aeaf42fcd611362e2456417b91f659341cf/apps/backend/agent/tools/search_backend.py)。归一化和评分规则改编自该 MIT 源码，协议接入 Meido 的宿主身份、不可变快照和持久化边界；来源许可见 [MIT License](../../third_party/shiori-agent/LICENSE)。
+上游行为依据：[Shiori-Agent 固定版本 tool_search.py](https://github.com/YinFengWindy/Shiori-Agent/blob/4f266aeaf42fcd611362e2456417b91f659341cf/apps/backend/agent/tools/tool_search.py)、[search_backend.py](https://github.com/YinFengWindy/Shiori-Agent/blob/4f266aeaf42fcd611362e2456417b91f659341cf/apps/backend/agent/tools/search_backend.py)。归一化和评分规则改编自该 MIT 源码，协议接入 Meido 的宿主身份、原调用回执和持久化边界；来源许可见 [MIT License](../../third_party/shiori-agent/LICENSE)。
 
-同 run 的 MCP 重连通过 host-only `rebind=True` 暂存新连接执行器，要求同服务 grant、完整同名声明集合完全相同；只在下一请求生效。旧 request 不能被重新连接到新 client。`activate=True` 的整服务加载/Drift mount 仍计累计声明预算，无法完整容纳则原子拒绝，不声称已加载部分未知工具。
+同 run 的 MCP 重连通过 host-only `rebind=True` 更新同一服务 grant 的当前目录；允许远端 schema 更新，下一调用按新定义验证，不要求等下次模型请求。旧 peer 已进入的调用不能关闭替代 peer，也不自动重放。`activate=True` 的整服务加载/Drift mount 仍计累计声明预算，无法完整容纳时原子拒绝。

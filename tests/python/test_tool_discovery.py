@@ -39,7 +39,7 @@ class ArchiveTool:
         return AgentToolResult("archive evidence: " + arguments["topic"])
 
 
-def test_discovery_is_durable_before_next_request_and_cannot_authorize_same_reply(
+def test_discovery_is_durable_and_authorizes_subsequent_calls_in_same_reply(
     tmp_path,
 ):
     initialize_databases(tmp_path)
@@ -94,10 +94,10 @@ def test_discovery_is_durable_before_next_request_and_cannot_authorize_same_repl
                     for item in messages
                     if getattr(item, "tool_call_id", None) == "premature"
                 )
-                assert rejected.is_error and "tool_search" in rejected.content
+                assert not rejected.is_error and rejected.content == "archive evidence: forged same reply"
                 assert "capabilityRevisions" not in sessions.get_run(run.runId).modelSnapshot
                 assert sessions.call_binding(run.runId, "search")["active"] is True
-                assert sessions.call_binding(run.runId, "premature")["active"] is False
+                assert sessions.call_binding(run.runId, "premature")["active"] is True
                 yield AssistantDoneEvent(
                     AssistantMessage(
                         tool_calls=(
@@ -142,7 +142,7 @@ def test_discovery_is_durable_before_next_request_and_cannot_authorize_same_repl
             sessions.capability_revision_for_call(run.runId, "premature")[
                 "visibilityVersion"
             ]
-            == 0
+            == 1
         )
         assert (
             sessions.capability_revision_for_call(run.runId, "read")[
@@ -152,14 +152,12 @@ def test_discovery_is_durable_before_next_request_and_cannot_authorize_same_repl
         )
         audits = {item["callId"]: item for item in sessions.list_tool_audits(run.runId)}
         assert (
-            audits["search"]["snapshotId"]
-            == audits["premature"]["snapshotId"]
-            == initial["snapshotId"]
+            audits["search"]["snapshotId"] == initial["snapshotId"]
         )
         assert (
             audits["read"]["snapshotId"] == capabilities.current().snapshot.snapshot_id
         )
-        assert audits["premature"]["resultCategory"] == "denied"
+        assert audits["premature"]["resultCategory"] == "succeeded"
         assert all(item["endedAt"] for item in audits.values())
 
     asyncio.run(execute())
@@ -315,7 +313,7 @@ def test_live_revocation_blocks_execution_without_mutating_issued_schema_version
     asyncio.run(execute())
 
 
-def test_revoking_a_running_tool_cancels_it_before_its_file_effect(tmp_path):
+def test_entered_tool_finishes_naturally_after_registry_permission_changes(tmp_path):
     initialize_databases(tmp_path)
     sessions = SessionStore(tmp_path / "sessions.db")
     effect = tmp_path / "effect.txt"
@@ -394,9 +392,9 @@ def test_revoking_a_running_tool_cancels_it_before_its_file_effect(tmp_path):
                 pass
             release.set()
             await asyncio.wait_for(running, 1)
-            assert not effect.exists(), "revoked tool still committed its file effect"
-            assert cancelled.is_set(), "revocation must reach the in-flight tool"
-            assert sessions.list_tool_audits(run.runId)[0]["resultCategory"] == "denied"
+            assert effect.read_text(encoding="utf-8") == "permission was revoked"
+            assert not cancelled.is_set()
+            assert sessions.list_tool_audits(run.runId)[0]["resultCategory"] == "succeeded"
         finally:
             release.set()
             if not running.done():
@@ -489,9 +487,8 @@ def test_repeated_parent_cancellation_waits_for_real_tool_resource_cleanup(tmp_p
         running = asyncio.create_task(consume())
         try:
             await asyncio.wait_for(ready.wait(), 1)
-            allowed = False
-            await asyncio.wait_for(cleanup_ready.wait(), 1)
             assert manager.cancel_run(run.runId)
+            await asyncio.wait_for(cleanup_ready.wait(), 1)
             for _ in range(6):
                 for _ in range(4):
                     await asyncio.sleep(0)
@@ -522,56 +519,16 @@ def test_repeated_parent_cancellation_waits_for_real_tool_resource_cleanup(tmp_p
     asyncio.run(execute())
 
 
-def test_restored_activation_requires_current_admission_and_exact_definition():
-    original = CapabilityRegistry([ArchiveTool()]).resolve(
-        role_id="r",
-        session_key="role:r",
-        run_id="old",
-        enabled_tools={"archive.read", "tool_search"},
-        activated_tools={"archive.read"},
-        discovery_enabled=True,
-    )
-    saved = original.snapshot.to_dict(include_prompt_sections=False)
-    restored = CapabilityRegistry([ArchiveTool()]).resolve(
-        role_id="r",
-        session_key="role:r",
-        run_id="new",
-        enabled_tools={"archive.read", "tool_search"},
-        discovery_enabled=True,
-        restored_activation=saved,
-    )
-    assert {item["function"]["name"] for item in restored.provider_schemas()} == {
-        "archive.read",
-        "tool_search",
-    }
-    revoked = CapabilityRegistry([ArchiveTool()]).resolve(
-        role_id="r",
-        session_key="role:r",
-        run_id="revoked",
-        enabled_tools={"tool_search"},
-        discovery_enabled=True,
-        restored_activation=saved,
-    )
-    assert {item["function"]["name"] for item in revoked.provider_schemas()} == {
-        "tool_search"
-    }
-    changed = ArchiveTool()
-    changed.definition = replace(
-        changed.definition,
-        input_schema={"type": "object", "properties": {"other": {"type": "string"}}},
-    )
-    updated = CapabilityRegistry([changed]).resolve(
-        role_id="r",
-        session_key="role:r",
-        run_id="changed",
-        enabled_tools={"archive.read", "tool_search"},
-        discovery_enabled=True,
-        restored_activation=saved,
-    )
-    assert {item["function"]["name"] for item in updated.provider_schemas()} == {
-        "tool_search"
-    }
-    assert restored.snapshot.snapshot_id != original.snapshot.snapshot_id
+def test_window_restoration_uses_current_definition_and_current_permission():
+    from backend.app.agent_runtime.types import ToolResultMessage
+    history = [ToolResultMessage('search', 'tool_search', '{}', unlocked_tools=('archive.read',))]
+    tool = ArchiveTool()
+    tool.definition = replace(tool.definition, input_schema={'type': 'object', 'properties': {'other': {'type': 'string'}}})
+    restored = CapabilityRegistry([tool]).resolve(role_id='r', session_key='role:r', run_id='new', discovery_enabled=True).select_window(history)
+    assert restored.definition('archive.read').input_schema == tool.definition.input_schema
+    revoked = CapabilityRegistry([tool]).resolve(role_id='r', session_key='role:r', run_id='denied', discovery_enabled=True,
+        enabled_tools={'tool_search'}).select_window(history)
+    assert [item['function']['name'] for item in revoked.provider_schemas()] == ['tool_search']
 
 
 def test_service_revision_inherits_frozen_grant_and_keeps_old_catalog_immutable():
@@ -719,7 +676,7 @@ def test_cancelling_after_discovery_persistence_does_not_activate_or_send_anothe
         assert capabilities.current().snapshot.visibility_version == 0
         assert not capabilities._discovery.pending
         assert "capabilityRevisions" not in sessions.get_run(run.runId).modelSnapshot
-        assert sessions.latest_tool_selection("r", "role:r") is None
+        assert "toolSelection" not in sessions.get_run(run.runId).modelSnapshot
 
     asyncio.run(execute())
 
@@ -776,7 +733,7 @@ def test_failed_message_persistence_never_publishes_the_staged_version(tmp_path)
         assert not capabilities._discovery.pending
         assert sessions.get_run(run.runId).status == "failed"
         assert "capabilityRevisions" not in sessions.get_run(run.runId).modelSnapshot
-        assert sessions.latest_tool_selection("r", "role:r") is None
+        assert "toolSelection" not in sessions.get_run(run.runId).modelSnapshot
 
     asyncio.run(execute())
 
@@ -817,10 +774,9 @@ def test_discovery_rejects_malformed_filters_and_model_context_overrides(argumen
         ("other", "role:r", "run", None),
         ("r", "thread:other", "run", None),
         ("r", "role:r", "foreign-run", None),
-        ("r", "role:r", "run", "forged-version"),
     ],
 )
-def test_discovery_requires_host_bound_role_origin_run_and_provider_version(
+def test_discovery_requires_host_bound_role_origin_and_run(
     role_id, session_key, run_id, version
 ):
     capabilities = CapabilityRegistry([ArchiveTool()]).resolve(

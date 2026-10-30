@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
 
 from ..agent_runtime.tools import AgentToolResult, ToolDefinition, ToolRegistry
 from .application import _owned_call
@@ -36,16 +35,15 @@ class ScheduleTool:
 
     def _freeze(self, context):
         if self._bound is None:
-            raise PermissionError('frozen execution capabilities are unavailable')
+            raise PermissionError('task execution context is unavailable')
         capabilities, role, configuration = self._bound
-        current = context.capability_binding or capabilities.current()
+        current = capabilities.current()
         if ((context.role_id, context.session_key, context.run_id) !=
-                (current.snapshot.role_id, current.snapshot.session_key, current.snapshot.run_id)
-                or context.capability_snapshot_id and context.capability_snapshot_id != current.snapshot.snapshot_id):
+                (current.snapshot.role_id, current.snapshot.session_key, current.snapshot.run_id)):
             raise PermissionError('schedule request binding is stale')
         frozen = {'role': role.model_dump(mode='json', exclude={'modelConfig'}),
             'configuration': configuration.model_dump(mode='json', exclude={'apiKey'}) if configuration else None,
-            'tools': [asdict(definition) for tool in current.tools
+            'toolNames': [tool.definition.name for tool in current.tools
                       if tool.definition.name in SOFT_TOOLS
                       and (definition := current.definition(tool.definition.name)) is not None
                       and definition.source in {'builtin', 'role'}]}

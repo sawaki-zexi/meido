@@ -797,6 +797,8 @@ class SessionStore:
                 metadata["usage"] = asdict(message.usage) if is_dataclass(message.usage) else message.usage
             if message.nested_calls:
                 metadata["nestedCalls"] = [asdict(call) for call in message.nested_calls]
+            if message.unlocked_tools:
+                metadata["unlockedTools"] = list(message.unlocked_tools)
             if message.timestamp is not None:
                 metadata["timestamp"] = message.timestamp
             return [
@@ -963,6 +965,7 @@ class SessionStore:
                                 details=replay_result.toolResult,
                                 usage=replay_result.metadata.get("usage"),
                                 nested_calls=nested_calls,
+                                unlocked_tools=tuple(name for name in replay_result.metadata.get("unlockedTools", []) if isinstance(name, str)),
                                 timestamp=_timestamp(replay_result.metadata),
                                 # Images are intentionally ephemeral and are not
                                 # reconstructed from SQLite on later runs.
@@ -1292,40 +1295,6 @@ class SessionStore:
                 (run.runId, run.roleId, run.sessionKey, run.status, run.modelConfigurationId, json.dumps(run.modelSnapshot, ensure_ascii=False), run.turnCount, run.startedAt.isoformat(), run.endedAt.isoformat() if run.endedAt else None, run.cancelReason, run.error),
             )
         return run
-
-    def save_tool_selection(self, run_id: str, selection: dict[str, Any]) -> None:
-        """Write once at normal completion; failed runs never replace recovery hints."""
-        with sqlite3.connect(self.database_path) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT role_id,session_key,model_snapshot_json FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
-            if row is None:
-                raise KeyError(run_id)
-            if (selection.get("roleId"), selection.get("sessionKey"), selection.get("format")) != (row[0], row[1], "tool-selection-v1"):
-                raise PermissionError("tool selection does not belong to its run")
-            snapshot = json.loads(row[2])
-            snapshot["toolSelection"] = selection
-            connection.execute("UPDATE agent_runs SET model_snapshot_json=? WHERE run_id=?", (_dump(snapshot), run_id))
-
-    def latest_tool_selection(self, role_id: str, session_key: str, *, source_scope: str = "") -> dict[str, Any] | None:
-        """Existing run ownership/deletion controls cache lifetime; no detached cache."""
-        with sqlite3.connect(self.database_path) as connection:
-            rows = connection.execute("""SELECT model_snapshot_json FROM agent_runs
-                WHERE role_id=? AND session_key=? AND status='completed'
-                AND EXISTS(SELECT 1 FROM messages WHERE messages.run_id=agent_runs.run_id AND role='user' AND status='completed')
-                ORDER BY started_at DESC""", (role_id, session_key))
-            for row in rows:
-                snapshot = json.loads(row[0])
-                cache = snapshot.get("toolSelection")
-                if isinstance(cache, dict):
-                    if cache.get("sourceScope", "") == source_scope:
-                        return cache
-                    continue
-                # Old channels did not record a source-bound discovery hint.
-                # Never upgrade their session-only cache to a newly paired sender.
-                revisions = snapshot.get("capabilityRevisions", [])
-                if revisions and not source_scope and not session_key.startswith("thread:"):
-                    return revisions[-1]
-        return None
 
     def active_call_binding(self, run_id: str, call_id: str | None, *, tool_names: set[str]) -> dict[str, Any] | None:
         with sqlite3.connect(self.database_path) as connection:

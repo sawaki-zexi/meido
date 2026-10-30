@@ -35,7 +35,7 @@ from .provider import (
     ThinkingDeltaEvent,
     ToolCallEndEvent,
 )
-from .tools import AgentTool, AgentToolResult, ToolContext, ToolDefinition, ToolRegistry, resolve_tool_result
+from .tools import AgentTool, AgentToolResult, ToolContext, ToolRegistry, resolve_tool_result
 from .types import AgentMessage, AssistantMessage, ToolCall, ToolResultMessage, UserMessage
 
 
@@ -68,6 +68,8 @@ async def run_agent_loop(
 
     token = signal or CancellationToken()
     registry = ToolRegistry(tools) if capabilities is None else capabilities
+    if capabilities is not None and hasattr(provider, 'bind_capabilities'):
+        provider.bind_capabilities(capabilities)
     sequence = 0
     used_call_ids = {call.id for message in messages if isinstance(message, AssistantMessage) for call in message.tool_calls}
 
@@ -86,7 +88,11 @@ async def run_agent_loop(
         if can_continue is not None and not can_continue():
             token.cancel()
         if capabilities is not None:
-            registry = capabilities.current()
+            # The window provider selects after applying its real waterline.
+            # Other hosts already supply their actual raw transcript here.
+            registry = (capabilities.current() if hasattr(provider, 'bind_capabilities')
+                        else capabilities.select_window(messages) if capabilities._discovery is not None
+                        else capabilities.current()._select(item.name for item in capabilities.current().snapshot.tools))
         if token.is_cancelled():
             aborted = AssistantMessage(stop_reason="aborted", metadata={"completion_origin": "host_cancel"})
             messages.append(aborted)
@@ -270,6 +276,14 @@ async def run_agent_loop(
             if can_continue is not None and not can_continue():
                 token.cancel()
                 break
+            if token.is_cancelled():
+                break
+            if capabilities is not None and capabilities._discovery is not None:
+                registry = capabilities.current()
+            elif capabilities is not None and hasattr(provider, 'bind_capabilities'):
+                # The window provider may have compacted and refreshed the
+                # declarations while constructing this actual request.
+                registry = getattr(provider, 'capabilities', registry)
             definition = registry.candidate_definition(call.name) if isinstance(registry, CapabilityResolution) else None
             async for event in emit(ToolExecutionStartEvent(
                 call.id, call.name, dict(call.arguments),
@@ -297,6 +311,9 @@ async def run_agent_loop(
 
             async def settle_result(final_result: AgentToolResult) -> None:
                 nonlocal tool_message
+                unlocked = (capabilities._discovery.pending.get(call.id, ())
+                            if capabilities is not None and capabilities._discovery is not None
+                            and not final_result.is_error and not token.is_cancelled() else ())
                 tool_message = ToolResultMessage(
                     tool_call_id=call.id,
                     tool_name=call.name,
@@ -304,6 +321,7 @@ async def run_agent_loop(
                     is_error=final_result.is_error,
                     details=final_result.details,
                     images=final_result.images,
+                    unlocked_tools=unlocked,
                 )
                 messages.append(tool_message)
                 if on_tool_result is not None:
@@ -455,14 +473,15 @@ async def _execute_tool(
         )
     tool_signal: CancellationToken | None = None
     accepting_updates = True
+    initial_definition = tool.definition
 
     def bounded(result: AgentToolResult) -> tuple[AgentToolResult, int]:
         output_chars = _result_output_chars(result)
         definition = (
             registry.definition(call.name)
             if isinstance(registry, CapabilityResolution)
-            else tool.definition
-        ) or tool.definition
+            else initial_definition
+        ) or initial_definition
         output_limit = definition.output_limit
         if output_limit is None or len(result.content) <= output_limit:
             return result, output_chars
@@ -537,7 +556,12 @@ async def _execute_tool(
             effective_timeout = min(effective_timeout, remaining) if effective_timeout is not None else remaining
         tool_context = replace(context, signal=tool_signal,
             deadline=now + effective_timeout if effective_timeout is not None else None)
-        execute = registry.executor(call.name) if isinstance(registry, CapabilityResolution) else tool.execute
+        # Hooks can await registration/reconnection. Resolve once more after
+        # hooks, then validate and enter that current implementation together.
+        tool = registry.get(call.name)
+        if tool is None:
+            return finish(AgentToolResult(f"tool is no longer available: {call.name}", is_error=True), status="denied")
+        execute = tool.execute
 
         async def invoke() -> AgentToolResult:
             nonlocal accepting_updates
@@ -550,10 +574,7 @@ async def _execute_tool(
                 accepting_updates = False
 
         pending = invoke()
-        result = await _await_authorized_tool(
-            pending, registry=registry, definition=definition, context=context,
-            signal=signal, tool_signal=tool_signal, timeout=effective_timeout, arguments=arguments,
-        )
+        result = await _await_tool(pending, signal=signal, tool_signal=tool_signal, timeout=effective_timeout)
         if not isinstance(result, AgentToolResult):
             return finish(AgentToolResult("tool returned an invalid result", is_error=True), status="failed")
         return finish(result)
@@ -596,10 +617,9 @@ async def _execute_tool(
         )
 
 
-async def _await_authorized_tool(
-    pending: Awaitable[AgentToolResult], *, registry: ToolRegistry | CapabilityResolution,
-    definition: ToolDefinition, context: ToolContext, signal: CancellationToken,
-    tool_signal: CancellationToken, timeout: float | None, arguments: Mapping[str, object],
+async def _await_tool(
+    pending: Awaitable[AgentToolResult], *, signal: CancellationToken,
+    tool_signal: CancellationToken, timeout: float | None,
 ) -> AgentToolResult:
     task = asyncio.ensure_future(pending)
     deadline = time.monotonic() + timeout if timeout is not None else None
@@ -612,10 +632,6 @@ async def _await_authorized_tool(
             if tool_signal.is_cancelled():
                 signal.cancel()
                 signal.raise_if_cancelled()
-            if isinstance(registry, CapabilityResolution):
-                denial = registry.authorization_denial(definition, context, arguments)
-                if denial is not None:
-                    return AgentToolResult(denial, details={"reason": denial, "status": "denied"}, is_error=True)
             remaining = deadline - time.monotonic() if deadline is not None else None
             if remaining is not None and remaining <= 0:
                 raise asyncio.TimeoutError

@@ -26,6 +26,65 @@ from backend.app.agent_runtime.plugins import HookContext
 from backend.app.agent_runtime.skills import SkillDescriptor
 
 
+@pytest.mark.parametrize('replace_first', [False, True])
+def test_unregister_plugin_contribution_never_resurrects_original_executor(replace_first):
+    calls = []
+    class Tracked:
+        definition = ToolDefinition('plugin.echo', 'echo', {'type': 'object'}, source='plugin:demo')
+        async def execute(self, arguments, context, on_update=None):
+            calls.append('effect')
+            return AgentToolResult('effect')
+    async def run():
+        plugins = PluginRegistry([(_manifest(), lambda context: PluginContribution(tools=(Tracked(),)))])
+        registry = CapabilityRegistry(plugins=plugins)
+        resolution = await registry.resolve_async(role_id='r', session_key='role:r', run_id='run', enabled_plugin_ids={'demo'})
+        class Provider:
+            requests = 0
+            async def stream_response(self, **kwargs):
+                self.requests += 1
+                if self.requests == 1:
+                    if replace_first:
+                        registry.register(Tracked())
+                    registry.unregister('plugin.echo')
+                    yield AssistantDoneEvent(AssistantMessage(tool_calls=(ToolCall('removed', 'plugin.echo', {}),)))
+                else:
+                    assert kwargs['tools'] == ()
+                    yield AssistantDoneEvent(AssistantMessage('done'))
+        try:
+            events = [event async for event in run_agent_loop(provider=Provider(), model='fixture', system='',
+                messages=[UserMessage('run')], capabilities=resolution)]
+            assert events[-1].reason == 'completed', events[-1]
+            assert next(event.result for event in events if event.type == 'tool_execution_end').is_error
+            assert calls == []
+        finally:
+            await resolution.close()
+    asyncio.run(run())
+
+
+def test_reusing_registry_keeps_plugin_contributions_in_their_actual_role_scope():
+    async def run():
+        seen = []
+        class Scoped:
+            definition = ToolDefinition('plugin.echo', 'echo', {'type': 'object'}, source='plugin:demo')
+            def __init__(self, role):
+                self.role = role
+            async def execute(self, arguments, context, on_update=None):
+                seen.append((self.role, context.role_id))
+                return AgentToolResult(self.role)
+        registry = CapabilityRegistry(plugins=PluginRegistry([(_manifest(),
+            lambda context: PluginContribution(tools=(Scoped(context.role_id),)))]))
+        first = await registry.resolve_async(role_id='first', session_key='role:first', run_id='one', enabled_plugin_ids={'demo'})
+        second = await registry.resolve_async(role_id='second', session_key='role:second', run_id='two', enabled_plugin_ids={'demo'})
+        try:
+            assert (await first.get('plugin.echo').execute({}, ToolContext('first', 'role:first', 'one', CancellationToken()))).content == 'first'
+            assert (await second.get('plugin.echo').execute({}, ToolContext('second', 'role:second', 'two', CancellationToken()))).content == 'second'
+            assert seen == [('first', 'first'), ('second', 'second')]
+        finally:
+            await first.close()
+            await second.close()
+    asyncio.run(run())
+
+
 class EchoTool:
     definition = ToolDefinition(
         name="plugin.echo",

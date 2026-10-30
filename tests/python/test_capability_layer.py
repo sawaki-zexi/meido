@@ -130,11 +130,11 @@ class ApprovalTool:
         return AgentToolResult("ok")
 
 
-def test_capability_registry_rejects_duplicate_ids_and_freezes_snapshot():
+def test_capability_registry_replaces_same_name_and_preserves_audit_snapshot():
     registry = CapabilityRegistry([ReadTool()])
 
-    with pytest.raises(ValueError, match="duplicate tool"):
-        registry.register(ReadTool())
+    replacement = ReadTool()
+    registry.register(replacement)
 
     first = registry.resolve(
         role_id="role-1",
@@ -207,7 +207,7 @@ def test_capability_generation_is_independent_of_registration_order():
     assert first.snapshot.generation == reversed_order.snapshot.generation
 
 
-def test_capability_resolution_keeps_frozen_policy_but_rejects_mutated_tool():
+def test_current_definition_validates_old_arguments_while_audit_snapshot_stays_immutable():
     class MutableTool:
         calls = 0
         definition = ToolDefinition(
@@ -287,16 +287,12 @@ def test_capability_resolution_keeps_frozen_policy_but_rejects_mutated_tool():
 
     events = asyncio.run(collect())
     result = next(event.result for event in events if event.type == "tool_execution_end")
-    # The old request keeps its schema/limits, but a changed implementation
-    # declaration is no longer a valid execution binding.
     assert tool.calls == 0
-    assert result.is_error and result.details["status"] == "denied"
-    assert result.content == "stal"  # Frozen output_limit still applies.
-    assert resolution.authorization_denial(
-        resolution.snapshot.tools[0],
-        ToolContext("role-1", "role:role-1", "run-frozen-policy", CancellationToken()),
-    ).startswith("stale_definition:")
-    assert result.details["outputLimit"] == 4
+    assert result.is_error and result.details['status'] == 'invalid_arguments'
+    assert result.content == 'missing required arguments: other'
+    assert resolution.authorization_denial(resolution.definition('mutable'),
+        ToolContext('role-1', 'role:role-1', 'run-frozen-policy', CancellationToken())) is None
+    assert 'outputLimit' not in result.details
 
 
 def test_capability_registry_filters_tools_and_records_deterministic_reasons():

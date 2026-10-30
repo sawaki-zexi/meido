@@ -83,39 +83,26 @@ def test_plain_exact_name_wins_over_keyword_scores_and_ties_use_stable_top_k():
     assert search(ties, "read", top_k=2)["unlocked"] == ["a_read", "b_read"]
 
 
-def test_search_hint_is_frozen_persisted_and_invalidates_changed_restoration():
+def test_search_hint_uses_current_metadata_and_history_restores_names():
+    from backend.app.agent_runtime.types import ToolResultMessage
     definition = ToolDefinition("archive_lookup", "opaque", search_hint="meteor")
     tool = CatalogTool(definition)
     registry = CapabilityRegistry([tool])
     options = dict(role_id="r", session_key="role:r", enabled_tools={"tool_search", definition.name},
                    discovery_enabled=True, deferred_tool_names=frozenset({definition.name}))
     original = registry.resolve(run_id="old", activated_tools={definition.name}, **options)
-    saved = original.snapshot.to_dict()
-    assert saved["tools"][0]["searchHint"] == "meteor"
-    assert saved["candidates"][0]["searchHint"] == "meteor"
-    assert "searchHint" not in json.dumps(original.provider_schemas())
-    assert "search_hint" not in json.dumps(original.provider_schemas())
-    restored = registry.resolve(run_id="restored", restored_activation=saved, **options)
-    assert definition.name in {item["function"]["name"] for item in restored.provider_schemas()}
-    frozen = registry.resolve(run_id="frozen", **options)
-    tool.definition = replace(definition, search_hint="comet")
-    context = ToolContext("r", "role:r", "frozen", CancellationToken(), "find")
-    result = json.loads(asyncio.run(frozen.get("tool_search").execute({"query": "meteor"}, context)).content)
-    assert frozen.snapshot.to_dict()["candidates"][0]["searchHint"] == "meteor"
-    # Frozen metadata is not permission to stage an implementation whose
-    # declaration has since changed, including its searchable metadata.
-    assert result["unlocked"] == [] and result["matched"] == []
-    assert frozen.pending_revision("find") is None
-    changed = registry.resolve(run_id="changed", restored_activation=saved, **options)
-    assert definition.name not in {item["function"]["name"] for item in changed.provider_schemas()}
-    assert changed.snapshot.candidate_catalog_id != frozen.snapshot.candidate_catalog_id
-    # Empty metadata keeps the exact legacy serialized definition shape.
-    plain = CatalogTool(replace(definition, search_hint=""))
-    legacy = CapabilityRegistry([plain]).resolve(run_id="legacy", activated_tools={definition.name}, **options)
-    legacy_saved = legacy.snapshot.to_dict()
-    assert "searchHint" not in legacy_saved["tools"][0]
-    compatible = CapabilityRegistry([plain]).resolve(run_id="compatible", restored_activation=legacy_saved, **options)
-    assert definition.name in {item["function"]["name"] for item in compatible.provider_schemas()}
+    saved = original.call_record(definition.name)
+    assert saved['tools'][0]['searchHint'] == 'meteor'
+    assert 'searchHint' not in json.dumps(original.provider_schemas())
+    current = registry.resolve(run_id='current', **options)
+    tool.definition = replace(definition, search_hint='comet')
+    context = ToolContext('r', 'role:r', 'current', CancellationToken(), 'find')
+    result = json.loads(asyncio.run(current.get('tool_search').execute({'query': 'comet'}, context)).content)
+    assert result['unlocked'] == [definition.name]
+    assert saved['tools'][0]['searchHint'] == 'meteor'
+    restored = registry.resolve(run_id='restored', **options).select_window([
+        ToolResultMessage('find', 'tool_search', '{}', unlocked_tools=(definition.name,))])
+    assert restored.definition(definition.name).search_hint == 'comet'
 
 
 def test_long_query_keeps_useful_top_k_with_bounded_valid_json_explanations():

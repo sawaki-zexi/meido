@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from backend.app.agent_runtime import CapabilityRegistry, CancellationToken, ToolContext
+from backend.app.agent_runtime import AgentToolResult, CapabilityRegistry, CancellationToken, ToolContext, ToolDefinition
 from backend.app.agent_runtime.file_tools import build_file_tools
 from backend.app.agent_runtime.provider import AssistantDoneEvent, TextDeltaEvent
 from backend.app.agent_runtime.shell_tool import ShellTool
@@ -41,6 +41,54 @@ async def completed(tasks, context, task_id):
             return snapshot
         assert time.monotonic() < deadline
         await asyncio.sleep(.01)
+
+
+def test_child_requests_and_calls_follow_current_parent_registration(tmp_path):
+    calls = []
+    class Read:
+        def __init__(self, current=False):
+            self.current = current
+            self.definition = ToolDefinition('read_file', 'read', {'type': 'object',
+                'properties': {'path': {'type': 'string'}, 'version': {'type': 'string'}},
+                'required': ['path', 'version'] if current else ['path']})
+        async def execute(self, arguments, context, on_update=None):
+            assert arguments == {'path': '../parent', 'version': 'current'}
+            calls.append(self.current)
+            return AgentToolResult('current-read' if self.current else 'old-read')
+    registry = CapabilityRegistry([Read()])
+    class Provider:
+        requests = 0
+        async def stream_response(self, *, tools, messages, **kwargs):
+            self.requests += 1
+            if self.requests == 1:
+                registry.register(Read(current=True))
+                yield AssistantDoneEvent(AssistantMessage(tool_calls=(
+                    ToolCall('old-args', 'read_file', {'path': '../parent'}),
+                    ToolCall('new-args', 'read_file', {'path': '../parent', 'version': 'current', 'description': '读取当前父级文件'}))))
+            elif self.requests == 2:
+                assert tools[0]['function']['parameters']['required'] == ['path', 'version', 'description']
+                results = [item for item in messages if isinstance(item, ToolResultMessage)]
+                assert results[0].is_error and results[1].content == 'current-read'
+                registry.unregister('read_file')
+                yield AssistantDoneEvent(AssistantMessage(tool_calls=(ToolCall('removed', 'read_file', {'path': '../parent'}),)))
+            else:
+                assert tools == ()
+                yield AssistantDoneEvent(AssistantMessage('current-registry-confirmed'))
+    async def run():
+        tasks = TaskRuntime(tmp_path / 'tasks')
+        context = ToolContext('role-a', 'role:role-a', 'parent-run', CancellationToken(), 'spawn')
+        resolution = registry.resolve(role_id=context.role_id, session_key=context.session_key, run_id=context.run_id)
+        tool = SpawnTool(tasks, SpawnToolConfig(enabled=True),
+            origin_resolver=lambda ctx: TaskOrigin(ctx.role_id, ctx.session_key, ctx.run_id, ctx.tool_call_id), authorized=lambda ctx: True)
+        tool.bind(resolution, Provider)
+        try:
+            result = await tool.execute({'task': 'read current registration'}, context)
+            assert not result.is_error, result
+            assert result.content == 'current-registry-confirmed'
+            assert calls == [True]
+        finally:
+            tasks.close()
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize('profile,expected', [

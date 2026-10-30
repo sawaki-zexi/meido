@@ -392,8 +392,6 @@ class RuntimeManager:
                                 isinstance(event.message, ToolResultMessage) or isinstance(event.message, AssistantMessage) and event.message.tool_calls):
                             self.sessions.append_agent_message(run.sessionKey, event.message, run_id=run.runId)
                     if isinstance(event, AgentEndEvent):
-                        if event.reason == "completed" and capabilities is not None and capabilities.snapshot.candidates:
-                            self.sessions.save_tool_selection(run.runId, capabilities.current().selection_cache())
                         assistant = next(
                             (message for message in reversed(event.messages) if isinstance(message, AssistantMessage)),
                             None,

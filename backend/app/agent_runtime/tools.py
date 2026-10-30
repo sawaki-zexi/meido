@@ -187,9 +187,10 @@ class ToolRegistry:
             self.register(tool)
 
     def register(self, tool: AgentTool) -> None:
-        if tool.definition.name in self._tools:
-            raise ValueError(f"duplicate tool: {tool.definition.name}")
         self._tools[tool.definition.name] = tool
+
+    def unregister(self, name: str) -> None:
+        self._tools.pop(name, None)
 
     def get(self, name: str) -> AgentTool | None:
         return self._tools.get(name)
@@ -210,7 +211,7 @@ class ToolRegistry:
 
     @staticmethod
     def validate_definition(definition: ToolDefinition, arguments: Mapping[str, object]) -> None:
-        """Validate arguments against a frozen Tool definition."""
+        """Validate arguments against the supplied current tool definition."""
 
         schema = definition.input_schema
         if schema.get("type") == "object":

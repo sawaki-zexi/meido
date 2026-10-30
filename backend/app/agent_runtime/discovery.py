@@ -1,4 +1,4 @@
-"""Run-local discovery: freeze admission, stage activation, publish after persistence."""
+"""Current-registry discovery; successful receipts unlock subsequent calls."""
 
 from __future__ import annotations
 
@@ -88,7 +88,8 @@ class DiscoveryState:
 
     @property
     def definitions(self) -> dict[str, ToolDefinition]:
-        return {item.name: item for item in self.current.snapshot.candidates}
+        return {name: definition for name in self.current._registered()
+                if (definition := self.current.candidate_definition(name)) is not None}
 
     @property
     def current(self) -> CapabilityResolution:
@@ -103,16 +104,7 @@ class DiscoveryState:
             current.snapshot.run_id,
         ):
             raise PermissionError("tool discovery scope does not match this run")
-        version = getattr(context, "capability_snapshot_id", None)
-        if version is None:
-            return current
-        view = context.capability_binding
-        if (view is None and version == current.snapshot.snapshot_id):
-            view = current
-        if (view is None or view._discovery is not self
-                or view.snapshot.snapshot_id != version):
-            raise PermissionError("unknown provider capability binding")
-        return view
+        return current.current()
 
     def stage_service_tools(
         self,
@@ -124,7 +116,7 @@ class DiscoveryState:
         activate: bool = False,
         rebind: bool = False,
     ) -> tuple[str, ...]:
-        from .capabilities import _freeze_json, _definition_payload
+        from .capabilities import _thaw_json
 
         self.view(context)
         context.signal.raise_if_cancelled()
@@ -144,7 +136,7 @@ class DiscoveryState:
             definition = tool.definition
             if (definition.name in seen or definition.name in self.definitions and not rebind
                     or definition.name in names and self.name_sources.get(definition.name) != f"mcp:{grant.service_id}"):
-                raise ValueError("service tool name collides with the frozen directory")
+                raise ValueError("service tool name collides with the current directory")
             names.add(definition.name)
             seen.add(definition.name)
             if (
@@ -164,15 +156,10 @@ class DiscoveryState:
                     external_allowed=grant.external_allowed
                     and definition.external_allowed,
                     input_schema=cast(
-                        dict[str, object], _freeze_json(definition.input_schema)
+                        dict[str, object], _thaw_json(definition.input_schema)
                     ),
                 )
             )
-        if rebind:
-            expected = {name: item for name, item in self.definitions.items() if item.source == f"mcp:{grant.service_id}"}
-            if ({item.name for item in definitions} != set(expected)
-                    or any(_definition_payload(item) != _definition_payload(expected[item.name]) for item in definitions)):
-                raise ValueError("service reconnect changed an admitted definition; start a new run")
         if activate:
             # Direct MCP additions/Drift mounts still obey the cumulative bound.
             # These callers promise the complete declared set, so fail atomically
@@ -206,128 +193,35 @@ class DiscoveryState:
         self.removals[context.tool_call_id] = (parent_snapshot_id, f"mcp:{grant.service_id}")
 
     def propose(self, call_id: str) -> CapabilityResolution | None:
-        from .capabilities import (
-            _thaw_json,
-            _snapshot_generation,
-            _candidate_catalog_id,
-            definition_fingerprint,
-        )
-
         names = self.pending.pop(call_id, ())
         extension = self.extensions.pop(call_id, None)
         removal = self.removals.pop(call_id, None)
-        current = self.current
-        candidate_definitions = self.definitions
-        candidate_tools = dict(self.tools)
-        removed: set[str] = set()
-        if removal is not None:
-            if removal[0] != current.snapshot.snapshot_id:
-                raise ValueError("service capability revision has a stale parent")
-            removed = {name for name, definition in candidate_definitions.items() if definition.source == removal[1]}
-            for name in removed:
-                candidate_definitions.pop(name)
-                candidate_tools.pop(name, None)
-        if extension is not None:
-            if extension.parent != current.snapshot.snapshot_id:
-                raise ValueError("service capability revision has a stale parent")
-            candidate_definitions.update(
-                {item.name: item for item in extension.definitions}
-            )
-            candidate_tools.update(
-                {
-                    definition.name: tool
-                    for definition, tool in zip(
-                        extension.definitions, extension.tools, strict=True
-                    )
-                }
-            )
-        visible = {item.name for item in current.snapshot.tools}
-        rebound = {item.name for item in extension.definitions if item.name in visible} if extension else set()
-        added = [name for name in names if name not in visible]
-        added = [name for name in added if name in candidate_definitions]
-        if not added and extension is None and not removed:
+        current = self.current.current()
+        if not names and extension is None and removal is None:
             return None
-        definitions = (
-            *(item for item in current.snapshot.tools if item.name not in removed),
-            *(candidate_definitions[name] for name in added),
-        )
+        registry = current._registry
+        assert registry is not None
+        if removal is not None:
+            for name, tool in list(registry._tools.items()):
+                if tool is not None and tool.definition.source == removal[1]:
+                    registry.unregister(name)
+        if extension is not None:
+            # Reconnection replaces the service's current catalog. A changed
+            # schema is checked on the next call, including this model reply.
+            sources = {item.source for item in extension.definitions}
+            replacements = {item.name for item in extension.definitions}
+            for name, tool in list(registry._tools.items()):
+                if tool is not None and tool.definition.source in sources and name not in replacements:
+                    registry.unregister(name)
+            for tool, definition in zip(extension.tools, extension.definitions, strict=True):
+                tool.definition = definition
+                registry.register(tool)
         version = current.snapshot.visibility_version + 1
-        decisions = {
-            **current.snapshot.policy_decisions,
-            **{name: "allowed" for name in added},
-            **{name: "denied:service_removed" for name in removed},
-        }
-        if extension is not None:
-            decisions.update(
-                {item.name: "denied:deferred" for item in extension.definitions if item.name not in added and item.name not in rebound}
-            )
-        snapshot = replace(
-            current.snapshot,
+        view = current._select([*(item.name for item in current.snapshot.tools), *names])
+        from .capabilities import _candidate_catalog_id
+        return replace(view, snapshot=replace(view.snapshot, candidate_catalog_id=_candidate_catalog_id(view.snapshot),
             snapshot_id=f"cap-{current.snapshot.run_id}-v{version}",
-            visibility_version=version,
-            parent_snapshot_id=current.snapshot.snapshot_id,
-            tools=definitions,
-            policy_decisions=MappingProxyType(decisions),
-            candidates=tuple(candidate_definitions.values()),
-        )
-        snapshot = replace(
-            snapshot,
-            generation=_snapshot_generation(
-                tools=snapshot.tools,
-                skills=snapshot.skills,
-                plugins=snapshot.plugins,
-                policy_decisions=snapshot.policy_decisions,
-            ),
-        )
-        if extension is not None or removed:
-            snapshot = replace(
-                snapshot, candidate_catalog_id=_candidate_catalog_id(snapshot)
-            )
-        denied = {
-            name: reason
-            for name, reason in current.denied_tools.items()
-            if name not in added
-        }
-        denied.update({name: "MCP service connection was removed" for name in removed})
-        if extension is not None:
-            denied.update(
-                {
-                    item.name: f"tool is deferred; use tool_search(query='select:{item.name}')"
-                    for item in extension.definitions if item.name not in added and item.name not in rebound
-                }
-            )
-        return replace(
-            current,
-            snapshot=snapshot,
-            tools=tuple(candidate_tools[item.name] for item in definitions),
-            denied_tools=MappingProxyType(denied),
-            _candidate_tools=MappingProxyType(candidate_tools),
-            _executors_by_name=MappingProxyType({**{name: method for name, method in current._executors_by_name.items() if name not in removed},
-                **({tool.definition.name: tool.execute for tool in extension.tools} if extension else {})}),
-            _definition_fingerprints=MappingProxyType({**{name: value for name, value in current._definition_fingerprints.items() if name not in removed},
-                **({tool.definition.name: definition_fingerprint(tool.definition) for tool in extension.tools} if extension else {})}),
-            _tools_by_name=MappingProxyType(
-                {
-                    **{name: tool for name, tool in current._tools_by_name.items() if name not in removed},
-                    **{name: candidate_tools[name] for name in (*added, *rebound)},
-                }
-            ),
-            _definitions_by_name=MappingProxyType(
-                {
-                    **{name: definition for name, definition in current._definitions_by_name.items() if name not in removed},
-                    **{
-                        name: replace(
-                            candidate_definitions[name],
-                            input_schema=cast(
-                                dict[str, object],
-                                _thaw_json(candidate_definitions[name].input_schema),
-                            ),
-                        )
-                        for name in (*added, *rebound)
-                    },
-                }
-            ),
-        )
+            visibility_version=version, parent_snapshot_id=current.snapshot.snapshot_id))
 
     def discard_pending(self, call_id: str | None = None) -> None:
         if call_id is None:
@@ -357,7 +251,7 @@ class ToolSearchTool:
         "知道名称但不可见时用 select: 精确加载；收到工具不存在错误时按建议关键词搜索。"
         "纯对话或推理不需要工具时不调用。未搜索前不要仅因当前 schema 未列出就声称没有该能力。"
         "查询形式：关键词描述功能，或 select:工具名（逗号分隔多个，如 select:schedule,list_schedules）。"
-        "成功结果持久化后，下一次模型请求加载 unlocked 工具，可直接调用，无需二次搜索。"
+        "搜索成功后，后续调用即可使用 unlocked 工具，无需二次搜索。"
         "发现不授予新权限；无匹配、失败或超出声明预算时按真实结果处理。",
         {
             "type": "object",
@@ -404,17 +298,13 @@ class ToolSearchTool:
         allowed = {
             risks[value] for value in cast(list[str], arguments.get("allowed_risk", []))
         }
-        current = self.discovery.current
-        authorized = {
-            item.name: item for item in current.snapshot.candidates
-            if current.authorization_denial(item, context) is None
-        }
+        current = view
+        authorized = {name: item for name, item in self.discovery.definitions.items()
+                      if current.authorization_denial(item, context) is None}
         eligible = {
             definition.name: definition
-            for definition in view.snapshot.candidates
+            for definition in authorized.values()
             if (not allowed or definition.risk in allowed)
-            and authorized.get(definition.name) == definition
-            and view.authorization_denial(definition, context) is None
         }
         explanations: dict[str, list[str]] = {}
         documents: dict[str, SearchDocument] = {}
@@ -494,7 +384,7 @@ class ToolSearchTool:
             "already_loaded": loaded,
             "skipped_due_to_budget": skipped,
             "budget": selection.report,
-            "tip": "结果持久化后下一次模型请求加载完整 schema；直接调用 unlocked 工具。"
+            "tip": "搜索成功，后续调用可直接使用 unlocked 工具。"
             if found
             else "已加载，可直接调用。"
             if loaded

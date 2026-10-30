@@ -2,7 +2,7 @@
 
 状态：当前
 
-最后核验：2026-10-26
+最后核验：2026-10-30
 
 事实来源：[配置](../../backend/app/mcp_config.py)、[主人 HTTP API](../../backend/app/mcp_api.py)、[运行宿主](../../backend/app/mcp_runtime.py)、[stdio 协议](../../backend/app/mcp_stdio.py)、[真实 HTTP 测试](../../tests/python/test_mcp_http.py)、[分片凭据 HTTP 测试](../../tests/python/test_mcp_credentials.py)、[来源测试](../../tests/python/test_mcp_origin.py)、[恶意 schema 测试](../../tests/python/test_mcp_schema.py)。对应 [Issue #159](https://github.com/sawaki-zexi/meido/issues/159)、[ADR-0011](../adr/0011-versioned-tool-activation.md)。
 
@@ -40,13 +40,13 @@ MCP 对系统 CredentialStore 显式启用 `strict_cleanup=True`。长凭据写�
 
 `mcp_add({server_id})`、`mcp_remove({server_id})`、`mcp_list({})` 均为 deferred；先经 `tool_search` 加载。模型不能提供 argv、cwd、env、角色或来源。MCP 服务只向主人桌面或平台实际已绑定主人来源开放；访客及非主人群发言没有服务 grant。
 
-运行开始冻结当前角色的服务配置、代际与 ServiceGrant，以及角色/session/真实来源身份。`mcp_add` 只连接这份集合中的服务：initialize → initialized → 全部分页 tools/list → 验证目录 → 暂存带父版本的远端候选。管理结果持久化后发布下一请求使用的不可变内存目录；下一次 provider 请求可用 tool_search 激活 `mcp_<serverId>__<remoteName>` 并在同 run 真实 tools/call。同一 provider 回复不能抢先使用新目录。`mcp_add` 在原准入通过、实际开始 owned 连接时通过既有 on_update 发送固定安全的 connecting 阶段摘要；不发送原参数/凭据/peer 输出、百分比或 MCP notification 扩展，已连接和准入被拒时不伪报新阶段。风险、角色与外部范围全部继承原 grant。
+运行开始冻结当前角色的服务配置、代际与 ServiceGrant，以及角色/session/真实来源身份。`mcp_add` 只连接这份集合中的服务：initialize → initialized → 全部分页 tools/list → 验证目录 → 暂存带父版本的远端候选。管理结果持久化后更新当前目录；后续 tool_search 可激活 `mcp_<serverId>__<remoteName>`，同一 provider 回复也按顺序使用新解锁名称并实际 tools/call。`mcp_add` 在原准入通过、实际开始 owned 连接时通过既有 on_update 发送固定安全的 connecting 阶段摘要；不发送原参数/凭据/peer 输出、百分比或 MCP notification 扩展，已连接和准入被拒时不伪报新阶段。风险、角色与外部范围全部继承原 grant。
 
-`mcp_list` 仅观察，返回 serverId/name/risk、connectionDesired、status、error 及真实发现工具的名称/loaded。status 为 connected、disconnected、failed 或 revoked。退出、坏流或 stdout 关闭会自动回收进程并报告失败；再次 add 重新握手。同 run 重连要求完整远端声明版本一致，变化必须等新 run。即使声明相同，旧请求也只绑定原 client/连接代次，不能转派给替代连接；授权在异步 schema 验证之后、真实 dispatch 之前再查。重连结果持久化后，下一请求才使用经过完整安全定义相等检查的新 executor；旧调用或迟到响应不会关闭新 peer。远端 RPC 错误只转成宿主安全错误，开始清理前即保留；慢退出期间不会被普通断连提示覆盖，真实来源/服务撤权仍优先。下一模型请求前等待进程回收，业务调用不自动重试。
+`mcp_list` 仅观察，返回 serverId/name/risk、connectionDesired、status、error 及真实发现工具的名称/loaded。status 为 connected、disconnected、failed 或 revoked。退出、坏流或 stdout 关闭会自动回收进程并报告失败；再次 add 重新握手。同 run 重连可以更新远端声明与 schema。结果持久化后当前注册表采用新工具，下一调用按新定义验证；已进入旧 peer 的调用仍属于原连接，迟到响应不会关闭新 peer。异步 schema 验证之后、真实 dispatch 之前仍复核当前来源与具体连接，业务调用不自动重试。远端 RPC 错误只转成宿主安全错误，开始清理前即保留；慢退出期间不会被普通断连提示覆盖，真实来源/服务撤权仍优先。下一模型请求前等待进程回收，业务调用不自动重试。
 
 成功 add 保存按角色、线程及原始绑定代际隔离的连接意愿。每个 run 创建自己的 stdio 进程，结束时释放；相同仍获准来源的后续 run、宿主和 SQLite 重建可以自动握手恢复候选。它只重做握手与发现，从不重放 tools/call。其他角色/线程及解绑重绑后的来源不能继承意愿。
 
-remove 先清当前来源的意愿并关闭整棵进程树，再暂存目录移除修订。已存在的历史版本保持不变，但旧版本调用立即被执行授权拒绝。重复 remove 幂等；同一冻结 grant 可以再次 add，持久化管理结果后发布下一请求的内存绑定，不新增持久化目录版本链。配置删除/改变、角色删除、发现权限关闭和原来源失效会取消当前工作。watchdog 一旦实际观察到来源失效，本 run 锁存撤权；平台恢复不会复活旧 run。新入站 run 会重新验证平台与原绑定。没有全局平台启停 epoch，也不保证捕获两个检查之间完成的暂停/恢复。来源授权或配置读取异常会锁存失效、立即封闭准入并由独立 owned task 清理，不让 watcher 与自己互相等待；读取恢复不复活旧 run。
+remove 先清当前来源的意愿并关闭整棵进程树，再暂存目录移除修订。历史调用事实保留；后续调用无法从当前注册表取得已移除的工具。重复 remove 幂等；同一冻结 grant 可以再次 add，持久化管理结果后更新当前工具目录，不新增持久化目录版本链。配置删除/改变、角色删除、发现权限关闭和原来源失效会取消当前工作。watchdog 一旦实际观察到来源失效，本 run 锁存撤权；平台恢复不会复活旧 run。新入站 run 会重新验证平台与原绑定。没有全局平台启停 epoch，也不保证捕获两个检查之间完成的暂停/恢复。来源授权或配置读取异常会锁存失效、立即封闭准入并由独立 owned task 清理，不让 watcher 与自己互相等待；读取恢复不复活旧 run。
 
 普通运行仅在所有 child 的 `exit_confirmed` 为真后移出 host；一个 peer 失败不阻止其他 peer 清理，并发 close 共享当前清理，失败保留原 owner 后允许显式重试。成功业务终态与 cleanup_failed 分开保留，不改写已完成业务。待清理资源只隔离同 role / 原来源 scope / server，其他角色、来源和无关聊天不受影响；普通与自主 owner/意愿分别管理。每个 server 的 opening、closing 和代次归原 run，并发 add 不提前报告目录已就绪；Stop/remove/revoke 取消并 join opening，迟到握手不能发布目录或恢复意愿。stdio spawn 自身也被持有，close 会等待未返回的创建结果并回收真实子进程，而非用“尚无 process 句柄”推断退出。
 
@@ -60,6 +60,6 @@ inputSchema 和 outputSchema 必须描述对象，仅支持 2020-12（缺省）�
 
 每个请求的 timeoutSeconds 从写入开始计时，覆盖 write/drain 与响应等待，远端不读 stdin 也不能绕过预算。普通请求取消可尝试发送 notifications/cancelled，最多等待 50ms；失败、超时或再次取消都继续关闭，initialize 不发送该通知。Windows 使用 Job 所有权，POSIX 使用独立进程组；取消、重复 Stop、移除及坏流都等待进程树清理。协议 reader 退出后，清理任务以固定大小块丢弃剩余 stdout 并等待 stdout/stderr EOF，避免超限输出使管道暂停读取而阻塞 process.wait。POSIX 的 killpg 仅发送信号，因此在同一个 5 秒清理预算内还要确认整个 owned group 已不存在，不能只等父进程退出；僵尸不会被当作已回收。取消/断连后的业务事务可能结果未知，宿主不会自动重试。浏览器固定客户端与 28 个工具维持独立实现。
 
-## 请求绑定与目录存储（2026-10-26）
+## 当前注册表与目录存储（2026-10-30）
 
-按 [ADR-0026](../adr/0026-request-bound-lightweight-tool-loading.md)，完整工具目录不再形成持久版本链。MCP 仍固定原 config/grant/source；普通结果保存后发布下一请求内存绑定。重连只能为相同完整声明建立新 client 绑定，旧请求不能随同名查询改投新 client。连接意愿恢复只重做握手/发现，业务 tools/call 不重放；来源验证 proof、ACK、配置代次及 outbox 保留原职责。
+[ADR-0032](../adr/0032-current-tool-registry-and-raw-window.md) 替代执行器固定和相同定义重连门槛。MCP 仍保留实际 config/grant/source 与资源归属；普通结果保存后更新当前目录。同名新调用查当前工具，原 peer 已进入的调用按真实结果收尾。连接意愿恢复只重做握手/发现，工具可见性从当前聊天原文 used/unlocked 名称恢复；业务 tools/call 不重放，来源 proof、ACK、配置代次及 outbox 保留原职责。

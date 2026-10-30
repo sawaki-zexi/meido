@@ -1,10 +1,12 @@
-"""A provider request keeps its exact MCP executor, not just an equal schema."""
+"""Reconnection publishes current tools while entered peer calls keep ownership."""
 import asyncio
 from dataclasses import replace
 
 import pytest
 
 from backend.app import mcp_runtime
+from backend.app.agent_runtime import AssistantDoneEvent, AssistantMessage, ToolCall, run_agent_loop
+from backend.app.agent_runtime.types import ToolResultMessage, UserMessage
 from backend.app.mcp_runtime import McpHost
 from test_mcp_owner_cleanup import Peer, bundle, context
 from test_mcp_stdio import configure
@@ -30,8 +32,75 @@ def publish(run, call_id):
     return run.capabilities.current()
 
 
+def test_model_calls_use_reconnected_schema_and_empty_catalog_removes_old_name(tmp_path, monkeypatch):
+    store, _ = configure(tmp_path)
+    host = McpHost(store)
+
+    async def exercise():
+        peers = []
+        class ChangingPeer(EchoPeer):
+            def __init__(self):
+                super().__init__()
+                self.index = len(peers)
+                self.arguments = []
+            async def connect(self):
+                if self.index == 2:
+                    return ()
+                schema = {'type': 'object', 'properties': {'query': {'type': 'string'}}}
+                if self.index == 1:
+                    schema['required'] = ['query']
+                return ({'name': 'echo', 'description': 'current echo', 'inputSchema': schema},)
+            async def call(self, name, arguments):
+                self.arguments.append(arguments)
+                return await super().call(name, arguments)
+        def factory(*args):
+            peer = ChangingPeer()
+            peers.append(peer)
+            return peer
+        monkeypatch.setattr(mcp_runtime, 'McpStdioClient', factory)
+        run = bundle(host)
+        run.direct_exposure = True
+        transcript = [UserMessage('reconnect and use current tools')]
+        class Provider:
+            requests = 0
+            async def stream_response(self, *, tools, **kwargs):
+                self.requests += 1
+                schemas = {item['function']['name']: item['function']['parameters'] for item in tools}
+                if self.requests == 1:
+                    calls = (ToolCall('discover', 'tool_search', {'query': 'select:mcp_add'}),
+                             ToolCall('first', 'mcp_add', {'server_id': 'notes'}))
+                elif self.requests == 2:
+                    assert schemas['mcp_notes__echo']['required'] == ['description']
+                    await run.close_server('notes')
+                    calls = (ToolCall('reconnect', 'mcp_add', {'server_id': 'notes'}),
+                             ToolCall('old-args', 'mcp_notes__echo', {}),
+                             ToolCall('new-args', 'mcp_notes__echo', {'query': 'current', 'description': '读取当前远端资料'}))
+                elif self.requests == 3:
+                    assert schemas['mcp_notes__echo']['required'] == ['query', 'description']
+                    await run.close_server('notes')
+                    calls = (ToolCall('empty-catalog', 'mcp_add', {'server_id': 'notes'}),
+                             ToolCall('removed', 'mcp_notes__echo', {'query': 'old'}))
+                else:
+                    assert 'mcp_notes__echo' not in schemas
+                    yield AssistantDoneEvent(AssistantMessage('done'))
+                    return
+                yield AssistantDoneEvent(AssistantMessage(tool_calls=calls))
+        try:
+            events = [event async for event in run_agent_loop(provider=Provider(), model='fixture', system='',
+                messages=transcript, capabilities=run.capabilities, max_turns=5)]
+            assert events[-1].reason == 'completed', events[-1]
+            results = {item.tool_call_id: item for item in transcript if isinstance(item, ToolResultMessage)}
+            assert results['old-args'].is_error and 'required' in results['old-args'].content
+            assert results['new-args'].content == 'actual reply'
+            assert results['removed'].is_error
+            assert [peer.arguments for peer in peers] == [[], [{'query': 'current'}], []]
+        finally:
+            await run.close()
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("pause_validation", [False, True])
-def test_identical_reconnect_rejects_old_binding_and_publishes_new_executor_only_next_request(tmp_path, monkeypatch, pause_validation):
+def test_reconnect_replaces_current_registry_after_receipt_and_retires_old_peer(tmp_path, monkeypatch, pause_validation):
     store, _ = configure(tmp_path)
     host = McpHost(store)
     async def exercise():
@@ -71,8 +140,8 @@ def test_identical_reconnect_rejects_old_binding_and_publishes_new_executor_only
             assert [peer.calls for peer in peers] == [0, 0]
             assert not peers[1].closed, "a stale call cannot dispose its replacement peer"
             refreshed = publish(run, "reconnect")
-            assert issued.get("mcp_notes__echo") is old
             replacement = refreshed.get("mcp_notes__echo")
+            assert issued.get("mcp_notes__echo") is replacement
             assert replacement is not old
             assert refreshed.snapshot.policy_decisions["mcp_notes__echo"] == issued.snapshot.policy_decisions["mcp_notes__echo"]
             assert replacement.definition.version == old.definition.version

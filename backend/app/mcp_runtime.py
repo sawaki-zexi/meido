@@ -81,7 +81,7 @@ class McpRemoteTool:
             raise PermissionError(denial)
         if (self.bundle.clients.get(self.config.server_id) is not self._client
                 or self.bundle._generations.get(self.config.server_id) != self._generation):
-            raise PermissionError("MCP connection changed; use tools from the next request")
+            raise PermissionError("MCP connection changed; use the current registered tool")
         return self._client
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
@@ -94,7 +94,7 @@ class McpRemoteTool:
         except McpProtocolError as error:
             return AgentToolResult(str(error), is_error=True)
         if not valid_input:
-            return AgentToolResult("MCP arguments do not match the frozen input schema", is_error=True)
+            return AgentToolResult("MCP arguments do not match the current input schema", is_error=True)
         # Schema validation awaits a separate worker; recheck both current
         # authority and the issued request's exact peer immediately before call.
         client = self._require_binding(context)
@@ -545,21 +545,14 @@ class McpRun:
         try:
             tools = await self._connect(config, on_update)
             self.require_context(context, "mcp_add")
-            # A reconnect can restore the exact already-admitted directory; it
-            # cannot silently change schemas inside an issued run snapshot.
             current = self.capabilities.current()
-            admitted = {item.name: item for item in current.snapshot.candidates if item.source == f"mcp:{server_id}"}
-            if admitted:
-                # The version hashes the complete declaration and immutable
-                # owner configuration; frozen schemas normalize arrays to tuples.
-                if {item.definition.name: item.definition.version for item in tools} != {name: item.version for name, item in admitted.items()}:
-                    raise McpProtocolError("MCP tool directory changed; start a new run")
-                # Identical declarations do not make a replacement connection
-                # the executor of an already-issued provider request.
+            if tools:
                 current.stage_service_tools(context, grant_id=config.grant_id,
-                    parent_snapshot_id=current.snapshot.snapshot_id, tools=tools, rebind=True)
-            elif tools:
-                current.stage_service_tools(context, grant_id=config.grant_id, parent_snapshot_id=current.snapshot.snapshot_id, tools=tools, activate=self.direct_exposure)
+                    parent_snapshot_id=current.snapshot.snapshot_id, tools=tools,
+                    rebind=True, activate=self.direct_exposure)
+            else:
+                current.stage_service_removal(context, grant_id=config.grant_id,
+                    parent_snapshot_id=current.snapshot.snapshot_id)
             self.host.store.set_intent(self.scope_id, self.role_id, self.session_key, config)
             return {"serverId": server_id, "status": "connected", "tools": [item.definition.name for item in tools],
                     "tip": "结果持久化后可直接使用远端工具。" if self.direct_exposure else "结果持久化后用 tool_search 加载远端工具。"}
