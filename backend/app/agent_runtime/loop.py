@@ -57,6 +57,7 @@ async def run_agent_loop(
     tool_timeout: float | None = None,
     on_capability_revision: Callable[[CapabilitySnapshot], Awaitable[None] | None] | None = None,
     on_tool_result: Callable[[ToolResultMessage], Awaitable[None] | None] | None = None,
+    on_tool_dispatch: Callable[[ToolExecutionStartEvent], None] | None = None,
     can_continue: Callable[[], bool] | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run the provider/tool loop while keeping the transcript mutable.
@@ -68,6 +69,8 @@ async def run_agent_loop(
 
     token = signal or CancellationToken()
     registry = ToolRegistry(tools) if capabilities is None else capabilities
+    if capabilities is not None and capabilities._discovery is not None:
+        capabilities._discovery.unloaded_calls.clear()
     if capabilities is not None and hasattr(provider, 'bind_capabilities'):
         provider.bind_capabilities(capabilities)
     sequence = 0
@@ -284,15 +287,9 @@ async def run_agent_loop(
                 # The window provider may have compacted and refreshed the
                 # declarations while constructing this actual request.
                 registry = getattr(provider, 'capabilities', registry)
-            definition = registry.candidate_definition(call.name) if isinstance(registry, CapabilityResolution) else None
-            async for event in emit(ToolExecutionStartEvent(
-                call.id, call.name, dict(call.arguments),
-                snapshot_id=registry.snapshot.snapshot_id if isinstance(registry, CapabilityResolution) else None,
-                tool_source=definition.source if definition is not None else None,
-                tool_version=definition.version if definition is not None else None,
-                policy_decision=registry.snapshot.policy_decisions.get(call.name) if isinstance(registry, CapabilityResolution) else None,
-                capability_binding=registry.call_record(call.name) if isinstance(registry, CapabilityResolution) else None,
-            )):
+            if capabilities is not None and capabilities._discovery is not None and registry.get(call.name) is None:
+                capabilities._discovery.unloaded_calls.add(call.id)
+            async for event in emit(_tool_start_event(call, registry)):
                 yield event
             tool_context = (
                 ToolContext(
@@ -329,7 +326,7 @@ async def run_agent_loop(
                     if inspect.isawaitable(persisted):
                         await persisted
 
-            async with aclosing(_execute_tool_events(call, registry, tool_context, token, tool_timeout, settle_result)) as execution:
+            async with aclosing(_execute_tool_events(call, registry, tool_context, token, tool_timeout, settle_result, on_tool_dispatch)) as execution:
                 async for tool_event in execution:
                     async for event in emit(tool_event):
                         yield event
@@ -362,6 +359,16 @@ async def run_agent_loop(
             return
 
 
+def _tool_start_event(call: ToolCall, registry: ToolRegistry | CapabilityResolution) -> ToolExecutionStartEvent:
+    definition = registry.candidate_definition(call.name) if isinstance(registry, CapabilityResolution) else None
+    return ToolExecutionStartEvent(call.id, call.name, dict(call.arguments),
+        snapshot_id=registry.snapshot.snapshot_id if isinstance(registry, CapabilityResolution) else None,
+        tool_source=definition.source if definition is not None else None,
+        tool_version=definition.version if definition is not None else None,
+        policy_decision=registry.snapshot.policy_decisions.get(call.name) if isinstance(registry, CapabilityResolution) else None,
+        capability_binding=registry.call_record(call.name) if isinstance(registry, CapabilityResolution) else None)
+
+
 def _assign_call_identities(assistant: AssistantMessage, used_ids: set[str], *, run_id: str, turn: int) -> AssistantMessage:
     if not assistant.tool_calls:
         return assistant
@@ -385,6 +392,7 @@ async def _execute_tool_events(
     call: ToolCall, registry: ToolRegistry | CapabilityResolution, context: ToolContext,
     signal: CancellationToken, timeout: float | None,
     on_result: Callable[[AgentToolResult], Awaitable[None]],
+    on_dispatch: Callable[[ToolExecutionStartEvent], None] | None = None,
 ) -> AsyncIterator[ToolExecutionUpdateEvent | ToolExecutionEndEvent]:
     tool = registry.get(call.name)
     definition = registry.definition(call.name) if isinstance(registry, CapabilityResolution) else tool.definition if tool else None
@@ -399,7 +407,7 @@ async def _execute_tool_events(
 
     async def execute() -> AgentToolResult:
         try:
-            result = await _execute_tool(call, registry, context, signal, timeout, progress.add)
+            result = await _execute_tool(call, registry, context, signal, timeout, progress.add, on_dispatch=on_dispatch)
             progress.close()
             # A settled result belongs to the host transcript, not to the
             # disposable subscriber queue. Join persistence even on close.
@@ -459,6 +467,7 @@ async def _execute_tool(
     signal: CancellationToken,
     timeout: float | None,
     on_progress: Callable[[AgentToolResult], None],
+    *, on_dispatch: Callable[[ToolExecutionStartEvent], None] | None = None,
 ) -> AgentToolResult:
     started = time.monotonic()
     tool = registry.get(call.name)
@@ -519,6 +528,12 @@ async def _execute_tool(
             if denial is not None:
                 return finish(AgentToolResult(denial, details={"reason": denial}, is_error=True), status="denied")
             arguments, hook_error = await registry.prepare_tool_call(call.name, arguments, context)
+            # The start event announces the attempt. Finalize its existing
+            # audit binding after hooks can replace the named registration.
+            # This host callback is synchronous: business execution sees the
+            # actual declaration in the audit before entering the function.
+            if on_dispatch is not None:
+                on_dispatch(_tool_start_event(call, registry))
             if hook_error is not None:
                 return finish(hook_error)
             denial = registry.authorization_denial(registry.definition(call.name), context, arguments)

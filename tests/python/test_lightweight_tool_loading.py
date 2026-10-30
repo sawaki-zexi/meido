@@ -75,6 +75,10 @@ def test_used_definition_audit_is_immutable_and_has_legacy_reader(tmp_path):
     sessions.start_tool_audit(**kwargs)
     assert sessions.call_binding('run', 'call') == proof
     sessions.finish_tool_audit(run_id='run', call_id='call', result_category='uncertain')
+    import pytest
+    with pytest.raises(ValueError, match='open audit'):
+        sessions.bind_tool_audit(run_id='run', role_id='r', call_id='call', snapshot_id='new',
+            tool_source='builtin', tool_version='new', policy_decision='allowed', capability_binding=proof)
     try:
         sessions.start_tool_audit(**kwargs)
     except ValueError:

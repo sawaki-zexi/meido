@@ -65,6 +65,9 @@ class DiscoveryState:
         external_only: bool = False,
     ) -> None:
         self._current: CapabilityResolution | None = None
+        # Current-turn attempts are not historical loading facts. A later
+        # user turn may still restore their names from its raw history.
+        self.unloaded_calls: set[str] = set()
         self.pending: dict[str | None, tuple[str, ...]] = {}
         self.extensions: dict[str, _ServiceExtension] = {}
         self.removals: dict[str, tuple[str, str]] = {}

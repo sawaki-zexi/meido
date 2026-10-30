@@ -1160,6 +1160,24 @@ class SessionStore:
                 connection.execute("UPDATE tool_audits SET capability_binding_json=? WHERE audit_id=?",
                     (_dump(capability_binding), f"{run_id}:{call_id}"))
 
+    def bind_tool_audit(
+        self, *, run_id: str, role_id: str, call_id: str, snapshot_id: str | None,
+        tool_source: str | None, tool_version: str | None, policy_decision: str | None,
+        capability_binding: dict[str, object] | None,
+    ) -> None:
+        """Bind an open attempt to the current declaration selected after hooks."""
+        if capability_binding is not None and (
+                capability_binding.get("runId"), capability_binding.get("roleId")) != (run_id, role_id):
+            raise PermissionError("tool call binding belongs to another run")
+        with sqlite3.connect(self.database_path) as connection:
+            updated = connection.execute(
+                """UPDATE tool_audits SET snapshot_id=?, tool_source=?, tool_version=?,
+                   policy_decision=?, capability_binding_json=?
+                   WHERE run_id=? AND role_id=? AND call_id=? AND ended_at IS NULL""",
+                (snapshot_id, tool_source, tool_version, policy_decision, _dump(capability_binding), run_id, role_id, call_id))
+            if updated.rowcount != 1:
+                raise ValueError("tool dispatch requires its open audit attempt")
+
     def finish_tool_audit(
         self,
         *,

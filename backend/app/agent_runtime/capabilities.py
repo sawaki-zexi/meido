@@ -246,7 +246,8 @@ class CapabilityResolution:
 
     def window_view(self, messages) -> CapabilityResolution:
         from .tool_window import window_tool_names
-        return self.current()._select(window_tool_names(messages))
+        unloaded = self._discovery.unloaded_calls if self._discovery is not None else frozenset()
+        return self.current()._select(window_tool_names(messages, unloaded_calls=unloaded))
 
     def select_window(self, messages) -> CapabilityResolution:
         view = self.window_view(messages)

@@ -69,9 +69,11 @@
 
 常驻工具按注册顺序排列，再加入实际原文窗口中用过或解锁过的名称并稳定去重。`tool_window.window_tool_names` 消费同一份 Runtime transcript；`ContextWindowProvider` 应用真实 source view 与持久 cut 后重建声明，在压缩候选计量、最终请求和重启中使用相同规则。工作摘要不会授予工具可见性。自然回复保留宿主 `finish_reply`，格式纠正只提供该协议。
 
+本轮调用时尚未加载的名称不会因失败调用记录进入 transcript，就在后续模型步骤自动加载；本轮仍须成功搜索解锁。该区分只保留在本轮内存中，压缩候选与实际请求共用；新用户回合仍可从当前原文窗口恢复旧历史中的使用名称，包括旧失败调用。
+
 成功解锁写入原工具结果的 `metadata.unlockedTools`。旧搜索记录中的 `details.unlocked` 或原 JSON 仍可读取；其他工具结果不因自称 unlocked 而授予可见性。停止新增和依赖 `modelSnapshot.toolSelection`，旧 JSON 和历史列原样保留。已被压缩移出的原文、清空的历史或另一实际线程不会从选择缓存补回名称。
 
-既有 tool_audits 的 `capability_binding_json` 保存 `tool-call-v1`：一个实际调用定义、指纹、可见事实、run/role/session/source 标识和必要 builtin 作者摘要。指纹仅供历史审计，不是当前执行门槛。`SessionStore.call_binding` 兼容读取旧链；snapshotId/visibilityVersion 是诊断与来源事实标识，不是独立授权凭证。重复 provider call ID 仍映射唯一宿主 ID；重复宿主审计拒绝，不覆盖 uncertain 事实，不重放工具。
+既有 tool_audits 的 `capability_binding_json` 保存 `tool-call-v1`：一个实际调用定义、指纹、可见事实、run/role/session/source 标识和必要 builtin 作者摘要。界面开始事件记录调用尝试；钩子完成后、进入业务函数前，同步将该未结束审计行绑定到当前选中的定义。原调用参数与意图保持原样，结束后的事实不可再绑定。指纹仅供历史审计，不是当前执行门槛。`SessionStore.call_binding` 兼容读取旧链；snapshotId/visibilityVersion 是诊断与来源事实标识，不是独立授权凭证。重复 provider call ID 仍映射唯一宿主 ID；重复宿主审计拒绝，不覆盖 uncertain 事实，不重放工具。
 
 spawn 保留选定名称范围与原宿主身份，执行查当前注册表；soft schedule 保存名称范围，旧完整定义只读取名称，执行仍受当前许可限制。Drift 作者使用实际活动 write/edit 调用、真实用户/来源、当前作者许可与 builtin 内容证明，保持原产物和历史事实，不以旧执行器或选择指纹授予新调用。
 

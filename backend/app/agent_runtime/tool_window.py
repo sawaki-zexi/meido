@@ -1,17 +1,20 @@
 """Tool loading facts from the same raw transcript used for model context."""
-from collections.abc import Sequence
+from collections.abc import Sequence, Set
 import json
 
 from .types import AgentMessage, AssistantMessage, ToolResultMessage
 
 
-def window_tool_names(messages: Sequence[AgentMessage]) -> tuple[str, ...]:
+def window_tool_names(messages: Sequence[AgentMessage], *, unloaded_calls: Set[str] = frozenset()) -> tuple[str, ...]:
     names: dict[str, None] = {}
     for message in messages:
         if isinstance(message, AssistantMessage):
             for call in message.tool_calls:
-                names.setdefault(call.name, None)
+                if call.id not in unloaded_calls:
+                    names.setdefault(call.name, None)
         elif isinstance(message, ToolResultMessage):
+            if message.tool_call_id in unloaded_calls:
+                continue
             names.setdefault(message.tool_name, None)
             if message.is_error:
                 continue
