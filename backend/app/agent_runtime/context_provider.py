@@ -65,8 +65,9 @@ class ContextWindowProvider:
         self.provider, self.settings, self.windows = provider, settings, windows
         self.role_id, self.session_key, self.scope, self.authority = role_id, session_key, scope, authority
         self.authorized, self.ensure_coverage = authorized, ensure_coverage
-        if hasattr(provider, 'usage_context'):
-            provider.usage_context = (role_id, session_key, scope, authority)
+        bind_usage = getattr(provider, 'bind_usage_context', None)
+        if callable(bind_usage):
+            bind_usage((role_id, session_key, scope, authority))
         self.requests = 0
         self.compactions = 0
         self.last_input_estimate = 0

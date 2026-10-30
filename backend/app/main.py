@@ -223,11 +223,6 @@ def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_
     if history is not None:
         authority += history.authority
         provider.request_guard = history.require_snapshot_current
-    # Providers are rebuilt each turn; retain only the bounded, in-memory
-    # ordinary conversation anchors. Existing frozen view authority supplies
-    # stable ownership, independent of run IDs and message fences.
-    provider.usage_anchors = _ordinary_usage_anchors
-
     def authorized():
         return (store.get(role_id) is not None and role_id not in _channel_roles_deleting
                 and (not session_key.startswith('thread:') or source is not None)
@@ -260,7 +255,13 @@ def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_
     window = ContextWindowProvider(provider, settings, history.windows() if history is not None else _context_window_store(), role_id=role_id,
         session_key=session_key, scope='shared_owner' if history is not None else 'owner' if owner else 'external', authority=authority,
         authorized=authorized, ensure_coverage=covered, on_diagnostic=diagnostic)
-    provider.usage_context += (str(session_store.database_path), provider.role.createdAt.isoformat())
+    # Calibration is an optional provider capability. Legacy ModelProviders
+    # keep the window's local estimate without acquiring anchor state.
+    bind_usage = getattr(provider, 'bind_usage_context', None)
+    if callable(bind_usage):
+        bind_usage((role_id, session_key, window.scope, authority,
+                    str(session_store.database_path), provider.role.createdAt.isoformat()),
+                   anchors=_ordinary_usage_anchors)
     return window
 session_manager = SessionManager(store, session_store)
 multichannel_store = MultichannelStore(data_root / "sessions.db", session_store)

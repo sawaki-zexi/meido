@@ -197,6 +197,13 @@ class MeidoProvider:
         self.usage_context = usage_context or (getattr(role, 'id', ''), 'independent', '')
         self.last_input_estimate = InputEstimate(0, 'local')
 
+    def bind_usage_context(self, context: tuple, *, anchors: UsageAnchors | None = None) -> None:
+        """Opt into host ownership only when the adapter can project real input."""
+        if callable(getattr(self.adapter, 'prepare_input', None)):
+            self.usage_context = context
+            if anchors is not None:
+                self.usage_anchors = anchors
+
     def _check_request(self, signal):
         signal.raise_if_cancelled()
         if self.request_guard is not None:
