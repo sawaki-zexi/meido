@@ -93,9 +93,16 @@ async def run_agent_loop(
         if capabilities is not None:
             # The window provider selects after applying its real waterline.
             # Other hosts already supply their actual raw transcript here.
-            registry = (capabilities.current() if hasattr(provider, 'bind_capabilities')
-                        else capabilities.select_window(messages) if capabilities._discovery is not None
-                        else capabilities.current()._select(item.name for item in capabilities.current().snapshot.tools))
+            if hasattr(provider, 'bind_capabilities'):
+                registry = capabilities.current()
+            elif not token.is_cancelled():
+                try:
+                    preparation = await capabilities.prepare_metadata(token)
+                    registry = (capabilities.select_window(messages, preparation=preparation) if capabilities._discovery is not None
+                                else capabilities.current()._select((item.name for item in capabilities.current().snapshot.tools), preparation=preparation))
+                except RuntimeError:
+                    if not token.is_cancelled():
+                        raise
         if token.is_cancelled():
             aborted = AssistantMessage(stop_reason="aborted", metadata={"completion_origin": "host_cancel"})
             messages.append(aborted)
@@ -337,7 +344,16 @@ async def run_agent_loop(
             async for event in emit(MessageEndEvent(tool_message)):
                 yield event
             if capabilities is not None and not tool_message.is_error and not token.is_cancelled():
-                revision = capabilities.pending_revision(call.id)
+                try:
+                    revision = await capabilities.prepare_revision(call.id, token)
+                except RuntimeError:
+                    if not token.is_cancelled():
+                        raise
+                    # The tool receipt above is already real and persisted.
+                    # Cancelling metadata preparation must not erase it or
+                    # turn cooperative cancellation into an uncaught error.
+                    capabilities.discard_pending(call.id)
+                    revision = None
                 if revision is not None:
                     if on_capability_revision is not None:
                         persisted = on_capability_revision(revision.snapshot)

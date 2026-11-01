@@ -195,7 +195,7 @@ class DiscoveryState:
             raise ValueError("service removal requires a current parent and host call")
         self.removals[context.tool_call_id] = (parent_snapshot_id, f"mcp:{grant.service_id}")
 
-    def propose(self, call_id: str) -> CapabilityResolution | None:
+    def _stage_revision(self, call_id):
         names = self.pending.pop(call_id, ())
         extension = self.extensions.pop(call_id, None)
         removal = self.removals.pop(call_id, None)
@@ -219,12 +219,28 @@ class DiscoveryState:
             for tool, definition in zip(extension.tools, extension.definitions, strict=True):
                 tool.definition = definition
                 registry.register(tool)
+        return current, [*(item.name for item in current.snapshot.tools), *names]
+
+    @staticmethod
+    def _revision(current, names, preparation=None):
         version = current.snapshot.visibility_version + 1
-        view = current._select([*(item.name for item in current.snapshot.tools), *names])
+        view = current._select(names, preparation=preparation)
         from .capabilities import _candidate_catalog_id
         return replace(view, snapshot=replace(view.snapshot, candidate_catalog_id=_candidate_catalog_id(view.snapshot),
             snapshot_id=f"cap-{current.snapshot.run_id}-v{version}",
             visibility_version=version, parent_snapshot_id=current.snapshot.snapshot_id))
+
+    def propose(self, call_id: str) -> CapabilityResolution | None:
+        staged = self._stage_revision(call_id)
+        return self._revision(*staged) if staged is not None else None
+
+    async def prepare_revision(self, call_id, signal):
+        staged = self._stage_revision(call_id)
+        if staged is None:
+            return None
+        current, names = staged
+        preparation = await current.prepare_metadata(signal)
+        return self._revision(current, names, preparation)
 
     def discard_pending(self, call_id: str | None = None) -> None:
         if call_id is None:
@@ -301,9 +317,10 @@ class ToolSearchTool:
         allowed = {
             risks[value] for value in cast(list[str], arguments.get("allowed_risk", []))
         }
-        current = view
-        authorized = {name: item for name, item in self.discovery.definitions.items()
-                      if current.authorization_denial(item, context) is None}
+        preparation = await view.prepare_metadata(context.signal)
+        current = self.discovery.view(context)
+        visible = {item.name for item in current.snapshot.tools}
+        authorized = {item.name: item for item in preparation.definitions if item.name not in preparation.denied}
         eligible = {
             definition.name: definition
             for definition in authorized.values()

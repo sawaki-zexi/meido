@@ -8,6 +8,8 @@ import pytest
 from backend.app import main
 from backend.app.agent_runtime.capabilities import CapabilityRegistry
 from backend.app.agent_runtime.loop import run_agent_loop
+from backend.app.agent_runtime.meido_provider import RequestContext
+from backend.app.agent_runtime.provider import CancellationToken
 from backend.app.agent_runtime.tools import AgentToolResult, ToolDefinition
 from backend.app.agent_runtime.types import UserMessage
 from backend.app.computer_use.tools import load_computer_tools
@@ -43,8 +45,30 @@ def fixtures(executed):
     return (PetActionTool(Pet(), 'r', authorized=lambda context: True), computer, Schedule())
 
 
+def windowed(model, tmp_path):
+    from backend.app.advanced_settings import AdvancedSettings
+    from backend.app.agent_runtime.context_provider import ContextWindowProvider
+    from backend.app.context_windows import ContextWindowStore
+    from backend.app.session_store import SessionStore
+    from backend.app.storage import initialize_databases
+
+    initialize_databases(tmp_path)
+    sessions = SessionStore(tmp_path / 'sessions.db')
+    sessions.open_role_session('r')
+    async def coverage(ids):
+        raise AssertionError('short fixture must not compact history')
+    return ContextWindowProvider(model, AdvancedSettings(maxTokens=1024, summaryTokenLimit=512),
+        ContextWindowStore(sessions.database_path), role_id='r', session_key='role:r', scope='owner',
+        authority='a', authorized=lambda: True, ensure_coverage=coverage)
+
+
+def directory(capabilities):
+    preparation = asyncio.run(capabilities.prepare_metadata(CancellationToken()))
+    return preparation.namespace_context(item.name for item in capabilities.current().snapshot.tools)
+
+
 @pytest.mark.parametrize('direct,query', [(False, '桌面窗口'), (False, 'select:computer_list_windows'), (True, None)])
-def test_visible_pet_and_discoverable_desktop_reach_real_http_and_execute(direct, query):
+def test_visible_pet_and_discoverable_desktop_reach_real_http_and_execute(tmp_path, direct, query):
     executed = []
     candidates = fixtures(executed)
     caps = CapabilityRegistry(candidates).resolve(role_id='r', session_key='role:r', run_id='contract',
@@ -86,8 +110,7 @@ def test_visible_pet_and_discoverable_desktop_reach_real_http_and_execute(direct
         return response('已完成模拟动作并读取窗口。')
 
     with model_server(respond) as (url, requests, errors):
-        model = provider(url)
-        model.namespace_context = lambda signal: main._runtime_namespace_context(caps, signal)
+        model = windowed(provider(url), tmp_path)
         async def run():
             return [event async for event in run_agent_loop(provider=model, model='m', system='',
                 messages=[UserMessage('挥手并查看桌面窗口')], capabilities=caps, max_turns=4)]
@@ -106,7 +129,7 @@ def test_directory_and_discovery_never_restore_disabled_revoked_or_external_tool
         deferred_tool_names=main._deferred_discovery_tools(),
         authorize_tool=lambda definition, context: definition.name == 'tool_search' or definition.name in allowed)
     allowed.remove('computer_list_windows')
-    prompt = main._runtime_namespace_context(caps)
+    prompt = directory(caps)
     assert 'schedule' in prompt
     assert 'pet_action' not in prompt and 'computer_list_windows' not in prompt
     async def run():
@@ -119,7 +142,7 @@ def test_directory_and_discovery_never_restore_disabled_revoked_or_external_tool
         enabled_tools={'tool_search', *allowed, 'computer_list_windows'}, discovery_enabled=True,
         deferred_tool_names=main._deferred_discovery_tools(), external_only=True)
     assert [tool['function']['name'] for tool in external.provider_schemas()] == ['tool_search']
-    assert main._runtime_namespace_context(external) == ''
+    assert directory(external) == ''
     assert executed == []
 
 
@@ -129,7 +152,6 @@ def test_actual_wire_guidance_is_conditional_and_minimal_keeps_search_route(mode
     from backend.app.agent_runtime.memory_write_tools import MemorizeTool, ForgetMemoryTool
     from backend.app.agent_runtime.spawn_tool import SpawnTool
     from backend.app.agent_runtime.discovery import ToolSearchTool
-    from backend.app.agent_runtime.provider import CancellationToken
     memory = SimpleNamespace(enabled=lambda: True)
     definitions = [MemoryRecallTool.definition, MemorizeTool(memory).definition, ForgetMemoryTool(memory).definition,
         SpawnTool.definition, ToolSearchTool.definition,
@@ -158,39 +180,29 @@ def test_actual_wire_guidance_is_conditional_and_minimal_keeps_search_route(mode
         return response('依据当前可见工具处理。')
     with model_server(respond) as (url, requests, errors):
         model = provider(url)
-        model.namespace_context = lambda signal: main._runtime_namespace_context(caps, signal)
+        context = RequestContext(namespace=directory(caps))
         if mode == 'minimal':
             model = model.minimal_provider()
+            context = RequestContext()
         schemas = [item.as_provider_schema() for item in definitions]
         messages = [UserMessage('当前问题')]
-        estimate_with_directory = model.estimate_request_tokens('', messages, schemas)
-        catalog = model.namespace_context
-        model.namespace_context = None
-        estimate_without_directory = model.estimate_request_tokens('', messages, schemas)
-        model.namespace_context = catalog
+        prepared = model.prepare_request('', messages, schemas, context=context)
+        estimate_with_directory = model.estimate_prepared(prepared).tokens
+        estimate_without_directory = model.estimate_prepared(model.prepare_request('', messages, schemas)).tokens
         if mode == 'business':
             assert estimate_with_directory > estimate_without_directory
         else:
             assert estimate_with_directory == estimate_without_directory
         async def run():
-            return [event async for event in model.stream_response(model='m', system='', messages=messages,
-                tools=schemas, signal=CancellationToken())]
+            return [event async for event in model.stream_prepared(prepared, system='', messages=messages,
+                signal=CancellationToken())]
         asyncio.run(run())
     assert not errors, errors
     assert len(requests) == 1
 
 
 def test_natural_reply_correction_omits_live_discovery_catalog_from_actual_http_request(tmp_path):
-    from backend.app.advanced_settings import AdvancedSettings
-    from backend.app.agent_runtime.context_provider import ContextWindowProvider
     from backend.app.agent_runtime.natural_reply import NaturalReplyProvider, reply_messages
-    from backend.app.context_windows import ContextWindowStore
-    from backend.app.session_store import SessionStore
-    from backend.app.storage import initialize_databases
-
-    initialize_databases(tmp_path)
-    sessions = SessionStore(tmp_path / 'sessions.db')
-    sessions.open_role_session('r')
     executed = []
     caps = CapabilityRegistry(fixtures(executed)).resolve(role_id='r', session_key='role:r', run_id='correction',
         discovery_enabled=True, deferred_tool_names=main._deferred_discovery_tools())
@@ -211,13 +223,7 @@ def test_natural_reply_correction_omits_live_discovery_catalog_from_actual_http_
             arguments={'finish': {'messages': ['保留原意的正式回复。']}}, finish='tool_calls')
 
     with model_server(respond) as (url, requests, errors):
-        model = provider(url, context=32768)
-        model.namespace_context = lambda signal: main._runtime_namespace_context(caps, signal)
-        async def coverage(ids):
-            raise AssertionError('short correction must not compact history')
-        budgeted = ContextWindowProvider(model, AdvancedSettings(maxTokens=1024, summaryTokenLimit=512),
-            ContextWindowStore(sessions.database_path), role_id='r', session_key='role:r', scope='owner',
-            authority='a', authorized=lambda: True, ensure_coverage=coverage)
+        budgeted = windowed(provider(url, context=32768), tmp_path)
         async def run():
             return [event async for event in run_agent_loop(provider=NaturalReplyProvider(budgeted),
                 model='m', system='', messages=[UserMessage('正常回复即可')], capabilities=caps, max_turns=4)]
@@ -240,7 +246,7 @@ def test_combined_directory_is_bounded_json_metadata_and_excludes_non_business_p
     tools += [MetadataTool('finish_fixture', exposure='hidden'), MetadataTool('private_disabled', exposure='deferred')]
     caps = CapabilityRegistry(tools).resolve(role_id='r', session_key='role:r', run_id='catalog', discovery_enabled=True,
         enabled_tools={'tool_search', 'finish_fixture', *(tool.definition.name for tool in tools[:-1])})
-    rendered = main._runtime_namespace_context(caps)
+    rendered = directory(caps)
     assert len(rendered.encode('utf-8')) <= 4096
     assert 'private_disabled' not in rendered and 'finish_fixture' not in rendered
     assert '名称未列出' in rendered

@@ -215,7 +215,9 @@ def test_every_protocol_prepares_real_images_schema_and_repaired_history_without
     assert estimate.tokens >= 4096
     messages[0] = UserMessage('picture', attachments=(image('eA==' * 10000),))
     assert provider.estimate_request_tokens('', messages, tools) == estimate.tokens
-    request = provider._input_request(provider._rich_messages('', messages), tools)
+    prepared = provider.prepare_request('', messages, tools)
+    request = provider._input_request(prepared.messages, prepared.tools,
+        configuration=prepared.configuration, max_tokens=prepared.max_tokens)
     assert 'archive' in str(request) and 'No result provided' in str(request)
     assert 'apiKey' not in request and 'test' not in request['_connection']
     assert request.get('_context_frames') == (1,)
@@ -251,8 +253,10 @@ def test_http_wire_uses_same_aliased_tools_and_multimodal_projection(monkeypatch
     messages = [UserMessage('read image', attachments=(AttachmentContent('img', 'image/png', image=ImageContent('image/png', 'eA==')),)),
         AssistantMessage(tool_calls=(ToolCall('call', 'archive.read', {}),)), UserMessage('continue')]
     tools = [{'type': 'function', 'function': {'name': 'archive.read', 'parameters': {'type': 'object'}}}]
-    provider.estimate_request('', messages, tools)
-    projected = provider._input_request(provider._rich_messages('', messages), tools)
+    prepared = provider.prepare_request('', messages, tools)
+    provider.estimate_prepared(prepared)
+    projected = provider._input_request(prepared.messages, prepared.tools,
+        configuration=prepared.configuration, max_tokens=prepared.max_tokens)
     asyncio.run(respond(provider, messages, tools))
     assert projected['messages'] == requests[0]['messages']
     assert projected['tools'] == requests[0]['tools']

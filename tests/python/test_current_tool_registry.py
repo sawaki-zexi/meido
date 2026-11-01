@@ -44,7 +44,9 @@ def test_turn_visibility_requires_search_but_new_turn_restores_old_failed_calls(
             schemas.append([item['function']['name'] for item in tools])
             step = len(schemas)
             if windowed and not historical and step == 1:
-                base.configuration = base.configuration.model_copy(update={'modelAutoCompactTokenLimit': 3000})
+                # Leave room for the configured retained turns and current
+                # namespace metadata after the first compaction.
+                base.configuration = base.configuration.model_copy(update={'modelAutoCompactTokenLimit': 8000})
             if historical:
                 blocks = (ModelToolCallBlock('restored', 'archive.read', {}),) if step == 1 else (ModelTextBlock('done'),)
             elif step < 3:
