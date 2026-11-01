@@ -34,6 +34,40 @@ def test_estimation_does_not_read_host_context(tmp_path):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize('capacity', [None, 16000])
+async def test_ordinary_input_is_prepared_and_measured_once(tmp_path, monkeypatch, capacity):
+    sessions, adapter, provider, windows, settings = setup_window(tmp_path)
+    provider.configuration = provider.configuration.model_copy(update={'contextWindowTokens': capacity})
+    prepared, measured = [], []
+    prepare, estimate, stream = provider.prepare_request, provider.estimate_prepared, provider.stream_prepared
+    dispatched = False
+
+    def preparing(*args, **kwargs):
+        request = prepare(*args, **kwargs)
+        prepared.append(request)
+        return request
+
+    def measuring(request):
+        if not dispatched:
+            measured.append(request)
+        return estimate(request)
+
+    def streaming(*args, **kwargs):
+        nonlocal dispatched
+        dispatched = True
+        return stream(*args, **kwargs)
+
+    monkeypatch.setattr(provider, 'prepare_request', preparing)
+    monkeypatch.setattr(provider, 'estimate_prepared', measuring)
+    monkeypatch.setattr(provider, 'stream_prepared', streaming)
+    wrapper, _ = await execute(provider, windows, settings, [UserMessage('短输入')])
+    assert len(prepared) == len(measured) == 1
+    assert measured[0] is prepared[0]
+    assert wrapper.compactions == 0 and len(adapter.calls) == 1
+    assert adapter.calls[0] == (prepared[0].messages, prepared[0].tools, prepared[0].max_tokens)
+
+
+@pytest.mark.anyio
 async def test_compaction_starts_at_configured_retention(tmp_path):
     sessions, adapter, provider, windows, settings = setup_window(tmp_path)
     settings = settings.model_copy(update={'compactionRetainedTurns': 2, 'contextTargetRatio': .3})
@@ -325,6 +359,13 @@ async def test_commit_wait_keeps_validated_request_and_visibility_but_not_execut
         authorized=lambda: True, ensure_coverage=coverage)
     wrapper.bind_capabilities(caps)
     entered, release = threading.Event(), threading.Event()
+    prepared = []
+    prepare = base.prepare_request
+    def record_prepared(*args, **kwargs):
+        request = prepare(*args, **kwargs)
+        prepared.append(request)
+        return request
+    monkeypatch.setattr(base, 'prepare_request', record_prepared)
     commit = windows.commit
     def blocked_commit(*args, **kwargs):
         entered.set()
@@ -348,7 +389,7 @@ async def test_commit_wait_keeps_validated_request_and_visibility_but_not_execut
     task = asyncio.create_task(collect())
     try:
         assert await asyncio.to_thread(entered.wait, 2)
-        validated = wrapper.prepared_request
+        validated = prepared[-1]
         estimate = base.estimate_prepared(validated)
         replacement = Tool('current_tool', exposure='direct', value='new executor', schema={
             'type': 'object', 'properties': {'new': {'type': 'string'}}, 'required': ['new']})

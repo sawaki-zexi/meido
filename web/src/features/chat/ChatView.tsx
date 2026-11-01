@@ -24,10 +24,9 @@ import { ChatTypingSparkles } from './ChatTypingSparkles';
 import { ComposerTools } from './ComposerTools';
 import { useChatContextStatus } from './useChatContextStatus';
 import type { ToolProgressState } from './toolProgress';
-import type { ChatPhase } from '../../api/stream';
 import "./chat-presentation.css";
 
-function MessageItem({ message, role, highlighted, onRegenerate, progress, stopping, phase }: { message: Message; role: Role; highlighted: boolean; stopping?: boolean; phase?: ChatPhase | null; progress?: ToolProgressState | null; onRegenerate: (selection: GenerationSelection) => void }) {
+function MessageItem({ message, role, highlighted, onRegenerate, progress, stopping }: { message: Message; role: Role; highlighted: boolean; stopping?: boolean; progress?: ToolProgressState | null; onRegenerate: (selection: GenerationSelection) => void }) {
   const mine = message.role === "user";
   const streaming = message.status === "streaming";
   const failed = message.status === "failed";
@@ -40,19 +39,20 @@ function MessageItem({ message, role, highlighted, onRegenerate, progress, stopp
     : [];
   const generationAttempts = Array.isArray(message.metadata?.generationAttemptIds)
     ? message.metadata.generationAttemptIds.filter((item): item is string => typeof item === 'string' && Boolean(item)) : [];
-  const hasProcess = !mine && (Boolean(phase) || readProcess(message.metadata?.process).length > 0 || Boolean(message.metadata?.streamThinking) || Boolean(progress?.calls.length));
+  const process = readProcess(message.metadata?.process);
+  const hasThinking = !mine && (Boolean(message.metadata?.streamThinking) || process.at(-1)?.type === 'thinking');
+  const hasProcess = !mine && (process.length > 0 || Boolean(message.metadata?.streamThinking) || Boolean(progress?.calls.length));
   return <li ref={ref} className={`message ${message.role}${failed ? " failed" : ""}${highlighted ? " source-highlight" : ""}`} aria-busy={streaming || undefined}>
     {!mine && <Avatar id={role.id} name={role.name} size="sm" avatarUrl={role.avatarUrl} />}
     <div className="message-body">
       <div className="message-heading">
         <strong>{mine ? "我" : role.name}</strong>
-        {streaming && <span className="message-status streaming">生成中</span>}
         {failed && <span className={`message-status ${stopped ? "stopped" : "failed"}`}>{stopped ? "已停止" : "未完成"}</span>}
         {highlighted && <span className="source-marker">记忆来源</span>}
       </div>
       {(message.content || hasProcess || attachments.length === 0) && <div className="bubble">
-        {!mine && <MessageProcess message={message} progress={progress} stopping={stopping} phase={phase} />}
-        {streaming && !message.content && !hasProcess && <span className="chat-pending" role="status" aria-label="正在回复"><span className="chat-stream-cursor" aria-hidden="true" /></span>}
+        {!mine && <MessageProcess message={message} progress={progress} stopping={stopping} />}
+        {streaming && !message.content && !hasThinking && <span className="chat-pending" role="status" aria-label="正在回复"><span className="chat-stream-cursor" aria-hidden="true" /></span>}
         <div className="reply-content">
           {message.content && <MessageMarkdown content={message.content} />}
           {streaming && message.content && <span className="chat-stream-cursor" aria-hidden="true" />}
@@ -75,10 +75,10 @@ function MessageItem({ message, role, highlighted, onRegenerate, progress, stopp
 }
 
 /** Message box shared by the conversation and the welcome screen, so home always looks like a chat. */
-function Composer({ roleId, sessionKey, sessionSnapshot, contextRevision = '', placeholder, disabled, sending, stopping, onSend, onStop }: { roleId?: string; sessionKey?: string; sessionSnapshot?: object; contextRevision?: string; placeholder: string; disabled?: boolean; sending?: boolean; stopping?: boolean; onSend: (text: string, attachmentIds: string[]) => Promise<boolean>; onStop?: () => void }) {
+function Composer({ roleId, sessionKey, sessionSnapshot, contextRevision = '', settingsRevision = '', placeholder, disabled, sending, stopping, onSend, onStop }: { roleId?: string; sessionKey?: string; sessionSnapshot?: object; contextRevision?: string; settingsRevision?: string; placeholder: string; disabled?: boolean; sending?: boolean; stopping?: boolean; onSend: (text: string, attachmentIds: string[]) => Promise<boolean>; onStop?: () => void }) {
   const [configuration, setConfiguration] = useState<ModelConfiguration | null>(null);
   const inspection = useChatContextStatus({ roleId, sessionKey, sending, enabled: !disabled,
-    revision: contextRevision, modelKey: JSON.stringify(configuration), sessionSnapshot });
+    revision: contextRevision, modelKey: JSON.stringify([configuration, settingsRevision]), sessionSnapshot });
   const [draft, setDraft] = useState("");
   const [unsentText, setUnsentText] = useState("");
   const { attachments, uploading, dragging, setDragging, error, setError, upload, remove, clear, restore } = useChatAttachments(roleId, Boolean(disabled), Boolean(sending));
@@ -209,14 +209,15 @@ export function ChatView({ role, chat, settingsVersion = 0, highlightedId = null
     <div className={`chat-scroll${background ? " has-role-background" : ""}`} style={background ? { backgroundImage: `linear-gradient(rgba(255,255,255,.2),rgba(255,255,255,.2)), url(${JSON.stringify(background)})` } : undefined} ref={scrollRef} onScroll={onScroll}>
       {presentation.illustration && <figure className="role-mood-portrait" aria-label={`当前心情：${presentation.mood}`}><img src={presentation.illustration.url} alt={`${role.name} · ${presentation.mood}`} /></figure>}
       {chat.messages.length
-        ? <ol ref={listRef} className="message-list" aria-live="polite">{chat.messages.map((message) => <MessageItem key={message.id} message={message} role={role} highlighted={message.id === highlightedId} stopping={chat.stopping} phase={chat.sending && message.id === chat.messages.filter(item => item.role === "assistant").at(-1)?.id ? chat.phase : null} progress={message.status === "streaming" && chat.toolProgress?.roleId === role.id && chat.toolProgress.sessionKey === chat.session?.sessionKey ? chat.toolProgress : null}
+        ? <ol ref={listRef} className="message-list" aria-live="polite">{chat.messages.map((message) => <MessageItem key={message.id} message={message} role={role} highlighted={message.id === highlightedId} stopping={chat.stopping} progress={message.status === "streaming" && chat.toolProgress?.roleId === role.id && chat.toolProgress.sessionKey === chat.session?.sessionKey ? chat.toolProgress : null}
           onRegenerate={(selection) => { setSelectedGenerationImage(selection); setGenerationRoleId(role.id); }} />)}</ol>
         : <Placeholder>发送第一条消息开始对话。</Placeholder>}
     </div>
     <div className="composer-dock">
       {chat.error && <Notice onDismiss={() => chat.setError("")}>{chat.error}</Notice>}
       <Composer key={role.id} roleId={role.id} sessionKey={chat.session?.sessionKey} sessionSnapshot={chat.session ?? undefined}
-        contextRevision={JSON.stringify([role.updatedAt, settingsVersion, chat.messages.map(message => [message.id, message.status, message.sequence])])}
+        settingsRevision={JSON.stringify([role.updatedAt, settingsVersion])}
+        contextRevision={JSON.stringify(chat.messages.map(message => [message.id, message.status, message.sequence]))}
         placeholder={`对${role.name}说点什么…`} sending={chat.sending} stopping={chat.stopping} disabled={chat.opening} onSend={chat.send} onStop={chat.stop} />
     </div>
     {generationRoleId === role.id && <GenerationDrawer key={role.id} role={role} onClose={() => setGenerationRoleId(null)} onGenerated={chat.refresh} selectedImage={selectedGenerationImage}

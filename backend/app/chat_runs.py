@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections import OrderedDict, deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from .agent_runtime.progress import utf8_prefix
-from .agent_runtime.runtime import RuntimeManager
-from .models import AgentRun
+from .agent_runtime.runtime import RuntimeManager, complete_despite_cancellation
+from .models import AgentRun, Message
 from .session_store import SessionStore
 
 MAX_EVENTS = 128
@@ -23,6 +24,8 @@ MAX_TOOL_CALLS = 32
 MAX_ACTIVE_RUNS = 128
 MAX_FINISHED_RUNS = 16
 TERMINAL_EVENTS = {'assistant_completed', 'assistant_failed'}
+OWNER_FAILURE = '回复执行或收尾失败，部分内容可能未保存，请重新检查'
+logger = logging.getLogger(__name__)
 
 
 def encode_event(kind: str, payload: dict[str, Any]) -> str:
@@ -40,6 +43,9 @@ class ChatRun:
         self.cancel_requested = False
         self.task: asyncio.Task[None] | None = None
         self.invalidate: Callable[[], None] | None = None
+        # Read the owner's current placeholder only when recovering a view.
+        # The owner already accumulates text; do not keep another token buffer.
+        self.current_message: Callable[[], Message | None] | None = None
         self.calls: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self.events: deque[tuple[int, str, int]] = deque()
         self.event_bytes = 0
@@ -85,7 +91,9 @@ class ChatRun:
 
     def snapshot(self, persisted: AgentRun | None = None, process=None) -> dict[str, Any]:
         """Capture owner state on its event loop; never perform database I/O."""
-        status = persisted.status if persisted is not None else self.run.status
+        # Runtime may have committed success before desktop delivery/cleanup
+        # fails. The completed owner's outcome governs this public task.
+        status = self.run.status if self.finished or persisted is None else persisted.status
         return {'runId': self.run.runId, 'roleId': self.run.roleId,
             'sessionKey': self.run.sessionKey, 'sequence': self.sequence,
             # Runtime can finish before natural delivery and capability cleanup.
@@ -93,7 +101,8 @@ class ChatRun:
             'phase': self.phase, 'stopping': self.cancel_requested,
             **({'process': process} if process is not None else {}),
             'tools': [dict(call) for call in self.calls.values()],
-            'error': self.terminal[1].get('error') if self.terminal else None}
+            'error': self.terminal[1].get('error') if self.terminal else (
+                OWNER_FAILURE if self.finished and self.run.error else None)}
 
     async def subscribe(self, sessions: SessionStore, after: int | None = None) -> AsyncIterator[str]:
         cursor = after
@@ -138,12 +147,18 @@ class ChatRunService:
     def read_fence(self, role_id: str, run_id: str | None = None):
         """Validate a worker read without making producers wait for readers.
 
-        The existing latest accepted ID also detects a run that starts and ends
-        during an otherwise idle read; no second sequence counter is needed.
+        The retained role identity detects a run that starts and ends during an
+        idle read, without invalidation from unrelated roles while it is known.
         """
         active = self.active(role_id)
         exact = self.runs.get(run_id) if run_id is not None else None
-        return (next(reversed(self.runs), None), active, active.sequence if active else None,
+        latest = next((turn.run.runId for turn in reversed(self.runs.values()) if turn.run.roleId == role_id), None)
+        if latest is None:
+            # Finished owners are bounded. With no retained role identity, keep
+            # the original conservative fence so a newly finished/evicted run
+            # cannot disappear between the two reads.
+            latest = next(reversed(self.runs), None)
+        return (latest, active, active.sequence if active else None,
             exact, exact.sequence if exact else None)
 
     def start(self, run: AgentRun, execute: Callable[[ChatRun], Awaitable[None]],
@@ -153,32 +168,58 @@ class ChatRunService:
 
         async def runner() -> None:
             turn.started = True
+            failed = False
             try:
                 if not self.runtime.attach_current_task(run.runId) or turn.cancel_requested:
                     raise asyncio.CancelledError
                 await execute(turn)
             except asyncio.CancelledError:
                 self.runtime.cancel_run(run.runId, interrupt=False)
+            except Exception as error:
+                failed = True
+                logger.error('Desktop execution failed run=%s type=%s', run.runId, type(error).__name__)
             finally:
-                # Stop is idempotent and never cancels an owner twice. Shielded
-                # join also protects cleanup from a cancelled HTTP Stop waiter.
-                await finish(turn)
-                persisted = await asyncio.to_thread(self.sessions.get_run, run.runId)
-                if persisted is not None:
-                    turn.run = persisted.model_copy(update={'modelSnapshot': {}})
-                turn.finished = True
-                turn.phase = 'finished'
-                if turn.terminal is not None:
-                    turn.emit(*turn.terminal)
-                    turn.terminal = (turn.terminal[0], {'error': turn.terminal[1].get('error')})
-                else:
-                    turn.emit('run_snapshot', turn.snapshot())
-                finished = [key for key, value in self.runs.items() if value.finished]
-                for key in finished[:-MAX_FINISHED_RUNS]:
-                    self.runs.pop(key, None)
+                await complete_despite_cancellation(self._finish(turn, finish, failed=failed))
 
         turn.task = asyncio.create_task(runner(), name=f'desktop-chat:{run.runId}')
         return turn
+
+    async def _finish(self, turn: ChatRun, finish, *, failed: bool) -> None:
+        """The sole terminal publisher, including failed persistence or final reads."""
+        try:
+            await finish(turn)
+        except BaseException as error:
+            failed = True
+            logger.error('Desktop cleanup failed run=%s type=%s', turn.run.runId, type(error).__name__)
+        try:
+            persisted = await asyncio.to_thread(self.sessions.get_run, turn.run.runId)
+            if persisted is not None:
+                turn.run = persisted.model_copy(update={'modelSnapshot': {}})
+        except Exception as error:
+            failed = True
+            logger.error('Desktop terminal read failed run=%s type=%s', turn.run.runId, type(error).__name__)
+        finally:
+            turn.current_message = None
+            if failed:
+                turn.run = turn.run.model_copy(update={'status': 'failed', 'error': OWNER_FAILURE})
+                try:
+                    await asyncio.to_thread(self.sessions.record_run_error, turn.run.runId, OWNER_FAILURE)
+                except Exception as error:
+                    # A broken database cannot guarantee a new durable error.
+                    # Keep the live failure explicit; no hidden retry or replay.
+                    logger.error('Desktop failure could not be saved run=%s type=%s', turn.run.runId, type(error).__name__)
+                if turn.terminal is not None:
+                    turn.terminal = ('assistant_failed', {**turn.terminal[1], 'error': OWNER_FAILURE})
+            turn.finished = True
+            turn.phase = 'finished'
+            if turn.terminal is not None:
+                turn.emit(*turn.terminal)
+                turn.terminal = (turn.terminal[0], {'error': turn.terminal[1].get('error')})
+            else:
+                turn.emit('run_snapshot', turn.snapshot())
+            finished = [key for key, value in self.runs.items() if value.finished]
+            for key in finished[:-MAX_FINISHED_RUNS]:
+                self.runs.pop(key, None)
 
     async def stop(self, run_id: str) -> bool:
         turn = self.runs.get(run_id)
@@ -205,5 +246,8 @@ class ChatRunService:
             return turn.snapshot(run, process)
         # Restart recovers unfinished DB rows once; it never reconstructs tasks.
         return {'runId': run.runId, 'roleId': run.roleId, 'sessionKey': run.sessionKey,
-            'sequence': 0, 'status': run.status, 'phase': 'finished', 'stopping': False,
-            'tools': [], 'error': '回复未完成；已保存的历史仍然保留' if run.error else None}
+            'sequence': 0, 'status': 'failed' if run.error and run.status in {
+                'completed', 'cancelled', 'failed', 'max_turns'} else run.status,
+            'phase': 'finished', 'stopping': False, 'tools': [],
+            'error': OWNER_FAILURE if run.error == OWNER_FAILURE else (
+                '回复未完成；已保存的历史仍然保留' if run.error else None)}

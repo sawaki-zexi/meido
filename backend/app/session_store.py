@@ -1384,6 +1384,13 @@ class SessionStore:
             row = connection.execute("SELECT run_id, role_id, session_key, status, model_configuration_id, model_snapshot_json, turn_count, started_at, ended_at, cancel_reason, error FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
         return self._run(row)
 
+    def record_run_error(self, run_id: str, error: str) -> None:
+        """Record an owner's later failure without rewriting completed runtime facts."""
+        with sqlite3.connect(self.database_path) as connection:
+            result = connection.execute('UPDATE agent_runs SET error = ? WHERE run_id = ?', (error, run_id))
+            if result.rowcount != 1:
+                raise KeyError(run_id)
+
     def finish_run(
         self,
         run_id: str,

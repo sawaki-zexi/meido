@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, errorMessage } from '../../api/client';
-import type { ContextUsage } from './ComposerTools';
+import type { ContextUsage } from './chatContextState';
 
 export type ContextStatus = {
   roleId: string; sessionKey: string; status: 'ready' | 'busy' | 'unavailable'; reason: string;
@@ -14,8 +14,9 @@ export type ContextInspection = { status: ContextStatus | null; loading: boolean
 export function useChatContextStatus({ roleId, sessionKey, sending, enabled, revision, modelKey, sessionSnapshot }: {
   roleId?: string; sessionKey?: string; sending?: boolean; enabled: boolean; revision: string; modelKey: string; sessionSnapshot?: object;
 }): ContextInspection {
-  const [result, setResult] = useState<{ key: string; status: ContextStatus | null; loading: boolean; error: string }>({ key: '', status: null, loading: false, error: '' });
-  const key = JSON.stringify([roleId, sessionKey, revision, modelKey]);
+  const [result, setResult] = useState<{ key: string; identity: string; status: ContextStatus | null; loading: boolean; error: string }>({ key: '', identity: '', status: null, loading: false, error: '' });
+  const identity = JSON.stringify([roleId, sessionKey, modelKey]);
+  const key = JSON.stringify([identity, revision]);
   const pending = useRef<AbortController | null>(null);
   const retried = useRef(false);
   const lastSnapshot = useRef(sessionSnapshot);
@@ -23,19 +24,29 @@ export function useChatContextStatus({ roleId, sessionKey, sending, enabled, rev
     if (!roleId || !sessionKey || !enabled || sending || pending.current) return;
     const controller = new AbortController();
     pending.current = controller;
-    setResult({ key, status: null, loading: true, error: '' });
+    setResult(previous => ({ key, identity, status: previous.identity === identity ? previous.status : null, loading: true, error: '' }));
     void api<ContextStatus>(`/api/roles/${encodeURIComponent(roleId)}/context-status`, { signal: controller.signal })
       .then(status => {
         if (controller.signal.aborted) return;
         if (status.roleId !== roleId || status.sessionKey !== sessionKey) throw new Error('上下文来源已变化，请重新检查');
-        setResult({ key, status, loading: false, error: '' });
+        setResult(previous => {
+          const saved = previous.identity === identity ? previous.status : null;
+          // Shiori retains busy usage only for the same saved conversation.
+          // The composer model identity also clears it before a new read.
+          if (status.status === 'busy' && status.inputTokens === null && saved?.inputTokens != null) {
+            const { inputTokens, capacity, source, configurationId, model } = saved;
+            return { key, identity, status: { ...status, inputTokens, capacity, source, configurationId, model }, loading: false, error: '' };
+          }
+          return { key, identity, status, loading: false, error: '' };
+        });
       }).catch(cause => {
-        if (!controller.signal.aborted) setResult({ key, status: null, loading: false, error: errorMessage(cause, '读取当前上下文失败') });
+        if (!controller.signal.aborted) setResult({ key, identity, status: null, loading: false, error: errorMessage(cause, '读取当前上下文失败') });
       }).finally(() => { if (pending.current === controller) pending.current = null; });
-  }, [enabled, key, roleId, sending, sessionKey]);
+  }, [enabled, identity, key, roleId, sending, sessionKey]);
 
   useEffect(() => {
     retried.current = false;
+    setResult(previous => previous.identity === identity ? previous : { key, identity, status: null, loading: false, error: '' });
     refresh();
     return () => { pending.current?.abort(); pending.current = null; };
   }, [refresh]);
@@ -66,7 +77,8 @@ export function useChatContextStatus({ roleId, sessionKey, sending, enabled, rev
     if (result.key === key && result.status?.status === 'busy') refresh();
   }, [sessionSnapshot, key, result.key, result.status?.status, refresh]);
 
-  if (sending) return { status: null, loading: false, busy: true, error: '正在回复或整理上下文，请稍后重试', refresh };
-  const current = result.key === key ? result : { status: null, loading: enabled, error: '' };
+  const saved = result.identity === identity ? result.status : null;
+  if (sending) return { status: saved, loading: false, busy: true, error: '正在回复或整理上下文', refresh };
+  const current = result.key === key ? result : { status: saved, loading: enabled, error: '' };
   return { ...current, busy: current.status?.status === 'busy', refresh };
 }

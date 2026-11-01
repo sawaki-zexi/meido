@@ -212,6 +212,7 @@ class MeidoProvider:
         self.context_safety_margin = context_safety_margin
         self._request_time = datetime.now().astimezone().isoformat(timespec="seconds")
         self.request_guard = None
+        self.snapshot_guard = None
         # One-off providers (including spawn) get a temporary store. The host
         # explicitly shares a bounded store only for ordinary conversation views.
         self.usage_anchors = usage_anchors if usage_anchors is not None else UsageAnchors()
@@ -231,6 +232,15 @@ class MeidoProvider:
         if self.request_guard is not None:
             self.request_guard()
 
+    async def _check_boundary(self, signal):
+        """Validate saved input at request boundaries, never per SSE fragment."""
+        def check():
+            self._check_request(signal)
+            if self.snapshot_guard is not None:
+                self.snapshot_guard()
+        await asyncio.to_thread(check)
+        signal.raise_if_cancelled()
+
     def minimal_provider(self):
         """Keep identity/source checks but omit optional memory, skills and catalogs."""
         provider = MeidoProvider(self.adapter, self.role, self.configuration,
@@ -238,6 +248,7 @@ class MeidoProvider:
             context_safety_margin=self.context_safety_margin, required_context=self.required_context,
             usage_anchors=self.usage_anchors, usage_context=self.usage_context)
         provider.request_guard = self.request_guard
+        provider.snapshot_guard = self.snapshot_guard
         provider._request_time = self._request_time
         return provider
 
@@ -361,10 +372,12 @@ class MeidoProvider:
                 options: dict[str, object] = {"cancel_check": lambda: self._check_request(signal)} if accepts_cancel_check else {}
                 if max_tokens is not None and "max_tokens" in inspect.signature(rich).parameters:
                     options["max_tokens"] = max_tokens
-                self._check_request(signal)
+                await self._check_boundary(signal)
                 source = rich(runtime_messages, configuration, request_tools, **options)
                 async for event in source:
                     signal.raise_if_cancelled()
+                    if not accepts_cancel_check:
+                        await asyncio.to_thread(self._check_request, signal)
                     if isinstance(event, RichTextDelta):
                         content += event.text
                         yield TextDeltaEvent(event.text)
@@ -378,7 +391,7 @@ class MeidoProvider:
                         yield ProviderErrorEvent(event.error)
                         return
                     elif isinstance(event, ModelStreamDone):
-                        self._check_request(signal)
+                        await self._check_boundary(signal)
                         final_content = "".join(
                             block.text for block in event.message.content if isinstance(block, RichTextBlock)
                         )
@@ -432,6 +445,10 @@ class MeidoProvider:
                             timestamp=event.message.timestamp or event.message.metadata.timestamp,
                         ))
                         return
+                    if accepts_cancel_check:
+                        # A buffered network read can contain many events; let
+                        # HTTP/Stop tasks progress even without another socket wait.
+                        await asyncio.sleep(0)
             except Exception as error:
                 if isinstance(error, RuntimeError) and str(error) == "agent run cancelled":
                     raise
@@ -451,10 +468,10 @@ class MeidoProvider:
             try:
                 options = ({'max_tokens': prepared.max_tokens} if prepared.max_tokens is not None
                            and 'max_tokens' in inspect.signature(structured).parameters else {})
-                self._check_request(signal)
+                await self._check_boundary(signal)
                 source = structured(runtime_messages, prepared.configuration, prepared.tools, **options)
                 async for event in source:
-                    signal.raise_if_cancelled()
+                    await asyncio.to_thread(self._check_request, signal)
                     if isinstance(event, ModelTextDelta):
                         content += event.text
                         yield TextDeltaEvent(event.text)
@@ -467,6 +484,7 @@ class MeidoProvider:
                     elif isinstance(event, ModelStreamError):
                         yield ProviderErrorEvent(event.error)
                         return
+                await self._check_boundary(signal)
                 yield AssistantDoneEvent(AssistantMessage(
                     content=content,
                     tool_calls=tuple(tool_calls),
@@ -691,13 +709,14 @@ class MeidoProvider:
         options = {'memory_context': self._combined_memory_context(tool_prompt=tool_prompt, request_context=request_context)} if accepts_memory else {}
         if prepared.max_tokens is not None and 'max_tokens' in inspect.signature(stream_reply).parameters:
             options['max_tokens'] = prepared.max_tokens
-        self._check_request(signal)
+        await self._check_boundary(signal)
         source: object = stream_reply(role, history, prepared.configuration, **options)
         content = ""
         async for delta in cast(AsyncIterator[str], source):
-            signal.raise_if_cancelled()
+            await asyncio.to_thread(self._check_request, signal)
             content += delta
             yield TextDeltaEvent(delta)
+        await self._check_boundary(signal)
         yield AssistantDoneEvent(AssistantMessage(content=content))
 
     async def _stream_multimodal(self, messages: Sequence[object], signal: CancellationToken, prepared) -> AsyncIterator[ProviderEvent]:
@@ -715,12 +734,13 @@ class MeidoProvider:
         try:
             options = ({'max_tokens': prepared.max_tokens} if prepared.max_tokens is not None
                        and 'max_tokens' in inspect.signature(self.adapter.stream_messages).parameters else {})
-            self._check_request(signal)
+            await self._check_boundary(signal)
             source = self.adapter.stream_messages(wire_messages, prepared.configuration, **options)
             async for delta in source:
-                signal.raise_if_cancelled()
+                await asyncio.to_thread(self._check_request, signal)
                 content += delta
                 yield TextDeltaEvent(delta)
+            await self._check_boundary(signal)
             yield AssistantDoneEvent(AssistantMessage(content=content))
         except Exception as error:
             yield ProviderErrorEvent(str(error))

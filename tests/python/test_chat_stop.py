@@ -110,7 +110,8 @@ def test_stop_desktop_reply_before_or_after_first_token(chat_server, monkeypatch
     assert [item["content"] for item in history] == ["第一句", "部分回复" if partial else "", "下一句", "后续回复"]
 
 
-def test_stop_waits_for_completed_run_cleanup_before_allowing_next_send(chat_server, monkeypatch):
+@pytest.mark.parametrize('cancel_again', [False, True])
+def test_stop_waits_for_completed_run_cleanup_before_allowing_next_send(chat_server, monkeypatch, cancel_again):
     import asyncio
 
     client, role, _ = chat_server
@@ -136,6 +137,10 @@ def test_stop_waits_for_completed_run_cleanup_before_allowing_next_send(chat_ser
             assert cleaning.wait(timeout=3)
             run_id = main.session_store.list_messages(f"role:{role.id}")[0].runId
             assert main.session_store.get_run(run_id).status == "completed"
+            if cancel_again:
+                owner = main._chat_runs().runs[run_id]
+                owner.task.get_loop().call_soon_threadsafe(owner.task.cancel)
+                owner.task.get_loop().call_soon_threadsafe(owner.task.cancel)
             stopping = pool.submit(client.post, f"/api/roles/{role.id}/runs/{run_id}/stop")
             with pytest.raises(TimeoutError):
                 stopping.result(timeout=0.15)

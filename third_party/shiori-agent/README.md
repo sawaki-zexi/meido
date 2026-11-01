@@ -1,6 +1,6 @@
 # Shiori-Agent attribution
 
-状态：当前。最后核验：2026-11-01。
+状态：当前。最后核验：2026-11-02。
 
 ## 桌面聊天任务归属（2026-11-01）
 
@@ -9,6 +9,12 @@
 `apps/backend/desktop_bridge/chat_service.py`：服务拥有 turn task、前驱等待保护、开始前取消及清理后发布终态。
 Meido 保留 RuntimeManager、SQLite 和 FastAPI/SSE；稳定接受标识、有界事件环与网页重订阅由 Meido 实现，不复制 JSONL bridge。
 Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。合同见[聊天运行生命周期](../../docs/reference/chat-run-lifecycle.md)。
+
+本轮 `backend/app/agent_runtime/runtime.py` 的 `complete_despite_cancellation` 及其桌面收尾调用
+适配固定提交 `c14152ed225954a2a50da775075fe64dbf7b8b50` 的
+[`apps/backend/desktop_bridge/chat_turn_state.py`](https://github.com/YinFengWindy/Shiori-Agent/blob/c14152ed225954a2a50da775075fe64dbf7b8b50/apps/backend/desktop_bridge/chat_turn_state.py)
+同名 helper：重复取消仍等待已开始的所属清理，不建立脱离所有者的任务队列。
+Copyright (c) 2026 YinFengWindy，沿用同一 [MIT LICENSE](LICENSE)。
 
 ## Herdr 现有 session 代理控制（2026-10-30）
 
@@ -39,9 +45,18 @@ Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。
 `apps/backend/agent/prompting/{usage_anchor,input_budget,token_estimate,assembler}.py`、
 `apps/backend/agent/provider.py` 和 `apps/backend/core/roles/model_runtime.py`：
 actual / anchor_delta / local、有界 64 上下文 LRU、最新请求响应归属、显式宿主帧与辅助请求隔离。
-`ComposerTools.tsx` 沿已有上下文详情增加同版 `chatContextState.ts` 的锚点估算来源。
+前端的计量来源最初沿用同版 `chatContextState.ts`；当前简短提示的展示来源见下节。
 Meido 使用原生协议 preparation、显式 Provider 所有权和既有冻结授权视图，不复制上游宿主或持久累计账单。
 合同与差异见[输入用量校准](../../docs/reference/input-usage-calibration.md)。
+Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。
+
+## 当前上下文圆环展示（2026-11-01）
+
+`web/src/features/chat/{ChatContextRing,chatContextState,useChatContextStatus}.tsx/ts` 的细环、
+两行提示、用量格式和忙碌保留行为适配固定提交 `c14152ed225954a2a50da775075fe64dbf7b8b50` 的
+`apps/desktop/renderer/src/chat/{ChatContextRing,chatContextState,useChatComposerPopover,chatComposerPopoverLayout}.tsx/ts`。
+Meido 复用既有只读 HTTP 接口，额外按角色／会话／模型隔离显示值；不引入上游点击压缩操作。
+等待展示沿同版 `ChatHeader`、`ChatMessageBubbleBody` 保留星光和空回复光标，移除额外内部阶段标签。
 Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。
 
 ## 工具可见性与调用指引（2026-10-30，后续核验）

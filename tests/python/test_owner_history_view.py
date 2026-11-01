@@ -23,6 +23,39 @@ def private(channels, chat="owner"):
     return channels.ensure_channel_thread("r1", "qq", "qq", chat, "private")
 
 
+def test_empty_frozen_grants_skip_queries_without_accepting_later_authority(tmp_path, monkeypatch):
+    sessions, channels, _, _ = setup_history(tmp_path)
+    allowed = sessions.append_message('role:r1', 'user', '本角色历史')
+    checks, connections = [], []
+    enabled = [True]
+
+    def authorized():
+        checks.append(enabled[0])
+        return enabled[0]
+
+    view = ConversationHistoryView(channels, role_id='r1', authorized=authorized)
+    assert view.snapshot()['grants'] == {}
+    thread = private(channels)
+    pair(channels, thread)
+    sessions.append_message(thread.session_key, 'user', '后来新增授权的秘密')
+    connect = channels._connect
+
+    def observed():
+        connections.append(True)
+        return connect()
+
+    monkeypatch.setattr(channels, '_connect', observed)
+    for _ in range(1200):
+        view.require_current()
+    assert len(checks) == 1200
+    assert connections == [], 'empty frozen grants have no current grants to compare on stream callbacks'
+    assert view.snapshot()['grants'] == {}
+    assert [message.id for message in view.read()] == [allowed.id]
+    enabled[0] = False
+    with pytest.raises(PermissionError, match='历史来源已失效'):
+        view.require_current()
+
+
 def test_frozen_view_preserves_turn_groups_and_excludes_future_and_pre_pairing_replies(tmp_path):
     sessions, channels, _, _ = setup_history(tmp_path)
     thread = private(channels)

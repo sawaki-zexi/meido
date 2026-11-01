@@ -27,7 +27,7 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 import httpx
 
 from .agent_runtime.tools import AgentTool
-from .chat_runs import ChatRun, ChatRunService, encode_event
+from .chat_runs import ChatRun, ChatRunService, OWNER_FAILURE, encode_event, complete_despite_cancellation
 
 from .agent_runtime.natural_reply import (NaturalReplyProvider, NATURAL_CHAT_PROMPT, ReplyPlan,
     natural_chat_enabled, reply_messages, private_reply, wait_between_messages)
@@ -229,21 +229,30 @@ def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_
     authority = json.dumps(authority_data, sort_keys=True)
     if history is not None:
         authority += history.authority
-        provider.request_guard = history.require_snapshot_current
+    def require_current():
+        if (store.get(role_id) is None or role_id in _channel_roles_deleting
+                or session_key.startswith('thread:') and source is None
+                or source is not None and source.authorization_denial(multichannel_store) is not None):
+            raise PermissionError('对话来源许可已变化，请重新开始回复')
+        if history is not None:
+            history.require_current()
+    provider.request_guard = require_current
+    provider.snapshot_guard = history.require_snapshot_current if history is not None else None
     def authorized():
-        return (store.get(role_id) is not None and role_id not in _channel_roles_deleting
-                and (not session_key.startswith('thread:') or source is not None)
-                and (source is None or source.authorization_denial(multichannel_store) is None)
-                and (history is None or history.authorized()))
+        try:
+            require_current()
+            return history is None or history.authorized()
+        except (PermissionError, KeyError):
+            return False
 
     async def covered(ids):
         from .memory_engine import MemoryCoverageRequest
-        if not authorized():
+        if not await asyncio.to_thread(authorized):
             return False
         sources = {session_key: ids}
         if history is not None:
             sources = {}
-            for message in history.read():
+            for message in await asyncio.to_thread(history.read):
                 if message.id in ids:
                     sources.setdefault(message.sessionKey, []).append(message.id)
         for source_session, source_ids in sources.items():
@@ -252,7 +261,7 @@ def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_
             proof = await _current_memory_engine().ensure_coverage(request)
             if proof.request != request or proof.status not in {'covered', 'not_required'}:
                 return False
-        return authorized()
+        return await asyncio.to_thread(authorized)
 
     def diagnostic(values):
         run = session_store.get_run(run_id)
@@ -7119,6 +7128,9 @@ async def stop_role_reply(role_id: str, run_id: str) -> SessionResponse:
     if not await _chat_runs().stop(run_id):
         raise HTTPException(status_code=409, detail="当前回复暂时无法停止，请刷新后重试")
     await computer_use.close_run(role_id, run_id)
+    run = await asyncio.to_thread(_desktop_run, role_id, run_id)
+    if _chat_runs().snapshot(run)['error'] == OWNER_FAILURE:
+        raise HTTPException(status_code=500, detail=OWNER_FAILURE)
     return await get_role_session(role_id)
 
 
@@ -7172,7 +7184,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
             raise HTTPException(status_code=404, detail="附件不存在或已失效")
         attachments.append(item)
     try:
-        role, session = session_manager.role_and_history(role_id)
+        role, session = session_manager.role_and_session(role_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
     configuration = model_configuration_store.get(role.modelConfigurationId)
@@ -7209,7 +7221,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
         run = AgentRun(
             runId=run_id,
             roleId=role_id,
-            sessionKey=session.session.sessionKey,
+            sessionKey=session.sessionKey,
             status="queued" if natural_chat_enabled(role) else "created",
             modelConfigurationId=configuration.id if configuration else None,
             modelSnapshot=model_snapshot,
@@ -7231,13 +7243,13 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
             if previous is not None:
                 raise ActiveRunError('previous desktop reply is still finishing')
             _, user_message, assistant_message = await runtime_manager.reserve_run(run, data.content, attachments=attachments, received_at=received_at,
-                on_accepting=lambda: _accept_owner_run(role_id, session.session.sessionKey, run_id))
+                on_accepting=lambda: _accept_owner_run(role_id, session.sessionKey, run_id))
         history.include_current(user_message.id)
     except BaseException as error:
         if reply_plan is not None:
             reply_plan.invalidate()
-            if _desktop_reply_plans.get(session.session.sessionKey) is reply_plan:
-                _desktop_reply_plans.pop(session.session.sessionKey, None)
+            if _desktop_reply_plans.get(session.sessionKey) is reply_plan:
+                _desktop_reply_plans.pop(session.sessionKey, None)
         if isinstance(error, (sqlite3.IntegrityError, ActiveRunError)):
             raise HTTPException(status_code=409, detail="该角色正在生成回复，请稍后再试") from error
         raise
@@ -7251,6 +7263,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
         first_content_at: float | None = None
         presentation_context_provider: ContextWindowProvider | None = None
         placeholder_id: str | None = assistant_message.id
+        placeholder = assistant_message
         final_message: Message | None = None
         final_sequence = ()
         natural_reply = natural_chat_enabled(role)
@@ -7270,12 +7283,19 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                 payload["runtimeSequence"] = runtime_sequence
             return payload
 
+        def current_message() -> Message | None:
+            if placeholder_id is None:
+                return None
+            return placeholder.model_copy(update={'content': content,
+                'metadata': {'runtimePlaceholder': True, 'streamThinking': thinking}})
+
         async def persist_runtime_message(event: MessageEndEvent) -> Message | None:
             nonlocal content, placeholder_id, final_message, final_sequence
             if isinstance(event.message, AssistantMessage):
                 if not event.message.tool_calls:
                     event = replace(event, message=replace(event.message, metadata={
                         **event.message.metadata,
+                        **({'streamThinking': thinking} if thinking and event.message.stop_reason not in {'stop', 'tool_use'} else {}),
                         'thinkingDurationMs': round(((first_content_at if first_content_at is not None else monotonic()) - turn_started_at) * 1000),
                         'auxiliaryUsageIncomplete': bool(presentation_context_provider and presentation_context_provider.summary_attempts),
                     }))
@@ -7293,11 +7313,12 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                         placeholder_id = None
                         runtime_manager.set_assistant_message(run_id, None)
                     session_store.append_agent_message(
-                        session.session.sessionKey,
+                        session.sessionKey,
                         event.message,
                         run_id=run_id,
                         status="completed" if event.message.stop_reason == "tool_use" else "failed",
                     )
+                    turn.current_message = None
                     return None
                 if placeholder_id is not None:
                     final_message = session_store.update_message(
@@ -7311,15 +7332,16 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                     )
                 else:
                     final_message = session_store.append_agent_message(
-                        session.session.sessionKey,
+                        session.sessionKey,
                         event.message,
                         run_id=run_id,
                         status="streaming",
                     )[0]
+                turn.current_message = None
                 return final_message
             elif isinstance(event.message, ToolResultMessage):
                 return session_store.append_agent_message(
-                    session.session.sessionKey,
+                    session.sessionKey,
                     event.message,
                     run_id=run_id,
                     status="completed",
@@ -7338,13 +7360,13 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                             and store.get(role_id) is not None and role_id not in _channel_roles_deleting)
                 turn.set_phase('preparing')
                 # The service owns preparation independently of subscribers.
-                context_messages = session_store.context_messages(session.session.sessionKey)
+                context_messages = session_store.context_messages(session.sessionKey)
                 try:
                     if memory_settings_store.get().enabled and len(context_messages) > context_limit:
                         await asyncio.to_thread(
                             memory_maintenance.ensure_memory_for_window,
                             role_id,
-                            session.session.sessionKey,
+                            session.sessionKey,
                             max_messages=context_limit,
                         )
                 except Exception as error:
@@ -7353,7 +7375,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                     query_result = await _current_memory_engine().query(MemoryQuery(
                         text=data.content,
                         intent="context",
-                        scope=MemoryScope(role_id, session.session.sessionKey),
+                        scope=MemoryScope(role_id, session.sessionKey),
                     )) if memory_settings_store.get().enabled else None
                     memory_context = memory_service.context_block([], _role_memory_context(role_id, include_recent=False))
                     if query_result is not None and query_result.text_block:
@@ -7402,7 +7424,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                 }
                 capabilities = await _runtime_capabilities(
                     role,
-                    session_key=session.session.sessionKey,
+                    session_key=session.sessionKey,
                     run_id=run_id,
                     available_tools=available_runtime_tools,
                     prompt_text=data.content,
@@ -7414,18 +7436,18 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                 model_snapshot["capabilities"] = capabilities.run_metadata()
                 session_store.update_run(run_id, status="created", model_snapshot=model_snapshot)
                 reaction_task = asyncio.current_task()
-                reaction = await _role_reaction_turn(role, session.session.sessionKey, run_id, lambda: (
+                reaction = await _role_reaction_turn(role, session.sessionKey, run_id, lambda: (
                     reaction_task is not None and not reaction_task.cancelling() and store.get(role_id) is not None
                     and role_id not in _channel_roles_deleting
                     and (current := session_store.get_run(run_id)) is not None
                     and current.status in {'created', 'running', 'completed'}
-                    and next((item.runId for item in reversed(session_store.list_messages(session.session.sessionKey))
+                    and next((item.runId for item in reversed(session_store.list_messages(session.sessionKey))
                         if item.role == 'user'), None) == run_id))
                 provider = _desktop_provider(role, configuration, ordinary_settings, capabilities, memory_context,
                     reaction_prompt=reaction.prompt if reaction is not None else '')
                 _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
                 provider = _ordinary_context_provider(provider, ordinary_settings, role_id=role_id,
-                    session_key=session.session.sessionKey, run_id=run_id, history=history)
+                    session_key=session.sessionKey, run_id=run_id, history=history)
                 presentation_context_provider = provider
                 provider.on_phase = turn.set_phase
                 if any(t.definition.name in COMPUTER_USE_TOOL_NAMES for t in runtime_tools):
@@ -7439,7 +7461,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                     AgentRun(
                         runId=run_id,
                         roleId=role_id,
-                        sessionKey=session.session.sessionKey,
+                        sessionKey=session.sessionKey,
                         status="created",
                         modelConfigurationId=configuration.id if configuration else None,
                         modelSnapshot=model_snapshot,
@@ -7474,7 +7496,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                         thinking = ""
                         if placeholder_id is None:
                             placeholder = session_store.append_message(
-                                session.session.sessionKey,
+                                session.sessionKey,
                                 "assistant",
                                 "",
                                 "streaming",
@@ -7485,12 +7507,12 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                             runtime_manager.set_assistant_message(run_id, placeholder_id)
                             turn.emit('assistant_generation_started', runtime_event_payload({
                                 'messageId': placeholder.id, 'messageSequence': placeholder.sequence}, runtime_event.sequence))
+                        turn.current_message = current_message
                     elif isinstance(runtime_event, MessageUpdateEvent):
                         if runtime_event.thinking_delta:
                             from .chat_presentation import display_text
                             if placeholder_id is not None:
                                 thinking = display_text(thinking + runtime_event.thinking_delta)
-                                session_store.update_message(placeholder_id, content, 'streaming', metadata={'runtimePlaceholder': True, 'streamThinking': thinking})
                             turn.emit('assistant_thinking_delta', runtime_event_payload({
                                 'messageId': placeholder_id or assistant_message.id,
                                 'delta': display_text(runtime_event.thinking_delta)}, runtime_event.sequence))
@@ -7498,21 +7520,19 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                         if runtime_event.delta and first_content_at is None:
                             first_content_at = monotonic()
                         content += runtime_event.delta
-                        if placeholder_id is not None:
-                            session_store.update_message(placeholder_id, content, "streaming")
                         turn.emit("assistant_delta", runtime_event_payload({"messageId": placeholder_id or assistant_message.id, "delta": runtime_event.delta}, runtime_event.sequence))
                     elif isinstance(runtime_event, MessageEndEvent) and isinstance(runtime_event.message, AssistantMessage):
                         content = runtime_event.message.content
                         from .chat_presentation import run_process
                         turn.emit('assistant_presentation', runtime_event_payload({
-                            'process': run_process(session_store.list_messages(session.session.sessionKey), run_id),
+                            'process': run_process(session_store.list_messages(session.sessionKey), run_id),
                             'contextUsage': runtime_event.message.metadata.get('contextUsage')}, runtime_event.sequence))
                     elif isinstance(runtime_event, ToolExecutionStartEvent):
                         turn.set_phase('tool')
                         from .chat_presentation import arguments_preview
                         turn.emit("tool_execution_start", runtime_event_payload({
                             "roleId": role_id,
-                            "sessionKey": session.session.sessionKey,
+                            "sessionKey": session.sessionKey,
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
                             "argumentsPreview": arguments_preview(runtime_event.tool_name, runtime_event.arguments),
@@ -7526,7 +7546,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                             safe_result = utf8_prefix(safe_result, MAX_TEXT_BYTES)
                         turn.emit(runtime_event.type, runtime_event_payload({
                             "roleId": role_id,
-                            "sessionKey": session.session.sessionKey,
+                            "sessionKey": session.sessionKey,
                             "toolCallId": runtime_event.tool_call_id,
                             "toolName": runtime_event.tool_name,
                             "result": safe_result,
@@ -7535,7 +7555,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                             "droppedUpdates": runtime_event.dropped_updates,
                         }, runtime_event.sequence))
                         if not updating and runtime_event.tool_name == 'message_push' and not runtime_event.result.is_error:
-                            pushed = next((item for item in session_store.list_messages(session.session.sessionKey)
+                            pushed = next((item for item in session_store.list_messages(session.sessionKey)
                                 if item.id == details.get('messageId') and item.messageType == 'desktop_push'
                                 and item.metadata.get('sourceRunId') == run_id), None)
                             if pushed is not None:
@@ -7548,7 +7568,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                 if terminal_reason != "completed":
                     message = next(
                         item
-                        for item in reversed(session_store.list_messages(session.session.sessionKey))
+                        for item in reversed(session_store.list_messages(session.sessionKey))
                         if item.runId == run_id and item.role == "assistant" and item.messageType == "text"
                     )
                     reason_text = {
@@ -7563,12 +7583,12 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                     return
                 final_message = next(
                     item
-                    for item in reversed(session_store.list_messages(session.session.sessionKey))
+                    for item in reversed(session_store.list_messages(session.sessionKey))
                     if item.runId == run_id and item.role == "assistant" and item.messageType == "text"
                 )
                 message = final_message
                 attached = await _novelai_application().attach_foreground_reply(role_id,
-                    session.session.sessionKey, run_id, final_message.id)
+                    session.sessionKey, run_id, final_message.id)
                 if attached is not None:
                     message = attached
                 if reaction is not None and not message.metadata.get('attachments'):
@@ -7596,18 +7616,18 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                             for key in ('attachments', 'generationAttemptIds', 'generationId', 'generationAttemptId'):
                                 piece_metadata.pop(key, None)
                         message = (session_store.update_message(first_message.id, piece, 'completed', metadata=piece_metadata)
-                            if index == 0 else session_store.append_message(session.session.sessionKey, 'assistant', piece,
+                            if index == 0 else session_store.append_message(session.sessionKey, 'assistant', piece,
                                 'completed', run_id=run_id, metadata=piece_metadata))
                         spoken.append(piece)
                         if index != len(final_sequence) - 1:
                             turn.emit('assistant_message_committed', runtime_event_payload({'message': session_manager.present_message(message).model_dump(mode='json')}))
                 if not natural_reply or not final_sequence or len(spoken) == len(final_sequence):
-                    _novelai_application().scenes.complete(role_id, session.session.sessionKey, run_id)
+                    _novelai_application().scenes.complete(role_id, session.sessionKey, run_id)
                 memory_message = message.model_copy(update={'content': '\n\n'.join(spoken)}) if spoken else message
                 try:
                     memory_worker.publish(TurnCommitted(
                         role_id,
-                        session.session.sessionKey,
+                        session.sessionKey,
                         user_message,
                         memory_message,
                         tuple(data.toolMemoryIds),
@@ -7620,13 +7640,14 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                 runtime_manager.abandon_unstarted_run(run_id, str(error))
                 message = next(
                     item
-                    for item in reversed(session_store.list_messages(session.session.sessionKey))
+                    for item in reversed(session_store.list_messages(session.sessionKey))
                     if item.runId == run_id and item.role == "assistant" and item.messageType == "text"
                 )
                 turn.emit("assistant_failed", runtime_event_payload({
                     "message": session_manager.present_message(message).model_dump(mode="json"),
                     "error": _safe_model_error(error, configuration.apiKey if configuration else ""),
                 }))
+                raise
         except asyncio.CancelledError:
             terminal_reason = "cancelled"
             runtime_manager.cancel_run(run_id, interrupt=False)
@@ -7655,15 +7676,15 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                     memory_worker.errors.append(f"{role_id}: tool audit cleanup failed: {error}")
             if capabilities is not None and not capabilities_owned_by_runtime:
                 try:
-                    await capabilities.close()
+                    await complete_despite_cancellation(capabilities.close())
                 except Exception:
                     pass
             # Each owner must complete its cleanup even when another owner's
             # cleanup fails; keep failures isolated and await both joins.
-            cleanup_results = await asyncio.gather(
+            cleanup_results = await complete_despite_cancellation(asyncio.gather(
                 computer_use.finish_run(role_id, run_id),
                 browser_use_sessions.close_run(role_id, run_id), return_exceptions=True,
-            )
+            ))
             for owner_name, result in zip(("computer", "browser"), cleanup_results):
                 if isinstance(result, BaseException):
                     memory_worker.errors.append(f"{role_id}: {owner_name} run cleanup failed: {type(result).__name__}")
@@ -7673,14 +7694,35 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
         # supplement cannot overtake an already-dispatched tool or its receipt.
         if previous is not None and previous.task is not None:
             await asyncio.shield(asyncio.gather(previous.task, return_exceptions=True))
-        if turn.cancel_requested:
-            runtime_manager.cancel_unstarted_run(run_id)
-        else:
-            runtime_manager.abandon_unstarted_run(run_id, '回复在执行完成前中断')
-        if reply_plan is not None:
-            if _desktop_reply_plans.get(run.sessionKey) is reply_plan:
-                _desktop_reply_plans.pop(run.sessionKey, None)
-            _ordinary_reply_runs.pop(run_id, None)
+        try:
+            if turn.cancel_requested:
+                runtime_manager.cancel_unstarted_run(run_id)
+            else:
+                runtime_manager.abandon_unstarted_run(run_id, '回复在执行完成前中断')
+            # Runtime already commits partial prose on cancellation. An interrupted
+            # provider has no MessageEnd metadata, so commit its public thinking once
+            # before Stop/terminal can return, including orderly service shutdown.
+            partial = turn.current_message() if turn.current_message is not None else None
+            if partial is not None and partial.metadata.get('streamThinking'):
+                def persist_partial(partial: Message) -> Message | None:
+                    row = next((item for item in session_store.list_messages(run.sessionKey)
+                        if item.id == partial.id and item.runId == run_id and item.status != 'completed'), None)
+                    if row is None:
+                        return None
+                    saved = session_store.update_message(row.id, row.content, row.status,
+                        metadata={**row.metadata, 'streamThinking': partial.metadata['streamThinking']})
+                    return session_manager.present_message(saved)
+                saved = await asyncio.to_thread(persist_partial, partial)
+                if saved is not None and turn.terminal is not None:
+                    kind, payload = turn.terminal
+                    if (payload.get('message') or {}).get('id') == saved.id:
+                        turn.terminal = (kind, {**payload, 'message': saved.model_dump(mode='json')})
+        finally:
+            turn.current_message = None
+            if reply_plan is not None:
+                if _desktop_reply_plans.get(run.sessionKey) is reply_plan:
+                    _desktop_reply_plans.pop(run.sessionKey, None)
+                _ordinary_reply_runs.pop(run_id, None)
         if turn.terminal is None:
             message = next((item for item in reversed(session_store.list_messages(run.sessionKey))
                 if item.runId == run_id and item.role == 'assistant' and item.messageType == 'text'), None)
@@ -7703,15 +7745,27 @@ def _desktop_run(role_id: str, run_id: str) -> AgentRun:
     return run
 
 
-def _read_desktop_projection(role_id: str, run_id: str | None, register_thread: bool):
+def _read_desktop_projection(role_id: str, run_id: str | None, register_thread: bool, partial: Message | None = None):
     """Independent SQLite reads and presentation work belong to an I/O worker."""
     from .chat_presentation import run_process
-    response = session_manager.open_role_session(role_id)
+    _, session = session_manager.role_and_session(role_id)
     if register_thread:
-        multichannel_store.register_desktop_thread(role_id, response.session.sessionKey,
-            response.session.createdAt.isoformat(), response.session.updatedAt.isoformat())
+        multichannel_store.register_desktop_thread(role_id, session.sessionKey,
+            session.createdAt.isoformat(), session.updatedAt.isoformat())
     run = _desktop_run(role_id, run_id) if run_id is not None else None
-    process = run_process(session_store.list_messages(response.session.sessionKey), run_id) if run_id else []
+    rows = session_store.list_messages(session.sessionKey)
+    if partial is not None and partial.runId == run_id and partial.sessionKey == session.sessionKey:
+        for index, row in enumerate(rows):
+            if row.id == partial.id and row.runId == run_id and row.status != 'completed':
+                # Runtime may already have saved a failed partial while the
+                # desktop owner is still cleaning up. Keep that durable prose
+                # and status; the owner supplies its not-yet-committed thinking.
+                live = partial if row.status == 'streaming' else row.model_copy(update={
+                    'metadata': {**row.metadata, 'streamThinking': partial.metadata.get('streamThinking', '')}})
+                rows[index] = live
+                break
+    response = session_manager.present_session(session, rows)
+    process = run_process(rows, run_id) if run_id else []
     return response, run, process
 
 
@@ -7723,7 +7777,9 @@ async def _desktop_snapshot(role_id: str, run_id: str | None = None, *, register
         fence = service.read_fence(role_id, run_id)
         active = service.active(role_id)
         selected = run_id or (active.run.runId if active is not None else None)
-        response, run, process = await asyncio.to_thread(_read_desktop_projection, role_id, selected, register_thread)
+        owner = service.runs.get(selected) if selected is not None else None
+        partial = owner.current_message() if owner is not None and owner.current_message is not None else None
+        response, run, process = await asyncio.to_thread(_read_desktop_projection, role_id, selected, register_thread, partial)
         if fence != service.read_fence(role_id, run_id):
             continue
         snapshot = service.snapshot(run, process) if run is not None else None

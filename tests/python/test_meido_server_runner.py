@@ -15,7 +15,7 @@ import pytest
 @pytest.mark.parametrize('reload', [False, True])
 def test_runner_drains_open_sse_on_stdin_stop_and_reload(tmp_path, reload):
     fixture = tmp_path / 'runner_fixture.py'
-    fixture.write_text('''import asyncio, os
+    fixture.write_text('''import asyncio, os, sys
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
@@ -29,6 +29,12 @@ async def drain():
 app.state.before_server_drain = drain
 @app.get('/pid')
 async def pid(): return {'pid':os.getpid()}
+@app.get('/subprocess')
+async def child():
+    process = await asyncio.create_subprocess_exec(sys.executable, '-c', 'print("child-ready")',
+        stdout=asyncio.subprocess.PIPE)
+    output, _ = await process.communicate()
+    return {'output': output.decode().strip(), 'returncode': process.returncode}
 @app.get('/events')
 async def events():
     async def stream():
@@ -58,7 +64,7 @@ async def events():
             except (httpx.HTTPError, ValueError, KeyError):
                 pass
             time.sleep(.05)
-        raise AssertionError('runner did not start/reload: ' + (tmp_path / 'runner.log').read_text(encoding='utf-8'))
+        raise AssertionError('runner did not start/reload: ' + (tmp_path / 'runner.log').read_text(encoding='utf-8', errors='replace'))
 
     with (tmp_path / 'runner.log').open('w', encoding='utf-8') as output:
         process = subprocess.Popen(command, cwd=Path(__file__).resolve().parents[2], env=environment,
@@ -67,6 +73,9 @@ async def events():
         try:
             with httpx.Client(base_url=f'http://127.0.0.1:{port}', timeout=5, trust_env=False) as client:
                 first = wait_pid(client)
+                child = client.get('/subprocess')
+                assert child.status_code == 200, child.text
+                assert child.json() == {'output': 'child-ready', 'returncode': 0}
                 if reload:
                     with client.stream('GET', '/events') as response:
                         lines = response.iter_lines()
@@ -77,6 +86,7 @@ async def events():
                         with fixture.open('a', encoding='utf-8') as source:
                             source.write('\n# reload the isolated fixture\n')
                         second = wait_pid(client, first)
+                        assert client.get('/subprocess').json() == {'output': 'child-ready', 'returncode': 0}
                         assert 'data: closed' in list(lines)
                         assert log.read_text().splitlines() == [str(first)]
                 else:

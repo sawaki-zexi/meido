@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, TypeAlias, TypeVar
 from contextlib import aclosing
 from datetime import datetime, timezone
 
@@ -19,6 +19,21 @@ if TYPE_CHECKING:
     from ..session_store import SessionStore
 
 MessageEndHandler: TypeAlias = Callable[[MessageEndEvent], object | Awaitable[object]]
+T = TypeVar('T')
+
+
+async def complete_despite_cancellation(operation: Awaitable[T]) -> T:
+    """Join owned cleanup despite repeated cancellation; never detach its writes.
+
+    Adapted from Shiori c14152ed desktop_bridge/chat_turn_state.py (MIT).
+    """
+    pending = asyncio.ensure_future(operation)
+    while True:
+        try:
+            return await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            if pending.done():
+                return pending.result()
 
 
 class ActiveRunError(RuntimeError):
@@ -466,23 +481,27 @@ class RuntimeManager:
             )
             raise
         finally:
-            if capabilities is not None:
+            async def finish_owned():
                 try:
-                    await capabilities.close()
-                except Exception:
-                    # Cleanup diagnostics must not hide the run's terminal state.
-                    pass
-            run_state = self.sessions.get_run(run.runId)
-            if run_state is not None and run_state.status in {"created", "running"}:
-                token.cancel()
-                self._finish_run(
-                    run.runId,
-                    status="cancelled",
-                    assistant_content="" if defer_reply else assistant_content,
-                    turn_count=turn_count,
-                    cancel_reason="Runtime 消费者在运行完成前退出",
-                )
-            self._release_run(run.runId)
+                    if capabilities is not None:
+                        try:
+                            await capabilities.close()
+                        except Exception:
+                            # Cleanup diagnostics must not hide the run's terminal state.
+                            pass
+                    run_state = self.sessions.get_run(run.runId)
+                    if run_state is not None and run_state.status in {"created", "running"}:
+                        token.cancel()
+                        self._finish_run(
+                            run.runId,
+                            status="cancelled",
+                            assistant_content="" if defer_reply else assistant_content,
+                            turn_count=turn_count,
+                            cancel_reason="Runtime 消费者在运行完成前退出",
+                        )
+                finally:
+                    self._release_run(run.runId)
+            await complete_despite_cancellation(finish_owned())
 
     def _finish_run(
         self,

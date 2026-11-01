@@ -31,6 +31,39 @@ jobs:
       - run: npm run test:web
       - run: npm run build:landing -- --base /meido/
 
+  chat-e2e:
+    name: Windows chat E2E
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: python -m pip install -r requirements.txt
+      - run: npm ci
+      - run: npx playwright-core install chromium
+      - run: New-Item -ItemType Directory -Force -Path .data/chat-e2e | Out-Null
+      - run: python -m pytest tests/python/test_meido_server_runner.py -q --basetemp=.data/chat-e2e/runner
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-chat-e2e
+          include-hidden-files: true
+          path: |
+            .data/chat-e2e/artifacts/**
+            .data/chat-e2e/runner/**/runner.log
+            .data/chat-e2e/runner/**/launcher.log
+
   backend:
     name: Backend tests (${{ matrix.group }})
     runs-on: ubuntu-latest
@@ -58,6 +91,7 @@ jobs:
           - group: chat-lifecycle
             args: >-
               tests/python/test_chat_lifecycle.py
+              tests/python/test_chat_stream_projection.py
               tests/python/test_chat_stop.py
               tests/python/test_natural_reply_api.py
               tests/python/test_natural_runtime.py
@@ -72,6 +106,8 @@ jobs:
           - group: context-preparation
             args: >-
               tests/python/test_context_preparation.py
+              tests/python/test_stream_preparation.py
+              tests/python/test_owner_history_view.py
               tests/python/test_context_inspection.py
               tests/python/test_context_windows.py
               tests/python/test_current_tool_registry.py

@@ -8,6 +8,8 @@
 - [desktop_bridge/context_requests.py](https://github.com/YinFengWindy/Shiori-Agent/blob/c14152ed225954a2a50da775075fe64dbf7b8b50/apps/backend/desktop_bridge/context_requests.py) 解析角色唯一会话，在聊天忙碌时返回状态，再交给当前模型窗口检查。
 - [context_window_request.py](https://github.com/YinFengWindy/Shiori-Agent/blob/c14152ed225954a2a50da775075fe64dbf7b8b50/apps/backend/agent/core/passive_turn/context_window_request.py) 使用保存窗口和同一个提示渲染器；`include_current_message=False`，没有草稿、附件或检索文本。工具来自当前原文窗口，读取后校验窗口是否变化。
 - [useChatContextStatus.ts](https://github.com/YinFengWindy/Shiori-Agent/blob/c14152ed225954a2a50da775075fe64dbf7b8b50/apps/desktop/renderer/src/chat/useChatContextStatus.ts) 对模型、工具、角色、会话和终态事件失效并重读；发送期间不检查，完成时有一次忙碌交接重试。
+- [ChatContextRing.tsx](https://github.com/YinFengWindy/Shiori-Agent/blob/c14152ed225954a2a50da775075fe64dbf7b8b50/apps/desktop/renderer/src/chat/ChatContextRing.tsx) 使用 30px 触达区中的 20px SVG 细环，悬停和聚焦显示 280px 两行 tooltip；未知无填充，忙碌保留同会话用量。Meido 按维护者最新纠正复用这一展示，另对模型身份隔离保留值；触屏点击仅打开提示，不引入上游手动压缩。
+- [ChatHeader.tsx](https://github.com/YinFengWindy/Shiori-Agent/blob/c14152ed225954a2a50da775075fe64dbf7b8b50/apps/desktop/renderer/src/chat/ChatHeader.tsx) 在名字下用星光显示“正在输入…”；[ChatMessageBubbleBody.tsx](https://github.com/YinFengWindy/Shiori-Agent/blob/c14152ed225954a2a50da775075fe64dbf7b8b50/apps/desktop/renderer/src/chat/ChatMessageBubbleBody.tsx) 保留真实思考、工具块及空回复光标，没有内部准备／收尾阶段标签。Meido 的额外标签已按这一来源移除，后端生命周期不变。
 
 ## Meido 适配
 
@@ -17,4 +19,4 @@ Meido 的聊天历史视图在普通回合中固定追加围栏，因此检查�
 
 MCP 的持久连接意愿跨回合保留，但实际 peer 在回合收尾时释放。宿主已经有按配置 revision/grant 校验的有界观察目录；检查复用这个目录以及真实 MCP 声明生成函数。没有有效目录时返回暂不可用，不连接外部 peer，也不新增缓存或数据库表。
 
-本次只移植独立检查行为，不引入上游手动压缩。代码归属声明与 MIT 许可见 [Shiori LICENSE](../../third_party/shiori-agent/LICENSE)。
+本次移植独立检查及其紧凑展示，不引入上游手动压缩。代码归属声明与 MIT 许可见 [Shiori LICENSE](../../third_party/shiori-agent/LICENSE)。
