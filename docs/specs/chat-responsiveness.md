@@ -10,7 +10,10 @@
 
 [#291](https://github.com/sawaki-zexi/meido/issues/291) 已合入 main：准备输入、纯候选投影与计量、即时执行准入、配置保留轮数及窗口批量读取。见 [ADR-0034](../adr/0034-context-preparation-boundaries.md) 和 [回归](../../tests/python/test_context_preparation.py)。
 
-本分支实现 [#292](https://github.com/sawaki-zexi/meido/issues/292) 的摘要正文计量／缩短反馈，协议边界保留有效计数与缺失／异常原因，摘要规范化后判断是否允许一次缩短。见[分批摘要合同](../reference/working-summary-batches.md)。[#293](https://github.com/sawaki-zexi/meido/issues/293) 的聊天任务归属／刷新续接仍是后续计划。本分支没有改变 SSE 断线行为，以下完整规格不能当作全部已经交付。
+[#292](https://github.com/sawaki-zexi/meido/issues/292) 已合入 main：摘要正文计量／缩短反馈、严格计数与缺失／异常原因，见[分批摘要合同](../reference/working-summary-batches.md)。
+
+本分支实现 [#293](https://github.com/sawaki-zexi/meido/issues/293)：服务持有接受后的普通与拟人排队任务，提交／订阅／Stop 分离，稳定接受标识、序号缺口恢复与有界投影；切角色和刷新只解除订阅。真实阶段沿原过程区展示，终态等待清理完成。见 [ADR-0035](../adr/0035-service-owned-desktop-chat-runs.md)、[生命周期合同](../reference/chat-run-lifecycle.md) 与[HTTP 回归](../../tests/python/test_chat_lifecycle.py)。本地定向模型／工具夹具已验证，真实浏览器组合验收记录由对应 PR 提供；不表示已部署正式实例。
+
 
 ## Problem Statement
 

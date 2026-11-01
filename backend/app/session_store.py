@@ -99,10 +99,10 @@ class SessionStore:
             message_columns = {row[1] for row in connection.execute("PRAGMA table_info(messages)")}
             if "agent_runs" in tables and "run_id" in message_columns:
                 connection.execute(
-                    "UPDATE messages SET status = 'failed' WHERE status = 'streaming' AND (run_id IS NULL OR run_id IN (SELECT run_id FROM agent_runs WHERE status IN ('created', 'running')) )"
+                    "UPDATE messages SET status = 'failed' WHERE status = 'streaming' AND (run_id IS NULL OR run_id IN (SELECT run_id FROM agent_runs WHERE status IN ('queued', 'created', 'running')) )"
                 )
                 connection.execute(
-                    "UPDATE agent_runs SET status='failed', ended_at=?, error=COALESCE(error, '服务重启时运行未完成') WHERE status IN ('created', 'running')",
+                    "UPDATE agent_runs SET status='failed', ended_at=?, error=COALESCE(error, '服务重启时运行未完成') WHERE status IN ('queued', 'created', 'running')",
                     (_now(),),
                 )
                 if "tool_audits" in tables:
@@ -1374,6 +1374,8 @@ class SessionStore:
             if current_status in terminal:
                 row = connection.execute("SELECT run_id, role_id, session_key, status, model_configuration_id, model_snapshot_json, turn_count, started_at, ended_at, cancel_reason, error FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
                 return self._run(row)
+            if current_status == "queued" and status not in {"queued", "created", "failed", "cancelled"}:
+                raise ValueError(f"invalid run transition: {current_status} -> {status}")
             if current_status == "created" and status not in {"created", "running", "failed", "cancelled"}:
                 raise ValueError(f"invalid run transition: {current_status} -> {status}")
             if current_status == "running" and status not in {"running", *terminal}:
@@ -1412,7 +1414,7 @@ class SessionStore:
                     raise RuntimeError(f"terminal run {run_id} has no assistant message")
                 return current, self._message(existing)
 
-            if current.status not in {"created", "running"}:
+            if current.status not in {"queued", "created", "running"}:
                 raise ValueError(f"invalid run transition: {current.status} -> {status}")
             connection.execute(
                 "UPDATE agent_runs SET status = ?, turn_count = ?, ended_at = ?, cancel_reason = ?, error = ? WHERE run_id = ?",
@@ -1479,17 +1481,17 @@ class SessionStore:
 
     def active_run(self, role_id: str) -> AgentRun | None:
         with sqlite3.connect(self.database_path) as connection:
-            row = connection.execute("SELECT run_id, role_id, session_key, status, model_configuration_id, model_snapshot_json, turn_count, started_at, ended_at, cancel_reason, error FROM agent_runs WHERE role_id = ? AND status IN ('created', 'running') ORDER BY started_at DESC LIMIT 1", (role_id,)).fetchone()
+            row = connection.execute("SELECT run_id, role_id, session_key, status, model_configuration_id, model_snapshot_json, turn_count, started_at, ended_at, cancel_reason, error FROM agent_runs WHERE role_id = ? AND status IN ('queued', 'created', 'running') ORDER BY CASE WHEN status='queued' THEN 1 ELSE 0 END, started_at DESC LIMIT 1", (role_id,)).fetchone()
         return self._run(row) if row else None
 
     def mark_running_runs_failed(self) -> None:
         with sqlite3.connect(self.database_path) as connection:
             now = _now()
-            connection.execute("UPDATE messages SET status='failed' WHERE status='streaming' AND (run_id IS NULL OR run_id IN (SELECT run_id FROM agent_runs WHERE status IN ('created', 'running')))" )
-            connection.execute("UPDATE agent_runs SET status='failed', ended_at=?, error=COALESCE(error, '服务重启时运行未完成') WHERE status IN ('created', 'running')", (now,))
+            connection.execute("UPDATE messages SET status='failed' WHERE status='streaming' AND (run_id IS NULL OR run_id IN (SELECT run_id FROM agent_runs WHERE status IN ('queued', 'created', 'running')))" )
+            connection.execute("UPDATE agent_runs SET status='failed', ended_at=?, error=COALESCE(error, '服务重启时运行未完成') WHERE status IN ('queued', 'created', 'running')", (now,))
 
     def _run(self, row: tuple[object, ...]) -> AgentRun:
-        status = cast(Literal["created", "running", "completed", "failed", "cancelled", "max_turns"], str(row[3]))
+        status = cast(Literal["queued", "created", "running", "completed", "failed", "cancelled", "max_turns"], str(row[3]))
         return AgentRun(runId=str(row[0]), roleId=str(row[1]), sessionKey=str(row[2]), status=status, modelConfigurationId=str(row[4]) if row[4] is not None else None, modelSnapshot=_load_dict(row[5]) or {}, turnCount=int(str(row[6])), startedAt=datetime.fromisoformat(str(row[7])), endedAt=datetime.fromisoformat(str(row[8])) if row[8] else None, cancelReason=str(row[9]) if row[9] else None, error=str(row[10]) if row[10] else None)
 
 

@@ -1,8 +1,8 @@
 import { vi } from "vitest";
 import type { Message, Role } from "../api/types";
 
-type Reply = { status?: number; body?: unknown; stream?: string[] | ReadableStream<Uint8Array>; headers?: Record<string, string> };
-type Handler = (init: RequestInit | undefined, match: RegExpMatchArray) => Reply | Promise<Reply>;
+export type Reply = { status?: number; body?: unknown; stream?: string[] | ReadableStream<Uint8Array>; headers?: Record<string, string> };
+export type Handler = (init: RequestInit | undefined, match: RegExpMatchArray) => Reply | Promise<Reply>;
 
 export const role = (overrides: Partial<Role> & { id: string; name: string }): Role => ({
   description: "",
@@ -40,7 +40,7 @@ export function fakeBackend(routes: Record<string, Handler>) {
         return new Response(body, { status: 200, headers: { "content-type": "text/event-stream", ...reply.headers } });
       }
       const status = reply.status ?? 200;
-      return new Response(status === 204 ? null : JSON.stringify(reply.body ?? {}), { status, headers: { "content-type": "application/json" } });
+      return new Response(status === 204 ? null : JSON.stringify(reply.body ?? {}), { status, headers: { "content-type": "application/json", ...reply.headers } });
     }
     if (method === 'GET' && path === '/api/plugin-management') return new Response(JSON.stringify({ plugins: [
       { id: 'browser', name: '浏览器', description: '访问网页', values: { headed: false, timeout_seconds: 45 } },

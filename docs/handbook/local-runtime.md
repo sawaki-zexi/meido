@@ -2,9 +2,9 @@
 
 状态：当前
 
-事实来源：[`Start-Meido.ps1`](../../scripts/local-runtime/Start-Meido.ps1)、[`backup-meido-data.py`](../../scripts/local-runtime/backup-meido-data.py)、[`main.py`](../../backend/app/main.py)、[`storage.py`](../../backend/app/storage.py)
+事实来源：[`Start-Meido.ps1`](../../scripts/local-runtime/Start-Meido.ps1)、[`Start-Dev.ps1`](../../scripts/local-runtime/Start-Dev.ps1)、[`start-dev.mjs`](../../scripts/local-runtime/start-dev.mjs)、[`服务入口`](../../backend/app/server.py)、[`backup-meido-data.py`](../../scripts/local-runtime/backup-meido-data.py)、[`main.py`](../../backend/app/main.py)、[`storage.py`](../../backend/app/storage.py)
 
-最后核验：2026-10-16
+最后核验：2026-11-01
 
 ## 保留一份本机路径配置
 
@@ -49,9 +49,23 @@
 & .\scripts\local-runtime\Start-Meido.ps1 -SettingsPath D:\MeidoRuntime\local-settings.json -Service Frontend
 ```
 
-按示例端口访问 <http://127.0.0.1:5288/app>。脚本通过现有 `MEIDO_*` 环境变量设置路径，后端端口传给 uvicorn，前端代理指向相同后端。已有服务在目标端口响应时，脚本保留它；端口占用但服务不响应时会报错。终端关闭会结束其前台服务，已保存数据仍在磁盘上。
+按示例端口访问 <http://127.0.0.1:5288/app>。脚本通过现有 `MEIDO_*` 环境变量设置路径，后端使用 `python -m backend.app.server`，前端代理指向相同后端。已有服务在目标端口响应时，脚本保留它；端口占用但服务不响应时会报错。停止时按 Ctrl+C，等待后端完成工具和聊天收尾再关闭终端；直接关窗口或强杀不保证清理完成。
 
 更换代码版本前在原终端停止旧服务，再修改配置的 `codeRoot`，或临时指定 `-CodeRoot D:\另一个代码工作区`。同一份数据只运行一个后端，以免渠道重复连接或多个进程同时修改配置。只有 `codeRoot` 随代码版本变化，数据目录保持固定。
+
+## 分支隔离开发与正常退出
+
+新版 tracked 开发入口只从配置读取解释器位置，开发数据固定为目标工作区的 `.data/development/`，不会使用配置中的常驻数据路径。先检查：
+
+```powershell
+& .\scripts\local-runtime\Start-Dev.ps1 -SettingsPath D:\MeidoRuntime\local-settings.json -CodeRoot D:\meido-branch -CheckOnly
+```
+
+去掉 `-CheckOnly` 后启动同一工作区的 API（含 reload）与 Vite。默认端口由工作区路径确定，避开常驻端口；占用时会报错，可另设 `MEIDO_DEV_API_PORT` / `MEIDO_DEV_WEB_PORT`，解释器可用 `MEIDO_DEV_PYTHON` 覆盖。按 Ctrl+C 后 launcher 请求自有 API 收尾，并停止自有 Vite。自动化测试可以直接运行 `node scripts/local-runtime/start-dev.mjs --code-root <工作区> --shutdown-stdin`，向它的私有 stdin 写入 `shutdown` 行或关闭管道后等待退出。
+
+`backend.app.server` 在 Uvicorn 等待 HTTP/SSE 排空之前，先拒绝新聊天、取消并等待已接受任务和真实工具清理。打开的 SSE 不需要先由浏览器关闭；reload 也先完成同样的收尾再启动新 worker。`npm run dev:api` 与新版 `Start-Meido.ps1` 后端入口使用此行为；分支开发使用上面的隔离入口，不直接运行占用常驻端口的默认 npm dev 命令。
+
+原生 `python -m uvicorn backend.app.main:app` 仍兼容 ASGI，但只在 lifespan shutdown 中兜底关闭聊天；长 SSE 会使该回调推迟，不保证及时取消。机器上已有的 ignored `.runtime/Start-Dev.ps1`、`.runtime/start-dev.mjs` 或其他服务包装器不会随源码自动升级；若仍调用原生 uvicorn，需维护者在部署时更新为新版入口才能获得这个退出保证。本次源码更新不替换或重启本机常驻实例。
 
 ## 创建备份
 

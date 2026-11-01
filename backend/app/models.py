@@ -223,7 +223,7 @@ class AgentRun(BaseModel):
     runId: str
     roleId: str
     sessionKey: str
-    status: Literal["created", "running", "completed", "failed", "cancelled", "max_turns"]
+    status: Literal["queued", "created", "running", "completed", "failed", "cancelled", "max_turns"]
     modelConfigurationId: str | None = None
     modelSnapshot: dict[str, Any] = Field(default_factory=dict)
     turnCount: int = 0
@@ -236,10 +236,12 @@ class AgentRun(BaseModel):
 class SessionResponse(BaseModel):
     session: SessionSummary
     messages: list[Message]
+    activeRun: dict[str, Any] | None = None
 
 
 class SendMessageInput(BaseModel):
     content: str
+    requestId: str | None = Field(default=None, min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     attachments: list[str] = Field(default_factory=list)
     toolMemoryIds: list[str] = Field(default_factory=list)
     skillIds: list[str] = Field(default_factory=list)

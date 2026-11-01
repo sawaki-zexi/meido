@@ -1,8 +1,9 @@
+import { fakeChatBackend as fakeBackend } from './test/fakeChatBackend';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "./App";
-import { fakeBackend, message, role, sse } from "./test/fakeBackend";
+import { message, role, sse, type Reply } from "./test/fakeBackend";
 
 const alice = role({ id: "r1", name: "爱丽丝", description: "安静的女仆" });
 const bella = role({ id: "r2", name: "贝拉" });
@@ -221,6 +222,118 @@ describe("首页", () => {
     expect(await chatHeading("贝拉")).toBeTruthy();
     expect(screen.getByText("贝拉的话", { selector: ".bubble p" })).toBeTruthy();
     expect(localStorage.getItem("meido:last-role")).toBe("r2");
+  });
+
+  it.each(['等待重试', '旧读取在途'])('会话快照繁忙%s时可实际切换角色，旧恢复不覆盖新选择', async mode => {
+    let aliceReads = 0;
+    let oldSignal: AbortSignal | null | undefined;
+    let releaseAlice!: (reply: Reply) => void;
+    let releaseBella!: (reply: Reply) => void;
+    const lateAlice = new Promise<Reply>(resolve => { releaseAlice = resolve; });
+    const pendingBella = new Promise<Reply>(resolve => { releaseBella = resolve; });
+    const { calls } = fakeBackend({
+      'GET /api/roles': () => ({ body: { roles: [alice, bella] } }),
+      'GET /api/roles/r1/session': init => {
+        aliceReads += 1;
+        oldSignal = init?.signal;
+        if (mode === '旧读取在途' && aliceReads === 2) return lateAlice;
+        return { status: 503, headers: { 'Retry-After': '1' }, body: { detail: '回复仍在更新，正在重新同步' } };
+      },
+      'GET /api/roles/r2/session': () => pendingBella,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    const list = await roleList();
+    await waitFor(() => expect(aliceReads).toBe(2), { timeout: 2500 });
+    const chooseBella = within(list).getByRole('button', { name: /贝拉/ });
+    expect(chooseBella).toBeEnabled();
+    expect(screen.getByText('正在加载角色…')).toBeTruthy();
+    expect(screen.getByLabelText('消息内容')).toBeDisabled();
+    await user.click(chooseBella);
+    await waitFor(() => expect(calls.filter(call => call.path === '/api/roles/r2/session')).toHaveLength(1));
+    expect(oldSignal?.aborted).toBe(true);
+    await act(async () => {
+      // Deliberately let an obsolete transport return despite abort. Its data
+      // and completion must not replace Bella or clear Bella's loading state.
+      releaseAlice({ body: { session, messages: [message({ id: 'late-alice', role: 'assistant', content: '迟到的爱丽丝' })] } });
+      await new Promise(resolve => setTimeout(resolve, 1100));
+    });
+    expect(aliceReads).toBe(2);
+    expect(screen.getByText('正在加载角色…')).toBeTruthy();
+    expect(screen.getByLabelText('消息内容')).toBeDisabled();
+    expect(screen.queryByText('迟到的爱丽丝')).toBeNull();
+    await act(async () => { releaseBella({ body: { session: sessionOf('r2'), messages: [message({
+      id: 'bella-message', role: 'assistant', content: '贝拉的已保存回复', sessionKey: 'role:r2',
+    })] } }); });
+    await chatHeading('贝拉');
+    expect(screen.getByText('贝拉的已保存回复', { selector: '.bubble p' })).toBeTruthy();
+    expect(screen.getByLabelText('消息内容')).toBeEnabled();
+    expect(localStorage.getItem('meido:last-role')).toBe('r2');
+    expect(calls.filter(call => call.method === 'POST')).toHaveLength(0);
+  });
+
+  it('另一角色快照繁忙时点回当前角色会撤销旧读取，不被迟到完成切回', async () => {
+    let aliceReads = 0, bellaReads = 0;
+    let bellaSignal: AbortSignal | null | undefined;
+    let releaseBella!: (reply: Reply) => void;
+    const pendingBella = new Promise<Reply>(resolve => { releaseBella = resolve; });
+    const { calls } = fakeBackend({
+      'GET /api/roles': () => ({ body: { roles: [alice, bella] } }),
+      'GET /api/roles/r1/session': () => {
+        aliceReads += 1;
+        return { body: { session, messages: [message({ id: 'saved-alice', role: 'assistant', content: '爱丽丝的已保存回复' })] } };
+      },
+      'GET /api/roles/r2/session': init => {
+        bellaReads += 1;
+        bellaSignal = init?.signal;
+        return bellaReads === 1
+          ? { status: 503, headers: { 'Retry-After': '1' }, body: { detail: '回复仍在更新，正在重新同步' } }
+          : pendingBella;
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading('爱丽丝');
+    const list = await roleList();
+    await user.click(within(list).getByRole('button', { name: /贝拉/ }));
+    await waitFor(() => expect(bellaReads).toBe(2), { timeout: 2500 });
+    await user.click(within(list).getByRole('button', { name: /爱丽丝/ }));
+    await waitFor(() => expect(aliceReads).toBe(2));
+    expect(bellaSignal?.aborted).toBe(true);
+    await act(async () => { releaseBella({ body: { session: sessionOf('r2'), messages: [message({
+      id: 'late-bella', role: 'assistant', content: '迟到的贝拉', sessionKey: 'role:r2',
+    })] } }); });
+    await chatHeading('爱丽丝');
+    expect(screen.queryByText('迟到的贝拉')).toBeNull();
+    expect(screen.getByLabelText('消息内容')).toBeEnabled();
+    expect(localStorage.getItem('meido:last-role')).toBe('r1');
+    expect(calls.filter(call => call.method === 'POST')).toHaveLength(0);
+  });
+
+  it('会话打开完成时保留等待期间选择的角色页面', async () => {
+    let reads = 0;
+    let releaseBella!: (reply: Reply) => void;
+    const pending = new Promise<Reply>(resolve => { releaseBella = resolve; });
+    fakeBackend({
+      'GET /api/roles': () => ({ body: { roles: [alice, bella] } }),
+      'GET /api/roles/r1/session': emptySession,
+      'GET /api/roles/r2/session': () => ++reads === 1
+        ? { status: 503, headers: { 'Retry-After': '1' }, body: { detail: '回复仍在更新，正在重新同步' } }
+        : pending,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading('爱丽丝');
+    await user.click(within(await roleList()).getByRole('button', { name: /贝拉/ }));
+    await waitFor(() => expect(reads).toBe(2), { timeout: 2500 });
+    const chooseRoles = within(screen.getByRole('navigation', { name: '页面' })).getByRole('button', { name: '角色' });
+    await user.click(chooseRoles);
+    expect(screen.getByRole('list', { name: '角色卡牌' })).toBeTruthy();
+    await act(async () => { releaseBella({ body: { session: sessionOf('r2'), messages: [] } }); });
+    expect(screen.getByRole('list', { name: '角色卡牌' })).toBeTruthy();
+    expect(chooseRoles).toHaveAttribute('aria-current', 'page');
+    await user.click(within(screen.getByRole('navigation', { name: '页面' })).getByRole('button', { name: '对话' }));
+    await chatHeading('贝拉');
   });
 });
 
@@ -830,7 +943,7 @@ describe("唯一会话", () => {
     const { calls } = fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": () => ({ body: { session, messages: [message({ id: "old", role: "user", content: "以前的话" })] } }),
-      "POST /api/roles/r1/messages": () => {
+      "CHAT /api/roles/r1": () => {
         turn += 1;
         const id = `t${turn}`;
         return { stream: [
@@ -858,7 +971,7 @@ describe("唯一会话", () => {
     await user.type(input, "第2句");
     await user.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(screen.getAllByText("您好，主人", { selector: ".bubble p" })).toHaveLength(2));
-    expect(calls.filter((call) => call.method === "POST").map((call) => call.body)).toEqual([{ content: "第1句" }, { content: "第2句" }]);
+    expect(calls.filter((call) => call.method === "POST").map((call) => call.body)).toMatchObject([{ content: "第1句" }, { content: "第2句" }]);
   });
 
   it("Shift+Enter 换行而不发送，空白消息不能发送", async () => {
@@ -879,7 +992,7 @@ describe("唯一会话", () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": emptySession,
-      "POST /api/roles/r1/messages": () => {
+      "CHAT /api/roles/r1": () => {
         turn += 1;
         if (turn === 2) return { status: 409, body: { detail: "该角色正在生成回复，请稍后再试" } };
         return { stream: [
@@ -911,7 +1024,7 @@ describe("唯一会话", () => {
       "GET /api/model/configurations": () => ({ body: { configurations: [] } }),
       "GET /api/roles/r1/model-configuration": () => ({ body: { configurationId: null, effectiveConfigurationId: null } }),
       "POST /api/roles/r1/attachments": () => ({ body: { id: "att-1", name: "photo.png", mediaType: "image/png", size: 8, kind: "image" } }),
-      "POST /api/roles/r1/messages": () => ({ stream: [
+      "CHAT /api/roles/r1": () => ({ stream: [
         sse("user_message_accepted", { message: { ...message({ id: "u1", role: "user", content: "" }), metadata: { attachments: [{ id: "att-1", name: "photo.png", mediaType: "image/png", size: 8, kind: "image" }] } } }),
         sse("assistant_generation_started", { messageId: "a1" }),
         sse("assistant_completed", { message: message({ id: "a1", role: "assistant", content: "看到了" }) }),
@@ -926,7 +1039,7 @@ describe("唯一会话", () => {
     expect(screen.queryByAltText("photo.png")).toBeNull();
     await user.upload(screen.getByLabelText("附件文件"), new File(["png"], "photo.png", { type: "image/png" }));
     await user.click(screen.getByRole("button", { name: "发送" }));
-    await waitFor(() => expect(calls.find((call) => call.method === "POST" && call.path === "/api/roles/r1/messages")?.body).toEqual({ content: "", attachments: ["att-1"] }));
+    await waitFor(() => expect(calls.find((call) => call.method === "POST" && call.path === "/api/roles/r1/runs")?.body).toMatchObject({ content: "", attachments: ["att-1"] }));
     expect(await screen.findByAltText("photo.png")).toHaveAttribute("src", "/api/roles/r1/attachments/att-1");
   });
 
@@ -983,6 +1096,41 @@ describe("角色记忆", () => {
     const source = screen.getByText("我喜欢红茶").closest("li")!;
     expect(source).toHaveClass("source-highlight");
     expect(within(source).getByText("记忆来源")).toBeTruthy();
+  });
+
+  it('记忆来源快照繁忙时切到角色页，迟到的来源恢复不会拉回聊天', async () => {
+    let reads = 0;
+    let releaseSource!: (reply: Reply) => void;
+    const pending = new Promise<Reply>(resolve => { releaseSource = resolve; });
+    const saved = { body: { session, messages: [message({ id: 'm2', role: 'user', content: '我喜欢红茶' })] } };
+    fakeBackend({
+      'GET /api/roles': () => ({ body: { roles: [alice] } }),
+      'GET /api/roles/r1/session': () => {
+        reads += 1;
+        if (reads === 1) return saved;
+        if (reads === 2) return { status: 503, headers: { 'Retry-After': '1' }, body: { detail: '回复仍在更新，正在重新同步' } };
+        return pending;
+      },
+      'GET /api/roles/r1/memories.*': () => ({ body: { memories: [memory] } }),
+      'GET /api/roles/r1/memory-documents': () => ({ body: { documents: [], journals: [] } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading('爱丽丝');
+    await user.click(screen.getByRole('button', { name: '角色记忆' }));
+    await user.click(within(await screen.findByRole('list', { name: '记忆列表' })).getByRole('button', { name: '查看记忆：主人喜欢红茶' }));
+    await user.click(within(await screen.findByRole('region', { name: '记忆详情' })).getByRole('button', { name: '定位到消息' }));
+    await waitFor(() => expect(reads).toBe(3), { timeout: 2500 });
+    const navigation = within(screen.getByRole('navigation', { name: '页面' }));
+    await user.click(navigation.getByRole('button', { name: '角色' }));
+    await act(async () => { releaseSource(saved); });
+    expect(screen.getByRole('list', { name: '角色卡牌' })).toBeTruthy();
+    expect(navigation.getByRole('button', { name: '角色' })).toHaveAttribute('aria-current', 'page');
+    await user.click(navigation.getByRole('button', { name: '对话' }));
+    await user.click(screen.getByRole('button', { name: '角色记忆' }));
+    await user.click(within(await screen.findByRole('list', { name: '记忆列表' })).getByRole('button', { name: '查看记忆：主人喜欢红茶' }));
+    await user.click(within(await screen.findByRole('region', { name: '记忆详情' })).getByRole('button', { name: '定位到消息' }));
+    await waitFor(() => expect(screen.getByText('我喜欢红茶').closest('li')).toHaveClass('source-highlight'));
   });
 
   it("渠道记忆来源在只读弹窗定位消息，关闭后仍在角色记忆页", async () => {

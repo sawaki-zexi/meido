@@ -2,7 +2,7 @@
 
 状态：当前（Runtime、能力快照、Skill、角色范围工具、角色 Shell 工具和按独立规格接入的邮件工具）
 
-最后核验：2026-10-14
+最后核验：2026-11-01（#293 更新桌面任务归属与恢复边界）
 
 事实来源：
 
@@ -67,7 +67,7 @@
 3. 通过 SSE 发送增量回复；
 4. 成功时保存完整 assistant 消息；
 5. 成功后提交记忆维护任务；
-6. 失败、取消或客户端断开时保留可诊断的失败状态，用户消息不丢失。
+6. 失败、取消时保留可诊断的终态，用户消息不丢失；桌面客户端断开后任务继续，重入恢复同一运行。
 
 ### 3.2 工具对话
 
@@ -79,7 +79,7 @@
 4. 将工具结果作为下一轮 provider 上下文；
 5. 继续生成，直到模型返回最终回复、运行被取消、达到轮数限制或发生不可恢复错误。
 
-工具执行错误（包括单个工具超时）应转换为结构化的错误 tool result，让模型决定是否继续；provider 请求超时、显式取消和不可恢复运行时错误终止当前运行并释放角色锁。客户端断开必须能取消正在等待的 provider/tool await。
+工具执行错误（包括单个工具超时）应转换为结构化的错误 tool result，让模型决定是否继续；provider 请求超时、显式取消和不可恢复运行时错误终止当前运行并释放角色锁。桌面客户端断开只解除订阅；显式 Stop 继续取消正在等待的 provider/tool，并等待真实回执与清理。
 
 ### 3.3 前端兼容
 
@@ -167,7 +167,7 @@ created -> running -> completed
                   -> max_turns
 ```
 
-尚未开始的 `created` run 可以在请求取消或服务启动恢复时直接进入 `cancelled` 或 `failed`。终态不可再次变为 `running`；同一个 `role_id` 同时最多存在一个 `created` 或 `running` 运行。
+已接受未执行的 `queued` 和尚未开始的 `created` run 可以在显式停止或服务启动恢复时进入 `cancelled` 或 `failed`。拟人补充输入先 queued，再使用原角色锁转为 created；详见[聊天生命周期](../reference/chat-run-lifecycle.md)。终态不可再次变为 `running`；同一个 `role_id` 同时最多存在一个 `created` 或 `running` 运行。
 
 ### 5.2 Provider
 
@@ -329,8 +329,8 @@ Runtime 必须支持：
 
 RuntimeManager 接管现有 `role_locks` 的职责：
 
-- 同角色已有运行时，新请求返回 409；
-- HTTP 客户端断开时向当前运行发出取消信号；
+- 普通回复同角色已有运行或仍在收尾时返回 409；拟人补充输入由服务排队，既有工具完成回执后才取得角色锁；
+- 桌面 HTTP 客户端断开只解除订阅；显式 Stop 和服务退出取消确切运行，见 [ADR-0035](../adr/0035-service-owned-desktop-chat-runs.md)；
 - provider、tool 和 loop 都必须观察取消信号；
 - 取消后释放角色锁并写入终态；
 - 角色活动运行期间，删除请求继续返回 409；运行终态后才能删除角色。删除完成后不能留下可继续写入的运行；
@@ -349,7 +349,7 @@ RuntimeManager 接管现有 `role_locks` 的职责：
 - 现有普通流式对话产生相同 SSE 事件；
 - 模型配置在运行开始时冻结；
 - 同角色并发仍返回 409；
-- 模型失败、流中断、客户端断开后可继续发送；
+- 模型失败并清理后可继续发送；客户端断开后恢复同一运行，不重复接受输入；
 - 成功回复仍触发记忆维护，失败回复不触发正常记忆任务；
 - 现有 API 和前端测试保持通过。
 
@@ -389,9 +389,9 @@ RuntimeManager 接管现有 `role_locks` 的职责：
 1. 参考 Tau `0c233ff080ba261ec1178e9232301cbb6479e648` 的 portable loop 行为；Meido 自行实现 provider-neutral seam，不依赖完整 `tau-ai`，也不逐文件移植上游 `loop.py`。
 2. SQLite 是运行和消息的权威来源；以现有 `messages` 表兼容扩展的结构化列表示 tool call/result，并新增 `agent_runs`。任何可恢复的 message end 在下一轮 provider 请求前持久化。
 3. 进程启动时将所有遗留 `created` 或 `running` run 标记为 `failed`，原因写明服务重启；同时将关联的 `streaming` assistant 收束为 `failed`。不尝试恢复旧进程中的 provider/tool 执行。
-4. 每个 `run_id` 的事件序号单调递增；既有 SSE 事件名保持兼容，工具生命周期事件可作为新增事件暴露。
+4. 新运行订阅按 `run_id` 使用单调递增事件序号，缺口从 SQLite 恢复；旧 `/messages` 连接保持原事件名和本连接递增序号，其慢订阅恢复由服务转换为旧消息事件。工具生命周期事件可作为新增事件暴露。
 5. #75 实施时生产 Registry 为空，Fake tools 仅用于 Runtime 测试。当前 Registry 已按后续实现接入角色范围记忆、主人资料、待办和可选 Shell 工具；每项能力仍需经过角色配置、能力快照和策略校验。
-6. 客户端断开必须取消当前 Runtime，即使 provider/tool 正阻塞等待下一次输出；取消传播到可取消的 provider/tool 请求，并以终态和失败/中止 assistant 收尾。
+6. 此项已由 #293／ADR-0035 更新：桌面任务由服务持有，断开只解除订阅；显式 Stop、服务退出和来源失效仍传播到可取消的 provider/tool，并等待真实回执与清理后发布终态。
 7. 角色运行期间，删除请求按当前 API 行为返回 409；运行结束后再删除。不得静默删除或遗留仍能写消息的运行。
 
 当前 HTTP 入口固定 `max_turns=8`、provider timeout 为 120 秒；工具超时使用角色 Shell 配置，未配置时为 30 秒。provider timeout 终止 run，单个工具超时产生错误 tool result。上下文预算保留完整回合与工具配对。OpenAI-compatible adapter 已支持结构化 tool call；具体工具仍由本次运行的 `CapabilitySnapshot` 决定，不能把未启用或未授权的工具发送给 provider。

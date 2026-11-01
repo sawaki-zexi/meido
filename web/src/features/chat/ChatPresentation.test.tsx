@@ -1,8 +1,9 @@
+import { fakeChatBackend as fakeBackend } from '../../test/fakeChatBackend';
 import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { App } from '../../App';
-import { fakeBackend, message, role, sse } from '../../test/fakeBackend';
+import { message, role, sse } from '../../test/fakeBackend';
 import { ComposerTools, readContextUsage } from './ComposerTools';
 
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
@@ -27,7 +28,7 @@ it('shows Shiori typing feedback before the server accepts a message and clears 
   fakeBackend({
     'GET /api/roles': () => ({ body: { roles: [role({ id: 'r1', name: '爱丽丝' })] } }),
     'GET /api/roles/r1/session': () => ({ body: { session: { roleId: 'r1', sessionKey: 'role:r1' }, messages: [] } }),
-    'POST /api/roles/r1/messages': () => pending,
+    'CHAT /api/roles/r1': () => pending,
   });
   const user = userEvent.setup();
   render(<App />);
@@ -45,7 +46,7 @@ it('shows only identity in the header, a recent message in the list, and inserts
   const { calls } = fakeBackend({
     'GET /api/roles': () => ({ body: { roles: [alice] } }),
     'GET /api/roles/r1/session': () => ({ body: { session: { roleId: 'r1', sessionKey: 'role:r1' }, messages: [reply] } }),
-    'POST /api/roles/r1/messages': () => ({ stream: [sse('user_message_accepted', { message: message({ id: 'u2', role: 'user', content: '你好😊呀' }) }), sse('assistant_completed', { message: message({ id: 'a2', role: 'assistant', content: '收到' }) })] }),
+    'CHAT /api/roles/r1': () => ({ stream: [sse('user_message_accepted', { message: message({ id: 'u2', role: 'user', content: '你好😊呀' }) }), sse('assistant_completed', { message: message({ id: 'a2', role: 'assistant', content: '收到' }) })] }),
   });
   const user = userEvent.setup();
   render(<App />);
@@ -62,7 +63,7 @@ it('shows only identity in the header, a recent message in the list, and inserts
   expect(calls.filter(call => call.method === 'POST')).toHaveLength(0);
   await user.click(screen.getByRole('button', { name: '发送' }));
   await screen.findByText('收到', { selector: '.bubble p' });
-  expect(calls.find(call => call.path.endsWith('/messages'))?.body).toEqual({ content: '你好😊呀' });
+  expect(calls.find(call => call.path.endsWith('/runs'))?.body).toMatchObject({ content: '你好😊呀' });
 });
 
 it('renders a persisted process in the reply and explains last request input usage', async () => {
@@ -102,7 +103,7 @@ it('streams thinking into the active reply and retains its process across tool t
   fakeBackend({
     'GET /api/roles': () => ({ body: { roles: [role({ id: 'r1', name: '爱丽丝' })] } }),
     'GET /api/roles/r1/session': () => ({ body: { session: { roleId: 'r1', sessionKey: 'role:r1' }, messages: [] } }),
-    'POST /api/roles/r1/messages': () => {
+    'CHAT /api/roles/r1': () => {
       emit('user_message_accepted', { message: message({ id: 'u1', role: 'user', content: '查找' }) });
       emit('assistant_generation_started', { messageId: 'a1' });
       emit('assistant_thinking_delta', { messageId: 'a1', delta: '查看资料' });
@@ -137,6 +138,33 @@ it('streams thinking into the active reply and retains its process across tool t
   expect(screen.queryByRole('button', { name: '停止回复' })).toBeNull();
 });
 
+it('restores one live thinking identity and appends deltas without deduplicating equal earlier thinking', async () => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
+  const text = '本地测试推理摘要：正在核对这次回复。';
+  const process = [{ type: 'thinking', id: 'previous-tool-group:thinking', text },
+    { type: 'tool', id: 'call', name: 'lookup', status: 'succeeded', result: '已找到' },
+    { type: 'thinking', id: 'a2:thinking', text }];
+  const active = message({ id: 'a2', role: 'assistant', content: '', runId: 'run-thinking', status: 'streaming',
+    metadata: { process, streamThinking: text } });
+  fakeBackend({
+    'GET /api/roles': () => ({ body: { roles: [role({ id: 'r1', name: '爱丽丝' })] } }),
+    'GET /api/roles/r1/session': () => ({ body: { session: { roleId: 'r1', sessionKey: 'role:r1' }, messages: [active],
+      activeRun: { runId: 'run-thinking', roleId: 'r1', sessionKey: 'role:r1', sequence: 8, status: 'running', phase: 'model', stopping: false, tools: [] } } }),
+    'GET /api/roles/r1/runs/run-thinking/events\\?after=8': () => ({ stream }),
+  });
+  render(<App />);
+  await screen.findByRole('heading', { name: '爱丽丝' });
+  expect(screen.getAllByText(text, { selector: '.chat-thinking-text' })).toHaveLength(2);
+  expect(document.querySelectorAll('.chat-thinking-cursor')).toHaveLength(1);
+  act(() => controller.enqueue(new TextEncoder().encode(sse('assistant_thinking_delta', {
+    runId: 'run-thinking', sequence: 9, messageId: 'a2', delta: '继续整理。',
+  }))));
+  expect(await screen.findByText(text + '继续整理。', { selector: '.chat-thinking-text' })).toBeVisible();
+  expect(screen.getAllByText(text, { selector: '.chat-thinking-text' })).toHaveLength(1);
+  expect(document.querySelectorAll('.chat-thinking-text')).toHaveLength(2);
+});
+
 it.each(['failed', 'cancelled'])('keeps each same-name call intent in its live and reopened parameter chip after %s', async terminal => {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
@@ -152,11 +180,11 @@ it.each(['failed', 'cancelled'])('keeps each same-name call intent in its live a
   fakeBackend({
     'GET /api/roles': () => ({ body: { roles: [role({ id: 'r1', name: '爱丽丝' })] } }),
     'GET /api/roles/r1/session': () => ({ body: { session: { roleId: 'r1', sessionKey: 'role:r1' }, messages: history } }),
-    'POST /api/roles/r1/messages': () => {
+    'CHAT /api/roles/r1': () => {
       emit('user_message_accepted', { message: message({ id: 'u1', role: 'user', content: '检查配置' }) });
       emit('assistant_generation_started', { messageId: 'a1' });
       emit('tool_execution_start', { toolCallId: 'c0', toolName: 'read_config', argumentsPreview: previews[0] });
-      return { stream };
+      return { stream, headers: { 'X-Meido-Run-Id': 'run-intent' } };
     },
   });
   const user = userEvent.setup();

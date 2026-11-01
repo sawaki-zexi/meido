@@ -29,6 +29,9 @@ class SessionManager:
 
     def present_message(self, message: Message, messages=None) -> Message:
         result = public_message(message)
+        if message.status == 'streaming' and isinstance(message.metadata.get('streamThinking'), str):
+            from .chat_presentation import display_text
+            result.metadata['streamThinking'] = display_text(message.metadata['streamThinking'])
         if message.role == 'assistant' and message.messageType == 'text' and message.runId:
             messages = messages if messages is not None else self.sessions.list_messages(message.sessionKey)
             if message.id == process_target(messages, message.runId):

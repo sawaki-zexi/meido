@@ -1,5 +1,7 @@
 # 普通自然聊天
 
+状态：当前；最后核验：2026-11-01。事实来源：本文末尾列出的实现与测试。
+
 角色能力页的 **自然聊天** 对应 `agentConfig.naturalChatEnabled`，默认关闭。开启后，桌面和已触发的渠道回合共用普通工具循环，由模型用 `finish_reply(messages: string[])` 决定内容、条数及分条位置；不是按换行机械拆分。关闭时保留原有单条正文行为。
 
 - 普通业务工具先完成；同批次的提前回复和草稿正文不显示、不作为已发送历史。最终格式无效时只允许一次仅含回复协议的纠正，不重新开放业务工具。
@@ -10,3 +12,9 @@
 - **群聊主动接话（无需 @）** 是保留的独立按群功能；旧配置和记录不迁移、不删除，见 [QQ 群聊主动接话](qq-natural-chat.md)。
 
 来源：固定 Shiori `d3acaed` 的 `finish_reply/messages` 普通自然聊天契约；Meido 实现 `agent_runtime/natural_reply.py`、`channels/reply_sequence.py` 与普通桌面／渠道入口。验证为本地真实 API、SQLite、Runtime 和 QQ adapter 链路配合受控模型／平台，无真实发送或付费调用；不代表真实模型的自然度已经验收。
+
+## 桌面排队与恢复
+
+#293 后，桌面补充输入以同一事务保存 `queued` run、用户消息与占位，由服务等待旧任务。取消排队输入不会取消前驱工具；旧工具先完成真实回执，后续补充才能进入原角色锁。断线或未读取接受响应也不会丢失这段等待。关闭自然聊天会阻止尚未开始的排队回复。
+
+每段仍独立提交；重入读取已提交前段和同一活动 run，不生成未发送尾段或重跑业务工具。最终事件等任务资源收尾后发布，阶段和 Stop 细节见[桌面聊天生命周期](chat-run-lifecycle.md)。验证：[自然回复 API](../../tests/python/test_natural_reply_api.py)、[排队与生命周期](../../tests/python/test_chat_lifecycle.py)。
