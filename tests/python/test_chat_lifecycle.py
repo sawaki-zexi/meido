@@ -32,6 +32,8 @@ def events(response):
 def test_disconnect_resume_and_duplicate_submit_do_not_repeat_execution(chat_server, monkeypatch):
     client, role, other = chat_server
     release, entered = threading.Event(), threading.Event()
+    finish_steps = [threading.Event() for _ in range(3)]
+    advanced = [threading.Event() for _ in range(3)]
     calls = []
 
     class Model:
@@ -40,7 +42,10 @@ def test_disconnect_resume_and_duplicate_submit_do_not_repeat_execution(chat_ser
             yield '已收到'
             entered.set()
             await asyncio.to_thread(release.wait, 5)
-            yield '，完成'
+            for index, text in enumerate(('，', '完', '成')):
+                assert await asyncio.to_thread(finish_steps[index].wait, 5)
+                yield text
+                advanced[index].set()
 
     monkeypatch.setattr(main, 'model_adapter', Model())
     path = f'/api/roles/{role.id}'
@@ -63,12 +68,47 @@ def test_disconnect_resume_and_duplicate_submit_do_not_repeat_execution(chat_ser
         assert client.post(path + '/runs', json={'content': '不同输入', 'requestId': 'lifecycle-first'}).status_code == 409
         assert client.post(f'/api/roles/{other.id}/runs', json={'content': '同一句', 'requestId': 'lifecycle-first'}).status_code == 409
         assert calls == [role.id]
+        projection = main._read_desktop_projection
+        crossed_reads = []
+
+        def cross_final_delta(*args):
+            value = projection(*args)
+            if len(crossed_reads) < len(finish_steps):
+                index = len(crossed_reads)
+                crossed_reads.append(index)
+                finish_steps[index].set()
+                assert advanced[index].wait(3)
+            return value
+
+        # Each worker snapshot crosses one real final delta. Three stale reads
+        # must exercise the bounded 503 contract, independent of runner speed.
+        monkeypatch.setattr(main, '_read_desktop_projection', cross_final_delta)
+        retried = []
+
+        def read_terminal():
+            response = client.get(path + '/runs/' + run['runId'])
+            if response.status_code != 200:
+                assert response.status_code == 503, (response.status_code, response.text)
+                assert response.headers['Retry-After'] == '1'
+                assert response.headers['X-Meido-Run-Id'] == run['runId']
+                assert response.json() == {'detail': '回复仍在更新，正在重新同步'}
+                retried.append(response.status_code)
+                return None
+            value = response.json()
+            assert value['run']['runId'] == run['runId']
+            assert value['run']['status'] in {'queued', 'created', 'running', 'completed'}, value
+            return value if value['run']['status'] == 'completed' else None
+
         release.set()
-        terminal = wait_for(lambda: (value if (value := client.get(path + '/runs/' + run['runId']).json())['run']['status'] == 'completed' else None))
+        terminal = wait_for(read_terminal)
+        assert crossed_reads == [0, 1, 2] and retried
+        assert calls == [role.id]
         assert [item['content'] for item in terminal['messages']] == ['同一句', '已收到，完成']
         assert client.get(path + '/session').json()['activeRun'] is None
     finally:
         release.set()
+        for step in finish_steps:
+            step.set()
 
 
 def test_legacy_disconnect_continues_and_explicit_stop_still_cancels(chat_server, monkeypatch):
