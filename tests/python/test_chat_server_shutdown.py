@@ -11,13 +11,15 @@ from test_api import configure_session_api
 
 
 def test_server_exit_cancels_owned_reply_without_waiting_for_sse_disconnect(tmp_path, monkeypatch, local_platform_only):
+    from backend.app.ai.model_types import ModelTextDelta, ModelThinkingDelta
     entered, cancelled = asyncio.Event(), asyncio.Event()
 
     class Model:
-        async def stream_reply(self, role, history, configuration=None):
-            entered.set()
+        async def stream_rich_messages(self, messages, configuration, tools):
             try:
-                yield '部分内容'
+                yield ModelThinkingDelta('退出前的真实思考')
+                yield ModelTextDelta('部分内容')
+                entered.set()
                 await asyncio.Event().wait()
             finally:
                 cancelled.set()
@@ -52,6 +54,9 @@ def test_server_exit_cancels_owned_reply_without_waiting_for_sse_disconnect(tmp_
                 await asyncio.wait_for(serving, 5)
                 assert stopped_while_open, 'server waited for the SSE client before stopping the owner'
                 assert status_while_open == 'cancelled'
+                partial = sessions.list_messages(f'role:{role.id}')[-1]
+                assert partial.content == '部分内容'
+                assert partial.metadata['streamThinking'] == '退出前的真实思考'
         finally:
             server.should_exit = True
             await main._chat_runs().close()

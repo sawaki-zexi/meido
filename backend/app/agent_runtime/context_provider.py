@@ -155,9 +155,9 @@ class ContextWindowProvider:
             self._publish_window(view)
         return (*view.provider_schemas(), *protocol_tools)
 
-    def _reserve(self, signal, *, auxiliary=False):
+    async def _reserve(self, signal, *, auxiliary=False):
         signal.raise_if_cancelled()
-        if not self.authorized():
+        if not await self._io(signal, self.authorized):
             raise PermissionError('对话来源许可已变化，请重新开始回复')
         if self.requests + int(auxiliary) >= self.settings.maxIterations:
             raise ValueError('本次运行的模型请求步数已用完（包括上下文压缩）')
@@ -253,7 +253,10 @@ class ContextWindowProvider:
         parameters = inspect.signature(rich).parameters
         def check_request():
             signal.raise_if_cancelled()
-            if not self.authorized():
+            guard = getattr(self.provider, 'request_guard', None)
+            if guard is not None:
+                guard()
+            elif not self.authorized():
                 raise PermissionError('对话来源许可已变化，请重新开始回复')
         if 'cancel_check' in parameters:
             options['cancel_check'] = check_request
@@ -271,12 +274,14 @@ class ContextWindowProvider:
             if estimate > available:
                 attempt['outcome'] = 'input_overflow'
                 raise ValueError('待压缩前缀超出摘要请求容量，请使用更大上下文的模型')
-            self._reserve(signal, auxiliary=True)
+            await self._reserve(signal, auxiliary=True)
             # Auxiliary work cannot consume the entire ordinary-response deadline.
             async with asyncio.timeout(SUMMARY_TIMEOUT_SECONDS):
                 async with aclosing(rich(request_messages, configuration, [], **options)) as stream:
                     async for event in stream:
-                        check_request()
+                        signal.raise_if_cancelled()
+                        if 'cancel_check' not in parameters:
+                            await self._io(signal, check_request)
                         if isinstance(event, ModelTextDelta):
                             result += event.text
                             if len(result) > max_characters:
@@ -307,9 +312,14 @@ class ContextWindowProvider:
                                 raise ValueError('摘要响应超过本地体积上限')
                             result = ''.join(text_blocks) or result
                             done = True
+                        if 'cancel_check' in parameters:
+                            # Buffered SSE still needs to yield to HTTP/Stop tasks.
+                            await asyncio.sleep(0)
             if not done:
                 attempt['outcome'] = 'incomplete'
                 raise ValueError('工作摘要未完整返回')
+            if not await self._io(signal, self.authorized):
+                raise PermissionError('对话来源许可已变化，请重新开始回复')
             attempt['outcome'] = 'returned'
             return result
         except BaseException as error:
@@ -533,7 +543,7 @@ class ContextWindowProvider:
             if configuration is not None and configuration.contextWindowTokens is not None and self.last_input_estimate >= available:
                 raise ValueError('当前输入与工具声明仍超出输入容量；原历史已保留')
         self.tool_count = len(request_tools)
-        self._reserve(signal)
+        await self._reserve(signal)
         if self.on_phase is not None:
             self.on_phase('model')
         timeout = asyncio.timeout(provider_timeout) if provider_timeout is not None else nullcontext()
