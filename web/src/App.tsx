@@ -47,7 +47,6 @@ export function App() {
   // Narrow screens show one pane at a time; home is the conversation.
   const [showList, setShowList] = useState(false);
   const [channelsOpen, setChannelsOpen] = useState(false);
-  const [openingId, setOpeningId] = useState<string | null>(null);
   const booted = useRef(false);
   // The message a memory came from; the chat scrolls to and marks it.
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
@@ -66,17 +65,16 @@ export function App() {
 
   const openChat = async (role: Role, navigate = true) => {
     roles.setError("");
-    setOpeningId(role.id);
-    const opened = await chat.open(role);
-    setOpeningId(null);
-    if (!opened) return null;
-    writeLastRole(role.id);
+    // Navigation belongs to the click, not a possibly delayed history response.
     if (navigate) {
       setHighlightedId(null);
       setChannelsOpen(false);
       setView("chat");
       setShowList(false);
     }
+    const opened = await chat.open(role);
+    if (!opened) return null;
+    writeLastRole(role.id);
     return opened;
   };
 
@@ -112,9 +110,8 @@ export function App() {
       setChannelSource({ role, source: { origin, messageId } }); return;
     }
     if (origin.sessionKey !== `role:${role.id}`) { chat.setError("来源会话与当前角色不匹配"); setView("chat"); return; }
-    const messages = await chat.open(role);
+    const messages = await openChat(role);
     if (!messages) return;
-    setView("chat");
     const [from, to] = origin.messageRange ?? [];
     const source = messageId
       ? messages.find((message) => message.id === messageId)
@@ -137,7 +134,7 @@ export function App() {
     }
     setHighlightedId(messageId);
   };
-  const chatWith = (role: Role) => role.id === chat.roleId ? backToChat() : void openChat(role);
+  const chatWith = (role: Role) => role.id === chat.roleId && !chat.opening ? backToChat() : void openChat(role);
 
   const saveRole = async () => {
     const wasCreating = view === "create";
@@ -164,8 +161,6 @@ export function App() {
     }
   };
 
-  // Switching roles mid-reply would mix two conversations, so the list waits for the reply.
-  const lockSwitch = openingId !== null;
   const rolePage = view === "role" || view === "create";
   const backLabel = roleReturnView === "tavern" ? "返回角色" : "返回对话";
 
@@ -204,17 +199,17 @@ export function App() {
       </div>
       <div className="sidebar-body">
         {roles.error && panel === null && view !== "tavern" && <Notice onDismiss={() => roles.setError("")}>{roles.error}</Notice>}
-        <RoleList previews={chatPreviews} roles={filteredRoles} loading={roles.loading} loadFailed={roles.loadFailed} searching={Boolean(searchTerm)} activeId={view === "tavern" ? null : rolePage ? roles.selected?.id ?? null : view === "novelai" ? studioRoleId : chat.roleId} disabled={roles.busy || (view !== "novelai" && lockSwitch)} onOpen={rolePage ? (role) => showProfile(role) : view === "novelai" ? (role) => openNovelai(role.id) : chatWith} />
+        <RoleList previews={chatPreviews} roles={filteredRoles} loading={roles.loading} loadFailed={roles.loadFailed} searching={Boolean(searchTerm)} activeId={view === "tavern" ? null : rolePage ? roles.selected?.id ?? null : view === "novelai" ? studioRoleId : chat.roleId} disabled={roles.busy} onOpen={rolePage ? (role) => showProfile(role) : view === "novelai" ? (role) => openNovelai(role.id) : chatWith} />
       </div>
     </aside>
 
     <main className="main" aria-hidden={panel === 'settings' || undefined} ref={element => { if (element) element.inert = panel === 'settings'; }}>
       {view === "tavern"
-        ? <TavernView roles={roles.roles} query={searchTerm} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={lockSwitch} onBack={() => setShowList(true)} onShow={showChatProfile} onWorkspace={showProfile} onChat={chatWith} onPreviewAvatar={setPreviewRole} />
+        ? <TavernView roles={roles.roles} query={searchTerm} loading={roles.loading} error={panel === null ? roles.error : ""} onDismissError={() => roles.setError("")} chatDisabled={roles.busy} onBack={() => setShowList(true)} onShow={showChatProfile} onWorkspace={showProfile} onChat={chatWith} onPreviewAvatar={setPreviewRole} />
         : view === "create"
         ? <CreateRolePage state={roles} number={roles.roles.length + 1} onSubmit={() => void saveRole()} onCancel={cancelEdit} onBack={backFromRole} backLabel={backLabel} />
         : view === "role" && roles.selected
-        ? <RoleWorkspace key={roles.selected.id} role={roles.selected} state={roles} tab={profileTab} onTabChange={setProfileTab} onBack={backFromRole} backLabel={backLabel} onChat={() => chatWith(roles.selected!)} chatDisabled={lockSwitch} onEdit={() => { setProfileTab("profile"); roles.startEdit(); }} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} onOpenSettings={(section = 'plugins') => { setSettingsSection(section); setPanel("settings"); }} onOpenChannelSettings={() => { setSettingsSection("channels"); setPanel("settings"); }} onOpenMemorySource={(origin, messageId) => void openMemorySource(roles.selected!, origin, messageId)} settingsVersion={roleSettingsVersion} />
+        ? <RoleWorkspace key={roles.selected.id} role={roles.selected} state={roles} tab={profileTab} onTabChange={setProfileTab} onBack={backFromRole} backLabel={backLabel} onChat={() => chatWith(roles.selected!)} chatDisabled={roles.busy} onEdit={() => { setProfileTab("profile"); roles.startEdit(); }} onSubmit={() => void saveRole()} onCancel={cancelEdit} onDelete={() => void deleteRole()} onOpenSettings={(section = 'plugins') => { setSettingsSection(section); setPanel("settings"); }} onOpenChannelSettings={() => { setSettingsSection("channels"); setPanel("settings"); }} onOpenMemorySource={(origin, messageId) => void openMemorySource(roles.selected!, origin, messageId)} settingsVersion={roleSettingsVersion} />
         : view === "novelai"
         ? null
         : view === "story"
@@ -223,7 +218,7 @@ export function App() {
         ? <MemoryPanel key={chatRole.id} role={chatRole} onBack={backToChat} onOpenSource={(origin, messageId) => void openMemorySource(chatRole, origin, messageId)} />
         : chatRole
         ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showChatProfile(chatRole)} onShowMemories={() => setView("memories")} onShowChannels={openChannels} />
-        : <WelcomeView loading={roles.loading || openingId !== null} hasRoles={roles.roles.length > 0} error={chat.error} onDismissError={() => chat.setError("")} onCreate={startCreate} onBack={() => setShowList(true)} />}
+        : <WelcomeView loading={roles.loading || chat.opening} hasRoles={roles.roles.length > 0} error={chat.error} onDismissError={() => chat.setError("")} onCreate={startCreate} onBack={() => setShowList(true)} />}
       {studioVisited && <div hidden={view !== 'novelai'} aria-hidden={view !== 'novelai' || undefined}
         style={{ display: view === 'novelai' ? 'flex' : 'none', flex: 1, minWidth: 0, minHeight: 0 }}
         ref={element => { if (element) element.inert = view !== 'novelai'; }}>

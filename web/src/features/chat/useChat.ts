@@ -63,6 +63,7 @@ export function useChat() {
   const [phase, setPhase] = useState<ChatPhase | null>(null);
   const [toolProgress, setToolProgress] = useState<ToolProgressState | null>(null);
   const activeReply = useRef<ActiveReply | null>(null);
+  const openingRequest = useRef<AbortController | null>(null);
   const sourceRevision = useRef(0);
   const mounted = useRef(true);
   const current = (reply: ActiveReply) => mounted.current && activeReply.current === reply && !reply.controller.signal.aborted;
@@ -71,9 +72,13 @@ export function useChat() {
     activeReply.current?.controller.abort();
     activeReply.current = null;
   };
+  const cancelOpening = () => {
+    openingRequest.current?.abort();
+    openingRequest.current = null;
+  };
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; sourceRevision.current += 1; detach(); };
+    return () => { mounted.current = false; sourceRevision.current += 1; cancelOpening(); detach(); };
   }, []);
 
   const finish = (reply: ActiveReply) => {
@@ -170,7 +175,10 @@ export function useChat() {
   };
 
   const open = async (role: Role): Promise<Message[] | null> => {
+    cancelOpening();
     detach();
+    const controller = new AbortController();
+    openingRequest.current = controller;
     const revision = ++sourceRevision.current;
     setToolProgress(null); setPhase(null); setSending(false); setStopping(false); setError(''); setOpening(true);
     try {
@@ -178,13 +186,17 @@ export function useChat() {
       for (;;) {
         if (!mounted.current || sourceRevision.current !== revision) return null;
         try {
-          data = await api<SessionData>(`/api/roles/${encodeURIComponent(role.id)}/session`);
+          data = await api<SessionData>(`/api/roles/${encodeURIComponent(role.id)}/session`, { signal: controller.signal });
           break;
         } catch (cause) {
           if (!(cause instanceof ApiError && cause.status === 503)) throw cause;
           if (!mounted.current || sourceRevision.current !== revision) return null;
           setError(errorMessage(cause, '回复进度正在重新同步'));
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          await new Promise<void>(resolve => {
+            const done = () => { clearTimeout(timer); controller.signal.removeEventListener('abort', done); resolve(); };
+            const timer = setTimeout(done, 1000);
+            controller.signal.addEventListener('abort', done, { once: true });
+          });
         }
       }
       if (!mounted.current || sourceRevision.current !== revision || data.session.roleId !== role.id) return null;
@@ -197,16 +209,17 @@ export function useChat() {
       if (mounted.current && sourceRevision.current === revision) setError(errorMessage(cause, '无法打开会话'));
       return null;
     } finally {
+      if (openingRequest.current === controller) openingRequest.current = null;
       if (mounted.current && sourceRevision.current === revision) setOpening(false);
     }
   };
 
   const refresh = useCallback(async () => {
-    if (!roleId || activeReply.current) return;
+    if (!roleId || activeReply.current || openingRequest.current) return;
     const revision = sourceRevision.current;
     try {
       const data = await api<SessionData>(`/api/roles/${encodeURIComponent(roleId)}/session`);
-      if (!mounted.current || sourceRevision.current !== revision || activeReply.current || data.session.roleId !== roleId) return;
+      if (!mounted.current || sourceRevision.current !== revision || activeReply.current || openingRequest.current || data.session.roleId !== roleId) return;
       setSession(data.session); setMessages(data.activeRun ? liveMessages(data.messages, data.activeRun) : data.messages);
       if (data.activeRun && !terminal(data.activeRun) && data.activeRun.roleId === roleId
         && data.activeRun.sessionKey === data.session.sessionKey) attach(data.activeRun);
@@ -214,6 +227,7 @@ export function useChat() {
   }, [roleId]);
 
   const reset = () => {
+    cancelOpening();
     detach(); sourceRevision.current += 1;
     setRoleId(null); setSession(null); setMessages([]); setToolProgress(null); setPhase(null);
     setOpening(false); setSending(false); setStopping(false); setError('');
@@ -221,7 +235,7 @@ export function useChat() {
 
   const send = async (text: string, attachments: string[] = []): Promise<boolean> => {
     const content = text.trim();
-    if ((!content && !attachments.length) || !roleId || activeReply.current) return false;
+    if ((!content && !attachments.length) || !roleId || activeReply.current || openingRequest.current) return false;
     sourceRevision.current += 1;
     const requestId = crypto.randomUUID();
     const reply: ActiveReply = { controller: new AbortController(), roleId, sessionKey: session?.sessionKey ?? `role:${roleId}`,
