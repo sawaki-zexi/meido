@@ -40,30 +40,47 @@ def _facts(host, role_id):
     role = host.store.get(role_id)
     if role is None:
         raise HTTPException(status_code=404, detail='角色不存在')
+    # Reuse the host's inventory policy once per read boundary, never per tool.
+    policy = host._runtime_capability_policy(role,
+        include_channel=host._role_has_usable_channel_account(role_id))
     return (role, host.model_configuration_store.get(role.modelConfigurationId), host.advanced_settings.get(),
         host.memory_service.context_block([], host._role_memory_context(role_id, include_recent=False, readonly=True)),
         tuple(host._external_activity_blocks(role_id)),
         tuple(host.plugin_configuration.get(name) for name in PARAMETERS),
         tuple((config, host.mcp_host.observed_catalog(role_id, config.server_id))
-            for config in host.mcp_host.store.all() if role_id in config.role_ids))
+            for config in host.mcp_host.store.all() if role_id in config.role_ids), policy)
+
+
+def _candidates(host, role, history):
+    return host._runtime_tool_candidates(role,
+        include_channel=host._role_has_usable_channel_account(role.id),
+        source_thread_id=f'desktop:{role.id}', history=history, preview=True)
+
+
+def _definitions(candidates, policy):
+    return tuple(tool.definition for tool in candidates if tool.definition.name in policy.enabled_tools)
 
 
 def _read(host, role_id):
     facts = _facts(host, role_id)
-    history = host._owner_history(role_id)
+    history = host._owner_history(role_id, readonly=True)
     configuration = facts[1]
     limit = None if configuration and configuration.contextWindowTokens else max(100, AdvancedSettings.model_validate(facts[2]['values']).recent_memory_count)
     messages = history.runtime_messages(max_messages=limit)
     return facts, history, messages
 
 
-def _current(host, role_id, facts, history, window, state):
+def _current(host, role_id, facts, history, window, state, definitions):
     if _facts(host, role_id) != facts:
         return False
     # The normal turn fence deliberately ignores new appends. Inspection must
     # include them, so compare against a fresh *role-scoped* view after the await.
-    current = host._owner_history(role_id)
+    current = host._owner_history(role_id, readonly=True)
     if current.authority != history.authority or current.read() != history.read():
+        return False
+    # Compare current local declaration metadata, including availability text.
+    # This preview neither loads plugins/MCP peers nor authorizes executions.
+    if _definitions(_candidates(host, facts[0], current), facts[-1]) != definitions:
         return False
     return window.windows.load(role_id, window.session_key, window.scope, window.authority) == state
 
@@ -83,9 +100,8 @@ async def inspect_context(host, role_id):
         settings = AdvancedSettings.model_validate(advanced['values'])
         # Preview builds the same tools without authoring Drift files, binding
         # executions to a fake run, or recreating a missing workspace directory.
-        candidates = await asyncio.to_thread(host._runtime_tool_candidates, role,
-            include_channel=await asyncio.to_thread(host._role_has_usable_channel_account, role_id),
-            source_thread_id=f'desktop:{role_id}', history=history, preview=True)
+        candidates = await asyncio.to_thread(_candidates, host, role, history)
+        definitions = _definitions(candidates, facts[-1])
         capabilities = await host._runtime_capabilities(role, session_key=history.session_key, run_id='',
             available_tools=candidates, advanced_snapshot=advanced, inspection=True)
         provider = host._desktop_provider(role, configuration, settings, capabilities, memory, readonly=True)
@@ -94,7 +110,7 @@ async def inspect_context(host, role_id):
         window.bind_capabilities(capabilities)
         value, state = await window.inspect(messages, signal,
             protocol_tools=(finish_reply_schema(),) if natural_chat_enabled(role) else ())
-        current = await asyncio.to_thread(_current, host, role_id, facts, history, window, state)
+        current = await asyncio.to_thread(_current, host, role_id, facts, history, window, state, definitions)
         if _busy(host, role_id):
             return unavailable(role_id, '正在回复或整理上下文，请稍后重试', busy=True)
         if not current:

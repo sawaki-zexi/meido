@@ -205,11 +205,11 @@ def _context_window_store():
     return ContextWindowStore(session_store.database_path)
 
 
-def _owner_history(role_id, *, thread_id=None, through_message_id=None, snapshot=None):
+def _owner_history(role_id, *, thread_id=None, through_message_id=None, snapshot=None, readonly=False):
     from .conversation_history import ConversationHistoryView
     return ConversationHistoryView(multichannel_store, role_id=role_id, thread_id=thread_id,
         through_message_id=through_message_id, snapshot=snapshot,
-        attachment_resolver=lambda identifier: resolve_attachment(store.workspace_path(role_id), identifier),
+        attachment_resolver=lambda identifier: resolve_attachment(store.workspace_path(role_id, create=not readonly), identifier),
         authorized=lambda: store.get(role_id) is not None and role_id not in _channel_roles_deleting)
 
 

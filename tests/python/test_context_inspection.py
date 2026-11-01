@@ -1,4 +1,5 @@
 """Current saved context is an independent, read-only HTTP operation."""
+import asyncio
 import copy
 import hashlib
 import io
@@ -27,8 +28,8 @@ def configure():
         model='fixture', contextWindowTokens=64000))
 
 
-def database():
-    with sqlite3.connect(main.session_store.database_path) as connection:
+def database(path=None):
+    with sqlite3.connect(path or main.session_store.database_path) as connection:
         return list(connection.iterdump())
 
 
@@ -119,6 +120,133 @@ def capture_input(monkeypatch):
         return provider
     monkeypatch.setattr(main, '_desktop_provider', factory)
     return captured
+
+
+def test_missing_attachment_workspace_stays_missing_during_inspection(chat_server, monkeypatch, tmp_path):
+    client, role, _ = chat_server
+    configure()
+    # Match normal startup before taking the read-only operation's snapshots.
+    main._coding_application()
+    main._novelai_application()
+    main._desktop_pet_application()
+    main.session_store.open_role_session(role.id)
+    workspace = main.store.workspace_path(role.id)
+    attachment = save_attachment(workspace, 'saved.txt', 'text/plain', b'previously saved attachment')
+    main.session_store.append_message(f'role:{role.id}', 'user', 'saved input', metadata={'attachments': [attachment]})
+    retained = workspace.with_name('retained-workspace')
+    assert workspace.is_relative_to(tmp_path.resolve()) and retained.is_relative_to(tmp_path.resolve())
+    workspace.rename(retained)
+    assert not workspace.exists()
+    anchors = UsageAnchors()
+    monkeypatch.setattr(main, '_ordinary_usage_anchors', anchors)
+    captured = capture_input(monkeypatch)
+    before, anchor_before = database(), copy.deepcopy(vars(anchors))
+    files_before = {path: path.read_bytes() for path in retained.rglob('*') if path.is_file()}
+
+    response = client.get(f'/api/roles/{role.id}/context-status')
+
+    assert response.status_code == 200, response.text
+    assert response.json()['status'] == 'ready', response.text
+    assert '历史附件已缺失或不属于当前角色' in json.dumps(captured[-1][2], ensure_ascii=False)
+    assert not workspace.exists(), 'read-only inspection must not recreate a missing role workspace'
+    assert database() == before
+    assert vars(anchors) == anchor_before
+    assert {path: path.read_bytes() for path in retained.rglob('*') if path.is_file()} == files_before
+
+
+@pytest.mark.parametrize('change', ['todo_disable', 'todo_enable', 'novelai_availability', 'novelai_quota', 'novelai_settings', 'coding_disable'])
+def test_effective_tool_changes_during_inspection_discard_stale_status(chat_server, monkeypatch, tmp_path, change):
+    from backend.app.agent_runtime.context_provider import ContextWindowProvider
+    from backend.app.todo.plugin import TodoPlugin
+    from backend.app.todo.store import TodoStore
+
+    client, role, _ = chat_server
+    configure()
+    monkeypatch.setattr(main, 'data_root', tmp_path / 'data')
+    todos = TodoStore(tmp_path / 'todos.db')
+    todos.update_settings(enabled=change != 'todo_enable', reminders_enabled=False)
+    monkeypatch.setattr(main, 'todo_store', todos)
+    monkeypatch.setattr(main, 'todo_plugin', TodoPlugin(todos, main.session_store))
+    coding = main._coding_application()
+    coding.config.set_enabled(True)
+    novelai = main._novelai_application()
+    # This fake token never leaves the fixture or touches the system vault.
+    class Credentials:
+        def get(self, key):
+            raise AssertionError('inspection must not read a generation credential')
+        def set(self, key, value):
+            pass
+    monkeypatch.setattr(novelai.settings, 'credentials', Credentials())
+    novelai.settings.set_token('fixture-token')
+    novelai.settings.save({'enabled': True}, expected_revision=novelai.settings.public()['revision'])
+    main._desktop_pet_application()
+    main.session_store.open_role_session(role.id)
+    main.session_store.append_message(f'role:{role.id}', 'user', 'saved input')
+    anchors = UsageAnchors()
+    monkeypatch.setattr(main, '_ordinary_usage_anchors', anchors)
+    captured = capture_input(monkeypatch)
+    entered, release = threading.Event(), threading.Event()
+    original = ContextWindowProvider.inspect
+    async def held(window, *args, **kwargs):
+        result = await original(window, *args, **kwargs)
+        if not entered.is_set():
+            entered.set()
+            assert await asyncio.to_thread(release.wait, 5)
+        return result
+    monkeypatch.setattr(ContextWindowProvider, 'inspect', held)
+
+    with ThreadPoolExecutor() as pool:
+        reading = pool.submit(client.get, f'/api/roles/{role.id}/context-status')
+        try:
+            assert entered.wait(3)
+            previous_request = json.dumps(captured[-1][2], ensure_ascii=False)
+            if change.startswith('todo_'):
+                assert ('todo.search' in previous_request) == (change == 'todo_disable')
+                updated = client.put('/api/todos/settings', json={'enabled': change == 'todo_enable'})
+                assert updated.status_code == 200, updated.text
+            elif change.startswith('novelai_'):
+                assert '本地配置已就绪' in previous_request
+                if change == 'novelai_quota':
+                    # A paid operation elsewhere can change declaration readiness
+                    # without changing any service settings revision.
+                    with novelai.ledger.connect() as connection:
+                        connection.execute('INSERT INTO novelai_daily VALUES(?,?,?)',
+                            (novelai.ledger.usage(role.id)['day'], role.id, 10))
+                else:
+                    values = {'allowTxt2Img': False, 'allowImg2Img': False} if change == 'novelai_availability' else {'maxSteps': 27}
+                    novelai.settings.save(values, expected_revision=novelai.settings.public()['revision'])
+            else:
+                assert 'herdr_start_task' in previous_request
+                coding.config.set_enabled(False)
+            before = {path: database(path) for path in tmp_path.rglob('*.db')}
+            anchor_before = copy.deepcopy(vars(anchors))
+            release.set()
+            response = reading.result(5)
+            assert response.status_code == 200, response.text
+            unchanged_input = change == 'novelai_settings'
+            assert response.json()['status'] == ('ready' if unchanged_input else 'unavailable'), response.text
+            if not unchanged_input:
+                assert response.json()['inputTokens'] is None
+            assert {path: database(path) for path in tmp_path.rglob('*.db')} == before
+            assert vars(anchors) == anchor_before
+        finally:
+            release.set()
+
+    fresh = client.get(f'/api/roles/{role.id}/context-status')
+    assert fresh.status_code == 200 and fresh.json()['status'] == 'ready', fresh.text
+    current_request = json.dumps(captured[-1][2], ensure_ascii=False)
+    if change.startswith('todo_'):
+        assert ('todo.search' in current_request) == (change == 'todo_enable')
+    elif change == 'novelai_availability':
+        assert '文生图和图生图均已关闭' in current_request
+    elif change == 'novelai_quota':
+        assert '今日生图尝试额度已用完' in current_request
+    elif change == 'novelai_settings':
+        assert current_request == previous_request
+    elif change == 'coding_disable':
+        assert 'herdr_start_task' not in current_request
+    if change == 'todo_enable':
+        assert client.put('/api/todos/settings', json={'enabled': False}).status_code == 200
 
 
 def test_summary_tools_and_saved_images_share_normal_request_estimation(chat_server, monkeypatch):

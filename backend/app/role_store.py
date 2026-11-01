@@ -43,15 +43,16 @@ class RoleStore:
                     return role.model_copy(deep=True)
         return None
 
-    def workspace_path(self, role_id: str) -> Path:
-        """Return the role-owned workspace, creating it for legacy roles."""
+    def workspace_path(self, role_id: str, *, create: bool = True) -> Path:
+        """Return the validated workspace; read-only callers can skip creation."""
         role = self.get(role_id)
         if role is None:
             raise KeyError(role_id)
         workspace = (self.root / role_id / "workspace").resolve()
         if workspace.parent.parent != self.root or workspace.parent.name != role_id:
             raise ValueError("角色 workspace 路径无效")
-        workspace.mkdir(parents=True, exist_ok=True)
+        if create:
+            workspace.mkdir(parents=True, exist_ok=True)
         return workspace
 
     def create(self, data: RoleInput) -> Role:
