@@ -75,10 +75,10 @@ function MessageItem({ message, role, highlighted, onRegenerate, progress, stopp
 }
 
 /** Message box shared by the conversation and the welcome screen, so home always looks like a chat. */
-function Composer({ roleId, sessionKey, sessionSnapshot, contextRevision = '', placeholder, disabled, sending, stopping, onSend, onStop }: { roleId?: string; sessionKey?: string; sessionSnapshot?: object; contextRevision?: string; placeholder: string; disabled?: boolean; sending?: boolean; stopping?: boolean; onSend: (text: string, attachmentIds: string[]) => Promise<boolean>; onStop?: () => void }) {
+function Composer({ roleId, sessionKey, sessionSnapshot, contextRevision = '', settingsRevision = '', placeholder, disabled, sending, stopping, onSend, onStop }: { roleId?: string; sessionKey?: string; sessionSnapshot?: object; contextRevision?: string; settingsRevision?: string; placeholder: string; disabled?: boolean; sending?: boolean; stopping?: boolean; onSend: (text: string, attachmentIds: string[]) => Promise<boolean>; onStop?: () => void }) {
   const [configuration, setConfiguration] = useState<ModelConfiguration | null>(null);
   const inspection = useChatContextStatus({ roleId, sessionKey, sending, enabled: !disabled,
-    revision: contextRevision, modelKey: JSON.stringify(configuration), sessionSnapshot });
+    revision: contextRevision, modelKey: JSON.stringify([configuration, settingsRevision]), sessionSnapshot });
   const [draft, setDraft] = useState("");
   const [unsentText, setUnsentText] = useState("");
   const { attachments, uploading, dragging, setDragging, error, setError, upload, remove, clear, restore } = useChatAttachments(roleId, Boolean(disabled), Boolean(sending));
@@ -216,7 +216,8 @@ export function ChatView({ role, chat, settingsVersion = 0, highlightedId = null
     <div className="composer-dock">
       {chat.error && <Notice onDismiss={() => chat.setError("")}>{chat.error}</Notice>}
       <Composer key={role.id} roleId={role.id} sessionKey={chat.session?.sessionKey} sessionSnapshot={chat.session ?? undefined}
-        contextRevision={JSON.stringify([role.updatedAt, settingsVersion, chat.messages.map(message => [message.id, message.status, message.sequence])])}
+        settingsRevision={JSON.stringify([role.updatedAt, settingsVersion])}
+        contextRevision={JSON.stringify(chat.messages.map(message => [message.id, message.status, message.sequence]))}
         placeholder={`对${role.name}说点什么…`} sending={chat.sending} stopping={chat.stopping} disabled={chat.opening} onSend={chat.send} onStop={chat.stop} />
     </div>
     {generationRoleId === role.id && <GenerationDrawer key={role.id} role={role} onClose={() => setGenerationRoleId(null)} onGenerated={chat.refresh} selectedImage={selectedGenerationImage}

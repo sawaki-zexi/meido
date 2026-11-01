@@ -1,13 +1,49 @@
 import { fakeChatBackend as fakeBackend } from '../../test/fakeChatBackend';
-import { act, cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { App } from '../../App';
 import { message, role, sse } from '../../test/fakeBackend';
 import { ComposerTools, readContextUsage } from './ComposerTools';
+import { ChatView } from './ChatView';
+import type { ChatState } from './useChat';
 
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+it.each(['global', 'role'])('clears busy context after %s settings change while preserving the draft', async (change) => {
+  const alice = role({ id: 'r1', name: '爱丽丝' });
+  let capacity = 64000;
+  fakeBackend({
+    'GET /api/model/configurations': () => ({ body: { configurations: [{ id: 'old', model: 'old-model' }] } }),
+    'GET /api/roles/r1/model-configuration': () => ({ body: { configurationId: null, effectiveConfigurationId: 'old' } }),
+    'GET /api/roles/r1/context-status': () => ({ body: { roleId: 'r1', sessionKey: 'role:r1', status: 'ready',
+      reason: '', inputTokens: 1200, capacity, source: 'local', model: capacity === 64000 ? 'old-model' : 'new-model' } }),
+  });
+  const chat: ChatState = { roleId: 'r1', session: { sessionKey: 'role:r1', roleId: 'r1', createdAt: alice.createdAt, updatedAt: alice.updatedAt },
+    messages: [], toolProgress: null, phase: null, opening: false, sending: false, stopping: false, error: '',
+    setError: vi.fn(), open: vi.fn(), reset: vi.fn(), send: vi.fn(), stop: vi.fn(), refresh: vi.fn() };
+  const props = { role: alice, chat, onBack: vi.fn(), onShowProfile: vi.fn(), onShowMemories: vi.fn(), onShowChannels: vi.fn() };
+  const view = render(<ChatView {...props} />);
+  const user = userEvent.setup();
+  const input = screen.getByRole('textbox', { name: '消息内容' });
+  await user.type(input, '保留这份草稿');
+  await user.hover(screen.getByRole('button', { name: /上下文用量/ }));
+  await waitFor(() => expect(screen.getByRole('tooltip')).toHaveTextContent('64,000'));
+  const active = { ...chat, sending: true, messages: [message({ id: 'active', role: 'assistant', content: '', status: 'streaming' })] };
+  view.rerender(<ChatView {...props} chat={active} />);
+  expect(screen.getByRole('tooltip')).toHaveTextContent('上次用量');
+  expect(screen.getByRole('tooltip')).toHaveTextContent('64,000');
+  const changed = change === 'global' ? { settingsVersion: 1 } : { role: { ...alice, updatedAt: '2026-11-01T18:00:00Z' } };
+  view.rerender(<ChatView {...props} {...changed} chat={active} />);
+  expect(screen.getByRole('tooltip')).not.toHaveTextContent('64,000');
+  expect(screen.getByRole('tooltip')).toHaveTextContent('上下文用量未知');
+  expect(screen.getByRole('textbox', { name: '消息内容' })).toBe(input);
+  expect(input).toHaveValue('保留这份草稿');
+  capacity = 120000;
+  view.rerender(<ChatView {...props} {...changed} chat={{ ...active, sending: false }} />);
+  await waitFor(() => expect(screen.getByRole('tooltip')).toHaveTextContent('120,000'));
+});
 
 it.each([
   ['actual', '实际'], ['anchor_delta', '锚点估算'], ['local', '本地估算'],
