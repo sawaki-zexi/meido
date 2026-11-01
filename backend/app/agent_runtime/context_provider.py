@@ -80,6 +80,29 @@ class ContextWindowProvider:
     def bind_capabilities(self, capabilities):
         self.capabilities = capabilities
 
+    async def inspect(self, messages, signal, *, protocol_tools=()):
+        """Measure a saved window; never publish tools, reserve or compact it."""
+        state = await self._io(signal, self.windows.load, self.role_id, self.session_key, self.scope, self.authority)
+        await self._prepare_inputs(signal)
+        removed = set(state['removed'])
+        raw = [message for message in messages if not (set(message.source_message_ids) & removed)]
+        tools = self._window_tools(raw, (), protocol_tools=protocol_tools)
+        visible = ([self._summary_message(state['summary'])] if state['summary'] else []) + raw
+        tokens = self._estimate('', visible, tools)
+        configuration = self.provider.configuration
+        output = self.provider.max_response_tokens or self.settings.maxTokens
+        available = trigger = target = None
+        reason = ''
+        if configuration.contextWindowTokens is None:
+            reason = '模型尚未配置上下文容量'
+        else:
+            available, trigger, target = budget(configuration, self.settings, output)
+        return {'inputTokens': tokens, 'source': self.last_input_source,
+            'configurationId': configuration.id, 'model': configuration.model,
+            'capacity': configuration.contextWindowTokens, 'inputLimit': available,
+            'outputReserve': output, 'safetyMargin': self.settings.contextSafetyMarginTokens,
+            'compactTrigger': trigger, 'compactTarget': target, 'reason': reason}, state
+
     async def _io(self, signal, operation, *args, drain_on_cancel=False, **kwargs):
         worker = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
         try:

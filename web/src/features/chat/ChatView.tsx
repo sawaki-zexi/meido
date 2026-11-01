@@ -21,7 +21,8 @@ import { MessageMarkdown } from "../../ui/MessageMarkdown";
 import { MessageProcess, readProcess } from './MessageProcess';
 import { ChatReplyMetrics } from './ChatReplyMetrics';
 import { ChatTypingSparkles } from './ChatTypingSparkles';
-import { ComposerTools, readContextUsage, type ContextUsage } from './ComposerTools';
+import { ComposerTools } from './ComposerTools';
+import { useChatContextStatus } from './useChatContextStatus';
 import type { ToolProgressState } from './toolProgress';
 import type { ChatPhase } from '../../api/stream';
 import "./chat-presentation.css";
@@ -74,8 +75,10 @@ function MessageItem({ message, role, highlighted, onRegenerate, progress, stopp
 }
 
 /** Message box shared by the conversation and the welcome screen, so home always looks like a chat. */
-function Composer({ roleId, usage = null, placeholder, disabled, sending, stopping, onSend, onStop }: { roleId?: string; usage?: ContextUsage | null; placeholder: string; disabled?: boolean; sending?: boolean; stopping?: boolean; onSend: (text: string, attachmentIds: string[]) => Promise<boolean>; onStop?: () => void }) {
+function Composer({ roleId, sessionKey, sessionSnapshot, contextRevision = '', placeholder, disabled, sending, stopping, onSend, onStop }: { roleId?: string; sessionKey?: string; sessionSnapshot?: object; contextRevision?: string; placeholder: string; disabled?: boolean; sending?: boolean; stopping?: boolean; onSend: (text: string, attachmentIds: string[]) => Promise<boolean>; onStop?: () => void }) {
   const [configuration, setConfiguration] = useState<ModelConfiguration | null>(null);
+  const inspection = useChatContextStatus({ roleId, sessionKey, sending, enabled: !disabled,
+    revision: contextRevision, modelKey: JSON.stringify(configuration), sessionSnapshot });
   const [draft, setDraft] = useState("");
   const [unsentText, setUnsentText] = useState("");
   const { attachments, uploading, dragging, setDragging, error, setError, upload, remove, clear, restore } = useChatAttachments(roleId, Boolean(disabled), Boolean(sending));
@@ -140,7 +143,7 @@ function Composer({ roleId, usage = null, placeholder, disabled, sending, stoppi
       <button type="button" className="composer-attach" aria-label="添加附件" title="添加附件" disabled={disabled || sending || uploading} onClick={() => fileRef.current?.click()}><Icon name="attachment" size={18} /></button>
       <textarea ref={inputRef} aria-label="消息内容" placeholder={placeholder} rows={1} value={draft} disabled={disabled} onChange={(event) => { draftRevision.current += 1; setDraft(event.target.value); }} onKeyDown={onKeyDown} />
       {roleId && <RoleModelSelector roleId={roleId} disabled={disabled || sending || uploading} onChange={setConfiguration} />}
-      <ComposerTools disabled={disabled} onEmoji={insertEmoji} usage={usage && (!configuration || usage.configurationId === configuration.id && (!usage.model || usage.model === configuration.model)) ? usage : null} />
+      <ComposerTools disabled={disabled} onEmoji={insertEmoji} inspection={inspection} />
       {sending
         ? <button type="button" className="send stop" aria-label="停止回复" title={stopping ? "正在停止…" : "停止回复"} disabled={stopping} onClick={onStop}>{stopping ? <span className="spinner" aria-hidden="true" /> : <Icon name="stop" size={18} />}</button>
         : <button type="submit" className="send" aria-label="发送" title="发送（Enter）" disabled={disabled || uploading || (!draft.trim() && attachments.length === 0)}><Icon name="send" size={18} /></button>}
@@ -148,9 +151,9 @@ function Composer({ roleId, usage = null, placeholder, disabled, sending, stoppi
   </form>;
 }
 
-type ChatProps = { role: Role; chat: ChatState; highlightedId?: string | null; onBack: () => void; onShowProfile: () => void; onShowMemories: () => void; onShowChannels: () => void };
+type ChatProps = { role: Role; chat: ChatState; settingsVersion?: number; highlightedId?: string | null; onBack: () => void; onShowProfile: () => void; onShowMemories: () => void; onShowChannels: () => void };
 
-export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfile, onShowMemories, onShowChannels }: ChatProps) {
+export function ChatView({ role, chat, settingsVersion = 0, highlightedId = null, onBack, onShowProfile, onShowMemories, onShowChannels }: ChatProps) {
   const { scrollRef, listRef, onScroll } = useChatScroll({ roleId: role.id, messages: chat.messages, sending: chat.sending, highlightedId });
   const [generationRoleId, setGenerationRoleId] = useState<string | null>(null);
   const [selectedGenerationImage, setSelectedGenerationImage] = useState<GenerationSelection | undefined>();
@@ -212,7 +215,9 @@ export function ChatView({ role, chat, highlightedId = null, onBack, onShowProfi
     </div>
     <div className="composer-dock">
       {chat.error && <Notice onDismiss={() => chat.setError("")}>{chat.error}</Notice>}
-      <Composer key={role.id} roleId={role.id} usage={[...chat.messages].reverse().map(message => readContextUsage(message.metadata?.contextUsage)).find(Boolean) ?? null} placeholder={`对${role.name}说点什么…`} sending={chat.sending} stopping={chat.stopping} disabled={chat.opening} onSend={chat.send} onStop={chat.stop} />
+      <Composer key={role.id} roleId={role.id} sessionKey={chat.session?.sessionKey} sessionSnapshot={chat.session ?? undefined}
+        contextRevision={JSON.stringify([role.updatedAt, settingsVersion, chat.messages.map(message => [message.id, message.status, message.sequence])])}
+        placeholder={`对${role.name}说点什么…`} sending={chat.sending} stopping={chat.stopping} disabled={chat.opening} onSend={chat.send} onStop={chat.stop} />
     </div>
     {generationRoleId === role.id && <GenerationDrawer key={role.id} role={role} onClose={() => setGenerationRoleId(null)} onGenerated={chat.refresh} selectedImage={selectedGenerationImage}
       attachments={chat.messages.flatMap((message) => Array.isArray(message.metadata?.attachments)

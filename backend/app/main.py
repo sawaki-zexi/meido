@@ -218,7 +218,7 @@ from .agent_runtime.usage_anchor import UsageAnchors
 _ordinary_usage_anchors = UsageAnchors()
 
 
-def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_id, owner=True, memory_required=True, history=None, source_authority=None):
+def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_id, owner=True, memory_required=True, history=None, source_authority=None, readonly=False):
     source = source_authority or (capture_channel_source(multichannel_store, session_store, role_id=role_id,
               session_key=session_key, run_id=run_id, owner_context=owner)
               if session_key.startswith('thread:') else None)
@@ -259,9 +259,9 @@ def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_
         if run is not None:
             session_store.update_run(run_id, status=run.status, model_snapshot={**run.modelSnapshot, 'budgetDiagnostic': values})
 
-    window = ContextWindowProvider(provider, settings, history.windows() if history is not None else _context_window_store(), role_id=role_id,
+    window = ContextWindowProvider(provider, settings, history.windows(readonly=readonly) if history is not None else _context_window_store(), role_id=role_id,
         session_key=session_key, scope='shared_owner' if history is not None else 'owner' if owner else 'external', authority=authority,
-        authorized=authorized, ensure_coverage=covered, on_diagnostic=diagnostic)
+        authorized=authorized, ensure_coverage=covered, on_diagnostic=None if readonly else diagnostic)
     # Calibration is an optional provider capability. Legacy ModelProviders
     # keep the window's local estimate without acquiring anchor state.
     bind_usage = getattr(provider, 'bind_usage_context', None)
@@ -966,11 +966,11 @@ async def _mutate_and_sync_memory_locked(role_id: str, operation):
     return result
 
 
-def _role_memory_context(role_id: str, *, include_recent=True) -> str:
+def _role_memory_context(role_id: str, *, include_recent=True, readonly=False) -> str:
     if not memory_settings_store.get().enabled:
         return ""
     recent_current = True
-    if multichannel_store.sessions is session_store and not memory_worker.role_deletion_blocked(role_id):
+    if not readonly and multichannel_store.sessions is session_store and not memory_worker.role_deletion_blocked(role_id):
         try:
             recent_current = memory_maintenance.refresh_recent_context(role_id, f"role:{role_id}")
         except (OSError, RuntimeError, sqlite3.Error, ValueError):
@@ -5139,13 +5139,13 @@ def _runtime_tool_candidates(
         MessagePushTool(session_store, lambda: store.workspace_path(role.id), role_id=role.id, authorized=desktop_push_authorized),
         SpawnTool(task_runtime, role.agentConfig.spawn, origin_resolver=task_origin, authorized=spawn_authorized,
             coding_application=_coding_application, coding_authorized=coding_source_authorized,
-            coding_access=_coding_application().freeze_access(role.id, role.agentConfig.coding)),
+            coding_access={} if preview else _coding_application().freeze_access(role.id, role.agentConfig.coding)),
         SpawnManageTool(task_runtime, origin_resolver=task_origin, authorized=spawn_authorized,
             coding_application=_coding_application, coding_authorized=coding_source_authorized,
-            coding_access=_coding_application().freeze_access(role.id, role.agentConfig.coding)),
+            coding_access={} if preview else _coding_application().freeze_access(role.id, role.agentConfig.coding)),
         *build_coding_tools(_coding_application, role_id=role.id, origin_resolver=task_origin,
             authorized=coding_source_authorized,
-            access=_coding_application().freeze_access(role.id, role.agentConfig.coding)),
+            access={} if preview else _coding_application().freeze_access(role.id, role.agentConfig.coding)),
         *build_agent_tools(_herdr_control, role_id=role.id, role_name=role.name,
             enabled=lambda: plugin_configuration.enabled('herdr') and store.get(role.id) is not None
                 and role.id not in _channel_roles_deleting
@@ -5372,6 +5372,7 @@ async def _runtime_capabilities(
     external_only: bool = False,
     advanced_snapshot: dict | None = None,
     source_authority: FrozenChannelSource | None = None,
+    inspection: bool = False,
 ) -> CapabilityResolution:
     role = await asyncio.to_thread(_effective_plugin_role, role)
     include_channel = session_key.startswith("thread:") or (
@@ -5381,23 +5382,23 @@ async def _runtime_capabilities(
     # reads their availability/configuration, and never registers executors.
     _desktop_pet_application()
     _novelai_application()
-    if role.agentConfig.coding.enabled:
+    if role.agentConfig.coding.enabled and not inspection:
         _coding_application()
     policy = await asyncio.to_thread(_runtime_capability_policy, role, include_channel=include_channel)
     frozen_advanced = advanced_snapshot if advanced_snapshot is not None else await asyncio.to_thread(advanced_settings.get)
     direct_exposure = not frozen_advanced['values']['searchEnabled']
     if not frozen_advanced['values']['spawnEnabled']:
         policy = replace(policy, enabled_tools=policy.enabled_tools - {'spawn'})
-    source_run = await asyncio.to_thread(session_store.get_run, run_id)
-    if (session_key != f'role:{role.id}' or source_run is None
+    source_run = await asyncio.to_thread(session_store.get_run, run_id) if not inspection else None
+    if not inspection and (session_key != f'role:{role.id}' or source_run is None
             or source_run.modelSnapshot.get('humanInputSource') != 'desktop_owner'
             or source_run.modelSnapshot.get('desktopPetGeneration') != _desktop_pet_application().store.binding(role.id)[0]['generation']):
         policy = replace(policy, enabled_tools=policy.enabled_tools - {'pet_action'},
             enabled_plugins=policy.enabled_plugins - {'desktop_pet'})
-    if (session_key != f"role:{role.id}" or source_run is None
+    if not inspection and (session_key != f"role:{role.id}" or source_run is None
             or source_run.modelSnapshot.get("screenPerceptionSource") != "desktop_owner"):
         policy = replace(policy, enabled_tools=policy.enabled_tools - {"observe_screen"})
-    if (session_key != f"role:{role.id}" or source_run is None
+    if not inspection and (session_key != f"role:{role.id}" or source_run is None
             or source_run.modelSnapshot.get("computerUseSource") != "desktop_owner"):
         policy = replace(policy, enabled_tools=policy.enabled_tools - COMPUTER_USE_TOOL_NAMES,
                          enabled_plugins=policy.enabled_plugins - {"computer_use"})
@@ -5424,11 +5425,13 @@ async def _runtime_capabilities(
         current_role = store.get(role.id)
         return current_role is not None and (name in DEFAULT_BUILTIN_TOOLS or name in current_role.agentConfig.enabledTools)
 
+    mcp_inspection = (await asyncio.to_thread(mcp_host.inspect_context, role.id, session_key)
+        if inspection and 'tool_search' in policy.enabled_tools and not external_only else None)
     mcp_run = mcp_host.freeze(
         role_id=role.id, session_key=session_key, run_id=run_id,
         source=source_authority.to_dict() if source_authority is not None else None,
         source_denial=mcp_source_denial, tool_enabled=mcp_tool_enabled, owner=not external_only,
-    ) if "tool_search" in policy.enabled_tools and not external_only else None
+    ) if not inspection and "tool_search" in policy.enabled_tools and not external_only else None
     if mcp_run is not None:
         await mcp_run.prepare()
 
@@ -5443,7 +5446,8 @@ async def _runtime_capabilities(
         manifests = {item.plugin_id: item for item in plugin_registry.manifests()}
         switches = {}
         mcp_definitions = tuple(item for item in definitions if item.source.startswith('mcp:') or item.source == 'builtin:mcp')
-        mcp_denials = (mcp_run.preparation_denials(mcp_definitions) if preparing and mcp_run is not None and mcp_definitions else {})
+        mcp_denials = (mcp_inspection[2](mcp_definitions) if mcp_inspection is not None else
+            mcp_run.preparation_denials(mcp_definitions) if preparing and mcp_run is not None and mcp_definitions else {})
         denied = {}
         for definition in definitions:
             plugin_id = ('browser' if definition.name in BROWSER_USE_TOOL_NAMES
@@ -5458,7 +5462,8 @@ async def _runtime_capabilities(
                     denied[definition.name] = 'plugin permission was revoked'
                     continue
             if definition in mcp_definitions:
-                reason = (mcp_denials.get(definition.name) if preparing else mcp_run.authorization_denial(definition)) if mcp_run is not None else 'MCP has no frozen service grant'
+                reason = (mcp_denials.get(definition.name) if mcp_inspection is not None else
+                    (mcp_denials.get(definition.name) if preparing else mcp_run.authorization_denial(definition)) if mcp_run is not None else 'MCP has no frozen service grant')
                 if reason is not None:
                     denied[definition.name] = reason
             elif definition.name not in current.enabled_tools:
@@ -5509,15 +5514,19 @@ async def _runtime_capabilities(
         elif isinstance(candidate, SpawnManageTool):
             candidate.new_execution_allowed = new_spawn_allowed
     for tool in candidates:
-        if tool.definition.name in {'generate_image', 'set_role_mood'} and tool.definition.name in policy.enabled_tools:
+        if not inspection and tool.definition.name in {'generate_image', 'set_role_mood'} and tool.definition.name in policy.enabled_tools:
             try:
                 tool.bind_run(run_id, session_key)
             except (PermissionError, ValueError):
                 policy = replace(policy, enabled_tools=policy.enabled_tools - {tool.definition.name})
     if mcp_run is not None:
         candidates = tuple(tool for tool in candidates if tool.definition.name not in MCP_MANAGEMENT_NAMES) + mcp_run.tools
+    elif mcp_inspection is not None:
+        candidates = tuple(tool for tool in candidates if tool.definition.name not in MCP_MANAGEMENT_NAMES) + mcp_inspection[0]
     def skill_dependency_check(skill, name):
         if skill.skill_id == 'codex-delegate' and name == 'codex':
+            if not role.agentConfig.coding.enabled:
+                return '编程委托尚未启用'
             status = _coding_application().config.availability(role.id, role.agentConfig.coding, executor='codex_exec')
             return None if status['status'] == 'available' else status['reason']
         import shutil
@@ -5525,6 +5534,8 @@ async def _runtime_capabilities(
     registry_enabled_tools = policy.enabled_tools
     if mcp_run is not None:
         registry_enabled_tools = registry_enabled_tools | {tool.definition.name for items in mcp_run.remote_tools.values() for tool in items}
+    elif mcp_inspection is not None:
+        registry_enabled_tools = registry_enabled_tools | {tool.definition.name for tool in mcp_inspection[0] if tool.definition.source.startswith('mcp:')}
     try:
         skills = await asyncio.to_thread(SkillRegistry.discover_many, (
             (store.root / role.id / "workspace" / "skills", "role"),
@@ -5557,7 +5568,7 @@ async def _runtime_capabilities(
             prepare_tools=prepare_tools,
             authorize_call=authorize_call,
             source_scope=source_scope,
-            service_grants=mcp_run.grants if mcp_run is not None else (),
+            service_grants=mcp_run.grants if mcp_run is not None else mcp_inspection[1] if mcp_inspection is not None else (),
             resource_close=mcp_run.close if mcp_run is not None else None,
         )
         if mcp_run is not None:
@@ -7111,6 +7122,27 @@ async def stop_role_reply(role_id: str, run_id: str) -> SessionResponse:
     return await get_role_session(role_id)
 
 
+def _desktop_provider(role, configuration, settings, capabilities, memory_context='', *, reaction_prompt='', readonly=False):
+    """Stable desktop input shared by a saved-context read and real turns.
+
+    Draft retrieval and reaction execution remain owned by the real turn.
+    """
+    return MeidoProvider(model_adapter, role, configuration, memory_context,
+        '\n\n'.join(filter(None, (capabilities.prompt_context(), reaction_prompt))),
+        required_context=NATURAL_CHAT_PROMPT if natural_chat_enabled(role) else '',
+        max_response_tokens=settings.maxTokens,
+        context_blocks=lambda: _external_activity_blocks(role.id),
+        context_safety_margin=settings.contextSafetyMarginTokens,
+        readonly_usage=readonly)
+
+
+@app.get('/api/roles/{role_id}/context-status')
+async def role_context_status(role_id: str, response: Response):
+    from .context_inspection import inspect_context
+    response.headers['Cache-Control'] = 'no-store'
+    return await inspect_context(sys.modules[__name__], role_id)
+
+
 async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun:
     service = _chat_runs()
     run_id = f"run-{data.requestId or uuid.uuid4().hex}"
@@ -7389,17 +7421,8 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                     and current.status in {'created', 'running', 'completed'}
                     and next((item.runId for item in reversed(session_store.list_messages(session.session.sessionKey))
                         if item.role == 'user'), None) == run_id))
-                provider = MeidoProvider(
-                    model_adapter,
-                    role,
-                    configuration,
-                    memory_context,
-                    "\n\n".join(filter(None, (capabilities.prompt_context(), reaction.prompt if reaction is not None else ''))),
-                    required_context=NATURAL_CHAT_PROMPT if natural_reply else '',
-                    max_response_tokens=ordinary_settings.maxTokens,
-                    context_blocks=lambda: _external_activity_blocks(role_id),
-                    context_safety_margin=ordinary_settings.contextSafetyMarginTokens,
-                )
+                provider = _desktop_provider(role, configuration, ordinary_settings, capabilities, memory_context,
+                    reaction_prompt=reaction.prompt if reaction is not None else '')
                 _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
                 provider = _ordinary_context_provider(provider, ordinary_settings, role_id=role_id,
                     session_key=session.session.sessionKey, run_id=run_id, history=history)

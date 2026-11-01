@@ -72,6 +72,7 @@ jobs:
           - group: context-preparation
             args: >-
               tests/python/test_context_preparation.py
+              tests/python/test_context_inspection.py
               tests/python/test_context_windows.py
               tests/python/test_current_tool_registry.py
               tests/python/test_tool_namespace_context.py

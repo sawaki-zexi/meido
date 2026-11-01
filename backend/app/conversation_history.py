@@ -293,15 +293,15 @@ class ConversationHistoryView:
         self.require_current()
         return tuple(loaded)
 
-    def windows(self):
-        return HistoryWindowStore(self)
+    def windows(self, *, readonly=False):
+        return HistoryWindowStore(self, readonly=readonly)
 
 
 class HistoryWindowStore(ContextWindowStore):
     """Existing compaction ledger, with fingerprints over the same visible IDs."""
-    def __init__(self, view):
+    def __init__(self, view, *, readonly=False):
         self.view = view
-        super().__init__(view.sessions.database_path)
+        super().__init__(view.sessions.database_path, readonly=readonly)
 
     def fingerprint(self, db, session, ids):
         self.view.require_current()

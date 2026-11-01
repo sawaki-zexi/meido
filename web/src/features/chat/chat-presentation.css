@@ -78,6 +78,11 @@
 .context-details { font-size: 13px; line-height: 1.7; }
 .context-details p { margin: 6px 0; font-variant-numeric: tabular-nums; }
 .context-details small { color: var(--ink-soft); }
+.context-details dl { margin: 8px 0; font-variant-numeric: tabular-nums; }
+.context-details dt { color: var(--ink-soft); font-size: 12px; }
+.context-details dd { margin: 0 0 5px; overflow-wrap: anywhere; }
+.context-details > small { display: block; }
+.context-details > button { margin-top: 8px; }
 .role-row-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .role-row-top strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .role-row-top time { flex: none; font-size: 10px; color: var(--ink-faint); font-weight: 400; }

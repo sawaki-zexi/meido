@@ -96,9 +96,11 @@ class UsageAnchors:
             self._forget(evicted)
         return key
 
-    def estimate(self, request: Request, context: Context | None) -> InputEstimate:
+    def estimate(self, request: Request, context: Context | None, *, readonly: bool = False) -> InputEstimate:
         local = input_cost(request)
-        key = self._key(context)
+        # Inspection must not touch the LRU, replace an authority or invalidate
+        # a pending actual-usage ticket while looking at another model/window.
+        key = (context[:3] if context is not None and self._views.get(context[:3]) == context else None) if readonly else self._key(context)
         anchor = self._anchors.get(key) if key is not None else None
         if anchor is None:
             return InputEstimate(local, 'local')
@@ -109,7 +111,7 @@ class UsageAnchors:
         new_other = {k: v for k, v in request.items() if k not in {'messages', '_context_frames'}}
         if old_other == new_other and current[:len(previous)] == previous:
             return InputEstimate(max(0, anchor.prompt_tokens + local - input_cost(anchor.request)), 'anchor_delta')
-        if key is not None:
+        if key is not None and not readonly:
             self._forget(key)
         return InputEstimate(local, 'local')
 
