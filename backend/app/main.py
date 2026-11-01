@@ -7128,6 +7128,7 @@ async def stop_role_reply(role_id: str, run_id: str) -> SessionResponse:
     if not await _chat_runs().stop(run_id):
         raise HTTPException(status_code=409, detail="当前回复暂时无法停止，请刷新后重试")
     await computer_use.close_run(role_id, run_id)
+    run = await asyncio.to_thread(_desktop_run, role_id, run_id)
     if _chat_runs().snapshot(run)['error'] == OWNER_FAILURE:
         raise HTTPException(status_code=500, detail=OWNER_FAILURE)
     return await get_role_session(role_id)
@@ -7646,6 +7647,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                     "message": session_manager.present_message(message).model_dump(mode="json"),
                     "error": _safe_model_error(error, configuration.apiKey if configuration else ""),
                 }))
+                raise
         except asyncio.CancelledError:
             terminal_reason = "cancelled"
             runtime_manager.cancel_run(run_id, interrupt=False)
