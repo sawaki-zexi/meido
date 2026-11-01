@@ -70,7 +70,7 @@ describe("聊天滚动", () => {
     await user.type(screen.getByRole("textbox", { name: "消息内容" }), "继续{Enter}");
     emit("user_message_accepted", { message: message({ id: "new-u", role: "user", content: "继续", sequence: 3 }) });
     emit("assistant_generation_started", { messageId: "new-a" });
-    await screen.findByText("模型回复中");
+    await screen.findByRole("status", { name: "正在回复" });
     height = 2600;
     emit("assistant_delta", { messageId: "new-a", delta: "第一段" });
     await screen.findByText("第一段");

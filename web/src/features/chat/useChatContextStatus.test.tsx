@@ -1,4 +1,4 @@
-import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { useChatContextStatus, type ContextStatus } from './useChatContextStatus';
@@ -47,7 +47,7 @@ it('refreshes after a turn, settings and saved-history changes, reconnect and re
   await waitFor(() => expect(hook.result.current.loading).toBe(false));
   hook.rerender({ ...props, sending: true });
   expect(hook.result.current.busy).toBe(true);
-  expect(hook.result.current.status).toBeNull();
+  expect(hook.result.current.status?.inputTokens).toBe(1200);
   expect(fetch).toHaveBeenCalledTimes(1);
   hook.rerender(props);
   await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
@@ -108,15 +108,64 @@ it('shows read failures and retries without a fictional percentage', async () =>
   expect(hook.result.current.status?.inputTokens).toBe(1200);
 });
 
-it('details refreshes on demand and explains capacity and saved-input scope', async () => {
+it('shows only a compact usage tooltip on hover, focus or touch, with no extra action', async () => {
   const refresh = vi.fn();
   render(<ComposerTools onEmoji={() => {}} inspection={{ status: status(), loading: false, busy: false, error: '', refresh }} />);
   const user = userEvent.setup();
-  await user.click(screen.getByRole('button', { name: '上下文用量：5%' }));
+  const trigger = screen.getByRole('button', { name: /上下文用量/ });
+  await user.hover(trigger);
   expect(refresh).toHaveBeenCalledTimes(1);
-  expect(screen.getByText('当前已保存会话的上下文')).toBeVisible();
-  expect(screen.getByText('20,000 tokens')).toBeVisible();
-  expect(screen.getByText(/不含待发送草稿、未发送附件及新消息检索结果/)).toBeVisible();
-  await user.click(screen.getByRole('button', { name: '重新检查' }));
+  const tooltip = screen.getByRole('tooltip');
+  expect(tooltip).toHaveTextContent('上下文 1,200 / 24,000，5%（本地估算）');
+  expect(tooltip).toHaveTextContent('当前已保存会话，不含草稿');
+  expect(within(tooltip).queryByRole('button')).toBeNull();
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(screen.queryByText(/实际输入限额|重新检查|自动压缩阈值/)).toBeNull();
+  await user.unhover(trigger);
+  expect(screen.queryByRole('tooltip')).toBeNull();
+  trigger.focus();
+  await screen.findByRole('tooltip');
   expect(refresh).toHaveBeenCalledTimes(2);
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('tooltip')).toBeNull();
+  expect(trigger).toHaveFocus();
+  fireEvent.pointerDown(trigger, { pointerType: 'touch' });
+  await user.click(trigger);
+  expect(screen.getByRole('tooltip')).toBeVisible();
+  await user.click(document.body);
+  expect(screen.queryByRole('tooltip')).toBeNull();
+});
+
+it('keeps same-model usage while busy and clears it immediately for another identity', async () => {
+  const fetch = vi.fn().mockResolvedValueOnce(response(status()))
+    .mockResolvedValue(response(status('r1', { status: 'busy', inputTokens: null, capacity: null, source: null, configurationId: null, model: null, reason: '正在整理上下文' })));
+  vi.stubGlobal('fetch', fetch);
+  const hook = renderHook(value => useChatContextStatus(value), { initialProps: props });
+  await waitFor(() => expect(hook.result.current.status?.inputTokens).toBe(1200));
+  act(() => hook.result.current.refresh());
+  await waitFor(() => expect(hook.result.current.busy).toBe(true));
+  expect(hook.result.current.status).toMatchObject({ status: 'busy', inputTokens: 1200, capacity: 24000, source: 'local' });
+  hook.rerender({ ...props, sending: true, revision: 'new-input' });
+  expect(hook.result.current.status?.inputTokens).toBe(1200);
+  for (const changed of [{ modelKey: 'other-model' }, { roleId: 'r2', sessionKey: 'role:r2' }, { sessionKey: 'new-session' }]) {
+    hook.rerender({ ...props, sending: true, ...changed });
+    expect(hook.result.current.status).toBeNull();
+  }
+  hook.rerender({ ...props, sending: true });
+  expect(hook.result.current.status).toBeNull();
+});
+
+it('leaves unknown usage unfilled and labels retained busy usage as the previous check', async () => {
+  const inspection = { status: status(), loading: false, busy: true, error: '正在回复或整理上下文', refresh: vi.fn() };
+  const view = render(<ComposerTools onEmoji={() => {}} inspection={inspection} />);
+  const user = userEvent.setup();
+  await user.hover(screen.getByRole('button', { name: /上下文用量/ }));
+  expect(screen.getByRole('tooltip')).toHaveTextContent('上次用量');
+  expect(screen.getByRole('tooltip')).toHaveTextContent('1,200 / 24,000');
+  view.rerender(<ComposerTools onEmoji={() => {}} inspection={{ ...inspection, busy: false,
+    status: status('r1', { capacity: null, reason: '模型上下文容量未知' }), error: '' }} />);
+  expect(screen.getByRole('tooltip')).toHaveTextContent('上下文用量未知');
+  expect(screen.getByRole('tooltip')).toHaveTextContent('模型上下文容量未知');
+  expect(screen.getByRole('tooltip')).not.toHaveTextContent('%');
+  expect(screen.getByRole('button', { name: /上下文用量/ }).querySelector('[stroke-dasharray]')).toBeNull();
 });
