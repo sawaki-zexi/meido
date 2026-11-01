@@ -68,21 +68,18 @@
 .composer-tools { position: relative; grid-column: 3; grid-row: 2; display: flex; gap: 3px; }
 .composer-tool { width: 32px; height: 34px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--ink-soft); display: grid; place-items: center; }
 .composer-tool:hover { background: var(--hover); color: var(--rose); }
-.context-ring { --ring-color: var(--rose); display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; font-size: 10px; position: relative; isolation: isolate; background: conic-gradient(var(--ring-color) var(--context-used), var(--line-strong) 0); }
-.context-ring::before { content: ''; position: absolute; inset: 2px; border-radius: 50%; background: var(--bg); z-index: -1; }
-.context-ring.is-full { --ring-color: var(--danger); }
+/* Shiori c14152ed ChatContextRing: 20px data ring, 30px target, two-line tooltip. */
+.context-ring-button { width: 30px; height: 30px; align-self: center; flex: none; cursor: default; }
+.context-ring-button:hover { color: var(--ink); }
+.context-ring-button[aria-busy="true"] { color: var(--ink-faint); }
+.context-ring { display: block; width: 20px; height: 20px; transform: rotate(-90deg); }
+.context-ring text { font-size: 12px; }
+.context-tooltip { position: fixed; z-index: 50; width: 280px; max-width: calc(100vw - 16px); padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); box-shadow: 0 4px 16px rgb(56 27 43 / 8%); color: var(--ink); font-size: 12px; line-height: 18px; font-variant-numeric: tabular-nums; }
+.context-tooltip > div + div { margin-top: 4px; color: var(--ink-soft); }
 .composer-popover { position: absolute; bottom: calc(100% + 12px); right: 0; z-index: 20; background: var(--bg); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 10px 35px #6f3e5c26; padding: 12px; width: 296px; max-width: calc(100vw - 70px); }
 .emoji-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 2px; }
 .emoji-grid button { border: 0; background: transparent; border-radius: 8px; padding: 5px 0; font-size: 21px; line-height: 1.3; }
 .emoji-grid button:hover, .emoji-grid button:focus-visible { background: var(--hover); }
-.context-details { font-size: 13px; line-height: 1.7; }
-.context-details p { margin: 6px 0; font-variant-numeric: tabular-nums; }
-.context-details small { color: var(--ink-soft); }
-.context-details dl { margin: 8px 0; font-variant-numeric: tabular-nums; }
-.context-details dt { color: var(--ink-soft); font-size: 12px; }
-.context-details dd { margin: 0 0 5px; overflow-wrap: anywhere; }
-.context-details > small { display: block; }
-.context-details > button { margin-top: 8px; }
 .role-row-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .role-row-top strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .role-row-top time { flex: none; font-size: 10px; color: var(--ink-faint); font-weight: 400; }

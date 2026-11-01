@@ -10,16 +10,15 @@ beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 it.each([
-  ['actual', '供应商实测输入量'], ['anchor_delta', '锚点估算输入量'], ['local', '本地估算输入量'],
-] as const)('shows %s context provenance without inventing unknown capacity', async (source, label) => {
-  const usage = readContextUsage({ inputTokens: 1234, capacity: null, source, configurationId: 'model' });
+  ['actual', '实际'], ['anchor_delta', '锚点估算'], ['local', '本地估算'],
+] as const)('shows %s context provenance in the Shiori tooltip', async (source, label) => {
+  const usage = readContextUsage({ inputTokens: 1234, capacity: 12000, source, configurationId: 'model' });
   render(<ComposerTools usage={usage} onEmoji={() => {}} />);
   const user = userEvent.setup();
-  await user.click(screen.getByRole('button', { name: '上下文用量：未知' }));
-  const panel = screen.getByRole('dialog', { name: '上下文详情' });
-  expect(panel).toHaveTextContent('1,234 / 未知 tokens');
+  await user.hover(screen.getByRole('button', { name: /上下文用量/ }));
+  const panel = screen.getByRole('tooltip');
+  expect(panel).toHaveTextContent('1,234 / 12,000，10%');
   expect(panel).toHaveTextContent(label);
-  expect(panel).not.toHaveTextContent('%');
 });
 
 it('shows Shiori typing feedback before the server accepts a message and clears it at completion', async () => {
@@ -38,6 +37,36 @@ it('shows Shiori typing feedback before the server accepts a message and clears 
   await act(async () => accept({ stream: [sse('assistant_completed', { message: message({ id: 'a1', role: 'assistant', content: '你好' }) })] }));
   await screen.findByText('你好', { selector: '.bubble p' });
   expect(screen.queryByRole('status', { name: '回复状态' })).toBeNull();
+});
+
+it('uses a quiet empty reply cursor through internal phases and preserves real reasoning and tool feedback', async () => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
+  const active = message({ id: 'pending', role: 'assistant', content: '', runId: 'run-waiting', status: 'streaming' });
+  fakeBackend({
+    'GET /api/roles': () => ({ body: { roles: [role({ id: 'r1', name: '爱丽丝' })] } }),
+    'GET /api/roles/r1/session': () => ({ body: { session: { roleId: 'r1', sessionKey: 'role:r1' }, messages: [active],
+      activeRun: { runId: 'run-waiting', roleId: 'r1', sessionKey: 'role:r1', sequence: 0, status: 'running', phase: 'preparing', stopping: false, tools: [] } } }),
+    'GET /api/roles/r1/runs/run-waiting/events\\?after=0': () => ({ stream }),
+  });
+  render(<App />);
+  await screen.findByRole('status', { name: '正在回复' });
+  expect(screen.getByRole('status', { name: '回复状态' })).toHaveTextContent('正在输入…');
+  expect(screen.getByRole('button', { name: '停止回复' })).toBeEnabled();
+  let sequence = 0;
+  const emit = (type: string, data: object) => act(() => controller.enqueue(new TextEncoder().encode(sse(type, { runId: 'run-waiting', sequence: ++sequence, ...data }))));
+  for (const phase of ['queued', 'summarizing', 'model', 'tool', 'delivering', 'finishing']) {
+    emit('assistant_phase', { phase });
+    expect(screen.queryByText(/等待上一条回复收尾|准备上下文|整理历史|模型回复中|工具执行中|发送回复中|正在收尾|生成中/)).toBeNull();
+    expect(screen.getByRole('status', { name: '正在回复' })).toBeVisible();
+  }
+  emit('assistant_thinking_delta', { messageId: 'pending', delta: '真实的推理内容' });
+  expect(await screen.findByText('真实的推理内容')).toBeVisible();
+  expect(screen.queryByRole('status', { name: '正在回复' })).toBeNull();
+  emit('assistant_presentation', { process: [{ type: 'thinking', id: 'pending:thinking', text: '真实的推理内容' },
+    { type: 'tool', id: 'lookup', name: 'web_search', status: 'running', result: '', argumentsPreview: '{"query":"fixture"}' }] });
+  expect(await screen.findByRole('button', { name: /web_search/ })).toBeVisible();
+  expect(screen.getByRole('button', { name: '停止回复' })).toBeEnabled();
 });
 
 it('shows only identity in the header, a recent message in the list, and inserts emoji at the caret before sending', async () => {
@@ -90,8 +119,8 @@ it('renders a persisted process while the ring describes the current saved conte
   expect(screen.getByText('搜索服务不可用')).toBeVisible();
   expect(screen.getByText('思考 11.1 秒')).toBeVisible();
   expect(screen.getByText('1,230 tokens')).toBeVisible();
-  await user.click(screen.getByRole('button', { name: /上下文用量/ }));
-  expect(screen.getByText('当前已保存会话的上下文')).toBeVisible();
+  await user.hover(screen.getByRole('button', { name: /上下文用量/ }));
+  expect(screen.getByRole('tooltip')).toHaveTextContent('当前已保存会话，不含草稿');
   expect(await screen.findByText(/2,400 \/ 16,000/)).toBeVisible();
 });
 

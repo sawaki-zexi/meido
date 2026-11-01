@@ -163,7 +163,7 @@ describe("聊天输入与停止", () => {
     await screen.findByRole("alert");
     expect(input).toHaveValue("下一句草稿");
     expect(screen.queryByText(/未发送的消息/)).toBeNull();
-    expect(screen.getByText("生成中")).toBeTruthy();
+    expect(screen.getByRole("status", { name: "回复状态" })).toHaveTextContent("正在输入…");
     expect(screen.getByRole("button", { name: "停止回复" })).toBeEnabled();
   });
 

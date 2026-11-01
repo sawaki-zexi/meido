@@ -2,10 +2,6 @@ import type { Message } from '../../api/types';
 import type { ToolProgressState } from './toolProgress';
 import { ChatThinkingBlock } from './ChatThinkingBlock';
 import { ChatToolCalls, type ToolEntry } from './ChatToolCalls';
-import type { ChatPhase } from '../../api/stream';
-
-const phaseLabels: Record<ChatPhase, string> = { queued: '等待上一条回复收尾', preparing: '准备上下文',
-  summarizing: '整理历史', model: '模型回复中', tool: '工具执行中', delivering: '发送回复中', finishing: '正在收尾', finished: '' };
 
 export type ProcessEntry = { type: 'thinking' | 'text'; id: string; text: string }
   | ToolEntry;
@@ -18,7 +14,7 @@ export function readProcess(value: unknown): ProcessEntry[] {
 }
 
 /** Provider text and bounded tool summaries are plain text, never executable markup. */
-export function MessageProcess({ message, progress, stopping, phase }: { message: Message; stopping?: boolean; progress?: ToolProgressState | null; phase?: ChatPhase | null }) {
+export function MessageProcess({ message, progress, stopping }: { message: Message; stopping?: boolean; progress?: ToolProgressState | null }) {
   const process = readProcess(message.metadata?.process);
   const liveThinking = typeof message.metadata?.streamThinking === 'string' ? message.metadata.streamThinking : '';
   const liveThinkingId = `${message.id}:thinking`;
@@ -34,7 +30,7 @@ export function MessageProcess({ message, progress, stopping, phase }: { message
   });
   for (const call of calls) if (!known.has(call.toolCallId)) entries.push({ type: 'tool', id: call.toolCallId, name: call.toolName, status: call.status, result: call.result ?? '', argumentsPreview: call.argumentsPreview, droppedUpdates: call.droppedUpdates });
   if (liveThinking) entries.push({ type: 'thinking', id: liveThinkingId, text: liveThinking });
-  if (!entries.length && !phase) return null;
+  if (!entries.length) return null;
   // Consecutive tools share a foldout; reasoning between turns keeps its place.
   const groups: ProcessEntry[][] = [];
   for (const entry of entries) {
@@ -42,7 +38,6 @@ export function MessageProcess({ message, progress, stopping, phase }: { message
     else groups.push([entry]);
   }
   return <div className="message-process">
-    {phase && phase !== 'finished' && <p className="process-text chat-phase" role="status">{stopping ? '正在停止…' : phaseLabels[phase]}</p>}
     {groups.map(group => {
       const first = group[0];
       if (first.type === 'text') return <p className="process-text" key={first.id}>{first.text}</p>;
