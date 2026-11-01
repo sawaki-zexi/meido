@@ -13,7 +13,8 @@
     "setup:pet": "install-electron",
     "package:pet": "npm run build:pet && node desktop-pet/package.mjs",
     "test": "python -m pytest && vitest run",
-    "test:web": "vitest run"
+    "test:web": "vitest run",
+    "test:e2e": "node scripts/e2e/chat-e2e.mjs"
   },
   "dependencies": {
     "@phosphor-icons/react": "2.1.10",
@@ -35,6 +36,7 @@
     "concurrently": "^9.1.0",
     "electron": "44.8.0",
     "jsdom": "26.1.0",
+    "playwright-core": "1.58.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.5",
     "vitest": "3.2.4"

@@ -197,11 +197,11 @@ def test_relative_time_is_captured_before_history_preparation_and_model_delay(ap
     received = now[0]
     monkeypatch.setattr(main, '_schedule_clock', lambda: now[0])
     monkeypatch.setattr(main, '_schedules', None)
-    original = main.session_manager.role_and_history
+    original = main.session_manager.role_and_session
     def delayed(*args):
         now[0] += 20
         return original(*args)
-    monkeypatch.setattr(main.session_manager, 'role_and_history', delayed)
+    monkeypatch.setattr(main.session_manager, 'role_and_session', delayed)
     class Adapter:
         async def stream_structured_messages(self, messages, configuration, tools):
             if not any(m['role'] == 'tool' for m in messages):

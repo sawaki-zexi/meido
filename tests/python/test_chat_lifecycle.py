@@ -388,6 +388,109 @@ def test_stop_before_owner_first_step_and_shutdown_drain_accepted_runs(tmp_path,
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('failure', ['execute', 'finish', 'read'])
+def test_owner_failure_always_ends_and_recovery_does_not_report_success(tmp_path, monkeypatch, local_platform_only, failure):
+    from test_api import configure_session_api
+    from backend.app.agent_runtime.runtime import RuntimeManager
+    from backend.app.models import SendMessageInput
+
+    class Model:
+        async def stream_reply(self, role, history, configuration=None):
+            yield '已保存正文'
+
+    role, sessions, _ = configure_session_api(tmp_path, monkeypatch, Model())
+    monkeypatch.setattr(main, 'runtime_manager', RuntimeManager(sessions))
+    service = main._chat_runs()
+    start, read = service.start, sessions.get_run
+
+    def failing_read(run_id):
+        raise OSError('fixture terminal read failed')
+
+    def start_with_failure(run, execute, finish):
+        async def executing(turn):
+            await execute(turn)
+            if failure == 'execute':
+                raise OSError('fixture owner execution failed')
+
+        async def finishing(turn):
+            await finish(turn)
+            if failure == 'finish':
+                raise OSError('fixture partial persistence failed')
+            if failure == 'read':
+                monkeypatch.setattr(sessions, 'get_run', failing_read)
+
+        return start(run, executing, finishing)
+
+    monkeypatch.setattr(service, 'start', start_with_failure)
+
+    async def scenario():
+        run = await main._accept_role_message(role.id, SendMessageInput(content='第一条'))
+        turn = service.runs[run.runId]
+        await asyncio.wait_for(asyncio.gather(turn.task, return_exceptions=True), 5)
+        monkeypatch.setattr(sessions, 'get_run', read)
+        assert turn.finished, 'an owner exception must still end the subscription and release active ownership'
+        assert service.active(role.id) is None
+        assert not main.runtime_manager.lock_for(role.id).locked()
+        data = await main._desktop_run_response(run)
+        assert data['run']['status'] == 'failed' and data['run']['error']
+        assert data['messages'][-1]['content'] == '已保存正文'
+        terminal = [event for _, event, _ in turn.events if 'event: assistant_' in event and
+            ('event: assistant_failed\n' in event or 'event: assistant_completed\n' in event)]
+        assert len(terminal) == 1 and terminal[0].startswith('event: assistant_failed\n')
+        monkeypatch.setattr(service, 'start', start)
+        next_run = await main._accept_role_message(role.id, SendMessageInput(content='下一条'))
+        await asyncio.wait_for(service.runs[next_run.runId].task, 5)
+        assert sessions.get_run(next_run.runId).status == 'completed'
+
+    asyncio.run(scenario())
+
+
+def test_repeated_cancellation_waits_for_owner_finish(tmp_path, monkeypatch, local_platform_only):
+    from test_api import configure_session_api
+    from backend.app.agent_runtime.runtime import RuntimeManager
+    from backend.app.models import SendMessageInput
+
+    class Model:
+        async def stream_reply(self, role, history, configuration=None):
+            yield '完整正文'
+
+    role, sessions, _ = configure_session_api(tmp_path, monkeypatch, Model())
+    monkeypatch.setattr(main, 'runtime_manager', RuntimeManager(sessions))
+    service = main._chat_runs()
+    start = service.start
+    entered, release = asyncio.Event(), asyncio.Event()
+    finished = []
+
+    def start_with_slow_finish(run, execute, finish):
+        async def finishing(turn):
+            entered.set()
+            await release.wait()
+            await finish(turn)
+            finished.append(run.runId)
+        return start(run, execute, finishing)
+
+    monkeypatch.setattr(service, 'start', start_with_slow_finish)
+
+    async def scenario():
+        run = await main._accept_role_message(role.id, SendMessageInput(content='收尾'))
+        turn = service.runs[run.runId]
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            for _ in range(2):
+                turn.task.cancel()
+                await asyncio.sleep(0)
+            assert not turn.task.done() and not turn.finished
+            assert service.active(role.id) is turn
+        finally:
+            release.set()
+            await asyncio.gather(turn.task, return_exceptions=True)
+        assert finished == [run.runId]
+        assert turn.finished and service.active(role.id) is None
+        assert (await main._desktop_run_response(run))['run']['status'] == 'completed'
+
+    asyncio.run(scenario())
+
+
 def test_restart_fails_queued_and_running_records_without_replaying(tmp_path):
     from datetime import datetime, timezone
     from backend.app.models import AgentRun

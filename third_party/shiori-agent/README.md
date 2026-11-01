@@ -1,6 +1,6 @@
 # Shiori-Agent attribution
 
-状态：当前。最后核验：2026-11-01。
+状态：当前。最后核验：2026-11-02。
 
 ## 桌面聊天任务归属（2026-11-01）
 
@@ -9,6 +9,12 @@
 `apps/backend/desktop_bridge/chat_service.py`：服务拥有 turn task、前驱等待保护、开始前取消及清理后发布终态。
 Meido 保留 RuntimeManager、SQLite 和 FastAPI/SSE；稳定接受标识、有界事件环与网页重订阅由 Meido 实现，不复制 JSONL bridge。
 Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。合同见[聊天运行生命周期](../../docs/reference/chat-run-lifecycle.md)。
+
+本轮 `backend/app/agent_runtime/runtime.py` 的 `complete_despite_cancellation` 及其桌面收尾调用
+适配固定提交 `c14152ed225954a2a50da775075fe64dbf7b8b50` 的
+[`apps/backend/desktop_bridge/chat_turn_state.py`](https://github.com/YinFengWindy/Shiori-Agent/blob/c14152ed225954a2a50da775075fe64dbf7b8b50/apps/backend/desktop_bridge/chat_turn_state.py)
+同名 helper：重复取消仍等待已开始的所属清理，不建立脱离所有者的任务队列。
+Copyright (c) 2026 YinFengWindy，沿用同一 [MIT LICENSE](LICENSE)。
 
 ## Herdr 现有 session 代理控制（2026-10-30）
 

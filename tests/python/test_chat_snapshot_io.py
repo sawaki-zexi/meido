@@ -13,6 +13,75 @@ from test_chat_stop import chat_server
 from test_chat_lifecycle import wait_for
 
 
+def test_acceptance_does_not_render_saved_history(tmp_path, monkeypatch, local_platform_only):
+    from test_api import configure_session_api
+    from backend.app.models import SendMessageInput
+    from backend.app.agent_runtime.runtime import RuntimeManager
+
+    class Model:
+        async def stream_reply(self, role, history, configuration=None):
+            yield '回复'
+
+    role, sessions, _ = configure_session_api(tmp_path, monkeypatch, Model())
+    monkeypatch.setattr(main, 'runtime_manager', RuntimeManager(sessions))
+    sessions.open_role_session(role.id)
+    for index in range(160):
+        sessions.append_message(f'role:{role.id}', 'user' if index % 2 == 0 else 'assistant',
+            'saved history ' * 100, 'completed')
+    presented = []
+    original = main.session_manager.present_message
+
+    def present(*args, **kwargs):
+        presented.append(args[0].id)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(main.session_manager, 'present_message', present)
+
+    async def scenario():
+        run = await main._accept_role_message(role.id, SendMessageInput(content='接受输入'))
+        try:
+            assert presented == [], 'admission must not project the whole conversation for display'
+            assert sessions.get_run(run.runId) is not None
+        finally:
+            await main._chat_runs().stop(run.runId)
+
+    asyncio.run(scenario())
+
+
+def test_recovery_uses_one_raw_history_batch(chat_server, monkeypatch):
+    client, role, _ = chat_server
+    entered = threading.Event()
+
+    class Model:
+        async def stream_reply(self, role, history, configuration=None):
+            yield '当前片段'
+            entered.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(main, 'model_adapter', Model())
+    path = f'/api/roles/{role.id}'
+    accepted = client.post(path + '/runs', json={'content': '恢复', 'requestId': 'one-history'})
+    assert accepted.status_code in {200, 202}
+    assert entered.wait(3)
+    reads = []
+    original = main.session_store.list_messages
+
+    def read(session_key):
+        reads.append(session_key)
+        return original(session_key)
+
+    monkeypatch.setattr(main.session_store, 'list_messages', read)
+    try:
+        for endpoint in ('/session', '/runs/run-one-history'):
+            reads.clear()
+            recovered = client.get(path + endpoint)
+            assert recovered.status_code == 200, recovered.text
+            assert [item['content'] for item in recovered.json()['messages']] == ['恢复', '当前片段']
+            assert reads == [f'role:{role.id}'], 'one consistent raw batch must feed messages and process'
+    finally:
+        client.post(path + '/runs/run-one-history/stop')
+
+
 @pytest.mark.parametrize('endpoint', ['session', 'run', 'gap'])
 def test_slow_sqlite_recovery_keeps_other_pages_available(chat_server, monkeypatch, endpoint):
     client, role, _ = chat_server
@@ -87,19 +156,19 @@ def test_recovery_retries_when_delta_arrives_after_the_worker_read(chat_server, 
     monkeypatch.setattr(main, 'model_adapter', Model())
     path = f'/api/roles/{role.id}'
     assert client.post(path + '/runs', json={'content': '恢复', 'requestId': 'read-race'}).status_code in {200, 202}
-    original = main.session_manager.open_role_session
+    original = main.session_manager.present_session
     held = False
 
-    def hold_one_read(role_id):
+    def hold_one_read(*args):
         nonlocal held
-        data = original(role_id)
+        data = original(*args)
         if not held:
             held = True
             read_ready.set()
             assert release_read.wait(5)
         return data
 
-    monkeypatch.setattr(main.session_manager, 'open_role_session', hold_one_read)
+    monkeypatch.setattr(main.session_manager, 'present_session', hold_one_read)
     try:
         with ThreadPoolExecutor() as pool:
             reading = pool.submit(client.get, path + '/runs/run-read-race')
@@ -174,6 +243,88 @@ def test_busy_snapshots_are_bounded_and_confirm_the_already_accepted_run(chat_se
     finally:
         pause.set()
         client.post(path + '/runs/run-busy-view/stop')
+
+
+def test_other_role_acceptance_does_not_invalidate_a_saved_snapshot(chat_server, monkeypatch):
+    client, role, other = chat_server
+    entered, release = threading.Event(), threading.Event()
+    original = main._read_desktop_projection
+    reads = []
+
+    class Model:
+        async def stream_reply(self, role, history, configuration=None):
+            yield '另一角色的回复'
+
+    def held(*args):
+        result = original(*args)
+        if args[0] == role.id:
+            reads.append(role.id)
+            if len(reads) == 1:
+                entered.set()
+                assert release.wait(5)
+        return result
+
+    monkeypatch.setattr(main, 'model_adapter', Model())
+    accepted = client.post(f'/api/roles/{role.id}/runs', json={'content': '已知身份', 'requestId': 'known-owner'})
+    assert accepted.status_code in {200, 202}
+    wait_for(lambda: main._chat_runs().runs['run-known-owner'].finished)
+    monkeypatch.setattr(main, '_read_desktop_projection', held)
+    try:
+        with ThreadPoolExecutor() as pool:
+            reading = pool.submit(client.get, f'/api/roles/{role.id}/session')
+            assert entered.wait(3)
+            accepted = client.post(f'/api/roles/{other.id}/runs', json={'content': '不相关', 'requestId': 'unrelated'})
+            assert accepted.status_code in {200, 202}
+            wait_for(lambda: main._chat_runs().runs['run-unrelated'].finished)
+            release.set()
+            response = reading.result(3)
+        assert response.status_code == 200
+        assert [item['content'] for item in response.json()['messages']] == ['已知身份', '另一角色的回复']
+        assert response.json()['activeRun'] is None
+        assert reads == [role.id], 'unrelated roles must not consume this snapshot retry allowance'
+    finally:
+        release.set()
+
+
+def test_idle_snapshot_detects_same_role_run_even_after_owner_eviction(chat_server, monkeypatch):
+    from backend.app import chat_runs
+    client, role, other = chat_server
+    entered, release = threading.Event(), threading.Event()
+    original = main._read_desktop_projection
+    held = False
+
+    class Model:
+        async def stream_reply(self, role, history, configuration=None):
+            yield '已完成'
+
+    def hold_first(*args):
+        nonlocal held
+        value = original(*args)
+        if args[0] == role.id and not held:
+            held = True
+            entered.set()
+            assert release.wait(5)
+        return value
+
+    monkeypatch.setattr(main, 'model_adapter', Model())
+    monkeypatch.setattr(main, '_read_desktop_projection', hold_first)
+    monkeypatch.setattr(chat_runs, 'MAX_FINISHED_RUNS', 1)
+    try:
+        with ThreadPoolExecutor() as pool:
+            reading = pool.submit(client.get, f'/api/roles/{role.id}/session')
+            assert entered.wait(3)
+            for target, request_id in ((role, 'evicted-owner'), (other, 'evicting-owner')):
+                accepted = client.post(f'/api/roles/{target.id}/runs', json={'content': '新输入', 'requestId': request_id})
+                assert accepted.status_code in {200, 202}
+                wait_for(lambda: main._chat_runs().runs[f'run-{request_id}'].finished)
+            assert 'run-evicted-owner' not in main._chat_runs().runs
+            release.set()
+            response = reading.result(3)
+        assert response.status_code == 200
+        assert [row['content'] for row in response.json()['messages']] == ['新输入', '已完成']
+        assert response.json()['activeRun'] is None
+    finally:
+        release.set()
 
 
 def test_idle_snapshot_detects_a_new_run_even_if_it_already_finished(chat_server, monkeypatch):

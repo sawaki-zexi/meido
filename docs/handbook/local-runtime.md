@@ -4,7 +4,7 @@
 
 事实来源：[`Start-Meido.ps1`](../../scripts/local-runtime/Start-Meido.ps1)、[`Start-Dev.ps1`](../../scripts/local-runtime/Start-Dev.ps1)、[`start-dev.mjs`](../../scripts/local-runtime/start-dev.mjs)、[`服务入口`](../../backend/app/server.py)、[`backup-meido-data.py`](../../scripts/local-runtime/backup-meido-data.py)、[`main.py`](../../backend/app/main.py)、[`storage.py`](../../backend/app/storage.py)
 
-最后核验：2026-11-01
+最后核验：2026-11-02
 
 ## 保留一份本机路径配置
 
@@ -65,7 +65,26 @@
 
 `backend.app.server` 在 Uvicorn 等待 HTTP/SSE 排空之前，先拒绝新聊天、取消并等待已接受任务和真实工具清理。打开的 SSE 不需要先由浏览器关闭；reload 也先完成同样的收尾再启动新 worker。`npm run dev:api` 与新版 `Start-Meido.ps1` 后端入口使用此行为；分支开发使用上面的隔离入口，不直接运行占用常驻端口的默认 npm dev 命令。
 
-原生 `python -m uvicorn backend.app.main:app` 仍兼容 ASGI，但只在 lifespan shutdown 中兜底关闭聊天；长 SSE 会使该回调推迟，不保证及时取消。机器上已有的 ignored `.runtime/Start-Dev.ps1`、`.runtime/start-dev.mjs` 或其他服务包装器不会随源码自动升级；若仍调用原生 uvicorn，需维护者在部署时更新为新版入口才能获得这个退出保证。本次源码更新不替换或重启本机常驻实例。
+Windows 的上述服务入口使用 Proactor 循环，让 reload worker 可启动 MCP 等异步子进程。重载先等待旧 worker 退出，再重绑自身原端口，避免旧 IOCP 关联；这期间有短暂连接空档，若端口已被占用会明确退出，不终止占用者。Linux 沿用 Uvicorn 默认循环。
+
+原生 `python -m uvicorn backend.app.main:app` 仍兼容 ASGI，但只在 lifespan shutdown 中兜底关闭聊天；长 SSE 会使该回调推迟，不保证及时取消，Windows reload 默认循环也未必支持子进程工具。机器上已有的 ignored `.runtime/Start-Dev.ps1`、`.runtime/start-dev.mjs` 或其他服务包装器不会随源码自动升级；需维护者在部署时更新为新版入口才能获得这些保证。本次源码更新不替换或重启本机常驻实例。
+
+## 可重复的对话端到端验收
+
+安装仓库依赖后运行：
+
+```sh
+npm ci
+python -m pip install -r requirements.txt
+npx playwright-core install chromium
+npm run test:e2e
+```
+
+脚本使用真实 Chromium、HTTP/SSE、内置目录工具、MCP stdio 和 SQLite；供应商是本地可控协议，不调用付费模型或真实渠道。覆盖长历史工具衔接、摘要成功复用／失败回退、两类 Stop、402 后再次发送、MCP 恢复／撤权／慢调用停止、拟人多段及触屏圆环。Windows CI 同时执行实际 runner 重载与子进程回归。
+
+每次仅复制必要源码／配置到 `.data/chat-e2e/runs/` 下新建的自有目录，依赖通过链接复用，再走同一个 `start-dev.mjs`。不使用或覆盖现有 `.data/development`、正式数据或配置；历史 seed 校验目录标记并拒绝已有运行。端口自动选择空闲地址，禁止正式端口；也可用 `MEIDO_E2E_API_PORT`、`MEIDO_E2E_WEB_PORT` 指定空闲测试端口。
+
+`MEIDO_DEV_PYTHON` 可选择 Python，`MEIDO_E2E_BROWSER` 可指定浏览器可执行文件；否则使用 Playwright 安装的 Chromium。`MEIDO_E2E_ONLY=ring` 可定向验收，多个用例以逗号分隔；MCP 停止／撤权自动包含连接前提。报告、失败截图与开发日志位于 `.data/chat-e2e/artifacts/<运行标识>/`。脚本先请求私有 stdin 有序退出；非零退出、超时或清理失败都使验收失败，必要时只强制清理本次创建的进程树，不能用强制清理掩盖退出问题。自有合成数据保留供排查。
 
 ## 创建备份
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -146,10 +147,13 @@ class ConversationHistoryView:
             raise PermissionError("历史来源已失效")
         if self.source_account is not None and self._account(self.source_account["id"]) != self.source_account:
             raise PermissionError("历史来源账号已变化")
-        with self.channels._connect() as db:
-            current = self._grants(db)
-        if any(_grant_authority(current.get(session, {})) != _grant_authority(grant) for session, grant in self.grants.items()):
-            raise PermissionError("主人历史绑定已变化，请重新开始当前回合")
+        # Later grants cannot enlarge this frozen view. With no captured grant
+        # there is nothing to revoke or compare, including on every SSE chunk.
+        if self.grants:
+            with closing(self.channels._connect()) as db:
+                current = self._grants(db)
+            if any(_grant_authority(current.get(session, {})) != _grant_authority(grant) for session, grant in self.grants.items()):
+                raise PermissionError("主人历史绑定已变化，请重新开始当前回合")
 
     def authorized(self):
         try:

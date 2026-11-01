@@ -19,6 +19,16 @@ class Server(uvicorn.Server):
         # Optional launcher-owned control; shared with the standard reload child.
         self.shutdown_signal = shutdown_signal
 
+    def run(self, sockets=None):
+        if sys.platform == 'win32':
+            # Windows reload defaults to Selector in Uvicorn, which cannot run
+            # asyncio subprocess tools. The public Python runner works across
+            # our supported Uvicorn versions without changing global policies.
+            with asyncio.Runner(loop_factory=asyncio.ProactorEventLoop) as runner:
+                runner.run(self.serve(sockets=sockets))
+        else:
+            super().run(sockets=sockets)
+
     async def serve(self, sockets=None):
         async def watch_launcher():
             while not self.should_exit:
@@ -66,6 +76,15 @@ class Reload(ChangeReload):
         self.process.join()
         if self.should_exit.is_set():
             return
+        if sys.platform == 'win32':
+            # A shared listener remains associated with the retired worker's
+            # IOCP while the parent holds it. Only after that worker has drained,
+            # close our own handles and bind a fresh listener on the same port.
+            # This entry accepts one TCP listener, including --port 0.
+            self.config.port = self.sockets[0].getsockname()[1]
+            for listener in self.sockets:
+                listener.close()
+            self.sockets = [self.config.bind_socket()]
         self.shutdown_signal.clear()
         self.process = get_subprocess(config=self.config, target=self.target, sockets=self.sockets)
         self.process.start()

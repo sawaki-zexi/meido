@@ -20,7 +20,7 @@ from ..ai.model_types import (ModelStreamDone, ModelStreamError, ModelSystemMess
 from ..ai.output_usage import parse_output_usage
 from .types import UserMessage, AssistantMessage, ToolResultMessage, AttachmentContent
 from ..ai.model_adapter import supports_auxiliary_thinking_control
-from .usage_anchor import estimate_tokens
+from .usage_anchor import InputEstimate, estimate_tokens
 from .summary_batches import next_summary_batch, summary_source
 from .summary_validation import SUMMARY_FIELDS, SUMMARY_PROMPT, measured_summary, shortening_payload
 
@@ -75,7 +75,6 @@ class ContextWindowProvider:
         self.capabilities = None
         self.tool_preparation = None
         self.request_context = None
-        self.prepared_request = None
 
     def bind_capabilities(self, capabilities):
         self.capabilities = capabilities
@@ -88,7 +87,7 @@ class ContextWindowProvider:
         raw = [message for message in messages if not (set(message.source_message_ids) & removed)]
         tools = self._window_tools(raw, (), protocol_tools=protocol_tools)
         visible = ([self._summary_message(state['summary'])] if state['summary'] else []) + raw
-        tokens = self._estimate('', visible, tools)
+        _, estimate = self._prepare_request('', visible, tools)
         configuration = self.provider.configuration
         output = self.provider.max_response_tokens or self.settings.maxTokens
         available = trigger = target = None
@@ -97,7 +96,7 @@ class ContextWindowProvider:
             reason = '模型尚未配置上下文容量'
         else:
             available, trigger, target = budget(configuration, self.settings, output)
-        return {'inputTokens': tokens, 'source': self.last_input_source,
+        return {'inputTokens': estimate.tokens, 'source': estimate.source,
             'configurationId': configuration.id, 'model': configuration.model,
             'capacity': configuration.contextWindowTokens, 'inputLimit': available,
             'outputReserve': output, 'safetyMargin': self.settings.contextSafetyMarginTokens,
@@ -174,7 +173,8 @@ class ContextWindowProvider:
                 'modelId': self.provider.configuration.id if self.provider.configuration else None,
                 'compaction': {**self.compaction_diagnostic, 'summaryAttempts': list(self.summary_attempts)}})
 
-    def _estimate(self, system, messages, tools, *, provider=None):
+    def _prepare_request(self, system, messages, tools, *, provider=None):
+        """Return a candidate and its measurement; probing never changes the selected input."""
         actual = provider or self.provider
         if callable(getattr(actual, 'prepare_request', None)):
             from .meido_provider import RequestContext
@@ -182,18 +182,14 @@ class ContextWindowProvider:
             if self.tool_preparation is not None:
                 context = replace(context, namespace=self.tool_preparation.namespace_context(
                     item['function']['name'] for item in tools))
-            self.prepared_request = actual.prepare_request(system, messages, tools, context=context)
-            value = actual.estimate_prepared(self.prepared_request)
-            self.last_input_source = value.source
-            return value.tokens
+            request = actual.prepare_request(system, messages, tools, context=context)
+            return request, actual.estimate_prepared(request)
         estimate = getattr(provider or self.provider, 'estimate_request', None)
         if callable(estimate):
-            value = estimate(system, messages, tools)
-            self.last_input_source = value.source
-            return value.tokens
+            return None, estimate(system, messages, tools)
         estimator = getattr(provider or self.provider, 'estimate_request_tokens', None)
         if callable(estimator):
-            return estimator(system, messages, tools)
+            return None, InputEstimate(estimator(system, messages, tools), 'local')
         # Keep the provider seam usable for lightweight hosts and test
         # adapters that implement only the ModelProvider protocol.  The
         # concrete MeidoProvider supplies a more accurate estimate; this
@@ -205,7 +201,7 @@ class ContextWindowProvider:
                          for message in messages],
             'tools': tools,
         }
-        return estimate_tokens(payload)
+        return None, InputEstimate(estimate_tokens(payload), 'local')
 
     @staticmethod
     def _summary_message(summary):
@@ -366,14 +362,15 @@ class ContextWindowProvider:
             if any(not message.source_message_ids for message in prefix):
                 break  # Never evict an unfinished, in-memory tool chain.
             selected = cut
-            projected = self._estimate(system, raw[cut:], self._window_tools(raw[cut:], tools, protocol_tools=protocol_tools, restore=restore)) + self.settings.summaryTokenLimit
+            _, estimate = self._prepare_request(system, raw[cut:], self._window_tools(raw[cut:], tools, protocol_tools=protocol_tools, restore=restore))
+            projected = estimate.tokens + self.settings.summaryTokenLimit
             if hard_fit is None and projected < available:
                 hard_fit = cut
             if projected <= target:
                 break
         else:
             selected = hard_fit if hard_fit is not None else selected
-        if selected is None or self._estimate(system, raw[selected:], self._window_tools(raw[selected:], tools, protocol_tools=protocol_tools, restore=restore)) >= available:
+        if selected is None or self._prepare_request(system, raw[selected:], self._window_tools(raw[selected:], tools, protocol_tools=protocol_tools, restore=restore))[1].tokens >= available:
             raise ValueError('完整保留轮或当前工具链超出输入预算，无法安全压缩')
         prefix, retained = raw[:selected], raw[selected:]
         ids = list(dict.fromkeys([*state['removed'], *(identifier for message in prefix for identifier in message.source_message_ids)]))
@@ -407,8 +404,8 @@ class ContextWindowProvider:
             records = records[count:]
         visible = [self._summary_message(summary), *retained]
         await self._prepare_inputs(signal)
-        estimated = self._estimate(system, visible, self._window_tools(retained, tools, protocol_tools=protocol_tools, restore=restore))
-        if estimated >= available or estimated >= self.last_input_estimate:
+        _, estimate = self._prepare_request(system, visible, self._window_tools(retained, tools, protocol_tools=protocol_tools, restore=restore))
+        if estimate.tokens >= available or estimate.tokens >= self.last_input_estimate:
             raise ValueError('压缩后仍超出输入容量或未减少输入，原文已保留')
         self.compaction_diagnostic['step'] = 'commit_summary'
         covered = await self.ensure_coverage(ids)
@@ -419,18 +416,16 @@ class ContextWindowProvider:
         await self._prepare_inputs(signal)
         view = self._window_view(retained, restore=restore)
         request_tools = (*view.provider_schemas(), *protocol_tools) if view is not None else tools
-        estimated = self._estimate(system, visible, request_tools)
-        request = self.prepared_request
+        request, estimate = self._prepare_request(system, visible, request_tools)
         if request is not None and request.configuration is not None and request.configuration.contextWindowTokens is not None:
             available, _, _ = budget(request.configuration, self.settings, request.max_tokens or self.settings.maxTokens)
-        if estimated >= available or estimated >= self.last_input_estimate:
+        if estimate.tokens >= available or estimate.tokens >= self.last_input_estimate:
             raise ValueError('压缩后仍超出输入容量或未减少输入，原文已保留')
         await self._io(signal, self.windows.commit, prepared, summary,
             authorized=lambda: not signal.is_cancelled() and self.authorized(), covered=covered, drain_on_cancel=True)
         self._publish_window(view)
-        self.last_input_estimate = estimated
         self.compactions += 1
-        return visible, request_tools, request
+        return visible, request_tools, request, estimate
 
     def _minimal_messages(self, raw, state):
         current = self.current_input
@@ -480,7 +475,8 @@ class ContextWindowProvider:
         window_options = {'protocol_tools': protocol_tools, 'restore': not only_protocol_tools}
         tools = self._window_tools(raw, tools, commit=True, **window_options)
         visible = ([self._summary_message(state['summary'])] if state['summary'] else []) + raw
-        self.last_input_estimate = self._estimate(system, visible, tools)
+        request, estimate = self._prepare_request(system, visible, tools)
+        self.last_input_estimate, self.last_input_source = estimate.tokens, estimate.source
         request_provider = self.provider
         request_tools = tools
         committed = False
@@ -493,8 +489,9 @@ class ContextWindowProvider:
                 self.compaction_diagnostic = {'stage': 'summary', 'beforeTokens': self.last_input_estimate,
                     'inputLimit': available, 'trigger': trigger, 'fallback': None}
                 try:
-                    visible, request_tools, self.prepared_request = await self._compact(
+                    visible, request_tools, request, estimate = await self._compact(
                         system, raw, tools, state, signal, available, target, **window_options)
+                    self.last_input_estimate, self.last_input_source = estimate.tokens, estimate.source
                     committed = True
                     self.compaction_diagnostic.update(stage='committed', afterTokens=self.last_input_estimate)
                 except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
@@ -510,8 +507,9 @@ class ContextWindowProvider:
                     # Failure follows model/coverage/commit waits. Reprepare
                     # against the unchanged raw window before choosing fallback.
                     await self._prepare_inputs(signal)
-                    request_tools = self._window_tools(raw, tools, **window_options)
-                    self.last_input_estimate = self._estimate(system, visible, request_tools)
+                    request_tools = self._window_tools(raw, tools, commit=True, **window_options)
+                    request, estimate = self._prepare_request(system, visible, request_tools)
+                    self.last_input_estimate, self.last_input_source = estimate.tokens, estimate.source
                     configuration = self.provider.configuration
                     if configuration is not None and configuration.contextWindowTokens is not None:
                         output = getattr(self.provider, 'max_response_tokens', None) or self.settings.maxTokens
@@ -528,26 +526,21 @@ class ContextWindowProvider:
                 # Shorten context, not authorization: discovery and actual work
                 # must still be possible when the supplied schemas fit. If they
                 # do not fit, fail explicitly instead of silently claiming no tools.
-                request_tools = self._window_tools(raw, tools, **window_options)
-                self.last_input_estimate = self._estimate(system, visible, request_tools, provider=request_provider)
+                request_tools = self._window_tools(raw, tools, commit=True, **window_options)
+                request, estimate = self._prepare_request(system, visible, request_tools, provider=request_provider)
+                self.last_input_estimate, self.last_input_source = estimate.tokens, estimate.source
                 self.degraded = True
                 self.compaction_diagnostic.update(fallback='minimal', toolsDisabled=False,
                                                   afterTokens=self.last_input_estimate)
                 self._diagnose()
                 if self.last_input_estimate >= available:
                     raise ValueError('当前输入、必要约束或已执行工具结果仍超出输入容量；原历史已保留')
-        if not committed:
-            if self.compaction_diagnostic:
-                request_tools = self._window_tools(raw, request_tools, commit=True, **window_options)
-            self.last_input_estimate = self._estimate(system, visible, request_tools, provider=request_provider)
-            if configuration is not None and configuration.contextWindowTokens is not None and self.last_input_estimate >= available:
-                raise ValueError('当前输入与工具声明仍超出输入容量；原历史已保留')
         self.tool_count = len(request_tools)
         await self._reserve(signal)
         if self.on_phase is not None:
             self.on_phase('model')
         timeout = asyncio.timeout(provider_timeout) if provider_timeout is not None else nullcontext()
-        source = (request_provider.stream_prepared(self.prepared_request, system=system, messages=visible, signal=signal)
+        source = (request_provider.stream_prepared(request, system=system, messages=visible, signal=signal)
                   if callable(getattr(request_provider, 'stream_prepared', None)) else
                   request_provider.stream_response(model=model, system=system, messages=visible, tools=request_tools,
                                                    signal=signal, session_id=session_id))

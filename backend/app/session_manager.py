@@ -1,5 +1,5 @@
 from .chat_attachments import public_attachment
-from .models import Message, Role, SessionResponse
+from .models import Message, Role, SessionResponse, SessionSummary
 from .role_store import RoleStore
 from .session_store import SessionStore
 from .chat_presentation import run_process, run_metrics, process_target
@@ -11,10 +11,11 @@ class SessionManager:
         self.sessions = sessions
 
     def open_role_session(self, role_id: str) -> SessionResponse:
-        if self.roles.get(role_id) is None:
-            raise KeyError(role_id)
-        session = self.sessions.open_role_session(role_id)
-        messages = self.sessions.list_messages(session.sessionKey)
+        _, session = self.role_and_session(role_id)
+        return self.present_session(session, self.sessions.list_messages(session.sessionKey))
+
+    def present_session(self, session: SessionSummary, messages: list[Message]) -> SessionResponse:
+        """Present one raw batch, including any current owner projection, without I/O."""
         runs = {}
         for message in messages:
             if message.runId:
@@ -40,10 +41,15 @@ class SessionManager:
         return result
 
     def role_and_history(self, role_id: str) -> tuple[Role, SessionResponse]:
+        role, session = self.role_and_session(role_id)
+        return role, self.present_session(session, self.sessions.list_messages(session.sessionKey))
+
+    def role_and_session(self, role_id: str) -> tuple[Role, SessionSummary]:
+        """Admission needs the role and session identity, not its rendered history."""
         role = self.roles.get(role_id)
         if role is None:
             raise KeyError(role_id)
-        return role, self.open_role_session(role_id)
+        return role, self.sessions.open_role_session(role_id)
 
 
 def public_message(message: Message) -> Message:
