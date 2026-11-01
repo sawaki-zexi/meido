@@ -7,7 +7,7 @@ import pytest
 from backend.app import main
 from backend.app.ai.model_types import (ModelAssistantMessage, ModelResponseMetadata, ModelStreamDone,
     ModelStreamError, ModelTextBlock, ModelTextDelta, ModelThinkingBlock, ModelThinkingDelta)
-from test_chat_lifecycle import events, wait_for
+from test_chat_lifecycle import events, read_run_snapshot, wait_for
 from test_chat_stop import chat_server
 
 
@@ -172,8 +172,8 @@ def test_live_gap_recovery_is_complete_and_writes_only_at_message_boundaries(cha
             final_message = final.json()['messages'][-1]
         else:
             release.set()
-            final = wait_for(lambda: (data if (data := client.get(path + f'/runs/{run_id}').json())['run']['status']
-                in {'completed', 'failed'} else None))
+            final = wait_for(lambda: read_run_snapshot(client.get(path + f'/runs/{run_id}'), run_id,
+                statuses={'completed', 'failed'}))
             final_message = final['messages'][-1]
         assert final_message['content'] == text * 100
         assert final_message['status'] == ('completed' if terminal == 'complete' else 'failed')

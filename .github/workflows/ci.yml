@@ -51,12 +51,14 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - run: npm ci
       - run: npx playwright-core install chromium
+      - run: New-Item -ItemType Directory -Force -Path .data/chat-e2e | Out-Null
       - run: python -m pytest tests/python/test_meido_server_runner.py -q --basetemp=.data/chat-e2e/runner
       - run: npm run test:e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: windows-chat-e2e
+          include-hidden-files: true
           path: |
             .data/chat-e2e/artifacts/**
             .data/chat-e2e/runner/**/runner.log

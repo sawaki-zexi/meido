@@ -29,6 +29,22 @@ def events(response):
             yield json.loads(block[6:])
 
 
+def read_run_snapshot(response, run_id, *, statuses):
+    """Only a fenced, identified snapshot response permits an HTTP retry."""
+    if response.status_code == 503:
+        assert response.headers.get('Retry-After') == '1', response.headers
+        assert response.headers.get('X-Meido-Run-Id') == run_id, response.headers
+        assert response.json() == {'detail': '回复仍在更新，正在重新同步'}, response.text
+        return None
+    assert response.status_code == 200, (response.status_code, response.text)
+    value = response.json()
+    assert isinstance(value, dict) and isinstance(value.get('run'), dict), value
+    assert value['run'].get('runId') == run_id, value
+    assert value['run'].get('status') in {'queued', 'created', 'running', 'completed', 'failed', 'cancelled'}, value
+    assert isinstance(value.get('messages'), list), value
+    return value if value['run']['status'] in statuses else None
+
+
 def test_disconnect_resume_and_duplicate_submit_do_not_repeat_execution(chat_server, monkeypatch):
     client, role, other = chat_server
     release, entered = threading.Event(), threading.Event()
@@ -87,17 +103,10 @@ def test_disconnect_resume_and_duplicate_submit_do_not_repeat_execution(chat_ser
 
         def read_terminal():
             response = client.get(path + '/runs/' + run['runId'])
-            if response.status_code != 200:
-                assert response.status_code == 503, (response.status_code, response.text)
-                assert response.headers['Retry-After'] == '1'
-                assert response.headers['X-Meido-Run-Id'] == run['runId']
-                assert response.json() == {'detail': '回复仍在更新，正在重新同步'}
+            value = read_run_snapshot(response, run['runId'], statuses={'completed'})
+            if response.status_code == 503:
                 retried.append(response.status_code)
-                return None
-            value = response.json()
-            assert value['run']['runId'] == run['runId']
-            assert value['run']['status'] in {'queued', 'created', 'running', 'completed'}, value
-            return value if value['run']['status'] == 'completed' else None
+            return value
 
         release.set()
         terminal = wait_for(read_terminal)
@@ -172,9 +181,11 @@ def test_legacy_fast_reply_replays_final_messages_when_deltas_overflow_before_su
 def test_reopened_tool_phase_keeps_durable_thinking_before_the_tool(chat_server, monkeypatch):
     from backend.app.agent_runtime import AgentToolResult, ToolDefinition
     from backend.app.ai.model_types import (ModelAssistantMessage, ModelResponseMetadata, ModelStreamDone,
-        ModelThinkingBlock, ModelToolCallBlock, ModelTextBlock)
+        ModelThinkingBlock, ModelToolCallBlock, ModelTextBlock, ModelTextDelta)
     client, role, _ = chat_server
     entered, release = threading.Event(), threading.Event()
+    finish_steps = [threading.Event() for _ in range(3)]
+    advanced = [threading.Event() for _ in range(3)]
     calls = []
 
     class Tool:
@@ -187,8 +198,13 @@ def test_reopened_tool_phase_keeps_durable_thinking_before_the_tool(chat_server,
     class Model:
         async def stream_rich_messages(self, messages, configuration, tools):
             calls.append(messages)
+            if len(calls) == 2:
+                for index, text in enumerate(('完', '成', '。')):
+                    assert await asyncio.to_thread(finish_steps[index].wait, 5)
+                    yield ModelTextDelta(text)
+                    advanced[index].set()
             blocks = ((ModelThinkingBlock('查看资料'), ModelToolCallBlock('call', 'list_dir', {}))
-                if len(calls) == 1 else (ModelThinkingBlock('查看资料'), ModelTextBlock('完成')))
+                if len(calls) == 1 else (ModelThinkingBlock('查看资料'), ModelTextBlock('完成。')))
             yield ModelStreamDone(ModelAssistantMessage(blocks,
                 ModelResponseMetadata(stop_reason='tool_use' if len(calls) == 1 else 'stop')))
 
@@ -203,13 +219,39 @@ def test_reopened_tool_phase_keeps_durable_thinking_before_the_tool(chat_server,
         process = data['activeRun']['process']
         assert [item['type'] for item in process] == ['thinking', 'tool']
         assert process[0]['text'] == '查看资料'
+        projection = main._read_desktop_projection
+        crossed_reads = []
+
+        def cross_final_delta(*args):
+            value = projection(*args)
+            if len(crossed_reads) < len(finish_steps):
+                index = len(crossed_reads)
+                crossed_reads.append(index)
+                finish_steps[index].set()
+                assert advanced[index].wait(3)
+            return value
+
+        monkeypatch.setattr(main, '_read_desktop_projection', cross_final_delta)
+        retried = []
+
+        def read_terminal():
+            response = client.get(path + '/runs/run-thinking-tool')
+            value = read_run_snapshot(response, 'run-thinking-tool', statuses={'completed'})
+            if response.status_code == 503:
+                retried.append(response.status_code)
+            return value
+
         release.set()
-        completed = wait_for(lambda: (value if (value := client.get(path + '/runs/run-thinking-tool').json())['run']['status'] == 'completed' else None))
+        completed = wait_for(read_terminal)
+        assert crossed_reads == [0, 1, 2] and retried and len(calls) == 2
+        assert completed['messages'][-1]['content'] == '完成。'
         thinking = [item for item in completed['messages'][-1]['metadata']['process'] if item['type'] == 'thinking']
         assert [item['text'] for item in thinking] == ['查看资料', '查看资料']
         assert thinking[0]['id'] != thinking[1]['id']
     finally:
         release.set()
+        for step in finish_steps:
+            step.set()
 
 
 @pytest.mark.parametrize('cancel', ['stop', 'permission'])
