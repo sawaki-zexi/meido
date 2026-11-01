@@ -135,6 +135,29 @@ async function json(endpoint, method = 'GET', body) {
   assert.ok(response.ok, `${method} ${endpoint}: ${response.status} ${response.ok ? '' : await response.text()}`);
   return response.status === 204 ? null : response.json();
 }
+async function idleSession(roleId) {
+  const response = await fetch(`${api}/api/roles/${roleId}/session`, { signal: AbortSignal.timeout(15000) });
+  if (response.status === 503) {
+    assert.equal(response.headers.get('Retry-After'), '1');
+    assert.deepEqual(await response.json(), { detail: '回复仍在更新，正在重新同步' });
+    return null;
+  }
+  assert.equal(response.status, 200, await response.clone().text());
+  const session = await response.json(), sessionKey = `role:${roleId}`;
+  assert.equal(session?.session?.roleId, roleId);
+  assert.equal(session?.session?.sessionKey, sessionKey);
+  assert.ok(Array.isArray(session.messages));
+  for (const message of session.messages) assert.equal(message.sessionKey, sessionKey);
+  assert.ok(session.activeRun === null || (session.activeRun && typeof session.activeRun === 'object'));
+  if (session.activeRun !== null) {
+    assert.equal(session.activeRun.roleId, roleId);
+    assert.equal(session.activeRun.sessionKey, sessionKey);
+    assert.ok(typeof session.activeRun.runId === 'string' && session.activeRun.runId.length > 0);
+    assert.ok(['queued', 'created', 'running'].includes(session.activeRun.status));
+    return null;
+  }
+  return session;
+}
 async function one(key, name, fn) {
   if (selected && !selected.has(key)) return;
   report.current = name; console.log(JSON.stringify({ case: name, state: 'running' }));
@@ -300,16 +323,19 @@ try {
     await send('E2E_RECOVER 撤销工具后继续聊天'); await done();
   });
   await one('natural', '拟人分段结束后可以继续发送', async () => {
+    const before = report.requests.length;
     await select(roles.natural); await send('E2E_NATURAL');
     await page.locator('.message.assistant .reply-content').filter({ hasText: '拟人回复第一段。' }).waitFor();
     await page.locator('.message.assistant .reply-content').filter({ hasText: '拟人回复第二段。' }).waitFor();
-    await until(async () => !(await json(`/api/roles/${roles.natural.id}/session`)).activeRun, 'Natural run cleanup');
-    const session = await json(`/api/roles/${roles.natural.id}/session`);
+    const session = await until(() => idleSession(roles.natural.id), 'Natural run cleanup');
     assert.equal(session.messages.filter(m => m.role === 'assistant' && m.content.includes('拟人回复')).length, 2);
     await send('E2E_NATURAL_NEXT');
-    await until(async () => { const next = await json(`/api/roles/${roles.natural.id}/session`);
-      return !next.activeRun && next.messages.filter(m => m.role === 'assistant' && m.content.includes('拟人回复')).length === 4;
+    const next = await until(async () => { const value = await idleSession(roles.natural.id);
+      return value && value.messages.filter(m => m.role === 'assistant' && m.content.includes('拟人回复')).length === 4 ? value : null;
     }, 'Next natural reply did not finish');
+    assert.equal(next.messages.filter(m => m.role === 'assistant' && m.content.includes('拟人回复')).length, 4);
+    assert.equal(report.requests.length - before, 2, 'Natural reply recovery repeated a model request');
+    return { modelRequests: report.requests.length - before };
   });
   await one('ring', 'Shiori 圆环、未知容量与移动端触摸', async () => {
     await select(roles.idle); const ring = page.getByRole('button', { name: /^上下文用量/ });
