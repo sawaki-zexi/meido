@@ -127,15 +127,24 @@ class ContextWindowProvider:
             # This final await rechecks registry edits during context I/O too.
             self.tool_preparation = await self.capabilities.prepare_metadata(signal)
 
-    def _window_tools(self, raw, fallback, *, commit=False, protocol_tools=(), restore=True):
+    def _window_view(self, raw, *, restore=True):
         if not restore or self.capabilities is None:
-            return fallback
+            return None
         current = self.capabilities.current()
-        view = (current._select((item.name for item in current.snapshot.tools), preparation=self.tool_preparation) if current._discovery is None
-                else self.capabilities.select_window(raw, preparation=self.tool_preparation) if commit
-                else self.capabilities.window_view(raw, preparation=self.tool_preparation))
-        if commit:
+        return (current._select((item.name for item in current.snapshot.tools), preparation=self.tool_preparation) if current._discovery is None
+                else current.window_view(raw, preparation=self.tool_preparation))
+
+    def _publish_window(self, view):
+        if view is not None:
+            view.publish_window()
             self.capabilities = view
+
+    def _window_tools(self, raw, fallback, *, commit=False, protocol_tools=(), restore=True):
+        view = self._window_view(raw, restore=restore)
+        if view is None:
+            return fallback
+        if commit:
+            self._publish_window(view)
         return (*view.provider_schemas(), *protocol_tools)
 
     def _reserve(self, signal, *, auxiliary=False):
@@ -369,16 +378,23 @@ class ContextWindowProvider:
         covered = await self.ensure_coverage(ids)
         signal.raise_if_cancelled()
         # Coverage may await memory work while the current tool registry changes.
-        # Recheck the actual final schema before publishing the new durable cut.
+        # Capture the complete candidate and its issued visibility before the
+        # durable cut. Commit may await I/O, but success sends this exact input.
         await self._prepare_inputs(signal)
-        estimated = self._estimate(system, visible, self._window_tools(retained, tools, protocol_tools=protocol_tools, restore=restore))
+        view = self._window_view(retained, restore=restore)
+        request_tools = (*view.provider_schemas(), *protocol_tools) if view is not None else tools
+        estimated = self._estimate(system, visible, request_tools)
+        request = self.prepared_request
+        if request is not None and request.configuration is not None and request.configuration.contextWindowTokens is not None:
+            available, _, _ = budget(request.configuration, self.settings, request.max_tokens or self.settings.maxTokens)
         if estimated >= available or estimated >= self.last_input_estimate:
             raise ValueError('压缩后仍超出输入容量或未减少输入，原文已保留')
         await self._io(signal, self.windows.commit, prepared, summary,
             authorized=lambda: not signal.is_cancelled() and self.authorized(), covered=covered, drain_on_cancel=True)
+        self._publish_window(view)
         self.last_input_estimate = estimated
         self.compactions += 1
-        return visible
+        return visible, request_tools, request
 
     def _summary_tokens(self, summary, response):
         # Shiori uses reported output as an upper bound for the normalized
@@ -440,6 +456,7 @@ class ContextWindowProvider:
         self.last_input_estimate = self._estimate(system, visible, tools)
         request_provider = self.provider
         request_tools = tools
+        committed = False
         if configuration is not None and configuration.contextWindowTokens is not None:
             output = getattr(self.provider, 'max_response_tokens', None) or self.settings.maxTokens
             available, trigger, target = budget(configuration, self.settings, output)
@@ -447,10 +464,9 @@ class ContextWindowProvider:
                 self.compaction_diagnostic = {'stage': 'summary', 'beforeTokens': self.last_input_estimate,
                     'inputLimit': available, 'trigger': trigger, 'fallback': None}
                 try:
-                    visible = await self._compact(system, raw, tools, state, signal, available, target, **window_options)
-                    # The summary is not raw history and contains no unlocks.
-                    raw = visible[1:]
-                    request_tools = self._window_tools(raw, tools, **window_options)
+                    visible, request_tools, self.prepared_request = await self._compact(
+                        system, raw, tools, state, signal, available, target, **window_options)
+                    committed = True
                     self.compaction_diagnostic.update(stage='committed', afterTokens=self.last_input_estimate)
                 except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
                     # A failed optional summary is never a new historical fact.
@@ -462,15 +478,20 @@ class ContextWindowProvider:
                     self.compaction_diagnostic.update(stage='failed', errorType=type(error).__name__)
                     logger.warning('Context compaction failed role=%s run-scope=%s type=%s',
                                    self.role_id, self.scope, type(error).__name__)
+                    # Failure follows model/coverage/commit waits. Reprepare
+                    # against the unchanged raw window before choosing fallback.
+                    await self._prepare_inputs(signal)
+                    request_tools = self._window_tools(raw, tools, **window_options)
+                    self.last_input_estimate = self._estimate(system, visible, request_tools)
+                    configuration = self.provider.configuration
+                    if configuration is not None and configuration.contextWindowTokens is not None:
+                        output = getattr(self.provider, 'max_response_tokens', None) or self.settings.maxTokens
+                        available, _, _ = budget(configuration, self.settings, output)
                     if self.last_input_estimate < available:
                         self.compaction_diagnostic['fallback'] = 'original'
                 finally:
-                    # Failure also follows model/coverage waits. Its fallback
-                    # must use current schemas and context, not the old inputs.
-                    if not signal.is_cancelled():
-                        await self._prepare_inputs(signal)
                     self._diagnose()
-            if self.degraded or self.last_input_estimate >= available:
+            if not committed and (self.degraded or self.last_input_estimate >= available):
                 # Hard overflow has one transient minimal rendering; never cut SQLite
                 # history or publish the failed summary. Preserve current receipts.
                 request_provider = self.provider.minimal_provider()
@@ -486,12 +507,12 @@ class ContextWindowProvider:
                 self._diagnose()
                 if self.last_input_estimate >= available:
                     raise ValueError('当前输入、必要约束或已执行工具结果仍超出输入容量；原历史已保留')
-        if self.compaction_diagnostic:
-            request_tools = self._window_tools(raw, request_tools, commit=True, **window_options)
-        # Registration may have changed while an auxiliary request was awaited.
-        self.last_input_estimate = self._estimate(system, visible, request_tools, provider=request_provider)
-        if configuration is not None and configuration.contextWindowTokens is not None and self.last_input_estimate >= available:
-            raise ValueError('当前输入与工具声明仍超出输入容量；原历史已保留')
+        if not committed:
+            if self.compaction_diagnostic:
+                request_tools = self._window_tools(raw, request_tools, commit=True, **window_options)
+            self.last_input_estimate = self._estimate(system, visible, request_tools, provider=request_provider)
+            if configuration is not None and configuration.contextWindowTokens is not None and self.last_input_estimate >= available:
+                raise ValueError('当前输入与工具声明仍超出输入容量；原历史已保留')
         self.tool_count = len(request_tools)
         self._reserve(signal)
         timeout = asyncio.timeout(provider_timeout) if provider_timeout is not None else nullcontext()

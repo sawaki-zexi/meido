@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from backend.app import main
+from backend.app.agent_runtime.capabilities import CapabilityResolution
 from backend.app.model_adapter import ModelTextDelta
 from test_meme_turn import meme_turn, payload
 
@@ -11,17 +12,18 @@ from test_meme_turn import meme_turn, payload
 def test_paired_private_identity_is_present_in_group_model_context(meme_turn, monkeypatch, sender, unbound, owner):
     state = meme_turn
     requests = []
-    namespace_scopes = []
-    namespace_context = main._runtime_namespace_context
-    namespace_marker = "merge-regression: scoped namespace context"
+    preparations = []
+    request_namespaces = []
+    prepare_metadata = CapabilityResolution.prepare_metadata
 
-    def scoped_namespace_context(capabilities, signal=None):
+    async def scoped_preparation(capabilities, signal):
         snapshot = capabilities.current().snapshot
         assert snapshot.role_id == state.role.id
-        namespace_scopes.append(snapshot.session_key)
-        return "\n".join(filter(None, (namespace_context(capabilities, signal), namespace_marker)))
+        prepared = await prepare_metadata(capabilities, signal)
+        preparations.append((snapshot.session_key, prepared))
+        return prepared
 
-    monkeypatch.setattr(main, "_runtime_namespace_context", scoped_namespace_context)
+    monkeypatch.setattr(CapabilityResolution, "prepare_metadata", scoped_preparation)
     state.channels.unbind_identity(str(state.channels.list_identities()[0]["identityId"]))
     code = state.channels.create_pairing_code(state.role.id, "qq")
     original_transport = state.adapter._transport
@@ -37,6 +39,9 @@ def test_paired_private_identity_is_present_in_group_model_context(meme_turn, mo
     class Model:
         async def stream_structured_messages(self, messages, configuration, tools):
             requests.append(messages)
+            namespace = preparations[-1][1].namespace_context(tool['function']['name'] for tool in tools)
+            assert namespace, 'This scoped channel fixture has deferred group tools'
+            request_namespaces.append(namespace)
             yield ModelTextDelta("收到")
 
     monkeypatch.setattr(main, "model_adapter", Model())
@@ -72,10 +77,10 @@ def test_paired_private_identity_is_present_in_group_model_context(meme_turn, mo
     system = "\n".join(message["content"] for message in requests[0] if message["role"] == "system")
     assert f'当前发送者 ID："{sender}"' in system
     assert "当前发送者身份：" + ("已配对主人" if owner else "未配对成员") in system
-    # The merged channel provider must keep both verified identity and the
-    # request-scoped namespace callback, not choose one side of the merge.
-    assert namespace_marker in system
-    assert namespace_scopes and set(namespace_scopes) == {thread.session_key}
+    # Verified sender identity and the actual prepared directory both reach
+    # the model; private context cannot be substituted for the group scope.
+    assert request_namespaces[0] in system
+    assert preparations and {scope for scope, _ in preparations} == {thread.session_key}
     assert "主人私聊秘密不得进入群聊" not in str(requests)
 
 

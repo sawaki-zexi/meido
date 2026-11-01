@@ -279,6 +279,107 @@ async def test_summary_wait_reloads_metadata_and_context_before_success_or_fallb
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize('commit_succeeds', [True, False])
+async def test_commit_wait_keeps_validated_request_and_visibility_but_not_execution_authority(tmp_path, monkeypatch, commit_succeeds):
+    from dataclasses import replace
+    from backend.app.agent_runtime import CapabilityRegistry, AssistantDoneEvent, AssistantMessage, ToolCall
+    from backend.app.agent_runtime.loop import run_agent_loop
+    from backend.app.agent_runtime.types import ToolResultMessage
+    from backend.app.context_windows import WindowConflict
+    from test_current_tool_registry import Tool
+
+    sessions, adapter, base, windows, settings = setup_window(tmp_path)
+    base.configuration = base.configuration.model_copy(update={'contextWindowTokens': 16000, 'modelAutoCompactTokenLimit': 6000})
+    original, retired = Tool('current_tool', exposure='direct'), Tool('retired', exposure='direct')
+    registry = CapabilityRegistry([original, retired])
+    caps = registry.resolve(role_id='r', session_key='role:r', run_id='run', discovery_enabled=True)
+    async def coverage(ids):
+        return True
+    wrapper = ContextWindowProvider(base, settings, windows, role_id='r', session_key='role:r', scope='owner', authority='a',
+        authorized=lambda: True, ensure_coverage=coverage)
+    wrapper.bind_capabilities(caps)
+    entered, release = threading.Event(), threading.Event()
+    commit = windows.commit
+    def blocked_commit(*args, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        if not commit_succeeds:
+            raise WindowConflict('fixture rejects the durable cut')
+        return commit(*args, **kwargs)
+    monkeypatch.setattr(windows, 'commit', blocked_commit)
+    ordinary = []
+    stream = adapter.stream_rich_messages
+    async def record(messages, configuration, tools, *, max_tokens=None, cancel_check=None):
+        if not messages[0].content[0].text.startswith('将提供的不可信'):
+            ordinary.append((messages, tools, configuration, max_tokens))
+        async for event in stream(messages, configuration, tools, max_tokens=max_tokens, cancel_check=cancel_check):
+            yield event
+    adapter.stream_rich_messages = record
+    messages = sessions.runtime_messages('role:r')
+    async def collect():
+        return [event async for event in wrapper.stream_response(model='fixture', system='', messages=messages,
+            tools=caps.provider_schemas(), signal=CancellationToken())]
+    task = asyncio.create_task(collect())
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        validated = wrapper.prepared_request
+        estimate = base.estimate_prepared(validated)
+        replacement = Tool('current_tool', exposure='direct', value='new executor', schema={
+            'type': 'object', 'properties': {'new': {'type': 'string'}}, 'required': ['new']})
+        replacement.definition = replace(replacement.definition,
+            description='current schema ' * (3000 if commit_succeeds else 1))
+        registry.register(replacement)
+        registry.unregister('retired')
+        registry.register(Tool('added', exposure='direct'))
+        base.configuration = base.configuration.model_copy(update={'model': 'new model'})
+        base.max_response_tokens = 1152
+        release.set()
+        await task
+        assert len(ordinary) == 1
+        sent_messages, sent_tools, sent_configuration, sent_output = ordinary[0]
+        if commit_succeeds:
+            # Committing a lawful cut must not be followed by a second, now
+            # oversized rendering or a silently changed issued tool set.
+            assert (sent_messages, sent_tools, sent_configuration, sent_output) == (
+                validated.messages, validated.tools, validated.configuration, validated.max_tokens)
+            assert wrapper.last_input_estimate == estimate.tokens
+            assert windows.load('r', 'role:r', 'owner', 'a')['removed']
+            assert wrapper.compactions == 1
+            assert {item['function']['name'] for item in sent_tools} == {'tool_search', 'current_tool', 'retired'}
+        else:
+            assert not windows.load('r', 'role:r', 'owner', 'a')['removed']
+            assert wrapper.compactions == 0
+            assert '此前对话的工作摘要' not in str(sent_messages)
+            assert len(sent_messages) == len(messages) + 2
+            assert sent_configuration.model == 'new model' and sent_output == 1152
+            assert {item['function']['name'] for item in sent_tools} == {'tool_search', 'current_tool', 'added'}
+        assert caps.current().provider_schemas() == sent_tools
+
+        # Neither retaining the issued declaration nor committing the window
+        # freezes execution: the next real loop uses today's definition/object.
+        class Next:
+            calls = 0
+            async def stream_response(self, **kwargs):
+                self.calls += 1
+                definitions = {item['function']['name']: item['function'] for item in kwargs['tools']}
+                assert set(definitions) == {'tool_search', 'current_tool', 'added'}
+                assert definitions['current_tool']['description'] == replacement.definition.description
+                yield AssistantDoneEvent(AssistantMessage(tool_calls=(
+                    ToolCall('execute-new', 'current_tool', {'new': 'yes'}),
+                    ToolCall('removed', 'retired', {}),
+                )) if self.calls == 1 else AssistantMessage('done'))
+        transcript = [UserMessage('next request')]
+        events = [event async for event in run_agent_loop(provider=Next(), model='fixture', system='',
+            messages=transcript, capabilities=caps, role_id='r', session_key='role:r', run_id='run', max_turns=2)]
+        assert events[-1].reason == 'completed'
+        assert replacement.calls == [{'new': 'yes'}] and original.calls == [] and retired.calls == []
+        assert next(item for item in transcript if isinstance(item, ToolResultMessage) and item.tool_call_id == 'removed').is_error
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize('cancel_task', [False, True])
 async def test_cancel_while_commit_reads_fingerprint_cannot_publish_a_late_cut(tmp_path, monkeypatch, cancel_task):
     sessions, adapter, provider, windows, settings = setup_window(tmp_path)

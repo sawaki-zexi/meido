@@ -9,7 +9,6 @@ from backend.app.models import RoleInput, RoleProfile
 
 
 def test_namespace_hint_filters_before_render_and_obeys_search_revocation():
-    from backend.app.main import _runtime_namespace_context
     search = ToolDefinition('tool_search', 'Search')
     allowed = ToolDefinition('invoice', 'Read', source='mcp:finance', namespace_summary='发票服务')
     denied = ToolDefinition('secret', 'Read', source='mcp:private-service', namespace_summary='不得泄露')
@@ -24,7 +23,7 @@ def test_namespace_hint_filters_before_render_and_obeys_search_revocation():
         authorize_tool=lambda definition, context: authorize(definition, context) or True)
     def render():
         preparation = asyncio.run(capabilities.prepare_metadata(CancellationToken()))
-        return _runtime_namespace_context(preparation, ('tool_search',))
+        return preparation.namespace_context(('tool_search',))
     text = render()
     assert '发票服务' in text and 'mcp:finance' in text
     assert 'private-service' not in text and '不得泄露' not in text and 'omitted' not in text

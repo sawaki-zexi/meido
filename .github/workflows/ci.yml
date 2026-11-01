@@ -61,6 +61,8 @@ jobs:
               tests/python/test_context_windows.py
               tests/python/test_current_tool_registry.py
               tests/python/test_tool_namespace_context.py
+              tests/python/test_tool_exposure_contract.py
+              tests/python/channels/test_group_owner_identity.py
               tests/python/test_role_capabilities.py
               tests/python/test_input_usage_calibration.py
               tests/python/test_batched_summary.py

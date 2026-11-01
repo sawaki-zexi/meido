@@ -306,9 +306,13 @@ class CapabilityResolution:
 
     def select_window(self, messages, *, preparation=None) -> CapabilityResolution:
         view = self.window_view(messages, preparation=preparation)
-        if self._discovery is not None:
-            self._discovery._current = view
+        view.publish_window()
         return view
+
+    def publish_window(self) -> None:
+        """Publish an already selected request view without rereading the registry."""
+        if self._discovery is not None:
+            self._discovery._current = self
 
     def pending_revision(self, call_id: str) -> CapabilityResolution | None:
         return self._discovery.propose(call_id) if self._discovery is not None else None

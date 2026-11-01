@@ -5271,11 +5271,6 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
     return enabled
 
 
-def _runtime_namespace_context(preparation, visible_names=()) -> str:
-    """Pure projection; preparation has already read current host facts."""
-    return preparation.namespace_context(visible_names)
-
-
 def _runtime_tools(
     role,
     *,
