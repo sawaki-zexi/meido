@@ -3,9 +3,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { App } from "../../App";
 import { fakeBackend, message, role, sse } from "../../test/fakeBackend";
+import { fakeChatBackend } from "../../test/fakeChatBackend";
+import * as streamApi from "../../api/stream";
 
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 it('资料按四段单独展开编辑，工具栏保存和重置保留折叠字段及旧数据', async () => {
   const original = role({ id: 'r1', name: '爱丽丝' });
@@ -158,7 +160,7 @@ it('切换工作区标签保留未保存的能力更改，保存按钮只在能�
   expect(calls.filter(call => call.method !== 'GET')).toEqual([]);
 });
 
-it.each(["去聊天", "记忆来源"])("回复期间不能通过工作区%s切换会话，结束后可以切换", async (entry) => {
+it.each(["去聊天", "记忆来源"])("回复期间通过工作区%s切换会话，旧回复继续且返回后恢复同一运行", async (entry) => {
   const alice = role({ id: "r1", name: "爱丽丝" });
   const bella = role({ id: "r2", name: "贝拉" });
   const origin = { kind: "message", sessionKey: "role:r2", messageIds: ["b1"], messageRange: null, stableSourceKey: "message:b1" };
@@ -166,45 +168,96 @@ it.each(["去聊天", "记忆来源"])("回复期间不能通过工作区%s切�
     createdAt: "2026-10-24T00:00:00Z", updatedAt: "2026-10-24T00:00:00Z", happenedAt: null,
     sourceRef: { ...origin, sources: [origin], sourceKeys: [] } };
   let controller!: ReadableStreamDefaultController<Uint8Array>;
-  const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
-  fakeBackend({
+  let resumedController!: ReadableStreamDefaultController<Uint8Array>;
+  const cancelled = vi.fn();
+  const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; }, cancel: cancelled });
+  const resumedStream = new ReadableStream<Uint8Array>({ start(value) { resumedController = value; } });
+  const subscriptions: { runId: string; emit: Parameters<typeof streamApi.subscribeRoleRun>[3]; signal: AbortSignal }[] = [];
+  const subscribe = streamApi.subscribeRoleRun;
+  vi.spyOn(streamApi, 'subscribeRoleRun').mockImplementation((roleId, runId, after, emit, signal) => {
+    subscriptions.push({ runId, emit, signal });
+    return subscribe(roleId, runId, after, emit, signal);
+  });
+  const history: { session: { sessionKey: string; roleId: string }; messages: ReturnType<typeof message>[];
+    activeRun: streamApi.ChatRunSnapshot | null } = {
+    session: { sessionKey: 'role:r1', roleId: 'r1' }, messages: [], activeRun: null,
+  };
+  let acceptedRunId = '';
+  const { calls } = fakeChatBackend({
     "GET /api/roles": () => ({ body: { roles: [alice, bella] } }),
-    "GET /api/roles/r1/session": () => ({ body: { session: { sessionKey: "role:r1", roleId: "r1" }, messages: [] } }),
+    "GET /api/roles/r1/session": () => ({ body: history }),
     "GET /api/roles/r2/session": () => ({ body: { session: { sessionKey: "role:r2", roleId: "r2" }, messages: [message({ id: "b1", sessionKey: "role:r2", role: "assistant", content: "贝拉的历史" })] } }),
     "GET /api/roles/r2/memories.*": () => ({ body: { memories: [memory], total: 1 } }),
-    "POST /api/roles/r1/messages": () => ({ stream }),
+    'GET /api/roles/r1/runs/([^/]+)/events\\?after=3': (_init, match) => {
+      expect(match[1]).toBe(acceptedRunId);
+      return { stream: resumedStream };
+    },
+    'CHAT /api/roles/r1': init => {
+      acceptedRunId = `run-${JSON.parse(String(init?.body)).requestId}`;
+      history.activeRun = { ...history.session, runId: acceptedRunId, sequence: 3,
+        status: 'running', phase: 'model', stopping: false, tools: [] };
+      const encoder = new TextEncoder();
+      controller.enqueue(encoder.encode(sse('user_message_accepted', { runId: acceptedRunId, sequence: 1,
+        message: message({ id: 'u1', role: 'user', content: '你好', runId: acceptedRunId }) })));
+      controller.enqueue(encoder.encode(sse('assistant_generation_started', { runId: acceptedRunId, sequence: 2, messageId: 'a1', messageSequence: 2 })));
+      controller.enqueue(encoder.encode(sse('assistant_delta', { runId: acceptedRunId, sequence: 3, messageId: 'a1', delta: '爱丽丝正在回复' })));
+      return { stream };
+    },
   });
   const user = userEvent.setup();
   render(<App />);
   await screen.findByRole("heading", { name: "爱丽丝" });
   await user.type(screen.getByLabelText("消息内容"), "你好{Enter}");
   await screen.findByRole("button", { name: "停止回复" });
+  await screen.findByText('爱丽丝正在回复', { selector: '.bubble p' });
   await user.click(screen.getByRole("button", { name: "角色" }));
   await user.click(screen.getByRole("button", { name: "查看贝拉工作区" }));
   const workspace = screen.getByRole("region", { name: "贝拉的角色工作区" });
   if (entry === "去聊天") {
     const chatButton = within(workspace).getByRole("button", { name: "去聊天" });
-    expect(chatButton).toBeDisabled();
+    expect(chatButton).toBeEnabled();
     await user.click(chatButton);
   } else {
     await user.click(within(workspace).getByRole("tab", { name: "记忆" }));
     await user.click(await within(workspace).findByRole("button", { name: "查看记忆：贝拉的记忆" }));
     await user.click(within(workspace).getByRole("button", { name: "定位到消息" }));
   }
-  expect(workspace).toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "对话" }));
-  expect(screen.getByRole("heading", { name: "爱丽丝" })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: '贝拉', level: 1 })).toBeVisible();
+  expect(await screen.findByText('贝拉的历史', { selector: '.bubble p' })).toBeVisible();
+  expect(workspace).not.toBeInTheDocument();
+  if (entry === '记忆来源') expect(screen.getByText('记忆来源')).toBeVisible();
+  expect(subscriptions[0].signal.aborted).toBe(true);
+  await waitFor(() => expect(cancelled).toHaveBeenCalledOnce());
+  expect(history.activeRun?.status).toBe('running');
+  expect(screen.queryByRole('button', { name: '停止回复' })).not.toBeInTheDocument();
   await act(async () => {
-    const encoder = new TextEncoder();
-    controller.enqueue(encoder.encode(sse("assistant_generation_started", { messageId: "a1" })));
-    controller.enqueue(encoder.encode(sse("assistant_completed", { message: message({ id: "a1", role: "assistant", content: "爱丽丝的回复" }) })));
+    // Exercise callbacks already queued before transport cancellation as well
+    // as the real abort above: neither can replace the newly selected chat.
+    expect(await subscriptions[0].emit({ type: 'assistant_delta', runId: acceptedRunId, sequence: 4,
+      messageId: 'a1', delta: '迟到内容' })).toBe(false);
+    expect(await subscriptions[0].emit({ type: 'assistant_completed', runId: acceptedRunId, sequence: 5,
+      message: message({ id: 'a1', role: 'assistant', content: '迟到的爱丽丝回复', runId: acceptedRunId }) })).toBe(false);
   });
-  expect(await screen.findByText("爱丽丝的回复", { selector: ".bubble p" })).toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "角色" }));
-  await user.click(screen.getByRole("button", { name: "查看贝拉工作区" }));
-  await user.click(screen.getByRole("button", { name: "去聊天" }));
-  expect(await screen.findByText("贝拉的历史", { selector: ".bubble p" })).toBeInTheDocument();
-  expect(screen.queryByText("爱丽丝的回复", { selector: ".bubble p" })).not.toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: '贝拉', level: 1 })).toBeVisible();
+  expect(screen.getByText('贝拉的历史', { selector: '.bubble p' })).toBeVisible();
+  expect(screen.queryByText(/爱丽丝|迟到/, { selector: '.bubble p' })).not.toBeInTheDocument();
+  await user.click(within(screen.getByRole('list', { name: '角色列表' })).getByRole('button', { name: /爱丽丝/ }));
+  expect(await screen.findByText('爱丽丝正在回复', { selector: '.bubble p' })).toBeVisible();
+  expect(await screen.findByRole('button', { name: '停止回复' })).toBeEnabled();
+  expect(subscriptions.map(item => item.runId)).toEqual([acceptedRunId, acceptedRunId]);
+  await act(async () => {
+    const completed = message({ id: 'a1', role: 'assistant', content: '爱丽丝的回复', runId: acceptedRunId, sequence: 2 });
+    history.messages = [history.messages.find(item => item.id === 'u1')!, completed];
+    history.activeRun = null;
+    resumedController.enqueue(new TextEncoder().encode(sse('assistant_completed', { runId: acceptedRunId, sequence: 4, message: completed })));
+  });
+  expect(await screen.findByText('爱丽丝的回复', { selector: '.bubble p' })).toBeVisible();
+  expect(screen.queryByRole('button', { name: '停止回复' })).not.toBeInTheDocument();
+  expect(screen.getAllByText('你好', { selector: '.bubble p' })).toHaveLength(1);
+  expect(calls.filter(call => call.method === 'POST').map(call => call.path)).toEqual(['/api/roles/r1/runs']);
+  expect(calls.filter(call => call.path.includes('/events?after=')).map(call => call.path)).toEqual([
+    `/api/roles/r1/runs/${acceptedRunId}/events?after=0`, `/api/roles/r1/runs/${acceptedRunId}/events?after=3`,
+  ]);
 });
 
 it.each([
