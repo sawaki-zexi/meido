@@ -1,8 +1,8 @@
 # 聊天卡顿与断线：Shiori 对照
 
-状态：当前调研；基线问题记录于下文，#291 准备边界已合入，#292 摘要计量与反馈在本分支实现，#293 尚待实施。
+状态：当前调研；下文保留原始基线及 #291／#292／#293 实施证据，本次补充 #291 流式热路径。
 事实来源：固定上游源码、隔离性能复现、[准备回归](../../tests/python/test_context_preparation.py)、[完整规格](../specs/chat-responsiveness.md)。
-最后核验：2026-11-01。
+最后核验：2026-11-02。
 
 ## 基线
 
@@ -46,6 +46,18 @@
 本地证据路径（未跟踪）：`.data/checks/291/profile_probe.py`、`performance-after.txt`、`red.txt`。CI 不断言此机器相关耗时，而通过 [真实 HTTP barrier 与输入一致性测试](../../tests/python/test_context_preparation.py) 验证等待期间仍可读取页面、停止和正常收尾，并通过定向窗口、工具、来源与用量回归验证语义。
 
 `CapabilityPreparation` 只描述工具；原文窗口选择与搜索共用它。`MeidoProvider` 明确捕获上下文，再渲染 `PreparedRequest`，估算不再修改提示状态。最终 rich messages、工具和配置复用后交给原有 adapter。实际 dispatch 仍检查当前注册表和权限。取消时只排空已启动的窗口写事务，独立只读工作不阻止任务取消。
+
+### #291：流式历史校验补充
+
+后续核验固定 Shiori `c14152ed225954a2a50da775075fe64dbf7b8b50`：[流式事件](https://github.com/YinFengWindy/Shiori-Agent/blob/c14152ed225954a2a50da775075fe64dbf7b8b50/apps/backend/agent/looping/core/streaming.py) 使用当前回合状态追加输出，[辅助摘要请求](https://github.com/YinFengWindy/Shiori-Agent/blob/c14152ed225954a2a50da775075fe64dbf7b8b50/apps/backend/core/compaction_summary_request.py) 按请求执行预算与结果校验，没有每个文本片段读取完整历史的回调。
+
+Meido 遗漏的路径是 `cancel_check → require_snapshot_current → read`：普通回复每个 SSE payload 解析并哈希整份历史，摘要还会在解析后重复调用。独立 SQLite 合成 290 条消息、200 次回调的对照为完整校验 1918.88 ms、当前来源许可校验 191.31 ms；这是本机隔离对照，不是模型速度承诺。新增协议回归在修改前观察到一次 200 片段普通请求触发 206 次完整历史读取。
+
+现复用当前来源许可检查，将完整历史验证留在请求与接受结果的边界，并在 worker 执行；同步适配器回调仍检查来源许可，不增加历史缓存。已缓冲的 SSE 通过现有解析循环协作让出，避免只有 socket 再次等待时页面或 Stop 才能推进。[回归](../../tests/python/test_stream_preparation.py) 覆盖普通／摘要 200 片段的读取上界与 HTTP Stop、慢完整读取、配对撤销、历史删除、工具回执续轮及成功摘要下一轮复用。历史内容变化可能在请求结束时才被发现；已经显示的流式片段不能成为成功终态或执行工具，摘要不能提交。
+
+不修改未知厂商的思考参数、输出上限或摘要超时策略。此前 92／103 秒摘要超时不能仅凭本地扫描优化判定已解决，仍需区分外部模型等待。
+
+完整 HTTP／浏览器验收进一步定位到普通回复片段的同步 `update_message`：独立合成 SQLite 的 300 次更新为 2470 ms，约 8.233 ms／次；1200 片段的模型响应虽已发完，本地处理仍逐次提交。固定上游 [chat_service._on_delta](https://github.com/YinFengWindy/Shiori-Agent/blob/c14152ed225954a2a50da775075fe64dbf7b8b50/apps/backend/desktop_bridge/chat_service.py) 更新回合可见内容并发送事件，结束／中止时保存消息。Meido 复用现有 ChatRun 所有权，让恢复读取当前占位投影，完成与中止走原持久边界；[真实 HTTP 回归](../../tests/python/test_chat_stream_projection.py) 从 200 片段对应 200 次更新，变为流中零次更新、消息边界至多两次，仍恢复超过事件环的完整正文和公开思考。意外强杀的未提交片段不再保证保留，此取舍明确记录在 ADR-0035，未用后台队列或定时落盘掩盖。
 
 ## #292：协议用量核验与实现边界
 

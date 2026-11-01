@@ -58,6 +58,7 @@ jobs:
           - group: chat-lifecycle
             args: >-
               tests/python/test_chat_lifecycle.py
+              tests/python/test_chat_stream_projection.py
               tests/python/test_chat_stop.py
               tests/python/test_natural_reply_api.py
               tests/python/test_natural_runtime.py
@@ -72,6 +73,7 @@ jobs:
           - group: context-preparation
             args: >-
               tests/python/test_context_preparation.py
+              tests/python/test_stream_preparation.py
               tests/python/test_context_inspection.py
               tests/python/test_context_windows.py
               tests/python/test_current_tool_registry.py

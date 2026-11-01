@@ -14,7 +14,7 @@ from typing import Any
 
 from .agent_runtime.progress import utf8_prefix
 from .agent_runtime.runtime import RuntimeManager
-from .models import AgentRun
+from .models import AgentRun, Message
 from .session_store import SessionStore
 
 MAX_EVENTS = 128
@@ -40,6 +40,9 @@ class ChatRun:
         self.cancel_requested = False
         self.task: asyncio.Task[None] | None = None
         self.invalidate: Callable[[], None] | None = None
+        # Read the owner's current placeholder only when recovering a view.
+        # The owner already accumulates text; do not keep another token buffer.
+        self.current_message: Callable[[], Message | None] | None = None
         self.calls: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self.events: deque[tuple[int, str, int]] = deque()
         self.event_bytes = 0

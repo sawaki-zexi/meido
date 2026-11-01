@@ -229,21 +229,30 @@ def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_
     authority = json.dumps(authority_data, sort_keys=True)
     if history is not None:
         authority += history.authority
-        provider.request_guard = history.require_snapshot_current
+    def require_current():
+        if (store.get(role_id) is None or role_id in _channel_roles_deleting
+                or session_key.startswith('thread:') and source is None
+                or source is not None and source.authorization_denial(multichannel_store) is not None):
+            raise PermissionError('对话来源许可已变化，请重新开始回复')
+        if history is not None:
+            history.require_current()
+    provider.request_guard = require_current
+    provider.snapshot_guard = history.require_snapshot_current if history is not None else None
     def authorized():
-        return (store.get(role_id) is not None and role_id not in _channel_roles_deleting
-                and (not session_key.startswith('thread:') or source is not None)
-                and (source is None or source.authorization_denial(multichannel_store) is None)
-                and (history is None or history.authorized()))
+        try:
+            require_current()
+            return history is None or history.authorized()
+        except (PermissionError, KeyError):
+            return False
 
     async def covered(ids):
         from .memory_engine import MemoryCoverageRequest
-        if not authorized():
+        if not await asyncio.to_thread(authorized):
             return False
         sources = {session_key: ids}
         if history is not None:
             sources = {}
-            for message in history.read():
+            for message in await asyncio.to_thread(history.read):
                 if message.id in ids:
                     sources.setdefault(message.sessionKey, []).append(message.id)
         for source_session, source_ids in sources.items():
@@ -252,7 +261,7 @@ def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_
             proof = await _current_memory_engine().ensure_coverage(request)
             if proof.request != request or proof.status not in {'covered', 'not_required'}:
                 return False
-        return authorized()
+        return await asyncio.to_thread(authorized)
 
     def diagnostic(values):
         run = session_store.get_run(run_id)
@@ -7251,6 +7260,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
         first_content_at: float | None = None
         presentation_context_provider: ContextWindowProvider | None = None
         placeholder_id: str | None = assistant_message.id
+        placeholder = assistant_message
         final_message: Message | None = None
         final_sequence = ()
         natural_reply = natural_chat_enabled(role)
@@ -7270,12 +7280,19 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                 payload["runtimeSequence"] = runtime_sequence
             return payload
 
+        def current_message() -> Message | None:
+            if placeholder_id is None:
+                return None
+            return placeholder.model_copy(update={'content': content,
+                'metadata': {'runtimePlaceholder': True, 'streamThinking': thinking}})
+
         async def persist_runtime_message(event: MessageEndEvent) -> Message | None:
             nonlocal content, placeholder_id, final_message, final_sequence
             if isinstance(event.message, AssistantMessage):
                 if not event.message.tool_calls:
                     event = replace(event, message=replace(event.message, metadata={
                         **event.message.metadata,
+                        **({'streamThinking': thinking} if thinking and event.message.stop_reason not in {'stop', 'tool_use'} else {}),
                         'thinkingDurationMs': round(((first_content_at if first_content_at is not None else monotonic()) - turn_started_at) * 1000),
                         'auxiliaryUsageIncomplete': bool(presentation_context_provider and presentation_context_provider.summary_attempts),
                     }))
@@ -7298,6 +7315,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                         run_id=run_id,
                         status="completed" if event.message.stop_reason == "tool_use" else "failed",
                     )
+                    turn.current_message = None
                     return None
                 if placeholder_id is not None:
                     final_message = session_store.update_message(
@@ -7316,6 +7334,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                         run_id=run_id,
                         status="streaming",
                     )[0]
+                turn.current_message = None
                 return final_message
             elif isinstance(event.message, ToolResultMessage):
                 return session_store.append_agent_message(
@@ -7485,12 +7504,12 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                             runtime_manager.set_assistant_message(run_id, placeholder_id)
                             turn.emit('assistant_generation_started', runtime_event_payload({
                                 'messageId': placeholder.id, 'messageSequence': placeholder.sequence}, runtime_event.sequence))
+                        turn.current_message = current_message
                     elif isinstance(runtime_event, MessageUpdateEvent):
                         if runtime_event.thinking_delta:
                             from .chat_presentation import display_text
                             if placeholder_id is not None:
                                 thinking = display_text(thinking + runtime_event.thinking_delta)
-                                session_store.update_message(placeholder_id, content, 'streaming', metadata={'runtimePlaceholder': True, 'streamThinking': thinking})
                             turn.emit('assistant_thinking_delta', runtime_event_payload({
                                 'messageId': placeholder_id or assistant_message.id,
                                 'delta': display_text(runtime_event.thinking_delta)}, runtime_event.sequence))
@@ -7498,8 +7517,6 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                         if runtime_event.delta and first_content_at is None:
                             first_content_at = monotonic()
                         content += runtime_event.delta
-                        if placeholder_id is not None:
-                            session_store.update_message(placeholder_id, content, "streaming")
                         turn.emit("assistant_delta", runtime_event_payload({"messageId": placeholder_id or assistant_message.id, "delta": runtime_event.delta}, runtime_event.sequence))
                     elif isinstance(runtime_event, MessageEndEvent) and isinstance(runtime_event.message, AssistantMessage):
                         content = runtime_event.message.content
@@ -7677,6 +7694,27 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
             runtime_manager.cancel_unstarted_run(run_id)
         else:
             runtime_manager.abandon_unstarted_run(run_id, '回复在执行完成前中断')
+        # Runtime already commits partial prose on cancellation. An interrupted
+        # provider has no MessageEnd metadata, so commit its public thinking once
+        # before Stop/terminal can return, including orderly service shutdown.
+        partial = turn.current_message() if turn.current_message is not None else None
+        try:
+            if partial is not None and partial.metadata.get('streamThinking'):
+                def persist_partial(partial: Message) -> Message | None:
+                    row = next((item for item in session_store.list_messages(run.sessionKey)
+                        if item.id == partial.id and item.runId == run_id and item.status != 'completed'), None)
+                    if row is None:
+                        return None
+                    saved = session_store.update_message(row.id, row.content, row.status,
+                        metadata={**row.metadata, 'streamThinking': partial.metadata['streamThinking']})
+                    return session_manager.present_message(saved)
+                saved = await asyncio.to_thread(persist_partial, partial)
+                if saved is not None and turn.terminal is not None:
+                    kind, payload = turn.terminal
+                    if (payload.get('message') or {}).get('id') == saved.id:
+                        turn.terminal = (kind, {**payload, 'message': saved.model_dump(mode='json')})
+        finally:
+            turn.current_message = None
         if reply_plan is not None:
             if _desktop_reply_plans.get(run.sessionKey) is reply_plan:
                 _desktop_reply_plans.pop(run.sessionKey, None)
@@ -7703,7 +7741,7 @@ def _desktop_run(role_id: str, run_id: str) -> AgentRun:
     return run
 
 
-def _read_desktop_projection(role_id: str, run_id: str | None, register_thread: bool):
+def _read_desktop_projection(role_id: str, run_id: str | None, register_thread: bool, partial: Message | None = None):
     """Independent SQLite reads and presentation work belong to an I/O worker."""
     from .chat_presentation import run_process
     response = session_manager.open_role_session(role_id)
@@ -7711,7 +7749,20 @@ def _read_desktop_projection(role_id: str, run_id: str | None, register_thread: 
         multichannel_store.register_desktop_thread(role_id, response.session.sessionKey,
             response.session.createdAt.isoformat(), response.session.updatedAt.isoformat())
     run = _desktop_run(role_id, run_id) if run_id is not None else None
-    process = run_process(session_store.list_messages(response.session.sessionKey), run_id) if run_id else []
+    rows = session_store.list_messages(response.session.sessionKey) if run_id else []
+    if partial is not None and partial.runId == run_id and partial.sessionKey == response.session.sessionKey:
+        for index, row in enumerate(rows):
+            if row.id == partial.id and row.runId == run_id and row.status != 'completed':
+                # Runtime may already have saved a failed partial while the
+                # desktop owner is still cleaning up. Keep that durable prose
+                # and status; the owner supplies its not-yet-committed thinking.
+                live = partial if row.status == 'streaming' else row.model_copy(update={
+                    'metadata': {**row.metadata, 'streamThinking': partial.metadata.get('streamThinking', '')}})
+                rows[index] = live
+                response.messages = [session_manager.present_message(live, rows) if item.id == row.id else item
+                    for item in response.messages]
+                break
+    process = run_process(rows, run_id) if run_id else []
     return response, run, process
 
 
@@ -7723,7 +7774,9 @@ async def _desktop_snapshot(role_id: str, run_id: str | None = None, *, register
         fence = service.read_fence(role_id, run_id)
         active = service.active(role_id)
         selected = run_id or (active.run.runId if active is not None else None)
-        response, run, process = await asyncio.to_thread(_read_desktop_projection, role_id, selected, register_thread)
+        owner = service.runs.get(selected) if selected is not None else None
+        partial = owner.current_message() if owner is not None and owner.current_message is not None else None
+        response, run, process = await asyncio.to_thread(_read_desktop_projection, role_id, selected, register_thread, partial)
         if fence != service.read_fence(role_id, run_id):
             continue
         snapshot = service.snapshot(run, process) if run is not None else None
