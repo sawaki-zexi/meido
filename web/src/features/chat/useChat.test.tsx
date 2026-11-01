@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import * as streamApi from "../../api/stream";
+import type { Message } from "../../api/types";
 import { fakeBackend, message, role, sse } from "../../test/fakeBackend";
 import { useChat } from "./useChat";
 
@@ -97,6 +98,70 @@ it('a lost acceptance response resolves its exact identity even when identical t
   expect(result.current.sending).toBe(false);
   expect(calls.filter(call => call.path.endsWith('/session'))).toHaveLength(1);
   expect(calls.filter(call => call.method === 'POST')).toHaveLength(1);
+});
+
+it.each(['receipt', 'lost response'])('keeps accepted input while snapshots are busy after %s', async mode => {
+  vi.spyOn(crypto, 'randomUUID').mockReturnValue('first-0-0-0-0');
+  let ready = false, reads = 0;
+  const { calls } = fakeBackend({
+    'GET /api/roles/r1/session': () => ({ body: { session, messages: [] } }),
+    'POST /api/roles/r1/runs': () => {
+      if (mode === 'lost response') throw new TypeError('response lost after acceptance');
+      return { status: 202, body: { snapshotPending: true, run: run({ sequence: 100 }) } };
+    },
+    'GET /api/roles/r1/runs/run-first-0-0-0-0': () => {
+      reads += 1;
+      return ready ? { body: { session, messages: [message({ id: 'accepted-user', role: 'user', content: 'accepted', runId: run().runId }),
+        message({ ...row('saved'), status: 'completed', sequence: 2 })], run: run({ status: 'completed', phase: 'finished', sequence: 101 }) } }
+        : { status: 503, headers: { 'X-Meido-Run-Id': run().runId, 'Retry-After': '1' }, body: { detail: '回复仍在更新' } };
+    },
+    'GET /api/roles/r1/runs/run-first-0-0-0-0/events\\?after=0': () => ({ stream: [sse('run_snapshot', run({ sequence: 100 }))] }),
+  });
+  const { result } = renderHook(useChat);
+  await act(async () => { await result.current.open(alice); });
+  await act(async () => { expect(await result.current.send('accepted')).toBe(true); });
+  await waitFor(() => expect(reads).toBeGreaterThan(0));
+  expect(result.current.sending).toBe(true);
+  await act(async () => { expect(await result.current.send('accepted')).toBe(false); });
+  ready = true;
+  await waitFor(() => expect(result.current.sending).toBe(false));
+  expect(result.current.messages.map(item => item.content)).toEqual(['accepted', 'saved']);
+  expect(calls.filter(call => call.method === 'POST').map(call => call.path)).toEqual(['/api/roles/r1/runs']);
+  expect(calls.filter(call => call.path.endsWith('/session'))).toHaveLength(1);
+});
+
+it.each(['resume', 'switch role'])('retries a busy session snapshot without blocking %s', async mode => {
+  let ready = false, reads = 0;
+  const events = feed();
+  const { calls } = fakeBackend({
+    'GET /api/roles/r1/session': () => {
+      reads += 1;
+      return ready ? { body: { session, messages: [row('saved partial')], activeRun: run() } }
+        : { status: 503, headers: { 'Retry-After': '1' }, body: { detail: '回复仍在更新，正在重新同步' } };
+    },
+    'GET /api/roles/r2/session': () => ({ body: { session: { roleId: 'r2', sessionKey: 'role:r2' }, messages: [] } }),
+    'GET /api/roles/r1/runs/run-first-0-0-0-0/events\\?after=0': () => ({ stream: events.stream }),
+  });
+  const { result } = renderHook(useChat);
+  let opening!: Promise<Message[] | null>;
+  act(() => { opening = result.current.open(alice); });
+  await waitFor(() => expect(reads).toBe(1));
+  expect(result.current.opening).toBe(true);
+  if (mode === 'switch role') {
+    await act(async () => { await result.current.open(role({ id: 'r2', name: 'Bella' })); });
+    ready = true;
+    await act(async () => { await opening; });
+    expect(reads).toBe(1);
+    expect(result.current.roleId).toBe('r2');
+    expect(result.current.messages).toEqual([]);
+  } else {
+    ready = true;
+    await act(async () => { await opening; });
+    expect(result.current.messages[0].content).toBe('saved partial');
+    expect(result.current.sending).toBe(true);
+    expect(result.current.error).toBe('');
+  }
+  expect(calls.filter(call => call.method === 'POST')).toHaveLength(0);
 });
 
 it('Stop can finish the exact accepted run while the submission response is still missing', async () => {

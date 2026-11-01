@@ -1,11 +1,13 @@
 /** Turns a FastAPI error body into a readable message. */
 export class ApiError extends Error {
   readonly status: number;
+  readonly acceptedRunId?: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, acceptedRunId?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.acceptedRunId = acceptedRunId;
   }
 }
 
@@ -28,7 +30,7 @@ export async function request(path: string, init?: RequestInit): Promise<Respons
   }
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    throw new ApiError(errorDetail(data, response.status), response.status);
+    throw new ApiError(errorDetail(data, response.status), response.status, response.headers.get('X-Meido-Run-Id') ?? undefined);
   }
   return response;
 }

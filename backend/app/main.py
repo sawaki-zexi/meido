@@ -1156,7 +1156,12 @@ def _owner_knowledge_return_url(origin: str = "") -> str:
     return f"{safe_origin}/app?ownerKnowledge=connected"
 
 
+async def _prepare_chat_shutdown():
+    await _chat_runs().close()
+
+
 app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown=[_close_memory_workers])
+app.state.before_server_drain = _prepare_chat_shutdown
 app.include_router(mail_router)
 app.include_router(mcp_router(lambda: mcp_host, lambda: store))
 
@@ -2508,15 +2513,7 @@ async def delete_role(role_id: str) -> None:
 @app.get("/api/roles/{role_id}/session", response_model=SessionResponse)
 async def get_role_session(role_id: str) -> SessionResponse:
     try:
-        response = session_manager.open_role_session(role_id)
-        multichannel_store.register_desktop_thread(
-            role_id,
-            response.session.sessionKey,
-            response.session.createdAt.isoformat(),
-            response.session.updatedAt.isoformat(),
-        )
-        turn = _chat_runs().active(role_id)
-        response.activeRun = turn.snapshot(session_store) if turn is not None else None
+        response, _ = await _desktop_snapshot(role_id, register_thread=True)
         return response
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
@@ -7683,20 +7680,63 @@ def _desktop_run(role_id: str, run_id: str) -> AgentRun:
     return run
 
 
-def _desktop_run_response(run: AgentRun):
-    data = session_manager.open_role_session(run.roleId).model_dump(mode='json')
-    data['run'] = _chat_runs().snapshot(run)
+def _read_desktop_projection(role_id: str, run_id: str | None, register_thread: bool):
+    """Independent SQLite reads and presentation work belong to an I/O worker."""
+    from .chat_presentation import run_process
+    response = session_manager.open_role_session(role_id)
+    if register_thread:
+        multichannel_store.register_desktop_thread(role_id, response.session.sessionKey,
+            response.session.createdAt.isoformat(), response.session.updatedAt.isoformat())
+    run = _desktop_run(role_id, run_id) if run_id is not None else None
+    process = run_process(session_store.list_messages(response.session.sessionKey), run_id) if run_id else []
+    return response, run, process
+
+
+async def _desktop_snapshot(role_id: str, run_id: str | None = None, *, register_thread: bool = False):
+    service = _chat_runs()
+    # A constantly changing run must not monopolize this request or a worker.
+    # An exact-run 503 confirms durable acceptance for a lost POST response.
+    for _ in range(3):
+        fence = service.read_fence(role_id, run_id)
+        active = service.active(role_id)
+        selected = run_id or (active.run.runId if active is not None else None)
+        response, run, process = await asyncio.to_thread(_read_desktop_projection, role_id, selected, register_thread)
+        if fence != service.read_fence(role_id, run_id):
+            continue
+        snapshot = service.snapshot(run, process) if run is not None else None
+        if run_id is None:
+            response.activeRun = snapshot
+        return response, snapshot
+    raise HTTPException(status_code=503, detail='回复仍在更新，正在重新同步',
+        headers={'Retry-After': '1', **({'X-Meido-Run-Id': run_id} if run_id is not None else {})})
+
+
+async def _desktop_run_response(run: AgentRun):
+    response, snapshot = await _desktop_snapshot(run.roleId, run.runId)
+    data = response.model_dump(mode='json')
+    data['run'] = snapshot
     return data
 
 
 @app.post('/api/roles/{role_id}/runs')
 async def submit_role_message(role_id: str, data: SendMessageInput):
-    return _desktop_run_response(await _accept_role_message(role_id, data))
+    run = await _accept_role_message(role_id, data)
+    try:
+        return await _desktop_run_response(run)
+    except HTTPException as error:
+        if error.status_code != 503:
+            raise
+        # Acceptance is independent from whether a complete view is currently
+        # stable. The browser retains this identity and resumes only this run.
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=202, content={
+            'snapshotPending': True, 'run': _chat_runs().snapshot(run)},
+            headers={'X-Meido-Run-Id': run.runId})
 
 
 @app.get('/api/roles/{role_id}/runs/{run_id}')
 async def get_desktop_run(role_id: str, run_id: str):
-    return _desktop_run_response(_desktop_run(role_id, run_id))
+    return await _desktop_run_response(await asyncio.to_thread(_desktop_run, role_id, run_id))
 
 
 async def _legacy_desktop_events(run: AgentRun, source):
@@ -7707,6 +7747,7 @@ async def _legacy_desktop_events(run: AgentRun, source):
     Compatibility event sequences remain local to this one connection.
     """
     sequence = 0
+    recovered_sequence = 0
     accepted_ids: set[str] = set()
     committed_ids: set[str] = set()
 
@@ -7722,6 +7763,8 @@ async def _legacy_desktop_events(run: AgentRun, source):
         kind = encoded.splitlines()[0][7:]
         payload = json.loads(encoded.split('data: ', 1)[1])
         if kind != 'run_snapshot':
+            if payload.get('sequence', 0) <= recovered_sequence:
+                continue
             if kind == 'user_message_accepted':
                 if payload['message']['id'] in accepted_ids:
                     continue
@@ -7730,8 +7773,20 @@ async def _legacy_desktop_events(run: AgentRun, source):
                 committed_ids.add(payload['message']['id'])
             yield encode(kind, payload)
             continue
-        data = _desktop_run_response(run)
+        # Legacy readers also use a consistent worker projection. A busy read
+        # only delays this subscription; it never pauses the accepted task.
+        while True:
+            try:
+                data = await _desktop_run_response(run)
+                break
+            except HTTPException as error:
+                if error.status_code != 503:
+                    raise
+                await asyncio.sleep(.1)
         snapshot = data['run']
+        # The worker may have retried beyond the source iterator's gap cursor.
+        # Its recovered content already includes events through this sequence.
+        recovered_sequence = snapshot['sequence']
         rows = [row for row in data['messages'] if row['runId'] == run.runId]
         assistants = [row for row in rows if row['role'] == 'assistant']
         finished = snapshot['status'] not in {'queued', 'created', 'running'}
@@ -7775,7 +7830,7 @@ def _desktop_run_events(run: AgentRun, after: int | None = None, *, legacy: bool
 
 @app.get('/api/roles/{role_id}/runs/{run_id}/events')
 async def subscribe_role_reply(role_id: str, run_id: str, after: int | None = None):
-    return _desktop_run_events(_desktop_run(role_id, run_id), after)
+    return _desktop_run_events(await asyncio.to_thread(_desktop_run, role_id, run_id), after)
 
 
 @app.post('/api/roles/{role_id}/messages')

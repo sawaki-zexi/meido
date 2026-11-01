@@ -105,7 +105,7 @@ if ($listener.Count -gt 0) {
 Push-Location -LiteralPath $CodeRoot
 try {
     if ($Service -eq 'Backend') {
-        & $settings.python -m uvicorn backend.app.main:app --host $settings.apiHost --port $settings.apiPort
+        & $settings.python -m backend.app.server --host $settings.apiHost --port $settings.apiPort
     } else {
         & $settings.node (Join-Path $CodeRoot 'node_modules/vite/bin/vite.js') --host 127.0.0.1 --port $settings.webPort
     }

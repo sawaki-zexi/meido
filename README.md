@@ -76,7 +76,7 @@ npm ci
 终端一，启动后端：
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 4288
+.\.venv\Scripts\python.exe -m backend.app.server --host 127.0.0.1 --port 4288
 ```
 
 终端二，启动网页：

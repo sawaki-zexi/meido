@@ -6,6 +6,7 @@ import { applyToolProgress, closeToolProgress, createToolProgress, type ToolProg
 
 type SessionData = { session: Session; messages: Message[]; activeRun?: ChatRunSnapshot | null };
 type RunData = SessionData & { run: ChatRunSnapshot };
+type RunReceipt = { snapshotPending: true; run: ChatRunSnapshot };
 type ActiveReply = { controller: AbortController; roleId: string; sessionKey: string; runId: string; sequence: number;
   closed: boolean; accepted: boolean; admission: Promise<boolean> | null; admissionController?: AbortController;
   admissionDone?: boolean; subscribing?: boolean; progressClosed?: boolean; stopPromise: Promise<void> | null };
@@ -173,8 +174,21 @@ export function useChat() {
     const revision = ++sourceRevision.current;
     setToolProgress(null); setPhase(null); setSending(false); setStopping(false); setError(''); setOpening(true);
     try {
-      const data = await api<SessionData>(`/api/roles/${encodeURIComponent(role.id)}/session`);
+      let data: SessionData;
+      for (;;) {
+        if (!mounted.current || sourceRevision.current !== revision) return null;
+        try {
+          data = await api<SessionData>(`/api/roles/${encodeURIComponent(role.id)}/session`);
+          break;
+        } catch (cause) {
+          if (!(cause instanceof ApiError && cause.status === 503)) throw cause;
+          if (!mounted.current || sourceRevision.current !== revision) return null;
+          setError(errorMessage(cause, '回复进度正在重新同步'));
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
       if (!mounted.current || sourceRevision.current !== revision || data.session.roleId !== role.id) return null;
+      setError('');
       setRoleId(role.id); setSession(data.session); setMessages(data.activeRun ? liveMessages(data.messages, data.activeRun) : data.messages);
       if (data.activeRun && !terminal(data.activeRun) && data.activeRun.roleId === role.id
         && data.activeRun.sessionKey === data.session.sessionKey) attach(data.activeRun);
@@ -217,21 +231,27 @@ export function useChat() {
     setToolProgress(null); setPhase('preparing'); setError(''); setSending(true); setStopping(false);
     reply.admission = (async () => {
       try {
-        const data = await api<RunData>(`/api/roles/${encodeURIComponent(reply.roleId)}/runs`, {
+        const data = await api<RunData | RunReceipt>(`/api/roles/${encodeURIComponent(reply.roleId)}/runs`, {
           method: 'POST', body: JSON.stringify({ content, attachments, requestId }), signal: reply.admissionController?.signal,
         });
         reply.accepted = data.run.runId === reply.runId && data.run.roleId === reply.roleId && data.run.sessionKey === reply.sessionKey;
         if (!reply.accepted) throw new Error('回复接受标识不匹配');
-        applySnapshot(reply, data);
+        if (!('snapshotPending' in data)) applySnapshot(reply, data);
       } catch (cause) {
         // A missing response is reconciled by the preallocated identity, never
         // matching text or whichever run happens to be current on the server.
+        if (cause instanceof ApiError && cause.acceptedRunId === reply.runId) reply.accepted = true;
         if (!reply.accepted && !(cause instanceof ApiError && cause.status < 500)) {
           try {
             const data = await api<RunData>(runPath(reply));
             reply.accepted = data.run.runId === reply.runId && data.run.roleId === reply.roleId && data.run.sessionKey === reply.sessionKey;
             applySnapshot(reply, data);
-          } catch { /* Preserve admission failure if this exact ID is absent. */ }
+          } catch (recoveryError) {
+            // A busy exact snapshot still confirms the original acceptance.
+            // Keep the cleared draft and subscription alive instead of offering
+            // the already accepted content as a new message again.
+            if (recoveryError instanceof ApiError && recoveryError.acceptedRunId === reply.runId) reply.accepted = true;
+          }
         }
         if (!reply.accepted && current(reply)) { setError(errorMessage(cause, '发送失败')); finish(reply); }
       } finally { reply.admissionDone = true; }

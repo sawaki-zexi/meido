@@ -64,6 +64,9 @@ jobs:
               tests/python/test_tool_progress.py
               tests/python/test_chat_runtime_http.py
               tests/python/test_chat_presentation.py
+              tests/python/test_chat_snapshot_io.py
+              tests/python/test_chat_server_shutdown.py
+              tests/python/test_meido_server_runner.py
               tests/python/test_api.py::test_completed_reply_does_not_depend_on_consuming_the_http_response
               tests/python/test_api.py::test_unsubscribed_message_is_completed_and_role_can_send_again
           - group: context-preparation

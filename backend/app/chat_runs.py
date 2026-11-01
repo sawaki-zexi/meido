@@ -14,7 +14,6 @@ from typing import Any
 
 from .agent_runtime.progress import utf8_prefix
 from .agent_runtime.runtime import RuntimeManager
-from .chat_presentation import run_process
 from .models import AgentRun
 from .session_store import SessionStore
 
@@ -84,18 +83,17 @@ class ChatRun:
         self.phase = phase
         self.emit('assistant_phase', {'phase': phase})
 
-    def snapshot(self, sessions: SessionStore) -> dict[str, Any]:
-        persisted = sessions.get_run(self.run.runId)
-        status = persisted.status if persisted is not None else 'failed'
+    def snapshot(self, persisted: AgentRun | None = None, process=None) -> dict[str, Any]:
+        """Capture owner state on its event loop; never perform database I/O."""
+        status = persisted.status if persisted is not None else self.run.status
         return {'runId': self.run.runId, 'roleId': self.run.roleId,
             'sessionKey': self.run.sessionKey, 'sequence': self.sequence,
             # Runtime can finish before natural delivery and capability cleanup.
-            'status': status if self.finished else ('queued' if status == 'queued' else 'running'),
+            'status': status if self.finished else ('queued' if self.phase == 'queued' else 'running'),
             'phase': self.phase, 'stopping': self.cancel_requested,
-            # Tool-call rows are hidden from chat bubbles, so a reconnect may
-            # need their durable process before the next text placeholder exists.
-            'process': run_process(sessions.list_messages(self.run.sessionKey), self.run.runId),
-            'tools': list(self.calls.values()), 'error': self.terminal[1].get('error') if self.terminal else None}
+            **({'process': process} if process is not None else {}),
+            'tools': [dict(call) for call in self.calls.values()],
+            'error': self.terminal[1].get('error') if self.terminal else None}
 
     async def subscribe(self, sessions: SessionStore, after: int | None = None) -> AsyncIterator[str]:
         cursor = after
@@ -107,7 +105,7 @@ class ChatRun:
             if cursor is None or cursor > self.sequence or (cursor < self.sequence and
                     (not self.events or cursor < self.events[0][0] - 1)):
                 cursor = self.sequence
-                yield encode_event('run_snapshot', self.snapshot(sessions))
+                yield encode_event('run_snapshot', self.snapshot())
             else:
                 for sequence, encoded, _ in tuple(self.events):
                     if sequence > cursor:
@@ -137,6 +135,17 @@ class ChatRunService:
         if self.closing or sum(not run.finished for run in self.runs.values()) >= MAX_ACTIVE_RUNS:
             raise RuntimeError('聊天服务正在收尾或等待队列已满，请稍后重试')
 
+    def read_fence(self, role_id: str, run_id: str | None = None):
+        """Validate a worker read without making producers wait for readers.
+
+        The existing latest accepted ID also detects a run that starts and ends
+        during an otherwise idle read; no second sequence counter is needed.
+        """
+        active = self.active(role_id)
+        exact = self.runs.get(run_id) if run_id is not None else None
+        return (next(reversed(self.runs), None), active, active.sequence if active else None,
+            exact, exact.sequence if exact else None)
+
     def start(self, run: AgentRun, execute: Callable[[ChatRun], Awaitable[None]],
               finish: Callable[[ChatRun], Awaitable[None]]) -> ChatRun:
         turn = ChatRun(run)
@@ -154,13 +163,16 @@ class ChatRunService:
                 # Stop is idempotent and never cancels an owner twice. Shielded
                 # join also protects cleanup from a cancelled HTTP Stop waiter.
                 await finish(turn)
+                persisted = await asyncio.to_thread(self.sessions.get_run, run.runId)
+                if persisted is not None:
+                    turn.run = persisted.model_copy(update={'modelSnapshot': {}})
                 turn.finished = True
                 turn.phase = 'finished'
                 if turn.terminal is not None:
                     turn.emit(*turn.terminal)
                     turn.terminal = (turn.terminal[0], {'error': turn.terminal[1].get('error')})
                 else:
-                    turn.emit('run_snapshot', turn.snapshot(self.sessions))
+                    turn.emit('run_snapshot', turn.snapshot())
                 finished = [key for key, value in self.runs.items() if value.finished]
                 for key in finished[:-MAX_FINISHED_RUNS]:
                     self.runs.pop(key, None)
@@ -176,7 +188,7 @@ class ChatRunService:
             turn.cancel_requested = True
             if turn.invalidate is not None:
                 turn.invalidate()
-            persisted = self.sessions.get_run(run_id)
+            persisted = await asyncio.to_thread(self.sessions.get_run, run_id)
             if turn.started and persisted is not None and persisted.status in {'queued', 'created', 'running'}:
                 self.runtime.cancel_run(run_id)
         if turn.task is not None:
@@ -187,10 +199,10 @@ class ChatRunService:
         self.closing = True
         await asyncio.gather(*(self.stop(key) for key, run in tuple(self.runs.items()) if not run.finished))
 
-    def snapshot(self, run: AgentRun) -> dict[str, Any]:
+    def snapshot(self, run: AgentRun, process=None) -> dict[str, Any]:
         turn = self.runs.get(run.runId)
         if turn is not None:
-            return turn.snapshot(self.sessions)
+            return turn.snapshot(run, process)
         # Restart recovers unfinished DB rows once; it never reconstructs tasks.
         return {'runId': run.runId, 'roleId': run.roleId, 'sessionKey': run.sessionKey,
             'sequence': 0, 'status': run.status, 'phase': 'finished', 'stopping': False,
