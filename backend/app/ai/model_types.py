@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, TypeAlias
 
+from .output_usage import OutputTokenUsage
+
 
 @dataclass(frozen=True, slots=True)
 class ModelTextBlock:
@@ -70,6 +72,7 @@ class ModelUsage:
     cache_write_tokens: int = 0
     reasoning_tokens: int = 0
     cost: ModelCost = field(default_factory=ModelCost)
+    output_usage: OutputTokenUsage | None = None
 
 
 @dataclass(frozen=True, slots=True)

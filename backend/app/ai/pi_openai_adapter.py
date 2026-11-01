@@ -86,8 +86,9 @@ def _int(value: object) -> int:
 
 
 def _usage(payload: object) -> ModelUsage:
+    from .output_usage import parse_output_usage
     if not isinstance(payload, Mapping):
-        return ModelUsage()
+        return ModelUsage(output_usage=parse_output_usage(None))
     prompt = _int(payload.get("prompt_tokens", payload.get("input_tokens")))
     output = _int(payload.get("completion_tokens", payload.get("output_tokens")))
     cached = _int(payload.get("cache_read_input_tokens"))
@@ -106,6 +107,9 @@ def _usage(payload: object) -> ModelUsage:
         cache_write_tokens=cache_write,
         reasoning_tokens=reasoning,
         cost=model_cost(payload),
+        output_usage=parse_output_usage(payload.get('completion_tokens', payload.get('output_tokens')),
+            output_details.get('reasoning_tokens', payload.get('reasoning_tokens')) if isinstance(output_details, Mapping)
+            else payload.get('reasoning_tokens')),
     )
 
 

@@ -87,8 +87,9 @@ def _block(block: object) -> dict[str, object]:
 
 
 def _usage(value: object) -> ModelUsage:
+    from .output_usage import parse_output_usage
     if not isinstance(value, Mapping):
-        return ModelUsage()
+        return ModelUsage(output_usage=parse_output_usage(None))
     return ModelUsage(
         input_tokens=_number(value.get("input", value.get("input_tokens"))),
         output_tokens=_number(value.get("output", value.get("output_tokens"))),
@@ -96,6 +97,8 @@ def _usage(value: object) -> ModelUsage:
         cache_write_tokens=_number(value.get("cacheWrite", value.get("cache_write_tokens"))),
         reasoning_tokens=_number(value.get("reasoning", value.get("reasoning_tokens"))),
         cost=model_cost(value),
+        output_usage=parse_output_usage(value.get('output', value.get('output_tokens')),
+            value.get('reasoning', value.get('reasoning_tokens'))),
     )
 
 

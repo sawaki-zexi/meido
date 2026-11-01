@@ -291,7 +291,11 @@ async def test_each_oversized_batch_has_only_one_shortening_and_counts_all_reque
     assert provider.compactions == 1
     assert len(model.payloads) >= 4 and len(model.payloads) % 2 == 0
     for index in range(0, len(model.payloads), 2):
-        assert model.payloads[index + 1] == {'summary': model.summaries[index]}
+        shortened = model.payloads[index + 1]
+        assert shortened['summary'] == model.summaries[index]
+        assert shortened['budget_feedback']['counted_tokens'] == 900
+        assert shortened['budget_feedback']['hard_limit'] == provider.settings.summaryTokenLimit
+        assert 'messages' not in shortened
         if index:
             assert model.payloads[index]['previous_summary'] == model.summaries[index - 1]
         assert [attempt['batch'] for attempt in provider.summary_attempts[index:index + 2]] == [index // 2 + 1] * 2

@@ -144,8 +144,9 @@ def _tools_to_wire(tools: Sequence[Mapping[str, object]], aliases: Mapping[str, 
 
 
 def _usage(value: object) -> ModelUsage:
+    from .output_usage import parse_output_usage
     if not isinstance(value, Mapping):
-        return ModelUsage()
+        return ModelUsage(output_usage=parse_output_usage(None))
     prompt_details = value.get("prompt_tokens_details")
     completion_details = value.get("completion_tokens_details")
     return ModelUsage(
@@ -154,6 +155,8 @@ def _usage(value: object) -> ModelUsage:
         cache_read_tokens=_number(prompt_details.get("cached_tokens")) if isinstance(prompt_details, Mapping) else 0,
         reasoning_tokens=_number(completion_details.get("reasoning_tokens")) if isinstance(completion_details, Mapping) else 0,
         cost=model_cost(value),
+        output_usage=parse_output_usage(value.get('completion_tokens'),
+            completion_details.get('reasoning_tokens') if isinstance(completion_details, Mapping) else None),
     )
 
 

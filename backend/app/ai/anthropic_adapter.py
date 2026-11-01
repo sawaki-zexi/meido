@@ -76,15 +76,19 @@ def _int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
-def _usage(value: object) -> ModelUsage:
+def _usage(value: object, *, output_complete: bool = True) -> ModelUsage:
+    from .output_usage import parse_output_usage
     if not isinstance(value, Mapping):
-        return ModelUsage()
+        return ModelUsage(output_usage=parse_output_usage(None))
+    details = value.get('output_tokens_details')
     return ModelUsage(
         input_tokens=_int(value.get("input_tokens")),
         output_tokens=_int(value.get("output_tokens")),
         cache_read_tokens=_int(value.get("cache_read_input_tokens")),
         cache_write_tokens=_int(value.get("cache_creation_input_tokens")),
         cost=model_cost(value),
+        output_usage=(parse_output_usage(value.get('output_tokens'), details.get('thinking_tokens') if isinstance(details, Mapping) else None)
+                      if output_complete else parse_output_usage(None)),
     )
 
 
@@ -288,7 +292,9 @@ class _Accumulator:
             if isinstance(message, Mapping):
                 self.response_id = message.get("id") if isinstance(message.get("id"), str) else None
                 self.model = message.get("model") if isinstance(message.get("model"), str) else None
-                self.usage = _usage(message.get("usage"))
+                # Start usage retains input/cache/display facts, but its
+                # provisional output count cannot bound the completed text.
+                self.usage = _usage(message.get("usage"), output_complete=False)
         elif event_type == "content_block_start":
             index = _int(payload.get("index"))
             raw = payload.get("content_block")
@@ -346,6 +352,7 @@ class _Accumulator:
                 output_tokens=_int(payload.get("usage", {}).get("output_tokens")) if isinstance(payload.get("usage"), Mapping) else self.usage.output_tokens,
                 cache_read_tokens=self.usage.cache_read_tokens,
                 cache_write_tokens=self.usage.cache_write_tokens,
+                output_usage=_usage(payload.get('usage')).output_usage,
             )
         elif event_type == "content_block_stop":
             index = _int(payload.get("index"))

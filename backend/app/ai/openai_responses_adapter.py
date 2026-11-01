@@ -70,8 +70,9 @@ def _int(value: object) -> int:
 
 
 def _usage(value: object) -> ModelUsage:
+    from .output_usage import parse_output_usage
     if not isinstance(value, Mapping):
-        return ModelUsage()
+        return ModelUsage(output_usage=parse_output_usage(None))
     details = value.get("output_tokens_details")
     reasoning = _int(details.get("reasoning_tokens")) if isinstance(details, Mapping) else 0
     return ModelUsage(
@@ -80,6 +81,7 @@ def _usage(value: object) -> ModelUsage:
         cache_read_tokens=_int(value.get("input_tokens_details", {}).get("cached_tokens")) if isinstance(value.get("input_tokens_details"), Mapping) else 0,
         reasoning_tokens=reasoning,
         cost=model_cost(value),
+        output_usage=parse_output_usage(value.get('output_tokens'), details.get('reasoning_tokens') if isinstance(details, Mapping) else None),
     )
 
 
