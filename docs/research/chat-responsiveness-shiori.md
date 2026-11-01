@@ -1,8 +1,8 @@
 # 聊天卡顿与断线：Shiori 对照
 
-状态：当前调研；基线问题记录于下文，#291 准备边界已在本分支实现，#292/#293 尚待实施。
+状态：当前调研；基线问题记录于下文，#291 准备边界已合入，#292 摘要计量与反馈在本分支实现，#293 尚待实施。
 事实来源：固定上游源码、隔离性能复现、[准备回归](../../tests/python/test_context_preparation.py)、[完整规格](../specs/chat-responsiveness.md)。
-最后核验：2026-10-31。
+最后核验：2026-11-01。
 
 ## 基线
 
@@ -46,3 +46,15 @@
 本地证据路径（未跟踪）：`.data/checks/291/profile_probe.py`、`performance-after.txt`、`red.txt`。CI 不断言此机器相关耗时，而通过 [真实 HTTP barrier 与输入一致性测试](../../tests/python/test_context_preparation.py) 验证等待期间仍可读取页面、停止和正常收尾，并通过定向窗口、工具、来源与用量回归验证语义。
 
 `CapabilityPreparation` 只描述工具；原文窗口选择与搜索共用它。`MeidoProvider` 明确捕获上下文，再渲染 `PreparedRequest`，估算不再修改提示状态。最终 rich messages、工具和配置复用后交给原有 adapter。实际 dispatch 仍检查当前注册表和权限。取消时只排空已启动的窗口写事务，独立只读工作不阻止任务取消。
+
+## #292：协议用量核验与实现边界
+
+固定 Shiori 的 `OutputTokenUsage`、`SummaryRequest`、`normalize_summary` 分别负责严格计数、唯一缩短请求和合法状态投影。Meido 现在在适配器将非法计数转为显示用零值之前，保留独立的严格输出计量；摘要通过统一校验入口使用它，普通聊天原计数含义不变。完整 JSON 模板、规范化状态与计量反馈随同一次缩短请求发送，安全诊断通过持久化查询保留。
+
+- OpenAI Completions／Responses 的输出总量包含 reasoning，已有各原生协议适配器分别读取 `completion_tokens_details.reasoning_tokens` 和 `output_tokens_details.reasoning_tokens`；Azure／Codex 复用 Responses。
+- [Anthropic 官方说明](https://platform.claude.com/docs/en/build-with-claude/thinking-steering-and-cost)：`output_tokens` 包含全部思考，`output_tokens_details.thinking_tokens` 给出其中思考用量；流式在最终 `message_delta` 提供。适配器合并终态时保留此严格细分；缺失且观察到 thinking 时采用本地正文估算。
+- [Google UsageMetadata](https://ai.google.dev/api/generate-content#UsageMetadata)：`candidatesTokenCount` 与 `thoughtsTokenCount` 分开列出，`totalTokenCount` 还包含 prompt 和工具提示。Meido 原有显示输出会把 candidates 与 thoughts 相加；严格正文计量直接取 candidates，避免重复扣除。
+- [Pi 固定类型合同](https://github.com/earendil-works/pi/blob/7d75a0e3eb273dff753d49c066ea29fbe7b3b6f6/packages/ai/src/types.ts#L446-L469)：reasoning 是 output 的子集，可明确为零，未报告时为 undefined。不能把缺失计数先归零再当作有依据的零值。
+- [Bedrock TokenUsage](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_TokenUsage.html) 没有独立 reasoning 字段。[Mistral reasoning](https://docs.mistral.ai/studio/conversations/reasoning) 确认 thinking 块会增加 token，但未核验到必有的独立细分字段。两者观察到 thinking 却没有有效细分时回到本地正文估算，不臆造用量。
+
+协议回归使用真实适配器消费可控 HTTP／事件流，验证总量、细分、缺失、非法值及 Google 独立候选计数。摘要行为回归验证 2500／1500 被接受为 1000 且没有第二次请求；这修复错误重试，不能保证外部模型的生成速度。

@@ -77,14 +77,17 @@ def _int(value: object) -> int:
 
 
 def _usage(value: object) -> ModelUsage:
+    from .output_usage import parse_output_usage
     if not isinstance(value, Mapping):
-        return ModelUsage()
+        return ModelUsage(output_usage=parse_output_usage(None))
+    details = value.get('output_tokens_details')
     return ModelUsage(
         input_tokens=_int(value.get("input_tokens")),
         output_tokens=_int(value.get("output_tokens")),
         cache_read_tokens=_int(value.get("cache_read_input_tokens")),
         cache_write_tokens=_int(value.get("cache_creation_input_tokens")),
         cost=model_cost(value),
+        output_usage=parse_output_usage(value.get('output_tokens'), details.get('thinking_tokens') if isinstance(details, Mapping) else None),
     )
 
 
@@ -346,6 +349,7 @@ class _Accumulator:
                 output_tokens=_int(payload.get("usage", {}).get("output_tokens")) if isinstance(payload.get("usage"), Mapping) else self.usage.output_tokens,
                 cache_read_tokens=self.usage.cache_read_tokens,
                 cache_write_tokens=self.usage.cache_write_tokens,
+                output_usage=_usage(payload['usage']).output_usage if isinstance(payload.get('usage'), Mapping) else self.usage.output_usage,
             )
         elif event_type == "content_block_stop":
             index = _int(payload.get("index"))

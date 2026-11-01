@@ -4,13 +4,13 @@
 需求来源：用户要求“参考 shiori，解决问题”；沿用已经定位的上下文准备阻塞、工具前后等待、摘要失败与刷新中断范围。
 事实来源：[调研](../research/chat-responsiveness-shiori.md)、当前源码／隔离性能复现。
 
-最后核验：2026-10-31。
+最后核验：2026-11-01。
 
 ## 交付状态
 
-本分支实现 [#291](https://github.com/sawaki-zexi/meido/issues/291)：准备输入、纯候选投影与计量、即时执行准入、配置保留轮数及窗口批量读取。见 [ADR-0034](../adr/0034-context-preparation-boundaries.md) 和 [回归](../../tests/python/test_context_preparation.py)。
+[#291](https://github.com/sawaki-zexi/meido/issues/291) 已合入 main：准备输入、纯候选投影与计量、即时执行准入、配置保留轮数及窗口批量读取。见 [ADR-0034](../adr/0034-context-preparation-boundaries.md) 和 [回归](../../tests/python/test_context_preparation.py)。
 
-[#292](https://github.com/sawaki-zexi/meido/issues/292) 的摘要正文计量／缩短反馈、[#293](https://github.com/sawaki-zexi/meido/issues/293) 的聊天任务归属／刷新续接仍是后续计划。本分支没有改变 SSE 断线行为，以下完整规格不能当作全部已经交付。
+本分支实现 [#292](https://github.com/sawaki-zexi/meido/issues/292) 的摘要正文计量／缩短反馈，协议边界保留有效计数与缺失／异常原因，摘要规范化后判断是否允许一次缩短。见[分批摘要合同](../reference/working-summary-batches.md)。[#293](https://github.com/sawaki-zexi/meido/issues/293) 的聊天任务归属／刷新续接仍是后续计划。本分支没有改变 SSE 断线行为，以下完整规格不能当作全部已经交付。
 
 ## Problem Statement
 

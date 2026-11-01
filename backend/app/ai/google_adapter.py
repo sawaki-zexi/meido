@@ -37,13 +37,15 @@ def _int(value: object) -> int:
 
 
 def _usage(value: object) -> ModelUsage:
+    from .output_usage import parse_output_usage
     if not isinstance(value, Mapping):
-        return ModelUsage()
+        return ModelUsage(output_usage=parse_output_usage(None, visible_only=True))
     cached = _int(value.get("cachedContentTokenCount"))
     thoughts = _int(value.get("thoughtsTokenCount"))
     prompt = max(0, _int(value.get("promptTokenCount")) - cached)
     output = _int(value.get("candidatesTokenCount")) + thoughts
-    return ModelUsage(input_tokens=prompt, output_tokens=output, cache_read_tokens=cached, reasoning_tokens=thoughts, cost=model_cost(value))
+    return ModelUsage(input_tokens=prompt, output_tokens=output, cache_read_tokens=cached, reasoning_tokens=thoughts, cost=model_cost(value),
+        output_usage=parse_output_usage(value.get('candidatesTokenCount'), value.get('thoughtsTokenCount'), visible_only=True))
 
 
 def _text(blocks: Sequence[object]) -> str:

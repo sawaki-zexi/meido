@@ -12,6 +12,7 @@ from urllib.parse import quote
 import httpx
 
 from .request_budget import image_budget_client_kwargs, budgeted_model_stream, budgeted_model_completion
+from .output_usage import parse_output_usage
 
 from .message_transform import transform_messages
 from .model_adapter import _payload_error_detail, _raise_for_status_with_details
@@ -224,6 +225,7 @@ class BedrockConverseAdapter:
             cache_read_tokens=_nonnegative(usage_data.get("cacheReadInputTokens")),
             cache_write_tokens=_nonnegative(usage_data.get("cacheWriteInputTokens")),
             cost=model_cost(usage_data),
+            output_usage=parse_output_usage(usage_data.get('outputTokens')),
         )
         stop = _stop_reason(data.get("stopReason"))
         return ModelAssistantMessage(content=tuple(blocks), metadata=ModelResponseMetadata(
@@ -337,6 +339,7 @@ class BedrockConverseAdapter:
                                 cache_read_tokens=_nonnegative(usage_data.get("cacheReadInputTokens")),
                                 cache_write_tokens=_nonnegative(usage_data.get("cacheWriteInputTokens")),
                                 cost=model_cost(usage_data),
+                                output_usage=parse_output_usage(usage_data.get('outputTokens')),
                             )
                         if isinstance(event.get("messageStart"), Mapping):
                             response_id = event["messageStart"].get("messageId") if isinstance(event["messageStart"].get("messageId"), str) else response_id

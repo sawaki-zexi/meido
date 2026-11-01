@@ -159,14 +159,22 @@ class SessionStore:
                         if not isinstance(attempt, dict):
                             continue
                         safe = {}
-                        for key in ('maxTokens', 'elapsedMs'):
+                        for key in ('maxTokens', 'elapsedMs', 'batch', 'limit', 'providerOutputTokens',
+                                    'localTokens', 'countedTokens', 'sourceCount'):
                             if type(attempt.get(key)) is int and attempt[key] >= 0:
                                 safe[key] = attempt[key]
                         for key, choices in {'stopReason': {'stop', 'end_turn', 'completed', 'length', 'max_tokens', 'tool_calls', 'tool_use', 'error', 'aborted'},
-                                             'outcome': {'started', 'returned', 'incomplete', 'timeout', 'failed'}}.items():
+                                             'outcome': {'started', 'returned', 'incomplete', 'timeout', 'failed', 'accepted', 'oversized',
+                                                         'invalid_json', 'missing_fields', 'invalid_fields', 'invalid_sources', 'truncated',
+                                                         'input_overflow', 'response_too_large', 'stream_error', 'cancelled', 'source_revoked'},
+                                             'countSource': {'provider_output_upper_bound', 'local_normalized_estimate'},
+                                             'fallbackReason': {'', 'missing_completion_usage', 'invalid_completion_usage',
+                                                                'missing_reasoning_usage', 'invalid_reasoning_usage', 'normalized_projection'}}.items():
                             value = attempt.get(key)
                             if isinstance(value, str):
                                 safe[key] = value if value in choices else 'other'
+                        if type(attempt.get('shortening')) is bool:
+                            safe['shortening'] = attempt['shortening']
                         usage = attempt.get('usage')
                         if isinstance(usage, dict):
                             safe['usage'] = {key: usage[key] for key in ('input_tokens', 'output_tokens', 'reasoning_tokens')
