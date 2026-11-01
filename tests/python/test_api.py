@@ -114,65 +114,22 @@ def configure_session_api(tmp_path, monkeypatch, adapter, *, automatic_memory=Fa
     return role, sessions, TestClient(main.app)
 
 
-def test_completed_http_reply_finishes_when_disconnect_poll_and_cleanup_cancel_overlap(tmp_path, monkeypatch, local_platform_only):
-    import anyio
+def test_completed_reply_does_not_depend_on_consuming_the_http_response(tmp_path, monkeypatch, local_platform_only):
+    from types import SimpleNamespace
     from backend.app.agent_runtime.runtime import RuntimeManager
-    from backend.app.memory_config import MemorySettingsStore
+    role, sessions, _ = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    monkeypatch.setattr(main, 'runtime_manager', RuntimeManager(sessions))
 
-    poll_started = asyncio.Event()
-    aligned = False
-
-    class Adapter:
-        async def stream_reply(self, role, history, configuration=None):
-            del role, history, configuration
-            yield "已完成的回复"
-
-    role, sessions, _ = configure_session_api(tmp_path, monkeypatch, Adapter())
-    monkeypatch.setattr(main, "runtime_manager", RuntimeManager(sessions))
-    memory_settings = MemorySettingsStore(tmp_path / "memory-settings.json")
-    memory_settings.update(enabled=False)
-    monkeypatch.setattr(main, "memory_settings_store", memory_settings)
-
-    async def connected_client(scope, receive, send):
-        async def controlled_receive():
-            nonlocal aligned
-            if not aligned and anyio.current_effective_deadline() == float("-inf"):
-                aligned = True
-                poll_started.set()
-                # CancelScope's queued cancellation wakes this Future first;
-                # model completion then cancels the poll task before it resumes.
-                # This is an ASGI receive scheduling boundary, not a replacement
-                # of Request.is_disconnected or Meido's watcher implementation.
-                try:
-                    await asyncio.get_running_loop().create_future()
-                except asyncio.CancelledError as first_cancellation:
-                    # ASGI receive implementations may yield while cleaning up
-                    # cancelled reads before propagating the first exception.
-                    for _ in range(4):
-                        try:
-                            await asyncio.sleep(0)
-                        except asyncio.CancelledError:
-                            pass
-                    raise first_cancellation
-            return await receive()
-
-        async def controlled_send(message):
-            if b"event: assistant_completed" in message.get("body", b""):
-                # Resume final response delivery while the next nonblocking
-                # probe has cancellation queued but has not resumed yet.
-                await poll_started.wait()
-            await send(message)
-
-        await asyncio.wait_for(main.app(scope, controlled_receive, controlled_send), timeout=2)
-
-    response = TestClient(connected_client).post(
-        f"/api/roles/{role.id}/messages", json={"content": "完成这条回复"},
-    )
-
-    assert aligned
-    assert response.status_code == 200
-    assert "event: assistant_completed" in response.text
-    assert "已完成的回复" in response.text
+    async def scenario():
+        response = await main.send_role_message(role.id, SendMessageInput(content='完成这条回复'), SimpleNamespace())
+        run_id = response.headers['X-Meido-Run-Id']
+        await response.body_iterator.aclose()
+        turn = main._chat_runs().runs[run_id]
+        await asyncio.wait_for(asyncio.shield(turn.task), 5)
+        assert turn.finished and sessions.get_run(run_id).status == 'completed'
+        assert [row.content for row in sessions.list_messages(f'role:{role.id}')] == ['完成这条回复', '回复']
+        assert not main.runtime_manager.lock_for(role.id).locked()
+    asyncio.run(scenario())
 
 
 def test_role_api_crud_and_duplicate_names(tmp_path, monkeypatch):
@@ -1545,51 +1502,23 @@ def test_delete_role_rejects_persisted_active_run_without_process_lock(tmp_path,
     assert client.get(f"/api/roles/{role.id}").status_code == 200
 
 
-def test_unstarted_message_stream_is_failed_and_role_can_retry(tmp_path, monkeypatch):
-    role, sessions, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
-    scope = {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": "POST",
-        "scheme": "http",
-        "path": f"/api/roles/{role.id}/messages",
-        "raw_path": f"/api/roles/{role.id}/messages".encode(),
-        "query_string": b"",
-        "headers": [],
-        "server": ("testserver", 80),
-        "client": ("testclient", 12345),
-        "root_path": "",
-    }
+def test_unsubscribed_message_is_completed_and_role_can_send_again(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    role, sessions, _ = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
 
-    async def receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def prepare_response():
-        request = Request(scope, receive)
-        return await main.send_role_message(role.id, SendMessageInput(content="第一次"), request)
-
-    response = asyncio.run(prepare_response())
-    assert main.runtime_manager.lock_for(role.id).locked()
-    run_id = sessions.list_messages(f"role:{role.id}")[0].runId
-    assert run_id is not None
-    assert sessions.get_run(run_id).status == "created"
-    assert response.background is not None
-
-    async def abandon_before_first_chunk():
-        await response.body_iterator.aclose()
-        await response.background()
-
-    asyncio.run(abandon_before_first_chunk())
-    assert not main.runtime_manager.lock_for(role.id).locked()
-    failed_run = sessions.get_run(sessions.list_messages(f"role:{role.id}")[0].runId)
-    assert failed_run is not None and failed_run.status == "failed"
-    stored = sessions.list_messages(f"role:{role.id}")
-    assert [(item.role, item.status) for item in stored] == [("user", "completed"), ("assistant", "failed")]
-
-    retry = client.post(f"/api/roles/{role.id}/messages", json={"content": "重试"})
-    assert retry.status_code == 200
-    assert "event: assistant_completed" in retry.text
+    async def scenario():
+        first = await main.send_role_message(role.id, SendMessageInput(content='第一次'), SimpleNamespace())
+        run_id = first.headers['X-Meido-Run-Id']
+        await first.body_iterator.aclose()
+        await asyncio.wait_for(main._chat_runs().runs[run_id].task, 5)
+        assert sessions.get_run(run_id).status == 'completed'
+        second = await main.send_role_message(role.id, SendMessageInput(content='下一句'), SimpleNamespace())
+        chunks = [chunk async for chunk in second.body_iterator]
+        assert any('assistant_completed' in chunk for chunk in chunks)
+        assert not main.runtime_manager.lock_for(role.id).locked()
+        assert [(row.role, row.status) for row in sessions.list_messages(f'role:{role.id}')] == [
+            ('user', 'completed'), ('assistant', 'completed'), ('user', 'completed'), ('assistant', 'completed')]
+    asyncio.run(scenario())
 
 
 def test_capabilities_are_closed_when_provider_setup_fails(tmp_path, monkeypatch):

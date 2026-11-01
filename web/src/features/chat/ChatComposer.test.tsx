@@ -1,13 +1,15 @@
+import { fakeBackend as directBackend } from '../../test/fakeBackend';
+import { fakeChatBackend as fakeBackend } from '../../test/fakeChatBackend';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "../../App";
-import { fakeBackend, message, role, sse } from "../../test/fakeBackend";
+import { message, role, sse } from "../../test/fakeBackend";
 
 const alice = role({ id: "r1", name: "爱丽丝" });
 const session = { sessionKey: "role:r1", roleId: "r1", createdAt: alice.createdAt, updatedAt: alice.updatedAt };
 beforeEach(() => { sessionStorage.clear(); localStorage.clear(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("聊天输入与停止", () => {
   it("收到回复完成事件后立即恢复发送，即使响应连接还没有关闭", async () => {
@@ -17,7 +19,7 @@ describe("聊天输入与停止", () => {
     const { calls } = fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": () => ({ body: { session, messages: [] } }),
-      "POST /api/roles/r1/messages": () => {
+      "CHAT /api/roles/r1": () => {
         controller.enqueue(new TextEncoder().encode(
           sse("user_message_accepted", { message: message({ id: "u1", role: "user", content: "第一句" }), runId: "run-1" })
           + sse("assistant_generation_started", { messageId: "a1", runId: "run-1" })
@@ -50,7 +52,7 @@ describe("聊天输入与停止", () => {
       "GET /api/roles/r1/session": () => ({ body: { session, messages: [] } }),
       "GET /api/model/configurations": () => ({ body: { configurations: [{ id: "model-1", model: "test-model" }] } }),
       "GET /api/roles/r1/model-configuration": () => ({ body: { configurationId: null, effectiveConfigurationId: "model-1" } }),
-      "POST /api/roles/r1/messages": () => {
+      "CHAT /api/roles/r1": () => {
         if (++turn > 1) return { stream: [
           sse("user_message_accepted", { message: message({ id: "u2", role: "user", content: "下一句草稿", sequence: 3 }) }),
           sse("assistant_generation_started", { messageId: "a2" }),
@@ -72,7 +74,7 @@ describe("聊天输入与停止", () => {
     await screen.findByText("已保留的回复");
     await user.type(input, "下一句草稿");
     expect(screen.getByRole("button", { name: "选择聊天模型" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /贝拉/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /贝拉/ })).toBeEnabled();
     act(() => controller.enqueue(new TextEncoder().encode(sse(terminal, {
       message: message({ id: "a1", role: "assistant", content: "已保留的回复", sequence: 2, status: terminal === "assistant_completed" ? "completed" : "failed" }),
       error: terminal === "assistant_failed" ? "模型回复未能完成" : undefined,
@@ -90,29 +92,29 @@ describe("聊天输入与停止", () => {
     await user.click(screen.getByRole("button", { name: "发送" }));
     expect(await screen.findByText("第二轮回复", { selector: ".bubble p" })).toBeInTheDocument();
     expect(input).toHaveValue("");
-    expect(calls.filter((call) => call.path.endsWith("/messages")).map((call) => call.body)).toEqual([{ content: "第一句" }, { content: "下一句草稿" }]);
+    expect(calls.filter((call) => call.path.endsWith("/runs")).map((call) => call.body)).toMatchObject([{ content: "第一句" }, { content: "下一句草稿" }]);
     expect(calls.some((call) => call.path.endsWith("/stop"))).toBe(false);
     expect(cancel).toHaveBeenCalledOnce();
   });
 
-  it("后端已接收但响应头丢失时，从历史确认消息，避免回填后重复发送", async () => {
-    let posted = false;
-    fakeBackend({
-      "GET /api/roles": () => ({ body: { roles: [alice] } }),
-      "GET /api/roles/r1/session": () => ({ body: { session, messages: posted ? [
-        message({ id: "u1", role: "user", content: "已收到的消息", runId: "run-lost-header" }),
-      ] : [] } }),
-      "POST /api/roles/r1/messages": () => { posted = true; throw new TypeError("响应头丢失"); },
+  it("后端已接收但接受响应丢失时，按稳定标识恢复消息，避免回填重复发送", async () => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('lost-header-0-0-0');
+    const accepted = message({ id: 'u1', role: 'user', content: '已收到的消息', runId: 'run-lost-header-0-0-0' });
+    directBackend({
+      'GET /api/roles': () => ({ body: { roles: [alice] } }),
+      'GET /api/roles/r1/session': () => ({ body: { session, messages: [] } }),
+      'POST /api/roles/r1/runs': () => { throw new TypeError('接受响应丢失'); },
+      'GET /api/roles/r1/runs/run-lost-header-0-0-0': () => ({ body: { session, messages: [accepted],
+        run: { ...session, runId: 'run-lost-header-0-0-0', sequence: 3, status: 'completed', phase: 'finished', tools: [], stopping: false } } }),
     });
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole("heading", { name: "爱丽丝" });
-    const input = screen.getByRole("textbox", { name: "消息内容" });
-    await user.type(input, "已收到的消息{Enter}");
-    await screen.findByRole("alert");
-    await waitFor(() => expect(screen.queryByRole("button", { name: "停止回复" })).toBeNull());
-    expect(input).toHaveValue("");
-    expect(screen.getByText("已收到的消息")).toBeTruthy();
+    await screen.findByRole('heading', { name: '爱丽丝' });
+    const input = screen.getByRole('textbox', { name: '消息内容' });
+    await user.type(input, '已收到的消息{Enter}');
+    await screen.findByText('已收到的消息');
+    await waitFor(() => expect(screen.queryByRole('button', { name: '停止回复' })).toBeNull());
+    expect(input).toHaveValue('');
     expect(screen.queryByText(/未发送的消息/)).toBeNull();
   });
 
@@ -121,7 +123,7 @@ describe("聊天输入与停止", () => {
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": () => ({ body: { session, messages: [] } }),
       "POST /api/roles/r1/attachments": () => ({ body: { id: "file-1", name: "notes.txt", mediaType: "text/plain", size: 4, kind: "file" } }),
-      "POST /api/roles/r1/messages": () => ({ status: 503, body: { detail: "稍后重试" } }),
+      "CHAT /api/roles/r1": () => ({ status: 503, body: { detail: "稍后重试" } }),
     });
     const user = userEvent.setup();
     render(<App />);
@@ -141,7 +143,7 @@ describe("聊天输入与停止", () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": () => ({ body: { session, messages: [] } }),
-      "POST /api/roles/r1/messages": () => {
+      "CHAT /api/roles/r1": () => {
         controller.enqueue(new TextEncoder().encode(
           sse("user_message_accepted", { message: message({ id: "u1", role: "user", content: "第一句" }) })
           + sse("assistant_generation_started", { messageId: "a1" })
@@ -161,21 +163,22 @@ describe("聊天输入与停止", () => {
     await screen.findByRole("alert");
     expect(input).toHaveValue("下一句草稿");
     expect(screen.queryByText(/未发送的消息/)).toBeNull();
-    expect(screen.getByText("未完成")).toBeTruthy();
+    expect(screen.getByText("生成中")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "停止回复" })).toBeEnabled();
   });
 
-  it("响应头还没到达时停止，通过历史确认已接收消息而不重新回填", async () => {
-    let releaseRequest!: (value: { stream: string[] }) => void;
-    const response = new Promise<{ stream: string[] }>((resolve) => { releaseRequest = resolve; });
-    const userMessage = { ...message({ id: "u1", role: "user", content: "早停" }), runId: "run-early" };
+  it("响应头还没到达时停止，按确切接受标识停止已接收消息而不重新回填", async () => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('early-0-0-0-0');
+    const userMessage = { ...message({ id: "u1", role: "user", content: "早停" }), runId: "run-early-0-0-0-0" };
     const stopped = message({ id: "a1", role: "assistant", content: "", status: "failed", metadata: { runtimeReason: "cancelled" }, sequence: 2 });
     let posted = false;
-    fakeBackend({
+    directBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": () => ({ body: { session, messages: posted ? [userMessage] : [] } }),
-      "POST /api/roles/r1/messages": () => { posted = true; return response; },
-      "POST /api/roles/r1/runs/run-early/stop": () => {
-        releaseRequest({ stream: [] });
+      "POST /api/roles/r1/runs": init => new Promise((_resolve, reject) => {
+        posted = true; init?.signal?.addEventListener('abort', () => reject(new TypeError('aborted')), { once: true });
+      }),
+      "POST /api/roles/r1/runs/run-early-0-0-0-0/stop": () => {
         return { body: { session, messages: [userMessage, stopped] } };
       },
     });
@@ -196,7 +199,7 @@ describe("聊天输入与停止", () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": () => ({ body: { session, messages: [] } }),
-      "POST /api/roles/r1/messages": () => response,
+      "CHAT /api/roles/r1": () => response,
     });
     const user = userEvent.setup();
     render(<App />);
@@ -215,7 +218,7 @@ describe("聊天输入与停止", () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": () => ({ body: { session, messages: [] } }),
-      "POST /api/roles/r1/messages": () => ({ stream, headers: { "X-Meido-Run-Id": "run-before-token" } }),
+      "CHAT /api/roles/r1": () => ({ stream, headers: { "X-Meido-Run-Id": "run-before-token" } }),
       "POST /api/roles/r1/runs/run-before-token/stop": () => ({ body: { session, messages: [
         message({ id: "u1", role: "user", content: "首个字之前" }),
         message({ id: "a1", role: "assistant", content: "", status: "failed", metadata: { runtimeReason: "cancelled" }, sequence: 2 }),
@@ -242,7 +245,7 @@ describe("聊天输入与停止", () => {
     const { calls } = fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": () => ({ body: { session, messages: [] } }),
-      "POST /api/roles/r1/messages": () => {
+      "CHAT /api/roles/r1": () => {
         turn += 1;
         if (turn > 1) return { stream: [
           sse("user_message_accepted", { message: message({ id: "u2", role: "user", content: "下一条" }) }),
@@ -268,7 +271,7 @@ describe("聊天输入与停止", () => {
     await user.type(input, "第一句{Enter}");
     await screen.findByText("部分回复");
     await user.type(input, "下一条{Enter}");
-    expect(calls.filter((call) => call.path.endsWith("/messages"))).toHaveLength(1);
+    expect(calls.filter((call) => call.path.endsWith("/runs"))).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "停止回复" }));
     await screen.findByText("已停止");
     expect(screen.getByText("部分回复")).toBeTruthy();
@@ -285,7 +288,7 @@ describe("聊天输入与停止", () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": () => ({ body: { session, messages: [] } }),
-      "POST /api/roles/r1/messages": () => {
+      "CHAT /api/roles/r1": () => {
         controller.enqueue(new TextEncoder().encode(
           sse("user_message_accepted", { message: message({ id: "u1", role: "user", content: "第一句" }), runId: "run-1" })
           + sse("assistant_generation_started", { messageId: "a1", runId: "run-1" })

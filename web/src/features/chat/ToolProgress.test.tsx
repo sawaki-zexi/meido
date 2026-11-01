@@ -1,8 +1,9 @@
+import { fakeChatBackend as fakeBackend } from '../../test/fakeChatBackend';
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App } from "../../App";
-import { fakeBackend, message, role, sse } from "../../test/fakeBackend";
+import { message, role, sse } from "../../test/fakeBackend";
 
 const alice = role({ id: "r1", name: "爱丽丝" });
 const bella = role({ id: "r2", name: "贝拉" });
@@ -34,7 +35,7 @@ it("renders assistant Markdown beside live tool progress without formatting or e
   fakeBackend({
     "GET /api/roles": () => ({ body: { roles: [alice] } }),
     "GET /api/roles/r1/session": () => ({ body: { session, messages: [] } }),
-    "POST /api/roles/r1/messages": () => {
+    "CHAT /api/roles/r1": () => {
       events.emit("user_message_accepted", { message: userMessage, runId: "run-1", sequence: 1 });
       events.emit("assistant_generation_started", { messageId: "a1", runId: "run-1", sequence: 2 });
       events.emit("assistant_delta", { messageId: "a1", delta: content, runId: "run-1", sequence: 3 });
@@ -69,7 +70,7 @@ it("shows a safe update before the producer barrier releases, then truthful inde
   fakeBackend({
     "GET /api/roles": () => ({ body: { roles: [alice, bella] } }),
     "GET /api/roles/r1/session": () => ({ body: { session, messages: [] } }),
-    "POST /api/roles/r1/messages": () => {
+    "CHAT /api/roles/r1": () => {
       events.begin();
       events.emit("tool_execution_update", { ...call, sequence: 4, result: "连接握手已开始 <img src=x onerror=alert(1)>", status: "running", droppedUpdates: 8, isError: false, images: ["raw-base64"], details: { token: "never-show-secret" } });
       void barrier.then(() => {
@@ -93,7 +94,7 @@ it("shows a safe update before the producer barrier releases, then truthful inde
   expect(progress).not.toHaveTextContent("never-show-secret");
   expect(progress).not.toHaveTextContent("raw-base64");
   expect(completed).toBe(false);
-  expect(screen.getByRole("button", { name: /贝拉/ })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /贝拉/ })).toBeEnabled();
   expect(screen.getByRole("button", { name: "选择聊天模型" })).toBeDisabled();
   await act(async () => { release(); await barrier; });
   await within(progress).findByRole("button", { name: /mcp_connect · 结果不确定/ });
@@ -132,7 +133,7 @@ it("does not accept progress after stop, waits for cleanup, and never resurrects
     "GET /api/roles": () => ({ body: { roles: [alice, bella] } }),
     "GET /api/roles/r1/session": () => ({ body: { session, messages: history } }),
     "GET /api/roles/r2/session": () => ({ body: { session: { roleId: "r2", sessionKey: "role:r2" }, messages: [] } }),
-    "POST /api/roles/r1/messages": () => { history = []; events.begin(argumentsPreview); return { stream: events.stream, headers: { "X-Meido-Run-Id": "run-1" } }; },
+    "CHAT /api/roles/r1": () => { history = []; events.begin(argumentsPreview); return { stream: events.stream, headers: { "X-Meido-Run-Id": "run-1" } }; },
     "POST /api/roles/r1/runs/run-1/stop": () => stopped,
   });
   const user = userEvent.setup();
@@ -143,7 +144,7 @@ it("does not accept progress after stop, waits for cleanup, and never resurrects
   expect(within(progress).getByText(argumentsPreview)).toBeVisible();
   await user.click(screen.getByRole("button", { name: "停止回复" }));
   expect(within(progress).getByText("正在停止…")).toBeVisible();
-  expect(screen.getByRole("button", { name: /贝拉/ })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /贝拉/ })).toBeEnabled();
   act(() => events.emit("tool_execution_update", { ...call, sequence: 4, result: "late-after-stop" }));
   await act(async () => { history = [userMessage, saved]; finishStop({ body: { session, messages: history } }); await stopped; });
   expect(await screen.findByText("已派发的动作结果不确定")).toBeVisible();
@@ -164,7 +165,7 @@ it("a failed stop does not reopen the progress window or claim that cleanup comp
   fakeBackend({
     "GET /api/roles": () => ({ body: { roles: [alice] } }),
     "GET /api/roles/r1/session": () => ({ body: { session, messages: [] } }),
-    "POST /api/roles/r1/messages": () => { events.begin(); return { stream: events.stream, headers: { "X-Meido-Run-Id": "run-1" } }; },
+    "CHAT /api/roles/r1": () => { events.begin(); return { stream: events.stream, headers: { "X-Meido-Run-Id": "run-1" } }; },
     "POST /api/roles/r1/runs/run-1/stop": () => ({ status: 503, body: { detail: "停止结果尚未确认" } }),
   });
   const user = userEvent.setup();

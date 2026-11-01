@@ -1,8 +1,9 @@
+import { fakeChatBackend as fakeBackend } from './test/fakeChatBackend';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "./App";
-import { fakeBackend, message, role, sse } from "./test/fakeBackend";
+import { message, role, sse } from "./test/fakeBackend";
 
 const alice = role({ id: "r1", name: "爱丽丝", description: "安静的女仆" });
 const bella = role({ id: "r2", name: "贝拉" });
@@ -830,7 +831,7 @@ describe("唯一会话", () => {
     const { calls } = fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": () => ({ body: { session, messages: [message({ id: "old", role: "user", content: "以前的话" })] } }),
-      "POST /api/roles/r1/messages": () => {
+      "CHAT /api/roles/r1": () => {
         turn += 1;
         const id = `t${turn}`;
         return { stream: [
@@ -858,7 +859,7 @@ describe("唯一会话", () => {
     await user.type(input, "第2句");
     await user.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(screen.getAllByText("您好，主人", { selector: ".bubble p" })).toHaveLength(2));
-    expect(calls.filter((call) => call.method === "POST").map((call) => call.body)).toEqual([{ content: "第1句" }, { content: "第2句" }]);
+    expect(calls.filter((call) => call.method === "POST").map((call) => call.body)).toMatchObject([{ content: "第1句" }, { content: "第2句" }]);
   });
 
   it("Shift+Enter 换行而不发送，空白消息不能发送", async () => {
@@ -879,7 +880,7 @@ describe("唯一会话", () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
       "GET /api/roles/r1/session": emptySession,
-      "POST /api/roles/r1/messages": () => {
+      "CHAT /api/roles/r1": () => {
         turn += 1;
         if (turn === 2) return { status: 409, body: { detail: "该角色正在生成回复，请稍后再试" } };
         return { stream: [
@@ -911,7 +912,7 @@ describe("唯一会话", () => {
       "GET /api/model/configurations": () => ({ body: { configurations: [] } }),
       "GET /api/roles/r1/model-configuration": () => ({ body: { configurationId: null, effectiveConfigurationId: null } }),
       "POST /api/roles/r1/attachments": () => ({ body: { id: "att-1", name: "photo.png", mediaType: "image/png", size: 8, kind: "image" } }),
-      "POST /api/roles/r1/messages": () => ({ stream: [
+      "CHAT /api/roles/r1": () => ({ stream: [
         sse("user_message_accepted", { message: { ...message({ id: "u1", role: "user", content: "" }), metadata: { attachments: [{ id: "att-1", name: "photo.png", mediaType: "image/png", size: 8, kind: "image" }] } } }),
         sse("assistant_generation_started", { messageId: "a1" }),
         sse("assistant_completed", { message: message({ id: "a1", role: "assistant", content: "看到了" }) }),
@@ -926,7 +927,7 @@ describe("唯一会话", () => {
     expect(screen.queryByAltText("photo.png")).toBeNull();
     await user.upload(screen.getByLabelText("附件文件"), new File(["png"], "photo.png", { type: "image/png" }));
     await user.click(screen.getByRole("button", { name: "发送" }));
-    await waitFor(() => expect(calls.find((call) => call.method === "POST" && call.path === "/api/roles/r1/messages")?.body).toEqual({ content: "", attachments: ["att-1"] }));
+    await waitFor(() => expect(calls.find((call) => call.method === "POST" && call.path === "/api/roles/r1/runs")?.body).toMatchObject({ content: "", attachments: ["att-1"] }));
     expect(await screen.findByAltText("photo.png")).toHaveAttribute("src", "/api/roles/r1/attachments/att-1");
   });
 

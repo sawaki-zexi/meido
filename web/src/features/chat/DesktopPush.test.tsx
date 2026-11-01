@@ -1,9 +1,10 @@
+import { fakeChatBackend as fakeBackend } from '../../test/fakeChatBackend';
 import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { Message } from "../../api/types";
 import userEvent from "@testing-library/user-event";
 import { App } from "../../App";
-import { fakeBackend, message, role, sse } from "../../test/fakeBackend";
+import { message, role, sse } from "../../test/fakeBackend";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); localStorage.clear(); sessionStorage.clear(); });
 
@@ -41,7 +42,7 @@ it("shows committed media while the tool turn continues and keeps the new final 
   fakeBackend({
     'GET /api/roles': () => ({ body: { roles: [saved] } }),
     'GET /api/roles/r1/session': () => ({ body: { session, messages: [] } }),
-    'POST /api/roles/r1/messages': () => {
+    'CHAT /api/roles/r1': () => {
       emit('user_message_accepted', { runId: 'run', sequence: 1, message: message({ id: 'u', role: 'user', content: '发送文件' }) });
       emit('assistant_generation_started', { runId: 'run', sequence: 2, messageId: 'old-placeholder' });
       emit('assistant_message_committed', { runId: 'run', sequence: 3, message: message({ id: 'push', role: 'assistant', content: '', sequence: 5, messageType: 'desktop_push', metadata: { attachments: [{ id: 'owned', name: 'report.html', kind: 'file' }] } }) });

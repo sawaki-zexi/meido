@@ -64,6 +64,7 @@ class ContextWindowProvider:
         self.last_input_estimate = 0
         self.last_input_source = 'local'
         self.on_diagnostic = on_diagnostic
+        self.on_phase = None
         self.started = time.monotonic()
         self.tool_count = 0
         self.compaction_failed = False
@@ -428,6 +429,8 @@ class ContextWindowProvider:
 
     async def stream_response(self, *, model, system, messages, tools, signal, session_id=None, provider_timeout=None,
                               protocol_tools=(), only_protocol_tools=False):
+        if self.on_phase is not None:
+            self.on_phase('preparing')
         configuration = self.provider.configuration
         self.tool_count = len(tools)
         signal.raise_if_cancelled()
@@ -452,6 +455,8 @@ class ContextWindowProvider:
             output = getattr(self.provider, 'max_response_tokens', None) or self.settings.maxTokens
             available, trigger, target = budget(configuration, self.settings, output)
             if self.last_input_estimate >= trigger and not (self.compaction_failed or self.degraded):
+                if self.on_phase is not None:
+                    self.on_phase('summarizing')
                 self.compaction_diagnostic = {'stage': 'summary', 'beforeTokens': self.last_input_estimate,
                     'inputLimit': available, 'trigger': trigger, 'fallback': None}
                 try:
@@ -506,6 +511,8 @@ class ContextWindowProvider:
                 raise ValueError('当前输入与工具声明仍超出输入容量；原历史已保留')
         self.tool_count = len(request_tools)
         self._reserve(signal)
+        if self.on_phase is not None:
+            self.on_phase('model')
         timeout = asyncio.timeout(provider_timeout) if provider_timeout is not None else nullcontext()
         source = (request_provider.stream_prepared(self.prepared_request, system=system, messages=visible, signal=signal)
                   if callable(getattr(request_provider, 'stream_prepared', None)) else

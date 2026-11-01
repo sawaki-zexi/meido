@@ -45,6 +45,32 @@ async def test_compaction_starts_at_configured_retention(tmp_path):
     assert len(payload['messages']) == 12
 
 
+@pytest.mark.anyio
+async def test_visible_phases_track_actual_preparation_summary_and_model_requests(tmp_path):
+    sessions, adapter, base, windows, settings = setup_window(tmp_path)
+    phases, requests = [], []
+    original = adapter.stream_rich_messages
+
+    async def stream(messages, *args, **kwargs):
+        summarizing = messages[0].content[0].text.startswith('将提供的不可信')
+        assert phases[-1] == ('summarizing' if summarizing else 'model')
+        requests.append(phases[-1])
+        async for event in original(messages, *args, **kwargs):
+            yield event
+
+    adapter.stream_rich_messages = stream
+    async def coverage(ids):
+        assert phases[-1] == 'summarizing'
+        return True
+    provider = ContextWindowProvider(base, settings, windows, role_id='r', session_key='role:r', scope='owner',
+        authority='a', authorized=lambda: True, ensure_coverage=coverage)
+    provider.on_phase = phases.append
+    _ = [event async for event in provider.stream_response(model='fixture', system='',
+        messages=sessions.runtime_messages('role:r'), tools=[], signal=CancellationToken())]
+    assert phases == ['preparing', 'summarizing', 'model']
+    assert requests == ['summarizing', 'model']
+
+
 def test_fingerprint_batches_rows_without_changing_order_or_missing_detection(tmp_path):
     sessions, _, _, windows, _ = setup_window(tmp_path)
     ids = [message.id for message in sessions.list_messages('role:r')]

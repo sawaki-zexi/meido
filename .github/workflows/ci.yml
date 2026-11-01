@@ -55,6 +55,17 @@ jobs:
               tests/python/channels/test_runtime_delivery.py::test_real_channel_runtime_commits_reply_only_after_confirmed_delivery
           - group: drift
             args: tests/python/test_drift_meme_api.py::test_owner_can_explicitly_enable_builtin_meme_maintenance_without_shell
+          - group: chat-lifecycle
+            args: >-
+              tests/python/test_chat_lifecycle.py
+              tests/python/test_chat_stop.py
+              tests/python/test_natural_reply_api.py
+              tests/python/test_natural_runtime.py
+              tests/python/test_tool_progress.py
+              tests/python/test_chat_runtime_http.py
+              tests/python/test_chat_presentation.py
+              tests/python/test_api.py::test_completed_reply_does_not_depend_on_consuming_the_http_response
+              tests/python/test_api.py::test_unsubscribed_message_is_completed_and_role_can_send_again
           - group: context-preparation
             args: >-
               tests/python/test_context_preparation.py

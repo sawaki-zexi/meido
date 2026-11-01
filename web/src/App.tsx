@@ -165,7 +165,7 @@ export function App() {
   };
 
   // Switching roles mid-reply would mix two conversations, so the list waits for the reply.
-  const lockSwitch = chat.sending || openingId !== null;
+  const lockSwitch = openingId !== null;
   const rolePage = view === "role" || view === "create";
   const backLabel = roleReturnView === "tavern" ? "返回角色" : "返回对话";
 

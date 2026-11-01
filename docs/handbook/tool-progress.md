@@ -9,7 +9,7 @@
 
 单个 invocation 的 callback 窗口在 execute settle 时关闭（包括 `call_soon` 的迟到
 回调），取消、撤权和 timeout 的 local token 在清理之前拒绝新更新。消费者退出时
-关闭缓冲并等待执行清理；旧调用回调不能污染后一个同名调用。
+关闭缓冲并等待执行清理；这里的消费者是服务持有的 Runtime，网页 SSE 断开只解除订阅。旧调用回调不能污染后一个同名调用。
 
 已经 settle 的真实结果优先于同时观察到的取消/撤权；这不授予继续执行或投递权限。
 宿主取消后不再开始批次内后续调用或下一模型请求。未完成调用仍按既有取消/timeout/
@@ -28,12 +28,12 @@
   持久化仍先于下一 provider request。执行 settle 后通过宿主持有的结果回调提交既有
   审计与消息处理器，不等待可丢弃进度的订阅者继续消费；关闭/取消会 join 这次持久化，
   外层事件消费不重复保存。存储失败结束当前运行，不自动重放已执行动作。
-  重开历史不重放临时进度。
+  重开已结束历史不重放临时进度；重入活动桌面 run 会恢复最近有限调用的当前快照，见[聊天生命周期](../reference/chat-run-lifecycle.md)。
 
 ## SSE
 
 沿用 `tool_execution_start/update/end`。三者都有 `roleId`、`sessionKey`、`runId`、
-`sequence`、`runtimeSequence`、`toolCallId`、`toolName`，start 不再发送原始 arguments。
+`sequence`、`toolCallId`、`toolName`；Runtime 实时事件还带 `runtimeSequence`，旧入口从快照恢复的事件没有原 Runtime 序号。start 不再发送原始 arguments。
 update/end 增加：
 
 ```json

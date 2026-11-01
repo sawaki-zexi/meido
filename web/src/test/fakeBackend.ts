@@ -1,8 +1,8 @@
 import { vi } from "vitest";
 import type { Message, Role } from "../api/types";
 
-type Reply = { status?: number; body?: unknown; stream?: string[] | ReadableStream<Uint8Array>; headers?: Record<string, string> };
-type Handler = (init: RequestInit | undefined, match: RegExpMatchArray) => Reply | Promise<Reply>;
+export type Reply = { status?: number; body?: unknown; stream?: string[] | ReadableStream<Uint8Array>; headers?: Record<string, string> };
+export type Handler = (init: RequestInit | undefined, match: RegExpMatchArray) => Reply | Promise<Reply>;
 
 export const role = (overrides: Partial<Role> & { id: string; name: string }): Role => ({
   description: "",

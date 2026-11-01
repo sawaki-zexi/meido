@@ -187,7 +187,7 @@ class RuntimeManager:
         return result
 
     def attach_current_task(self, run_id: str) -> bool:
-        """Bind cancellation to the task consuming a reserved run's SSE stream."""
+        """Bind cancellation to the service task consuming a reserved run."""
 
         token = self._tokens.get(run_id)
         if token is None or token.is_cancelled():
@@ -197,6 +197,38 @@ class RuntimeManager:
             return False
         self._tasks[run_id] = task
         return True
+
+    def queue_run(self, run: AgentRun, user_content: str, *, attachments=None, received_at=None,
+                  on_accepting: Callable[[], Callable[[], None] | None] | None = None) -> tuple[AgentRun, Message, Message]:
+        """Durably accept a natural supplement before waiting for its predecessor."""
+        on_end = on_accepting() if on_accepting is not None else None
+        try:
+            result = self.sessions.create_run_with_messages(run, user_content, attachments=attachments, received_at=received_at)
+        except BaseException:
+            if on_end is not None:
+                on_end()
+            raise
+        self._assistant_message_ids[run.runId] = result[2].id
+        self._tokens[run.runId] = CancellationToken()
+        if on_end is not None:
+            self._reservation_end[run.runId] = on_end
+        return result
+
+    async def reserve_accepted_run(self, run: AgentRun, *, can_start: Callable[[], bool]) -> None:
+        """Enter the existing role gate without accepting the message again."""
+        lock = self.lock_for(run.roleId)
+        self._queued_roles[run.roleId] = self._queued_roles.get(run.roleId, 0) + 1
+        try:
+            await lock.acquire()
+        finally:
+            self._queued_roles[run.roleId] -= 1
+            if not self._queued_roles[run.roleId]:
+                self._queued_roles.pop(run.roleId)
+        self._reserved_roles[run.runId] = run.roleId
+        token = self._tokens.get(run.runId)
+        if token is None or token.is_cancelled() or not can_start():
+            raise asyncio.CancelledError
+        self.sessions.update_run(run.runId, status='created')
 
     def set_assistant_message(self, run_id: str, message_id: str | None) -> None:
         """Track the current user-visible assistant row for terminal recovery."""
@@ -208,10 +240,11 @@ class RuntimeManager:
         task = self._tasks.get(run_id)
         if token is None and task is None:
             return False
+        already_cancelled = token is not None and token.is_cancelled()
         if token is not None:
             token.cancel()
         current = asyncio.current_task()
-        if interrupt and task is not None and task is not current:
+        if interrupt and not already_cancelled and task is not None and task is not current:
             task.cancel()
         return True
 
@@ -227,16 +260,16 @@ class RuntimeManager:
 
         task = self._tasks.get(run_id)
         run = self.sessions.get_run(run_id)
-        if run is not None and run.status not in {"created", "running"}:
+        if run is not None and run.status not in {"queued", "created", "running"}:
             # Persistence precedes capability cleanup and releasing the lock.
             # Preserve a completed answer while waiting for its owner to exit.
             if task is not None and task is not asyncio.current_task():
-                await asyncio.gather(task, return_exceptions=True)
+                await asyncio.shield(asyncio.gather(task, return_exceptions=True))
             return True
         if not self.cancel_run(run_id):
             return False
         if task is not None and task is not asyncio.current_task():
-            await asyncio.gather(task, return_exceptions=True)
+            await asyncio.shield(asyncio.gather(task, return_exceptions=True))
         else:
             self.cancel_unstarted_run(run_id, "主人停止回复")
         return True
@@ -246,7 +279,7 @@ class RuntimeManager:
 
         try:
             run = self.sessions.get_run(run_id)
-            if run is not None and run.status in {"created", "running"}:
+            if run is not None and run.status in {"queued", "created", "running"}:
                 assistant_id = self._assistant_message_ids.get(run_id)
                 assistant_content = ""
                 if assistant_id is not None:
@@ -263,12 +296,12 @@ class RuntimeManager:
         finally:
             self._release_run(run_id)
 
-    def cancel_unstarted_run(self, run_id: str, reason: str = "客户端断开或请求被取消") -> None:
+    def cancel_unstarted_run(self, run_id: str, reason: str = "回复已停止") -> None:
         """Cancel a reservation while pre-run work is still in progress."""
 
         try:
             run = self.sessions.get_run(run_id)
-            if run is not None and run.status in {"created", "running"}:
+            if run is not None and run.status in {"queued", "created", "running"}:
                 self._finish_run(
                     run_id,
                     status="cancelled",
@@ -420,7 +453,7 @@ class RuntimeManager:
                 status="cancelled",
                 assistant_content="" if defer_reply else assistant_content,
                 turn_count=turn_count,
-                cancel_reason="客户端断开",
+                cancel_reason="回复已停止",
             )
             raise
         except Exception as error:

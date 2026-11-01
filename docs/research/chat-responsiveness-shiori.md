@@ -58,3 +58,9 @@
 - [Bedrock TokenUsage](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_TokenUsage.html) 没有独立 reasoning 字段。[Mistral reasoning](https://docs.mistral.ai/studio/conversations/reasoning) 确认 thinking 块会增加 token，但未核验到必有的独立细分字段。两者观察到 thinking 却没有有效细分时回到本地正文估算，不臆造用量。
 
 协议回归使用真实适配器消费可控 HTTP／事件流，验证总量、细分、缺失、非法值及 Google 独立候选计数。摘要行为回归验证 2500／1500 被接受为 1000 且没有第二次请求；这修复错误重试，不能保证外部模型的生成速度。
+
+## #293：聊天任务归属实施
+
+固定 `be6343d` 的 `DesktopChatService.start_chat_turn` 同时拥有前驱等待与实际运行，取消排队请求通过 shield 保护前驱；其 terminal 延后到 `_finish_turn`。Meido 在 `chat_runs.py` 适配此顺序，仍使用既有 RuntimeManager、SQLite 与 SSE。`queued` 是已接受但尚未进入锁的持久状态，服务重启只失败收尾。
+
+新增接受标识和 run 游标是 Meido 网页恢复协议，不声称是上游相同传输。当前工具投影、事件环和完成缓存均有上限；缺口从数据库恢复，慢订阅不阻塞生产。后端实际 HTTP 与前端集成测试覆盖断开、重订阅、响应丢失、queued Stop、慢清理及迟到回调；当前事实见[生命周期合同](../reference/chat-run-lifecycle.md)。没有改动正式服务或调用付费模型。

@@ -2,6 +2,11 @@ import type { Message } from "./types";
 import { request } from "./client";
 
 export type ToolStatus = "running" | "succeeded" | "failed" | "unknown" | "denied" | "invalid_arguments" | "timed_out" | "cancelled";
+export type ChatPhase = 'queued' | 'preparing' | 'summarizing' | 'model' | 'tool' | 'delivering' | 'finishing' | 'finished';
+export type ChatRunSnapshot = { runId: string; roleId: string; sessionKey: string; sequence: number;
+  status: 'queued' | 'created' | 'running' | 'completed' | 'failed' | 'cancelled' | 'max_turns';
+  phase: ChatPhase; stopping: boolean; error?: string | null; process?: unknown[];
+  tools: { toolCallId: string; toolName: string; argumentsPreview?: string; status: ToolStatus; result: string; droppedUpdates: number }[] };
 type ToolIdentity = { runId: string; sequence: number; roleId?: string; sessionKey?: string; toolCallId: string; toolName: string };
 export type ToolStreamEvent = ToolIdentity & (
   | { type: "tool_execution_start"; argumentsPreview?: string }
@@ -10,6 +15,8 @@ export type ToolStreamEvent = ToolIdentity & (
 );
 
 export type StreamEvent = ToolStreamEvent | ((
+  | { type: 'run_snapshot'; run: ChatRunSnapshot }
+  | { type: 'assistant_phase'; phase: ChatPhase }
   | { type: "user_message_accepted"; message: Message }
   | { type: "assistant_generation_started"; messageId: string; messageSequence?: number }
   | { type: "assistant_delta"; messageId: string; delta: string }
@@ -61,6 +68,11 @@ export function parseStreamEvent(raw: string): StreamEvent | null {
   const message = data.message && typeof data.message === "object" ? data.message as Message : undefined;
   const messageId = typeof data.messageId === "string" ? data.messageId : undefined;
   switch (type) {
+    case 'run_snapshot': return runId && sequence !== undefined && typeof data.roleId === 'string' && typeof data.sessionKey === 'string'
+      && typeof data.status === 'string' && typeof data.phase === 'string' && Array.isArray(data.tools)
+      ? { type, run: data as ChatRunSnapshot, runId, sequence } : null;
+    case 'assistant_phase': return runId && ['queued', 'preparing', 'summarizing', 'model', 'tool', 'delivering', 'finishing', 'finished'].includes(String(data.phase))
+      ? { type, phase: data.phase as ChatPhase, runId, sequence } : null;
     case "user_message_accepted": return message ? { type, message, runId, sequence } : null;
     case "assistant_generation_started": return messageId ? { type, messageId, runId, sequence, messageSequence: typeof data.messageSequence === "number" && Number.isSafeInteger(data.messageSequence) && data.messageSequence > 0 ? data.messageSequence : undefined } : null;
     case "assistant_delta": return messageId ? { type, messageId, delta: typeof data.delta === "string" ? data.delta : "", runId, sequence } : null;
@@ -80,31 +92,42 @@ export async function streamRoleMessage(roleId: string, content: string, attachm
   const response = await request(`/api/roles/${encodeURIComponent(roleId)}/messages`, { method: "POST", body: JSON.stringify(body), signal: options.signal });
   const runId = response.headers.get("X-Meido-Run-Id");
   if (runId) options.onRun?.(runId);
+  await readEvents(response, onEvent, options.signal);
+}
+
+/** Attach to an existing run; this request never submits content or executes tools. */
+export async function subscribeRoleRun(roleId: string, runId: string, after: number,
+  onEvent: (event: StreamEvent) => void | boolean | Promise<void | boolean>, signal: AbortSignal): Promise<void> {
+  const response = await request(`/api/roles/${encodeURIComponent(roleId)}/runs/${encodeURIComponent(runId)}/events?after=${after}`, { signal });
+  await readEvents(response, onEvent, signal);
+}
+
+async function readEvents(response: Response, onEvent: (event: StreamEvent) => void | boolean | Promise<void | boolean>, signal?: AbortSignal) {
   if (!response.body) throw new Error("服务端没有返回流式响应");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   const cancel = () => { void reader.cancel().catch(() => undefined); };
-  options.signal?.addEventListener("abort", cancel, { once: true });
+  signal?.addEventListener("abort", cancel, { once: true });
   try {
-    if (options.signal?.aborted) { cancel(); return; }
+    if (signal?.aborted) { cancel(); return; }
     while (true) {
       const { value, done } = await reader.read();
-      if (options.signal?.aborted) return;
+      if (signal?.aborted) return;
       buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
       const blocks = buffer.split("\n\n");
       buffer = blocks.pop() ?? "";
       for (const block of blocks) {
-        if (options.signal?.aborted) return;
+        if (signal?.aborted) return;
         const event = parseStreamEvent(block);
-        if (event && onEvent(event) !== false) {
+        if (event && await onEvent(event) !== false) {
           if (event.type === "assistant_completed" || event.type === "assistant_failed") return;
         }
       }
       if (done) break;
     }
   } finally {
-    options.signal?.removeEventListener("abort", cancel);
+    signal?.removeEventListener("abort", cancel);
     // Stream completion releases the chat immediately; transport cleanup may
     // continue after the final event and must not hold the next message.
     cancel();

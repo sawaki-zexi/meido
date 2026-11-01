@@ -1,6 +1,14 @@
 # Shiori-Agent attribution
 
-状态：当前。最后核验：2026-10-30。
+状态：当前。最后核验：2026-11-01。
+
+## 桌面聊天任务归属（2026-11-01）
+
+`backend/app/chat_runs.py` 与 `main.py` 适配固定提交
+`be6343d1deaa62c69f27d33654e77020b8f17c67` 的
+`apps/backend/desktop_bridge/chat_service.py`：服务拥有 turn task、前驱等待保护、开始前取消及清理后发布终态。
+Meido 保留 RuntimeManager、SQLite 和 FastAPI/SSE；稳定接受标识、有界事件环与网页重订阅由 Meido 实现，不复制 JSONL bridge。
+Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。合同见[聊天运行生命周期](../../docs/reference/chat-run-lifecycle.md)。
 
 ## Herdr 现有 session 代理控制（2026-10-30）
 
