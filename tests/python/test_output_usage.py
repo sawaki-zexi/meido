@@ -126,3 +126,47 @@ async def test_google_visible_count_is_independent_of_missing_thoughts_count(mon
     message = await response(monkeypatch, 'google-generative', {'candidatesTokenCount': 1000})
     counted = message.metadata.usage.output_usage.for_response(has_thinking=True)
     assert counted.visible_tokens == 1000 and not counted.unavailable_reason
+
+
+def anthropic_without_thinking(text, terminal):
+    """message_start usage is provisional, even when no thinking is emitted."""
+    events = [
+        ('message_start', {'message': {'id': 'm', 'usage': {
+            'input_tokens': 17, 'output_tokens': 1, 'cache_read_input_tokens': 11, 'cache_creation_input_tokens': 7}}}),
+        ('content_block_start', {'index': 0, 'content_block': {'type': 'text', 'text': text}}),
+        ('content_block_stop', {'index': 0}),
+    ]
+    if terminal != 'no_delta':
+        delta = {'delta': {'stop_reason': 'end_turn'}}
+        if terminal == 'valid':
+            delta['usage'] = {'output_tokens': 2500, 'output_tokens_details': {'thinking_tokens': 1500}}
+        elif terminal != 'missing':
+            delta['usage'] = {'null': None, 'not_object': ['invalid'], 'empty': {}}[terminal]
+        events.append(('message_delta', delta))
+    events.append(('message_stop', {}))
+    return ''.join(f'event: {name}\ndata: {json.dumps(event)}\n\n' for name, event in events)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('terminal', ['missing', 'null', 'not_object', 'empty', 'no_delta', 'valid'])
+async def test_anthropic_only_final_usage_can_bound_output_without_thinking(monkeypatch, terminal):
+    from backend.app.ai.model_types import ModelStreamError
+    body = anthropic_without_thinking('x' * 7000, terminal)
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: original(**kwargs,
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body))))
+    events = [event async for event in RoutedModelAdapter(ModelAdapterRegistry()).stream_rich_messages(
+        messages(), configuration('anthropic-messages'))]
+    if terminal == 'no_delta':
+        assert isinstance(events[-1], ModelStreamError)
+        assert not any(isinstance(event, ModelStreamDone) for event in events)
+        return
+    message = events[-1].message
+    assert not any(isinstance(block, ModelThinkingBlock) for block in message.content)
+    usage = message.metadata.usage
+    assert (usage.input_tokens, usage.cache_read_tokens, usage.cache_write_tokens) == (17, 11, 7)
+    # Preserve the existing display counters; only strict summary evidence changes.
+    assert usage.output_tokens == (2500 if terminal == 'valid' else 0 if terminal == 'empty' else 1)
+    strict = usage.output_usage.for_response(has_thinking=False)
+    assert strict.visible_tokens == (1000 if terminal == 'valid' else None)
+    assert strict.unavailable_reason == ('' if terminal == 'valid' else 'missing_completion_usage')

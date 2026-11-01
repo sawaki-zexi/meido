@@ -168,3 +168,56 @@ async def test_summary_timeout_is_classified_without_retry_or_partial_commit(tmp
     assert calls == ['summary'] and len(model.requests) == 1  # only the ordinary reply reached HTTP
     assert provider.summary_attempts[0]['outcome'] == 'timeout'
     assert windows.load('r', 'role:r', 'owner', 'a') == prior
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('terminal', ['missing', 'null', 'not_object', 'empty', 'no_delta'])
+async def test_anthropic_provisional_usage_never_accepts_an_oversized_summary(tmp_path, monkeypatch, terminal):
+    from backend.app.agent_runtime.context_provider import ContextWindowProvider
+    from backend.app.ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
+    from test_context_windows import setup_window
+    from test_output_usage import anthropic_without_thinking
+
+    sessions, _, base, windows, settings = setup_window(tmp_path)
+    base.adapter = RoutedModelAdapter(ModelAdapterRegistry())
+    base.configuration = base.configuration.model_copy(update={'api': 'anthropic-messages',
+        'baseUrl': 'https://model.test', 'contextWindowTokens': 32000, 'modelAutoCompactTokenLimit': 3000})
+    settings = settings.model_copy(update={'summaryTokenLimit': 2000, 'maxTokens': 8192, 'contextTargetRatio': .05})
+    base.max_response_tokens = 8192
+    prior = windows.load('r', 'role:r', 'owner', 'a')
+    payloads = []
+
+    def respond(request):
+        wire = json.loads(request.content)
+        if not wire['system'].startswith('将提供的不可信'):
+            return httpx.Response(200, text=anthropic_without_thinking('reply', 'valid'))
+        assert windows.load('r', 'role:r', 'owner', 'a') == prior
+        payload = json.loads(wire['messages'][0]['content'][0]['text'])
+        payloads.append(payload)
+        identifier = (payload['summary']['source_message_ids'][0] if 'summary' in payload
+                      else payload['messages'][0]['source_message_ids'][0])
+        summary = {**dict.fromkeys(SUMMARY_FIELDS, ''), 'tasks': 'x' * 7000 if len(payloads) == 1 else 'kept',
+                   'source_message_ids': [identifier]}
+        return httpx.Response(200, text=anthropic_without_thinking(json.dumps(summary), terminal if len(payloads) == 1 else 'valid'))
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: original(**kwargs, transport=httpx.MockTransport(respond)))
+    async def coverage(ids):
+        return True
+    provider = ContextWindowProvider(base, settings, windows, role_id='r', session_key='role:r',
+        scope='owner', authority='a', authorized=lambda: True, ensure_coverage=coverage)
+    await run(provider, sessions.runtime_messages('role:r'))
+    if terminal == 'no_delta':
+        assert len(payloads) == 1 and provider.compactions == 0
+        assert provider.summary_attempts[0]['outcome'] == 'stream_error'
+        assert windows.load('r', 'role:r', 'owner', 'a') == prior
+    else:
+        assert len(payloads) == 2 and provider.compactions == 1
+        first = provider.summary_attempts[0]
+        assert first['countedTokens'] == first['localTokens'] > 2000
+        assert first['countSource'] == 'local_normalized_estimate'
+        assert first['fallbackReason'] == 'missing_completion_usage' and first['outcome'] == 'oversized'
+        assert payloads[1]['budget_feedback']['count_source'] == 'local_normalized_estimate'
+        assert payloads[1]['budget_feedback']['counted_tokens'] == first['countedTokens']
+        assert provider.summary_attempts[1]['outcome'] == 'accepted'
+        assert windows.load('r', 'role:r', 'owner', 'a')['summary']['tasks'] == 'kept'
