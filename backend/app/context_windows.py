@@ -17,8 +17,11 @@ class WindowConflict(ValueError):
 
 
 class ContextWindowStore:
-    def __init__(self, database_path: str | Path):
+    def __init__(self, database_path: str | Path, *, readonly=False):
         self.path = Path(database_path)
+        self.readonly = readonly
+        if readonly:
+            return
         with self.connect() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS context_windows (
                 role_id TEXT NOT NULL, session_key TEXT NOT NULL, scope TEXT NOT NULL,
@@ -60,6 +63,8 @@ class ContextWindowStore:
 
     def load(self, role, session, scope, authority):
         with self.connect() as db:
+            if self.readonly and db.execute("SELECT 1 FROM sqlite_master WHERE name='context_windows'").fetchone() is None:
+                return {'version': 0, 'removed': [], 'summary': None}
             row = db.execute('SELECT version, authority, removed_ids, fingerprint, summary FROM context_windows WHERE role_id=? AND session_key=? AND scope=?',
                              (role, session, scope)).fetchone()
             if row is None:
@@ -71,6 +76,8 @@ class ContextWindowStore:
             except WindowConflict:
                 valid = False
             if not valid:
+                if self.readonly:
+                    return {'version': version, 'removed': [], 'summary': None}
                 # Keep a version tombstone so an in-flight writer cannot recreate a stale cut.
                 db.execute('UPDATE context_windows SET version=version+1, authority=?, removed_ids=\'[]\', fingerprint=?, summary=\'null\' WHERE role_id=? AND session_key=? AND scope=?',
                            (authority, _stamp([]), role, session, scope))

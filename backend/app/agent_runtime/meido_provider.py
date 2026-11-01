@@ -196,6 +196,7 @@ class MeidoProvider:
         namespace_context: Callable[[CancellationToken | None], str] | None = None,
         required_context: str = "",
         usage_anchors: UsageAnchors | None = None, usage_context: tuple | None = None,
+        readonly_usage: bool = False,
     ) -> None:
         self.adapter = adapter
         self.role = role
@@ -216,6 +217,7 @@ class MeidoProvider:
         self.usage_anchors = usage_anchors if usage_anchors is not None else UsageAnchors()
         self.usage_context = usage_context or (getattr(role, 'id', ''), 'independent', '')
         self.last_input_estimate = InputEstimate(0, 'local')
+        self.readonly_usage = readonly_usage
 
     def bind_usage_context(self, context: tuple, *, anchors: UsageAnchors | None = None) -> None:
         """Opt into host ownership only when the adapter can project real input."""
@@ -316,7 +318,7 @@ class MeidoProvider:
         request = self._input_request(prepared.messages, prepared.tools,
                                       configuration=prepared.configuration, max_tokens=prepared.max_tokens)
         if request is not None:
-            return self.usage_anchors.estimate(request, self.usage_context)
+            return self.usage_anchors.estimate(request, self.usage_context, readonly=self.readonly_usage)
         from .context_provider import estimate_tokens
         rendered = []
         for message in prepared.messages:

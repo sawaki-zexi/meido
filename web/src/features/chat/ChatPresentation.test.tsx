@@ -66,9 +66,10 @@ it('shows only identity in the header, a recent message in the list, and inserts
   expect(calls.find(call => call.path.endsWith('/runs'))?.body).toMatchObject({ content: '你好😊呀' });
 });
 
-it('renders a persisted process in the reply and explains last request input usage', async () => {
+it('renders a persisted process while the ring describes the current saved context', async () => {
   fakeBackend({
     'GET /api/roles': () => ({ body: { roles: [role({ id: 'r1', name: '爱丽丝' })] } }),
+    'GET /api/roles/r1/context-status': () => ({ body: { roleId: 'r1', sessionKey: 'role:r1', status: 'ready', inputTokens: 2400, capacity: 16000, source: 'local', configurationId: null } }),
     'GET /api/roles/r1/session': () => ({ body: { session: { roleId: 'r1', sessionKey: 'role:r1' }, messages: [message({ id: 'a1', role: 'assistant', content: '回复正文', metadata: {
       process: [{ type: 'thinking', id: 't1', text: '整理公开资料' }, { type: 'tool', id: 'c1', name: 'web_search', status: 'failed', result: '搜索服务不可用', argumentsPreview: '{"query":"公开资料"}' }],
       turnMetrics: { totalTokens: 1230, thinkingDurationMs: 11100 },
@@ -90,8 +91,8 @@ it('renders a persisted process in the reply and explains last request input usa
   expect(screen.getByText('思考 11.1 秒')).toBeVisible();
   expect(screen.getByText('1,230 tokens')).toBeVisible();
   await user.click(screen.getByRole('button', { name: /上下文用量/ }));
-  expect(screen.getByText(/最近一次请求/)).toBeVisible();
-  expect(screen.getByText(/1,200 \/ 8,000/)).toBeVisible();
+  expect(screen.getByText('当前已保存会话的上下文')).toBeVisible();
+  expect(await screen.findByText(/2,400 \/ 16,000/)).toBeVisible();
 });
 
 it('streams thinking into the active reply and retains its process across tool turns and completion', async () => {

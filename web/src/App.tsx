@@ -217,7 +217,7 @@ export function App() {
         : view === "memories" && chatRole
         ? <MemoryPanel key={chatRole.id} role={chatRole} onBack={backToChat} onOpenSource={(origin, messageId) => void openMemorySource(chatRole, origin, messageId)} />
         : chatRole
-        ? <ChatView role={chatRole} chat={chat} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showChatProfile(chatRole)} onShowMemories={() => setView("memories")} onShowChannels={openChannels} />
+        ? <ChatView role={chatRole} chat={chat} settingsVersion={roleSettingsVersion} highlightedId={highlightedId} onBack={() => setShowList(true)} onShowProfile={() => showChatProfile(chatRole)} onShowMemories={() => setView("memories")} onShowChannels={openChannels} />
         : <WelcomeView loading={roles.loading || chat.opening} hasRoles={roles.roles.length > 0} error={chat.error} onDismissError={() => chat.setError("")} onCreate={startCreate} onBack={() => setShowList(true)} />}
       {studioVisited && <div hidden={view !== 'novelai'} aria-hidden={view !== 'novelai' || undefined}
         style={{ display: view === 'novelai' ? 'flex' : 'none', flex: 1, minWidth: 0, minHeight: 0 }}

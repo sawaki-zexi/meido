@@ -65,11 +65,15 @@ class McpRemoteTool:
         self._input = schema_validator(declaration["inputSchema"])
         self._output = schema_validator(declaration["outputSchema"]) if "outputSchema" in declaration else None
         self._secrets = secrets
+        self.definition = self.describe(config, declaration, secrets)
+
+    @staticmethod
+    def describe(config, declaration, secrets=()):
         encoded = json.dumps(declaration, ensure_ascii=False, sort_keys=True)
         if _redact_value(declaration, secrets) != declaration:
             raise McpProtocolError("MCP tool declaration contains protected configuration")
         version = hashlib.sha256((config.revision + encoded).encode()).hexdigest()[:24]
-        self.definition = ToolDefinition(f"mcp_{config.server_id}__{self.remote_name}", declaration.get("description") or self.remote_name,
+        return ToolDefinition(f"mcp_{config.server_id}__{declaration['name']}", declaration.get("description") or declaration['name'],
             declaration["inputSchema"], risk=config.risk, source=f"mcp:{config.server_id}", version=version,
             exposure="deferred", timeout_seconds=config.timeout_seconds, output_limit=config.max_output_chars,
             namespace_summary=_redact_value(config.name, secrets))
@@ -176,6 +180,15 @@ def _redact_value(value: Any, secrets: tuple[str, ...]) -> Any:
     return value
 
 
+class McpInspectionTool:
+    """Metadata from a previous authorized handshake confers no execution right."""
+    def __init__(self, definition):
+        self.definition = definition
+
+    async def execute(self, *args, **kwargs):
+        raise PermissionError('Context inspection cannot execute MCP tools')
+
+
 class McpHost:
     def __init__(self, store: McpConfigStore) -> None:
         self.store = store
@@ -264,6 +277,34 @@ class McpHost:
                 raise RuntimeError("MCP run already owns a bundle")
             self._runs[run_id] = bundle
         return bundle
+
+    def inspect_context(self, role_id, session_key):
+        """Read the already-observed catalog without opening or owning a peer."""
+        scope = {'role_id': role_id, 'session_key': session_key, 'kind': 'desktop'}
+        scope_id = hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        configs = tuple(config for config in self.store.all() if config.enabled and role_id in config.role_ids)
+        tools = [McpManagementTool(item) for item in management_definitions()]
+        grants = []
+        observed = {}
+        for config in configs:
+            if not self.store.has_intent(scope_id, config):
+                continue
+            status, declarations = self.observed_catalog(role_id, config.server_id)
+            if status != 'observed':
+                raise ValueError('MCP 工具目录需要重新连接，暂时无法只读计量')
+            observed[config.server_id] = config
+            environment = self.store.environment(config)
+            secrets = tuple(environment[key] for key in config.env_keys)
+            tools.extend(McpInspectionTool(McpRemoteTool.describe(config, item, secrets)) for item in declarations)
+            grants.append(ServiceGrant(config.grant_id, config.server_id, role_id, frozenset({config.risk})))
+
+        def denials(definitions):
+            # One host read per server, not per restored tool declaration.
+            changed = {identifier for identifier, config in observed.items()
+                if self.store.get(identifier) != config or not self.store.has_intent(scope_id, config)}
+            return {item.name: 'MCP service grant changed during inspection' for item in definitions
+                if item.source.startswith('mcp:') and item.source[4:] in changed}
+        return tuple(tools), tuple(grants), denials
 
     def public(self) -> list[dict[str, object]]:
         with self._lock:
