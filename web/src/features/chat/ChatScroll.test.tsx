@@ -28,7 +28,7 @@ beforeEach(() => {
     disconnect() { resizeCallbacks.delete(this.notify); }
   });
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); Reflect.deleteProperty(Element.prototype, "scrollIntoView"); });
 
 function conversationViewport() {
   const conversation = screen.getByRole("region", { name: "与爱丽丝的会话" });
@@ -141,6 +141,18 @@ describe("聊天滚动", () => {
   });
 
   it("来源定位后发送新消息恢复底部跟随", async () => {
+    // jsdom has no scrollIntoView. Model 100px rows at 400px intervals so
+    // centering the first message clamps to the top of the scroll viewport.
+    const scrollIntoView = vi.fn(function (this: Element, options?: boolean | ScrollIntoViewOptions) {
+      const viewport = this.closest<HTMLElement>(".chat-scroll");
+      if (!viewport) return;
+      const rowTop = Array.from(this.parentElement!.children).indexOf(this) * 400;
+      const centered = typeof options === "object" && options.block === "center";
+      const target = rowTop + (centered ? 50 - viewport.clientHeight / 2 : 0);
+      viewport.scrollTop = Math.max(0, Math.min(viewport.scrollHeight - viewport.clientHeight, target));
+      fireEvent.scroll(viewport);
+    });
+    Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
     const origin = { kind: "message", sessionKey: "role:r1", messageIds: ["old-u"], messageRange: null, stableSourceKey: "message:old-u" };
     backend({
       "GET /api/roles/r1/memories.*": () => ({ body: { memories: [{ id: "mem1", roleId: "r1", memoryType: "preference", summary: "一条记忆", status: "active", happenedAt: null, createdAt: alice.createdAt, updatedAt: alice.updatedAt, sourceRef: { ...origin, sourceKeys: [], sources: [origin] } }] } }),
@@ -155,6 +167,8 @@ describe("聊天滚动", () => {
     await user.click(screen.getByRole("button", { name: "定位到消息" }));
     await screen.findByText("记忆来源");
     const viewport = conversationViewport();
+    expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({ behavior: "smooth", block: "center" });
+    expect(scrollIntoView.mock.contexts[0]).toBe(within(viewport).getByText("旧消息").closest("li"));
     expect(viewport.scrollTop).toBe(0);
     viewport.scrollTop = 120;
     fireEvent.scroll(viewport);
