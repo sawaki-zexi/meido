@@ -44,9 +44,11 @@ def test_turn_visibility_requires_search_but_new_turn_restores_old_failed_calls(
             schemas.append([item['function']['name'] for item in tools])
             step = len(schemas)
             if windowed and not historical and step == 1:
-                # Leave room for the configured retained turns and current
-                # namespace metadata after the first compaction.
-                base.configuration = base.configuration.model_copy(update={'modelAutoCompactTokenLimit': 8000})
+                # This adapter uses the dataclass fallback estimate (including
+                # usage metadata). Keep the threshold between the first denied
+                # request (~9.5k) and the fully expanded retained turn (~8.1k),
+                # so this scenario exercises exactly one real compaction.
+                base.configuration = base.configuration.model_copy(update={'modelAutoCompactTokenLimit': 8500})
             if historical:
                 blocks = (ModelToolCallBlock('restored', 'archive.read', {}),) if step == 1 else (ModelTextBlock('done'),)
             elif step < 3:
