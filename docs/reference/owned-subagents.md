@@ -1,8 +1,8 @@
 # 独立子任务与完成交付
 
-状态：当前；#157 已进入总 PR #162 集成分支，独立两轴审查及修复复核完成。完整 Shiori 复刻仍在进行，未合入 main。
+状态：当前；独立子任务与完成交付已在主线提供。本文记录该能力的现行契约，不代表全部 Shiori 复刻完成。
 
-最后核验：2026-10-16。
+最后核验：2026-11-02。
 
 事实来源：[ADR-0012](../adr/0012-owned-task-runtime.md)、[子任务工具](../../backend/app/agent_runtime/spawn_tool.py)、[受管任务](../../backend/app/task_runtime/runtime.py)、[完成 worker](../../backend/app/task_runtime/completion.py)、[会话追加](../../backend/app/session_store.py)、[行为测试](../../tests/python/test_spawn.py)、[HTTP 与渠道测试](../../tests/python/test_spawn_api.py)、[网页测试](../../web/src/features/role-management/SpawnSettings.test.tsx)。行为参考固定 Shiori `4f266aeaf42fcd611362e2456417b91f659341cf` 的 `spawn.py`、`subagent_profiles.py`、`subagent_manager.py` 和完成流。
 
@@ -46,6 +46,8 @@
 
 执行状态保留 `succeeded`、`failed`、`cancelled`、`timed_out`、`interrupted`。关闭释放真实模型/进程资源；重启将缺句柄的 queued/running 标记 interrupted，不自动重跑。连续取消不能跳过资源释放：子执行器只发起一次取消，后续取消等待已有清理；同步 spawn 和子 Shell 等待实际清理完成，之后才允许宿主记录终态。
 
+同步 `spawn` 接受执行后，所有前台退出路径都先取消并等待自己持有的执行器；来源失效或 Runtime 停用导致公开查询拒绝时也一样。宿主清理要求任务 ID 与原执行器对象一致，不返回快照、输出或日志，不放宽公开查询和管理权限。清理期间再次取消前台仍需等待；清理成功后才返回拒绝或继续传播前台取消。沿用首次取消原因与现有 10 秒资源释放等待上限，超时仍抛出 `TimeoutError`，不伪造任务终态。显式后台和 coding 委托不进入该前台清理边界。
+
 未交付的 `pending/sending` 完成事件连同任务、日志和目录保留，避免父锁被占用或应用关闭期间被普通保留期/配额清理静默丢弃；它们仍占用每角色记录数和日志总预算。容量被占满时拒绝新任务，直到已有完成交付或失效，而不无限扩大存储。收据与本地消息尚未同步时也先保留权威 outbox，重启修复并确认消息同步后才允许正常保留期清理；已确认、确定失败或 uncertain 的已同步记录沿用正常保留期。角色删除会清理全部归属数据。
 
 完成 worker 在常驻循环中逐条修复未同步收据。短暂 SQLite 锁冲突保留 pending/dirty 状态并重试，不让一条恢复失败终止其他自动交付；首次追加和收据修复使用短事务锁等待。重试只涉及本地追加/状态同步，不再次提交已有外部 attempt。
@@ -53,5 +55,7 @@
 ## 已验证与边界
 
 公开 HTTP tracer 验证父持角色锁时，子独立循环实际读取文件并同步返回，无同锁死锁；真实 localhost SSE 模型验证独立 transcript、配置冻结和工具往返。后台、真实脚本进程取消、来源封存、并发及模型预算、重启 interrupted、会话幂等和渠道账本的成功/失败/uncertain 均由受控外部边界测试验证，执行器、子循环和 SQLite 不使用替身。
+
+[前台退出回归](../../tests/python/test_spawn_cleanup.py)以真实 SpawnTool/TaskRuntime 和延迟清理模型 fixture 验证来源撤权、内部停用、重复取消及执行器身份隔离（[#331](https://github.com/sawaki-zexi/meido/issues/331)）。内部停用测试不代表生产删除竞态：公开角色删除会先拒绝活动角色锁或 run。
 
 平台发送验证使用获准的本地传输 fixture，没有使用真实平台账号、付费模型或真实凭据。当前范围只完成独立 spawn 切片，不表示通用调度、Coding Agent、Drift 或全部 Shiori 工具已经完成。

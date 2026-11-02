@@ -121,6 +121,16 @@ jobs:
             args: tests/python/test_drift_meme_api.py::test_owner_can_explicitly_enable_builtin_meme_maintenance_without_shell
           - group: chat-lifecycle
             args: >-
+              tests/python/test_spawn_cleanup.py
+              tests/python/test_spawn.py::test_child_requests_and_calls_follow_current_parent_registration
+              tests/python/test_spawn.py::test_repeated_foreground_cancel_waits_for_owned_cleanup_after_real_process
+              tests/python/test_spawn.py::test_running_child_cancellation_releases_model_and_has_real_terminal_state
+              tests/python/test_spawn.py::test_provider_local_deadline_is_distinct_from_provider_error_text
+              tests/python/test_spawn.py::test_management_seals_content_and_stop_from_other_roles_and_sessions
+              tests/python/test_spawn_api.py::test_background_completion_survives_parent_and_is_appended_once
+              tests/python/test_spawn_api.py::test_channel_management_and_watchdog_preserve_frozen_actual_source[unbind]
+              tests/python/test_coding_spawn.py::test_coding_spawn_uses_owned_task_before_chat_provider_and_continues_same_job
+              tests/python/test_coding_spawn.py::test_coding_requires_explicit_background_zero_retry_and_exclusive_schema
               tests/python/test_chat_lifecycle.py
               tests/python/test_chat_stream_projection.py
               tests/python/test_chat_stop.py
