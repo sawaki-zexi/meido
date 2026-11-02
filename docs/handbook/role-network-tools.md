@@ -1,6 +1,6 @@
 # 角色联网工具
 
-状态：当前实现；最后核验：2026-10-29。
+状态为当前实现，最后核验于 2026-11-02。
 事实来源：`backend/app/network_tools.py`、`backend/app/network_extract.py`、
 `tests/python/test_network_tools.py`、`tests/python/test_network_api.py`；Refs #140、#265、#269、#275。
 上游对照：[Shiori web_search](https://github.com/YinFengWindy/Shiori-Agent/blob/d3acaed186b172a78a5892e0307e9affd89759f0/apps/backend/agent/tools/web_search.py)、
@@ -52,7 +52,9 @@ TUN/Fake-IP 环境正常访问公共 Exa 服务。该边界只适用于宿主选
 ## 失败排查
 
 两个工具均返回稳定 `error_code`、中文 `error`、操作提示 `hint` 和 `retryable`；搜索还返回
-`provider`，HTTP 拒绝额外保留数字 `http_status`。`retryable` 仅表示可重试建议，不会自动重发。
+`provider`，HTTP 拒绝额外保留数字 `http_status`。Exa MCP 工具错误中的 HTTP 状态保存在
+`provider_status`，JSON-RPC 错误保留 `rpc_code`。HTTP 200 仍可能承载 MCP 工具错误或限流通知。
+`retryable` 仅表示可重试建议，不会自动重发。
 错误结果不回显查询、输入 URL、上游响应正文、异常字符串或配置密钥；原工具调用参数仍按既有
 会话审计规则保存在本地，错误诊断没有新增原始请求日志。
 
@@ -62,13 +64,19 @@ TUN/Fake-IP 环境正常访问公共 Exa 服务。该边界只适用于宿主选
 | `dns_error` | 网页预解析失败、没有地址或传输直接报告 DNS 错误；检查本机 DNS/网络 |
 | `connect_error` / `transport_error` | 建连或后续传输失败；固定搜索的 DNS 错误也可能由 HTTPX 包装为 `connect_error`。检查 DNS、代理、网络、证书与目标可达性，不据此断言某供应商宕机 |
 | `timeout` / `cancelled` | 整体时限到达或主动停止；保留旧 `status=timed_out/cancelled` |
-| `provider_error` | 有效 JSON-RPC/MCP 明确返回执行错误；检查服务、配额与配置 |
+| `provider_error` | 有效 JSON-RPC/MCP 明确返回执行错误；依据 `provider_status` 区分参数、凭据、余额和服务故障，`rpc_code` 定位协议或调用错误 |
+| `rate_limited` | Exa 返回限流通知或工具内部 429；稍后重试，匿名额度持续受限时可配置自己的 Exa 凭据 |
 | `invalid_response` / `missing_sources` | JSON/协议/正文编码无效，或结果缺少可核验 URL；不能当作空结果 |
 | `invalid_arguments` / `invalid_url` | 修正模型业务参数或宿主端点格式 |
 | `network_disabled` / `unsafe_url` | 宿主未许可或目标触及地址边界；不能通过重试绕过 |
 | `redirect_error` | 提供正确最终地址，搜索端点由宿主更新，不转发搜索凭据 |
 | `response_too_large` / `unsupported_content` | 缩小来源范围或使用支持该文件类型的专用工具 |
 | `parse_error` / `empty_content` | 正文解析失败、解析进程不可用或网页为空；换来源，持续发生则检查本机解析依赖 |
+
+Exa 的匿名限流可能只有 `_meta["ai.exa/rateLimited"]`，没有 `isError`。解析先处理该标志
+及旧版明确限流提示，再提取搜索来源；提示中的配置帮助网址不会作为查证来源。供应商错误
+只提取已知格式中的数字状态并生成固定中文提示，未知格式保留通用失败诊断。
+[Exa 官方错误协议](https://github.com/exa-labs/exa-mcp-server/blob/main/src/utils/errorHandler.ts)。
 
 ## 网页抓取与资源边界
 
