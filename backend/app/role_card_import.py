@@ -142,6 +142,9 @@ def _draft_from_card(value: Any, *, source: str, assets: list[ImportAsset] | Non
     extensions = card.get("extensions")
     shiori = extensions.get("shiori") if isinstance(extensions, dict) else None
     summary = _clean_text(shiori.get("description")) if isinstance(shiori, dict) else ""
+    meido = extensions.get("meido") if isinstance(extensions, dict) else None
+    if isinstance(meido, dict) and isinstance(meido.get("description"), str):
+        summary = _clean_text(meido["description"])
     context = _first_text(card, "char_context", "context")
     scenario = _first_text(card, "world_scenario")
     profile = "\n\n".join(part for part in (description, context, scenario) if part)
@@ -149,6 +152,8 @@ def _draft_from_card(value: Any, *, source: str, assets: list[ImportAsset] | Non
     response_constraints = _first_text(card, "post_history_instructions", "postHistoryInstructions", "response_constraints", "responseConstraints")
     personality = _first_text(card, "personality", "persona", "char_persona")
     nickname = _first_text(card, "nickname", "user_name", "userName")
+    if isinstance(meido, dict) and isinstance(meido.get("nickname"), str):
+        nickname = _clean_text(meido["nickname"])
     known = {"name", "char_name", "character_name", "description", "char_context", "context", "world_scenario", "personality", "persona", "char_persona", "system_prompt", "systemPrompt", "system", "post_history_instructions", "postHistoryInstructions", "response_constraints", "responseConstraints", "nickname", "user_name", "userName", "extensions", "assets", "avatar", "icon", "background", "background_image", "emotion_images", "emotions"}
     discarded = [key for key, item in card.items() if key not in known and item not in (None, "", [], {})]
     warnings: list[str] = []
