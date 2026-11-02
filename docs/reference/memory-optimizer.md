@@ -1,6 +1,6 @@
 # 记忆 Optimizer 配置与恢复契约
 
-状态：当前
+状态：已被[当前上下文与记忆契约](context-memory.md)替代。旧 optimizer 与结构化投影仅保留兼容代码，正常宿主路径使用 HostMemoryOptimizer；本文记录历史配置与恢复方案。
 
 事实来源：`backend/app/memory_optimizer.py`、`backend/app/main.py`、`tests/python/test_memory_optimizer.py`
 

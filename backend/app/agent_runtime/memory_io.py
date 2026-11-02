@@ -72,3 +72,22 @@ async def run_async_memory_io(factory, *, signal=None, timeout=None):
         return asyncio.run(run())
 
     return await run_memory_io(invoke, signal=signal, timeout=timeout, on_interrupt=interrupted.set)
+
+
+async def run_memory_read(factory, *, signal=None, timeout=None):
+    """Read-only lanes can abandon timed-out model/embedding requests safely."""
+    pending = asyncio.create_task(factory())
+    deadline = asyncio.get_running_loop().time() + timeout if timeout else None
+    try:
+        while not pending.done():
+            if signal is not None:
+                signal.raise_if_cancelled()
+            if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+                raise asyncio.TimeoutError('memory read deadline exceeded')
+            await asyncio.wait({pending}, timeout=.01)
+        return await pending
+    finally:
+        if not pending.done():
+            pending.cancel()
+        with suppress(asyncio.CancelledError):
+            await pending

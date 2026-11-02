@@ -1,5 +1,7 @@
 # ADR-0002：采用 Shiori 风格记忆引擎边界并保留角色硬隔离
 
+2026-11-02：上下文/记忆的后续变更由 [ADR-0036](0036-shiori-context-memory-ownership.md) 替代；本文保留原决策历史，其余适用边界继续有效。
+
 状态：已接受
 
 事实来源：已确认规格 [`memory-system-shiori-parity-spec.md`](../specs/memory-system-shiori-parity-spec.md)；Shiori-Agent `096a4ecbfbcdae3ba77c179fedb852721846fcb9`。

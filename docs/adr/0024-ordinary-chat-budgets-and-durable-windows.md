@@ -1,5 +1,7 @@
 # ADR-0024：普通聊天全局预算与持久工作窗口
 
+2026-11-02：上下文/记忆的后续变更由 [ADR-0036](0036-shiori-context-memory-ownership.md) 替代；本文保留原决策历史，其余适用边界继续有效。
+
 状态：已采纳。2026-10-19 主人明确批准[高级设置方案第 3 节](../specs/advanced-settings-parity-spec.md)。实施验收状态以该规格为准。
 
 事实来源：Shiori 固定 076a87b 的 input_budget、compaction 与 session/window；[七栏审计](../research/shiori-settings-implementation-audit.md)。

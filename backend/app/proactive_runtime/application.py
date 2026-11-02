@@ -34,13 +34,14 @@ class ProactiveApplication:
                  role_getter: Callable, model_getter: Callable, clock: Callable = time.time,
                  mcp_host=None, adapter_factory=None, fetch_body=None, recall_memory=None, web_tools=None,
                  context_reader=None, activity_reader=None, workspace_getter=None, channel_host=None, enabled=lambda: True, history_factory=None,
-                 role_model_getter=lambda role_id: None):
+                 role_model_getter=lambda role_id: None, memory_context_reader=None):
         self.sessions, self.tasks = sessions, tasks
         self.role_getter, self.model_getter, self.clock = role_getter, model_getter, clock
         self.role_model_getter = role_model_getter
         self.mcp_host, self.adapter_factory, self.fetch_body = mcp_host, adapter_factory, fetch_body
         self.recall_memory, self.web_tools = recall_memory, web_tools
         self.context_reader = context_reader
+        self.memory_context_reader = memory_context_reader
         self.history_factory = history_factory
         self.activity_reader = activity_reader
         self.enabled = enabled

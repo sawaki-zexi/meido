@@ -28,7 +28,7 @@ it.each(['global', 'role'])('clears busy context after %s settings change while 
   const user = userEvent.setup();
   const input = screen.getByRole('textbox', { name: '消息内容' });
   await user.type(input, '保留这份草稿');
-  await user.hover(screen.getByRole('button', { name: /上下文用量/ }));
+  await user.hover(screen.getByRole('button', { name: /压缩上下文/ }));
   await waitFor(() => expect(screen.getByRole('tooltip')).toHaveTextContent('64,000'));
   const active = { ...chat, sending: true, messages: [message({ id: 'active', role: 'assistant', content: '', status: 'streaming' })] };
   view.rerender(<ChatView {...props} chat={active} />);
@@ -51,7 +51,7 @@ it.each([
   const usage = readContextUsage({ inputTokens: 1234, capacity: 12000, source, configurationId: 'model' });
   render(<ComposerTools usage={usage} onEmoji={() => {}} />);
   const user = userEvent.setup();
-  await user.hover(screen.getByRole('button', { name: /上下文用量/ }));
+  await user.hover(screen.getByRole('button', { name: /压缩上下文/ }));
   const panel = screen.getByRole('tooltip');
   expect(panel).toHaveTextContent('1,234 / 12,000，10%');
   expect(panel).toHaveTextContent(label);
@@ -155,8 +155,8 @@ it('renders a persisted process while the ring describes the current saved conte
   expect(screen.getByText('搜索服务不可用')).toBeVisible();
   expect(screen.getByText('思考 11.1 秒')).toBeVisible();
   expect(screen.getByText('1,230 tokens')).toBeVisible();
-  await user.hover(screen.getByRole('button', { name: /上下文用量/ }));
-  expect(screen.getByRole('tooltip')).toHaveTextContent('当前已保存会话，不含草稿');
+  await user.hover(screen.getByRole('button', { name: /压缩上下文/ }));
+  expect(screen.getByRole('tooltip')).toHaveTextContent('点击压缩上下文');
   expect(await screen.findByText(/2,400 \/ 16,000/)).toBeVisible();
 });
 

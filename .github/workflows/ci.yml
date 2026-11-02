@@ -105,6 +105,19 @@ jobs:
               tests/python/test_api.py::test_unsubscribed_message_is_completed_and_role_can_send_again
           - group: context-preparation
             args: >-
+              tests/python/test_context_memory_parity.py
+              tests/python/test_host_memory_optimizer.py
+              tests/python/test_memory_runtime_parity.py
+              tests/python/test_embeddings.py
+              tests/python/test_memory_write_tools.py
+              tests/python/test_memory_tools_api.py
+              tests/python/test_memory_tool.py
+              tests/python/test_memory_optimizer.py
+              tests/python/test_proactive_context.py::test_tick_freezes_context_then_next_tick_reads_new_version_without_granting_tools
+              tests/python/test_memory_engine.py
+              tests/python/test_memory.py
+              tests/python/channels/test_owner_memory_progress.py
+              tests/python/channels/test_consolidation_parity.py
               tests/python/test_context_preparation.py
               tests/python/test_stream_preparation.py
               tests/python/test_owner_history_view.py

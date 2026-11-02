@@ -101,6 +101,10 @@ function Composer({ roleId, sessionKey, sessionSnapshot, contextRevision = '', s
     event.preventDefault();
     const text = draft;
     if ((!text.trim() && attachments.length === 0) || sending || disabled || uploading || submitting.current) return;
+    if (text.trim().toLowerCase() === '/compact') {
+      await inspection.compact?.();
+      return;
+    }
     submitting.current = true;
     const revision = ++draftRevision.current;
     const sentAttachments = attachments;

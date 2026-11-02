@@ -8,6 +8,7 @@ from backend.app.agent_runtime import CancellationToken, ToolContext, MemoryReca
 from backend.app.agent_runtime.memory_write_tools import MemorizeTool, ForgetMemoryTool, RoleMemoryAccess
 from backend.app.memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryScope
 from backend.app.memory_service import MemoryService
+from memory_fakes import configured_service, ControlledEmbedding
 from backend.app.memory_store import MemoryStore
 from backend.app.models import AgentRun, MemorySourceRef
 from backend.app.session_store import SessionStore
@@ -21,7 +22,7 @@ def setup_memory(tmp_path):
     sessions.open_role_session("role-a")
     _, user, _ = sessions.create_run_with_messages(AgentRun(runId="run-a", roleId="role-a", sessionKey="role:role-a",
         status="running", startedAt=datetime.now(timezone.utc)), "请记住我喜欢海边")
-    engine = DefaultMemoryEngine(MemoryService(MemoryStore(tmp_path / "memory.db")), role_exists=lambda value: value in {"role-a", "role-b"})
+    engine = DefaultMemoryEngine(configured_service(MemoryStore(tmp_path / "memory.db")), role_exists=lambda value: value in {"role-a", "role-b"})
     access = RoleMemoryAccess(engine, sessions, "role-a")
     context = ToolContext("role-a", "role:role-a", "run-a", CancellationToken())
     return engine, access, context, sessions, user
@@ -54,10 +55,12 @@ def test_role_recall_filters_real_memory_kind_domain_and_time_with_compatible_ev
     engine, access, context, _, user = setup_memory(tmp_path)
 
     async def run():
-        await MemorizeTool(access).execute({"summary": "主人今天去海边", "memory_kind": "event", "memory_domain": "shared"}, context)
+        with pytest.raises(ValueError, match='未授权'):
+            await MemorizeTool(access).execute({"summary": "未经授权的共享记忆", "memory_kind": "event", "memory_domain": "shared"}, context)
+        await MemorizeTool(access).execute({"summary": "主人今天去海边", "memory_kind": "event", "memory_domain": "relationship"}, context)
         await MemorizeTool(access).execute({"summary": "主人喜欢海边", "memory_kind": "preference", "memory_domain": "relationship"}, context)
         return await MemoryRecallTool(access).execute({"query": "海边", "intent": "timeline", "memory_kind": "event",
-            "memory_domain": "shared", "time_filter": "recent_7d", "limit": 30}, context)
+            "memory_domain": "relationship", "time_filter": "recent_7d", "limit": 30}, context)
 
     result = asyncio.run(run())
     assert not result.is_error
@@ -70,7 +73,7 @@ def test_role_recall_filters_real_memory_kind_domain_and_time_with_compatible_ev
     assert payload["cited_item_ids"] == [payload["items"][0]["id"]]
 
 
-def test_role_forgets_only_owned_ids_and_repeat_is_reported_as_unchanged(tmp_path):
+def test_role_forgets_only_owned_ids_and_repeat_confirms_the_same_superseded_id(tmp_path):
     engine, access, context, _, _ = setup_memory(tmp_path)
 
     async def run():
@@ -84,7 +87,8 @@ def test_role_forgets_only_owned_ids_and_repeat_is_reported_as_unchanged(tmp_pat
     item_id, forgotten, repeated, recalled = asyncio.run(run())
     assert forgotten.details["superseded_ids"] == [item_id]
     assert forgotten.details["missing_ids"] == ["unknown"]
-    assert repeated.details["count"] == 0
+    assert repeated.details["count"] == 1
+    assert repeated.details["superseded_ids"] == [item_id]
     assert repeated.details["already_forgotten_ids"] == [item_id]
     assert json.loads(recalled.content)["count"] == 0
 
@@ -96,10 +100,26 @@ def test_role_forgets_only_owned_ids_and_repeat_is_reported_as_unchanged(tmp_pat
     (ForgetMemoryTool, {"ids": [], "session_key": "role:role-b"}),
     (MemoryRecallTool, {"query": "test", "role_id": "role-b"}),
 ])
-def test_memory_tools_reject_model_identity_and_source_overrides(tmp_path, tool_type, arguments):
-    _, access, context, _, _ = setup_memory(tmp_path)
-    with pytest.raises(ValueError):
-        asyncio.run(tool_type(access).execute(arguments, context))
+def test_memory_tools_ignore_model_identity_and_source_overrides(tmp_path, tool_type, arguments):
+    engine, access, context, _, user = setup_memory(tmp_path)
+    async def run():
+        foreign = await engine.mutate(MemoryMutation(kind='remember', scope=MemoryScope('role-b', 'role:role-b'), summary='test foreign'))
+        original = engine.store.snapshot_role('role-b')
+        supplied = dict(arguments)
+        if tool_type is ForgetMemoryTool:
+            supplied['ids'] = [foreign.item_id]
+        result = await tool_type(access).execute(supplied, context)
+        assert engine.store.snapshot_role('role-b') == original
+        if tool_type is MemorizeTool:
+            item = engine.store.get('role-a', result.details['item_id'])
+            assert item.sourceRef.messageIds == [user.id]
+            assert item.sourceRef.stableSourceKey.startswith(user.id + '#memory-')
+            assert 'forged' not in json.dumps(item.model_dump(mode='json'))
+        elif tool_type is ForgetMemoryTool:
+            assert result.details['missing_ids'] == [foreign.item_id]
+        else:
+            assert json.loads(result.content)['count'] == 0
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("tool_type,arguments", [(MemorizeTool, {"summary": "test"}), (ForgetMemoryTool, {"ids": []}), (MemoryRecallTool, {"query": "test"})])
@@ -147,7 +167,7 @@ def test_same_user_message_can_teach_multiple_memories_and_procedure_steps_idemp
         repeat = await MemorizeTool(access).execute({"summary": "主人喜欢海边", "memory_kind": "preference"}, context)
         await MemorizeTool(access).execute({"summary": "阅读资料流程", "memory_kind": "procedure", "tool_requirement": "web_fetch", "steps": ["查看来源", "总结证据"]}, context)
         procedure = await engine.query(MemoryQuery("阅读资料", intent="procedure", effect="read_only", scope=access.scope))
-        recalled = await MemoryRecallTool(access).execute({"query": "阅读资料", "intent": "procedure"}, context)
+        recalled = await MemoryRecallTool(access).execute({"query": "阅读资料", "intent": "answer", "memory_kind": "procedure"}, context)
         return first, second, repeat, procedure, json.loads(recalled.content)
 
     first, second, repeat, procedure, recalled = asyncio.run(run())
@@ -337,7 +357,7 @@ def test_cancelled_mutation_holds_write_lock_until_worker_and_rollback_are_finis
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("phase", ["query", "backfill"])
+@pytest.mark.parametrize("phase", ["query", "missing-vector"])
 def test_recall_embedding_is_cancellable_without_blocking_loop_or_late_backfill(tmp_path, phase):
     import time
     import threading
@@ -345,13 +365,18 @@ def test_recall_embedding_is_cancellable_without_blocking_loop_or_late_backfill(
     engine, access, context, _, _ = setup_memory(tmp_path)
     saved = asyncio.run(MemorizeTool(access).execute({"summary": "海边事实"}, context))
     entered = threading.Event()
+    if phase == 'missing-vector':
+        with engine.store._connect() as db:
+            db.execute('UPDATE memory_items SET embedding_json=NULL WHERE id=?', (saved.details['item_id'],))
+    before = engine.store.embedding_for('role-a', saved.details['item_id'])
+    embedded = []
 
-    class Embeddings:
+    class Embeddings(ControlledEmbedding):
         def embed(self, role_id, text):
-            if phase == "query" or text == "海边事实":
-                entered.set()
-                time.sleep(.3)
-            return [1.0, 0.0]
+            embedded.append(text)
+            entered.set()
+            time.sleep(.3)
+            return super().embed(role_id, text)
 
     engine.service.embedding_provider = Embeddings()
 
@@ -372,6 +397,7 @@ def test_recall_embedding_is_cancellable_without_blocking_loop_or_late_backfill(
         assert ticks[0] < .15
         await asyncio.sleep(.4)
         item = engine.get_item_for_admin("role-a", saved.details["item_id"], include_embedding=True)
-        assert item["status"] == "active" and item["embedding"] is None
+        assert item["status"] == "active" and item["embedding"] == before
+        assert embedded == ['海边']  # No read-time corpus backfill.
 
     asyncio.run(run())

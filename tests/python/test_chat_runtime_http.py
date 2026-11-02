@@ -157,16 +157,18 @@ def test_real_http_truncated_auxiliary_does_not_block_ordinary_chat(tmp_path):
             # for platform-specific connection setup (notably on Windows).
             time.sleep(body_timeout + .2)
             return response('{"tasks":', finish='length', usage={'prompt_tokens': 4300, 'completion_tokens': 1024})
-        # The explicit host context frame precedes the entire unchanged history.
-        assert payload['messages'][2:] == [
-            {'role': message.role, 'content': message.content}
+        # The host frame follows history and precedes the current input.
+        ordinary = [item for item in payload['messages'][1:]
+            if not str(item.get('content', '')).startswith('<system-reminder data-system-context-frame=')]
+        assert ordinary == [{'role': message.role, 'content': message.content}
             for message in sessions.list_messages('role:r')]
         assert payload['messages'][-1]['content'] == '继续'
         return response('可以继续聊天。')
 
     with model_server(respond) as (url, requests, errors):
         async def coverage(ids):
-            raise AssertionError('incomplete summary must not publish a window')
+            assert ids and windows.load('r', 'role:r', 'owner', 'a')['summary'] is None
+            return True
         guarded = ContextWindowProvider(provider(url, context=10000), settings, windows, role_id='r',
             session_key='role:r', scope='owner', authority='a', authorized=lambda: True,
             ensure_coverage=coverage, on_diagnostic=diagnostics.append)
@@ -230,15 +232,20 @@ def test_real_http_long_history_can_discover_execute_and_reply_with_authorized_t
     def respond(payload, index):
         wire = json.dumps(payload, ensure_ascii=False)
         if payload['messages'][0]['content'].startswith('将提供的不可信'):
-            assert index == 1 and not payload.get('tools')
-            return response('{"tasks":', finish='length')
-        index -= 1  # The failed bounded summary is a separate real request.
-        assert 'disabled_tool' not in wire
+            from backend.app.agent_runtime.context_provider import SUMMARY_FIELDS
+            assert not payload.get('tools')
+            source = json.loads(payload['messages'][1]['content'])
+            identifiers = [*(source.get('previous_summary') or {}).get('source_message_ids', []),
+                *(item for message in source['messages'] for item in message['source_message_ids'])]
+            return response(json.dumps({**dict.fromkeys(SUMMARY_FIELDS, ''), 'tasks': 'continue authorized task',
+                'source_message_ids': identifiers}))
+        index -= len(guarded.summary_attempts)
         names = {item['function']['name'] for item in payload.get('tools', [])}
+        assert 'disabled_tool' not in names
         assert {'tool_search', 'generate_image'} <= names
         if index == 1:
             assert names == {'tool_search', 'generate_image'}
-            assert 'old context' not in wire  # Temporary context reduction, not data deletion.
+            assert wire.count('old context') < 8 * 180  # Compacted history retains a recent tail.
             return response(calls=(('search', 'tool_search'),),
                 arguments={'search': {'query': 'select:archive_read,disabled_tool'}}, finish='tool_calls')
         if index == 2:
@@ -256,11 +263,17 @@ def test_real_http_long_history_can_discover_execute_and_reply_with_authorized_t
     settings = AdvancedSettings(maxTokens=1024, summaryTokenLimit=512, contextSafetyMarginTokens=100,
                                 contextTriggerRatio=.5, contextTargetRatio=.2)
     windows = ContextWindowStore(sessions.database_path)
+    diagnostics = []
     with model_server(respond) as (url, requests, errors):
         async def coverage(ids):
-            raise AssertionError('failed compaction cannot publish a summary')
-        guarded = ContextWindowProvider(provider(url, context=6000), settings, windows, role_id='r',
-            session_key='role:r', scope='owner', authority='a', authorized=lambda: True, ensure_coverage=coverage)
+            assert ids
+            return True
+        guarded = ContextWindowProvider(provider(url, context=10000), settings, windows, role_id='r',
+            session_key='role:r', scope='owner', authority='a', authorized=lambda: True, ensure_coverage=coverage,
+            on_diagnostic=lambda item: diagnostics.append(json.loads(json.dumps(item))))
+        # Initial input is ~14k. The retained window plus real discovery receipts
+        # is ~7k, so the next tool steps stay below this explicit soft threshold.
+        guarded.provider.configuration.modelAutoCompactTokenLimit = 8000
         capabilities = CapabilityRegistry([FixtureTool('archive_read', exposure='deferred'),
             FixtureTool('generate_image'), FixtureTool('disabled_tool', exposure='deferred')]).resolve(
                 role_id='r', session_key='role:r', run_id='discovery-http',
@@ -279,9 +292,11 @@ def test_real_http_long_history_can_discover_execute_and_reply_with_authorized_t
             return events
         events = asyncio.run(run())
     assert not errors, errors
-    assert len(requests) == 4 and len(guarded.summary_attempts) == 1
+    assert len(requests) == len(guarded.summary_attempts) + 3 and guarded.summary_attempts
     assert events[-1].reason == 'completed', events[-1].error
     assert events[-1].messages[-1].content == '已读取归档并完成图片。'
-    assert guarded.degraded and guarded.compaction_diagnostic['toolsDisabled'] is False
-    assert windows.load('r', 'role:r', 'owner', 'a')['summary'] is None
+    assert not guarded.degraded and guarded.compactions == 1, [(item['compactions'],
+        item.get('compaction', {}).get('beforeTokens'), item.get('compaction', {}).get('afterTokens'))
+        for item in diagnostics if item.get('compaction', {}).get('stage') == 'committed']
+    assert windows.load('r', 'role:r', 'owner', 'a')['summary'] is not None
     assert [item.id for item in sessions.list_messages('role:r')[:len(original_ids)]] == original_ids

@@ -13,6 +13,7 @@ from backend.app.memory_config import MemorySettingsStore
 from backend.app.memory_documents import MemoryDocuments
 from backend.app.memory_engine import DefaultMemoryEngine
 from backend.app.memory_service import MemoryService, MemoryWorker
+from memory_fakes import configured_service, ControlledEmbedding
 from backend.app.memory_store import MemoryStore
 from backend.app.model_adapter import ModelResponseDone, ModelTextDelta, ModelToolCall
 from backend.app.model_config import ModelConfigurationStore
@@ -23,15 +24,16 @@ from backend.app.session_store import SessionStore
 from backend.app.storage import initialize_databases
 
 
-def test_owner_memory_write_recall_forget_roundtrip_uses_real_engine_and_updates_documents(tmp_path, monkeypatch):
+def test_owner_memory_write_recall_forget_roundtrip_preserves_host_documents(tmp_path, monkeypatch):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="记忆角色", profile=RoleProfile(profile="设定")))
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     memories = MemoryStore(tmp_path / "data" / "memory.db")
     settings = MemorySettingsStore(tmp_path / "data" / "settings.json")
-    service = MemoryService(memories, implicit_extraction_enabled=False, memory_enabled=lambda: settings.get().enabled)
+    service = configured_service(memories, implicit_extraction_enabled=False, memory_enabled=lambda: settings.get().enabled)
     engine = DefaultMemoryEngine(service, role_exists=lambda value: roles.get(value) is not None)
+    original_document = MemoryDocuments(tmp_path / 'roles').read_document(role.id, 'MEMORY.md')
 
     class Provider:
         requests = []
@@ -45,7 +47,7 @@ def test_owner_memory_write_recall_forget_roundtrip_uses_real_engine_and_updates
                 yield ModelResponseDone("tool_use")
             elif turn == 2:
                 self.item_id = json.loads(next(item["content"] for item in reversed(messages) if item.get("role") == "tool"))["item_id"]
-                assert "主人喜欢海边" in MemoryDocuments(tmp_path / "roles").read_document(role.id, "MEMORY.md")
+                assert MemoryDocuments(tmp_path / "roles").read_document(role.id, "MEMORY.md") == original_document
                 yield ModelToolCall("find", "recall_memory", {"query": "海边"})
                 yield ModelResponseDone("tool_use")
             elif turn == 3:
@@ -56,7 +58,7 @@ def test_owner_memory_write_recall_forget_roundtrip_uses_real_engine_and_updates
                 yield ModelToolCall("forget", "forget_memory", {"ids": [self.item_id]})
                 yield ModelResponseDone("tool_use")
             elif turn == 4:
-                assert "主人喜欢海边" not in MemoryDocuments(tmp_path / "roles").read_document(role.id, "MEMORY.md")
+                assert MemoryDocuments(tmp_path / "roles").read_document(role.id, "MEMORY.md") == original_document
                 yield ModelToolCall("find-again", "recall_memory", {"query": "海边"})
                 yield ModelResponseDone("tool_use")
             else:
@@ -122,8 +124,8 @@ def test_global_memory_switch_hides_all_tools_and_rejects_manual_enabled_tools(t
     client = TestClient(main.app)
     catalog = {item["name"]: item for item in client.get(f"/api/roles/{role.id}/tools").json()["tools"]}
     for name in ("memorize", "forget_memory"):
-        assert catalog[name]["enabled"] and not catalog[name]["authorized"]
-        assert catalog[name]["reason"] == "全局记忆已关闭"
+        assert not catalog[name]["enabled"] and not catalog[name]["authorized"]
+        assert catalog[name]["reason"] == "语义记忆引擎已关闭"
         assert catalog[name]["dependency"]["status"] == "unavailable"
     response = client.post(f"/api/roles/{role.id}/messages", json={"content": "尝试调用"})
     assert "event: assistant_completed" in response.text
@@ -132,7 +134,7 @@ def test_global_memory_switch_hides_all_tools_and_rejects_manual_enabled_tools(t
     assert engine.list_active_items(role.id) == []
 
 
-@pytest.mark.parametrize("interrupt", ["deadline", "cancel_request"])
+@pytest.mark.parametrize("interrupt", ["deadline", "stop"])
 def test_memory_io_deadline_rolls_back_http_sqlite_and_documents_after_embedding_finishes(tmp_path, monkeypatch, interrupt):
     from backend.app.memory_engine import MemoryMutation, MemoryScope
 
@@ -143,7 +145,7 @@ def test_memory_io_deadline_rolls_back_http_sqlite_and_documents_after_embedding
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     settings = MemorySettingsStore(tmp_path / "data" / "settings.json")
     memories = MemoryStore(tmp_path / "data" / "memory.db")
-    service = MemoryService(memories, implicit_extraction_enabled=False, memory_enabled=lambda: settings.get().enabled)
+    service = configured_service(memories, implicit_extraction_enabled=False, memory_enabled=lambda: settings.get().enabled)
     engine = DefaultMemoryEngine(service, role_exists=lambda value: roles.get(value) is not None)
     saved = asyncio.run(engine.mutate(MemoryMutation(kind="remember", scope=MemoryScope(role.id, f"role:{role.id}"), summary="保留的原始记忆")))
     documents = MemoryDocuments(tmp_path / "roles")
@@ -151,12 +153,12 @@ def test_memory_io_deadline_rolls_back_http_sqlite_and_documents_after_embedding
     original = documents.read_document(role.id, "MEMORY.md")
     embedding_started = threading.Event()
 
-    class Embeddings:
+    class Embeddings(ControlledEmbedding):
         def embed(self, role_id, text):
             if text == "本次不应写入":
                 embedding_started.set()
                 time.sleep(.5)
-            return [1.0, 0.0]
+            return super().embed(role_id, text)
 
     class Provider:
         calls = 0
@@ -195,12 +197,13 @@ def test_memory_io_deadline_rolls_back_http_sqlite_and_documents_after_embedding
         timer = asyncio.create_task(heartbeat())
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
             request = asyncio.create_task(client.post(f"/api/roles/{role.id}/messages", json={"content": "执行一次显式工具操作"}))
-            if interrupt == "cancel_request":
+            if interrupt == "stop":
                 await wait_for_embedding()
-                await asyncio.sleep(.05)
-                request.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await request
+                run = sessions.active_run(role.id)
+                assert run is not None
+                stopped = await client.post(f'/api/roles/{role.id}/runs/{run.runId}/stop')
+                assert stopped.status_code == 200
+                await request
             else:
                 response = await request
         await timer
@@ -218,7 +221,6 @@ def test_memory_io_deadline_rolls_back_http_sqlite_and_documents_after_embedding
 
 
 def test_cancelled_http_receive_actor_finishes_before_client_cleanup(tmp_path, monkeypatch, record_property, local_platform_only):
-    import anyio
     from contextlib import suppress
     from backend.app.agent_runtime.runtime import RuntimeManager
     from backend.app.credentials import SystemCredentialStore
@@ -237,7 +239,7 @@ def test_cancelled_http_receive_actor_finishes_before_client_cleanup(tmp_path, m
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     settings = MemorySettingsStore(tmp_path / "data" / "settings.json")
     memories = MemoryStore(tmp_path / "data" / "memory.db")
-    service = MemoryService(memories, implicit_extraction_enabled=False, memory_enabled=lambda: settings.get().enabled)
+    service = configured_service(memories, implicit_extraction_enabled=False, memory_enabled=lambda: settings.get().enabled)
     engine = DefaultMemoryEngine(service, role_exists=lambda value: roles.get(value) is not None)
     saved = asyncio.run(engine.mutate(MemoryMutation(kind="remember", scope=MemoryScope(role.id, f"role:{role.id}"), summary="保留的原始记忆")))
     documents = MemoryDocuments(tmp_path / "roles")
@@ -245,7 +247,7 @@ def test_cancelled_http_receive_actor_finishes_before_client_cleanup(tmp_path, m
     original = documents.read_document(role.id, "MEMORY.md")
     embedding_started, embedding_release, embedding_finished = (threading.Event() for _ in range(3))
 
-    class Embeddings:
+    class Embeddings(ControlledEmbedding):
         def embed(self, role_id, text):
             if text == "本次不应写入":
                 embedding_started.set()
@@ -253,7 +255,7 @@ def test_cancelled_http_receive_actor_finishes_before_client_cleanup(tmp_path, m
                     assert embedding_release.wait(5), "fixture embedding was not released"
                 finally:
                     embedding_finished.set()
-            return [1.0, 0.0]
+            return super().embed(role_id, text)
 
     class Provider:
         calls = 0
@@ -278,11 +280,19 @@ def test_cancelled_http_receive_actor_finishes_before_client_cleanup(tmp_path, m
     async def run():
         loop = asyncio.get_running_loop()
         actor_cancel_delivered = asyncio.Event()
+        owner_cancelled = asyncio.Event()
+        original_cancel = main.runtime_manager.cancel_run
+        def cancel_owner(run_id, *, interrupt=True):
+            result = original_cancel(run_id, interrupt=interrupt)
+            if interrupt:
+                owner_cancelled.set()
+            return result
+        monkeypatch.setattr(main.runtime_manager, 'cancel_run', cancel_owner)
         actor: asyncio.Task[None] | None = None
         actor_in_receive = False
         actor_cancel_calls = 0
         valid_overlap = False
-        transport_disconnected = False
+        body_complete = False
         ticks = []
 
         async def wait_for_embedding():
@@ -310,17 +320,20 @@ def test_cancelled_http_receive_actor_finishes_before_client_cleanup(tmp_path, m
 
         async def connected_client(scope, receive, send):
             async def controlled_receive():
-                nonlocal actor, actor_in_receive
-                probe = anyio.current_effective_deadline() == float("-inf")
-                if probe and transport_disconnected:
-                    return {"type": "http.disconnect"}
-                selected = probe and embedding_started.is_set() and actor is None
+                nonlocal actor, actor_in_receive, body_complete
+                # The backend owns the run. Its SSE subscriber waits directly
+                # in receive; the former request.is_disconnected poll is gone.
+                selected = body_complete and actor is None
                 if selected:
+                    await wait_for_embedding()
                     actor = asyncio.current_task()
                     actor_in_receive = True
                     loop.call_soon(cancel_receive_actor)
                 try:
-                    return await receive()
+                    message = await receive()
+                    if message['type'] == 'http.request' and not message.get('more_body', False):
+                        body_complete = True
+                    return message
                 finally:
                     if selected:
                         actor_in_receive = False
@@ -334,9 +347,10 @@ def test_cancelled_http_receive_actor_finishes_before_client_cleanup(tmp_path, m
             request = asyncio.create_task(client.post(f"/api/roles/{role.id}/messages", json={"content": "执行一次显式工具操作"}))
             try:
                 done, _ = await asyncio.wait({ready, request}, timeout=3)
-                assert ready in done and actor is not None, "real cancelled-deadline ASGI receive was never reached"
+                assert ready in done and actor is not None, "real SSE subscriber ASGI receive was never reached"
                 assert valid_overlap and actor_cancel_calls == 1, "fixture did not deliver its single cancellation inside receive"
-                assert not request.done() and not embedding_finished.is_set(), "HTTP and embedding must remain live during observation"
+                assert not embedding_finished.is_set(), "backend-owned embedding must remain live during observation"
+                assert sessions.active_run(role.id) is not None
                 await asyncio.wait({actor}, timeout=.25)
                 actor_finished_before_cleanup = actor.done()
                 record_property("actor_done_before_client_cleanup", actor_finished_before_cleanup)
@@ -347,8 +361,15 @@ def test_cancelled_http_receive_actor_finishes_before_client_cleanup(tmp_path, m
                 if not request.done():
                     request.cancel()
                 await asyncio.wait({request}, timeout=.05)
-                transport_disconnected = True
-                embedding_release.set()
+                run = sessions.active_run(role.id)
+                stop = asyncio.create_task(main.stop_role_reply(role.id, run.runId)) if run else None
+                try:
+                    if stop is not None:
+                        await asyncio.wait_for(owner_cancelled.wait(), 1)
+                finally:
+                    embedding_release.set()
+                if stop is not None:
+                    await stop
                 with suppress(asyncio.CancelledError):
                     await request
                 if actor is not None:

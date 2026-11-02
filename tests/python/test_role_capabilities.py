@@ -106,7 +106,7 @@ def test_legacy_empty_config_has_default_tools_without_enabling_special_plugins(
     assert not {'agent_browser_open', 'computer_click', 'generate_image', 'pet_action', 'observe_screen'} & visible
     for name in ('memorize', 'forget_memory'):
         item = next(item for item in catalog['tools'] if item['name'] == name)
-        assert item['enabled'] and item['reason'] == '全局记忆已关闭'
+        assert not item['enabled'] and item['reason'] == '语义记忆引擎已关闭'
     # Saving unrelated profile data or an old client's empty list cannot hide defaults.
     saved = role_api.put(f"/api/roles/{role['id']}", json={
         'name': role['name'], 'profile': {'profile': '更新设定'},

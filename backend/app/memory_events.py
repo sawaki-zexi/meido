@@ -104,4 +104,6 @@ class ConsolidationCommitted:
     message_range: tuple[int, int] | None
     candidates: tuple[ConsolidationCandidate, ...]
     error: str | None = None
+    history_entries: tuple[tuple[str, int], ...] = ()
+    conversation: str = ''
 

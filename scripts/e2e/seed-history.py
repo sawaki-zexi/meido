@@ -13,7 +13,8 @@ assert Path(marker['sourceRoot']).resolve() == source
 database = root / '.data/development/sessions.db'
 assert database.is_file()
 with sqlite3.connect(database) as connection:
-    assert connection.execute('SELECT COUNT(*) FROM agent_runs').fetchone()[0] == 0, 'Seed before any accepted input'
+    for role_id in sys.argv[2:]:
+        assert connection.execute('SELECT COUNT(*) FROM agent_runs WHERE role_id=?', (role_id,)).fetchone()[0] == 0, 'Seed only new unused roles'
 sys.path.insert(0, str(root))
 from backend.app.session_store import SessionStore
 

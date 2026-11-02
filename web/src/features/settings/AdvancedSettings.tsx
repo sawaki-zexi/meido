@@ -15,7 +15,7 @@ const groups = [
   ] },
   { title: '记忆整理', fields: [
     ['memoryWindow', '记忆整理消息基数', '约一半保留为最近记忆。', 12, 2000],
-    ['memoryOptimizerEnabled', '后台整理记忆', '需同时启用记忆。'],
+    ['memoryOptimizerEnabled', '后台整理记忆', '独立整理宿主记忆文档，关闭语义引擎后仍可运行。'],
     ['memoryOptimizerIntervalSeconds', '整理间隔（秒）', '默认 18 小时。', 60, 604800],
   ] },
   { title: '上下文压缩', fields: [

@@ -220,7 +220,12 @@ def test_every_protocol_prepares_real_images_schema_and_repaired_history_without
         configuration=prepared.configuration, max_tokens=prepared.max_tokens)
     assert 'archive' in str(request) and 'No result provided' in str(request)
     assert 'apiKey' not in request and 'test' not in request['_connection']
-    assert request.get('_context_frames') == (1,)
+    frame_index, = request['_context_frames']
+    assert frame_index > prepared.messages.context_frame_index
+    assert 'data-system-context-frame' in str(request['messages'][frame_index])
+    provider.usage_anchors.finish(provider.usage_anchors.begin(request, provider.usage_context), 12345)
+    provider.memory_context = 'updated dynamic context after repaired tool history'
+    assert provider.estimate_request('', messages, tools).source == 'anchor_delta'
 
 
 @pytest.mark.parametrize('api', ['openai-completions', 'openai-responses', 'azure-openai-responses', 'openai-codex-responses'])
@@ -342,7 +347,7 @@ def test_actual_usage_crosses_hard_limit_with_real_output_reserve_and_safety(mon
     provider.configuration.contextWindowTokens = local + 1024 + 100 + 50
     with pytest.raises(ValueError, match='输入容量'):
         asyncio.run(respond(window, messages))
-    assert window.compaction_failed and window.degraded
+    assert window.degraded and window.compaction_diagnostic['toolsDisabled']
     assert len(requests) == 1
 
 

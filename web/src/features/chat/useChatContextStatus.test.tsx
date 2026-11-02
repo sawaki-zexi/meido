@@ -11,6 +11,42 @@ const props = { roleId: 'r1', sessionKey: 'role:r1', enabled: true, sending: fal
 const response = (value: ContextStatus) => new Response(JSON.stringify(value));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
+it('keeps manual operation ownership across model changes and refreshes the latest model', async () => {
+  let finish!: (value: Response) => void;
+  let model = 'old';
+  const fetch = vi.fn((path: string) => path.endsWith('context-compact')
+    ? new Promise<Response>(resolve => { finish = resolve; })
+    : Promise.resolve(response(status('r1', { model, canCompact: true }))));
+  vi.stubGlobal('fetch', fetch);
+  const hook = renderHook(value => useChatContextStatus(value), { initialProps: props });
+  await waitFor(() => expect(hook.result.current.loading).toBe(false));
+  let operation!: Promise<void>;
+  act(() => { operation = hook.result.current.compact!(); });
+  model = 'new';
+  hook.rerender({ ...props, modelKey: 'new' });
+  expect(hook.result.current.busy).toBe(true);
+  await act(async () => { finish(response(status('r1', { model: 'old', compacted: true }))); await operation; });
+  await waitFor(() => expect(hook.result.current.status?.model).toBe('new'));
+  expect(hook.result.current.loading).toBe(false);
+  expect(fetch.mock.calls.filter(([path]) => path.endsWith('context-compact'))).toHaveLength(1);
+});
+
+it('abandons a manual result after role switch without overwriting the new role', async () => {
+  let finish!: (value: Response) => void;
+  vi.stubGlobal('fetch', vi.fn((path: string) => path.endsWith('context-compact')
+    ? new Promise<Response>(resolve => { finish = resolve; })
+    : Promise.resolve(response(status(path.includes('r2') ? 'r2' : 'r1', { canCompact: true })))));
+  const hook = renderHook(value => useChatContextStatus(value), { initialProps: props });
+  await waitFor(() => expect(hook.result.current.loading).toBe(false));
+  let operation!: Promise<void>;
+  act(() => { operation = hook.result.current.compact!(); });
+  hook.rerender({ ...props, roleId: 'r2', sessionKey: 'role:r2' });
+  await waitFor(() => expect(hook.result.current.status?.roleId).toBe('r2'));
+  await act(async () => { finish(response(status('r1', { compacted: true }))); await operation; });
+  expect(hook.result.current.status?.roleId).toBe('r2');
+  expect(hook.result.current.notice).toBe('');
+});
+
 it('reads without a message, coalesces pending refreshes and never sends a draft', async () => {
   let finish!: (value: Response) => void;
   const fetch = vi.fn((_path: string, _init?: RequestInit) => new Promise<Response>(resolve => { finish = resolve; }));
@@ -108,16 +144,16 @@ it('shows read failures and retries without a fictional percentage', async () =>
   expect(hook.result.current.status?.inputTokens).toBe(1200);
 });
 
-it('shows only a compact usage tooltip on hover, focus or touch, with no extra action', async () => {
+it('shows the compact tooltip on hover, focus or touch without making a read request', async () => {
   const refresh = vi.fn();
   render(<ComposerTools onEmoji={() => {}} inspection={{ status: status(), loading: false, busy: false, error: '', refresh }} />);
   const user = userEvent.setup();
-  const trigger = screen.getByRole('button', { name: /上下文用量/ });
+  const trigger = screen.getByRole('button', { name: /压缩上下文/ });
   await user.hover(trigger);
-  expect(refresh).toHaveBeenCalledTimes(1);
+  expect(refresh).not.toHaveBeenCalled();
   const tooltip = screen.getByRole('tooltip');
   expect(tooltip).toHaveTextContent('上下文 1,200 / 24,000，5%（本地估算）');
-  expect(tooltip).toHaveTextContent('当前已保存会话，不含草稿');
+  expect(tooltip).toHaveTextContent('点击压缩上下文');
   expect(within(tooltip).queryByRole('button')).toBeNull();
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(screen.queryByText(/实际输入限额|重新检查|自动压缩阈值/)).toBeNull();
@@ -125,7 +161,7 @@ it('shows only a compact usage tooltip on hover, focus or touch, with no extra a
   expect(screen.queryByRole('tooltip')).toBeNull();
   trigger.focus();
   await screen.findByRole('tooltip');
-  expect(refresh).toHaveBeenCalledTimes(2);
+  expect(refresh).not.toHaveBeenCalled();
   await user.keyboard('{Escape}');
   expect(screen.queryByRole('tooltip')).toBeNull();
   expect(trigger).toHaveFocus();
@@ -159,7 +195,7 @@ it('leaves unknown usage unfilled and labels retained busy usage as the previous
   const inspection = { status: status(), loading: false, busy: true, error: '正在回复或整理上下文', refresh: vi.fn() };
   const view = render(<ComposerTools onEmoji={() => {}} inspection={inspection} />);
   const user = userEvent.setup();
-  await user.hover(screen.getByRole('button', { name: /上下文用量/ }));
+  await user.hover(screen.getByRole('button', { name: /压缩上下文/ }));
   expect(screen.getByRole('tooltip')).toHaveTextContent('上次用量');
   expect(screen.getByRole('tooltip')).toHaveTextContent('1,200 / 24,000');
   view.rerender(<ComposerTools onEmoji={() => {}} inspection={{ ...inspection, busy: false,
@@ -167,5 +203,5 @@ it('leaves unknown usage unfilled and labels retained busy usage as the previous
   expect(screen.getByRole('tooltip')).toHaveTextContent('上下文用量未知');
   expect(screen.getByRole('tooltip')).toHaveTextContent('模型上下文容量未知');
   expect(screen.getByRole('tooltip')).not.toHaveTextContent('%');
-  expect(screen.getByRole('button', { name: /上下文用量/ }).querySelector('[stroke-dasharray]')).toBeNull();
+  expect(screen.getByRole('button', { name: /压缩上下文/ }).querySelector('[stroke-dasharray]')).toBeNull();
 });

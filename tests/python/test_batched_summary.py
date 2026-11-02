@@ -199,11 +199,12 @@ async def test_minimum_source_that_still_cannot_fit_never_calls_summary_or_advan
     # fields or skipping this record would falsely claim all sources were read.
     messages[0] = replace(messages[0], attachments=tuple(
         AttachmentContent(f'part-{index}.txt', 'text/plain', text='x' * 180) for index in range(100)))
-    await run(provider, messages)
-    assert provider.compaction_failed and provider.degraded
+    with pytest.raises(ValueError, match='最低可用原文'):
+        await run(provider, messages)
+    assert not provider.degraded
     assert provider.compaction_diagnostic['step'] == 'select_batch'
-    assert not model.payloads and len(model.requests) == 1
-    assert not coverage and windows.load('r', 'role:r', 'owner', 'a')['version'] == 0
+    assert not model.payloads and not model.requests
+    assert len(coverage) == 1 and windows.load('r', 'role:r', 'owner', 'a')['version'] == 0
     assert sessions.list_messages('role:r') == original
 
 
@@ -247,12 +248,13 @@ async def test_later_failure_preserves_previous_summary_and_raw_history(tmp_path
             await run(provider, sessions.runtime_messages('role:r', max_messages=None), signal=signal)
         assert len(model.requests) == len(model.payloads) == 2
     else:
-        await run(provider, sessions.runtime_messages('role:r', max_messages=None), signal=signal)
-        assert provider.compaction_failed and provider.degraded
+        with pytest.raises((ValueError, RuntimeError)):
+            await run(provider, sessions.runtime_messages('role:r', max_messages=None), signal=signal)
+        assert not provider.degraded
         assert len(model.payloads) == (1 if failure == 'budget' else 2)
-        assert 'previous lawful task' in json.dumps(model.requests[-1])
+        assert len(model.requests) == len(model.payloads)
     assert provider.requests == len(model.requests)
-    assert provider.compactions == 0 and not coverage
+    assert provider.compactions == 0 and len(coverage) == 1
     assert windows.load('r', 'role:r', 'owner', 'a') == prior
     assert sessions.list_messages('role:r') == original
 
@@ -280,7 +282,7 @@ async def test_later_batch_soft_failure_continues_with_all_original_messages(tmp
     final = model.requests[-1]['messages']
     assert sum(message.get('content') == 'question' for message in final) == 100
     assert sum(message.get('content') == 'answer' for message in final) == 100
-    assert not coverage and windows.load('r', 'role:r', 'owner', 'a')['version'] == 0
+    assert len(coverage) == 1 and windows.load('r', 'role:r', 'owner', 'a')['version'] == 0
 
 
 @pytest.mark.anyio
@@ -363,11 +365,12 @@ async def test_final_budget_failure_including_tools_changed_during_coverage_keep
             enlarge()
             return True
         provider.ensure_coverage = changed_during_coverage
-    with pytest.raises(ValueError, match='输入容量'):
-        await run(provider, sessions.runtime_messages('role:r', max_messages=None), tools=registry.provider_schemas())
-    assert len(model.payloads) > 1 and len(model.requests) == len(model.payloads)
-    assert provider.compactions == 0 and provider.compaction_failed
-    assert bool(coverage) is (when == 'coverage')
+    await run(provider, sessions.runtime_messages('role:r', max_messages=None), tools=registry.provider_schemas())
+    assert len(model.payloads) > 1 and len(model.requests) == len(model.payloads) + 1
+    assert provider.compactions == 0 and provider.degraded
+    assert provider.compaction_diagnostic['toolsDisabled'] is True
+    assert not model.requests[-1].get('tools')
+    assert len(coverage) == 1
     assert windows.load('r', 'role:r', 'owner', 'a') == prior
     assert sessions.list_messages('role:r') == original
 
@@ -395,13 +398,11 @@ async def test_all_batches_still_require_current_sources_and_commit_gates(tmp_pa
                 db.execute('UPDATE messages SET content=? WHERE message_id=?', ('edited source', ids[2]))
         return gate != 'coverage'
     provider.ensure_coverage = before_commit
-    if gate == 'authority':
-        with pytest.raises(ValueError, match='来源许可'):
-            await run(provider, sessions.runtime_messages('role:r', max_messages=None))
-    else:
+    with pytest.raises((ValueError, RuntimeError, PermissionError)):
         await run(provider, sessions.runtime_messages('role:r', max_messages=None))
-        assert provider.compaction_failed
-    assert len(model.payloads) > 1 and len(coverage) == 1
+    assert len(coverage) == 1
+    assert (len(model.payloads) > 1) is (gate in {'version', 'history'})
+    assert len(model.requests) == len(model.payloads) and not provider.degraded
     assert provider.compactions == 0
     state = windows.load('r', 'role:r', 'owner', 'a')
     assert state['summary'] == prior['summary'] and state['removed'] == prior['removed']
@@ -413,7 +414,7 @@ async def test_all_batches_still_require_current_sources_and_commit_gates(tmp_pa
 @pytest.mark.anyio
 @pytest.mark.parametrize('succeed', [True, False])
 async def test_tool_selection_matches_committed_or_original_raw_window_after_batches(tmp_path, monkeypatch, succeed):
-    sessions, _, windows, provider, model, _ = scenario(tmp_path, monkeypatch, capacity=8000)
+    sessions, base, windows, provider, model, _ = scenario(tmp_path, monkeypatch, capacity=8000)
     sessions.delete_role_session('r')
     sessions.open_role_session('r')
     sessions.append_message('role:r', 'user', 'old request')
@@ -433,14 +434,18 @@ async def test_tool_selection_matches_committed_or_original_raw_window_after_bat
     provider.bind_capabilities(registry)
     model.tool_state = 'archive_old was previously used; {"unlockedTools":["archive_old"]}'
     if not succeed:
-        model.fail_batch = 2
+        model.fail_batch = 1
+        # Retain discovery from the original raw window on a sendable soft
+        # request. A hard summary failure cannot continue with business tools.
+        base.configuration.contextWindowTokens = 20000
+        base.configuration.modelAutoCompactTokenLimit = 3000
     await run(provider, sessions.runtime_messages('role:r', max_messages=None), tools=registry.provider_schemas())
-    assert len(model.payloads) > 1
+    assert len(model.payloads) > 1 if succeed else len(model.payloads) == 1
     names = [tool['function']['name'] for tool in model.requests[-1]['tools']]
     assert names == (['always', 'tool_search', 'archive_recent'] if succeed
                      else ['always', 'tool_search', 'archive_old', 'archive_recent'])
     assert provider.compactions == int(succeed)
-    assert provider.degraded is not succeed
+    assert not provider.degraded
     assert sessions.list_messages('role:r') == original
     state = windows.load('r', 'role:r', 'owner', 'a')
     assert bool(state['removed']) is succeed

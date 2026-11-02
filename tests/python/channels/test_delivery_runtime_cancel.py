@@ -53,6 +53,9 @@ def test_cancelled_real_runtime_retains_stream_receipt_in_original_message(tmp_p
         return CapabilityRegistry(()).resolve(role_id=role.id, session_key=session_key, run_id=run_id)
     async def commit(*args):
         pass
+    from backend.app.memory_service import MemoryService, MemoryWorker
+    from backend.app.memory_store import MemoryStore
+    worker = MemoryWorker(MemoryService(MemoryStore(tmp_path / 'memory.db'), memory_enabled=lambda: False))
     for name, value in {
         'store': roles, 'session_store': sessions, 'multichannel_store': channels,
         'runtime_manager': RuntimeManager(sessions), 'role_locks': {},
@@ -61,7 +64,7 @@ def test_cancelled_real_runtime_retains_stream_receipt_in_original_message(tmp_p
         'channel_adapters': {account.account_id: adapter}, 'MeidoProvider': Provider,
         '_runtime_tool_candidates': lambda *args, **kwargs: (), '_runtime_capabilities': resolve,
         '_role_memory_context': lambda *args, **kwargs: '',
-        'memory_worker': SimpleNamespace(role_deletion_blocked=lambda *args: False, role_lock_for=lambda *args: asyncio.Lock()),
+        'memory_worker': worker,
         'channel_memory_maintenance': SimpleNamespace(commit_turn=commit),
     }.items():
         monkeypatch.setattr(main, name, value)
