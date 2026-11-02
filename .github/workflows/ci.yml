@@ -84,6 +84,8 @@ jobs:
               tests/python/test_role_prompt_compiler.py
               tests/python/test_role_card_import.py
               tests/python/test_role_card_export.py
+              tests/python/test_chat_attachments.py
+              tests/python/test_docx_attachments.py
               tests/python/test_todo_plugin.py::test_role_reminder_generation_uses_personality_facts_and_read_only_related_memory
               tests/python/test_api.py::test_role_creation_uses_canonical_binding_and_never_persists_legacy_credentials
               tests/python/test_api.py::test_role_creation_rejects_missing_canonical_connection_without_writing_role
