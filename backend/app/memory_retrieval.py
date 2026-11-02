@@ -51,7 +51,7 @@ class RetrievalStore:
         return [self.vector_search(vector, **kwargs) for vector in vectors]
 
     def vector_search(self, query_vec, *, top_k=8, score_threshold=.45,
-                      hotness_alpha=.2, hotness_half_life_days=14, **filters):
+                      hotness_alpha=0, hotness_half_life_days=14, **filters):
         results = []
         indexed = None
         store = self.service.store

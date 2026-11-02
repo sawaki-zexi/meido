@@ -15,11 +15,13 @@ from .memory_optimizer import MemoryOptimizer
 
 
 class OwnerChannelMemory:
-    def __init__(self, sessions, roles_root, extract, publish, verify):
+    def __init__(self, sessions, roles_root, extract, publish, verify, *, semantic_lock=None):
         self.sessions, self.roles_root = sessions, roles_root
         self.extract, self.publish, self.verify = extract, publish, verify
         self.tasks = {}
         self.errors = []
+        self._semantic_locks = {}
+        self.semantic_lock = semantic_lock or (lambda role_id: self._semantic_locks.setdefault(role_id, asyncio.Lock()))
 
     async def commit(self, thread, messages, *, listening=True):
         if not messages:
@@ -78,22 +80,31 @@ class OwnerChannelMemory:
 
     async def retry(self, role_id, key):
         try:
+            from .channels.consolidation import finish_io
             current = await asyncio.to_thread(self.sessions.maintenance_progress, role_id, key)
             for entry in tuple(current.get('pendingEvents', [])):
-                event = MemoryMaintenance._event_from_payload(entry['payload'])
-                proof = await asyncio.to_thread(self.verify, role_id, key, list(event.message_ids))
-                if proof == entry['proof']:
-                    await asyncio.to_thread(self.publish, event)
-                # Revoked/changed sources are preserved for audit, never replayed.
-                folder = MemoryDocuments(self.roles_root).memory_dir(role_id)
-                with document_lock(folder):
-                    current = self.sessions.maintenance_progress(role_id, key)
-                    progress = {**current, 'pendingEvents': [item for item in current.get('pendingEvents', []) if item != entry]}
-                    if proof != entry['proof']:
-                        progress['invalidatedEvents'] = [*current.get('invalidatedEvents', []), entry]
-                    self.sessions.save_maintenance_progress(role_id, key, progress, expected=current)
+                async with self.semantic_lock(role_id):
+                    await finish_io(asyncio.to_thread(self._publish_entry, role_id, key, entry))
         except Exception as error:
             self.errors.append(f'{role_id}: semantic publication pending: {error}')
+
+    def _publish_entry(self, role_id, key, entry):
+        current = self.sessions.maintenance_progress(role_id, key)
+        if entry not in current.get('pendingEvents', []):
+            return
+        event = MemoryMaintenance._event_from_payload(entry['payload'])
+        proof = self.verify(role_id, key, list(event.message_ids))
+        if proof == entry['proof']:
+            self.publish(event)
+        # Recheck the source after waiting for the semantic lane. Revoked
+        # payloads remain auditable, and can never acquire a publication ACK.
+        folder = MemoryDocuments(self.roles_root).memory_dir(role_id)
+        with document_lock(folder):
+            current = self.sessions.maintenance_progress(role_id, key)
+            progress = {**current, 'pendingEvents': [item for item in current.get('pendingEvents', []) if item != entry]}
+            if proof != entry['proof']:
+                progress['invalidatedEvents'] = [*current.get('invalidatedEvents', []), entry]
+            self.sessions.save_maintenance_progress(role_id, key, progress, expected=current)
 
     async def drain(self, role_id=None):
         tasks = [task for (role, _), task in self.tasks.items() if role_id is None or role == role_id]

@@ -272,6 +272,8 @@ class MemoryWorker:
     ) -> None:
         self.service = service
         self.maintenance = maintenance
+        if maintenance is not None:
+            maintenance.defer_consumers = True  # This worker owns the publication lane.
         self.optimizer = optimizer
         self._locks: dict[str, asyncio.Lock] = {}
         self._tasks: dict[asyncio.Task[object], str] = {}
@@ -306,6 +308,9 @@ class MemoryWorker:
     def role_lock_for(self, role_id: str) -> asyncio.Lock:
         """The session Markdown lane; semantic work and optimizer own separate locks."""
         return self._locks.setdefault(role_id, asyncio.Lock())
+
+    def semantic_lock_for(self, role_id: str) -> asyncio.Lock:
+        return self._semantic_locks.setdefault(role_id, asyncio.Lock())
 
     def role_deletion_blocked(self, role_id: str) -> bool:
         return role_id in self._deleting or role_id in self._deleted
@@ -437,7 +442,7 @@ class MemoryWorker:
             self.errors.append(f"{role_id}: markdown maintenance failed: {maintenance_result}")
 
     async def _semantic(self, operation, role_id, *args):
-        async with self._semantic_locks.setdefault(role_id, asyncio.Lock()):
+        async with self.semantic_lock_for(role_id):
             return await asyncio.to_thread(operation, role_id, *args)
 
     async def _maintain(self, operation, role_id, *args):
@@ -460,7 +465,15 @@ class MemoryWorker:
         async def run():
             try:
                 from .channels.consolidation import finish_io
-                await finish_io(asyncio.to_thread(self.maintenance.retry_consumers, role_id))
+                entries = await asyncio.to_thread(self.maintenance.pending_publications, role_id)
+                for entry in entries:
+                    async with self.semantic_lock_for(role_id):
+                        if self.role_deletion_blocked(role_id):
+                            return
+                        published = await finish_io(asyncio.to_thread(self.maintenance.publish_pending_event, role_id, entry))
+                    if not published:
+                        break
+                await finish_io(asyncio.to_thread(self.maintenance.retry_relationship, role_id))
             except Exception as error:
                 self.errors.append(f'{role_id}: memory consumers pending: {error}')
             finally:
@@ -468,6 +481,14 @@ class MemoryWorker:
         task = asyncio.create_task(run())
         self._tasks[task] = role_id
         task.add_done_callback(self._forget_task)
+
+    async def resume_pending(self):
+        if self.maintenance is None or self.closed:
+            return
+        roles = []
+        await asyncio.to_thread(self.maintenance.resume_pending, schedule=roles.append)
+        for role_id in roles:
+            self.retry_consumers(role_id)
 
     async def before_turn(self, role_id, session_key):
         """Queue normal backlog; only a known failed extraction blocks entry."""

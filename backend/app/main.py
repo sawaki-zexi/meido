@@ -852,7 +852,7 @@ def _todo_application() -> TodoApplicationService:
 async def _mutate_and_sync_memory(role_id: str, operation):
     if memory_worker.role_deletion_blocked(role_id):
         raise HTTPException(status_code=409, detail="角色正在删除，请稍后再试")
-    async with memory_worker._semantic_locks.setdefault(role_id, asyncio.Lock()):
+    async with memory_worker.semantic_lock_for(role_id):
         if memory_worker.role_deletion_blocked(role_id):
             raise HTTPException(status_code=409, detail="角色正在删除，请稍后再试")
         return await _mutate_and_sync_memory_locked(role_id, operation)
@@ -1052,7 +1052,7 @@ async def _start_memory_workers() -> None:
             if recovered:
                 _channel_roles_deleting.discard(role_id)
     await asyncio.to_thread(task_runtime.reconcile_roles, {role.id for role in store.list()})
-    await asyncio.to_thread(memory_maintenance.resume_pending)
+    await memory_worker.resume_pending()
     memory_optimizer_loop.start()
     owner_startup_report = await owner_knowledge_plugin.startup()
     if owner_startup_report and (owner_startup_report.created or owner_startup_report.updated or owner_startup_report.deleted):
@@ -1573,7 +1573,7 @@ async def update_memory_settings(data: MemorySettings) -> dict[str, object]:
     if current.enabled and not previous.enabled:
         memory_worker.start()
         memory_optimizer_loop.start()
-        await asyncio.to_thread(memory_maintenance.resume_pending)
+        await memory_worker.resume_pending()
     return _public_memory_settings(current)
 
 
@@ -6461,7 +6461,8 @@ def _verify_owner_channel_memory(role_id, key, ids):
 from .owner_channel_memory import OwnerChannelMemory
 
 owner_channel_memory = OwnerChannelMemory(session_store, roles_root, _owner_channel_layer,
-    _publish_consolidation_event, _verify_owner_channel_memory)
+    _publish_consolidation_event, _verify_owner_channel_memory,
+    semantic_lock=lambda role_id: memory_worker.semantic_lock_for(role_id))
 
 
 channel_memory_maintenance = ChannelMemoryMaintenance(

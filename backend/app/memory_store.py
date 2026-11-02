@@ -285,6 +285,14 @@ class MemoryStore:
                     if model and isinstance(dimension, int):
                         connection.execute('UPDATE memory_embedding_spaces SET model_id=? WHERE dimension=? AND model_id IN (?,?)',
                             (model, dimension, legacy_id, legacy_id + ':disabled'))
+            # Unlike an empty first setup, existing untyped vectors cannot be
+            # attributed to the next configured model. Mark this once at setup,
+            # including databases already imported by schema v2; reads stay O(1).
+            connection.execute("""UPDATE memory_embedding_spaces
+                SET validation_error = '旧记忆向量的模型身份无法验证；原数据已保留'
+                WHERE COALESCE(validation_error, '') = '' AND TRIM(COALESCE(model_id, '')) = ''
+                AND EXISTS (SELECT 1 FROM memory_items
+                    WHERE memory_items.role_id = memory_embedding_spaces.role_id AND embedding_json IS NOT NULL)""")
             connection.execute("PRAGMA user_version = 2")
         self._rebuild_vector_index_for_all_roles()
 
@@ -635,7 +643,7 @@ class MemoryStore:
             raise ValueError(row['validation_error'])
         changed = row is not None and (
             int(row["dimension"]) != dimension
-            or (model_id is not None and row["model_id"] is not None and str(row["model_id"]) != model_id)
+            or (model_id is not None and str(row["model_id"] or '').strip() and str(row["model_id"]) != model_id)
         )
         if changed:
             raise ValueError('记忆向量空间与当前模型或维度不匹配；原向量已保留')
@@ -653,7 +661,7 @@ class MemoryStore:
             if row and row['validation_error']:
                 raise ValueError(row['validation_error'])
             if row and (dimension is not None and int(row['dimension']) != dimension or
-                        model_id is not None and row['model_id'] is not None and row['model_id'] != model_id):
+                        model_id is not None and str(row['model_id'] or '').strip() and row['model_id'] != model_id):
                 raise ValueError('记忆向量空间与当前模型或维度不匹配；原向量已保留')
 
     def retrieval_snapshot(self, role_id):

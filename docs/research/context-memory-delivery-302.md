@@ -1,6 +1,6 @@
 # #302 交付验证
 
-状态：本地实现与验收完成，等待固定提交的 PR CI 和独立审查。最后核验：2026-11-02。批准规格见[上下文与记忆对齐](../specs/shiori-context-memory-alignment.md)，实现契约见[参考](../reference/context-memory.md)，迁移与回滚见[手册](../handbook/context-memory-migration.md)。
+状态：PR #304 初审的三项阻塞已完成本地修复，等待新提交的 CI 和增量双轴复核。最后核验：2026-11-02。批准规格见[上下文与记忆对齐](../specs/shiori-context-memory-alignment.md)，实现契约见[参考](../reference/context-memory.md)，迁移与回滚见[手册](../handbook/context-memory-migration.md)。
 
 工作分支为 `feat/302-shiori-context-memory`，起点为 `69b9c4a6f3aaeb3b3cc74c39a679822c3c6d9e10`。仅使用独立开发端口、临时数据、本地受控聊天/embedding HTTP 服务，没有正式数据、付费模型或真实渠道调用。固定上游为 `YinFengWindy/Shiori-Agent@c14152ed225954a2a50da775075fe64dbf7b8b50`，授权见[现有第三方声明](../reference/third-party-notices.md)。
 
@@ -21,6 +21,24 @@
 Python 均由 `C:/Users/Elysia/AppData/Local/Programs/Python/Python313/python.exe -m pytest` 执行。52轮命令记录在本地 `.data/validate-context-memory.ps1`：提取当时 CI 中全部 Python targets，追加 `test_advanced_settings.py` 及渠道 `test_commands.py`、`test_delivery_runtime_cancel.py`、`test_external_memory_runtime.py`、`test_member_lookup.py`、`test_runtime_delivery.py`，去掉已由完整文件覆盖的单个 selector。
 
 52/55轮执行期间有两项最后修复，不能把它们描述为最终源码的整套重跑：Markdown 草稿的普通模型异常也必须记为已知失败；显式记忆工具在 Stop 与向量返回竞态中必须保留原有数据库回滚。后者恢复现有语义锁内的纯数据库快照/回滚，不再恢复或重投影宿主 Markdown。59/60轮覆盖这两项最终差异；61轮只补主动临时上下文的测试，不改产品。前端与未受影响的通过证据直接复用。
+
+## PR #304 初审修复
+
+父代理确认 [PR #304](https://github.com/sawaki-zexi/meido/pull/304) 的 `6d799297e9fb63df91a1b4a11a0c9d1ef85b5af9` 已通过7项 CI。随后独立两轴审查发现以下三项阻塞，本轮修复位于该提交之后，旧提交的绿色 CI 不代表本轮修复已验证：
+
+- 消费者的语义发布及其 ACK 现在逐条占用现有同角色语义写入锁，与工具的数据库快照/回滚串行。单条发布所需的语义生成也在该锁内，事件之间释放；关系消费、查询、宿主 Markdown 和优化器不进入此锁。桌面、主人群发言/旁听、启动恢复和重新启用均使用该协调，等待后重新核验来源。
+- 初始化时将含旧向量且模型身份为 NULL/空字符串的空间标记为不可验证，保留向量、记录和原身份；重复启动不重新绑定。只读 availability 仍只检查已保存元数据。空库首次配置、已证明兼容的旧身份继续可用。
+- 存储相似搜索默认只使用语义分，30天前的 preference 仍可按0.9门槛替代，同工具 procedure 按语义门槛合并；正常 Retriever 仍显式启用0.2热度权重。
+
+新增[审查回归](../../tests/python/test_memory_review_regressions.py)已进入 CI 的 context-preparation 组。红测 `review-red-62.log` 为14失败、1通过：并发发布被回滚/来源撤销失效、缺少协调后的恢复入口、旧身份误接受、替代/合并受热度影响均复现；没有删除这些失败目标。补充空字符串空库参数后的 `review-green-63.log` 为16通过，10.57秒。
+
+受影响组合 `review-affected-64.log` 为 **198通过，106.90秒**，包括上述16项；产品修改在该轮开始前完成，运行期间未改产品代码。准确命令（Python 路径同前）：
+
+```powershell
+& 'C:/Users/Elysia/AppData/Local/Programs/Python/Python313/python.exe' -m pytest tests/python/test_memory_review_regressions.py tests/python/test_context_memory_parity.py tests/python/test_memory.py tests/python/test_memory_engine.py tests/python/test_memory_runtime_parity.py tests/python/test_embeddings.py tests/python/test_memory_write_tools.py tests/python/test_memory_tools_api.py tests/python/channels/test_owner_memory_progress.py tests/python/channels/test_consolidation_parity.py -q --tb=short -o faulthandler_timeout=60 --durations=5
+```
+
+这轮同时复验了现有真实 HTTP Stop/回滚、查询超时、12,000条记忆期间 HTTP 响应性、已知旧模型身份导入和渠道来源撤销。前端/构建及未受影响证据复用；本地未再运行完整浏览器，新提交的 Windows CI 负责完整13场景验证。P3 候选解析去重建议保留为非阻塞项，本轮未扩展处理。
 
 ## 行为证据
 
@@ -52,4 +70,4 @@ Python 均由 `C:/Users/Elysia/AppData/Local/Programs/Python/Python313/python.ex
 
 完整4,178项的18轮探索在约10%时中止，且与实现修改重叠，不是通过证据。53轮浏览器启动中止、没有完整报告，也不计通过；55轮完整通过。最终无已知未解决的本票测试失败。构建仍有既有大 chunk 提示和桌宠资源运行时解析提示；没有屏蔽警告。
 
-19份修改 Markdown 的本地链接检查通过，`git diff --check` 通过。没有调用真实渠道、付费供应商、正式数据或正式端口；没有测量供应商 KV 缓存命中收益。尚未执行提交、推送、PR CI、独立两轴审查、合并或部署，后续交付应使用固定提交继续完成这些步骤。
+首次交付的19份修改 Markdown 本地链接检查通过；本轮交付收据的本地链接及 `git diff --check` 再次通过。没有调用真实渠道、付费供应商、正式数据或正式端口；没有测量供应商 KV 缓存命中收益。父代理负责本轮修复的提交、推送、新 HEAD CI 和增量双轴复核；本轮未合并或部署。

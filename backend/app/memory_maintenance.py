@@ -60,7 +60,7 @@ class MemoryMaintenance:
         self.errors: list[str] = []
         self._draft_local = threading.local()
 
-    def resume_pending(self) -> int:
+    def resume_pending(self, *, schedule: Callable[[str], None] | None = None) -> int:
         """Import legacy cursors once, then resume each acknowledged consumer."""
         if not self.roles_root.exists():
             return 0
@@ -70,7 +70,10 @@ class MemoryMaintenance:
                 path = root / "memory" / ".maintenance.json"
                 progress = self._read_cursor(path)
                 if progress.get("pendingEvents") or progress.get("relationshipPayload"):
-                    self._retry_pending_event(path, progress, root.name, f"role:{root.name}")
+                    if schedule is not None:
+                        schedule(root.name)
+                    else:
+                        self._retry_pending_event(path, progress, root.name, f"role:{root.name}")
                     resumed += 1
         return resumed
 
@@ -200,6 +203,20 @@ class MemoryMaintenance:
     def retry_consumers(self, role_id):
         path = self.roles_root / role_id / 'memory' / '.maintenance.json'
         return self._retry_pending_event(path, self._read_cursor(path), role_id, f'role:{role_id}')
+
+    def pending_publications(self, role_id):
+        path = self.roles_root / role_id / 'memory' / '.maintenance.json'
+        current = self._validated_pending_cursor(path, self._read_cursor(path), role_id, f'role:{role_id}')
+        return tuple(current.get('pendingEvents', []))
+
+    def publish_pending_event(self, role_id, entry):
+        path = self.roles_root / role_id / 'memory' / '.maintenance.json'
+        return self._publish_pending_entry(path, entry, role_id, f'role:{role_id}')
+
+    def retry_relationship(self, role_id):
+        path = self.roles_root / role_id / 'memory' / '.maintenance.json'
+        current = self._validated_pending_cursor(path, self._read_cursor(path), role_id, f'role:{role_id}')
+        return self._refresh_relationship(path, current, role_id)
 
     def ensure_memory_for_window(
         self,
@@ -574,6 +591,13 @@ class MemoryMaintenance:
     def _retry_pending_event(self, cursor_path, cursor, role_id, session_key):
         # Each acknowledged publication is saved before the next. Relationship
         # refresh has its own latest payload and cannot undo memory coverage.
+        current = self._validated_pending_cursor(cursor_path, cursor, role_id, session_key)
+        for entry in tuple(current.get('pendingEvents', [])):
+            if not self._publish_pending_entry(cursor_path, entry, role_id, session_key):
+                break
+        return self._refresh_relationship(cursor_path, self._read_cursor(cursor_path), role_id)
+
+    def _validated_pending_cursor(self, cursor_path, cursor, role_id, session_key):
         messages = self._messages(role_id, session_key)
         current = self._context_cursor(cursor, messages, session_key)
         ownership = self.ownership_provider(role_id) if self.ownership_provider else {}
@@ -582,25 +606,31 @@ class MemoryMaintenance:
                        'invalidatedProgress': cursor}
         if current != cursor:
             self._save(cursor_path, current, expected=cursor)
-        for entry in tuple(current.get("pendingEvents", [])):
-            if self.on_consolidation_committed is None:
-                break
-            try:
-                event = self._event_from_payload(entry["payload"])
-                if event.role_id != role_id or event.session_key != session_key:
-                    raise ValueError("整理事件作用域与当前角色不匹配")
-                self.on_consolidation_committed(event)
-            except Exception as error:
-                self.errors.append(f"{role_id}: publication pending: {error}")
-                break
-            with document_lock(cursor_path.parent):
-                current = self._read_cursor(cursor_path)
-                if entry not in current.get('pendingEvents', []):
-                    continue
-                updated = {**current, "publishedVersion": max(int(current.get('publishedVersion', 0)), entry["version"]),
-                           "pendingEvents": [item for item in current.get("pendingEvents", []) if item["version"] > entry["version"]]}
+        return current
+
+    def _publish_pending_entry(self, cursor_path, entry, role_id, session_key):
+        current = self._validated_pending_cursor(cursor_path, self._read_cursor(cursor_path), role_id, session_key)
+        if entry not in current.get('pendingEvents', []):
+            return True
+        if self.on_consolidation_committed is None:
+            return False
+        try:
+            event = self._event_from_payload(entry['payload'])
+            if event.role_id != role_id or event.session_key != session_key:
+                raise ValueError('整理事件作用域与当前角色不匹配')
+            self.on_consolidation_committed(event)
+        except Exception as error:
+            self.errors.append(f'{role_id}: publication pending: {error}')
+            return False
+        with document_lock(cursor_path.parent):
+            current = self._read_cursor(cursor_path)
+            if entry in current.get('pendingEvents', []):
+                updated = {**current, 'publishedVersion': max(int(current.get('publishedVersion', 0)), entry['version']),
+                           'pendingEvents': [item for item in current.get('pendingEvents', []) if item['version'] > entry['version']]}
                 self._save(cursor_path, updated, expected=current)
-                current = updated
+        return True
+
+    def _refresh_relationship(self, cursor_path, current, role_id):
         entry = current.get("relationshipPayload")
         if entry and int(current.get("publishedVersion", 0)) >= entry["version"]:
             try:
