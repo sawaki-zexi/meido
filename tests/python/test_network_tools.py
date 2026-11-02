@@ -466,6 +466,92 @@ def test_search_protocol_errors_do_not_masquerade_as_empty_results(reply, code):
     assert "secret-key" not in result.content
 
 
+@pytest.mark.parametrize("sse", [False, True], ids=["json", "sse"])
+@pytest.mark.parametrize("metadata,is_error", [
+    ({"ai.exa/rateLimited": True}, False),
+    (None, False),
+    (None, True),
+], ids=["quota-metadata", "legacy-notice", "legacy-tool-error"])
+def test_search_mcp_quota_notice_is_a_safe_failure_not_search_sources(sse, metadata, is_error):
+    value = {"content": [{"type": "text", "text":
+        "You've hit Exa's free MCP rate limit. To continue, use https://dashboard.exa.ai/api-keys "
+        "or https://mcp.exa.ai/mcp?exaApiKey=upstream-secret private-query-context"}]}
+    if metadata is not None:
+        value["_meta"] = metadata
+    if is_error:
+        value["isError"] = True
+    reply = {"jsonrpc": "2.0", "id": 1, "result": value}
+    response = (httpx.Response(200, text="data: " + json.dumps(reply) + "\n\n",
+                              headers={"content-type": "text/event-stream"})
+                if sse else httpx.Response(200, json=reply))
+    result = asyncio.run(WebSearchTool(transport=httpx.MockTransport(lambda request: response))
+        .execute({"query": "private-query-context"}, context()))
+    assert result.is_error
+    assert result.details["error_code"] == "rate_limited"
+    assert result.details["provider_status"] == 429
+    assert result.details["status"] == 200
+    assert result.details["retryable"] is True
+    assert "限流" in result.details["error"]
+    assert "sources" not in result.details and "http_status" not in result.details
+    assert all(value not in result.content for value in
+               ("upstream-secret", "private-query-context", "https://", "count"))
+
+
+@pytest.mark.parametrize("status,retryable,diagnostic_text", [
+    (400, False, "参数"), (401, False, "凭据"), (402, False, "额度"),
+    (403, False, "权限"), (429, True, "限流"), (500, True, "服务"), (503, True, "服务"),
+])
+def test_search_mcp_tool_error_retains_safe_provider_status(status, retryable, diagnostic_text):
+    reply = {"jsonrpc": "2.0", "id": 1, "result": {"isError": True, "content": [
+        {"type": "text", "text": f"web_search_exa error ({status}): upstream-secret private-query-context\n"
+         "Timestamp: upstream-secret https://private.example/?key=upstream-secret"}]}}
+    result = asyncio.run(WebSearchTool(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=reply))).execute({"query": "private-query-context"}, context()))
+    assert result.is_error
+    assert result.details["error_code"] == ("rate_limited" if status == 429 else "provider_error")
+    assert result.details["provider_status"] == status
+    assert result.details["retryable"] is retryable
+    assert diagnostic_text in result.details["error"] + result.details["hint"]
+    assert "http_status" not in result.details
+    assert all(value not in result.content for value in ("upstream-secret", "private-query-context", "https://"))
+
+
+def test_search_mcp_tool_timeout_returns_safe_timeout_diagnostic():
+    reply = {"jsonrpc": "2.0", "id": 1, "result": {"isError": True, "content": [
+        {"type": "text", "text": "web_search_exa error: web_search_exa timed out after 60s"}]}}
+    result = asyncio.run(WebSearchTool(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=reply))).execute({"query": "private-query-context"}, context()))
+    assert result.is_error
+    assert result.details["error_code"] == "timeout"
+    assert result.details["retryable"] is True
+    assert "provider_status" not in result.details
+
+
+@pytest.mark.parametrize("code,retryable", [(-32600, False), (-32601, False), (-32602, False), (-32603, True)])
+def test_search_rpc_error_retains_code_without_returning_provider_message(code, retryable):
+    reply = {"jsonrpc": "2.0", "id": 1, "error": {"code": code, "message": "upstream-secret",
+             "data": {"details": "private-query-context"}}}
+    result = asyncio.run(WebSearchTool(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=reply))).execute({"query": "private-query-context"}, context()))
+    assert result.is_error
+    assert result.details["error_code"] == "provider_error"
+    assert result.details["rpc_code"] == code
+    assert result.details["retryable"] is retryable
+    assert "upstream-secret" not in result.content and "private-query-context" not in result.content
+
+
+@pytest.mark.parametrize("metadata", [None, [], "malformed", {"ai.exa/rateLimited": "true"}])
+def test_search_article_quoting_provider_errors_is_still_a_source(metadata):
+    text = ("Title: Handling Exa errors\nURL: https://example.org/article\n"
+            "You've hit Exa's free MCP rate limit.\nweb_search_exa error (503): sample error")
+    reply = {"jsonrpc": "2.0", "id": 1, "result": {
+        "_meta": metadata, "content": [{"type": "text", "text": text}]}}
+    result = asyncio.run(WebSearchTool(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=reply))).execute({"query": "fixture"}, context()))
+    assert not result.is_error, result.content
+    assert result.details["sources"] == ["https://example.org/article"]
+
+
 def test_search_invalid_json_is_diagnosed_without_echoing_upstream_html():
     result = asyncio.run(WebSearchTool(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, text="<html>secret-key</html>")))
@@ -475,7 +561,7 @@ def test_search_invalid_json_is_diagnosed_without_echoing_upstream_html():
     assert "secret-key" not in result.content
 
 
-@pytest.mark.parametrize("scenario", ["sse_cr", "empty", "http_error", "invalid_json"])
+@pytest.mark.parametrize("scenario", ["sse_cr", "empty", "http_error", "invalid_json", "mcp_quota", "mcp_service_error"])
 def test_search_real_http_result_and_diagnostics(scenario, local_platform_only):
     async def run():
         requests, peer_closed = [], asyncio.Event()
@@ -489,6 +575,13 @@ def test_search_real_http_result_and_diagnostics(scenario, local_platform_only):
                 if scenario != "sse_cr":
                     body = (b'{"jsonrpc":"2.0","id":1,"result":{"content":[]}}' if scenario == "empty"
                             else b"<html>upstream secret-key</html>")
+                    if scenario == "mcp_quota":
+                        body = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {
+                            "_meta": {"ai.exa/rateLimited": True}, "content": [{"type": "text", "text":
+                                "Quota notice secret-key https://dashboard.exa.ai/api-keys"}]}}).encode()
+                    elif scenario == "mcp_service_error":
+                        body = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"isError": True,
+                            "content": [{"type": "text", "text": "web_search_exa error (503): secret-key"}]}}).encode()
                     status = "429 Too Many Requests" if scenario == "http_error" else "200 OK"
                     writer.write((f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n"
                                   f"Content-Length: {len(body)}\r\n\r\n").encode() + body)
@@ -529,13 +622,19 @@ def test_search_real_http_result_and_diagnostics(scenario, local_platform_only):
                 transport=LocalTransport()).execute({"query": "synthetic fixture"}, context())
             await asyncio.wait_for(peer_closed.wait(), 1)
         assert requests[0]["params"]["arguments"]["query"] == "synthetic fixture"
-        if scenario in {"http_error", "invalid_json"}:
+        if scenario in {"http_error", "invalid_json", "mcp_quota", "mcp_service_error"}:
             assert result.is_error
-            assert result.details["error_code"] == ("http_error" if scenario == "http_error" else "invalid_response")
+            assert result.details["error_code"] == {
+                "http_error": "http_error", "invalid_json": "invalid_response",
+                "mcp_quota": "rate_limited", "mcp_service_error": "provider_error",
+            }[scenario]
             assert "secret-key" not in result.content
             assert "synthetic fixture" not in result.content
             if scenario == "http_error":
                 assert result.details["http_status"] == 429
+            elif scenario in {"mcp_quota", "mcp_service_error"}:
+                assert result.details["provider_status"] == (429 if scenario == "mcp_quota" else 503)
+                assert "sources" not in result.details and "http_status" not in result.details
         else:
             assert not result.is_error, result.content
             assert result.details["sources"] == (["https://example.org/source"] if scenario == "sse_cr" else [])

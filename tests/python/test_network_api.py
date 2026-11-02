@@ -39,7 +39,16 @@ def isolate_unrelated_automatic_memory(tmp_path, monkeypatch, local_platform_onl
         httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {"content": []}}), {"count": 0, "results": []}),
     ("web_search", {"query": "private-error-fixture"},
         httpx.Response(429, text="upstream-secret"), {"error_code": "http_error", "http_status": 429}),
-], ids=["fetch", "search", "search-empty", "search-http-error"])
+    ("web_search", {"query": "private-error-fixture"},
+        httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {
+            "_meta": {"ai.exa/rateLimited": True}, "content": [{"type": "text", "text":
+                "Quota notice upstream-secret https://dashboard.exa.ai/api-keys"}]}}),
+        {"error_code": "rate_limited", "provider_status": 429}),
+    ("web_search", {"query": "private-error-fixture"},
+        httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {
+            "isError": True, "content": [{"type": "text", "text": "web_search_exa error (503): upstream-secret"}]}}),
+        {"error_code": "provider_error", "provider_status": 503}),
+], ids=["fetch", "search", "search-empty", "search-http-error", "search-mcp-quota", "search-mcp-service-error"])
 def test_authorized_role_network_tool_completes_http_conversation_and_persists_sources(tmp_path, monkeypatch, tool_name, arguments, response, expected):
     requests = []
 

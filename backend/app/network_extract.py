@@ -18,6 +18,34 @@ def diagnostic(code, message, hint, *, retryable=False):
     return {"error_code": code, "error": message, "hint": hint, "retryable": retryable}
 
 
+def provider_failure(status=None):
+    message = "搜索服务返回执行错误"
+    hint = "稍后重试；若持续失败，请检查服务可用性、配额和宿主搜索配置"
+    if status in {401, 403}:
+        message = "搜索服务拒绝访问"
+        hint = "检查宿主搜索凭据和访问权限后重试"
+    elif status == 402:
+        message = "搜索服务额度不足"
+        hint = "检查搜索服务账户余额或配额后重试"
+    elif status == 429:
+        message = "搜索服务触发限流"
+        hint = "稍后重试；匿名 Exa 额度受限，持续限流时可配置自己的 Exa 凭据"
+    elif status in {400, 422}:
+        message = "搜索服务拒绝了请求参数"
+        hint = "检查搜索参数及宿主搜索端点与 provider 配置后重试"
+    elif status == 408:
+        message = "搜索服务处理超时"
+        hint = "稍后重试，或缩小查询范围"
+    elif status is not None and status >= 500:
+        message = "搜索服务暂时不可用"
+        hint = "稍后重试；若持续失败，请检查搜索服务状态"
+    result = diagnostic("rate_limited" if status == 429 else "provider_error", message, hint,
+                        retryable=status is None or status in {408, 429} or status >= 500)
+    if status is not None:
+        result["provider_status"] = status
+    return result
+
+
 def search(request):
     invalid = diagnostic("invalid_response", "搜索服务返回的协议内容无效",
                          "检查搜索服务端点与 provider 是否匹配；稍后重试或更换宿主搜索配置")
@@ -40,23 +68,46 @@ def search(request):
     if reply is None:
         return invalid
     value = reply.get("result") if mcp else reply
-    if "error" in reply or isinstance(value, dict) and value.get("isError"):
-        return diagnostic("provider_error", "搜索服务返回执行错误",
-                          "稍后重试；若持续失败，请检查服务可用性、配额和宿主搜索配置", retryable=True)
+    if "error" in reply:
+        failure = provider_failure()
+        error = reply["error"]
+        if mcp and isinstance(error, dict) and type(error.get("code")) is int:
+            failure["rpc_code"] = error["code"]
+            if error["code"] in {-32700, -32600, -32601, -32602}:
+                failure.update(diagnostic("provider_error", "搜索服务拒绝了 MCP 请求",
+                    "检查搜索端点、工具名称与请求参数后重试"))
+        return failure
     if not isinstance(value, dict):
         return invalid
     if mcp:
+        metadata = value.get("_meta")
+        if isinstance(metadata, dict) and metadata.get("ai.exa/rateLimited") is True:
+            return provider_failure(429)
         content = value.get("content")
         if not isinstance(content, list) or any(not isinstance(item, dict)
                 or item.get("type") != "text" or not isinstance(item.get("text"), str) for item in content):
-            return invalid
+            return provider_failure() if value.get("isError") else invalid
     else:
+        if value.get("isError"):
+            return provider_failure()
         results = value.get("results")
         if not isinstance(results, list) or any(not isinstance(item, dict) for item in results):
             return invalid
         content = [{"text": f"{item.get('title', '')}\nURL: {item.get('url', '')}\n{item.get('text', '')}"}
                    for item in results]
     combined = "\n\n".join(item["text"] for item in content).strip()
+    if mcp:
+        # Older Exa notices used text alone; match the notice, not article excerpts.
+        if len(content) == 1 and combined.startswith("You've hit Exa's free MCP rate limit."):
+            return provider_failure(429)
+        if value.get("isError"):
+            # Preserve only the status from Exa's documented error envelope.
+            status = re.match(r"web_search_exa error \(([45]\d{2})\):", combined)
+            if status:
+                return provider_failure(int(status[1]))
+            if re.fullmatch(r"web_search_exa error: web_search_exa timed out after \d+(?:\.\d+)?s", combined):
+                return diagnostic("timeout", "搜索服务处理超时", "稍后重试，或缩小查询范围", retryable=True)
+            return provider_failure()
     sources = list(dict.fromkeys(match.group().rstrip(".,;") for match in re.finditer(r'https?://[^\s<>\]\)\"]+', combined)
         if len(match.group()) <= 4096))[:20]
     if not combined or (not sources and re.match(
