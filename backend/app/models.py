@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Literal
 import uuid
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from .novelai_generation.config import NovelaiRoleConfig
 
 from .coding_tasks.config import CodingRoleConfig
@@ -96,12 +96,24 @@ class AgentToolConfig(BaseModel):
 
 
 class RoleInput(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     name: str
     description: str = ""
     profile: RoleProfile
-    modelConfig: dict[str, Any] = Field(default_factory=dict)
+    modelConfigurationId: str | None = None
     proactiveConfig: dict[str, Any] = Field(default_factory=dict)
     agentConfig: AgentToolConfig = Field(default_factory=AgentToolConfig)
+
+    @field_validator("modelConfigurationId")
+    @classmethod
+    def validate_model_configuration_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("模型连接 ID 不能为空")
+        return value
 
     @field_validator("name")
     @classmethod
@@ -120,6 +132,8 @@ class RoleInput(BaseModel):
 
 
 class RoleUpdateInput(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     name: str
     description: str = ""
     profile: RoleProfile
@@ -154,7 +168,7 @@ class Role(RoleInput):
     id: str
     createdAt: datetime
     updatedAt: datetime
-    modelConfigurationId: str | None = None
+    modelBindingRequired: bool = False
     avatarUrl: str | None = None
     avatarMediaType: str | None = None
     avatarOriginalUrl: str | None = None
@@ -173,6 +187,8 @@ class Role(RoleInput):
 
 
 class RoleModelConfigurationInput(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     configurationId: str | None
 
     @field_validator("configurationId")

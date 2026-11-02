@@ -190,6 +190,8 @@ class ComputerUseHost:
     def dependency_status(self, role):
         if not self.enabled_for(role):
             return {"status": "unavailable", "reason": "角色的 Computer Use 开关已关闭"}
+        if getattr(role, 'modelBindingRequired', False):
+            return {"status": "unavailable", "reason": "该角色的模型连接无法使用，请重新选择模型"}
         try:
             configuration = self._configuration(role.modelConfigurationId)
             if configuration is None or not self._registry.supports_images(configuration):
@@ -219,6 +221,8 @@ class ComputerUseHost:
                 or users[0].metadata.get("channel", "desktop") != "desktop"
                 or any(users[0].metadata.get(k) for k in ("scheduled", "background", "taskId", "proactive", "trigger", "senderId"))):
             raise ComputerUseError("permission_denied")
+        if getattr(role, 'modelBindingRequired', False):
+            raise ComputerUseError("vision_unsupported")
         configuration = self._configuration(role.modelConfigurationId)
         if configuration is None or not self._registry.supports_images(configuration):
             raise ComputerUseError("vision_unsupported")

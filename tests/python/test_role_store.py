@@ -3,7 +3,8 @@ import pytest
 from pydantic import ValidationError
 
 from backend.app.role_store import RoleStore
-from backend.app.models import AgentToolConfig, RoleInput, RoleProfile, RoleUpdateInput, ShellToolConfig
+from backend.app.models import AgentToolConfig, ModelConfigurationInput, RoleInput, RoleProfile, RoleUpdateInput, ShellToolConfig
+from backend.app.model_config import ModelConfigurationStore
 
 
 def role_input(name: str = "小葵") -> RoleInput:
@@ -36,7 +37,7 @@ def test_role_update_preserves_non_editable_configuration(tmp_path):
     role = store.create(RoleInput(
         name="小葵",
         profile=RoleProfile(profile="原设定"),
-        modelConfig={"provider": "local"},
+        modelConfigurationId="model-local",
         proactiveConfig={"enabled": True},
     ))
 
@@ -46,7 +47,7 @@ def test_role_update_preserves_non_editable_configuration(tmp_path):
         profile=RoleProfile(profile="新设定"),
     ))
 
-    assert updated.modelConfig == {"provider": "local"}
+    assert updated.modelConfigurationId == "model-local"
     assert updated.proactiveConfig == {"enabled": True}
     assert updated.profile.profile == "新设定"
 
@@ -121,6 +122,252 @@ def test_role_model_configuration_binding_persists_and_is_independent(tmp_path):
     reloaded = RoleStore(root)
     assert reloaded.get(first.id).modelConfigurationId == "model-first"
     assert reloaded.get(second.id).modelConfigurationId is None
+
+
+def test_role_creation_preserves_canonical_binding_and_discards_inline_credentials(tmp_path):
+    store = RoleStore(tmp_path / "roles")
+    role = store.create(RoleInput(
+        name="角色", profile=RoleProfile(profile="设定"),
+        modelConfigurationId="  model-chosen  ",
+        modelConfig={"apiKey": "synthetic-inline-secret", "headers": {"Authorization": "synthetic-bearer"}},
+        modelBindingRequired=True,
+    ))
+
+    assert role.modelConfigurationId == "model-chosen"
+    assert role.modelBindingRequired is False
+    assert "modelConfig" not in role.model_dump()
+    assert "synthetic-" not in store.manifest_path.read_text(encoding="utf-8")
+    assert RoleStore(store.root).get(role.id).modelConfigurationId == "model-chosen"
+
+
+@pytest.mark.parametrize("value", ["", "  ", {"apiKey": "synthetic-secret"}])
+def test_role_creation_rejects_invalid_canonical_binding(value):
+    with pytest.raises(ValidationError) as caught:
+        RoleInput(name="角色", profile=RoleProfile(profile="设定"), modelConfigurationId=value)
+    assert "synthetic-secret" not in str(caught.value)
+
+
+def _configuration_catalog(tmp_path, **overrides):
+    catalog = ModelConfigurationStore(tmp_path / "model-config.json")
+    values = {
+        "providerId": "custom", "provider": "test-provider",
+        "baseUrl": "https://model.invalid/v1", "model": "test-model",
+        "api": "openai-completions", "apiKey": "synthetic-catalog-secret",
+        **overrides,
+    }
+    configuration = catalog.create(ModelConfigurationInput(**values))
+    return catalog, configuration
+
+
+def _legacy_manifest(tmp_path, legacy, **overrides):
+    root = tmp_path / "roles"
+    root.mkdir()
+    values = {
+        "id": "role-legacy", "name": "旧角色", "description": "旧简介",
+        "profile": {"profile": "原设定", "personality": "原性格", "behaviorRules": "原规则",
+                    "responseConstraints": "原约束", "nickname": "原称呼"},
+        "createdAt": "2026-01-02T03:04:05Z", "updatedAt": "2026-02-03T04:05:06Z",
+        "modelConfig": legacy,
+        **overrides,
+    }
+    (root / "roles.json").write_text(json.dumps({"version": 1, "roles": [values]}, ensure_ascii=False), encoding="utf-8")
+    return root, values
+
+
+def _inline_configuration(configuration, **overrides):
+    return {
+        key: getattr(configuration, key)
+        for key in ("providerId", "provider", "baseUrl", "model", "api", "apiOptions")
+    } | {"apiKey": "synthetic-legacy-secret", **overrides}
+
+
+def test_legacy_role_migrates_unique_public_connection_and_preserves_profile(tmp_path):
+    catalog, configuration = _configuration_catalog(tmp_path)
+    legacy = _inline_configuration(configuration, provider=" test-provider ", baseUrl="https://model.invalid/v1/")
+    root, original = _legacy_manifest(tmp_path, legacy)
+    original_bytes = (root / "roles.json").read_bytes()
+
+    store = RoleStore(root, model_configurations=catalog.list)
+    role = store.get("role-legacy")
+
+    assert role.modelConfigurationId == configuration.id
+    assert role.modelBindingRequired is False
+    assert role.profile.model_dump() == original["profile"]
+    assert role.createdAt.isoformat() == "2026-01-02T03:04:05+00:00"
+    assert role.updatedAt.isoformat() == "2026-02-03T04:05:06+00:00"
+    assert "modelConfig" not in role.model_dump()
+    assert (root / "roles.json").read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize("identifier_field", ["id", "configurationId", "modelConfigurationId"])
+def test_legacy_role_prefers_existing_explicit_connection_id(tmp_path, identifier_field):
+    catalog, configuration = _configuration_catalog(tmp_path)
+    root, _ = _legacy_manifest(tmp_path, {identifier_field: configuration.id, "apiKey": "synthetic-secret"})
+
+    role = RoleStore(root, model_configurations=catalog.list).get("role-legacy")
+
+    assert role.modelConfigurationId == configuration.id
+    assert role.modelBindingRequired is False
+
+
+def test_existing_canonical_binding_never_falls_back_to_matching_legacy_configuration(tmp_path):
+    catalog, configuration = _configuration_catalog(tmp_path)
+    root, _ = _legacy_manifest(tmp_path, _inline_configuration(configuration), modelConfigurationId="missing-canonical")
+
+    role = RoleStore(root, model_configurations=catalog.list).get("role-legacy")
+
+    assert role.modelConfigurationId == "missing-canonical"
+    assert catalog.get_for_role(role) is None
+
+
+@pytest.mark.parametrize("legacy_change", [
+    {"model": "different"},
+    {"baseUrl": "https://user:synthetic-url-secret@model.invalid/v1"},
+    {"baseUrl": "https://model.invalid/v1?api_key=synthetic-url-secret"},
+    {"apiOptions": {"apiKey": "synthetic-option-secret"}},
+    {"apiOptions": "synthetic-malformed-secret"},
+    {"providerId": "missing-provider"},
+])
+def test_unmatched_or_unsafe_legacy_role_requires_reselection_without_global_fallback(tmp_path, legacy_change):
+    catalog, configuration = _configuration_catalog(tmp_path)
+    root, _ = _legacy_manifest(tmp_path, _inline_configuration(configuration, **legacy_change))
+
+    role = RoleStore(root, model_configurations=catalog.list).get("role-legacy")
+
+    assert role.modelConfigurationId is None
+    assert role.modelBindingRequired is True
+    assert catalog.get_for_role(role) is None
+    assert "synthetic-" not in role.model_dump_json()
+
+
+def test_ambiguous_legacy_role_is_not_resolved_by_matching_api_key(tmp_path):
+    catalog, configuration = _configuration_catalog(tmp_path)
+    catalog.create(ModelConfigurationInput(**_inline_configuration(configuration, apiKey="synthetic-other-secret")))
+    root, _ = _legacy_manifest(tmp_path, _inline_configuration(configuration, apiKey=configuration.apiKey))
+
+    role = RoleStore(root, model_configurations=catalog.list).get("role-legacy")
+
+    assert role.modelConfigurationId is None
+    assert role.modelBindingRequired is True
+
+
+@pytest.mark.parametrize("options, expected_binding", [
+    ({"project": "test-project", "location": "test-region"}, True),
+    ({"project": "different-project", "location": "test-region"}, False),
+])
+def test_legacy_matching_compares_protocol_options_exactly(tmp_path, options, expected_binding):
+    catalog, configuration = _configuration_catalog(tmp_path, api="google-vertex",
+        apiOptions={"project": "test-project", "location": "test-region"})
+    root, _ = _legacy_manifest(tmp_path, _inline_configuration(configuration, apiOptions=options))
+
+    role = RoleStore(root, model_configurations=catalog.list).get("role-legacy")
+
+    assert role.modelConfigurationId == (configuration.id if expected_binding else None)
+    assert role.modelBindingRequired is not expected_binding
+
+
+@pytest.mark.parametrize("legacy", ["synthetic-malformed-secret", ["synthetic-malformed-secret"]])
+def test_malformed_legacy_value_keeps_role_without_exposing_the_value(tmp_path, legacy):
+    root, _ = _legacy_manifest(tmp_path, legacy)
+
+    role = RoleStore(root).get("role-legacy")
+
+    assert role.modelBindingRequired is True
+    assert "synthetic-" not in role.model_dump_json()
+
+
+@pytest.mark.parametrize("invalid_id", ["", "  ", {"apiKey": "synthetic-invalid-id-secret"}])
+def test_invalid_stored_canonical_id_cannot_trigger_legacy_or_global_fallback(tmp_path, invalid_id):
+    catalog, configuration = _configuration_catalog(tmp_path)
+    root, _ = _legacy_manifest(tmp_path, _inline_configuration(configuration),
+        modelConfigurationId=invalid_id)
+
+    role = RoleStore(root, model_configurations=catalog.list).get("role-legacy")
+
+    assert role.modelBindingRequired is True
+    assert catalog.get_for_role(role) is None
+    assert "synthetic-" not in role.model_dump_json()
+
+
+def test_reselecting_model_clears_legacy_error_and_preserves_profile(tmp_path):
+    catalog, configuration = _configuration_catalog(tmp_path)
+    root, _ = _legacy_manifest(tmp_path, {"apiKey": "synthetic-secret"})
+    store = RoleStore(root, model_configurations=catalog.list)
+    before = store.get("role-legacy")
+    assert before.modelBindingRequired is True
+
+    edited = store.update(before.id, RoleUpdateInput(name="改名", profile=before.profile))
+    assert edited.modelBindingRequired is True
+    bound = store.set_model_configuration(before.id, configuration.id)
+
+    assert bound.modelBindingRequired is False
+    assert bound.profile == before.profile
+    assert bound.name == "改名"
+    assert RoleStore(root).get(before.id).modelConfigurationId == configuration.id
+
+
+def test_unbound_role_inherits_active_configuration_and_returns_an_isolated_snapshot(tmp_path):
+    catalog, configuration = _configuration_catalog(tmp_path)
+    role = RoleStore(tmp_path / "roles").create(role_input())
+    snapshot = catalog.get_for_role(role)
+
+    assert snapshot.id == configuration.id
+    catalog.update(configuration.id, ModelConfigurationInput(**_inline_configuration(configuration, model="updated")))
+    assert snapshot.model == "test-model"
+    assert catalog.get_for_role(role).model == "updated"
+    assert catalog.get_for_role(None) is None
+
+
+@pytest.mark.parametrize("legacy", [None, {}, [], "", {"apiKey": "synthetic-legacy-secret", "nested": {"token": "synthetic-token"}}])
+def test_ordinary_saves_preserve_original_legacy_field_privately(tmp_path, legacy):
+    root, _ = _legacy_manifest(tmp_path, legacy)
+    original_bytes = (root / "roles.json").read_bytes()
+    store = RoleStore(root)
+    role = store.get("role-legacy")
+    assert (root / "roles.json").read_bytes() == original_bytes
+    assert "modelConfig" not in role.model_dump()
+
+    store.update(role.id, RoleUpdateInput(name="新名字", profile=role.profile))
+    record = json.loads((root / "roles.json").read_text(encoding="utf-8"))["roles"][0]
+    assert "modelConfig" in record
+    assert record["modelConfig"] == legacy
+    store.set_model_configuration(role.id, "new-model")
+    assert json.loads((root / "roles.json").read_text(encoding="utf-8"))["roles"][0]["modelConfig"] == legacy
+    assert "modelConfig" not in RoleStore(root).get(role.id).model_dump()
+
+
+def test_explicit_global_reselection_survives_reload_with_legacy_source_unchanged(tmp_path):
+    catalog, configuration = _configuration_catalog(tmp_path)
+    legacy = {"apiKey": "synthetic-legacy-secret"}
+    root, _ = _legacy_manifest(tmp_path, legacy)
+    store = RoleStore(root, model_configurations=catalog.list)
+    assert store.get("role-legacy").modelBindingRequired is True
+
+    store.set_model_configuration("role-legacy", None)
+    role = RoleStore(root, model_configurations=catalog.list).get("role-legacy")
+
+    assert role.modelConfigurationId is None
+    assert role.modelBindingRequired is False
+    assert catalog.get_for_role(role).id == configuration.id
+    assert json.loads((root / "roles.json").read_text(encoding="utf-8"))["roles"][0]["modelConfig"] == legacy
+
+
+def test_failed_legacy_profile_save_preserves_original_manifest_bytes(tmp_path, monkeypatch):
+    root, _ = _legacy_manifest(tmp_path, {"apiKey": "synthetic-legacy-secret"})
+    store = RoleStore(root)
+    before = (root / "roles.json").read_bytes()
+    role = store.get("role-legacy")
+
+    def fail_replace(*_args):
+        raise OSError("synthetic write failure")
+
+    monkeypatch.setattr("backend.app.role_store.os.replace", fail_replace)
+    with pytest.raises(OSError, match="synthetic write failure"):
+        store.update(role.id, RoleUpdateInput(name="新名字", profile=role.profile))
+
+    assert (root / "roles.json").read_bytes() == before
+    assert store.get(role.id) == role
+    assert list(root.glob(".roles.json.*.tmp")) == []
 
 
 def test_failed_model_configuration_binding_keeps_previous_value(tmp_path, monkeypatch):

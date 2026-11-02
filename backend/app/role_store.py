@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable
 
-from .models import Role, RoleInput, RoleUpdateInput, RoleIllustration
+from .models import ModelConfiguration, ModelConfigurationInput, Role, RoleInput, RoleUpdateInput, RoleIllustration
+from .model_config import validate_model_configuration
 
 
 def utc_now() -> datetime:
@@ -22,12 +23,17 @@ def utc_now() -> datetime:
 class RoleStore:
     """Persistent role manifest modeled after Shiori-Agent's RoleStore."""
 
-    def __init__(self, root: str | Path = "roles") -> None:
+    def __init__(self, root: str | Path = "roles", *,
+                 model_configurations: Callable[[], list[ModelConfiguration]] | None = None) -> None:
         self.root = Path(root).resolve()
         self.manifest_path = self.root / "roles.json"
         self._lock = threading.RLock()
         self._deleting: set[str] = set()
         self.recovery_errors: list[str] = []
+        self._model_configurations = model_configurations
+        # Preserve legacy source data for an explicit future cleanup. This
+        # private compatibility map never enters a Role or an API response.
+        self._legacy_model_configs: dict[str, Any] = {}
         self.root.mkdir(parents=True, exist_ok=True)
         self._roles: list[Role] = self._load()
         self.cleanup_staged_role_files()
@@ -109,6 +115,7 @@ class RoleStore:
             current = self._roles[index]
             updated = current.model_copy(update={
                 "modelConfigurationId": configuration_id,
+                "modelBindingRequired": False,
                 "updatedAt": utc_now(),
             })
             candidate = [*self._roles]
@@ -633,18 +640,85 @@ class RoleStore:
             return []
         raw = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         roles = raw.get("roles", []) if isinstance(raw, dict) else []
-        return [Role.model_validate(self._normalize(item)) for item in roles if isinstance(item, dict)]
+        needs_catalog = any(
+            isinstance(item, dict) and isinstance(item.get("modelConfig"), dict) and item["modelConfig"]
+            and item.get("modelConfigurationId") is None
+            and not isinstance(item.get("modelBindingRequired"), bool)
+            for item in roles
+        )
+        configurations = self._model_configurations() if needs_catalog and self._model_configurations else []
+        loaded = []
+        for item in roles:
+            if not isinstance(item, dict):
+                continue
+            role = Role.model_validate(self._normalize(item, configurations))
+            if "modelConfig" in item:
+                self._legacy_model_configs[role.id] = deepcopy(item["modelConfig"])
+            loaded.append(role)
+        return loaded
 
     @staticmethod
-    def _normalize(item: dict[str, Any]) -> dict[str, Any]:
+    def _connection_identity(value: dict[str, Any]) -> tuple | None:
+        """Validate and compare only non-sensitive connection identity fields."""
+        fields = ("providerId", "provider", "baseUrl", "model", "api", "apiOptions")
+        try:
+            # The auth placeholder only satisfies protocol shape validation;
+            # a legacy credential is never read or compared during matching.
+            candidate = ModelConfigurationInput.model_validate({
+                **{key: value[key] for key in fields if key in value},
+                "apiKey": "unused-for-identity-validation",
+            })
+            validate_model_configuration(candidate)
+        except (TypeError, ValueError):
+            return None
+        return (candidate.providerId, candidate.provider, candidate.baseUrl.rstrip("/"),
+                candidate.model, candidate.api, tuple(sorted(candidate.apiOptions.items())))
+
+    @classmethod
+    def _model_binding(cls, item: dict[str, Any], configurations: list[ModelConfiguration]) -> tuple[str | None, bool]:
+        canonical_id = item.get("modelConfigurationId")
+        if isinstance(canonical_id, str) and canonical_id.strip():
+            # A missing canonical ID stays explicit; never rematch or inherit.
+            return canonical_id.strip(), False
+        if canonical_id is not None:
+            return None, True
+        if canonical_id is None and isinstance(item.get("modelBindingRequired"), bool):
+            # A saved explicit reselection may intentionally choose global
+            # inheritance even though the private legacy source is retained.
+            return None, item["modelBindingRequired"]
+        legacy = item.get("modelConfig")
+        if not legacy:
+            return None, bool(item.get("modelBindingRequired", False))
+        if not isinstance(legacy, dict):
+            return None, True
+        available_ids = {configuration.id for configuration in configurations}
+        explicit_ids = {
+            value.strip() for key in ("id", "configurationId", "modelConfigurationId")
+            if isinstance(value := legacy.get(key), str) and value.strip() in available_ids
+        }
+        if len(explicit_ids) == 1:
+            return explicit_ids.pop(), False
+        if len(explicit_ids) > 1:
+            return None, True
+        identity = cls._connection_identity(legacy)
+        if identity is None:
+            return None, True
+        fields = ("providerId", "provider", "baseUrl", "model", "api", "apiOptions")
+        matches = [configuration.id for configuration in configurations
+                   if cls._connection_identity({field: getattr(configuration, field) for field in fields}) == identity]
+        return (matches[0], False) if len(matches) == 1 else (None, True)
+
+    @classmethod
+    def _normalize(cls, item: dict[str, Any], configurations: list[ModelConfiguration]) -> dict[str, Any]:
         profile = item.get("profile") or {}
+        configuration_id, binding_required = cls._model_binding(item, configurations)
         return {
             "id": item.get("id") or f"role-{uuid.uuid4().hex}",
             "name": item.get("name", ""),
             "description": item.get("description", ""),
             "profile": profile,
-            "modelConfig": item.get("modelConfig") or {},
-            "modelConfigurationId": item.get("modelConfigurationId"),
+            "modelConfigurationId": configuration_id,
+            "modelBindingRequired": binding_required,
             "avatarUrl": item.get("avatarUrl"),
             "avatarMediaType": item.get("avatarMediaType"),
             "avatarOriginalUrl": item.get("avatarOriginalUrl"),
@@ -674,7 +748,16 @@ class RoleStore:
 
     def _save(self, roles: list[Role] | None = None) -> None:
         persisted_roles = roles if roles is not None else self._roles
-        payload = {"version": 1, "roles": [role.model_dump(mode="json") for role in persisted_roles]}
+        records = []
+        for role in persisted_roles:
+            record = role.model_dump(mode="json")
+            if role.id in self._legacy_model_configs:
+                record["modelConfig"] = self._legacy_model_configs[role.id]
+            records.append(record)
+        payload = {"version": 1, "roles": records}
         temporary = self.manifest_path.with_name(f".{self.manifest_path.name}.{os.getpid()}.tmp")
-        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.replace(temporary, self.manifest_path)
+        try:
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            os.replace(temporary, self.manifest_path)
+        finally:
+            temporary.unlink(missing_ok=True)

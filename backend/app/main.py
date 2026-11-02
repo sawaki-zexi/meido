@@ -22,8 +22,10 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 import httpx
 
 from .agent_runtime.tools import AgentTool
@@ -198,7 +200,8 @@ _managed_qq_pending: dict[str, str] = {}
 MAX_ROLE_AVATAR_BYTES = 10 * 1024 * 1024
 ROLE_AVATAR_MEDIA_TYPES = {"image/png", "image/jpeg", "image/webp"}
 initialize_databases(data_root)
-store = RoleStore(roles_root)
+model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
+store = RoleStore(roles_root, model_configurations=model_configuration_store.list)
 session_store = SessionStore(data_root / "sessions.db")
 from .context_windows import ContextWindowStore
 from .agent_runtime.context_provider import ContextWindowProvider
@@ -319,7 +322,6 @@ memory_store = MemoryStore(data_root / "memory2.db")
 memory_event_bus = MemoryEventBus()
 model_adapter_registry = ModelAdapterRegistry()
 model_adapter: ModelAdapter = RoutedModelAdapter(model_adapter_registry)
-model_configuration_store = ModelConfigurationStore(data_root / "model-config.json")
 plugin_configuration = PluginConfigurationStore(data_root / 'plugin-settings.json')
 from .advanced_settings import AdvancedSettings, AdvancedSettingsStore, AdvancedSettingsUpdate, SettingsConflict
 advanced_settings = AdvancedSettingsStore(data_root / 'advanced-settings.db')
@@ -330,9 +332,8 @@ def _effective_plugin_role(role):
     if projected is not None and projected.agentConfig.screenPerception.visionModelConfigurationId is None:
         # Only an unset vision binding inherits chat. Missing explicit IDs stay
         # explicit so they cannot silently route an image to another model.
-        projected.agentConfig.screenPerception.visionModelConfigurationId = (
-            role.modelConfigurationId or model_configuration_store.active_id()
-        )
+        configuration = model_configuration_store.get_for_role(role)
+        projected.agentConfig.screenPerception.visionModelConfigurationId = configuration.id if configuration else role.modelConfigurationId
     return projected
 
 
@@ -540,7 +541,7 @@ mail_manage_tool = MailManageTool(mail_service)
 
 def _role_model_configuration(role_id: str):
     role = store.get(role_id)
-    return model_configuration_store.get(role.modelConfigurationId) if role and role.modelConfigurationId else model_configuration_store.get()
+    return model_configuration_store.get_for_role(role)
 
 
 def _memory_configuration_generation(role_id: str) -> str:
@@ -776,11 +777,7 @@ memory_optimizer_loop = MemoryOptimizerLoop(
     policy_enabled=advanced_settings.values().memoryOptimizerEnabled,
     model_available=lambda role_id: (
         (role := store.get(role_id)) is not None
-        and (
-            model_configuration_store.get(role.modelConfigurationId)
-            if role.modelConfigurationId
-            else model_configuration_store.get()
-        ) is not None
+        and model_configuration_store.get_for_role(role) is not None
     ),
     enabled_provider=lambda: advanced_settings.values().memoryOptimizerEnabled,
 )
@@ -1083,6 +1080,17 @@ async def _prepare_chat_shutdown():
 
 
 app = FastAPI(title="Meido API", on_startup=[_start_memory_workers], on_shutdown=[_close_memory_workers])
+
+
+@app.exception_handler(RequestValidationError)
+async def role_validation_error(request: Request, error: RequestValidationError):
+    role_input = request.method == 'POST' and request.url.path == '/api/roles'
+    role_update = request.method == 'PUT' and re.fullmatch(r'/api/roles/[^/]+(?:/model-configuration)?', request.url.path)
+    if role_input or role_update:
+        # Pydantic's input/context fields can contain an entire legacy payload,
+        # including credentials. Do not echo untrusted role data on rejection.
+        return JSONResponse(status_code=422, content={'detail': '角色请求无效，请检查角色字段和模型连接 ID'})
+    return await request_validation_exception_handler(request, error)
 app.state.before_server_drain = _prepare_chat_shutdown
 app.include_router(mail_router)
 app.include_router(mcp_router(lambda: mcp_host, lambda: store))
@@ -1819,11 +1827,14 @@ async def activate_model_configuration(configuration_id: str) -> dict[str, objec
 @app.delete("/api/model/configurations/{configuration_id}")
 async def delete_model_configuration(configuration_id: str) -> dict[str, object]:
     try:
+        with model_configuration_store.binding_lock:
+            if any(role.modelConfigurationId == configuration_id for role in store.list()):
+                raise HTTPException(status_code=409, detail="该模型连接仍被角色使用，请先为角色重新选择模型")
+            active_id = model_configuration_store.delete(configuration_id)
         if _proactive is not None:
             _proactive.invalidate_model(configuration_id)
         if _novelai is not None:
             _novelai.scenes.invalidate_model(configuration_id)
-        active_id = model_configuration_store.delete(configuration_id)
         await screen_perception.invalidate(configuration_id=configuration_id)
         await computer_use.invalidate(configuration_id=configuration_id)
     except KeyError as error:
@@ -1878,8 +1889,15 @@ def chat_previews():
 @app.post("/api/roles", response_model=RoleResponse, status_code=201)
 def create_role(data: RoleInput) -> RoleResponse:
     _validate_screen_configuration(data.agentConfig.screenPerception)
+
+    def persist():
+        with model_configuration_store.binding_lock:
+            if data.modelConfigurationId and model_configuration_store.get(data.modelConfigurationId) is None:
+                raise HTTPException(status_code=409, detail="选择的模型连接已不存在，请重新选择模型")
+            return store.create(data)
+
     try:
-        return RoleResponse(role=_novelai_application().create_role(data))
+        return RoleResponse(role=_novelai_application().create_role(data, persist=persist))
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None
     except OSError as error:
@@ -2218,13 +2236,21 @@ def delete_role_avatar(role_id: str) -> Response:
 
 
 @app.get("/api/roles/{role_id}/model-configuration")
-def get_role_model_configuration(role_id: str) -> dict[str, str | None]:
+def get_role_model_configuration(role_id: str) -> dict[str, object]:
     role = store.get(role_id)
     if role is None:
         raise HTTPException(status_code=404, detail="角色不存在")
+    return _role_model_binding_state(role)
+
+
+def _role_model_binding_state(role) -> dict[str, object]:
+    configuration = model_configuration_store.get_for_role(role)
+    required = role.modelBindingRequired or bool(role.modelConfigurationId and configuration is None)
     return {
         "configurationId": role.modelConfigurationId,
-        "effectiveConfigurationId": role.modelConfigurationId or model_configuration_store.active_id(),
+        "effectiveConfigurationId": configuration.id if configuration else None,
+        "reselectionRequired": required,
+        "error": "该角色的模型连接无法使用，请重新选择模型" if required else None,
     }
 
 
@@ -2232,24 +2258,24 @@ def get_role_model_configuration(role_id: str) -> dict[str, str | None]:
 async def set_role_model_configuration(
     role_id: str,
     data: RoleModelConfigurationInput,
-) -> dict[str, str | None]:
+) -> dict[str, object]:
     if store.get(role_id) is None:
         raise HTTPException(status_code=404, detail="角色不存在")
     if data.configurationId and model_configuration_store.get(data.configurationId) is None:
-        raise HTTPException(status_code=404, detail="模型连接不存在")
+        raise HTTPException(status_code=404, detail="模型连接不存在，请重新选择模型")
     try:
         if plugin_configuration.get('screen').values['visionModelConfigurationId'] is None:
             await screen_perception.invalidate(role_id=role_id)
         await computer_use.invalidate(role_id=role_id)
-        role = store.set_model_configuration(role_id, data.configurationId)
+        with model_configuration_store.binding_lock:
+            if data.configurationId and model_configuration_store.get(data.configurationId) is None:
+                raise HTTPException(status_code=404, detail="模型连接不存在，请重新选择模型")
+            role = store.set_model_configuration(role_id, data.configurationId)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
     except OSError as error:
         raise HTTPException(status_code=500, detail=f"角色模型绑定保存失败：{error}") from error
-    return {
-        "configurationId": role.modelConfigurationId,
-        "effectiveConfigurationId": role.modelConfigurationId or model_configuration_store.active_id(),
-    }
+    return _role_model_binding_state(role)
 
 
 @app.delete("/api/roles/{role_id}", status_code=204)
@@ -3037,8 +3063,8 @@ async def _natural_decide(batch, inputs, authorized):
     role = store.get(batch.thread.role_id)
     if role is None or not authorized():
         return NaturalDecision('silence')
-    configuration = model_configuration_store.get(role.modelConfigurationId)
-    if role.modelConfigurationId and configuration is None:
+    configuration = model_configuration_store.get_for_role(role)
+    if role.modelBindingRequired or role.modelConfigurationId and configuration is None:
         return NaturalDecision('silence')
     batch.run_id = f'run-{uuid.uuid4().hex}'
     limits = _natural_application().limits
@@ -5081,7 +5107,7 @@ def _runtime_tool_candidates(
             and user.metadata.get('channel', 'desktop') == 'desktop')
 
     from .agent_runtime.role_image_tool import InspectRoleImageTool, role_image_catalog
-    image_configuration = model_configuration_store.get(role.modelConfigurationId)
+    image_configuration = model_configuration_store.get_for_role(role)
     memory_access = _memory_runtime_access(role, is_channel_owner=is_channel_owner, source_thread_id=source_thread_id)
     group_access = GroupToolAccess(multichannel_store, role_id=role.id,
         source_thread_id=source_thread_id, is_owner=is_channel_owner,
@@ -6389,7 +6415,7 @@ async def _summarize_channel_memory(thread, messages, context, profiles):
     role = store.get(thread.role_id)
     if role is None:
         raise KeyError(thread.role_id)
-    configuration = model_configuration_store.get(role.modelConfigurationId)
+    configuration = model_configuration_store.get_for_role(role)
     return await asyncio.to_thread(_complete_model_json, [
         {"role": "system", "content": "只整理以下外部会话中可证实的内容，不把群友当主人。返回JSON：{groupNote:string,summary:string,members:[{senderId:string,profile:string,shorthand:string}]}。更新而非丢弃既有笔记/档案。messages用于会话笔记与最近动态，包含主人参与的群事件和角色已确认的回复；成员档案只能依据memberFactsMessages中相应发送者的事实，senderId必须属于profiles的键，不提取主人或角色自身的档案，不推测身份。"},
         {"role": "user", "content": json.dumps({"channel": thread.channel, "chatType": thread.chat_type,
@@ -6588,8 +6614,8 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
     message_id = metadata.get("messageId")
     if role is None or not isinstance(message_id, str):
         return
-    configuration = model_configuration_store.get(role.modelConfigurationId)
-    if role.modelConfigurationId and configuration is None:
+    configuration = model_configuration_store.get_for_role(role)
+    if role.modelBindingRequired or role.modelConfigurationId and configuration is None:
         return
     run_id = f"run-{uuid.uuid4().hex}"
     plan = metadata.get("replyPlan")
@@ -7187,8 +7213,8 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
         role, session = session_manager.role_and_session(role_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="角色不存在") from error
-    configuration = model_configuration_store.get(role.modelConfigurationId)
-    if role.modelConfigurationId and configuration is None:
+    configuration = model_configuration_store.get_for_role(role)
+    if role.modelBindingRequired or role.modelConfigurationId and configuration is None:
         raise HTTPException(status_code=409, detail="该角色绑定的模型连接已不存在，请重新选择模型")
     if store.get(role_id) is None:
         raise HTTPException(status_code=404, detail="角色不存在")

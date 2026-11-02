@@ -28,9 +28,9 @@ async def report_to_chat(host: Any, target: ReportTarget, identifier: str, text:
     source = (FrozenChannelSource.from_dict(json.loads(origin.source_authority_json))
               if origin.source_authority_json else None)
     role = host.store.get(origin.role_id)
-    configuration = host.model_configuration_store.get(role.modelConfigurationId)
-    if role.modelConfigurationId and configuration is None:
-        raise PermissionError('原角色的模型连接已不存在')
+    configuration = host.model_configuration_store.get_for_role(role)
+    if role.modelBindingRequired or role.modelConfigurationId and configuration is None:
+        raise PermissionError('原角色的模型连接无法使用，请重新选择模型')
     history = host._owner_history(origin.role_id, thread_id=source.thread_id if source else None)
     event = host.session_store.append_message(origin.session_key, 'user', '[Herdr agent 回报]\n' + text,
         message_type='herdr_agent_report',

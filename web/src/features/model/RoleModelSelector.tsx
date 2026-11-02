@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { api, errorMessage } from "../../api/client";
-import type { ModelConfiguration as Configuration } from "../../api/types";
-
-type Binding = { configurationId: string | null; effectiveConfigurationId: string | null };
+import type { ModelBindingResponse as Binding, ModelConfiguration as Configuration } from "../../api/types";
 
 type RoleModelSelectorProps = {
   roleId: string;
@@ -20,6 +18,7 @@ export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleMo
   const [error, setError] = useState("");
   const requestSequence = useRef(0);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusRef = useRef(false);
 
   const load = async () => {
     const requestId = ++requestSequence.current;
@@ -33,9 +32,9 @@ export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleMo
       if (requestId === requestSequence.current) {
         setConfigurations(catalog.configurations);
         setBinding(roleBinding);
-        setError(roleBinding.configurationId && !catalog.configurations.some((item) => item.id === roleBinding.configurationId)
+        setError(roleBinding.error || (roleBinding.configurationId && !catalog.configurations.some((item) => item.id === roleBinding.configurationId)
           ? "当前角色绑定的模型已不存在，请重新选择"
-          : "");
+          : ""));
       }
     } catch (cause) {
       if (requestId === requestSequence.current) setError(errorMessage(cause, "无法加载模型列表"));
@@ -46,6 +45,7 @@ export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleMo
 
   useEffect(() => {
     requestSequence.current += 1;
+    restoreFocusRef.current = false;
     setOpen(false);
     setBinding(null);
     setSavingId(null);
@@ -54,7 +54,8 @@ export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleMo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roleId]);
 
-  const effectiveId = binding?.effectiveConfigurationId ?? null;
+  const reselectionRequired = binding?.reselectionRequired === true;
+  const effectiveId = reselectionRequired ? null : binding?.effectiveConfigurationId ?? null;
   const current = useMemo(
     () => configurations.find((configuration) => configuration.id === effectiveId) ?? null,
     [configurations, effectiveId],
@@ -62,10 +63,20 @@ export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleMo
   const selectedId = binding?.configurationId ?? null;
   useEffect(() => { if (!loading) onChange?.(current); }, [current, loading, onChange]);
   const busy = loading || savingId !== null;
+  const closeMenu = () => {
+    restoreFocusRef.current = true;
+    setOpen(false);
+  };
+  useEffect(() => {
+    if (!open && !busy && restoreFocusRef.current) {
+      restoreFocusRef.current = false;
+      triggerRef.current?.focus({ preventScroll: true });
+    }
+  }, [open, busy]);
 
   const select = async (configurationId: string | null) => {
-    if (busy || disabled || !binding || configurationId === selectedId) {
-      setOpen(false);
+    if (busy || disabled || !binding || (configurationId === selectedId && !reselectionRequired)) {
+      closeMenu();
       return;
     }
     const requestId = ++requestSequence.current;
@@ -78,7 +89,8 @@ export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleMo
       });
       if (requestId === requestSequence.current) {
         setBinding(next);
-        setOpen(false);
+        setError(next.error ?? "");
+        closeMenu();
       }
     } catch (cause) {
       if (requestId === requestSequence.current) setError(errorMessage(cause, "模型切换失败"));
@@ -99,8 +111,7 @@ export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleMo
     const index = items.indexOf(document.activeElement as HTMLButtonElement);
     if (event.key === "Escape") {
       event.preventDefault();
-      setOpen(false);
-      triggerRef.current?.focus();
+      closeMenu();
     } else if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
       event.preventDefault();
       const next = event.key === "Home" ? 0
@@ -111,7 +122,7 @@ export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleMo
     }
   };
 
-  const label = current?.model ?? (loading ? "加载模型…" : binding?.configurationId ? "模型已不存在" : "未配置模型");
+  const label = current?.model ?? (loading ? "加载模型…" : reselectionRequired ? "请重新选择模型" : binding?.configurationId ? "模型已不存在" : "未配置模型");
   const toggleMenu = () => {
     setError("");
     setOpen((value) => {
@@ -134,28 +145,29 @@ export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleMo
       <span aria-hidden="true" className="role-model-caret">{open ? "▴" : "▾"}</span>
     </button>
     {open && <div className="role-model-menu" role="menu" aria-label="聊天模型" onKeyDown={handleMenuKeyDown}>
+      {error && <span className="role-model-error" role="status">{error}</span>}
       {loading
         ? <span className="role-model-empty" role="status">正在刷新模型…</span>
         : configurations.length === 0
         ? <span className="role-model-empty">暂无已保存模型</span>
         : <>
-          <button type="button" role="menuitemradio" aria-checked={selectedId === null} className="role-model-option" disabled={savingId !== null} onClick={() => void select(null)}>
-            <span>跟随全局模型</span>{selectedId === null && <span aria-hidden="true">✓</span>}
+          <button type="button" role="menuitemradio" aria-checked={!reselectionRequired && selectedId === null} className="role-model-option" disabled={savingId !== null} onClick={() => void select(null)}>
+            <span>跟随全局模型</span>{!reselectionRequired && selectedId === null && <span aria-hidden="true">✓</span>}
           </button>
           {configurations.map((configuration) => <button
             type="button"
             role="menuitemradio"
-            aria-checked={selectedId === configuration.id}
+            aria-checked={!reselectionRequired && selectedId === configuration.id}
             className="role-model-option"
             key={configuration.id}
             disabled={savingId !== null}
             onClick={() => void select(configuration.id)}
           >
             <span>{configuration.model}<small>{configuration.provider}</small></span>
-            {selectedId === configuration.id && <span aria-hidden="true">✓</span>}
+            {!reselectionRequired && selectedId === configuration.id && <span aria-hidden="true">✓</span>}
           </button>)}
         </>}
     </div>}
-    {error && <span className="role-model-error" role="status">{error}</span>}
+    {!open && error && <span className="role-model-error" role="status">{error}</span>}
   </div>;
 }

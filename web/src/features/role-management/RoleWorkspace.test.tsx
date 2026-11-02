@@ -10,7 +10,7 @@ beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 it('资料按四段单独展开编辑，工具栏保存和重置保留折叠字段及旧数据', async () => {
-  const original = role({ id: 'r1', name: '爱丽丝' });
+  const original = role({ id: 'r1', name: '爱丽丝', modelConfigurationId: 'model-old' });
   let alice = { ...original, profile: { ...original.profile, nickname: '原称呼' } };
   const { calls } = fakeBackend({
     'GET /api/roles': () => ({ body: { roles: [alice] } }),
@@ -31,9 +31,13 @@ it('资料按四段单独展开编辑，工具栏保存和重置保留折叠字�
   await user.click(workspace.getByRole('button', { name: '性格' }));
   expect(workspace.queryByRole('textbox', { name: '角色设定' })).not.toBeInTheDocument();
   await user.type(workspace.getByRole('textbox', { name: '性格' }), '温柔而坚定');
+  alice = { ...alice, modelConfigurationId: 'model-new' };
   await user.click(workspace.getByRole('button', { name: '保存' }));
   await waitFor(() => expect(workspace.getByRole('button', { name: '保存' })).toBeDisabled());
   expect(calls.find(call => call.method === 'PUT')?.body).toMatchObject({ profile: { profile: '更新后的故事', personality: '温柔而坚定', nickname: '原称呼' } });
+  expect(calls.find(call => call.method === 'PUT')?.body).not.toHaveProperty('modelConfig');
+  expect(calls.find(call => call.method === 'PUT')?.body).not.toHaveProperty('modelConfigurationId');
+  expect(alice.modelConfigurationId).toBe('model-new');
   await user.clear(workspace.getByRole('textbox', { name: '性格' }));
   await user.click(workspace.getByRole('button', { name: '重置' }));
   expect(workspace.getByRole('textbox', { name: '性格' })).toHaveValue('温柔而坚定');

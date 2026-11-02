@@ -78,9 +78,25 @@ jobs:
               tests/python/test_api.py::test_role_has_one_persistent_session_and_streams_completed_reply
               tests/python/test_api.py::test_role_update_preserves_session_messages_and_changes_future_prompt
               tests/python/test_api.py::test_delete_role_removes_role_session_messages_and_files
-              tests/python/test_model_config.py::test_provider_presets_and_saved_configuration_are_publicly_masked
+              tests/python/test_model_config.py
               tests/python/test_agent_runtime.py::test_agent_loop_runs_tool_then_final_provider_turn
-              tests/python/test_role_store.py::test_role_store_persists_json_and_role_directories
+              tests/python/test_role_store.py
+              tests/python/test_api.py::test_role_creation_uses_canonical_binding_and_never_persists_legacy_credentials
+              tests/python/test_api.py::test_role_creation_rejects_missing_canonical_connection_without_writing_role
+              tests/python/test_api.py::test_role_validation_errors_do_not_echo_credentials
+              tests/python/test_api.py::test_in_use_model_connection_cannot_be_deleted_until_role_rebinds
+              tests/python/test_api.py::test_unresolved_legacy_binding_blocks_send_and_can_be_explicitly_reselected
+              tests/python/test_api.py::test_legacy_resolved_role_uses_canonical_snapshot_without_exposing_credentials
+              tests/python/test_api.py::test_binding_commit_serializes_with_connection_deletion
+              tests/python/test_api.py::test_role_creation_and_scene_policy_edit_share_one_lock_order
+              tests/python/test_api.py::test_role_model_configuration_api_persists_and_only_changes_selected_role
+              tests/python/test_api.py::test_role_model_configuration_api_rejects_missing_configuration_without_changing_binding
+              tests/python/test_api.py::test_role_model_configuration_api_failure_keeps_previous_binding
+              tests/python/test_api.py::test_role_messages_use_bound_configuration_and_reject_deleted_binding
+              tests/python/test_api.py::test_role_message_keeps_configuration_snapshot_when_binding_changes_during_stream
+              tests/python/test_api.py::test_unbound_role_uses_active_model_configuration
+              tests/python/test_api.py::test_role_message_snapshot_does_not_persist_legacy_role_secrets
+              tests/python/test_computer_use.py::test_unresolved_role_binding_never_uses_global_connection_or_starts_driver
           - group: channels
             args: >-
               tests/python/channels/test_adapters.py::test_napcat_group_event_is_normalized_for_host_listener_policy

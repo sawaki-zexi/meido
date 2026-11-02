@@ -79,10 +79,12 @@ class NovelaiApplication:
             if not public['availability']['available'] or not public['allowTxt2Img']:
                 raise ValueError('请先启用 NovelAI、配置凭据并允许文生图')
 
-    def create_role(self, data):
+    def create_role(self, data, *, persist: Callable[[], object] | None = None):
         with self._lock:
             self._validate_policy(data.agentConfig.novelai)
-            return self.roles.create(data)
+            # Host persistence guards acquire the model catalog after this
+            # application lock, matching scene-policy validation on updates.
+            return persist() if persist is not None else self.roles.create(data)
 
     def update_role(self, role_id, data):
         with self._lock:

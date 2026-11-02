@@ -392,6 +392,228 @@ def test_role_model_configuration_api_persists_and_only_changes_selected_role(tm
     ]
 
 
+def test_role_creation_uses_canonical_binding_and_never_persists_legacy_credentials(tmp_path, monkeypatch):
+    _, _, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    configuration = main.model_configuration_store.create(model_configuration_payload())
+    response = client.post('/api/roles', json={
+        'name': 'Canonical', 'profile': {'profile': '核心设定'},
+        'modelConfigurationId': configuration.id,
+        'modelConfig': {'apiKey': 'synthetic-legacy-secret', 'headers': {'Authorization': 'synthetic-token'}},
+    })
+    assert response.status_code == 201
+    role = response.json()['role']
+    assert role['modelConfigurationId'] == configuration.id
+    assert 'modelConfig' not in role
+    assert 'synthetic-' not in main.store.manifest_path.read_text(encoding='utf-8')
+    assert 'synthetic-' not in client.get('/api/roles').text
+    assert client.get(f"/api/roles/{role['id']}").json()['role']['modelConfigurationId'] == configuration.id
+
+
+def test_role_creation_rejects_missing_canonical_connection_without_writing_role(tmp_path, monkeypatch):
+    _, _, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    before = main.store.manifest_path.read_bytes()
+    response = client.post('/api/roles', json={'name': 'Missing', 'profile': {'profile': '设定'},
+        'modelConfigurationId': 'missing-model'})
+    assert response.status_code == 409
+    assert '选择' in response.json()['detail']
+    assert main.store.manifest_path.read_bytes() == before
+
+
+@pytest.mark.parametrize('payload', [
+    {'name': 'Invalid', 'profile': {'profile': '设定'}, 'modelConfigurationId': {'apiKey': 'synthetic-secret'}},
+    {'name': 'Invalid', 'modelConfig': {'apiKey': 'synthetic-secret'}},
+    {'name': 'Invalid', 'profile': {'profile': {'apiKey': 'synthetic-secret'}}},
+])
+def test_role_validation_errors_do_not_echo_credentials(tmp_path, monkeypatch, payload, caplog):
+    _, _, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    response = client.post('/api/roles', json=payload)
+    assert response.status_code == 422
+    assert 'synthetic-secret' not in response.text
+    assert 'synthetic-secret' not in caplog.text
+
+
+def test_in_use_model_connection_cannot_be_deleted_until_role_rebinds(tmp_path, monkeypatch):
+    role, _, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    first = main.model_configuration_store.create(model_configuration_payload('first'))
+    second = main.model_configuration_store.create(model_configuration_payload('second'))
+    client.put(f'/api/roles/{role.id}/model-configuration', json={'configurationId': first.id})
+    before = main.model_configuration_store.path.read_bytes()
+    response = client.delete(f'/api/model/configurations/{first.id}')
+    assert response.status_code == 409
+    assert '角色' in response.json()['detail']
+    assert main.model_configuration_store.path.read_bytes() == before
+    client.put(f'/api/roles/{role.id}/model-configuration', json={'configurationId': second.id})
+    assert client.delete(f'/api/model/configurations/{first.id}').status_code == 200
+
+
+def _load_legacy_api_role(role, legacy, sessions, monkeypatch):
+    record = role.model_dump(mode='json', exclude={'modelBindingRequired'})
+    record['modelConfig'] = legacy
+    main.store.manifest_path.write_text(json.dumps({'roles': [record]}), encoding='utf-8')
+    roles = RoleStore(main.store.root, model_configurations=main.model_configuration_store.list)
+    monkeypatch.setattr(main, 'store', roles)
+    monkeypatch.setattr(main, 'session_manager', SessionManager(roles, sessions))
+    return roles.get(role.id)
+
+
+@pytest.mark.parametrize('follow_global', [False, True])
+def test_unresolved_legacy_binding_blocks_send_and_can_be_explicitly_reselected(tmp_path, monkeypatch, caplog, follow_global):
+    adapter = ConfigurationRecordingAdapter()
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter)
+    active = main.model_configuration_store.create(model_configuration_payload())
+    legacy = {'provider': 'unknown', 'apiKey': 'synthetic-unresolved-secret'}
+    role = _load_legacy_api_role(role, legacy, sessions, monkeypatch)
+    before = main.store.manifest_path.read_bytes()
+    for response in (client.get('/api/roles'), client.get(f'/api/roles/{role.id}')):
+        assert response.status_code == 200 and 'synthetic-unresolved-secret' not in response.text
+        assert 'modelConfig"' not in response.text
+    binding = client.get(f'/api/roles/{role.id}/model-configuration').json()
+    assert binding['reselectionRequired'] and binding['effectiveConfigurationId'] is None
+    assert '重新选择' in binding['error']
+    response = client.post(f'/api/roles/{role.id}/messages', json={'content': '不得回退'})
+    assert response.status_code == 409 and '重新选择' in response.json()['detail']
+    assert adapter.configuration_ids == []
+    assert sessions.list_messages(f'role:{role.id}') == []
+    assert main.store.manifest_path.read_bytes() == before
+    assert main._role_model_configuration(role.id) is None
+    response = client.put(f'/api/roles/{role.id}/model-configuration',
+        json={'configurationId': None if follow_global else active.id})
+    assert response.status_code == 200 and not response.json()['reselectionRequired']
+    assert response.json()['effectiveConfigurationId'] == active.id
+    assert json.loads(main.store.manifest_path.read_text(encoding='utf-8'))['roles'][0]['modelConfig'] == legacy
+    assert 'event: assistant_completed' in client.post(f'/api/roles/{role.id}/messages', json={'content': '恢复'}).text
+    assert adapter.configuration_ids == [active.id]
+    assert 'synthetic-unresolved-secret' not in caplog.text
+
+
+def test_legacy_resolved_role_uses_canonical_snapshot_without_exposing_credentials(tmp_path, monkeypatch):
+    class UpdatingAdapter:
+        def __init__(self):
+            self.received = []
+
+        async def stream_reply(self, role, history, configuration=None):
+            before = (configuration.id, configuration.model, configuration.apiKey)
+            if not self.received:
+                main.model_configuration_store.update(configuration.id,
+                    model_configuration_payload('new-model').model_copy(update={'apiKey': 'synthetic-new-secret'}))
+            self.received.append((before, (configuration.id, configuration.model, configuration.apiKey)))
+            yield '回复'
+
+    adapter = UpdatingAdapter()
+    role, sessions, client = configure_session_api(tmp_path, monkeypatch, adapter)
+    config = main.model_configuration_store.create(model_configuration_payload('old-model').model_copy(
+        update={'apiKey': 'synthetic-saved-secret'}))
+    legacy = {**config.model_dump(), 'apiKey': 'synthetic-legacy-secret'}
+    role = _load_legacy_api_role(role, legacy, sessions, monkeypatch)
+    assert role.modelConfigurationId == config.id
+    assert client.delete(f'/api/model/configurations/{config.id}').status_code == 409
+    for content in ('旧快照', '新快照'):
+        assert 'event: assistant_completed' in client.post(f'/api/roles/{role.id}/messages', json={'content': content}).text
+    assert adapter.received == [
+        ((config.id, 'old-model', 'synthetic-saved-secret'), (config.id, 'old-model', 'synthetic-saved-secret')),
+        ((config.id, 'new-model', 'synthetic-new-secret'), (config.id, 'new-model', 'synthetic-new-secret')),
+    ]
+    runs = [sessions.get_run(message.runId) for message in sessions.list_messages(f'role:{role.id}') if message.role == 'user']
+    assert [run.modelSnapshot['modelConfiguration']['model'] for run in runs] == ['old-model', 'new-model']
+    for run in runs:
+        assert run.modelConfigurationId == config.id
+        assert 'synthetic-' not in json.dumps(run.modelSnapshot)
+        assert 'modelConfig' not in run.modelSnapshot['role']
+
+
+@pytest.mark.parametrize('operation', ['bind', 'create'])
+def test_binding_commit_serializes_with_connection_deletion(tmp_path, monkeypatch, operation):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+
+    role, _, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    config = main.model_configuration_store.create(model_configuration_payload())
+    entered, release, deleting = threading.Event(), threading.Event(), threading.Event()
+    original = main.store.set_model_configuration if operation == 'bind' else main.store.create
+    lock = main.model_configuration_store.binding_lock
+
+    class ObservedLock:
+        def __enter__(self):
+            if entered.is_set():
+                deleting.set()
+            lock.acquire()
+
+        def __exit__(self, *args):
+            lock.release()
+
+    def paused_commit(*args):
+        entered.set()
+        assert release.wait(5)
+        return original(*args)
+
+    monkeypatch.setattr(main.model_configuration_store, 'binding_lock', ObservedLock())
+    monkeypatch.setattr(main.store, 'set_model_configuration' if operation == 'bind' else 'create', paused_commit)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        if operation == 'bind':
+            binding = workers.submit(client.put, f'/api/roles/{role.id}/model-configuration',
+                json={'configurationId': config.id})
+        else:
+            binding = workers.submit(client.post, '/api/roles', json={
+                'name': 'Concurrent creation', 'profile': {'profile': '核心设定'},
+                'modelConfigurationId': config.id})
+        assert entered.wait(5)
+        deletion = workers.submit(client.delete, f'/api/model/configurations/{config.id}')
+        try:
+            assert deleting.wait(5)
+            assert not deletion.done()
+        finally:
+            release.set()
+        response = binding.result(timeout=5)
+        assert response.status_code == (200 if operation == 'bind' else 201)
+        assert deletion.result(timeout=5).status_code == 409
+    bound_role_id = role.id if operation == 'bind' else response.json()['role']['id']
+    assert main.store.get(bound_role_id).modelConfigurationId == config.id
+    assert main.model_configuration_store.get(config.id) is not None
+
+
+def test_role_creation_and_scene_policy_edit_share_one_lock_order(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+
+    role, _, _ = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    configurations = main.model_configuration_store
+    config = configurations.create(model_configuration_payload())
+    application = main._novelai_application()
+    original_lock = application._lock
+    editing, creating = threading.Event(), threading.Event()
+
+    class BoundedApplicationLock:
+        def __enter__(self):
+            if editing.is_set():
+                creating.set()
+            # A reversed order fails within two seconds instead of leaving
+            # pytest's worker threads permanently deadlocked.
+            assert original_lock.acquire(timeout=2), 'creation reversed the application/catalog lock order'
+
+        def __exit__(self, *args):
+            original_lock.release()
+
+    def scene_configuration(identifier):
+        editing.set()  # update_role already owns the application lock.
+        assert creating.wait(2), 'creation did not reach the application lock'
+        return configurations.get(identifier)
+
+    monkeypatch.setattr(application, '_lock', BoundedApplicationLock())
+    monkeypatch.setattr(application, 'model_configuration', scene_configuration)
+    monkeypatch.setattr(application.settings, 'public', lambda: {
+        'availability': {'available': True}, 'allowTxt2Img': True})
+    monkeypatch.setattr(main, '_novelai_application', lambda: application)
+    update = RoleUpdateInput(name=role.name, profile=role.profile,
+        agentConfig={'novelai': {'sceneCgEnabled': True, 'scenePromptModelConfigurationId': config.id}})
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        edited = workers.submit(application.update_role, role.id, update)
+        assert editing.wait(2)
+        created = workers.submit(main.create_role, RoleInput(name='Concurrent creation',
+            profile=role.profile, modelConfigurationId=config.id))
+        assert edited.result(timeout=5).agentConfig.novelai.sceneCgEnabled
+        assert created.result(timeout=5).role.modelConfigurationId == config.id
+
+
 def test_role_model_configuration_api_rejects_missing_configuration_without_changing_binding(tmp_path, monkeypatch):
     role, _, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
     configuration = main.model_configuration_store.create(model_configuration_payload())
@@ -399,6 +621,12 @@ def test_role_model_configuration_api_rejects_missing_configuration_without_chan
         f"/api/roles/{role.id}/model-configuration",
         json={"configurationId": configuration.id},
     )
+
+    async def unexpected_invalidation(**kwargs):
+        raise AssertionError('invalid selection must not interrupt active tools')
+
+    monkeypatch.setattr(main.screen_perception, 'invalidate', unexpected_invalidation)
+    monkeypatch.setattr(main.computer_use, 'invalidate', unexpected_invalidation)
 
     response = client.put(
         f"/api/roles/{role.id}/model-configuration",
