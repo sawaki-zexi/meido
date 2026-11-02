@@ -2,7 +2,7 @@
 
 状态：当前
 
-最后核验：2026-10-26
+最后核验：2026-11-02
 
 事实来源：[Issue #238](https://github.com/sawaki-zexi/meido/issues/238)、[ADR-0028](../adr/0028-frozen-owner-conversation-history.md)、[历史视图](../../backend/app/conversation_history.py)、[端到端测试](../../tests/python/channels/test_shared_owner_runtime.py)。
 
@@ -20,6 +20,8 @@
 ## 图片、引用与预算
 
 历史附件按角色附件目录重新解析。存在的受支持图片和文本附件可以重建；缺失或跨角色附件显示缺失说明。引用只读取同一聊天当前可见的原文，不能借引用带入未授权历史。
+
+主人 QQ 私聊的 `read_attachment` 与当前输入的引用投影使用同一附件集合和 ID，可继续读取文本预览以外的部分；不会因此允许读取其他历史消息的附件。工具读取继续复验冻结来源及原文是否有效，详见 [QQ 文本附件读取契约](../reference/qq-attachment-reader.md)。
 
 配置模型容量后使用原有完整回合摘要，不拆散工具调用和结果。摘要保留来源 ID，跨端原文删除、修改或撤权后失效。没有配置容量时使用至少 100 条的完整回合窗口；较早原文仍可查询。原始 transcript 不裁剪、不复制。
 

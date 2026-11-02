@@ -1,11 +1,13 @@
 import asyncio
 import io
+from dataclasses import replace
 
 import pytest
 from PIL import Image
 
 from backend.app.agent_runtime.message_history_tools import build_message_history_tools
 from backend.app.agent_runtime.types import AssistantMessage, ToolCall, ToolResultMessage, UserMessage
+from backend.app.channels.attachment_tool import ReadChannelAttachmentTool
 from backend.app.chat_attachments import save_attachment, resolve_attachment
 from backend.app.conversation_history import ConversationHistoryView
 from test_message_history_tools import setup_history
@@ -200,3 +202,80 @@ def test_media_and_tool_wait_recheck_the_same_frozen_grant(tmp_path, monkeypatch
     monkeypatch.setattr(tool.history, "read", delayed_read)
     with pytest.raises(PermissionError):
         asyncio.run(tool.execute({"source_ref": allowed.id}, context))
+
+
+@pytest.mark.parametrize("source", ["allowed", "pre-pair", "other-chat", "foreign-attachment"])
+def test_current_quoted_attachment_grant_uses_only_visible_same_chat_and_role_files(tmp_path, source):
+    sessions, channels, _, context = setup_history(tmp_path)
+    root = tmp_path / "r1"
+    direct = save_attachment(root, "direct.txt", "text/plain", b"DIRECT")
+    quoted = save_attachment(tmp_path / "r2" if source == "foreign-attachment" else root,
+        "quoted.txt", "text/plain", b"QUOTED")
+    unrelated = save_attachment(root, "unrelated.txt", "text/plain", b"UNRELATED")
+    downloaded = save_attachment(root, "fresh.txt", "text/plain", b"UNVERIFIED_DOWNLOAD")
+    thread = private(channels)
+    if source != "pre-pair":
+        pair(channels, thread)
+    origin_thread = private(channels, "second") if source == "other-chat" else thread
+    if origin_thread != thread:
+        pair(channels, origin_thread, "second")
+    original = sessions.append_message(origin_thread.session_key, "user", "原文件",
+        metadata={"attachments": [{**quoted, "path": unrelated["path"]}]})
+    if source == "pre-pair":
+        pair(channels, thread)
+    sessions.append_message(thread.session_key, "user", "未被引用的文件", metadata={"attachments": [unrelated]})
+    current = sessions.append_message(thread.session_key, "user", "读取引用",
+        metadata={"replyTo": original.id, "attachments": [direct], "quotedAttachments": [downloaded]})
+    view = ConversationHistoryView(channels, role_id="r1", thread_id=thread.thread_id,
+        through_message_id=current.id, attachment_resolver=lambda key: resolve_attachment(root, key))
+    shown = view.runtime_messages()[-1]
+    tool = ReadChannelAttachmentTool("r1", thread.session_key, view.current_attachments(), authorized=view.authorized)
+    context = replace(context, session_key=thread.session_key)
+
+    async def check():
+        direct_result = await tool.execute({"attachment_id": direct["id"]}, context)
+        assert not direct_result.is_error and direct_result.content.startswith("DIRECT\n")
+        result = await tool.execute({"attachment_id": quoted["id"]}, context)
+        assert result.is_error is (source != "allowed")
+        if source == "allowed":
+            assert f"attachment_id={quoted['id']}" in shown.content
+            assert result.content.startswith("QUOTED\n"), "historical path must not choose the file"
+        for identifier in (unrelated["id"], downloaded["id"]):
+            denied = await tool.execute({"attachment_id": identifier}, context)
+            assert denied.is_error and "不属于当前 QQ 回合" in denied.content
+        for other_context in (replace(context, role_id="r2"), replace(context, session_key="role:r1")):
+            assert (await tool.execute({"attachment_id": direct["id"]}, other_context)).is_error
+
+    asyncio.run(check())
+    persisted = next(message for message in sessions.list_messages(origin_thread.session_key) if message.id == original.id)
+    assert persisted.metadata == original.metadata, "projection must not rewrite the stored source"
+
+
+@pytest.mark.parametrize("change", ["unbind", "remove-source", "during-resolution"])
+def test_current_attachment_permission_is_revoked_after_snapshot_or_during_resolution(tmp_path, change):
+    sessions, channels, _, context = setup_history(tmp_path)
+    root = tmp_path / "r1"
+    attachment = save_attachment(root, "private.txt", "text/plain", b"PRIVATE_FILE")
+    thread = private(channels); pair(channels, thread)
+    original = sessions.append_message(thread.session_key, "user", "原文件", metadata={"attachments": [attachment]})
+    current = sessions.append_message(thread.session_key, "user", "引用", metadata={"replyTo": original.id})
+
+    def resolve(identifier):
+        result = resolve_attachment(root, identifier)
+        if change == "during-resolution":
+            channels.unbind_identity(channels.list_identities()[0]["identityId"])
+        return result
+
+    view = ConversationHistoryView(channels, role_id="r1", thread_id=thread.thread_id,
+        through_message_id=current.id, attachment_resolver=resolve)
+    if change == "during-resolution":
+        with pytest.raises(PermissionError):
+            view.current_attachments()
+        return
+    tool = ReadChannelAttachmentTool("r1", thread.session_key, view.current_attachments(), authorized=view.authorized)
+    if change == "unbind":
+        channels.unbind_identity(channels.list_identities()[0]["identityId"])
+    else:
+        sessions.delete_message(original.id)
+    result = asyncio.run(tool.execute({"attachment_id": attachment["id"]}, replace(context, session_key=thread.session_key)))
+    assert result.is_error and "PRIVATE_FILE" not in result.content

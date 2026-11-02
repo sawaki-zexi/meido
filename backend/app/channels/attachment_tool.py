@@ -1,7 +1,7 @@
 """QQ text attachment reader with a host-owned current-turn allowlist."""
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from ..agent_runtime.tools import AgentToolResult, ToolContext, ToolDefinition
@@ -19,13 +19,16 @@ class ReadChannelAttachmentTool:
         external_allowed=True, search_hint='QQ 附件 txt md 文件正文 引用文件 read_attachment',
     )
 
-    def __init__(self, role_id: str, session_key: str, attachments: list[dict[str, object]]) -> None:
+    def __init__(self, role_id: str, session_key: str, attachments: list[dict[str, object]], *,
+                 authorized: Callable[[], bool] | None = None) -> None:
         self.role_id, self.session_key = role_id, session_key
         self.attachments = {str(item["id"]): dict(item) for item in attachments if item.get("id")}
+        self.authorized = authorized
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None) -> AgentToolResult:
         del on_update
-        if context.role_id != self.role_id or context.session_key != self.session_key:
+        if (context.role_id != self.role_id or context.session_key != self.session_key
+                or self.authorized is not None and not self.authorized()):
             return AgentToolResult("附件不属于当前 QQ 回合。", is_error=True)
         item = self.attachments.get(str(arguments.get("attachment_id") or ""))
         if item is None:
@@ -47,6 +50,8 @@ class ReadChannelAttachmentTool:
             text = data.decode("utf-8-sig")
         except (OSError, ValueError, KeyError) as error:
             return AgentToolResult(f"附件无法读取：{error}", is_error=True)
+        if self.authorized is not None and not self.authorized():
+            return AgentToolResult("附件不属于当前 QQ 回合。", is_error=True)
         if character_offset is not None or any(len(line) > 8000 for line in data.splitlines()):
             if offset:
                 return AgentToolResult("此附件含超长行，请使用 character_offset。", is_error=True)

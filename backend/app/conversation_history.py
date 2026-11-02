@@ -30,6 +30,30 @@ def _grant_authority(grant):
     return {key: value for key, value in grant.items() if key != "title"}
 
 
+def _quote_lookup(messages):
+    visible = {(message.sessionKey, message.id): message for message in messages}
+    visible.update({(message.sessionKey, str(message.metadata["platformMessageId"])): message
+        for message in messages if message.metadata.get("platformMessageId")})
+    return visible
+
+
+def _user_projection(message, quotes):
+    metadata = dict(message.metadata)
+    content = message.content
+    attachments = list(metadata.get("attachments") or [])
+    if metadata.get("replyTo"):
+        quoted = quotes.get((message.sessionKey, str(metadata["replyTo"])))
+        if quoted is not None:
+            content = f"引用{'主人' if quoted.role == 'user' else '角色'}：\n{quoted.content}\n\n{content}"
+            attachments.extend(quoted.metadata.get("attachments") or [])
+        else:
+            content = "[引用原文不在当前授权历史中或已缺失]\n" + content
+    metadata["attachments"] = attachments
+    metadata.pop("quotedAttachments", None)
+    metadata.pop("replyToContent", None)
+    return content, metadata
+
+
 def freeze_channel_history(channels, account):
     """Normalize no payload here: freeze the host account before adapter awaits."""
     history = ConversationHistoryView(channels, role_id=account.role_id)
@@ -228,9 +252,7 @@ class ConversationHistoryView:
 
     def runtime_messages(self, *, max_messages=None):
         originals = self.read()
-        visible = {message.id: message for message in originals}
-        platform_messages = {(message.sessionKey, str(message.metadata.get("platformMessageId"))): message
-            for message in originals if message.metadata.get("platformMessageId")}
+        quotes = _quote_lookup(originals)
         prepared = []
         for message in originals:
             grant = self.grants.get(message.sessionKey)
@@ -238,17 +260,7 @@ class ConversationHistoryView:
             metadata = dict(message.metadata)
             content = message.content
             if message.role == "user":
-                attachments = list(metadata.get("attachments") or [])
-                if metadata.get("replyTo"):
-                    quoted = platform_messages.get((message.sessionKey, str(metadata["replyTo"]))) or visible.get(str(metadata["replyTo"]))
-                    if quoted is not None and quoted.sessionKey == message.sessionKey:
-                        content = f"引用{'主人' if quoted.role == 'user' else '角色'}：\n{quoted.content}\n\n{content}"
-                        attachments.extend(quoted.metadata.get("attachments") or [])
-                    else:
-                        content = "[引用原文不在当前授权历史中或已缺失]\n" + content
-                metadata["attachments"] = attachments
-                metadata.pop("quotedAttachments", None)
-                metadata.pop("replyToContent", None)
+                content, metadata = _user_projection(message, quotes)
                 content = f"[历史来源：{label}；message_id={message.id}]\n" + content
             elif message.role == "assistant" and message.messageType in {"text", "internal_completion", "desktop_push"}:
                 content = f"[回复来源：{label}]\n" + content
@@ -275,6 +287,26 @@ class ConversationHistoryView:
         if [_history_value(message) for message in self.read()] != [_history_value(message) for message in originals]:
             raise PermissionError("历史消息在读取期间变化")
         return result
+
+    def current_attachments(self):
+        """Resolve only the current input and its visible same-chat quote."""
+        originals = self.read()
+        current = next((message for message in originals if message.id == self.current_id
+            and message.sessionKey == self.session_key and message.role == "user"), None)
+        if current is None:
+            return []
+        _, metadata = _user_projection(current, _quote_lookup(originals))
+        attachments = []
+        for item in metadata["attachments"]:
+            if not isinstance(item, dict):
+                continue
+            self.require_current()
+            resolved = self.attachment_resolver(str(item.get("id") or "")) if self.attachment_resolver else None
+            self.require_current()
+            if resolved and Path(str(resolved.get("path", ""))).is_file():
+                attachments.append(dict(resolved))
+        self.require_snapshot_current()
+        return attachments
 
     def _attachments(self, metadata):
         self.require_current()

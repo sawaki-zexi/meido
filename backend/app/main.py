@@ -6828,9 +6828,11 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             history=history,
         )
         if thread.channel == "qq":
+            turn_attachments = await asyncio.to_thread(history.current_attachments) if history is not None else [
+                item for key in ("attachments", "quotedAttachments") for item in metadata.get(key, []) if isinstance(item, dict)]
             available = (*available, ReadChannelAttachmentTool(
-                thread.role_id, thread.session_key,
-                [item for key in ("attachments", "quotedAttachments") for item in metadata.get(key, []) if isinstance(item, dict)],
+                thread.role_id, thread.session_key, turn_attachments,
+                authorized=history.authorized if history is not None else None,
             ))
         if owner and thread.channel == "qq" and thread.chat_type == "group" and metadata.get("triggered"):
             meme_source = capture_channel_source(multichannel_store, session_store,
