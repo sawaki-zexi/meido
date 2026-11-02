@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -26,11 +26,18 @@ def source_messages(messages):
 def channel_owner_binding(
     channels: MultichannelStore, channel: str, account_id: str, sender_id: str
 ) -> dict[str, object] | None:
+    return select_owner_binding(channels.list_identities(), channel, account_id, sender_id)
+
+
+def select_owner_binding(
+    bindings: Iterable[dict[str, object]], channel: str, account_id: str, sender_id: str
+) -> dict[str, object] | None:
+    """Use the same sender scope for live and pre-admission identity snapshots."""
     scope = "platform" if channel in {"telegram", "qq"} else "account"
     return next(
         (
             item
-            for item in channels.list_identities()
+            for item in bindings
             if item["channel"] == channel
             and item["scope"] == scope
             and item["platformUserId"] == sender_id
