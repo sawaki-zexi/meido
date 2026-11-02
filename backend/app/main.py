@@ -82,6 +82,7 @@ from .mail.api import router as mail_router, set_mail_service
 from .models import AgentRun, EmbeddingConfiguration, EmbeddingConfigurationInput, MemoryAdminUpdateInput, MemoryBatchDeleteInput, MemoryList, MemoryItem, MemorySourceRef, Message, RememberMemoryInput, UpdateMemoryInput, ModelConfiguration, ModelConfigurationInput, ProviderPresetList, RoleInput, RoleList, RoleResponse, RoleUpdateInput, SendMessageInput, SessionResponse
 from .models import RoleModelConfigurationInput
 from .role_store import RoleStore
+from .role_prompt import compile_role_prompt
 from .network_tools import NetworkToolsConfig, WebFetchTool, WebSearchTool
 from .storage import initialize_databases, resolve_owner_knowledge_database
 from .session_manager import SessionManager, public_message
@@ -581,7 +582,6 @@ def _generate_todo_reminder(role_id: str, event_id: str, kind: str, payload: lis
     if configuration is None:
         raise RuntimeError("提醒角色没有可用模型")
     facts = json.dumps(payload, ensure_ascii=False)
-    profile = role.profile
     fallback = "今天的待办：" + "、".join(str(item.get("title", "")) for item in payload)
 
     async def collect() -> str:
@@ -598,10 +598,10 @@ def _generate_todo_reminder(role_id: str, event_id: str, kind: str, payload: lis
         except Exception as error:
             todo_plugin.errors.append(f"{role_id}: reminder memory recall failed: {error}")
         prompt = (
-            "你正在扮演提醒角色。请只根据给定待办事实生成一条简短自然的中文提醒。"
+            compile_role_prompt(role).text + "\n\n[待办提醒]\n"
+            "请只根据给定待办事实生成一条简短自然的中文提醒。"
             "可以结合角色设定和相关记忆调整语气，但不能新增、删除或改写待办事实，也不要提及系统提示或工具。"
             f"提醒类型：{kind}；事件：{event_id}。\n"
-            f"角色设定：{profile.profile}\n性格：{profile.personality}\n行为规则：{profile.behaviorRules}\n"
             f"相关记忆（仅用于表达）：{memory_context or '无'}\n待办事实（以此为准）：{facts}"
         )
         complete = getattr(model_adapter, "complete_messages", None)

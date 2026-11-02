@@ -46,16 +46,36 @@ def natural(meme_turn,monkeypatch):
 @pytest.mark.parametrize('sender,owner', [('11', True), ('22', False)])
 def test_natural_model_receives_host_verified_sender_identity(natural, sender, owner):
     s = natural
+    from backend.app.models import RoleProfile, RoleUpdateInput
+    from backend.app.agent_runtime.usage_anchor import SYSTEM_CONTEXT_FRAME_MARKER
+    s.role = s.roles.update(s.role.id, RoleUpdateInput(name=s.role.name,
+        profile=RoleProfile(profile='{{char}}面向{{user}}', nickname='主人')))
+
     async def run():
         try:
             await s.receive('identity', sender=sender)
             await s.clock.advance(1)
+
+            async def model_called():
+                while not s.calls:
+                    await asyncio.sleep(.01)
+
+            # Provider preparation includes worker I/O. Virtual clock ticks
+            # alone do not wait for that real asynchronous boundary.
+            await asyncio.wait_for(model_called(), timeout=5)
             assert len(s.calls) == 1
-            inputs = [json.loads(item['content']) for item in s.calls[0][0] if item['role'] == 'user']
-            message = next(item for item in inputs if item['messageId'] == 'identity')
+            user_inputs = [item['content'] for item in s.calls[0][0] if item['role'] == 'user']
+            frames = [text for text in user_inputs if text.startswith(SYSTEM_CONTEXT_FRAME_MARKER)]
+            assert len(frames) == 1
+            inputs = [json.loads(text) for text in user_inputs if not text.startswith(SYSTEM_CONTEXT_FRAME_MARKER)]
+            assert len(inputs) == 1
+            message = inputs[0]
+            assert message['messageId'] == 'identity'
+            assert message['senderId'] == sender
             assert message['senderIsOwner'] is owner
             assert not s.calls[0][1]
             system = '\n'.join(item['content'] for item in s.calls[0][0] if item['role'] == 'system')
+            assert f'角色设定：{s.role.name}面向主人' in system
             assert '[对话方式]' in system
             assert '本次请求没有业务工具可用' in system
             assert 'query="select:' not in system

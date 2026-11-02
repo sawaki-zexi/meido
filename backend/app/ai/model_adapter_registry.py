@@ -24,6 +24,7 @@ from .model_types import (
 )
 from ..models import ModelConfiguration
 from .model_adapter import OpenAICompatibleAdapter
+from ..role_prompt import compile_role_prompt
 from .openai_responses_adapter import OpenAIResponsesAdapter
 from .openai_codex_responses_adapter import OpenAICodexResponsesAdapter
 from .pi_messages_adapter import PiMessagesAdapter
@@ -77,15 +78,8 @@ class RoutedModelAdapter:
         configuration = OpenAICompatibleAdapter._effective_configuration(configuration)
 
         async def stream() -> AsyncIterator[str]:
-            profile = role.profile
             system = "\n\n".join(part for part in (
-                f"你正在扮演 {role.name}。",
-                f"简介：{role.description}" if role.description else "",
-                f"角色设定：{profile.profile}",
-                f"性格：{profile.personality}" if profile.personality else "",
-                f"行为规则：{profile.behaviorRules}" if profile.behaviorRules else "",
-                f"回复约束：{profile.responseConstraints}" if profile.responseConstraints else "",
-                f"称呼用户：{profile.nickname}" if profile.nickname else "",
+                compile_role_prompt(role).text,
                 memory_context,
             ) if part)
             messages = [{"role": "system", "content": system}]

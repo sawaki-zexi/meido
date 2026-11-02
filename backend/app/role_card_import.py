@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
+from .role_prompt import is_supported_role_macro
+
 
 MAX_SOURCE_BYTES = 50 * 1024 * 1024
 MAX_JSON_BYTES = 10 * 1024 * 1024
@@ -154,7 +156,7 @@ def _draft_from_card(value: Any, *, source: str, assets: list[ImportAsset] | Non
         if card.get(key):
             discarded.append(key)
             warnings.append(f"{label}未映射到角色字段")
-    unsupported_macros = [macro for macro in dict.fromkeys(_macros(envelope)) if macro.lower() not in {"{{char}}", "{{user}}"}]
+    unsupported_macros = [macro for macro in dict.fromkeys(_macros(envelope)) if not is_supported_role_macro(macro)]
     if unsupported_macros:
         warnings.append("包含未处理的模板宏")
     if asset_warnings:

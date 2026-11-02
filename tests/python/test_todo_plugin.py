@@ -521,7 +521,7 @@ def test_role_reminder_generation_uses_personality_facts_and_read_only_related_m
             return "主人，出门前记得带上药盒哦。"
 
     monkeypatch.setattr(main, "store", roles)
-    monkeypatch.setattr(main, "model_configuration_store", SimpleNamespace(get=lambda _identifier=None: "configured"))
+    monkeypatch.setattr(main, "model_configuration_store", SimpleNamespace(get_for_role=lambda _role: "configured"))
     monkeypatch.setattr(main, "model_adapter", Adapter())
     monkeypatch.setattr(main, "_current_memory_engine", lambda: Memory())
 
