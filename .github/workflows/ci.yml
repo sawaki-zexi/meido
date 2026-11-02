@@ -88,6 +88,7 @@ jobs:
               tests/python/test_api.py::test_unresolved_legacy_binding_blocks_send_and_can_be_explicitly_reselected
               tests/python/test_api.py::test_legacy_resolved_role_uses_canonical_snapshot_without_exposing_credentials
               tests/python/test_api.py::test_binding_commit_serializes_with_connection_deletion
+              tests/python/test_api.py::test_role_creation_and_scene_policy_edit_share_one_lock_order
               tests/python/test_api.py::test_role_model_configuration_api_persists_and_only_changes_selected_role
               tests/python/test_api.py::test_role_model_configuration_api_rejects_missing_configuration_without_changing_binding
               tests/python/test_api.py::test_role_model_configuration_api_failure_keeps_previous_binding

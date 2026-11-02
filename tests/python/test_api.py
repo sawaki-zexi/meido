@@ -521,14 +521,15 @@ def test_legacy_resolved_role_uses_canonical_snapshot_without_exposing_credentia
         assert 'modelConfig' not in run.modelSnapshot['role']
 
 
-def test_binding_commit_serializes_with_connection_deletion(tmp_path, monkeypatch):
+@pytest.mark.parametrize('operation', ['bind', 'create'])
+def test_binding_commit_serializes_with_connection_deletion(tmp_path, monkeypatch, operation):
     from concurrent.futures import ThreadPoolExecutor
     import threading
 
     role, _, client = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
     config = main.model_configuration_store.create(model_configuration_payload())
     entered, release, deleting = threading.Event(), threading.Event(), threading.Event()
-    original = main.store.set_model_configuration
+    original = main.store.set_model_configuration if operation == 'bind' else main.store.create
     lock = main.model_configuration_store.binding_lock
 
     class ObservedLock:
@@ -546,10 +547,15 @@ def test_binding_commit_serializes_with_connection_deletion(tmp_path, monkeypatc
         return original(*args)
 
     monkeypatch.setattr(main.model_configuration_store, 'binding_lock', ObservedLock())
-    monkeypatch.setattr(main.store, 'set_model_configuration', paused_commit)
+    monkeypatch.setattr(main.store, 'set_model_configuration' if operation == 'bind' else 'create', paused_commit)
     with ThreadPoolExecutor(max_workers=2) as workers:
-        binding = workers.submit(client.put, f'/api/roles/{role.id}/model-configuration',
-            json={'configurationId': config.id})
+        if operation == 'bind':
+            binding = workers.submit(client.put, f'/api/roles/{role.id}/model-configuration',
+                json={'configurationId': config.id})
+        else:
+            binding = workers.submit(client.post, '/api/roles', json={
+                'name': 'Concurrent creation', 'profile': {'profile': '核心设定'},
+                'modelConfigurationId': config.id})
         assert entered.wait(5)
         deletion = workers.submit(client.delete, f'/api/model/configurations/{config.id}')
         try:
@@ -557,10 +563,55 @@ def test_binding_commit_serializes_with_connection_deletion(tmp_path, monkeypatc
             assert not deletion.done()
         finally:
             release.set()
-        assert binding.result(timeout=5).status_code == 200
+        response = binding.result(timeout=5)
+        assert response.status_code == (200 if operation == 'bind' else 201)
         assert deletion.result(timeout=5).status_code == 409
-    assert main.store.get(role.id).modelConfigurationId == config.id
+    bound_role_id = role.id if operation == 'bind' else response.json()['role']['id']
+    assert main.store.get(bound_role_id).modelConfigurationId == config.id
     assert main.model_configuration_store.get(config.id) is not None
+
+
+def test_role_creation_and_scene_policy_edit_share_one_lock_order(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+
+    role, _, _ = configure_session_api(tmp_path, monkeypatch, RecordingAdapter())
+    configurations = main.model_configuration_store
+    config = configurations.create(model_configuration_payload())
+    application = main._novelai_application()
+    original_lock = application._lock
+    editing, creating = threading.Event(), threading.Event()
+
+    class BoundedApplicationLock:
+        def __enter__(self):
+            if editing.is_set():
+                creating.set()
+            # A reversed order fails within two seconds instead of leaving
+            # pytest's worker threads permanently deadlocked.
+            assert original_lock.acquire(timeout=2), 'creation reversed the application/catalog lock order'
+
+        def __exit__(self, *args):
+            original_lock.release()
+
+    def scene_configuration(identifier):
+        editing.set()  # update_role already owns the application lock.
+        assert creating.wait(2), 'creation did not reach the application lock'
+        return configurations.get(identifier)
+
+    monkeypatch.setattr(application, '_lock', BoundedApplicationLock())
+    monkeypatch.setattr(application, 'model_configuration', scene_configuration)
+    monkeypatch.setattr(application.settings, 'public', lambda: {
+        'availability': {'available': True}, 'allowTxt2Img': True})
+    monkeypatch.setattr(main, '_novelai_application', lambda: application)
+    update = RoleUpdateInput(name=role.name, profile=role.profile,
+        agentConfig={'novelai': {'sceneCgEnabled': True, 'scenePromptModelConfigurationId': config.id}})
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        edited = workers.submit(application.update_role, role.id, update)
+        assert editing.wait(2)
+        created = workers.submit(main.create_role, RoleInput(name='Concurrent creation',
+            profile=role.profile, modelConfigurationId=config.id))
+        assert edited.result(timeout=5).agentConfig.novelai.sceneCgEnabled
+        assert created.result(timeout=5).role.modelConfigurationId == config.id
 
 
 def test_role_model_configuration_api_rejects_missing_configuration_without_changing_binding(tmp_path, monkeypatch):

@@ -1889,11 +1889,15 @@ def chat_previews():
 @app.post("/api/roles", response_model=RoleResponse, status_code=201)
 def create_role(data: RoleInput) -> RoleResponse:
     _validate_screen_configuration(data.agentConfig.screenPerception)
-    try:
+
+    def persist():
         with model_configuration_store.binding_lock:
             if data.modelConfigurationId and model_configuration_store.get(data.modelConfigurationId) is None:
                 raise HTTPException(status_code=409, detail="选择的模型连接已不存在，请重新选择模型")
-            return RoleResponse(role=_novelai_application().create_role(data))
+            return store.create(data)
+
+    try:
+        return RoleResponse(role=_novelai_application().create_role(data, persist=persist))
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None
     except OSError as error:
