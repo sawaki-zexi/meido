@@ -266,8 +266,9 @@ class NapCatAdapter(ChannelAdapter):
                 attachment = file_attachment(data)
                 attachments.append(attachment)
                 text.append(file_description(attachment.file_name))
-            elif segment.get("type") == "image" and data.get("url"):
-                attachments.append(Attachment(str(segment["type"]), str(data["url"]), str(data.get("file") or "") or None))
+            elif segment.get("type") == "image":
+                attachments.append(Attachment("image", str(data["url"]) if data.get("url") else None,
+                    str(data.get("file") or "") or None))
         return replace(event, metadata={
             **event.metadata,
             "replyToContent": "".join(text),
@@ -425,28 +426,45 @@ class NapCatAdapter(ChannelAdapter):
             raise UnsupportedTargetError("NapCat 不支持该目标类型")
 
     async def download_media(self, event: InboundEvent, *, max_bytes: int = 10 * 1024 * 1024) -> tuple[DownloadedMedia, ...]:
-        from .media import download_qq_file, download_qq_media
+        import httpx
+        from .media import MediaTooLargeError, UntrustedMediaUrlError, download_qq_file, download_qq_media
 
         downloaded: list[DownloadedMedia] = []
+        excess_images_reported = False
         for index, attachment in enumerate(event.attachments):
             check_media_authorization(event)
             if index >= 4:
                 if attachment.kind == "file":
                     downloaded.append(DownloadedMedia("file", b"", attachment.file_name,
                         error="每条消息最多接收 4 个附件", file_id=attachment.file_id, source_size=attachment.size))
+                elif attachment.kind == "image" and not excess_images_reported:
+                    downloaded.append(DownloadedMedia("image", b"", error="每条消息最多接收 4 个附件"))
+                    excess_images_reported = True
                 continue
             if attachment.kind == "file":
                 downloaded.append(await download_file(attachment, event, self._transport, download_qq_file, max_bytes=max_bytes))
                 continue
-            if attachment.kind != "image" or not attachment.url:
+            if attachment.kind != "image":
+                continue
+            if not attachment.url:
+                downloaded.append(DownloadedMedia("image", b"", error="没有可用下载地址"))
                 continue
             try:
                 data, mime_type = await download_qq_media(attachment.url, max_bytes=max_bytes)
                 check_media_authorization(event)
             except PermissionError:
                 raise
+            except MediaTooLargeError:
+                reason = "图片超过接收大小限制"
+            except UntrustedMediaUrlError:
+                reason = "图片下载地址不可信"
+            except (TimeoutError, httpx.TimeoutException):
+                reason = "图片接收超时"
             except Exception as error:
                 logger.warning("NapCat 附件下载失败 account=%s kind=%s error=%s", self.account_id, attachment.kind, type(error).__name__)
+                reason = "图片下载失败或地址已失效"
+            else:
+                downloaded.append(DownloadedMedia(attachment.kind, data, attachment.file_name, mime_type))
                 continue
-            downloaded.append(DownloadedMedia(attachment.kind, data, attachment.file_name, mime_type))
+            downloaded.append(DownloadedMedia("image", b"", error=reason))
         return tuple(downloaded)

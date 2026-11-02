@@ -28,6 +28,28 @@ function setupBackend(accounts: ReturnType<typeof makeAccount>[] = []) {
   });
 }
 
+it.each([false, true])("图片接收失败的当前正文在桌面和手机可见（手机 %s）", async (phoneMode) => {
+  const stamp = "2026-11-02T06:00:00Z";
+  const failure = { kind: "image", name: "图片", reason: "图片下载失败或地址已失效" };
+  fakeBackend({
+    "GET /api/roles/r1/channels/accounts": () => ({ body: { accounts: [makeAccount("qq", "qq-1")] } }),
+    "GET /api/roles/r1/channels/threads\\?networkOnly=true": () => ({ body: { threads: [{ threadId: "images", accountId: "qq-1", channel: "qq", chatId: "42", chatType: "private", title: "图片接收测试", lastActivity: stamp }] } }),
+    "GET .*threads/images/messages.*": () => ({ body: { messages: [
+      { id: "failed", sequence: 1, role: "user", content: "[收到附件]\n[图片；图片下载失败或地址已失效，未读取图片内容]", createdAt: stamp, metadata: { threadId: "images", attachmentFailures: [failure] } },
+      { id: "mixed", sequence: 2, role: "user", content: "保留成功图片\n[图片；图片接收超时，未读取图片内容]", createdAt: stamp, metadata: { threadId: "images", attachments: [{ id: "kept-image", name: "保留的图片", kind: "image" }] } },
+      { id: "quoted", sequence: 3, role: "user", content: "请查看引用\n[本次未取得新的引用图片内容]", createdAt: stamp, metadata: { threadId: "images", replyTo: "unavailable", quotedAttachmentFailures: [failure] } },
+    ], hasMore: false } }),
+  });
+  const user = userEvent.setup();
+  render(<ChannelView role={role({ id: "r1", name: "诗织" })} phoneMode={phoneMode} onBack={() => undefined} />);
+  if (phoneMode) await user.click(await screen.findByRole("button", { name: /^QQ/ }));
+  await user.click(await screen.findByRole("button", { name: /图片接收测试/ }));
+  expect(await screen.findByText(/图片下载失败或地址已失效/)).toBeVisible();
+  expect(screen.getByText(/图片接收超时/)).toBeVisible();
+  expect(screen.getByText(/本次未取得新的引用图片内容/)).toBeVisible();
+  expect(screen.getByRole("img", { name: "保留的图片" })).toBeVisible();
+});
+
 describe("手机账号应用导航", () => {
   it.each([false, true])("原消息已加载时仍显示本次引用文件失败（手机 %s）", async (phoneMode) => {
     const stamp = "2026-10-26T06:00:00Z";
