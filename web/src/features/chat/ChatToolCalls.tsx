@@ -33,10 +33,12 @@ export function ChatToolCalls({ calls, streaming, closing }: { calls: ToolEntry[
     previousStreaming.current = streaming;
   }, [streaming]);
   const running = calls.filter(call => call.status === 'running').length;
+  const failedCount = calls.filter(call => call.status === 'failed').length;
   return <div className="chat-tool-calls" role={streaming ? 'status' : undefined} aria-label="工具执行">
     <button type="button" className="chat-tool-toggle" aria-expanded={expanded} aria-controls={id} onClick={() => setExpanded(value => !value)}>
       <CaretDown size={13} className={expanded ? 'is-expanded' : ''} aria-hidden /><Wrench size={13} aria-hidden />
       <span>{calls.length} 次工具调用</span>
+      {failedCount > 0 && <span className="chat-tool-failed-count">{failedCount} 个失败</span>}
       {running > 0 && <span className="chat-tool-running-count">{closing ?? `${running} 个执行中`}</span>}
     </button>
     <div id={id} className={`chat-tool-call-content${expanded ? ' is-expanded' : ''}`} aria-hidden={!expanded}>

@@ -37,6 +37,7 @@
 .chat-thinking-text { margin-left: 5px; border-left: 1px solid rgb(17 24 39 / 8%); padding: 4px 0 0 16px; font-size: 12px; line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .chat-tool-toggle { display: flex; align-items: center; gap: 6px; margin: 0 -4px; padding: 4px; border-radius: 6px; font-size: 12.5px; font-weight: 400; }
 .chat-tool-running-count { color: var(--process-faint); font-size: 11px; }
+.chat-tool-failed-count { color: var(--danger); font-size: 11px; white-space: nowrap; }
 .chat-tool-rows { display: grid; gap: 4px; margin-top: 6px; padding: 0 3px; }
 .chat-tool-call { min-width: 0; }
 .message-process .chat-tool-row { display: flex; align-items: center; gap: 8px; width: calc(100% + 6px); height: 28px; margin: 0 -3px; padding: 0 3px; border-radius: 6px; text-align: left; }

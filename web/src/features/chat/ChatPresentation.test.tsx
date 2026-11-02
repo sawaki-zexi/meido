@@ -146,7 +146,9 @@ it('renders a persisted process while the ring describes the current saved conte
   await screen.findByText('回复正文', { selector: '.bubble p' });
   expect(screen.getByRole('button', { name: '思考中' })).toHaveAttribute('aria-expanded', 'true');
   expect(screen.getByText('整理公开资料')).toBeVisible();
-  expect(screen.getByRole('button', { name: '1 次工具调用' })).toHaveAttribute('aria-expanded', 'false');
+  const failedGroup = screen.getByRole('button', { name: '1 次工具调用 1 个失败' });
+  expect(failedGroup).toHaveAttribute('aria-expanded', 'false');
+  expect(within(failedGroup).getByText('1 个失败')).toBeVisible();
   await user.click(screen.getByText(/1 次工具调用/));
   expect(screen.getByText('{"query":"公开资料"}')).toBeVisible();
   const tool = screen.getByRole('button', { name: /web_search/ });
@@ -278,6 +280,10 @@ it.each(['failed', 'cancelled'])('keeps each same-name call intent in its live a
   const terminalLabel = terminal === 'failed' ? '失败' : '已取消';
   const secondEnded = await screen.findByRole('button', { name: `read_config · ${terminalLabel}` });
   expect(within(secondEnded).getByText(previews[1])).toBeVisible();
+  const groupName = terminal === 'failed' ? '2 次工具调用 1 个失败' : '2 次工具调用';
+  const liveGroup = screen.getByRole('button', { name: groupName });
+  if (terminal === 'failed') expect(within(liveGroup).getByText('1 个失败')).toBeVisible();
+  else expect(within(liveGroup).queryByText(/失败/)).toBeNull();
   expect(screen.queryByText(/迟到/)).toBeNull();
   act(() => {
     history = [saved];
@@ -285,11 +291,18 @@ it.each(['failed', 'cancelled'])('keeps each same-name call intent in its live a
     controller.close();
   });
   await screen.findByText('处理结束', { selector: '.bubble p' });
-  expect(screen.getByRole('button', { name: '2 次工具调用' })).toHaveAttribute('aria-expanded', 'false');
+  const completedGroup = screen.getByRole('button', { name: groupName });
+  expect(completedGroup).toHaveAttribute('aria-expanded', 'false');
+  if (terminal === 'failed') expect(within(completedGroup).getByText('1 个失败')).toBeVisible();
+  else expect(within(completedGroup).queryByText(/失败/)).toBeNull();
   view.unmount();
   render(<App />);
   await screen.findByText('处理结束', { selector: '.bubble p' });
-  await user.click(screen.getByRole('button', { name: '2 次工具调用' }));
+  const restoredGroup = screen.getByRole('button', { name: groupName });
+  expect(restoredGroup).toHaveAttribute('aria-expanded', 'false');
+  if (terminal === 'failed') expect(within(restoredGroup).getByText('1 个失败')).toBeVisible();
+  else expect(within(restoredGroup).queryByText(/失败/)).toBeNull();
+  await user.click(restoredGroup);
   const first = screen.getByRole('button', { name: 'read_config · 已完成' });
   const second = screen.getByRole('button', { name: `read_config · ${terminalLabel}` });
   expect(within(first).getByText(previews[0])).toBeVisible();

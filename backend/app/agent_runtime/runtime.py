@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, TypeAlias, TypeVar
 from contextlib import aclosing
 from datetime import datetime, timezone
@@ -12,7 +12,7 @@ from .events import AgentEndEvent, AgentEvent, MessageEndEvent, MessageUpdateEve
 from .capabilities import CapabilityResolution, CapabilitySnapshot
 from .loop import run_agent_loop
 from .provider import CancellationToken, ModelProvider, AssistantDoneEvent, ToolCallEndEvent, ProviderErrorEvent
-from .tools import AgentTool, summarize_tool_arguments
+from .tools import AgentTool, AgentToolResult, summarize_tool_arguments
 from .types import AgentMessage, AssistantMessage, ToolResultMessage
 
 if TYPE_CHECKING:
@@ -20,6 +20,11 @@ if TYPE_CHECKING:
 
 MessageEndHandler: TypeAlias = Callable[[MessageEndEvent], object | Awaitable[object]]
 T = TypeVar('T')
+
+
+def _audit_text(details: Mapping[str, object], key: str) -> str | None:
+    value = details.get(key)
+    return value if isinstance(value, str) and value else None
 
 
 async def complete_despite_cancellation(operation: Awaitable[T]) -> T:
@@ -374,14 +379,23 @@ class RuntimeManager:
                     snapshot_id=event.snapshot_id, tool_source=event.tool_source, tool_version=event.tool_version,
                     policy_decision=event.policy_decision, capability_binding=event.capability_binding)
 
-            async def persist_tool_result(message: ToolResultMessage) -> None:
-                details = message.details if isinstance(message.details, dict) else {}
+            def finish_tool_audit(call_id: str, result: AgentToolResult | ToolResultMessage) -> None:
+                details = result.details if isinstance(result.details, Mapping) else {}
+                error_type = _audit_text(details, "errorType")
+                error_message = _audit_text(details, "message")
+                if result.is_error:
+                    # These are tool-owned safe diagnostics. Never derive audit
+                    # errors from content, arbitrary details or upstream bodies.
+                    error_type = error_type or _audit_text(details, "error_code")
+                    error_message = error_message or _audit_text(details, "error")
                 self.sessions.finish_tool_audit(
-                    run_id=run.runId, call_id=message.tool_call_id,
-                    result_category=str(details.get("status") or ("error" if message.is_error else "succeeded")),
-                    error_type=str(details["errorType"]) if details.get("errorType") else None,
-                    error_message=str(details["message"]) if details.get("message") else None,
+                    run_id=run.runId, call_id=call_id,
+                    result_category=_audit_text(details, "status") or ("error" if result.is_error else "succeeded"),
+                    error_type=error_type, error_message=error_message,
                 )
+
+            async def persist_tool_result(message: ToolResultMessage) -> None:
+                finish_tool_audit(message.tool_call_id, message)
                 if on_message_end is not None:
                     persisted = on_message_end(MessageEndEvent(message, run_id=run.runId))
                     if inspect.isawaitable(persisted):
@@ -424,13 +438,7 @@ class RuntimeManager:
                             capability_binding=event.capability_binding,
                         )
                     if isinstance(event, ToolExecutionEndEvent) and event.tool_call_id not in persisted_tool_calls:
-                        details = event.result.details if isinstance(event.result.details, dict) else {}
-                        self.sessions.finish_tool_audit(
-                            run_id=run.runId, call_id=event.tool_call_id,
-                            result_category=str(details.get("status") or ("error" if event.result.is_error else "succeeded")),
-                            error_type=str(details["errorType"]) if details.get("errorType") else None,
-                            error_message=str(details["message"]) if details.get("message") else None,
-                        )
+                        finish_tool_audit(event.tool_call_id, event.result)
                     if isinstance(event, MessageEndEvent):
                         if isinstance(event.message, AssistantMessage):
                             assistant_content = event.message.content
