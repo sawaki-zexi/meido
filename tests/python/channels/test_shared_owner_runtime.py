@@ -124,3 +124,55 @@ def test_account_queue_cannot_promote_old_guest_or_expand_owner_history(meme_tur
     actual = str(requests)
     assert ('原桌面秘密' in actual) is initial_owner
     assert '后配对私聊秘密' not in actual and '等待中的未来桌面消息' not in actual
+
+
+def test_account_queue_still_rejects_revoked_captured_shared_history(meme_turn, monkeypatch):
+    state, requests = meme_turn, []
+    other = state.channels.ensure_channel_thread(state.role.id, 'qq', state.adapter.account_id, '33', 'private')
+    code = state.channels.create_pairing_code()
+    assert state.channels.consume_pairing_code(code, role_id=state.role.id, channel='qq', scope='platform',
+        platform_user_id='33', account_id=state.adapter.account_id, chat_id='33')
+    state.sessions.append_message(other.session_key, 'user', 'PREVIOUSLY_SHARED_SECRET')
+    original_binding = next(item for item in state.channels.list_identities() if item['platformUserId'] == '11')
+    removed = next(item for item in state.channels.list_identities() if item['platformUserId'] == '33')
+
+    class Model:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            requests.append(messages)
+            yield ModelTextDelta('must not run')
+
+    monkeypatch.setattr(main, 'model_adapter', Model())
+
+    async def scenario():
+        accepted = asyncio.Event()
+        accept = main.channel_host.accept_event
+
+        async def observe(*args):
+            event = await accept(*args)
+            accepted.set()
+            return event
+
+        monkeypatch.setattr(main.channel_host, 'accept_event', observe)
+        lock = main.channel_event_locks.setdefault(state.adapter.account_id, asyncio.Lock())
+        await lock.acquire()
+        pending = asyncio.create_task(main._dispatch_channel_payload(state.adapter.account_id,
+            private_payload('history-revoked', 'queued input'), source_adapter=state.adapter))
+        try:
+            await asyncio.wait_for(accepted.wait(), 3)
+            state.channels.unbind_identity(removed['identityId'])
+            assert original_binding == next(item for item in state.channels.list_identities() if item['platformUserId'] == '11')
+            lock.release()
+            await asyncio.wait_for(pending, 8)
+        finally:
+            if lock.locked():
+                lock.release()
+            if not pending.done():
+                pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+            if main._proactive is not None:
+                await main._proactive.close()
+
+    asyncio.run(scenario())
+    assert not requests, 'sender authority must not replace captured shared-history revocation checks'
+    with state.channels._connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM agent_runs').fetchone()[0] == 0

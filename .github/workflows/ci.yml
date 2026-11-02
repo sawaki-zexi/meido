@@ -114,6 +114,8 @@ jobs:
               tests/python/channels/test_qq_file_receiving.py
               tests/python/channels/test_attachment_turn.py
               tests/python/channels/test_owner_quoted_attachment.py
+              tests/python/channels/test_media_binding_scope.py
+              tests/python/channels/test_shared_owner_runtime.py
               tests/python/channels/test_natural_media.py
           - group: drift
             args: tests/python/test_drift_meme_api.py::test_owner_can_explicitly_enable_builtin_meme_maintenance_without_shell

@@ -1,8 +1,8 @@
 # QQ 文本文件接收
 
-状态：当前分支实现，合入后生效。
+状态：当前。
 
-最后核验：2026-10-26。
+最后核验：2026-11-02。
 
 事实来源：[接收实现](../../backend/app/channels/qq_files.py)、[地址与下载边界](../../backend/app/channels/media.py)、[接收验收](../../tests/python/channels/test_qq_file_receiving.py)、[实际回合读取](../../tests/python/channels/test_attachment_turn.py)。关联 [Issue #236](https://github.com/sawaki-zexi/meido/issues/236)。
 
@@ -11,6 +11,8 @@
 文件描述保留名称（`name`/`file` 的 basename）、文件编号（`file_id`/`id`）、大小（`size`/`file_size`）和已准入消息所属聊天。CQ 字符串按实体转义解码一次，不解码编号中的百分号，也不把平台路径当作本机路径。
 
 仅接收 `.txt`、`.md`，每个至多 2 MiB；读取前检查声明大小，下载中检查实际字节，拒绝二进制控制字符和非 UTF-8 文本。每条消息最多下载 4 个附件，引用使用同样规则。地址查询和下载共用 20 秒总预算。来源许可在异步边界后再次检查，账号/平台停用、账号替换、配对撤销或代次变化不能通过重新启用恢复旧下载。
+
+配对核验按原输入发送者适用的渠道、身份 scope 和账号进行，不因其他发送者新增配对而丢弃本轮当前或引用文件。平台身份可用于同平台其他角色账号，账号身份仅适用于接收账号；原本未配对的输入不能借等待期间的新配对取得主人权限。账号、连接、群策略及已捕获主人历史的撤权检查继续独立生效。相关正反例见 [媒体来源绑定测试](../../tests/python/channels/test_media_binding_scope.py) 与 [排队历史测试](../../tests/python/channels/test_shared_owner_runtime.py)，对应 [#329](https://github.com/sawaki-zexi/meido/issues/329)。
 
 成功文件保存为角色附件，由当前回合的 `read_attachment` 分页读取；后续回合或其他聊天不能借旧 ID 读取。手机沿用现有附件链接和引用附件展示。失败保留文件名和原因：格式不支持、超限、无地址、地址不可信、超时、下载失败、编码错误或保存失败；失败不会产生可读取的附件 ID。普通旁听保留名称，不查询地址或下载。
 

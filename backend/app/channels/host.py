@@ -23,6 +23,7 @@ from .intake import ChannelIntake
 from . import directory
 from .directory import DirectoryError, DirectoryPages, DirectoryQuery, MAX_RECORDS, bound_records, observed_now, supported_kinds
 from .runtime_owner import ChannelRuntimeOwner
+from .source_authority import select_owner_binding
 
 
 CHANNEL_INTAKE_RETRY_NOTICE = "渠道配置正在切换，这条消息尚未处理，请稍后重新发送。"
@@ -424,18 +425,25 @@ class ChannelHost:
         account = self.store.get_account(account_id)
         if account is None:
             return {}
-        bindings = sorted((str(item["identityId"]), str(item["pairedAt"]))
+        # The adapter has not normalized the sender yet. Preserve the identity
+        # keys now so the admitted event can select its original binding later.
+        bindings = [{key: item[key] for key in (
+            "identityId", "pairedAt", "channel", "scope", "platformUserId", "accountId")}
             for item in self.store.list_identities() if item["channel"] == account.channel
-            and (item["scope"] == "platform" or item["accountId"] == account_id))
+            and (item["scope"] == "platform" or item["accountId"] == account_id)]
         return {"roleId": account.role_id, "channel": account.channel, "createdAt": account.created_at,
             "revision": self.store.directory_revision(account_id, account.channel),
             "generation": self.connection_generation(account_id), "bindings": bindings}
 
     def media_authorization(self, role_id: str, event) -> Callable[[], bool]:
         """Freeze an admitted media source; checks can revoke, never renew it."""
+        def sender_source(snapshot):
+            binding = select_owner_binding(snapshot.get("bindings", []), event.channel, event.account_id, event.sender_id)
+            return {**snapshot, "bindings": (binding["identityId"], binding["pairedAt"]) if binding else None}
+
         account = self.store.get_account(event.account_id)
         adapter = self._adapters.get(event.account_id)
-        source = event.metadata.get("hostMediaSource", self.capture_media_source(event.account_id))
+        source = sender_source(event.metadata.get("hostMediaSource", self.capture_media_source(event.account_id)))
         generation = (event.metadata.get("hostConnectionGeneration", source.get("generation"))
             if event.channel == "qq" else source.get("generation"))
         group_revision = (self.store.group_reply_policy(role_id, event.account_id, event.chat_id)
@@ -448,7 +456,7 @@ class ChannelHost:
                     or not self.store.account_effectively_enabled(current)
                     or self._adapters.get(event.account_id) is not adapter
                     or self.connection_generation(event.account_id) != generation
-                    or self.capture_media_source(event.account_id) != source
+                    or sender_source(self.capture_media_source(event.account_id)) != source
                     or event.sender_id in current.blocked_senders
                     or not (current.allow_group if event.is_group else current.allow_private)):
                 return False
