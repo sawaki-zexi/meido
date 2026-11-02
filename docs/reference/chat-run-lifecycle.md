@@ -1,7 +1,7 @@
 # 桌面聊天运行与恢复协议
 
-状态：当前实现；最后核验：2026-11-02；Refs #293、#291、#315。
-事实来源：[服务所有者](../../backend/app/chat_runs.py)、[HTTP 宿主](../../backend/app/main.py)、[Runtime](../../backend/app/agent_runtime/runtime.py)、[客户端](../../web/src/features/chat/useChat.ts)、[客户端回归](../../web/src/features/chat/useChat.test.tsx)、[HTTP 回归](../../tests/python/test_chat_lifecycle.py)。决定见 [ADR-0035](../adr/0035-service-owned-desktop-chat-runs.md)。
+状态：当前实现；最后核验：2026-11-02；Refs #293、#291、#315、#319。
+事实来源：[服务所有者](../../backend/app/chat_runs.py)、[HTTP 宿主](../../backend/app/main.py)、[Runtime](../../backend/app/agent_runtime/runtime.py)、[客户端](../../web/src/features/chat/useChat.ts)、[客户端回归](../../web/src/features/chat/useChat.test.tsx)、[接受恢复回归](../../web/src/features/chat/useChatAdmission.test.tsx)、[输入框回归](../../web/src/features/chat/ChatComposer.test.tsx)、[HTTP 回归](../../tests/python/test_chat_lifecycle.py)。决定见 [ADR-0035](../adr/0035-service-owned-desktop-chat-runs.md)。
 
 ## 接受与任务归属
 
@@ -10,6 +10,12 @@
 数据库原子保存 run、用户消息和 assistant 占位行即为接受。任务从此由服务持有；是否读取 JSON 响应或 SSE 不影响它。规范化输入摘要绑定角色、附件与显式技能等字段；相同 ID 和相同请求返回原运行，ID 被另一角色或另一输入使用返回 409。恢复不需要再次提交原文。
 
 接受后的完整视图暂时无法稳定读取时，POST 返回 `202 {snapshotPending: true, run}` 和 `X-Meido-Run-Id`，仍表示接受成功。客户端保留已接受身份，从原游标订阅或读取确切运行，不能恢复成待发送草稿。完整视图就绪时，通常返回 `200 {session, messages, run}`。
+
+若 POST 丢失响应或返回无接受身份的 5xx，随后确切 GET 也遇到网络错误或无确认身份的 5xx，网页保留原提交和请求身份，显示“发送结果尚未确认，正在恢复连接”。每次查询结束后间隔 500 ms，只读取原角色、会话与运行；匹配的完整快照或确切运行接受头确认后，沿现有快照、订阅和终态路径继续。恢复不自动重发 POST，也不按原文、最近消息或其他活动运行推测接受。
+
+等待期间可编辑下一条草稿，但不能再提交；原文字与附件不会回填，恢复完成也不覆盖新草稿。直接 POST 4xx 及确切 GET 4xx（包括现有 404 分支）保留原拒绝处理，恢复未发送的文字和附件。这是现有客户端兼容行为，并不保证任意时刻的 404 都能排除服务随后接受的竞态；该接受协议未在 #319 改动。
+
+切换角色、重置或卸载会中止旧视图的恢复查询和等待，迟到结果不能写入新来源。前端发送结果区分已确认接受、拒绝和视图脱离；脱离不回填仍暂时挂载的旧输入框。切回角色沿现有会话读取恢复活动运行或已保存历史，不新增跨页面关闭的未知请求存储或草稿持久化。
 
 普通回复同角色已有运行或尚在收尾时返回 409。自然聊天补充输入先以 `queued` 持久接受，失效旧计划的未开始尾段，再等待前驱退出并取得原角色锁。排队也计入 owner 活动登记，Stop 或权限失效会收尾这条输入；它不取得旧工具的取消权。
 
@@ -63,6 +69,8 @@ Runtime 的数据库状态可能先结束，桌面任务仍在发送拟人尾段
 ## Stop、退出和重启
 
 `POST /api/roles/{roleId}/runs/{runId}/stop` 只停止指定运行，等待任务和清理后返回最新 `SessionResponse`。已结束运行的重复 Stop 只确认原终态；即使同角色已有下一条，也不取消下一条。用户点击 Stop 时接受响应尚未到达，网页仍用提前生成的确切 ID；404 只等待这次接受，不查询“当前运行”代替它。
+
+接受仍未知时，Stop 使用同一个预分配 ID；成功结束原提交的接受等待与恢复，失败保留未知身份和单条确切查询链，不回填或重发原输入，也不另起订阅循环。接受尚未结算时的 Stop 404 继续沿既有短间隔重试；重复点击仍共用同一个停止操作。
 
 Stop 前已经完成的工具结果保持真实回执。重复 Stop 和断开 Stop 请求的连接不会再次打断 cleanup。拟人排队取消会等待旧任务，停止未发送尾段；已发送前段保持持久记录。关闭自然聊天后，未开始的排队回复不再执行。
 

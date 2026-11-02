@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import * as streamApi from "../../api/stream";
 import type { Message } from "../../api/types";
 import { fakeBackend, message, role, sse } from "../../test/fakeBackend";
-import { useChat } from "./useChat";
+import { useChat, type ChatSendResult } from "./useChat";
 
 const session = { roleId: 'r1', sessionKey: 'role:r1' };
 const alice = role({ id: 'r1', name: 'Alice' });
@@ -174,7 +174,7 @@ it('Stop can finish the exact accepted run while the submission response is stil
   });
   const { result } = renderHook(useChat);
   await act(async () => { await result.current.open(alice); });
-  let pending!: Promise<boolean>;
+  let pending!: Promise<ChatSendResult>;
   act(() => { pending = result.current.send('same'); });
   await act(async () => { result.current.stop(); expect(await pending).toBe(true); });
   expect(result.current.sending).toBe(false);

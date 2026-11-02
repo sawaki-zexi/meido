@@ -7,11 +7,19 @@ import { applyToolProgress, closeToolProgress, createToolProgress, type ToolProg
 type SessionData = { session: Session; messages: Message[]; activeRun?: ChatRunSnapshot | null };
 type RunData = SessionData & { run: ChatRunSnapshot };
 type RunReceipt = { snapshotPending: true; run: ChatRunSnapshot };
+/** Only a confirmed rejection may restore the submitted draft. */
+export type ChatSendResult = boolean | 'detached';
 type ActiveReply = { controller: AbortController; roleId: string; sessionKey: string; runId: string; sequence: number;
   closed: boolean; accepted: boolean; admission: Promise<boolean> | null; admissionController?: AbortController;
   admissionDone?: boolean; subscribing?: boolean; progressClosed?: boolean; stopPromise: Promise<void> | null };
 const terminal = (run: ChatRunSnapshot) => !['queued', 'created', 'running'].includes(run.status);
 const runPath = (reply: ActiveReply) => `/api/roles/${encodeURIComponent(reply.roleId)}/runs/${encodeURIComponent(reply.runId)}`;
+const waitForRecovery = (signal: AbortSignal) => new Promise<void>(resolve => {
+  if (signal.aborted) { resolve(); return; }
+  const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
+  const timer = setTimeout(done, 500);
+  signal.addEventListener('abort', done, { once: true });
+});
 
 function liveMessages(messages: Message[], run: ChatRunSnapshot): Message[] {
   if (terminal(run) || messages.some(message => message.role === 'assistant' && message.runId === run.runId)) return messages;
@@ -94,6 +102,7 @@ export function useChat() {
       || data.run.runId !== reply.runId || data.run.roleId !== reply.roleId || data.run.sessionKey !== reply.sessionKey) return false;
     reply.accepted = true;
     reply.sequence = data.run.sequence;
+    setError('');
     setSession(data.session); setMessages(liveMessages(data.messages, data.run));
     setPhase(data.run.phase); setStopping(Boolean(reply.stopPromise) || data.run.stopping);
     setToolProgress({ ...createToolProgress(reply), sequence: data.run.sequence, closing: Boolean(reply.progressClosed) || data.run.stopping, calls: data.run.tools });
@@ -105,7 +114,7 @@ export function useChat() {
   };
 
   const recover = async (reply: ActiveReply) => {
-    const data = await api<RunData>(runPath(reply));
+    const data = await api<RunData>(runPath(reply), { signal: reply.controller.signal });
     return applySnapshot(reply, data);
   };
 
@@ -153,11 +162,7 @@ export function useChat() {
         }
         if (!current(reply) || reply.closed) break;
         // Reconnect only the accepted ID. Never retry the original message POST.
-        await new Promise<void>(resolve => {
-          const done = () => { clearTimeout(timer); reply.controller.signal.removeEventListener('abort', done); resolve(); };
-          const timer = setTimeout(done, 500);
-          reply.controller.signal.addEventListener('abort', done, { once: true });
-        });
+        await waitForRecovery(reply.controller.signal);
         if (current(reply)) {
           try { await recover(reply); if (current(reply)) setError(''); } catch { /* Retry until the view detaches. */ }
         }
@@ -237,7 +242,7 @@ export function useChat() {
     setOpening(false); setSending(false); setStopping(false); setError('');
   };
 
-  const send = async (text: string, attachments: string[] = []): Promise<boolean> => {
+  const send = async (text: string, attachments: string[] = []): Promise<ChatSendResult> => {
     const content = text.trim();
     if ((!content && !attachments.length) || !roleId || activeReply.current || openingRequest.current) return false;
     sourceRevision.current += 1;
@@ -252,23 +257,35 @@ export function useChat() {
         const data = await api<RunData | RunReceipt>(`/api/roles/${encodeURIComponent(reply.roleId)}/runs`, {
           method: 'POST', body: JSON.stringify({ content, attachments, requestId }), signal: reply.admissionController?.signal,
         });
-        reply.accepted = data.run.runId === reply.runId && data.run.roleId === reply.roleId && data.run.sessionKey === reply.sessionKey;
+        if (!current(reply)) return reply.accepted;
+        if ('snapshotPending' in data) {
+          reply.accepted = data.run.runId === reply.runId && data.run.roleId === reply.roleId && data.run.sessionKey === reply.sessionKey;
+        } else applySnapshot(reply, data);
         if (!reply.accepted) throw new Error('回复接受标识不匹配');
-        if (!('snapshotPending' in data)) applySnapshot(reply, data);
       } catch (cause) {
+        if (!current(reply)) return reply.accepted;
         // A missing response is reconciled by the preallocated identity, never
         // matching text or whichever run happens to be current on the server.
         if (cause instanceof ApiError && cause.acceptedRunId === reply.runId) reply.accepted = true;
         if (!reply.accepted && !(cause instanceof ApiError && cause.status < 500)) {
-          try {
-            const data = await api<RunData>(runPath(reply));
-            reply.accepted = data.run.runId === reply.runId && data.run.roleId === reply.roleId && data.run.sessionKey === reply.sessionKey;
-            applySnapshot(reply, data);
-          } catch (recoveryError) {
-            // A busy exact snapshot still confirms the original acceptance.
-            // Keep the cleared draft and subscription alive instead of offering
-            // the already accepted content as a new message again.
-            if (recoveryError instanceof ApiError && recoveryError.acceptedRunId === reply.runId) reply.accepted = true;
+          while (current(reply) && !reply.accepted) {
+            try {
+              if (await recover(reply)) break;
+            } catch (recoveryError) {
+              if (!current(reply)) break;
+              // A busy exact snapshot with this identity confirms acceptance.
+              if (recoveryError instanceof ApiError && recoveryError.acceptedRunId === reply.runId) {
+                reply.accepted = true;
+                setError('');
+                break;
+              }
+              // Retain the existing exact-read 4xx rejection behavior. A
+              // transport error or unconfirmed 5xx does not settle admission.
+              if (recoveryError instanceof ApiError && recoveryError.status < 500) break;
+            }
+            if (!current(reply) || reply.accepted) break;
+            setError('发送结果尚未确认，正在恢复连接');
+            await waitForRecovery(reply.controller.signal);
           }
         }
         if (!reply.accepted && current(reply)) { setError(errorMessage(cause, '发送失败')); finish(reply); }
@@ -276,7 +293,14 @@ export function useChat() {
       if (reply.accepted && current(reply) && !reply.stopPromise) void subscribe(reply);
       return reply.accepted;
     })();
-    return await reply.admission;
+    return await new Promise<ChatSendResult>((resolve, reject) => {
+      // Opening another role keeps the old Composer mounted until its session
+      // loads. Detaching must settle it without claiming acceptance/rejection.
+      const detached = () => resolve(reply.closed ? reply.accepted : 'detached');
+      reply.controller.signal.addEventListener('abort', detached, { once: true });
+      void reply.admission!.then(resolve, reject).finally(() => reply.controller.signal.removeEventListener('abort', detached));
+      if (reply.controller.signal.aborted) detached();
+    });
   };
 
   const stop = () => {
@@ -306,7 +330,12 @@ export function useChat() {
       if (data.activeRun && data.activeRun.runId !== reply.runId && !terminal(data.activeRun)) attach(data.activeRun);
     })();
     void reply.stopPromise.catch(cause => {
-      if (current(reply)) { setError(errorMessage(cause, '停止回复失败，请重试')); reply.stopPromise = null; setStopping(false); void subscribe(reply); }
+      if (current(reply)) {
+        setError(errorMessage(cause, '停止回复失败，请重试')); reply.stopPromise = null; setStopping(false);
+        // Unknown admission already owns exact-ID recovery; do not start a
+        // second recovery/subscription loop until acceptance is confirmed.
+        if (reply.accepted) void subscribe(reply);
+      }
     });
   };
 
