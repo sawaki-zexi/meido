@@ -233,25 +233,106 @@ it('natural segments upsert by durable ID and stay active until the real termina
   expect(result.current.messages.map(item => item.content)).toEqual(['one', 'two']);
 });
 
-it("a delayed history refresh cannot replace a newer role/session or revive progress", async () => {
+it.each([false, true])('ignores an older idle refresh after newer history (obsolete active run: %s)', async obsoleteRun => {
+  const subscribe = vi.spyOn(streamApi, 'subscribeRoleRun').mockImplementation((_role, _run, _after, _emit, signal) =>
+    new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true })));
+  const existing = message({ id: 'existing', role: 'assistant', content: 'saved history' });
+  const newest = message({ id: 'background', role: 'assistant', content: 'new background message', sequence: 2 });
+  const responses: ((value: { body: unknown }) => void)[] = [];
+  let loads = 0;
+  fakeBackend({
+    'GET /api/roles/r1/session': () => ++loads === 1 ? { body: { session, messages: [existing] } }
+      : new Promise<{ body: unknown }>(resolve => { responses.push(resolve); }),
+  });
+  const { result } = renderHook(useChat);
+  await act(async () => { await result.current.open(alice); });
+  let older!: Promise<void>, newer!: Promise<void>;
+  act(() => { older = result.current.refresh(); newer = result.current.refresh(); });
+  await act(async () => {
+    responses[1]({ body: { session, messages: [existing, newest] } }); await newer;
+  });
+  expect(result.current.messages).toEqual([existing, newest]);
+  await act(async () => {
+    responses[0]({ body: { session, messages: [existing], activeRun: obsoleteRun ? run() : null } }); await older;
+  });
+  expect(result.current.messages).toEqual([existing, newest]);
+  expect(result.current.sending).toBe(false);
+  expect(subscribe).not.toHaveBeenCalled();
+});
+
+it('keeps current history when the newest refresh fails and accepts a later successful refresh', async () => {
+  const existing = message({ id: 'existing', role: 'assistant', content: 'saved history' });
+  const visible = message({ id: 'visible', role: 'assistant', content: 'already visible', sequence: 2 });
+  const newest = message({ id: 'newest', role: 'assistant', content: 'later update', sequence: 3 });
+  const responses: ((value: { body: unknown; status?: number }) => void)[] = [];
+  let loads = 0;
+  fakeBackend({
+    'GET /api/roles/r1/session': () => ++loads === 1 ? { body: { session, messages: [existing, visible] } }
+      : new Promise<{ body: unknown; status?: number }>(resolve => { responses.push(resolve); }),
+  });
+  const { result } = renderHook(useChat);
+  await act(async () => { await result.current.open(alice); });
+  let older!: Promise<void>, newer!: Promise<void>, next!: Promise<void>;
+  act(() => { older = result.current.refresh(); newer = result.current.refresh(); });
+  await act(async () => { responses[1]({ status: 503, body: { detail: 'temporary read failure' } }); await newer; });
+  expect(result.current.messages).toEqual([existing, visible]);
+  await act(async () => { responses[0]({ body: { session, messages: [existing] } }); await older; });
+  expect(result.current.messages).toEqual([existing, visible]);
+  act(() => { next = result.current.refresh(); });
+  await act(async () => { responses[2]({ body: { session, messages: [existing, visible, newest] } }); await next; });
+  expect(result.current.messages).toEqual([existing, visible, newest]);
+  expect(result.current.error).toBe('');
+});
+
+it('an idle refresh resumes the valid active run and receives its next event', async () => {
+  const events = feed();
+  let loads = 0;
+  const { calls } = fakeBackend({
+    'GET /api/roles/r1/session': () => ({ body: ++loads === 1 ? { session, messages: [] }
+      : { session, messages: [row('saved partial')], activeRun: run({ sequence: 2 }) } }),
+    'GET /api/roles/r1/runs/run-first-0-0-0-0/events\\?after=2': () => ({ stream: events.stream }),
+  });
+  const { result } = renderHook(useChat);
+  await act(async () => { await result.current.open(alice); });
+  await act(async () => { await result.current.refresh(); });
+  expect(result.current.sending).toBe(true);
+  expect(result.current.messages[0].content).toBe('saved partial');
+  await act(async () => {
+    events.emit('assistant_delta', { runId: run().runId, sequence: 3, messageId: 'a1', delta: ' continued' });
+  });
+  await waitFor(() => expect(result.current.messages[0].content).toBe('saved partial continued'));
+  expect(calls.filter(call => call.method === 'POST')).toEqual([]);
+});
+
+it.each(['switch role', 'reset', 'send', 'unmount'])('a delayed history refresh cannot revive old state after %s', async action => {
+  vi.spyOn(crypto, 'randomUUID').mockReturnValue('first-0-0-0-0');
+  const subscribe = vi.spyOn(streamApi, 'subscribeRoleRun').mockImplementation((_role, _run, _after, _emit, signal) =>
+    new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true })));
+  const sent = message({ id: 'sent', role: 'assistant', content: 'new completed reply' });
   let respond!: (value: { body: unknown }) => void;
   const delayed = new Promise<{ body: unknown }>(resolve => { respond = resolve; });
   let loads = 0;
   fakeBackend({
     "GET /api/roles/r1/session": () => ++loads === 1 ? { body: { session: { roleId: "r1", sessionKey: "role:r1" }, messages: [] } } : delayed,
     "GET /api/roles/r2/session": () => ({ body: { session: { roleId: "r2", sessionKey: "role:r2" }, messages: [] } }),
+    'POST /api/roles/r1/runs': () => ({ body: { session, messages: [sent], run: run({ status: 'completed', phase: 'finished' }) } }),
   });
-  const { result } = renderHook(useChat);
+  const { result, unmount } = renderHook(useChat);
   await act(async () => { await result.current.open(role({ id: "r1", name: "Alice" })); });
   let refreshing!: Promise<void>;
   act(() => { refreshing = result.current.refresh(); });
-  await act(async () => { await result.current.open(role({ id: "r2", name: "Bella" })); });
+  if (action === 'switch role') await act(async () => { await result.current.open(role({ id: 'r2', name: 'Bella' })); });
+  else if (action === 'send') await act(async () => { expect(await result.current.send('new input')).toBe(true); });
+  else if (action === 'reset') act(() => { result.current.reset(); });
+  else unmount();
   await act(async () => {
-    respond({ body: { session: { roleId: "r1", sessionKey: "role:r1" }, messages: [message({ id: "old", role: "assistant", content: "old history" })] } });
+    respond({ body: { session, messages: [message({ id: 'old', role: 'assistant', content: 'old history' })], activeRun: run() } });
     await refreshing;
   });
-  expect(result.current.roleId).toBe("r2");
-  expect(result.current.session?.sessionKey).toBe("role:r2");
-  expect(result.current.messages).toEqual([]);
+  expect(result.current.roleId).toBe(action === 'switch role' ? 'r2' : action === 'reset' ? null : 'r1');
+  expect(result.current.session?.sessionKey).toBe(action === 'switch role' ? 'role:r2' : action === 'reset' ? undefined : 'role:r1');
+  expect(result.current.messages).toEqual(action === 'send' ? [sent] : []);
   expect(result.current.toolProgress).toBeNull();
+  expect(result.current.sending).toBe(false);
+  expect(subscribe).not.toHaveBeenCalled();
 });

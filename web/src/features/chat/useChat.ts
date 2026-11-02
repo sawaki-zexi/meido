@@ -65,6 +65,7 @@ export function useChat() {
   const activeReply = useRef<ActiveReply | null>(null);
   const openingRequest = useRef<AbortController | null>(null);
   const sourceRevision = useRef(0);
+  const refreshRequestId = useRef(0);
   const mounted = useRef(true);
   const current = (reply: ActiveReply) => mounted.current && activeReply.current === reply && !reply.controller.signal.aborted;
 
@@ -216,10 +217,13 @@ export function useChat() {
 
   const refresh = useCallback(async () => {
     if (!roleId || activeReply.current || openingRequest.current) return;
+    // Focus, visibility and polling reads can overlap within the same role.
+    const requestId = ++refreshRequestId.current;
     const revision = sourceRevision.current;
     try {
       const data = await api<SessionData>(`/api/roles/${encodeURIComponent(roleId)}/session`);
-      if (!mounted.current || sourceRevision.current !== revision || activeReply.current || openingRequest.current || data.session.roleId !== roleId) return;
+      if (!mounted.current || refreshRequestId.current !== requestId || sourceRevision.current !== revision
+        || activeReply.current || openingRequest.current || data.session.roleId !== roleId) return;
       setSession(data.session); setMessages(data.activeRun ? liveMessages(data.messages, data.activeRun) : data.messages);
       if (data.activeRun && !terminal(data.activeRun) && data.activeRun.roleId === roleId
         && data.activeRun.sessionKey === data.session.sessionKey) attach(data.activeRun);
