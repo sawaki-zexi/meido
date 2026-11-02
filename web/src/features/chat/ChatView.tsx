@@ -129,12 +129,18 @@ function Composer({ roleId, sessionKey, sessionSnapshot, contextRevision = '', s
     }
   };
 
+  const onDragOver = (event: DragEvent<HTMLFormElement>) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    setDragging(true);
+  };
   const onDrop = (event: DragEvent<HTMLFormElement>) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
     event.preventDefault();
     setDragging(false);
     void upload([...event.dataTransfer.files]);
   };
-  return <form aria-label="聊天输入" className={`composer${dragging ? " is-dragging" : ""}`} onSubmit={submit} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
+  return <form aria-label="聊天输入" className={`composer${dragging ? " is-dragging" : ""}`} onSubmit={submit} onDragOver={onDragOver} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
     {attachments.length > 0 && <div className="composer-attachments" aria-label="待发送附件">
       {attachments.map((attachment) => attachment.kind === "image"
         ? <div className="attachment-preview chat-attachment-preview" key={attachment.id}><AttachmentImage src={`/api/roles/${encodeURIComponent(roleId ?? "")}/attachments/${encodeURIComponent(attachment.id)}`} alt={attachment.name} /><button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => remove(attachment.id)}>×</button></div>

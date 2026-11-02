@@ -1055,7 +1055,7 @@ describe("唯一会话", () => {
     render(<App />);
     await chatHeading("爱丽丝");
     expect(screen.getByRole("link", { name: "notes.txt" })).toHaveAttribute("href", "/api/roles/r1/attachments/att-2");
-    fireEvent.drop(screen.getByRole("form", { name: "聊天输入" }), { dataTransfer: { files: [new File(["hello"], "notes.txt", { type: "text/plain" })] } });
+    fireEvent.drop(screen.getByRole("form", { name: "聊天输入" }), { dataTransfer: { types: ["Files"], files: [new File(["hello"], "notes.txt", { type: "text/plain" })] } });
     expect(await screen.findByText("notes.txt")).toBeTruthy();
   });
 
