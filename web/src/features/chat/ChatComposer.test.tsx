@@ -12,6 +12,46 @@ beforeEach(() => { sessionStorage.clear(); localStorage.clear(); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("聊天输入与停止", () => {
+  it("部分附件失败后等整批结束，保留成功项并仅发送成功附件", async () => {
+    type UploadReply = { status?: number; body: object };
+    let finishGood!: (reply: UploadReply) => void;
+    let finishEmpty!: (reply: UploadReply) => void;
+    const goodResponse = new Promise<UploadReply>((resolve) => { finishGood = resolve; });
+    const emptyResponse = new Promise<UploadReply>((resolve) => { finishEmpty = resolve; });
+    const { calls } = fakeBackend({
+      "GET /api/roles": () => ({ body: { roles: [alice] } }),
+      "GET /api/roles/r1/session": () => ({ body: { session, messages: [] } }),
+      "POST /api/roles/r1/attachments": (init) => new Headers(init?.headers).get("x-attachment-filename") === "good.txt" ? goodResponse : emptyResponse,
+      "CHAT /api/roles/r1": () => ({ stream: [
+        sse("user_message_accepted", { message: message({ id: "u-batch", role: "user", content: "查看文件" }) }),
+        sse("assistant_generation_started", { messageId: "a-batch" }),
+        sse("assistant_completed", { message: message({ id: "a-batch", role: "assistant", content: "收到文件", sequence: 2 }) }),
+      ] }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: "爱丽丝" });
+    await user.type(screen.getByRole("textbox", { name: "消息内容" }), "查看文件");
+    await user.upload(screen.getByLabelText("附件文件"), [
+      new File(["note"], "good.txt", { type: "text/plain" }),
+      new File([], "empty.txt", { type: "text/plain" }),
+    ]);
+    await act(async () => { finishEmpty({ status: 422, body: { detail: "附件不能为空" } }); });
+    expect(screen.getByRole("button", { name: "添加附件" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    await act(async () => { finishGood({ body: { id: "good-id", name: "good.txt", mediaType: "text/plain", size: 4, kind: "file" } }); });
+    expect(await screen.findByRole("button", { name: "移除 good.txt" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "移除 empty.txt" })).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("empty.txt：附件不能为空");
+    expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findByText("收到文件", { selector: ".bubble p" });
+    expect(calls.filter((call) => call.method === "POST" && call.path === "/api/roles/r1/runs").map((call) => call.body)).toMatchObject([
+      { content: "查看文件", attachments: ["good-id"] },
+    ]);
+    expect(calls.filter((call) => call.path === "/api/roles/r1/attachments")).toHaveLength(2);
+  });
+
   it("收到回复完成事件后立即恢复发送，即使响应连接还没有关闭", async () => {
     let controller!: ReadableStreamDefaultController<Uint8Array>;
     const cancel = vi.fn();
