@@ -1,10 +1,12 @@
 # QQ 文本附件读取契约
 
-状态：当前。最后核验：2026-10-16。
+状态：当前。最后核验：2026-11-02。
 
 事实来源：[工具实现](../../backend/app/channels/attachment_tool.py)、[入站装配](../../backend/app/main.py)、[真实文件测试](../../tests/python/channels/test_attachment_reader.py)、[QQ 入站到模型往返](../../tests/python/channels/test_attachment_turn.py)。对应 [#164](https://github.com/sawaki-zexi/meido/issues/164) 及完整规格 P07。
 
 `read_attachment` 仅读取宿主在当前 QQ 回合提供的附件 ID，包括本条消息与经过实际 QQ 引用解析的附件。参数使用 `attachment_id`，不接受任意路径。角色与渠道 session 必须相符；后续回合和其他群即使知道旧附件 ID，也不能因此读取文件。此工具不要求通用文件或 Shell 授权。
+
+已配对主人私聊使用冻结的主人历史视图：本回合引用只取同聊天可见原文的附件，展示和读取使用同一原附件 ID，并按当前角色附件目录重新解析，不使用历史记录中的路径或重新下载副本的 ID。未被本回合引用的历史文件、配对前原文及其他聊天的引用不进入读取许可；来源撤权或原文变化后停止读取。普通群聊与访客私聊继续使用当前入站及已解析引用的附件集合。
 
 | 参数 | 行为 |
 | --- | --- |
@@ -20,3 +22,5 @@
 示例：4000 个中文字符为 12000 UTF-8 字节，首次只给 `attachment_id` 即返回前 2000 字符及 `character_offset=2000`；下一次返回剩余 2000 字符与结束标记。
 
 入站测试使用真实 NapCat 解析/引用解析、角色附件文件、SQLite、能力解析和共享模型循环，验证当前/引用结果和续页进入下一 provider 请求、旧回合与其他群 ID 被拒绝。仅远端模型、QQ RPC、媒体下载和头像下载使用可控传输夹具；没有连接真实 QQ 账号或向第三方发送测试消息，这些测试不等于实际 QQ 平台收件验收。
+
+[主人引用往返测试](../../tests/python/channels/test_owner_quoted_attachment.py) 验证已配对主人与访客的 TXT/MD 直接读取、引用后读取 32,000 字符预览以外的尾部及后续回合拒绝旧 ID；[历史视图边界测试](../../tests/python/test_owner_history_view.py) 验证跨聊天、跨角色附件、配对前引用、不可信路径及撤权/原文移除。对应 [#327](https://github.com/sawaki-zexi/meido/issues/327)。

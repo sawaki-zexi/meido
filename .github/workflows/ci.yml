@@ -112,6 +112,8 @@ jobs:
               tests/python/channels/test_natural_turn.py::test_natural_model_receives_host_verified_sender_identity
               tests/python/channels/test_qq_image_receiving.py
               tests/python/channels/test_qq_file_receiving.py
+              tests/python/channels/test_attachment_turn.py
+              tests/python/channels/test_owner_quoted_attachment.py
               tests/python/channels/test_natural_media.py
           - group: drift
             args: tests/python/test_drift_meme_api.py::test_owner_can_explicitly_enable_builtin_meme_maintenance_without_shell
