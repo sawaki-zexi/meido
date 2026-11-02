@@ -158,6 +158,88 @@ describe("聊天输入与停止", () => {
     expect(screen.queryByText(/未发送的消息/)).toBeNull();
   });
 
+  it.each(['network', '503'])('提交和确切查询均不可达（%s）时只恢复原请求，保留下一条草稿和附件', async failure => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('unknown-0-0-0-0');
+    const attachment = { id: 'file-1', name: 'notes.txt', mediaType: 'text/plain', size: 4, kind: 'file' };
+    const run = { ...session, runId: 'run-unknown-0-0-0-0', sequence: 3, status: 'completed', phase: 'finished', tools: [], stopping: false };
+    let ready = false, reads = 0;
+    const unavailable = () => {
+      if (failure === 'network') throw new TypeError('synthetic lost response');
+      return { status: 503, body: { detail: 'synthetic unavailable' } };
+    };
+    const { calls } = directBackend({
+      'GET /api/roles': () => ({ body: { roles: [alice] } }),
+      'GET /api/roles/r1/session': () => ({ body: { session, messages: [] } }),
+      'POST /api/roles/r1/attachments': () => ({ body: attachment }),
+      'POST /api/roles/r1/runs': unavailable,
+      'GET /api/roles/r1/runs/run-unknown-0-0-0-0': () => {
+        reads += 1;
+        return ready ? { body: { session, run, messages: [
+          message({ id: 'u1', role: 'user', content: '原消息', runId: run.runId, metadata: { attachments: [attachment] } }),
+          message({ id: 'a1', role: 'assistant', content: '已保存回复', sequence: 2, runId: run.runId }),
+        ] } } : unavailable();
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: '爱丽丝' });
+    await user.upload(screen.getByLabelText('附件文件'), new File(['note'], 'notes.txt', { type: 'text/plain' }));
+    const input = screen.getByRole('textbox', { name: '消息内容' });
+    await user.type(input, '原消息{Enter}');
+    await waitFor(() => expect(reads).toBeGreaterThan(0));
+    expect(input).toHaveValue('');
+    expect(screen.getByRole('alert')).toHaveTextContent('发送结果尚未确认');
+    expect(screen.getByRole('button', { name: '停止回复' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: '移除 notes.txt' })).toBeNull();
+    await user.type(input, '下一条草稿{Enter}');
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(calls.filter(call => call.path.endsWith('/session'))).toHaveLength(1);
+    ready = true;
+    await screen.findByText('已保存回复', { selector: '.bubble p' });
+    expect(input).toHaveValue('下一条草稿');
+    expect(screen.getByRole('button', { name: '发送' })).toBeEnabled();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/未发送的消息/)).toBeNull();
+    expect(screen.getAllByRole('link', { name: 'notes.txt' })).toHaveLength(1);
+    expect(calls.filter(call => call.method === 'POST' && call.path.endsWith('/runs')).map(call => call.body))
+      .toEqual([{ content: '原消息', attachments: ['file-1'], requestId: 'unknown-0-0-0-0' }]);
+  });
+
+  it('切换角色等待期间仍挂载的旧输入框不回填未知消息或附件', async () => {
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('detached-0-0-0-0');
+    let finishOpening!: (value: { body: unknown }) => void;
+    const opening = new Promise<{ body: unknown }>(resolve => { finishOpening = resolve; });
+    let recoverySignal: AbortSignal | null | undefined;
+    directBackend({
+      'GET /api/roles': () => ({ body: { roles: [alice, role({ id: 'r2', name: '贝拉' })] } }),
+      'GET /api/roles/r1/session': () => ({ body: { session, messages: [] } }),
+      'GET /api/roles/r2/session': () => opening,
+      'POST /api/roles/r1/attachments': () => ({ body: { id: 'file-1', name: 'notes.txt', mediaType: 'text/plain', size: 4, kind: 'file' } }),
+      'POST /api/roles/r1/runs': () => { throw new TypeError('synthetic lost response'); },
+      'GET /api/roles/r1/runs/run-detached-0-0-0-0': init => {
+        recoverySignal = init?.signal;
+        throw new TypeError('synthetic unavailable');
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: '爱丽丝' });
+    await user.upload(screen.getByLabelText('附件文件'), new File(['note'], 'notes.txt', { type: 'text/plain' }));
+    const input = screen.getByRole('textbox', { name: '消息内容' });
+    await user.type(input, '原消息{Enter}');
+    await screen.findByRole('alert');
+    await user.click(screen.getByRole('button', { name: /贝拉/ }));
+    expect(input).toBeInTheDocument();
+    expect(input).toBeDisabled();
+    expect(input).toHaveValue('');
+    expect(screen.queryByRole('button', { name: '移除 notes.txt' })).toBeNull();
+    expect(screen.queryByText(/未发送的消息/)).toBeNull();
+    expect(recoverySignal?.aborted).toBe(true);
+    await act(async () => { finishOpening({ body: { session: { ...session, roleId: 'r2', sessionKey: 'role:r2' }, messages: [] } }); });
+    await screen.findByRole('heading', { name: '贝拉' });
+    expect(screen.getByRole('textbox', { name: '消息内容' })).toHaveValue('');
+  });
+
   it("未接收的失败提交恢复文字和附件，重试不会丢失附件", async () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),

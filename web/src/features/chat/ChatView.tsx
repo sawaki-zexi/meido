@@ -75,7 +75,7 @@ function MessageItem({ message, role, highlighted, onRegenerate, progress, stopp
 }
 
 /** Message box shared by the conversation and the welcome screen, so home always looks like a chat. */
-function Composer({ roleId, sessionKey, sessionSnapshot, contextRevision = '', settingsRevision = '', placeholder, disabled, sending, stopping, onSend, onStop }: { roleId?: string; sessionKey?: string; sessionSnapshot?: object; contextRevision?: string; settingsRevision?: string; placeholder: string; disabled?: boolean; sending?: boolean; stopping?: boolean; onSend: (text: string, attachmentIds: string[]) => Promise<boolean>; onStop?: () => void }) {
+function Composer({ roleId, sessionKey, sessionSnapshot, contextRevision = '', settingsRevision = '', placeholder, disabled, sending, stopping, onSend, onStop }: { roleId?: string; sessionKey?: string; sessionSnapshot?: object; contextRevision?: string; settingsRevision?: string; placeholder: string; disabled?: boolean; sending?: boolean; stopping?: boolean; onSend: ChatState['send']; onStop?: () => void }) {
   const [configuration, setConfiguration] = useState<ModelConfiguration | null>(null);
   const inspection = useChatContextStatus({ roleId, sessionKey, sending, enabled: !disabled,
     revision: contextRevision, modelKey: JSON.stringify([configuration, settingsRevision]), sessionSnapshot });
@@ -112,7 +112,7 @@ function Composer({ roleId, sessionKey, sessionSnapshot, contextRevision = '', s
     clear();
     try {
       const sent = await onSend(text, sentAttachments.map((item) => item.id));
-      if (!sent) {
+      if (sent === false) {
         if (draftRevision.current === revision) setDraft(text);
         else if (text) setUnsentText(text);
         restore(sentAttachments);
