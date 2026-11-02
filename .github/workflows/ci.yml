@@ -79,6 +79,7 @@ jobs:
               tests/python/test_api.py::test_role_update_preserves_session_messages_and_changes_future_prompt
               tests/python/test_api.py::test_delete_role_removes_role_session_messages_and_files
               tests/python/test_model_config.py
+              tests/python/test_claude_error_tool_images.py
               tests/python/test_agent_runtime.py::test_agent_loop_runs_tool_then_final_provider_turn
               tests/python/test_role_store.py
               tests/python/test_role_prompt_compiler.py

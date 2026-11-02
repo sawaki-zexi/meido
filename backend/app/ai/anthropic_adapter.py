@@ -14,6 +14,7 @@ import httpx
 from .request_budget import image_budget_client_kwargs, budgeted_model_stream, budgeted_model_completion
 
 from .message_transform import transform_messages
+from .claude_tool_results import split_error_tool_images
 from .model_adapter import _payload_error_detail, _raise_for_status_with_details, _response_error_detail
 from .model_protocol import compatible_tool_names, effective_tools, json_object, model_cost, normalize_tools, remap_message_tool_names, safe_tool_id
 from .model_types import (
@@ -195,6 +196,7 @@ def _messages_to_wire(
 ) -> tuple[str, list[dict[str, object]]]:
     system_parts: list[str] = []
     wire: list[dict[str, object]] = []
+    image_tails: list[tuple[list[dict[str, object]], list[dict[str, object]]]] = []
     for message in messages:
         if isinstance(message, ModelSystemMessage):
             system_parts.append("".join(block.text for block in message.content))
@@ -226,10 +228,11 @@ def _messages_to_wire(
                     })
             wire.append({"role": "assistant", "content": content or [{"type": "text", "text": ""}]})
         elif isinstance(message, ModelToolResultMessage):
+            content, images = split_error_tool_images(message)
             result = {
                 "type": "tool_result",
                 "tool_use_id": safe_tool_id(message.tool_call_id),
-                "content": _content_blocks(message.content),
+                "content": _content_blocks(content),
             }
             if message.is_error:
                 result["is_error"] = True
@@ -241,6 +244,11 @@ def _messages_to_wire(
                     wire.append({"role": "user", "content": [result]})
             else:
                 wire.append({"role": "user", "content": [result]})
+            if images:
+                image_tails.append((wire[-1]["content"], _content_blocks(images)))
+    # Delay supplemental images until every result in its user message exists.
+    for content, images in image_tails:
+        content.extend(images)
     return "\n\n".join(part for part in system_parts if part), wire
 
 

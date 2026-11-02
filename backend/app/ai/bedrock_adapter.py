@@ -15,6 +15,7 @@ from .request_budget import image_budget_client_kwargs, budgeted_model_stream, b
 from .output_usage import parse_output_usage
 
 from .message_transform import transform_messages
+from .claude_tool_results import split_error_tool_images
 from .model_adapter import _payload_error_detail, _raise_for_status_with_details
 from .model_protocol import preserve_stop_reason
 from .model_protocol import compatible_tool_names, effective_tools, model_cost, normalize_tools, remap_message_tool_names, safe_tool_id
@@ -43,6 +44,13 @@ def _capabilities() -> ModelCapabilities:
 
 def _supports_thinking_signature(model: str) -> bool:
     return "claude" in model.lower()
+
+
+def _requires_text_only_error_results(model: str) -> bool:
+    # Opaque inference-profile IDs cannot identify the underlying model. Keep
+    # their existing behavior rather than guessing from a connection label.
+    value = model.lower()
+    return value.startswith("claude-") or "anthropic.claude-" in value or "anthropic/claude-" in value
 
 
 def _sanitize_document(value: object, *, path: str = "$") -> object:
@@ -85,9 +93,11 @@ def _wire_messages(
     messages: Sequence[ModelMessage],
     *,
     supports_thinking_signature: bool = True,
+    text_only_error_results: bool = False,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     system: list[dict[str, object]] = []
     result: list[dict[str, object]] = []
+    image_tails: list[tuple[list[dict[str, object]], list[dict[str, object]]]] = []
     for message in messages:
         if isinstance(message, ModelSystemMessage):
             value = "\n\n".join(block.text for block in message.content)
@@ -113,11 +123,12 @@ def _wire_messages(
                 continue
             result.append({"role": "assistant", "content": content})
         elif isinstance(message, ModelToolResultMessage):
+            content, images = split_error_tool_images(message) if text_only_error_results else (message.content, ())
             block = {"toolResult": {
                 "toolUseId": safe_tool_id(message.tool_call_id),
                 "status": "error" if message.is_error else "success",
                 "content": _content(
-                    message.content,
+                    content,
                     supports_thinking_signature=supports_thinking_signature,
                 ),
             }}
@@ -130,6 +141,11 @@ def _wire_messages(
                 result[-1]["content"].append(block)
             else:
                 result.append({"role": "user", "content": [block]})
+            if images:
+                image_tails.append((result[-1]["content"], _content(images)))
+    # Appending earlier would split later results into a different user message.
+    for content, images in image_tails:
+        content.extend(images)
     return system, result
 
 
@@ -166,6 +182,7 @@ class BedrockConverseAdapter:
         system, wire = _wire_messages(
             messages,
             supports_thinking_signature=_supports_thinking_signature(configuration.model),
+            text_only_error_results=_requires_text_only_error_results(configuration.model),
         )
         payload: dict[str, object] = {"messages": wire}
         if system:

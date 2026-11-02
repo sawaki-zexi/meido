@@ -114,6 +114,12 @@ Meido Runtime messages
 
 所有十种协议均通过 HTTP/SSE 或 JSON 转换投影到统一 rich stream。Codex 目前采用 HTTP SSE，不包含 Pi 的 WebSocket、自动重试和 OAuth 生命周期；Bedrock 不包含 AWS SigV4。
 
+### 错误工具附图兼容（2026-11-02）
+
+Anthropic Messages 和可明确识别为 Claude 的 Bedrock 请求中，失败工具结果保留错误状态和文字，将诊断图片放在同一 user 消息的整批工具结果之后，并标注对应工具名和调用 ID。图片不丢弃、不重复，原始消息及持久历史不改写；成功附图和纯文字错误保持原布局。此投影在 provider adapter 内完成，公开 `prepare_input` 与实际请求使用同一准备路径。
+
+该处理参考 [Pi 固定提交 `62752fd4`](https://github.com/earendil-works/pi/blob/62752fd4c37a72e0f3c1cc83e9ac3b4299f31fe6/packages/ai/src/api/transform-messages.ts#L25) 和 [上游服务拒绝报告](https://github.com/earendil-works/pi/issues/10794#issuecomment-6194941237)，不是官方 schema 对 image 与错误标志组合的明确禁止，也不代表本地已复现服务端 HTTP 400。Bedrock 仅通过模型标识中的 `anthropic.claude-`、`anthropic/claude-` 或 `claude-` 前缀识别，不根据连接名称猜测；无法识别底层模型的不透明 inference-profile ID 和非 Claude 模型保持原行为。此兼容不扩大原有图片格式支持范围。
+
 ## 6. 风险和决策
 
 - Pi 的 thinking signature 在不同 provider 或 api 上可能是不可解释的 opaque replay data；provider、api 或 model 标识变化时必须删除，完全相同的模型连接才可保留。
