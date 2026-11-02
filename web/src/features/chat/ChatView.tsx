@@ -152,7 +152,7 @@ function Composer({ roleId, sessionKey, sessionSnapshot, contextRevision = '', s
       <input ref={fileRef} type="file" aria-label="附件文件" multiple accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.json,.pdf,.docx" hidden onChange={(event) => { const input = event.currentTarget; const files = [...input.files ?? []]; void upload(files).finally(() => { input.value = ""; }); }} />
       <button type="button" className="composer-attach" aria-label="添加附件" title="添加附件" disabled={disabled || sending || uploading} onClick={() => fileRef.current?.click()}><Icon name="attachment" size={18} /></button>
       <textarea ref={inputRef} aria-label="消息内容" placeholder={placeholder} rows={1} value={draft} disabled={disabled} onChange={(event) => { draftRevision.current += 1; setDraft(event.target.value); }} onKeyDown={onKeyDown} />
-      {roleId && <RoleModelSelector roleId={roleId} disabled={disabled || sending || uploading} onChange={setConfiguration} />}
+      {roleId && <RoleModelSelector roleId={roleId} revision={settingsRevision} disabled={disabled || sending || uploading} onChange={setConfiguration} />}
       <ComposerTools disabled={disabled} onEmoji={insertEmoji} inspection={inspection} />
       {sending
         ? <button type="button" className="send stop" aria-label="停止回复" title={stopping ? "正在停止…" : "停止回复"} disabled={stopping} onClick={onStop}>{stopping ? <span className="spinner" aria-hidden="true" /> : <Icon name="stop" size={18} />}</button>

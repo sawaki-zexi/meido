@@ -4,12 +4,13 @@ import type { ModelBindingResponse as Binding, ModelConfiguration as Configurati
 
 type RoleModelSelectorProps = {
   roleId: string;
+  revision?: string;
   disabled?: boolean;
   onChange?: (configuration: Configuration | null) => void;
 };
 
 /** Loads and persists one role's model binding from the chat header. */
-export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleModelSelectorProps) {
+export function RoleModelSelector({ roleId, revision = "", disabled = false, onChange }: RoleModelSelectorProps) {
   const [configurations, setConfigurations] = useState<Configuration[]>([]);
   const [binding, setBinding] = useState<Binding | null>(null);
   const [open, setOpen] = useState(false);
@@ -17,13 +18,15 @@ export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleMo
   const [savingId, setSavingId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const requestSequence = useRef(0);
+  const savingRequest = useRef<number | null>(null);
+  const refreshAfterSave = useRef(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const restoreFocusRef = useRef(false);
 
-  const load = async () => {
+  const load = async (saveError = "") => {
     const requestId = ++requestSequence.current;
     setLoading(true);
-    setError("");
+    setError(saveError);
     try {
       const [catalog, roleBinding] = await Promise.all([
         api<{ configurations: Configuration[] }>("/api/model/configurations"),
@@ -32,12 +35,13 @@ export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleMo
       if (requestId === requestSequence.current) {
         setConfigurations(catalog.configurations);
         setBinding(roleBinding);
-        setError(roleBinding.error || (roleBinding.configurationId && !catalog.configurations.some((item) => item.id === roleBinding.configurationId)
+        const bindingError = roleBinding.error || (roleBinding.configurationId && !catalog.configurations.some((item) => item.id === roleBinding.configurationId)
           ? "当前角色绑定的模型已不存在，请重新选择"
-          : ""));
+          : "");
+        setError([saveError, bindingError].filter(Boolean).join("；"));
       }
     } catch (cause) {
-      if (requestId === requestSequence.current) setError(errorMessage(cause, "无法加载模型列表"));
+      if (requestId === requestSequence.current) setError([saveError, errorMessage(cause, "无法加载模型列表")].filter(Boolean).join("；"));
     } finally {
       if (requestId === requestSequence.current) setLoading(false);
     }
@@ -49,10 +53,22 @@ export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleMo
     setOpen(false);
     setBinding(null);
     setSavingId(null);
-    void load();
-    // roleId is the only value that starts a new load; load intentionally uses the current role.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    savingRequest.current = null;
+    refreshAfterSave.current = false;
+    return () => {
+      requestSequence.current += 1;
+      savingRequest.current = null;
+      refreshAfterSave.current = false;
+    };
   }, [roleId]);
+
+  useEffect(() => {
+    // A settings refresh must read after any pending binding write settles.
+    if (savingRequest.current !== null) refreshAfterSave.current = true;
+    else void load();
+    // Only a new role/settings snapshot triggers this read; load uses that role.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roleId, revision]);
 
   const reselectionRequired = binding?.reselectionRequired === true;
   const effectiveId = reselectionRequired ? null : binding?.effectiveConfigurationId ?? null;
@@ -80,8 +96,10 @@ export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleMo
       return;
     }
     const requestId = ++requestSequence.current;
+    savingRequest.current = requestId;
     setSavingId(configurationId ?? "__default__");
     setError("");
+    let saveError = "";
     try {
       const next = await api<Binding>(`/api/roles/${encodeURIComponent(roleId)}/model-configuration`, {
         method: "PUT",
@@ -93,9 +111,17 @@ export function RoleModelSelector({ roleId, disabled = false, onChange }: RoleMo
         closeMenu();
       }
     } catch (cause) {
-      if (requestId === requestSequence.current) setError(errorMessage(cause, "模型切换失败"));
+      saveError = errorMessage(cause, "模型切换失败");
+      if (requestId === requestSequence.current) setError(saveError);
     } finally {
-      if (requestId === requestSequence.current) setSavingId(null);
+      if (requestId === requestSequence.current) {
+        savingRequest.current = null;
+        setSavingId(null);
+        if (refreshAfterSave.current) {
+          refreshAfterSave.current = false;
+          void load(saveError);
+        }
+      }
     }
   };
 

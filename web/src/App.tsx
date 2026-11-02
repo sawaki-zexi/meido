@@ -38,6 +38,11 @@ export function App() {
   );
   const [panel, setPanel] = useState<Panel>(returnedFromOwnerKnowledgeAuthorization ? "settings" : null);
   const [roleSettingsVersion, setRoleSettingsVersion] = useState(0);
+  const previousPanel = useRef(panel);
+  useEffect(() => {
+    if (previousPanel.current === "settings" && panel !== "settings") setRoleSettingsVersion(value => value + 1);
+    previousPanel.current = panel;
+  }, [panel]);
   const [view, setView] = useState<View>(() => roles.creating ? "create" : "chat");
   const [roleReturnView, setRoleReturnView] = useState<Exclude<View, "role" | "create">>("chat");
   const [studioRoleId, setStudioRoleId] = useState<string | null>(null);
@@ -235,7 +240,7 @@ export function App() {
       <ChannelView key={`${channelSource.role.id}:${channelSource.source.origin.stableSourceKey}:${channelSource.source.messageId ?? ""}`} role={channelSource.role} sourceOnly onBack={() => setChannelSource(null)} initialSource={channelSource.source} />
     </Dialog>}
 
-    {panel === "settings" && <SettingsDialog initialSection={settingsSection} onRoleSaved={roles.receiveRole} onClose={() => { setPanel(null); setRoleSettingsVersion(value => value + 1); }} />}
+    {panel === "settings" && <SettingsDialog initialSection={settingsSection} onRoleSaved={roles.receiveRole} onClose={() => setPanel(null)} />}
     {previewRole && <Dialog title={`${previewRole.name}头像`} variant="modal" onClose={() => setPreviewRole(null)}>
       <div className="avatar-lightbox"><img src={previewRole.avatarOriginalUrl ?? previewRole.avatarUrl ?? ""} alt={`${previewRole.name}头像`} /></div>
     </Dialog>}
