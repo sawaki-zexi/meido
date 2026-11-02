@@ -63,24 +63,64 @@ async def test_fixed_model_credentials_resume_failed_markdown_without_restart(tm
     sessions = transcript(tmp_path)
     configurations = ModelConfigurationStore(tmp_path / 'models.json')
     config = configurations.save(ModelConfigurationInput(providerId='custom', provider='custom', baseUrl='https://model.test', model='fixture', apiKey='old'))
+    role = _memory_role()
     monkeypatch.setattr(main, 'model_configuration_store', configurations)
-    monkeypatch.setattr(main, 'store', SimpleNamespace(get=lambda _: None))
+    monkeypatch.setattr(main, 'store', SimpleNamespace(get=lambda role_id: role if role_id == role.id else None))
     def model(*_):
-        if configurations.get().apiKey == 'old':
+        configuration = main._role_model_configuration(role.id)
+        assert configuration is not None and configuration.id == config.id
+        if configuration.apiKey == 'old':
             raise TimeoutError()
         return {'history': '恢复后整理的事实', 'pendingItems': []}
     maintenance = MemoryMaintenance(tmp_path / 'roles', sessions, consolidation_provider=model,
+        role_exists=lambda role_id: main.store.get(role_id) is not None,
         configuration_generation=main._memory_configuration_generation)
     worker = MemoryWorker(MemoryService(MemoryStore(tmp_path / 'memory.db')), maintenance)
     await worker.before_turn('r', 'role:r')
     await worker.drain()
     with pytest.raises(ValueError, match='TimeoutError'):
         await worker.before_turn('r', 'role:r')
+    failed_generation = main._memory_configuration_generation(role.id)
     configurations.update(config.id, config.model_copy(update={'apiKey': 'fixed'}))
+    assert main._memory_configuration_generation(role.id) != failed_generation
     await worker.before_turn('r', 'role:r')
     await worker.drain()
     assert not maintenance.failures
     assert sessions.maintenance_progress('r', 'role:r')['lastSequence'] > 0
+
+
+def _memory_role(**binding):
+    from datetime import datetime, timezone
+    from backend.app.models import Role
+    now = datetime.now(timezone.utc)
+    return Role(id='r', name='fixture', profile={'profile': 'fixture'},
+        createdAt=now, updatedAt=now, **binding)
+
+
+@pytest.mark.parametrize('binding', [None, {'modelBindingRequired': True}, {'modelConfigurationId': 'deleted'}],
+    ids=['missing-role', 'unresolved-legacy', 'missing-canonical'])
+def test_unavailable_role_memory_configuration_never_inherits_active_key_changes(tmp_path, monkeypatch, binding):
+    from types import SimpleNamespace
+    from backend.app import main
+    from backend.app.model_config import ModelConfigurationStore
+    from backend.app.models import ModelConfigurationInput
+    configurations = ModelConfigurationStore(tmp_path / 'models.json')
+    config = configurations.save(ModelConfigurationInput(providerId='custom', provider='custom',
+        baseUrl='https://model.test', model='fixture', apiKey='old'))
+    role = _memory_role(**binding) if binding is not None else None
+    monkeypatch.setattr(main, 'model_configuration_store', configurations)
+    monkeypatch.setattr(main, 'store', SimpleNamespace(get=lambda role_id: role if role_id == 'r' else None))
+    maintenance = MemoryMaintenance(tmp_path / 'roles', transcript(tmp_path),
+        configuration_generation=main._memory_configuration_generation)
+    generation = maintenance.refresh_configuration('r')
+    maintenance.failures['r'] = '模型连接不可用，请重新选择模型'
+    assert main._role_model_configuration('r') is None
+
+    configurations.update(config.id, config.model_copy(update={'apiKey': 'fixed'}))
+
+    assert main._role_model_configuration('r') is None
+    assert maintenance.refresh_configuration('r') == generation
+    assert maintenance.failures['r'] == '模型连接不可用，请重新选择模型'
 
 
 @pytest.mark.parametrize('old_success', [False, True])
