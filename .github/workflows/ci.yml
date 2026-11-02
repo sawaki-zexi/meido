@@ -81,6 +81,9 @@ jobs:
               tests/python/test_model_config.py
               tests/python/test_agent_runtime.py::test_agent_loop_runs_tool_then_final_provider_turn
               tests/python/test_role_store.py
+              tests/python/test_role_prompt_compiler.py
+              tests/python/test_role_card_import.py
+              tests/python/test_todo_plugin.py::test_role_reminder_generation_uses_personality_facts_and_read_only_related_memory
               tests/python/test_api.py::test_role_creation_uses_canonical_binding_and_never_persists_legacy_credentials
               tests/python/test_api.py::test_role_creation_rejects_missing_canonical_connection_without_writing_role
               tests/python/test_api.py::test_role_validation_errors_do_not_echo_credentials
@@ -102,6 +105,7 @@ jobs:
               tests/python/channels/test_adapters.py::test_napcat_group_event_is_normalized_for_host_listener_policy
               tests/python/channels/test_adapters.py::test_napcat_group_member_target_uses_private_message_shape
               tests/python/channels/test_runtime_delivery.py::test_real_channel_runtime_commits_reply_only_after_confirmed_delivery
+              tests/python/channels/test_natural_turn.py::test_natural_model_receives_host_verified_sender_identity
           - group: drift
             args: tests/python/test_drift_meme_api.py::test_owner_can_explicitly_enable_builtin_meme_maintenance_without_shell
           - group: chat-lifecycle

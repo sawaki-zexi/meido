@@ -12,6 +12,7 @@ import httpx
 from .request_budget import image_budget_client_kwargs, budgeted_model_stream, budgeted_model_completion
 
 from ..models import Message, ModelConfiguration, Role
+from ..role_prompt import compile_role_prompt
 from .model_types import ModelMessage, ModelStreamEvent as RichModelStreamEvent
 from .model_protocol import copy_json
 
@@ -388,15 +389,8 @@ class OpenAICompatibleAdapter:
     ) -> AsyncIterator[str]:
         effective_configuration = self._effective_configuration(configuration)
 
-        profile = role.profile
         system_prompt = "\n\n".join(part for part in [
-            f"你正在扮演 {role.name}。",
-            f"简介：{role.description}" if role.description else "",
-            f"角色设定：{profile.profile}",
-            f"性格：{profile.personality}" if profile.personality else "",
-            f"行为规则：{profile.behaviorRules}" if profile.behaviorRules else "",
-            f"回复约束：{profile.responseConstraints}" if profile.responseConstraints else "",
-            f"称呼用户：{profile.nickname}" if profile.nickname else "",
+            compile_role_prompt(role).text,
             memory_context,
         ] if part)
         messages: list[dict[str, object]] = [{"role": "system", "content": system_prompt}]

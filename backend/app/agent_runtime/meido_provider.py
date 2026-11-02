@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import cast
 
 from ..models import Message, ModelConfiguration, Role
+from ..role_prompt import compile_role_prompt
 from ..ai.model_adapter import ModelAdapter, ModelResponseDone, ModelStreamError, ModelTextDelta, ModelToolCall
 from ..ai.model_types import (
     ModelAssistantMessage as RichAssistantMessage,
@@ -691,15 +692,8 @@ class MeidoProvider:
             self._context_frame(include_memory=False, request_context=request_context) if include_context else '') if part)
 
     def role_system_prompt(self, *, include_context=True, tool_prompt='', request_context='') -> str:
-        profile = self.role.profile
         return "\n\n".join(part for part in [
-            f"你正在扮演 {self.role.name}。",
-            f"简介：{self.role.description}" if self.role.description else "",
-            f"角色设定：{profile.profile}",
-            f"性格：{profile.personality}" if profile.personality else "",
-            f"行为规则：{profile.behaviorRules}" if profile.behaviorRules else "",
-            f"回复约束：{profile.responseConstraints}" if profile.responseConstraints else "",
-            f"称呼用户：{profile.nickname}" if profile.nickname else "",
+            compile_role_prompt(self.role).text,
             CHAT_BEHAVIOR_PROMPT,
             self.stable_memory,
             self.required_context,
